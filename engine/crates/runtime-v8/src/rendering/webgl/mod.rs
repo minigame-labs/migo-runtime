@@ -45,7 +45,6 @@ extension!(host_v8_webgl,
     deps = [host_v8_console, host_v8_base],
     ops = [
         op_viewport,
-        op_clear,
         op_clear_color,
 
         op_await_next_frame,

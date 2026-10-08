@@ -14,7 +14,7 @@
 //! are advertised by the public headers and artifact manifests, not inferred
 //! from which Rust modules happened to compile.
 
-// Section 7.3's steady-state growth gate reads this. `#[cfg(test)]` scopes it to this
+// The steady-state growth gate reads this. `#[cfg(test)]` scopes it to this
 // crate's own test binary: a `#[global_allocator]` is unique per binary, so one declared
 // unconditionally here would follow this crate into the cdylib it exists to produce.
 // Deleting it does not make the gate pass silently -- every cycle proves the allocator
@@ -119,11 +119,11 @@ use shared::{config::InitOptions, protocol::host_cmd::HostCommand, surface::Surf
 /// second Engine, which the ABI allows and `concurrent_sessions` covers.
 ///
 /// `code_cache_dir` is shared **on purpose**, and this is the root that would be
-/// actively damaged by moving: Section 6.5 requires the on-disk V8 code cache to
-/// be shared between Sessions, its key is `hash(source_bytes, v8_version)` so the
-/// bytes mean the same thing to whoever asked, and the budget task 0.19 moved onto
-/// the directory is a budget *because* the directory is one. Per-Session roots
-/// would silently give each Session its own copy of every compile.
+/// actively damaged by moving: the on-disk V8 code cache must be shared between
+/// Sessions, its key is `hash(source_bytes, v8_version)` so the bytes mean the
+/// same thing to whoever asked, and its budget belongs to the directory because
+/// the directory is shared. Per-Session roots would silently give each Session
+/// its own copy of every compile.
 struct EngineInner {
     files_dir: PathBuf,
     cache_dir: PathBuf,
@@ -797,12 +797,6 @@ const MIGO_LIFECYCLE_CREATED: u32 = 0;
 const MIGO_LIFECYCLE_RUNNING: u32 = 1;
 const MIGO_LIFECYCLE_PAUSED: u32 = 2;
 
-/// Drive the engine's show/hide channel — the same one Android's `onShow` /
-/// `onHide` use, so a desktop host produces the lifecycle the content already
-/// expects instead of a second, divergent notion of "paused".
-///
-/// `send_critical_command_to_host` matches Android: lifecycle must not be
-/// dropped when the command queue is saturated.
 /// Report that a frame boundary arrived, in response to `on_request_frame`.
 ///
 /// # Safety

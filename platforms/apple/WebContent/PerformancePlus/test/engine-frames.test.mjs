@@ -349,8 +349,14 @@ const sequenceBefore = flushToHost();
 check(flags(sent.at(-1)) === 0, "flushToHost sends what is recorded as a barrier");
 check(sequenceBefore === sequenceOf(sent.at(-1)), "and returns that barrier's sequence");
 check(flushToHost() === sequenceBefore, "a flush with nothing recorded sends nothing and names the last packet");
+// The frame drew and then asked a question, so all it drew went in the barrier. Its end still sends the presenting
+// packet -- a stream that is only its header -- because the host presents a frame when that arrives, not when a
+// barrier runs. The frame after it, which recorded nothing and sent no barrier, sends nothing.
 endFrame();
-check(sent.length === afterBarriers + 1, "a frame end with nothing recorded after the flush sends nothing");
+check(sent.length === afterBarriers + 2, "a frame end after a barrier sends a packet though nothing is left to record");
+check(flags(sent.at(-1)) === 1 && recordsOf(sent.at(-1)).length === 0, "and it presents and carries no records");
+endFrame();
+check(sent.length === afterBarriers + 2, "a frame end with nothing recorded and no barrier sends nothing");
 
 // Content runs inside a blocking call. A barrier waiting for the window is a synchronous request, and a
 // FinalizationRegistry callback that frees a collected canvas runs from inside the request's native send: the op it

@@ -12,7 +12,7 @@
 # environment below is not incidental -- `CC`, `RUSTY_V8_ARCHIVE`,
 # `RUSTY_V8_SRC_BINDING_PATH`, `LIBRARY_PATH` and the unset `ANDROID_NDK*` are
 # all cargo fingerprint inputs -- so a caller that wants the player built ahead
-# of time cannot simply run `cargo build` itself. migo-conformance tried
+# of time cannot simply run `cargo build` itself. The conformance suite tried
 # exactly that, with `CC=clang-18` instead of the `/usr/bin/clang` set here,
 # and the two fingerprints meant the "warm" build compiled one variant and the
 # first bundle then rebuilt the other inside its own 45-second budget -- and

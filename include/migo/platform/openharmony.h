@@ -4,8 +4,8 @@
 #include <migo/surface.h>
 
 /*
- * native_window is an OHNativeWindow*. A future implementation takes its own
- * native-object reference before attach returns success and releases that
+ * native_window is an OHNativeWindow*. The OpenHarmony implementation takes its
+ * own native-object reference before attach returns success and releases that
  * reference before the release observer reaches MIGO_SURFACE_RELEASE_RELEASED.
  */
 typedef struct MigoOpenHarmonyNativeWindowDescriptor {

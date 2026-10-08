@@ -15,9 +15,10 @@ import java.util.UUID;
 import org.junit.Test;
 
 /**
- * Section 6.1: "no per-event path may take a lock shared across sessions, and no
- * per-event path may allocate", naming this one -- "each callback allocates a
- * connection wrapper plus capturing lambdas".
+ * Per-event locking and allocation behavior for Bluetooth notifications.
+ *
+ * <p>Each callback must avoid a lock shared across sessions and avoid allocating
+ * a connection wrapper or capturing lambdas.
  *
  * <p>What these gates cover, said plainly rather than implied: the dispatch from
  * {@code handleGattCharacteristicChanged} inward, which is where both lambdas

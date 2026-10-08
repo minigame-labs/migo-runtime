@@ -17,12 +17,13 @@ impl JavaMethodCache {
 
     /// Returns the cached Java class as a `JClass<'static>`.
     ///
-    /// Safety note:
-    /// - `GlobalRef` is a JNI global reference, so the raw handle is always valid
-    ///   as long as `self.class` is alive.
-    /// - We do NOT delete this reference via `JClass` (no Drop semantics here).
+    /// The raw handle is valid as long as `self.class` is alive. No Drop is
+    /// triggered through `JClass` because it carries no ownership of its own.
     #[inline]
     pub(crate) fn class(&self) -> JClass<'static> {
+        // SAFETY: `self.class` is a JNI global reference; its raw handle is
+        // always valid for the lifetime of `self`. `JClass` has no Drop, so
+        // handing it out as `'static` cannot cause a double-free.
         unsafe { JClass::from_raw(self.class.as_obj().as_raw()) }
     }
 

@@ -134,14 +134,14 @@ public class BluetoothManager {
      * The admission supplier and the delivery runnable for one GATT attempt,
      * reused across notifications instead of captured afresh on each one.
      *
-     * <p>Section 6.1 requires that no per-event path allocate, and names this
-     * one: a characteristic notification arrives at whatever rate the peripheral
-     * chooses. Written closure-style the dispatch built two capturing lambdas
-     * every time — one for the admission gate and one for the delivery — and
-     * neither is a lambda that can be non-capturing, because both need the
-     * event's own values. Carrying those values in fields of one long-lived
-     * object is what removes the allocation; implementing both interfaces on it
-     * is what makes it one object rather than two.
+     * <p>Per-event paths must not allocate: a characteristic notification
+     * arrives at whatever rate the peripheral chooses. Written closure-style
+     * the dispatch built two capturing lambdas every time — one for the
+     * admission gate and one for the delivery — and neither is a lambda that
+     * can be non-capturing, because both need the event's own values. Carrying
+     * those values in fields of one long-lived object is what removes the
+     * allocation; implementing both interfaces on it is what makes it one
+     * object rather than two.
      *
      * <p><b>Every use holds this object's own monitor</b> ({@code fill} through
      * the end of the dispatch it feeds), because the fields are scratch space
@@ -380,8 +380,9 @@ public class BluetoothManager {
      * <p>{@code UUID.toString} formats 36 characters every call, and a
      * notification needs two of them -- the service's and the characteristic's
      * -- for identifiers that are the same on every notification of one stream.
-     * Section 6.1 forbids the allocation; a lookup keyed by the UUID object the
-     * platform already holds removes it without changing what is delivered.
+     * The notification path cannot allocate; a lookup keyed by the UUID object
+     * the platform already holds removes that formatting without changing what
+     * is delivered.
      */
     private final ConcurrentHashMap<UUID, String> uuidText = new ConcurrentHashMap<>();
 

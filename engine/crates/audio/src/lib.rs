@@ -31,7 +31,7 @@
 //!
 //! - **WebAudio API**: Supports `AudioContext`, `AudioBufferSourceNode`, `GainNode`
 //! - **InnerAudioContext**: audio player with streaming support
-//! - **Format Support**: MP3, OGG/Vorbis, WAV, FLAC (via symphonia)
+//! - **Format Support**: MP3 (minimp3-sys), OGG/Vorbis (lewton), WAV (hound)
 //! - **Streaming**: Edge-download-edge-play for large audio files
 //! - **Caching**: LRU cache for decoded audio to avoid repeated decoding
 //! - **Resampling**: Automatic sample rate conversion for device compatibility
@@ -66,6 +66,7 @@
 //! - **Android**: Uses Oboe (AAudio/OpenSL ES) via cpal
 //! - **Linux**: Uses ALSA via cpal
 //! - **macOS/iOS**: Uses CoreAudio via cpal
+//! - **OpenHarmony**: Uses OHAudio via a hand-declared backend (`output_ohaudio.rs`)
 //!
 //! ## Module Structure
 //!
@@ -74,7 +75,7 @@
 //! - [`streaming`]: HTTP streaming download and progressive decoding
 //! - [`power_manager`]: 3-level power state management
 
-// Section 7.3's steady-state allocation gate reads this. `#[cfg(test)]` scopes it
+// The steady-state allocation gate reads this. `#[cfg(test)]` scopes it
 // to this crate's own test binary: a `#[global_allocator]` is unique per binary, so
 // one declared unconditionally here would follow the library into every shipped
 // cdylib. Deleting it does not make the gates pass silently -- each burst proves the

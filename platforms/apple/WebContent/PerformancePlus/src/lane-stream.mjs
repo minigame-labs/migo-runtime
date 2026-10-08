@@ -1235,9 +1235,6 @@ export function op_blend_func(canvasId, sfactor, dfactor) {
 export function op_blend_func_separate(canvasId, srcRgb, dstRgb, srcAlpha, dstAlpha) {
   emit(R.OP_BLEND_FUNC_SEPARATE, smiU32(canvasId, "canvas_id"), smiU32(srcRgb, "src_rgb"), smiU32(dstRgb, "dst_rgb"), smiU32(srcAlpha, "src_alpha"), smiU32(dstAlpha, "dst_alpha"));
 }
-export function op_clear(canvasId, bitField) {
-  emit(R.OP_CLEAR, smiU32(canvasId, "canvas_id"), smiU32(bitField, "bit_field"));
-}
 export function op_clear_color(canvasId, r, g, b, a) {
   emit(R.OP_CLEAR_COLOR, smiU32(canvasId, "canvas_id"), f32BitsOf(r, "r"), f32BitsOf(g, "g"), f32BitsOf(b, "b"), f32BitsOf(a, "a"));
 }

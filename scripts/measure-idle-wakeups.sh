@@ -3,7 +3,7 @@
 # Measure the engine's wakeups per second while idle.
 # Location: scripts/measure-idle-wakeups.sh
 #
-# Specification Section 7.3 requires idle quiescence — no polling loop and no
+# The runtime's idle-quiescence contract requires no polling loop and no
 # fixed-interval wakeup when idle, measured as wakeups per second at idle. This
 # is the instrument for that metric on the engine-paced platforms (Linux,
 # Windows, HarmonyOS, and any C host that does not drive frames itself), where

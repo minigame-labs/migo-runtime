@@ -26,7 +26,7 @@ import com.migo.runtime.internal.RuntimeScoped;
  *   <li>"normal" = ~200ms (SENSOR_DELAY_NORMAL)</li>
  * </ul>
  * <p>
- * Compatible with Android API 21+.
+ * Compatible with Android API 26+.
  *
  * @hide
  */

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Which target builds a set of changed files needs before it can be called verified.
 
-Section 7.4 of the four-platform delivery design: *a platform-conditional path is
-unverified until its own target compiles*. Host `cargo check`, `cargo test` and
-`cargo clippy` skip `cfg(target_os = "android")` code entirely, so a green host run
-says nothing about it. That is not hypothetical -- three Android compile errors rode
-this branch for several sessions while every host run stayed green.
+The rule is simple: a platform-conditional path is unverified until its own
+target compiles. Host `cargo check`, `cargo test` and `cargo clippy` skip
+`cfg(target_os = "android")` code entirely, so a green host run says nothing
+about it. That is not hypothetical -- compile errors can otherwise ride a
+branch for several sessions while every host run stays green.
 
 Answering "which targets does this change need" from the changed paths alone is not
 enough, for two reasons found in the tree rather than imagined:

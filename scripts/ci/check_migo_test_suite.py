@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-Validate migo-test-suite report JSON against CI quality gates.
+Validate the device test suite report JSON against CI quality gates.
 
 Usage:
     python scripts/ci/check_migo_test_suite.py \\
-        --report ../migo-test-suite/report.json \\
+        --report ../<device-test-suite>/report.json \\
         [--min-pass-rate 95] \\
         [--min-total 100] \\
         [--required-categories canvas,webgl,audio,touch,network] \\
         [--summary-out reports/test-suite-summary.json] \\
         [--gate]
 
-Expected report.json format (from migo-test-suite):
+Expected report.json format (from the device test suite):
     {
       "summary": {
         "total": 500,
@@ -246,11 +246,11 @@ def write_summary(path, report, gate_results, has_failures, bindings):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Validate migo-test-suite results against CI gates."
+        description="Validate device test suite results against CI gates."
     )
     parser.add_argument(
         "--report", required=True,
-        help="Path to migo-test-suite report JSON",
+        help="Path to the device test suite report JSON",
     )
     parser.add_argument(
         "--min-pass-rate", type=float, default=DEFAULT_MIN_PASS_RATE,

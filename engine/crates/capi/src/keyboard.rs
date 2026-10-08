@@ -33,7 +33,6 @@ use migo_capi_abi::{MIGO_ERROR_INVALID_ARGUMENT, MIGO_ERROR_INVALID_STATE};
 /// becomes the right engine command or the wrong one, and the entry point's
 /// state checks cannot tell those apart.
 ///
-///
 /// `runtime_generation` is the generation the *calling* host observed, taken
 /// from the ingress it is about to enqueue on. Stamping it here rather than
 /// reading the current one at dispatch is the whole point: an event a host

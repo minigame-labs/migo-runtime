@@ -75,7 +75,7 @@ fi
 # The audited sysroot is only present on a machine with the SDK unpacked. Its
 # absence reduces the check rather than failing it -- but it is reported, because
 # a reduced check that prints the same thing as a full one is how the reduced
-# form becomes permanent (ledger item T.8).
+# form becomes permanent.
 FLOOR_SYSROOT="${MIGO_OHOS_FLOOR_SYSROOT:-$HOME/ohos-sdk/native/sysroot}"
 FLOOR_PKG="${FLOOR_SYSROOT%/sysroot}/oh-uni-package.json"
 if [[ -f "$FLOOR_PKG" ]]; then

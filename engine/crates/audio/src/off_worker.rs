@@ -1,8 +1,8 @@
 //! Keeps CPU-bound work off an async worker that sessions share.
 //!
-//! Section 6.4 defect 4 names "the single worker serving all audio streaming" as a
-//! shared budget one game can spend at another's expense. The way it was spent was
-//! not a lock or an allocation but occupancy: a CPU-bound step running inline in an
+//! A shared async worker can let one game's streaming work occupy the only
+//! worker thread and delay another game's I/O. The way it was spent was not a
+//! lock or an allocation but occupancy: a CPU-bound step running inline in an
 //! async task holds the worker thread that polls it, and a worker holding one task's
 //! CPU work cannot poll anyone else's I/O.
 //!

@@ -44,7 +44,7 @@
     "min_devices_per_os_minor": 1,
     "required_os_minors": ["15.0", "15.1", "15.2", "current"],
     "_required_os_minors_comment": [
-      "A21/A23/A24 are all version-sensitive, and 15.2 is the SharedArrayBuffer",
+      "These are all version-sensitive, and 15.2 is the SharedArrayBuffer",
       "boundary the coverage arithmetic turns on. A capability admitted from",
       "one OS is a capability admitted for one OS."
     ]
@@ -90,7 +90,7 @@
       "agree, and a disagreement is a finding rather than a bookkeeping error."
     ],
     "_lockdown_comment": [
-      "A24. Lockdown Mode disables JIT for web content unless the app is",
+      "Lockdown Mode disables JIT for web content unless the app is",
       "explicitly excluded, so 'WebContent has JIT' is a device state and not",
       "an admission invariant. `unknown` is honest and is not the same as",
       "`off`: iOS exposes no public query for it, so a probe that cannot infer",
@@ -116,16 +116,16 @@
       "something nothing consumes, and accepting it silently reports coverage",
       "that does not exist."
     ],
-    "jit_enabled": "A24. Whether WebContent actually got JIT, probed rather than inferred. The whole architecture rests on this and Lockdown Mode can turn it off. Origin-independent; recorded in both records so a disagreement is visible.",
-    "secure_context": "A5/A6/A23. Whether this origin is a secure context. For the custom scheme this is A23, whose claim that it needs private API rests on a specification that in fact lets a user agent designate trustworthy schemes.",
-    "cross_origin_isolated": "A7/A23. Whether this origin reports crossOriginIsolated === true with COOP and COEP actually served.",
-    "shared_array_buffer": "A15. Whether SharedArrayBuffer constructs in a Worker at this origin. Downstream of cross_origin_isolated, and recorded separately because the two have been observed to disagree.",
-    "atomics_wait": "A21. Whether Atomics.wait blocks and wakes in a Worker, measured by elapsed time and not by the function existing.",
-    "sync_xhr_binary": "A21. Whether a synchronous XMLHttpRequest in a Worker returns a binary body. The second public blocking primitive, and the one that decides whether Window is excluded on capability grounds at all.",
-    "websocket_in_worker": "A22. Whether WebSocket is constructible and connectable from a Worker, which is what makes the Window relay a consequence of blocking rather than an API requirement.",
-    "worker_raf": "A18. Whether DedicatedWorkerGlobalScope.requestAnimationFrame exists. The design does not depend on it; the probe exists so the feature detection has a measured answer in both directions.",
-    "request_body_delivery": "A5. Whether a POST body reaches the other side of this origin's transport intact. For the custom scheme that is the WKURLSchemeHandler, and WebKit 191362 is RESOLVED FIXED, so this measures shipping behaviour rather than restating a bug report.",
-    "no_local_network_prompt": "A6/G0.3. Whether this origin works WITHOUT the local-network permission alert. `unavailable` means the alert appeared, which is a review and onboarding problem and not only a latency one. `unsupported` for an origin that opens no socket."
+    "jit_enabled": "Whether WebContent actually got JIT, probed rather than inferred. The whole architecture rests on this and Lockdown Mode can turn it off. Origin-independent; recorded in both records so a disagreement is visible.",
+    "secure_context": "Whether this origin is a secure context. For the custom scheme this is the contested point, whose claim that it needs private API rests on a specification that in fact lets a user agent designate trustworthy schemes.",
+    "cross_origin_isolated": "Whether this origin reports crossOriginIsolated === true with COOP and COEP actually served.",
+    "shared_array_buffer": "Whether SharedArrayBuffer constructs in a Worker at this origin. Downstream of cross_origin_isolated, and recorded separately because the two have been observed to disagree.",
+    "atomics_wait": "Whether Atomics.wait blocks and wakes in a Worker, measured by elapsed time and not by the function existing.",
+    "sync_xhr_binary": "Whether a synchronous XMLHttpRequest in a Worker returns a binary body. The second public blocking primitive, and the one that decides whether Window is excluded on capability grounds at all.",
+    "websocket_in_worker": "Whether WebSocket is constructible and connectable from a Worker, which is what makes the Window relay a consequence of blocking rather than an API requirement.",
+    "worker_raf": "Whether DedicatedWorkerGlobalScope.requestAnimationFrame exists. The design does not depend on it; the probe exists so the feature detection has a measured answer in both directions.",
+    "request_body_delivery": "Whether a POST body reaches the other side of this origin's transport intact. For the custom scheme that is the WKURLSchemeHandler, and WebKit 191362 is RESOLVED FIXED, so this measures shipping behaviour rather than restating a bug report.",
+    "no_local_network_prompt": "Whether this origin works WITHOUT the local-network permission alert. `unavailable` means the alert appeared, which is a review and onboarding problem and not only a latency one. `unsupported` for an origin that opens no socket."
   },
 
   "admission": {
@@ -150,7 +150,7 @@
       {
         "when": {},
         "requires": ["jit_enabled"],
-        "reason": "A1/A24. The lane exists because WebContent has JIT and the app process does not. On a device where it does not -- Lockdown Mode is the case that ships -- every candidate here is slower than the WebKit lane it would replace."
+        "reason": "The lane exists because WebContent has JIT and the app process does not. On a device where it does not -- Lockdown Mode is the case that ships -- every candidate here is slower than the WebKit lane it would replace."
       },
       {
         "when": {},
@@ -160,37 +160,37 @@
       {
         "when": {"origin": "loopback"},
         "requires": ["no_local_network_prompt"],
-        "reason": "A6/G0.3. A permission alert on first launch is an onboarding and App Review problem, not a latency one, and it is not fixed by measuring faster."
+        "reason": "A permission alert on first launch is an onboarding and App Review problem, not a latency one, and it is not fixed by measuring faster."
       },
       {
         "when": {"transport": "loopback_websocket", "transport_owner": "same_context", "agent": "dedicated_worker"},
         "requires": ["websocket_in_worker"],
-        "reason": "A22. The content Worker owns the socket itself, so the Worker has to be able to open one."
+        "reason": "The content Worker owns the socket itself, so the Worker has to be able to open one."
       },
       {
         "when": {"transport": "loopback_websocket", "transport_owner": "io_worker"},
         "requires": ["websocket_in_worker", "shared_array_buffer", "atomics_wait"],
-        "reason": "A22's third topology. The I/O Worker opens the socket and the content Worker blocks; waking it across Workers needs a shared buffer and a real blocking wait."
+        "reason": "The third topology. The I/O Worker opens the socket and the content Worker blocks; waking it across Workers needs a shared buffer and a real blocking wait."
       },
       {
         "when": {"transport": "sync_xhr_rpc"},
         "requires": ["sync_xhr_binary"],
-        "reason": "A21. A synchronous RPC that cannot return binary is not this transport."
+        "reason": "A synchronous RPC that cannot return binary is not this transport."
       },
       {
         "when": {"transport": "scheme_request"},
         "requires": ["request_body_delivery"],
-        "reason": "A5. An upstream frame is a request body. WebKit 191362 is RESOLVED FIXED, so this is measured rather than presumed -- in either direction."
+        "reason": "An upstream frame is a request body. WebKit 191362 is RESOLVED FIXED, so this is measured rather than presumed -- in either direction."
       },
       {
         "when": {"clock": "worker_raf"},
         "requires": ["worker_raf"],
-        "reason": "A18. The design does not depend on Worker rAF, but a candidate that names it does."
+        "reason": "The design does not depend on Worker rAF, but a candidate that names it does."
       },
       {
         "when": {"agent": "dedicated_worker", "transport_owner": "same_context"},
         "requires_any": ["atomics_wait", "sync_xhr_binary"],
-        "reason": "A21. A Worker that serves synchronous content has to be able to block, and there are two public ways to do it. Recording only the SharedArrayBuffer one is what made D2 look like a capability exclusion when it is a performance trade."
+        "reason": "A Worker that serves synchronous content has to be able to block, and there are two public ways to do it. Recording only the SharedArrayBuffer one is what made a Worker candidate look like a capability exclusion when it is a performance trade."
       }
     ],
     "_no_rule_comment": [

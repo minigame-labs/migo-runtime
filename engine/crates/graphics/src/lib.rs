@@ -195,14 +195,24 @@ fn does_not_present_when_surface_is_not_ready() {
 #[cfg(test)]
 #[test]
 fn gl_only_packet_triggers_present_when_batch_hits_onscreen() {
-    use shared::FramePacket;
+    use shared::{FrameOp, FramePacketBuilder};
 
-    let packet = FramePacket::for_gl_batch(0, 0.0, Vec::new().into());
+    // A packet that ends the frame: one without `Present` is a barrier, which presents nothing.
+    let packet = FramePacketBuilder::new(0, 0.0)
+        .push(FrameOp::BeginFrame)
+        .push(FrameOp::GlBatch(
+            shared::protocol::render_cmd::GlBatchPayload {
+                commands: Vec::new().into(),
+            },
+        ))
+        .push(FrameOp::Present)
+        .finish();
 
     let mut hit_count = 0u32;
     let should_present = render_thread::execute_frame_packet_with_present_tracking(
         packet,
         &mut hit_count,
+        &mut Default::default(),
         |_state, _payload| -> bool {
             panic!("should not receive canvas batch in GL-only packet");
         },
@@ -226,6 +236,7 @@ fn gl_only_packet_no_present_when_batch_is_offscreen() {
     let should_present = render_thread::execute_frame_packet_with_present_tracking(
         packet,
         &mut (),
+        &mut Default::default(),
         |_, _| -> bool { panic!("no canvas batch expected") },
         |_, _| -> bool { false },
     );
@@ -257,6 +268,7 @@ fn mixed_canvas2d_and_gl_packet_unions_present_signals() {
     let should_present = render_thread::execute_frame_packet_with_present_tracking(
         packet,
         &mut (0u32, 0u32),
+        &mut Default::default(),
         |state, _| -> bool {
             state.0 += 1;
             true

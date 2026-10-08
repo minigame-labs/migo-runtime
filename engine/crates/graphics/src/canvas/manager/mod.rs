@@ -62,7 +62,8 @@ use shared::{
     protocol::{
         io_cmd::NormalizedImage,
         render_cmd::{
-            BufferId, CanvasId, FramebufferId, ProgramId, RenderbufferId, ShaderId, TextureId,
+            BufferId, CanvasId, FramebufferId, GLCmd, ProgramId, RenderbufferId, ShaderId,
+            TextureId,
         },
     },
     surface::PixelRatio,
@@ -254,10 +255,6 @@ fn upload_server_for_device(
 pub(crate) enum AsyncUploadRejectAction {
     SyncFallback,
     DeferRetry,
-}
-
-fn should_latch_default_fbo_readback(needs_default_fbo_readback: bool) -> bool {
-    !needs_default_fbo_readback
 }
 
 /// Gather one frame's worth of upload completions into a reusable buffer:
@@ -782,13 +779,16 @@ pub(crate) struct CanvasManager {
     /// DrawingBuffer closes that lifecycle gap.
     preserved_drawing_buffer: Option<drawing_buffer::DrawingBuffer>,
 
-    /// Set to true when a game reads pixels from the onscreen default framebuffer
-    /// (readPixels on canvas_id=1 with default FBO bound). Once set, DrawingBuffer
-    /// bypass is permanently disabled so the DrawingBuffer preserves content across
-    /// swaps and readback returns valid data. One-way latch — never cleared.
-    /// Starts set for a session whose reads can follow their frame's present
-    /// (`DefaultFramebufferReads::AfterTheirPresent`).
-    needs_default_fbo_readback: bool,
+    /// The canvas whose drawing buffer has been presented and is not preserved: after a present such a buffer is
+    /// cleared to its initial state (WebGL 1.0 section 2.2), and the clear is owed until the content next draws
+    /// into, clears or reads it (`settle_owed_clear`). A frame that begins with a clear of its own pays for one, and
+    /// a present that the content follows with nothing leaves the buffer -- and the screen -- as they were.
+    ///
+    /// Owed from the end of the content's frame (`end_content_frame`), which is when a browser hands the buffer to
+    /// its compositor, not from the swap that shows it: what the content finds in its buffer is then a matter of its
+    /// own frames and never of when the render thread swapped. The render loop presents a finished frame before
+    /// anything behind it runs, so the clear never reaches a frame before it is shown.
+    default_framebuffer_clear_owed: Option<CanvasId>,
 
     /// What each canvas's WebGL context declared of its drawing buffer (`declare_webgl_context`). The screen canvas's
     /// outlives its surface -- a recreated surface's buffer is made to it -- and an offscreen canvas's goes with the
@@ -876,6 +876,13 @@ pub(crate) struct CanvasManager {
     /// Fed by Canvas2D batches, GL draw/clear, and readback paths.
     /// Resolved at swap time to determine partial vs full surface update.
     pub(crate) damage: crate::damage_effect::FrameDamageAccumulator,
+    /// Whether the content's frame has drawn into the screen yet: what its end presents.
+    pub(crate) frame_drawing: crate::damage_effect::FrameDrawing,
+    /// A content frame that drew into the screen has ended and has not been presented yet. The render loop presents
+    /// it before anything that arrives behind it runs (`drain_cmds`): run first, that would put the next frame's work
+    /// into the buffer the present shows. Not every present waits on this -- a resume asks for one with no frame
+    /// behind it -- and those keep to the frame clock.
+    pub(crate) frame_awaits_present: bool,
 
     /// History of recent successfully-presented current-frame damage regions.
     /// Unioned with the queried buffer age to compute the exact repair region.
@@ -953,7 +960,6 @@ impl CanvasManager {
         // protocol agree; distinct from every other session's, so the GL
         // texture names this manager mints stay inside its own context.
         text_cache: shared::text_texture_cache::SharedTextCache,
-        default_framebuffer_reads: crate::DefaultFramebufferReads,
     ) -> EngineResult<Self> {
         let dpi = PixelRatio::new(dpi).ok_or_else(|| {
             ee(
@@ -1276,11 +1282,7 @@ impl CanvasManager {
             gl_get_graphics_reset_status_fn,
             preserved_ctx: None,
             preserved_drawing_buffer: None,
-            // Latched before the first frame when a read can follow its frame's
-            // present: the snapshot that latching normally takes would copy a
-            // surface the swap has already made undefined.
-            needs_default_fbo_readback: default_framebuffer_reads
-                == crate::DefaultFramebufferReads::AfterTheirPresent,
+            default_framebuffer_clear_owed: None,
             webgl_buffers: HashMap::new(),
             surface_format,
             snapshot_fence_waits: 0,
@@ -1297,6 +1299,8 @@ impl CanvasManager {
             egl_swap_buffers_with_damage_fn,
             swap_with_damage_rejected: false,
             damage: crate::damage_effect::FrameDamageAccumulator::new(),
+            frame_drawing: Default::default(),
+            frame_awaits_present: false,
             pending_present_plan: None,
             damage_history: crate::present_damage::PresentDamageHistory::new(),
             dest_single_sample,
@@ -3791,45 +3795,6 @@ impl CanvasManager {
         waits
     }
 
-    /// Preserve the first nonempty read of the onscreen default framebuffer.
-    /// The caller has made the onscreen context current and validated storage.
-    /// A failed snapshot leaves the mode and client binding shadow unchanged.
-    pub(crate) fn signal_default_fbo_readback(&mut self) -> EngineResult<()> {
-        if !should_latch_default_fbo_readback(self.needs_default_fbo_readback) {
-            return Ok(());
-        }
-        let onscreen_id = CanvasId::from(1u32);
-        debug_assert_eq!(self.bound, BoundContext::Canvas(onscreen_id));
-        if !reads_from_default_framebuffer(
-            &self.gl,
-            self.canvases
-                .get(&onscreen_id)
-                .is_some_and(|entry| entry.drawing_buffer.is_some()),
-            self.gl_state.get(&onscreen_id),
-            self.get_drawing_buffer_fbo(onscreen_id),
-        ) {
-            return Ok(());
-        }
-        if let Some(entry) = self.canvases.get(&onscreen_id) {
-            if entry.bypass_drawing_buffer {
-                if let Some(db) = entry.drawing_buffer.as_ref() {
-                    // A DrawingBuffer exists only after create() successfully
-                    // probes split bindings and glBlitFramebuffer on this driver.
-                    let (buffer_w, buffer_h) = entry.presented_size();
-                    if !drawing_buffer::blit_from_surface(&self.gl, db, buffer_w, buffer_h) {
-                        return Err(ee(
-                            ErrorCode::RenderBackendError,
-                            "default framebuffer snapshot failed",
-                        ));
-                    }
-                }
-            }
-        }
-        self.needs_default_fbo_readback = true;
-        self.evaluate_bypass();
-        Ok(())
-    }
-
     /// Give a fixed-size window surface the buffer
     /// [`crate::canvas::window_buffer_size`] asks for, and report whether its
     /// size changed.
@@ -3939,6 +3904,69 @@ impl CanvasManager {
         Ok(())
     }
 
+    /// The content's frame ended (`FrameOp::Present`): what it captured may be drained at the next present, and
+    /// whether it drew into the screen -- in the packet that ends it or in a barrier before -- is whether it is
+    /// presented. A screen drawing buffer that it drew into and that is not preserved owes its clear from here.
+    pub(crate) fn end_content_frame(&mut self) -> bool {
+        self.end_snapshot_frame();
+        let drew = self.frame_drawing.frame_ended();
+        let screen = CanvasId::from(1u32);
+        if drew {
+            self.frame_awaits_present = true;
+            if !self.preserves_drawing_buffer(screen) {
+                self.default_framebuffer_clear_owed = Some(screen);
+            }
+        }
+        drew
+    }
+
+    /// Whether canvas `id`'s drawing buffer keeps its contents across a present: what its WebGL context asked for
+    /// (`preserveDrawingBuffer`). A buffer no context has declared keeps them -- nothing said it may be cleared.
+    fn preserves_drawing_buffer(&self, id: CanvasId) -> bool {
+        self.webgl_buffers
+            .get(&id)
+            .map_or(true, |spec| spec.preserve)
+    }
+
+    /// Before a command runs: the clear a present left owed (`default_framebuffer_clear_owed`) is made if the
+    /// command is the presented canvas's and draws into, clears or reads its default framebuffer.
+    #[inline]
+    pub(crate) fn settle_owed_clear(&mut self, cmd: &GLCmd) -> EngineResult<()> {
+        let Some(owed) = self.default_framebuffer_clear_owed else {
+            return Ok(());
+        };
+        let (draws, reads) = default_framebuffer_use(cmd);
+        if !(draws || reads) || cmd.touches_canvas() != Some(owed) {
+            return Ok(());
+        }
+        self.make_current_needed(owed)?;
+        let default = self.get_drawing_buffer_fbo(owed);
+        let split_bindings_probed = self
+            .canvases
+            .get(&owed)
+            .is_some_and(|entry| entry.drawing_buffer.is_some());
+        let state = self.gl_state.get(&owed);
+        let uses =
+            |read| binds_default_framebuffer(&self.gl, split_bindings_probed, state, default, read);
+        if !((draws && uses(false)) || (reads && uses(true))) {
+            return Ok(());
+        }
+        self.default_framebuffer_clear_owed = None;
+        // Only what the command will not itself write over: a clear of the whole of a buffer leaves nothing of the
+        // owed clear of it to be seen.
+        let mut buffers = self.drawing_buffer_format(owed).buffers();
+        if let GLCmd::Clear { bit_field, .. } = cmd {
+            buffers &= !overwritten_by_clear(&self.gl, *bit_field);
+        }
+        if buffers != 0 {
+            drawing_buffer::clear_to_initial_state(&self.gl, default, buffers);
+            // What the next present shows is the cleared buffer and what is drawn onto it, not the frame before.
+            self.damage
+                .add(crate::damage_effect::DamageEffect::FullSurface);
+        }
+        Ok(())
+    }
+
     /// Give offscreen canvas `id`, current, a DrawingBuffer of `format` at its size as its default framebuffer, and
     /// shrink its pbuffer to one pixel. A zero-sized canvas has a one-by-one buffer, as a browser gives it.
     fn install_offscreen_drawing_buffer(
@@ -4030,8 +4058,8 @@ impl CanvasManager {
 
     pub(crate) fn evaluate_bypass(&mut self) {
         let onscreen_id = CanvasId::from(1u32);
-        // Bypass requires: single canvas, has DrawingBuffer, no default-FBO
-        // readback, and the onscreen canvas is NOT a Canvas2D canvas.
+        // Bypass requires: single canvas, has DrawingBuffer, a drawing buffer
+        // that is not preserved, and the onscreen canvas is NOT a Canvas2D canvas.
         //
         // Bypass is a WebGL-only optimization: in bypass mode WebGL's default
         // framebuffer is redirected to the real FBO 0 (see
@@ -4056,10 +4084,9 @@ impl CanvasManager {
         // fixed-size window buffer that follows a smaller canvas makes the copy
         // into it 1:1, but it does not make bypass eligible: that would widen
         // bypass from content that sized its canvas to the window to every
-        // DPR-naive WebGL game, and bypass does not yet honour
-        // `preserveDrawingBuffer` or clear after a present -- gaps that are
-        // reachable today only by the narrower population. The buffer has to
-        // match as well, since under bypass WebGL draws into it directly.
+        // DPR-naive WebGL game, and bypass has yet to run in steady state on a
+        // device (see `can_bypass_drawing_buffer`). The buffer has to match as
+        // well, since under bypass WebGL draws into it directly.
         let onscreen_db_matches_surface = self.canvases.get(&onscreen_id).map_or(false, |e| {
             e.drawing_buffer.as_ref().map_or(false, |db| {
                 let size = (db.width, db.height);
@@ -4068,14 +4095,16 @@ impl CanvasManager {
         });
         let canvas_count = self.canvases.len();
         let onscreen_has_2d_context = self.contexts_2d.contains_key(&onscreen_id);
-        let needs_default_fbo_readback = self.needs_default_fbo_readback;
+        // A swap leaves the window's back buffer undefined, so a drawing buffer whose contents have to outlive a
+        // present is the DrawingBuffer.
+        let drawing_buffer_preserved = self.preserves_drawing_buffer(onscreen_id);
         // Under bypass the window's own buffers are WebGL's default framebuffer, so they have to be the ones the
         // context asked for: a stencil buffer it did not ask for would make its stencil test fail where none can.
         let buffers_are_the_surface_s =
             self.drawing_buffer_format(onscreen_id) == self.surface_format;
         let can_bypass = can_bypass_drawing_buffer(
             canvas_count,
-            needs_default_fbo_readback,
+            drawing_buffer_preserved,
             onscreen_has_2d_context,
             onscreen_db_matches_surface,
             buffers_are_the_surface_s,
@@ -4091,7 +4120,7 @@ impl CanvasManager {
                 // platform allows observation" needs on a host with no device.
                 tracing::info!(
                     canvas_count,
-                    needs_default_fbo_readback,
+                    drawing_buffer_preserved,
                     onscreen_has_2d_context,
                     onscreen_db_matches_surface,
                     buffers_are_the_surface_s,
@@ -4256,7 +4285,7 @@ impl CanvasManager {
         if entry.drawing_buffer.is_some() || self.contexts_2d.contains_key(&id) {
             return;
         }
-        drawing_buffer::clear_to_initial_state(&self.gl, None);
+        drawing_buffer::clear_to_initial_state(&self.gl, None, drawing_buffer::EVERY_BUFFER);
     }
 
     /// Put the READ and DRAW framebuffer bindings back to raw GL names read before the engine's own
@@ -7260,6 +7289,60 @@ enum OwningContext {
     Canvas(CanvasId),
 }
 
+/// Whether a command draws into (or clears) the framebuffer bound for drawing, and whether it reads (or copies
+/// from) the one bound for reading: the uses of a default framebuffer that settle the clear a present left owed
+/// (`CanvasManager::settle_owed_clear`). A blit does both.
+fn default_framebuffer_use(cmd: &GLCmd) -> (bool, bool) {
+    match cmd {
+        GLCmd::Clear { .. }
+        | GLCmd::ClearBufferfv { .. }
+        | GLCmd::ClearBufferiv { .. }
+        | GLCmd::ClearBufferuiv { .. }
+        | GLCmd::ClearBufferfi { .. }
+        | GLCmd::DrawArrays { .. }
+        | GLCmd::DrawElements { .. }
+        | GLCmd::DrawArraysInstanced { .. }
+        | GLCmd::DrawElementsInstanced { .. } => (true, false),
+        GLCmd::ReadPixels { .. }
+        | GLCmd::ReadPixelsToBuffer { .. }
+        | GLCmd::CopyTexImage2D { .. }
+        | GLCmd::CopyTexSubImage2D { .. }
+        | GLCmd::CopyTexSubImage3D { .. } => (false, true),
+        GLCmd::BlitFramebuffer { .. } => (true, true),
+        _ => (false, false),
+    }
+}
+
+/// The buffers of `bits` a `clear(bits)` now writes every pixel of: those no write mask keeps it from, and none
+/// while the scissor test or rasterizer discard confines it.
+fn overwritten_by_clear(gl: &glow::Context, bits: u32) -> u32 {
+    unsafe {
+        if gl.is_enabled(glow::SCISSOR_TEST)
+            || (gl.version().major >= 3 && gl.is_enabled(glow::RASTERIZER_DISCARD))
+        {
+            return 0;
+        }
+        let mut written = 0;
+        if bits & glow::COLOR_BUFFER_BIT != 0
+            && gl.get_parameter_bool_array::<4>(glow::COLOR_WRITEMASK) == [true; 4]
+        {
+            written |= glow::COLOR_BUFFER_BIT;
+        }
+        if bits & glow::DEPTH_BUFFER_BIT != 0 && gl.get_parameter_bool(glow::DEPTH_WRITEMASK) {
+            written |= glow::DEPTH_BUFFER_BIT;
+        }
+        // A drawing buffer's stencil has 8 bits; a clear writes them through the front mask, and the back one is
+        // asked as well rather than lean on a reading of the specification a driver may not share.
+        if bits & glow::STENCIL_BUFFER_BIT != 0
+            && gl.get_parameter_i32(glow::STENCIL_WRITEMASK) & 0xff == 0xff
+            && gl.get_parameter_i32(glow::STENCIL_BACK_WRITEMASK) & 0xff == 0xff
+        {
+            written |= glow::STENCIL_BUFFER_BIT;
+        }
+        written
+    }
+}
+
 /// Pure decision for whether the onscreen canvas may bypass its DrawingBuffer
 /// (render straight to FBO 0 and skip the DrawingBuffer→window blit at swap).
 ///
@@ -7267,8 +7350,9 @@ enum OwningContext {
 /// onscreen canvas lands in FBO 0 — which holds for WebGL (its default
 /// framebuffer is redirected to FBO 0 in bypass mode) but NOT for Skia/Canvas2D
 /// (whose onscreen surface always targets the DrawingBuffer FBO). It also
-/// requires no default-FBO readback (which needs preserved content) and exactly
-/// one canvas.
+/// requires a drawing buffer that is not preserved -- a swap leaves the window's
+/// back buffer undefined, and one that is not preserved is cleared after a present
+/// anyway -- and exactly one canvas.
 ///
 /// Crucially, bypass also requires the DrawingBuffer to be exactly the surface
 /// size (`onscreen_db_matches_surface`). The DrawingBuffer→window blit *scales*
@@ -7329,13 +7413,13 @@ enum OwningContext {
 /// content, and the reason is this condition rather than a missing optimisation.
 fn can_bypass_drawing_buffer(
     canvas_count: usize,
-    needs_default_fbo_readback: bool,
+    drawing_buffer_preserved: bool,
     onscreen_has_2d_context: bool,
     onscreen_db_matches_surface: bool,
     buffers_are_the_surface_s: bool,
 ) -> bool {
     canvas_count == 1
-        && !needs_default_fbo_readback
+        && !drawing_buffer_preserved
         && !onscreen_has_2d_context
         && onscreen_db_matches_surface
         && buffers_are_the_surface_s
@@ -7453,21 +7537,24 @@ pub(crate) fn apply_default_framebuffer(
     *applied = desired;
 }
 
-/// readPixels consumes READ on GLES3, independently of the draw target. Known
+/// Whether the framebuffer bound for reading (`read`) or for drawing is the
+/// canvas's default one, `default` being the name that is. A read consumes READ
+/// on GLES3, independently of the draw target, and a draw or a clear DRAW. Known
 /// client bindings avoid a driver query; unknown state must use native truth.
-fn reads_from_default_framebuffer(
+fn binds_default_framebuffer(
     gl: &glow::Context,
     split_bindings_probed: bool,
     state: Option<&CanvasGLState>,
     default: Option<glow::NativeFramebuffer>,
+    read: bool,
 ) -> bool {
     // The requested EGL version may be lower than the returned GL version.
     // DrawingBuffer creation can also establish split support on an extension
     // stack; use the same capability contract as the mapping and blit paths.
-    let (target, binding) = if gl.version().major >= 3 || split_bindings_probed {
-        (glow::READ_FRAMEBUFFER, glow::READ_FRAMEBUFFER_BINDING)
-    } else {
-        (glow::FRAMEBUFFER, glow::FRAMEBUFFER_BINDING)
+    let (target, binding) = match (gl.version().major >= 3 || split_bindings_probed, read) {
+        (true, true) => (glow::READ_FRAMEBUFFER, glow::READ_FRAMEBUFFER_BINDING),
+        (true, false) => (glow::DRAW_FRAMEBUFFER, glow::DRAW_FRAMEBUFFER_BINDING),
+        (false, _) => (glow::FRAMEBUFFER, glow::FRAMEBUFFER_BINDING),
     };
     if let Some(bound) = state.and_then(|s| s.bound_framebuffer.get(target)) {
         return bound.is_none();
@@ -7732,8 +7819,14 @@ mod recovery_source_guards {
         // A line of code, not a comment that mentions it.
         assert!(
             arm.lines().any(|line| !line.trim_start().starts_with("//")
-                && line.contains("cm.end_snapshot_frame()")),
-            "the Present op ends the snapshot epoch: a frame's snapshots are drained after it, not before"
+                && line.contains("cm.end_content_frame()")),
+            "the Present op ends the content's frame"
+        );
+        let end = function_body(MGR, "pub(crate) fn end_content_frame(");
+        assert!(
+            end.lines().any(|line| !line.trim_start().starts_with("//")
+                && line.contains("self.end_snapshot_frame()")),
+            "the content's frame ending ends the snapshot epoch: a frame's snapshots are drained after it, not before"
         );
         let drain = function_body(MGR, "pub(crate) fn drain_canvas2d_snapshots(");
         assert!(
@@ -8830,11 +8923,11 @@ mod tests {
         assert!(!can_bypass_drawing_buffer(2, false, false, true, true));
     }
 
-    /// A latched default-FBO readback means content has to survive
-    /// `eglSwapBuffers`, and under bypass the window's back buffer is undefined
-    /// afterwards per the EGL spec. Only the DrawingBuffer preserves it.
+    /// A preserved drawing buffer has to survive `eglSwapBuffers`, and under
+    /// bypass the window's back buffer is undefined afterwards per the EGL spec.
+    /// Only the DrawingBuffer keeps it.
     #[test]
-    fn a_latched_default_fbo_readback_disables_bypass() {
+    fn a_preserved_drawing_buffer_disables_bypass() {
         assert!(!can_bypass_drawing_buffer(1, true, false, true, true));
     }
 
@@ -8964,8 +9057,44 @@ mod tests {
         assert_eq!(fixture::mutations(), 0);
     }
 
+    /// What a clear writes all of, from the state it runs under: the buffers it names, less any a write mask holds
+    /// back, and none under a scissor test or rasterizer discard. Whatever is left is what the clear a present owes
+    /// still has to write.
     #[test]
-    fn default_read_source_uses_read_binding_and_native_unknown_state() {
+    #[ignore = "requires Mesa surfaceless EGL and GLES3"]
+    fn a_clear_overwrites_the_buffers_nothing_confines_it_from() {
+        let (_scope, gl) = crate::backend::gl::readback_test_gl::native_gles3_context();
+        let all = drawing_buffer::EVERY_BUFFER;
+        let (colour, depth, stencil) = (
+            glow::COLOR_BUFFER_BIT,
+            glow::DEPTH_BUFFER_BIT,
+            glow::STENCIL_BUFFER_BIT,
+        );
+        unsafe {
+            assert_eq!(overwritten_by_clear(&gl, all), all);
+            assert_eq!(overwritten_by_clear(&gl, colour), colour);
+            gl.color_mask(true, false, true, true);
+            assert_eq!(overwritten_by_clear(&gl, all), depth | stencil);
+            gl.color_mask(true, true, true, true);
+            gl.depth_mask(false);
+            assert_eq!(overwritten_by_clear(&gl, all), colour | stencil);
+            gl.depth_mask(true);
+            gl.stencil_mask_separate(glow::BACK, 0x0f);
+            assert_eq!(overwritten_by_clear(&gl, all), colour | depth);
+            gl.stencil_mask(0xff);
+            assert_eq!(overwritten_by_clear(&gl, all), all);
+            gl.enable(glow::SCISSOR_TEST);
+            assert_eq!(overwritten_by_clear(&gl, all), 0);
+            gl.disable(glow::SCISSOR_TEST);
+            gl.enable(glow::RASTERIZER_DISCARD);
+            assert_eq!(overwritten_by_clear(&gl, all), 0);
+            gl.disable(glow::RASTERIZER_DISCARD);
+            assert_eq!(gl.get_error(), glow::NO_ERROR);
+        }
+    }
+
+    #[test]
+    fn the_default_framebuffer_is_judged_per_binding_with_native_truth_when_unknown() {
         use crate::backend::gl::{readback_test_gl as fixture, state_tracker as st};
         for (gl, probed) in [
             (fixture::context as fn() -> glow::Context, false),
@@ -8975,19 +9104,35 @@ mod tests {
             let mut state = CanvasGLState::default();
             st::update_bind_framebuffer(&mut state, glow::READ_FRAMEBUFFER, None);
             st::update_bind_framebuffer(&mut state, glow::DRAW_FRAMEBUFFER, Some(9001));
-            assert!(reads_from_default_framebuffer(
+            assert!(binds_default_framebuffer(
                 &gl,
                 probed,
                 Some(&state),
-                Some(fbo(7))
+                Some(fbo(7)),
+                true
+            ));
+            assert!(!binds_default_framebuffer(
+                &gl,
+                probed,
+                Some(&state),
+                Some(fbo(7)),
+                false
             ));
             st::update_bind_framebuffer(&mut state, glow::FRAMEBUFFER, None);
             st::update_bind_framebuffer(&mut state, glow::READ_FRAMEBUFFER, Some(9002));
-            assert!(!reads_from_default_framebuffer(
+            assert!(!binds_default_framebuffer(
                 &gl,
                 probed,
                 Some(&state),
-                None
+                None,
+                true
+            ));
+            assert!(binds_default_framebuffer(
+                &gl,
+                probed,
+                Some(&state),
+                None,
+                false
             ));
             state.bound_framebuffer.forget_all();
             fixture::set_bindings(fixture::Bindings {
@@ -8995,13 +9140,21 @@ mod tests {
                 draw_framebuffer: 9,
                 ..Default::default()
             });
-            assert!(reads_from_default_framebuffer(
+            assert!(binds_default_framebuffer(
                 &gl,
                 probed,
                 Some(&state),
-                Some(fbo(7))
+                Some(fbo(7)),
+                true
             ));
-            assert!(!reads_from_default_framebuffer(&gl, probed, None, None));
+            assert!(!binds_default_framebuffer(&gl, probed, None, None, true));
+            assert!(binds_default_framebuffer(
+                &gl,
+                probed,
+                None,
+                Some(fbo(9)),
+                false
+            ));
             assert_eq!(fixture::unsupported_calls(), 0);
         }
     }
@@ -9012,7 +9165,7 @@ mod tests {
         let gl = fixture::context_gles2(fixture::Gles2Caps::default());
         let mut applied = None;
         apply_default_framebuffer(&gl, true, &mut applied, None);
-        assert!(reads_from_default_framebuffer(&gl, false, None, None));
+        assert!(binds_default_framebuffer(&gl, false, None, None, true));
         assert_eq!(fixture::mutations(), 0);
         assert_eq!(fixture::unsupported_calls(), 0);
     }
@@ -9424,12 +9577,6 @@ mod tests {
             decide_async_upload_reject_action(true, None, 256 * 1024),
             AsyncUploadRejectAction::SyncFallback
         );
-    }
-
-    #[test]
-    fn default_fbo_readback_latch_only_on_first_signal() {
-        assert!(should_latch_default_fbo_readback(false));
-        assert!(!should_latch_default_fbo_readback(true));
     }
 
     // ---- DeferredUpload queue semantics (P13) ------------------------

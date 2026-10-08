@@ -1023,7 +1023,7 @@ public final class NativeExports {
         }
 
         try {
-            // Use DisplayCompat for API 21+ compatibility
+            // Use DisplayCompat for API 26+ compatibility
             int screenWidth = DisplayCompat.getScreenWidth(activity);
             int screenHeight = DisplayCompat.getScreenHeight(activity);
             float density = DisplayCompat.getDensity(activity);

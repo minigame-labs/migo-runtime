@@ -6,6 +6,7 @@ description: Downloading Migo release artifacts and confirming origin and integr
 audience: host-integrator
 platforms:
   - android
+  - apple
   - linux
   - windows
 sourcePaths:
@@ -51,6 +52,34 @@ Compare the digest in the output character-for-character against the digest for 
 in `SHA256SUMS` or on the release page. Matching file name, size, or download timestamp does not
 substitute for a digest check. If the digests do not match, delete the artifact and re-download
 from the official release.
+
+## Verify the Attestation
+
+Every official artifact (AAR, per-platform runtime archives, Apple SDK zip, and so on) ships
+with a matching `<artifact>.attestation.json` on the release page. It records the artifact's
+file name, byte size, SHA-256 digest, and a fingerprint of the build receipt (package index);
+the goal is "the bytes you hold are the bytes CI recorded at build time".
+
+Minimal check — compare the digest recorded in the attestation against the computed one:
+
+```bash
+sha256sum migo-<version>-apple-sdk.zip
+python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['package_sha256'])" \
+  migo-<version>-apple-sdk.zip.attestation.json
+```
+
+Both lines must match. Full verification (build-receipt fingerprint, size, file name) uses the
+artifact-manifest tool from a source checkout:
+
+```bash
+cargo run --manifest-path tools/artifact-manifest/Cargo.toml -- \
+  verify-attestation <artifact>.attestation.json <artifact> <package-index.json>
+```
+
+`<package-index.json>` is the build receipt shipped inside or beside the artifact (for the Apple
+SDK zip it is `Frameworks/MigoEngine.xcframework/migo-build.json`; extract it before verifying).
+On success the tool prints the artifact's SHA-256 digest; on failure it exits non-zero and names
+the mismatched field.
 
 ## Verify the Release Tag
 

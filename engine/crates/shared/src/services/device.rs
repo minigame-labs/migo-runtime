@@ -524,10 +524,10 @@ pub trait BluetoothService: Send + Sync {
     }
 }
 
-// ==================== Domain Sub-Traits (M24) ====================
+// ==================== Domain Sub-Traits ====================
 //
 // DeviceServices is split into 5 domain groups to improve organization,
-// enable per-domain feature gating (M25), and support domain-scoped testing.
+// enable per-domain feature gating, and support domain-scoped testing.
 // Each sub-trait has default `None` implementations so platforms only need
 // to override the services they support.
 

@@ -295,6 +295,12 @@ pub(crate) struct UnifiedFrameCollector {
     /// How many times this frame's commands crossed from JavaScript into
     /// native, and what they carried.
     boundary: BoundaryCounts,
+    /// Whether a barrier has sent some of this frame's commands ahead of its
+    /// end. Its end then sends a packet even with nothing left to carry: the
+    /// renderer presents a frame when it ends (`FrameOp::Present`), not when a
+    /// barrier runs, so a frame that drew and then asked a question would
+    /// otherwise never be presented.
+    barrier_in_frame: bool,
 }
 
 /// The JavaScript-to-native crossing count, which is the whole of
@@ -377,6 +383,7 @@ impl UnifiedFrameCollector {
             diagnostics_host_id,
             diagnostics_stats,
             boundary: BoundaryCounts::default(),
+            barrier_in_frame: false,
         }
     }
 
@@ -759,7 +766,16 @@ impl UnifiedFrameCollector {
     /// Inserts `Materialize` ops at each Canvas2D→GL boundary.
     /// Resets the collector for the next frame.
     pub(crate) fn build_frame_packet(&mut self, present: bool) -> Option<shared::FramePacket> {
-        let packet = self.build_frame_packet_inner(present, false);
+        let mut packet = self.build_frame_packet_inner(present, false);
+        if packet.is_none() && present && self.barrier_in_frame {
+            packet = Some(
+                shared::FramePacketBuilder::new(0, 0.0)
+                    .push(FrameOp::BeginFrame)
+                    .push(FrameOp::Present)
+                    .finish(),
+            );
+        }
+        self.barrier_in_frame = false;
         self.publish_frame_peak();
         self.close_boundary_frame(packet.as_ref());
         packet
@@ -818,7 +834,9 @@ impl UnifiedFrameCollector {
     /// Used before sync operations (getImageData, readPixels, GL queries).
     /// Materializes ALL trailing pending 2D canvases so the sync op sees results.
     pub(crate) fn flush_as_barrier(&mut self) -> Option<shared::FramePacket> {
-        self.build_frame_packet_inner(false, true)
+        let packet = self.build_frame_packet_inner(false, true);
+        self.barrier_in_frame |= packet.is_some();
+        packet
     }
 
     // ── Canvas2D forwarding methods ────────────────────────────────
@@ -1255,6 +1273,27 @@ mod tests {
     #[test]
     fn empty_collector_returns_none() {
         let mut c = UnifiedFrameCollector::new();
+        assert!(c.build_frame_packet(true).is_none());
+    }
+
+    /// A frame that drew and then asked a question sent its drawing in the
+    /// barrier, and its end has nothing left to carry. It still sends the
+    /// presenting packet: the renderer presents a frame at its end, and without
+    /// one this frame would never reach the screen. The frame after it, which
+    /// drew nothing, sends nothing.
+    #[test]
+    fn a_frame_whose_drawing_went_out_in_a_barrier_still_ends() {
+        let mut c = UnifiedFrameCollector::new();
+        c.append_gl_batch(vec![clear_command()].into(), 64);
+        let barrier = c.flush_as_barrier().expect("the barrier carries the draw");
+        assert!(
+            !barrier
+                .ops()
+                .iter()
+                .any(|op| matches!(op, FrameOp::Present))
+        );
+        let end = c.build_frame_packet(true).expect("the frame's end is sent");
+        assert!(matches!(end.ops(), [FrameOp::BeginFrame, FrameOp::Present]));
         assert!(c.build_frame_packet(true).is_none());
     }
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Host-only R6 Android flavor/R8 reachability contract.
+# Host-only R8 Android flavor/JNI reachability contract.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

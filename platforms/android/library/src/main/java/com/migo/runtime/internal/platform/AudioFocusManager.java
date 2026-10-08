@@ -14,7 +14,7 @@ import com.migo.runtime.internal.NativeMethods;
  * Automatically listens for system audio focus changes (e.g., incoming calls,
  * other apps playing audio) and triggers the corresponding JS callbacks.
  * <p>
- * Compatible with Android API 21+.
+ * Compatible with Android API 26+.
  *
  * @hide
  */

@@ -1,13 +1,13 @@
 # ============================================================
 # Android dynamic library build script
-# Location: engine/scripts/build-android.ps1
+# Location: scripts/build-android-so.ps1
 #
 # Usage:
-#   ./build-android.ps1
-#   ./build-android.ps1 arm64-v8a
-#   ./build-android.ps1 arm64-v8a x86_64 release
-#   ./build-android.ps1 all release
-#   ./build-android.ps1 arm64-v8a release --codegen-profile=2
+#   ./build-android-so.ps1
+#   ./build-android-so.ps1 arm64-v8a
+#   ./build-android-so.ps1 arm64-v8a x86_64 release
+#   ./build-android-so.ps1 all release
+#   ./build-android-so.ps1 arm64-v8a release --codegen-profile=2
 # ============================================================
 
 param(
@@ -98,10 +98,10 @@ function Check-Dependencies {
     # compiler, sysroot and linker that the component manifest records, so it is
     # part of the artifact's identity. Testing only that ANDROID_NDK_HOME was
     # non-empty let a Windows build link the pinned V8 archive with any NDK at all,
-    # which is the defect the shell path closed in task 1.1a and this path never
-    # did. The variable is no longer required either, for the same reason
-    # build-android-so.sh does not require it: the NDK is found in the standard SDK
-    # layouts, and an override is checked like any other candidate.
+    # which the shell path once allowed this path to do as well. The variable is
+    # no longer required either, for the same reason build-android-so.sh does not
+    # require it: the NDK is found in the standard SDK layouts, and an override is
+    # checked like any other candidate.
     Import-Module (Join-Path $PSScriptRoot "lib/AndroidNdk.psm1") -Force
     $ndkLock = Join-Path (Split-Path $PSScriptRoot -Parent) "contracts/artifact-manifest/android-v8.lock.json"
     try {

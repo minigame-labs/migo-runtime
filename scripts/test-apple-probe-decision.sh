@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The G0 decision tool must refuse the data that cannot decide anything.
+# The decision tool must refuse data that cannot decide anything.
 #
 # Worker versus Window, the transport, the frame clock and the WebView host
 # shape are unresolved by design, and the design says so in prose. Prose does
@@ -33,7 +33,7 @@ CAPABILITY_SCHEMA="contracts/apple/capability-probe.schema.json"
 
 for required in "$TOOL" "$TESTS" "$SCHEMA" "$ADMIT" "$ADMIT_TESTS" "$CAPABILITY_SCHEMA"; do
     if [[ ! -f "$required" ]]; then
-        echo "FAIL: $required is missing; the G0 decision procedure cannot be checked." >&2
+        echo "FAIL: $required is missing; the decision procedure cannot be checked." >&2
         exit 1
     fi
 done

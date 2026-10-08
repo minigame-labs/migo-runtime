@@ -1,9 +1,9 @@
-//! Cross-session lock gate for Section 7.3.
+//! Cross-session lock gate.
 //!
-//! Section 7.3 requires, for every per-event path, "a contention regression test
+//! The gate requires, for every per-event path, "a contention regression test
 //! that fails when a per-event operation acquires a lock shared beyond its own
 //! session". Reading the code and observing that it resolves its handles at
-//! bring-up is not that test — Section 7.3 says these are "enforced by tests, not by
+//! bring-up is not that test — these are "enforced by tests, not by
 //! inspection", and the first attempt at one was withdrawn because it took the shared
 //! lock inside the very helper it called, so it passed with and without the property.
 //!

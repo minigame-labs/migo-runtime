@@ -1,7 +1,7 @@
-//! Shared-executor occupancy gate for Section 6.4 defect 4.
+//! Shared-executor occupancy gate.
 //!
-//! Section 6.4 names "the single worker serving all audio streaming" as one of the
-//! shared budgets that let one game degrade another, and Section 7.3 requires the
+//! The design names "the single worker serving all audio streaming" as one of the
+//! shared budgets that let one game degrade another, and the gate requires the
 //! structural performance properties to be "enforced by tests, not by inspection".
 //! Neither of the two gates that already exist can see this one: a CPU-bound step
 //! running on an executor other sessions share is not a lock, so

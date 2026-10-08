@@ -24,7 +24,7 @@ hardware; `entry/build-profile.json5` filters ABIs, so building for an
 architecture whose archive has not been staged fails the CMake existence check
 with a clear message rather than linking something stale.
 
-### On this machine, DevEco is on the Windows side
+### When building from WSL2 with DevEco on Windows
 
 The engine is built in WSL and DevEco, hvigor, hdc and the emulator all live on
 Windows. Two constraints follow, and both were found by hitting them:

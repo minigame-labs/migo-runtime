@@ -78,24 +78,11 @@ pub(crate) struct AudioService {
     http_client_factory: audio::streaming::StreamingHttpClientFactory,
 }
 
-/// What the audio thread starts with: everything buffered before it existed, in
-/// arrival order, with `PauseAll` last when the app is backgrounded.
-///
-/// **The buffered commands go to the thread rather than back into the channel.**
-/// Re-injecting them would deadlock now that the transport is bounded: at the
-/// moment of handover nothing is draining the queue — the receiver is still held
-/// by the service — so a full queue would park the caller forever. It also
-/// removes an ordering argument that was never sound, since the game thread can
-/// enqueue while the handover runs and a re-injected command would then land
-/// behind a newer one.
-///
-/// Extracted because the handover itself needs an audio device and a host test
-/// cannot provide one, while this can be observed exactly.
-/// The client streamed audio (`InnerAudioContext.src = "https://..."`) is
-/// fetched with: the policy-checked one every outbound request in this engine
-/// uses -- allow list, HTTPS enforcement, an SSRF-checking resolver and a
-/// redirect gate (`migo_services::network::client`). Built lazily and once,
-/// because a session that never streams audio should not pay for a TLS client.
+/// The client used for streamed audio (`InnerAudioContext.src = "https://..."`)
+/// applies the same policy as every outbound request in this engine: domain
+/// allow-listing, HTTPS enforcement, an SSRF-checking resolver, and a redirect
+/// gate (`migo_services::network::client`). It is built lazily and once, because
+/// a session that never streams audio should not pay for a TLS client.
 #[cfg(feature = "host-audio")]
 pub(crate) fn streaming_http_client_factory(
     network_policy: shared::op_state::NetworkPolicy,
@@ -118,6 +105,19 @@ pub(crate) fn streaming_http_client_factory(
 }
 
 #[cfg(feature = "host-audio")]
+/// What the audio thread starts with: everything buffered before it existed, in
+/// arrival order, with `PauseAll` last when the app is backgrounded.
+///
+/// **The buffered commands go to the thread rather than back into the channel.**
+/// Re-injecting them would deadlock now that the transport is bounded: at the
+/// moment of handover nothing is draining the queue — the receiver is still held
+/// by the service — so a full queue would park the caller forever. It also
+/// removes an ordering argument that was never sound, since the game thread can
+/// enqueue while the handover runs and a re-injected command would then land
+/// behind a newer one.
+///
+/// Extracted because the handover itself needs an audio device and a host test
+/// cannot provide one, while this can be observed exactly.
 fn take_startup_backlog(pending: &mut Vec<AudioCmd>, is_paused: bool) -> Vec<AudioCmd> {
     let mut backlog: Vec<AudioCmd> = pending.drain(..).collect();
     if is_paused {
@@ -186,10 +186,9 @@ pub(crate) fn platform_audio_service() -> Option<Arc<dyn shared::services::Audio
 #[cfg(feature = "host-audio")]
 impl AudioService {
     /// Create a lazy audio service. **No thread or HTTP client is created.**
-    /// `http_client_factory` builds the client streamed audio fetches with,
-    /// lazily and once: the caller's, because the policy-checked client is the
-    /// network layer's and each execution has its own (see
-    /// [`streaming_http_client_factory`]).
+    /// `http_client_factory` builds the client used for streamed audio lazily
+    /// and once. The policy-checked client belongs to the network layer, and
+    /// each execution has its own (see [`streaming_http_client_factory`]).
     pub(crate) fn new(
         host_tx: HostTx,
         http_client_factory: audio::streaming::StreamingHttpClientFactory,
@@ -262,7 +261,7 @@ impl AudioService {
 
     /// Force-start the thread even if no real command has arrived.
     ///
-    /// Used by `on_restart()` which needs a live thread for ResumeAll.
+    /// Reserved for callers that need a live thread before a real command.
     #[allow(dead_code)]
     pub(crate) fn ensure_started(&mut self) -> EngineResult<()> {
         if self.thread.is_some() {

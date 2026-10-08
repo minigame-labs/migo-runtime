@@ -1,25 +1,25 @@
 #!/usr/bin/env bash
 # The probe app must not need an exemption the product cannot ship.
 #
-# G0.3 is a row in the probe matrix, not an afterthought: "ATS/Info.plist, no
-# NSAllowsArbitraryLoads, no Bonjour, only public API to stay alive". Its
-# device half needs a signed phone. Its static half is a property of a file in
-# this repository and can be checked today.
+# The ATS/Info.plist row is part of the probe matrix, not an afterthought:
+# "ATS/Info.plist, no NSAllowsArbitraryLoads, no Bonjour, only public API to stay
+# alive". Its device half needs a signed phone. Its static half is a property of
+# a file in this repository and can be checked today.
 #
 # THE DRIFT THIS EXISTS TO CATCH is the shortest path out of a real problem.
 # The loopback origin is plain HTTP, App Transport Security blocks cleartext,
 # and the one-line way to make the page load is NSAllowsArbitraryLoads. It
 # works, it is invisible in a green run, and it changes what the gate measured:
 # a transport that only loads with ATS disabled is a transport the shipping
-# product cannot use, and G0 would have selected it on numbers gathered under a
-# configuration that will not pass review. NSAllowsLocalNetworking permits
-# cleartext to loopback and link-local and nothing else, which is the exemption
-# the product would actually ship.
+# product cannot use, and the decision procedure would otherwise select it on
+# numbers gathered under a configuration that will not pass review.
+# NSAllowsLocalNetworking permits cleartext to loopback and link-local and nothing
+# else, which is the exemption the product would actually ship.
 #
 # Bonjour is the same shape one layer down: `NSBonjourServices` plus a local
 # network usage description turns the permission prompt into something the
-# operator taps past, and G0.3 exists partly to find out whether a prompt
-# appears at all. An app that pre-arranges the prompt cannot answer that.
+# operator taps past, and the probe matrix exists partly to find out whether a
+# prompt appears at all. An app that pre-arranges the prompt cannot answer that.
 #
 # Host-only: python3 reads the plist. No macOS, no Xcode.
 set -euo pipefail
@@ -76,8 +76,8 @@ else:
     for forbidden, why in (
         ("NSAllowsArbitraryLoads",
          "it disables App Transport Security for every host. A transport measured under it is a "
-         "transport measured in a configuration the product cannot ship, and G0 would select on "
-         "those numbers."),
+         "transport measured in a configuration the product cannot ship, and the decision "
+         "procedure would select on those numbers."),
         ("NSAllowsArbitraryLoadsInWebContent",
          "it disables ATS for everything the web view loads, which is the whole probe."),
         ("NSAllowsArbitraryLoadsForMedia",
@@ -88,8 +88,8 @@ else:
 
 if "NSBonjourServices" in plist:
     problems.append(
-        "NSBonjourServices is declared. G0.3's list names Bonjour explicitly, and part of what "
-        "gate 1 asks is whether a local-network prompt appears at all -- an app that "
+        "NSBonjourServices is declared. The probe matrix names Bonjour explicitly, and part of "
+        "what gate 1 asks is whether a local-network prompt appears at all -- an app that "
         "pre-arranges the prompt has answered its own question."
     )
 if "NSLocalNetworkUsageDescription" in plist:

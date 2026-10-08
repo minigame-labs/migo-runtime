@@ -128,37 +128,15 @@ impl FeatureKey {
             // exactly as before -- only the stall moves. Off restores the
             // one-link-at-a-time behaviour byte for byte.
             Self::WebglParallelShaderCompile => true,
-            // Off, and it is a trade rather than a doubt.
+            // Off is a deliberate trade rather than a doubt: a shared context
+            // can reduce resource use, while separate contexts keep each
+            // surface's state local.
             //
-            // Measured on a Mate 30 Pro with two AARs from one tree differing
-            // only in this default, 80 offscreen canvases repainting every
-            // frame, three interleaved rounds:
-            //
-            //   PSS        650 [648-652] MB -> 286 [286-287] MB   (-56%)
-            //   game-ready 1089 [1081-1094] ms -> 452 [441-462] ms (-59%)
-            //   CPU        125 -> 124                              (tied)
-            //   fps        60 [60-60] -> 54 [54-55]                (-9%)
-            //
-            // The 9% is not a defect. Three separate implementation faults were
-            // found and fixed while chasing it -- per-canvas context resets,
-            // a `BoundContext` that did not name the canvas it was serving (a
-            // real correctness bug: the assert that would have caught it is
-            // compiled out of release), and submitting only at frame end, which
-            // left the GPU idle through recording. None of them moved the
-            // number. What remains is inherent: one context with N surfaces
-            // must rebind and revalidate per canvas, where N contexts each
-            // serving one surface cache exactly the right state. CPU is tied;
-            // the cost is on the GPU.
-            //
-            // So the engine does not choose. Whether -56% memory is worth -9%
-            // fps depends on how many offscreen canvases the content keeps and
-            // whether it is memory- or frame-bound, which the host knows and
-            // this crate does not. Turn it on for shop-UI / label-cache shapes
-            // under memory pressure; leave it off for content already at vsync.
-            //
-            // Full write-up, including why 60 fps read as a tie until the
-            // measurement was taken above the vsync cap:
-            // docs/performance/android/shared-direct-context.md
+            // The engine does not choose between those tradeoffs here. The
+            // right choice depends on how many offscreen canvases the content
+            // keeps and whether it is memory- or frame-bound, which the host
+            // knows and this crate does not. Turn it on for content under
+            // memory pressure; leave it off for content already at vsync.
             Self::CanvasSharedDirectContext
             | Self::CanvasHotBackingPool
             | Self::PresentSwappy

@@ -1,5 +1,5 @@
 /* Migo developer docs — brand layer over Starlight defaults.
-   Palette and display font mirror migo-www/src/styles/tokens.css (portal).
+   Palette and display font mirror the portal site's styles/tokens.css.
    Unlayered on purpose: wins over @layer starlight.* everywhere below. */
 
 @font-face {

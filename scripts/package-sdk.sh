@@ -6,7 +6,7 @@
 # All four platform build scripts stage a prefix directory and stop there, so the
 # `migo-sdk-<os>-<arch>.tar.gz` on every release so far was produced by a `tar`
 # typed on the release machine. That is why the published Linux archive records
-# `xg/xg` as owner and the build machine's wall clock as every mtime: nobody can
+# the release user's own user/group as owner and the build machine's wall clock as every mtime: nobody can
 # rebuild those bytes, and the `package_sha256` its attestation swears to is
 # therefore unverifiable by the person receiving it.
 #
