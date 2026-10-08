@@ -340,57 +340,13 @@ impl ServiceContext {
         self.session_id.get().copied().unwrap_or(0)
     }
 
-    /// The command that uploads a loaded image into a texture, for the frame
-    /// decoder: the function the embedded runtime's ops call, over this
-    /// session's table.
-    pub(crate) fn image_upload(
+    /// Where a loaded image's pixels are, for the frame decoder's upload of it:
+    /// the function the embedded runtime's op calls, over this session's table.
+    pub(crate) fn image_source(
         &self,
-        upload: frame_decode::ImageUpload,
-    ) -> Option<shared::protocol::render_cmd::GLCmd> {
-        use migo_services::image::gl;
-        let session = self.session();
-        match upload {
-            frame_decode::ImageUpload::Full {
-                canvas_id,
-                target,
-                level,
-                internalformat,
-                format,
-                type_,
-                image_id,
-            } => gl::tex_image_2d_from_image(
-                &self.aliases,
-                session,
-                canvas_id,
-                target,
-                level,
-                internalformat,
-                format,
-                type_,
-                image_id,
-            ),
-            frame_decode::ImageUpload::Sub {
-                canvas_id,
-                target,
-                level,
-                xoffset,
-                yoffset,
-                format,
-                type_,
-                image_id,
-            } => gl::tex_sub_image_2d_from_image(
-                &self.aliases,
-                session,
-                canvas_id,
-                target,
-                level,
-                xoffset,
-                yoffset,
-                format,
-                type_,
-                image_id,
-            ),
-        }
+        image_id: u32,
+    ) -> Option<shared::protocol::render_cmd::TextureSource> {
+        migo_services::image::gl::texture_source(&self.aliases, self.session(), image_id)
     }
 
     /// Release this session's claims on the decoded-bytes cache.

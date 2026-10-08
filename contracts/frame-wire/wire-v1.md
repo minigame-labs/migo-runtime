@@ -215,6 +215,28 @@ process. A WebGL 2 float colour buffer is read as RGBA/FLOAT and an integer one 
 refused before. Additive for every record a producer wrote before -- RGBA/UNSIGNED_BYTE answers as it did -- and the
 producer is a resource of the same Swift package as the reader.
 
+### Amendment, 2026-10-05: one record for every TexImageSource upload
+
+`TEX_IMAGE_SOURCE` (209) joins the resource block's payload records for every `tex*Image*` call whose pixels are a
+TexImageSource -- `texImage2D`, `texSubImage2D`, `texImage3D` and `texSubImage3D` from an image the host decoded, a
+2D canvas, a snapshot of one, or `ImageData`: `H C call target level:I internalformat:I xoffset:I yoffset:I zoffset:I
+width:I height:I depth:I format type destination_format kind source_id source_width source_height | len pixels`.
+`call` is 0 `texImage2D`, 1 `texSubImage2D`, 2 `texImage3D`, 3 `texSubImage3D`; `kind` is 1 an image (`source_id` its
+id), 2 a canvas (its id), 3 a snapshot (its id), 4 the record's own pixels -- `source_width` x `source_height` RGBA8
+rows, straight alpha, top row first -- and there are no pixels for the others; `destination_format` is a sub call's
+image's effective internal format, 0 for a full call. The host converts the pixels as the call asks: the selection
+of the pixel-store state as it holds it when the record runs (WebGL 2's `UNPACK_SKIP_PIXELS`, `UNPACK_SKIP_ROWS`,
+and in 3D `UNPACK_IMAGE_HEIGHT` and `UNPACK_SKIP_IMAGES`), `UNPACK_FLIP_Y_WEBGL`, `UNPACK_PREMULTIPLY_ALPHA_WEBGL`,
+and the call's format and type. The record may be staged (`STAGE_PAYLOAD`), as the other uploads may.
+
+It replaces `TEX_IMAGE_2D_FROM_IMAGE` (169), `TEX_SUB_IMAGE_2D_FROM_IMAGE` (170), `TEX_IMAGE_2D_FROM_SNAPSHOT` (171),
+`TEX_SUB_IMAGE_2D_FROM_SNAPSHOT` (172), `TEX_IMAGE_2D_FROM_CANVAS2D` (173) and `TEX_SUB_IMAGE_2D_FROM_CANVAS2D` (174),
+whose values are retired, and the `TEX_IMAGE_2D` / `TEX_SUB_IMAGE_2D` records the producer wrote for `ImageData` as
+though its rows were bytes the pixel-store state laid out. Those records converted nothing but 8-bit RGB(A) of a
+host-held source, took no 3D call, and read `ImageData` with the content's alignment and row length. Not additive --
+six records go -- and safe under the audit the amendments above rest on: the producer is a resource of the same Swift
+package as the reader, and the in-process JavaScript calls the ops, not the records.
+
 ## Conventions
 
 - Little-endian. Every multi-byte field.

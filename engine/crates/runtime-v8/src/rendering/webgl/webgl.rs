@@ -1,7 +1,6 @@
 use deno_core::{OpState, ToJsBuffer, op2, v8};
 use tracing::error;
 
-use crate::rendering::image::ImageCacheState;
 use crate::rendering::webgl::error_state::{self, OpStateDecodeContext, codes};
 use frame_decode::resource::{CompressedSource, Payload, PixelSource};
 
@@ -3380,6 +3379,166 @@ pub(super) mod tests {
                 "ReadBuffer",
             ],
             "only the calls taken reach the renderer"
+        );
+    }
+
+    /// A TexImageSource upload is judged against WebGL 2's own table (3.7.6) in a browser's order -- an internal format
+    /// outside it INVALID_VALUE, a format or type outside it INVALID_ENUM, a combination it does not list
+    /// INVALID_OPERATION -- and its WebGL 2 selection (UNPACK_SKIP_* and the call's size, UNPACK_IMAGE_HEIGHT in 3D) must
+    /// be within the source. What passes is one `TexImageSource` command naming its call and its source: `ImageData`'s
+    /// rows, a canvas, a snapshot spent by the upload; a sub call carries the image's effective format for the
+    /// renderer's copy, and every call the content's own format and type. A value that is no TexImageSource is a
+    /// TypeError, and WebGL 1 takes one in the 6- and 7-argument forms only.
+    #[test]
+    fn tex_image_source_uploads_are_judged_against_their_own_table_and_name_their_source() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        runtime
+            .exec_script(
+                "tex_image_source.js",
+                r#"
+                const check = (c, m) => { if (!c) throw new Error(m); };
+                const errOf = (gl) => (want, m) => { const got = gl.getError(); if (got !== want) throw new Error(`${m}: getError ${got}, want ${want}`); };
+                const throws = (f, m) => { try { f(); } catch (e) { if (e instanceof TypeError) return; throw e; } throw new Error(`${m}: no TypeError`); };
+                const ENUM = 0x0500, VALUE = 0x0501, OPERATION = 0x0502;
+                const T2D = 0x0de1, RGBA = 0x1908, RGB = 0x1907, UBYTE = 0x1401;
+                const image = { width: 4, height: 4, data: new Uint8ClampedArray(64) };
+                const gl = new WebGL2RenderingContext({ _rid: 240, width: 4, height: 4 }, {});
+                const err = errOf(gl);
+                gl.bindTexture(T2D, gl.createTexture());
+                gl.texImage2D(T2D, 0, 0x8d88, 0x8d99, 0x1402, image); err(VALUE, "RGBA16I is not a TexImageSource's");
+                gl.texImage2D(T2D, 0, 0x8f97, RGBA, 0x1400, image); err(VALUE, "RGBA8_SNORM neither");
+                gl.texImage2D(T2D, 0, 0x8c3d, RGB, 0x8c3e, image); err(ENUM, "5_9_9_9_REV is not a TexImageSource's type");
+                gl.texImage2D(T2D, 0, RGBA, RGB, UBYTE, image); err(OPERATION, "RGBA from RGB");
+                gl.texImage2D(T2D, 0, 0x881a, RGBA, 0x140b, image); err(0, "RGBA16F of half floats");        // sent
+                gl.pixelStorei(0x0cf4, 1); gl.pixelStorei(0x0cf3, 2);                                       // skip 1, 2
+                gl.texImage2D(T2D, 0, RGBA, 2, 2, 0, RGBA, UBYTE, image); err(0, "a 2 x 2 selection from (1, 2)"); // sent
+                gl.texImage2D(T2D, 0, RGBA, 3, 3, 0, RGBA, UBYTE, image); err(OPERATION, "a selection past the source");
+                gl.texImage2D(T2D, 0, RGBA, RGBA, UBYTE, image); err(OPERATION, "the source's size from a skip");
+                gl.pixelStorei(0x0cf4, 0); gl.pixelStorei(0x0cf3, 0);
+                gl.texImage2D(T2D, 0, RGBA, RGBA, UBYTE, image); err(0, "the whole source");                // sent
+                gl.texSubImage2D(T2D, 0, 0, 0, RGB, UBYTE, image); err(OPERATION, "RGB into RGBA");
+                const canvas = { _rid: 77, width: 4, height: 4, getContext() { return null; } };
+                gl.texSubImage2D(T2D, 0, 0, 0, RGBA, UBYTE, canvas); err(0, "a canvas into it");          // sent
+                const snapshot = { width: 4, height: 4 };
+                Object.defineProperty(snapshot, "__migo_snapshot_id__", { value: 9, writable: true });
+                Object.defineProperty(snapshot, "__migo_snapshot_spent__", { value: false, writable: true });
+                gl.texSubImage2D(T2D, 0, 0, 0, 4, 4, RGBA, UBYTE, snapshot); err(0, "a snapshot");           // sent
+                check(snapshot.__migo_snapshot_spent__ === true, "the upload spends the snapshot");
+                const array = gl.createTexture();
+                gl.bindTexture(0x8c1a, array);
+                gl.pixelStorei(0x806e, 2);                                                                 // image height 2
+                gl.texImage3D(0x8c1a, 0, 0x8058, 4, 1, 2, 0, RGBA, UBYTE, image); err(0, "two slices, 2 rows apart"); // sent
+                gl.texImage3D(0x8c1a, 0, 0x8058, 4, 1, 3, 0, RGBA, UBYTE, image); err(OPERATION, "a third is past it");
+                gl.pixelStorei(0x806e, 0);
+                gl.pixelStorei(0x9240, 1);                                                                 // FLIP_Y
+                gl.texSubImage3D(0x8c1a, 0, 0, 0, 0, 4, 1, 1, RGBA, UBYTE, image); err(0, "flipped, as a source may be"); // sent
+                gl.pixelStorei(0x9240, 0);
+                throws(() => gl.texImage2D(T2D, 0, RGBA, RGBA, UBYTE, {}), "an object that is no source");
+                throws(() => gl.texImage2D(T2D, 0, RGBA, RGBA, UBYTE, null), "null");
+                const gl1 = new WebGLRenderingContext({ _rid: 241, width: 4, height: 4 }, {});
+                gl1.bindTexture(T2D, gl1.createTexture());
+                throws(() => gl1.texImage2D(T2D, 0, RGBA, 4, 4, 0, RGBA, UBYTE, image), "WebGL 1 takes bytes in 9 arguments");
+                gl1.texImage2D(T2D, 0, 0x8058, RGBA, UBYTE, image); errOf(gl1)(VALUE, "WebGL 1 has no sized formats");
+                gl1.texImage2D(T2D, 0, RGB, RGB, 0x8363, image); errOf(gl1)(0, "565 from a source");          // sent
+                gl.flush(); gl1.flush();
+                "#,
+            )
+            .expect("every call should be judged");
+        let sources: Vec<GLCmd> = drain_gl_commands(&render_rx)
+            .into_iter()
+            .filter(|cmd| matches!(cmd, GLCmd::TexImageSource { .. }))
+            .collect();
+        let pixels = shared::protocol::render_cmd::TextureSource::Pixels {
+            bytes: std::sync::Arc::new(vec![0; 64]),
+            width: 4,
+            height: 4,
+        };
+        use shared::protocol::render_cmd::{SourceUploadCall as Call, TextureSource as Source};
+        let summary: Vec<(Call, i32, i32, u32, u32, u32, Source)> = sources
+            .into_iter()
+            .map(|cmd| match cmd {
+                GLCmd::TexImageSource {
+                    call,
+                    width,
+                    height,
+                    format,
+                    type_,
+                    destination_format,
+                    source,
+                    ..
+                } => (
+                    call,
+                    width,
+                    height,
+                    format,
+                    type_,
+                    destination_format,
+                    source,
+                ),
+                _ => unreachable!(),
+            })
+            .collect();
+        let image2d = |internalformat| Call::Image2D { internalformat };
+        assert_eq!(
+            summary,
+            vec![
+                (image2d(0x881a), 4, 4, 0x1908, 0x140b, 0, pixels.clone()),
+                (image2d(0x1908), 2, 2, 0x1908, 0x1401, 0, pixels.clone()),
+                (image2d(0x1908), 4, 4, 0x1908, 0x1401, 0, pixels.clone()),
+                // RGBA of bytes is RGBA8, which the renderer may copy into.
+                (
+                    Call::SubImage2D {
+                        xoffset: 0,
+                        yoffset: 0
+                    },
+                    4,
+                    4,
+                    0x1908,
+                    0x1401,
+                    0x8058,
+                    Source::Canvas { canvas_2d_id: 77 }
+                ),
+                (
+                    Call::SubImage2D {
+                        xoffset: 0,
+                        yoffset: 0
+                    },
+                    4,
+                    4,
+                    0x1908,
+                    0x1401,
+                    0x8058,
+                    Source::Snapshot { snapshot_id: 9 }
+                ),
+                (
+                    Call::Image3D {
+                        internalformat: 0x8058,
+                        depth: 2
+                    },
+                    4,
+                    1,
+                    0x1908,
+                    0x1401,
+                    0,
+                    pixels.clone()
+                ),
+                (
+                    Call::SubImage3D {
+                        xoffset: 0,
+                        yoffset: 0,
+                        zoffset: 0,
+                        depth: 1
+                    },
+                    4,
+                    1,
+                    0x1908,
+                    0x1401,
+                    0x8058,
+                    pixels.clone()
+                ),
+                (image2d(0x1907), 4, 4, 0x1907, 0x8363, 0, pixels),
+            ],
+            "only the uploads taken reach the renderer, each as its call names its source"
         );
     }
 
@@ -7996,12 +8155,10 @@ pub(super) mod tests {
 
     /// Section 7.3, on the path every `texSubImage2D(…, image)` takes.
     ///
-    /// `op_tex_sub_image_2d_from_image` reaches `resolve_cached_image_rgba`
-    /// unconditionally — there is no `TexSubImage2DFromShared` command and no
-    /// branch above it — so this is a per-call cost of that op rather than a
-    /// fallback, and it does not depend on which game is running.
-    /// `op_tex_image_2d_from_image` reaches the same helper whenever its GPU-side
-    /// copy is unavailable.
+    /// Every upload naming an image reaches `resolve_cached_image_rgba` through
+    /// `texture_source` -- the decoded bytes travel with the command whenever the
+    /// cache holds them -- so this is a per-call cost of `op_tex_image_source`
+    /// rather than a fallback, and it does not depend on which game is running.
     ///
     /// What is measured is the resolve — the alias lookup and the decoded-bytes
     /// lookup — and not the upload behind it, which is the render command path
@@ -9111,184 +9268,21 @@ pub fn op_tex_image_2d(
     }
 }
 
+/// A `tex*Image*` call whose pixels are a TexImageSource -- an image the host decoded, a 2D canvas, a snapshot of one,
+/// `ImageData`'s rows -- as [`frame_wire::gl_resource::OPR_TEX_IMAGE_SOURCE`] carries it: `words` are the record's
+/// words after its header and `pixels` an `ImageData`'s RGBA8 rows, empty for the others. Built by the decoder's own
+/// function, so this lane and the Performance+ lane name, check and resolve every source alike; the renderer converts
+/// the pixels as the call asks (`GLCmd::TexImageSource`).
 #[op2(fast)]
-pub fn op_tex_image_2d_from_image(
-    state: &mut OpState,
-    #[smi] canvas_id: u32,
-    #[smi] target: u32,
-    #[smi] level: i32,
-    #[smi] internalformat: i32,
-    #[smi] format: u32,
-    #[smi] type_: u32,
-    #[smi] image_id: u32,
-) {
-    // A GPU-side copy from the image's texture when the id is a live alias,
-    // the decoded bytes otherwise; `migo_services::image::gl`, which the
-    // external session's frame decoder calls too.
-    let command = {
-        let images = state.borrow::<ImageCacheState>();
-        migo_services::image::gl::tex_image_2d_from_image(
-            &images.aliases,
-            images.session,
-            canvas_id,
-            target,
-            level,
-            internalformat,
-            format,
-            type_,
-            image_id,
-        )
-    };
+pub fn op_tex_image_source(state: &mut OpState, #[buffer] words: &[u32], #[buffer] pixels: &[u8]) {
+    let command = frame_decode::resource::tex_image_source(
+        &mut OpStateDecodeContext(state),
+        words,
+        frame_decode::resource::Payload::Bytes(pixels),
+    );
     if let Some(command) = command {
         queue_gl_fire_and_forget(state, command);
     }
-}
-
-/// `texImage2D` from a Canvas2D snapshot allocated by
-/// `op_get_image_data_snapshot`.  Routes a single `GLCmd` into the
-/// frame collector so the upload lands inside the same FramePacket
-/// as the surrounding WebGL draw — no inserted Materialize barrier,
-/// no sync flush, no CPU readback.  Mirrors
-/// [`op_tex_image_2d_from_image`].
-#[op2(fast)]
-pub fn op_tex_image_2d_from_snapshot(
-    state: &mut OpState,
-    #[smi] canvas_id: u32,
-    #[smi] target: u32,
-    #[smi] level: i32,
-    #[smi] internalformat: i32,
-    #[smi] format: u32,
-    #[smi] type_: u32,
-    #[smi] snapshot_id: u32,
-) {
-    if snapshot_id == 0 {
-        // JS-side fallback already happened (`getImageData` returned
-        // a real CPU buffer instead of a snapshot wrapper); this op
-        // shouldn't be invoked.  Drop silently to keep the call site
-        // total; tracing-warn would just spam logs on misuse.
-        return;
-    }
-    queue_gl_fire_and_forget(
-        state,
-        GLCmd::TexImage2DFromSnapshot {
-            canvas_id,
-            target,
-            level,
-            internalformat,
-            format,
-            type_,
-            snapshot_id,
-        },
-    );
-}
-
-/// Direct GPU->GPU `texImage2D` from an HTMLCanvasElement -- bypasses
-/// the getImageData->snapshot->force-readback chain that cocos's
-/// `gl.texImage2D(target, ..., canvasElement)` pattern was triggering
-/// (~50ms V8 stall per call on the emulator, ~20 calls per popup).
-/// Fire-and-forget: render thread does FBO blit + glCopyTexImage2D in
-/// one shot.
-#[op2(fast)]
-pub fn op_tex_image_2d_from_canvas2d(
-    state: &mut OpState,
-    #[smi] canvas_id: u32,
-    #[smi] target: u32,
-    #[smi] level: i32,
-    #[smi] internalformat: i32,
-    #[smi] canvas_2d_id: u32,
-    #[smi] x: i32,
-    #[smi] y: i32,
-    #[smi] width: u32,
-    #[smi] height: u32,
-) {
-    if width == 0 || height == 0 {
-        return;
-    }
-    queue_gl_fire_and_forget(
-        state,
-        GLCmd::TexImage2DFromCanvas2D {
-            canvas_id,
-            target,
-            level,
-            internalformat,
-            canvas_2d_id,
-            x,
-            y,
-            width,
-            height,
-        },
-    );
-}
-
-#[op2(fast)]
-pub fn op_tex_sub_image_2d_from_canvas2d(
-    state: &mut OpState,
-    #[smi] canvas_id: u32,
-    #[smi] target: u32,
-    #[smi] level: i32,
-    #[smi] xoffset: i32,
-    #[smi] yoffset: i32,
-    #[smi] canvas_2d_id: u32,
-    #[smi] x: i32,
-    #[smi] y: i32,
-    #[smi] width: u32,
-    #[smi] height: u32,
-) {
-    if width == 0 || height == 0 {
-        return;
-    }
-    queue_gl_fire_and_forget(
-        state,
-        GLCmd::TexSubImage2DFromCanvas2D {
-            canvas_id,
-            target,
-            level,
-            xoffset,
-            yoffset,
-            canvas_2d_id,
-            x,
-            y,
-            width,
-            height,
-        },
-    );
-}
-
-/// `texSubImage2D` from a Canvas2D snapshot -- sibling of
-/// `op_tex_image_2d_from_snapshot` for cocos-style text atlases that
-/// pre-allocate an atlas texture and stream glyph cells in via
-/// `texSubImage2D`.  Without this op, the JS path falls through to
-/// `op_tex_sub_image_2d` and uploads the zero-filled placeholder
-/// `Uint8ClampedArray` carried by the synthetic ImageData -- visible
-/// as missing glyphs in the atlas.
-#[op2(fast)]
-pub fn op_tex_sub_image_2d_from_snapshot(
-    state: &mut OpState,
-    #[smi] canvas_id: u32,
-    #[smi] target: u32,
-    #[smi] level: i32,
-    #[smi] xoffset: i32,
-    #[smi] yoffset: i32,
-    #[smi] format: u32,
-    #[smi] type_: u32,
-    #[smi] snapshot_id: u32,
-) {
-    if snapshot_id == 0 {
-        return;
-    }
-    queue_gl_fire_and_forget(
-        state,
-        GLCmd::TexSubImage2DFromSnapshot {
-            canvas_id,
-            target,
-            level,
-            xoffset,
-            yoffset,
-            format,
-            type_,
-            snapshot_id,
-        },
-    );
 }
 
 #[op2(fast)]
@@ -9319,38 +9313,6 @@ pub fn op_tex_sub_image_2d(
         type_,
         PixelSource::of_call(data, pbo_offset),
     );
-    if let Some(command) = command {
-        queue_gl_fire_and_forget(state, command);
-    }
-}
-
-#[op2(fast)]
-pub fn op_tex_sub_image_2d_from_image(
-    state: &mut OpState,
-    #[smi] canvas_id: u32,
-    #[smi] target: u32,
-    #[smi] level: i32,
-    #[smi] xoffset: i32,
-    #[smi] yoffset: i32,
-    #[smi] format: u32,
-    #[smi] type_: u32,
-    #[smi] image_id: u32,
-) {
-    let command = {
-        let images = state.borrow::<ImageCacheState>();
-        migo_services::image::gl::tex_sub_image_2d_from_image(
-            &images.aliases,
-            images.session,
-            canvas_id,
-            target,
-            level,
-            xoffset,
-            yoffset,
-            format,
-            type_,
-            image_id,
-        )
-    };
     if let Some(command) = command {
         queue_gl_fire_and_forget(state, command);
     }

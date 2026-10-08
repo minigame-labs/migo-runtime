@@ -244,68 +244,26 @@ impl frame_decode::GlDecodeContext for OpStateDecodeContext<'_> {
         set_transform_feedback(self.0, canvas_id, phase.into());
     }
 
-    fn image_upload(
+    fn image_source(
         &mut self,
-        upload: frame_decode::ImageUpload,
-    ) -> Option<shared::protocol::render_cmd::GLCmd> {
-        image_upload(self.0, upload)
+        image_id: u32,
+    ) -> Option<shared::protocol::render_cmd::TextureSource> {
+        image_source(self.0, image_id)
     }
     fn staged_payload(&mut self) -> Option<&mut frame_decode::StagedPayload> {
         None
     }
 }
 
-/// A record's texture upload from a loaded image, resolved against this
-/// isolate's image table -- the function the `*_from_image` ops call, so a
-/// record and an op for the same call build the same command.
-pub(crate) fn image_upload(
+/// Where a loaded image's pixels are, resolved against this isolate's image
+/// table -- for the record's upload of it and the op's alike, so both build the
+/// same command.
+pub(crate) fn image_source(
     state: &OpState,
-    upload: frame_decode::ImageUpload,
-) -> Option<shared::protocol::render_cmd::GLCmd> {
-    use migo_services::image::gl;
+    image_id: u32,
+) -> Option<shared::protocol::render_cmd::TextureSource> {
     let images = state.borrow::<crate::rendering::image::ImageCacheState>();
-    match upload {
-        frame_decode::ImageUpload::Full {
-            canvas_id,
-            target,
-            level,
-            internalformat,
-            format,
-            type_,
-            image_id,
-        } => gl::tex_image_2d_from_image(
-            &images.aliases,
-            images.session,
-            canvas_id,
-            target,
-            level,
-            internalformat,
-            format,
-            type_,
-            image_id,
-        ),
-        frame_decode::ImageUpload::Sub {
-            canvas_id,
-            target,
-            level,
-            xoffset,
-            yoffset,
-            format,
-            type_,
-            image_id,
-        } => gl::tex_sub_image_2d_from_image(
-            &images.aliases,
-            images.session,
-            canvas_id,
-            target,
-            level,
-            xoffset,
-            yoffset,
-            format,
-            type_,
-            image_id,
-        ),
-    }
+    migo_services::image::gl::texture_source(&images.aliases, images.session, image_id)
 }
 
 impl From<frame_decode::TransformFeedbackPhase> for TransformFeedback {

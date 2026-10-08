@@ -471,6 +471,76 @@ impl CompressedImageData {
     }
 }
 
+/// What a `tex*Image*` call whose pixels are a TexImageSource defines or fills ([`GLCmd::TexImageSource`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceUploadCall {
+    /// `texImage2D`: a new image of `internalformat`.
+    Image2D { internalformat: i32 },
+    /// `texSubImage2D`: a region of the image there, from (`xoffset`, `yoffset`).
+    SubImage2D { xoffset: i32, yoffset: i32 },
+    /// `texImage3D`: a new image of `internalformat`, `depth` slices deep.
+    Image3D { internalformat: i32, depth: i32 },
+    /// `texSubImage3D`: `depth` slices of the image there, from (`xoffset`, `yoffset`, `zoffset`).
+    SubImage3D {
+        xoffset: i32,
+        yoffset: i32,
+        zoffset: i32,
+        depth: i32,
+    },
+}
+
+impl SourceUploadCall {
+    /// How many slices the call uploads: 1 for a 2D call.
+    pub fn depth(&self) -> i32 {
+        match *self {
+            Self::Image2D { .. } | Self::SubImage2D { .. } => 1,
+            Self::Image3D { depth, .. } | Self::SubImage3D { depth, .. } => depth,
+        }
+    }
+}
+
+/// Where a TexImageSource upload's pixels are ([`GLCmd::TexImageSource`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TextureSource {
+    /// A decoded image, `width` x `height`: the texture the image store holds of it (`shared_id`, an atlas page's
+    /// entry included), its decoded bytes (straight RGBA8, top row first), or both -- whichever are still there. The
+    /// renderer copies from the texture where a copy reproduces the upload exactly, converts the bytes otherwise, and
+    /// reads the texture back only when the bytes are gone.
+    Image {
+        shared_id: Option<u32>,
+        pixels: Option<std::sync::Arc<Vec<u8>>>,
+        width: u32,
+        height: u32,
+    },
+    /// RGBA8 rows, straight alpha, top row first: a decoded image's, `ImageData`'s.
+    Pixels {
+        bytes: std::sync::Arc<Vec<u8>>,
+        width: u32,
+        height: u32,
+    },
+    /// A 2D canvas, as its pixels are when the command runs: a live dependency ([`GLCmd::live_canvas_source`]).
+    /// Premultiplied, as Skia renders.
+    Canvas { canvas_2d_id: CanvasId },
+    /// A snapshot of a 2D canvas kept on the GPU (`getImageData`'s): premultiplied, frozen when it was taken.
+    Snapshot { snapshot_id: u32 },
+    /// A cached text texture (the in-process lane's text cache): premultiplied. Boxed: the key carries two strings.
+    TextCache {
+        key: Box<crate::text_texture_cache::TextCacheKey>,
+    },
+}
+
+impl TextureSource {
+    #[inline]
+    fn approx_deep_size_bytes(&self) -> usize {
+        match self {
+            // An image's bytes are the decoded-bytes cache's, shared: the command adds nothing.
+            Self::Pixels { bytes, .. } => bytes.capacity(),
+            Self::TextCache { key } => std::mem::size_of_val(&**key) + key.text.capacity(),
+            Self::Image { .. } | Self::Canvas { .. } | Self::Snapshot { .. } => 0,
+        }
+    }
+}
+
 /// Where a `tex*Image*` upload's pixels come from: the bytes the call carried, or the PIXEL_UNPACK_BUFFER bound when
 /// the renderer runs it, from this byte offset (WebGL 2's offset overloads). An image upload with neither -- `None` in
 /// its `Option` -- allocates the storage only; a sub-image upload always has one.
@@ -924,125 +994,28 @@ pub enum GLCmd {
         /// `None` allocates the storage only.
         data: Option<PixelUnpackSource>,
     },
-    /// `glTexImage2D(target, level, internalformat, ..., image)` where
-    /// `image` is a previously loaded shared image (uploaded via
-    /// `CanvasCmd::LoadImage`).  Avoids the round-trip of CPU-side
-    /// RGBA bytes from JS land back to the render thread by copying
-    /// straight from the existing GL texture into the destination.
-    /// The render thread issues a GPU-side copy (FBO + glCopyTexImage2D).
-    /// The destination is whichever texture is currently bound to
-    /// `target` on the canvas's context — same convention as
-    /// [`Self::TexImage2D`].
-    TexImage2DFromShared {
+    /// A `tex*Image*` call whose pixels are a TexImageSource -- an image, a canvas, `ImageData` -- rather than bytes
+    /// the pixel-store state lays out: the renderer converts them to `format` / `type_` as the call asks
+    /// (UNPACK_FLIP_Y_WEBGL, UNPACK_PREMULTIPLY_ALPHA_WEBGL, and WebGL 2's UNPACK_SKIP_PIXELS / UNPACK_SKIP_ROWS /
+    /// UNPACK_IMAGE_HEIGHT / UNPACK_SKIP_IMAGES selecting the pixels, as it holds them when the command runs) and
+    /// uploads them into the texture bound to `target`: a GPU copy where that reproduces the conversion exactly, the
+    /// converted bytes otherwise.
+    TexImageSource {
         canvas_id: CanvasId,
         target: u32,
         level: i32,
-        internalformat: i32,
+        /// What the call defines or fills.
+        call: SourceUploadCall,
+        /// The size of the upload: of the image a full call defines, of the region a sub call fills.
+        width: i32,
+        height: i32,
         format: u32,
         type_: u32,
-        /// Identifier of the source shared image in `ImageStore`.
-        source_shared_id: u32,
-        /// Logical image size; for atlased entries this is the
-        /// sub-rect size, not the atlas page dims.
-        src_width: i32,
-        src_height: i32,
-    },
-    /// Zero-readback Canvas2D->WebGL upload, sibling of
-    /// [`Self::TexImage2DFromShared`].  Source is a snapshot
-    /// texture allocated by [`Canvas2DCmd::GetImageDataSnapshot`];
-    /// destination is whichever texture is currently bound to
-    /// `target` on `canvas_id`.  Render thread issues an FBO+
-    /// `glCopyTexImage2D` GPU copy — same primitive that powers the
-    /// shared-image path.  Snapshot is NOT consumed (refcount-free
-    /// for now): per-frame drain releases all live snapshots after
-    /// present, so a single getImageData→texImage2D pair within a
-    /// frame is the supported lifetime.
-    TexImage2DFromSnapshot {
-        canvas_id: CanvasId,
-        target: u32,
-        level: i32,
-        internalformat: i32,
-        format: u32,
-        type_: u32,
-        snapshot_id: u32,
-    },
-    /// Text texture cache hit path.  When the JS-side pattern
-    /// recognizer in `frame_collector` matches the cocos
-    /// `(state setters → fillText → texImage2D(canvas))` shape AND
-    /// the `(text, font, size, color, ...)` tuple is already
-    /// present in **this session's** text texture cache (see
-    /// [`crate::text_texture_cache::text_cache_for_host`]), JS
-    /// suppresses the offscreen fillText + snapshot pipeline
-    /// entirely and emits this command instead.  Render thread
-    /// re-acquires the same session's cache lock, copies the cached
-    /// source texture into the destination texture bound to `target`
-    /// on `canvas_id` (single GPU→GPU copy, no Skia paint, no blit
-    /// from Canvas2D FBO), and unpins the entry.  Both ends resolve
-    /// the cache from the same host id, so the source name is one
-    /// this session's own EGL context minted.
-    ///
-    /// `key` is boxed because `TextCacheKey` carries two `String`s;
-    /// the unboxed variant would inflate every `GLCmd` instance and
-    /// every `CanvasBatchPayload` cmd vec across the channel.
-    TexImage2DFromTextCache {
-        canvas_id: CanvasId,
-        target: u32,
-        level: i32,
-        internalformat: i32,
-        key: Box<crate::text_texture_cache::TextCacheKey>,
-    },
-    /// Direct GPU->GPU upload from a Canvas2D's framebuffer to a WebGL
-    /// texture, no JS-visible snapshot id, no readback.  Optimises the
-    /// cocos `gl.texImage2D(target, ..., HTMLCanvasElement)` pattern --
-    /// previously routed through `sourceToRawRgba` -> getImageData ->
-    /// lazy readback (~50ms V8 stall per call, ~20 calls per popup
-    /// open).  The render thread does FBO blit + glCopyTexImage2D in
-    /// one shot, freeing the temp source texture immediately.
-    TexImage2DFromCanvas2D {
-        canvas_id: CanvasId, // GL canvas (where dst tex is bound)
-        target: u32,
-        level: i32,
-        internalformat: i32,
-        canvas_2d_id: CanvasId, // 2D canvas (source content)
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    },
-    /// Sub-region variant of `TexImage2DFromCanvas2D`: copies the 2D
-    /// canvas's content into a sub-rect of an already-allocated texture.
-    /// Required for cocos's text-atlas pattern (allocate atlas once,
-    /// stream glyph cells in via texSubImage2D).
-    TexSubImage2DFromCanvas2D {
-        canvas_id: CanvasId,
-        target: u32,
-        level: i32,
-        xoffset: i32,
-        yoffset: i32,
-        canvas_2d_id: CanvasId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    },
-    /// Sibling of `TexImage2DFromSnapshot` for `texSubImage2D` -- copies
-    /// the snapshot texture into a sub-region of the destination texture
-    /// currently bound to `target` on `canvas_id` via FBO +
-    /// `glCopyTexSubImage2D`.  Required for cocos's text-atlas pattern,
-    /// which pre-allocates the atlas with `texImage2D` and then updates
-    /// individual glyph cells via `texSubImage2D`.  Width/height come
-    /// from the snapshot itself; JS only routes here when the caller's
-    /// (width, height) matches the snapshot's (or it's the 7-arg form
-    /// without explicit dims), so partial copies fall back to bytes.
-    TexSubImage2DFromSnapshot {
-        canvas_id: CanvasId,
-        target: u32,
-        level: i32,
-        xoffset: i32,
-        yoffset: i32,
-        format: u32,
-        type_: u32,
-        snapshot_id: u32,
+        /// For a sub call, the effective internal format of the image the pixels go into, as the facade recorded it:
+        /// it decides whether a GPU copy reproduces the conversion. 0 for a full call, whose image is
+        /// `call`'s internal format.
+        destination_format: u32,
+        source: TextureSource,
     },
     TexSubImage2D {
         canvas_id: CanvasId,
@@ -2084,7 +2057,7 @@ pub enum Canvas2DCmd {
     /// Resize the backing pbuffer + SkSurface in-band with the rest of
     /// the Canvas2D command stream.  Mirrors `CanvasCmd::ResizeCanvas`
     /// but routes through the frame collector so it interleaves with
-    /// `FillText` / `TexImage2DFromCanvas2D` in the order JS issued
+    /// `FillText` / `TexImageSource` (a canvas source) in the order JS issued
     /// them.  Required for cocos's text-label pattern where a single
     /// pooled canvas is repeatedly resized and re-filled within a
     /// frame; without this, the resize side-channel races ahead of
@@ -2378,10 +2351,10 @@ pub enum Canvas2DCmd {
     /// JS allocates the `snapshot_id` from a process-local counter
     /// so the call never blocks — the capture rides the next
     /// FramePacket alongside the prior canvas2D draws and the
-    /// downstream `TexImage2DFromSnapshot` GL op, all in command
+    /// downstream `TexImageSource` (a snapshot source) GL op, all in command
     /// order.  On capture failure (FBO incomplete, pool full) the
     /// id is silently absent from the pool; the consuming
-    /// `TexImage2DFromSnapshot` then warns.  JS-side cap (
+    /// `TexImageSource` (a snapshot source) then warns.  JS-side cap (
     /// `MAX_LIVE_CANVAS2D_SNAPSHOTS_JS`) keeps the per-frame count
     /// well under the render-side pool cap so the failure path is
     /// never reached in normal operation.
@@ -2395,13 +2368,13 @@ pub enum Canvas2DCmd {
         /// JS-side pattern recognizer matched the cocos
         /// `fillText → texImage2D(canvas)` shape but the cache
         /// missed, this command both captures the snapshot (so the
-        /// downstream `TexImage2DFromSnapshot` still works) **and**
+        /// downstream `TexImageSource` (a snapshot source) still works) **and**
         /// instructs the render thread to register the snapshot's
         /// resulting texture under this key.  Subsequent fillTexts
-        /// with the same key hit `TexImage2DFromTextCache`.
+        /// with the same key hit `TexImageSource` (text-cache source).
         ///
         /// `None` means "no cache record" — the legacy path; the
-        /// snapshot is consumed by `TexImage2DFromSnapshot` and
+        /// snapshot is consumed by `TexImageSource` (a snapshot source) and
         /// drained at frame end like always.
         cache_key: Option<Box<crate::text_texture_cache::TextCacheKey>>,
     },
@@ -2850,12 +2823,7 @@ impl GLCmd {
             | GLCmd::CompressedTexImage3D { canvas_id, .. }
             | GLCmd::CompressedTexSubImage3D { canvas_id, .. }
             | GLCmd::WaitSync { canvas_id, .. }
-            | GLCmd::TexImage2DFromShared { canvas_id, .. }
-            | GLCmd::TexImage2DFromSnapshot { canvas_id, .. }
-            | GLCmd::TexImage2DFromTextCache { canvas_id, .. }
-            | GLCmd::TexImage2DFromCanvas2D { canvas_id, .. }
-            | GLCmd::TexSubImage2DFromCanvas2D { canvas_id, .. }
-            | GLCmd::TexSubImage2DFromSnapshot { canvas_id, .. }
+            | GLCmd::TexImageSource { canvas_id, .. }
             | GLCmd::FramebufferTexture2D { canvas_id, .. }
             | GLCmd::DebugLoseContext { canvas_id }
             | GLCmd::Uniform1f { canvas_id, .. }
@@ -2992,8 +2960,8 @@ impl GLCmd {
     /// current framebuffer content, not an immutable snapshot — or `None` if
     /// the command reads no live Canvas2D.
     ///
-    /// Only the two direct-canvas upload commands qualify.  `TexImage2DFromCanvas2D`
-    /// and `TexSubImage2DFromCanvas2D` copy the *current* pixels of a Canvas2D
+    /// Only a TexImageSource upload whose source is a canvas qualifies
+    /// ([`TextureSource::Canvas`]): it copies the *current* pixels of a Canvas2D
     /// framebuffer into a WebGL texture; the source pixels are whatever that
     /// canvas has drawn at the moment the command executes.  Any Canvas2D draw
     /// to the same source canvas that is reordered past one of these uploads
@@ -3002,9 +2970,9 @@ impl GLCmd {
     /// `draw-red → draw-blue → upload → upload`, capturing `[blue, blue]` instead
     /// of `[red, blue]`).
     ///
-    /// The snapshot variants (`TexImage2DFromSnapshot`, `TexSubImage2DFromSnapshot`)
-    /// read an immutable handle whose pixel content is frozen at snapshot creation
-    /// time; they carry no live dependency and are safe to reorder.
+    /// Its other sources -- a snapshot, a decoded image, `ImageData`'s bytes, a cached
+    /// text texture -- are frozen when they are made; they carry no live dependency
+    /// and are safe to reorder.
     ///
     /// **This match has no catch-all for the same reason `touches_canvas` does
     /// not.**  A new variant that reads a Canvas2D framebuffer without being
@@ -3013,9 +2981,12 @@ impl GLCmd {
     /// wrong pixels.  The compiler enforces exhaustiveness instead.
     pub fn live_canvas_source(&self) -> Option<CanvasId> {
         match self {
-            // The only two variants that read a live Canvas2D framebuffer.
-            GLCmd::TexImage2DFromCanvas2D { canvas_2d_id, .. }
-            | GLCmd::TexSubImage2DFromCanvas2D { canvas_2d_id, .. } => Some(*canvas_2d_id),
+            // The one variant that reads a live Canvas2D framebuffer, when its source is one.
+            GLCmd::TexImageSource {
+                source: TextureSource::Canvas { canvas_2d_id },
+                ..
+            } => Some(*canvas_2d_id),
+            GLCmd::TexImageSource { .. } => None,
 
             // Every other variant either:
             //  • writes/binds to the GL canvas it carries as `canvas_id`
@@ -3137,10 +3108,6 @@ impl GLCmd {
             | GLCmd::CompressedTexImage3D { .. }
             | GLCmd::CompressedTexSubImage3D { .. }
             | GLCmd::WaitSync { .. }
-            | GLCmd::TexImage2DFromShared { .. }
-            | GLCmd::TexImage2DFromSnapshot { .. }
-            | GLCmd::TexImage2DFromTextCache { .. }
-            | GLCmd::TexSubImage2DFromSnapshot { .. }
             | GLCmd::FramebufferTexture2D { .. }
             | GLCmd::DebugLoseContext { .. }
             | GLCmd::Uniform1f { .. }
@@ -3239,6 +3206,7 @@ impl GLCmd {
             GLCmd::TexSubImage2D { data, .. } | GLCmd::TexSubImage3D { data, .. } => {
                 data.approx_deep_size_bytes()
             }
+            GLCmd::TexImageSource { source, .. } => source.approx_deep_size_bytes(),
             GLCmd::CompressedTexImage2D { data, .. }
             | GLCmd::CompressedTexSubImage2D { data, .. }
             | GLCmd::CompressedTexImage3D { data, .. }
@@ -3653,21 +3621,33 @@ mod approx_size_tests {
         // what runs, and it is the destination the WebGL half must not be
         // deferred past a Canvas2D batch on.
         assert_eq!(
-            GLCmd::TexImage2DFromCanvas2D {
-                canvas_id: cid,
-                target: 0x0DE1,
-                level: 0,
-                internalformat: 0x1908,
-                canvas_2d_id: other,
-                x: 0,
-                y: 0,
-                width: 4,
-                height: 4,
-            }
+            source_upload(
+                cid,
+                TextureSource::Canvas {
+                    canvas_2d_id: other
+                }
+            )
             .touches_canvas(),
             Some(cid),
             "an upload sourced from another canvas still executes on this one"
         );
+    }
+
+    fn source_upload(canvas_id: CanvasId, source: TextureSource) -> GLCmd {
+        GLCmd::TexImageSource {
+            canvas_id,
+            target: 0x0DE1,
+            level: 0,
+            call: SourceUploadCall::Image2D {
+                internalformat: 0x1908,
+            },
+            width: 4,
+            height: 4,
+            format: 0x1908,
+            type_: 0x1401,
+            destination_format: 0,
+            source,
+        }
     }
 
     #[test]
@@ -3675,42 +3655,15 @@ mod approx_size_tests {
         let destination = CanvasId::from(42u32);
         let source = CanvasId::from(43u32);
 
-        let live = GLCmd::TexImage2DFromCanvas2D {
-            canvas_id: destination,
-            target: 0x0DE1,
-            level: 0,
-            internalformat: 0x1908,
-            canvas_2d_id: source,
-            x: 0,
-            y: 0,
-            width: 4,
-            height: 4,
-        };
+        let live = source_upload(
+            destination,
+            TextureSource::Canvas {
+                canvas_2d_id: source,
+            },
+        );
         assert_eq!(live.live_canvas_source(), Some(source));
 
-        let live_sub = GLCmd::TexSubImage2DFromCanvas2D {
-            canvas_id: destination,
-            target: 0x0DE1,
-            level: 0,
-            xoffset: 0,
-            yoffset: 0,
-            canvas_2d_id: source,
-            x: 0,
-            y: 0,
-            width: 4,
-            height: 4,
-        };
-        assert_eq!(live_sub.live_canvas_source(), Some(source));
-
-        let snapshot = GLCmd::TexImage2DFromSnapshot {
-            canvas_id: destination,
-            target: 0x0DE1,
-            level: 0,
-            internalformat: 0x1908,
-            format: 0x1908,
-            type_: 0x1401,
-            snapshot_id: 1,
-        };
+        let snapshot = source_upload(destination, TextureSource::Snapshot { snapshot_id: 1 });
         assert_eq!(snapshot.live_canvas_source(), None);
     }
 

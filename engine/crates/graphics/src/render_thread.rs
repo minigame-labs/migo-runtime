@@ -1118,6 +1118,7 @@ mod tests {
     use migo_alloc_probe::{Burst, assert_no_steady_state_allocation};
     use shared::protocol::render_cmd::{
         Canvas2DCmd, CanvasBatchPayload, CanvasId, DirtyRect, GLCmd, GlBatchPayload,
+        SourceUploadCall, TextureSource,
     };
     use shared::{FrameOp, FramePacketBuilder};
 
@@ -1150,19 +1151,30 @@ mod tests {
                 .into(),
         })
     }
+    fn source_upload(canvas_id: CanvasId, source: TextureSource) -> GLCmd {
+        GLCmd::TexImageSource {
+            canvas_id,
+            target: 0x0DE1,
+            level: 0,
+            call: SourceUploadCall::Image2D {
+                internalformat: 0x1908,
+            },
+            width: 1,
+            height: 1,
+            format: 0x1908,
+            type_: 0x1401,
+            destination_format: 0,
+            source,
+        }
+    }
     fn gl_batch_reading_live_canvas(source_canvas_id: u32) -> FrameOp {
         FrameOp::GlBatch(GlBatchPayload {
-            commands: vec![GLCmd::TexImage2DFromCanvas2D {
-                canvas_id: CanvasId::from(99u32),
-                target: 0x0DE1,
-                level: 0,
-                internalformat: 0x1908,
-                canvas_2d_id: CanvasId::from(source_canvas_id),
-                x: 0,
-                y: 0,
-                width: 1,
-                height: 1,
-            }]
+            commands: vec![source_upload(
+                CanvasId::from(99u32),
+                TextureSource::Canvas {
+                    canvas_2d_id: CanvasId::from(source_canvas_id),
+                },
+            )]
             .into(),
         })
     }
@@ -1212,15 +1224,10 @@ mod tests {
     fn immutable_snapshot_uploads_and_different_live_sources_still_reorder() {
         let gl_canvas = CanvasId::from(99u32);
         let snapshot_upload = FrameOp::GlBatch(GlBatchPayload {
-            commands: vec![GLCmd::TexImage2DFromSnapshot {
-                canvas_id: gl_canvas,
-                target: 0x0DE1,
-                level: 0,
-                internalformat: 0x1908,
-                format: 0x1908,
-                type_: 0x1401,
-                snapshot_id: 1,
-            }]
+            commands: vec![source_upload(
+                gl_canvas,
+                TextureSource::Snapshot { snapshot_id: 1 },
+            )]
             .into(),
         });
         let different_source_upload = gl_batch_reading_live_canvas(8);
@@ -3487,7 +3494,7 @@ impl RenderThread {
                     // Drain Canvas2D snapshot textures captured during this
                     // frame's `getImageData` calls.  By this point the
                     // FramePacket has already executed every queued
-                    // `TexImage2DFromSnapshot`, so the snapshots are no
+                    // `TexImageSource` (a snapshot source), so the snapshots are no
                     // longer referenced by any pending command.  Deleting
                     // them now keeps the pool tiny under the cocos text-
                     // rendering pattern (hundreds of getImageData calls per

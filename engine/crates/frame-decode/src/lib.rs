@@ -70,7 +70,7 @@ pub use budget::{
     producer_estimated_bytes, validate_frame_budget,
 };
 pub use staging::StagedPayload;
-pub use validate::{ClearBufferKind, GlDecodeContext, ImageUpload, TransformFeedbackPhase};
+pub use validate::{ClearBufferKind, GlDecodeContext, TransformFeedbackPhase};
 
 use validate::{
     validate_bind_buffer_base, validate_bind_buffer_range, validate_bind_buffer_target,
@@ -1504,8 +1504,11 @@ impl<C: GlDecodeContext> GlDecodeContext for FrameOpSink<'_, C> {
     }
 
     #[inline]
-    fn image_upload(&mut self, upload: ImageUpload) -> Option<GLCmd> {
-        self.context.image_upload(upload)
+    fn image_source(
+        &mut self,
+        image_id: u32,
+    ) -> Option<shared::protocol::render_cmd::TextureSource> {
+        self.context.image_source(image_id)
     }
 
     #[inline]
@@ -1724,7 +1727,10 @@ mod tests {
                 false
             }
             fn set_transform_feedback(&mut self, _: u32, _: TransformFeedbackPhase) {}
-            fn image_upload(&mut self, _: ImageUpload) -> Option<GLCmd> {
+            fn image_source(
+                &mut self,
+                _: u32,
+            ) -> Option<shared::protocol::render_cmd::TextureSource> {
                 None
             }
             fn staged_payload(&mut self) -> Option<&mut StagedPayload> {

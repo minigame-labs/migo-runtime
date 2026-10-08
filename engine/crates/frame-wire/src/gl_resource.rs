@@ -105,14 +105,6 @@ pub const OPR_TEX_STORAGE_3D: u32 = 166;
 pub const OPR_UNIFORM_BLOCK_BINDING: u32 = 167;
 // H C
 pub const OPR_LOSE_CONTEXT: u32 = 168;
-/// `texImage2D(target, level, internalformat, format, type, image)`:
-/// `H C target level internalformat format type image_id`. The image is one the
-/// host decoded and holds; which pixels it names is the host's to resolve, so
-/// none cross.
-pub const OPR_TEX_IMAGE_2D_FROM_IMAGE: u32 = 169;
-/// `texSubImage2D(target, level, x, y, format, type, image)`:
-/// `H C target level xoffset yoffset format type image_id`.
-pub const OPR_TEX_SUB_IMAGE_2D_FROM_IMAGE: u32 = 170;
 
 // ─── Payload records ─────────────────────────────────────────────────────────
 
@@ -177,25 +169,45 @@ pub const OPR_COMPRESSED_TEX_IMAGE_3D: u32 = 207;
 /// `compressedTexSubImage3D` (WebGL 2):
 /// `H C target level:I xoffset:I yoffset:I zoffset:I width:I height:I depth:I format pbo_offset:I pbo_size:I | len data`.
 pub const OPR_COMPRESSED_TEX_SUB_IMAGE_3D: u32 = 208;
+/// A `tex*Image*` call whose pixels are a TexImageSource -- an image the host decoded, a 2D canvas, a snapshot of
+/// one, or `ImageData`'s RGBA8 rows -- which the host converts as the call asks (UNPACK_FLIP_Y_WEBGL,
+/// UNPACK_PREMULTIPLY_ALPHA_WEBGL, WebGL 2's UNPACK_SKIP_* and UNPACK_IMAGE_HEIGHT selecting the pixels):
+/// `H C call target level:I internalformat:I xoffset:I yoffset:I zoffset:I width:I height:I depth:I format type
+/// destination_format kind source_id source_width source_height | len pixels`. `call` and `kind` are
+/// [`tex_source`]'s; `destination_format` is a sub call's image's effective internal format, 0 for a full call; the
+/// pixels are a [`tex_source::SOURCE_PIXELS`] source's, `source_width` x `source_height` straight RGBA8, and there are
+/// none for the others, which the host holds. One record for every TexImageSource upload, so both lanes convert
+/// every source the same way.
+pub const OPR_TEX_IMAGE_SOURCE: u32 = 209;
 
-// ─── Uploads whose pixels are already the host's (171..=174) ─────────────────
-//
-// A texture filled from something the host already holds: a snapshot of a 2D
-// canvas, or the canvas itself. No pixel crosses on either lane -- in process
-// because the renderer copies GPU to GPU, and here for the same reason, which is
-// what makes `fillText` into a texture cost nothing but the record.
-//
-// The canvas-source pair takes the source's rectangle; the snapshot pair does
-// not, because a snapshot is the rectangle it was captured with.
+/// Values this block once named and has retired: never reused, so a stream that still carries one is refused as an
+/// unknown record rather than read as another. 169..=174 were the TexImageSource uploads from an image, a snapshot and
+/// a canvas, which [`OPR_TEX_IMAGE_SOURCE`] replaced (wire-v1.md, 2026-10-05). `scripts/test-render-opcode-agreement.sh`
+/// counts them toward the fixed run's contiguity and refuses a live opcode that takes one.
+pub const RETIRED_OPCODES: [u32; 6] = [169, 170, 171, 172, 173, 174];
 
-// H C target level internalformat format type snapshot_id
-pub const OPR_TEX_IMAGE_2D_FROM_SNAPSHOT: u32 = 171;
-// H C target level xoffset yoffset format type snapshot_id
-pub const OPR_TEX_SUB_IMAGE_2D_FROM_SNAPSHOT: u32 = 172;
-// H C target level internalformat canvas_2d_id x y width height
-pub const OPR_TEX_IMAGE_2D_FROM_CANVAS2D: u32 = 173;
-// H C target level xoffset yoffset canvas_2d_id x y width height
-pub const OPR_TEX_SUB_IMAGE_2D_FROM_CANVAS2D: u32 = 174;
+/// [`OPR_TEX_IMAGE_SOURCE`]'s `call` and `kind` words, and its length before the pixels.
+pub mod tex_source {
+    /// Words before the `len` word, the header included.
+    pub const PREFIX_WORDS: usize = 19;
+    /// `texImage2D`.
+    pub const CALL_IMAGE_2D: u32 = 0;
+    /// `texSubImage2D`.
+    pub const CALL_SUB_IMAGE_2D: u32 = 1;
+    /// `texImage3D`.
+    pub const CALL_IMAGE_3D: u32 = 2;
+    /// `texSubImage3D`.
+    pub const CALL_SUB_IMAGE_3D: u32 = 3;
+    /// An image the host decoded: `source_id` is its id.
+    pub const SOURCE_IMAGE: u32 = 1;
+    /// A 2D canvas, as it is when the record runs: `source_id` is its id.
+    pub const SOURCE_CANVAS: u32 = 2;
+    /// A snapshot of a 2D canvas the host keeps: `source_id` is its id.
+    pub const SOURCE_SNAPSHOT: u32 = 3;
+    /// The record's own pixels.
+    pub const SOURCE_PIXELS: u32 = 4;
+}
+
 /// `framebufferTextureLayer(target, attachment, texture, level, layer)` (WebGL 2):
 /// `H C target attachment texture:I level:I layer:I`, a texture of -1 detaching.
 pub const OPR_FRAMEBUFFER_TEXTURE_LAYER: u32 = 175;
@@ -273,8 +285,6 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
         OPR_TEX_STORAGE_3D => fixed(8),
         OPR_UNIFORM_BLOCK_BINDING => fixed(4),
         OPR_LOSE_CONTEXT => fixed(2),
-        OPR_TEX_IMAGE_2D_FROM_IMAGE => fixed(8),
-        OPR_TEX_SUB_IMAGE_2D_FROM_IMAGE => fixed(9),
 
         OPR_SHADER_SOURCE => bytes(3, None, true),
         OPR_BIND_ATTRIB_LOCATION => bytes(3, None, true),
@@ -288,6 +298,7 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
         OPR_COMPRESSED_TEX_SUB_IMAGE_3D => upload(13, None),
         OPR_TEX_IMAGE_3D => upload(13, Some(12)),
         OPR_TEX_SUB_IMAGE_3D => upload(13, None),
+        OPR_TEX_IMAGE_SOURCE => upload(tex_source::PREFIX_WORDS as u8, None),
         OPR_DRAW_BUFFERS => RecordSpec::Words {
             prefix_words: 2,
             max_count: MAX_RESOURCE_WORD_LIST,
@@ -299,12 +310,6 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
         OPR_TRANSFORM_FEEDBACK_VARYINGS => bytes(4, None, true),
         OPR_STAGE_PAYLOAD => bytes(3, None, false),
 
-        // The sub forms carry one more word than the full ones: an offset pair
-        // in place of an internal format.
-        OPR_TEX_IMAGE_2D_FROM_SNAPSHOT => fixed(8),
-        OPR_TEX_SUB_IMAGE_2D_FROM_SNAPSHOT => fixed(9),
-        OPR_TEX_IMAGE_2D_FROM_CANVAS2D => fixed(10),
-        OPR_TEX_SUB_IMAGE_2D_FROM_CANVAS2D => fixed(11),
         OPR_FRAMEBUFFER_TEXTURE_LAYER => fixed(7),
         OPR_WAIT_SYNC => fixed(3),
         OPR_DETACH_SHADER => fixed(3),
@@ -320,6 +325,14 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A retired value names no record: the reader refuses it as it refuses any value it does not know.
+    #[test]
+    fn a_retired_opcode_is_no_record() {
+        for opcode in RETIRED_OPCODES {
+            assert!(record_spec(opcode).is_none(), "{opcode} is retired");
+        }
+    }
 
     /// Every opcode in the block's range either has a spec or is unassigned, and
     /// the payload specs sit in the payload range.

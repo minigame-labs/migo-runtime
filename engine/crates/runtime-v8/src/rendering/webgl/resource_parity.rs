@@ -34,10 +34,7 @@ struct Host {
 }
 
 impl frame_decode::GlDecodeContext for Host {
-    fn image_upload(
-        &mut self,
-        _upload: frame_decode::ImageUpload,
-    ) -> Option<shared::protocol::render_cmd::GLCmd> {
+    fn image_source(&mut self, _: u32) -> Option<shared::protocol::render_cmd::TextureSource> {
         None
     }
     fn push_error(&mut self, canvas_id: u32, code: u32) {
@@ -100,7 +97,7 @@ fn the_producer_s_canvas_source_uploads_decode_to_the_commands_the_ops_build() {
     compare_fixture(
         "MIGO_CANVAS_SOURCE_PARITY_DIR",
         "webgl-canvas-source-calls.js",
-        6,
+        14,
     );
 }
 

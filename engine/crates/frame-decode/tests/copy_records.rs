@@ -34,7 +34,7 @@ struct Recorder {
 }
 
 impl GlDecodeContext for Recorder {
-    fn image_upload(&mut self, _upload: frame_decode::ImageUpload) -> Option<GLCmd> {
+    fn image_source(&mut self, _: u32) -> Option<shared::protocol::render_cmd::TextureSource> {
         None
     }
     fn push_error(&mut self, canvas_id: u32, code: u32) {

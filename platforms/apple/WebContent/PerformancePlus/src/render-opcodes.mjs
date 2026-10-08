@@ -292,8 +292,6 @@ export const OPR_TEX_STORAGE_2D = 165;
 export const OPR_TEX_STORAGE_3D = 166;
 export const OPR_UNIFORM_BLOCK_BINDING = 167;
 export const OPR_LOSE_CONTEXT = 168;
-export const OPR_TEX_IMAGE_2D_FROM_IMAGE = 169;
-export const OPR_TEX_SUB_IMAGE_2D_FROM_IMAGE = 170;
 export const OPR_SHADER_SOURCE = 192;
 export const OPR_BIND_ATTRIB_LOCATION = 193;
 export const OPR_BUFFER_DATA = 194;
@@ -311,18 +309,16 @@ export const OPR_STAGE_PAYLOAD = 205;
 export const OPR_INVALIDATE_SUB_FRAMEBUFFER = 206;
 export const OPR_COMPRESSED_TEX_IMAGE_3D = 207;
 export const OPR_COMPRESSED_TEX_SUB_IMAGE_3D = 208;
+// A TexImageSource upload: the 18 words after the header the facade writes (`uploadTexImageSource`), then an
+// `ImageData`'s rows or none. frame_wire::gl_resource::OPR_TEX_IMAGE_SOURCE.
+export const OPR_TEX_IMAGE_SOURCE = 209;
+export const TEX_SOURCE_PREFIX_WORDS = 19;
 
 // The byte_length of an upload whose bytes were staged ahead of it in
 // OPR_STAGE_PAYLOAD chunks: no bytes follow in the record. Declared beside
 // MAGIC in engine/crates/frame-wire/src/stream.rs.
 export const STAGED_PAYLOAD = 0xffffffff;
 
-// Uploads whose pixels the host already holds: a snapshot of a 2D canvas, or
-// the canvas itself. No pixel crosses on either lane.
-export const OPR_TEX_IMAGE_2D_FROM_SNAPSHOT = 171;
-export const OPR_TEX_SUB_IMAGE_2D_FROM_SNAPSHOT = 172;
-export const OPR_TEX_IMAGE_2D_FROM_CANVAS2D = 173;
-export const OPR_TEX_SUB_IMAGE_2D_FROM_CANVAS2D = 174;
 export const OPR_FRAMEBUFFER_TEXTURE_LAYER = 175;
 export const OPR_WAIT_SYNC = 176;
 export const OPR_DETACH_SHADER = 177;

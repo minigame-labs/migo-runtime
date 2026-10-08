@@ -450,7 +450,7 @@ pub fn op_force_readback_snapshot(state: &mut OpState, #[smi] snapshot_id: u32) 
 //     render-thread snapshot drain transfers the texture into the cache
 //     instead of deleting it.
 //   * `op_tex_image_2d_from_text_cache` — hit-path GL upload.  Emits
-//     `GLCmd::TexImage2DFromTextCache`, skipping the offscreen Canvas2D
+//     a `GLCmd::TexImageSource` from the text cache, skipping the offscreen Canvas2D
 //     pipeline entirely.
 //
 // The 11-field cache key is passed as primitives across the FFI rather
@@ -509,7 +509,7 @@ fn build_text_cache_key(
 
 /// Look up this session's text texture cache; on hit, increment the pin
 /// count and return `1` so the caller can safely emit a
-/// `TexImage2DFromTextCache` later in the same frame.  On miss, returns
+/// `TexImageSource` (text-cache source) later in the same frame.  On miss, returns
 /// `0` without side effects.
 /// The pin acquired on hit MUST be balanced by either
 /// `op_tex_image_2d_from_text_cache` (which the render thread unpins
@@ -643,11 +643,9 @@ pub fn op_capture_canvas2d_snapshot_for_cache(
     );
 }
 
-/// Hit-path GL upload.  Emits `GLCmd::TexImage2DFromTextCache` so the
-/// destination texture currently bound to `target` on `canvas_id` is
-/// populated from the cached source texture via FBO + glCopyTexImage2D
-/// on the render thread.  The cached entry is unpinned by the render
-/// thread inside `tex_image_2d_from_text_cache`.
+/// Hit-path GL upload: a `texImage2D(..., internalformat, format, type, canvas)` whose canvas holds only cached text,
+/// sourced from the cached text texture (`TextureSource::TextCache`) as any TexImageSource upload is -- a GPU copy where
+/// that is exact, the pixels converted otherwise. The render thread unpins the entry, hit or miss.
 #[op2(fast)]
 #[allow(clippy::too_many_arguments)]
 pub fn op_tex_image_2d_from_text_cache(
@@ -656,6 +654,8 @@ pub fn op_tex_image_2d_from_text_cache(
     #[smi] target: u32,
     #[smi] level: i32,
     #[smi] internalformat: i32,
+    #[smi] format: u32,
+    #[smi] type_: u32,
     #[string] text: String,
     #[string] font_request: String,
     font_size: f32,
@@ -683,12 +683,17 @@ pub fn op_tex_image_2d_from_text_cache(
     );
     super::webgl::queue_gl_fire_and_forget(
         state,
-        shared::protocol::render_cmd::GLCmd::TexImage2DFromTextCache {
+        shared::protocol::render_cmd::GLCmd::TexImageSource {
             canvas_id,
             target,
             level,
-            internalformat,
-            key: Box::new(key),
+            call: shared::protocol::render_cmd::SourceUploadCall::Image2D { internalformat },
+            width: canvas_w as i32,
+            height: canvas_h as i32,
+            format,
+            type_,
+            destination_format: 0,
+            source: shared::protocol::render_cmd::TextureSource::TextCache { key: Box::new(key) },
         },
     );
 }

@@ -34,9 +34,9 @@ const OUT_OF_MEMORY = 0x0505;
 const INVALID_VALUE = 0x0501;
 
 // One scratch record, reused: the header and fixed words of the call being
-// encoded, ending with `byte_length` or `count` for a payload record. Fifteen
-// words holds the longest (texSubImage3D's fourteen plus its length).
-const record = new Uint32Array(15);
+// encoded, ending with `byte_length` or `count` for a payload record. Twenty
+// words holds the longest (a TexImageSource upload's nineteen plus its length).
+const record = new Uint32Array(20);
 const utf8 = new TextEncoder();
 
 /** Fill `record` with a header for `opcode` and these words; its length. */
@@ -97,6 +97,7 @@ const MAX_RECORD_WORDS = 0xfffff;
 // A record staged that the host does not take staged is refused whole, which
 // engine-frames.test.mjs's interop run would show for any member here.
 const STAGEABLE = new Set([
+  R.OPR_TEX_IMAGE_SOURCE,
   R.OPR_BUFFER_DATA,
   R.OPR_BUFFER_SUB_DATA,
   R.OPR_TEX_IMAGE_2D,
@@ -869,61 +870,21 @@ export function op_set_text_direction(canvasId, direction) {
 // own early return is kept, because a record the host would drop is one this
 // side should not have written.
 
-export function op_tex_image_2d_from_snapshot(canvasId, target, level, internalformat, format, type_, snapshotId) {
-  const snapshot = smiU32(snapshotId, "snapshot_id");
-  const canvas = smiU32(canvasId, "canvas_id");
-  const t = smiU32(target, "target");
-  const lvl = toI32(level, "level");
-  const internal = toI32(internalformat, "internalformat");
-  const fmt = smiU32(format, "format");
-  const ty = smiU32(type_, "type_");
-  // `getImageData` fell back to a real CPU buffer, so there is no snapshot to
-  // upload; the op drops it rather than warning, and so does this.
-  if (snapshot === 0) return;
-  emit(R.OPR_TEX_IMAGE_2D_FROM_SNAPSHOT, canvas, t, lvl >>> 0, internal >>> 0, fmt, ty, snapshot);
-}
+// ---- TexImageSource uploads -------------------------------------------------
+//
+// Every upload whose pixels are a TexImageSource -- an image the host decoded, a
+// 2D canvas, a snapshot of one, `ImageData` -- is one record: the words the
+// facade wrote (`uploadTexImageSource`), then an `ImageData`'s rows, or none for
+// a source the host holds. The in-process op hands the same words to the
+// decoder's own function, so both lanes name, check and resolve a source alike,
+// and the renderer converts its pixels the same way for both.
 
-export function op_tex_sub_image_2d_from_snapshot(canvasId, target, level, xoffset, yoffset, format, type_, snapshotId) {
-  const snapshot = smiU32(snapshotId, "snapshot_id");
-  const canvas = smiU32(canvasId, "canvas_id");
-  const t = smiU32(target, "target");
-  const lvl = toI32(level, "level");
-  const x = toI32(xoffset, "xoffset");
-  const y = toI32(yoffset, "yoffset");
-  const fmt = smiU32(format, "format");
-  const ty = smiU32(type_, "type_");
-  if (snapshot === 0) return;
-  emit(R.OPR_TEX_SUB_IMAGE_2D_FROM_SNAPSHOT, canvas, t, lvl >>> 0, x >>> 0, y >>> 0, fmt, ty, snapshot);
-}
-
-export function op_tex_image_2d_from_canvas2d(canvasId, target, level, internalformat, canvas2dId, x, y, width, height) {
-  const canvas = smiU32(canvasId, "canvas_id");
-  const t = smiU32(target, "target");
-  const lvl = toI32(level, "level");
-  const internal = toI32(internalformat, "internalformat");
-  const source = smiU32(canvas2dId, "canvas_2d_id");
-  const left = toI32(x, "x");
-  const top = toI32(y, "y");
-  const w = smiU32(width, "width");
-  const h = smiU32(height, "height");
-  // A zero-area source is nothing to copy, which is where the op returns.
-  if (w === 0 || h === 0) return;
-  emit(R.OPR_TEX_IMAGE_2D_FROM_CANVAS2D, canvas, t, lvl >>> 0, internal >>> 0, source, left >>> 0, top >>> 0, w, h);
-}
-
-export function op_tex_sub_image_2d_from_canvas2d(canvasId, target, level, xoffset, yoffset, canvas2dId, x, y, width, height) {
-  const canvas = smiU32(canvasId, "canvas_id");
-  const t = smiU32(target, "target");
-  const lvl = toI32(level, "level");
-  const xo = toI32(xoffset, "xoffset");
-  const yo = toI32(yoffset, "yoffset");
-  const source = smiU32(canvas2dId, "canvas_2d_id");
-  const left = toI32(x, "x");
-  const top = toI32(y, "y");
-  const w = smiU32(width, "width");
-  const h = smiU32(height, "height");
-  if (w === 0 || h === 0) return;
-  emit(R.OPR_TEX_SUB_IMAGE_2D_FROM_CANVAS2D, canvas, t, lvl >>> 0, xo >>> 0, yo >>> 0, source, left >>> 0, top >>> 0, w, h);
+export function op_tex_image_source(words, pixels) {
+  const fields = u32ArrayOf(words, "words");
+  const bytes = bytesOf(pixels, "pixels");
+  // The decoder's function takes exactly a record's words and drops anything else, as the in-process op does.
+  if (fields.length !== R.TEX_SOURCE_PREFIX_WORDS - 1) return;
+  emitBytes(fields[0], R.OPR_TEX_IMAGE_SOURCE, bytes, ...fields);
 }
 
 // ---- Canvas2D snapshots -----------------------------------------------------
@@ -1148,37 +1109,6 @@ export function op_draw_image_batch(canvasId, data) {
   if (!appendCanvas2DRecord(canvas, record, headerWords, words)) {
     recordProducerError(canvas, OUT_OF_MEMORY);
   }
-}
-
-/// `texImage2D(target, level, internalformat, format, type, image)`: the host
-/// resolves the id against the images it loaded -- a GPU-side copy from the
-/// image's texture where it can, the decoded bytes otherwise.
-export function op_tex_image_2d_from_image(canvasId, target, level, internalformat, format, type, imageId) {
-  emit(
-    R.OPR_TEX_IMAGE_2D_FROM_IMAGE,
-    smiU32(canvasId, "canvas_id"),
-    smiU32(target, "target"),
-    toI32(level, "level"),
-    toI32(internalformat, "internalformat"),
-    smiU32(format, "format"),
-    smiU32(type, "type_"),
-    smiU32(imageId, "image_id"),
-  );
-}
-
-/// `texSubImage2D(target, level, x, y, format, type, image)`.
-export function op_tex_sub_image_2d_from_image(canvasId, target, level, xoffset, yoffset, format, type, imageId) {
-  emit(
-    R.OPR_TEX_SUB_IMAGE_2D_FROM_IMAGE,
-    smiU32(canvasId, "canvas_id"),
-    smiU32(target, "target"),
-    toI32(level, "level"),
-    toI32(xoffset, "xoffset"),
-    toI32(yoffset, "yoffset"),
-    smiU32(format, "format"),
-    smiU32(type, "type_"),
-    smiU32(imageId, "image_id"),
-  );
 }
 
 // ---- the raw path ----------------------------------------------------------------

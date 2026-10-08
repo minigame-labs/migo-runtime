@@ -79,6 +79,8 @@ mod egl_ops;
 pub(crate) mod gl_object;
 mod image;
 mod pbo_upload;
+mod texture_source;
+pub(crate) use texture_source::SourceUpload;
 mod types;
 
 pub(crate) use types::{
@@ -148,30 +150,6 @@ struct CanvasSourceCopy {
     bytes: usize,
     /// Least-recently-used eviction order.
     last_used: u64,
-}
-
-/// Where the pixels of an upload whose source is a texture go.
-#[derive(Clone, Copy)]
-enum UploadPlacement {
-    /// A new image, `texImage2D`: the destination's internal format.
-    Image { internalformat: i32 },
-    /// A region of the image already there, `texSubImage2D`: its offsets, and the `format` and
-    /// `type` the caller passed (what the destination holds).
-    Region {
-        xoffset: i32,
-        yoffset: i32,
-        format: u32,
-        type_: u32,
-    },
-}
-
-/// What a texture that is the source of an upload holds in its alpha channel.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SourceAlpha {
-    /// Straight (unpremultiplied): a host-decoded image.
-    Straight,
-    /// Premultiplied: what Skia rendered, so every canvas snapshot.
-    Premultiplied,
 }
 
 /// What every live source-canvas copy may hold in total. A copy is one RGBA8 texture the size of its canvas.
@@ -488,7 +466,7 @@ pub(crate) struct CanvasManager {
     pub(crate) retained_image_scratch: smallvec::SmallVec<[u32; 16]>,
 
     /// Per-canvas FBO used as the read source for `glCopyTexImage2D`
-    /// when handling `GLCmd::TexImage2DFromShared`.  Lazy-created on
+    /// and readbacks when handling `GLCmd::TexImageSource`.  Lazy-created on
     /// first use because most canvases never trigger the WebGL
     /// `texImage2D(image)` path. Keyed by the EGL context that owns it, because
     /// a framebuffer name means a different object in every context: canvases on
@@ -507,7 +485,7 @@ pub(crate) struct CanvasManager {
     /// Bounded two ways, and **at the cap a new capture is refused, not traded
     /// for an old one** — this said "oldest evicted first", which the code has
     /// never done and must not. Every live entry is waiting for a
-    /// `TexImage2DFromSnapshot` that JS has already committed to issuing;
+    /// `TexImageSource` upload of it that JS has already committed to issuing;
     /// evicting one to make room turns a bounded pool into a missing texture.
     /// Refusing returns `0`, which JS reads as "fall back to the legacy CPU
     /// readback" — slower for that one label, correct for all of them.
@@ -5292,218 +5270,6 @@ impl CanvasManager {
         }
     }
 
-    /// `UNPACK_FLIP_Y_WEBGL` / `UNPACK_PREMULTIPLY_ALPHA_WEBGL` for an upload whose source is
-    /// already a GPU texture.
-    ///
-    /// The GPU copy those uploads use cannot change the pixels, so when the flags ask for a
-    /// change they are read back, converted ([`unpack_convert`]) and uploaded as bytes. What the
-    /// flags ask for depends on what the source holds: a host-decoded image is straight alpha, so
-    /// premultiply-on is a conversion; a canvas snapshot is what Skia rendered, premultiplied, so
-    /// premultiply-off -- WebGL's default -- is the conversion, the straight alpha the
-    /// specification promises. Flip applies to both.
-    ///
-    /// `true` when the upload was done here. `false` -- nothing touched -- when the flags change
-    /// nothing, when the destination format is not RGB(A) (the GPU copy keeps handling those, as it
-    /// always did) or when the source cannot be read.
-    ///
-    /// The pixels go where `placement` says: a new image (`texImage2D`) or a region of the one
-    /// already there (`texSubImage2D`, which is what three.js, Pixi and Cocos use for every canvas
-    /// texture once the storage is allocated: `texStorage2D` then `texSubImage2D`).
-    ///
-    /// [`unpack_convert`]: crate::backend::gl::unpack_convert
-    #[allow(clippy::too_many_arguments)]
-    fn upload_unpack_converted(
-        &mut self,
-        canvas_id: CanvasId,
-        copy_fbo: glow::NativeFramebuffer,
-        src_tex: glow::NativeTexture,
-        (sx, sy, width, height): (i32, i32, i32, i32),
-        source: SourceAlpha,
-        target: u32,
-        level: i32,
-        placement: UploadPlacement,
-    ) -> bool {
-        let (flip_y, wants_premultiplied) = match self.unpack_conversion(canvas_id) {
-            Some(state) => (state.flip_y, state.premultiply),
-            None => (false, false),
-        };
-        let premultiply = wants_premultiplied && source == SourceAlpha::Straight;
-        let unpremultiply = !wants_premultiplied && source == SourceAlpha::Premultiplied;
-        if !(flip_y || premultiply || unpremultiply) {
-            return false;
-        }
-        let format = match placement {
-            UploadPlacement::Image { internalformat } => match internalformat as u32 {
-                glow::RGBA | glow::RGBA8 => glow::RGBA,
-                glow::RGB | glow::RGB8 => glow::RGB,
-                _ => return false,
-            },
-            // The caller says what the destination holds. Only 8-bit RGB(A) is converted here;
-            // a packed or float destination keeps the GPU copy, as it always did.
-            UploadPlacement::Region { format, type_, .. } => match (format, type_) {
-                (glow::RGBA, glow::UNSIGNED_BYTE) => glow::RGBA,
-                (glow::RGB, glow::UNSIGNED_BYTE) => glow::RGB,
-                _ => return false,
-            },
-        };
-        let Some(mut pixels) = crate::backend::gl::texture_copy::read_texture_rgba8(
-            &self.gl, copy_fbo, src_tex, sx, sy, width, height,
-        ) else {
-            return false;
-        };
-        use crate::backend::gl::unpack_convert::{flip_rows_in_place, premultiply_rgba8};
-        if premultiply {
-            premultiply_rgba8(&mut pixels);
-        }
-        if unpremultiply {
-            crate::backend::gl::readback::unpremultiply_rgba8(&mut pixels);
-        }
-        if flip_y {
-            flip_rows_in_place(&mut pixels, width.max(0) as usize * 4);
-        }
-        let bytes = if format == glow::RGB {
-            pixels
-                .chunks_exact(4)
-                .flat_map(|p| [p[0], p[1], p[2]])
-                .collect::<Vec<u8>>()
-        } else {
-            pixels
-        };
-        {
-            // Tight rows whatever UNPACK_ALIGNMENT, ROW_LENGTH and the skips the content set.
-            let _unpack = crate::backend::gl::readback::CompactPixelUnpackGuard::new(&self.gl, 1);
-            unsafe {
-                match placement {
-                    UploadPlacement::Image { internalformat } => self.gl.tex_image_2d(
-                        target,
-                        level,
-                        internalformat,
-                        width,
-                        height,
-                        0,
-                        format,
-                        glow::UNSIGNED_BYTE,
-                        glow::PixelUnpackData::Slice(Some(&bytes)),
-                    ),
-                    UploadPlacement::Region {
-                        xoffset, yoffset, ..
-                    } => self.gl.tex_sub_image_2d(
-                        target,
-                        level,
-                        xoffset,
-                        yoffset,
-                        width,
-                        height,
-                        format,
-                        glow::UNSIGNED_BYTE,
-                        glow::PixelUnpackData::Slice(Some(&bytes)),
-                    ),
-                }
-            }
-        }
-        self.mark_all_2d_contexts_stale_bits(
-            crate::backend::gl::surface::gr_state_bits::TEXTURE_BINDING,
-        );
-        true
-    }
-
-    /// GPU-side `glTexImage2D(image)`: copy from a previously uploaded
-    /// shared image's GL texture into the destination texture
-    /// currently bound to `target` on `canvas_id`.  Replaces the slow
-    /// path of round-tripping CPU-side RGBA bytes back through the
-    /// render thread for WebGL `texImage2D(image)` calls.
-    ///
-    /// The destination texture is whichever the caller bound via
-    /// `gl.bindTexture(target, my_dst)` before issuing the WebGL
-    /// call — same semantics as the regular `TexImage2D` path.
-    /// Returns silently (with a `tracing::warn`) on lookup miss or
-    /// FBO completeness failure so a stale alias never panics the
-    /// render thread.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn tex_image_2d_from_shared(
-        &mut self,
-        canvas_id: CanvasId,
-        target: u32,
-        level: i32,
-        internalformat: i32,
-        source_shared_id: u32,
-        src_width: i32,
-        src_height: i32,
-    ) -> EngineResult<()> {
-        self.make_current_needed(canvas_id)?;
-
-        let stored = match self.image_registry.get_shared_texture(source_shared_id) {
-            Some(s) => s,
-            None => {
-                tracing::warn!(
-                    "TexImage2DFromShared: source shared_id {} not found",
-                    source_shared_id
-                );
-                return Ok(());
-            }
-        };
-
-        let src_tex = match <glow::NativeTexture as NativeTextureFromRawShim>::try_from_raw(
-            stored.gl_texture,
-        ) {
-            Some(t) => t,
-            None => {
-                tracing::warn!(
-                    "TexImage2DFromShared: source texture handle is 0 for shared_id {}",
-                    source_shared_id
-                );
-                return Ok(());
-            }
-        };
-
-        let (sx, sy) = stored
-            .atlas_origin
-            .map(|(x, y)| (x as i32, y as i32))
-            .unwrap_or((0, 0));
-
-        let copy_fbo = self.ensure_image_copy_fbo(canvas_id)?;
-
-        let source_alpha = match stored.info.alpha_type {
-            skia_safe::AlphaType::Premul => SourceAlpha::Premultiplied,
-            _ => SourceAlpha::Straight,
-        };
-        if self.upload_unpack_converted(
-            canvas_id,
-            copy_fbo,
-            src_tex,
-            (sx, sy, src_width, src_height),
-            source_alpha,
-            target,
-            level,
-            UploadPlacement::Image { internalformat },
-        ) {
-            return Ok(());
-        }
-
-        let status = crate::backend::gl::texture_copy::copy_texture(
-            &self.gl,
-            copy_fbo,
-            src_tex,
-            crate::backend::gl::texture_copy::TextureCopy::Image {
-                target,
-                level,
-                internal_format: internalformat as u32,
-                source_x: sx,
-                source_y: sy,
-                width: src_width,
-                height: src_height,
-            },
-        );
-        if status != glow::FRAMEBUFFER_COMPLETE {
-            tracing::warn!("TexImage2DFromShared: read FBO incomplete: 0x{status:X}");
-        }
-
-        self.mark_all_2d_contexts_stale_bits(
-            crate::backend::gl::surface::gr_state_bits::TEXTURE_BINDING,
-        );
-        Ok(())
-    }
-
     /// The canvas's temporary framebuffer, for transfers that attach a texture,
     /// use it, and detach it again.
     ///
@@ -5608,7 +5374,7 @@ impl CanvasManager {
     /// the mirror, every cocos text sprite would render upside-down.
     ///
     /// Returns `0` on failure (caller has already committed to the
-    /// id; the consuming `TexImage2DFromSnapshot` will detect the
+    /// id; the consuming `TexImageSource` upload will detect the
     /// missing pool entry and warn).
     pub(crate) fn snapshot_canvas2d_region_with_id(
         &mut self,
@@ -6257,337 +6023,13 @@ impl CanvasManager {
         }
     }
 
-    /// Upload a previously captured snapshot texture into the
-    /// destination texture currently bound to `target` on
-    /// `canvas_id`.  Mirrors [`Self::tex_image_2d_from_shared`] but
-    /// pulls from the snapshot pool.
-    pub(crate) fn tex_image_2d_from_canvas2d_snapshot(
-        &mut self,
-        canvas_id: CanvasId,
-        target: u32,
-        level: i32,
-        internalformat: i32,
-        snapshot_id: u32,
-    ) -> EngineResult<()> {
-        let entry = match self.canvas2d_snapshots.get(&snapshot_id) {
-            Some(e) => e.clone(),
-            None => {
-                tracing::warn!(
-                    "TexImage2DFromSnapshot: snapshot_id {} not in pool (frame drain race?)",
-                    snapshot_id
-                );
-                return Ok(());
-            }
-        };
-        self.make_current_needed(canvas_id)?;
-
-        // Reuse the per-canvas image_copy_fbo as the READ framebuffer
-        // — exactly the same primitive `tex_image_2d_from_shared`
-        // uses, so the same driver paths are exercised.
-        let copy_fbo = self.ensure_image_copy_fbo(canvas_id)?;
-        if self.upload_unpack_converted(
-            canvas_id,
-            copy_fbo,
-            entry.tex,
-            (0, 0, entry.width as i32, entry.height as i32),
-            SourceAlpha::Premultiplied,
-            target,
-            level,
-            UploadPlacement::Image { internalformat },
-        ) {
-            return Ok(());
-        }
-        let status = crate::backend::gl::texture_copy::copy_texture(
-            &self.gl,
-            copy_fbo,
-            entry.tex,
-            crate::backend::gl::texture_copy::TextureCopy::Image {
-                target,
-                level,
-                internal_format: internalformat as u32,
-                source_x: 0,
-                source_y: 0,
-                width: entry.width as i32,
-                height: entry.height as i32,
-            },
-        );
-        if status != glow::FRAMEBUFFER_COMPLETE {
-            tracing::warn!("TexImage2DFromSnapshot: read FBO incomplete: 0x{status:X}");
-        }
-
-        self.mark_all_2d_contexts_stale_bits(
-            crate::backend::gl::surface::gr_state_bits::TEXTURE_BINDING,
-        );
-        Ok(())
-    }
-
-    /// Text texture cache hit path: copy from the cached source
-    /// texture (lives in this session's cache, [`Self::text_cache`])
-    /// into the destination texture currently bound to `target` on
-    /// `canvas_id`.  Mirrors `tex_image_2d_from_canvas2d_snapshot`'s
-    /// FBO + `glCopyTexImage2D` shape — same correctness story, just
-    /// the source texture comes from the session text cache instead
-    /// of the per-frame snapshot pool.  Because the cache is per
-    /// session, the name it returns was minted in this manager's own
-    /// EGL context.
-    ///
-    /// Always unpins `key` on return (success OR error path), so a
-    /// JS-side pin acquired at fillText time is balanced exactly
-    /// once.  A miss (cache evicted between JS lookup + render
-    /// execution despite the pin) returns `Ok(false)` to signal the
-    /// caller "we did nothing"; the caller has no way to recover
-    /// (the original fillText was suppressed) so it warns.  The pin
-    /// guarantees this should not happen in practice.
-    pub(crate) fn tex_image_2d_from_text_cache(
-        &mut self,
-        canvas_id: CanvasId,
-        target: u32,
-        level: i32,
-        internalformat: i32,
-        key: &shared::text_texture_cache::TextCacheKey,
-    ) -> EngineResult<bool> {
-        let (src_tex_raw, width, height) = {
-            let mut cache = self.text_cache.lock();
-            let lookup = cache.get(key);
-            // Always unpin once, regardless of hit/miss — the JS-side
-            // pin is balanced by this render-thread call.  Doing it
-            // BEFORE we drop the lock keeps the bookkeeping atomic
-            // with the lookup.
-            cache.unpin(key);
-            match lookup {
-                Some(entry) => (entry.texture_id, entry.width, entry.height),
-                None => return Ok(false),
-            }
-        };
-
-        let src_tex =
-            match <glow::NativeTexture as NativeTextureFromRawShim>::try_from_raw(src_tex_raw) {
-                Some(t) => t,
-                None => return Ok(false),
-            };
-
-        self.make_current_needed(canvas_id)?;
-        let copy_fbo = self.ensure_image_copy_fbo(canvas_id)?;
-        // A cached text texture is a snapshot that outlived its frame: premultiplied.
-        if self.upload_unpack_converted(
-            canvas_id,
-            copy_fbo,
-            src_tex,
-            (0, 0, width as i32, height as i32),
-            SourceAlpha::Premultiplied,
-            target,
-            level,
-            UploadPlacement::Image { internalformat },
-        ) {
-            return Ok(true);
-        }
-        let status = crate::backend::gl::texture_copy::copy_texture(
-            &self.gl,
-            copy_fbo,
-            src_tex,
-            crate::backend::gl::texture_copy::TextureCopy::Image {
-                target,
-                level,
-                internal_format: internalformat as u32,
-                source_x: 0,
-                source_y: 0,
-                width: width as i32,
-                height: height as i32,
-            },
-        );
-        if status != glow::FRAMEBUFFER_COMPLETE {
-            tracing::warn!("TexImage2DFromTextCache: read FBO incomplete: 0x{status:X}");
-        }
-
-        self.mark_all_2d_contexts_stale_bits(
-            crate::backend::gl::surface::gr_state_bits::TEXTURE_BINDING,
-        );
-        Ok(true)
-    }
-
-    /// Reserved snapshot id for the direct `tex_image_2d_from_canvas2d`
-    /// path: the entry is captured + consumed + freed within a single
-    /// render-thread call, so the slot is never observable to anyone
+    /// Reserved snapshot id for a TexImageSource upload from a canvas
+    /// (`texture_source`): the entry is captured + consumed + freed within a
+    /// single render-thread call, so the slot is never observable to anyone
     /// else.  Sentinel chosen at the very top of the u32 range so JS-
     /// allocated ids (which start at 1 and increment) effectively can
     /// never reach it.
     const DIRECT_CANVAS2D_RESERVED_ID: u32 = u32::MAX;
-
-    /// Direct GPU->GPU upload from a 2D canvas's framebuffer to the
-    /// WebGL texture currently bound to `target` on `canvas_id`.
-    /// Combines `snapshot_canvas2d_region_with_id` and
-    /// `tex_image_2d_from_canvas2d_snapshot` so the cocos
-    /// `gl.texImage2D(target, ..., HTMLCanvasElement)` pattern never
-    /// has to round-trip through `getImageData` + a sync readback --
-    /// previously ~50ms V8 stall per label, ~20 labels per cocos popup
-    /// open.
-    pub(crate) fn tex_image_2d_from_canvas2d_direct(
-        &mut self,
-        canvas_id: CanvasId,
-        target: u32,
-        level: i32,
-        internalformat: i32,
-        canvas_2d_id: CanvasId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> EngineResult<()> {
-        let id = Self::DIRECT_CANVAS2D_RESERVED_ID;
-
-        // Defence: free any leftover entry from a prior direct call
-        // that errored before the post-upload cleanup ran.
-        if let Some(entry) = self.remove_canvas2d_snapshot(id) {
-            unsafe {
-                self.gl.delete_texture(entry.tex);
-            }
-        }
-
-        // Capture into the reserved slot.  Returns 0 on failure (pool
-        // full, GLES 2, zero area, or FBO-incomplete) -- in which case
-        // we silently drop the upload, mirroring the pre-existing
-        // `texImage2D` fallback contract.
-        let captured =
-            self.snapshot_canvas2d_region_with_id(canvas_2d_id, x, y, width, height, id)?;
-        if captured == 0 {
-            return Ok(());
-        }
-
-        // Upload into the texture currently bound on `canvas_id`.
-        self.tex_image_2d_from_canvas2d_snapshot(canvas_id, target, level, internalformat, id)?;
-
-        // Free immediately.  The drain at frame end would clean it up
-        // anyway, but we'd rather not pin the slot for a whole frame.
-        if let Some(entry) = self.remove_canvas2d_snapshot(id) {
-            unsafe {
-                self.gl.delete_texture(entry.tex);
-            }
-        }
-        Ok(())
-    }
-
-    /// Sub-region variant of `tex_image_2d_from_canvas2d_direct`.
-    /// Mirrors `tex_sub_image_2d_from_canvas2d_snapshot` for the cocos
-    /// text-atlas pattern that streams glyph cells in via
-    /// `gl.texSubImage2D(..., HTMLCanvasElement)`.
-    pub(crate) fn tex_sub_image_2d_from_canvas2d_direct(
-        &mut self,
-        canvas_id: CanvasId,
-        target: u32,
-        level: i32,
-        xoffset: i32,
-        yoffset: i32,
-        canvas_2d_id: CanvasId,
-        x: i32,
-        y: i32,
-        width: u32,
-        height: u32,
-    ) -> EngineResult<()> {
-        let id = Self::DIRECT_CANVAS2D_RESERVED_ID;
-
-        if let Some(entry) = self.remove_canvas2d_snapshot(id) {
-            unsafe {
-                self.gl.delete_texture(entry.tex);
-            }
-        }
-
-        let captured =
-            self.snapshot_canvas2d_region_with_id(canvas_2d_id, x, y, width, height, id)?;
-        if captured == 0 {
-            return Ok(());
-        }
-
-        // The command carries no format or type: a canvas is RGBA8, and that is what is converted.
-        self.tex_sub_image_2d_from_canvas2d_snapshot(
-            canvas_id,
-            target,
-            level,
-            xoffset,
-            yoffset,
-            (glow::RGBA, glow::UNSIGNED_BYTE),
-            id,
-        )?;
-
-        if let Some(entry) = self.remove_canvas2d_snapshot(id) {
-            unsafe {
-                self.gl.delete_texture(entry.tex);
-            }
-        }
-        Ok(())
-    }
-
-    /// Sub-region variant of `tex_image_2d_from_canvas2d_snapshot`.
-    /// Uses `glCopyTexSubImage2D` to copy the entire snapshot texture
-    /// into the destination texture currently bound to `target` on
-    /// `canvas_id`, anchored at (`xoffset`, `yoffset`).  Required for
-    /// cocos-style text atlases that pre-allocate via `texImage2D` and
-    /// stream glyphs in via `texSubImage2D`.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn tex_sub_image_2d_from_canvas2d_snapshot(
-        &mut self,
-        canvas_id: CanvasId,
-        target: u32,
-        level: i32,
-        xoffset: i32,
-        yoffset: i32,
-        (format, type_): (u32, u32),
-        snapshot_id: u32,
-    ) -> EngineResult<()> {
-        let entry = match self.canvas2d_snapshots.get(&snapshot_id) {
-            Some(e) => e.clone(),
-            None => {
-                tracing::warn!(
-                    "TexSubImage2DFromSnapshot: snapshot_id {} not in pool (frame drain race?)",
-                    snapshot_id
-                );
-                return Ok(());
-            }
-        };
-        self.make_current_needed(canvas_id)?;
-
-        let copy_fbo = self.ensure_image_copy_fbo(canvas_id)?;
-        // UNPACK_FLIP_Y_WEBGL / UNPACK_PREMULTIPLY_ALPHA_WEBGL apply to a sub-image upload exactly as
-        // to a whole one: three.js flips every canvas texture (`CanvasTexture.flipY`) and uploads it
-        // with `texStorage2D` + `texSubImage2D`, so without this every text sprite was upside down.
-        if self.upload_unpack_converted(
-            canvas_id,
-            copy_fbo,
-            entry.tex,
-            (0, 0, entry.width as i32, entry.height as i32),
-            SourceAlpha::Premultiplied,
-            target,
-            level,
-            UploadPlacement::Region {
-                xoffset,
-                yoffset,
-                format,
-                type_,
-            },
-        ) {
-            return Ok(());
-        }
-        let status = crate::backend::gl::texture_copy::copy_texture(
-            &self.gl,
-            copy_fbo,
-            entry.tex,
-            crate::backend::gl::texture_copy::TextureCopy::SubImage {
-                target,
-                level,
-                xoffset,
-                yoffset,
-                width: entry.width as i32,
-                height: entry.height as i32,
-            },
-        );
-        if status != glow::FRAMEBUFFER_COMPLETE {
-            tracing::warn!("TexSubImage2DFromSnapshot: read FBO incomplete: 0x{status:X}");
-        }
-
-        self.mark_all_2d_contexts_stale_bits(
-            crate::backend::gl::surface::gr_state_bits::TEXTURE_BINDING,
-        );
-        Ok(())
-    }
 
     /// Sync CPU readback of a snapshot texture, used by
     /// lazy `ImageData.data` getter. Layout matches the
@@ -6665,7 +6107,7 @@ impl CanvasManager {
     /// Snapshots tagged with `cache_key` (the cocos text miss path)
     /// have their texture transferred to this session's text texture
     /// cache instead of being deleted, so a subsequent identical
-    /// fillText resolves through `TexImage2DFromTextCache` without a
+    /// fillText resolves through a `TexImageSource` from the text cache without a
     /// re-render.  The cache's own LRU may evict an older entry to make
     /// room — any returned victim texture ids are deleted here as part
     /// of the same drain, and they can only ever be this session's own
@@ -7969,34 +7411,34 @@ mod recovery_source_guards {
                 "{arm} must apply the unpack flags to the bytes before they reach the driver"
             );
         }
-        for signature in [
-            "pub(crate) fn tex_image_2d_from_shared(",
-            "pub(crate) fn tex_image_2d_from_canvas2d_snapshot(",
-            "pub(crate) fn tex_image_2d_from_text_cache(",
-            // `texStorage2D` + `texSubImage2D(canvas)` is how three.js, Pixi and Cocos upload every canvas
-            // texture: without this, `CanvasTexture.flipY` left every text sprite upside down.
-            "pub(crate) fn tex_sub_image_2d_from_canvas2d_snapshot(",
-        ] {
-            let body = function_body(MGR, signature);
+        // Every TexImageSource upload -- a decoded image, a canvas, a snapshot, a cached text texture, `ImageData` --
+        // goes through `upload_texture_source`, whose GPU copy is taken only when it changes nothing the flags ask to
+        // change: `texStorage2D` + `texSubImage2D(canvas)` is how three.js, Pixi and Cocos upload every canvas
+        // texture, and `CanvasTexture.flipY` left every text sprite upside down when the copy ignored the flags.
+        const SOURCE: &str = include_str!("texture_source.rs");
+        let copy = function_body(SOURCE, "fn copy_from_texture(");
+        let refused = copy
+            .find("return Ok(false);")
+            .expect("the copy is refused when it would not reproduce the conversion");
+        for condition in ["conversion.flip_y", "changes_alpha", "copy_reproduces("] {
+            let at = copy
+                .find(condition)
+                .unwrap_or_else(|| panic!("the GPU copy must check {condition}"));
             assert!(
-                body.contains("upload_unpack_converted("),
-                "{signature} copies a texture into the content's and must apply the unpack flags"
-            );
-            let call = body.find("upload_unpack_converted(").unwrap();
-            let copy = body
-                .find("texture_copy::copy_texture(")
-                .expect("and keep the GPU copy for when they ask for nothing");
-            assert!(
-                call < copy,
-                "{signature}: the conversion must be tried before the GPU copy"
+                at < refused,
+                "{condition} is checked before the copy is made"
             );
         }
-        let source_alpha =
-            |signature: &str| function_body(MGR, signature).contains("SourceAlpha::Premultiplied");
-        assert!(source_alpha(
-            "pub(crate) fn tex_image_2d_from_canvas2d_snapshot("
-        ));
-        assert!(source_alpha("pub(crate) fn tex_image_2d_from_text_cache("));
+        let selection = function_body(SOURCE, "fn source_selection(");
+        assert!(
+            selection.contains("PIXEL_STORE_FLIP_Y")
+                && selection.contains("PIXEL_STORE_PREMULTIPLY_ALPHA"),
+            "the flags are read from the pixel-store state the renderer holds"
+        );
+        assert!(
+            SOURCE.contains("SourceAlpha::Premultiplied"),
+            "what Skia rendered -- a canvas, a snapshot, a text texture -- is premultiplied"
+        );
     }
 
     /// A WebGL drawing buffer is transparent black when it is created and again
