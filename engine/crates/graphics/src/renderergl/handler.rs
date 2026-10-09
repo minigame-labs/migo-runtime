@@ -1976,9 +1976,15 @@ impl RendererGL {
                 let zero_pixels;
                 let pixels = match &data {
                     None => {
-                        let len =
-                            unpack_convert::upload_bytes(width, height, 1, format, type_, &cm.unpack_layout(canvas_id, false))
-                                .unwrap_or(0);
+                        let len = unpack_convert::upload_bytes(
+                            width,
+                            height,
+                            1,
+                            format,
+                            type_,
+                            &cm.unpack_layout(canvas_id, false),
+                        )
+                        .unwrap_or(0);
                         zero_pixels = vec![0u8; len];
                         glow::PixelUnpackData::Slice(Some(zero_pixels.as_slice()))
                     }
