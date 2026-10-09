@@ -26,7 +26,6 @@ new RuntimeConfig.Builder(cacheDir, filesDir, density)      // fully caller-supp
 | `cacheDir` | Cache directory; the system may clear it |
 | `filesDir` | Persistent directory; the system will not clear it |
 | `codeCacheDir` | JS bytecode cache directory; derived from `cacheDir` by default (system-clearable), overridden by `setCodeCacheDir` |
-| `workersPath` | Worker script directory; may be `null` |
 | `displayDensity` | Pixel density, the CSS px conversion base; must be a real value when using the three-parameter Builder |
 
 If the host has its own game-package or cache directory conventions, use the three-parameter Builder — take the two root directories yourself and do not let the SDK pick them for you.
@@ -61,10 +60,11 @@ A common mistake is assuming signature verification defaults to off in productio
 
 ## Content-side injection
 
-Two list fields that exist only on the Builder; both are passed to native over JNI as JSON:
+One list field that exists only on the Builder, passed to native over JNI as JSON:
 
-- **subPackages**: `List<String[]>`, each entry `{"name","root"}` — sub-package local mount plan;
 - **preludeScripts**: `List<String[]>`, each entry `{"name","source"}` — complete script source to run before `game.js`, used to inject polyfills; executed in list order.
+
+Subpackages (`subpackages`) and the Worker directory (`workers`) are not configured here: content declares them in its own `game.json`, and the engine reads them through the verified mount when it loads the content -- one source on every platform.
 
 ## Builder overview
 
@@ -80,6 +80,5 @@ RuntimeConfig config = new RuntimeConfig.Builder(context)
     .setWatchdogTimeoutSecs(10)
     .setCodeSigningEnabled(true)
     .setCodeSigningPubkey(pubkeyHex)
-    .setWorkersPath(workersDir)
     .build();
 ```

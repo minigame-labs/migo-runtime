@@ -93,7 +93,6 @@
   public com.migo.runtime.PerformanceSnapshot(float, float, int, int, int, int, int, int);
   public com.migo.runtime.RuntimeConfig build();
   public com.migo.runtime.RuntimeConfig$Builder addPreludeScript(java.lang.String, java.lang.String);
-  public com.migo.runtime.RuntimeConfig$Builder addSubPackage(java.lang.String, java.lang.String);
   public com.migo.runtime.RuntimeConfig$Builder setCodeCacheDir(java.lang.String);
   public com.migo.runtime.RuntimeConfig$Builder setCodeSigningEnabled(boolean);
   public com.migo.runtime.RuntimeConfig$Builder setCodeSigningPubkey(java.lang.String);
@@ -104,7 +103,6 @@
   public com.migo.runtime.RuntimeConfig$Builder setTargetFps(int);
   public com.migo.runtime.RuntimeConfig$Builder setWatchdogEnabled(boolean);
   public com.migo.runtime.RuntimeConfig$Builder setWatchdogTimeoutSecs(int);
-  public com.migo.runtime.RuntimeConfig$Builder setWorkersPath(java.lang.String);
   public com.migo.runtime.RuntimeConfig$Builder(android.content.Context);
   public com.migo.runtime.RuntimeConfig$Builder(java.lang.String, java.lang.String, float);
   public com.migo.runtime.RuntimeConfig$LogLevel getLogLevel();
@@ -209,7 +207,6 @@
   public java.lang.String getNativeVersion();
   public java.lang.String getStartupOrientation();
   public java.lang.String getVersion();
-  public java.lang.String getWorkersPath();
   public java.lang.String iv;
   public java.lang.String language;
   public java.lang.String nickName;
@@ -224,7 +221,6 @@
   public java.lang.String toString();
   public java.lang.Throwable getNativeLoadError();
   public java.util.List<java.lang.String[]> getPreludeScripts();
-  public java.util.List<java.lang.String[]> getSubPackages();
   public long getCacheSize();
   public long getUserDataSize();
   public static boolean isRecoverable(int);

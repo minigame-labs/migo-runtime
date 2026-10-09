@@ -605,6 +605,14 @@ impl ServiceContext {
             .map(|content| Arc::clone(&content.mount_table))
     }
 
+    /// What the mounted package's game.json declares, once content is mounted.
+    fn game_config(&self) -> Option<Arc<migo_services::content::GameConfig>> {
+        self.content
+            .read()
+            .as_ref()
+            .map(|content| Arc::clone(&content.config))
+    }
+
     fn game_paths(&self) -> Option<Arc<shared::vfs::GamePaths>> {
         self.content
             .read()
@@ -749,11 +757,15 @@ impl ServiceContext {
             // the embedded ops call.
             id::op_get_sub_packages => {
                 let [] = exactly(op, args)?;
-                // A session on this lane is started with the package it mounts
-                // and no separate subpackage list; what is installed is what the
-                // mount table shows.
+                // What the package's own game.json declares, as on the
+                // embedded lane; nothing before content is mounted.
+                let config = self.game_config();
                 Ok(OwnedValue::Str(
-                    migo_services::subpackage::sub_packages_json(&[]),
+                    migo_services::subpackage::sub_packages_json(
+                        config
+                            .as_deref()
+                            .map_or(&[][..], |config| &config.sub_packages),
+                    ),
                 ))
             }
             id::op_get_mount_generation => {
@@ -786,9 +798,14 @@ impl ServiceContext {
             }
             id::op_get_workers_path => {
                 let [] = exactly(op, args)?;
-                // A Worker's engine is staged beside the producer's, which is
-                // the producer's own path to resolve; the host has none to give.
-                Ok(OwnedValue::Str(String::new()))
+                // The directory game.json declares Worker scripts under. Where a
+                // Worker's engine is staged is the producer's to resolve; which
+                // scripts the game ships as Workers is the package's to say.
+                Ok(OwnedValue::Str(
+                    self.game_config()
+                        .and_then(|config| config.workers_path.clone())
+                        .unwrap_or_default(),
+                ))
             }
             file if super::service_fs::is_sync(file) => {
                 super::service_fs::call_sync(&self.fs_env()?, file, args)
@@ -1790,6 +1807,55 @@ mod tests {
             .call_sync(id::op_storage_get, vec![])
             .expect_err("no key");
         assert_eq!(error.message, "op_storage_get takes 1 argument(s), not 0");
+    }
+
+    /// The package's own game.json answers what content asks about its
+    /// subpackages and Workers on this lane, as on the embedded one -- and a
+    /// game.json that is not valid refuses the mount rather than mounting a game
+    /// whose declarations were skipped.
+    #[test]
+    fn the_package_s_game_json_answers_its_subpackages_and_workers() {
+        let root =
+            std::env::temp_dir().join(format!("migo-external-game-json-{}", std::process::id()));
+        let files = root.join("files");
+        let cache = root.join("cache");
+        let installed = shared::vfs::GamePaths::new(&files, &cache, "g", 1).unwrap();
+        std::fs::create_dir_all(installed.code_dir()).unwrap();
+        std::fs::write(
+            installed.code_dir().join("game.json"),
+            r#"{"subpackages":[{"name":"stage1","root":"stage1/"}],"workers":"workers"}"#,
+        )
+        .unwrap();
+
+        let context = Arc::new(ServiceContext::new(files.clone(), cache.clone()));
+        context.bind_session(1);
+        assert_eq!(
+            context.call_sync(id::op_get_sub_packages, vec![]).unwrap(),
+            OwnedValue::Str("[]".into()),
+            "nothing is declared before content is mounted"
+        );
+        context.load_content("g", "game.js").expect("mounts");
+        let OwnedValue::Str(declared) = context.call_sync(id::op_get_sub_packages, vec![]).unwrap()
+        else {
+            panic!("a JSON string")
+        };
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&declared).unwrap(),
+            serde_json::json!([{"name": "stage1", "root": "stage1/"}])
+        );
+        assert_eq!(
+            context.call_sync(id::op_get_workers_path, vec![]).unwrap(),
+            OwnedValue::Str("workers".into())
+        );
+
+        std::fs::write(installed.code_dir().join("game.json"), "{").unwrap();
+        let malformed = Arc::new(ServiceContext::new(files, cache));
+        malformed.bind_session(2);
+        assert!(
+            malformed.load_content("g", "game.js").is_err(),
+            "a malformed game.json refuses the mount"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A storage round trip through the real services, the way the producer

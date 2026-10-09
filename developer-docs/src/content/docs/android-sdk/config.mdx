@@ -26,7 +26,6 @@ new RuntimeConfig.Builder(cacheDir, filesDir, density)      // 完全自供,脱�
 | `cacheDir` | 缓存目录,系统可清 |
 | `filesDir` | 持久目录,系统不清 |
 | `codeCacheDir` | JS bytecode 缓存目录,默认推导自 `cacheDir`(即主缓存目录,系统可清),`setCodeCacheDir` 重写 |
-| `workersPath` | Worker 脚本目录,可为 `null` |
 | `displayDensity` | 像素密度,CSS px 换算基准;自供 Builder 时必须给真值 |
 
 宿主有自己的游戏包/缓存目录规范就用三参 Builder — 把两个根目录取走,不让 SDK 替你挑。
@@ -61,10 +60,11 @@ new RuntimeConfig.Builder(cacheDir, filesDir, density)      // 完全自供,脱�
 
 ## 内容侧注入
 
-两个仅存于 Builder 的列表字段,都以 JSON 走 JNI 传给 native:
+一个仅存于 Builder 的列表字段,以 JSON 走 JNI 传给 native:
 
-- **subPackages**:`List<String[]>`,每项 `{"name","root"}` — 子包本地挂载规划;
 - **preludeScripts**:`List<String[]>`,每项 `{"name","source"}` — `game.js` 之前先跑的完整脚本源码,注入 polyfill 用,按 list 序执行。
+
+分包(`subpackages`)与 Worker 目录(`workers`)不在这里配:它们是内容自己在 `game.json` 里声明的,引擎加载内容时经已校验的挂载读取,所有平台同一个来源。
 
 ## Builder 全景
 
@@ -80,6 +80,5 @@ RuntimeConfig config = new RuntimeConfig.Builder(context)
     .setWatchdogTimeoutSecs(10)
     .setCodeSigningEnabled(true)
     .setCodeSigningPubkey(pubkeyHex)
-    .setWorkersPath(workersDir)
     .build();
 ```

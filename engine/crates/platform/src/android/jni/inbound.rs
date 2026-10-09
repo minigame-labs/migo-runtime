@@ -11,22 +11,6 @@ use std::sync::{Arc, OnceLock};
 
 use jni::objects::{JByteBuffer, JClass, JObject, JString};
 
-/// Parse the internal subPackagesJson field into a Vec of (name, root) pairs.
-fn parse_sub_packages(json: Option<String>) -> Vec<(String, String)> {
-    let json = match json {
-        Some(s) if !s.is_empty() => s,
-        _ => return Vec::new(),
-    };
-    #[derive(serde::Deserialize)]
-    struct Entry {
-        name: String,
-        root: String,
-    }
-    serde_json::from_str::<Vec<Entry>>(&json)
-        .map(|v| v.into_iter().map(|e| (e.name, e.root)).collect())
-        .unwrap_or_default()
-}
-
 /// Parse the internal preludeScriptsJson field into a Vec of (name, source)
 /// pairs. The Java side encodes prelude entries as
 /// `[{"name":"...","source":"..."}, ...]`; we deserialize back into the
@@ -486,14 +470,6 @@ pub(crate) extern "system" fn init(
         let code_signing_pubkey =
             super::get_optional_string_field(&mut env, "codeSigningPubkey", &options);
 
-        // Read optional game config fields
-        let sub_packages = parse_sub_packages(super::get_optional_string_field(
-            &mut env,
-            "subPackagesJson",
-            &options,
-        ));
-        let workers_path = super::get_optional_string_field(&mut env, "workersPath", &options);
-
         // Boot prelude scripts (BOM/DOM adapter injection, etc.).
         // Optional — empty list when the host app doesn't configure any.
         let prelude_scripts = parse_prelude_scripts(super::get_optional_string_field(
@@ -514,8 +490,6 @@ pub(crate) extern "system" fn init(
             .with_watchdog_timeout_secs(watchdog_timeout_secs)
             .with_code_signing_enabled(code_signing_enabled)
             .with_code_signing_pubkey(code_signing_pubkey)
-            .with_sub_packages(sub_packages)
-            .with_workers_path(workers_path)
             .with_prelude_scripts(prelude_scripts);
 
         // The session's level is published by its Host's registration, which has

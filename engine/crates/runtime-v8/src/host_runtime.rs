@@ -1000,6 +1000,13 @@ impl HostJsRuntime {
         let cs_enabled = false;
         let mount_table =
             migo_services::content::mount_code(&game_paths, cs_enabled, &self.io_scheduler());
+        // What the package declares about itself: its subpackages and where its
+        // Workers live. Read once here, through the mount it was verified in.
+        let config = migo_services::content::GameConfig::read(&mount_table)?;
+        self.update_host_op_state(|state| {
+            state.sub_packages = config.sub_packages;
+            state.workers_path = config.workers_path;
+        });
 
         // Store paths, VFS, and mount table in op state.
         self.set_game_paths(Some(game_paths));
