@@ -111,7 +111,17 @@ public final class MigoDisplayLink {
 
     /// One delivery point, so both platforms and both macOS mechanisms hand the tick
     /// over the same way.
+    ///
+    /// Checked here rather than only where a tick is scheduled: `CVDisplayLinkStop`
+    /// stops the real-time callback, but a callback that had already fired before
+    /// that moment hops to the main queue with `DispatchQueue.main.async`, and that
+    /// hop can still be sitting unscheduled when `stop()` runs. `owner` in that
+    /// closure stays alive -- `stop()` tears down the link, not this object -- so
+    /// without this guard the hop delivers anyway once the main queue gets to it,
+    /// which is a tick after `stop()` and `isRunning == false` already said there
+    /// would not be one.
     fileprivate func deliver(_ frame: Frame) {
+        guard isRunning else { return }
         onTick(frame)
     }
 
