@@ -40,7 +40,7 @@ sourcePaths:
 
 - `createAd(adId, adType, adUnitId, optionsJson)` 的 `adId` 是 **runtime 分配的句柄**,一生不变。这个 ad 对象的所有事件都必须用同一个 id 报回;
 - 所有 AdHandler 方法在 **runtime 的宿主线程**上调用,不要阻塞本线程做 SDK 工作。回调到内容侧走 `AdEventSink`(任意线程安全),全集 8 个方法:`emitLoad(int)` / `emitLoad(int, boolean)`(是否回落到分享页式兜底)、`emitShow`(SDK 的曝光回调)、`emitError`、`emitClose(adId, isEnded)`、`emitShowFailed`(= `emitError` + `emitClose(false)`)、`emitResize`、`emitHide`。**没有** `emitClick` / `emitReward` — 奖励发放由 `emitClose` 的 `isEnded` 承载。
-- 内容的 `load()` / `show()` 返回的 Promise 由这些事件结算,与 wx 一致:`emitLoad` 结算 `load()`,`emitShow` 结算 `show()`(全屏广告的 `emitClose` 也算已展示),`emitError` 让两者 reject。横幅、格子、自定义、游戏横幅这类没有 close 的广告,**必须**在曝光时 `emitShow`,否则内容 `await ad.show()` 永远等不到。
+- 内容的 `load()` / `show()` 返回的 Promise 由这些事件结算,与通用小游戏平台一致:`emitLoad` 结算 `load()`,`emitShow` 结算 `show()`(全屏广告的 `emitClose` 也算已展示),`emitError` 让两者 reject。横幅、格子、自定义、游戏横幅这类没有 close 的广告,**必须**在曝光时 `emitShow`,否则内容 `await ad.show()` 永远等不到。
 
 灭后不许再报:`destroyAd` 之后任何 `emit*` 对该 `adId` 都会被丢弃 — 引擎的内存纪律,内容侧已经把句柄还回去了。`AdEventSink` 的发送是**任意线程安全**,但没有重试语义,不要指望终态在 SDK 里排队。
 

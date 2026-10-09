@@ -264,7 +264,8 @@ mod callback_isolation_tests {
         }
     }
 
-    /// Every asynchronous API answers by callback or by Promise, by wx's rule:
+    /// Every asynchronous API answers by callback or by Promise, by the common
+    /// mini-game platform's rule:
     /// options carrying `success`, `fail` or `complete` are answered through
     /// them and the call returns nothing; options carrying none get a Promise.
     ///

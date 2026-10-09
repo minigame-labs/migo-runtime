@@ -84,7 +84,8 @@ function invokeCallback(apiName, kind, cb, res) {
     }
 }
 
-// How an asynchronous call is answered, by wx's rule for every one of them:
+// How an asynchronous call is answered, by the common mini-game platform's rule
+// for every one of them:
 // options that carry `success`, `fail` or `complete` are answered through those
 // callbacks and the call returns nothing; options that carry none are answered
 // by the Promise the call returns.

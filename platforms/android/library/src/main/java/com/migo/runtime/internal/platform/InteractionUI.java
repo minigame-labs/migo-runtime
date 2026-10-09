@@ -75,7 +75,10 @@ public final class InteractionUI {
         }
     }
 
-    /** The player dismissed the sheet, which wx reports as {@code showActionSheet:fail cancel}. */
+    /**
+     * The player dismissed the sheet, which the common mini-game platform reports
+     * as {@code showActionSheet:fail cancel}.
+     */
     static String actionSheetCancelled(int requestId) {
         return CallbackCorrelation.failure(requestId, "showActionSheet", "cancel");
     }
