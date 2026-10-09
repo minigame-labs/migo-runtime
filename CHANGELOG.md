@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Performance+: `migo.createWorker` works. Content already runs as a Dedicated Worker in this lane, and WebKit offers
+  no nested-Worker constructor inside one (confirmed on-device, iPhone 12 / iOS 17.0.3: `typeof Worker ===
+  "undefined"` there); the page that constructed the content worker in the first place does not have that gap, so
+  content's five worker ops now cross a dedicated `MessagePort` to it instead of a Rust op, and the page constructs
+  the real classic Worker (`worker-nested-bootstrap.js?script=<path>`), giving it `self.postMessage` / `self.onmessage`
+  over a small shim shaped like `02_worker_inner.js`'s `worker.postMessage` / `worker.onMessage`. One worker at a
+  time, JSON-message round-tripping, `terminate()` quiet and restart-right-after-terminate all match the in-process
+  lane's own contract exactly -- the same `worker-spec` conformance bundle that was five known failures on this lane
+  now passes all of it. Not yet carried over: the in-process lane's worker-side `connectSocket` / `createInnerAudioContext`
+  / `downloadFile` / `getFileSystemManager` / `request` / `uploadFile` -- those would need the nested worker proxied
+  through to the host's own services, which this change does not add.
 - Canvas 2D: `reset()`, `isContextLost()` and `getContextAttributes()`. `reset()` puts the context back to its default
   state -- the bitmap transparent black, the state stack and every clip gone, every attribute and the transform at its
   default, the current path empty -- without the surface being made again, which is what assigning the canvas's size
