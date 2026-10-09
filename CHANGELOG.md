@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Performance+: `migo.createWorker` works. Content already runs as a Dedicated Worker in this lane, and WebKit offers
+  no nested-Worker constructor inside one (confirmed on-device, iPhone 12 / iOS 17.0.3: `typeof Worker ===
+  "undefined"` there); the page that constructed the content worker in the first place does not have that gap, so
+  content's five worker ops now cross a dedicated `MessagePort` to it instead of a Rust op, and the page constructs
+  the real classic Worker (`worker-nested-bootstrap.js?script=<path>`), giving it `self.postMessage` / `self.onmessage`
+  over a small shim shaped like `02_worker_inner.js`'s `worker.postMessage` / `worker.onMessage`. One worker at a
+  time, JSON-message round-tripping, `terminate()` quiet and restart-right-after-terminate all match the in-process
+  lane's own contract exactly -- the same `worker-spec` conformance bundle that was five known failures on this lane
+  now passes all of it. Not yet carried over: the in-process lane's worker-side `connectSocket` / `createInnerAudioContext`
+  / `downloadFile` / `getFileSystemManager` / `request` / `uploadFile` -- those would need the nested worker proxied
+  through to the host's own services, which this change does not add.
+- Canvas 2D: `reset()`, `isContextLost()` and `getContextAttributes()`. `reset()` puts the context back to its default
+  state -- the bitmap transparent black, the state stack and every clip gone, every attribute and the transform at its
+  default, the current path empty -- without the surface being made again, which is what assigning the canvas's size
+  costs and a context reset every frame would otherwise pay every frame. `isContextLost()` answers the GPU's lost state,
+  which a 2D canvas shares with every other context. `getContextAttributes()` answers what `getContext("2d", settings)`
+  was given: sRGB, 8 bits a channel, alpha, never desynchronized, and the `willReadFrequently` hint as it was asked for.
+  `getContext("2d", settings)`'s dictionary is read as WebIDL reads a dictionary: `undefined` and `null` are the empty
+  one, any other non-object value is a TypeError, and `colorSpace` / `colorType` refuse a value outside their enums.
 - WebGL: `KHR_parallel_shader_compile`, where the driver compiles and links in parallel (`GL_KHR_parallel_shader_compile`):
   COMPLETION_STATUS_KHR of a shader or program is asked of the renderer without waiting for the compile or link -- the
   renderer's deferred link read stays queued -- and is kept once true, or once LINK_STATUS was read, so polling content
@@ -55,6 +74,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   upload was INVALID_ENUM. Its blocks are uploaded as ETC2 RGB8, which decodes every ETC1 block to the same texels and
   which every GLES 3.0 driver has. An ETC1 image is a 2D one defined whole, by `compressedTexImage2D` or 2D immutable
   storage; a sub-image upload, a 3D call or 3D storage of it is INVALID_OPERATION, as a browser has it.
+- Canvas 2D: `ImageData`, `TextMetrics` and `CanvasPattern` are interfaces, and globals. `new ImageData(sw, sh,
+  settings)` and `new ImageData(data, sw, sh, settings)` construct as the specification has them -- PixiJS's extract
+  and Egret's render textures call it, and three.js's `image instanceof ImageData` threw while the name was missing --
+  and `createImageData`, `getImageData` and every `ImageData` the engine makes (the snapshot and text-cache readbacks
+  included) are instances. `putImageData` takes an `ImageData` and nothing that only looks like one; the three methods
+  convert their numbers as `[EnforceRange] long` (a non-finite or out-of-range one is a TypeError, where it was
+  truncated) and require their arguments. `ImageDataSettings.colorSpace` is read: an `ImageData` in Display P3 is
+  converted from and to the canvas's sRGB through the primaries, as Chrome converts it. `measureText` answers a
+  read-only `TextMetrics`, a new one each call over cached numbers -- it was a plain object the cache handed out again,
+  so a write to one changed every later measurement of that text. `new CanvasGradient()`, `new CanvasPattern()` and
+  `new TextMetrics()` are TypeErrors, and the four interfaces' members are enumerable on their prototypes.
 - Canvas 2D: `Path2D`, `roundRect`, and `isPointInPath` / `isPointInStroke`. A `Path2D` is built by the `CanvasPath`
   calls, from another path, or from SVG path data (every command, relative and implicit forms, reflected control
   points and arcs, read up to the command holding the first error), and `addPath` adds another under a
@@ -287,6 +317,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   INVALID_OPERATION. The attachment calls are judged before they are recorded: the target and attachment point, a
   texture of the textarget's kind, a level of 0 in WebGL 1, a renderbuffer that has been bound, a 3D or 2D-array
   texture for a layer, and the default framebuffer, which takes none.
+- Canvas 2D: the context's arguments are converted as WebIDL converts them. Every method counts its required arguments
+  (`fillRect(0, 0, 1)`, `translate(1)`, `fillText("x", 0)` are TypeErrors; `drawImage` takes three, five or nine);
+  numbers are converted in order, so a BigInt or a Symbol is a TypeError where it was a silent no-op, and a Symbol for
+  a string (`fillText`, `fillStyle`, a keyword attribute) is one too. The gradient factories and `addColorStop` take
+  `double`s: one that is not finite is a TypeError, a negative radius and an offset outside 0..1 IndexSizeErrors (the
+  offset was a RangeError), and a colour stop of `null` is the SyntaxError of a colour that does not parse.
+  `setLineDash` takes any iterable and refuses anything else -- an array-like object was read by its `length`. An image
+  argument (`drawImage`, `createPattern`) is the engine's image, ImageBitmap or canvas: `null`, an ImageData or an
+  object with the right names is a TypeError, a broken image or a closed bitmap an InvalidStateError, an image still
+  loading draws nothing and is a null pattern -- and an ImageBitmap is drawn, which it never was (it was asked whether
+  it had `loaded`). `drawImage(image, dx, dy)` draws the image at its natural size. `createPattern`'s repetition is
+  read as the specification reads it: `null` is "repeat", `undefined` a SyntaxError, and a missing one a TypeError.
+  `setTransform()` and `setTransform(transform)` take a DOMMatrix2DInit. `direction` ignores what is not one of its
+  three keywords and is saved and restored with the rest of the drawing state. `new ImageBitmap()` is a TypeError.
+- Canvas 2D: `ctx.font` is read as Chrome reads it, by one parser in the facade. A shorthand needs a size and a family
+  (`20px` alone is ignored, `0px serif` is a font); each of style, `small-caps`, weight and stretch is given at most once,
+  `normal` standing for any; sizes in px, pt, pc, in, cm, mm, Q, em, rem, ex, ch, ic, %, the absolute keywords and
+  `larger`/`smaller` -- relative ones against the canvas default 10px, where `em` and `%` used to be 16px; families as
+  strings, identifier sequences and generic keywords, escapes and comments included; CSS-wide keywords refused. `font`
+  reads back the font serialised (`italic bold small-caps 16px "Noto Sans", serif`, the size to six digits) rather than
+  the string assigned. The renderer and the measurer are sent what the facade read -- size, weight, slant and the family
+  names -- never text, so `measureText` and `fillText` cannot read one string two ways. Gone: the two Rust parsers
+  (`shared::css_font_shorthand`, `shared::css_font`), the Performance+ producer's port of the first, and the corpus
+  gate that held the port to it (`scripts/test-css-font-agreement.sh`); on Performance+ the font record (550) carries
+  the fields, and its family names are charged to the decode budget one `String` each. Not read, so ignored: math
+  functions, `var()`, viewport, container, line-height and `cap` units. A system font keyword is the platform UI face
+  at 16px (`16px system-ui`).
 - Canvas 2D: the current default path keeps each point where the transform current when it was added put it, as the
   specification has it. A path built and then filled after a `translate` was drawn through the later transform. The
   renderer keeps the path in the space it was built in and moves it once, when it is next used, so a `save()` /
@@ -331,6 +388,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its result. QUERY_RESULT_AVAILABLE is a boolean, false in the task that ended the query and the same every time it is
   asked within a task (WebGL 2.0 5.38); QUERY_RESULT is 0 until it is available, and the renderer asks the driver for a
   result only once it is, where it used to wait for the GPU to finish the query on the render thread.
+- `requestAnimationFrame`'s timestamp is when the frame began, on the timeline `performance.now()` reads, and never
+  after the callback that receives it. Apple's display link reported when the frame is due to appear, still to come,
+  and the engine anchored the host's clock to the process clock at the first frame it handled, so a first frame
+  handled late -- a loaded machine, a long startup -- put every later timestamp that far ahead: under load a callback
+  read a timestamp 25 ms after its own `performance.now()`. The host's frame time is now the frame's start
+  (`CADisplayLink.timestamp`; `CVDisplayLink`'s host times, which are on the uptime clock where its video times are on
+  the display's own), and the engine converts it as it arrives, through a reading of the same monotonic clock taken
+  then, so a frame keeps the time it began however long it waited. `migo_session_notify_vsync` documents the clock
+  each platform reports on.
 - Canvas2D / WebGL: Skia's GL work runs in its own context. Skia does its GL work in whatever EGL context is current,
   and a cleanup is GL work -- it deletes textures and framebuffers -- but the periodic purge of every 2D context's
   unused resources (every 250 ms), the low-memory trim, and the re-capping of every context's share of the resource

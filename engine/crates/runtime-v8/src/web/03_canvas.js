@@ -275,7 +275,7 @@ class Canvas {
         } else if (contextType === 'webgl' || contextType === 'experimental-webgl') {
             this._context = new WebGLRenderingContext(this, options);
         } else {
-            this._context = new CanvasRenderingContext2D(this);
+            this._context = new CanvasRenderingContext2D(this, options);
         }
         this._contextKind = this._context instanceof WebGL2RenderingContext ? 'webgl2'
             : this._context instanceof WebGLRenderingContext ? 'webgl' : '2d';

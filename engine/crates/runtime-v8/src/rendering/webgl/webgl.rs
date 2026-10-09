@@ -1295,7 +1295,11 @@ pub(super) mod tests {
     pub(in crate::rendering::webgl) fn new_webgl_runtime()
     -> (HostJsRuntime, crossbeam_channel::Receiver<RenderCommand>) {
         let (host_state, render_rx) = new_test_host_state();
-        let runtime = HostJsRuntime::new(
+        (runtime_over(host_state), render_rx)
+    }
+
+    fn runtime_over(host_state: HostOpState) -> HostJsRuntime {
+        HostJsRuntime::new(
             1,
             host_state,
             &std::env::temp_dir(),
@@ -1305,8 +1309,7 @@ pub(super) mod tests {
             false,
             #[cfg(feature = "code-signing")]
             None,
-        );
-        (runtime, render_rx)
+        )
     }
 
     pub(in crate::rendering::webgl) fn end_test_frame(runtime: &mut HostJsRuntime) {
@@ -8001,6 +8004,13 @@ pub(super) mod tests {
         runtime
             .exec_script(name, source)
             .expect("script must not throw");
+        // The script's microtasks ran when it returned; what they found wrong they left in `failure`.
+        runtime
+            .exec_script(
+                "microtask_failures.js",
+                "if (globalThis.failure !== undefined) throw new Error(String(globalThis.failure));",
+            )
+            .expect("the script's promises must not record a failure");
         end_test_frame(&mut runtime);
         handle.join().expect("helper thread should not panic");
         packet_rx
@@ -8298,6 +8308,726 @@ pub(super) mod tests {
                 ("fill", bits(10, 20, 30, 128)),
                 ("stroke", bits(0, 255, 0, 255)),
             ]
+        );
+    }
+
+    /// What a font shorthand means, as Chrome has a canvas read it.
+    ///
+    /// The facade is the only reader of `ctx.font`: the renderer and the measurer are sent the font it read. So this is
+    /// the whole of what a canvas does with a shorthand -- which are fonts, and what `font` reads back. Every expected
+    /// value is Chrome's for a canvas it is not rendering, except where the comment says otherwise. migo-conformance's
+    /// `canvas2d-spec/font-*` asks the same through every platform.
+    #[test]
+    fn font_shorthands_read_as_chrome_reads_them() {
+        // (assigned, what `font` reads back, or None when the assignment is ignored)
+        let cases: &[(&str, Option<&str>)] = &[
+            ("10px sans-serif", Some("10px sans-serif")),
+            ("bold 20px Arial", Some("bold 20px Arial")),
+            (
+                "italic small-caps bold 16px/2 cursive",
+                Some("italic bold small-caps 16px cursive"),
+            ),
+            (
+                "small-caps italic bold condensed 12px serif",
+                Some("italic bold small-caps 12px serif"),
+            ),
+            ("  12px   serif  ", Some("12px serif")),
+            ("\t12px\nserif\r", Some("12px serif")),
+            ("BOLD 12PX SERIF", Some("bold 12px serif")),
+            ("12px SANS-SERIF", Some("12px sans-serif")),
+            (
+                "12px cursive, Fantasy, MONOSPACE",
+                Some("12px cursive, fantasy, monospace"),
+            ),
+            // A size and a family are both required.
+            ("20px", None),
+            ("bold", None),
+            ("italic 12px", None),
+            ("12px/1.5", None),
+            ("bogus", None),
+            ("", None),
+            // Sizes: zero and fractions are fonts, negatives are not; relative sizes resolve against 10px.
+            ("bold 0px serif", Some("bold 0px serif")),
+            ("0 serif", Some("0px serif")),
+            ("-5px serif", None),
+            ("12 serif", None),
+            ("12.px serif", None),
+            ("0.1px serif", Some("0.1px serif")),
+            ("1.23456789px serif", Some("1.23457px serif")),
+            ("1e1px serif", Some("10px serif")),
+            ("+12px serif", Some("12px serif")),
+            (".5px serif", Some("0.5px serif")),
+            ("123456789px serif", Some("10000px serif")),
+            ("12pt serif", Some("16px serif")),
+            ("10pt serif", Some("13.3333px serif")),
+            ("10pc serif", Some("160px serif")),
+            ("1in serif", Some("96px serif")),
+            ("2.54cm serif", Some("96px serif")),
+            ("40Q serif", Some("37.7953px serif")),
+            ("1em serif", Some("10px serif")),
+            ("2rem serif", Some("20px serif")),
+            ("50% serif", Some("5px serif")),
+            ("1000% serif", Some("100px serif")),
+            ("-1% serif", None),
+            ("3ch serif", Some("15px serif")),
+            ("1ic serif", Some("10px serif")),
+            ("medium serif", Some("16px serif")),
+            ("xx-small serif", Some("9px serif")),
+            ("XX-LARGE serif", Some("32px serif")),
+            ("xxx-large serif", Some("48px serif")),
+            ("larger serif", Some("12px serif")),
+            ("smaller serif", Some("8.33333px serif")),
+            // Line height: read and dropped, and still has to be one.
+            ("12px/1.5 serif", Some("12px serif")),
+            ("12px / 1.5 serif", Some("12px serif")),
+            ("12px/normal serif", Some("12px serif")),
+            ("12px/20px serif", Some("12px serif")),
+            ("12px/0 serif", Some("12px serif")),
+            ("12px/ serif", None),
+            ("12px/-1 serif", None),
+            ("12px/-1px serif", None),
+            // Weights.
+            ("700 12px serif", Some("bold 12px serif")),
+            ("400 12px serif", Some("12px serif")),
+            ("100 12px serif", Some("100 12px serif")),
+            ("1000 12px serif", Some("1000 12px serif")),
+            ("550.7 12px serif", Some("550 12px serif")),
+            ("1001 12px serif", None),
+            ("0 12px serif", None),
+            ("bolder 12px serif", Some("bold 12px serif")),
+            ("lighter 12px serif", Some("100 12px serif")),
+            // The four optional components: each once, `normal` for any, four at most.
+            ("normal normal normal normal 12px serif", Some("12px serif")),
+            ("normal normal normal normal normal 12px serif", None),
+            ("bold bold 12px serif", None),
+            ("italic oblique 12px serif", None),
+            ("bold 700 12px serif", None),
+            ("small-caps small-caps 12px serif", None),
+            ("condensed expanded 12px serif", None),
+            ("normal italic 12px serif", Some("italic 12px serif")),
+            ("bold italic 12px serif", Some("italic bold 12px serif")),
+            ("condensed 12px serif", Some("12px serif")),
+            ("all-small-caps 12px serif", None),
+            ("oblique 12px serif", Some("italic 12px serif")),
+            ("OBLIQUE 12px serif", Some("italic 12px serif")),
+            ("oblique 14deg 12px serif", Some("italic 12px serif")),
+            ("oblique -14deg 12px serif", Some("12px serif")),
+            ("oblique 0deg 12px serif", Some("12px serif")),
+            ("oblique 91deg 12px serif", None),
+            ("italic 10deg 12px serif", None),
+            // Chrome reads back only its default angle as italic and drops the rest; a face that slants reads back
+            // as one here.
+            ("oblique 20deg 12px serif", Some("italic 12px serif")),
+            // Families: identifiers, sequences, strings, keywords, escapes.
+            ("12px A  B, C   D", Some("12px \"A B\", \"C D\"")),
+            ("12px Noto Sans CJK SC", Some("12px \"Noto Sans CJK SC\"")),
+            (
+                "small-caps 30px 'My Font', serif",
+                Some("small-caps 30px \"My Font\", serif"),
+            ),
+            (
+                "12px \"\u{5fae}\u{8f6f}\u{96c5}\u{9ed1}\", sans-serif",
+                Some("12px \u{5fae}\u{8f6f}\u{96c5}\u{9ed1}, sans-serif"),
+            ),
+            ("12px  \"x\" , y ", Some("12px x, y")),
+            ("12px 'A\"B'", Some("12px \"A\\\"B\"")),
+            ("12px \"\"", Some("12px \"\"")),
+            ("12px 'serif'", Some("12px \"serif\"")),
+            ("12px \"inherit\"", Some("12px \"inherit\"")),
+            ("12px foo serif", Some("12px \"foo serif\"")),
+            ("12px foo inherit", Some("12px \"foo inherit\"")),
+            ("12px inherit foo", Some("12px \"inherit foo\"")),
+            ("12px a/**/b", Some("12px \"a b\"")),
+            ("12px a\\:b", Some("12px \"a:b\"")),
+            ("12px 'a\\", Some("12px a")),
+            ("12px -foo", Some("12px -foo")),
+            ("12px --foo", Some("12px \"--foo\"")),
+            ("12px \\31 23", Some("12px \"123\"")),
+            ("12px a\\62 c", Some("12px abc")),
+            ("12px \\41 rial", Some("12px Arial")),
+            ("12px a\\ b", Some("12px \"a b\"")),
+            ("12px A\\, B", Some("12px \"A, B\"")),
+            ("12px \"a\\\nb\"", Some("12px ab")),
+            ("12px 'abc", Some("12px abc")),
+            ("12px \"a\tb\"", Some("12px \"a\\9 b\"")),
+            ("12px \"\u{1}\"", Some("12px \"\\1 \"")),
+            ("12px \"a\\\\b\"", Some("12px \"a\\\\b\"")),
+            ("12px serif\u{0}x", Some("12px serif\u{fffd}x")),
+            ("12px \\", Some("12px \u{fffd}")),
+            ("12px/*a comment*/serif", Some("12px serif")),
+            (
+                "20px cursive,fantasy,monospace,sans-serif,serif,UnquotedFont,\"QuotedFont\\\\\\\",\"",
+                Some(
+                    "20px cursive, fantasy, monospace, sans-serif, serif, UnquotedFont, \"QuotedFont\\\\\\\",\"",
+                ),
+            ),
+            ("12px serif,", None),
+            ("12px ,serif", None),
+            ("12px serif,,monospace", None),
+            ("12px 'a' 'b'", None),
+            ("12px a 'b'", None),
+            ("12px 3D", None),
+            ("12px -1x", None),
+            ("12px serif bold", None),
+            ("12px sans-serif serif", None),
+            ("12px inherit", None),
+            ("12px Inherit", None),
+            ("12px default", None),
+            ("12px 'a\nb'", None),
+            ("12px serif !important", None),
+            ("12px serif;", None),
+            ("inherit", None),
+            ("10px {bogus}", None),
+            ("var(--x) serif", None),
+            ("12px var(--f)", None),
+            ("1em serif; background: green; margin: 10px", None),
+            ("12px\u{a0}serif", None),
+            // Not read here, so ignored: math functions, and units whose length needs a viewport, a container or the
+            // font's own metrics.
+            ("calc(10px + 2px) serif", None),
+            ("10vw serif", None),
+            ("1lh serif", None),
+            ("1cap serif", None),
+            // A system font is the platform's UI face at the default size (Chrome names Arial).
+            ("caption", Some("16px system-ui")),
+            ("  Menu  ", Some("16px system-ui")),
+            ("bold caption", None),
+            ("caption, serif", None),
+            ("12px caption", Some("12px caption")),
+        ];
+
+        let mut script = String::from("const ctx = createCanvas().getContext('2d');\n");
+        for (input, expected) in cases {
+            let want = expected.unwrap_or("13px Sentinel");
+            script.push_str(&format!(
+                "ctx.font = '13px Sentinel'; ctx.font = {input}; if (ctx.font !== {want}) throw new Error({label} + ' read back as ' + ctx.font + ', want ' + {want});\n",
+                input = js_string(input),
+                want = js_string(want),
+                label = js_string(input),
+            ));
+        }
+        // Every shorthand reads back as Chrome reads it, or the script throws naming the one that did not.
+        run_2d_frame("font_shorthands.js", &script);
+    }
+
+    /// The renderer is sent the font the facade read -- never the shorthand -- and only when it changes: an invalid
+    /// string sends nothing, and neither does one that reads as the font already set.
+    #[test]
+    fn a_font_reaches_the_renderer_as_what_the_facade_read() {
+        let script = r#"
+            const ctx = createCanvas().getContext('2d');
+            ctx.font = "italic bold 12pt 'Noto Sans', serif";
+            ctx.font = 'bogus';
+            ctx.font = 'italic 700 16px "Noto Sans",SERIF';
+            ctx.font = '1em monospace';
+            ctx.font = '13.333333px ""';
+        "#;
+        let ops = run_2d_frame("font_records.js", script);
+        let fonts: Vec<(f32, u16, bool, Vec<String>)> = canvas_commands(&ops)
+            .iter()
+            .filter_map(|command| match command {
+                Canvas2DCmd::SetFont { font } => {
+                    Some((font.size, font.weight, font.italic, font.families.to_vec()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            fonts,
+            vec![
+                (
+                    16.0,
+                    700,
+                    true,
+                    vec!["Noto Sans".to_owned(), "serif".to_owned()]
+                ),
+                (10.0, 400, false, vec!["monospace".to_owned()]),
+                // The size is the one `font` reads back, six significant digits, and an empty name is a name.
+                (13.3333, 400, false, vec![String::new()]),
+            ]
+        );
+    }
+
+    /// `measureText` measures the font `fillText` draws: the host's measurer is handed the facade's font, the whole
+    /// family list included, and a font that is not one changes nothing it is handed.
+    #[test]
+    fn a_measurement_is_of_the_font_the_facade_read() {
+        use shared::protocol::render_cmd::{CanvasCmd, TextMetrics};
+        use shared::text_measurer::TextMeasurer;
+
+        #[derive(Default)]
+        struct Recorder(std::sync::Mutex<Vec<(String, Vec<String>, f32, u16, bool)>>);
+        impl TextMeasurer for Recorder {
+            fn measure(
+                &self,
+                text: &str,
+                families: &std::sync::Arc<Vec<String>>,
+                font_size: f32,
+                weight: u16,
+                italic: bool,
+            ) -> TextMetrics {
+                self.0.lock().unwrap().push((
+                    text.to_owned(),
+                    families.to_vec(),
+                    font_size,
+                    weight,
+                    italic,
+                ));
+                TextMetrics {
+                    width: text.len() as f32,
+                    actual_bounding_box_left: 0.0,
+                    actual_bounding_box_right: 0.0,
+                    actual_bounding_box_ascent: 0.0,
+                    actual_bounding_box_descent: 0.0,
+                    font_bounding_box_ascent: 0.0,
+                    font_bounding_box_descent: 0.0,
+                    em_height_ascent: 0.0,
+                    em_height_descent: 0.0,
+                    hanging_baseline: 0.0,
+                    alphabetic_baseline: 0.0,
+                    ideographic_baseline: 0.0,
+                }
+            }
+            fn line_height(
+                &self,
+                _families: &std::sync::Arc<Vec<String>>,
+                _font_size: f32,
+                _weight: u16,
+                _italic: bool,
+            ) -> f32 {
+                0.0
+            }
+            fn register_font(&self, _aliases: &[String], _bytes: &[u8]) -> Option<String> {
+                None
+            }
+        }
+
+        let recorder = std::sync::Arc::new(Recorder::default());
+        let (mut host_state, render_rx) = new_test_host_state();
+        host_state.text_measurer = Some(recorder.clone());
+        let mut runtime = runtime_over(host_state);
+        std::thread::spawn(move || {
+            while let Ok(command) = render_rx.recv() {
+                if let RenderCommand::Canvas(CanvasCmd::GetInfo { id: _, resp }) = command {
+                    resp.send(Ok((64, 64)));
+                }
+            }
+        });
+        runtime
+            .exec_script(
+                "font_measure.js",
+                r#"
+                    const ctx = createCanvas().getContext('2d');
+                    if (ctx.measureText('ab').width !== 2) throw new Error('the measurer was not asked');
+                    ctx.font = "bold 2em 'Microsoft YaHei', \"Noto Serif\", serif";
+                    ctx.measureText('cde');
+                    ctx.font = 'not a font';
+                    ctx.measureText('f');
+                "#,
+            )
+            .expect("script must not throw");
+        let seen = recorder.0.lock().unwrap();
+        assert_eq!(
+            *seen,
+            vec![
+                (
+                    "ab".to_owned(),
+                    vec!["sans-serif".to_owned()],
+                    10.0,
+                    400,
+                    false
+                ),
+                (
+                    "cde".to_owned(),
+                    vec![
+                        "Microsoft YaHei".to_owned(),
+                        "Noto Serif".to_owned(),
+                        "serif".to_owned()
+                    ],
+                    20.0,
+                    700,
+                    false
+                ),
+                (
+                    "f".to_owned(),
+                    vec![
+                        "Microsoft YaHei".to_owned(),
+                        "Noto Serif".to_owned(),
+                        "serif".to_owned()
+                    ],
+                    20.0,
+                    700,
+                    false
+                ),
+            ]
+        );
+    }
+
+    /// `ImageData` is an interface: constructed as the specification's two constructors have it, returned by every
+    /// method that makes one, and the only thing `putImageData` takes. Every expectation is Chrome's except where the
+    /// comment says otherwise; migo-conformance's `canvas2d-spec/image-data-*` asks the same through every platform.
+    #[test]
+    fn image_data_is_the_interface_the_specification_has() {
+        let script = r#"
+            const ctx = createCanvas().getContext('2d');
+            const outcome = (f) => { try { const v = f(); return v instanceof ImageData ? [v.width, v.height, v.data.length, v.colorSpace].join() : String(v); } catch (e) { return 'threw ' + e.name; } };
+            const cases = [
+                [() => new ImageData(2, 3), '2,3,24,srgb'],
+                [() => new ImageData(2 ** 32 + 1, 1), '1,1,4,srgb'],
+                [() => new ImageData(1.9, 1), '1,1,4,srgb'],
+                [() => new ImageData('2', '2'), '2,2,16,srgb'],
+                [() => new ImageData(0, 1), 'threw IndexSizeError'],
+                [() => new ImageData(1, 0), 'threw IndexSizeError'],
+                [() => new ImageData(1n, 1), 'threw TypeError'],
+                [() => new ImageData(Symbol(), 1), 'threw TypeError'],
+                [() => new ImageData(1), 'threw TypeError'],
+                [() => new ImageData(), 'threw TypeError'],
+                [() => ImageData(1, 1), 'threw TypeError'],
+                [() => new ImageData(1, 1, { colorSpace: 'display-p3' }), '1,1,4,display-p3'],
+                [() => new ImageData(1, 1, { colorSpace: 'bogus' }), 'threw TypeError'],
+                [() => new ImageData(1, 1, 5), 'threw TypeError'],
+                [() => new ImageData(1, 1, null), '1,1,4,srgb'],
+                [() => new ImageData(1, 1, { colorSpace: undefined }), '1,1,4,srgb'],
+                [() => new ImageData(new Uint8ClampedArray(8), 1), '1,2,8,srgb'],
+                [() => new ImageData(new Uint8ClampedArray(8), 1, undefined), '1,2,8,srgb'],
+                [() => new ImageData(new Uint8ClampedArray(8), 2, 1, { colorSpace: 'display-p3' }), '2,1,8,display-p3'],
+                [() => new ImageData(new Uint8ClampedArray(8), 1, 3), 'threw IndexSizeError'],
+                [() => new ImageData(new Uint8ClampedArray(8), 3), 'threw IndexSizeError'],
+                [() => new ImageData(new Uint8ClampedArray(8), 0), 'threw IndexSizeError'],
+                [() => new ImageData(new Uint8ClampedArray(0), 1), 'threw InvalidStateError'],
+                [() => new ImageData(new Uint8ClampedArray(6), 1), 'threw InvalidStateError'],
+                [() => new ImageData(new Uint8Array(4), 1), 'threw IndexSizeError'],
+                [() => new ImageData({ length: 4 }, 1), 'threw IndexSizeError'],
+                [() => { const a = new Uint8ClampedArray(4); return new ImageData(a, 1).data === a; }, 'true'],
+                [() => { const d = new ImageData(1, 1); d.width = 5; return d.width; }, '1'],
+                [() => Object.getOwnPropertyDescriptor(ImageData.prototype, 'width').get.call({}), 'threw TypeError'],
+                [() => Object.prototype.toString.call(new ImageData(1, 1)), '[object ImageData]'],
+                [() => Object.keys(ImageData.prototype).join(' '), 'width height data colorSpace'],
+                [() => ImageData.length, '2'],
+                // A size past what a readback may hold is an allocation that fails: a RangeError (Chrome: IndexSizeError).
+                [() => new ImageData(-1, 1), 'threw RangeError'],
+                [() => ctx.createImageData(2, 3), '2,3,24,srgb'],
+                [() => ctx.createImageData(-2, 2), '2,2,16,srgb'],
+                [() => ctx.createImageData(1, 1, { colorSpace: 'display-p3' }), '1,1,4,display-p3'],
+                [() => ctx.createImageData(new ImageData(3, 1, { colorSpace: 'display-p3' })), '3,1,12,display-p3'],
+                [() => ctx.createImageData(1, 1, { colorSpace: 'x' }), 'threw TypeError'],
+                [() => ctx.createImageData(1, 1, 5), 'threw TypeError'],
+                [() => ctx.createImageData({ width: 1, height: 1, data: new Uint8ClampedArray(4) }), 'threw TypeError'],
+                [() => ctx.createImageData(null), 'threw TypeError'],
+                [() => ctx.createImageData(5), 'threw TypeError'],
+                [() => ctx.createImageData(), 'threw TypeError'],
+                [() => ctx.createImageData(NaN, 1), 'threw TypeError'],
+                [() => ctx.createImageData(2 ** 31, 1), 'threw TypeError'],
+                [() => ctx.createImageData(0, 1), 'threw IndexSizeError'],
+                [() => ctx.getImageData(NaN, 0, 1, 1), 'threw TypeError'],
+                [() => ctx.getImageData(0, 0, 2 ** 31, 1), 'threw TypeError'],
+                [() => ctx.getImageData(0, 0, 1), 'threw TypeError'],
+                [() => ctx.getImageData(0, 0, 1, 1, { colorSpace: 'x' }), 'threw TypeError'],
+                [() => ctx.getImageData(0, 0, 0, 1), 'threw IndexSizeError'],
+                [() => ctx.putImageData({ width: 1, height: 1, data: new Uint8ClampedArray(4) }, 0, 0), 'threw TypeError'],
+                [() => ctx.putImageData(new ImageData(1, 1), 2 ** 31, 0), 'threw TypeError'],
+                [() => ctx.putImageData(new ImageData(1, 1), NaN, 0), 'threw TypeError'],
+                [() => ctx.putImageData(new ImageData(1, 1), 0, 0, NaN, 0, 1, 1), 'threw TypeError'],
+                [() => ctx.putImageData(new ImageData(1, 1), 0), 'threw TypeError'],
+                [() => ctx.putImageData(new ImageData(1, 1), 0, 0, 0, 0, 1), 'threw TypeError'],
+                [() => ctx.putImageData(new ImageData(1, 1), 0, 0, 0, 0, 1, 1, 'ignored'), 'undefined'],
+                [() => ctx.putImageData(new ImageData(1, 1), -(2 ** 31), 0), 'undefined'],
+                // A buffer transferred away: nothing left to put.
+                [() => { const d = new ImageData(1, 1); d.data.buffer.transfer(); return ctx.putImageData(d, 0, 0); }, 'threw InvalidStateError'],
+                [() => new CanvasGradient(), 'threw TypeError'],
+                [() => new CanvasPattern(), 'threw TypeError'],
+                [() => new TextMetrics(), 'threw TypeError'],
+                [() => Object.prototype.toString.call(ctx.createLinearGradient(0, 0, 1, 1)), '[object CanvasGradient]'],
+                [() => Object.keys(CanvasGradient.prototype).join(' '), 'addColorStop'],
+            ];
+            for (const [f, want] of cases) {
+                const got = outcome(f);
+                if (got !== want) throw new Error(f.toString() + ' gave ' + got + ', want ' + want);
+            }
+        "#;
+        run_2d_frame("image_data_interface.js", script);
+    }
+
+    /// `putImageData` converts an ImageData in Display P3 to the canvas's sRGB on the way to the renderer, and leaves
+    /// one in sRGB as it is. The numbers are Chrome's for an unpremultiplied opaque pixel.
+    #[test]
+    fn put_image_data_converts_display_p3_to_the_canvas_srgb() {
+        let script = r#"
+            const ctx = createCanvas().getContext('2d');
+            ctx.putImageData(new ImageData(new Uint8ClampedArray([128, 64, 32, 255, 255, 0, 0, 255]), 2, 1, { colorSpace: 'display-p3' }), 1, 2);
+            ctx.putImageData(new ImageData(new Uint8ClampedArray([128, 64, 32, 255]), 1, 1), 0, 0);
+        "#;
+        let ops = run_2d_frame("put_image_data_p3.js", script);
+        let puts: Vec<(i32, i32, u32, u32, Vec<u8>)> = canvas_commands(&ops)
+            .iter()
+            .filter_map(|command| match command {
+                Canvas2DCmd::PutImageData {
+                    x,
+                    y,
+                    width,
+                    height,
+                    pixels,
+                } => Some((*x, *y, *width, *height, pixels.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            puts,
+            vec![
+                (1, 2, 2, 1, vec![138, 59, 21, 255, 255, 0, 0, 255]),
+                (0, 0, 1, 1, vec![128, 64, 32, 255]),
+            ]
+        );
+    }
+
+    /// `getImageData` in Display P3 reads the canvas's sRGB pixels and converts them, and is an ImageData in that colour
+    /// space; in sRGB it is the snapshot the renderer took, an ImageData too. The numbers are Chrome's.
+    #[test]
+    fn get_image_data_converts_to_display_p3_when_asked() {
+        use shared::protocol::render_cmd::CanvasCmd;
+
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        std::thread::spawn(move || {
+            while let Ok(command) = render_rx.recv() {
+                match command {
+                    RenderCommand::Canvas(CanvasCmd::GetInfo { id: _, resp }) => {
+                        resp.send(Ok((64, 64)))
+                    }
+                    RenderCommand::Canvas2D {
+                        cmd: Canvas2DCmd::GetImageData { resp, .. },
+                        ..
+                    } => resp.send(Ok(vec![255, 0, 0, 255, 0, 255, 0, 255, 128, 64, 32, 255])),
+                    RenderCommand::Canvas2D {
+                        cmd: Canvas2DCmd::ReadSnapshotPixels { resp, .. },
+                        ..
+                    } => resp.send(Ok(vec![1, 2, 3, 4])),
+                    _ => {}
+                }
+            }
+        });
+        runtime
+            .exec_script(
+                "get_image_data_p3.js",
+                r#"
+                    const ctx = createCanvas().getContext('2d');
+                    const d = ctx.getImageData(0, 0, 3, 1, { colorSpace: 'display-p3' });
+                    const got = [d instanceof ImageData, d.colorSpace, d.width, d.height, ...d.data].join();
+                    const want = 'true,display-p3,3,1,234,51,35,255,117,251,76,255,120,67,39,255';
+                    if (got !== want) throw new Error('read ' + got + ', want ' + want);
+                    // In sRGB a read is the snapshot the renderer took, an ImageData all the same.
+                    const snapshot = ctx.getImageData(0, 0, 1, 1);
+                    const read = [snapshot instanceof ImageData, snapshot.colorSpace, ...snapshot.data].join();
+                    if (read !== 'true,srgb,1,2,3,4') throw new Error('the snapshot read ' + read);
+                "#,
+            )
+            .expect("script must not throw");
+    }
+
+    /// `measureText` answers a `TextMetrics`: read-only, a new object each call, its members on the prototype.
+    #[test]
+    fn a_measurement_is_a_text_metrics() {
+        let script = r#"
+            'use strict';
+            const ctx = createCanvas().getContext('2d');
+            const a = ctx.measureText('abc');
+            const b = ctx.measureText('abc');
+            if (!(a instanceof TextMetrics)) throw new Error('not a TextMetrics');
+            if (a === b) throw new Error('the same object twice');
+            if (a.width !== b.width) throw new Error('two widths for one text');
+            let threw = false;
+            try { a.width = 1; } catch (e) { threw = e instanceof TypeError; }
+            if (!threw) throw new Error('width was writable');
+            if (Object.keys(a).length !== 0) throw new Error('own members ' + Object.keys(a));
+            const members = Object.keys(TextMetrics.prototype).join(' ');
+            const want = 'width actualBoundingBoxLeft actualBoundingBoxRight fontBoundingBoxAscent fontBoundingBoxDescent'
+                + ' actualBoundingBoxAscent actualBoundingBoxDescent emHeightAscent emHeightDescent hangingBaseline'
+                + ' alphabeticBaseline ideographicBaseline';
+            if (members !== want) throw new Error('members ' + members);
+            if (Object.prototype.toString.call(a) !== '[object TextMetrics]') throw new Error('class string');
+        "#;
+        // Measuring draws nothing, so there is no frame to wait for: the commands are drained, the script is the test.
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        std::thread::spawn(move || {
+            while let Ok(command) = render_rx.recv() {
+                if let RenderCommand::Canvas(shared::protocol::render_cmd::CanvasCmd::GetInfo {
+                    id: _,
+                    resp,
+                }) = command
+                {
+                    resp.send(Ok((64, 64)));
+                }
+            }
+        });
+        runtime
+            .exec_script("text_metrics.js", script)
+            .expect("script must not throw");
+    }
+
+    /// The 2D context's arguments are converted as WebIDL converts them -- counted, a Symbol or a BigInt where a number
+    /// or a string is wanted a TypeError, a `double` that is not finite a TypeError, a sequence iterated, an image source
+    /// checked -- and its keyword attributes ignore what is not a keyword. Every expectation is Chrome's except where the
+    /// comment says otherwise; migo-conformance's `canvas2d-spec/arguments-*` asks the same through every platform.
+    #[test]
+    fn canvas2d_arguments_are_converted_as_webidl_has_them() {
+        let script = r#"
+            const ctx = createCanvas().getContext('2d');
+            // Canvases as the context reads one -- a renderer id and a size -- without a render thread to make them.
+            const tile = { _rid: 900, width: 2, height: 2, getContext() { return null; } };
+            const empty = { _rid: 901, width: 0, height: 0, getContext() { return null; } };
+            const name = (v) => v === undefined ? 'undefined' : v === null ? 'null'
+                : v instanceof CanvasGradient ? 'CanvasGradient' : v instanceof CanvasPattern ? 'CanvasPattern'
+                : Array.isArray(v) ? '[' + v.join() + ']' : String(v);
+            const outcome = (f) => { try { return name(f()); } catch (e) { return 'threw ' + e.name; } };
+            const gradient = () => ctx.createLinearGradient(0, 0, 1, 1);
+            const matrix = () => { const m = ctx.getTransform(); return [m.a, m.d, m.e]; };
+            const cases = [
+                // Counted: a call short of its required arguments, or between two overloads, is a TypeError.
+                [() => ctx.fillRect(0, 0, 1), 'threw TypeError'],
+                [() => ctx.strokeRect(0, 0, 1), 'threw TypeError'],
+                [() => ctx.clearRect(0, 0, 1), 'threw TypeError'],
+                [() => ctx.moveTo(1), 'threw TypeError'],
+                [() => ctx.lineTo(1), 'threw TypeError'],
+                [() => ctx.quadraticCurveTo(0, 0, 1), 'threw TypeError'],
+                [() => ctx.bezierCurveTo(0, 0, 1, 1, 0), 'threw TypeError'],
+                [() => ctx.arc(0, 0, 1, 0), 'threw TypeError'],
+                [() => ctx.arcTo(0, 0, 1, 1), 'threw TypeError'],
+                [() => ctx.rect(0, 0, 1), 'threw TypeError'],
+                [() => ctx.ellipse(0, 0, 1, 1, 0, 0), 'threw TypeError'],
+                [() => ctx.translate(1), 'threw TypeError'],
+                [() => ctx.scale(2), 'threw TypeError'],
+                [() => ctx.rotate(), 'threw TypeError'],
+                [() => ctx.transform(1, 2, 3, 4, 5), 'threw TypeError'],
+                [() => ctx.setTransform(1, 2, 3), 'threw TypeError'],
+                [() => ctx.fillText(), 'threw TypeError'],
+                [() => ctx.fillText('x', 0), 'threw TypeError'],
+                [() => ctx.strokeText('x', 0), 'threw TypeError'],
+                [() => ctx.measureText(), 'threw TypeError'],
+                [() => ctx.setLineDash(), 'threw TypeError'],
+                [() => ctx.createLinearGradient(0, 0, 1), 'threw TypeError'],
+                [() => ctx.createRadialGradient(0, 0, 1, 0, 0), 'threw TypeError'],
+                [() => ctx.createConicGradient(0, 0), 'threw TypeError'],
+                [() => gradient().addColorStop(0.5), 'threw TypeError'],
+                [() => ctx.createPattern(tile), 'threw TypeError'],
+                [() => ctx.drawImage(tile, 0), 'threw TypeError'],
+                [() => ctx.drawImage(tile, 0, 0, 1), 'threw TypeError'],
+                [() => ctx.drawImage(tile, 0, 0, 1, 1, 0), 'threw TypeError'],
+                [() => ctx.drawImage(tile, 0, 0, 1, 1, 0, 0, 1, 1, 'ignored'), 'undefined'],
+                [() => ctx.fillText('x', 0, 0, undefined), 'undefined'],
+                // Converted: a BigInt or a Symbol is not a number, a Symbol not a string.
+                [() => ctx.fillRect(1n, 0, 1, 1), 'threw TypeError'],
+                [() => ctx.moveTo(Symbol(), 0), 'threw TypeError'],
+                [() => ctx.arc(0, 0, -1, 0, 1n), 'threw TypeError'],
+                [() => ctx.drawImage(tile, 1n, 0), 'threw TypeError'],
+                [() => ctx.fillText(Symbol(), 0, 0), 'threw TypeError'],
+                [() => { ctx.fillStyle = Symbol(); }, 'threw TypeError'],
+                [() => { ctx.lineCap = Symbol(); }, 'threw TypeError'],
+                [() => { ctx.globalCompositeOperation = Symbol(); }, 'threw TypeError'],
+                // A keyword attribute ignores what is not one of its keywords; `direction` is drawing state.
+                [() => { ctx.direction = 5; return ctx.direction; }, 'inherit'],
+                [() => { ctx.direction = 'rtl'; ctx.direction = 'up'; return ctx.direction; }, 'rtl'],
+                [() => { ctx.direction = 'ltr'; ctx.save(); ctx.direction = 'rtl'; ctx.restore(); return ctx.direction; }, 'ltr'],
+                // The factories' `double`s: not finite is a TypeError; a negative radius an IndexSizeError.
+                [() => ctx.createLinearGradient('a', 0, 1, 1), 'threw TypeError'],
+                [() => ctx.createLinearGradient(Infinity, 0, 1, 1), 'threw TypeError'],
+                [() => ctx.createLinearGradient('1', 0, 1, 1), 'CanvasGradient'],
+                [() => ctx.createLinearGradient(1n, 0, 1, 1), 'threw TypeError'],
+                [() => ctx.createRadialGradient(0, 0, 1, 0, 0, -1), 'threw IndexSizeError'],
+                [() => ctx.createRadialGradient(0, 0, -1, 0, NaN, 1), 'threw TypeError'],
+                [() => ctx.createConicGradient(NaN, 0, 0), 'threw TypeError'],
+                [() => gradient().addColorStop(-0.1, 'red'), 'threw IndexSizeError'],
+                [() => gradient().addColorStop(Infinity, 'red'), 'threw TypeError'],
+                [() => gradient().addColorStop(NaN, 'nope'), 'threw TypeError'],
+                [() => gradient().addColorStop(2, 'nope'), 'threw IndexSizeError'],
+                [() => gradient().addColorStop(0.5, null), 'threw SyntaxError'],
+                [() => gradient().addColorStop('0.5', 'red'), 'undefined'],
+                // A dash list is a sequence: iterated, its items numbers; one that is not finite or is negative leaves
+                // the list as it was.
+                [() => ctx.setLineDash(null), 'threw TypeError'],
+                [() => ctx.setLineDash('x'), 'threw TypeError'],
+                [() => ctx.setLineDash({ length: 2, 0: 1, 1: 2 }), 'threw TypeError'],
+                [() => ctx.setLineDash([1, 1n]), 'threw TypeError'],
+                [() => { ctx.setLineDash(new Set([3, 4])); return ctx.getLineDash(); }, '[3,4]'],
+                [() => { ctx.setLineDash(new Float32Array([1, 2])); return ctx.getLineDash(); }, '[1,2]'],
+                [() => { ctx.setLineDash([1, '2']); return ctx.getLineDash(); }, '[1,2]'],
+                [() => { ctx.setLineDash([7, 7]); ctx.setLineDash([1, 'x']); return ctx.getLineDash(); }, '[7,7]'],
+                // An image argument is an image, a bitmap or a canvas, the engine's own.
+                [() => ctx.drawImage(null, 0, 0), 'threw TypeError'],
+                [() => ctx.drawImage(undefined, 0, 0), 'threw TypeError'],
+                [() => ctx.drawImage({}, 0, 0), 'threw TypeError'],
+                [() => ctx.drawImage({}, NaN), 'threw TypeError'],
+                [() => ctx.drawImage(ctx.createImageData(1, 1), 0, 0), 'threw TypeError'],
+                [() => ctx.drawImage({ rid: 1, loaded: true, width: 1, height: 1 }, 0, 0), 'threw TypeError'],
+                [() => ctx.drawImage(empty, 0, 0), 'threw InvalidStateError'],
+                [() => ctx.drawImage(empty, NaN, 0), 'threw InvalidStateError'],
+                [() => ctx.drawImage(migo.createImage(), 0, 0), 'undefined'],
+                [() => ctx.createPattern(null, 'repeat'), 'threw TypeError'],
+                [() => ctx.createPattern({}, 'repeat'), 'threw TypeError'],
+                [() => ctx.createPattern(tile, undefined), 'threw SyntaxError'],
+                [() => ctx.createPattern(tile, 'REPEAT'), 'threw SyntaxError'],
+                [() => ctx.createPattern(tile, null), 'CanvasPattern'],
+                [() => ctx.createPattern(tile, ''), 'CanvasPattern'],
+                [() => ctx.createPattern(empty, 'bogus'), 'threw InvalidStateError'],
+                // The specification checks an image's usability before the repetition, so one still loading is a null
+                // pattern whatever the repetition (Chrome: a SyntaxError).
+                [() => ctx.createPattern(migo.createImage(), 'bogus'), 'null'],
+                [() => new ImageBitmap(), 'threw TypeError'],
+                // `setTransform(transform)`: a DOMMatrix2DInit, nothing for the identity, a mismatched pair a TypeError.
+                [() => { ctx.setTransform(2, 0, 0, 2, 0, 0); ctx.setTransform(); return matrix(); }, '[1,1,0]'],
+                [() => { ctx.setTransform(2, 0, 0, 2, 0, 0); ctx.setTransform(null); return matrix(); }, '[1,1,0]'],
+                [() => { ctx.setTransform({ m11: 2, m22: 3 }); return matrix(); }, '[2,3,0]'],
+                [() => { ctx.setTransform({ a: 2, d: 3, e: 4 }); return matrix(); }, '[2,3,4]'],
+                [() => ctx.setTransform({ a: 1, m11: 2 }), 'threw TypeError'],
+                [() => ctx.setTransform(5), 'threw TypeError'],
+                [() => { ctx.setTransform(2, 0, 0, 2, 0, 0); ctx.setTransform({ a: NaN }); return matrix(); }, '[2,2,0]'],
+            ];
+            for (const [f, want] of cases) {
+                const got = outcome(f);
+                if (got !== want) throw new Error(f.toString() + ' gave ' + got + ', want ' + want);
+            }
+        "#;
+        run_2d_frame("canvas2d_arguments.js", script);
+    }
+
+    /// A bitmap is drawn like the image it came from: `drawImage(bitmap)` and a pattern of one name its renderer id, and a
+    /// closed one is an InvalidStateError. (It used to be asked whether it had `loaded`, which a bitmap never has, so
+    /// it drew nothing.)
+    #[test]
+    fn an_image_bitmap_is_drawn() {
+        let script = r#"
+            const ctx = createCanvas().getContext('2d');
+            const image = migo.createImage();
+            // An image as a decode leaves it, without the decode: loaded, its renderer id, its size. No `src`, so the
+            // bitmap shares the id.
+            image._loaded = true;
+            image.complete = true;
+            image._shared_img_id = 0x40000003;
+            image.width = image.naturalWidth = 3;
+            image.height = image.naturalHeight = 2;
+            createImageBitmap(image).then((bitmap) => {
+                ctx.drawImage(bitmap, 4, 5);
+                ctx.fillStyle = ctx.createPattern(bitmap, 'repeat');
+                bitmap.close();
+                let threw = null;
+                try { ctx.drawImage(bitmap, 0, 0); } catch (e) { threw = e.name; }
+                if (threw !== 'InvalidStateError') globalThis.failure = 'a closed bitmap drew: ' + threw;
+            }).catch((e) => { globalThis.failure = e; });
+        "#;
+        let ops = run_2d_frame("image_bitmap.js", script);
+        let commands = canvas_commands(&ops);
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                Canvas2DCmd::DrawImage { image_id, dx, dy, dw, dh, .. }
+                    if *image_id == 0x40000003 && *dx == 4.0 && *dy == 5.0 && *dw == 3.0 && *dh == 2.0
+            )),
+            "the bitmap was not drawn: {commands:?}"
+        );
+        assert!(
+            commands.iter().any(|command| matches!(
+                command,
+                Canvas2DCmd::SetFillStylePattern { image_id, .. } if *image_id == 0x40000003
+            )),
+            "no pattern of the bitmap: {commands:?}"
         );
     }
 
@@ -8771,7 +9501,9 @@ pub(super) mod tests {
                 empty.width = 0;
                 const noPixels = named(() => ctx.createPattern(empty, "repeat"));
                 if (noPixels !== "InvalidStateError") throw new Error("empty canvas: " + noPixels);
-                if (ctx.createPattern({}, "repeat") !== null) throw new Error("not a source");
+                // Not an image source at all: a TypeError, as the WebIDL union has it (it used to be a null pattern).
+                const notASource = named(() => ctx.createPattern({}, "repeat"));
+                if (notASource !== "TypeError") throw new Error("not a source: " + notASource);
                 "#,
             )
             .expect("patterns must execute");

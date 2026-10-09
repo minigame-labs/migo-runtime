@@ -15,7 +15,7 @@
 //! the renderer that has the state to judge them.
 
 use shared::protocol::render_cmd::{
-    Canvas2DCmd, GradientType, TextAlign, TextBaseline, TextDirection,
+    Canvas2DCmd, CanvasFont, GradientType, TextAlign, TextBaseline, TextDirection,
 };
 
 use frame_wire::canvas2d::*;
@@ -140,6 +140,7 @@ pub fn decode_record(opcode: u32, record: &[u32]) -> Option<Canvas2DCmd> {
 
         OP2D_SAVE => Canvas2DCmd::Save,
         OP2D_RESTORE => Canvas2DCmd::Restore,
+        OP2D_RESET => Canvas2DCmd::Reset,
         OP2D_SET_TRANSFORM => Canvas2DCmd::SetTransform {
             a: f(record[1]),
             b: f(record[2]),
@@ -239,8 +240,20 @@ pub fn decode_record(opcode: u32, record: &[u32]) -> Option<Canvas2DCmd> {
         },
 
         // ── Text ────────────────────────────────────────────────────────────
+        // size, weight, slants, then the family names joined by NUL: the font as
+        // the facade read it. Fields no font it reads has are a producer this
+        // build cannot execute, as text that is not UTF-8 is.
         OP2D_SET_FONT => Canvas2DCmd::SetFont {
-            font: text_of(record, 1)?,
+            font: CanvasFont::from_parts(
+                f(record[1]),
+                record[2],
+                match record[3] {
+                    0 => false,
+                    1 => true,
+                    _ => return None,
+                },
+                &text_of(record, 4)?,
+            )?,
         },
         OP2D_FILL_TEXT => Canvas2DCmd::FillText {
             text: text_of(record, 4)?,

@@ -124,7 +124,9 @@ impl Canvas2DSegment {
             | Canvas2DCmd::FillEvenOdd
             | Canvas2DCmd::Stroke
             | Canvas2DCmd::Clip
-            | Canvas2DCmd::ClipEvenOdd => {
+            | Canvas2DCmd::ClipEvenOdd
+            // The whole canvas cleared, and every state the bounds assumed gone.
+            | Canvas2DCmd::Reset => {
                 self.poison_dirty();
             }
 
@@ -1060,7 +1062,11 @@ impl UnifiedFrameCollector {
     }
 
     #[inline]
-    pub(crate) fn set_font(&mut self, canvas_id: u32, font: String) {
+    pub(crate) fn set_font(
+        &mut self,
+        canvas_id: u32,
+        font: shared::protocol::render_cmd::CanvasFont,
+    ) {
         self.push_canvas2d(canvas_id, Canvas2DCmd::SetFont { font });
     }
 

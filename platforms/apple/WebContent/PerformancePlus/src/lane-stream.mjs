@@ -27,7 +27,6 @@ import {
   toI32,
   u32ArrayOf,
 } from "./op-args.mjs";
-import { parseFontShorthand } from "./css-font.mjs";
 import * as R from "./render-opcodes.mjs";
 
 const OUT_OF_MEMORY = 0x0505;
@@ -808,18 +807,20 @@ export function op_create_context_2d(canvasId) {
 }
 
 /**
- * `ctx.font = "..."`, which answers whether the shorthand parsed.
- *
- * The parser is the producer's own port of the host's, held to it by
- * `scripts/test-css-font-agreement.sh`. A shorthand that does not parse is a
- * no-op that keeps the previous font -- what a browser does, and what the op
- * this stands in for does -- so no record is written for one.
+ * `ctx.font = "..."`, as the facade read it: the size, the weight, whether the
+ * face slants, and the family names joined by NUL. Whether the string was a
+ * font is the facade's answer, given before this is called, so the record
+ * carries the font and not the shorthand: the host parses nothing.
  */
-export function op_set_font(canvasId, font) {
-  const text = stringOf(font, "font");
-  if (parseFontShorthand(text) === null) return false;
-  emit2DText(smiU32(canvasId, "canvas_id"), R.OP2D_SET_FONT, text);
-  return true;
+export function op_set_font(canvasId, size, weight, italic, families) {
+  emit2DText(
+    smiU32(canvasId, "canvas_id"),
+    R.OP2D_SET_FONT,
+    stringOf(families, "families"),
+    f32BitsOf(size, "size"),
+    smiU32(weight, "weight"),
+    toBool(italic, "italic") ? 1 : 0,
+  );
 }
 
 export function op_fill_text(canvasId, text, x, y, maxWidth) {

@@ -42,7 +42,7 @@ use raf::*;
 use webgl::*;
 
 extension!(host_v8_webgl,
-    deps = [host_v8_console, host_v8_base],
+    deps = [host_v8_console, host_v8_base, host_v8_image],
     ops = [
         op_viewport,
         op_clear_color,
@@ -194,7 +194,6 @@ extension!(host_v8_webgl,
 
         // 2D Context (sync ops)
         op_create_context_2d,
-        op_measure_text,
         op_measure_text_flat,
         op_get_image_data,
         op_capture_canvas2d_snapshot,

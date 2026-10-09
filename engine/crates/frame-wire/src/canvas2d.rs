@@ -113,17 +113,19 @@ pub const OP2D_CREATE_CONTEXT: u32 = 549;
 
 // ─── Text (550..=556) ────────────────────────────────────────────────────────
 //
-// Everything above is numbers. Text is the block's first payload: a font
-// shorthand and a string to draw, which is why the two payload record shapes
-// the resource block introduced are used here rather than restated.
+// Everything above is numbers. Text is the block's first payload: a font's
+// family names and a string to draw, which is why the two payload record
+// shapes the resource block introduced are used here rather than restated.
 
-/// The font shorthand, as CSS writes it: `italic bold 16px "Noto Sans", sans`.
+/// A font, as the facade read `ctx.font`: `H size:F weight slants byte_length |
+/// utf8`, the bytes the family names joined by NUL.
 ///
-/// `H byte_length | utf8`. The producer answers `setFont` locally -- the op it
-/// stands in for returns whether the shorthand parses -- so a record only ever
-/// carries a shorthand the producer already parsed. The host parses it again,
-/// because it is the one that has to turn it into a typeface, and because a
-/// record is not trusted for being well-formed.
+/// Not the shorthand. The facade is its only reader -- `ctx.font =` answers at
+/// once whether the string was a font, and `font` reads back its serialisation
+/// -- so what crosses is what it read: the size in CSS pixels, the weight
+/// (1..=1000), whether the face slants (0 or 1), and the families. The host
+/// checks those fields (`CanvasFont::from_parts`) because a record is not
+/// trusted for being well-formed, and parses nothing.
 pub const OP2D_SET_FONT: u32 = 550;
 
 /// `fillText(text, x, y, maxWidth)`: `H x:F y:F max_width:F byte_length | utf8`.
@@ -370,8 +372,13 @@ pub const OP2D_STROKE_PATH: u32 = 575;
 /// `clip(path, fillRule)` with a `Path2D`: `H rule:U count path...`. See [`OP2D_FILL_PATH`].
 pub const OP2D_CLIP_PATH: u32 = 576;
 
+/// `reset()`: `H`. The context's default state again -- the bitmap transparent black, the state stack empty, every
+/// attribute and the transform at its default, the current path empty -- without the surface being made again, which
+/// is what assigning the canvas's size does.
+pub const OP2D_RESET: u32 = 577;
+
 /// One past the last 2D opcode in this block.
-pub const OP2D_END: u32 = 577;
+pub const OP2D_END: u32 = 578;
 
 /// The most words of segments a path carried by value may hold: some 50,000 cubic curves, far above a shape anybody
 /// keeps in a `Path2D` and far below a record that would cost a frame anything.
@@ -534,7 +541,7 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
 
         OP2D_FILL_RECT | OP2D_STROKE_RECT | OP2D_CLEAR_RECT => (5, &[]),
 
-        OP2D_SAVE | OP2D_RESTORE | OP2D_RESET_TRANSFORM => (1, &[]),
+        OP2D_SAVE | OP2D_RESTORE | OP2D_RESET_TRANSFORM | OP2D_RESET => (1, &[]),
         OP2D_SET_TRANSFORM => (7, &[]),
         OP2D_TRANSLATE | OP2D_SCALE => (3, &[]),
         OP2D_ROTATE => (2, &[]),
@@ -577,15 +584,8 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
         // The payload records: their length is a word of their own rather than
         // their word count. Both shapes are the ones the resource block
         // introduced; see `RecordSpec::Bytes` and `Words`.
-        OP2D_SET_FONT => {
-            return Some(RecordSpec::Bytes {
-                prefix_words: 1,
-                presence_word: None,
-                text: true,
-                stageable: false,
-            });
-        }
-        OP2D_FILL_TEXT | OP2D_STROKE_TEXT => {
+        // size, weight, slants | x, y, max_width; then the text
+        OP2D_SET_FONT | OP2D_FILL_TEXT | OP2D_STROKE_TEXT => {
             return Some(RecordSpec::Bytes {
                 prefix_words: 4,
                 presence_word: None,

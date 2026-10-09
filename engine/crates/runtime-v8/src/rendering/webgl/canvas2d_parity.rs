@@ -79,7 +79,7 @@ fn batch_commands(batch: &CanvasBatchPayload) -> Vec<String> {
 #[test]
 #[ignore = "needs the producer's packets from node; run through scripts/test-performance-plus-engine-contract.sh"]
 fn the_producer_s_text_records_decode_to_the_commands_the_ops_build() {
-    compare_fixture("MIGO_CANVAS2D_PARITY_DIR", "canvas2d-text-calls.js", 17);
+    compare_fixture("MIGO_CANVAS2D_PARITY_DIR", "canvas2d-text-calls.js", 18);
 }
 
 /// The same question for the two styles a colour cannot express.

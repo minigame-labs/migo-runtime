@@ -1,28 +1,11 @@
 use std::time::{Duration, Instant};
 
-/// Puts the frame timestamps of a host vsync clock on the process timeline.
-///
-/// The scheduler works in time since the first vsync -- the host's clock has an arbitrary base, and
-/// the scheduler only ever compares and subtracts -- but the timestamp content is handed has to be
-/// on the timeline `performance.now()` counts on (`shared::time_origin`). The first frame is
-/// stamped with the process time at which it arrived and every later one keeps its distance from
-/// it, so the host clock's own steadiness is preserved and only its base is replaced.
-#[derive(Default)]
-pub struct RafTimeline {
-    anchor_ms: Option<f64>,
-}
-
-impl RafTimeline {
-    /// `raf_time_ms` is the scheduler's (zero at the first vsync), `process_now_ms` the process
-    /// timeline's reading as this frame is handled.
-    pub fn align(&mut self, raf_time_ms: f64, process_now_ms: f64) -> f64 {
-        raf_time_ms + *self.anchor_ms.get_or_insert(process_now_ms - raf_time_ms)
-    }
-}
-
 pub struct FrameDecision {
     pub should_render: bool,
-    pub raf_time_ms: f64,
+    /// The vsync's place on the scheduler's own timeline, which starts at the first vsync it was given: pacing
+    /// compares and subtracts, so its zero is arbitrary. Not the timestamp content is handed -- that is the vsync's
+    /// time on the process timeline (`render_thread::VsyncFrameDecision::raf_time_ms`).
+    pub since_first_vsync_ms: f64,
 }
 
 pub struct FrameScheduler {
@@ -81,9 +64,9 @@ impl FrameScheduler {
     /// after an idle stall *is* the stall. Non-monotonic timestamps are dropped
     /// rather than believed -- `migo_session_notify_vsync` takes whatever the
     /// host's frame clock reports.
-    fn observe_gap(&mut self, raf_time_ms: f64) {
-        if let Some(previous) = self.last_vsync_ms.replace(raf_time_ms) {
-            let gap_ms = raf_time_ms - previous;
+    fn observe_gap(&mut self, since_first_vsync_ms: f64) {
+        if let Some(previous) = self.last_vsync_ms.replace(since_first_vsync_ms) {
+            let gap_ms = since_first_vsync_ms - previous;
             if gap_ms > 0.0 {
                 self.recent_gaps_ms = [Some(gap_ms), self.recent_gaps_ms[0]];
             }
@@ -92,11 +75,11 @@ impl FrameScheduler {
 
     pub fn on_vsync(&mut self, vsync_ts_ms: f64) -> FrameDecision {
         let origin = *self.time_origin_ms.get_or_insert(vsync_ts_ms);
-        let raf_time_ms = vsync_ts_ms - origin;
+        let since_first_vsync_ms = vsync_ts_ms - origin;
         let frame_interval_ms = 1000.0 / self.preferred_fps as f64;
         let tolerance_ms = self.vsync_tolerance_ms();
         let deadline = self.next_deadline_ms.unwrap_or(0.0);
-        let should_render = raf_time_ms + tolerance_ms >= deadline;
+        let should_render = since_first_vsync_ms + tolerance_ms >= deadline;
 
         let mut next_deadline_ms = deadline;
         if should_render {
@@ -107,19 +90,19 @@ impl FrameScheduler {
             // would iterate once per slot, and an app backgrounded for a minute
             // is 3600 of them. The `while` then cleans up after the multiply,
             // which `.floor() + 1.0` makes mathematically overshoot but
-            // floating-point rounding can land exactly on `raf_time_ms`.
-            if next_deadline_ms <= raf_time_ms {
+            // floating-point rounding can land exactly on `since_first_vsync_ms`.
+            if next_deadline_ms <= since_first_vsync_ms {
                 let skipped_slots =
-                    ((raf_time_ms - next_deadline_ms) / frame_interval_ms).floor() + 1.0;
+                    ((since_first_vsync_ms - next_deadline_ms) / frame_interval_ms).floor() + 1.0;
                 next_deadline_ms += skipped_slots * frame_interval_ms;
             }
 
-            // **Terminates because `raf_time_ms` cannot be infinite, and that is
+            // **Terminates because `since_first_vsync_ms` cannot be infinite, and that is
             // a fact about the FFI boundary rather than about this loop.** Both
             // producers take an integer nanosecond count — `frame_time_nanos:
             // i64` in `capi::migo_session_notify_vsync`, `jlong` in the Android
             // `onVsync` — and `i64 as f64 / 1e6` is always finite. Given a finite
-            // `raf_time_ms` and a positive `frame_interval_ms` (`clamp_fps`
+            // `since_first_vsync_ms` and a positive `frame_interval_ms` (`clamp_fps`
             // floors the rate at `MIN_FPS`), each iteration adds a positive
             // constant and the loop ends.
             //
@@ -131,16 +114,16 @@ impl FrameScheduler {
             // a branch every frame against an input the types already exclude, so
             // the boundary is where it belongs — and `shared::frame_rate::
             // requested_fps` already rejects non-finite input for this reason.
-            while next_deadline_ms <= raf_time_ms {
+            while next_deadline_ms <= since_first_vsync_ms {
                 next_deadline_ms += frame_interval_ms;
             }
         }
         self.next_deadline_ms = Some(next_deadline_ms);
-        self.observe_gap(raf_time_ms);
+        self.observe_gap(since_first_vsync_ms);
 
         FrameDecision {
             should_render,
-            raf_time_ms,
+            since_first_vsync_ms,
         }
     }
 
@@ -319,8 +302,8 @@ pub(crate) fn assert_session_relative_time_starts_from_first_vsync() {
     let mut scheduler = FrameScheduler::new(60);
     let first = scheduler.on_vsync(5.0);
     let second = scheduler.on_vsync(21.666);
-    assert_eq!(first.raf_time_ms, 0.0);
-    assert!(second.raf_time_ms > 0.0);
+    assert_eq!(first.since_first_vsync_ms, 0.0);
+    assert!(second.since_first_vsync_ms > 0.0);
 }
 
 #[cfg(test)]
@@ -347,43 +330,6 @@ pub(crate) fn assert_does_not_present_when_surface_is_not_ready() {
 
 #[cfg(test)]
 mod tests {
-    use super::RafTimeline;
-
-    /// The first frame is stamped with the process time it arrived at; each later one keeps its
-    /// distance from it. A game that spent two seconds loading used to see `ts = 0` on its first
-    /// frame against a `performance.now()` of 2000.
-    #[test]
-    fn the_first_frame_takes_the_process_time_and_the_rest_keep_their_spacing() {
-        let mut timeline = RafTimeline::default();
-        assert_eq!(timeline.align(0.0, 2_000.0), 2_000.0);
-        // the host's clock advances 16.667 ms a frame; the process clock a little unevenly
-        assert!((timeline.align(16.667, 2_017.3) - 2_016.667).abs() < 1e-9);
-        assert!((timeline.align(33.333, 2_033.9) - 2_033.333).abs() < 1e-9);
-    }
-
-    /// The anchor is taken once. A later frame arriving late (a stall, a background) does not move
-    /// the timeline, so the stall stays visible in the timestamps as the gap it was.
-    #[test]
-    fn a_late_frame_does_not_move_the_anchor() {
-        let mut timeline = RafTimeline::default();
-        timeline.align(0.0, 500.0);
-        let after_stall = timeline.align(16.667 * 60.0, 5_000.0);
-        assert!(
-            (after_stall - (500.0 + 16.667 * 60.0)).abs() < 1e-9,
-            "{after_stall}"
-        );
-    }
-
-    /// If the first frame handled is not at scheduler time zero (the scheduler's origin is the
-    /// first vsync it was given, so it is in practice) the anchor still makes the stamp equal the
-    /// process time at that frame.
-    #[test]
-    fn the_anchor_makes_the_first_stamp_equal_the_process_time_whatever_the_scheduler_said() {
-        let mut timeline = RafTimeline::default();
-        assert_eq!(timeline.align(7.5, 100.0), 100.0);
-        assert!((timeline.align(24.167, 118.0) - 116.667).abs() < 1e-9);
-    }
-
     use super::{
         assert_does_not_present_when_surface_is_not_ready,
         assert_hits_60fps_on_90hz_without_jittering_to_45fps,

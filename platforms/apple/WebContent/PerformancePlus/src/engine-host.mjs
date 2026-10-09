@@ -93,8 +93,10 @@ function deviceProfile(described) {
  *   stream, when the host serves one.
  * @param {(message: object) => void} options.report posts a message to the host,
  *   through the page; nothing waits for it.
+ * @param {MessagePort} [options.workerRelayPort] the page's half of content's `migo.createWorker`, when the host
+ *   transferred one (see `page-entry.mjs`, `worker-page-relay.mjs`).
  */
-export function bindEngineHost({ session, identity, socketCeilingBytes, sync, services, report }) {
+export function bindEngineHost({ session, identity, socketCeilingBytes, sync, services, report, workerRelayPort }) {
   if (bound !== null) throw new Error("the engine host is already bound");
   if (!(session instanceof FrameSession)) throw new TypeError("the engine host needs a FrameSession");
   if (typeof socketCeilingBytes !== "number" || !Number.isFinite(socketCeilingBytes)) {
@@ -106,6 +108,7 @@ export function bindEngineHost({ session, identity, socketCeilingBytes, sync, se
     sync,
     services,
     report,
+    workerRelayPort,
     socketCeilingBytes,
     launchNonce: identity.launchNonce,
     runtimeGeneration: identity.runtimeGeneration,

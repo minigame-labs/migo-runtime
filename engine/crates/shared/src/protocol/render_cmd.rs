@@ -1963,6 +1963,54 @@ pub enum TextDirection {
     Rtl,
 }
 
+/// A Canvas 2D font, as the facade read it from `ctx.font`.
+///
+/// The facade is the shorthand's only reader (`_cssFont` in `02_2d_context.js`): `ctx.font =` has to answer at once
+/// whether the string was a font and `font` reads back its serialisation, so the parse cannot wait for the renderer.
+/// What crosses is what it read -- an op's arguments in process, a record's words on Performance+ -- and both are
+/// checked into this by [`CanvasFont::from_parts`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct CanvasFont {
+    /// CSS pixels, `0..=`[`Self::MAX_SIZE`].
+    pub size: f32,
+    /// The CSS weight, `1..=1000`.
+    pub weight: u16,
+    /// Whether the face slants: `italic`, or `oblique` with no angle or a positive one.
+    pub italic: bool,
+    /// The family list, head first: the names as CSS read them, generic keywords in lower case. Never empty; a name
+    /// may be (`ctx.font = '12px ""'`).
+    pub families: Arc<Vec<String>>,
+}
+
+impl CanvasFont {
+    /// The largest size the facade sends: Chrome's limit, which a size past it is clamped to.
+    pub const MAX_SIZE: f32 = 10_000.0;
+
+    /// The font a facade's op or record carries: the size, the weight, whether it slants, and the family names joined by
+    /// NUL, which CSS replaces in what it reads and so no name holds. `None` for fields no font the facade reads has.
+    pub fn from_parts(size: f32, weight: u32, italic: bool, families: &str) -> Option<Self> {
+        if !(0.0..=Self::MAX_SIZE).contains(&size) || !(1..=1000).contains(&weight) {
+            return None;
+        }
+        Some(Self {
+            size,
+            weight: weight as u16,
+            italic,
+            families: Arc::new(families.split('\0').map(str::to_owned).collect()),
+        })
+    }
+
+    /// The canvas default, `10px sans-serif`.
+    pub fn canvas_default() -> Self {
+        Self {
+            size: 10.0,
+            weight: 400,
+            italic: false,
+            families: Arc::new(vec!["sans-serif".to_owned()]),
+        }
+    }
+}
+
 /// Result of measureText operation.
 ///
 /// Serialised with camelCase field names so JS consumers receive the
@@ -2291,7 +2339,7 @@ pub enum Canvas2DCmd {
         repeat_y: bool,
     },
     SetFont {
-        font: String,
+        font: CanvasFont,
     },
     SetTextAlign {
         align: TextAlign,
@@ -2308,6 +2356,9 @@ pub enum Canvas2DCmd {
     // ========== State methods ==========
     Save,
     Restore,
+    /// `reset()`: the context's default state -- the bitmap transparent black, the state stack and every clip gone,
+    /// every attribute and the transform at its default, the current path empty.
+    Reset,
 
     // ========== Transform methods ==========
     SetTransform {
@@ -2497,6 +2548,7 @@ impl Canvas2DCmd {
             | Self::SetTextDirection { .. }
             | Self::Save
             | Self::Restore
+            | Self::Reset
             | Self::SetTransform { .. }
             | Self::ResetTransform
             | Self::Translate { .. }
@@ -3339,7 +3391,11 @@ impl Canvas2DCmd {
             | Canvas2DCmd::StrokeText { text, .. }
             | Canvas2DCmd::MeasureText { text, .. } => text.capacity(),
             Canvas2DCmd::PutImageData { pixels, .. } => pixels.capacity(),
-            Canvas2DCmd::SetFont { font, .. } => font.capacity(),
+            Canvas2DCmd::SetFont { font } => font
+                .families
+                .iter()
+                .map(|family| std::mem::size_of::<String>() + family.capacity())
+                .sum(),
             Canvas2DCmd::SetLineDash { segments } => {
                 segments.capacity() * std::mem::size_of::<f32>()
             }
@@ -3785,7 +3841,7 @@ mod approx_size_tests {
 
 #[cfg(test)]
 mod text_context_tests {
-    use super::{Canvas2DCmd, RenderCmdResp, TextAlign, TextMetrics};
+    use super::{Canvas2DCmd, CanvasFont, RenderCmdResp, TextAlign, TextMetrics};
 
     #[test]
     fn only_text_execution_commands_require_the_shared_context() {
@@ -3820,7 +3876,7 @@ mod text_context_tests {
     fn text_state_and_non_text_commands_do_not_require_the_shared_context() {
         let commands = [
             Canvas2DCmd::SetFont {
-                font: "16px sans-serif".into(),
+                font: CanvasFont::canvas_default(),
             },
             Canvas2DCmd::SetTextAlign {
                 align: TextAlign::Center,

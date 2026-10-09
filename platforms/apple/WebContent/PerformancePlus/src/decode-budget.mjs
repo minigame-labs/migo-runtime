@@ -103,12 +103,12 @@ export const WORD_LIST_PREFIX_WORDS = new Map([
 ]);
 /**
  * The 2D payload records' shapes, from engine/crates/frame-wire/src/canvas2d.rs:
- * a font or a text is a string the decode copies out, pixels and a gradient's stops are bytes it copies out, a dash
+ * a font's family names or a text is a string the decode copies out, pixels and a gradient's stops are bytes it copies out, a dash
  * list or an image batch a vector of the record's own words. scripts/test-render-opcode-agreement.sh holds these
  * tables to the Rust specs, opcode by opcode.
  */
 export const CANVAS2D_PAYLOAD_PREFIX_WORDS = new Map([
-  [OP2D_SET_FONT, 1],
+  [OP2D_SET_FONT, 4],
   [OP2D_FILL_TEXT, 4],
   [OP2D_STROKE_TEXT, 4],
   [OP2D_PUT_IMAGE_DATA, 5],
@@ -126,7 +126,12 @@ export const CANVAS2D_WORD_LIST_PREFIX_WORDS = new Map([
 /** What a selected 2D record owns beyond its command. `canvas2d_payload_bytes`. */
 function canvas2dPayloadBytes(words, start, opcode, wordCount) {
   const prefix = CANVAS2D_PAYLOAD_PREFIX_WORDS.get(opcode);
-  if (prefix !== undefined) return words[start + prefix] + PAYLOAD_OVERHEAD_BYTES;
+  if (prefix !== undefined) {
+    const length = words[start + prefix];
+    // A font's family names, NUL-separated: as many as one per byte, plus one.
+    if (opcode === OP2D_SET_FONT) return length + STRING_BYTES * (length + 1) + PAYLOAD_OVERHEAD_BYTES;
+    return length + PAYLOAD_OVERHEAD_BYTES;
+  }
   const listPrefix = CANVAS2D_WORD_LIST_PREFIX_WORDS.get(opcode);
   if (listPrefix !== undefined) return (wordCount - listPrefix - 1) * 4 + PAYLOAD_OVERHEAD_BYTES;
   return 0;

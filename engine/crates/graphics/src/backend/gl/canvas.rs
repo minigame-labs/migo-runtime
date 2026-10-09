@@ -694,7 +694,12 @@ impl Canvas2DRenderer {
                 false
             }
             SetFont { font } => {
-                apply_parsed_font(&mut self.state, font);
+                // The facade read the shorthand; this is what it read.
+                let text = &mut self.state.text;
+                text.size = font.size;
+                text.weight = font.weight;
+                text.italic = font.italic;
+                text.families = font.families.clone();
                 false
             }
             SetTextAlign { align } => {
@@ -727,6 +732,17 @@ impl Canvas2DRenderer {
                 }
                 self.transform_changed();
                 false
+            }
+
+            // `reset()`: the specification's "reset the rendering context to its default state". The SkCanvas's saves go
+            // with the state stack -- they hold the clips and the transforms -- and the bitmap is cleared under the
+            // identity with no clip, so all of it is transparent black.
+            Reset => {
+                canvas.restore_to_count(1);
+                canvas.reset_matrix();
+                canvas.clear(skia_safe::Color::TRANSPARENT);
+                self.reset();
+                true
             }
 
             // ---- CTM mutators -------------------------------------
@@ -946,86 +962,6 @@ fn _force_use_imports() {
     let _ = TextAlign::Start;
     let _ = TextBaseline::Alphabetic;
     let _ = GradientType::Linear;
-}
-
-/// Apply a CSS `font` shorthand to a Canvas2D state.
-///
-/// Extracted so both the dispatch path and unit tests exercise the
-/// identical code: the test seam ensures `SetFont` can never regress
-/// to the previous "silently ignored" behaviour.  An unparseable
-/// shorthand leaves `state.text` untouched, matching Blink's "invalid
-/// font assignment is a no-op" policy.
-pub(crate) fn apply_parsed_font(state: &mut Canvas2DState, font: &str) {
-    if let Some(parsed) = shared::css_font_shorthand::parse_font_shorthand(font) {
-        // Diag: parsed OK.  Logged at trace because SetFont can
-        // fire once per UI element per frame in Cocos Creator
-        // games; trace keeps the hot path free unless the
-        // operator actively asks for it via RUST_LOG.
-        tracing::trace!(
-            raw = font,
-            family = parsed.families.first().map(String::as_str).unwrap_or(""),
-            families_len = parsed.families.len(),
-            size = parsed.size_px,
-            weight = parsed.weight,
-            italic = parsed.italic,
-            "SetFont parsed"
-        );
-        state.text.size = parsed.size_px;
-        state.text.weight = parsed.weight;
-        state.text.italic = parsed.italic;
-        state.text.families = std::sync::Arc::new(parsed.families);
-    } else {
-        // Invalid CSS font shorthand per WHATWG; the state stays
-        // at the previous value (browser-equivalent no-op).  We
-        // warn *once per distinct source location* because a game
-        // that keeps sending the same bad string would otherwise
-        // flood logcat — but the first occurrence is worth
-        // surfacing because it usually points at a typo or a
-        // parser gap we haven't closed yet.
-        shared::warn_once!(
-            raw = font,
-            "SetFont rejected: unparseable CSS font shorthand"
-        );
-    }
-}
-
-#[cfg(test)]
-mod set_font_tests {
-    use super::*;
-
-    #[test]
-    fn apply_parsed_font_updates_size_and_family() {
-        let mut state = Canvas2DState::default();
-        apply_parsed_font(
-            &mut state,
-            "italic bold 24px 'Noto Sans CJK SC', sans-serif",
-        );
-        assert_eq!(state.text.size, 24.0);
-        assert_eq!(state.text.weight, 700);
-        assert!(state.text.italic);
-        assert_eq!(
-            &*state.text.families,
-            &vec!["Noto Sans CJK SC".to_string(), "sans-serif".to_string()]
-        );
-    }
-
-    #[test]
-    fn apply_parsed_font_preserves_state_on_invalid_input() {
-        let mut state = Canvas2DState::default();
-        let before = state.text.clone();
-        // No size token → invalid per CSS; must be silent no-op.
-        apply_parsed_font(&mut state, "bold serif");
-        assert_eq!(state.text, before);
-    }
-
-    #[test]
-    fn apply_parsed_font_handles_pt_units() {
-        let mut state = Canvas2DState::default();
-        apply_parsed_font(&mut state, "12pt Helvetica");
-        // 12pt == 16px at 96dpi
-        assert!((state.text.size - 16.0).abs() < 1e-3);
-        assert_eq!(&*state.text.families, &vec!["Helvetica".to_string()]);
-    }
 }
 
 #[cfg(test)]

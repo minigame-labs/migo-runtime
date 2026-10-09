@@ -11,6 +11,8 @@
 // channel is listening, which is after this file was packaged and before this
 // page was loaded.
 
+import { bindWorkerRelay } from "./worker-page-relay.mjs";
+
 const HOST_CHANNEL = "migoPerformancePlus";
 
 /** Tell the host something. Never throws: a page that cannot report is still a
@@ -51,6 +53,11 @@ if (!config || typeof config.frameChannelUrl !== "string") {
         detail: String(event.message || event.type || "error"),
       });
     };
-    worker.postMessage({ type: "start", config });
+    // A dedicated channel for content's own `migo.createWorker`, carried on the one message the producer worker ever
+    // receives: its `self.onmessage` is cleared right after "start" (see `producer-worker.mjs`), so a port handed
+    // any later is a port handed to nobody.
+    const workerRelay = new MessageChannel();
+    bindWorkerRelay(workerRelay.port1);
+    worker.postMessage({ type: "start", config }, [workerRelay.port2]);
   }
 }

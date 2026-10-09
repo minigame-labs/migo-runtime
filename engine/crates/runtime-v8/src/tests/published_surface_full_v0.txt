@@ -21,6 +21,7 @@ BigUint64Array
 BiquadFilterNode
 Boolean
 CanvasGradient
+CanvasPattern
 CanvasRenderingContext2D
 ChannelMergerNode
 ChannelSplitterNode
@@ -42,6 +43,7 @@ GainNode
 GameGlobal
 IIRFilterNode
 ImageBitmap
+ImageData
 Infinity
 InnerAudioContext
 Int16Array
@@ -74,6 +76,7 @@ SuppressedError
 Symbol
 SyntaxError
 Temporal
+TextMetrics
 TypeError
 URIError
 URL
@@ -454,6 +457,7 @@ AudioNode
 AudioParam
 BiquadFilterNode
 CanvasGradient
+CanvasPattern
 CanvasRenderingContext2D
 ChannelMergerNode
 ChannelSplitterNode
@@ -465,6 +469,7 @@ Float16Array
 GainNode
 IIRFilterNode
 ImageBitmap
+ImageData
 InnerAudioContext
 MediaAudioPlayer
 OscillatorNode
@@ -473,6 +478,7 @@ Path2D
 PeriodicWave
 ScriptProcessorNode
 Temporal
+TextMetrics
 URL
 WaveShaperNode
 WebGL2RenderingContext

@@ -6,8 +6,8 @@
 // records the host decodes. The Canvas2D commands of both, in order, must be
 // equal -- see engine/crates/runtime-v8/src/rendering/webgl/canvas2d_parity.rs.
 //
-// The arguments are the ones that tell two implementations apart: a font
-// shorthand in every accepted form and one that must be refused, text outside
+// The arguments are the ones that tell two implementations apart: fonts the
+// facade read from shorthands of every form and one it refused, text outside
 // ASCII, a `maxWidth` left out (which is `Infinity`), alignment and baseline
 // keywords at both ends of their tables, and a dash pattern.
 
@@ -22,8 +22,11 @@ const ctx = new CanvasRenderingContext2D({ _rid: 1, width: 64, height: 64 });
 ctx.font = "16px sans-serif";
 ctx.font = "italic bold 24px 'Noto Sans CJK SC', serif";
 ctx.font = "12pt Times";
-// Refused by both parsers: no size. The font stays what it was, and neither
-// side records anything.
+// The family names cross joined by NUL: an empty one, one with an escaped comma
+// in it, and a size the facade rounds to the six digits `font` reads back.
+ctx.font = "13.333333px '', A\\, B, monospace";
+// Not a font (no size): the facade ignores it, the font stays what it was, and
+// neither side records anything.
 ctx.font = "not-a-font";
 
 ctx.textAlign = "start";
@@ -42,11 +45,22 @@ ctx.setLineDash([5, 5]);
 ctx.setLineDash([10, 3, 2, 3]);
 ctx.setLineDash([]);
 
-// Images: a loaded image as the facade reads one -- `loaded`, its shared id,
-// its size. The ids sit above 2^30, where consecutive f32 values are 128 apart:
-// the batch used to carry its ids as floats and name another image.
-const image = { loaded: true, rid: 0x40000001, width: 32, height: 16 };
-const other = { loaded: true, rid: 0x40000002, width: 8, height: 8 };
+// Images: the engine's own, as a decode leaves one -- loaded, its shared id,
+// its natural size -- without a decoder to run. (A look-alike object is not an
+// image source: the context refuses it with a TypeError.) The ids sit above
+// 2^30, where consecutive f32 values are 128 apart: the batch used to carry its
+// ids as floats and name another image.
+const decoded = (sharedId, width, height) => {
+  const image = createImage();
+  image._loaded = true;
+  image.complete = true;
+  image._shared_img_id = sharedId;
+  image.width = image.naturalWidth = width;
+  image.height = image.naturalHeight = height;
+  return image;
+};
+const image = decoded(0x40000001, 32, 16);
+const other = decoded(0x40000002, 8, 8);
 ctx.drawImage(image, 4, 8);
 ctx.drawImage(image, 0, 0, 64, 32);
 ctx.drawImage(other, 1, 2, 3, 4, 5, 6, 7, 8);

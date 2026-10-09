@@ -39,6 +39,7 @@ import {
     encode2dRestore,
     encode2dSetTransform,
     encode2dResetTransform,
+    encode2dReset,
     encode2dTranslate,
     encode2dRotate,
     encode2dScale,
@@ -94,8 +95,11 @@ import {
     // Path2D
     op_canvas2d_draw_path,
     op_canvas2d_hit_test,
+    // Context loss, which the 2D context shares with every other on the GPU
+    op_gl_is_context_lost,
 } from "ext:core/ops";
 import { domException } from "ext:host_v8_base/06_dom_exception.js";
+import { isImage, isImageBitmap } from "ext:host_v8_image/01_image.js";
 import { primordials } from "ext:core/mod.js";
 
 // Line cap constants
@@ -161,6 +165,7 @@ const {
     StringPrototypeSlice,
     SymbolIterator,
     TypedArrayPrototypeGetLength,
+    TypedArrayPrototypeGetSymbolToStringTag,
     TypedArrayPrototypeSet,
     TypedArrayPrototypeSubarray,
     Uint32Array,
@@ -181,11 +186,10 @@ const MAX_CANVAS_SURFACE_PIXELS = 8192 * 8192;
 const MAX_SYNC_CANVAS_RGBA_BYTES = 64 * 1024 * 1024;
 const MAX_DRAW_IMAGE_BATCH_ENTRIES = 65_536;
 
+// The size of an image the engine makes for content: `width` and `height` in pixels, already integers, non-zero. A
+// negative one counts from the other corner, so its magnitude is the size. Past the implementation limit -- what a
+// synchronous readback may hold -- it is a RangeError, as an allocation that fails is.
 function checkedImageDataDimensions(width, height) {
-    // These parameters are WebIDL `long`s. Bitwise conversion implements the
-    // required signed 32-bit conversion, including NaN/Infinity -> 0.
-    width |= 0;
-    height |= 0;
     if (width === 0 || height === 0) {
         throw domException(
             "ImageData width and height must be non-zero",
@@ -203,8 +207,247 @@ function checkedImageDataDimensions(width, height) {
     return { width, height, bytes };
 }
 
+// WebIDL's `[EnforceRange] long`: a number that is finite and, truncated, a signed 32-bit integer -- anything else is a
+// TypeError, a Symbol or a BigInt included (`+` throws for both).
+function _enforceRangeLong(value, context) {
+    const x = +value;
+    if (x - x !== 0) throw new TypeError(`${context}: Value is not of type 'long'.`);
+    const n = Math.trunc(x);
+    if (n < -2147483648 || n > 2147483647) {
+        throw new TypeError(`${context}: Value is outside the 'long' value range.`);
+    }
+    return n === 0 ? 0 : n;
+}
+
+// WebIDL's `unsigned long`: ToNumber, then modulo 2^32 with NaN and the infinities 0.
+function _unsignedLong(value) {
+    return (+value) >>> 0;
+}
+
+// An `ImageDataSettings` dictionary's colour space, or `undefined` when it names none. `undefined` and `null` are the
+// empty dictionary; any other value that is not an object is not a dictionary.
+function _imageDataColorSpace(settings, context) {
+    if (settings === undefined || settings === null) return undefined;
+    if (typeof settings !== 'object' && typeof settings !== 'function') {
+        throw new TypeError(`${context}: The provided value is not of type 'ImageDataSettings'.`);
+    }
+    const colorSpace = settings.colorSpace;
+    if (colorSpace === undefined) return undefined;
+    const name = `${colorSpace}`;
+    if (name !== 'srgb' && name !== 'display-p3') {
+        throw new TypeError(`${context}: The provided value '${name}' is not a valid enum value of type PredefinedColorSpace.`);
+    }
+    return name;
+}
+
+// `getContext("2d", settings)`'s CanvasRenderingContext2DSettings, converted as WebIDL converts a dictionary: `undefined`
+// and `null` are the empty one, any other value that is not an object is not one, and the members are read in their
+// order -- alpha, colorSpace, colorType, desynchronized, willReadFrequently -- a keyword that is not one of the enum's a
+// TypeError. Only `willReadFrequently` is kept: it is a hint, and the one this context can report as asked. A canvas
+// here is sRGB, 8 bits a channel and has alpha, whatever is asked, and `getContextAttributes` says what it is.
+function _contextSettings(settings) {
+    const context = "Failed to execute 'getContext' on 'HTMLCanvasElement'";
+    if (settings === undefined || settings === null) return { willReadFrequently: false };
+    if (typeof settings !== 'object' && typeof settings !== 'function') {
+        throw new TypeError(`${context}: The provided value is not of type 'CanvasRenderingContext2DSettings'.`);
+    }
+    void !!settings.alpha;
+    const colorSpace = settings.colorSpace;
+    if (colorSpace !== undefined) {
+        const name = _domString(colorSpace);
+        if (name !== 'srgb' && name !== 'display-p3') {
+            throw new TypeError(`${context}: The provided value '${name}' is not a valid enum value of type PredefinedColorSpace.`);
+        }
+    }
+    const colorType = settings.colorType;
+    if (colorType !== undefined) {
+        const name = _domString(colorType);
+        if (name !== 'unorm8' && name !== 'float16') {
+            throw new TypeError(`${context}: The provided value '${name}' is not a valid enum value of type CanvasColorType.`);
+        }
+    }
+    void !!settings.desynchronized;
+    return { willReadFrequently: !!settings.willReadFrequently };
+}
+
+// ---- Display P3 ----
+//
+// A canvas here is sRGB. An `ImageData` in Display P3 is read from it, and written to it, converted: the two share the
+// sRGB transfer function and differ in primaries, so a byte is decoded to linear light, the three channels are mapped
+// through the 3x3 matrix between the primaries, clipped to the gamut written to, and encoded again. Alpha is not a
+// colour and is not touched, and the bytes are unpremultiplied, as an ImageData's are.
+const _SRGB_TO_LINEAR = new Float64Array(256);
+for (let i = 0; i < 256; i++) {
+    const c = i / 255;
+    _SRGB_TO_LINEAR[i] = c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+}
+function _linearToByte(l) {
+    if (!(l > 0)) return 0;
+    if (l >= 1) return 255;
+    return Math.round((l <= 0.0031308 ? 12.92 * l : 1.055 * l ** (1 / 2.4) - 0.055) * 255);
+}
+// Linear sRGB to linear Display P3, and back.
+const _SRGB_TO_P3 = [0.8224621, 0.177538, 0, 0.0331941, 0.9668058, 0, 0.0170827, 0.0723974, 0.9105199];
+const _P3_TO_SRGB = [1.2249401, -0.2249404, 0, -0.0420569, 1.0420571, 0, -0.0196376, -0.0786361, 1.0982735];
+function _convertPrimaries(bytes, m) {
+    for (let i = 0; i < bytes.length; i += 4) {
+        const r = _SRGB_TO_LINEAR[bytes[i]];
+        const g = _SRGB_TO_LINEAR[bytes[i + 1]];
+        const b = _SRGB_TO_LINEAR[bytes[i + 2]];
+        bytes[i] = _linearToByte(m[0] * r + m[1] * g + m[2] * b);
+        bytes[i + 1] = _linearToByte(m[3] * r + m[4] * g + m[5] * b);
+        bytes[i + 2] = _linearToByte(m[6] * r + m[7] * g + m[8] * b);
+    }
+    return bytes;
+}
+
+// The interface members WebIDL defines on a prototype are enumerable, and an instance's class string is the
+// interface's name; a JavaScript class makes neither so. Applied to each interface this file exposes.
+function _exposeInterface(cls, name) {
+    const proto = cls.prototype;
+    for (const key of Object.getOwnPropertyNames(proto)) {
+        if (key === 'constructor' || key.charCodeAt(0) === 95 /* _ */) continue;
+        const descriptor = Object.getOwnPropertyDescriptor(proto, key);
+        descriptor.enumerable = true;
+        Object.defineProperty(proto, key, descriptor);
+    }
+    Object.defineProperty(proto, Symbol.toStringTag, { value: name, configurable: true });
+}
+
+// ==================== ImageData ====================
+//
+// The pixels `getImageData` reads and `putImageData` writes, and what `new ImageData` makes: a width, a height, the
+// RGBA bytes (unpremultiplied, row by row) and the colour space they are in. A class of its own because content
+// constructs it and tests for it -- PixiJS's extract and Egret's render textures call `new ImageData`, three.js asks
+// `image instanceof ImageData` -- and because `putImageData` takes nothing else: its argument is checked for being one,
+// not for looking like one.
+//
+// The engine's own (a readback, a blank image) are built through `_IMAGE_DATA`, which content cannot name. Two of them
+// hold no bytes yet: a `getImageData` the renderer answered with a snapshot, and one answered from the text cache. Their
+// `data` is read back the first time it is asked for, by the function they were made with (see
+// `_migoMakeSnapshotImageData`).
+const _IMAGE_DATA = Symbol('ImageData');
+let _imageDataFields;
+class ImageData {
+    #width;
+    #height;
+    #data;
+    #colorSpace;
+    #materialize = null;
+
+    // (sw, sh, settings) or (data, sw, sh, settings): two parameters as WebIDL counts them, the rest from `arguments`.
+    constructor(source, sw) {
+        const argc = arguments.length;
+        if (source === _IMAGE_DATA) {
+            this.#width = sw;
+            this.#height = arguments[2];
+            this.#data = arguments[3];
+            this.#colorSpace = arguments[4];
+            this.#materialize = arguments[5] ?? null;
+            return;
+        }
+        const context = "Failed to construct 'ImageData'";
+        if (argc < 2) throw new TypeError(`${context}: 2 arguments required, but only ${argc} present.`);
+        if (ArrayBuffer.isView(source) && TypedArrayPrototypeGetSymbolToStringTag(source) === 'Uint8ClampedArray') {
+            const width = _unsignedLong(sw);
+            const height = arguments[2] === undefined ? undefined : _unsignedLong(arguments[2]);
+            const colorSpace = _imageDataColorSpace(arguments[3], context);
+            const length = TypedArrayPrototypeGetLength(source);
+            if (length === 0) throw domException(`${context}: The input data has zero elements.`, 'InvalidStateError');
+            if (length % 4 !== 0) {
+                throw domException(`${context}: The input data length is not a multiple of 4.`, 'InvalidStateError');
+            }
+            if (width === 0) throw domException(`${context}: The source width is zero or not a number.`, 'IndexSizeError');
+            const pixels = length / 4;
+            if (pixels % width !== 0) {
+                throw domException(`${context}: The input data length is not a multiple of (4 * width).`, 'IndexSizeError');
+            }
+            if (height !== undefined && height * width !== pixels) {
+                throw domException(
+                    `${context}: The input data length is not equal to (4 * width * height).`, 'IndexSizeError');
+            }
+            // The array is the image's, not a copy of it.
+            this.#width = width;
+            this.#height = pixels / width;
+            this.#data = source;
+            this.#colorSpace = colorSpace ?? 'srgb';
+            return;
+        }
+        const width = _unsignedLong(source);
+        const height = _unsignedLong(sw);
+        const colorSpace = _imageDataColorSpace(arguments[2], context);
+        if (width === 0) throw domException(`${context}: The source width is zero or not a number.`, 'IndexSizeError');
+        if (height === 0) throw domException(`${context}: The source height is zero or not a number.`, 'IndexSizeError');
+        const dimensions = checkedImageDataDimensions(width, height);
+        this.#width = width;
+        this.#height = height;
+        this.#data = new Uint8ClampedArray(dimensions.bytes);
+        this.#colorSpace = colorSpace ?? 'srgb';
+    }
+
+    get width() { return this.#width; }
+    get height() { return this.#height; }
+    get data() {
+        const materialize = this.#materialize;
+        if (materialize !== null) {
+            this.#materialize = null;
+            materialize(this, this.#data);
+        }
+        return this.#data;
+    }
+    get colorSpace() { return this.#colorSpace; }
+
+    static {
+        // What `putImageData` and `createImageData(imagedata)` read of one, by its own fields, so a prototype content
+        // replaced is not asked: `[width, height, data, colorSpace]`, or `null` for a value that is not an ImageData.
+        _imageDataFields = (value) => {
+            if (value === null || typeof value !== 'object' || !(#data in value)) return null;
+            const materialize = value.#materialize;
+            if (materialize !== null) {
+                value.#materialize = null;
+                materialize(value, value.#data);
+            }
+            return [value.#width, value.#height, value.#data, value.#colorSpace];
+        };
+    }
+}
+_exposeInterface(ImageData, 'ImageData');
+
+// ==================== TextMetrics ====================
+//
+// `measureText`'s answer: the twelve numbers `op_measure_text_flat` returns, read through getters, so a measurement is
+// read-only as it is in a browser. A new object each call, over numbers that may be shared: the measure cache keeps the
+// numbers, not the object content was handed.
+const _TEXT_METRICS = Symbol('TextMetrics');
+class TextMetrics {
+    #m;
+    constructor() {
+        if (arguments[0] !== _TEXT_METRICS) throw new TypeError("Illegal constructor");
+        this.#m = arguments[1];
+    }
+    get width() { return this.#m[0]; }
+    get actualBoundingBoxLeft() { return this.#m[1]; }
+    get actualBoundingBoxRight() { return this.#m[2]; }
+    get fontBoundingBoxAscent() { return this.#m[9]; }
+    get fontBoundingBoxDescent() { return this.#m[6]; }
+    get actualBoundingBoxAscent() { return this.#m[7]; }
+    get actualBoundingBoxDescent() { return this.#m[8]; }
+    get emHeightAscent() { return this.#m[3]; }
+    get emHeightDescent() { return this.#m[4]; }
+    get hangingBaseline() { return this.#m[10]; }
+    get alphabeticBaseline() { return this.#m[5]; }
+    get ideographicBaseline() { return this.#m[11]; }
+}
+_exposeInterface(TextMetrics, 'TextMetrics');
+
+// The constructions only this file makes: a gradient or a pattern comes from the context, never from `new`.
+const _CANVAS_STYLE = Symbol('canvas style');
+
 class CanvasGradient {
-    constructor(type, canvasId, x0, y0, r0, x1, y1, r1) {
+    // (type, canvasId, x0, y0, r0, x1, y1, r1), after the token: no parameters, as WebIDL counts them.
+    constructor() {
+        if (arguments[0] !== _CANVAS_STYLE) throw new TypeError("Illegal constructor");
+        const [, type, canvasId, x0, y0, r0, x1, y1, r1] = arguments;
         this._type = type;
         this._canvasId = canvasId;
         this._x0 = x0;
@@ -215,20 +458,24 @@ class CanvasGradient {
         this._r1 = r1;
         this._stops = [];
     }
+    // `addColorStop(offset, color)`: a `double` and a DOMString, then the specification's order -- an offset outside
+    // 0..1 is an IndexSizeError, a colour that does not parse a SyntaxError.
     addColorStop(offset, color) {
-        var off = Number(offset);
-        if (!Number.isFinite(off) || off < 0 || off > 1) {
-            throw new RangeError("Failed to execute 'addColorStop': offset must be between 0 and 1");
+        _requireArguments(arguments.length, 2, 'addColorStop', 'CanvasGradient');
+        const off = _double(offset, 'addColorStop', 'CanvasGradient');
+        const text = _domString(color);
+        if (off < 0 || off > 1) {
+            throw domException("Failed to execute 'addColorStop' on 'CanvasGradient': The provided value (" + off +
+                ") is outside the range (0.0, 1.0).", "IndexSizeError");
         }
-        if (typeof color !== 'string') {
-            throw new TypeError("Failed to execute 'addColorStop': color must be a string");
-        }
-        var entry = _cssColour(color);
+        const entry = _cssColour(text);
         if (entry === null) {
-            throw domException("Failed to execute 'addColorStop': the value provided ('" + color + "') could not be parsed as a color.", "SyntaxError");
+            throw domException("Failed to execute 'addColorStop' on 'CanvasGradient': The value provided ('" + text +
+                "') could not be parsed as a color.", "SyntaxError");
         }
-        var parsed = entry.rgba;
+        const parsed = entry.rgba;
         this._stops.push({ offset: off, r: parsed[0], g: parsed[1], b: parsed[2], a: parsed[3] });
+        // Stable: stops at one offset keep the order they were added in.
         this._stops.sort(function (a, b) { return a.offset - b.offset; });
     }
     // Called internally when this gradient is assigned to fillStyle.
@@ -256,17 +503,18 @@ class CanvasGradient {
         );
     }
 }
+_exposeInterface(CanvasGradient, 'CanvasGradient');
 
 class CanvasPattern {
-    constructor(canvasId, imageRid, repetition) {
+    // (canvasId, imageRid, repetition), after the token.
+    constructor() {
+        if (arguments[0] !== _CANVAS_STYLE) throw new TypeError("Illegal constructor");
+        // The repetition is one of the four names: `createPattern` checked it.
+        const [, canvasId, imageRid, repetition] = arguments;
         this._canvasId = canvasId;
         this._imageRid = imageRid;
-        var rep = repetition == null ? 'repeat' : String(repetition);
-        if (rep !== 'repeat' && rep !== 'repeat-x' && rep !== 'repeat-y' && rep !== 'no-repeat') {
-            throw new TypeError("Failed to execute 'createPattern': invalid repetition value");
-        }
-        this._repeatX = rep === 'repeat' || rep === 'repeat-x';
-        this._repeatY = rep === 'repeat' || rep === 'repeat-y';
+        this._repeatX = repetition === 'repeat' || repetition === 'repeat-x';
+        this._repeatY = repetition === 'repeat' || repetition === 'repeat-y';
     }
     _applyFill() {
         flushRenderCommandStream();
@@ -277,6 +525,7 @@ class CanvasPattern {
         op_set_stroke_style_pattern(this._canvasId, this._imageRid, this._repeatX, this._repeatY);
     }
 }
+_exposeInterface(CanvasPattern, 'CanvasPattern');
 
 // ==================== Path2D ====================
 //
@@ -320,6 +569,79 @@ function _requireArguments(given, required, method, owner) {
         throw new TypeError("Failed to execute '" + method + "' on '" + owner + "': " + required +
             " argument" + (required === 1 ? "" : "s") + " required, but only " + given + " present.");
     }
+}
+
+// An overloaded call with a count no overload takes (`drawImage` with four arguments).
+function _arityError(given, arities, method, owner) {
+    return new TypeError("Failed to execute '" + method + "' on '" + owner + "': Valid arities are: [" + arities +
+        "], but " + given + " arguments provided.");
+}
+
+// WebIDL's DOMString: a string is itself, anything else is converted -- and a Symbol refuses, with a TypeError.
+function _domString(value) {
+    return typeof value === 'string' ? value : `${value}`;
+}
+
+// WebIDL's `double`: a finite number, or a TypeError. The factories take these (the gradients, `addColorStop`) and throw
+// where the drawing calls, which take `unrestricted double`, draw nothing.
+function _double(value, method, owner) {
+    const x = +value;
+    if (x - x !== 0) {
+        throw new TypeError("Failed to execute '" + method + "' on '" + owner + "': The provided double value is non-finite.");
+    }
+    return x;
+}
+
+// WebIDL's `sequence<unrestricted double>`: an object content can iterate, each item a number. A string is not an
+// object, and an object with no iterator is not a sequence.
+function _numberSequence(value, method, owner) {
+    if (value === null || (typeof value !== 'object' && typeof value !== 'function')) {
+        throw new TypeError("Failed to execute '" + method + "' on '" + owner +
+            "': The provided value cannot be converted to a sequence.");
+    }
+    const out = [];
+    for (const item of value) ArrayPrototypePush(out, +item);
+    return out;
+}
+
+// ---- Image arguments ----
+//
+// `drawImage` and `createPattern` take a CanvasImageSource: here an image, an ImageBitmap or a canvas, each the engine's
+// own (the image classes by their private fields, a canvas by its renderer id). Anything else -- `null`, an ImageData,
+// an object with the right names -- is a TypeError, as the WebIDL union has it. What is then done with one is the
+// specification's "check the usability of the image argument": a broken image or a closed bitmap is an
+// InvalidStateError, as is a canvas with no pixels; an image not yet loaded draws nothing.
+const _SOURCE_IMAGE = 1;    // an image or a bitmap: its renderer id is drawn
+const _SOURCE_CANVAS = 2;   // a canvas: the renderer copies it in stream order
+
+function _imageSourceKind(image, method) {
+    if (isImage(image) || isImageBitmap(image)) return _SOURCE_IMAGE;
+    if (image !== null && typeof image === 'object' && typeof image.getContext === 'function'
+            && typeof image._rid === 'number') {
+        return _SOURCE_CANVAS;
+    }
+    throw new TypeError("Failed to execute '" + method + "' on 'CanvasRenderingContext2D': The provided value is not " +
+        "of type '(HTMLCanvasElement or HTMLImageElement or ImageBitmap)'.");
+}
+
+// Whether the image can be drawn now: `false` for an image still loading, a throw for one that never will be.
+function _imageUsable(image, kind, method) {
+    const context = "Failed to execute '" + method + "' on 'CanvasRenderingContext2D': ";
+    if (kind === _SOURCE_CANVAS) {
+        if (image.width === 0 || image.height === 0) {
+            throw domException(context + "The image argument is a canvas element with a width or height of 0.",
+                "InvalidStateError");
+        }
+        return true;
+    }
+    if (isImageBitmap(image)) {
+        if (image.rid === 0) throw domException(context + "The image source is detached.", "InvalidStateError");
+        return true;
+    }
+    if (image.error) {
+        throw domException(context + "The HTMLImageElement provided is in the 'broken' state.", "InvalidStateError");
+    }
+    return image.loaded === true;
 }
 
 function _negativeRadius(value) {
@@ -427,13 +749,17 @@ function _cornerRadii(radii, out, method) {
 
 // A `DOMMatrix2DInit`, validated and fixed up as the specification's "create a DOMMatrix from the 2D dictionary" does,
 // into `out` as `a b c d e f`. Its members are read in WebIDL's order.
-function _matrix2DInit(init, out) {
+// `setTransform(transform)`'s matrix, read into the same six numbers every call.
+const _setTransformMatrix = [1, 0, 0, 1, 0, 0];
+
+function _matrix2DInit(init, out, method, owner) {
     if (init === undefined || init === null) {
         out[0] = 1; out[1] = 0; out[2] = 0; out[3] = 1; out[4] = 0; out[5] = 0;
         return;
     }
     if (typeof init !== 'object' && typeof init !== 'function') {
-        throw new TypeError("Failed to execute 'addPath' on 'Path2D': The provided value is not of type 'DOMMatrix2DInit'.");
+        throw new TypeError("Failed to execute '" + method + "' on '" + owner +
+            "': The provided value is not of type 'DOMMatrix2DInit'.");
     }
     const a = _member(init.a), b = _member(init.b), c = _member(init.c);
     const d = _member(init.d), e = _member(init.e), f = _member(init.f);
@@ -445,7 +771,8 @@ function _matrix2DInit(init, out) {
         (d !== undefined && m22 !== undefined && !_sameValueZero(d, m22)) ||
         (e !== undefined && m41 !== undefined && !_sameValueZero(e, m41)) ||
         (f !== undefined && m42 !== undefined && !_sameValueZero(f, m42))) {
-        throw new TypeError("Failed to execute 'addPath' on 'Path2D': Property mismatch on matrix initialization.");
+        throw new TypeError("Failed to execute '" + method + "' on '" + owner +
+            "': Property mismatch on matrix initialization.");
     }
     out[0] = m11 ?? a ?? 1;
     out[1] = m12 ?? b ?? 0;
@@ -873,7 +1200,7 @@ class Path2D {
             throw new TypeError("Failed to execute 'addPath' on 'Path2D': parameter 1 is not of type 'Path2D'.");
         }
         const m = _addPathMatrix;
-        _matrix2DInit(transform, m);
+        _matrix2DInit(transform, m, 'addPath', 'Path2D');
         if (!_fin6(m[0], m[1], m[2], m[3], m[4], m[5])) return;
         const count = path.#length;
         if (count === 0) return;
@@ -1213,21 +1540,348 @@ function _styleRgba(style) {
     return entry === null ? [0, 0, 0, 255] : entry.rgba;
 }
 
-// CSS `font` parsing used to live here as `_parseCssFont`
-// and in Rust as a separate implementation.  Both parsers could
-// subtly drift (different weight ladders, different unit
-// conversions), producing silent "measureText disagrees with
-// fillText" bugs.  The JS-side parser has been removed; the
-// authoritative implementation is now
-// `shared::css_font::parse_css_font` on the Rust side.  The JS
-// layer only needs to pass the raw `this._font` string through
-// to `op_measure_text_flat`, which parses it once through the
-// `SharedTextMeasurer::measure_css` trait.
+// ---- CSS font shorthand ----
+//
+// The one parser, for the reason colours have one: `ctx.font = s` has to answer at once whether `s` is a font -- an
+// invalid shorthand is ignored and keeps the previous font -- and `font` reads back the serialised font, not the string
+// that was assigned. The renderer and the measurer are only ever sent the font this reads, never text: a size in CSS
+// pixels, a weight, whether it slants, and the family list.
+//
+// There used to be three: `shared::css_font_shorthand`, which the op and the renderer ran; a lenient `shared::css_font`
+// the measurer fell back to; and a port of the first in the Performance+ producer, held to it by a corpus. All three
+// read a language of their own -- `20px` with no family was a font, `0px` was not, `em` and `%` were 16px -- and the
+// getter returned the string as assigned.
+//
+// The grammar is CSS Fonts 4's `font` as a canvas takes it: up to four of a font-style (`italic`, or `oblique` and an
+// optional angle), `small-caps`, a font-weight (`bold`, `bolder`, `lighter`, or 1 to 1000) and a font-stretch keyword,
+// each at most once and `normal` standing for any of them; a size; an optional `/` line-height, read and dropped; and a
+// list of families, each a string, a sequence of identifiers or a generic keyword. A system font keyword alone is the
+// platform's UI face at the default 16px. Tokens are CSS Syntax 3's, escapes, comments and an unterminated final
+// string included.
+//
+// A canvas here has no element and no style, so relative sizes resolve against the canvas default font, 10px, as a
+// browser resolves them for a canvas it is not rendering: `em`, `rem` and `%` against 10px, `larger` and `smaller` a
+// factor of 1.2 from it. `ex`, `ch` and `ic` take CSS Values' values for a font whose metrics cannot be read, which is
+// the case here: 0.5em, 0.5em and 1em. Math functions, `var()`, and viewport, container, line-height and `cap` units
+// are not read: a shorthand with one is invalid here, so ignored. A size past 10000px is 10000px, as in Chrome.
+//
+// The serialisation is Chrome's: style, weight, `small-caps`, size, families. `italic` for a style that slants
+// (`oblique` with no angle or a positive one); a weight of 400 is left out, 700 is `bold`, any other the integer; the
+// size in up to six significant digits; a family as an identifier when it is one and no keyword, else as a string. A
+// stretch keyword is read and, as in Chrome, neither serialised nor drawn; `small-caps` is serialised and not drawn,
+// for the renderer has no small-capitals synthesis. A font's fields are those of its serialisation -- the size is
+// rounded to what the text says -- so two assignments that read back alike draw and measure alike.
+
+// The canvas default font's size, which relative sizes resolve against.
+const _FONT_BASE_PX = 10;
+const _FONT_SIZE_LIMIT = 10000;
+const _FONT_GENERIC = new Set([
+    'serif', 'sans-serif', 'cursive', 'fantasy', 'monospace', 'system-ui', 'emoji', 'math', 'fangsong',
+    'ui-serif', 'ui-sans-serif', 'ui-monospace', 'ui-rounded',
+]);
+// The CSS-wide keywords and `default`: never a family name unless quoted.
+const _FONT_RESERVED = new Set(['inherit', 'initial', 'unset', 'revert', 'revert-layer', 'default']);
+const _FONT_SYSTEM = new Set(['caption', 'icon', 'menu', 'message-box', 'small-caption', 'status-bar']);
+const _FONT_STRETCH = new Set([
+    'ultra-condensed', 'extra-condensed', 'condensed', 'semi-condensed',
+    'semi-expanded', 'expanded', 'extra-expanded', 'ultra-expanded',
+]);
+const _FONT_ABSOLUTE_SIZE = new Map([
+    ['xx-small', 9], ['x-small', 10], ['small', 13], ['medium', 16],
+    ['large', 18], ['x-large', 24], ['xx-large', 32], ['xxx-large', 48],
+]);
+// CSS pixels per unit.
+const _FONT_LENGTH = new Map([
+    ['px', 1], ['pt', 4 / 3], ['pc', 16], ['in', 96], ['cm', 96 / 2.54], ['mm', 96 / 25.4], ['q', 96 / 101.6],
+    ['em', _FONT_BASE_PX], ['rem', _FONT_BASE_PX], ['ic', _FONT_BASE_PX], ['ric', _FONT_BASE_PX],
+    ['ex', _FONT_BASE_PX / 2], ['rex', _FONT_BASE_PX / 2], ['ch', _FONT_BASE_PX / 2], ['rch', _FONT_BASE_PX / 2],
+]);
+// Degrees per unit.
+const _FONT_ANGLE = new Map([['deg', 1], ['grad', 0.9], ['rad', 180 / Math.PI], ['turn', 360]]);
+const _FONT_COMMA = { type: ',' };
+const _FONT_SLASH = { type: '/' };
+
+function _asciiLower(text) {
+    return text.replace(/[A-Z]+/g, (upper) => upper.toLowerCase());
+}
+
+function _isCssDigit(c) { return c >= 0x30 && c <= 0x39; }
+function _isCssHex(c) { return _isCssDigit(c) || (c >= 0x41 && c <= 0x46) || (c >= 0x61 && c <= 0x66); }
+function _isCssIdentStart(c) { return (c >= 0x41 && c <= 0x5a) || (c >= 0x61 && c <= 0x7a) || c === 0x5f || c >= 0x80; }
+function _isCssIdentChar(c) { return _isCssIdentStart(c) || _isCssDigit(c) || c === 0x2d; }
+function _isCssSpace(c) { return c === 0x20 || c === 0x09 || c === 0x0a; }
+
+// The shorthand's tokens, whitespace and comments dropped (nothing in the grammar depends on them once the tokens are
+// cut), or `null` for input with a token no font has: a function, a bad string, `!`, `;`, a bracket.
+function _fontTokens(input) {
+    // CSS Syntax's preprocessing: one newline, and U+FFFD for NUL and for a lone surrogate.
+    const s = input.replace(/\r\n?|\f/g, '\n')
+        .replace(/\u0000|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '\uFFFD');
+    const n = s.length;
+    const at = (k) => s.charCodeAt(k); // NaN past the end, which no class test accepts
+    const validEscape = (k) => at(k) === 0x5c && at(k + 1) !== 0x0a;
+    const startsIdent = (k) => at(k) === 0x2d
+        ? _isCssIdentStart(at(k + 1)) || at(k + 1) === 0x2d || validEscape(k + 1)
+        : _isCssIdentStart(at(k)) || validEscape(k);
+    const startsNumber = (k) => {
+        const c = at(k) === 0x2b || at(k) === 0x2d ? at(++k) : at(k);
+        return _isCssDigit(c) || (c === 0x2e && _isCssDigit(at(k + 1)));
+    };
+    let i = 0;
+    // An escape, from the code point after its backslash.
+    const escape = () => {
+        if (i >= n) return '\uFFFD';
+        if (_isCssHex(at(i))) {
+            const begin = i;
+            while (i - begin < 6 && _isCssHex(at(i))) i++;
+            const cp = parseInt(s.slice(begin, i), 16);
+            if (_isCssSpace(at(i))) i++;
+            return cp === 0 || (cp >= 0xd800 && cp <= 0xdfff) || cp > 0x10ffff ? '\uFFFD' : String.fromCodePoint(cp);
+        }
+        const cp = s.codePointAt(i);
+        i += cp > 0xffff ? 2 : 1;
+        return String.fromCodePoint(cp);
+    };
+    const name = () => {
+        let out = '';
+        for (;;) {
+            if (_isCssIdentChar(at(i))) out += s[i++];
+            else if (validEscape(i)) { i++; out += escape(); }
+            else return out;
+        }
+    };
+    const tokens = [];
+    while (i < n) {
+        const c = at(i);
+        if (_isCssSpace(c)) { i++; continue; }
+        if (c === 0x2f && at(i + 1) === 0x2a) {
+            const end = s.indexOf('*/', i + 2);
+            i = end < 0 ? n : end + 2;
+            continue;
+        }
+        if (c === 0x22 || c === 0x27) {
+            i++;
+            let out = '';
+            // The end of the input ends a string too: a parse error, and still a string.
+            while (i < n) {
+                const d = at(i);
+                if (d === c) { i++; break; }
+                if (d === 0x0a) return null;
+                if (d !== 0x5c) { out += s[i++]; continue; }
+                i++;
+                if (i >= n) continue;
+                if (at(i) === 0x0a) { i++; continue; }
+                out += escape();
+            }
+            tokens.push({ type: 'string', value: out });
+            continue;
+        }
+        if (startsNumber(i)) {
+            const begin = i;
+            if (at(i) === 0x2b || at(i) === 0x2d) i++;
+            while (_isCssDigit(at(i))) i++;
+            if (at(i) === 0x2e && _isCssDigit(at(i + 1))) {
+                i += 2;
+                while (_isCssDigit(at(i))) i++;
+            }
+            if ((at(i) === 0x45 || at(i) === 0x65) && (_isCssDigit(at(i + 1))
+                    || ((at(i + 1) === 0x2b || at(i + 1) === 0x2d) && _isCssDigit(at(i + 2))))) {
+                i += _isCssDigit(at(i + 1)) ? 1 : 2;
+                while (_isCssDigit(at(i))) i++;
+            }
+            const value = +s.slice(begin, i);
+            if (startsIdent(i)) tokens.push({ type: 'dimension', value, unit: _asciiLower(name()) });
+            else if (at(i) === 0x25) { i++; tokens.push({ type: 'percentage', value }); }
+            else tokens.push({ type: 'number', value });
+            continue;
+        }
+        if (startsIdent(i)) {
+            const value = name();
+            if (at(i) === 0x28) return null;
+            tokens.push({ type: 'ident', value });
+            continue;
+        }
+        if (c === 0x2c) { tokens.push(_FONT_COMMA); i++; continue; }
+        if (c === 0x2f) { tokens.push(_FONT_SLASH); i++; continue; }
+        return null;
+    }
+    return tokens;
+}
+
+// `{ size, weight, italic, smallCaps, families: [{ generic, name }] }`, or `null` for a string that is not a font.
+function _parseCssFont(input) {
+    const tokens = _fontTokens(input);
+    if (tokens === null || tokens.length === 0) return null;
+    if (tokens.length === 1 && tokens[0].type === 'ident' && _FONT_SYSTEM.has(_asciiLower(tokens[0].value))) {
+        return { size: 16, weight: 400, italic: false, smallCaps: false, families: [{ generic: true, name: 'system-ui' }] };
+    }
+    let i = 0;
+    // `null` until given; `normal` gives none of them and still counts as one of the four.
+    let slant = null, smallCaps = null, weight = null, stretch = null;
+    for (let given = 0; given < 4 && i < tokens.length; given++) {
+        const t = tokens[i];
+        if (t.type === 'number') {
+            if (weight !== null || !(t.value >= 1 && t.value <= 1000)) break;
+            weight = t.value;
+            i++;
+            continue;
+        }
+        if (t.type !== 'ident') break;
+        const k = _asciiLower(t.value);
+        if (k === 'normal') {
+            i++;
+        } else if (k === 'italic' || k === 'oblique') {
+            if (slant !== null) break;
+            slant = true;
+            i++;
+            const angle = k === 'oblique' ? tokens[i] : undefined;
+            if (angle !== undefined && angle.type === 'dimension' && _FONT_ANGLE.has(angle.unit)) {
+                const degrees = angle.value * _FONT_ANGLE.get(angle.unit);
+                if (!(degrees >= -90 && degrees <= 90)) return null;
+                slant = degrees > 0;
+                i++;
+            }
+        } else if (k === 'small-caps') {
+            if (smallCaps !== null) break;
+            smallCaps = true;
+            i++;
+        } else if (k === 'bold' || k === 'bolder' || k === 'lighter') {
+            // `bolder` and `lighter` are relative to the inherited weight, the default font's 400.
+            if (weight !== null) break;
+            weight = k === 'lighter' ? 100 : 700;
+            i++;
+        } else if (_FONT_STRETCH.has(k)) {
+            if (stretch !== null) break;
+            stretch = k;
+            i++;
+        } else {
+            break;
+        }
+    }
+
+    const t = tokens[i++];
+    let size;
+    if (t === undefined) {
+        return null;
+    } else if (t.type === 'dimension') {
+        const pxPerUnit = _FONT_LENGTH.get(t.unit);
+        if (pxPerUnit === undefined || !(t.value >= 0)) return null;
+        size = t.value * pxPerUnit;
+    } else if (t.type === 'percentage') {
+        if (!(t.value >= 0)) return null;
+        size = t.value / 100 * _FONT_BASE_PX;
+    } else if (t.type === 'number') {
+        if (t.value !== 0) return null;
+        size = 0;
+    } else if (t.type === 'ident') {
+        const k = _asciiLower(t.value);
+        size = k === 'larger' ? _FONT_BASE_PX * 1.2 : k === 'smaller' ? _FONT_BASE_PX / 1.2 : _FONT_ABSOLUTE_SIZE.get(k);
+        if (size === undefined) return null;
+    } else {
+        return null;
+    }
+
+    if (tokens[i] === _FONT_SLASH) {
+        const h = tokens[i + 1];
+        if (h === undefined) return null;
+        const lineHeight = (h.type === 'ident' && _asciiLower(h.value) === 'normal')
+            || ((h.type === 'number' || h.type === 'percentage') && h.value >= 0)
+            || (h.type === 'dimension' && _FONT_LENGTH.has(h.unit) && h.value >= 0);
+        if (!lineHeight) return null;
+        i += 2;
+    }
+
+    const families = [];
+    for (;;) {
+        const f = tokens[i];
+        if (f === undefined) return null;
+        if (f.type === 'string') {
+            families.push({ generic: false, name: f.value });
+            i++;
+        } else if (f.type === 'ident') {
+            let end = i + 1;
+            while (end < tokens.length && tokens[end].type === 'ident') end++;
+            const head = _asciiLower(f.value);
+            // A CSS-wide keyword alone is that keyword, never a name; a generic keyword is a family of its own,
+            // never the start of one.
+            if (end - i === 1 && _FONT_RESERVED.has(head)) return null;
+            if (_FONT_GENERIC.has(head)) {
+                if (end - i > 1) return null;
+                families.push({ generic: true, name: head });
+            } else {
+                let familyName = f.value;
+                for (let k = i + 1; k < end; k++) familyName += ' ' + tokens[k].value;
+                families.push({ generic: false, name: familyName });
+            }
+            i = end;
+        } else {
+            return null;
+        }
+        if (i === tokens.length) break;
+        if (tokens[i] !== _FONT_COMMA) return null;
+        i++;
+    }
+
+    return {
+        // Rounded to the digits the serialisation keeps, so the font is a function of its text.
+        size: +Math.min(size, _FONT_SIZE_LIMIT).toPrecision(6),
+        weight: weight === null ? 400 : Math.trunc(weight),
+        italic: slant === true,
+        smallCaps: smallCaps === true,
+        families,
+    };
+}
+
+// A family name as CSS writes it: bare when it reads back as the same single identifier, else a string.
+const _CSS_IDENT = /^-?[A-Za-z_\u0080-\uFFFF][\w\-\u0080-\uFFFF]*$/;
+function _serializeFontFamily(family) {
+    if (family.generic) return family.name;
+    const lower = _asciiLower(family.name);
+    if (_CSS_IDENT.test(family.name) && !_FONT_GENERIC.has(lower) && !_FONT_RESERVED.has(lower)) return family.name;
+    return '"' + family.name.replace(/["\\]/g, '\\$&')
+        .replace(/[\u0001-\u001f\u007f]/g, (c) => '\\' + c.charCodeAt(0).toString(16) + ' ') + '"';
+}
+
+function _serializeCssFont(font) {
+    let text = font.italic ? 'italic ' : '';
+    if (font.weight !== 400) text += (font.weight === 700 ? 'bold' : String(font.weight)) + ' ';
+    if (font.smallCaps) text += 'small-caps ';
+    text += font.size + 'px ';
+    for (let i = 0; i < font.families.length; i++) {
+        text += (i === 0 ? '' : ', ') + _serializeFontFamily(font.families[i]);
+    }
+    return text;
+}
+
+// Assignments repeat the same few strings (a label sets its font before every draw), so each string is read once.
+// `{ text, size, weight, italic, families }`, `families` the names joined by NUL -- which no name holds, CSS having
+// replaced it -- as the ops and the record take them; or `null` for a string that is not a font.
+const _fontCache = new Map();
+const _FONT_CACHE_LIMIT = 256;
+function _cssFont(raw) {
+    let entry = _fontCache.get(raw);
+    if (entry !== undefined) return entry;
+    const font = _parseCssFont(raw);
+    entry = font === null ? null : Object.freeze({
+        text: _serializeCssFont(font),
+        size: font.size,
+        weight: font.weight,
+        italic: font.italic,
+        families: font.families.map((family) => family.name).join('\u0000'),
+    });
+    if (_fontCache.size >= _FONT_CACHE_LIMIT) _fontCache.clear();
+    _fontCache.set(raw, entry);
+    return entry;
+}
+
+const _DEFAULT_FONT = _cssFont('10px sans-serif');
 
 class CanvasRenderingContext2D {
-    constructor(canvas) {
+    // `settings`: `getContext("2d", settings)`'s dictionary, read when the context is made.
+    constructor(canvas, settings = undefined) {
         this._canvas = canvas;
         this._canvasId = canvas._rid;
+        this._willReadFrequently = _contextSettings(settings).willReadFrequently;
 
         // Create native 2D context on the render thread
         flushRenderCommandStream();
@@ -1242,9 +1896,10 @@ class CanvasRenderingContext2D {
         this._lineJoin = 'miter';
         this._miterLimit = 10;
         this._globalAlpha = 1;
-        this._font = '10px sans-serif';
+        this._font = _DEFAULT_FONT;
         this._textAlign = 'start';
         this._textBaseline = 'alphabetic';
+        this._direction = 'inherit';
         this._imageSmoothing = true;
         this._imageSmoothingQuality = 'low';
 
@@ -1268,17 +1923,43 @@ class CanvasRenderingContext2D {
 
     get canvas() { return this._canvas; }
 
+    // `reset()`: the context's default state again -- the bitmap transparent black, the state stack and the clips gone,
+    // every attribute and the transform at its default, the current path empty. What assigning the canvas's size does,
+    // without the surface being made again: a context reset every frame would otherwise reallocate it every frame.
+    reset() {
+        this._abandonPendingTextCache();
+        encode2dReset(this._canvasId);
+        this._resetShadowState();
+    }
+
+    // Whether the GPU the canvas draws with is lost and not yet restored. A 2D canvas shares it with every other context,
+    // so it is lost when they are. Barriered: draws already encoded and still sitting in the stream buffer must reach
+    // the collector before this host-local read, or this call would overtake them.
+    isContextLost() {
+        this._barrier();
+        return op_gl_is_context_lost();
+    }
+
+    // What this context is: sRGB with alpha, 8 bits a channel, never desynchronized -- whatever `getContext` asked for,
+    // which is why these are not echoed back -- and the `willReadFrequently` hint as it was given.
+    getContextAttributes() {
+        return {
+            alpha: true,
+            colorSpace: 'srgb',
+            colorType: 'unorm8',
+            desynchronized: false,
+            willReadFrequently: this._willReadFrequently,
+        };
+    }
+
     // ==================== Text texture cache ====================
 
     // Build the cache-key argument tuple for the current 2D state, or
     // return null when the state is outside the cacheable whitelist
     // (anything that moves / recolours / blends the glyph run beyond
     // the keyed fields).  Font identity is carried entirely by the
-    // raw `font` string -- JS deliberately does not re-parse CSS font
-    // (see the note above about CSS font parsing), so size/weight/italic stay 0/false in
-    // the key; the render-thread resolves the string authoritatively
-    // and identical strings always render identically within a
-    // process generation.
+    // serialised `font`, which is a function of the font drawn, so
+    // size/weight/italic stay 0/false in the key.
     _buildTextCacheArgs(text) {
         const tm = this._tm;
         if (tm[0] !== 1 || tm[1] !== 0 || tm[2] !== 0
@@ -1302,7 +1983,7 @@ class CanvasRenderingContext2D {
             | (rgba[3] & 255)) >>> 0;
         return {
             text: String(text),
-            fontRequest: this._font,
+            fontRequest: this._font.text,
             fontSize: 0,
             fontWeight: 0,
             italic: false,
@@ -1424,22 +2105,32 @@ class CanvasRenderingContext2D {
         encode2dClosePath(this._canvasId);
     }
 
+    // The CanvasPath calls take their arguments as Path2D's do (WebIDL's `unrestricted double`, converted in order,
+    // a Symbol or a BigInt a TypeError, a missing one a TypeError); a call with one that is not finite adds nothing.
     moveTo(x, y) {
+        _requireArguments(arguments.length, 2, 'moveTo', 'CanvasRenderingContext2D');
+        x = +x; y = +y;
         if (!_fin2(x, y)) return;
         encode2dMoveTo(this._canvasId, x, y);
     }
 
     lineTo(x, y) {
+        _requireArguments(arguments.length, 2, 'lineTo', 'CanvasRenderingContext2D');
+        x = +x; y = +y;
         if (!_fin2(x, y)) return;
         encode2dLineTo(this._canvasId, x, y);
     }
 
     quadraticCurveTo(cpx, cpy, x, y) {
+        _requireArguments(arguments.length, 4, 'quadraticCurveTo', 'CanvasRenderingContext2D');
+        cpx = +cpx; cpy = +cpy; x = +x; y = +y;
         if (!_fin4(cpx, cpy, x, y)) return;
         encode2dQuadraticCurveTo(this._canvasId, cpx, cpy, x, y);
     }
 
     bezierCurveTo(cp1x, cp1y, cp2x, cp2y, x, y) {
+        _requireArguments(arguments.length, 6, 'bezierCurveTo', 'CanvasRenderingContext2D');
+        cp1x = +cp1x; cp1y = +cp1y; cp2x = +cp2x; cp2y = +cp2y; x = +x; y = +y;
         if (!_fin6(cp1x, cp1y, cp2x, cp2y, x, y)) return;
         encode2dBezierCurveTo(this._canvasId, cp1x, cp1y, cp2x, cp2y, x, y);
     }
@@ -1447,18 +2138,25 @@ class CanvasRenderingContext2D {
     // A negative radius is an error the content is told about; any non-finite argument is a silent no-op, and is
     // checked first.
     arc(x, y, radius, startAngle, endAngle, counterclockwise = false) {
+        _requireArguments(arguments.length, 5, 'arc', 'CanvasRenderingContext2D');
+        x = +x; y = +y; radius = +radius; startAngle = +startAngle; endAngle = +endAngle;
+        const ccw = !!counterclockwise;
         if (!_fin6(x, y, radius, startAngle, endAngle, 0)) return;
-        if (radius < 0) throw domException("The radius provided (" + radius + ") is negative.", "IndexSizeError");
-        encode2dArc(this._canvasId, x, y, radius, startAngle, endAngle, counterclockwise);
+        if (radius < 0) throw _negativeRadius(radius);
+        encode2dArc(this._canvasId, x, y, radius, startAngle, endAngle, ccw);
     }
 
     arcTo(x1, y1, x2, y2, radius) {
+        _requireArguments(arguments.length, 5, 'arcTo', 'CanvasRenderingContext2D');
+        x1 = +x1; y1 = +y1; x2 = +x2; y2 = +y2; radius = +radius;
         if (!_fin6(x1, y1, x2, y2, radius, 0)) return;
-        if (radius < 0) throw domException("The radius provided (" + radius + ") is negative.", "IndexSizeError");
+        if (radius < 0) throw _negativeRadius(radius);
         encode2dArcTo(this._canvasId, x1, y1, x2, y2, radius);
     }
 
     rect(x, y, width, height) {
+        _requireArguments(arguments.length, 4, 'rect', 'CanvasRenderingContext2D');
+        x = +x; y = +y; width = +width; height = +height;
         if (!_fin4(x, y, width, height)) return;
         encode2dRect(this._canvasId, x, y, width, height);
     }
@@ -1475,11 +2173,13 @@ class CanvasRenderingContext2D {
     }
 
     ellipse(x, y, radiusX, radiusY, rotation, startAngle, endAngle, counterclockwise = false) {
+        _requireArguments(arguments.length, 7, 'ellipse', 'CanvasRenderingContext2D');
+        x = +x; y = +y; radiusX = +radiusX; radiusY = +radiusY; rotation = +rotation;
+        startAngle = +startAngle; endAngle = +endAngle;
+        const ccw = !!counterclockwise;
         if (!_fin6(x, y, radiusX, radiusY, rotation, startAngle) || !_fin1(endAngle)) return;
-        if (radiusX < 0 || radiusY < 0) {
-            throw domException("The radius provided (" + (radiusX < 0 ? radiusX : radiusY) + ") is negative.", "IndexSizeError");
-        }
-        encode2dEllipse(this._canvasId, x, y, radiusX, radiusY, rotation, startAngle, endAngle, counterclockwise);
+        if (radiusX < 0 || radiusY < 0) throw _negativeRadius(radiusX < 0 ? radiusX : radiusY);
+        encode2dEllipse(this._canvasId, x, y, radiusX, radiusY, rotation, startAngle, endAngle, ccw);
     }
 
     // ==================== Drawing Methods ====================
@@ -1588,23 +2288,32 @@ class CanvasRenderingContext2D {
     // ==================== Rectangle Methods ====================
 
     fillRect(x, y, width, height) {
+        _requireArguments(arguments.length, 4, 'fillRect', 'CanvasRenderingContext2D');
+        x = +x; y = +y; width = +width; height = +height;
         this._abandonPendingTextCache();
         encode2dFillRect(this._canvasId, x, y, width, height);
     }
 
     strokeRect(x, y, width, height) {
+        _requireArguments(arguments.length, 4, 'strokeRect', 'CanvasRenderingContext2D');
+        x = +x; y = +y; width = +width; height = +height;
         this._abandonPendingTextCache();
         encode2dStrokeRect(this._canvasId, x, y, width, height);
     }
 
     clearRect(x, y, width, height) {
+        _requireArguments(arguments.length, 4, 'clearRect', 'CanvasRenderingContext2D');
+        x = +x; y = +y; width = +width; height = +height;
         this._abandonPendingTextCache();
         encode2dClearRect(this._canvasId, x, y, width, height);
     }
 
     // ==================== Text Methods ====================
 
+    // `fillText(text, x, y, maxWidth)`: a DOMString and `unrestricted double`s, `maxWidth` optional.
     fillText(text, x, y, maxWidth = Infinity) {
+        _requireArguments(arguments.length, 3, 'fillText', 'CanvasRenderingContext2D');
+        text = _domString(text); x = +x; y = +y; maxWidth = +maxWidth;
         // Non-finite position: nothing is drawn. A maxWidth that is NaN or not positive draws nothing either
         // (Infinity, the default, is "no limit").
         if (!_fin2(x, y) || maxWidth !== maxWidth || !(maxWidth > 0)) return;
@@ -1638,19 +2347,22 @@ class CanvasRenderingContext2D {
             this._tcKey = args;
         }
         this._barrier();
-        op_fill_text(this._canvasId, String(text), x, y, maxWidth);
+        op_fill_text(this._canvasId, text, x, y, maxWidth);
     }
 
     strokeText(text, x, y, maxWidth = Infinity) {
+        _requireArguments(arguments.length, 3, 'strokeText', 'CanvasRenderingContext2D');
+        text = _domString(text); x = +x; y = +y; maxWidth = +maxWidth;
         if (!_fin2(x, y) || maxWidth !== maxWidth || !(maxWidth > 0)) return;
         this._abandonPendingTextCache();
         this._barrier();
-        op_stroke_text(this._canvasId, String(text), x, y, maxWidth);
+        op_stroke_text(this._canvasId, text, x, y, maxWidth);
     }
 
     measureText(text) {
-        const s = String(text);
-        // JS-side measure cache in front of the
+        _requireArguments(arguments.length, 1, 'measureText', 'CanvasRenderingContext2D');
+        const s = _domString(text);
+        // R-10 + F-2: JS-side measure cache in front of the
         // native op.  Cross-thread RPC into the render thread
         // costs 30-50 us round-trip even on the cache-hit
         // path; `op_measure_text_flat` drops that
@@ -1661,10 +2373,9 @@ class CanvasRenderingContext2D {
         // caching locally turns the hot case into a `Map.get`,
         // ~100 ns.
         //
-        // Cache key: `${font}\x1f${text}`.  `\x1f` is an ASCII
-        // unit-separator that cannot appear in a valid CSS font
-        // shorthand or in any canvas-drawable text snippet we
-        // care about, so no key collisions.  Epoch-invalidated
+        // Cache key: `${font}\x1f${text}`, the font serialised.  `\x1f`
+        // is a control character a serialised font escapes, so no
+        // key collisions.  Epoch-invalidated
         // against the global `__migoFontEpoch` set by
         // `op_load_font`; see `registerFontFamily` in the bundled
         // loader.
@@ -1673,38 +2384,20 @@ class CanvasRenderingContext2D {
             this._measureCacheEpoch = epoch;
             this._measureCache = new Map();
         }
-        const key = this._font + '\x1f' + s;
+        const font = this._font;
+        const key = font.text + '\x1f' + s;
         const hit = this._measureCache.get(key);
-        if (hit !== undefined) return hit;
-        // Prefer the flat-buffer op so we skip serde_v8's
-        // 12-field V8 object construction on the hot measure
-        // path.  Layout is fixed little-endian f32 at the offsets
-        // documented on `op_measure_text_flat`; the Float32Array
-        // view is zero-copy.  Keep the old serde op as fallback
-        // for older snapshots -- the engine exposes both.
+        if (hit !== undefined) return new TextMetrics(_TEXT_METRICS, hit);
+        // R-7: a flat buffer, not a V8 object built field by field
+        // on the hot measure path.  Layout is fixed little-endian f32
+        // at the offsets documented on `op_measure_text_flat`; the
+        // Float32Array view is zero-copy.
         //
-        // Pass the raw CSS font string; Rust-side
-        // `SharedTextMeasurer::measure_css` parses it through the
-        // shared `css_font::parse_css_font` implementation, which
-        // is also what the render-thread `SetFont` handler uses
-        // so the two sides can't disagree.
+        // The font crosses as `op_set_font` sends it, so a measurement
+        // and the `fillText` after it resolve the same face.
         flushRenderCommandStream();
-        const buf = op_measure_text_flat(this._canvasId, s, this._font);
-        const f = new Float32Array(buf.buffer, buf.byteOffset, 12);
-        const metrics = {
-            width: f[0],
-            actualBoundingBoxLeft: f[1],
-            actualBoundingBoxRight: f[2],
-            emHeightAscent: f[3],
-            emHeightDescent: f[4],
-            alphabeticBaseline: f[5],
-            fontBoundingBoxDescent: f[6],
-            actualBoundingBoxAscent: f[7],
-            actualBoundingBoxDescent: f[8],
-            fontBoundingBoxAscent: f[9],
-            hangingBaseline: f[10],
-            ideographicBaseline: f[11],
-        };
+        const buf = op_measure_text_flat(this._canvasId, s, font.size, font.weight, font.italic, font.families);
+        const metrics = new Float32Array(buf.buffer, buf.byteOffset, 12);
         // Cap the cache at 256 entries to match the render-side
         // LRU budget; oldest-inserted drops when full.  `Map`
         // iteration follows insertion order so this is O(1).
@@ -1713,7 +2406,7 @@ class CanvasRenderingContext2D {
             if (first !== undefined) this._measureCache.delete(first);
         }
         this._measureCache.set(key, metrics);
-        return metrics;
+        return new TextMetrics(_TEXT_METRICS, metrics);
     }
 
     // ==================== Style Properties ====================
@@ -1741,7 +2434,7 @@ class CanvasRenderingContext2D {
             value._applyFill();
         } else {
             // A string that is not a colour leaves the style as it was; what reads back is the serialised colour.
-            const entry = _cssColour(typeof value === 'string' ? value : String(value));
+            const entry = _cssColour(_domString(value));
             if (entry === null || entry.text === this._fillStyle) return;
             this._fillStyle = entry.text;
             const rgba = entry.rgba;
@@ -1760,7 +2453,7 @@ class CanvasRenderingContext2D {
             this._strokeStyle = value;
             value._applyStroke();
         } else {
-            const entry = _cssColour(typeof value === 'string' ? value : String(value));
+            const entry = _cssColour(_domString(value));
             if (entry === null || entry.text === this._strokeStyle) return;
             this._strokeStyle = entry.text;
             const rgba = entry.rgba;
@@ -1781,8 +2474,11 @@ class CanvasRenderingContext2D {
         encode2dSetLineWidth(this._canvasId, v);
     }
 
+    // The keyword attributes are WebIDL enums: the value is converted to a string (a Symbol is a TypeError), and one
+    // that is not a keyword is ignored.
     get lineCap() { return this._lineCap; }
     set lineCap(value) {
+        value = _domString(value);
         if (this._lineCap === value) return;
         if (!Object.prototype.hasOwnProperty.call(LINE_CAP_MAP, value)) return;
         this._lineCap = value;
@@ -1791,6 +2487,7 @@ class CanvasRenderingContext2D {
 
     get lineJoin() { return this._lineJoin; }
     set lineJoin(value) {
+        value = _domString(value);
         if (this._lineJoin === value) return;
         if (!Object.prototype.hasOwnProperty.call(LINE_JOIN_MAP, value)) return;
         this._lineJoin = value;
@@ -1816,28 +2513,19 @@ class CanvasRenderingContext2D {
         encode2dSetGlobalAlpha(this._canvasId, v);
     }
 
-    get font() { return this._font; }
+    get font() { return this._font.text; }
     set font(value) {
-        if (this._font === value) return;
-        // No JS-side parsing needed.  `op_set_font` parses on
-        // the Rust side via `shared::css_font_shorthand::
-        // parse_font_shorthand`, the same function the render
-        // thread uses for `Canvas2DCmd::SetFont`.  One parser, one
-        // source of truth.
-        //
-        // It also answers whether the value was a font at all.
-        // WHATWG makes an unparseable assignment a no-op, and this
-        // is where that has to be decided: `_font` is the string
-        // `measureText` is later measured from, so accepting one
-        // the render thread will reject is how the same `ctx.font`
-        // comes to measure at one size and paint at another.
+        // A string that is not a font leaves the font as it was; what reads back is the serialised font.
+        const font = _cssFont(_domString(value));
+        if (font === null || font.text === this._font.text) return;
+        this._font = font;
         this._barrier();
-        if (!op_set_font(this._canvasId, value)) return;
-        this._font = value;
+        op_set_font(this._canvasId, font.size, font.weight, font.italic, font.families);
     }
 
     get textAlign() { return this._textAlign; }
     set textAlign(value) {
+        value = _domString(value);
         if (this._textAlign === value) return;
         if (!Object.prototype.hasOwnProperty.call(TEXT_ALIGN_MAP, value)) return;
         this._textAlign = value;
@@ -1847,6 +2535,7 @@ class CanvasRenderingContext2D {
 
     get textBaseline() { return this._textBaseline; }
     set textBaseline(value) {
+        value = _domString(value);
         if (this._textBaseline === value) return;
         if (!Object.prototype.hasOwnProperty.call(TEXT_BASELINE_MAP, value)) return;
         this._textBaseline = value;
@@ -1854,12 +2543,14 @@ class CanvasRenderingContext2D {
         op_set_text_baseline(this._canvasId, TEXT_BASELINE_MAP[value]);
     }
 
-    get direction() { return this._direction || 'inherit'; }
+    get direction() { return this._direction; }
     set direction(value) {
+        value = _domString(value);
         if (this._direction === value) return;
+        if (!Object.prototype.hasOwnProperty.call(TEXT_DIRECTION_MAP, value)) return;
         this._direction = value;
         this._barrier();
-        op_set_text_direction(this._canvasId, TEXT_DIRECTION_MAP[value] ?? 0);
+        op_set_text_direction(this._canvasId, TEXT_DIRECTION_MAP[value]);
     }
 
     // ==================== State Methods ====================
@@ -1878,12 +2569,12 @@ class CanvasRenderingContext2D {
         this._lineJoin = 'miter';
         this._miterLimit = 10;
         this._globalAlpha = 1;
-        this._font = '10px sans-serif';
+        this._font = _DEFAULT_FONT;
         this._textAlign = 'start';
         this._textBaseline = 'alphabetic';
         this._imageSmoothing = true;
         this._imageSmoothingQuality = 'low';
-        this._direction = undefined;
+        this._direction = 'inherit';
         this._tm = [1, 0, 0, 1, 0, 0];
         this._stateStack = [];
         this._compositeOp = null;
@@ -1907,6 +2598,9 @@ class CanvasRenderingContext2D {
             font: this._font,
             textAlign: this._textAlign,
             textBaseline: this._textBaseline,
+            // Drawing state like the rest: the renderer's `restore()` gives it back, so this side must too, or a setter
+            // after a restore compares against the inner value and sends nothing.
+            direction: this._direction,
             imageSmoothing: this._imageSmoothing,
             imageSmoothingQuality: this._imageSmoothingQuality,
             tm: this._tm.slice(),
@@ -1935,6 +2629,7 @@ class CanvasRenderingContext2D {
                 _font: state.font,
                 _textAlign: state.textAlign,
                 _textBaseline: state.textBaseline,
+                _direction: state.direction,
                 _imageSmoothing: state.imageSmoothing,
                 _imageSmoothingQuality: state.imageSmoothingQuality,
                 _tm: state.tm,
@@ -1953,6 +2648,8 @@ class CanvasRenderingContext2D {
     // ==================== Transform Methods ====================
 
     translate(x, y) {
+        _requireArguments(arguments.length, 2, 'translate', 'CanvasRenderingContext2D');
+        x = +x; y = +y;
         if (!_fin2(x, y)) return;
         const m = this._tm;
         m[4] += m[0] * x + m[2] * y;
@@ -1961,6 +2658,8 @@ class CanvasRenderingContext2D {
     }
 
     rotate(angle) {
+        _requireArguments(arguments.length, 1, 'rotate', 'CanvasRenderingContext2D');
+        angle = +angle;
         if (!_fin1(angle)) return;
         const cos = Math.cos(angle), sin = Math.sin(angle);
         const m = this._tm;
@@ -1973,13 +2672,26 @@ class CanvasRenderingContext2D {
     }
 
     scale(x, y) {
+        _requireArguments(arguments.length, 2, 'scale', 'CanvasRenderingContext2D');
+        x = +x; y = +y;
         if (!_fin2(x, y)) return;
         this._tm[0] *= x; this._tm[1] *= x;
         this._tm[2] *= y; this._tm[3] *= y;
         encode2dScale(this._canvasId, x, y);
     }
 
+    // `setTransform(a, b, c, d, e, f)` and `setTransform(transform)`, the second taking a DOMMatrix2DInit (a DOMMatrix
+    // is one) or nothing, which is the identity. A matrix with a value that is not finite changes nothing.
     setTransform(a, b, c, d, e, f) {
+        const given = arguments.length;
+        if (given > 1 && given < 6) throw _arityError(given, '0, 1, 6', 'setTransform', 'CanvasRenderingContext2D');
+        if (given <= 1) {
+            const m = _setTransformMatrix;
+            _matrix2DInit(a, m, 'setTransform', 'CanvasRenderingContext2D');
+            [a, b, c, d, e, f] = m;
+        } else {
+            a = +a; b = +b; c = +c; d = +d; e = +e; f = +f;
+        }
         if (!_fin6(a, b, c, d, e, f)) return;
         this._tm[0] = a; this._tm[1] = b;
         this._tm[2] = c; this._tm[3] = d;
@@ -1995,6 +2707,8 @@ class CanvasRenderingContext2D {
     }
 
     transform(a, b, c, d, e, f) {
+        _requireArguments(arguments.length, 6, 'transform', 'CanvasRenderingContext2D');
+        a = +a; b = +b; c = +c; d = +d; e = +e; f = +f;
         if (!_fin6(a, b, c, d, e, f)) return;
         // Multiply current matrix: CTM = CTM * [a b c d e f]
         const m = this._tm;
@@ -2015,63 +2729,42 @@ class CanvasRenderingContext2D {
 
     // ==================== Image Methods ====================
 
-    drawImage(image, ...args) {
-        this._abandonPendingTextCache();
-        // A canvas is an image source too: its pixels are read by the renderer when the record runs, in stream order.
-        if (image && typeof image.getContext === 'function' && typeof image._rid === 'number') {
-            this._drawCanvas(image, args);
-            return;
-        }
-        if (!image || !image.loaded) return;
-
-        this._barrier();
-
-        let sx, sy, sw, sh, dx, dy, dw, dh;
-
-        if (args.length === 2) {
-            [dx, dy] = args;
-            sx = sy = 0;
-            sw = image.width;
-            sh = image.height;
-            dw = sw;
-            dh = sh;
-        } else if (args.length === 4) {
-            [dx, dy, dw, dh] = args;
-            sx = sy = 0;
-            sw = image.width;
-            sh = image.height;
-        } else if (args.length === 8) {
-            [sx, sy, sw, sh, dx, dy, dw, dh] = args;
+    // `drawImage(image, dx, dy)`, `(image, dx, dy, dw, dh)` and `(image, sx, sy, sw, sh, dx, dy, dw, dh)`: three, five or
+    // nine arguments (more than nine are the nine), the image a CanvasImageSource (see `_imageSourceKind`) and the rest
+    // `unrestricted double`s, converted before the image's usability is checked. An argument that is not finite draws
+    // nothing; so does an image still loading.
+    drawImage(image, a1, a2, a3, a4, a5, a6, a7, a8) {
+        const given = arguments.length;
+        _requireArguments(given, 3, 'drawImage', 'CanvasRenderingContext2D');
+        if (given !== 3 && given !== 5 && given < 9) throw _arityError(given, '3, 5, 9', 'drawImage', 'CanvasRenderingContext2D');
+        const kind = _imageSourceKind(image, 'drawImage');
+        a1 = +a1; a2 = +a2;
+        if (given >= 5) { a3 = +a3; a4 = +a4; }
+        if (given >= 9) { a5 = +a5; a6 = +a6; a7 = +a7; a8 = +a8; }
+        if (!_imageUsable(image, kind, 'drawImage')) return;
+        // The image's own size, which the shorter forms draw whole: a canvas's or a bitmap's pixels, an image's natural
+        // size (its `width` is content's to change and does not resize what is drawn).
+        const natural = isImage(image);
+        const w = natural ? image.naturalWidth : image.width;
+        const h = natural ? image.naturalHeight : image.height;
+        let sx = 0, sy = 0, sw = w, sh = h, dx, dy, dw = w, dh = h;
+        if (given === 3) {
+            dx = a1; dy = a2;
+        } else if (given === 5) {
+            dx = a1; dy = a2; dw = a3; dh = a4;
         } else {
-            return;
-        }
-
-        op_draw_image(this._canvasId, image.rid, sx, sy, sw, sh, dx, dy, dw, dh);
-    }
-
-    // drawImage(canvas, dx, dy) / (canvas, dx, dy, dw, dh) / (canvas, sx, sy, sw, sh, dx, dy, dw, dh). A canvas with no
-    // pixels cannot be drawn: the specification throws, and so do we. Any non-finite argument is a silent no-op.
-    _drawCanvas(canvas, args) {
-        const w = canvas.width, h = canvas.height;
-        if (w === 0 || h === 0) {
-            throw domException("The image argument is a canvas element with a width or height of 0.", "InvalidStateError");
-        }
-        let sx, sy, sw, sh, dx, dy, dw, dh;
-        if (args.length === 2) {
-            [dx, dy] = args;
-            sx = sy = 0; sw = w; sh = h; dw = w; dh = h;
-        } else if (args.length === 4) {
-            [dx, dy, dw, dh] = args;
-            sx = sy = 0; sw = w; sh = h;
-        } else if (args.length === 8) {
-            [sx, sy, sw, sh, dx, dy, dw, dh] = args;
-        } else {
-            return;
+            sx = a1; sy = a2; sw = a3; sh = a4; dx = a5; dy = a6; dw = a7; dh = a8;
         }
         if (!_fin4(sx, sy, sw, sh) || !_fin4(dx, dy, dw, dh)) return;
-        // A canvas the renderer cannot copy as it is (a WebGL one) names the 2D canvas that holds what it shows.
-        const source = typeof canvas._imageSourceCanvas === 'function' ? canvas._imageSourceCanvas() : canvas;
-        encode2dDrawCanvas(this._canvasId, source._rid, sx, sy, sw, sh, dx, dy, dw, dh);
+        this._abandonPendingTextCache();
+        if (kind === _SOURCE_CANVAS) {
+            // A canvas the renderer cannot copy as it is (a WebGL one) names the 2D canvas that holds what it shows.
+            const source = typeof image._imageSourceCanvas === 'function' ? image._imageSourceCanvas() : image;
+            encode2dDrawCanvas(this._canvasId, source._rid, sx, sy, sw, sh, dx, dy, dw, dh);
+            return;
+        }
+        this._barrier();
+        op_draw_image(this._canvasId, image.rid, sx, sy, sw, sh, dx, dy, dw, dh);
     }
 
     drawImageBatch(draws) {
@@ -2082,7 +2775,9 @@ class CanvasRenderingContext2D {
 
         this._barrier();
 
-        const validDraws = draws.filter(d => d.image && d.image.loaded);
+        // An image that has loaded, or a bitmap still open; anything else draws nothing.
+        const validDraws = draws.filter(d => d !== null && typeof d === 'object'
+            && (isImage(d.image) ? d.image.loaded === true : isImageBitmap(d.image) && d.image.rid !== 0));
         if (validDraws.length === 0) return;
 
         const buffer = new Float32Array(validDraws.length * 9);
@@ -2107,7 +2802,20 @@ class CanvasRenderingContext2D {
         op_draw_image_batch(this._canvasId, new Uint8Array(buffer.buffer));
     }
 
-    getImageData(sx, sy, sw, sh) {
+    // `getImageData(sx, sy, sw, sh, settings)`: four `[EnforceRange] long`s, and the colour space the pixels are wanted
+    // in -- the canvas's, sRGB, unless the settings name Display P3, which is converted to on the CPU and so takes none
+    // of the snapshot paths below.
+    getImageData(sx, sy, sw, sh, settings) {
+        const context = "Failed to execute 'getImageData' on 'CanvasRenderingContext2D'";
+        if (arguments.length < 4) {
+            throw new TypeError(`${context}: 4 arguments required, but only ${arguments.length} present.`);
+        }
+        let x = _enforceRangeLong(sx, context);
+        let y = _enforceRangeLong(sy, context);
+        const rawWidth = _enforceRangeLong(sw, context);
+        const rawHeight = _enforceRangeLong(sh, context);
+        const colorSpace = _imageDataColorSpace(settings, context) ?? 'srgb';
+        const srgb = colorSpace === 'srgb';
         // Zero-readback fast path.  Two layers of optimisation:
         //
         // 1. Snapshot id is allocated JS-side from a process-local
@@ -2126,10 +2834,6 @@ class CanvasRenderingContext2D {
         // distinct text sprites in one frame) stays correct rather
         // than silently dropping snapshots.  Counter resets on
         // frame-end (see the module-private frame-end hook registry below).
-        let x = sx | 0;
-        let y = sy | 0;
-        const rawWidth = sw | 0;
-        const rawHeight = sh | 0;
         const dimensions = checkedImageDataDimensions(rawWidth, rawHeight);
         const w = dimensions.width;
         const h = dimensions.height;
@@ -2137,7 +2841,7 @@ class CanvasRenderingContext2D {
         // direction; the returned pixels themselves are never flipped.
         if (rawWidth < 0) x += rawWidth;
         if (rawHeight < 0) y += rawHeight;
-        const snapshotInBounds = x >= 0 && y >= 0
+        const snapshotInBounds = srgb && x >= 0 && y >= 0
             && x + w <= this._canvas.width
             && y + h <= this._canvas.height;
         flushRenderCommandStream();
@@ -2149,7 +2853,7 @@ class CanvasRenderingContext2D {
             const k = this._tcKey;
             const fullCanvas =
                 x === 0 && y === 0 && w === k.canvasW && h === k.canvasH;
-            if (fullCanvas && this._tcState === 2) {
+            if (fullCanvas && srgb && this._tcState === 2) {
                 // HIT: no snapshot -- hand back a cache-marked
                 // ImageData.  The pin is now owned by the upcoming
                 // texImage2D (it unpins after the GPU copy).
@@ -2187,59 +2891,62 @@ class CanvasRenderingContext2D {
             _migoSnapshotCharge(w, h);
             return _migoMakeSnapshotImageData(snapshotId, w, h);
         }
-        // Fall back to legacy CPU path (zero-area, GLES 2, or budget
-        // exhausted).  Behaviour preserved bit-exactly.
-        const data = op_get_image_data(this._canvasId, x, y, w, h);
-        return { width: w, height: h, data: new Uint8ClampedArray(data) };
+        // Fall back to legacy CPU path (zero-area, GLES 2, budget
+        // exhausted, or a colour space to convert to).
+        const data = new Uint8ClampedArray(op_get_image_data(this._canvasId, x, y, w, h));
+        if (!srgb) _convertPrimaries(data, _SRGB_TO_P3);
+        return new ImageData(_IMAGE_DATA, w, h, data, colorSpace);
     }
 
-    // `createImageData(imageData)` is a blank image of that image's size.
-    createImageData(sw, sh) {
-        if (sw !== null && typeof sw === 'object'
-                && typeof sw.width === 'number' && typeof sw.height === 'number') {
-            sh = sw.height;
-            sw = sw.width;
+    // `createImageData(sw, sh, settings)` is a blank image of that size -- two `[EnforceRange] long`s, a negative one
+    // counting from the other corner -- in the canvas's colour space or the one the settings name;
+    // `createImageData(imagedata)` is a blank image of that one's size and colour space.
+    createImageData(sw, sh, settings) {
+        const context = "Failed to execute 'createImageData' on 'CanvasRenderingContext2D'";
+        const argc = arguments.length;
+        if (argc === 0) throw new TypeError(`${context}: 1 argument required, but only 0 present.`);
+        if (argc === 1) {
+            const fields = _imageDataFields(sw);
+            if (fields === null) throw new TypeError(`${context}: parameter 1 is not of type 'ImageData'.`);
+            const dimensions = checkedImageDataDimensions(fields[0], fields[1]);
+            return new ImageData(_IMAGE_DATA, dimensions.width, dimensions.height,
+                new Uint8ClampedArray(dimensions.bytes), fields[3]);
         }
-        const dimensions = checkedImageDataDimensions(sw, sh);
-        return {
-            width: dimensions.width,
-            height: dimensions.height,
-            data: new Uint8ClampedArray(dimensions.bytes),
-        };
+        const width = _enforceRangeLong(sw, context);
+        const height = _enforceRangeLong(sh, context);
+        const colorSpace = _imageDataColorSpace(settings, context) ?? 'srgb';
+        const dimensions = checkedImageDataDimensions(width, height);
+        return new ImageData(_IMAGE_DATA, dimensions.width, dimensions.height,
+            new Uint8ClampedArray(dimensions.bytes), colorSpace);
     }
 
     // `putImageData(imageData, dx, dy)` and `putImageData(imageData, dx, dy, dirtyX, dirtyY, dirtyWidth, dirtyHeight)`:
     // the pixels of `imageData` -- or only its dirty rectangle -- replace the canvas's at (dx, dy). The call ignores the
     // transform, the clip, `globalAlpha`, the composite operation and the shadow (HTML Standard, "putImageData"). The
-    // algorithm below is the specification's; the arguments are WebIDL `long`s (a non-finite one is 0).
+    // algorithm below is the specification's; the arguments are an ImageData and WebIDL `[EnforceRange] long`s, and
+    // pixels in Display P3 are converted to the canvas's sRGB on the way.
     putImageData(imageData, dx, dy, dirtyX, dirtyY, dirtyWidth, dirtyHeight) {
+        const context = "Failed to execute 'putImageData' on 'CanvasRenderingContext2D'";
         const argc = arguments.length;
-        if (argc !== 3 && argc !== 7) {
-            throw new TypeError(
-                `putImageData: 3 or 7 arguments required, but ${argc} present.`);
+        // WebIDL's overloads take three arguments or seven; one past seven is ignored, a count between is neither.
+        if (argc < 3) throw new TypeError(`${context}: 3 arguments required, but only ${argc} present.`);
+        if (argc > 3 && argc < 7) {
+            throw new TypeError(`${context}: Valid arities are: [3, 7], but ${argc} arguments provided.`);
         }
-        if (imageData === null || typeof imageData !== 'object'
-                || typeof imageData.width !== 'number' || typeof imageData.height !== 'number'
-                || imageData.data === null || typeof imageData.data !== 'object') {
-            throw new TypeError("putImageData: parameter 1 is not of type 'ImageData'.");
-        }
-        const width = imageData.width | 0;
-        const height = imageData.height | 0;
-        const data = imageData.data;
-        if (width <= 0 || height <= 0 || data.length < width * height * 4) {
-            throw new TypeError("putImageData: parameter 1 is not of type 'ImageData'.");
-        }
-        dx |= 0;
-        dy |= 0;
+        const fields = _imageDataFields(imageData);
+        if (fields === null) throw new TypeError(`${context}: parameter 1 is not of type 'ImageData'.`);
+        dx = _enforceRangeLong(dx, context);
+        dy = _enforceRangeLong(dy, context);
+        const [width, height, data, colorSpace] = fields;
         let x = 0;
         let y = 0;
         let w = width;
         let h = height;
-        if (argc === 7) {
-            x = dirtyX | 0;
-            y = dirtyY | 0;
-            w = dirtyWidth | 0;
-            h = dirtyHeight | 0;
+        if (argc >= 7) {
+            x = _enforceRangeLong(dirtyX, context);
+            y = _enforceRangeLong(dirtyY, context);
+            w = _enforceRangeLong(dirtyWidth, context);
+            h = _enforceRangeLong(dirtyHeight, context);
             // A negative width or height names the rectangle from its other corner.
             if (w < 0) { x += w; w = -w; }
             if (h < 0) { y += h; h = -h; }
@@ -2248,6 +2955,10 @@ class CanvasRenderingContext2D {
             if (y < 0) { h += y; y = 0; }
             if (x + w > width) w = width - x;
             if (y + h > height) h = height - y;
+        }
+        // A buffer content transferred away holds nothing to put.
+        if (TypedArrayPrototypeGetLength(data) === 0) {
+            throw domException(`${context}: The source data has been detached.`, 'InvalidStateError');
         }
         if (w <= 0 || h <= 0) return;
         // Where it lands, and the part of that inside the canvas: pixels past the edge are not sent.
@@ -2265,7 +2976,7 @@ class CanvasRenderingContext2D {
         // The rows of the rectangle, contiguous: the ImageData's own bytes when the rectangle is whole rows, a copy of the
         // rows otherwise.
         let pixels;
-        if (w === width) {
+        if (w === width && colorSpace === 'srgb') {
             pixels = new Uint8Array(data.buffer, data.byteOffset + srcY * width * 4, w * h * 4);
         } else {
             pixels = new Uint8Array(w * h * 4);
@@ -2274,6 +2985,7 @@ class CanvasRenderingContext2D {
                 const from = ((srcY + row) * width + srcX) * 4;
                 pixels.set(new Uint8Array(data.buffer, data.byteOffset + from, rowBytes), row * rowBytes);
             }
+            if (colorSpace !== 'srgb') _convertPrimaries(pixels, _P3_TO_SRGB);
         }
         // Not a stream record: the bytes go in the frame as a command, behind everything the stream already holds.
         this._barrier();
@@ -2299,12 +3011,14 @@ class CanvasRenderingContext2D {
     // value that is not one of the three is ignored, as it is in a browser.
     get imageSmoothingQuality() { return this._imageSmoothingQuality; }
     set imageSmoothingQuality(value) {
+        value = _domString(value);
         if (value === 'low' || value === 'medium' || value === 'high') this._imageSmoothingQuality = value;
     }
 
     // ==================== Compositing ====================
     get globalCompositeOperation() { return this._compositeOp || 'source-over'; }
     set globalCompositeOperation(value) {
+        value = _domString(value);
         if (this._compositeOp === value) return;
         var idx = _COMPOSITE_OPS.indexOf(value);
         if (idx !== -1) {
@@ -2325,7 +3039,7 @@ class CanvasRenderingContext2D {
     }
     get shadowColor() { return this._shadowColor || 'rgba(0, 0, 0, 0)'; }
     set shadowColor(value) {
-        const entry = _cssColour(typeof value === 'string' ? value : String(value));
+        const entry = _cssColour(_domString(value));
         if (entry === null || entry.text === (this._shadowColor || 'rgba(0, 0, 0, 0)')) return;
         this._shadowColor = entry.text;
         const rgba = entry.rgba;
@@ -2349,14 +3063,39 @@ class CanvasRenderingContext2D {
     }
 
     // ==================== Gradient ====================
+    // The factories take WebIDL `double`s: an argument that is not finite is a TypeError, as is a missing one, and a
+    // negative radius an IndexSizeError.
     createLinearGradient(x0, y0, x1, y1) {
-        return new CanvasGradient('linear', this._canvasId, x0, y0, 0, x1, y1, 0);
+        const method = 'createLinearGradient';
+        _requireArguments(arguments.length, 4, method, 'CanvasRenderingContext2D');
+        x0 = _double(x0, method, 'CanvasRenderingContext2D');
+        y0 = _double(y0, method, 'CanvasRenderingContext2D');
+        x1 = _double(x1, method, 'CanvasRenderingContext2D');
+        y1 = _double(y1, method, 'CanvasRenderingContext2D');
+        return new CanvasGradient(_CANVAS_STYLE, 'linear', this._canvasId, x0, y0, 0, x1, y1, 0);
     }
     createRadialGradient(x0, y0, r0, x1, y1, r1) {
-        return new CanvasGradient('radial', this._canvasId, x0, y0, r0, x1, y1, r1);
+        const method = 'createRadialGradient';
+        _requireArguments(arguments.length, 6, method, 'CanvasRenderingContext2D');
+        x0 = _double(x0, method, 'CanvasRenderingContext2D');
+        y0 = _double(y0, method, 'CanvasRenderingContext2D');
+        r0 = _double(r0, method, 'CanvasRenderingContext2D');
+        x1 = _double(x1, method, 'CanvasRenderingContext2D');
+        y1 = _double(y1, method, 'CanvasRenderingContext2D');
+        r1 = _double(r1, method, 'CanvasRenderingContext2D');
+        if (r0 < 0 || r1 < 0) {
+            throw domException("Failed to execute 'createRadialGradient' on 'CanvasRenderingContext2D': The " +
+                (r0 < 0 ? "r0" : "r1") + " provided is less than 0.", "IndexSizeError");
+        }
+        return new CanvasGradient(_CANVAS_STYLE, 'radial', this._canvasId, x0, y0, r0, x1, y1, r1);
     }
     createConicGradient(startAngle, cx, cy) {
-        return new CanvasGradient('conic', this._canvasId, cx, cy, 0, startAngle, 0, 0);
+        const method = 'createConicGradient';
+        _requireArguments(arguments.length, 3, method, 'CanvasRenderingContext2D');
+        startAngle = _double(startAngle, method, 'CanvasRenderingContext2D');
+        cx = _double(cx, method, 'CanvasRenderingContext2D');
+        cy = _double(cy, method, 'CanvasRenderingContext2D');
+        return new CanvasGradient(_CANVAS_STYLE, 'conic', this._canvasId, cx, cy, 0, startAngle, 0, 0);
     }
 
     // ==================== Line Dash ====================
@@ -2366,12 +3105,11 @@ class CanvasRenderingContext2D {
     // A list with a negative or non-finite entry is rejected whole; an odd-length list is stored (and reported by
     // `getLineDash`) repeated to an even one, so `[5]` is `[5, 5]`.
     setLineDash(segments) {
-        if (segments === null || typeof segments !== 'object' || typeof segments.length !== 'number') return;
-        const list = [];
-        for (let i = 0; i < segments.length; i++) {
-            const v = +segments[i];
+        _requireArguments(arguments.length, 1, 'setLineDash', 'CanvasRenderingContext2D');
+        const list = _numberSequence(segments, 'setLineDash', 'CanvasRenderingContext2D');
+        for (let i = 0; i < list.length; i++) {
+            const v = list[i];
             if (!(v >= 0) || v === Infinity) return;
-            list.push(v);
         }
         if (list.length % 2 === 1) {
             for (let i = 0, n = list.length; i < n; i++) list.push(list[i]);
@@ -2390,32 +3128,30 @@ class CanvasRenderingContext2D {
         encode2dSetLineDashOffset(this._canvasId, v);
     }
 
-    // `createPattern(image, repetition)`: `image` is a decoded image or a canvas, and a pattern from a canvas is
-    // the canvas as it is now -- what it draws afterwards does not reach the pattern.
+    // `createPattern(image, repetition)`: `image` is an image, an ImageBitmap or a canvas, and a pattern from a canvas
+    // is the canvas as it is now -- what it draws afterwards does not reach the pattern. In the specification's order:
+    // the image's usability first (an image still loading is a null pattern, whatever the repetition), then the
+    // repetition -- `null` and "" are "repeat", anything else not one of the four names a SyntaxError.
     createPattern(image, repetition) {
-        // The repetition is checked first, as the specification's steps do: "" and null mean "repeat", anything
-        // that is not one of the four names is a SyntaxError.
-        const rep = repetition == null || repetition === '' ? 'repeat' : String(repetition);
+        _requireArguments(arguments.length, 2, 'createPattern', 'CanvasRenderingContext2D');
+        const kind = _imageSourceKind(image, 'createPattern');
+        let rep = repetition === null ? '' : _domString(repetition);
+        if (!_imageUsable(image, kind, 'createPattern')) return null;
+        if (rep === '') rep = 'repeat';
         if (rep !== 'repeat' && rep !== 'repeat-x' && rep !== 'repeat-y' && rep !== 'no-repeat') {
-            throw domException("The provided repetition value '" + rep + "' is not a valid repetition.", "SyntaxError");
+            throw domException("Failed to execute 'createPattern' on 'CanvasRenderingContext2D': The provided " +
+                "repetition value '" + rep + "' is not a valid repetition.", "SyntaxError");
         }
-        if (image && typeof image.getContext === 'function' && typeof image._rid === 'number') {
-            const w = image.width, h = image.height;
-            if (w === 0 || h === 0) {
-                throw domException("The image argument is a canvas element with a width or height of 0.", "InvalidStateError");
-            }
-            // A copy that belongs to the pattern: the canvas is selected for the record so it runs in the
-            // canvas's own stream, after everything drawn to it so far. The id is allocated after what the stream
-            // holds, as every op in this file is.
-            flushRenderCommandStream();
-            const imageId = op_create_image();
-            encode2dCaptureImage(image._rid, imageId);
-            const pattern = new CanvasPattern(this._canvasId, imageId, rep);
-            _patternCopies.register(pattern, imageId);
-            return pattern;
-        }
-        if (!image || !image.loaded) return null;
-        return new CanvasPattern(this._canvasId, image.rid, rep);
+        if (kind === _SOURCE_IMAGE) return new CanvasPattern(_CANVAS_STYLE, this._canvasId, image.rid, rep);
+        // A copy that belongs to the pattern: the canvas is selected for the record so it runs in the canvas's own
+        // stream, after everything drawn to it so far. The id is allocated after what the stream holds, as every op in
+        // this file is.
+        flushRenderCommandStream();
+        const imageId = op_create_image();
+        encode2dCaptureImage(image._rid, imageId);
+        const pattern = new CanvasPattern(_CANVAS_STYLE, this._canvasId, imageId, rep);
+        _patternCopies.register(pattern, imageId);
+        return pattern;
     }
 }
 
@@ -2484,9 +3220,7 @@ function _migoNextSnapshotId() {
 // when it can no longer be avoided. `texImage2D(imageData)` within the frame, which is the
 // pattern this exists for, spends the snapshot and costs nothing.
 function _migoMakeSnapshotImageData(snapshotId, w, h) {
-    const placeholder = new Uint8ClampedArray(w * h * 4);
-    let _populated = false;
-    const imageData = { width: w, height: h };
+    const imageData = new ImageData(_IMAGE_DATA, w, h, new Uint8ClampedArray(w * h * 4), 'srgb', _readBackSnapshot);
     Object.defineProperty(imageData, '__migo_snapshot_id__', {
         value: snapshotId,
         enumerable: false,
@@ -2502,28 +3236,22 @@ function _migoMakeSnapshotImageData(snapshotId, w, h) {
         configurable: true,
     });
     _migoFrameSnapshotImageData.push(imageData);
-    Object.defineProperty(imageData, 'data', {
-        get() {
-            if (!_populated) {
-                _populated = true;
-                const sid = imageData.__migo_snapshot_id__ | 0;
-                if (sid !== 0) {
-                    flushRenderCommandStream();
-                    const real = op_force_readback_snapshot(sid);
-                    if (real && real.length === placeholder.length) {
-                        placeholder.set(real);
-                    }
-                    // JS now owns the buffer; subsequent uploads must
-                    // pick up any in-place mutations from this point on.
-                    imageData.__migo_snapshot_id__ = 0;
-                }
-            }
-            return placeholder;
-        },
-        enumerable: true,
-        configurable: true,
-    });
     return imageData;
+}
+
+// A snapshot `ImageData`'s bytes, on the first read of its `data`: the renderer's readback, unless a `texImage2D` has
+// already taken the snapshot and left nothing to read.
+function _readBackSnapshot(imageData, placeholder) {
+    const sid = imageData.__migo_snapshot_id__ | 0;
+    if (sid === 0) return;
+    flushRenderCommandStream();
+    const real = op_force_readback_snapshot(sid);
+    if (real && real.length === placeholder.length) {
+        placeholder.set(real);
+    }
+    // JS now owns the buffer; subsequent uploads must
+    // pick up any in-place mutations from this point on.
+    imageData.__migo_snapshot_id__ = 0;
 }
 
 // Synthetic ImageData for a text texture cache HIT.  No snapshot was
@@ -2541,46 +3269,36 @@ function _migoMakeSnapshotImageData(snapshotId, w, h) {
 // read `.data` for these labels (otherwise the pre-existing snapshot
 // fast path wouldn't help either), so this stays cold in practice.
 function _migoMakeTextCacheImageData(ctx, k, w, h) {
-    const placeholder = new Uint8ClampedArray(w * h * 4);
-    let _populated = false;
-    const imageData = { width: w, height: h };
+    // The bytes on the first read of `data`: the text drawn after all, and read back (see above).
+    const imageData = new ImageData(_IMAGE_DATA, w, h, new Uint8ClampedArray(w * h * 4), 'srgb', (self, placeholder) => {
+        const key = self.__migo_text_cache_key__;
+        if (key) {
+            ctx._barrier();
+            op_text_cache_unpin(
+                key.text, key.fontRequest, key.fontSize, key.fontWeight,
+                key.italic, key.fillColor, key.textAlign, key.textBaseline,
+                key.canvasW, key.canvasH,
+            );
+            op_fill_text(
+                ctx._canvasId,
+                key.text,
+                key._x || 0,
+                key._y || 0,
+                key._mw == null ? Infinity : key._mw,
+            );
+            const sid = _migoNextSnapshotId();
+            op_capture_canvas2d_snapshot(ctx._canvasId, 0, 0, w, h, sid);
+            const real = op_force_readback_snapshot(sid);
+            if (real && real.length === placeholder.length) {
+                placeholder.set(real);
+            }
+            self.__migo_text_cache_key__ = null;
+        }
+    });
     Object.defineProperty(imageData, '__migo_text_cache_key__', {
         value: k,
         enumerable: false,
         writable: true,
-        configurable: true,
-    });
-    Object.defineProperty(imageData, 'data', {
-        get() {
-            if (!_populated) {
-                _populated = true;
-                const key = imageData.__migo_text_cache_key__;
-                if (key) {
-                    ctx._barrier();
-                    op_text_cache_unpin(
-                        key.text, key.fontRequest, key.fontSize, key.fontWeight,
-                        key.italic, key.fillColor, key.textAlign, key.textBaseline,
-                        key.canvasW, key.canvasH,
-                    );
-                    op_fill_text(
-                        ctx._canvasId,
-                        key.text,
-                        key._x || 0,
-                        key._y || 0,
-                        key._mw == null ? Infinity : key._mw,
-                    );
-                    const sid = _migoNextSnapshotId();
-                    op_capture_canvas2d_snapshot(ctx._canvasId, 0, 0, w, h, sid);
-                    const real = op_force_readback_snapshot(sid);
-                    if (real && real.length === placeholder.length) {
-                        placeholder.set(real);
-                    }
-                    imageData.__migo_text_cache_key__ = null;
-                }
-            }
-            return placeholder;
-        },
-        enumerable: true,
         configurable: true,
     });
     return imageData;
@@ -2636,4 +3354,4 @@ frameEndHooks.push(() => {
 // game script can run.
 globalThis._internalFrameEnd = frameEndAll;
 
-export { CanvasRenderingContext2D, CanvasGradient, Path2D, frameEndAll };
+export { CanvasRenderingContext2D, CanvasGradient, CanvasPattern, ImageData, Path2D, TextMetrics, frameEndAll };

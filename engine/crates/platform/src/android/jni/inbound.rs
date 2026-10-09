@@ -1904,8 +1904,7 @@ pub(crate) extern "system" fn onVsync(
     frame_time_nanos: jlong,
 ) {
     jni_safe!("onVsync", {
-        let frame_time_ms = frame_time_nanos as f64 / 1_000_000.0;
-        match with_hot_ingress(host_id, |ingress| ingress.try_send_vsync(frame_time_ms)) {
+        match with_hot_ingress(host_id, |ingress| ingress.try_send_vsync(frame_time_nanos)) {
             Some(Ok(()) | Err(HostIngressSendError::Full)) => {}
             Some(Err(HostIngressSendError::Closed)) | None => {
                 invalidate_hot_ingress(host_id);

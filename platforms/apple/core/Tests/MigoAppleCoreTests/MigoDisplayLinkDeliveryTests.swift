@@ -1,3 +1,4 @@
+import QuartzCore
 import XCTest
 
 @testable import MigoAppleCore
@@ -28,8 +29,9 @@ final class MigoDisplayLinkDeliveryTests: XCTestCase {
     /// recorder is still crossing a boundary and is locked accordingly.
     private final class Ticks: @unchecked Sendable {
         private let lock = NSLock()
-        private var targets: [CFTimeInterval] = []
-        private var durations: [CFTimeInterval] = []
+        private var frames: [MigoDisplayLink.Frame] = []
+        /// `CACurrentMediaTime` as each frame was delivered, to hold its times against.
+        private var deliveredAt: [CFTimeInterval] = []
         private var expectation: XCTestExpectation?
         private var wanted = 0
 
@@ -40,21 +42,22 @@ final class MigoDisplayLinkDeliveryTests: XCTestCase {
             self.expectation = expectation
         }
 
-        func record(_ target: CFTimeInterval, _ duration: CFTimeInterval) {
+        func record(_ frame: MigoDisplayLink.Frame) {
+            let now = CACurrentMediaTime()
             lock.lock()
-            targets.append(target)
-            durations.append(duration)
-            let reached = targets.count == wanted
+            frames.append(frame)
+            deliveredAt.append(now)
+            let reached = frames.count == wanted
             let pending = expectation
             if reached { expectation = nil }
             lock.unlock()
             if reached { pending?.fulfill() }
         }
 
-        var snapshot: (targets: [CFTimeInterval], durations: [CFTimeInterval]) {
+        var snapshot: (frames: [MigoDisplayLink.Frame], deliveredAt: [CFTimeInterval]) {
             lock.lock()
             defer { lock.unlock() }
-            return (targets, durations)
+            return (frames, deliveredAt)
         }
     }
 
@@ -72,7 +75,7 @@ final class MigoDisplayLinkDeliveryTests: XCTestCase {
         #endif
         let link = MigoDisplayLink(
             decision: MigoDisplayLinkPolicy.decide(.init(platform: platform, osMajor: major)),
-            onTick: { target, duration in ticks.record(target, duration) })
+            onTick: { frame in ticks.record(frame) })
 
         // Twenty is a third of a second at 60 Hz and a sixth at 120: enough to see
         // a cadence, short enough that a slow machine still finishes inside the
@@ -94,15 +97,37 @@ final class MigoDisplayLinkDeliveryTests: XCTestCase {
         // see a tick and would report the link as dead.
         wait(for: [arrived], timeout: 5)
 
-        let (targets, durations) = ticks.snapshot
+        let (frames, deliveredAt) = ticks.snapshot
+        let targets = frames.map(\.targetTimestamp)
         XCTAssertGreaterThanOrEqual(targets.count, wanted)
+
+        // Both times are on the clock `CACurrentMediaTime` reads, whichever
+        // mechanism delivered them: a frame began before it was delivered, and not
+        // long before. A frame stamped on another clock -- the display's video
+        // time, which `CVDisplayLink` also reports -- is nowhere near the moment it
+        // arrived, and an engine that converts it to `performance.now()`'s timeline
+        // would put the frame anywhere at all.
+        for (frame, arrived) in zip(frames, deliveredAt) {
+            XCTAssertLessThanOrEqual(
+                frame.timestamp, arrived,
+                "a frame began at \(frame.timestamp), after it was delivered at \(arrived)")
+            XCTAssertLessThan(
+                arrived - frame.timestamp, 1,
+                "a frame began \(arrived - frame.timestamp) s before it was delivered: not on the uptime clock")
+            XCTAssertGreaterThanOrEqual(frame.targetTimestamp, frame.timestamp)
+        }
+        for (index, pair) in zip(frames, frames.dropFirst()).enumerated() {
+            XCTAssertGreaterThan(
+                pair.1.timestamp, pair.0.timestamp,
+                "frame start timestamps must strictly increase; tick \(index + 1) did not advance")
+        }
 
         // Strictly increasing, because `targetTimestamp` is when the frame being
         // drawn is due to appear. A repeated or reversed value would mean a
         // presenter pacing against it draws two frames for one slot or steps
-        // backwards, and the arithmetic that produces it -- videoTime over
-        // videoTimeScale -- is exactly where a scale of zero or a signed overflow
-        // would show up.
+        // backwards, and the arithmetic that produces it -- a host time over the
+        // host clock's frequency -- is exactly where a zero frequency or a unit
+        // mistake would show up.
         for (index, pair) in zip(targets, targets.dropFirst()).enumerated() {
             XCTAssertGreaterThan(
                 pair.1, pair.0,
@@ -113,7 +138,7 @@ final class MigoDisplayLinkDeliveryTests: XCTestCase {
         // that the value is a duration in seconds and not milliseconds, nanoseconds
         // or a raw video time. 1 Hz to 1000 Hz covers every display Apple ships and
         // every stall a loaded machine can introduce.
-        for duration in durations {
+        for duration in frames.map(\.duration) {
             XCTAssertGreaterThanOrEqual(duration, 0)
             XCTAssertLessThan(
                 duration, 1,
@@ -133,12 +158,12 @@ final class MigoDisplayLinkDeliveryTests: XCTestCase {
         // battery complaint with no owner, which is the failure `MigoDisplayLink`'s
         // proxy exists to prevent on the retain side and this checks on the
         // delivery side.
-        let afterStop = ticks.snapshot.targets.count
+        let afterStop = ticks.snapshot.frames.count
         let settle = expectation(description: "settle")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { settle.fulfill() }
         wait(for: [settle], timeout: 2)
         XCTAssertEqual(
-            ticks.snapshot.targets.count, afterStop,
+            ticks.snapshot.frames.count, afterStop,
             "ticks kept arriving after stop()")
     }
 }

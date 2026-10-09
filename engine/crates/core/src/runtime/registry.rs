@@ -329,14 +329,19 @@ impl HostIngress {
             .fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Deliver one externally paced frame timestamp. A Host without external
-    /// pacing deliberately has no sender, making this a harmless no-op.
+    /// Deliver one externally paced frame: `frame_time_nanos` is when it began, on the platform's monotonic
+    /// clock (`migo_session_notify_vsync`). It is put on the process timeline here, as it arrives, so the render
+    /// thread hands content a timestamp on the clock `performance.now()` reads -- at or before the moment the
+    /// callback runs, however long the frame waited to be handled. A Host without external pacing deliberately has
+    /// no sender, making this a harmless no-op.
     #[inline]
-    pub fn try_send_vsync(&self, frame_time_ms: f64) -> Result<(), HostIngressSendError> {
+    pub fn try_send_vsync(&self, frame_time_nanos: i64) -> Result<(), HostIngressSendError> {
         let Some(tx) = &self.vsync_tx else {
             return Ok(());
         };
-        match tx.try_send(frame_time_ms) {
+        match tx.try_send(shared::time_origin::ms_since_origin_of_monotonic_nanos(
+            frame_time_nanos,
+        )) {
             Ok(()) => Ok(()),
             Err(crossbeam_channel::TrySendError::Full(_)) => {
                 self.stats.dropped_frames.fetch_add(1, Ordering::Relaxed);

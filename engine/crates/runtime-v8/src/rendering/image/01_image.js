@@ -18,6 +18,10 @@ const registry = new SafeFinalizationRegistry((rid) => {
     } catch (_) { }
 });
 
+// The 2D context's test for its image arguments, set by each class (see their static blocks).
+let isImage;
+let isImageBitmap;
+
 class Image {
     constructor(width, height) {
         this._src = "";
@@ -62,6 +66,11 @@ class Image {
     // For drawImage: prefer shared id if available.
     get rid() {
         return this._shared_img_id ?? this._rid;
+    }
+
+    static {
+        // Whether a value is one of these, by a field only the constructor gives: what a 2D context takes as an image.
+        isImage = (value) => value !== null && typeof value === 'object' && #listeners in value;
     }
 
     get loaded() {
@@ -188,6 +197,10 @@ class Image {
 
 const createImage = (width, height) => new Image(width, height);
 
+// The bitmaps `createImageBitmap` makes; content cannot construct one (`new ImageBitmap()` is a TypeError, as in a
+// browser), which would otherwise name any image the renderer holds.
+const _IMAGE_BITMAP = Symbol('ImageBitmap');
+
 /**
  * ImageBitmap - a loaded, decoded image tied to a GPU texture.
  *
@@ -206,7 +219,12 @@ const createImage = (width, height) => new Image(width, height);
  * ends up sharing a single GPU texture.
  */
 class ImageBitmap {
-    constructor(rid, sharedId, width, height) {
+    #bitmap = true;
+
+    // (rid, sharedId, width, height), after the token.
+    constructor() {
+        if (arguments[0] !== _IMAGE_BITMAP) throw new TypeError("Illegal constructor");
+        const [, rid, sharedId, width, height] = arguments;
         this._rid = rid;
         this._shared_img_id = sharedId;
         this.width = width;
@@ -218,6 +236,10 @@ class ImageBitmap {
 
     get rid() {
         return this._closed ? 0 : (this._shared_img_id ?? this._rid);
+    }
+
+    static {
+        isImageBitmap = (value) => value !== null && typeof value === 'object' && #bitmap in value;
     }
 
     close() {
@@ -339,7 +361,7 @@ async function createImageBitmap(source, ...args) {
             final_w,
             final_h,
         );
-        return new ImageBitmap(rid2, dim[0], dim[1][0], dim[1][1]);
+        return new ImageBitmap(_IMAGE_BITMAP, rid2, dim[0], dim[1][0], dim[1][1]);
     }
 
     const wantsResize = rw > 0 && rh > 0 && (rw !== source.width || rh !== source.height);
@@ -354,11 +376,11 @@ async function createImageBitmap(source, ...args) {
             // No src => can't re-alias via cache; still return a
             // bitmap sharing the id directly.  close() will decref
             // the shared texture; caller accepts this trade-off.
-            return new ImageBitmap(sharedId, sharedId, source.width, source.height);
+            return new ImageBitmap(_IMAGE_BITMAP, sharedId, sharedId, source.width, source.height);
         }
         const rid2 = op_create_image();
         const dim = await op_load_image(rid2, source._src, 0, 0);
-        return new ImageBitmap(rid2, dim[0], dim[1][0], dim[1][1]);
+        return new ImageBitmap(_IMAGE_BITMAP, rid2, dim[0], dim[1][0], dim[1][1]);
     }
 
     // Resize path: replay src with target dims.  Same cache
@@ -368,7 +390,7 @@ async function createImageBitmap(source, ...args) {
     }
     const rid2 = op_create_image();
     const dim = await op_load_image(rid2, source._src, rw, rh);
-    return new ImageBitmap(rid2, dim[0], dim[1][0], dim[1][1]);
+    return new ImageBitmap(_IMAGE_BITMAP, rid2, dim[0], dim[1][0], dim[1][1]);
 }
 
 /**
@@ -505,5 +527,7 @@ export {
     ImageCache,
     ImageBitmap,
     createImageBitmap,
+    isImage,
+    isImageBitmap,
     prefetchImage,
 };
