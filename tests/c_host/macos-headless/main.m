@@ -145,6 +145,171 @@ static int64_t now_nanos(void) {
     return (int64_t)ts.tv_sec * 1000000000LL + (int64_t)ts.tv_nsec;
 }
 
+/*
+ * The host-service channel, answered as a fixed fake backend.
+ *
+ * A real host forwards these to an ad SDK, a store, a sign-in backend. This one
+ * answers every call the same way every time, so content can check the exact
+ * result it receives -- scripts/fixtures/headless-host-services-probe does,
+ * step by step. Content that does not use these services never calls them, so
+ * declaring them costs the other fixtures nothing.
+ *
+ * Answered inline, from inside the callback: the header allows a callback to
+ * re-enter the library, and a host whose dispatcher runs tasks on the calling
+ * thread -- as this one's does -- is exactly the host that would.
+ */
+static const uint64_t HOST_SERVICES = (UINT64_C(1) << MIGO_HOST_SERVICE_AD)
+                                      | (UINT64_C(1) << MIGO_HOST_SERVICE_PAYMENT)
+                                      | (UINT64_C(1) << MIGO_HOST_SERVICE_AUTH)
+                                      | (UINT64_C(1) << MIGO_HOST_SERVICE_SHARE)
+                                      | (UINT64_C(1) << MIGO_HOST_SERVICE_NAVIGATE);
+
+static void probe_failure(const char *what) {
+    pthread_mutex_lock(&g_lock);
+    snprintf(g_error_message, sizeof(g_error_message), "host-service probe: %s", what);
+    pthread_mutex_unlock(&g_lock);
+    fprintf(stderr, "[macos-headless] host-service probe: %s\n", what);
+    fflush(stderr);
+    publish(OUTCOME_ERROR);
+}
+
+static MigoHostServiceResult host_result(MigoHostServiceStatus status) {
+    MigoHostServiceResult result;
+    memset(&result, 0, sizeof(result));
+    result.struct_size = (uint32_t)sizeof(result);
+    result.abi_version = MIGO_ABI_VERSION_CURRENT;
+    result.status = status;
+    return result;
+}
+
+static void complete_ok(MigoSession *session, uint64_t call_id, const char *payload_json) {
+    MigoHostServiceResult result = host_result(MIGO_HOST_SERVICE_STATUS_OK);
+    result.payload_json_utf8 = payload_json;
+    result.payload_length = (uint32_t)strlen(payload_json);
+    if (migo_session_complete_host_service_call(session, call_id, &result) != MIGO_OK) {
+        probe_failure("migo_session_complete_host_service_call refused a success");
+    }
+}
+
+static void complete_fail(MigoSession *session, uint64_t call_id, const char *message,
+                          int has_code, int32_t code) {
+    MigoHostServiceResult result = host_result(MIGO_HOST_SERVICE_STATUS_FAIL);
+    result.message_utf8 = message;
+    result.message_length = (uint32_t)strlen(message);
+    if (has_code) {
+        result.flags = MIGO_HOST_SERVICE_RESULT_FLAG_ERROR_CODE;
+        result.error_code = code;
+    }
+    if (migo_session_complete_host_service_call(session, call_id, &result) != MIGO_OK) {
+        probe_failure("migo_session_complete_host_service_call refused a failure");
+    }
+}
+
+/* The advert an ad command addresses. Every ad payload carries adId; a parser
+ * would be more than this probe needs to find one integer. */
+static long ad_id_of(const char *payload) {
+    const char *key = strstr(payload, "\"adId\":");
+    return key ? strtol(key + strlen("\"adId\":"), NULL, 10) : -1;
+}
+
+static void post_ad_event(MigoSession *session, long ad_id, const char *rest) {
+    char event[256];
+    int length = snprintf(event, sizeof(event), "{\"adId\":%ld,%s}", ad_id, rest);
+    if (migo_session_post_host_service_event(session, MIGO_HOST_SERVICE_AD,
+                                             MIGO_AD_EVENT_LIFECYCLE, event,
+                                             (uint32_t)length) != MIGO_OK) {
+        probe_failure("migo_session_post_host_service_event refused an ad event");
+    }
+}
+
+static void MIGO_CALL on_host_service_call(void *user_data, MigoSession *session,
+                                           const MigoHostServiceCall *call) {
+    (void)user_data;
+    char payload[4096];
+    size_t length = call->payload_length < sizeof(payload) - 1 ? call->payload_length
+                                                               : sizeof(payload) - 1;
+    memcpy(payload, call->payload_json_utf8, length);
+    payload[length] = '\0';
+    /* Content's own bookkeeping never reaches a host: it answers by call_id. */
+    if (strstr(payload, "requestId") != NULL) {
+        probe_failure("the host was handed content's requestId");
+        return;
+    }
+    switch (call->service) {
+        case MIGO_HOST_SERVICE_AUTH:
+            switch (call->method) {
+                case MIGO_AUTH_LOGIN:
+                    complete_ok(session, call->call_id, "{\"code\":\"probe-login-code\"}");
+                    return;
+                case MIGO_AUTH_CHECK_SESSION:
+                    complete_fail(session, call->call_id, "session expired", 1, 1);
+                    return;
+                case MIGO_AUTH_GET_USER_INFO:
+                    complete_ok(session, call->call_id,
+                                "{\"userInfo\":{\"nickName\":\"probe\",\"avatarUrl\":\"\"}}");
+                    return;
+                case MIGO_AUTH_GET_PHONE_NUMBER:
+                    complete_fail(session, call->call_id, "no phone bound", 0, 0);
+                    return;
+            }
+            break;
+        case MIGO_HOST_SERVICE_PAYMENT:
+            switch (call->method) {
+                case MIGO_PAYMENT_REQUEST_MIDAS_PAYMENT:
+                    complete_ok(session, call->call_id, "");
+                    return;
+                case MIGO_PAYMENT_REQUEST_MIDAS_PAYMENT_GAME_ITEM:
+                    complete_fail(session, call->call_id, "cancel", 1, 1);
+                    return;
+            }
+            break;
+        case MIGO_HOST_SERVICE_SHARE:
+            if (call->method == MIGO_SHARE_SHARE_APP_MESSAGE) {
+                complete_ok(session, call->call_id, "{}");
+                return;
+            }
+            break;
+        case MIGO_HOST_SERVICE_NAVIGATE:
+            switch (call->method) {
+                case MIGO_NAVIGATE_NAVIGATE_TO_MINI_PROGRAM:
+                    complete_ok(session, call->call_id, "");
+                    return;
+                case MIGO_NAVIGATE_NAVIGATE_BACK_MINI_PROGRAM:
+                case MIGO_NAVIGATE_OPEN_CUSTOMER_SERVICE_CONVERSATION:
+                    if (call->call_id != 0) probe_failure("a navigation command carried a call id");
+                    return;
+            }
+            break;
+        case MIGO_HOST_SERVICE_AD: {
+            if (call->call_id != 0) {
+                probe_failure("an ad command carried a call id");
+                return;
+            }
+            long ad_id = ad_id_of(payload);
+            switch (call->method) {
+                /* An advert loads as soon as it is created, as an ad SDK's does. */
+                case MIGO_AD_CREATE:
+                case MIGO_AD_LOAD:
+                    post_ad_event(session, ad_id, "\"event\":\"load\"");
+                    return;
+                /* Watched to the end: the one fact only this side can state. */
+                case MIGO_AD_SHOW:
+                    post_ad_event(session, ad_id, "\"event\":\"close\",\"isEnded\":true");
+                    return;
+                case MIGO_AD_HIDE:
+                case MIGO_AD_UPDATE_STYLE:
+                case MIGO_AD_DESTROY:
+                    return;
+            }
+            break;
+        }
+    }
+    char what[160];
+    snprintf(what, sizeof(what), "a call this host does not define: service %u method %u",
+             (unsigned)call->service, (unsigned)call->method);
+    probe_failure(what);
+}
+
 static int fail(const char *what, MigoResult result) {
     fprintf(stderr, "[macos-headless] %s failed: %d\n", what, (int)result);
     return 1;
@@ -224,6 +389,8 @@ int main(int argc, char **argv) {
     host_callbacks.on_error = on_error;
     host_callbacks.on_exit_requested = on_exit_requested;
     host_callbacks.on_request_frame = on_request_frame;
+    host_callbacks.on_host_service_call = on_host_service_call;
+    host_callbacks.host_services = HOST_SERVICES;
 
     result = migo_session_set_host_callbacks(session, &host_callbacks);
     if (result != MIGO_OK) return fail("migo_session_set_host_callbacks", result);

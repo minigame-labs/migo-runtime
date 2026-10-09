@@ -302,6 +302,8 @@ ADDED_AFTER_ARCHIVE = {
     "migo_session_start_frame_endpoint": "0.9.15",
     "migo_session_stop_frame_endpoint": "0.9.15",
     "migo_session_get_frame_transport_statistics": "0.9.15",
+    "migo_session_complete_host_service_call": "0.9.20",
+    "migo_session_post_host_service_event": "0.9.20",
 }
 
 for page in sorted((docs_root / "reference").glob("*.mdx")):
@@ -400,12 +402,15 @@ for name in sorted(marked_api - set(sections)):
 for name in sorted(set(sections) - header_symbols - marked_api):
     error(f"函数节无 header 声明对应:{name}(在 include/migo/*.h 找不到调用形态)")
 
-# 示例祖先:所有 ```c 块内的 migo_* 调用都要在 tests/c_host 有真实调用形态
+# 示例祖先:所有 ```c 块内的 migo_* 调用都要在 tests/c_host 有真实调用形态。
+# Objective-C 宿主(macos-headless/main.m)调的是同一个 C ABI、同一种调用形态,
+# 只扫 *.c 会把真实的调用当作不存在。
 host_sources = ""
 chost = root / "tests" / "c_host"
 if chost.is_dir():
-    for src in chost.rglob("*.c"):
-        host_sources += src.read_text(encoding="utf-8", errors="replace") + "\n"
+    for pattern in ("*.c", "*.m"):
+        for src in chost.rglob(pattern):
+            host_sources += src.read_text(encoding="utf-8", errors="replace") + "\n"
 example_fns: set[tuple[str, str]] = set()
 for page in ref_pages:
     text = page.read_text(encoding="utf-8")
@@ -419,7 +424,7 @@ for page in ref_pages:
 if host_sources:
     for page_name, fn in sorted(example_fns):
         if fn + "(" not in host_sources:
-            error(f"示例无 tests/c_host 祖先:{page_name} 调用 {fn}(tests/c_host/**/*.c 未出现;无覆盖路径时块内需标「以头文件为准」)")
+            error(f"示例无 tests/c_host 祖先:{page_name} 调用 {fn}(tests/c_host/**/*.c 与 *.m 未出现;无覆盖路径时块内需标「以头文件为准」)")
 
 # -- verdict -------------------------------------------------------------------
 

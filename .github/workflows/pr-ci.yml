@@ -765,6 +765,13 @@ jobs:
       - name: Runtime op boundary contract
         run: bash scripts/test-runtime-op-boundary-contract.sh
 
+      # The host-service channel's numbers mean the same thing in the contract,
+      # the C header and the library's constants, in both directions, and every
+      # op and hook the contract routes to is still registered. A disagreement
+      # calls a different method with the right-looking payload and nobody sees it.
+      - name: Host-service channel contract
+        run: bash scripts/test-host-services-contract.sh
+
       # `isEnabled` is answered on the producer side, from a ten-bit shadow of
       # the capabilities content has enabled. A capability missing from the
       # JavaScript half of that table is silent: the query answers `false`

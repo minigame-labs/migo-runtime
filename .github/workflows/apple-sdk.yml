@@ -43,6 +43,12 @@ on:
       - 'platforms/apple/**'
       - 'contracts/apple/**'
       - 'engine/crates/capi/**'
+      # The public headers and the ABI records behind them, which the Swift SDK
+      # imports and the headless host compiles against -- a record that grew a
+      # field changes what every Apple host writes.
+      - 'engine/crates/capi-abi/**'
+      - 'include/migo/**'
+      - 'tests/c_host/macos-headless/**'
       - 'engine/crates/frame-wire/**'
       - 'engine/crates/frame-decode/**'
       # The crate the synchronous barrier and the frame ingress live in, and it
@@ -84,6 +90,7 @@ on:
       - 'scripts/test-macos-game-view.sh'
       - 'tests/swift_host/macos-game-view/**'
       - 'scripts/fixtures/headless-js-probe/**'
+      - 'scripts/fixtures/headless-host-services-probe/**'
       - 'scripts/apple-sdk-package.py'
       - 'scripts/embed-apple-angle.sh'
       - 'scripts/fetch-apple-angle.sh'
@@ -283,6 +290,20 @@ jobs:
           bash scripts/test-macos-archive-runs-js.sh
           --archive "$MIGO_APPLE_BUILD_ROOT/${{ matrix.product }}/Debug/${{ matrix.platform }}/libmigo.a"
           --content headless-webgl-probe
+
+      # The host-service channel, end to end. Unit tests prove each half -- a
+      # request leaves the engine with the right numbers, a completion becomes the
+      # right JSON -- and neither proves that content calling migo.login() on a
+      # real session gets the host's answer back. The headless host answers every
+      # service as a fixed fake backend and the content checks each result it
+      # receives: success fields, the failure's errMsg, the code in the field its
+      # API defines, and a rewarded video's isEnded coming from the host alone.
+      - name: Content reaches the host's services through the C ABI channel
+        if: matrix.product == 'macos-v8'
+        run: >-
+          bash scripts/test-macos-archive-runs-js.sh
+          --archive "$MIGO_APPLE_BUILD_ROOT/${{ matrix.product }}/Debug/${{ matrix.platform }}/libmigo.a"
+          --content headless-host-services-probe
 
       # The configuration macos-v8 actually ships in, which until now nothing ran.
       #

@@ -338,12 +338,12 @@ expect_violation "every output record turns const, so the audit can see none" \
     no-output-records-found "$dest"
 
 dest="$(fixture unversioned)"
-edit "$dest" include/migo/capabilities.h '
-text = text.replace("uint32_t struct_size;", "uint32_t record_size;")
-'
-for rel in include/migo/surface.h include/migo/session.h include/migo/external_frames.h \
-           include/migo/input.h include/migo/types.h; do
-    edit "$dest" "$rel" '
+# Every public header, derived from the directory. This loop named seven by hand
+# and went stale the first time a header was added: host_services.h kept its
+# versioned records, the audit still saw them, and the injection proved nothing
+# about the convention it claims to rename.
+for rel in "$ROOT"/include/migo/*.h; do
+    edit "$dest" "include/migo/$(basename "$rel")" '
 text = text.replace("uint32_t struct_size;", "uint32_t record_size;")
 '
 done

@@ -34,7 +34,10 @@ use crate::{
         MigoX11WindowDescriptor,
     },
 };
-use migo_capi_abi::VersionedHeader;
+use migo_capi_abi::{
+    VersionedHeader,
+    host_services::{MigoHostServiceCall, MigoHostServiceResult},
+};
 
 /// Every versioned struct must begin with its header.
 ///
@@ -57,6 +60,8 @@ header_is_first!(
     MigoSessionConfig,
     MigoContentDescriptor,
     MigoHostCallbacks,
+    MigoHostServiceCall,
+    MigoHostServiceResult,
     MigoError,
     MigoSurfaceDescriptor,
     MigoSurfaceMetrics,
@@ -192,7 +197,7 @@ mod lp64 {
     // Function pointers are `Option<fn>` on the Rust side, which is a plain
     // nullable pointer with no discriminant. Pinning the offsets is what keeps
     // that niche optimisation from being an assumption.
-    const _: () = assert!(size_of::<MigoHostCallbacks>() == 128);
+    const _: () = assert!(size_of::<MigoHostCallbacks>() == 144);
     const _: () = assert!(offset_of!(MigoHostCallbacks, user_data) == 8);
     const _: () = assert!(offset_of!(MigoHostCallbacks, dispatcher_data) == 16);
     const _: () = assert!(offset_of!(MigoHostCallbacks, dispatch) == 24);
@@ -208,6 +213,20 @@ mod lp64 {
     const _: () = assert!(offset_of!(MigoHostCallbacks, on_vibrate) == 104);
     const _: () = assert!(offset_of!(MigoHostCallbacks, on_keep_screen_on) == 112);
     const _: () = assert!(offset_of!(MigoHostCallbacks, on_game_log) == 120);
+    const _: () = assert!(offset_of!(MigoHostCallbacks, on_host_service_call) == 128);
+    const _: () = assert!(offset_of!(MigoHostCallbacks, host_services) == 136);
+
+    const _: () = assert!(size_of::<MigoHostServiceCall>() == 40);
+    const _: () = assert!(offset_of!(MigoHostServiceCall, call_id) == 8);
+    const _: () = assert!(offset_of!(MigoHostServiceCall, service) == 16);
+    const _: () = assert!(offset_of!(MigoHostServiceCall, method) == 20);
+    const _: () = assert!(offset_of!(MigoHostServiceCall, payload_json_utf8) == 24);
+    const _: () = assert!(offset_of!(MigoHostServiceCall, payload_length) == 32);
+    const _: () = assert!(size_of::<MigoHostServiceResult>() == 48);
+    const _: () = assert!(offset_of!(MigoHostServiceResult, status) == 8);
+    const _: () = assert!(offset_of!(MigoHostServiceResult, message_utf8) == 24);
+    const _: () = assert!(offset_of!(MigoHostServiceResult, payload_json_utf8) == 32);
+    const _: () = assert!(offset_of!(MigoHostServiceResult, payload_length) == 40);
 
     const _: () = assert!(size_of::<MigoKeyboardShowOptions>() == 40);
     const _: () = assert!(offset_of!(MigoKeyboardShowOptions, flags) == 8);

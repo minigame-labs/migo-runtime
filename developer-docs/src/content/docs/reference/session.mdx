@@ -112,6 +112,8 @@ typedef struct MigoHostCallbacks {
     MigoOnVibrateFn         on_vibrate;            /* optional: device capabilities */
     MigoOnKeepScreenOnFn    on_keep_screen_on;
     MigoOnGameLogFn         on_game_log;
+    MigoOnHostServiceCallFn on_host_service_call;  /* 可选：宿主服务通道，与下一项同装 */
+    uint64_t                host_services;         /* 宿主提供的服务，每个 MIGO_HOST_SERVICE_* 一位 */
 } MigoHostCallbacks;
 ```
 
@@ -140,6 +142,8 @@ detach 或 destroy 调用。回调只能成功安装一次，且须在首次 sur
 | `on_vibrate` | `MigoOnVibrateFn` | — | 内容请求振动；未装则内容得到 not supported |
 | `on_keep_screen_on` | `MigoOnKeepScreenOnFn` | — | 内容请求（或不再请求）屏幕常亮 |
 | `on_game_log` | `MigoOnGameLogFn` | — | 内容游戏日志的一条，交给宿主保存或上传 |
+| `on_host_service_call` | `MigoOnHostServiceCallFn` | 与 `host_services` 同装或同不装 | 内容对宿主服务（广告、支付、登录、分享、跳转）的请求，见[宿主服务通道](#宿主服务通道) |
+| `host_services` | `uint64_t` | 同上 | 宿主提供的服务集合，每个 `MIGO_HOST_SERVICE_*` 一位；含本头文件未定义的位返回 `MIGO_ERROR_INVALID_ARGUMENT` |
 
 ### MigoDispatchFn
 
@@ -287,6 +291,52 @@ typedef void (MIGO_CALL *MigoOnGameLogFn)(void *user_data, MigoSession *session,
   无论最后一次调用是什么都要释放。
 - `on_game_log`：内容游戏日志的一条，JSON 对象（`level`、`key`、`value`、`commonInfo`），
   按长度界定的 UTF-8，仅在调用期间借用。保留 JSON 是因为 `value` 是内容记录的任意值。
+
+### 宿主服务通道
+
+```c
+typedef void (MIGO_CALL *MigoOnHostServiceCallFn)(void *user_data, MigoSession *session,
+                                                  const MigoHostServiceCall *call);
+
+typedef struct MigoHostServiceCall {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint64_t call_id;              /* 非 0 = 调用（须完成一次）；0 = 命令 */
+    MigoHostService service;       /* MIGO_HOST_SERVICE_* */
+    uint32_t method;               /* 该服务内的方法号 */
+    const char *payload_json_utf8; /* 请求选项，JSON 对象 */
+    uint32_t payload_length;
+    uint32_t reserved0;
+} MigoHostServiceCall;
+```
+
+（`migo/host_services.h`）广告、支付、登录、分享、跳转其他小程序——这些能力从来不归引擎实现，
+是宿主 App 自己和广告 SDK、商店、自家后端的集成。Android 上由 Java SDK 的 Handler 接口承载；
+其余所有平台（Apple、Linux、Windows、OpenHarmony）都嵌入 C ABI，靠这条通道接入：
+
+1. 宿主在 `host_services` 里按位声明自己提供哪些服务（每个 `MIGO_HOST_SERVICE_*` 一位），并安装
+   `on_host_service_call`。两者同装或同不装；未声明的服务永远不会被调用，内容调用对应 API 得到与
+   没有该能力的平台一样的失败。
+2. 内容的请求经 `dispatch` 以 `MigoHostServiceCall` 到达：服务号、服务内方法号、JSON 对象形式的选项。
+   所有指针仅在回调期间借用。
+3. **调用**（`call_id != 0`）须恰好完成一次：在任意线程调用
+   [`migo_session_complete_host_service_call`](#migo_session_complete_host_service_call)。
+   `call_id` 对宿主不透明，原样交回即可。**命令**（`call_id == 0`）执行即可，不作答。
+4. 有自身事件的服务（广告的加载、关闭、尺寸变化）用
+   [`migo_session_post_host_service_event`](#migo_session_post_host_service_event) 报告。
+
+| 服务 | 方法（号） | 类型 | 内容侧 API |
+| --- | --- | --- | --- |
+| `MIGO_HOST_SERVICE_AD` (0) | `CREATE` 0 · `LOAD` 1 · `SHOW` 2 · `HIDE` 3 · `UPDATE_STYLE` 4 · `DESTROY` 5 | 命令；结果走事件 `MIGO_AD_EVENT_LIFECYCLE` | `createRewardedVideoAd` 等全部广告 |
+| `MIGO_HOST_SERVICE_PAYMENT` (1) | `REQUEST_MIDAS_PAYMENT` 0 · `REQUEST_MIDAS_PAYMENT_GAME_ITEM` 1 | 调用 | `requestMidasPayment` · `requestMidasPaymentGameItem` |
+| `MIGO_HOST_SERVICE_AUTH` (2) | `LOGIN` 0 · `CHECK_SESSION` 1 · `GET_USER_INFO` 2 · `GET_PHONE_NUMBER` 3 | 调用 | `login` · `checkSession` · `getUserInfo` · `getPhoneNumber` |
+| `MIGO_HOST_SERVICE_SHARE` (3) | `SHARE_APP_MESSAGE` 0 | 调用 | `shareAppMessage` |
+| `MIGO_HOST_SERVICE_NAVIGATE` (4) | `NAVIGATE_TO_MINI_PROGRAM` 0（调用）· `NAVIGATE_BACK_MINI_PROGRAM` 1 · `OPEN_CUSTOMER_SERVICE_CONVERSATION` 2（命令） | 见左 | `navigateToMiniProgram` · `navigateBackMiniProgram` · `openCustomerServiceConversation` |
+
+编号由 `contracts/runtime/host-services.json` 唯一定义，只追加、不复用、不重排。声明了支付服务的宿主
+即视为可支付（`checkIsSupportMidasPayment` 回答 `allow_pay: true`）。广告激励视频的奖励只认宿主
+`close` 事件里的 `isEnded`，引擎从不代宿主报告它。载荷用 JSON，是因为这些选项集是开放的、跟厂商走的，
+在引擎的其他路径上也都是 JSON；本 ABI 其他地方的小型封闭选项（键盘、振动）仍是类型化结构体。
 
 ## MigoKeyboardShowOptions
 
@@ -620,6 +670,59 @@ MIGO_API MigoResult MIGO_CALL migo_session_set_battery_status(MigoSession *sessi
 - `MIGO_OK` — 已保留
 - `MIGO_ERROR_INVALID_ARGUMENT` — `session` 为 NULL；`level_percent` 大于 100；`flags` 含本头文件
   未定义的位
+- `MIGO_ERROR_INVALID_STATE` — Session 已销毁
+
+## migo_session_complete_host_service_call
+
+```c
+typedef struct MigoHostServiceResult {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    MigoHostServiceStatus status;      /* MIGO_HOST_SERVICE_STATUS_OK / _FAIL */
+    MigoHostServiceResultFlags flags;  /* MIGO_HOST_SERVICE_RESULT_FLAG_ERROR_CODE */
+    int32_t error_code;
+    uint32_t message_length;
+    const char *message_utf8;          /* 失败原因，不含 API 名 */
+    const char *payload_json_utf8;     /* 成功结果，JSON 对象或空 */
+    uint32_t payload_length;
+    uint32_t reserved0;
+} MigoHostServiceResult;
+
+MIGO_API MigoResult MIGO_CALL migo_session_complete_host_service_call(
+    MigoSession *session, uint64_t call_id, const MigoHostServiceResult *result);
+```
+
+完成一次调用，恰好一次，任意线程。成功时 `payload` 是结果字段（JSON 对象，无字段可为空），
+`message` 为空且无 flag；内容得到 `<api>:ok` 加这些字段（例：`login` 成功给 `{"code":"..."}`）。
+失败时 `message` 是必填的、不带 API 名的原因——内容看到 `<api>:fail <message>`，由内容侧按它实际调用的 API
+拼接，因为同一个方法可能服务多个 API——带
+`MIGO_HOST_SERVICE_RESULT_FLAG_ERROR_CODE` 时 `error_code` 放进该 API 定义的字段（登录类为 `errno`，
+支付、分享、跳转为 `errCode`；`getUserInfo` 没有），`payload` 为空。结果不得包含引擎自己写的字段
+（`requestId`、`error`、`errMsg`）。字符串按长度界定，单条不超过 `MIGO_HOST_SERVICE_PAYLOAD_MAX_BYTES`。
+
+返回：
+
+- `MIGO_OK` — 已接受；内容已不在（Session 未运行内容）时同样返回 `MIGO_OK`，这不是宿主的错
+- `MIGO_ERROR_INVALID_ARGUMENT` — 参数为 NULL；`call_id` 不是本宿主声明的服务的调用；结果格式错误；
+  成功载荷不是 JSON 对象或含保留字段
+- `MIGO_ERROR_INVALID_STATE` — Session 已销毁
+
+## migo_session_post_host_service_event
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_session_post_host_service_event(
+    MigoSession *session, MigoHostService service, uint32_t event,
+    const char *payload_json_utf8, uint32_t payload_length);
+```
+
+报告已声明服务自身的一个事件，任意线程。目前定义的事件：`MIGO_AD_EVENT_LIFECYCLE`，载荷
+`{"adId": <广告 id>, "event": "load"|"error"|"show"|"hide"|"close"|"resize", ...}`，例如关闭时带
+`"isEnded"`。
+
+返回：
+
+- `MIGO_OK` — 已接受，或当前没有运行中的内容可投递
+- `MIGO_ERROR_INVALID_ARGUMENT` — 服务未声明；该服务未定义此事件；载荷不是 JSON 对象
 - `MIGO_ERROR_INVALID_STATE` — Session 已销毁
 
 ## migo_session_notify_vsync

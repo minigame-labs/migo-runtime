@@ -1,12 +1,16 @@
-// showShareMenu / updateShareMenu / onShareAppMessage /
-// offShareAppMessage / shareAppMessage
+// showShareMenu / updateShareMenu / onShareAppMessage / offShareAppMessage /
+// shareAppMessage / shareMessageToFriend / showShareImageMenu
 //
-// Minimal viable implementation:
-//   - showShareMenu / updateShareMenu cache config, return :ok
+//   - showShareMenu / updateShareMenu cache the menu configuration
 //   - onShareAppMessage registers a callback invoked when shareAppMessage fires
-//   - shareAppMessage delegates to the host via _internalOnShareRequest if present
+//   - shareAppMessage, shareMessageToFriend and showShareImageMenu are requests
+//     the host answers (Mode C), each through its own op and result hook
 
-import { op_share_app_message } from "ext:core/ops";
+import {
+    op_share_app_message,
+    op_share_message_to_friend,
+    op_show_share_image_menu,
+} from "ext:core/ops";
 import { wrapAsync, createDeferredApi, createListenerGroup } from "ext:host_v8_base/02_async.js";
 
 // ---- share menu state ------------------------------------------------------
@@ -145,20 +149,29 @@ function _internalTriggerShareTimeline() {
     return shareData;
 }
 
-// ---- shareMessageToFriend (Mode A stub) ------------------------------------
+// ---- shareMessageToFriend ----------------------------------------------------
+
+// A request the host answers: the host's relationship chain picks the friend,
+// so success is the host's to report, not something this call can claim.
+const _shareMessageToFriendApi = createDeferredApi('shareMessageToFriend');
 
 function shareMessageToFriend(options) {
-    return wrapAsync('shareMessageToFriend', function () {
-        var opts = options || {};
-        if (!opts.openId) throw new Error('openId is required');
-        op_share_app_message(JSON.stringify({
-            type: 'shareMessageToFriend',
+    return _shareMessageToFriendApi.invoke(options, function (opts, requestId) {
+        if (typeof opts.openId !== 'string' || opts.openId.length === 0) {
+            throw new Error('openId is required');
+        }
+        op_share_message_to_friend(JSON.stringify({
+            requestId: requestId,
             openId: opts.openId,
             title: opts.title || '',
             imageUrl: opts.imageUrl || '',
             imageUrlId: opts.imageUrlId || '',
         }));
-    }, options);
+    });
+}
+
+function _internalOnShareMessageToFriendResult(resultJson) {
+    _shareMessageToFriendApi.settle(resultJson);
 }
 
 // ---- onShareMessageToFriend / offShareMessageToFriend ----------------------
@@ -192,20 +205,28 @@ function setMessageToFriendQuery(options) {
     }
 }
 
-// ---- showShareImageMenu (Mode A stub) --------------------------------------
+// ---- showShareImageMenu ------------------------------------------------------
+
+// The share sheet is the host's UI; whether the player shared is its answer.
+const _showShareImageMenuApi = createDeferredApi('showShareImageMenu');
 
 function showShareImageMenu(options) {
-    return wrapAsync('showShareImageMenu', function () {
-        var opts = options || {};
-        op_share_app_message(JSON.stringify({
-            type: 'showShareImageMenu',
-            path: opts.path || '',
-            imageUrl: opts.imageUrl || '',
+    return _showShareImageMenuApi.invoke(options, function (opts, requestId) {
+        if (typeof opts.path !== 'string' || opts.path.length === 0) {
+            throw new Error('path is required');
+        }
+        op_show_share_image_menu(JSON.stringify({
+            requestId: requestId,
+            path: opts.path,
             style: opts.style || '',
             needShowEntrance: !!opts.needShowEntrance,
             entrancePath: opts.entrancePath || '',
         }));
-    }, options);
+    });
+}
+
+function _internalOnShowShareImageMenuResult(resultJson) {
+    _showShareImageMenuApi.settle(resultJson);
 }
 
 // ---- host-side trigger (called from Rust when user taps native share) ------
@@ -241,9 +262,11 @@ export {
     offShareTimeline,
     _internalTriggerShareTimeline,
     shareMessageToFriend,
+    _internalOnShareMessageToFriendResult,
     onShareMessageToFriend,
     offShareMessageToFriend,
     _internalTriggerShareMessageToFriend,
     setMessageToFriendQuery,
     showShareImageMenu,
+    _internalOnShowShareImageMenuResult,
 };

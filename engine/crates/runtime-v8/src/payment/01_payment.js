@@ -84,7 +84,7 @@ function _settleMidas(requestId, result) {
     _pendingMidas.delete(requestId);
 
     if (result.error) {
-        var res = { errMsg: result.error };
+        var res = { errMsg: failMessage('requestMidasPayment', result.error) };
         if (result.errCode !== undefined) res.errCode = result.errCode;
         invokeCallback('requestMidasPayment', 'fail', pending.fail, res);
         invokeCallback('requestMidasPayment', 'complete', pending.complete, res);
@@ -150,7 +150,7 @@ function _settleMidasGameItem(requestId, result) {
     _pendingMidasGameItem.delete(requestId);
 
     if (result.error) {
-        var res = { errMsg: result.error };
+        var res = { errMsg: failMessage('requestMidasPaymentGameItem', result.error) };
         if (result.errCode !== undefined) res.errCode = result.errCode;
         invokeCallback('requestMidasPaymentGameItem', 'fail', pending.fail, res);
         invokeCallback('requestMidasPaymentGameItem', 'complete', pending.complete, res);

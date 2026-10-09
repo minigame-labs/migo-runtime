@@ -1,6 +1,6 @@
 import { op_download_subpackage, op_install_subpackage, op_is_subpackage_installed, op_is_subpackage_persisted, op_get_mount_generation, op_get_subpackage_identity, op_get_sub_packages, op_get_workers_path } from "ext:core/ops";
 import { require as amdRequire } from "ext:host_v8_base/01_amdshim.js";
-import { allocateHostCallbackId, createListenerGroup, invokeCallback } from "ext:host_v8_base/02_async.js";
+import { allocateHostCallbackId, createListenerGroup, failMessage, invokeCallback } from "ext:host_v8_base/02_async.js";
 
 const noop = () => {};
 
@@ -183,7 +183,7 @@ function _settle(requestId, error) {
                 // Local execution also failed, report original download error
             }
         }
-        const res = { errMsg: `${pending.apiName}:fail ${error}` };
+        const res = { errMsg: failMessage(pending.apiName, error) };
         invokeCallback(pending.apiName, 'fail', pending.fail, res);
         invokeCallback(pending.apiName, 'complete', pending.complete, res);
         return;
@@ -194,7 +194,7 @@ function _settle(requestId, error) {
         try {
             _executeSubpackage(pending.pkg);
         } catch (e) {
-            const res = { errMsg: `${pending.apiName}:fail ${_errorText(e)}` };
+            const res = { errMsg: failMessage(pending.apiName, _errorText(e)) };
             invokeCallback(pending.apiName, 'fail', pending.fail, res);
             invokeCallback(pending.apiName, 'complete', pending.complete, res);
             return;
@@ -274,7 +274,7 @@ function _startDownload(apiName, options, pkg, executeAfter) {
     } catch (e) {
         const fail = typeof options.fail === "function" ? options.fail : noop;
         const complete = typeof options.complete === "function" ? options.complete : noop;
-        const res = { errMsg: `${apiName}:fail ${_errorText(e)}` };
+        const res = { errMsg: failMessage(apiName, _errorText(e)) };
         queueMicrotask(() => {
             fail(res);
             complete(res);
@@ -399,7 +399,7 @@ function loadSubpackage(options = {}) {
         const fail = typeof options.fail === "function" ? options.fail : noop;
         const complete = typeof options.complete === "function" ? options.complete : noop;
         queueMicrotask(() => {
-            const res = { errMsg: `loadSubpackage:fail ${_errorText(e)}` };
+            const res = { errMsg: failMessage('loadSubpackage', _errorText(e)) };
             fail(res);
             complete(res);
         });
@@ -450,7 +450,7 @@ function preDownloadSubpackage(options = {}) {
         const fail = typeof options.fail === "function" ? options.fail : noop;
         const complete = typeof options.complete === "function" ? options.complete : noop;
         queueMicrotask(() => {
-            const res = { errMsg: `preDownloadSubpackage:fail ${_errorText(e)}` };
+            const res = { errMsg: failMessage('preDownloadSubpackage', _errorText(e)) };
             fail(res);
             complete(res);
         });

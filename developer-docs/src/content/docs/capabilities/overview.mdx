@@ -97,6 +97,25 @@ GameSession 上 10 个 `set*Handler(...)` 外加 `setListener(GameSessionListene
 
 详细:[广告](/docs/capabilities/commerce/ads/) / [支付](/docs/capabilities/commerce/payment/)。
 
+## 5. 宿主服务通道:C ABI 宿主接广告、支付、登录、分享、跳转
+
+上表是 Android 的 Java 层合同。Apple、Linux、Windows、OpenHarmony 都嵌入 C ABI,同一批能力走一条通道:
+宿主在 `MigoHostCallbacks.host_services` 里按位声明自己提供哪些服务、装上 `on_host_service_call`,
+内容的请求以「服务号 + 方法号 + JSON 选项」到达;调用用 `migo_session_complete_host_service_call` 完成恰好一次,
+广告的加载/关闭等事件用 `migo_session_post_host_service_event` 报告。
+
+| 服务 | 内容的 migo.* 调用 | 宿主不声明时 |
+| --- | --- | --- |
+| `MIGO_HOST_SERVICE_AD` | 全部广告(`createRewardedVideoAd` 等) | 运行时降级:不播放,激励视频以 `isEnded=false` 关 |
+| `MIGO_HOST_SERVICE_PAYMENT` | `checkIsSupportMidasPayment` / `requestMidasPayment*` | `allow_pay=false`,请求 not supported |
+| `MIGO_HOST_SERVICE_AUTH` | `login` / `checkSession` / `getUserInfo` / `getPhoneNumber` | not supported |
+| `MIGO_HOST_SERVICE_SHARE` | `shareAppMessage` | not supported |
+| `MIGO_HOST_SERVICE_NAVIGATE` | `navigateToMiniProgram` / `navigateBackMiniProgram` / `openCustomerServiceConversation` | not supported |
+
+宿主只给成功字段或失败原因,引擎按每个 API 的约定把错误码放进 `errno` / `errCode`,`errMsg` 由内容侧按它实际调用的
+API 拼成 `<api>:fail <原因>`;宿主不接触内容的回调 id。编号只追加,由 `contracts/runtime/host-services.json` 唯一定义。细节见
+[Session · 宿主服务通道](/docs/reference/session/#宿主服务通道)。
+
 ## 分级:export 不存在 vs 能力不存在
 
 - **export 不存在**:`migo_engine_create` 本身在库里没有(`platform/openharmony.h` 链接错一类,平台头) — 编译/链接期失败,不进运行时。

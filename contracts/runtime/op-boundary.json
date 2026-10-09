@@ -317,7 +317,9 @@
     "host_v8_share": {
       "reason": "Sharing is native UI outside the profile.",
       "ops": {
-        "op_share_app_message": "unsupported"
+        "op_share_app_message": "unsupported",
+        "op_share_message_to_friend": "unsupported",
+        "op_show_share_image_menu": "unsupported"
       }
     },
     "host_v8_storage": {

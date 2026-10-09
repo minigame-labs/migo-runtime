@@ -66,19 +66,27 @@ MIGO_CHECK_CXX_RECORD(MigoPlatformSurfaceDescriptor);
 MIGO_CHECK_CXX_RECORD(MigoSurfaceMetrics);
 MIGO_CHECK_CXX_RECORD(MigoSurfaceDescriptor);
 MIGO_CHECK_CXX_RECORD(MigoHostCallbacks);
+MIGO_CHECK_CXX_RECORD(MigoHostServiceCall);
+MIGO_CHECK_CXX_RECORD(MigoHostServiceResult);
 
 #if UINTPTR_MAX == UINT64_MAX
-static_assert(sizeof(MigoHostCallbacks) == 128, "LP64/LLP64 callback layout");
+static_assert(sizeof(MigoHostCallbacks) == 144, "LP64/LLP64 callback layout");
 static_assert(offsetof(MigoHostCallbacks, on_surface_released) == 96,
               "release wakeup stays where it was appended");
 static_assert(offsetof(MigoHostCallbacks, on_game_log) == 120,
-              "the device callbacks are the append-only tail");
+              "the device callbacks stay where they were appended");
+static_assert(offsetof(MigoHostCallbacks, host_services) == 136,
+              "the host-service channel is the append-only tail");
+static_assert(sizeof(MigoHostServiceCall) == 40, "LP64/LLP64 host-service call layout");
+static_assert(sizeof(MigoHostServiceResult) == 48, "LP64/LLP64 host-service result layout");
 #elif UINTPTR_MAX == UINT32_MAX
-static_assert(sizeof(MigoHostCallbacks) == 68, "ILP32 callback layout");
+static_assert(sizeof(MigoHostCallbacks) == 80, "ILP32 callback layout");
 static_assert(offsetof(MigoHostCallbacks, on_surface_released) == 52,
               "ILP32 release wakeup offset");
 static_assert(offsetof(MigoHostCallbacks, on_game_log) == 64,
-              "ILP32 device callbacks tail offset");
+              "ILP32 device callbacks offset");
+static_assert(offsetof(MigoHostCallbacks, host_services) == 72, "ILP32 host_services offset");
+static_assert(sizeof(MigoHostServiceResult) == 40, "ILP32 host-service result layout");
 #else
 #error "unsupported pointer width"
 #endif

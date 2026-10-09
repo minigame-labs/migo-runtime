@@ -1,0 +1,170 @@
+{
+  "schema_version": 1,
+  "$comment": [
+    "The capabilities a C ABI host supplies through its host-service channel, and the numbers each",
+    "travels under (include/migo/host_services.h).",
+    "",
+    "WHY THIS EXISTS. Ads, payment, login, sharing and mini-program navigation are not the engine's to",
+    "implement: each is the host app's own integration with a vendor SDK, a store or a backend. On",
+    "Android the Java SDK carries them as typed handler interfaces. Every other platform Migo ships --",
+    "Apple, Linux, Windows, OpenHarmony -- embeds the C ABI, which had no way to carry them at all, so",
+    "content there got `not supported` for every one. The channel is one callback, one completion and",
+    "one event entry point; this file is what gives its three integers meaning.",
+    "",
+    "WHY JSON PAYLOADS. These option sets are open and vendor-shaped -- an ad unit's options, a",
+    "payment's offer and zone, a share's title and image -- and they are already JSON on every other",
+    "path: the engine's service traits take it, and the Java SDK receives it. Small closed option sets",
+    "(the keyboard, vibration) stay typed structs, where a host should not need a JSON parser.",
+    "",
+    "RULES. Append only. A service, method or event number is never reused and never renumbered: a",
+    "host built against one header and a library built against another must still mean the same call",
+    "by the same numbers. A service's number is also its bit in MigoHostCallbacks.host_services, so",
+    "service ids stay below 64.",
+    "",
+    "A `command` is fire-and-forget: the host carries it out and replies to nothing. A `call` carries",
+    "a nonzero call_id the host must complete exactly once with",
+    "migo_session_complete_host_service_call. A failure carries the host's reason, which content",
+    "composes into its errMsg (`<api>:fail <reason>`) itself: one method can serve several content APIs",
+    "-- a subpackage download is both loadSubpackage and preDownloadSubpackage -- so no name here could",
+    "be right for all of them. `error_code_field` names the field a failure's numeric code is delivered",
+    "in, or null where the content API defines none. `hook` is where the engine delivers the result or",
+    "the event to content; the host never names one. `op` is the engine op that makes the request,",
+    "which the gate checks still exists.",
+    "",
+    "Checked by engine/crates/capi/src/host_services.rs's tests (the Rust table) and",
+    "scripts/test-host-services-contract.sh (the C header, the ops and the hooks)."
+  ],
+  "services": {
+    "ad": {
+      "id": 0,
+      "methods": {
+        "create": {
+          "id": 0,
+          "kind": "command",
+          "op": "op_ad_create"
+        },
+        "load": {
+          "id": 1,
+          "kind": "command",
+          "op": "op_ad_load"
+        },
+        "show": {
+          "id": 2,
+          "kind": "command",
+          "op": "op_ad_show"
+        },
+        "hide": {
+          "id": 3,
+          "kind": "command",
+          "op": "op_ad_hide"
+        },
+        "update_style": {
+          "id": 4,
+          "kind": "command",
+          "op": "op_ad_update_style"
+        },
+        "destroy": {
+          "id": 5,
+          "kind": "command",
+          "op": "op_ad_destroy"
+        }
+      },
+      "events": {
+        "lifecycle": {
+          "id": 0,
+          "hook": "_internalOnAdEvent"
+        }
+      }
+    },
+    "payment": {
+      "id": 1,
+      "methods": {
+        "request_midas_payment": {
+          "id": 0,
+          "kind": "call",
+          "op": "op_request_midas_payment",
+          "hook": "_internalOnMidasPaymentResult",
+          "error_code_field": "errCode"
+        },
+        "request_midas_payment_game_item": {
+          "id": 1,
+          "kind": "call",
+          "op": "op_request_midas_payment_game_item",
+          "hook": "_internalOnMidasPaymentGameItemResult",
+          "error_code_field": "errCode"
+        }
+      },
+      "events": {}
+    },
+    "auth": {
+      "id": 2,
+      "methods": {
+        "login": {
+          "id": 0,
+          "kind": "call",
+          "op": "op_login",
+          "hook": "_internalOnLoginResult",
+          "error_code_field": "errno"
+        },
+        "check_session": {
+          "id": 1,
+          "kind": "call",
+          "op": "op_check_session",
+          "hook": "_internalOnCheckSessionResult",
+          "error_code_field": "errno"
+        },
+        "get_user_info": {
+          "id": 2,
+          "kind": "call",
+          "op": "op_get_user_info",
+          "hook": "_internalOnGetUserInfoResult",
+          "error_code_field": null
+        },
+        "get_phone_number": {
+          "id": 3,
+          "kind": "call",
+          "op": "op_get_phone_number",
+          "hook": "_internalOnGetPhoneNumberResult",
+          "error_code_field": "errno"
+        }
+      },
+      "events": {}
+    },
+    "share": {
+      "id": 3,
+      "methods": {
+        "share_app_message": {
+          "id": 0,
+          "kind": "call",
+          "op": "op_share_app_message",
+          "hook": "_internalOnShareAppMessageResult",
+          "error_code_field": "errCode"
+        }
+      },
+      "events": {}
+    },
+    "navigate": {
+      "id": 4,
+      "methods": {
+        "navigate_to_mini_program": {
+          "id": 0,
+          "kind": "call",
+          "op": "op_navigate_to_mini_program",
+          "hook": "_internalOnNavigateToMiniProgramResult",
+          "error_code_field": "errCode"
+        },
+        "navigate_back_mini_program": {
+          "id": 1,
+          "kind": "command",
+          "op": "op_navigate_back_mini_program"
+        },
+        "open_customer_service_conversation": {
+          "id": 2,
+          "kind": "command",
+          "op": "op_open_customer_service_conversation"
+        }
+      },
+      "events": {}
+    }
+  }
+}

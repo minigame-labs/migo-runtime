@@ -19,9 +19,11 @@ ObjectDefineProperties(globalThis, {
     offShareTimeline: core.propNonEnumerable(shareApi.offShareTimeline),
     _internalTriggerShareTimeline: core.propNonEnumerable(shareApi._internalTriggerShareTimeline),
     shareMessageToFriend: core.propNonEnumerable(shareApi.shareMessageToFriend),
+    _internalOnShareMessageToFriendResult: core.propNonEnumerable(shareApi._internalOnShareMessageToFriendResult),
     onShareMessageToFriend: core.propNonEnumerable(shareApi.onShareMessageToFriend),
     offShareMessageToFriend: core.propNonEnumerable(shareApi.offShareMessageToFriend),
     _internalTriggerShareMessageToFriend: core.propNonEnumerable(shareApi._internalTriggerShareMessageToFriend),
     setMessageToFriendQuery: core.propNonEnumerable(shareApi.setMessageToFriendQuery),
     showShareImageMenu: core.propNonEnumerable(shareApi.showShareImageMenu),
+    _internalOnShowShareImageMenuResult: core.propNonEnumerable(shareApi._internalOnShowShareImageMenuResult),
 });

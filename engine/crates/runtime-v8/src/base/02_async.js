@@ -215,7 +215,9 @@ function createDeferredApi(apiName, defaultTimeoutMs) {
             }
         }
         if (parsed.error) {
-            var res = { errMsg: parsed.error };
+            // The host's reason, composed here: content knows which API it
+            // called, and an already-composed `<api>:fail ...` is left as is.
+            var res = { errMsg: failMessage(apiName, parsed.error) };
             if (parsed.errCode !== undefined) res.errCode = parsed.errCode;
             invokeCallback(apiName, 'fail', entry.fail, res);
             invokeCallback(apiName, 'complete', entry.complete, res);

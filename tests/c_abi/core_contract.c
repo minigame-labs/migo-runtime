@@ -94,6 +94,8 @@ MIGO_CHECK_PREFIX(MigoPlatformSurfaceDescriptor);
 MIGO_CHECK_PREFIX(MigoSurfaceMetrics);
 MIGO_CHECK_PREFIX(MigoSurfaceDescriptor);
 MIGO_CHECK_PREFIX(MigoHostCallbacks);
+MIGO_CHECK_PREFIX(MigoHostServiceCall);
+MIGO_CHECK_PREFIX(MigoHostServiceResult);
 
 _Static_assert(offsetof(MigoSurfaceDescriptor, generation) == 8,
                "generation is naturally aligned");
@@ -116,26 +118,68 @@ _Static_assert(MIGO_SURFACE_RELEASE_RELEASED == UINT32_C(1), "released state val
 #if UINTPTR_MAX == UINT64_MAX
 _Static_assert(sizeof(MigoError) == 32, "LP64 error layout");
 _Static_assert(sizeof(MigoSurfaceDescriptor) == 72, "LP64 Surface layout");
-_Static_assert(sizeof(MigoHostCallbacks) == 128, "LP64 callback layout");
+_Static_assert(sizeof(MigoHostCallbacks) == 144, "LP64 callback layout");
 _Static_assert(offsetof(MigoHostCallbacks, on_surface_released) == 96,
                "release wakeup stays where it was appended");
 _Static_assert(offsetof(MigoHostCallbacks, on_game_log) == 120,
-               "the device callbacks are the append-only tail");
+               "the device callbacks stay where they were appended");
+_Static_assert(offsetof(MigoHostCallbacks, on_host_service_call) == 128,
+               "the host-service channel is the append-only tail");
+_Static_assert(offsetof(MigoHostCallbacks, host_services) == 136,
+               "host_services follows its callback");
+_Static_assert(sizeof(MigoHostServiceCall) == 40, "LP64 host-service call layout");
+_Static_assert(offsetof(MigoHostServiceCall, payload_json_utf8) == 24,
+               "LP64 host-service call payload offset");
+_Static_assert(offsetof(MigoHostServiceCall, payload_length) == 32,
+               "LP64 host-service call payload length offset");
+_Static_assert(sizeof(MigoHostServiceResult) == 48, "LP64 host-service result layout");
+_Static_assert(offsetof(MigoHostServiceResult, message_utf8) == 24,
+               "LP64 host-service result message offset");
+_Static_assert(offsetof(MigoHostServiceResult, payload_json_utf8) == 32,
+               "LP64 host-service result payload offset");
+_Static_assert(offsetof(MigoHostServiceResult, payload_length) == 40,
+               "LP64 host-service result payload length offset");
 #elif UINTPTR_MAX == UINT32_MAX
+/*
+ * How a uint64_t member is aligned inside a struct, measured rather than asked
+ * of _Alignof. The two differ on i386: clang answers _Alignof(uint64_t) with
+ * the type's preferred alignment, 8, while the System V ABI places the member
+ * on a 4-byte boundary -- so every assertion below that consulted _Alignof
+ * failed under clang -m32 while passing under GCC, which answers 4.
+ */
+typedef struct MigoU64MemberAlignProbe {
+    char lead;
+    uint64_t value;
+} MigoU64MemberAlignProbe;
+#define MIGO_U64_MEMBER_ALIGN offsetof(MigoU64MemberAlignProbe, value)
 _Static_assert(sizeof(MigoError) == 28, "ILP32 error layout");
-_Static_assert(sizeof(MigoSurfaceDescriptor) ==
-                   (_Alignof(uint64_t) == 8 ? 72 : 68),
-               "ILP32 Surface layout follows the target uint64_t alignment");
+_Static_assert(sizeof(MigoSurfaceDescriptor) == (MIGO_U64_MEMBER_ALIGN == 8 ? 72 : 68),
+               "ILP32 Surface layout follows the target uint64_t member alignment");
 /* 8 bytes of header plus twelve pointers. This was wrong from the commit that
  * appended on_request_frame until 2026-07-21: the LP64 line was updated and
  * this one was not, and the soft-keyboard callbacks were then added on top of
  * the wrong base. Nothing caught it because every lane ran on an LP64 host, so
  * this branch had never once been compiled. */
-_Static_assert(sizeof(MigoHostCallbacks) == 68, "ILP32 callback layout");
+_Static_assert(sizeof(MigoHostCallbacks) == 80, "ILP32 callback layout");
 _Static_assert(offsetof(MigoHostCallbacks, on_surface_released) == 52,
                "ILP32 release wakeup offset");
 _Static_assert(offsetof(MigoHostCallbacks, on_game_log) == 64,
-               "ILP32 device callbacks tail offset");
+               "ILP32 device callbacks offset");
+/* host_services lands on 72, 8-aligned under either u64 alignment, so the
+ * record has no padding on any ILP32 target. */
+_Static_assert(offsetof(MigoHostCallbacks, on_host_service_call) == 68,
+               "ILP32 host-service callback offset");
+_Static_assert(offsetof(MigoHostCallbacks, host_services) == 72,
+               "ILP32 host_services offset");
+_Static_assert(sizeof(MigoHostServiceCall) == (MIGO_U64_MEMBER_ALIGN == 8 ? 40 : 36),
+               "ILP32 host-service call layout follows the target uint64_t member alignment");
+_Static_assert(offsetof(MigoHostServiceCall, payload_length) == 28,
+               "ILP32 host-service call payload length offset");
+_Static_assert(sizeof(MigoHostServiceResult) == 40, "ILP32 host-service result layout");
+_Static_assert(offsetof(MigoHostServiceResult, payload_json_utf8) == 28,
+               "ILP32 host-service result payload offset");
+_Static_assert(offsetof(MigoHostServiceResult, payload_length) == 32,
+               "ILP32 host-service result payload length offset");
 #else
 #error "unsupported pointer width"
 #endif
@@ -194,6 +238,13 @@ int migo_core_c_contract(void) {
         &migo_session_set_network_status;
     MigoResult(MIGO_CALL *battery_fn)(MigoSession *, uint32_t, MigoBatteryFlags) =
         &migo_session_set_battery_status;
+    MigoResult(MIGO_CALL *complete_call_fn)(MigoSession *, uint64_t,
+                                            const MigoHostServiceResult *) =
+        &migo_session_complete_host_service_call;
+    MigoResult(MIGO_CALL *post_event_fn)(MigoSession *, MigoHostService, uint32_t,
+                                         const char *, uint32_t) =
+        &migo_session_post_host_service_event;
+    MigoOnHostServiceCallFn host_service_call = callbacks.on_host_service_call;
 
     return (int)(engine_config.struct_size + session_config.struct_size +
                  surface.struct_size + callbacks.struct_size +
@@ -205,5 +256,7 @@ int migo_core_c_contract(void) {
                  (session_create_fn != NULL) + (set_callbacks_fn != NULL) +
                  (set_lifecycle_fn != NULL) + (set_visibility_fn != NULL) +
                  (set_focus_fn != NULL) + (destroy_fn != NULL) +
-                 (network_fn != NULL) + (battery_fn != NULL));
+                 (network_fn != NULL) + (battery_fn != NULL) +
+                 (complete_call_fn != NULL) + (post_event_fn != NULL) +
+                 (host_service_call != NULL) + (callbacks.host_services != 0));
 }

@@ -116,6 +116,30 @@ pub unsafe fn copy_utf8(text: *const c_char) -> Result<String, MigoResult> {
         .map_err(|_| MIGO_ERROR_INVALID_ARGUMENT)
 }
 
+/// Copy an exact length-delimited UTF-8 string.
+///
+/// A null pointer is accepted only for an empty range, in which case it is not
+/// dereferenced. Embedded NUL bytes are data rather than terminators.
+///
+/// # Safety
+/// `value` must be null with `length == 0`, or readable for `length` bytes.
+pub unsafe fn copy_utf8_with_length(
+    value: *const c_char,
+    length: u32,
+) -> Result<String, MigoResult> {
+    if length == 0 {
+        return Ok(String::new());
+    }
+    if value.is_null() {
+        return Err(MIGO_ERROR_INVALID_ARGUMENT);
+    }
+    // SAFETY: the caller guarantees `length` readable bytes at `value`.
+    let bytes = unsafe { std::slice::from_raw_parts(value.cast::<u8>(), length as usize) };
+    std::str::from_utf8(bytes)
+        .map(str::to_owned)
+        .map_err(|_| MIGO_ERROR_INVALID_ARGUMENT)
+}
+
 /// Write only the output prefix understood by both caller and library.
 ///
 /// The caller-owned header is an input to negotiation and is preserved on a
