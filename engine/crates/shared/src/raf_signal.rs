@@ -34,6 +34,9 @@ impl RafSender {
                 *frame.lock() = RafFrame { ts_ms, ticket };
                 let val: u64 = 1;
                 loop {
+                    // SAFETY: fd is a live nonblocking eventfd owned by this
+                    // sender; val points to 8 initialized bytes and libc gets
+                    // exactly that length.
                     let ret = unsafe {
                         libc::write(fd.as_raw_fd(), &val as *const u64 as *const libc::c_void, 8)
                     };
@@ -99,6 +102,9 @@ impl RafReceiver {
                         let mut guard = async_fd.readable().await.ok()?;
 
                         let mut buf = [0u8; 8];
+                        // SAFETY: raw_fd is the receiver's live nonblocking
+                        // eventfd and buf is an initialized 8-byte writable
+                        // buffer.
                         let ret =
                             unsafe { libc::read(raw_fd, buf.as_mut_ptr() as *mut libc::c_void, 8) };
                         guard.clear_ready();
@@ -220,13 +226,19 @@ pub fn create_raf_pair() -> (RafSender, Arc<RafReceiver>) {
 fn create_eventfd_pair() -> Result<(RafSender, RafReceiver), String> {
     use std::os::fd::FromRawFd;
 
+    // SAFETY: eventfd takes value and flags by value and returns a new
+    // descriptor or -1.
     let fd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
     if fd < 0 {
         return Err(format!("eventfd(): {}", std::io::Error::last_os_error()));
     }
 
+    // SAFETY: fd was just returned as a valid eventfd descriptor and is
+    // still open here.
     let fd2 = unsafe { libc::dup(fd) };
     if fd2 < 0 {
+        // SAFETY: fd is the still-open descriptor returned by eventfd; this
+        // failure path closes it exactly once.
         unsafe { libc::close(fd) };
         return Err(format!("dup(eventfd): {}", std::io::Error::last_os_error()));
     }
@@ -238,11 +250,15 @@ fn create_eventfd_pair() -> Result<(RafSender, RafReceiver), String> {
 
     Ok((
         RafSender(SenderInner::Eventfd {
+            // SAFETY: fd is a successful eventfd result; ownership moves
+            // into OwnedFd exactly once.
             fd: unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) },
             frame: frame.clone(),
         }),
         RafReceiver(ReceiverInner::Eventfd {
             async_fd: tokio::sync::OnceCell::new(),
+            // SAFETY: fd2 is a successful dup result; ownership moves into
+            // OwnedFd exactly once.
             fd: unsafe { std::os::fd::OwnedFd::from_raw_fd(fd2) },
             frame,
         }),

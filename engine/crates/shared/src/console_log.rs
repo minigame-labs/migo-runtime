@@ -127,7 +127,7 @@ pub fn get_console_log(id: i32) -> Option<Arc<Mutex<ConsoleLogBuffer>>> {
     log_map().read().get(&id).cloned()
 }
 
-/// Hand the registry's own lock to Section 7.3's contention gate.
+/// Hand the registry's own lock to the cross-session contention gate.
 ///
 /// The op that writes console output must hold the buffer it resolved at isolate
 /// bring-up, never look the session up again -- this map is shared with every

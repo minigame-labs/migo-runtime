@@ -1483,7 +1483,7 @@ mod tests {
 
     /// The old scan allocated and compared every prior path for every entry,
     /// producing the quadratic allocation growth recorded by
-    /// docs/audits/2026-09-09/full/io-network.md:35-39.  The shared crate already
+    /// the 2026-09-09 I/O network audit.  The shared crate already
     /// installs its counting allocator for tests, so use its per-thread event
     /// count as the deterministic growth proxy.
     #[test]

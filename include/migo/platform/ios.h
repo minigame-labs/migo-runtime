@@ -6,8 +6,8 @@
 /*
  * iOS did not have a native Surface descriptor because the platform candidate
  * assumed the iOS runtime would be a WKWebView container, where WebKit owns
- * the drawing surface and Migo owns nothing. That assumption was wrong for the
- * reason recorded in docs/apple-final-implementation-plan.md: the JIT boundary
+ * the drawing surface and Migo owns nothing. That assumption was wrong: the
+ * JIT boundary
  * on iOS is drawn around the process, not around the engine, so the shipping
  * architecture runs content JavaScript inside WebKit's WebContent process and
  * brings rendering back to the host process. Rendering in the host process

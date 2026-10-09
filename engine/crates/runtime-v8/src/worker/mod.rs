@@ -2843,7 +2843,7 @@ mod timer_lifecycle_tests {
     }
 }
 
-/// R4: Worker runaway protection via the one process deadline watchdog.
+/// Worker runaway protection via the one process deadline watchdog.
 #[cfg(all(test, feature = "v8-limits"))]
 mod watchdog_worker_tests {
     use super::*;

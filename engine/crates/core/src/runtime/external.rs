@@ -284,8 +284,6 @@ impl frame_decode::RenderSink for ExternalDecodeContext<'_> {
     }
 }
 
-/// What the submit path needs from the session thread, published once the
-/// renderer is up.
 /// What a poll of the mailbox reports, in one read.
 ///
 /// A struct rather than four getters because the four values are only
@@ -3400,8 +3398,6 @@ fn handle_command(
     true
 }
 
-/// Drain what the renderer has to say, and keep the ingress on the same
-/// timeline it is.
 /// Minimum spacing between repeats of one render-error report.
 ///
 /// Only presentation needs it: a Surface that rejects every swap produces one

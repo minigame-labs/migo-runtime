@@ -49,6 +49,9 @@
           "slug": "capabilities/keyboard"
         },
         {
+          "slug": "capabilities/bluetooth"
+        },
+        {
           "label": "商业化",
           "translations": {
             "en": "Monetization"

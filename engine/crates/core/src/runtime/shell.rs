@@ -13,8 +13,8 @@
 //! hundred lines of careful ordering; moving ownership would have renamed every
 //! use site in a 1800-line file for no property either mode gains.
 //!
-//! The ordering here is load-bearing and was measured, not guessed. See
-//! `docs/archive/PROGRESS-apple-android.md` and the Android startup work: the render
+//! The ordering here is load-bearing and was measured, not guessed (recorded in
+//! the archived Apple/Android startup progress notes): the render
 //! thread is launched before the JavaScript runtime is built so GPU bring-up
 //! and V8 construction overlap, and `gpu_init_started` is taken at the launch
 //! rather than at the wait so the `GPU_INIT_TIMEOUT` budget is not restarted
@@ -182,7 +182,7 @@ impl SessionShell {
         // Other platforms: tokio mpsc channel (unchanged behavior).
         let (raf_tx, raf_rx) = shared::raf_signal::create_raf_pair();
 
-        // ---- R1 RAF demand latch (host op <-> render thread) ----
+        // ---- RAF demand latch (host op <-> render thread) ----
         let raf_demand = Arc::new(shared::raf_signal::RafDemand::new());
         // Allocate the first session ticket up front so pre-signals (free-run
         // RAF) have a stable ticket to match from the very first frame.
@@ -261,7 +261,7 @@ impl SessionShell {
             }))
         };
 
-        // R1: one-shot frame arm, one route per platform.
+        // One-shot frame arm, one route per platform.
         //
         // With an external vsync source this routes to `platform.request_vsync(id)`
         // (Android posts a single Choreographer frame callback via JNI). Without

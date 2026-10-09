@@ -38,7 +38,7 @@
 //! - **IME composition** (3): `OnCompositionStart` .. `OnCompositionEnd`
 //! - **Bluetooth / BLE** (7): `OnBluetoothAdapterStateChange` .. `OnBeaconServiceChange`
 //! - **Video** (1): `OnVideoStateChange`
-//! - **System** (2): `OnMemoryWarning`, `OnUserCaptureScreen`
+//! - **System** (3): `OnMemoryWarning`, `OnUserCaptureScreen`, `OnThermalStatusChanged`
 
 use std::borrow::Cow;
 use std::num::NonZeroI64;
@@ -139,7 +139,7 @@ pub const BLE_VALUE_RETAINED_LIMIT: usize = 1024;
 /// **The fields are private and the only way to fill one is [`Self::overwrite`],
 /// which is the invariant rather than encapsulation for its own sake.** A
 /// notification stream runs at whatever rate the peripheral chooses — a hundred
-/// hertz is ordinary — and Section 7.3 forbids a per-event allocation on it. A
+/// hertz is ordinary — and the steady-state zero-allocation requirement forbids a per-event allocation on it. A
 /// public `String` field invites `device_id: id.to_owned()`, which reads as
 /// obviously correct and allocates on every notification of every stream. There
 /// is no way to write that here.

@@ -168,7 +168,7 @@ let package = Package(
         ),
 
         // Lane 2: content JavaScript stays in WebKit's WebContent process;
-        // G0 selects Window versus Dedicated Worker, transport, clock, and
+        // The probe-app evidence selects Window versus Dedicated Worker, transport, clock, and
         // host shape from the ProbeApp evidence.
         .target(
             name: "MigoApplePerformancePlus",

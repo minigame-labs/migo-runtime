@@ -299,7 +299,7 @@ The candidate cannot be declared stable until all of the following exist:
   any number existed -- fps at least 97%, CPU and PSS at most 105% of the Java SDK's: bunnymark 60
   vs 60 fps, 40% vs 46% CPU, 118.7 vs 121.0 MiB PSS; endless-runner 60 vs 60 fps, 39% vs 44% CPU,
   213.9 vs 213.1 MiB PSS (2026-09-26; v0.9.10 changes only how images decode at load, not the
-  steady state). **Android compatibility done**: migo-conformance runs its whole suite on the C
+  steady state). **Android compatibility done**: the conformance suite runs its whole suite on the C
   host through the same loop and verdict as on the Java SDK (`runners/run-android-capi.sh`) --
   Canvas2D, readback, text, WebGL, surface geometry and resize, lifecycle across a HOME round
   trip, WASM, and image decode on both decode paths -- and the published v0.9.10 package passes

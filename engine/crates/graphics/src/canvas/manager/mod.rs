@@ -440,8 +440,8 @@ pub(crate) struct CanvasManager {
     /// invalidates the cache with no signal. Nothing but offscreen 2D drawing
     /// ever binds this one, which makes that invariant local and checkable.
     ///
-    /// See `Canvas2DContext::new_shared_offscreen` and
-    /// `docs/performance/android/multicanvas-fixed-cost.md`.
+    /// See `Canvas2DContext::new_shared_offscreen` and the 2026 multicanvas
+    /// fixed-cost analysis.
     shared_2d: Option<Shared2DContext>,
 
     // current binding
@@ -513,7 +513,7 @@ pub(crate) struct CanvasManager {
     /// `getImageData` capture and the read of its `.data` -- the producer's frame is still being
     /// built, and on the Performance+ lane that gap is a socket round trip -- and the read then
     /// found an empty pool: a read that came back all zeros, one in about four hundred on an
-    /// iPhone 12 (migo-conformance `image-decode`, `canvas2d-spec`).
+    /// iPhone 12 (the conformance suite `image-decode`, `canvas2d-spec`).
     snapshot_epoch: u64,
     /// Ids for the snapshots the renderer takes for itself (`drawImage(canvas)`).
     /// JavaScript allocates its own from a small process-local counter; these start
@@ -698,7 +698,7 @@ pub(crate) struct CanvasManager {
     /// still wraps the atlas page into an `SkImage`; the draw
     /// path offsets its source rect by the atlas region.
     ///
-    /// P1-13: gated behind the `experimental_atlas` cargo feature
+    /// Gated behind the `experimental_atlas` cargo feature
     /// until the profile-validated cutover lands.  The field is
     /// kept at the struct level (rather than behind `cfg!`) so
     /// the hot-path fast check (`atlas.is_some()`) still compiles
@@ -724,10 +724,10 @@ pub(crate) struct CanvasManager {
     /// Whether the EGL implementation supports
     /// `EGL_EXT_create_context_robustness`.  When true, every context
     /// the manager creates asks for `LOSE_CONTEXT_ON_RESET_EXT` so the
-    /// GL driver reports resets synchronously (R-3).
+    /// GL driver reports resets synchronously.
     has_robust_context: bool,
 
-    /// Resolved `glGetGraphicsResetStatusKHR` entry point (R-3).
+    /// Resolved `glGetGraphicsResetStatusKHR` entry point.
     /// `None` on drivers without `GL_KHR_robustness` — the render
     /// thread then has to fall back to detecting loss at
     /// `eglSwapBuffers` time, same as the legacy path.
@@ -1026,7 +1026,7 @@ impl CanvasManager {
             }
         }
 
-        // P1-12: set the Skia resource-cache budget from the
+        // Set the Skia resource-cache budget from the
         // detected device tier before any `Canvas2DContext` is
         // created.  The per-context cap is derived lazily in
         // `per_ctx_resource_cache_bytes`, so updating the global
@@ -1161,7 +1161,7 @@ impl CanvasManager {
             .split_ascii_whitespace()
             .any(|extension| extension == "EGL_ANGLE_window_fixed_size");
 
-        // Probe `GL_KHR_robustness::glGetGraphicsResetStatusKHR` (R-3).
+        // Probe `GL_KHR_robustness::glGetGraphicsResetStatusKHR`.
         // Only resolved when both the EGL extension for robust contexts
         // and the GL extension are advertised — otherwise calling
         // `glGetGraphicsResetStatus` is a no-op on some drivers and a
@@ -1747,7 +1747,7 @@ impl CanvasManager {
             }
         }
 
-        // R-5: same ANativeWindow but physical dimensions changed
+        // Same ANativeWindow but physical dimensions changed
         // (status bar hide/show, keyboard open/close, orientation
         // where the window handle is preserved).  Fast-path via
         // `resize_canvas`, which keeps the EGL context, Skia
@@ -1925,7 +1925,7 @@ impl CanvasManager {
             drawing_buffer: None,
         });
 
-        // R-3: apply robust-context attribs when the driver supports
+        // Apply robust-context attribs when the driver supports
         // them so the onscreen context signals resets via
         // `glGetGraphicsResetStatus` instead of waiting for the
         // swap-buffers detection path.
@@ -2790,7 +2790,7 @@ impl CanvasManager {
         }
     }
 
-    /// Poll `glGetGraphicsResetStatus` (R-3).  Returns `true` when
+    /// Poll `glGetGraphicsResetStatus`.  Returns `true` when
     /// the driver reports a reset, in which case the caller should
     /// treat the GL context as dead and trigger recovery.  A `None`
     /// function pointer (driver without `GL_KHR_robustness`) falls
@@ -4179,7 +4179,7 @@ impl CanvasManager {
                 // The four inputs travel with the verdict: a presented frame
                 // either copies or it does not, and "why not" is otherwise only
                 // recoverable by re-deriving them from a log that does not carry
-                // them. This is the instrument Section 7.3's "asserted where the
+                // them. This is the instrument the steady-state requirement's "asserted where the
                 // platform allows observation" needs on a host with no device.
                 tracing::info!(
                     canvas_count,
@@ -4923,7 +4923,7 @@ impl CanvasManager {
         // entry recomputes safely with the same plan-preparation helper before
         // any FBO 0 write; it never reuses another canvas/frame's plan.
         //
-        // P1-8: a mismatch means declare ↔ swap targeted different canvases.
+        // A mismatch means declare ↔ swap targeted different canvases.
         // Debug builds panic; release builds recompute and log a warning.
         let plan = match self.pending_present_plan.take() {
             Some((cached_id, plan)) if cached_id == id => plan,
@@ -6528,7 +6528,7 @@ impl CanvasManager {
         self.deferred_uploads.len()
     }
 
-    /// R1 on-demand vsync source: whether any upload still needs a frame to
+    /// On-demand vsync source: whether any upload still needs a frame to
     /// make progress. Covers fence-pending completed uploads, budget-deferred
     /// retries, and in-flight jobs submitted to the upload thread but not yet
     /// drained. The render thread treats this as demand so an async upload that
@@ -6724,7 +6724,7 @@ impl CanvasManager {
         self.image_registry.destroy_shared_image(&self.gl, image_id)
     }
 
-    /// F-1: Pin an image id so a concurrent `DestroyImage` can't
+    /// Pin an image id so a concurrent `DestroyImage` can't
     /// glDeleteTextures the underlying texture while a queued
     /// `DrawImage` / `DrawImageBatch` command still references
     /// it.  Call once per referenced id when a `FramePacket`
@@ -6738,7 +6738,7 @@ impl CanvasManager {
         self.image_registry.store_mut().retain_in_flight(image_id);
     }
 
-    /// F-1: Companion to [`retain_in_flight_image`].  Returns the
+    /// Companion to [`retain_in_flight_image`].  Returns the
     /// `StoredImage` that the caller should `glDeleteTextures`
     /// when the release caused the refcount to hit zero AND a
     /// destroy had been requested while the image was in flight.
@@ -6753,7 +6753,7 @@ impl CanvasManager {
         self.image_registry.store_mut().release_in_flight(image_id)
     }
 
-    /// F-1: Flush deferred deletions.  Called at the post-frame
+    /// Flush deferred deletions.  Called at the post-frame
     /// Present barrier: walks the `pending_delete` map for every
     /// id whose in-flight refcount has dropped to zero and
     /// deletes its GL texture.  Idempotent and cheap when the
@@ -6936,7 +6936,7 @@ fn overwritten_by_clear(gl: &glow::Context, bits: u32) -> u32 {
 /// written per frame, some 440 MB/s of bandwidth, for a copy whose only purpose is
 /// to keep FBO 0 unambiguous.
 ///
-/// So Section 7.3's "no redundant presentation copy" is **not** met for ordinary
+/// So the "no redundant presentation copy" requirement is **not** met for ordinary
 /// content, and the reason is this condition rather than a missing optimisation.
 fn can_bypass_drawing_buffer(
     canvas_count: usize,
@@ -7262,7 +7262,7 @@ mod recovery_source_guards {
     /// bound. Re-pointing at the default framebuffer sent the next pass of three.js's
     /// PMREMGenerator to the screen (its own cache said the target was still bound) and the
     /// environment map it returned was black, about one run in twelve. The behaviour is
-    /// migo-conformance's `engine-three-advanced` (`pmrem-environment*`); this holds the shape:
+    /// the conformance suite's `engine-three-advanced` (`pmrem-environment*`); this holds the shape:
     /// read before the blit, restored before the swap's result is used (so a failed swap restores
     /// too), and no re-point to the default afterwards.
     #[test]
@@ -7371,7 +7371,7 @@ mod recovery_source_guards {
     ///
     /// Without it an iPhone 12's onscreen 2D canvas, if an image finished decoding before the
     /// canvas had been drawn on or read, ignored every later write (see the comment in
-    /// `drain_upload_completed`). It needs a device -- the behaviour is migo-conformance's
+    /// `drain_upload_completed`). It needs a device -- the behaviour is the conformance suite's
     /// `image-decode` suite on iOS, `png-before-webgl/pixel-*` -- so this holds the line the
     /// device found: the flush is there, it follows the registration it exists for, and it is
     /// conditional on an upload having been taken, so a frame that took none pays nothing.
@@ -7403,7 +7403,7 @@ mod recovery_source_guards {
     /// A copy that outlived a change would draw the canvas as it was: the dispatcher
     /// notes every command that painted, a resize drops the copy before the pixels
     /// are replaced, and destroying a canvas releases it. Structural because each
-    /// needs a GL context; the behaviour is migo-conformance's
+    /// needs a GL context; the behaviour is the conformance suite's
     /// `canvas2d-spec/draw-image-canvas-sees-the-sources-changes`.
     #[test]
     fn a_source_canvas_copy_is_invalidated_by_every_change() {
@@ -7433,7 +7433,7 @@ mod recovery_source_guards {
     /// registered with, before the content's `width`/`height` assignments in that
     /// same batch have run -- and it must be consumed once per canvas and
     /// forgotten with it. Structural because each needs a GL context; the
-    /// behaviour is migo-conformance's `webgl-spec/default-viewport`.
+    /// behaviour is the conformance suite's `webgl-spec/default-viewport`.
     #[test]
     fn a_pbuffer_webgl_context_starts_at_the_drawing_buffer_size() {
         const GL_HANDLER: &str = include_str!("../../renderergl/handler.rs");
@@ -7465,7 +7465,7 @@ mod recovery_source_guards {
     /// `INVALID_ENUM`, and that error would reach the content), and every upload that takes its
     /// pixels from a texture the engine holds must consult them, because the GPU copy it
     /// otherwise uses cannot flip or convert alpha. Structural because each needs a GL context;
-    /// the behaviour is migo-conformance's `webgl-spec/flip-y-*` and `premultiply-*`.
+    /// the behaviour is the conformance suite's `webgl-spec/flip-y-*` and `premultiply-*`.
     #[test]
     fn the_webgl_only_unpack_flags_are_applied_by_the_engine_and_never_sent_to_the_driver() {
         const GL_HANDLER: &str = include_str!("../../renderergl/handler.rs");
@@ -7530,7 +7530,7 @@ mod recovery_source_guards {
     /// Every place that allocates that storage must clear it: the DrawingBuffer on
     /// creation and on resize, and a pbuffer canvas at its first use after it was
     /// created or resized. Structural because each needs a GL context; the
-    /// behaviour is migo-conformance's `webgl-drawing-buffer`.
+    /// behaviour is the conformance suite's `webgl-drawing-buffer`.
     #[test]
     fn every_drawing_buffer_allocation_is_cleared() {
         const DRAWING_BUFFER: &str = include_str!("drawing_buffer.rs");
@@ -7568,7 +7568,7 @@ mod recovery_source_guards {
     /// specification says `(255, 0, 0, 128)`: every translucent pixel darkened, and
     /// `putImageData(getImageData(...))` would darken it again. Structural because
     /// the read needs an EGL display; the conversion itself is tested in
-    /// `readback` and the behaviour in migo-conformance's `canvas2d-spec`.
+    /// `readback` and the behaviour in the conformance suite's `canvas2d-spec`.
     #[test]
     fn the_snapshot_cpu_read_returns_straight_alpha() {
         let body = function_body(MGR, "pub(crate) fn read_canvas2d_snapshot_pixels(");
@@ -7590,7 +7590,7 @@ mod recovery_source_guards {
     /// in `image_copy_fbos`, keyed by canvas.
     ///
     /// Structural because the manager needs an EGL display; the behaviour is
-    /// covered by migo-conformance's `canvas2d-offscreen-readback`.
+    /// covered by the conformance suite's `canvas2d-offscreen-readback`.
     #[test]
     fn no_framebuffer_name_is_cached_across_contexts() {
         let fields: Vec<&str> = function_body(MGR, "pub(crate) struct CanvasManager")
@@ -7629,7 +7629,7 @@ mod recovery_source_guards {
     /// 33` with nothing read in between came back red, as did the same-size
     /// assignment. Structural for the same reason as the tests around it -- the
     /// manager needs an EGL display -- and the behaviour itself is covered by
-    /// migo-conformance's `canvas2d-resize-resets`.
+    /// the conformance suite's `canvas2d-resize-resets`.
     #[test]
     fn resize_flushes_queued_draws_before_the_store_is_replaced() {
         let body = function_body(MGR, "pub(crate) fn resize_canvas(");
@@ -8193,7 +8193,7 @@ mod tests {
         registered
     }
 
-    /// Section 7.3 on the once-per-frame upload drain.
+    /// Steady-state allocation gate on the once-per-frame upload drain.
     ///
     /// **This is the assertion the previous shape could not have passed.** It
     /// consumed the staging vector by value — freeing its buffer — after

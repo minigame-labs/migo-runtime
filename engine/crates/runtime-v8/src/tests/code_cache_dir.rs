@@ -1,4 +1,4 @@
-//! V05 end-to-end regression: `code_cache_dir` must be the directory that
+//! End-to-end regression: `code_cache_dir` must be the directory that
 //! actually receives V8 bytecode, not the ordinary app cache directory.
 //!
 //! # What was wrong
@@ -100,7 +100,7 @@ mod code_cache_dir_tests {
             .unwrap_or(0)
     }
 
-    /// V05 regression: bytecode goes to the configured directory, not to the
+    /// Regression: bytecode goes to the configured directory, not to the
     /// ordinary app cache.
     ///
     /// # Mechanism

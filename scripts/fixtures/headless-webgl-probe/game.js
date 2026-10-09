@@ -1,12 +1,12 @@
 // Pixel evidence that ANGLE-Metal draws what it is told, on Apple hardware.
 //
-// G0's P2 asks for `glReadPixels` verification rather than someone looking at a
+// The measurement plan asks for `glReadPixels` verification rather than someone looking at a
 // screen, and this is the half of it that is reachable today. The half that is
 // not: on iOS the shipping product carries no engine -- content JavaScript runs
 // in WebKit's WebContent process, not ours -- so there is no in-process
 // `readPixels` to call, and the external-frame ABI has no readback entry point
 // (`submit_external_frame`, `request_external_frame`, `take_external_gl_error`
-// and nothing else). So the phone half waits on A3 or on an affordance nobody
+// and nothing else). So the phone half waits on an affordance nobody
 // has decided to add.
 //
 // What runs here is the SAME presenter iOS will use: `platform/src/apple/

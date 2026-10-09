@@ -220,7 +220,7 @@ impl FramePacket {
     }
 
     /// Walk every Canvas2D draw-image command in the packet and
-    /// feed its referenced image id into `sink` (F-1).  Used by
+    /// feed its referenced image id into `sink`.  Used by
     /// the render thread to pin `ImageStore` entries while the
     /// packet is queued — a concurrent `DestroyImage` on one of
     /// those ids then defers the actual `glDeleteTextures` call

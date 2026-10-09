@@ -3,7 +3,7 @@
 #
 # `engine/crates/runtime-v8/src/web/04_image_encode.js` is plain ESM with no imports, so Node can run it. The test decodes
 # what it writes -- PNG exactly (Node's inflate and the PNG filters), JPEG by a small independent baseline decoder -- and
-# requires the pixels back. The same bytes are decoded by the engine's own decoders on every platform in migo-conformance
+# requires the pixels back. The same bytes are decoded by the engine's own decoders on every platform in the conformance suite
 # (`canvas2d-spec/to-data-url-*`); this is the check that needs no device.
 #
 # Drift this gate exists for: an encoder that is only ever looked at through its own decoder agrees with itself. This one

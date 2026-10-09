@@ -22,7 +22,7 @@ pub enum Priority {
     Background = 10,
 }
 
-/// Set the current thread's priority.  Best-effort: logs a warning on failure
+/// Set the current thread's priority. Best-effort: logs at debug level on failure
 /// but never panics.
 pub fn set_current_thread_priority(priority: Priority) {
     let name = std::thread::current()
@@ -71,16 +71,17 @@ pub fn set_current_thread_priority(priority: Priority) {
     tracing::trace!("thread '{name}' priority set to {:?}", priority);
 }
 
-/// Call `android.os.Process.setThreadPriority(tid, priority)` via JNI.
-///
-/// Uses the cached JNIEnv from the platform crate if available, otherwise
-/// falls back to raw syscall `setpriority(PRIO_PROCESS, tid, nice)`.
+/// Apply the scheduling priority to the calling thread via the raw syscall
+/// `setpriority(PRIO_PROCESS, tid, nice)`.
 #[cfg(target_os = "android")]
 fn android_set_priority(priority: i32) -> Result<(), String> {
     // Try the POSIX setpriority path first (works for non-negative nice values
     // and for negative values when the process has CAP_SYS_NICE).
     // This avoids JNI overhead on threads that may not have a JNIEnv attached.
+    // SAFETY: gettid takes no pointers and returns the calling thread's ID.
     let tid = unsafe { libc::gettid() };
+    // SAFETY: the syscall takes scalar values only; tid is the calling
+    // thread's ID and priority the caller-provided nice value.
     let ret = unsafe { libc::setpriority(libc::PRIO_PROCESS, tid as u32, priority) };
     if ret == 0 {
         return Ok(());

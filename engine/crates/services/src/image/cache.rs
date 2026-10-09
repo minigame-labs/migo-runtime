@@ -101,7 +101,7 @@ impl ImageCache {
             if let Some(key) = self.shared_to_key.get(&shared_id).cloned() {
                 if let Some(entry) = self.by_src.get_mut(&key) {
                     entry.refs = entry.refs.saturating_sub(1);
-                    // H-5: each alias removal releases exactly one
+                    // Each alias removal releases exactly one
                     // pin on the io-side LRU entry.  When refs hits
                     // zero the full unpin drops the count back to
                     // regular-LRU eligibility so the bytes can age
@@ -131,7 +131,7 @@ impl ImageCache {
             self.shared_to_key
                 .entry(shared_id)
                 .or_insert_with(|| key.clone());
-            // H-5: every refs++ site must pair with a pin to keep
+            // Every refs++ site must pair with a pin to keep
             // the live-vs-cached split consistent.  The io cache
             // side counts pins additively, so two aliases to the
             // same shared image hold two pins; releasing one
@@ -186,7 +186,7 @@ impl ImageCache {
             self.shared_to_key
                 .entry(shared_id)
                 .or_insert_with(|| actual_key.clone());
-            // H-5: joiner became a real alias; pin the io entry
+            // Joiner became a real alias; pin the io entry
             // to keep bytes alive for its texImage2D path.
             migo_io::image_cache::global_cache().pin(actual_key);
         }
@@ -230,7 +230,7 @@ impl ImageCache {
                         existing.refs = existing.refs.saturating_add(1);
                         self.alias_to_shared
                             .insert(loader_image_id, existing_shared_id);
-                        // H-5: loader morphed into a real alias.
+                        // Loader morphed into a real alias.
                         migo_io::image_cache::global_cache().pin(actual_key);
                     }
                     self.shared_to_key
@@ -259,7 +259,7 @@ impl ImageCache {
                 );
                 if loader_alive {
                     self.alias_to_shared.insert(loader_image_id, shared_id);
-                    // H-5: new shared-entry path; pin for the
+                    // New shared-entry path; pin for the
                     // loader's alias.  Joiners (if any) will pin
                     // separately when their `bind_alias_existing`
                     // resolves, so each refs++ stays paired with
@@ -298,7 +298,7 @@ impl ImageCache {
             if let Some(entry) = self.by_src.get_mut(&key) {
                 if entry.refs > 0 {
                     entry.refs -= 1;
-                    // H-5: one alias released → unpin once.  When
+                    // One alias released → unpin once.  When
                     // entry.refs still > 0 the remaining aliases
                     // keep their own pins, so the io entry
                     // stays live.  When refs hits zero the
@@ -324,6 +324,8 @@ impl ImageCache {
     }
 
     /// Get the source path for an image ID (for texImage2D RGBA lookup).
+    /// Kept for diagnostics and future callers; the hot upload path uses
+    /// the borrowed image key directly.
     #[allow(dead_code)]
     pub fn source_for_image_id(&self, image_id: u32) -> Option<String> {
         let shared_id = self
@@ -417,8 +419,8 @@ impl ImageCache {
 /// Handed out as an `Arc` so every op reaches it through the handle its own
 /// isolate resolved at bring-up and locks only this Session's `Mutex`.  A
 /// `texImage2D` on one game's frame path therefore never waits behind another
-/// game's image load, which is what Section 7.3's "no cross-session lock on a
-/// per-event path" asks for.
+/// game's image load, which is what the "no cross-session lock on a
+/// per-event path" requirement asks for.
 pub type SharedImageCache = Arc<Mutex<ImageCache>>;
 
 /// Per-session registry.
@@ -426,8 +428,8 @@ pub type SharedImageCache = Arc<Mutex<ImageCache>>;
 /// This table maps a source to a *shared image id*, and such an id names a GPU
 /// texture inside one Session's EGL context — each Session builds its own, with
 /// no sharing between them.  An id minted by one Session therefore means
-/// nothing in another's namespace, which puts this cache in tier one of
-/// specification Section 6.5: it must be per-session.  The decoded-RGBA cache
+/// nothing in another's namespace, which puts this cache in the per-session tier:
+/// it must be per-session.  The decoded-RGBA cache
 /// one layer below it is the opposite case and stays shared on purpose, because
 /// its entries are context-independent bytes under a key that carries the
 /// file's real identity.
@@ -454,10 +456,10 @@ pub fn image_cache_for_host(host_id: i32) -> SharedImageCache {
         .clone()
 }
 
-/// Hand the registry's own lock to Section 7.3's contention gate.
+/// Hand the registry's own lock to the cross-session contention gate.
 ///
 /// The comment on `SESSION_IMAGE_CACHES` claims per-event paths never consult the
-/// map, and a claim is not what Section 7.3 accepts: the gate holds this lock and
+/// map, and a claim is not what the contention gate accepts: the gate holds this lock and
 /// requires a per-event upload to finish anyway. Test-only, so no shipped build
 /// can reach past the handle it resolved at bring-up.
 #[cfg(test)]
@@ -824,7 +826,7 @@ mod tests {
     }
 }
 
-// ── Section 7.3: no cross-session lock on a per-event path ──────────────────
+// ── No cross-session lock on a per-event path ───────────────────────────────
 
 #[cfg(test)]
 mod cross_session_contention {
@@ -834,7 +836,7 @@ mod cross_session_contention {
     };
     use migo_contention_probe::{PATIENCE, PerEventPath, assert_completes_while_locked};
 
-    /// Section 7.3, on the upload path's reach for the per-session registry.
+    /// Cross-session contention gate, on the upload path's reach for the per-session registry.
     ///
     /// `SESSION_IMAGE_CACHES` maps every live Session to its alias table, so it is
     /// shared beyond any one game. The design says per-event paths never consult

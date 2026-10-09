@@ -343,7 +343,7 @@ assert_v8_has_jit() {
   mips="${report#*mips=}"; mips="${mips%% *}"
   echo "  V8 reports: WebAssembly=$wasm, warm loop $mips M it/s (floor $JIT_FLOOR_MIPS)"
   # WebAssembly is the uncalibrated half of the answer: a jitless V8 does not
-  # slow it down, it deletes it. CLAUDE.md records the same finding from the
+  # slow it down, it deletes it. The same finding comes from the
   # HarmonyOS NEXT measurement, where `typeof WebAssembly` came back undefined.
   [[ "$wasm" == "object" ]] || fail "V8 ran without WebAssembly (typeof WebAssembly = $wasm). That is the jitless signature: the .wasm.br bundles every Cocos and Unity export ships would not load at all"
   awk -v m="$mips" -v f="$JIT_FLOOR_MIPS" 'BEGIN { exit !(m >= f) }' \

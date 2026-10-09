@@ -414,7 +414,7 @@ mod tests {
 
     /// The table lock must not span an fd's real IO.
     ///
-    /// Audit `docs/audits/2026-09-09/io-network.md:87-91`: one mutex covered
+    /// Review finding from the 2026-09-09 I/O network audit: one mutex covered
     /// lookup *and* read/write/sync_data, so two fds could not make progress at
     /// once and a worker waiting on an unrelated file held a pool slot for the
     /// duration of someone else's disk IO. `try_lock` from inside the operation

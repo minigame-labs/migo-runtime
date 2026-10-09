@@ -8,7 +8,7 @@
  * something else, the ABI is incomplete, and finding that out is why the
  * example exists.
  *
- * The Linux counterpart is tests/c_host/main.c. The three things that differ
+ * The Linux counterpart is tests/c_host/linux/main.c. The three things that differ
  * are marked: the dispatcher runs on the glue's looper, touch carries every
  * pointer, and the lifecycle comes from real Android commands.
  */

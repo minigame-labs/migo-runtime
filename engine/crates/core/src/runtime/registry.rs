@@ -113,7 +113,7 @@ impl HostIngress {
     /// **This is the whole of the notification path that is not platform glue,
     /// and it lives here so it can be measured.** The Android JNI entry point
     /// that feeds it is `cfg(target_os = "android")`, so no host test binary
-    /// compiles it; Section 7.3's gates need a function they can call. What is
+    /// compiles it; the steady-state gates need a function they can call. What is
     /// left on the platform side is reading three strings and a byte array out
     /// of the JVM — everything that decides whether the path allocates or takes
     /// a lock shared beyond this Session is in these few lines.
@@ -427,8 +427,6 @@ pub(crate) fn alloc_host_id() -> HostId {
     NEXT_HOST_ID.fetch_add(1, Ordering::Relaxed)
 }
 
-/// Register sender for a host.
-/// Returns the previous sender if existed (should normally be None).
 /// Publish a Host's control and data-plane endpoints, and answer with the direct
 /// ingress they add up to.
 ///
@@ -1236,7 +1234,7 @@ mod tests {
         assert!(clone.claim_input_saturation_notification());
     }
 
-    /// Section 7.3: no per-event path acquires a lock shared beyond its own session.
+    /// The steady-state requirement: no per-event path acquires a lock shared beyond its own session.
     ///
     /// One gate per shared lock rather than one holding both, so a failure names the
     /// registry the path reached for instead of leaving it to be guessed.
@@ -1302,7 +1300,7 @@ mod tests {
             assert_eq!(stats.input_coalesced.load(Ordering::Relaxed), 1);
         }
 
-        /// Section 7.3, for the path Section 6.1 names by hand.
+        /// Steady-state allocation gate, for the Bluetooth characteristic write hot path.
         ///
         /// The notification path used to call `send_command_to_host`, whose first
         /// act is a `HOST_SENDERS` read to find the Session's sender. Every
@@ -1479,7 +1477,7 @@ mod tests {
             assert_eq!(stats.command_drops.load(Ordering::Relaxed), 1);
         }
 
-        /// Section 7.3's allocation gate for the path Section 6.1 names.
+        /// Steady-state allocation gate for the Bluetooth characteristic write hot path.
         ///
         /// The burst sends and drains within each iteration, which is what a
         /// steady stream is: the slot the Host thread finishes with is the slot

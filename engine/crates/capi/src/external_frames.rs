@@ -1474,8 +1474,8 @@ pub unsafe extern "C" fn migo_sync_reply_bytes(
 /// Free a reply.
 ///
 /// # Safety
-/// `reply` must be a unique live handle from [`migo_session_call_sync`], or
-/// null. It is invalid afterwards.
+/// `reply` must be a unique live handle from [`migo_session_call_sync`]. It
+/// is invalid afterwards.
 #[cfg(feature = "external-frames")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn migo_sync_reply_release(reply: *mut MigoSyncReply) -> MigoResult {
@@ -1797,8 +1797,8 @@ pub unsafe extern "C" fn migo_owned_bytes_view(
 /// Free owned bytes.
 ///
 /// # Safety
-/// `owned` must be a unique live handle from this library, or null. It is
-/// invalid afterwards.
+/// `owned` must be a unique live handle from this library. It is invalid
+/// afterwards.
 #[cfg(feature = "external-frames")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn migo_owned_bytes_release(owned: *mut MigoOwnedBytes) -> MigoResult {

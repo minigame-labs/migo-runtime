@@ -299,7 +299,7 @@ mod tests {
         assert_eq!(ErrorCode::Internal.default_message(), "internal error");
     }
 
-    /// P2-7: pin every variant's `as u16` value so accidental
+    /// Pin every variant's `as u16` value so accidental
     /// reorders or renumbers surface as a failing test rather
     /// than a wire-format compatibility break.  The `ErrorCode`
     /// enum is Serialize+Deserialize and its numeric

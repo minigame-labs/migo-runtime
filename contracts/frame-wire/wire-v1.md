@@ -17,9 +17,10 @@ the header layout, retired a flag, and tightened the section rules. Rewriting a
 shipped format in place would be indefensible; an audit established that this
 one had not shipped:
 
-- `contracts/frame-wire/` and `engine/crates/frame-wire/` exist only on the
-  `feat/apple-platform-foundation` branch. `master` does not contain them, and
-  neither does any tag — including `v0.9.6`, the current release.
+- `contracts/frame-wire/` and `engine/crates/frame-wire/` existed only on the
+  `feat/apple-platform-foundation` branch at the time of this audit
+  (2026-09-03): `master` then did not contain them, and neither did any tag
+  (`v0.9.6` was the current release).
 - No `migo_session_submit_external_frame` entry point is exported anywhere, so
   no host can have sent a packet.
 - The only in-repository consumer of the crate is the command-stream validator
@@ -38,8 +39,8 @@ changes what the one flag means without one. The audit that allowed the
 refreeze was repeated and came out the same way, and one fact it did not have
 makes a transition pointless rather than merely unnecessary:
 
-- No product release contains this format. `v0.9.6` and every earlier tag
-  predate `include/migo/external_frames.h`; the only tags that contain the
+- At the time of this amendment, no product release contained this format:
+  `v0.9.6` and every earlier tag predate `include/migo/external_frames.h`; the only tags that contain the
   commit that added it are the `angle-apple-*` and `skia-apple-*` artifact
   releases, which ship no engine.
 - The producer that writes these packets is not a separate deliverable. Its

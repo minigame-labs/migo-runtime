@@ -85,7 +85,7 @@ impl From<i32> for LogLevel {
 ///
 /// let options = InitOptions::new()
 ///     .with_pixel_ratio(2.0)
-///     .with_tmp_dir("/data/app/cache".into())
+///     .with_cache_dir("/data/app/cache".into())
 ///     .with_extra("feature_flag", true);
 /// ```
 ///
@@ -680,7 +680,7 @@ mod tests {
     ///
     /// The option was reachable from the C ABI and the Android bridge and had a
     /// getter, and `Host::new` still passed `cache_dir()` to the runtime, so
-    /// nothing read it. See `docs/audits/2026-09-09/v8-core-shared.md:84-90`.
+    /// nothing read it; the configured root is now the runtime's code-cache root.
     #[test]
     fn a_configured_code_cache_dir_is_the_root_the_runtime_gets() {
         let options = InitOptions::new()

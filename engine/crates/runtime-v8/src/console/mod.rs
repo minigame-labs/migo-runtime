@@ -12,7 +12,7 @@ thread_local! {
     /// Resolved **once**, at bring-up, and never again. Finding it means reading
     /// a registry shared with every other Session, whose writers are their
     /// bring-up and teardown, so doing that per call would put a cross-session
-    /// lock on a path the content drives -- the trap Section 7.3 names, and the
+    /// lock on a path the content drives -- the cross-session contention trap, and the
     /// reason the text texture cache and the image alias table are wired the same
     /// way.
     static CONSOLE_SINK: RefCell<Option<Arc<Mutex<ConsoleLogBuffer>>>> =
@@ -94,14 +94,14 @@ pub fn console_lazy_extensions() -> Vec<Extension> {
     vec![host_v8_console::lazy_init()]
 }
 
-// ── Section 7.3: no cross-session lock on a per-event path ──────────────────
+// ── No cross-session lock on a per-event path ───────────────────────────────
 
 #[cfg(test)]
 mod cross_session_contention {
     use super::{bind_thread_console, record_for_devtools, set_thread_console_sink};
     use migo_contention_probe::{PATIENCE, PerEventPath, assert_completes_while_locked};
 
-    /// Section 7.3, on the path content drives every time it calls `console.log`.
+    /// Cross-session contention gate, on the path content drives every time it calls `console.log`.
     ///
     /// The registry that maps a Session to its console buffer is shared with every
     /// other Session, and its writers are their bring-up and teardown. Looking a

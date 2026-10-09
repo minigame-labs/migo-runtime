@@ -240,12 +240,12 @@ impl PermissionGate {
 /// One session's handle on the permission gate, resolved once when its device services
 /// are built.
 ///
-/// **Why a handle and not an id.** Section 7.3 forbids a per-event path acquiring a
+/// **Why a handle and not an id.** The steady-state requirement forbids a per-event path acquiring a
 /// lock shared beyond its own session, and the gate's live-host map is exactly that:
 /// every gated Android device call used to look the session up in it first, including
-/// the Bluetooth characteristic writes Section 6.1 names as a steady hot path. Two
+/// the Bluetooth characteristic writes, which are a steady hot path. Two
 /// sessions doing that traffic serialised on one mutex. The handle removes the lookup
-/// rather than making it cheaper, which is the move task 0.16 made for the text
+/// rather than making it cheaper, which is the same move made for the text
 /// texture cache and the input path made for the debug-stats registry.
 ///
 /// **Holding the control block is also what makes refusal correct after teardown.**
@@ -319,12 +319,12 @@ mod tests {
 
     use super::*;
 
-    /// Section 7.3: no per-event path acquires a lock shared beyond its own session.
+    /// The steady-state requirement: no per-event path acquires a lock shared beyond its own session.
     ///
-    /// This is the path that requirement was first written for, and the one Section 7.3
-    /// still records as ungated. Every gated Android device call goes through
+    /// This is the path that requirement was first written for, and had
+    /// no named gate until this test. Every gated Android device call goes through
     /// `permission_jni_call` to `PermissionGate::run`, and that includes the Bluetooth
-    /// characteristic writes Section 6.1 names as a steady hot path.
+    /// characteristic writes, which are a steady hot path.
     ///
     /// The lock's process-wide scope comes from `PERMISSION_GATE` being a `OnceLock`
     /// singleton, so a gate built here has the same relationship to `hosts` that the

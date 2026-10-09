@@ -269,8 +269,8 @@ pub(crate) extern "system" fn getMinApiLevel<'local>(
 ) -> jint {
     // Must be kept in sync with scripts/build-android-so.sh
     // (`ANDROID_API`) and platforms/android/library/build.gradle
-    // (`minSdk`).  The test in `platform/android/tests` pins the
-    // trio together.
+    // (`minSdk`).  The `test-android-sdk-levels-contract.sh` gate pins
+    // the trio together.
     26
 }
 
@@ -1662,7 +1662,7 @@ pub(crate) extern "system" fn onBLECharacteristicValueChange<'local>(
     value: jni::objects::JByteArray<'local>,
 ) {
     jni_safe!("onBLECharacteristicValueChange", {
-        // Section 7.3: a peripheral chooses this path's rate, so nothing here
+        // The steady-state requirement: a peripheral chooses this path's rate, so nothing here
         // may reach the heap or a lock shared beyond this Session. The three
         // identifiers stay borrowed from the JVM, the value lands in a stack
         // buffer, and the Session's own recycled slot is the only destination.

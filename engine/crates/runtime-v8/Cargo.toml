@@ -12,13 +12,13 @@ path = "src/lib.rs"
 default = ["profile-full"]
 profile-full = ["v8-limits", "code-signing", "api-sensors", "api-media", "api-connectivity", "api-commerce", "api-system"]
 profile-slim = ["v8-limits", "code-signing"]
-# Opt-in R9 A/B candidate. Android builds additionally require a validated,
+# Opt-in A/B candidate. Android builds additionally require a validated,
 # kind-bound Worker snapshot; the shipping default keeps source bootstrap.
 worker-snapshot = []
 
 # Measurement build. HarmonyOS NEXT forbids executable anonymous memory for
 # third-party VMs, so V8 there runs interpreted whether we ask it to or not, and
-# PLAN.md gates every HarmonyOS performance claim on knowing what that costs.
+# The project plan gates every HarmonyOS performance claim on knowing what that costs.
 # `--jitless` is the closest faithful proxy on hardware we can actually measure.
 # Never in a shipping build: it is off by default and no release path selects it.
 v8-jitless = []
@@ -28,7 +28,7 @@ code-signing = ["shared/code-signing"]
 # Image decoding is handled by the `io` crate (which has its own `rust-image-decode` feature).
 rust-image-decode = ["dep:image"]
 
-# ---- API group feature gates (M25) ----
+# ---- API group feature gates ----
 #
 # Each feature controls whether the corresponding API domain's extension
 # modules (Rust ops + JS ESM files + global scope registration) are compiled
@@ -96,10 +96,10 @@ futures.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
-# Section 7.3's steady-state allocation gate. A dev-dependency by construction:
+# The steady-state allocation gate. A dev-dependency by construction:
 # the counting allocator must never be reachable from a shipped cdylib.
 migo-alloc-probe = { path = "../../testing/alloc-probe", default-features = false }
-# Section 7.3's cross-session contention gate, same reasoning: dev-only by
+# The cross-session contention gate, same reasoning: dev-only by
 # construction so no shipped build can reach it.
 migo-contention-probe = { path = "../../testing/contention-probe", default-features = false }
 # The gate holds the console registry's own lock, which only this feature exposes.

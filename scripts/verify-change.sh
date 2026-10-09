@@ -4,7 +4,7 @@
 # Location: scripts/verify-change.sh
 #
 # Answers one question: has this change been verified for every target it
-# touches. Section 7.4 of the four-platform delivery design is the reason it
+# touches. The platform-target verification rule is the reason it
 # exists -- host `cargo check`, `cargo test` and `cargo clippy` skip
 # `cfg(target_os = "android")` code entirely, so a green host run is evidence
 # about the portable tree and nothing else. Three Android compile errors rode

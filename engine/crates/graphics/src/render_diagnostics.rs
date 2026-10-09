@@ -347,7 +347,7 @@ mod tests {
         uninstall_for_tests();
     }
 
-    /// Section 6.5's per-session accounting, for the gauges specifically.
+    /// Per-session accounting test, for the gauges specifically.
     ///
     /// `sinks_are_isolated_by_thread` above cannot stand in for this. Counters
     /// publish with `fetch_add`, so a defect that merged two sessions' *gauges* while

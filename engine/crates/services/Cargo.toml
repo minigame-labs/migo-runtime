@@ -67,7 +67,7 @@ hex = "0.4"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "sync", "macros", "time", "test-util"] }
-# Section 7.3's contention gate, for the image alias registry.
+# The cross-session contention gate, for the image alias registry.
 migo-contention-probe = { path = "../../testing/contention-probe", default-features = false }
 # The same dependency, with the fixture signer the signed-mount tests use.
 # A feature on an existing edge, so the lockfile -- and every V8 snapshot

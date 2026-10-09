@@ -89,7 +89,7 @@ fn unpin_without_pin_is_a_bug(key: &ImageCacheKey) {
 /// reason this type is no longer handed out: [`ImageCache::get`] returns the
 /// `NormalizedImage` instead, whose clone is an `Arc` bump and two `u32`. That
 /// call sits on the `texImage2D` frame path, so cloning a `Vec` alongside it
-/// would put a heap allocation there — what Section 7.3 forbids.
+/// would put a heap allocation there — what the steady-state zero-allocation requirement forbids.
 ///
 /// One entry can have several owners, because two games loading the same file
 /// share one decoded copy on purpose. Bytes are therefore attributed to every
@@ -301,7 +301,7 @@ pub struct ImageCache {
     /// Recording one costs an owned key, which is why the resident case does not
     /// go through here: a reservation is taken once per decode, beside a decode
     /// that allocates the bitmap itself, whereas pinning a resident entry is the
-    /// per-event path Section 7.3 governs.
+    /// per-event path the steady-state allocation gate governs.
     ///
     /// **A key is in exactly one home.** A reservation is removed the moment the
     /// entry becomes resident, and handed back if that entry is later evicted with
@@ -1520,9 +1520,9 @@ mod tests {
         );
     }
 
-    // ── Section 7.3: zero steady-state allocation ───────────────────────────
+    // ── Zero steady-state allocation ────────────────────────────────────────────
 
-    /// Section 7.3, on the path `op_tex_image_2d_from_image` takes for every draw
+    /// Steady-state allocation gate, on the path `op_tex_image_2d_from_image` takes for every draw
     /// whose bytes come from this cache: `resolve_cached_image_rgba` looks the key
     /// up and hands back the decoded RGBA.
     ///
@@ -1530,7 +1530,7 @@ mod tests {
     /// excludes it: the caller already holds the key. What this measures is whether
     /// the *cache* adds a heap event to a hit -- the frequency increment, the
     /// per-Session counters, and the per-owner attribution against the entry's
-    /// `owners` vector, which task 0.16 recorded as unmeasured.
+    /// `owners` vector, which had not been measured before this test.
     ///
     /// Two owners, not one, because `add_owner` scans that vector: a gate with a
     /// single owner would pass a `Vec` that grew on every hit.
@@ -1556,7 +1556,7 @@ mod tests {
         );
     }
 
-    /// Section 7.3, on the path an alias takes across its own lifetime: `begin_load`
+    /// Steady-state allocation gate, on the path an alias takes across its own lifetime: `begin_load`
     /// pins the decoded bytes when it hands out an alias, and the alias's release
     /// unpins them. A game recycling image aliases -- a sprite pool, a scrolling
     /// list -- runs this pair per event.
@@ -1565,7 +1565,7 @@ mod tests {
     /// map keyed beside the entry needs an owned key to record the pin and drops it
     /// again when the count reaches zero, so the allocation and the free are one
     /// round trip rather than growth.
-    /// Section 7.3's steady-state *growth* requirement, on the reservation table.
+    /// Steady-state *growth* requirement, on the reservation table.
     ///
     /// This is the pin path's other half. The resident case above must not reach the
     /// heap at all; the *non*-resident case must, because a reservation records the

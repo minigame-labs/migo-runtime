@@ -31,8 +31,8 @@ The following components are licensed under the MIT License:
 - parking_lot (https://github.com/Amanieu/parking_lot) - MIT OR Apache-2.0
 - hashbrown (https://github.com/rust-lang/hashbrown) - MIT OR Apache-2.0
 - indexmap (https://github.com/indexmap-rs/indexmap) - Apache-2.0 OR MIT
-- ttf-parser (https://github.com/AlessioNetti/ttf-parser) - MIT OR Apache-2.0
-- rustybuzz (https://github.com/AlessioNetti/rustybuzz) - MIT
+- ttf-parser (https://github.com/harfbuzz/ttf-parser) - MIT OR Apache-2.0
+- rustybuzz (https://github.com/harfbuzz/rustybuzz) - MIT
 - glow (https://github.com/grovesNL/glow) - MIT OR Apache-2.0 OR Zlib
 - png (https://github.com/image-rs/image-png) - MIT OR Apache-2.0
 - gif (https://github.com/image-rs/image-gif) - MIT OR Apache-2.0
@@ -50,7 +50,7 @@ Apache License 2.0
 
 The following components are licensed under the Apache License 2.0:
 
-- clang-sys (https://github.com/AlessioNetti/clang-sys) - Apache-2.0
+- clang-sys (https://github.com/KyleMayes/clang-sys) - Apache-2.0
 - debugid (https://github.com/mitsuhiko/debugid) - Apache-2.0
 - ring (https://github.com/briansmith/ring) - Apache-2.0 AND ISC
 
@@ -60,7 +60,7 @@ MPL-2.0 (Mozilla Public License 2.0)
 
 The following components are licensed under MPL-2.0:
 
-- cooked-waker (https://github.com/AlessioNetti/cooked-waker) - MPL-2.0
+- cooked-waker (https://github.com/Lucretiel/cooked-waker) - MPL-2.0
 
 Note: MPL-2.0 is a file-level copyleft license. This project uses cooked-waker
 as an unmodified dependency, which is permitted under MPL-2.0 without requiring

@@ -2136,7 +2136,7 @@ mod tests {
     }
 }
 
-// ── Section 7.3: zero steady-state allocation ───────────────────────────────
+// ── Zero steady-state allocation ───────────────────────────────
 
 #[cfg(test)]
 mod steady_state_allocation {
@@ -2144,7 +2144,7 @@ mod steady_state_allocation {
     use crate::nodes::{GainNode, OscillatorNode};
     use migo_alloc_probe::{Burst, assert_no_steady_state_allocation};
 
-    /// Section 7.3, on the audio graph's real-time path.
+    /// The allocation gate, on the audio graph's real-time path.
     ///
     /// `process` is the audio callback's work: it runs on the output thread —
     /// SCHED_FIFO on Android, per `audio_thread.rs` — once per quantum, for the
@@ -2212,7 +2212,7 @@ mod steady_state_allocation {
         let mut output = vec![0.0f32; QUANTUM_FRAMES * CHANNELS as usize];
 
         // The boxed nodes are built before the measured window: `Box::new` is the
-        // burst body's own allocation, not the render path's, and Section 7.3
+        // burst body's own allocation, not the render path's, and the gate
         // forbids a body that takes from a pool it does not control.
         const ITERATIONS: usize = 8 + 64;
         let mut ready: Vec<Box<dyn AudioNodeProcessor>> = (0..ITERATIONS)

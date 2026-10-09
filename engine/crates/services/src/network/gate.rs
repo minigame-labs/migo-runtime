@@ -164,7 +164,7 @@ fn scheme_allowed(kind: GateKind, scheme: &str) -> bool {
         ) => true,
         (GateKind::WebSocket, "ws" | "wss") => true,
         // Raw TCP/UDP use the synthetic `tcp://` / `udp://` scheme
-        // produced by [`enforce_host_from_state`]; no other kind is
+        // produced by [`enforce_host`]; no other kind is
         // allowed to feed those schemes in.
         (GateKind::TcpSocket, "tcp") => true,
         (GateKind::UdpSocket, "udp") => true,
@@ -235,8 +235,8 @@ pub fn evaluate_policy(
     }
 
     // 4. Domain whitelist. Empty whitelist means "allow all" (dev /
-    //    first-boot behaviour — a dedicated warning path is the
-    //    caller's responsibility and lives in `enforce_from_state`).
+    //    first-boot behaviour — `enforce` emits the warning before
+    //        evaluation).
     if !is_host_whitelisted(host, policy) {
         return Err(GateReject::NotWhitelisted {
             host: host.to_string(),
@@ -269,6 +269,7 @@ pub fn evaluate_policy(
 
     Ok(())
 }
+
 /// Enforce the policy for a raw socket's host and port.
 ///
 /// A socket has no URL, so one is synthesized (`tcp://host:port/`) and the

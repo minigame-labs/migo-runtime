@@ -53,7 +53,7 @@ const loadFont = (path, family) => {
     console.info('migo.loadFont called: path=' + path + (family ? ', family=' + family : ''));
     const name = ops.op_load_font(path, family);
     console.info('migo.loadFont result: path=' + path + ', family=' + (name || 'null'));
-    // R-10: bump the global font epoch so every per-canvas JS
+    // Bump the global font epoch so every per-canvas JS
     // measureText cache invalidates its stored metrics on the
     // next access.  Cheap monotonic counter; compared against
     // `this._measureCacheEpoch` in `CanvasRenderingContext2D.

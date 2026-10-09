@@ -1,4 +1,4 @@
-//! Regression tests for `createDeferredApi` (V07 + RT-01).
+//! Regression tests for `createDeferredApi`.
 //!
 //! Every test loads the *production* `02_async.js` source (ES-module
 //! import/export syntax stripped) into a bare `JsRuntime` alongside a small
@@ -11,7 +11,7 @@
 //! (`fnet01_connect_generation_discards_stale_result_and_closes_orphan`): inject
 //! mock globals, include the real source, assert observable state.
 //!
-//! ## Why these tests are RED before the V07 + RT-01 fix
+//! ## Why these tests were RED before the fix
 //!
 //! * Every assertion uses `api.pendingCount()`, which does not exist on the
 //!   object returned by `createDeferredApi` before the fix.
@@ -125,7 +125,7 @@ mod deferred_api_tests {
     // Tests
     // ---------------------------------------------------------------------------
 
-    /// V07 (regression): when `setTimeout` throws — e.g. because the 1024-live-
+    /// Regression: when `setTimeout` throws — e.g. because the 1024-live-
     /// timer cap is exhausted — the pending entry must be rolled back, and
     /// `fail` / `complete` must be called exactly once.
     ///

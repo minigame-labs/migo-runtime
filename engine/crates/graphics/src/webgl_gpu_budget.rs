@@ -2146,7 +2146,7 @@ mod tests {
         assert_eq!(scope.process_usage(), 96);
     }
 
-    /// R6 – `CompressedTexImage2D` and `GenerateMipmap` must route through
+    /// `CompressedTexImage2D` and `GenerateMipmap` must route through
     /// the ledger so their bytes count against the per-context and process limits.
     /// This test drove the addition of `prepare_compressed_tex_image_2d` and
     /// `prepare_generate_mipmap`; it was RED (compile error: no such method)

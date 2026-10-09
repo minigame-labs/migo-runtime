@@ -1,4 +1,4 @@
-//! Render-loop state container (F-3 infrastructure).
+//! Render-loop state container.
 //!
 //! Historically the render-loop body in `render_thread::RenderThread::
 //! spawn` was one 700-line closure with three nested closures
@@ -61,7 +61,7 @@ pub(crate) struct RenderLoopState {
     pub(crate) dirty: bool,
     pub(crate) paused: bool,
     /// Set when `swap_buffers` reports `EGL_CONTEXT_LOST` or the
-    /// `GL_KHR_robustness` poll (R-3) reports a reset.  Checked
+    /// `GL_KHR_robustness` poll reports a reset.  Checked
     /// at the top of the next iteration; recovery is deferred
     /// there so the swap path stays lean.
     pub(crate) needs_context_recovery: bool,
@@ -85,7 +85,7 @@ pub(crate) enum LoopCtl {
     Shutdown,
 }
 
-// G-4 dispatch lives in `render_thread::dispatch_one_cmd` so
+// The dispatch body lives in `render_thread::dispatch_one_cmd` so
 // the closure body can stay where it has always been (diff
 // minimisation for reviewers); only its signature changes from
 // 11 threaded arguments to a single `&mut RenderLoopState` plus

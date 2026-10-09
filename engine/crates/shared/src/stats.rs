@@ -170,7 +170,7 @@ pub struct DebugStats {
     /// Cumulative dropped upload recoveries.
     pub dropped_upload_recoveries: AtomicU32,
 
-    // ---- P11 render diagnostics (not in fixed snapshot) ----
+    // ---- Render diagnostics (not in fixed snapshot) ----
     // These counters are NOT serialised into `RenderMetricsSnapshot`
     // to keep the existing Java ByteBuffer layout stable.  They're
     // exposed through a separate debug API (see
@@ -685,12 +685,12 @@ fn stats_map() -> &'static RwLock<HashMap<i32, Arc<DebugStats>>> {
     STATS.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
-/// The stats registry's lock, for Section 7.3's cross-session contention gate.
+/// The stats registry's lock, for the cross-session contention gate.
 ///
 /// Every Session's `DebugStats` lives in one process-wide map so out-of-band
 /// consumers can find a Session by id: the JNI debug poll, and the frame collector's
 /// one-time resolve. That is sound only while no *per-event* path looks it up, which
-/// Section 7.3 requires a test — not an argument — to establish. The per-event paths
+/// The contention gate requires a test — not an argument — to establish. The per-event paths
 /// live in other crates and cannot hold a private lock, so this hands it over, behind
 /// a feature no shipped build enables.
 #[cfg(any(test, feature = "contention-probe"))]

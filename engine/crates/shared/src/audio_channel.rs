@@ -2,7 +2,7 @@
 //! running the game to the audio thread.
 //!
 //! **Why it is bounded, and why bounding it is not the input queue's problem
-//! again.** Section 7.3 forbids unbounded queue growth under saturation. This
+//! again.** The steady-state bounded-queue requirement forbids unbounded queue growth under saturation. This
 //! queue used to be `tokio::sync::mpsc::unbounded_channel`, drained at most
 //! [`AUDIO_COMMANDS_PER_DRAIN`] commands per audio-thread iteration with the rest
 //! deferred — an unbounded queue behind a capped drain, which is that growth
@@ -815,7 +815,7 @@ mod tests {
         }
     }
 
-    /// Section 7.3's bounded-hot-paths requirement, stated about the transport
+    /// The bounded-hot-paths requirement, stated about the transport
     /// itself. An unbounded channel reports no capacity at all, which is the
     /// difference this asserts.
     #[test]
@@ -1219,7 +1219,7 @@ mod tests {
         }
     }
 
-    /// Section 7.3's zero-allocation requirement, on a per-event path: one
+    /// The zero-allocation requirement, on a per-event path: one
     /// JavaScript audio call is one send. The unbounded channel this replaced
     /// bought a block from the heap every thirty-two messages, forever, on the
     /// thread running the game.

@@ -2365,7 +2365,7 @@ class CanvasRenderingContext2D {
         // R-10 + F-2: JS-side measure cache in front of the
         // native op.  Cross-thread RPC into the render thread
         // costs 30-50 us round-trip even on the cache-hit
-        // path; `op_measure_text_flat` (R-7 / F-2) drops that
+        // path; `op_measure_text_flat` drops that
         // to ~5-10 us when the shared measurer is installed,
         // and ~10 us otherwise.  Most UI code calls
         // `measureText` with a repeating set of strings per

@@ -16,7 +16,7 @@ import WebKit
 ///
 /// ## Why there is a second uplink at all
 ///
-/// G0's P3 measured both channels and neither wins outright: a loopback socket
+/// The 2026-09 transport probe measured both channels and neither wins outright: a loopback socket
 /// has a low fixed cost and grows with bytes, a scheme request has a higher
 /// fixed cost and is nearly flat. `MigoFrameChannelPolicy` carries the table and
 /// the crossover. Commands over the socket, textures over the scheme.

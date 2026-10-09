@@ -24,7 +24,7 @@ pub(crate) use migo_services::image::cache;
 /// Resolved **once**, by the extension state initializer below, and never again:
 /// finding it means reading a registry shared with every other Session, so doing
 /// that per op would put a cross-session lock on the `texImage2D` frame path —
-/// the trap Section 7.3 names, and the reason the text texture cache is wired
+/// the cross-session contention trap, and the reason the text texture cache is wired
 /// the same way.  WebGL's upload ops read this handle too, which is why it lives
 /// in op state rather than being a private detail of the ops below.
 ///

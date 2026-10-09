@@ -191,7 +191,7 @@ impl ImageStore {
             .saturating_mul(4)
     }
 
-    /// F-1: drain every `pending_delete` entry whose in-flight
+    /// Drain every `pending_delete` entry whose in-flight
     /// refcount has already reached zero.  Returns the freed
     /// entries so the caller can issue `glDeleteTextures` under
     /// the correct GL context.  Idempotent when no deletions are
@@ -528,7 +528,7 @@ mod tests {
         assert_eq!(info.color_type, ColorType::RGBA8888);
         assert_eq!(info.alpha_type, AlphaType::Unpremul);
     }
-    /// P2-MEM: repeated create/delete must return both metadata and retained
+    /// Repeated create/delete must return both metadata and retained
     /// payload accounting to baseline.  The second remove remains idempotent.
     #[test]
     fn repeated_create_delete_returns_retained_bytes_to_baseline() {

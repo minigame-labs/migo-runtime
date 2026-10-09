@@ -232,7 +232,7 @@ mod global_surface_tests {
         );
     }
 
-    /// R6 named products must expose exactly the optional domains selected at
+    /// Named products must expose exactly the optional domains selected at
     /// compile time while retaining the same core game surface.
     #[test]
     fn product_profile_surface_matches_features() {

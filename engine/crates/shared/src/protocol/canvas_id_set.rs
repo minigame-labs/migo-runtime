@@ -35,7 +35,7 @@ pub const CANVAS_ID_SET_INLINE_CAPACITY: usize = 32;
 /// **Above the inline capacity it spills to the heap, and where that costs
 /// anything is decided by the caller, not here.** A set constructed per frame
 /// and dropped pays that allocation on every frame of the scene, for as long as
-/// the scene is on screen — which is what Section 7.3 forbids, and what
+/// the scene is on screen — which is what the steady-state zero-allocation requirement forbids, and what
 /// "correct but slower on a scene nobody has produced yet" understated. A set
 /// that outlives the frame pays it once and then never, whatever the scene
 /// does. So a per-frame caller acquires it through [`CanvasIdSet::begin`] from a
@@ -205,7 +205,7 @@ mod tests {
         assert!(!set.contains(count));
     }
 
-    /// Section 7.3: these sets are built on per-frame and per-batch paths, so
+    /// Steady-state allocation gate: these sets are built on per-frame and per-batch paths, so
     /// whatever they cost, the engine pays once a frame for as long as it runs.
     /// The `HashSet`s this type replaced each cost an allocation and a free
     /// there.
@@ -237,7 +237,7 @@ mod tests {
     /// The gate above cannot state this — it constructs its set inside the burst
     /// and so is only zero for a scene that *fits*. Both are needed: one says
     /// the ordinary scene never allocates, this one says the extraordinary scene
-    /// does not allocate *repeatedly*, and the second is the one Section 7.3 is
+    /// does not allocate *repeatedly*, and the second is the one the steady-state requirement is
     /// actually about.
     #[test]
     fn refilling_a_reused_set_far_above_the_inline_capacity_never_reaches_the_heap() {

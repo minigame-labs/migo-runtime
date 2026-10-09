@@ -1289,7 +1289,7 @@ fn calculate_process_frames(sample_rate: u32) -> usize {
 /// events the player raised.
 ///
 /// A free function over an event sink rather than a method on the loop's locals,
-/// because this is the tick's steady per-player work and Section 7.3 requires it
+/// because this is the tick's steady per-player work and the allocation gate requires it
 /// to be measured. `HostTx` and `AudioOutput` are the two things a host test
 /// binary cannot build; the sink removes the first and this step never touches
 /// the second. The production call site passes a closure over `host_tx`, which
@@ -3922,7 +3922,7 @@ mod tests {
         assert!(result_rx.recv_timeout(Duration::from_secs(1)).is_ok());
     }
 
-    /// Section 7.3's steady-state allocation gate, applied to the audio thread's
+    /// The steady-state allocation gate, applied to the audio thread's
     /// own tick.
     ///
     /// The tick is what runs 200 times a second while anything is audible, so a

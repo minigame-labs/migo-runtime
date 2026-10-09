@@ -189,7 +189,7 @@ mod v8_limits_tests {
     }
 }
 
-/// R4: exact V8 coverage — the process deadline watchdog must guard every real
+/// Exact V8 coverage — the process deadline watchdog must guard every real
 /// V8 entry a `HostJsRuntime` exposes.
 #[cfg(all(test, feature = "v8-limits"))]
 mod host_watchdog_tests {

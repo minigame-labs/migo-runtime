@@ -406,7 +406,7 @@ mod recycle_pool_tests {
         let _: RecyclePool<Payload> = RecyclePool::new(0);
     }
 
-    /// Section 7.3, for the mechanism rather than for one of its consumers.
+    /// Steady-state allocation gate, for the mechanism rather than for one of its consumers.
     ///
     /// The warm-up covers both one-time costs: the population growing to the
     /// depth the burst uses, and each slot's buffer reaching the size it carries.
@@ -453,7 +453,7 @@ mod tests {
         }
     }
 
-    /// Section 7.3, and the claim `TouchData`'s own documentation makes: a single
+    /// Steady-state allocation gate, and the claim `TouchData`'s own documentation makes: a single
     /// memcpy into a preallocated slot keeps steady-state input allocation-free.
     ///
     /// The burst runs at full occupancy and then asks for one slot too many, because

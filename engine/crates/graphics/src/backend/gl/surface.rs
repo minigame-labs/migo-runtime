@@ -323,7 +323,7 @@ fn alloc_ctx_tag() -> u32 {
 /// The current engine already stores `gr_ctx: DirectContext`
 /// directly on `Canvas2DContext` for backwards-compat with the
 /// existing call graph; migrating each call site to use
-/// `CanvasGr` is a follow-up (see `AUDIT.md` P2-3).  Until then
+/// `CanvasGr` is a follow-up.  Until then
 /// the newtype is exposed here as a documentation anchor and a
 /// place to hang a narrow API once the migration starts.
 #[allow(dead_code)]
@@ -718,8 +718,8 @@ impl Canvas2DContext {
     /// **Why.** Measured on a Mate 30 Pro, an offscreen canvas costs 4.86 MB of
     /// `Graphics` and **96% of that is its own `GrDirectContext`** -- the EGL
     /// context under it is 0.20 MB and the 128x64 backing is 32 KB. 80 canvases
-    /// therefore hold 398 MB where the pixels account for 2.5 MB. The full
-    /// attribution is in `docs/performance/android/multicanvas-fixed-cost.md`.
+    /// therefore hold 398 MB where the pixels account for 2.5 MB. The attribution
+    /// was measured on-device in the 2026 multicanvas fixed-cost analysis.
     /// One context with many surfaces is also Skia's own usage model; a context
     /// per surface was the unusual part.
     ///
@@ -1011,7 +1011,7 @@ impl Canvas2DContext {
         text: Option<&TextContext>,
         image_store: &mut ImageStore,
     ) -> bool {
-        // P2-12: dispatch via an explicit `FastPathOutcome` rather
+        // Dispatch via an explicit `FastPathOutcome` rather
         // than a loosely-documented `match ... _ => {}` + fall-through.
         match self.try_fast_path_draw_image(cmd, image_store) {
             FastPathOutcome::Handled(painted) => return painted,
@@ -1514,7 +1514,7 @@ mod tests {
     ///
     /// `no-repeat`, and the axis `repeat-x`/`repeat-y` leaves out, are transparent past the image; `Clamp`
     /// would stretch its edge pixels over the whole canvas. It needs a GPU image to run, so this holds the
-    /// choice in the source (migo-conformance `canvas2d-spec/pattern-*-second-tile-*` runs it).
+    /// choice in the source (the conformance suite `canvas2d-spec/pattern-*-second-tile-*` runs it).
     #[test]
     fn a_pattern_does_not_repeat_into_decal_not_clamp() {
         let source = include_str!("surface.rs");
@@ -1534,7 +1534,7 @@ mod tests {
     /// of destroyed surfaces without clearing it, so after a few hundred canvases
     /// had been created and collected, every new one began holding an earlier
     /// one's pixels (measured: 162 of 480). Structural because a surface needs a
-    /// GL context; the behaviour is covered by migo-conformance's
+    /// GL context; the behaviour is covered by the conformance suite's
     /// `canvas2d-spec/new-canvases-start-transparent`.
     #[test]
     fn every_surface_constructor_clears_the_new_bitmap() {
@@ -1603,7 +1603,7 @@ mod tests {
         assert_eq!(pixels, vec![10, 20, 30, 255]);
     }
 
-    /// Section 6.5: the Skia budget's denominator has to span the process, because
+    /// The Skia budget's denominator has to span the process, because
     /// its numerator does.
     ///
     /// The guard is exercised directly rather than through `Canvas2DContext::new`,

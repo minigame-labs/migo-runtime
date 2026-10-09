@@ -533,7 +533,7 @@ where
                 }
             }
 
-            // H-5: for *inline* RGBA decodes served by the local
+            // For *inline* RGBA decodes served by the local
             // file path we also drop bytes into the io LRU so
             // `op_tex_image_2d_from_image` can hit a single source
             // of truth.  The full-resolution branch above only
@@ -635,7 +635,7 @@ async fn upload_inline_image(
         DecodedImage::Compressed(c) => (c.width as i32, c.height as i32),
     };
 
-    // H-5: populate migo_io::global_cache BEFORE moving `decoded`
+    // Populate migo_io::global_cache BEFORE moving `decoded`
     // into the render command.  Data-URL and http(s):// paths
     // previously skipped the LRU entirely, which made every later
     // `texImage2D(image)` on those images a guaranteed cache miss
@@ -1294,14 +1294,14 @@ mod tests {
         variant_source_version_token,
     };
 
-    /// Section 6.5, on the one process-global structure two Sessions both reach
+    /// Shared-tier ownership test, on the one process-global structure two Sessions both reach
     /// that holds their *content*: the decoded-image cache. What keeps one game's
     /// pixels out of another's is the cache key, and for a directory-mounted
     /// `/code` asset the key's path component is the **virtual** string
     /// `/code/logo.png` — byte-identical for both games. Separation rests entirely
     /// on the source-version token, which hashes the real path behind the mount.
     /// Nothing asserted that until this test; the pack-backed half of the same
-    /// branch got its own identity under task 0.28, and this is the other half.
+    /// branch got its own identity in a prior fix, and this is the other half.
     ///
     /// **The two files are given identical bytes and identical mtimes on purpose.**
     /// Left to the filesystem they would differ, and the test would then pass on

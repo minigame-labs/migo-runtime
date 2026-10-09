@@ -1600,7 +1600,7 @@ mod tests {
             let _ = fs::remove_dir_all(&base);
         }
 
-        // -- P3-2: Writable-dir symlink tests (validates P0-2 fix) --
+        // -- Writable-dir symlink tests (validates the symlink-escape fix) --
 
         #[test]
         fn test_writable_dir_symlink_escape_outside() {

@@ -1,4 +1,4 @@
-//! Section 7.3's steady-state allocation requirement, applied to the frame
+//! The steady-state allocation requirement, applied to the frame
 //! boundary.
 //!
 //! **This is an integration test because the property is a property of a

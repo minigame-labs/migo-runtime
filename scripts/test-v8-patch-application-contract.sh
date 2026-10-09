@@ -617,7 +617,7 @@ done
 info "every declared patch resolves to exactly one file"
 # Two sources, and both must contribute. Patch names live either as literals in a
 # build script (windows, ohos) or as `required_patches[].file` in a lock (android,
-# since task 1.1b made the lock the single declaration). Drawing from one source
+# since the lock became the single declaration). Drawing from one source
 # only is how this check silently narrowed from 8 patches to 4 the moment android's
 # literals moved into the lock -- a zero-matches guard did not notice, because 4 is
 # not zero. So each source is counted separately and an empty one is a failure.

@@ -948,7 +948,7 @@ mod tests {
     /// the next image entry must not be silently truncated and published.  The
     /// ingest must either include the original entry in full or fail cleanly.
     ///
-    /// Three sub-cases from the audit (docs/audits/2026-09-09/full/io-network.md:31):
+    /// Three sub-cases from the 2026-09-09 I/O network audit:
     ///
     /// * **cap+1 / sidecar boundary**: after img1 + its sidecar are ingested the
     ///   remaining budget is exactly `png_size - 1`; the second image needs one

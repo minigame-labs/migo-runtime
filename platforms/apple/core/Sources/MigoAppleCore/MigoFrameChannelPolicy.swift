@@ -33,7 +33,7 @@ import Foundation
 /// over the socket, textures over the scheme* — a sentence somebody can re-derive
 /// when the hardware changes, rather than a number they would have to trust.
 ///
-/// Records: `docs/performance/apple/g0/transport/`.
+/// Records: the 2026-09-10 transport probe bundle.
 public enum MigoFrameChannel: String, Sendable, Equatable, CaseIterable {
     /// A persistent connection. Low fixed cost, grows with bytes.
     case loopbackWebSocket = "loopback_websocket"

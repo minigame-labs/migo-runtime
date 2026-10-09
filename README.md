@@ -41,7 +41,8 @@
 
 - **Pinned** — you ship the engine, so it never drifts across phone brands or OS updates.
 - **Auditable** — full source, checksummed releases, builds reproducible from source.
-- **Compatible** — Pixi, Phaser, three.js, Babylon.js, PlayCanvas, Egret, p5.js, EaselJS, Howler, raw Canvas/WebGL, and mini-game content: each one run unmodified, at a pinned version, by [`migo-conformance`](https://github.com/minigame-labs/migo-conformance) (`engines/`) through the real macOS host and, for most of them, on an iPhone 12. Cocos Creator and Laya are not in that suite yet, so they are not claimed.
+- **Fast under constraints** — JavaScript boots from a prebuilt V8 startup snapshot, ASTC/KTX2 compressed textures upload without a CPU decode, and the full Web Audio node family plus ICU-backed Intl are built in.
+- **Compatible** — Pixi, Phaser, three.js, Babylon.js, PlayCanvas, Egret, p5.js, EaselJS, Howler, raw Canvas/WebGL, and mini-game content: each one run unmodified, at a pinned version, by the conformance suite through the real macOS host and, for most of them, on an iPhone 12. Cocos Creator and Laya are not in that suite yet, so they are not claimed.
 - **Yours to control** — your app decides login, payments, ads and downloads. Nothing is faked.
 
 ## Architecture

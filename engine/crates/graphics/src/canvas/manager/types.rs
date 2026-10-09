@@ -185,7 +185,7 @@ pub(crate) struct CanvasGLState {
     /// values (u32, stored as the location-index returned to JS).
     pub uniform_cache: HashMap<(ProgramId, u32), Vec<u8>>,
 
-    // ---- P11-state-tracker expansion ----------------------------------
+    // ---- State-tracker expansion ----------------------------------
     /// Currently bound FBO id for each of the three GL binding targets.
     /// `Some(None)` means "shadowed as the default FBO (0)"; `None` means
     /// "no shadow yet, must re-issue".
@@ -1044,7 +1044,7 @@ impl CanvasGLState {
         self.bound_framebuffer.forget_all();
         self.bound_renderbuffer = None;
         self.vertex_attribs.forget_all();
-        // P14 shadows: Skia does not touch stencil state (Ganesh GL
+        // Shadows: Skia does not touch stencil state (Ganesh GL
         // backend leaves stencil disabled by default), and the scope
         // around Skia restores the pixel-store state it does touch.
         // Still, clearing them on the boundary matches the behaviour

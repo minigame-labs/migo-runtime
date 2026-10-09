@@ -135,7 +135,7 @@ migo-frame-wire = { path = "../frame-wire", default-features = false, features =
 # `#[global_allocator]` into every cdylib that links this crate.
 migo-alloc-probe = { path = "../../testing/alloc-probe", default-features = false }
 migo-contention-probe = { path = "../../testing/contention-probe", default-features = false }
-# Section 7.3's contention gate holds the stats registry's lock, which is private to
+# The cross-session contention gate holds the stats registry's lock, which is private to
 # `shared`. Requested here rather than in `[dependencies]` so resolver 2 leaves the
 # accessor out of the cdylib.
 shared = { package = "migo-shared", path = "../shared", default-features = false, features = ["contention-probe", "vfs"] }

@@ -158,7 +158,7 @@ impl UploadThreadHandle {
         with_background_context(egl_provider.as_ref(), || ())?;
 
         // Create shared context matching the render context's GLES
-        // version.  R-3: mirror the render context's robustness
+        // version.  Mirror the render context's robustness
         // setting so the shared context also reports reset via
         // `glGetGraphicsResetStatus` if the driver supports it.
         let mut ctx_attribs: Vec<khronos_egl::Int> = vec![

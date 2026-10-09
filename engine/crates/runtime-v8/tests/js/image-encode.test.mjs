@@ -4,7 +4,7 @@
 // PNG is decoded here with Node's own inflate and the PNG filters, and must come back byte for byte. JPEG is decoded by a
 // small baseline decoder written for this test (Huffman, dequantisation, inverse DCT, YCbCr), independent of the encoder's
 // transform, and must come back within what quality 0.92 allows. The same bytes are decoded by the engine's own decoders
-// on every platform in migo-conformance (`canvas2d-spec/to-data-url-*`).
+// on every platform in the conformance suite (`canvas2d-spec/to-data-url-*`).
 //
 // Run:  node engine/crates/runtime-v8/tests/js/image-encode.test.mjs
 // Gate: scripts/test-canvas-image-encode.sh

@@ -9,7 +9,7 @@
 # in scripts/gen-linux-package-metadata.py. The one exception is Xlib: the
 # example owns its window, and the engine deliberately does not link Xlib.
 #
-# Usage: tests/c_host/build-with-pkgconfig.sh [OUTPUT_BINARY]
+# Usage: tests/c_host/linux/build-with-pkgconfig.sh [OUTPUT_BINARY]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

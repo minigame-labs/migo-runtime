@@ -748,7 +748,7 @@ mod tests {
         );
     }
 
-    /// Section 7.3's steady-state allocation gate, applied to the streaming
+    /// The steady-state allocation gate, applied to the streaming
     /// refill: one network chunk in, its decoded PCM out.
     ///
     /// The unit is a chunk because that is what repeats -- a track is thousands

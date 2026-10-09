@@ -670,7 +670,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rebind, and its next passes drew onto the canvas: `PMREMGenerator` returned a black
   environment map about one run in twelve, and a multiple-render-target scene
   intermittently read black. The present now puts back exactly the read and draw
-  bindings it found. Found by running migo-conformance's engine bundles repeatedly;
+  bindings it found. Found by running the conformance suite's engine bundles repeatedly;
   `engine-three-advanced` gains a scene that runs the generator 40 times with the
   frame clock ticking (24-28 black maps before, none after).
 - Canvas2D: a `getImageData` whose pixels were read while the renderer presented could
@@ -678,7 +678,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the capture and the read of `.data` are a socket round trip apart. The renderer
   dropped its snapshot pool at every present; it now drops only the snapshots of
   content frames that have ended (a presenting packet), and keeps the frame being
-  built. Found by running migo-conformance's suites on a device.
+  built. Found by running the conformance suite's suites on a device.
 - Canvas2D: an `ImageData` from `getImageData` read after its frame has ended no longer
   reads as zeros. The facade captures a GPU snapshot and reads it back only on `.data`,
   and the renderer keeps a snapshot for one frame: a stored `ImageData` used for
@@ -700,7 +700,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `drawImage` and `putImageData` read back as transparent black -- until a WebGL
   context existed (measured on an iPhone 12, ANGLE Metal). The render thread now
   flushes its own queue after taking an upload from the upload thread. Found by
-  running migo-conformance's `image-decode` suite on a device.
+  running the conformance suite's `image-decode` suite on a device.
 - Canvas2D: `drawImage` accepts a canvas as its source, in all three forms and
   including the canvas itself and the on-screen canvas. It silently drew nothing:
   the facade only knew images the host had decoded. A new 2D record
@@ -745,7 +745,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   texel; it is saved and restored with the rest of the drawing state, survives a
   readback, and is reset by a canvas resize. `imageSmoothingQuality` is accepted
   and validated; all three levels draw the same. Found by the first run of
-  migo-conformance on macOS, where a 2x display put the old assertion's sample a
+  the conformance suite on macOS, where a 2x display put the old assertion's sample a
   device pixel off a texel centre. A new 2D record (`SET_IMAGE_SMOOTHING`, 567) carries it
   (`contracts/frame-wire/wire-v1.md`, amendment of 2026-10-01).
 - `putImageData` writes pixels. It was an empty function (`// Not implemented`): p5.js's `updatePixels`, EaselJS's filters
@@ -849,7 +849,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pages become resident. The filter is code (a 150-line reader/writer of ICU's package
   format with tests, no tool and no committed blob) and the Android size budgets move by
   its size, with the reason written next to them. Found running Pixi on the runtime;
-  migo-conformance's `intl-spec` (27 assertions) crashes the released v0.9.19 and passes
+  the conformance suite's `intl-spec` (27 assertions) crashes the released v0.9.19 and passes
   here.
 - Asking for WebGL on a canvas nobody has sized yet no longer takes the process down.
   `document.createElement('canvas')` is zero-sized until something sizes it, and
@@ -863,7 +863,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`pbuffer_extent`, at both places one is made), and `drawingBufferWidth/Height`
   say what the WebGL specification says for a zero-sized canvas: "A 0x0 canvas will
   yield a 1x1 drawingBufferWidth/Height". Found running Pixi on the runtime;
-  migo-conformance's `webgl-zero-size` aborts the released v0.9.19 and passes here.
+  the conformance suite's `webgl-zero-size` aborts the released v0.9.19 and passes here.
 - three.js can create a WebGLRenderer, and a canvas texture is the right way up.
   Found by running three.js (r1xx) on the runtime for the first time, which no test
   had done: `new THREE.WebGLRenderer()` threw `TypeError: expected i32` out of
@@ -889,7 +889,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reasonless group.
 - Three permission checks work again, and a failed call names its API once. Found by
   probing every callback-style `migo.*` API once on a desktop host
-  (migo-conformance's new `api-surface-spec`, found at run time from the namespace so
+  (the conformance suite's new `api-surface-spec`, found at run time from the namespace so
   an API added later is covered; 272 assertions, released v0.9.19 fails 18):
   - `checkUserLocation`, `checkWritePhotosAlbum` and `getWritePhotosAlbum` answered
     `fail: _authSetting is not defined` on every call since the host-owns-the-answer
@@ -917,7 +917,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   burst, so the clocks cannot drift apart over a long session or a sleep), inside a
   burst the host's spacing is kept, and the result is never in the future. The header
   documents the contract (`include/migo/input.h`: use one clock per host; do not
-  convert). Found by migo-conformance's new `input-touch-spec`, the first bundle that
+  convert). Found by the conformance suite's new `input-touch-spec`, the first bundle that
   sends the game input (a macOS host replays real mouse events through the view's own
   handlers; 20 assertions; released v0.9.19 fails the timestamp one and passes the
   other 19, which is the evidence the coordinate and lifecycle path is right).
@@ -934,7 +934,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   over a body: the SSRF filter refuses every address a test could listen on, and
   the one fetch test read the body with `core.read` itself. A `data:` URL is answered
   through the same ops, reader and callbacks without a connection, so the new
-  `request_through_the_engine` tests (and migo-conformance's `network-spec`) run the
+  `request_through_the_engine` tests (and the conformance suite's `network-spec`) run the
   real code. They also pin what the same pass left wrong:
   - A response with no body (empty, 204, 304, HEAD) arrives as `""` or an empty
     ArrayBuffer, not `null`, so `res.data.length` is not a TypeError.
@@ -973,7 +973,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The same went for the digest (`getFileInfo`) and Brotli read of a package
   entry. A read is now charged the size of the file (one `stat`) or of the
   package entry, bounded by the caller's `length`; one nobody can size keeps the
-  cautious estimate, which is what the budget is for. Found by migo-conformance's
+  cautious estimate, which is what the budget is for. Found by the conformance suite's
   new `io-spec` bundle (released v0.9.19: 23 of 60 succeed), and by a unit test
   that failed one run in twenty for the same reason.
 - Workers: `terminate()` is quiet. The worker's event loop ends with V8's
@@ -986,7 +986,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   messages: the queue held 64, so a worker that posted a result per item in a loop
   threw `Worker message queue full` at the 65th and the rest never existed (68 of
   200 arrived); it holds 4096 per direction, still inside the same byte budget that
-  actually bounds the memory. Found by migo-conformance's new `worker-spec` bundle
+  actually bounds the memory. Found by the conformance suite's new `worker-spec` bundle
   (17 assertions: the released v0.9.19 fails 3).
 - `performance.now()`'s origin is clamped to the clock it is read against, which
   matters only to tests that advance a paused clock by hand: the worker timer
@@ -1026,7 +1026,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nothing invented: `model` stays `"unknown"`, `brand` empty, `benchmarkLevel`
   `-1`. A host that can say more (a model, an OS version) overrides it, as the
   Android host and the iOS Performance+ profile already do. Found by
-  migo-conformance's new `system-info-spec` bundle (37 assertions: the released
+  the conformance suite's new `system-info-spec` bundle (37 assertions: the released
   v0.9.19 fails the one that checks the platform against the OS string).
 - File system: `readFileSync(path, "base64")` (and `readFile`, `unzip`'s readers)
   threw `btoa is not defined`: the encoder called the page's `btoa`, which this
@@ -1040,7 +1040,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which is the user's home directory and the game's sandbox location, in the text
   of an error a game may well log or report. It names the paths the content gave.
   The same for a `readdirSync` that meets a non-UTF-8 file name. Found by
-  migo-conformance's new `fs-spec` bundle (81 assertions: the released v0.9.19
+  the conformance suite's new `fs-spec` bundle (81 assertions: the released v0.9.19
   fails 8, and two groups of its assertions never ran because the base64 read
   threw first).
 - The timestamp handed to a `requestAnimationFrame` callback is on the same
@@ -1065,7 +1065,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   callback after 300 ms of idle got a time 267 ms old, its successor a step of
   that size. Every platform now keeps only the newest unconsumed signal, and a
   signal more than 50 ms older than the request is passed over for the next one.
-  Found by migo-conformance's new `timers-spec` bundle (25 assertions: the
+  Found by the conformance suite's new `timers-spec` bundle (25 assertions: the
   released v0.9.19 fails 3).
 - Web Audio: the errors the engine's own audio, `ImageData` and Canvas 2D code
   throw are the ones the specification names. They were written as
@@ -1087,7 +1087,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resampled to the device's, so a context at 44100 Hz on a 48000 Hz device handed
   content buffers whose `sampleRate` was not its own, and every sample index
   computed from the context's rate was 8.8% off; playback also paid to resample
-  them back at run time. Found by migo-conformance's new `audio-spec` bundle (53
+  them back at run time. Found by the conformance suite's new `audio-spec` bundle (53
   assertions: the released v0.9.19 fails 19 of them).
 - WebGL: `pixelStorei(UNPACK_FLIP_Y_WEBGL)` and
   `pixelStorei(UNPACK_PREMULTIPLY_ALPHA_WEBGL)` were recorded and never applied,
@@ -1112,7 +1112,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   built a 16 GiB typed array, and the isolate stopped answering until the watchdog
   ended it. They throw `TypeError`, as WebIDL says; `null` and `undefined` remain
   the empty list. Found by a hostile-call test (`robustness-hostile-calls` in
-  migo-conformance: 1.8 M random calls with NaN, infinities, 2^32, BigInt, odd
+  the conformance suite: 1.8 M random calls with NaN, infinities, 2^32, BigInt, odd
   typed arrays at the Canvas2D, WebGL and WebGL 2 contexts) which otherwise found
   no crash and no other hang.
 - WebGL 2: `gl.HALF_FLOAT` was `undefined` (the constant was never declared), so a
@@ -1198,7 +1198,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is not shared between contexts, so in the on-screen canvas's context the name
   was its DrawingBuffer, and each snapshot attached a texture to it and detached
   it again. Each canvas now has its own temporary. Found by the first run of
-  migo-conformance on macOS; the same sequence on any platform reaches it.
+  the conformance suite on macOS; the same sequence on any platform reaches it.
 
 ## v0.9.19 (2026-09-29)
 
@@ -1397,7 +1397,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as this engine links it, decodes PNG but not JPEG, and the Java SDK's
   BitmapFactory fallback is out of a C host's reach. The C ABI package now
   carries the Rust image decoders every other platform's C ABI already has; the
-  Java SDK's AAR is unchanged. Found by migo-conformance's new image-decode
+  Java SDK's AAR is unchanged. Found by the conformance suite's new image-decode
   bundle, which runs every decode path on both Android embeddings.
 
 ## v0.9.9 (2026-09-26)
@@ -1600,7 +1600,7 @@ A hotfix for a WebGL regression in v0.9.5.
   because the field is unused there. So the most common WebGL upload -- vertex
   and index buffers -- became a silent no-op that also recorded a spurious
   `INVALID_VALUE`, and every WebGL draw painted black. The op had no test;
-  `migo-conformance`'s `webgl-basics` bundle caught it on the first run against
+  the conformance suite's `webgl-basics` bundle caught it on the first run against
   the v0.9.5 release AAR. The negative-size check now runs only on the
   size-only form, and `op_buffer_data` has a regression test on both forms.
 
@@ -1774,7 +1774,7 @@ behaviour rather than by reading turned up several that failed silently. The
   easiest to blame on the content; content that builds textures by drawing and
   reading back gets one empty texture. `signal_default_fbo_readback` has
   documented this snapshot since the flag was introduced -- only the code was
-  missing. Found by a new WebGL bundle in migo-conformance on its first run.
+  missing. Found by a new WebGL bundle in the conformance suite on its first run.
 - Android hosts can keep the engine out of their first install. `libmigo.so`
   is ~17 MB of store download and ~45 MB installed per ABI, paid by every
   user whether or not they ever open a mini-game. Two new release assets let
@@ -2166,7 +2166,7 @@ While the version is below 1.0.0:
 - MINOR version bumps may include breaking changes
 - PATCH version bumps are backward compatible
 
-[Unreleased]: https://github.com/minigame-labs/migo/compare/v0.9.3...HEAD
+[Unreleased]: https://github.com/minigame-labs/migo/compare/v0.9.19...HEAD
 [v0.9.3]: https://github.com/minigame-labs/migo/releases/tag/v0.9.3
 [v0.9.2]: https://github.com/minigame-labs/migo/releases/tag/v0.9.2
 [v0.9.0]: https://github.com/minigame-labs/migo/releases/tag/v0.9.0

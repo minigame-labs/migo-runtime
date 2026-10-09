@@ -416,7 +416,7 @@ RAN_TESTS+=("$SESSION_TEST")
 # --- which uplink a frame leaves on -----------------------------------------
 #
 # Above `MigoFrameChannelPolicy.socketCeilingBytes` the producer POSTs to the
-# content origin instead of sending on the socket, because G0's P3 measured the
+# content origin instead of sending on the socket, because the Apple probe measured the
 # scheme 4.4x faster and 4.6x cheaper at 1 MiB and the socket better below.
 #
 # What this suite pins is the boundary -- at the ceiling the socket, one byte

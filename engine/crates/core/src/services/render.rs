@@ -197,7 +197,7 @@ impl RenderService {
         self.thread.events()
     }
 
-    /// F-2: pass-through accessor so `HostOpState` can adopt the
+    /// Pass-through accessor so `HostOpState` can adopt the
     /// render thread's `SharedTextMeasurer`.  The measurer is
     /// built at `RenderThread::spawn` time and lives for the
     /// lifetime of the render service.

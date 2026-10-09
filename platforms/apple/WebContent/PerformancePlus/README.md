@@ -8,7 +8,7 @@ and minified by `scripts/build-apple-sdk.sh` into
 `../../Sources/MigoApplePerformancePlus/README.md` said the topology was decided;
 both were about the same choice, so one of them was wrong, and that contradiction
 is what surfaced the adversarial review. Now they agree with the evidence in
-`docs/performance/apple/g0/`.
+the 2026-09-10 gate-run records.
 
 **The agent is a Dedicated Worker and the transport is a hybrid that switches at
 64 KiB** — loopback WebSocket below, custom-scheme request above. Measured on an

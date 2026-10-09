@@ -13,8 +13,8 @@
 #
 # CPU%, not frame time: 300 tiny rects is nowhere near enough to miss 60fps
 # either way, so a frame-time/fps reading has no power to show a difference
-# here regardless of the true cost (same reasoning as T1/T6, and the same
-# instrument -- see measure-skia-floor-cpu.sh).
+# here regardless of the true cost (same reasoning as scissor-hint-baseline
+# and measure-skia-floor-cpu.sh).
 #
 # Usage:
 #   scripts/measure-scissor-hint.sh [--device SERIAL]

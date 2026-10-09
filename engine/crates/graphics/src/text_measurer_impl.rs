@@ -1,5 +1,5 @@
 //! Concrete [`shared::text_measurer::TextMeasurer`] implementation
-//! backed by the graphics crate's `TextContext` (F-2).
+//! backed by the graphics crate's `TextContext`.
 //!
 //! Architecture: a single `Arc<parking_lot::Mutex<TextContext>>`
 //! is owned by the render thread and cloned into the JS side via
@@ -14,7 +14,7 @@
 //! consistent between the render thread's `fillText` shaping
 //! and the JS-thread `measureText` lookup.  JS side also bumps
 //! `globalThis.__migoFontEpoch` immediately so its per-canvas
-//! LRU cache (R-10) invalidates within the same tick —
+//! LRU cache invalidates within the same tick —
 //! `register_font` on the shared context and the JS-side bump
 //! are wired from the same `loadFont` call, so ordering is
 //! deterministic.

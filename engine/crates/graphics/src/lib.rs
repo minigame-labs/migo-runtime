@@ -35,8 +35,8 @@
 //!   organised as if it were pluggable because we may add a Vulkan /
 //!   wgpu backend later, but there is **no** `RenderBackend` trait
 //!   abstraction and no runtime choice between backends yet — the
-//!   name is aspirational, not plug-and-play.  See
-//!   `AUDIT.md` P2-2 for the full-trait roadmap.
+//!   name is aspirational, not plug-and-play.  No `RenderBackend` trait or
+//!   runtime backend selection is wired up yet.
 //! - [`renderergl`]: WebGL 1.0 / 2.0 command handler (glow-backed).
 
 #[cfg(all(feature = "profile-full", feature = "profile-slim"))]
@@ -52,7 +52,7 @@ compile_error!("embed_icudtl and external_icudtl are mutually exclusive");
 /// which would inspect their own unrelated feature namespace.
 pub const EMBEDS_ICU_DATA: bool = cfg!(feature = "embed_icudtl");
 
-// Section 7.3's steady-state allocation gate reads this. `#[cfg(test)]` scopes it
+// The steady-state allocation gate reads this. `#[cfg(test)]` scopes it
 // to this crate's own test binary: a `#[global_allocator]` is unique per binary, so
 // one declared unconditionally here would follow the library into every shipped
 // cdylib. Deleting it does not make the gates pass silently -- each burst proves the

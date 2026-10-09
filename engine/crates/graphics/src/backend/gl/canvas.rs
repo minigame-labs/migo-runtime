@@ -801,7 +801,7 @@ impl Canvas2DRenderer {
                 false
             }
 
-            // ---- Text (stubbed in P4; real impl in P5) ------------
+            // ---- Text ----
             FillText {
                 text,
                 x,
@@ -951,7 +951,7 @@ impl Canvas2DRenderer {
         if !shadow.is_visible() {
             return false;
         }
-        // TODO(P4b): install a blur + drop-shadow SkImageFilter on `paint`.
+        // TODO: install a blur + drop-shadow SkImageFilter on `paint`.
         true
     }
 }

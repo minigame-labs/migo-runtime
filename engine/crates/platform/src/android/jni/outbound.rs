@@ -218,7 +218,7 @@ jni_void_int!(open_bluetooth_settings, "openSystemBluetoothSetting");
 
 jni_void_int!(open_app_authorize_setting, "openAppAuthorizeSetting");
 
-// R1: request one Choreographer frame callback (Rust render/host -> Java).
+// Request one Choreographer frame callback (Rust render/host -> Java).
 // `NativeExports.requestVsync` posts to the main thread and rechecks the live
 // GameSession, so a late call after teardown is harmless.
 //

@@ -252,7 +252,7 @@ mod tests {
         }
     }
 
-    /// Regression for FNET-01 (docs/audits/2026-09-09/full/io-network.md:57-61):
+    /// Regression:
     /// TCPSocket.connect() had no connection-generation guard, so two rapid calls
     /// before either resolved would both proceed and the second would overwrite
     /// `_rid`, orphaning the first fd.

@@ -21,7 +21,7 @@
 #     defined fails, so does a method that is neither, and so does a reasonless entry.
 #
 # Methods are found by reading the facade's class bodies, not by running it, so the gate needs no engine build.
-# `webgl-spec-surface` conformance (migo-conformance) checks the same by running it on a device.
+# `webgl-spec-surface` conformance suite checks the same by running it on a device.
 #
 # Host-only: reads the contract, the vendored IDL and the facade's source.
 set -uo pipefail

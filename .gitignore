@@ -164,6 +164,10 @@ tests/c_host/linux/c-host-cmake
 # Screenshots dropped in the repo root are scratch, not project content.
 Snipaste_*.png
 
+# Android host library build outputs
+platforms/android/build/
+platforms/android/library/build/
+
 # Android example build outputs
 tests/c_host/android/build/
 tests/c_host/android-multitouch/build/

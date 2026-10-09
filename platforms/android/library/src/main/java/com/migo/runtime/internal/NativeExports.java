@@ -166,7 +166,7 @@ public final class NativeExports {
     /** Handler for dispatching callbacks to the main thread. */
     private static final Handler sMainHandler = new Handler(Looper.getMainLooper());
 
-    /** R1 hot-path message code; uses pooled Message objects instead of one Runnable allocation/frame. */
+    /** Hot-path message code; uses pooled Message objects instead of one Runnable allocation/frame. */
     private static final int MSG_REQUEST_VSYNC = 1;
 
     /** Dedicated frame-arm handler. The callback object is allocated once at class initialization. */

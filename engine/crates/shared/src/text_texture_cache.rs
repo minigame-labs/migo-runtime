@@ -441,7 +441,7 @@ impl TextTextureCache {
 /// handle once at session bring-up and hold it for the session's life.
 /// A `fillText` therefore locks only *this* session's `Mutex`; two
 /// sessions rendering text concurrently never contend, which is what
-/// Section 7.3's "no cross-session lock on a per-event path" requires.
+/// the "no cross-session lock on a per-event path" rule requires.
 pub struct SessionTextCache {
     cache: Mutex<TextTextureCache>,
     /// Per-session font generation.  Bumped by this session's render
@@ -912,7 +912,7 @@ mod tests {
         );
     }
 
-    /// Section 7.3, on the path `op_text_cache_peek_pin` takes for every
+    /// Steady-state allocation gate, on the path `op_text_cache_peek_pin` takes for every
     /// `fillText` that hits: lock this session's cache, look the entry up, pin it
     /// for the render thread, release the pin.
     ///
@@ -947,11 +947,11 @@ mod tests {
         );
     }
 
-    /// Section 7.3: no per-event path acquires a lock shared beyond its own session.
+    /// The steady-state requirement: no per-event path acquires a lock shared beyond its own session.
     ///
     /// Task 0.16 freed the render path of the session registry by resolving the handle
     /// once at bring-up, and that freedom has been *structural* ever since — which
-    /// Section 7.3 explicitly does not accept. This holds the registry against a frame.
+    /// the contention gate explicitly does not accept. This holds the registry against a frame.
     #[test]
     fn a_per_frame_text_cache_hit_does_not_reach_the_session_registry() {
         let (host_id, _spare) = unique_host_pair();

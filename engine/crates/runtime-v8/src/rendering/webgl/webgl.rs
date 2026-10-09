@@ -8051,7 +8051,7 @@ pub(super) mod tests {
     /// The point of the whole exercise, stated as a number.
     ///
     /// Three hundred Canvas2D calls used to be three hundred crossings of the
-    /// JavaScript/native boundary — `android-ceiling-review.md`'s G2, and the
+    /// JavaScript/native boundary, and the
     /// largest remaining per-frame cost in a 2D-heavy scene. They are now three
     /// hundred records in one buffer and one submission.
     ///
@@ -8201,7 +8201,7 @@ pub(super) mod tests {
     ///
     /// The facade is the only reader of colour strings: the renderer is sent the colour. So this is the whole of what
     /// a canvas does with one -- which are colours, what `fillStyle` reads back, and that a string that is not one
-    /// leaves the style alone and sends nothing. migo-conformance's `canvas2d-spec/colour-*` asks the same through
+    /// leaves the style alone and sends nothing. the conformance suite's `canvas2d-spec/colour-*` asks the same through
     /// every platform; this is the fast one, and the one that names each case.
     #[test]
     fn colour_strings_read_as_the_specification_has_them() {
@@ -10040,7 +10040,7 @@ pub(super) mod tests {
         );
     }
 
-    // ── Section 7.3: zero steady-state allocation ───────────────────────────
+    // ── Zero steady-state allocation ────────────────────────────────────────────
 
     /// Bind `image_id` to a settled load of `key` in a table of its own, with the
     /// decoded bytes resident, which is the state a completed `op_load_image`
@@ -10074,7 +10074,7 @@ pub(super) mod tests {
         crate::rendering::image::ImageCacheState { aliases, session }
     }
 
-    /// Section 7.3, on the path every `texSubImage2D(…, image)` takes.
+    /// Steady-state allocation gate, on the path every `texSubImage2D(…, image)` takes.
     ///
     /// Every upload naming an image reaches `resolve_cached_image_rgba` through
     /// `texture_source` -- the decoded bytes travel with the command whenever the
@@ -10083,7 +10083,7 @@ pub(super) mod tests {
     ///
     /// What is measured is the resolve — the alias lookup and the decoded-bytes
     /// lookup — and not the upload behind it, which is the render command path
-    /// Section 7.3 still lists as unmeasured.
+    /// and remains unmeasured.
     #[test]
     fn steady_state_image_texture_resolve_never_reaches_the_heap() {
         use migo_services::image::gl::{RgbaLookup, resolve_cached_image_rgba};

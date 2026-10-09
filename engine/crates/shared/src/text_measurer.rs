@@ -1,4 +1,4 @@
-//! Thread-safe measureText façade (F-2).
+//! Thread-safe measureText façade.
 //!
 //! The render thread's `TextContext` owns HarfBuzz + ICU + Skia
 //! shaping state that is naturally on the render side for
