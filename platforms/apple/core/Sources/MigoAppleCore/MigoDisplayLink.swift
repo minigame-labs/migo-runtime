@@ -99,6 +99,9 @@ public final class MigoDisplayLink {
     public let decision: MigoDisplayLinkPolicy.Decision
     private let onTick: Tick
     public private(set) var isRunning = false
+    /// The last frame handed to `onTick`, to enforce `Frame`'s own documented
+    /// invariant: both times strictly increase from one tick to the next.
+    private var lastDelivered: Frame?
 
     public init(decision: MigoDisplayLinkPolicy.Decision, onTick: @escaping Tick) {
         self.decision = decision
@@ -120,8 +123,23 @@ public final class MigoDisplayLink {
     /// without this guard the hop delivers anyway once the main queue gets to it,
     /// which is a tick after `stop()` and `isRunning == false` already said there
     /// would not be one.
+    ///
+    /// A tick whose `timestamp` or `targetTimestamp` does not strictly exceed the
+    /// previous one's is dropped rather than handed to `onTick`: observed from
+    /// `CVDisplayLinkCreateWithActiveCGDisplays` under load (a backed-up main queue
+    /// lets several already-fired callbacks queue up, and a runner recovering from
+    /// that has reported the same host-time pair twice), and `Frame`'s own contract
+    /// is that a presenter paces against these as strictly increasing -- a repeat
+    /// handed onward is the one-slot-twice stutter that contract exists to prevent,
+    /// not a value for a consumer to filter for itself.
     fileprivate func deliver(_ frame: Frame) {
         guard isRunning else { return }
+        if let last = lastDelivered,
+            frame.timestamp <= last.timestamp || frame.targetTimestamp <= last.targetTimestamp
+        {
+            return
+        }
+        lastDelivered = frame
         onTick(frame)
     }
 
@@ -133,6 +151,7 @@ public final class MigoDisplayLink {
 
         public func start() {
             guard !isRunning else { return }
+            lastDelivered = nil
             let proxy = MigoDisplayLinkProxy(owner: self)
             let link = CADisplayLink(target: proxy, selector: #selector(MigoDisplayLinkProxy.fire(_:)))
             switch decision.cadence {
@@ -188,6 +207,7 @@ public final class MigoDisplayLink {
         /// stutter with nothing attached to it.
         public func start(view: NSView? = nil) {
             guard !isRunning else { return }
+            lastDelivered = nil
             if decision.mechanism == .caDisplayLink, let view {
                 if #available(macOS 14.0, *) {
                     let proxy = MigoDisplayLinkProxy(owner: self)
