@@ -68,6 +68,8 @@ MIGO_CHECK_CXX_RECORD(MigoSurfaceDescriptor);
 MIGO_CHECK_CXX_RECORD(MigoHostCallbacks);
 MIGO_CHECK_CXX_RECORD(MigoHostServiceCall);
 MIGO_CHECK_CXX_RECORD(MigoHostServiceResult);
+MIGO_CHECK_CXX_RECORD(MigoAppAuthorizeSetting);
+static_assert(sizeof(MigoAppAuthorizeSetting) == 20, "app authorization report layout");
 
 #if UINTPTR_MAX == UINT64_MAX
 static_assert(sizeof(MigoHostCallbacks) == 144, "LP64/LLP64 callback layout");

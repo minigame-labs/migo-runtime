@@ -32,6 +32,9 @@ pub const MIGO_HOST_SERVICE_PAYMENT: u32 = 1;
 pub const MIGO_HOST_SERVICE_AUTH: u32 = 2;
 pub const MIGO_HOST_SERVICE_SHARE: u32 = 3;
 pub const MIGO_HOST_SERVICE_NAVIGATE: u32 = 4;
+pub const MIGO_HOST_SERVICE_SUBPACKAGE: u32 = 5;
+pub const MIGO_HOST_SERVICE_PERMISSION: u32 = 6;
+pub const MIGO_HOST_SERVICE_SETTING: u32 = 7;
 
 /// Every service this library knows. A host declaring a bit outside it was
 /// built against a newer header than the library it runs with.
@@ -39,7 +42,10 @@ pub const MIGO_HOST_SERVICES_KNOWN: u64 = (1 << MIGO_HOST_SERVICE_AD)
     | (1 << MIGO_HOST_SERVICE_PAYMENT)
     | (1 << MIGO_HOST_SERVICE_AUTH)
     | (1 << MIGO_HOST_SERVICE_SHARE)
-    | (1 << MIGO_HOST_SERVICE_NAVIGATE);
+    | (1 << MIGO_HOST_SERVICE_NAVIGATE)
+    | (1 << MIGO_HOST_SERVICE_SUBPACKAGE)
+    | (1 << MIGO_HOST_SERVICE_PERMISSION)
+    | (1 << MIGO_HOST_SERVICE_SETTING);
 
 // ---- Methods, numbered per service. ----
 
@@ -64,9 +70,115 @@ pub const MIGO_NAVIGATE_NAVIGATE_TO_MINI_PROGRAM: u32 = 0;
 pub const MIGO_NAVIGATE_NAVIGATE_BACK_MINI_PROGRAM: u32 = 1;
 pub const MIGO_NAVIGATE_OPEN_CUSTOMER_SERVICE_CONVERSATION: u32 = 2;
 
+pub const MIGO_SUBPACKAGE_DOWNLOAD: u32 = 0;
+
+pub const MIGO_PERMISSION_REQUEST_SCOPE: u32 = 0;
+
+pub const MIGO_SETTING_OPEN_SETTING: u32 = 0;
+pub const MIGO_SETTING_OPEN_SYSTEM_BLUETOOTH_SETTING: u32 = 1;
+pub const MIGO_SETTING_OPEN_APP_AUTHORIZE_SETTING: u32 = 2;
+
 // ---- Events, numbered per service. ----
 
 pub const MIGO_AD_EVENT_LIFECYCLE: u32 = 0;
+
+// ---- Scopes: what content may be granted, in `migo.getSetting()`'s order. ----
+
+pub const MIGO_SCOPE_USER_INFO: u32 = 0;
+pub const MIGO_SCOPE_USER_LOCATION: u32 = 1;
+pub const MIGO_SCOPE_USER_LOCATION_BACKGROUND: u32 = 2;
+pub const MIGO_SCOPE_ADDRESS: u32 = 3;
+pub const MIGO_SCOPE_INVOICE_TITLE: u32 = 4;
+pub const MIGO_SCOPE_INVOICE: u32 = 5;
+pub const MIGO_SCOPE_WERUN: u32 = 6;
+pub const MIGO_SCOPE_RECORD: u32 = 7;
+pub const MIGO_SCOPE_WRITE_PHOTOS_ALBUM: u32 = 8;
+pub const MIGO_SCOPE_CAMERA: u32 = 9;
+pub const MIGO_SCOPE_BLUETOOTH: u32 = 10;
+pub const MIGO_SCOPE_ADD_PHONE_CONTACT: u32 = 11;
+pub const MIGO_SCOPE_ADD_PHONE_CALENDAR: u32 = 12;
+pub const MIGO_SCOPE_FRIEND_INTERACTION: u32 = 13;
+pub const MIGO_SCOPE_GAME_CLUB_DATA: u32 = 14;
+/// One past the last scope.
+pub const MIGO_SCOPE_COUNT: u32 = 15;
+
+/// A scope nobody has decided yet, which content may still ask about.
+pub const MIGO_SCOPE_STATE_UNKNOWN: u32 = 0;
+pub const MIGO_SCOPE_STATE_GRANTED: u32 = 1;
+pub const MIGO_SCOPE_STATE_DENIED: u32 = 2;
+
+// ---- The system switches `migo.getSystemSetting()` reports. ----
+
+pub const MIGO_SYSTEM_SETTING_FLAG_NONE: u32 = 0;
+pub const MIGO_SYSTEM_SETTING_FLAG_BLUETOOTH_ENABLED: u32 = 1 << 0;
+pub const MIGO_SYSTEM_SETTING_FLAG_LOCATION_ENABLED: u32 = 1 << 1;
+pub const MIGO_SYSTEM_SETTING_FLAG_WIFI_ENABLED: u32 = 1 << 2;
+pub const MIGO_SYSTEM_SETTING_FLAGS_KNOWN: u32 = MIGO_SYSTEM_SETTING_FLAG_BLUETOOTH_ENABLED
+    | MIGO_SYSTEM_SETTING_FLAG_LOCATION_ENABLED
+    | MIGO_SYSTEM_SETTING_FLAG_WIFI_ENABLED;
+
+// ---- The app's OS-level authorisations `migo.getAppAuthorizeSetting()` reports. ----
+
+pub const MIGO_AUTHORIZATION_NOT_DETERMINED: u8 = 0;
+pub const MIGO_AUTHORIZATION_AUTHORIZED: u8 = 1;
+pub const MIGO_AUTHORIZATION_DENIED: u8 = 2;
+
+/// What the operating system has granted the host app itself, which is what
+/// `migo.getAppAuthorizeSetting()` describes -- not content's scopes, which are
+/// the host's own decisions.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MigoAppAuthorizeSetting {
+    pub header: VersionedHeader,
+    pub album: u8,
+    pub bluetooth: u8,
+    pub camera: u8,
+    pub location: u8,
+    pub microphone: u8,
+    pub notification: u8,
+    pub notification_alert: u8,
+    pub notification_badge: u8,
+    pub notification_sound: u8,
+    pub phone_calendar: u8,
+    /// 1 when location is granted only approximately, else 0.
+    pub location_reduced_accuracy: u8,
+    pub reserved0: u8,
+}
+
+// SAFETY: integers only; v1 requires the complete record.
+unsafe impl AbiStruct for MigoAppAuthorizeSetting {}
+
+impl MigoAppAuthorizeSetting {
+    /// Copy and validate a caller-owned report.
+    ///
+    /// # Safety
+    /// `setting` must be null or readable for its announced byte count.
+    pub unsafe fn parse(setting: *const Self) -> Result<Self, MigoResult> {
+        // SAFETY: forwarded from this function's contract.
+        let raw = unsafe { copy_versioned::<Self>(setting.cast::<VersionedHeader>()) }?;
+        validate_reserved(u64::from(raw.reserved0))?;
+        let states = [
+            raw.album,
+            raw.bluetooth,
+            raw.camera,
+            raw.location,
+            raw.microphone,
+            raw.notification,
+            raw.notification_alert,
+            raw.notification_badge,
+            raw.notification_sound,
+            raw.phone_calendar,
+        ];
+        if states
+            .iter()
+            .any(|state| *state > MIGO_AUTHORIZATION_DENIED)
+            || raw.location_reduced_accuracy > 1
+        {
+            return Err(MIGO_ERROR_INVALID_ARGUMENT);
+        }
+        Ok(raw)
+    }
+}
 
 // ---- Completion. ----
 
@@ -194,6 +306,9 @@ pub unsafe fn copy_bounded(value: *const c_char, length: u32) -> Result<String, 
     unsafe { copy_utf8_with_length(value, length) }
 }
 
+const _: () = assert!(size_of::<MigoAppAuthorizeSetting>() == 20);
+const _: () = assert!(offset_of!(MigoAppAuthorizeSetting, album) == 8);
+const _: () = assert!(offset_of!(MigoAppAuthorizeSetting, location_reduced_accuracy) == 18);
 const _: () = assert!(offset_of!(MigoHostServiceCall, header) == 0);
 const _: () = assert!(offset_of!(MigoHostServiceCall, call_id) == 8);
 const _: () = assert!(offset_of!(MigoHostServiceCall, service) == 16);
@@ -359,6 +474,62 @@ mod tests {
         oversized.payload_json_utf8 = bad.as_ptr().cast();
         oversized.payload_length = MIGO_HOST_SERVICE_PAYLOAD_MAX_BYTES + 1;
         assert_eq!(parse(&oversized), Err(MIGO_ERROR_INVALID_ARGUMENT));
+    }
+
+    fn authorization() -> MigoAppAuthorizeSetting {
+        MigoAppAuthorizeSetting {
+            header: VersionedHeader {
+                struct_size: size_of::<MigoAppAuthorizeSetting>() as u32,
+                abi_version: MIGO_ABI_VERSION_CURRENT,
+            },
+            album: 0,
+            bluetooth: 0,
+            camera: 0,
+            location: 0,
+            microphone: 0,
+            notification: 0,
+            notification_alert: 0,
+            notification_badge: 0,
+            notification_sound: 0,
+            phone_calendar: 0,
+            location_reduced_accuracy: 0,
+            reserved0: 0,
+        }
+    }
+
+    #[test]
+    fn an_app_authorization_report_holds_only_known_states() {
+        let mut report = authorization();
+        report.camera = MIGO_AUTHORIZATION_AUTHORIZED;
+        report.location = MIGO_AUTHORIZATION_DENIED;
+        report.location_reduced_accuracy = 1;
+        assert_eq!(
+            unsafe { MigoAppAuthorizeSetting::parse(&report) },
+            Ok(report)
+        );
+
+        let mut unknown_state = authorization();
+        unknown_state.microphone = 3;
+        assert_eq!(
+            unsafe { MigoAppAuthorizeSetting::parse(&unknown_state) },
+            Err(MIGO_ERROR_INVALID_ARGUMENT)
+        );
+        let mut not_a_bool = authorization();
+        not_a_bool.location_reduced_accuracy = 2;
+        assert_eq!(
+            unsafe { MigoAppAuthorizeSetting::parse(&not_a_bool) },
+            Err(MIGO_ERROR_INVALID_ARGUMENT)
+        );
+        let mut reserved = authorization();
+        reserved.reserved0 = 1;
+        assert_eq!(
+            unsafe { MigoAppAuthorizeSetting::parse(&reserved) },
+            Err(MIGO_ERROR_INVALID_ARGUMENT)
+        );
+        assert_eq!(
+            unsafe { MigoAppAuthorizeSetting::parse(std::ptr::null()) },
+            Err(MIGO_ERROR_INVALID_ARGUMENT)
+        );
     }
 
     #[test]

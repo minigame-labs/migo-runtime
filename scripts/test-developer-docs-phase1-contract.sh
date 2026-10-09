@@ -304,6 +304,10 @@ ADDED_AFTER_ARCHIVE = {
     "migo_session_get_frame_transport_statistics": "0.9.15",
     "migo_session_complete_host_service_call": "0.9.20",
     "migo_session_post_host_service_event": "0.9.20",
+    "migo_session_update_host_service_call": "0.9.20",
+    "migo_session_set_scope_state": "0.9.20",
+    "migo_session_set_system_settings": "0.9.20",
+    "migo_session_set_app_authorize_setting": "0.9.20",
 }
 
 for page in sorted((docs_root / "reference").glob("*.mdx")):

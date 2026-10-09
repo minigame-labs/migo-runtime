@@ -58,7 +58,7 @@ mod api_failure_tests {
                 if (!entry) fail(name + " never answered");
                 if (!entry.ok) fail(name + " failed");
                 const scope = name === "checkUserLocation" ? "scope.userLocation" : "scope.writePhotosAlbum";
-                if (entry.res.authSetting[scope] !== false) fail(name + " reports a grant nobody made");
+                if (entry.res.authSetting[scope] === true) fail(name + " reports a grant nobody made");
             }
         "#,
         );

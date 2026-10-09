@@ -426,12 +426,25 @@ pub fn op_get_beacons(state: &mut OpState) -> Result<String, JsErrorBox> {
 #[op2]
 #[string]
 pub fn op_get_auth_setting(state: &mut OpState) -> String {
+    // Only scopes somebody has decided: a granted one is `true`, a refused one
+    // `false`, and one nobody has been asked about is absent. Content tells the
+    // last two apart -- the mini-game convention does not re-prompt after a
+    // refusal, so `false` sends the player to openSetting while an absent scope
+    // is one to authorize -- and reporting the undecided as `false` made every
+    // game that followed it send the player to settings for a question it had
+    // never asked.
     let mut out = String::from("{");
-    for (index, scope) in Scope::ALL.iter().enumerate() {
-        if index > 0 {
+    let mut first = true;
+    for scope in Scope::ALL {
+        let granted = match crate::permission::scope_state(state, *scope) {
+            ScopeState::Granted => true,
+            ScopeState::Denied => false,
+            ScopeState::Unknown => continue,
+        };
+        if !first {
             out.push(',');
         }
-        let granted = crate::permission::scope_state(state, *scope) == ScopeState::Granted;
+        first = false;
         out.push('"');
         out.push_str(scope.as_minigame_str());
         out.push_str("\":");

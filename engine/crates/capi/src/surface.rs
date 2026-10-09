@@ -383,6 +383,7 @@ pub unsafe extern "C" fn migo_session_attach_surface(
                         Arc::downgrade(&session),
                         Arc::clone(&window_state),
                         Arc::clone(&session.device),
+                        Arc::clone(&session.host_reports),
                     ));
                     let options = session
                         .engine

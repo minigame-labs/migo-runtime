@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- C ABI host-service channel: subpackages, permission and the settings pages. `MIGO_HOST_SERVICE_SUBPACKAGE` carries
+  `loadSubpackage` / `preDownloadSubpackage` downloads, with progress reported through the new
+  `migo_session_update_host_service_call` and the downloaded zip's path kept by the engine for the install, never handed
+  to content. `MIGO_HOST_SERVICE_PERMISSION` carries `authorize`, and the host records its standing decision per scope
+  with `migo_session_set_scope_state` -- what `getSetting` reports and every gated capability is checked against, so a
+  revocation takes effect on the next call. `MIGO_HOST_SERVICE_SETTING` carries `openSetting`,
+  `openSystemBluetoothSetting` and `openAppAuthorizeSetting`. `migo_session_set_system_settings` and
+  `migo_session_set_app_authorize_setting` report what `getSystemSetting` and `getAppAuthorizeSetting` describe; on a C
+  ABI host `getSystemSetting` used to throw, and now answers with the reported switches and the attached window's
+  orientation.
 - C ABI: the host-service channel (`include/migo/host_services.h`). Ads, payment, sign-in, sharing and mini-program
   navigation are the host app's own integrations, and until now only Android could carry them (through the Java SDK's
   handlers): every C ABI platform -- Apple, Linux, Windows, OpenHarmony -- answered content's `login`,
@@ -221,6 +231,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a relink, is INVALID_OPERATION and null, as are a deleted program and one that did not link.
 
 ### Fixed
+- `getSetting` reports a scope nobody has been asked about as absent rather than `false`, as the mini-game convention
+  has it. Content sends the player to `openSetting` after a refusal and calls `authorize` for a scope it has never
+  asked, and a report that collapsed the two sent players to the settings page for a question nobody had asked.
+- `openSetting` succeeds with `authSetting`, the decisions as the player left them, on every platform.
+- `openSystemBluetoothSetting` no longer answers under another API's name (`openBluetoothAdapterSetting:ok`) with a
+  stray `code`, and `openAppAuthorizeSetting`'s failure carries a reason: both settings-page results now take the shape
+  every host result takes.
 - `shareMessageToFriend` and `showShareImageMenu` no longer report success for a share nobody made. Both went through
   `shareAppMessage`'s op with a `type` field the host's share handler never received, and resolved as soon as the op
   returned. Each is now its own request, settled by the host's answer (`_internalOnShareMessageToFriendResult`,

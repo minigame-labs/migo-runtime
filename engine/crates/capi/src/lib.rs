@@ -44,6 +44,7 @@ mod platform;
 // or frames produced by one somewhere else.
 mod retirement;
 mod session_engine;
+mod settings;
 // The frame transport's entry points, in the product that has a transport.
 #[cfg(feature = "external-frames")]
 mod external_frames;
@@ -323,6 +324,9 @@ pub struct MigoSession {
     /// What the host last reported about the device -- its network and battery.
     /// The Session's, not a Host's: a report survives attaching and restarting.
     pub(crate) device: Arc<device::DeviceState>,
+    /// The host's standing permission decisions and settings reports, which
+    /// content reads synchronously. The Session's, for the battery's reason.
+    pub(crate) host_reports: Arc<settings::HostReports>,
 }
 
 impl MigoSession {
@@ -596,6 +600,7 @@ pub unsafe extern "C" fn migo_session_create(
             gamepad_topology: gamepad::GamepadTopology::new(),
             input_saturation_reported: AtomicBool::new(false),
             device: Default::default(),
+            host_reports: Default::default(),
         });
         *out_session = Arc::into_raw(session).cast_mut();
         MIGO_OK
