@@ -134,6 +134,36 @@ async function run() {
   expect(!sub.ok && sub.res.errMsg === "loadSubpackage:fail offline" && progress[0] === 50,
     "loadSubpackage", { sub: sub, progress: progress });
 
+  // Native UI is the host's: toasts and loading are commands, a modal and an
+  // action sheet are answered -- an editable modal with what was typed.
+  const toast = await settle("showToast", { title: "probe" });
+  expect(toast.ok, "showToast", toast);
+  expect((await settle("hideToast")).ok, "hideToast", null);
+  const loading = await settle("showLoading", { title: "probe" });
+  expect(loading.ok && (await settle("hideLoading")).ok, "showLoading/hideLoading", loading);
+  const modal = await settle("showModal", { title: "probe", content: "ok?" });
+  expect(modal.ok && modal.res.confirm === true && modal.res.cancel === false &&
+    !("content" in modal.res), "showModal", modal);
+  const prompt = await settle("showModal", { title: "probe", editable: true, placeholderText: "name" });
+  expect(prompt.ok && prompt.res.content === "typed", "showModal editable", prompt);
+  const sheet = await settle("showActionSheet", { itemList: ["a", "b"] });
+  expect(sheet.ok && sheet.res.tapIndex === 1, "showActionSheet", sheet);
+
+  // The clipboard round-trips through the host, asynchronously.
+  const copied = await settle("setClipboardData", { data: "probe-clip" });
+  expect(copied.ok && copied.res.errMsg === "setClipboardData:ok", "setClipboardData", copied);
+  const pasted = await settle("getClipboardData");
+  expect(pasted.ok && pasted.res.data === "probe-clip", "getClipboardData", pasted);
+
+  const scanned = await settle("scanCode", { onlyFromCamera: true });
+  expect(scanned.ok && scanned.res.result === "probe-qr" && scanned.res.scanType === "QR_CODE",
+    "scanCode", scanned);
+
+  // Location is gated on scope.userLocation, which the host granted.
+  const located = await settle("getLocation", { type: "wgs84" });
+  expect(located.ok && located.res.latitude === 31.2 && located.res.longitude === 121.5,
+    "getLocation", located);
+
   // An advert's Promises are settled by what the host's SDK says: load()
   // when it has loaded, show() when it is on screen -- before it closes.
   // The reward is the host's word too: the close event's isEnded comes from it.

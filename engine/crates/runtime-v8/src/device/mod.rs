@@ -13,27 +13,37 @@ use shared::services::Scope;
 #[op2(fast)]
 pub fn op_set_clipboard_data(
     state: &mut OpState,
-    #[string] data: String,
+    #[string] request_json: String,
 ) -> Result<(), JsErrorBox> {
     let host = state.borrow::<HostOpState>();
-    if let Some(ref services) = host.device_services {
-        if let Some(clipboard) = services.clipboard() {
-            return clipboard.set_data(&data).map_err(JsErrorBox::generic);
-        }
+    match host
+        .device_services
+        .as_ref()
+        .and_then(|services| services.clipboard())
+    {
+        Some(clipboard) => clipboard
+            .set_data(&request_json)
+            .map_err(JsErrorBox::generic),
+        None => Err(JsErrorBox::generic("setClipboardData:fail not supported")),
     }
-    Err(JsErrorBox::generic("setClipboardData:fail not supported"))
 }
 
-#[op2]
-#[string]
-pub fn op_get_clipboard_data(state: &mut OpState) -> Result<String, JsErrorBox> {
+#[op2(fast)]
+pub fn op_get_clipboard_data(
+    state: &mut OpState,
+    #[string] request_json: String,
+) -> Result<(), JsErrorBox> {
     let host = state.borrow::<HostOpState>();
-    if let Some(ref services) = host.device_services {
-        if let Some(clipboard) = services.clipboard() {
-            return clipboard.get_data().map_err(JsErrorBox::generic);
-        }
+    match host
+        .device_services
+        .as_ref()
+        .and_then(|services| services.clipboard())
+    {
+        Some(clipboard) => clipboard
+            .get_data(&request_json)
+            .map_err(JsErrorBox::generic),
+        None => Err(JsErrorBox::generic("getClipboardData:fail not supported")),
     }
-    Err(JsErrorBox::generic("getClipboardData:fail not supported"))
 }
 
 // ==================== Battery Ops ====================

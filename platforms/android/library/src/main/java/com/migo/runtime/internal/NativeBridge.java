@@ -197,19 +197,20 @@ final class NativeBridge {
     /**
      * Callback when modal dialog is dismissed.
      *
-     * @param sessionId The session ID
-     * @param confirm   1 if user tapped confirm, 0 otherwise
-     * @param cancel    1 if user tapped cancel, 0 otherwise
+     * @param sessionId  The session ID
+     * @param resultJson {@code {requestId, confirm, cancel, content?}} or a
+     *                   {@link CallbackCorrelation#failure} document
      */
-    static native void onModalResult(int sessionId, int requestId, int confirm, int cancel);
+    static native void onModalResult(int sessionId, String resultJson);
 
     /**
      * Callback when action sheet is dismissed.
      *
-     * @param sessionId The session ID
-     * @param tapIndex  Index of selected item (0-based), or -1 if cancelled
+     * @param sessionId  The session ID
+     * @param resultJson {@code {requestId, tapIndex}} or a
+     *                   {@link CallbackCorrelation#failure} document
      */
-    static native void onActionSheetResult(int sessionId, int requestId, int tapIndex);
+    static native void onActionSheetResult(int sessionId, String resultJson);
 
     // ==================== Device Sensor Callbacks ====================
 

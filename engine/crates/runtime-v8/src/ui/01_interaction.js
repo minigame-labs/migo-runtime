@@ -50,20 +50,17 @@ function showModal(options) {
             confirmText: o.confirmText || '\u786e\u5b9a',
             cancelColor: o.cancelColor || '#000000',
             confirmColor: o.confirmColor || '#576B95',
+            // An input in place of the content, its text the answer's `content`.
+            editable: o.editable === true,
+            placeholderText: typeof o.placeholderText === 'string' ? o.placeholderText : '',
         }));
     });
 }
 
-// The platform hands these back as integers over JNI, so there is no JSON to
-// parse -- the object is built here and correlated by the same rule.
-//
-// A non-positive id is omitted: an integer parameter cannot be absent the way a
-// JSON key can, so the platform says "this request carried no id" with 0, and a
-// result without an id names no request -- the settler discards it.
-function _internalOnModalResult(requestId, confirm, cancel) {
-    var result = { confirm: !!confirm, cancel: !!cancel };
-    if (requestId > 0) result.requestId = requestId;
-    _modalApi.settleParsed(result);
+// `{requestId, confirm, cancel, content?}` -- content when the modal was
+// editable -- or `{requestId, error}`, in the shape every host result takes.
+function _internalOnModalResult(resultJson) {
+    _modalApi.settle(resultJson);
 }
 
 // ==================== Loading (Mode A) ====================
@@ -100,16 +97,10 @@ function showActionSheet(options) {
     });
 }
 
-function _internalOnActionSheetResult(requestId, tapIndex) {
-    // A negative index is the cancellation, and `error` is what makes the
-    // shared settler take the fail/reject path -- the same wording content
-    // received before. The id is omitted when non-positive, for the reason
-    // spelled out above `_internalOnModalResult`.
-    var result = tapIndex < 0
-        ? { error: 'showActionSheet:fail cancel' }
-        : { tapIndex: tapIndex };
-    if (requestId > 0) result.requestId = requestId;
-    _actionSheetApi.settleParsed(result);
+// `{requestId, tapIndex}`, or `{requestId, error}` -- "cancel" when the
+// player dismissed the sheet.
+function _internalOnActionSheetResult(resultJson) {
+    _actionSheetApi.settle(resultJson);
 }
 
 export {

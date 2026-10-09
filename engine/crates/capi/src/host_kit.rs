@@ -7,14 +7,16 @@
 //! supplied directly by the versioned Surface descriptor.
 
 use migo_capi_abi::host_services::{
-    MIGO_HOST_SERVICE_AD, MIGO_HOST_SERVICE_AUTH, MIGO_HOST_SERVICE_NAVIGATE,
-    MIGO_HOST_SERVICE_PAYMENT, MIGO_HOST_SERVICE_PERMISSION, MIGO_HOST_SERVICE_SHARE,
-    MIGO_HOST_SERVICE_SUBPACKAGE,
+    MIGO_HOST_SERVICE_AD, MIGO_HOST_SERVICE_AUTH, MIGO_HOST_SERVICE_CLIPBOARD,
+    MIGO_HOST_SERVICE_INTERACTION, MIGO_HOST_SERVICE_LOCATION, MIGO_HOST_SERVICE_NAVIGATE,
+    MIGO_HOST_SERVICE_PAYMENT, MIGO_HOST_SERVICE_PERMISSION, MIGO_HOST_SERVICE_SCAN_CODE,
+    MIGO_HOST_SERVICE_SHARE, MIGO_HOST_SERVICE_SUBPACKAGE,
 };
 use migo_core::services::{
-    AdService, AuthService, BatteryService, CommerceServices, ConnectivityServices, GameLogService,
-    KeyboardService, MediaServices, NavigateService, NetworkService, PaymentService,
-    PermissionService, ScreenService, SensorServices, ShareService, SubpackageService,
+    AdService, AuthService, BatteryService, ClipboardService, CommerceServices,
+    ConnectivityServices, GameLogService, InteractionService, KeyboardService, LocationService,
+    MediaServices, NavigateService, NetworkService, PaymentService, PermissionService,
+    ScanCodeService, ScreenService, SensorServices, ShareService, SubpackageService,
     SystemInfoService, SystemUtilServices, VibrationService,
 };
 use migo_core::{DeviceServiceProvider, FrameClock, HostNotifier};
@@ -178,6 +180,11 @@ impl ConnectivityServices for CapiDeviceServices {
     fn network(&self) -> Option<Arc<dyn NetworkService>> {
         Some(self.device.network())
     }
+
+    fn location(&self) -> Option<Arc<dyn LocationService>> {
+        self.host_service(MIGO_HOST_SERVICE_LOCATION)
+            .map(|services| services as Arc<dyn LocationService>)
+    }
 }
 
 impl CommerceServices for CapiDeviceServices {
@@ -225,6 +232,21 @@ impl SystemUtilServices for CapiDeviceServices {
     fn permission(&self) -> Option<Arc<dyn PermissionService>> {
         self.host_service(MIGO_HOST_SERVICE_PERMISSION)
             .map(|services| services as Arc<dyn PermissionService>)
+    }
+
+    fn interaction(&self) -> Option<Arc<dyn InteractionService>> {
+        self.host_service(MIGO_HOST_SERVICE_INTERACTION)
+            .map(|services| services as Arc<dyn InteractionService>)
+    }
+
+    fn clipboard(&self) -> Option<Arc<dyn ClipboardService>> {
+        self.host_service(MIGO_HOST_SERVICE_CLIPBOARD)
+            .map(|services| services as Arc<dyn ClipboardService>)
+    }
+
+    fn scan_code(&self) -> Option<Arc<dyn ScanCodeService>> {
+        self.host_service(MIGO_HOST_SERVICE_SCAN_CODE)
+            .map(|services| services as Arc<dyn ScanCodeService>)
     }
 
     fn navigate(&self) -> Option<Arc<dyn NavigateService>> {

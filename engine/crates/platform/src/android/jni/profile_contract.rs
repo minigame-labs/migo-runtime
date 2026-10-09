@@ -150,8 +150,8 @@ const NATIVE_COMMERCE: &[JniMethod] = methods![
 const NATIVE_SYSTEM: &[JniMethod] = methods![
     ("onAuthorizeResult", "(ILjava/lang/String;)V"),
     ("updatePermission", "(ILjava/lang/String;Z)Z"),
-    ("onModalResult", "(IIII)V"),
-    ("onActionSheetResult", "(III)V"),
+    ("onModalResult", "(ILjava/lang/String;)V"),
+    ("onActionSheetResult", "(ILjava/lang/String;)V"),
 ];
 
 const JAVA_CORE: &[JniMethod] = methods![

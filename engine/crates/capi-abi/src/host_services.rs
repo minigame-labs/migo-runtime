@@ -35,6 +35,10 @@ pub const MIGO_HOST_SERVICE_NAVIGATE: u32 = 4;
 pub const MIGO_HOST_SERVICE_SUBPACKAGE: u32 = 5;
 pub const MIGO_HOST_SERVICE_PERMISSION: u32 = 6;
 pub const MIGO_HOST_SERVICE_SETTING: u32 = 7;
+pub const MIGO_HOST_SERVICE_INTERACTION: u32 = 8;
+pub const MIGO_HOST_SERVICE_CLIPBOARD: u32 = 9;
+pub const MIGO_HOST_SERVICE_SCAN_CODE: u32 = 10;
+pub const MIGO_HOST_SERVICE_LOCATION: u32 = 11;
 
 /// Every service this library knows. A host declaring a bit outside it was
 /// built against a newer header than the library it runs with.
@@ -45,7 +49,11 @@ pub const MIGO_HOST_SERVICES_KNOWN: u64 = (1 << MIGO_HOST_SERVICE_AD)
     | (1 << MIGO_HOST_SERVICE_NAVIGATE)
     | (1 << MIGO_HOST_SERVICE_SUBPACKAGE)
     | (1 << MIGO_HOST_SERVICE_PERMISSION)
-    | (1 << MIGO_HOST_SERVICE_SETTING);
+    | (1 << MIGO_HOST_SERVICE_SETTING)
+    | (1 << MIGO_HOST_SERVICE_INTERACTION)
+    | (1 << MIGO_HOST_SERVICE_CLIPBOARD)
+    | (1 << MIGO_HOST_SERVICE_SCAN_CODE)
+    | (1 << MIGO_HOST_SERVICE_LOCATION);
 
 // ---- Methods, numbered per service. ----
 
@@ -77,6 +85,21 @@ pub const MIGO_PERMISSION_REQUEST_SCOPE: u32 = 0;
 pub const MIGO_SETTING_OPEN_SETTING: u32 = 0;
 pub const MIGO_SETTING_OPEN_SYSTEM_BLUETOOTH_SETTING: u32 = 1;
 pub const MIGO_SETTING_OPEN_APP_AUTHORIZE_SETTING: u32 = 2;
+
+pub const MIGO_INTERACTION_SHOW_TOAST: u32 = 0;
+pub const MIGO_INTERACTION_HIDE_TOAST: u32 = 1;
+pub const MIGO_INTERACTION_SHOW_MODAL: u32 = 2;
+pub const MIGO_INTERACTION_SHOW_LOADING: u32 = 3;
+pub const MIGO_INTERACTION_HIDE_LOADING: u32 = 4;
+pub const MIGO_INTERACTION_SHOW_ACTION_SHEET: u32 = 5;
+
+pub const MIGO_CLIPBOARD_SET_CLIPBOARD_DATA: u32 = 0;
+pub const MIGO_CLIPBOARD_GET_CLIPBOARD_DATA: u32 = 1;
+
+pub const MIGO_SCAN_CODE_SCAN_CODE: u32 = 0;
+
+pub const MIGO_LOCATION_GET_LOCATION: u32 = 0;
+pub const MIGO_LOCATION_GET_FUZZY_LOCATION: u32 = 1;
 
 // ---- Events, numbered per service. ----
 

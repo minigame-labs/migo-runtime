@@ -60,6 +60,8 @@ ObjectDefineProperties(globalThis, {
     // Clipboard
     setClipboardData: core.propNonEnumerable(clipboard.setClipboardData),
     getClipboardData: core.propNonEnumerable(clipboard.getClipboardData),
+    _internalOnSetClipboardDataResult: core.propNonEnumerable(clipboard._internalOnSetClipboardDataResult),
+    _internalOnGetClipboardDataResult: core.propNonEnumerable(clipboard._internalOnGetClipboardDataResult),
 
     // Vibration
     vibrateShort: core.propNonEnumerable(vibrate.vibrateShort),

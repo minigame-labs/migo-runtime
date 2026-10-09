@@ -118,6 +118,10 @@ load, close and other events are reported with
 | `MIGO_HOST_SERVICE_SUBPACKAGE` | `loadSubpackage` / `preDownloadSubpackage` | only subpackages already in the content package run |
 | `MIGO_HOST_SERVICE_PERMISSION` | `authorize`; `getSetting` and every gated capability read the decisions the host records with `migo_session_set_scope_state` | every scope denied |
 | `MIGO_HOST_SERVICE_SETTING` | `openSetting` / `openSystemBluetoothSetting` / `openAppAuthorizeSetting` | not supported |
+| `MIGO_HOST_SERVICE_INTERACTION` | `showToast` / `showLoading` / `showModal` / `showActionSheet`, ... | not supported |
+| `MIGO_HOST_SERVICE_CLIPBOARD` | `setClipboardData` / `getClipboardData` | not supported |
+| `MIGO_HOST_SERVICE_SCAN_CODE` | `scanCode` | not supported |
+| `MIGO_HOST_SERVICE_LOCATION` | `getLocation` / `getFuzzyLocation` | not supported |
 
 The host gives the success fields or the failure's reason; the engine puts a
 failure's code in the field its API defines (`errno` or `errCode`), content

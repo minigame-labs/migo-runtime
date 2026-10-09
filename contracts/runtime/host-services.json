@@ -227,6 +227,99 @@
         }
       },
       "events": {}
+    },
+    "interaction": {
+      "id": 8,
+      "methods": {
+        "show_toast": {
+          "id": 0,
+          "kind": "command",
+          "op": "op_show_toast"
+        },
+        "hide_toast": {
+          "id": 1,
+          "kind": "command",
+          "op": "op_hide_toast"
+        },
+        "show_modal": {
+          "id": 2,
+          "kind": "call",
+          "op": "op_show_modal",
+          "hook": "_internalOnModalResult",
+          "error_code_field": null
+        },
+        "show_loading": {
+          "id": 3,
+          "kind": "command",
+          "op": "op_show_loading"
+        },
+        "hide_loading": {
+          "id": 4,
+          "kind": "command",
+          "op": "op_hide_loading"
+        },
+        "show_action_sheet": {
+          "id": 5,
+          "kind": "call",
+          "op": "op_show_action_sheet",
+          "hook": "_internalOnActionSheetResult",
+          "error_code_field": null
+        }
+      },
+      "events": {}
+    },
+    "clipboard": {
+      "id": 9,
+      "methods": {
+        "set_clipboard_data": {
+          "id": 0,
+          "kind": "call",
+          "op": "op_set_clipboard_data",
+          "hook": "_internalOnSetClipboardDataResult",
+          "error_code_field": null
+        },
+        "get_clipboard_data": {
+          "id": 1,
+          "kind": "call",
+          "op": "op_get_clipboard_data",
+          "hook": "_internalOnGetClipboardDataResult",
+          "error_code_field": null
+        }
+      },
+      "events": {}
+    },
+    "scan_code": {
+      "id": 10,
+      "methods": {
+        "scan_code": {
+          "id": 0,
+          "kind": "call",
+          "op": "op_scan_code",
+          "hook": "_internalOnScanCodeResult",
+          "error_code_field": null
+        }
+      },
+      "events": {}
+    },
+    "location": {
+      "id": 11,
+      "methods": {
+        "get_location": {
+          "id": 0,
+          "kind": "call",
+          "op": "op_get_location",
+          "hook": "_internalOnLocationResult",
+          "error_code_field": null
+        },
+        "get_fuzzy_location": {
+          "id": 1,
+          "kind": "call",
+          "op": "op_get_fuzzy_location",
+          "hook": "_internalOnFuzzyLocationResult",
+          "error_code_field": null
+        }
+      },
+      "events": {}
     }
   }
 }

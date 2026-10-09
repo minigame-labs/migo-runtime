@@ -175,7 +175,7 @@ mod runtime_restart_boundary_tests {
             // `_internalOn*` names are retired from `globalThis` by hardening
             // and travel by handle. Going through the real dispatcher also puts
             // the argument encoding under test -- these hooks are called with
-            // exactly the JSON array `hook_args_two`/`hook_args_three` build.
+            // exactly the JSON array `hook_args_one` builds.
             globalThis.__hook = function (name, args) {
                 globalThis[Symbol.for('Migo.hostBridge')]
                     ._internalDispatch(name, JSON.stringify(args));
@@ -433,8 +433,8 @@ mod runtime_restart_boundary_tests {
                 showModal({ success: function (r) { __out.push('second:' + r.confirm); } });
 
                 // Second one first, by its own id.
-                __hook('_internalOnModalResult', [base + 2, 1, 0]);
-                __hook('_internalOnModalResult', [base + 1, 0, 1]);
+                __hook('_internalOnModalResult', [JSON.stringify({ requestId: base + 2, confirm: true, cancel: false })]);
+                __hook('_internalOnModalResult', [JSON.stringify({ requestId: base + 1, confirm: false, cancel: true })]);
             }
             "#,
         );
@@ -467,9 +467,9 @@ mod runtime_restart_boundary_tests {
                 });
 
                 // An id neither call holds settles neither, not the oldest.
-                __hook('_internalOnActionSheetResult', [base + 99, 0]);
-                __hook('_internalOnActionSheetResult', [base + 2, -1]);
-                __hook('_internalOnActionSheetResult', [base + 1, 3]);
+                __hook('_internalOnActionSheetResult', [JSON.stringify({ requestId: base + 99, tapIndex: 0 })]);
+                __hook('_internalOnActionSheetResult', [JSON.stringify({ requestId: base + 2, error: 'cancel' })]);
+                __hook('_internalOnActionSheetResult', [JSON.stringify({ requestId: base + 1, tapIndex: 3 })]);
             }
             "#,
         );

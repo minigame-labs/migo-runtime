@@ -165,7 +165,14 @@ static const uint64_t HOST_SERVICES = (UINT64_C(1) << MIGO_HOST_SERVICE_AD)
                                       | (UINT64_C(1) << MIGO_HOST_SERVICE_NAVIGATE)
                                       | (UINT64_C(1) << MIGO_HOST_SERVICE_SUBPACKAGE)
                                       | (UINT64_C(1) << MIGO_HOST_SERVICE_PERMISSION)
-                                      | (UINT64_C(1) << MIGO_HOST_SERVICE_SETTING);
+                                      | (UINT64_C(1) << MIGO_HOST_SERVICE_SETTING)
+                                      | (UINT64_C(1) << MIGO_HOST_SERVICE_INTERACTION)
+                                      | (UINT64_C(1) << MIGO_HOST_SERVICE_CLIPBOARD)
+                                      | (UINT64_C(1) << MIGO_HOST_SERVICE_SCAN_CODE)
+                                      | (UINT64_C(1) << MIGO_HOST_SERVICE_LOCATION);
+
+/* The clipboard this host keeps: what content last wrote. */
+static char g_clipboard[256] = "";
 
 static void probe_failure(const char *what) {
     pthread_mutex_lock(&g_lock);
@@ -312,6 +319,68 @@ static void MIGO_CALL on_host_service_call(void *user_data, MigoSession *session
                     return;
             }
             break;
+        case MIGO_HOST_SERVICE_INTERACTION:
+            switch (call->method) {
+                case MIGO_INTERACTION_SHOW_TOAST:
+                case MIGO_INTERACTION_HIDE_TOAST:
+                case MIGO_INTERACTION_SHOW_LOADING:
+                case MIGO_INTERACTION_HIDE_LOADING:
+                    if (call->call_id != 0) probe_failure("a toast or loading command carried a call id");
+                    return;
+                case MIGO_INTERACTION_SHOW_MODAL:
+                    /* An editable modal answers with what the player typed. */
+                    complete_ok(session, call->call_id,
+                                strstr(payload, "\"editable\":true") != NULL
+                                    ? "{\"confirm\":true,\"cancel\":false,\"content\":\"typed\"}"
+                                    : "{\"confirm\":true,\"cancel\":false}");
+                    return;
+                case MIGO_INTERACTION_SHOW_ACTION_SHEET:
+                    complete_ok(session, call->call_id, "{\"tapIndex\":1}");
+                    return;
+            }
+            break;
+        case MIGO_HOST_SERVICE_CLIPBOARD:
+            switch (call->method) {
+                case MIGO_CLIPBOARD_SET_CLIPBOARD_DATA: {
+                    /* {"data":"..."}: content's text, plain ASCII in this probe. */
+                    const char *key = strstr(payload, "\"data\":\"");
+                    const char *start = key ? key + strlen("\"data\":\"") : NULL;
+                    const char *end = start ? strchr(start, '"') : NULL;
+                    if (end == NULL || (size_t)(end - start) >= sizeof(g_clipboard)) {
+                        complete_fail(session, call->call_id, "unreadable data", 0, 0);
+                        return;
+                    }
+                    memcpy(g_clipboard, start, (size_t)(end - start));
+                    g_clipboard[end - start] = '\0';
+                    complete_ok(session, call->call_id, "");
+                    return;
+                }
+                case MIGO_CLIPBOARD_GET_CLIPBOARD_DATA: {
+                    char answer[320];
+                    snprintf(answer, sizeof(answer), "{\"data\":\"%s\"}", g_clipboard);
+                    complete_ok(session, call->call_id, answer);
+                    return;
+                }
+            }
+            break;
+        case MIGO_HOST_SERVICE_SCAN_CODE:
+            if (call->method == MIGO_SCAN_CODE_SCAN_CODE) {
+                complete_ok(session, call->call_id,
+                            "{\"result\":\"probe-qr\",\"scanType\":\"QR_CODE\",\"charSet\":\"utf-8\"}");
+                return;
+            }
+            break;
+        case MIGO_HOST_SERVICE_LOCATION:
+            switch (call->method) {
+                case MIGO_LOCATION_GET_LOCATION:
+                case MIGO_LOCATION_GET_FUZZY_LOCATION:
+                    complete_ok(session, call->call_id,
+                                "{\"latitude\":31.2,\"longitude\":121.5,\"accuracy\":10,"
+                                "\"speed\":0,\"altitude\":0,\"verticalAccuracy\":0,"
+                                "\"horizontalAccuracy\":10}");
+                    return;
+            }
+            break;
         case MIGO_HOST_SERVICE_SUBPACKAGE:
             if (call->method == MIGO_SUBPACKAGE_DOWNLOAD) {
                 /* The subpackage the content's game.json declared, by name and
@@ -455,6 +524,8 @@ int main(int argc, char **argv) {
      * the player profile is shared, Bluetooth and Wi-Fi are on, and the OS has
      * given this app the camera and refused it the photo library. */
     result = migo_session_set_scope_state(session, MIGO_SCOPE_USER_INFO, MIGO_SCOPE_STATE_GRANTED);
+    if (result != MIGO_OK) return fail("migo_session_set_scope_state", result);
+    result = migo_session_set_scope_state(session, MIGO_SCOPE_USER_LOCATION, MIGO_SCOPE_STATE_GRANTED);
     if (result != MIGO_OK) return fail("migo_session_set_scope_state", result);
     result = migo_session_set_system_settings(
         session, MIGO_SYSTEM_SETTING_FLAG_BLUETOOTH_ENABLED | MIGO_SYSTEM_SETTING_FLAG_WIFI_ENABLED);

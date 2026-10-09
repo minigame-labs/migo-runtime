@@ -311,6 +311,10 @@ Windows, OpenHarmony) embeds the C ABI and reaches them through this channel:
 | `MIGO_HOST_SERVICE_SUBPACKAGE` (5) | `DOWNLOAD` 0 | call, reports progress | `loadSubpackage` · `preDownloadSubpackage` |
 | `MIGO_HOST_SERVICE_PERMISSION` (6) | `REQUEST_SCOPE` 0 | call | `authorize` (and `getWritePhotosAlbum`, ...) |
 | `MIGO_HOST_SERVICE_SETTING` (7) | `OPEN_SETTING` 0 · `OPEN_SYSTEM_BLUETOOTH_SETTING` 1 · `OPEN_APP_AUTHORIZE_SETTING` 2 | calls | `openSetting` · `openSystemBluetoothSetting` · `openAppAuthorizeSetting` |
+| `MIGO_HOST_SERVICE_INTERACTION` (8) | `SHOW_TOAST` 0 · `HIDE_TOAST` 1 · `SHOW_LOADING` 3 · `HIDE_LOADING` 4 (commands) · `SHOW_MODAL` 2 · `SHOW_ACTION_SHEET` 5 (calls) | as listed | `showToast` / `hideToast` / `showLoading` / `hideLoading` · `showModal` (with `editable`) · `showActionSheet` |
+| `MIGO_HOST_SERVICE_CLIPBOARD` (9) | `SET_CLIPBOARD_DATA` 0 · `GET_CLIPBOARD_DATA` 1 | calls | `setClipboardData` · `getClipboardData` |
+| `MIGO_HOST_SERVICE_SCAN_CODE` (10) | `SCAN_CODE` 0 | call | `scanCode` |
+| `MIGO_HOST_SERVICE_LOCATION` (11) | `GET_LOCATION` 0 · `GET_FUZZY_LOCATION` 1 | calls (checked against `scope.userLocation` first) | `getLocation` · `getFuzzyLocation` |
 
 The numbers are defined once, in `contracts/runtime/host-services.json`, append
 only. A host that declares the payment service is one that takes payments
