@@ -236,11 +236,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a relink, is INVALID_OPERATION and null, as are a deleted program and one that did not link.
 
 ### Removed
+- APIs no mini-game platform's content could rely on, because they answered without asking anyone: `addColorSign`,
+  `addRecentColorSign`, `isColorSignExistSync`, `fetchSecondFloorIconOptionSync`, `updateSecondFloorChannel`,
+  `checkScene`, `navigateToScene`, `openPage`, `getUserGameLabel`, `requestSubscribeWhatsNew` and
+  `getWhatsNewSubscriptionsSetting` (both reported a subscription the player never made), `subscribeAppMsg` (likewise),
+  `updateApp`, `saveAppToDesktop`, `createLivePlayer` / `createLivePusher` (a local state machine with nothing behind
+  it), and the H5 JS-SDK's `config` / `ready` / `error`. None is a WeChat mini-game API; each kept local state or a
+  fixed answer and reported success.
 - Android SDK: `RuntimeConfig.Builder.addSubPackage`, `setWorkersPath`, `getSubPackages` and `getWorkersPath`. Content
   declares its subpackages and Worker directory in `game.json`, which the engine now reads itself; a second copy in
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- Ads: `load()` and `show()` resolve when the host's ad SDK says the advert loaded or is on screen, and reject with its
+  error, as in wx -- not as soon as the command left. The host reports exposure with the new `AdEventSink.emitShow`
+  (Android) or a `"show"` lifecycle event (C ABI); a full-screen ad's close counts as shown, and destroying an ad
+  rejects what is still pending on it.
 - Asynchronous APIs answer by callback or by Promise, as wx does, not by both. Options carrying `success`, `fail` or
   `complete` are answered through them and the call returns nothing; options carrying none get a Promise. Every API
   used to return a Promise as well, which callback-style content never held -- so each failure it handled in `fail`

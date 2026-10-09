@@ -51,6 +51,18 @@ public interface AdEventSink {
     void emitLoad(int adId, boolean useFallbackSharePage);
 
     /**
+     * Report that the ad is on screen -- the SDK's exposure callback.
+     * <p>
+     * This is what settles content's {@code show()} Promise: an advert that
+     * was asked for is not shown until the SDK says so. A full-screen ad that
+     * closes is taken as shown too, but a banner, grid, custom or game banner
+     * ad has no close, so without this its {@code show()} never settles.
+     *
+     * @param adId the handle passed to {@link AdHandler#createAd}
+     */
+    void emitShow(int adId);
+
+    /**
      * Report a failure. Content receives this on its {@code onError} listener.
      *
      * @param adId    the handle passed to {@link AdHandler#createAd}

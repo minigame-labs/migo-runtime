@@ -134,13 +134,19 @@ async function run() {
   expect(!sub.ok && sub.res.errMsg === "loadSubpackage:fail offline" && progress[0] === 50,
     "loadSubpackage", { sub: sub, progress: progress });
 
-  // The reward is the host's word: the close event's isEnded comes from it.
+  // An advert's Promises are settled by what the host's SDK says: load()
+  // when it has loaded, show() when it is on screen -- before it closes.
+  // The reward is the host's word too: the close event's isEnded comes from it.
   const ad = migo.createRewardedVideoAd({ adUnitId: "probe-unit" });
-  await new Promise(function (resolve) { ad.onLoad(resolve); });
-  const closed = new Promise(function (resolve) { ad.onClose(resolve); });
-  await ad.show();
+  await ad.load();
+  const order = [];
+  const closed = new Promise(function (resolve) {
+    ad.onClose(function (res) { order.push("close"); resolve(res); });
+  });
+  await ad.show().then(function () { order.push("shown"); });
   const close = await closed;
-  expect(close && close.isEnded === true, "rewarded video close", close);
+  expect(close && close.isEnded === true && order.join(",") === "shown,close",
+    "rewarded video", { close: close, order: order });
 
   console.error("migo-host-services-probe: every host service round-tripped");
   migo.exitMiniProgram();

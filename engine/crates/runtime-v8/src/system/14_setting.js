@@ -178,47 +178,11 @@ function requestSubscribeSystemMessage(options) {
     }, options);
 }
 
-function requestSubscribeWhatsNew(options) {
-    return wrapAsync('requestSubscribeWhatsNew', function () {
-        return {
-            confirm: true,
-            status: 'accept',
-        };
-    }, options);
-}
-
-function getWhatsNewSubscriptionsSetting(options) {
-    return wrapAsync('getWhatsNewSubscriptionsSetting', function () {
-        return {
-            status: 2,
-            mainSwitch: true,
-            itemSettings: {
-                SYS_MSG_TYPE_WHATS_NEW: 'accept',
-            },
-        };
-    }, options);
-}
-
 function authPrivateMessage(options) {
     return wrapAsync('authPrivateMessage', function () {
         return {
             valid: true,
         };
-    }, options);
-}
-
-function subscribeAppMsg(options) {
-    return wrapAsync('subscribeAppMsg', function () {
-        var opts = options || {};
-        var result = _buildAcceptMap(opts.tmplIds || []);
-        if (typeof opts.subscribe === 'function') {
-            try {
-                opts.subscribe(result);
-            } catch (e) {
-                console.error('subscribeAppMsg callback error:', e);
-            }
-        }
-        return result;
     }, options);
 }
 
@@ -290,10 +254,7 @@ export {
     requirePrivacyAuthorize,
     requestSubscribeMessage,
     requestSubscribeSystemMessage,
-    requestSubscribeWhatsNew,
-    getWhatsNewSubscriptionsSetting,
     authPrivateMessage,
-    subscribeAppMsg,
     checkUserLocation,
     getWritePhotosAlbum,
     checkWritePhotosAlbum,

@@ -170,11 +170,30 @@ function _setAdHostEventObserver(ad, observer) {
   if (capability) capability.observe = observer;
 }
 
+// The content API each ad type is created by, which names its failures.
+const _AD_CREATE_API = {
+  banner: "createBannerAd",
+  custom: "createCustomAd",
+  grid: "createGridAd",
+  interstitial: "createInterstitialAd",
+  rewardedVideo: "createRewardedVideoAd",
+  gameBanner: "createGameBanner",
+  gameIcon: "createGameIcon",
+  gamePortal: "createGamePortal",
+};
+
 class AdBase {
   #listeners = {};
   #destroyed = false;
   #adId = 0;
   #hosted = false;
+  #createApi = "";
+  // Promises content holds on this ad's load() and show(), settled by the
+  // host's events for it: an advert has loaded when the host says `load`, is on
+  // screen when it says `show` -- or `close`, since an advert that closed was
+  // shown -- and failed when it says `error`. Resolving when the command left
+  // told content an advert was ready, or showing, before any SDK had said so.
+  #awaiting = { load: [], show: [] };
 
   // `adType` and `adUnitId` are what the host needs to resolve a real ad slot;
   // `options` carries the remaining platform-style creation fields verbatim.
@@ -184,6 +203,7 @@ class AdBase {
     }
     this.#adId = _allocAdId();
     this.#hosted = _hostAdsAvailable();
+    this.#createApi = _AD_CREATE_API[adType] || adType;
     const capability = {
       fire: (type, arg) => this.#fire(type, arg),
       observe: null,
@@ -234,6 +254,7 @@ class AdBase {
   }
 
   _markDestroyed() {
+    this.#rejectAwaiting({ errMsg: this.#createApi + ":fail already destroyed" });
     this.#destroyed = true;
     _adRegistry.delete(this.#adId);
     _adCapabilities.delete(this);
@@ -259,10 +280,35 @@ class AdBase {
       const message = error && error.message ? error.message : String(error);
       queueMicrotask(() => {
         if (!this.#destroyed) {
-          this.#fire("error", { errCode: -1, errMsg: message });
+          const res = { errCode: -1, errMsg: message };
+          this.#fire("error", res);
+          this.#rejectAwaiting(res);
         }
       });
     }
+  }
+
+  // Ask the host to load or show this advert, and answer with a Promise the
+  // host's events settle (see #awaiting). Registered before the command is
+  // sent, so an answer can never arrive ahead of the waiter.
+  _hostRequest(op, kind) {
+    const settled = new Promise((resolve, reject) => {
+      this.#awaiting[kind].push({ resolve, reject });
+    });
+    this._command(op);
+    return settled;
+  }
+
+  #resolveAwaiting(kind) {
+    const waiting = this.#awaiting[kind];
+    this.#awaiting[kind] = [];
+    for (const waiter of waiting) waiter.resolve();
+  }
+
+  #rejectAwaiting(res) {
+    const waiting = this.#awaiting.load.concat(this.#awaiting.show);
+    this.#awaiting = { load: [], show: [] };
+    for (const waiter of waiting) waiter.reject(res);
   }
 
   // Make layout writes on a style object reach the host.
@@ -316,17 +362,25 @@ class AdBase {
     switch (type) {
       case "load":
         this.#fire("load", this._loadPayload(event));
+        this.#resolveAwaiting("load");
         break;
-      case "error":
-        this.#fire("error", {
+      case "show":
+        this.#resolveAwaiting("show");
+        break;
+      case "error": {
+        const res = {
           errCode: NumberIsFinite(Number(event.errCode))
             ? Number(event.errCode)
             : -1,
           errMsg: typeof event.errMsg === "string" ? event.errMsg : "ad error",
-        });
+        };
+        this.#fire("error", res);
+        this.#rejectAwaiting(res);
         break;
+      }
       case "close":
         this.#fire("close", this._closePayload(event));
+        this.#resolveAwaiting("show");
         break;
       case "resize":
         this.#fire("resize", {
@@ -402,8 +456,7 @@ class BannerAd extends AdBase {
     }
     this.#visible = true;
     if (this._hosted) {
-      this._command(op_ad_show);
-      return Promise.resolve();
+      return this._hostRequest(op_ad_show, "show");
     }
     _fireAdEvent(this, "resize", {
       width: this.#style.realWidth,
@@ -477,8 +530,7 @@ class CustomAd extends AdBase {
     }
     this.#visible = true;
     if (this._hosted) {
-      this._command(op_ad_show);
-      return Promise.resolve();
+      return this._hostRequest(op_ad_show, "show");
     }
     if (this.#adIntervals && this.#adIntervals >= 30 && !this.#refreshTimer) {
       this.#refreshTimer = setInterval(() => {
@@ -582,8 +634,7 @@ class GridAd extends AdBase {
     }
     this.#visible = true;
     if (this._hosted) {
-      this._command(op_ad_show);
-      return Promise.resolve();
+      return this._hostRequest(op_ad_show, "show");
     }
     _fireAdEvent(this, "resize", {
       width: this.#style.realWidth,
@@ -635,8 +686,7 @@ class InterstitialAd extends AdBase {
       return Promise.reject({ errMsg: "createInterstitialAd:fail already destroyed" });
     }
     if (this._hosted) {
-      this._command(op_ad_load);
-      return Promise.resolve();
+      return this._hostRequest(op_ad_load, "load");
     }
     return new Promise((resolve) => {
       setTimeout(() => {
@@ -653,8 +703,7 @@ class InterstitialAd extends AdBase {
       return Promise.reject({ errMsg: "createInterstitialAd:fail already destroyed" });
     }
     if (this._hosted) {
-      this._command(op_ad_show);
-      return Promise.resolve();
+      return this._hostRequest(op_ad_show, "show");
     }
     // No host: nothing is displayed. Close immediately so content's flow
     // continues instead of stalling on a modal that never appears.
@@ -709,8 +758,7 @@ class RewardedVideoAd extends AdBase {
       return Promise.reject({ errMsg: "createRewardedVideoAd:fail already destroyed" });
     }
     if (this._hosted) {
-      this._command(op_ad_load);
-      return Promise.resolve();
+      return this._hostRequest(op_ad_load, "load");
     }
     return new Promise((resolve) => {
       setTimeout(() => {
@@ -727,8 +775,7 @@ class RewardedVideoAd extends AdBase {
       return Promise.reject({ errMsg: "createRewardedVideoAd:fail already destroyed" });
     }
     if (this._hosted) {
-      this._command(op_ad_show);
-      return Promise.resolve();
+      return this._hostRequest(op_ad_show, "show");
     }
     // No host ad service: no advert was played, so no reward is owed. The
     // close event still fires so content is not left waiting forever, but it
@@ -873,8 +920,7 @@ class GameBanner extends AdBase {
     if (this._isDestroyed()) return Promise.reject({ errMsg: "createGameBanner:fail already destroyed" });
     this.#visible = true;
     if (this._hosted) {
-      this._command(op_ad_show);
-      return Promise.resolve();
+      return this._hostRequest(op_ad_show, "show");
     }
     _fireAdEvent(this, "resize", { width: this.#style.realWidth, height: this.#style.realHeight });
     return Promise.resolve();
@@ -933,8 +979,7 @@ class GameIcon extends AdBase {
     if (this._isDestroyed()) return Promise.reject({ errMsg: "createGameIcon:fail already destroyed" });
     this.#visible = true;
     if (this._hosted) {
-      this._command(op_ad_show);
-      return Promise.resolve();
+      return this._hostRequest(op_ad_show, "show");
     }
     _fireAdEvent(this, "resize", { width: this.#style.width, height: this.#style.height });
     return Promise.resolve();
@@ -978,8 +1023,7 @@ class GamePortal extends AdBase {
   load() {
     if (this._isDestroyed()) return Promise.reject({ errMsg: "createGamePortal:fail already destroyed" });
     if (this._hosted) {
-      this._command(op_ad_load);
-      return Promise.resolve();
+      return this._hostRequest(op_ad_load, "load");
     }
     return new Promise((resolve) => {
       setTimeout(() => {
@@ -994,8 +1038,7 @@ class GamePortal extends AdBase {
   show() {
     if (this._isDestroyed()) return Promise.reject({ errMsg: "createGamePortal:fail already destroyed" });
     if (this._hosted) {
-      this._command(op_ad_show);
-      return Promise.resolve();
+      return this._hostRequest(op_ad_show, "show");
     }
     setTimeout(() => {
       if (!this._isDestroyed()) {

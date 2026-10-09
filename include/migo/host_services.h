@@ -49,6 +49,10 @@ typedef uint32_t MigoHostService;
 /*
  * Ads. All six are commands addressed to the advert by the adId in their
  * payload; what happens to an advert is reported as MIGO_AD_EVENT_LIFECYCLE.
+ * Content's load() and show() Promises are settled by those events: "load"
+ * settles load(), "show" -- the SDK's exposure callback -- settles show() (a
+ * full-screen ad's "close" counts as shown too), and "error" rejects both. An
+ * ad with no close (banner, grid, custom, game banner) must report "show".
  * The host is authoritative for an incentivised video's reward: content grants
  * one only when the host's close event says the video was watched to the end
  * (isEnded), and the engine never reports that on the host's behalf.

@@ -1,5 +1,5 @@
 import { op_restart_mini_program, op_exit_mini_program } from "ext:core/ops";
-import { promisify, wrapAsync } from "ext:host_v8_base/02_async.js";
+import { promisify } from "ext:host_v8_base/02_async.js";
 
 // Restarts the current mini-program.
 // TODO: support `path` parameter (open a specific page after restart)
@@ -22,9 +22,3 @@ export const exitApplication = promisify("exitApplication", (_opts) => {
     op_exit_mini_program();
 });
 
-// @stub - saves mini-program shortcut to home screen (platform-dependent)
-export function saveAppToDesktop(options) {
-    return wrapAsync('saveAppToDesktop', function () {
-        throw new Error('not supported');
-    }, options);
-}

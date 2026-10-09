@@ -15,7 +15,6 @@ import * as windowResize from 'ext:host_v8_system/12_window_resize.js';
 import * as loginApi from 'ext:host_v8_system/13_login.js';
 import * as settingApi from 'ext:host_v8_system/14_setting.js';
 import * as navigateApi from 'ext:host_v8_system/15_navigate.js';
-import * as jssdkApi from 'ext:host_v8_system/16_jssdk.js';
 import * as analyticsApi from 'ext:host_v8_system/17_analytics.js';
 import * as cryptoApi from 'ext:host_v8_system/18_crypto.js';
 import * as logManagerApi from 'ext:host_v8_system/19_log_manager.js';
@@ -85,10 +84,7 @@ ObjectDefineProperties(globalThis, {
     _internalOnAuthorizeResult: core.propNonEnumerable(settingApi._internalOnAuthorizeResult),
     _internalUpdateAuthSetting: core.propNonEnumerable(settingApi._internalUpdateAuthSetting),
     requestSubscribeSystemMessage: core.propNonEnumerable(settingApi.requestSubscribeSystemMessage),
-    requestSubscribeWhatsNew: core.propNonEnumerable(settingApi.requestSubscribeWhatsNew),
-    getWhatsNewSubscriptionsSetting: core.propNonEnumerable(settingApi.getWhatsNewSubscriptionsSetting),
     authPrivateMessage: core.propNonEnumerable(settingApi.authPrivateMessage),
-    subscribeAppMsg: core.propNonEnumerable(settingApi.subscribeAppMsg),
     checkUserLocation: core.propNonEnumerable(settingApi.checkUserLocation),
     getWritePhotosAlbum: core.propNonEnumerable(settingApi.getWritePhotosAlbum),
     checkWritePhotosAlbum: core.propNonEnumerable(settingApi.checkWritePhotosAlbum),
@@ -99,9 +95,6 @@ ObjectDefineProperties(globalThis, {
     _internalOnNavigateToMiniProgramResult: core.propNonEnumerable(navigateApi._internalOnNavigateToMiniProgramResult),
     openCustomerServiceConversation: core.propNonEnumerable(navigateApi.openCustomerServiceConversation),
     openBusinessView: core.propNonEnumerable(navigateApi.openBusinessView),
-    checkScene: core.propNonEnumerable(navigateApi.checkScene),
-    navigateToScene: core.propNonEnumerable(navigateApi.navigateToScene),
-    openPage: core.propNonEnumerable(navigateApi.openPage),
 
     // Login
     login: core.propNonEnumerable(loginApi.login),
@@ -130,11 +123,6 @@ ObjectDefineProperties(globalThis, {
     getAppBaseInfo: core.propNonEnumerable(appInfo.getAppBaseInfo),
     getAccountInfoSync: core.propNonEnumerable(appInfo.getAccountInfoSync),
     checkIsAddedToMyMiniProgram: core.propNonEnumerable(appInfo.checkIsAddedToMyMiniProgram),
-    isColorSignExistSync: core.propNonEnumerable(appInfo.isColorSignExistSync),
-    addColorSign: core.propNonEnumerable(appInfo.addColorSign),
-    addRecentColorSign: core.propNonEnumerable(appInfo.addRecentColorSign),
-    fetchSecondFloorIconOptionSync: core.propNonEnumerable(appInfo.fetchSecondFloorIconOptionSync),
-    updateSecondFloorChannel: core.propNonEnumerable(appInfo.updateSecondFloorChannel),
     _internalSetAppId: core.propNonEnumerable(appInfo._internalSetAppId),
 
     // Authorize Setting
@@ -157,7 +145,6 @@ ObjectDefineProperties(globalThis, {
     modifyFriendInteractiveStorage: core.propNonEnumerable(openDataContext.modifyFriendInteractiveStorage),
     getPotentialFriendList: core.propNonEnumerable(openDataContext.getPotentialFriendList),
     getGameClubData: core.propNonEnumerable(openDataContext.getGameClubData),
-    getUserGameLabel: core.propNonEnumerable(openDataContext.getUserGameLabel),
 
     // Window Resize
     //
@@ -172,10 +159,6 @@ ObjectDefineProperties(globalThis, {
     getGameLogManager: core.propNonEnumerable(gameLog.getGameLogManager),
 
     // JSSDK Lifecycle
-    config: core.propNonEnumerable(jssdkApi.config),
-    ready: core.propNonEnumerable(jssdkApi.ready),
-    error: core.propNonEnumerable(jssdkApi.error),
-    _internalTriggerJssdkError: core.propNonEnumerable(jssdkApi._internalTriggerJssdkError),
 
     // Privacy
     getPrivacySetting: core.propNonEnumerable(settingApi.getPrivacySetting),

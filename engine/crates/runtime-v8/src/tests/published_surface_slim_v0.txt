@@ -192,7 +192,6 @@ require
 restartMiniProgram
 restartMiniProgramSync
 revokeBufferURL
-saveAppToDesktop
 saveFile
 saveFileSync
 saveFileToDisk
@@ -333,7 +332,6 @@ require
 restartMiniProgram
 restartMiniProgramSync
 revokeBufferURL
-saveAppToDesktop
 saveFile
 saveFileSync
 saveFileToDisk

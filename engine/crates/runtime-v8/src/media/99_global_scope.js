@@ -30,7 +30,5 @@ ObjectDefineProperties(globalThis, {
 
     // Video
     createVideo: core.propNonEnumerable(videoApi.createVideo),
-    createLivePlayer: core.propNonEnumerable(videoApi.createLivePlayer),
-    createLivePusher: core.propNonEnumerable(videoApi.createLivePusher),
     _internalTriggerVideoEvent: core.propNonEnumerable(videoApi._internalTriggerVideoEvent),
 });
