@@ -103,8 +103,16 @@ for name, service in services.items():
                 fail(f"{where}: error_code_field must be one of errCode, errno or null")
             if isinstance(method.get("hook"), str):
                 hooks[method["hook"]] = where
+            if "progress_hook" in method:
+                if not isinstance(method["progress_hook"], str) or not method["progress_hook"]:
+                    fail(f"{where}: progress_hook must name a hook")
+                else:
+                    hooks[method["progress_hook"]] = f"{where} progress"
+            withheld = method.get("withheld", [])
+            if not isinstance(withheld, list) or not all(isinstance(f, str) and f for f in withheld):
+                fail(f"{where}: withheld must list result field names")
         elif kind == "command":
-            for key in ("api", "hook", "error_code_field"):
+            for key in ("api", "hook", "error_code_field", "progress_hook", "withheld"):
                 if key in method:
                     fail(f"{where}: a command is answered by nothing, so `{key}` means nothing")
         else:

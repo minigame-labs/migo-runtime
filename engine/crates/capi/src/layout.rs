@@ -36,7 +36,7 @@ use crate::{
 };
 use migo_capi_abi::{
     VersionedHeader,
-    host_services::{MigoHostServiceCall, MigoHostServiceResult},
+    host_services::{MigoAppAuthorizeSetting, MigoHostServiceCall, MigoHostServiceResult},
 };
 
 /// Every versioned struct must begin with its header.
@@ -62,6 +62,7 @@ header_is_first!(
     MigoHostCallbacks,
     MigoHostServiceCall,
     MigoHostServiceResult,
+    MigoAppAuthorizeSetting,
     MigoError,
     MigoSurfaceDescriptor,
     MigoSurfaceMetrics,
@@ -223,6 +224,7 @@ mod lp64 {
     const _: () = assert!(offset_of!(MigoHostServiceCall, payload_json_utf8) == 24);
     const _: () = assert!(offset_of!(MigoHostServiceCall, payload_length) == 32);
     const _: () = assert!(size_of::<MigoHostServiceResult>() == 48);
+    const _: () = assert!(size_of::<MigoAppAuthorizeSetting>() == 20);
     const _: () = assert!(offset_of!(MigoHostServiceResult, status) == 8);
     const _: () = assert!(offset_of!(MigoHostServiceResult, message_utf8) == 24);
     const _: () = assert!(offset_of!(MigoHostServiceResult, payload_json_utf8) == 32);

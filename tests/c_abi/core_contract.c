@@ -96,6 +96,12 @@ MIGO_CHECK_PREFIX(MigoSurfaceDescriptor);
 MIGO_CHECK_PREFIX(MigoHostCallbacks);
 MIGO_CHECK_PREFIX(MigoHostServiceCall);
 MIGO_CHECK_PREFIX(MigoHostServiceResult);
+MIGO_CHECK_PREFIX(MigoAppAuthorizeSetting);
+_Static_assert(sizeof(MigoAppAuthorizeSetting) == 20, "app authorization report layout");
+_Static_assert(offsetof(MigoAppAuthorizeSetting, album) == 8, "authorizations follow the header");
+_Static_assert(offsetof(MigoAppAuthorizeSetting, location_reduced_accuracy) == 18,
+               "reduced accuracy follows the ten authorizations");
+_Static_assert(MIGO_SCOPE_GAME_CLUB_DATA == 14U, "fifteen scopes, in getSetting order");
 
 _Static_assert(offsetof(MigoSurfaceDescriptor, generation) == 8,
                "generation is naturally aligned");
@@ -245,6 +251,14 @@ int migo_core_c_contract(void) {
                                          const char *, uint32_t) =
         &migo_session_post_host_service_event;
     MigoOnHostServiceCallFn host_service_call = callbacks.on_host_service_call;
+    MigoResult(MIGO_CALL *update_call_fn)(MigoSession *, uint64_t, const char *, uint32_t) =
+        &migo_session_update_host_service_call;
+    MigoResult(MIGO_CALL *scope_fn)(MigoSession *, MigoScope, MigoScopeState) =
+        &migo_session_set_scope_state;
+    MigoResult(MIGO_CALL *system_settings_fn)(MigoSession *, MigoSystemSettingFlags) =
+        &migo_session_set_system_settings;
+    MigoResult(MIGO_CALL *app_authorize_fn)(MigoSession *, const MigoAppAuthorizeSetting *) =
+        &migo_session_set_app_authorize_setting;
 
     return (int)(engine_config.struct_size + session_config.struct_size +
                  surface.struct_size + callbacks.struct_size +
@@ -258,5 +272,7 @@ int migo_core_c_contract(void) {
                  (set_focus_fn != NULL) + (destroy_fn != NULL) +
                  (network_fn != NULL) + (battery_fn != NULL) +
                  (complete_call_fn != NULL) + (post_event_fn != NULL) +
-                 (host_service_call != NULL) + (callbacks.host_services != 0));
+                 (host_service_call != NULL) + (callbacks.host_services != 0) +
+                 (update_call_fn != NULL) + (scope_fn != NULL) +
+                 (system_settings_fn != NULL) + (app_authorize_fn != NULL));
 }

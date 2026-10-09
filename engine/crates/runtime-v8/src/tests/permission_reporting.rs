@@ -154,10 +154,13 @@ mod permission_reporting_tests {
         );
     }
 
-    /// A refusal and a never-asked both report `false` to content: `getSetting`
-    /// answers "may I", and "nobody has been asked" is not a yes.
+    /// A refusal is `false` and a never-asked is absent, as the mini-game
+    /// convention has it: content sends the player to openSetting after a
+    /// refusal and calls authorize for a scope it has never asked about, and a
+    /// report that collapsed the two sent players to settings for questions
+    /// nobody had asked.
     #[test]
-    fn unknown_reports_the_same_as_denied() {
+    fn a_refusal_is_false_and_the_undecided_are_absent() {
         let services: Arc<dyn DeviceServices> = Arc::new(Bundle);
         let mut rt = boot(Some(services));
         rt.execute_script(
@@ -171,34 +174,10 @@ mod permission_reporting_tests {
         assert_js(
             &mut rt,
             "const a = (globalThis.__res && globalThis.__res.authSetting) || {}; \
-             let __ok = a['scope.record'] === false && a['scope.bluetooth'] === false; \
-             let __msg = 'record=' + a['scope.record'] + ' bluetooth=' + a['scope.bluetooth']",
-        );
-    }
-
-    /// Every permission scope this engine defines is reported, so content
-    /// that iterates the map sees a complete key set.
-    #[test]
-    fn every_permission_scope_appears_in_the_report() {
-        let services: Arc<dyn DeviceServices> = Arc::new(Bundle);
-        let mut rt = boot(Some(services));
-        rt.execute_script(
-            "<test:getSetting>",
-            FastString::from_static(
-                "globalThis.__res = null; \
-                 migo.getSetting({ success: (r) => { globalThis.__res = r; } });",
-            ),
-        )
-        .expect("getSetting");
-        let expected = Scope::ALL.len();
-        assert_js(
-            &mut rt,
-            &format!(
-                "const a = (globalThis.__res && globalThis.__res.authSetting) || {{}}; \
-                 const n = Object.keys(a).length; \
-                 let __ok = n === {expected}; \
-                 let __msg = 'reported ' + n + ' scopes, expected {expected}'"
-            ),
+             const keys = Object.keys(a).sort(); \
+             let __ok = a['scope.record'] === false && !('scope.bluetooth' in a) \
+                 && keys.length === 2 && keys[0] === 'scope.camera' && keys[1] === 'scope.record'; \
+             let __msg = 'reported ' + JSON.stringify(a)",
         );
     }
 

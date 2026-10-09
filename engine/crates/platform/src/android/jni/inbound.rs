@@ -708,31 +708,16 @@ pub(crate) extern "system" fn onOpenSystemBluetoothSetting<'local>(
     enabled: jint,
 ) {
     jni_safe!("onOpenSystemBluetoothSetting", {
-        // Absent stays absent: a non-positive id means the request carried
-        // none, and writing `0` would make the runtime discard the reply as
-        // *present and not an id* -- strictly worse than the fallback it would
-        // otherwise take.
-        let correlation = if request_id > 0 {
-            format!(r#","requestId":{}"#, request_id)
-        } else {
-            String::new()
-        };
-        let json = if enabled >= 0 {
-            format!(
-                r#"{{"errMsg":"openBluetoothAdapterSetting:ok","code":{}{}}}"#,
-                enabled, correlation
-            )
-        } else {
-            format!(
-                r#"{{"errMsg":"openBluetoothAdapterSetting:fail","code":{}{}}}"#,
-                enabled, correlation
-            )
-        };
-        let cmd = HostCommand::InvokeHostHook {
-            hook: "_internalOnOpenBluetoothSettingResult",
-            args_json: hook_args_one(json.as_str()),
-        };
-        let _ = send_reliable_command_to_host(host_id, cmd);
+        // The settings page was shown; whether the player switched Bluetooth on
+        // is the adapter's state to report, not this result's. A negative
+        // value is the page that could not be opened.
+        let reason = (enabled < 0).then_some("could not open the Bluetooth settings");
+        send_settings_page_result(
+            host_id,
+            "_internalOnOpenBluetoothSettingResult",
+            request_id,
+            reason,
+        );
     });
 }
 
@@ -744,12 +729,42 @@ pub(crate) extern "system" fn onOpenAppAuthorizeSetting<'local>(
     code: jint,
 ) {
     jni_safe!("onOpenAppAuthorizeSetting", {
-        let cmd = HostCommand::InvokeHostHook {
-            hook: "_internalOnOpenAppAuthorizeSettingFinished",
-            args_json: hook_args_two(request_id, code),
-        };
-        let _ = send_reliable_command_to_host(host_id, cmd);
+        let reason = (code < 0).then_some("could not open the app's settings");
+        send_settings_page_result(
+            host_id,
+            "_internalOnOpenAppAuthorizeSettingFinished",
+            request_id,
+            reason,
+        );
     });
+}
+
+/// A settings page's result in the shape every host result takes:
+/// `{requestId}` on success, `{requestId, error}` with the reason on failure --
+/// content composes the errMsg from the API it called.
+///
+/// Absent stays absent: a non-positive id means the request carried none, and
+/// writing `0` would make the runtime discard the reply as *present and not an
+/// id* -- strictly worse than the fallback it would otherwise take.
+fn send_settings_page_result(
+    host_id: jint,
+    hook: &'static str,
+    request_id: jint,
+    failure: Option<&str>,
+) {
+    let mut fields = serde_json::Map::new();
+    if request_id > 0 {
+        fields.insert("requestId".into(), request_id.into());
+    }
+    if let Some(reason) = failure {
+        fields.insert("error".into(), reason.into());
+    }
+    let json = serde_json::Value::Object(fields).to_string();
+    let cmd = HostCommand::InvokeHostHook {
+        hook,
+        args_json: hook_args_one(json.as_str()),
+    };
+    let _ = send_reliable_command_to_host(host_id, cmd);
 }
 
 pub(crate) extern "system" fn onTouch(

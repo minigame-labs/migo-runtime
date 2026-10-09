@@ -29,19 +29,28 @@ use migo_capi_abi::{
         MIGO_AD_LOAD, MIGO_AD_SHOW, MIGO_AD_UPDATE_STYLE, MIGO_AUTH_CHECK_SESSION,
         MIGO_AUTH_GET_PHONE_NUMBER, MIGO_AUTH_GET_USER_INFO, MIGO_AUTH_LOGIN, MIGO_HOST_SERVICE_AD,
         MIGO_HOST_SERVICE_AUTH, MIGO_HOST_SERVICE_NAVIGATE, MIGO_HOST_SERVICE_PAYMENT,
-        MIGO_HOST_SERVICE_SHARE, MIGO_NAVIGATE_NAVIGATE_BACK_MINI_PROGRAM,
+        MIGO_HOST_SERVICE_PERMISSION, MIGO_HOST_SERVICE_SETTING, MIGO_HOST_SERVICE_SHARE,
+        MIGO_HOST_SERVICE_SUBPACKAGE, MIGO_NAVIGATE_NAVIGATE_BACK_MINI_PROGRAM,
         MIGO_NAVIGATE_NAVIGATE_TO_MINI_PROGRAM, MIGO_NAVIGATE_OPEN_CUSTOMER_SERVICE_CONVERSATION,
         MIGO_PAYMENT_REQUEST_MIDAS_PAYMENT, MIGO_PAYMENT_REQUEST_MIDAS_PAYMENT_GAME_ITEM,
-        MIGO_SHARE_SHARE_APP_MESSAGE, MigoHostServiceResult, copy_bounded,
+        MIGO_PERMISSION_REQUEST_SCOPE, MIGO_SETTING_OPEN_APP_AUTHORIZE_SETTING,
+        MIGO_SETTING_OPEN_SETTING, MIGO_SETTING_OPEN_SYSTEM_BLUETOOTH_SETTING,
+        MIGO_SHARE_SHARE_APP_MESSAGE, MIGO_SUBPACKAGE_DOWNLOAD, MigoHostServiceResult,
+        copy_bounded,
     },
 };
-use migo_core::services::{AdService, AuthService, NavigateService, PaymentService, ShareService};
+use migo_core::services::{
+    AdService, AuthService, NavigateService, PaymentService, PermissionService, Scope, ScopeState,
+    ShareService, SubpackageService,
+};
 use serde_json::{Map, Value};
 use shared::{
     js_escape::hook_args_one, protocol::error::ServiceError, protocol::host_cmd::HostCommand,
 };
 
-use crate::{MigoSession, callbacks::Notifier, panic_barrier::guard, pin_session};
+use crate::{
+    MigoSession, callbacks::Notifier, panic_barrier::guard, pin_session, settings::HostReports,
+};
 
 /// One request content makes that the host answers.
 #[derive(Debug, PartialEq, Eq)]
@@ -53,6 +62,24 @@ struct Call {
     /// The field a failure's numeric code travels in; `None` where the API
     /// defines none.
     error_code_field: Option<&'static str>,
+    /// Where progress reported while the call is in flight is delivered;
+    /// `None` for a call that reports none.
+    progress_hook: Option<&'static str>,
+    /// What a success carries that content must never see.
+    withheld: Withheld,
+}
+
+/// Result fields the engine keeps rather than delivers.
+#[derive(Debug, PartialEq, Eq)]
+enum Withheld {
+    Nothing,
+    /// A downloaded subpackage's `zipPath`: a host path, which content must
+    /// not name -- the install ingests whatever file it names, so a path
+    /// content could choose would make any zip the process can read installable
+    /// as game code. It is recorded for the install and stripped from the result
+    /// (`shared::services::intercept_download_result`), exactly as the Android
+    /// SDK's path does.
+    SubpackageZip,
 }
 
 const REQUEST_MIDAS_PAYMENT: Call = Call {
@@ -60,48 +87,105 @@ const REQUEST_MIDAS_PAYMENT: Call = Call {
     method: MIGO_PAYMENT_REQUEST_MIDAS_PAYMENT,
     hook: "_internalOnMidasPaymentResult",
     error_code_field: Some("errCode"),
+    progress_hook: None,
+    withheld: Withheld::Nothing,
 };
 const REQUEST_MIDAS_PAYMENT_GAME_ITEM: Call = Call {
     service: MIGO_HOST_SERVICE_PAYMENT,
     method: MIGO_PAYMENT_REQUEST_MIDAS_PAYMENT_GAME_ITEM,
     hook: "_internalOnMidasPaymentGameItemResult",
     error_code_field: Some("errCode"),
+    progress_hook: None,
+    withheld: Withheld::Nothing,
 };
 const LOGIN: Call = Call {
     service: MIGO_HOST_SERVICE_AUTH,
     method: MIGO_AUTH_LOGIN,
     hook: "_internalOnLoginResult",
     error_code_field: Some("errno"),
+    progress_hook: None,
+    withheld: Withheld::Nothing,
 };
 const CHECK_SESSION: Call = Call {
     service: MIGO_HOST_SERVICE_AUTH,
     method: MIGO_AUTH_CHECK_SESSION,
     hook: "_internalOnCheckSessionResult",
     error_code_field: Some("errno"),
+    progress_hook: None,
+    withheld: Withheld::Nothing,
 };
 const GET_USER_INFO: Call = Call {
     service: MIGO_HOST_SERVICE_AUTH,
     method: MIGO_AUTH_GET_USER_INFO,
     hook: "_internalOnGetUserInfoResult",
     error_code_field: None,
+    progress_hook: None,
+    withheld: Withheld::Nothing,
 };
 const GET_PHONE_NUMBER: Call = Call {
     service: MIGO_HOST_SERVICE_AUTH,
     method: MIGO_AUTH_GET_PHONE_NUMBER,
     hook: "_internalOnGetPhoneNumberResult",
     error_code_field: Some("errno"),
+    progress_hook: None,
+    withheld: Withheld::Nothing,
 };
 const SHARE_APP_MESSAGE: Call = Call {
     service: MIGO_HOST_SERVICE_SHARE,
     method: MIGO_SHARE_SHARE_APP_MESSAGE,
     hook: "_internalOnShareAppMessageResult",
     error_code_field: Some("errCode"),
+    progress_hook: None,
+    withheld: Withheld::Nothing,
 };
 const NAVIGATE_TO_MINI_PROGRAM: Call = Call {
     service: MIGO_HOST_SERVICE_NAVIGATE,
     method: MIGO_NAVIGATE_NAVIGATE_TO_MINI_PROGRAM,
     hook: "_internalOnNavigateToMiniProgramResult",
     error_code_field: Some("errCode"),
+    progress_hook: None,
+    withheld: Withheld::Nothing,
+};
+
+const SUBPACKAGE_DOWNLOAD: Call = Call {
+    service: MIGO_HOST_SERVICE_SUBPACKAGE,
+    method: MIGO_SUBPACKAGE_DOWNLOAD,
+    hook: "_internalOnSubpackageResult",
+    error_code_field: None,
+    progress_hook: Some("_internalOnSubpackageProgress"),
+    withheld: Withheld::SubpackageZip,
+};
+const REQUEST_SCOPE: Call = Call {
+    service: MIGO_HOST_SERVICE_PERMISSION,
+    method: MIGO_PERMISSION_REQUEST_SCOPE,
+    hook: "_internalOnAuthorizeResult",
+    error_code_field: None,
+    progress_hook: None,
+    withheld: Withheld::Nothing,
+};
+const OPEN_SETTING: Call = Call {
+    service: MIGO_HOST_SERVICE_SETTING,
+    method: MIGO_SETTING_OPEN_SETTING,
+    hook: "_internalOnOpenSettingResult",
+    error_code_field: Some("errCode"),
+    progress_hook: None,
+    withheld: Withheld::Nothing,
+};
+const OPEN_SYSTEM_BLUETOOTH_SETTING: Call = Call {
+    service: MIGO_HOST_SERVICE_SETTING,
+    method: MIGO_SETTING_OPEN_SYSTEM_BLUETOOTH_SETTING,
+    hook: "_internalOnOpenBluetoothSettingResult",
+    error_code_field: Some("errCode"),
+    progress_hook: None,
+    withheld: Withheld::Nothing,
+};
+const OPEN_APP_AUTHORIZE_SETTING: Call = Call {
+    service: MIGO_HOST_SERVICE_SETTING,
+    method: MIGO_SETTING_OPEN_APP_AUTHORIZE_SETTING,
+    hook: "_internalOnOpenAppAuthorizeSettingFinished",
+    error_code_field: Some("errCode"),
+    progress_hook: None,
+    withheld: Withheld::Nothing,
 };
 
 const CALLS: &[&Call] = &[
@@ -113,10 +197,17 @@ const CALLS: &[&Call] = &[
     &GET_PHONE_NUMBER,
     &SHARE_APP_MESSAGE,
     &NAVIGATE_TO_MINI_PROGRAM,
+    &SUBPACKAGE_DOWNLOAD,
+    &REQUEST_SCOPE,
+    &OPEN_SETTING,
+    &OPEN_SYSTEM_BLUETOOTH_SETTING,
+    &OPEN_APP_AUTHORIZE_SETTING,
 ];
 
 /// Fire-and-forget requests, as `(service, method)`. Listed so the contract test
-/// can hold the whole method set to the contract, not only the calls.
+/// can hold the whole method set to the contract, not only the calls; a command
+/// needs no routing back, so nothing else reads it.
+#[cfg(test)]
 const COMMANDS: &[(u32, u32)] = &[
     (MIGO_HOST_SERVICE_AD, MIGO_AD_CREATE),
     (MIGO_HOST_SERVICE_AD, MIGO_AD_LOAD),
@@ -194,15 +285,24 @@ fn split_request(options_json: &str) -> Option<(u32, String)> {
     Some((request_id as u32, Value::Object(options).to_string()))
 }
 
-/// Content's ads, payments, sign-in, sharing and navigation, carried to a C host
-/// that declared it supplies them.
+/// Content's requests of the host's services, carried to a C host that declared
+/// it supplies them.
 pub(crate) struct CapiHostServices {
     notifier: Arc<Notifier>,
+    /// The host's standing permission decisions, which the permission service
+    /// answers from.
+    reports: Arc<HostReports>,
 }
 
 impl CapiHostServices {
-    pub(crate) fn new(notifier: Arc<Notifier>) -> Arc<Self> {
-        Arc::new(Self { notifier })
+    pub(crate) fn new(notifier: Arc<Notifier>, reports: Arc<HostReports>) -> Arc<Self> {
+        Arc::new(Self { notifier, reports })
+    }
+
+    /// Whether the host declared `service`.
+    #[inline]
+    pub(crate) fn supplies(&self, service: u32) -> bool {
+        self.notifier.supplies_host_service(service)
     }
 
     fn command(&self, service: u32, method: u32, options_json: &str) -> Result<(), ServiceError> {
@@ -222,6 +322,22 @@ impl CapiHostServices {
         let Some((request_id, payload)) = split_request(options_json) else {
             return Err(ServiceError::invalid_param("malformed request"));
         };
+        self.post_call(call, request_id, payload)
+    }
+
+    /// A call whose request id content passed as an argument rather than in
+    /// its options, with nothing else to say.
+    fn call_by_id(&self, call: &Call, request_id: i32) -> Result<(), ServiceError> {
+        let Ok(request_id) = u32::try_from(request_id) else {
+            return Err(ServiceError::invalid_param("malformed request"));
+        };
+        if request_id == 0 {
+            return Err(ServiceError::invalid_param("malformed request"));
+        }
+        self.post_call(call, request_id, "{}".to_owned())
+    }
+
+    fn post_call(&self, call: &Call, request_id: u32, payload: String) -> Result<(), ServiceError> {
         if self.notifier.host_service_call(
             call.service,
             call.method,
@@ -234,6 +350,41 @@ impl CapiHostServices {
                 "host dispatcher refused the request",
             ))
         }
+    }
+}
+
+impl SubpackageService for CapiHostServices {
+    fn download_subpackage(&self, options_json: &str) -> Result<(), ServiceError> {
+        self.call(&SUBPACKAGE_DOWNLOAD, options_json)
+    }
+}
+
+impl PermissionService for CapiHostServices {
+    fn scope_state(&self, scope: Scope) -> ScopeState {
+        self.reports.scope_state(scope)
+    }
+
+    fn request_scope(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&REQUEST_SCOPE, request_json)
+    }
+}
+
+/// The settings pages content can send the player to, for [`crate::settings`]'s
+/// system-information service to forward.
+impl CapiHostServices {
+    pub(crate) fn open_setting(&self, options_json: &str) -> Result<(), ServiceError> {
+        self.call(&OPEN_SETTING, options_json)
+    }
+
+    pub(crate) fn open_system_bluetooth_setting(
+        &self,
+        request_id: i32,
+    ) -> Result<(), ServiceError> {
+        self.call_by_id(&OPEN_SYSTEM_BLUETOOTH_SETTING, request_id)
+    }
+
+    pub(crate) fn open_app_authorize_setting(&self, request_id: i32) -> Result<(), ServiceError> {
+        self.call_by_id(&OPEN_APP_AUTHORIZE_SETTING, request_id)
     }
 }
 
@@ -350,6 +501,16 @@ fn completion_json(
                 }
                 fields = result;
             }
+            // A download that succeeded has a file to install; without one
+            // the install would fail later, far from the host's mistake.
+            if call.withheld == Withheld::SubpackageZip
+                && !fields
+                    .get("zipPath")
+                    .and_then(Value::as_str)
+                    .is_some_and(|path| !path.is_empty())
+            {
+                return Err(MIGO_ERROR_INVALID_ARGUMENT);
+            }
             fields.insert("requestId".into(), request_id.into());
         }
         HostServiceOutcome::Fail {
@@ -369,9 +530,34 @@ fn completion_json(
     Ok(Value::Object(fields).to_string())
 }
 
+/// The JSON a call's progress hook receives: the host's fields and the request
+/// id.
+fn progress_json(request_id: u32, payload_json: &str) -> Result<String, MigoResult> {
+    let Ok(Value::Object(mut fields)) = serde_json::from_str::<Value>(payload_json) else {
+        return Err(MIGO_ERROR_INVALID_ARGUMENT);
+    };
+    if RESERVED_RESULT_FIELDS
+        .iter()
+        .any(|field| fields.contains_key(*field))
+    {
+        return Err(MIGO_ERROR_INVALID_ARGUMENT);
+    }
+    fields.insert("requestId".into(), request_id.into());
+    Ok(Value::Object(fields).to_string())
+}
+
 /// Hand `json` to content's `hook`, if `service` is one this host declared and
 /// there is content to tell.
-fn deliver(session: &MigoSession, service: u32, hook: &'static str, json: String) -> MigoResult {
+///
+/// `withheld` is applied with the Host's id in hand, because what it keeps is
+/// keyed by the Host the content runs in.
+fn deliver(
+    session: &MigoSession,
+    service: u32,
+    hook: &'static str,
+    json: String,
+    withheld: &Withheld,
+) -> MigoResult {
     let Ok(state) = session.state.lock() else {
         return MIGO_ERROR_INTERNAL;
     };
@@ -388,6 +574,10 @@ fn deliver(session: &MigoSession, service: u32, hook: &'static str, json: String
         return MIGO_OK;
     };
     drop(state);
+    let json = match withheld {
+        Withheld::Nothing => json,
+        Withheld::SubpackageZip => shared::services::intercept_download_result(host, &json),
+    };
     if let Err(error) = migo_core::send_reliable_command_to_host(
         host,
         HostCommand::InvokeHostHook {
@@ -422,7 +612,39 @@ pub unsafe extern "C" fn migo_session_complete_host_service_call(
             Err(error) => return error,
         };
         match completion_json(call, request_id, outcome) {
-            Ok(json) => deliver(&session, call.service, call.hook, json),
+            Ok(json) => deliver(&session, call.service, call.hook, json, &call.withheld),
+            Err(error) => error,
+        }
+    })
+}
+
+/// # Safety
+/// `session` must be a live session handle and `payload_json_utf8` null with a
+/// zero length or readable for `payload_length` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn migo_session_update_host_service_call(
+    session: *mut MigoSession,
+    call_id: u64,
+    payload_json_utf8: *const std::os::raw::c_char,
+    payload_length: u32,
+) -> MigoResult {
+    guard("migo_session_update_host_service_call", || {
+        let session = match unsafe { pin_session(session) } {
+            Ok(session) => session,
+            Err(error) => return error,
+        };
+        let Some((call, request_id)) = decode_call_id(call_id) else {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        };
+        let Some(hook) = call.progress_hook else {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        };
+        let payload = match unsafe { copy_bounded(payload_json_utf8, payload_length) } {
+            Ok(payload) => payload,
+            Err(error) => return error,
+        };
+        match progress_json(request_id, &payload) {
+            Ok(json) => deliver(&session, call.service, hook, json, &Withheld::Nothing),
             Err(error) => error,
         }
     })
@@ -459,7 +681,7 @@ pub unsafe extern "C" fn migo_session_post_host_service_event(
         ) {
             return MIGO_ERROR_INVALID_ARGUMENT;
         }
-        deliver(&session, service, hook, payload)
+        deliver(&session, service, hook, payload, &Withheld::Nothing)
     })
 }
 
@@ -490,6 +712,9 @@ mod tests {
             "auth" => MIGO_HOST_SERVICE_AUTH,
             "share" => MIGO_HOST_SERVICE_SHARE,
             "navigate" => MIGO_HOST_SERVICE_NAVIGATE,
+            "subpackage" => MIGO_HOST_SERVICE_SUBPACKAGE,
+            "permission" => MIGO_HOST_SERVICE_PERMISSION,
+            "setting" => MIGO_HOST_SERVICE_SETTING,
             other => panic!("the contract names a service the ABI has no constant for: {other}"),
         }
     }
@@ -529,6 +754,21 @@ mod tests {
                             method["error_code_field"].as_str(),
                             "{method_name} error_code_field"
                         );
+                        assert_eq!(
+                            call.progress_hook,
+                            method.get("progress_hook").and_then(Value::as_str),
+                            "{method_name} progress_hook"
+                        );
+                        let withheld: Vec<&str> = method
+                            .get("withheld")
+                            .and_then(Value::as_array)
+                            .map(|fields| fields.iter().filter_map(Value::as_str).collect())
+                            .unwrap_or_default();
+                        let expected: &[&str] = match call.withheld {
+                            Withheld::Nothing => &[],
+                            Withheld::SubpackageZip => &["zipPath"],
+                        };
+                        assert_eq!(withheld, expected, "{method_name} withheld");
                         calls_seen += 1;
                     }
                     Some("command") => {
@@ -694,6 +934,55 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_downloaded_subpackage_must_name_its_zip() {
+        for payload in ["", "{}", r#"{"zipPath":""}"#, r#"{"zipPath":7}"#] {
+            assert_eq!(
+                completion_json(&SUBPACKAGE_DOWNLOAD, 3, ok(payload)),
+                Err(MIGO_ERROR_INVALID_ARGUMENT),
+                "{payload}"
+            );
+        }
+        // Kept in the JSON here; `deliver` strips it with the Host's id in
+        // hand, through the same interceptor the Android SDK's path uses.
+        assert_eq!(
+            parsed(completion_json(
+                &SUBPACKAGE_DOWNLOAD,
+                3,
+                ok(r#"{"zipPath":"/tmp/stage1.zip"}"#)
+            )),
+            serde_json::json!({"requestId": 3, "zipPath": "/tmp/stage1.zip"})
+        );
+        let delivered = shared::services::intercept_download_result(
+            i32::MAX - 7,
+            r#"{"requestId":3,"zipPath":"/tmp/stage1.zip"}"#,
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&delivered).unwrap(),
+            serde_json::json!({"requestId": 3})
+        );
+        assert_eq!(
+            shared::services::take_downloaded_zip(i32::MAX - 7, 3),
+            Some(std::path::PathBuf::from("/tmp/stage1.zip"))
+        );
+    }
+
+    #[test]
+    fn progress_is_the_host_s_fields_and_the_request_id() {
+        assert_eq!(
+            serde_json::from_str::<Value>(&progress_json(9, r#"{"progress":50}"#).unwrap())
+                .unwrap(),
+            serde_json::json!({"requestId": 9, "progress": 50})
+        );
+        for payload in ["", "[]", r#"{"requestId":1}"#, r#"{"error":"x"}"#] {
+            assert_eq!(
+                progress_json(9, payload),
+                Err(MIGO_ERROR_INVALID_ARGUMENT),
+                "{payload}"
+            );
+        }
+    }
+
     // ---- through the dispatcher ----
 
     #[derive(Default)]
@@ -756,7 +1045,8 @@ mod tests {
             raw.validate().expect("valid").expect("a dispatcher"),
             Arc::downgrade(&session),
         ));
-        (session, CapiHostServices::new(notifier))
+        let reports = Arc::clone(&session.host_reports);
+        (session, CapiHostServices::new(notifier, reports))
     }
 
     #[test]
@@ -803,6 +1093,63 @@ mod tests {
         );
         assert!(AdService::create_ad(&*services, r#"{"adId":1}"#).is_err());
         assert!(heard.0.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_settings_page_is_a_call_named_by_content_s_request_id() {
+        let heard = Heard::default();
+        let (_session, services) = services_with(&heard, inline_dispatch);
+        services.open_app_authorize_setting(17).unwrap();
+        assert!(
+            services.open_system_bluetooth_setting(0).is_err(),
+            "no request id"
+        );
+        assert!(
+            services.open_system_bluetooth_setting(-4).is_err(),
+            "no request id"
+        );
+        let heard = heard.0.lock().unwrap();
+        assert_eq!(
+            *heard,
+            vec![(
+                encode_call_id(&OPEN_APP_AUTHORIZE_SETTING, 17),
+                MIGO_HOST_SERVICE_SETTING,
+                MIGO_SETTING_OPEN_APP_AUTHORIZE_SETTING,
+                "{}".to_owned()
+            )]
+        );
+    }
+
+    #[test]
+    fn permission_answers_from_the_host_s_standing_decisions() {
+        let heard = Heard::default();
+        let (session, services) = services_with(&heard, inline_dispatch);
+        assert_eq!(
+            PermissionService::scope_state(&*services, Scope::Camera),
+            ScopeState::Unknown
+        );
+        // What `migo_session_set_scope_state` writes, read through the service.
+        session
+            .host_reports
+            .record_scope_for_test(Scope::Camera, ScopeState::Granted);
+        assert_eq!(
+            PermissionService::scope_state(&*services, Scope::Camera),
+            ScopeState::Granted
+        );
+        PermissionService::request_scope(
+            &*services,
+            r#"{"requestId":5,"scope":"scope.record","desc":""}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            heard.0.lock().unwrap()[0],
+            (
+                encode_call_id(&REQUEST_SCOPE, 5),
+                MIGO_HOST_SERVICE_PERMISSION,
+                MIGO_PERMISSION_REQUEST_SCOPE,
+                r#"{"desc":"","scope":"scope.record"}"#.to_owned()
+            )
+        );
     }
 
     #[test]
@@ -932,6 +1279,40 @@ mod tests {
                 },
                 MIGO_ERROR_INVALID_ARGUMENT
             );
+        });
+    }
+
+    #[test]
+    fn progress_reaches_only_a_call_that_reports_it() {
+        with_session("host-service-progress", |session| {
+            install(
+                session,
+                1 << MIGO_HOST_SERVICE_SUBPACKAGE | 1 << MIGO_HOST_SERVICE_AUTH,
+            );
+            let progress =
+                br#"{"progress":50,"totalBytesWritten":1,"totalBytesExpectedToWrite":2}"#;
+            let update = |call_id, bytes: &[u8]| unsafe {
+                migo_session_update_host_service_call(
+                    session,
+                    call_id,
+                    bytes.as_ptr().cast(),
+                    bytes.len() as u32,
+                )
+            };
+            assert_eq!(
+                update(encode_call_id(&SUBPACKAGE_DOWNLOAD, 1), progress),
+                MIGO_OK
+            );
+            assert_eq!(
+                update(encode_call_id(&LOGIN, 1), progress),
+                MIGO_ERROR_INVALID_ARGUMENT,
+                "login reports no progress"
+            );
+            assert_eq!(
+                update(encode_call_id(&SUBPACKAGE_DOWNLOAD, 1), b"[]"),
+                MIGO_ERROR_INVALID_ARGUMENT
+            );
+            assert_eq!(update(0, progress), MIGO_ERROR_INVALID_ARGUMENT);
         });
     }
 

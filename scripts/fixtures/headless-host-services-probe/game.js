@@ -41,12 +41,10 @@ async function run() {
   expect(!check.ok && check.res.errMsg === "checkSession:fail session expired" &&
     check.res.errno === 1, "checkSession", check);
 
-  // getUserInfo needs scope.userInfo, and a scope is granted by the host's
-  // permission service -- which this channel does not carry yet. Until it
-  // does, the runtime refuses the call before it reaches the host: nobody to
-  // ask resolves to no, never to a grant the player did not give.
+  // getUserInfo needs scope.userInfo, which the host granted before content
+  // ran: a scope check reads the host's standing decision.
   const info = await settle("getUserInfo");
-  expect(!info.ok && info.res.errMsg === "getUserInfo:fail auth deny: scope.userInfo is not granted",
+  expect(info.ok && info.res.userInfo && info.res.userInfo.nickName === "probe",
     "getUserInfo", info);
 
   // getPhoneNumber's failure had no code from the host, so none is invented.
@@ -83,6 +81,42 @@ async function run() {
   const friend = await settle("shareMessageToFriend", { openId: "probe-friend" });
   expect(!friend.ok && friend.res.errMsg === "shareMessageToFriend:fail not supported",
     "shareMessageToFriend", friend);
+
+  // Permission. getSetting reports what the host decided and nothing else: the
+  // granted scope is true and a scope nobody has been asked about is absent.
+  const before = await settle("getSetting");
+  expect(before.ok && before.res.authSetting["scope.userInfo"] === true &&
+    !("scope.camera" in before.res.authSetting), "getSetting before authorize", before);
+
+  // authorize asks the host; the host records its decision and settles.
+  const camera = await settle("authorize", { scope: "scope.camera" });
+  expect(camera.ok && camera.res.errMsg === "authorize:ok", "authorize camera", camera);
+  const record = await settle("authorize", { scope: "scope.record" });
+  expect(!record.ok && record.res.errMsg === "authorize:fail auth deny",
+    "authorize record", record);
+
+  // openSetting answers with the settings as the player left them -- the
+  // host's standing decisions, refusal included.
+  const opened = await settle("openSetting");
+  expect(opened.ok && opened.res.authSetting["scope.camera"] === true &&
+    opened.res.authSetting["scope.record"] === false &&
+    opened.res.authSetting["scope.userInfo"] === true, "openSetting", opened);
+
+  const bluetoothPage = await settle("openSystemBluetoothSetting");
+  expect(bluetoothPage.ok, "openSystemBluetoothSetting", bluetoothPage);
+  const appPage = await settle("openAppAuthorizeSetting");
+  expect(!appPage.ok && appPage.res.errMsg === "openAppAuthorizeSetting:fail no settings app" &&
+    appPage.res.errCode === -1, "openAppAuthorizeSetting", appPage);
+
+  // Standing reports, read synchronously. The orientation is the attached
+  // window's shape (256x256 is not wider than tall), not a report.
+  const system = migo.getSystemSetting();
+  expect(system.bluetoothEnabled === true && system.wifiEnabled === true &&
+    system.locationEnabled === false && system.deviceOrientation === "portrait",
+    "getSystemSetting", system);
+  const app = migo.getAppAuthorizeSetting();
+  expect(app.cameraAuthorized === "authorized" && app.albumAuthorized === "denied" &&
+    app.microphoneAuthorized === "not determined", "getAppAuthorizeSetting", app);
 
   // The reward is the host's word: the close event's isEnded comes from it.
   const ad = migo.createRewardedVideoAd({ adUnitId: "probe-unit" });

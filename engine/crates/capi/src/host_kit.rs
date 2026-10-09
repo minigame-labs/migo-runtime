@@ -8,16 +8,18 @@
 
 use migo_capi_abi::host_services::{
     MIGO_HOST_SERVICE_AD, MIGO_HOST_SERVICE_AUTH, MIGO_HOST_SERVICE_NAVIGATE,
-    MIGO_HOST_SERVICE_PAYMENT, MIGO_HOST_SERVICE_SHARE,
+    MIGO_HOST_SERVICE_PAYMENT, MIGO_HOST_SERVICE_PERMISSION, MIGO_HOST_SERVICE_SHARE,
+    MIGO_HOST_SERVICE_SUBPACKAGE,
 };
 use migo_core::services::{
     AdService, AuthService, BatteryService, CommerceServices, ConnectivityServices, GameLogService,
-    KeyboardService, MediaServices, NavigateService, NetworkService, PaymentService, ScreenService,
-    SensorServices, ShareService, SystemInfoService, SystemUtilServices, VibrationService,
+    KeyboardService, MediaServices, NavigateService, NetworkService, PaymentService,
+    PermissionService, ScreenService, SensorServices, ShareService, SubpackageService,
+    SystemInfoService, SystemUtilServices, VibrationService,
 };
 use migo_core::{DeviceServiceProvider, FrameClock, HostNotifier};
 use shared::protocol::error::ServiceError;
-use shared::surface::{HostWindowInfo, HostWindowState};
+use shared::surface::HostWindowState;
 use std::sync::{Arc, Weak};
 
 use crate::{
@@ -30,6 +32,7 @@ use crate::{
     },
     device::{CapiDevice, DeviceState},
     host_services::CapiHostServices,
+    settings::{CapiSystemInfo, HostReports},
 };
 use migo_capi_abi::MIGO_ERROR_INTERNAL;
 
@@ -98,6 +101,7 @@ impl CapiHostKit {
         session: Weak<MigoSession>,
         window: Arc<HostWindowState>,
         device: Arc<DeviceState>,
+        reports: Arc<HostReports>,
     ) -> Self {
         // Offered exactly when the host installed the callbacks -- never
         // because the platform claims a keyboard. On Android the platform's own
@@ -114,16 +118,18 @@ impl CapiHostKit {
             });
         // Built once and shared by every service the host declared; which of
         // them content is offered is decided per accessor, by the declaration.
-        let host_services = notifier.as_ref().map(|notifier| {
-            (
-                Arc::clone(notifier),
-                CapiHostServices::new(Arc::clone(notifier)),
-            )
-        });
+        let host_services = notifier
+            .as_ref()
+            .map(|notifier| CapiHostServices::new(Arc::clone(notifier), Arc::clone(&reports)));
+        // Also built once: content asks for system information on every
+        // getWindowInfo and getSystemSetting, and a service that is the same
+        // for the Host's life has no reason to be allocated per call.
+        let system_info: Arc<dyn SystemInfoService> =
+            Arc::new(CapiSystemInfo::new(window, reports, host_services.as_ref()));
         Self {
             device_services: Arc::new(CapiDeviceServices {
                 keyboard: host_keyboard,
-                window,
+                system_info,
                 device: CapiDevice::new(notifier.clone(), device),
                 host_services,
             }),
@@ -135,9 +141,9 @@ impl CapiHostKit {
 
 struct CapiDeviceServices {
     keyboard: Option<Arc<dyn KeyboardService>>,
-    window: Arc<HostWindowState>,
+    system_info: Arc<dyn SystemInfoService>,
     device: Arc<CapiDevice>,
-    host_services: Option<(Arc<Notifier>, Arc<CapiHostServices>)>,
+    host_services: Option<Arc<CapiHostServices>>,
 }
 
 impl CapiDeviceServices {
@@ -147,8 +153,8 @@ impl CapiDeviceServices {
     fn host_service(&self, service: u32) -> Option<Arc<CapiHostServices>> {
         self.host_services
             .as_ref()
-            .filter(|(notifier, _)| notifier.supplies_host_service(service))
-            .map(|(_, services)| Arc::clone(services))
+            .filter(|services| services.supplies(service))
+            .map(Arc::clone)
     }
 }
 
@@ -198,6 +204,11 @@ impl CommerceServices for CapiDeviceServices {
         self.host_service(MIGO_HOST_SERVICE_PAYMENT)
             .map(|services| services as Arc<dyn PaymentService>)
     }
+
+    fn subpackage(&self) -> Option<Arc<dyn SubpackageService>> {
+        self.host_service(MIGO_HOST_SERVICE_SUBPACKAGE)
+            .map(|services| services as Arc<dyn SubpackageService>)
+    }
 }
 
 impl SystemUtilServices for CapiDeviceServices {
@@ -206,7 +217,14 @@ impl SystemUtilServices for CapiDeviceServices {
     }
 
     fn system_info(&self) -> Option<Arc<dyn SystemInfoService>> {
-        Some(Arc::new(HostWindowInfo::new(Arc::clone(&self.window))))
+        Some(Arc::clone(&self.system_info))
+    }
+
+    /// Without one every scope is denied, which is the engine's answer to a
+    /// question nobody can be asked.
+    fn permission(&self) -> Option<Arc<dyn PermissionService>> {
+        self.host_service(MIGO_HOST_SERVICE_PERMISSION)
+            .map(|services| services as Arc<dyn PermissionService>)
     }
 
     fn navigate(&self) -> Option<Arc<dyn NavigateService>> {
@@ -389,6 +407,7 @@ mod tests {
             Arc::downgrade(&session),
             window(640, 480, 2.0),
             Arc::clone(&session.device),
+            Arc::clone(&session.host_reports),
         );
         assert!(
             kit.create_device_services(1)
@@ -474,6 +493,7 @@ mod tests {
             Arc::downgrade(&session),
             window(640, 480, 2.0),
             Arc::clone(&session.device),
+            Arc::clone(&session.host_reports),
         );
         let keyboard = kit
             .create_device_services(1)
@@ -550,6 +570,7 @@ mod tests {
             Arc::downgrade(&session),
             Arc::clone(&state),
             Arc::clone(&session.device),
+            Arc::clone(&session.host_reports),
         );
         let system = kit
             .create_device_services(1)

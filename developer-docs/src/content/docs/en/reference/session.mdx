@@ -308,6 +308,9 @@ Windows, OpenHarmony) embeds the C ABI and reaches them through this channel:
 | `MIGO_HOST_SERVICE_AUTH` (2) | `LOGIN` 0 · `CHECK_SESSION` 1 · `GET_USER_INFO` 2 · `GET_PHONE_NUMBER` 3 | calls | `login` · `checkSession` · `getUserInfo` · `getPhoneNumber` |
 | `MIGO_HOST_SERVICE_SHARE` (3) | `SHARE_APP_MESSAGE` 0 | call | `shareAppMessage` |
 | `MIGO_HOST_SERVICE_NAVIGATE` (4) | `NAVIGATE_TO_MINI_PROGRAM` 0 (call) · `NAVIGATE_BACK_MINI_PROGRAM` 1 · `OPEN_CUSTOMER_SERVICE_CONVERSATION` 2 (commands) | as listed | `navigateToMiniProgram` · `navigateBackMiniProgram` · `openCustomerServiceConversation` |
+| `MIGO_HOST_SERVICE_SUBPACKAGE` (5) | `DOWNLOAD` 0 | call, reports progress | `loadSubpackage` · `preDownloadSubpackage` |
+| `MIGO_HOST_SERVICE_PERMISSION` (6) | `REQUEST_SCOPE` 0 | call | `authorize` (and `getWritePhotosAlbum`, ...) |
+| `MIGO_HOST_SERVICE_SETTING` (7) | `OPEN_SETTING` 0 · `OPEN_SYSTEM_BLUETOOTH_SETTING` 1 · `OPEN_APP_AUTHORIZE_SETTING` 2 | calls | `openSetting` · `openSystemBluetoothSetting` · `openAppAuthorizeSetting` |
 
 The numbers are defined once, in `contracts/runtime/host-services.json`, append
 only. A host that declares the payment service is one that takes payments
@@ -701,6 +704,101 @@ Returns:
 - `MIGO_OK` — accepted, or there is no running content to deliver it to
 - `MIGO_ERROR_INVALID_ARGUMENT` — a service the host did not declare; an event
   that service does not define; a payload that is not a JSON object
+- `MIGO_ERROR_INVALID_STATE` — the Session has been destroyed
+
+## migo_session_update_host_service_call
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_session_update_host_service_call(
+    MigoSession *session, uint64_t call_id, const char *payload_json_utf8,
+    uint32_t payload_length);
+```
+
+Report progress on a call still in flight, from any thread: a JSON object of the
+method's progress fields. Only `MIGO_SUBPACKAGE_DOWNLOAD` reports progress today:
+`{"progress", "totalBytesWritten", "totalBytesExpectedToWrite"}`. A subpackage
+download succeeds with `{"zipPath": "<absolute path of the downloaded zip>"}`;
+the engine installs from it, and the path never reaches content.
+
+Returns:
+
+- `MIGO_OK` — accepted, or there is no running content to tell
+- `MIGO_ERROR_INVALID_ARGUMENT` — a `call_id` that does not name a call of a
+  declared service; a method that reports no progress; a payload that is not a
+  JSON object
+- `MIGO_ERROR_INVALID_STATE` — the Session has been destroyed
+
+## migo_session_set_scope_state
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_session_set_scope_state(MigoSession *session,
+                                                           MigoScope scope,
+                                                           MigoScopeState state);
+```
+
+Record the host's standing decision for one scope (`MIGO_SCOPE_*`, in
+`getSetting`'s order; `MIGO_SCOPE_STATE_UNKNOWN` / `_GRANTED` / `_DENIED`), from
+any thread, whenever it changes -- including a revocation the player makes in
+system settings. The next gated call reads it; revoking stops new use and does
+not tear down a camera or connection already open. `getSetting` reports only
+decided scopes: `true` granted, `false` refused, never-asked absent. Completing
+an `authorize` call does not record the decision; do both. Needs
+`MIGO_HOST_SERVICE_PERMISSION` declared: without the permission service the
+engine denies every scope, and a grant would be read by nobody.
+
+Returns:
+
+- `MIGO_OK` — recorded
+- `MIGO_ERROR_INVALID_ARGUMENT` — an unknown scope or state; the permission
+  service is not declared
+- `MIGO_ERROR_INVALID_STATE` — the Session has been destroyed
+
+## migo_session_set_system_settings
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_session_set_system_settings(MigoSession *session,
+                                                               MigoSystemSettingFlags flags);
+```
+
+The system switches `getSystemSetting` reports, as a combination of
+`MIGO_SYSTEM_SETTING_FLAG_BLUETOOTH_ENABLED`, `_LOCATION_ENABLED` and
+`_WIFI_ENABLED`, reported when they change; unreported reads as off. Its
+`deviceOrientation` is the attached window's shape and needs no report. May be
+called before a Surface is attached.
+
+Returns:
+
+- `MIGO_OK` — kept
+- `MIGO_ERROR_INVALID_ARGUMENT` — a flag this header does not define
+- `MIGO_ERROR_INVALID_STATE` — the Session has been destroyed
+
+## migo_session_set_app_authorize_setting
+
+```c
+typedef struct MigoAppAuthorizeSetting {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint8_t album, bluetooth, camera, location, microphone, notification,
+            notification_alert, notification_badge, notification_sound, phone_calendar;
+    uint8_t location_reduced_accuracy;  /* 1 = only approximate location granted */
+    uint8_t reserved0;
+} MigoAppAuthorizeSetting;
+
+MIGO_API MigoResult MIGO_CALL migo_session_set_app_authorize_setting(
+    MigoSession *session, const MigoAppAuthorizeSetting *setting);
+```
+
+What the operating system has granted the host app itself, which is what
+`getAppAuthorizeSetting` describes (each a `MIGO_AUTHORIZATION_NOT_DETERMINED` /
+`_AUTHORIZED` / `_DENIED`) -- not content's scopes. Report it when it changes;
+until the first report every one reads as `"not determined"`. May be called
+before a Surface is attached.
+
+Returns:
+
+- `MIGO_OK` — kept
+- `MIGO_ERROR_INVALID_ARGUMENT` — a NULL or malformed record; a value outside
+  `MIGO_AUTHORIZATION_*`
 - `MIGO_ERROR_INVALID_STATE` — the Session has been destroyed
 
 ## migo_session_notify_vsync

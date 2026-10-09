@@ -162,7 +162,10 @@ static const uint64_t HOST_SERVICES = (UINT64_C(1) << MIGO_HOST_SERVICE_AD)
                                       | (UINT64_C(1) << MIGO_HOST_SERVICE_PAYMENT)
                                       | (UINT64_C(1) << MIGO_HOST_SERVICE_AUTH)
                                       | (UINT64_C(1) << MIGO_HOST_SERVICE_SHARE)
-                                      | (UINT64_C(1) << MIGO_HOST_SERVICE_NAVIGATE);
+                                      | (UINT64_C(1) << MIGO_HOST_SERVICE_NAVIGATE)
+                                      | (UINT64_C(1) << MIGO_HOST_SERVICE_SUBPACKAGE)
+                                      | (UINT64_C(1) << MIGO_HOST_SERVICE_PERMISSION)
+                                      | (UINT64_C(1) << MIGO_HOST_SERVICE_SETTING);
 
 static void probe_failure(const char *what) {
     pthread_mutex_lock(&g_lock);
@@ -280,6 +283,49 @@ static void MIGO_CALL on_host_service_call(void *user_data, MigoSession *session
                     return;
             }
             break;
+        case MIGO_HOST_SERVICE_PERMISSION:
+            if (call->method == MIGO_PERMISSION_REQUEST_SCOPE) {
+                /* The player says yes to the camera and no to the microphone.
+                 * The decision is recorded first, then the request settled --
+                 * the order a real host keeps, so content that acts on success
+                 * finds the scope already granted. */
+                if (strstr(payload, "\"scope.camera\"") != NULL) {
+                    migo_session_set_scope_state(session, MIGO_SCOPE_CAMERA,
+                                                 MIGO_SCOPE_STATE_GRANTED);
+                    complete_ok(session, call->call_id, "");
+                } else {
+                    migo_session_set_scope_state(session, MIGO_SCOPE_RECORD,
+                                                 MIGO_SCOPE_STATE_DENIED);
+                    complete_fail(session, call->call_id, "auth deny", 0, 0);
+                }
+                return;
+            }
+            break;
+        case MIGO_HOST_SERVICE_SETTING:
+            switch (call->method) {
+                case MIGO_SETTING_OPEN_SETTING:
+                case MIGO_SETTING_OPEN_SYSTEM_BLUETOOTH_SETTING:
+                    complete_ok(session, call->call_id, "");
+                    return;
+                case MIGO_SETTING_OPEN_APP_AUTHORIZE_SETTING:
+                    complete_fail(session, call->call_id, "no settings app", 1, -1);
+                    return;
+            }
+            break;
+        case MIGO_HOST_SERVICE_SUBPACKAGE:
+            if (call->method == MIGO_SUBPACKAGE_DOWNLOAD) {
+                static const char progress[] =
+                    "{\"progress\":50,\"totalBytesWritten\":512,\"totalBytesExpectedToWrite\":1024}";
+                if (migo_session_update_host_service_call(session, call->call_id, progress,
+                                                          (uint32_t)strlen(progress))
+                    != MIGO_OK) {
+                    probe_failure("migo_session_update_host_service_call refused progress");
+                    return;
+                }
+                complete_fail(session, call->call_id, "offline", 0, 0);
+                return;
+            }
+            break;
         case MIGO_HOST_SERVICE_AD: {
             if (call->call_id != 0) {
                 probe_failure("an ad command carried a call id");
@@ -394,6 +440,23 @@ int main(int argc, char **argv) {
 
     result = migo_session_set_host_callbacks(session, &host_callbacks);
     if (result != MIGO_OK) return fail("migo_session_set_host_callbacks", result);
+
+    /* Standing answers content reads synchronously, reported before it runs:
+     * the player profile is shared, Bluetooth and Wi-Fi are on, and the OS has
+     * given this app the camera and refused it the photo library. */
+    result = migo_session_set_scope_state(session, MIGO_SCOPE_USER_INFO, MIGO_SCOPE_STATE_GRANTED);
+    if (result != MIGO_OK) return fail("migo_session_set_scope_state", result);
+    result = migo_session_set_system_settings(
+        session, MIGO_SYSTEM_SETTING_FLAG_BLUETOOTH_ENABLED | MIGO_SYSTEM_SETTING_FLAG_WIFI_ENABLED);
+    if (result != MIGO_OK) return fail("migo_session_set_system_settings", result);
+    MigoAppAuthorizeSetting authorizations;
+    memset(&authorizations, 0, sizeof(authorizations));
+    authorizations.struct_size = (uint32_t)sizeof(authorizations);
+    authorizations.abi_version = MIGO_ABI_VERSION_CURRENT;
+    authorizations.camera = MIGO_AUTHORIZATION_AUTHORIZED;
+    authorizations.album = MIGO_AUTHORIZATION_DENIED;
+    result = migo_session_set_app_authorize_setting(session, &authorizations);
+    if (result != MIGO_OK) return fail("migo_session_set_app_authorize_setting", result);
 
     /* The layer is owned by this host for the length of the run. Migo retains
      * it across attach and releases its own reference during retirement; the

@@ -42,6 +42,9 @@ typedef uint32_t MigoHostService;
 #define MIGO_HOST_SERVICE_AUTH 2U
 #define MIGO_HOST_SERVICE_SHARE 3U
 #define MIGO_HOST_SERVICE_NAVIGATE 4U
+#define MIGO_HOST_SERVICE_SUBPACKAGE 5U
+#define MIGO_HOST_SERVICE_PERMISSION 6U
+#define MIGO_HOST_SERVICE_SETTING 7U
 
 /*
  * Ads. All six are commands addressed to the advert by the adId in their
@@ -77,6 +80,98 @@ typedef uint32_t MigoHostService;
 #define MIGO_NAVIGATE_NAVIGATE_TO_MINI_PROGRAM 0U
 #define MIGO_NAVIGATE_NAVIGATE_BACK_MINI_PROGRAM 1U
 #define MIGO_NAVIGATE_OPEN_CUSTOMER_SERVICE_CONVERSATION 2U
+
+/*
+ * Subpackages: one call, for both loadSubpackage and preDownloadSubpackage. The
+ * request is {"name", "root"}; report progress while downloading with
+ * migo_session_update_host_service_call ({"progress", "totalBytesWritten",
+ * "totalBytesExpectedToWrite"}), and succeed with {"zipPath": "<absolute path
+ * of the downloaded zip>"} -- the engine installs from it, and the path never
+ * reaches content.
+ */
+#define MIGO_SUBPACKAGE_DOWNLOAD 0U
+
+/*
+ * Permission: content's authorize({scope}) asks the host, {"scope", "desc"} --
+ * desc is the reason the game declared, for an honest prompt. Success means
+ * granted; refusal is a failure with the reason "auth deny". Completing the call
+ * does not record the decision: report it with migo_session_set_scope_state,
+ * which is also how every gated capability is checked.
+ */
+#define MIGO_PERMISSION_REQUEST_SCOPE 0U
+
+/* Settings pages content can send the player to: three calls. */
+#define MIGO_SETTING_OPEN_SETTING 0U
+#define MIGO_SETTING_OPEN_SYSTEM_BLUETOOTH_SETTING 1U
+#define MIGO_SETTING_OPEN_APP_AUTHORIZE_SETTING 2U
+
+/*
+ * Content's permission scopes, in migo.getSetting()'s order. The host decides
+ * each; until it reports one, content's capability calls that need it fail with
+ * "auth deny", and getSetting omits it -- nobody has decided, which content
+ * tells apart from a refusal.
+ */
+typedef uint32_t MigoScope;
+#define MIGO_SCOPE_USER_INFO 0U
+#define MIGO_SCOPE_USER_LOCATION 1U
+#define MIGO_SCOPE_USER_LOCATION_BACKGROUND 2U
+#define MIGO_SCOPE_ADDRESS 3U
+#define MIGO_SCOPE_INVOICE_TITLE 4U
+#define MIGO_SCOPE_INVOICE 5U
+#define MIGO_SCOPE_WERUN 6U
+#define MIGO_SCOPE_RECORD 7U
+#define MIGO_SCOPE_WRITE_PHOTOS_ALBUM 8U
+#define MIGO_SCOPE_CAMERA 9U
+#define MIGO_SCOPE_BLUETOOTH 10U
+#define MIGO_SCOPE_ADD_PHONE_CONTACT 11U
+#define MIGO_SCOPE_ADD_PHONE_CALENDAR 12U
+#define MIGO_SCOPE_FRIEND_INTERACTION 13U
+#define MIGO_SCOPE_GAME_CLUB_DATA 14U
+
+typedef uint32_t MigoScopeState;
+#define MIGO_SCOPE_STATE_UNKNOWN 0U
+#define MIGO_SCOPE_STATE_GRANTED 1U
+#define MIGO_SCOPE_STATE_DENIED 2U
+
+/* The system switches migo.getSystemSetting() reports. Unreported reads as off. */
+typedef uint32_t MigoSystemSettingFlags;
+#define MIGO_SYSTEM_SETTING_FLAG_NONE 0U
+#define MIGO_SYSTEM_SETTING_FLAG_BLUETOOTH_ENABLED (1U << 0)
+#define MIGO_SYSTEM_SETTING_FLAG_LOCATION_ENABLED (1U << 1)
+#define MIGO_SYSTEM_SETTING_FLAG_WIFI_ENABLED (1U << 2)
+
+/* One OS authorisation of the host app, as migo.getAppAuthorizeSetting() words it. */
+#define MIGO_AUTHORIZATION_NOT_DETERMINED 0U
+#define MIGO_AUTHORIZATION_AUTHORIZED 1U
+#define MIGO_AUTHORIZATION_DENIED 2U
+
+/*
+ * What the operating system has granted the host app itself -- not content's
+ * scopes, which are the host's own decisions. Each field is a
+ * MIGO_AUTHORIZATION_*; location_reduced_accuracy is 1 when location is granted
+ * only approximately.
+ */
+typedef struct MigoAppAuthorizeSetting {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint8_t album;
+    uint8_t bluetooth;
+    uint8_t camera;
+    uint8_t location;
+    uint8_t microphone;
+    uint8_t notification;
+    uint8_t notification_alert;
+    uint8_t notification_badge;
+    uint8_t notification_sound;
+    uint8_t phone_calendar;
+    uint8_t location_reduced_accuracy;
+    uint8_t reserved0;
+} MigoAppAuthorizeSetting;
+
+MIGO_STATIC_ASSERT(offsetof(MigoAppAuthorizeSetting, struct_size) == 0,
+                   "every versioned struct must begin with struct_size");
+MIGO_STATIC_ASSERT(sizeof(MigoAppAuthorizeSetting) == 20,
+                   "MigoAppAuthorizeSetting size changed");
 
 /*
  * The largest payload or message either direction carries, in bytes. A longer
@@ -159,6 +254,18 @@ MIGO_API MigoResult MIGO_CALL migo_session_complete_host_service_call(
     MigoSession *session, uint64_t call_id, const MigoHostServiceResult *result);
 
 /*
+ * Report progress on a call still in flight, from any thread: a JSON object of
+ * the method's progress fields (see MIGO_SUBPACKAGE_DOWNLOAD). Returns MIGO_OK
+ * when accepted or there is no running content to tell, and
+ * MIGO_ERROR_INVALID_ARGUMENT for a call_id that does not name a call of a
+ * declared service, a method that reports no progress, or a payload that is not
+ * a JSON object.
+ */
+MIGO_API MigoResult MIGO_CALL migo_session_update_host_service_call(
+    MigoSession *session, uint64_t call_id, const char *payload_json_utf8,
+    uint32_t payload_length);
+
+/*
  * Report one of a declared service's own events, from any thread. payload is a
  * JSON object, length-delimited UTF-8, read during the call. Returns MIGO_OK
  * when the event was accepted or there is no running content to deliver it to,
@@ -168,6 +275,39 @@ MIGO_API MigoResult MIGO_CALL migo_session_complete_host_service_call(
 MIGO_API MigoResult MIGO_CALL migo_session_post_host_service_event(
     MigoSession *session, MigoHostService service, uint32_t event,
     const char *payload_json_utf8, uint32_t payload_length);
+
+/*
+ * Record the host's standing decision for one scope, from any thread, whenever
+ * it changes -- including a revocation made in system settings while content
+ * runs; the next gated call reads it. Needs MIGO_HOST_SERVICE_PERMISSION
+ * declared, because without that service every scope is denied and a grant
+ * would be read by nobody. Returns MIGO_ERROR_INVALID_ARGUMENT for an unknown
+ * scope or state, or when the permission service is not declared. Revoking
+ * stops new use; it does not tear down a camera or connection already open.
+ */
+MIGO_API MigoResult MIGO_CALL migo_session_set_scope_state(MigoSession *session,
+                                                           MigoScope scope,
+                                                           MigoScopeState state);
+
+/*
+ * Report the system switches, from any thread, when they change. The device
+ * orientation getSystemSetting() also reports is the attached window's shape and
+ * needs no report. Returns MIGO_ERROR_INVALID_ARGUMENT for a flag this header
+ * does not define. May be called before a Surface is attached; the report is
+ * kept.
+ */
+MIGO_API MigoResult MIGO_CALL migo_session_set_system_settings(MigoSession *session,
+                                                               MigoSystemSettingFlags flags);
+
+/*
+ * Report the host app's OS authorisations, from any thread, when they change.
+ * Until the first report every one reads as "not determined". Returns
+ * MIGO_ERROR_INVALID_ARGUMENT for a NULL or malformed record or a value outside
+ * MIGO_AUTHORIZATION_*. May be called before a Surface is attached; the report
+ * is kept.
+ */
+MIGO_API MigoResult MIGO_CALL migo_session_set_app_authorize_setting(
+    MigoSession *session, const MigoAppAuthorizeSetting *setting);
 
 MIGO_END_DECLS
 

@@ -332,6 +332,9 @@ typedef struct MigoHostServiceCall {
 | `MIGO_HOST_SERVICE_AUTH` (2) | `LOGIN` 0 · `CHECK_SESSION` 1 · `GET_USER_INFO` 2 · `GET_PHONE_NUMBER` 3 | 调用 | `login` · `checkSession` · `getUserInfo` · `getPhoneNumber` |
 | `MIGO_HOST_SERVICE_SHARE` (3) | `SHARE_APP_MESSAGE` 0 | 调用 | `shareAppMessage` |
 | `MIGO_HOST_SERVICE_NAVIGATE` (4) | `NAVIGATE_TO_MINI_PROGRAM` 0（调用）· `NAVIGATE_BACK_MINI_PROGRAM` 1 · `OPEN_CUSTOMER_SERVICE_CONVERSATION` 2（命令） | 见左 | `navigateToMiniProgram` · `navigateBackMiniProgram` · `openCustomerServiceConversation` |
+| `MIGO_HOST_SERVICE_SUBPACKAGE` (5) | `DOWNLOAD` 0 | 调用，可报进度 | `loadSubpackage` · `preDownloadSubpackage` |
+| `MIGO_HOST_SERVICE_PERMISSION` (6) | `REQUEST_SCOPE` 0 | 调用 | `authorize`（及 `getWritePhotosAlbum` 等） |
+| `MIGO_HOST_SERVICE_SETTING` (7) | `OPEN_SETTING` 0 · `OPEN_SYSTEM_BLUETOOTH_SETTING` 1 · `OPEN_APP_AUTHORIZE_SETTING` 2 | 调用 | `openSetting` · `openSystemBluetoothSetting` · `openAppAuthorizeSetting` |
 
 编号由 `contracts/runtime/host-services.json` 唯一定义，只追加、不复用、不重排。声明了支付服务的宿主
 即视为可支付（`checkIsSupportMidasPayment` 回答 `allow_pay: true`）。广告激励视频的奖励只认宿主
@@ -723,6 +726,87 @@ MIGO_API MigoResult MIGO_CALL migo_session_post_host_service_event(
 
 - `MIGO_OK` — 已接受，或当前没有运行中的内容可投递
 - `MIGO_ERROR_INVALID_ARGUMENT` — 服务未声明；该服务未定义此事件；载荷不是 JSON 对象
+- `MIGO_ERROR_INVALID_STATE` — Session 已销毁
+
+## migo_session_update_host_service_call
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_session_update_host_service_call(
+    MigoSession *session, uint64_t call_id, const char *payload_json_utf8,
+    uint32_t payload_length);
+```
+
+报告一个仍在进行的调用的进度，任意线程。载荷是该方法的进度字段（JSON 对象）。目前只有
+`MIGO_SUBPACKAGE_DOWNLOAD` 报进度：`{"progress", "totalBytesWritten", "totalBytesExpectedToWrite"}`；
+分包下载成功以 `{"zipPath": "<下载好的 zip 的绝对路径>"}` 完成，引擎据此安装，路径永远不会到达内容。
+
+返回：
+
+- `MIGO_OK` — 已接受，或当前没有运行中的内容可投递
+- `MIGO_ERROR_INVALID_ARGUMENT` — `call_id` 不是已声明服务的调用；该方法不报进度；载荷不是 JSON 对象
+- `MIGO_ERROR_INVALID_STATE` — Session 已销毁
+
+## migo_session_set_scope_state
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_session_set_scope_state(MigoSession *session,
+                                                           MigoScope scope,
+                                                           MigoScopeState state);
+```
+
+记录宿主对一个 scope 的常设决定（`MIGO_SCOPE_*` 按 `getSetting` 的顺序，`MIGO_SCOPE_STATE_UNKNOWN` /
+`_GRANTED` / `_DENIED`），任意线程，在决定变化时调用——包括玩家在系统设置里撤销。下一次受控调用即读到它；
+撤销只阻止新的使用，不拆掉已经打开的相机或连接。`getSetting` 只报告已决定的 scope：授予为 `true`，
+拒绝为 `false`，未询问的不出现。完成一次 `authorize` 调用并不记录决定，两步都要做。需要宿主声明了
+`MIGO_HOST_SERVICE_PERMISSION`：没有权限服务时引擎拒绝一切 scope，此时的授予无人会读。
+
+返回：
+
+- `MIGO_OK` — 已记录
+- `MIGO_ERROR_INVALID_ARGUMENT` — 未知的 scope 或状态；宿主未声明权限服务
+- `MIGO_ERROR_INVALID_STATE` — Session 已销毁
+
+## migo_session_set_system_settings
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_session_set_system_settings(MigoSession *session,
+                                                               MigoSystemSettingFlags flags);
+```
+
+`getSystemSetting` 的系统开关：`MIGO_SYSTEM_SETTING_FLAG_BLUETOOTH_ENABLED`、`_LOCATION_ENABLED`、
+`_WIFI_ENABLED` 的组合，变化时报告；未报告读作全关。`deviceOrientation` 取自已挂载窗口的形状，无需报告。
+可在 attach 之前调用。
+
+返回：
+
+- `MIGO_OK` — 已保留
+- `MIGO_ERROR_INVALID_ARGUMENT` — 含本头文件未定义的位
+- `MIGO_ERROR_INVALID_STATE` — Session 已销毁
+
+## migo_session_set_app_authorize_setting
+
+```c
+typedef struct MigoAppAuthorizeSetting {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint8_t album, bluetooth, camera, location, microphone, notification,
+            notification_alert, notification_badge, notification_sound, phone_calendar;
+    uint8_t location_reduced_accuracy;  /* 1 = 只授予了大致位置 */
+    uint8_t reserved0;
+} MigoAppAuthorizeSetting;
+
+MIGO_API MigoResult MIGO_CALL migo_session_set_app_authorize_setting(
+    MigoSession *session, const MigoAppAuthorizeSetting *setting);
+```
+
+`getAppAuthorizeSetting` 描述的是操作系统授予宿主 App 本身的权限（每项为 `MIGO_AUTHORIZATION_NOT_DETERMINED` /
+`_AUTHORIZED` / `_DENIED`），不是内容的 scope。变化时报告；首次报告之前每一项都读作 `"not determined"`。
+可在 attach 之前调用。
+
+返回：
+
+- `MIGO_OK` — 已保留
+- `MIGO_ERROR_INVALID_ARGUMENT` — 记录为 NULL 或格式错误；取值超出 `MIGO_AUTHORIZATION_*`
 - `MIGO_ERROR_INVALID_STATE` — Session 已销毁
 
 ## migo_session_notify_vsync

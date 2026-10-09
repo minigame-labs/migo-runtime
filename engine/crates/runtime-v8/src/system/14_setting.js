@@ -80,13 +80,15 @@ function openSetting(options) {
 }
 
 function _internalOnOpenSettingResult(resultJson) {
-    // Sync authSetting from host result before settling the promise
     var parsed;
     try { parsed = JSON.parse(resultJson); } catch (_) { parsed = {}; }
-    // No local sync: the host is the authority and `getSetting` reads it
-    // directly, so copying the reply into a shadow map would only create a
-    // second answer that can disagree with the first.
-    _openSettingApi.settle(resultJson);
+    if (parsed === null || typeof parsed !== 'object') parsed = {};
+    // openSetting answers with the settings as the player left them. Read
+    // from the host's standing decisions -- what getSetting reads -- rather
+    // than from the reply, so the two cannot disagree; a host that reports
+    // each decision as it changes has already recorded what was toggled.
+    if (!parsed.error) parsed.authSetting = _cloneAuthSetting();
+    _openSettingApi.settleParsed(parsed);
 }
 
 // ---- host-side helpers -----------------------------------------------------

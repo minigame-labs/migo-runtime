@@ -31,6 +31,11 @@
     "the event to content; the host never names one. `op` is the engine op that makes the request,",
     "which the gate checks still exists.",
     "",
+    "A call may report progress while in flight (migo_session_update_host_service_call), delivered",
+    "to `progress_hook`. `withheld` names result fields the engine keeps rather than delivers: a",
+    "downloaded subpackage's `zipPath` is a host path that must never reach content, so the engine",
+    "records it for the install and strips it.",
+    "",
     "Checked by engine/crates/capi/src/host_services.rs's tests (the Rust table) and",
     "scripts/test-host-services-contract.sh (the C header, the ops and the hooks)."
   ],
@@ -162,6 +167,63 @@
           "id": 2,
           "kind": "command",
           "op": "op_open_customer_service_conversation"
+        }
+      },
+      "events": {}
+    },
+    "subpackage": {
+      "id": 5,
+      "methods": {
+        "download": {
+          "id": 0,
+          "kind": "call",
+          "op": "op_download_subpackage",
+          "hook": "_internalOnSubpackageResult",
+          "progress_hook": "_internalOnSubpackageProgress",
+          "withheld": [
+            "zipPath"
+          ],
+          "error_code_field": null
+        }
+      },
+      "events": {}
+    },
+    "permission": {
+      "id": 6,
+      "methods": {
+        "request_scope": {
+          "id": 0,
+          "kind": "call",
+          "op": "op_authorize",
+          "hook": "_internalOnAuthorizeResult",
+          "error_code_field": null
+        }
+      },
+      "events": {}
+    },
+    "setting": {
+      "id": 7,
+      "methods": {
+        "open_setting": {
+          "id": 0,
+          "kind": "call",
+          "op": "op_open_setting",
+          "hook": "_internalOnOpenSettingResult",
+          "error_code_field": "errCode"
+        },
+        "open_system_bluetooth_setting": {
+          "id": 1,
+          "kind": "call",
+          "op": "op_open_system_bluetooth_setting",
+          "hook": "_internalOnOpenBluetoothSettingResult",
+          "error_code_field": "errCode"
+        },
+        "open_app_authorize_setting": {
+          "id": 2,
+          "kind": "call",
+          "op": "op_open_app_authorize_setting",
+          "hook": "_internalOnOpenAppAuthorizeSettingFinished",
+          "error_code_field": "errCode"
         }
       },
       "events": {}
