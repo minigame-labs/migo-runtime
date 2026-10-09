@@ -241,6 +241,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- Asynchronous APIs answer by callback or by Promise, as wx does, not by both. Options carrying `success`, `fail` or
+  `complete` are answered through them and the call returns nothing; options carrying none get a Promise. Every API
+  used to return a Promise as well, which callback-style content never held -- so each failure it handled in `fail`
+  also surfaced as an unhandled rejection. The one helper that chained on such a call (`getWritePhotosAlbum`) now
+  follows the same rule.
+- A host result without a `requestId` is discarded rather than settling the oldest pending request of that API, which
+  answered the wrong call whenever two were in flight. Every host path stamps the id.
+- `openSystemBluetoothSetting` answers under its own name (`openSystemBluetoothSetting:ok`).
 - `getSetting` reports a scope nobody has been asked about as absent rather than `false`, as the mini-game convention
   has it. Content sends the player to `openSetting` after a refusal and calls `authorize` for a scope it has never
   asked, and a report that collapsed the two sent players to the settings page for a question nobody had asked.

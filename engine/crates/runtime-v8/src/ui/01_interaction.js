@@ -57,12 +57,9 @@ function showModal(options) {
 // The platform hands these back as integers over JNI, so there is no JSON to
 // parse -- the object is built here and correlated by the same rule.
 //
-// A non-positive id is *omitted* rather than passed through, and that is the
-// whole reason this is not a one-liner: an integer parameter cannot be absent
-// the way a JSON key can, so the platform signals "this request carried no id"
-// with 0. Writing that 0 into the result would make the settler read it as
-// present-and-invalid and discard the reply, losing the FIFO fallback that is
-// the only thing left to settle it.
+// A non-positive id is omitted: an integer parameter cannot be absent the way a
+// JSON key can, so the platform says "this request carried no id" with 0, and a
+// result without an id names no request -- the settler discards it.
 function _internalOnModalResult(requestId, confirm, cancel) {
     var result = { confirm: !!confirm, cancel: !!cancel };
     if (requestId > 0) result.requestId = requestId;

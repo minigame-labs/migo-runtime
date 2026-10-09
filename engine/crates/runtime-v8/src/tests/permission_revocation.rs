@@ -367,7 +367,7 @@ fn album_write_and_shared_user_info_op_require_their_scopes() {
         &mut denied_runtime,
         "migo.saveImageToPhotosAlbum({ filePath: '/tmp/image.png', fail() {} }); \
          migo.getUserInfo({ fail() {} }); \
-         migo.getUserProfile({ desc: 'profile', fail() {} }).catch(() => {});",
+         migo.getUserProfile({ desc: 'profile', fail() {} });",
     );
     assert_eq!(denied.image_api.0.load(Ordering::SeqCst), 0);
     assert_eq!(denied.auth.0.load(Ordering::SeqCst), 0);
@@ -378,7 +378,7 @@ fn album_write_and_shared_user_info_op_require_their_scopes() {
         &mut granted_runtime,
         "migo.saveImageToPhotosAlbum({ filePath: '/tmp/image.png', fail() {} }); \
          migo.getUserInfo({ fail() {} }); \
-         migo.getUserProfile({ desc: 'profile', fail() {} }).catch(() => {});",
+         migo.getUserProfile({ desc: 'profile', fail() {} });",
     );
     assert_eq!(granted.image_api.0.load(Ordering::SeqCst), 1);
     assert_eq!(granted.auth.0.load(Ordering::SeqCst), 2);

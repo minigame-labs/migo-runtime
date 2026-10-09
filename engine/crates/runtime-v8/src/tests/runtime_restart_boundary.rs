@@ -169,7 +169,7 @@ mod runtime_restart_boundary_tests {
                 globalThis.__api.invoke(
                     { success: function () { globalThis.__settled.push(tag); } },
                     function (_opts, id) { globalThis.__ids.push(id); },
-                ).catch(function () {});
+                );
             };
             // Results arrive through the host bridge, not through a global: the
             // `_internalOn*` names are retired from `globalThis` by hardening
@@ -429,10 +429,8 @@ mod runtime_restart_boundary_tests {
             globalThis.__ran = typeof showModal === 'function';
             if (__ran) {
                 const base = globalThis.__allocId();
-                showModal({ success: function (r) { __out.push('first:' + r.confirm); } })
-                    .catch(function () {});
-                showModal({ success: function (r) { __out.push('second:' + r.confirm); } })
-                    .catch(function () {});
+                showModal({ success: function (r) { __out.push('first:' + r.confirm); } });
+                showModal({ success: function (r) { __out.push('second:' + r.confirm); } });
 
                 // Second one first, by its own id.
                 __hook('_internalOnModalResult', [base + 2, 1, 0]);
@@ -461,12 +459,12 @@ mod runtime_restart_boundary_tests {
                     itemList: ['a'],
                     success: function (r) { __out.push('first:' + r.tapIndex); },
                     fail: function () { __out.push('first:cancel'); },
-                }).catch(function () {});
+                });
                 showActionSheet({
                     itemList: ['b'],
                     success: function (r) { __out.push('second:' + r.tapIndex); },
                     fail: function () { __out.push('second:cancel'); },
-                }).catch(function () {});
+                });
 
                 // An id neither call holds settles neither, not the oldest.
                 __hook('_internalOnActionSheetResult', [base + 99, 0]);
@@ -483,12 +481,12 @@ mod runtime_restart_boundary_tests {
     }
 
     #[test]
-    fn a_ui_result_carrying_no_id_still_settles_through_the_fallback() {
-        // The id crosses this boundary as an integer, and an integer cannot be
-        // absent -- the platform says "no id" by sending 0. If that 0 were
-        // written into the result the settler would read it as present and
-        // invalid and discard the reply, which is worse than the fallback:
-        // nothing would ever settle the call.
+    fn a_result_carrying_no_id_settles_nothing() {
+        // A reply without an id names no request. Settling the oldest pending
+        // one with it -- the fallback this replaced -- answered the wrong call
+        // whenever two were in flight, and every host path now stamps the id,
+        // so an id-less reply is discarded and the call it might have been for
+        // is left to its own result.
         let mut rt = boot(Arc::new(CallbackIdAllocator::default()));
         exec(
             &mut rt,
@@ -496,14 +494,17 @@ mod runtime_restart_boundary_tests {
             globalThis.__out = [];
             globalThis.__ran = typeof openAppAuthorizeSetting === 'function';
             if (__ran) {
-                openAppAuthorizeSetting({ success: function () { __out.push('ok'); } })
-                    .catch(function () {});
-                __hook('_internalOnOpenAppAuthorizeSettingFinished', [0, 0]);
+                const base = globalThis.__allocId();
+                openAppAuthorizeSetting({ success: function () { __out.push('ok'); } });
+                __hook('_internalOnOpenAppAuthorizeSettingFinished', [JSON.stringify({})]);
+                __out.push('after-bare');
+                __hook('_internalOnOpenAppAuthorizeSettingFinished',
+                    [JSON.stringify({ requestId: base + 1 })]);
             }
             "#,
         );
 
-        assert_js(&mut rt, "!__ran || __out.join('|') === 'ok'");
+        assert_js(&mut rt, "!__ran || __out.join('|') === 'after-bare|ok'");
     }
 
     #[test]

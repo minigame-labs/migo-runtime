@@ -4,7 +4,9 @@ import {
     op_get_user_info,
     op_get_phone_number,
 } from "ext:core/ops";
-import { allocateHostCallbackId, parseHostCallbackId, invokeCallback, failMessage } from "ext:host_v8_base/02_async.js";
+import { allocateHostCallbackId, parseHostCallbackId, invokeCallback, failMessage,
+    createSettlement,
+} from "ext:host_v8_base/02_async.js";
 
 const noop = () => {};
 
@@ -73,7 +75,10 @@ function login(options = {}) {
     // had finished. Settlement is folded into the stored callbacks, which
     // is `getUserProfile`'s shape here and leaves the settle functions
     // untouched.
-    return new Promise(function (resolve, reject) {
+    const settlement = createSettlement(opts);
+    const resolve = settlement.resolve;
+    const reject = settlement.reject;
+    (function () {
         let requestId;
         try {
             requestId = allocateHostCallbackId();
@@ -98,7 +103,8 @@ function login(options = {}) {
                 reject(res);
             });
         }
-    });
+    })();
+    return settlement.promise;
 }
 
 function checkSession(options = {}) {
@@ -107,7 +113,10 @@ function checkSession(options = {}) {
     const fail = typeof opts.fail === "function" ? opts.fail : noop;
     const complete = typeof opts.complete === "function" ? opts.complete : noop;
 
-    return new Promise(function (resolve, reject) {
+    const settlement = createSettlement(opts);
+    const resolve = settlement.resolve;
+    const reject = settlement.reject;
+    (function () {
         let requestId;
         try {
             requestId = allocateHostCallbackId();
@@ -128,7 +137,8 @@ function checkSession(options = {}) {
                 reject(res);
             });
         }
-    });
+    })();
+    return settlement.promise;
 }
 
 function getUserInfo(options = {}) {
@@ -147,7 +157,10 @@ function getUserInfo(options = {}) {
     // had finished. Settlement is folded into the stored callbacks, which
     // is `getUserProfile`'s shape here and leaves the settle functions
     // untouched.
-    return new Promise(function (resolve, reject) {
+    const settlement = createSettlement(opts);
+    const resolve = settlement.resolve;
+    const reject = settlement.reject;
+    (function () {
         let requestId;
         try {
             requestId = allocateHostCallbackId();
@@ -172,7 +185,8 @@ function getUserInfo(options = {}) {
                 reject(res);
             });
         }
-    });
+    })();
+    return settlement.promise;
 }
 
 function getPhoneNumber(options = {}) {
@@ -191,7 +205,10 @@ function getPhoneNumber(options = {}) {
     // had finished. Settlement is folded into the stored callbacks, which
     // is `getUserProfile`'s shape here and leaves the settle functions
     // untouched.
-    return new Promise(function (resolve, reject) {
+    const settlement = createSettlement(opts);
+    const resolve = settlement.resolve;
+    const reject = settlement.reject;
+    (function () {
         let requestId;
         try {
             requestId = allocateHostCallbackId();
@@ -220,7 +237,8 @@ function getPhoneNumber(options = {}) {
                 reject(res);
             });
         }
-    });
+    })();
+    return settlement.promise;
 }
 
 function _internalOnLoginResult(resultJson) {
@@ -392,7 +410,10 @@ function getUserProfile(options = {}) {
     const lang = _normalizeLang(opts.lang);
     const desc = typeof opts.desc === "string" ? opts.desc : "";
 
-    return new Promise(function (resolve, reject) {
+    const settlement = createSettlement(opts);
+    const resolve = settlement.resolve;
+    const reject = settlement.reject;
+    (function () {
         let requestId;
         try {
             requestId = allocateHostCallbackId();
@@ -426,7 +447,8 @@ function getUserProfile(options = {}) {
                 reject(res);
             });
         }
-    });
+    })();
+    return settlement.promise;
 }
 
 export {

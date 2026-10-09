@@ -20,7 +20,7 @@ The Bluetooth capability group covers three related but distinct layers:
 - **BLE (Bluetooth Low Energy)**: GATT connections, service/characteristic reads, writes and notifications, RSSI, and MTU negotiation.
 - **Beacon (iBeacon)**: beacon scanning over BLE, independent of general device discovery.
 
-Operation APIs are exposed under the `migo.*` namespace and return a Promise; they also support `options.success` / `options.fail` callbacks. Event APIs use the `on*` / `off*` listener pattern described below.
+Operation APIs are exposed under the `migo.*` namespace and answer by wx's rule: options carrying `success`, `fail` or `complete` are answered through those callbacks and the call returns nothing; options carrying none get a Promise. Event APIs use the `on*` / `off*` listener pattern described below.
 
 ---
 

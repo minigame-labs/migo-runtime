@@ -84,8 +84,43 @@ function invokeCallback(apiName, kind, cb, res) {
     }
 }
 
+// How an asynchronous call is answered, by wx's rule for every one of them:
+// options that carry `success`, `fail` or `complete` are answered through those
+// callbacks and the call returns nothing; options that carry none are answered
+// by the Promise the call returns.
+//
+// Returning a Promise to callback-style content as well is not a harmless
+// extra. Nobody holds it, so every failure that content handled in `fail`
+// still rejected that Promise -- and an unhandled rejection is reported as an
+// error, for a call that went exactly as content expected.
+function isCallbackStyle(options) {
+    return options !== null && typeof options === 'object' && (
+        typeof options.success === 'function' ||
+        typeof options.fail === 'function' ||
+        typeof options.complete === 'function');
+}
+
+function noop() {}
+
+// The answer to one asynchronous call: `promise` is what the call returns --
+// undefined for callback-style options -- and `resolve` / `reject` settle it.
+// Calling them for a callback-style call does nothing; the callbacks carry the
+// answer there.
+function createSettlement(options) {
+    if (isCallbackStyle(options)) {
+        return { promise: undefined, resolve: noop, reject: noop };
+    }
+    var resolve, reject;
+    var promise = new Promise(function (res, rej) {
+        resolve = res;
+        reject = rej;
+    });
+    return { promise: promise, resolve: resolve, reject: reject };
+}
+
 function wrapAsync(apiName, fn, options) {
     const { success, fail, complete } = options || {};
+    const callbackStyle = isCallbackStyle(options);
     const profiling = _perf.enabled;
     const t0 = profiling ? performance.now() : 0;
     try {
@@ -97,7 +132,7 @@ function wrapAsync(apiName, fn, options) {
             }
         }
         const p = (result instanceof Promise) ? result : Promise.resolve(result);
-        return p.then(
+        const answered = p.then(
             function (value) {
                 if (profiling) {
                     const totalElapsed = performance.now() - t0;
@@ -122,14 +157,17 @@ function wrapAsync(apiName, fn, options) {
                 const res = { errMsg: failMessage(apiName, e) };
                 invokeCallback(apiName, 'fail', fail, res);
                 invokeCallback(apiName, 'complete', complete, res);
+                // The callbacks were the answer; nothing is left to reject.
+                if (callbackStyle) return undefined;
                 throw res;
             }
         );
+        return callbackStyle ? undefined : answered;
     } catch (e) {
         const res = { errMsg: failMessage(apiName, e) };
         queueMicrotask(function () { invokeCallback(apiName, 'fail', fail, res); });
         queueMicrotask(function () { invokeCallback(apiName, 'complete', complete, res); });
-        return Promise.reject(res);
+        return callbackStyle ? undefined : Promise.reject(res);
     }
 }
 
@@ -166,8 +204,7 @@ function promisify(apiName, executor) {
 // `_internalOn*Result` callback.
 //
 // Supports concurrent requests via Map-based tracking (requestId per call).
-// settle() matches by parsed.requestId if present, otherwise settles the
-// oldest pending request (FIFO fallback for backward compatibility).
+// settle() matches by parsed.requestId; a result without one is discarded.
 //
 // Usage:
 //   const _loc = createDeferredApi('getLocation');
@@ -179,7 +216,8 @@ function promisify(apiName, executor) {
 //   }
 //   function _internalOnLocationResult(json) { _loc.settle(json); }
 //
-// - invoke(options, executor): stores callbacks + resolve/reject, calls executor, returns Promise
+// - invoke(options, executor): stores callbacks + resolve/reject, calls executor, returns the
+//   Promise -- or nothing, for callback-style options (see isCallbackStyle)
 // - settle(resultJson): parses JSON, resolves/rejects, fires success/fail/complete
 //
 // Both callback and Promise styles are supported:
@@ -240,8 +278,11 @@ function createDeferredApi(apiName, defaultTimeoutMs) {
         var success = typeof opts.success === 'function' ? opts.success : null;
         var fail = typeof opts.fail === 'function' ? opts.fail : null;
         var complete = typeof opts.complete === 'function' ? opts.complete : null;
+        var settlement = createSettlement(opts);
+        var resolve = settlement.resolve;
+        var reject = settlement.reject;
 
-        return new Promise(function (resolve, reject) {
+        (function () {
             // Admission is runtime-wide and independent of timer capacity:
             // timeout=0 requests still need a finite in-flight bound.
             if (_deferredPendingCount >= MAX_DEFERRED_PENDING) {
@@ -303,7 +344,8 @@ function createDeferredApi(apiName, defaultTimeoutMs) {
                 invokeCallback(apiName, 'complete', entry.complete, res);
                 entry.reject(res);
             }
-        });
+        })();
+        return settlement.promise;
     }
 
     function settle(resultJson) {
@@ -320,41 +362,19 @@ function createDeferredApi(apiName, defaultTimeoutMs) {
     // encoding existed. Correlation is one implementation either way: the hooks
     // build the object, this decides whose request it answers.
     function settleParsed(parsed) {
-        // A result that carries the key at all is correlated by it, in any
-        // form. `null`, `1.5`, `-1`, `0`, `2147483648` and `"abc"` are all
-        // *present and not an id*, so they are discarded rather than allowed
-        // to reach the fallback below and settle somebody else's request.
-        if (parsed !== null && typeof parsed === 'object' && 'requestId' in parsed) {
-            var requestId = parseHostCallbackId(parsed.requestId);
-            if (requestId === null) return;
-            var entry = removePending(requestId);
-            if (entry) _settleEntry(entry, parsed);
-            // Present but unknown: already settled, or timed out. Discarding is
-            // the only safe answer -- there is no second candidate.
-            return;
-        }
-
-        // Fallback: settle the oldest pending request (FIFO), reached only when
-        // the platform omits `requestId` entirely.
-        //
-        // Do not delete this yet, and the reason has moved. Every Android path
-        // now echoes the id -- location, scan, image, video, modal, action
-        // sheet, Bluetooth and application settings. What is left is the other
-        // three platforms: a host that answers without an id is not a bug in
-        // this file, and deleting the fallback would not make it fail loudly,
-        // it would leave its promises unsettled forever. This goes when every
-        // shipped host echoes, not when Android does.
-        var iter = _pending.keys();
-        var first = iter.next();
-        if (!first.done) {
-            console.warn(
-                'createDeferredApi(' + apiName + '): response has no requestId, ' +
-                'using FIFO fallback. Platform Manager should include requestId ' +
-                'in the result JSON to support concurrent requests correctly.'
-            );
-            var entry = removePending(first.value);
-            _settleEntry(entry, parsed);
-        }
+        // Correlated by the id and nothing else. `null`, `1.5`, `-1`, `0`,
+        // `2147483648` and `"abc"` are *present and not an id*; a result with
+        // no id at all names no request -- settling the oldest pending one
+        // with it, as this once did, answered the wrong call whenever two were
+        // in flight. Every host path stamps the id: Android's managers echo it,
+        // and on every other platform the engine writes it from the call the
+        // host completes. An id that is pending no longer was settled or timed
+        // out, and there is no second candidate.
+        if (parsed === null || typeof parsed !== 'object' || !('requestId' in parsed)) return;
+        var requestId = parseHostCallbackId(parsed.requestId);
+        if (requestId === null) return;
+        var entry = removePending(requestId);
+        if (entry) _settleEntry(entry, parsed);
     }
 
     // Native cancellation, when a platform supports it, uses the same
@@ -479,6 +499,8 @@ function errorToString(err) {
 
 export {
     failMessage,
+    isCallbackStyle,
+    createSettlement,
     wrapAsync,
     promisify,
     createDeferredApi,

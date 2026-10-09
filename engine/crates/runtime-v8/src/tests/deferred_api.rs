@@ -147,7 +147,7 @@ mod deferred_api_tests {
                 complete: function() { _completeCount++; }
             }, function(opts, id) {
                 _execCount++;
-            }).catch(function() {});
+            });
             "#,
         );
         drain(&mut rt);
@@ -186,7 +186,7 @@ mod deferred_api_tests {
                 complete: function() { _completeCount++; }
             }, function(opts, id) {
                 throw new Error("executor exploded");
-            }).catch(function() {});
+            });
             "#,
         );
         drain(&mut rt);
@@ -233,7 +233,7 @@ mod deferred_api_tests {
                 _timeout: 5000,
                 fail:     function() { _failCount++; },
                 complete: function() { _completeCount++; }
-            }, function(opts, id) { /* no-op */ }).catch(function() {});
+            }, function(opts, id) { /* no-op */ });
 
             // Manually trigger the captured timer to simulate timeout expiry.
             if (_lastTimerId !== null) { _timerFns[_lastTimerId].fn(); }
@@ -277,7 +277,7 @@ mod deferred_api_tests {
                 complete: function() { _completeCount++; }
             }, function(opts, id) {
                 capturedId = id;
-            }).catch(function() {});
+            });
             "#,
         );
         exec(
@@ -334,7 +334,7 @@ mod deferred_api_tests {
                 complete:  function() { _completeCount++; }
             }, function(opts, id) {
                 capturedId = id;
-            }).catch(function() {});
+            });
 
             // JS-side timeout fires first.
             if (capturedTimerId !== null) { _timerFns[capturedTimerId].fn(); }
@@ -380,7 +380,7 @@ mod deferred_api_tests {
                 complete: function() { _completeCount++; }
             }, function(opts, id) {
                 capturedId = id;
-            }).catch(function() {});
+            });
             if (!api.cancel(capturedId, 'cancelled')) throw new Error('cancel did not find request');
             if (api.cancel(capturedId, 'cancelled again')) throw new Error('cancel settled twice');
             api.settle(JSON.stringify({ requestId: capturedId }));
@@ -430,7 +430,7 @@ mod deferred_api_tests {
                 complete: function() { _overflowComplete++; }
             }, function(opts, id) {
                 _overflowExec++;
-            }).catch(function() {});
+            });
             "#,
         );
         drain(&mut rt);

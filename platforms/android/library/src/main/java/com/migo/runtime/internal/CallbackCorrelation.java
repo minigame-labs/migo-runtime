@@ -8,9 +8,10 @@ import org.json.JSONObject;
  *
  * <p>The runtime allocates one id per deferred request from a space that
  * outlives the JavaScript isolate, sends it in the request JSON, and matches
- * the reply by it. A reply that omits the id falls back to settling the
- * <em>oldest</em> pending request, which is wrong whenever two are in flight —
- * two concurrent Sessions, or one game calling the same API twice.
+ * the reply by it and by nothing else: a reply that omits the id names no
+ * request and is discarded. (It once settled the <em>oldest</em> pending
+ * request instead, which was wrong whenever two were in flight — two
+ * concurrent Sessions, or one game calling the same API twice.)
  *
  * <p>Two rules live here rather than in each manager, because a second copy of
  * either is a second answer to who a result belongs to:
@@ -20,9 +21,8 @@ import org.json.JSONObject;
  *       so writing a value it will reject is the same as writing nothing —
  *       except that it also loses the fallback.
  *   <li><b>Absent stays absent.</b> A request that carried no id must get a
- *       reply with no {@code requestId} key at all. Stamping {@code 0} would
- *       make the runtime discard the reply as "present and not an id", which
- *       is worse than the fallback it would otherwise have taken.
+ *       reply with no {@code requestId} key at all, rather than an id the
+ *       runtime never issued.
  * </ul>
  */
 public final class CallbackCorrelation {

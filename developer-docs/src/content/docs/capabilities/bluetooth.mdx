@@ -20,7 +20,7 @@ sourcePaths:
 - **BLE（低功耗蓝牙）**：GATT 连接、服务/特征读写与通知、RSSI、MTU 协商。
 - **Beacon（iBeacon）**：基于 BLE 的信标扫描，独立于通用设备发现之外。
 
-操作 API 均挂载在 `migo.*` 命名空间下并返回 Promise；它们也支持通过 `options.success` / `options.fail` 回调接收结果。事件 API 使用下文的 `on*` / `off*` 监听器方式。
+操作 API 均挂载在 `migo.*` 命名空间下，按 wx 的规则作答：`options` 里带 `success` / `fail` / `complete` 时通过回调作答、调用本身无返回值；都不带时返回 Promise。事件 API 使用下文的 `on*` / `off*` 监听器方式。
 
 ---
 
