@@ -45,7 +45,7 @@ impl FrameClock for AndroidPlatform {
     }
 
     fn request_vsync(&self, host_id: i32) {
-        // R1: route to `NativeExports.requestVsync`, which hops to the main
+        // Route to `NativeExports.requestVsync`, which hops to the main
         // thread and arms one Choreographer callback. Failures here are benign
         // (idle races / session torn down), so log at debug and drop — never
         // escalate to notify_error and never flood on the hot path.

@@ -117,9 +117,9 @@ pub async fn fetch_http_image(
             None => break,
         }
     }
-    // `HTTP_IMAGE_CONNECT_TIMEOUT` is baked into the shared reqwest
-    // client built by `fetch::get_or_create_client_from_state`; refer
-    // to that module if you want to adjust per-request connect time.
+    // `HTTP_IMAGE_CONNECT_TIMEOUT` documents the connect budget that
+    // `client::policy_client_builder` applies (5s); adjust that builder
+    // to change it.
     let _ = HTTP_IMAGE_CONNECT_TIMEOUT;
     Ok(buf)
 }

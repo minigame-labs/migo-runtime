@@ -40,7 +40,7 @@ WKWebView 同一个 JavaScriptCore），渲染留在 App 进程：每帧的绘�
 由 Migo 的渲染器画进宿主的 `CAMetalLayer`。
 
 这意味着 iOS 上**内容 JavaScript 的执行速度与 WKWebView 相同**，不存在“JS 更快”；两者的
-差别在把画面送上屏的那条链路。0.9.7 时这条链路还没有在设备上测量过，不作性能声明。
+差别在把画面送上屏的那条链路。0.9.7 时这条链路的对照性能数据尚未发布，不作性能声明。
 
 另外有一条 `MigoAppleWebKit`（整页 WebKit、无 native 渲染）车道，它只有 WebView 会话，
 **不在 SDK 里**：在 web 平台上实现 `migo.*` 之前，它没有可供内容调用的东西。

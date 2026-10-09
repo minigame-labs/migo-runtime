@@ -3,8 +3,8 @@
 # Assert that what the content drew reaches the window, and nothing else does.
 # Location: scripts/verify-bypass-present.sh
 #
-# Specification Section 7.3 requires no redundant presentation copy, and Section
-# 6.4's GL-state contract requires the engine not to change bindings behind the
+# The presentation contract requires no redundant presentation copy, and the
+# GL-state contract requires the engine not to change bindings behind the
 # content's back. Both were unmet, and neither showed up in any test, because
 # "the blit needs a live GL context" was read as "this is device-blocked". The
 # blit is unobservable here; the *presented frame* is not.

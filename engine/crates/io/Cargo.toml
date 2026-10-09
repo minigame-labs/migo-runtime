@@ -82,6 +82,6 @@ libc = "0.2"
 tempfile = "3"
 texture2ddecoder = "0.1.2"
 tokio = { workspace = true, features = ["rt-multi-thread"] }
-# Section 7.3's steady-state allocation gate. A dev-dependency by construction:
+# The steady-state allocation gate. A dev-dependency by construction:
 # the counting allocator must never be reachable from a shipped cdylib.
 migo-alloc-probe = { path = "../../testing/alloc-probe", default-features = false }

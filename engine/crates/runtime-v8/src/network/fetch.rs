@@ -478,7 +478,7 @@ pub async fn op_fetch_upload(
 
 #[cfg(test)]
 mod js_regression_tests {
-    //! JS-mock regression tests for NET-01, NET-02, NET-04.
+    //! JS-mock regression tests.
     //!
     //! Seam: the production `.js` source is executed in a bare `JsRuntime` with
     //! all imported symbols replaced by in-script stubs (FNET-01 pattern from
@@ -516,7 +516,7 @@ mod js_regression_tests {
 
     // ── NET-01 ─────────────────────────────────────────────────────────────────
 
-    /// NET-01 regression (OPEN-ITEMS-host-vs-device.md):
+    /// Regression:
     /// `downloadFile` abort() used to close only the send cancel handle; the
     /// response body resource (`responseRid`) was not touched until `core.read`
     /// unblocked — non-deterministic, and the resource leaked if the read never
@@ -726,7 +726,7 @@ mod js_regression_tests {
 
     // ── NET-02 ─────────────────────────────────────────────────────────────────
 
-    /// NET-02 regression (OPEN-ITEMS-host-vs-device.md):
+    /// Regression:
     /// Concurrent `downloadFile` calls to the same destination shared a fixed
     /// `.part` path — the second task would truncate the first.  The fix adds a
     /// module-level monotonic counter to `generateTempFilePath` in `05_download.js`.

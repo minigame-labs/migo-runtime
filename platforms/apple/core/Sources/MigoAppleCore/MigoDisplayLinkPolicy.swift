@@ -2,7 +2,7 @@ import Foundation
 
 /// Which vsync source the presenter uses, and at what cadence.
 ///
-/// **What this is not.** G0 has to choose the Performance+ *frame clock* between a
+/// **What this is not.** The Performance+ *frame-clock* choice between a
 /// feature-detected Worker `requestAnimationFrame`, a Window rAF relay, and a host
 /// display-link relay -- and that choice is a measurement nobody has taken. This is
 /// the other clock: the one the native presenter needs to know when a drawable is

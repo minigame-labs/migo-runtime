@@ -57,7 +57,7 @@ pub(crate) async fn op_await_next_frame(state: Rc<RefCell<OpState>>) -> Result<f
         )
     };
 
-    // R1: publish demand and kick the one-shot arm BEFORE awaiting, so an idle
+    // Publish demand and kick the one-shot arm BEFORE awaiting, so an idle
     // display clock wakes up and the render thread knows a waiter is pending
     // (it only signals RAF when the demand latch is set).
     let mut ticket = raf_publish_demand_and_arm(&demand, arm.as_ref());
@@ -195,7 +195,7 @@ mod tests {
         assert_ne!(ticket, 0);
     }
 
-    /// R1 source contract for the demand-driven RAF loop. The loop must stop the
+    /// Source contract for the demand-driven RAF loop. The loop must stop the
     /// instant no callbacks remain (no idle-frame tail), and the resume hook must
     /// not restart (and thus arm a vsync) when the callback queue is empty.
     #[test]

@@ -120,7 +120,7 @@ final class MigoProbeHarnessTests: XCTestCase {
         // WebKit delivers a fetch body as a stream rather than as `httpBody`,
         // and a handler that read only the inline form would report "the body
         // was lost" for a body that arrived -- which is exactly the WebKit bug
-        // A5 cited, recreated locally, against a bug that is RESOLVED FIXED.
+        // The cited behavior is recreated locally against a bug that is RESOLVED FIXED.
         var request = URLRequest(url: URL(string: "migo-probe://probe/echo-body")!)
         request.httpMethod = "POST"
         let payload = Data([0x6d, 0x69, 0x67, 0x6f, 0x00, 0xff, 0x10, 0x20])
@@ -143,7 +143,7 @@ final class MigoProbeHarnessTests: XCTestCase {
         // whenever the next bytes have not arrived yet, so a loop conditioned on it
         // returns a *prefix*. This handler echoes what it read and the page compares
         // bytes, so a prefix is reported as "the other side received N of M bytes" --
-        // A5's own failure mode, produced by this file rather than by the platform.
+        // The same failure mode, produced by this file rather than by the platform.
         //
         // A bound stream pair is the only way to build that shape locally: an
         // InputStream(data:) always has its bytes available and cannot fail the way

@@ -4,7 +4,7 @@
 //! different files. It hands the resolver a `GamePaths` it built itself, which
 //! leaves the more interesting half unproven: that a real `evaluate_module`
 //! turns a *game id* into that `GamePaths`, and that two Sessions alive at once
-//! hold two different ones rather than sharing a slot. Section 6.4's concurrent
+//! hold two different ones rather than sharing a slot. The concurrent-identity
 //! isolation is a claim about two Sessions, and every test of it so far has been
 //! a claim about one function given distinct inputs.
 //!
@@ -373,7 +373,7 @@ mod tests {
         }
     }
 
-    /// The property Section 6.4 is actually about: two Sessions running at once,
+    /// The property concurrent isolation is actually about: two Sessions running at once,
     /// each writing to its own storage.
     ///
     /// **Both Sessions are given the *same* app directories on purpose.** Handing
@@ -428,12 +428,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// Two live Sessions hold two text texture caches, which is Section 6.4 defect 1
-    /// at the layer the defect was about.
+    /// Two live Sessions hold two text texture caches, proving isolation
+    /// at the layer this test targets.
     ///
     /// The cache's own isolation tests take two host ids from
     /// `text_cache_for_host` and show the registry separates them. That is a claim
-    /// about a registry given distinct keys — the same shape task 0.62 replaced for
+    /// about a registry given distinct keys — the same shape an earlier fix replaced for
     /// storage. What was never executed is the step before it: that a Session *binds*
     /// its own cache, through `CanvasOpState::for_host` in the `web` extension's state
     /// init, so two live Sessions end up on two caches without anyone choosing a key.
@@ -500,8 +500,8 @@ mod tests {
 
     /// One game exhausting its storage quota leaves the other's untouched.
     ///
-    /// Section 6.4 lists "per-game filesystem, key-value, and quota isolation
-    /// derived from the game identity" as an enforced property, and task 0.62 closed
+    /// "Per-game filesystem, key-value, and quota isolation
+    /// derived from the game identity" is an enforced property; an earlier fix closed
     /// the *namespace* half: two live Sessions resolve to two directories. Distinct
     /// directories are necessary and not sufficient. Nothing showed that the 10 MB
     /// limit is *each game's* 10 MB, which is a claim about where the accounting

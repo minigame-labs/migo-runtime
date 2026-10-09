@@ -9,7 +9,7 @@
 # is not a performance trade: the Window main agent's `[[CanBlock]]` is false, so
 # `Atomics.wait` throws there, and a synchronous reply is not slower -- it does
 # not exist. The size of this set is therefore the size of what the Window lane
-# would have to give up, and `docs/apple-final-implementation-plan.md` E1 named
+# would have to give up, and the final implementation plan's E1 named
 # four examples where the derived answer is twenty-three content-visible ones.
 #
 # On Android, today, each of these stalls the JavaScript thread for a round trip.

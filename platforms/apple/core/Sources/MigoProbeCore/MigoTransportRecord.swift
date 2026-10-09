@@ -62,7 +62,7 @@ public struct MigoTransportRecord: Codable, Sendable, Equatable {
 
     /// What the HOST spent serving this batch, from its own Mach counters.
     ///
-    /// A32's threshold has two halves and latency is one; this is the other. The
+    /// The comparison threshold has two halves and latency is one; this is the other. The
     /// two channels differ in the shape of their cost -- one connection with
     /// per-message framing, against a task built and torn down per call -- and
     /// at frame rates the second shape can lose on CPU while looking level on

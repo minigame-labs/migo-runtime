@@ -28,7 +28,7 @@ extension!(
     state = |state| {
         let host = state.borrow::<HostOpState>();
         let render_tx = host.render_tx.clone();
-        // F-2: adopt the render-thread's shared TextMeasurer handle
+        // Adopt the render-thread's shared TextMeasurer handle
         // so the JS-thread `op_measure_text_flat` fast path is
         // available without a cross-thread round-trip.
         let measurer = host.text_measurer.clone();

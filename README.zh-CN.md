@@ -41,7 +41,8 @@
 
 - **版本可控** —— 引擎随 App 打包，不随手机品牌和系统更新漂移。
 - **可审计** —— 源码公开，发布包带校验和，可从源码复现。
-- **兼容现有内容** —— Cocos、Laya、Egret、Pixi、Phaser、原生 Canvas/WebGL，以及小游戏内容。
+- **受限机型上也快** —— JavaScript 从预构建 V8 启动快照启动，ASTC/KTX2 压缩纹理直传（不走 CPU 解码），内置完整 Web Audio 节点族与 ICU 版 Intl。
+- **兼容现有内容** —— Pixi、Phaser、three.js、Babylon.js、PlayCanvas、Egret、p5.js、EaselJS、Howler、原生 Canvas/WebGL，以及小游戏内容：全部以固定版本、不改一行地在 conformance 套件的真实 macOS 宿主上逐一跑过，其中大部分还在 iPhone 12 上跑过。Cocos Creator 和 Laya 尚未进入该套件，不作兼容性声明。
 - **主导权在你** —— 登录、支付、广告、下载由你的 App 决定，没实现的能力不会假装成功。
 
 ## 架构
@@ -49,7 +50,7 @@
 ```text
 ┌──────────────────────────────────────────────────────────────────┐
 │  YOUR GAME     game.js + assets                                  │
-│                Cocos, Laya, Egret, Pixi, Phaser, Canvas/WebGL    │
+│                Pixi, Phaser, three.js, Egret, Canvas/WebGL, …    │
 ├──────────────────────────────────────────────────────────────────┤
 │  ADAPTERS      migo-wx-adapter, migo-web-adapter                 │
 │  (optional)    map wx.* and browser globals onto migo.*          │

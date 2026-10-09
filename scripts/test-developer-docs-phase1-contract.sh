@@ -188,7 +188,7 @@ if arch is not None:
 #
 # Mermaid 把 `A[text (x)]` 里的 `(` 读成形状语法,整张图渲染成错误框。英文首页与
 # 架构页的两张图就是这样坏着上线的:官网在发布边界打了一个补丁
-# (migo-www docs/patches/migo-docs-mermaid-labels.patch)才把它们救回来,
+# (门户仓库 docs/patches/migo-docs-mermaid-labels.patch)才把它们救回来,
 # 而本仓库自己的构建与测试都没有察觉。全角括号不触发,中文页因此一直正常。
 unquoted_label = re.compile(r'\b[A-Za-z0-9_]+\[(?!")([^\]\n]*[()][^\]\n]*)\]')
 for page in sorted(docs_root.rglob("*.mdx")):

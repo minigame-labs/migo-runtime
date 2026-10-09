@@ -75,8 +75,8 @@ pub(super) fn init_skia_for_canvas(
 
     // An offscreen canvas can share one `GrDirectContext` with every other
     // offscreen canvas instead of owning one. That context is 96% of what an
-    // offscreen canvas costs in `Graphics` -- 4.66 MB of 4.86 MB, measured; see
-    // `docs/performance/android/multicanvas-fixed-cost.md`.
+    // offscreen canvas costs in `Graphics` -- 4.66 MB of 4.86 MB, measured; the
+    // full attribution is in the 2026 multicanvas fixed-cost analysis.
     //
     // Only offscreen. The onscreen canvas renders into the DrawingBuffer FBO
     // that the present blit reads, and it is one canvas, so it has nothing to

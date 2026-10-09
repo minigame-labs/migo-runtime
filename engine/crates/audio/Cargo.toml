@@ -64,6 +64,6 @@ ndk-context = "0.1"
 [dev-dependencies]
 # Occupies the shared streaming worker and requires a co-tenant task to run anyway.
 migo-executor-probe = { path = "../../testing/executor-probe", default-features = false }
-# Section 7.3's steady-state allocation gate. A dev-dependency by construction:
+# The steady-state allocation gate. A dev-dependency by construction:
 # the counting allocator must never be reachable from a shipped cdylib.
 migo-alloc-probe = { path = "../../testing/alloc-probe", default-features = false }

@@ -28,7 +28,7 @@ public final class MigoCapabilityGate: NSObject {
 
     /// What the person holding the device declares, because no API reports it.
     public struct Attestation: Sendable {
-        /// A24. iOS exposes no public query for Lockdown Mode. `unknown` is the
+        /// iOS exposes no public query for Lockdown Mode. `unknown` is the
         /// honest default and is not the same answer as `off`.
         public var lockdownMode: MigoLockdownMode
         /// Whether a local-network permission alert was presented during the
@@ -491,7 +491,7 @@ public final class MigoCapabilityGate: NSObject {
         }
     }
 
-    /// A6/G0.3, and the one answer no code can take alone.
+    /// The local-network observation, and the one answer no code can take alone.
     ///
     /// There is no API that reports whether the system presented the
     /// local-network alert. What the process can see is whether traffic flowed,

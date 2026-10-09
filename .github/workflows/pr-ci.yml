@@ -898,7 +898,7 @@ jobs:
       # live in `tests/` (struct prefixes, versioned-copy truncation, output
       # policy) and `--lib` would silently skip all 50 of them.
       #
-      # `migo-alloc-probe` is the counting allocator behind Section 7.3's
+      # `migo-alloc-probe` is the counting allocator behind the
       # steady-state allocation gates. It runs without `--lib` for the same
       # reason: half its controls are integration tests, because whether a
       # counting `#[global_allocator]` is installed is a property of a binary and
@@ -906,7 +906,7 @@ jobs:
       #
       # `--tests` for shared and runtime-v8 rather than `--lib`, and the difference
       # is four binaries nothing ran. `shared/tests/frame_cycle_allocation.rs` is
-      # Section 7.3's allocation gate at the frame boundary and has to be its own
+      # the steady-state allocation gate at the frame boundary and has to be its own
       # binary for two reasons it states itself: a `#[global_allocator]` is unique
       # per binary, and the command pools have to be uncontended to measure a cycle
       # at zero. Under `--lib` it never ran here at all. `snapshot_roundtrip` and

@@ -19,7 +19,7 @@
 //! use shared::prelude::*;
 //!
 //! // Create initialization options
-//! let options = InitOptions::new("/tmp/app", 2.0);
+//! let options = InitOptions::new().with_pixel_ratio(2.0);
 //!
 //! // Handle errors with ErrorCode
 //! fn example_operation() -> shared::error::EngineResult<()> {
@@ -90,7 +90,7 @@ pub mod vfs;
 #[cfg(test)]
 pub mod test_support;
 
-// Section 7.3's steady-state allocation gate reads this. `#[cfg(test)]` scopes it
+// The steady-state allocation gate reads this. `#[cfg(test)]` scopes it
 // to this crate's own test binary: a `#[global_allocator]` is unique per binary, so
 // one declared unconditionally here would follow the library into every shipped
 // cdylib. Deleting it does not make the gates pass silently -- each burst proves the
@@ -107,7 +107,7 @@ static COUNTING_ALLOCATOR: migo_alloc_probe::CountingAllocator =
 /// ```rust,ignore
 /// use shared::prelude::*;
 ///
-/// let options = InitOptions::new("/tmp", 1.5);
+/// let options = InitOptions::new().with_pixel_ratio(1.5);
 /// let window = WindowInfo::default();
 /// ```
 pub mod prelude {
@@ -125,7 +125,7 @@ pub use surface::{SafeArea, Surface, SurfaceRef, WindowInfo};
 
 /// Protocol types are intentionally namespaced.
 /// Prefer `use shared::protocol::...` in downstream crates.
-/// `frame_packet` stays re-exported here as an explicit protocol exception for this plan stage.
+/// `frame_packet` stays re-exported here as an explicit protocol exception.
 pub use protocol::{
     frame_packet::{FrameOp, FrameOps, FramePacket, FramePacketBuilder},
     host_cmd::HostCommand,

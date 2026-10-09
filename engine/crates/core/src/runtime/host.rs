@@ -102,11 +102,11 @@ pub(crate) struct Host {
     /// Shared RAF receiver — survives JS runtime restarts.
     raf_rx: RafRx,
 
-    /// R1 RAF waiter demand latch — shared with the render thread; re-cloned
+    /// RAF waiter demand latch — shared with the render thread; re-cloned
     /// into each new HostOpState so it survives JS runtime restarts.
     raf_demand: shared::raf_signal::RafDemandRef,
 
-    /// R1 one-shot vsync arm closure (platform-agnostic). Stored so restart can
+    /// One-shot vsync arm closure (platform-agnostic). Stored so restart can
     /// re-clone it into the new HostOpState. `None` on platforms without a
     /// demand-driven display clock.
     request_vsync: Option<Arc<dyn Fn() + Send + Sync>>,
@@ -349,7 +349,7 @@ impl Host {
             app_cache_dir: init_options.cache_dir().to_path_buf(),
             app_files_dir: init_options.files_dir().to_path_buf(),
             render_tx: render.sender(),
-            // F-2: hand the shared TextMeasurer down from the
+            // Hand the shared TextMeasurer down from the
             // render thread so the JS-thread fast path (JS-side
             // LRU + inline measurement) can bypass the
             // cross-thread RPC entirely.

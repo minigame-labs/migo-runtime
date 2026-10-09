@@ -254,7 +254,7 @@ fn clear_dir(dir: &Path) {
 mod tests {
     use super::*;
 
-    // ---- R7: cache key completeness ----
+    // ---- Cache key completeness ----
 
     #[test]
     fn different_tf_varyings_produce_different_keys() {
@@ -435,7 +435,7 @@ mod tests {
         assert_ne!(k1, k2);
     }
 
-    // ---- P2-PERF5: async save, torn-file safety, limits ----
+    // ---- Async save, torn-file safety, limits ----
 
     fn make_test_dir(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("migo_sc_test_{tag}_{}", std::process::id()));

@@ -20,10 +20,10 @@ use crate::android_permission_gate::{PermissionGate, SessionGate};
 
 /// Run one gated Android device call under a session's own admission.
 ///
-/// Takes the handle rather than the id because Section 7.3 forbids a per-event path
+/// Takes the handle rather than the id because the steady-state requirement forbids a per-event path
 /// acquiring a lock shared beyond its own session: resolving the id here would take the
 /// gate's process-wide live-host map on every call, including the Bluetooth
-/// characteristic writes Section 6.1 names as a steady hot path.
+/// characteristic writes, which are a steady hot path.
 fn permission_jni_call<T>(
     session: &SessionGate,
     scope: Option<Scope>,
@@ -958,6 +958,8 @@ impl GameLogService for AndroidGameLog {
 
 // ==================== Permission ====================
 
+// Consumed by scripts/test-permission-coverage-contract.sh via source
+// parsing, not by Rust call sites; that is why dead_code is allowed.
 #[allow(dead_code)]
 pub(crate) const ANDROID_PERMISSION_GATED_METHODS: &[(&str, Scope)] = &[
     ("RecorderService::start", Scope::Record),
@@ -1013,6 +1015,8 @@ pub(crate) const ANDROID_PERMISSION_GATED_METHODS: &[(&str, Scope)] = &[
     ("AuthService::get_user_info", Scope::UserInfo),
 ];
 
+// Consumed by scripts/test-permission-coverage-contract.sh via source
+// parsing, not by Rust call sites; that is why dead_code is allowed.
 #[allow(dead_code)]
 pub(crate) const ANDROID_PERMISSION_CLEANUP_METHODS: &[(&str, Scope)] = &[
     ("RecorderService::stop", Scope::Record),

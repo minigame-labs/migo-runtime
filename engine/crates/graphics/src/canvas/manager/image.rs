@@ -162,7 +162,7 @@ impl ImageRegistry {
                     // `drawImage`.  That matched the "images go
                     // black" symptom in the P0 audit report.
                     //
-                    // R-9: once-only warn.  A driver that rejects
+                    // Once-only warn.  A driver that rejects
                     // AHB once will reject it every image; spamming
                     // the log at 30+ images per screen turned the
                     // logcat into a 10kB/s firehose of identical

@@ -1,8 +1,8 @@
 # Migo 开发者文档维护手册
 
-本文档说明如何在本地维护开发者文档、发布新版本,并把站点发布到 `migo-www`。所有命令默认在 `developer-docs/` 目录执行;Node.js 版本以 `package.json` 的 `engines` 为准(Astro 7 要求 ≥ 22.12,本仓库统一钉在 ≥ 22.19,与门户一致)。
+本文档说明如何在本地维护开发者文档、发布新版本,并把站点发布到门户站点仓库（私有）。所有命令默认在 `developer-docs/` 目录执行;Node.js 版本以 `package.json` 的 `engines` 为准(Astro 7 要求 ≥ 22.12,本仓库统一钉在 ≥ 22.19,与门户一致)。
 
-技术栈:**Astro 7 + @astrojs/starlight**。搜索用 Starlight 内置的 Pagefind,内部链接由 `starlight-links-validator` 在构建时校验,Mermaid 由 `astro-mermaid` 客户端渲染。构建产物输出到 `build/`(不要在 Astro 配置里改这个目录,migo-www 依赖它)。
+技术栈:**Astro 7 + @astrojs/starlight**。搜索用 Starlight 内置的 Pagefind,内部链接由 `starlight-links-validator` 在构建时校验,Mermaid 由 `astro-mermaid` 客户端渲染。构建产物输出到 `build/`(不要在 Astro 配置里改这个目录,门户站点仓库依赖它)。
 
 ## 1. 本地安装与开发服务器
 
@@ -111,9 +111,9 @@ Portal 是纯深色,所以文档也是深色锁定(`ThemeProvider.astro` + `Them
 1. 先发布 SDK,把 `release/VERSION` 更新为真实版本,再维护文档;不要让文档先宣告尚未发布的 API。
 2. 在 `astro.config.mjs` 的 `starlightVersions()` 配置中把新归档放到 `versions` 数组头部,保留 0.9 历史项及准确 label。插件只应生成缺失归档一次。
 3. 检查新归档的中英文路由集合、API 函数节和所有 `/docs/…` 内链都留在对应版本前缀;生成器可能不会改写 JSX 组件的 `href`,phase1 契约会对此失败。
-4. 同步更新 sitemap filter、`migo-www` 必出路由契约和必要的 Caddy 路由规则;归档继续从 sitemap 排除,latest 保持可索引。
+4. 同步更新 sitemap filter、门户站点仓库的必出路由契约和必要的 Caddy 路由规则;归档继续从 sitemap 排除,latest 保持可索引。
 5. 运行 `npm run docs:check && npm run docs:build && npm run docs:smoke`,确认版本切换、版本搜索、中英文归档、404、无 JS 阅读和无障碍检查。
-6. 先提交并推送 `migo`,取得不可变 commit SHA;再更新 `migo-www/docs/migo-docs-source.json` 的 `ref` 和 `expectedVersion`,最后构建、部署网站。
+6. 先提交并推送 `migo`,取得不可变 commit SHA;再更新门户仓库 `docs/migo-docs-source.json` 的 `ref` 和 `expectedVersion`,最后构建、部署网站。
 
 归档内容和侧栏由生成时的 latest 快照派生,因此信息架构调整必须在归档前完成。不要把分支名作为生产来源,也不要在归档生成后用批量替换继续“追平” latest。
 
@@ -123,11 +123,11 @@ Portal 是纯深色,所以文档也是深色锁定(`ThemeProvider.astro` + `Them
 
 ## 10. 文档与 SDK 的发布顺序
 
-先发布 SDK 及其 `release/VERSION`,再让文档跟进,最后发布网站。网站发布前确认 `migo-www/docs/migo-docs-source.json` 的 `expectedVersion` 与 SDK 一致。不要把未发布的 API 提前写成稳定内容。
+先发布 SDK 及其 `release/VERSION`,再让文档跟进,最后发布网站。网站发布前确认门户仓库 `docs/migo-docs-source.json` 的 `expectedVersion` 与 SDK 一致。不要把未发布的 API 提前写成稳定内容。
 
-## 11. `migo-www` 如何获取并构建文档
+## 11. 门户站点仓库如何获取并构建文档
 
-`migo-www/docs/migo-docs-source.json` 指定仓库、`ref` 和 `expectedVersion`。`npm run build:docs` 会临时浅克隆该 ref,校验 `release/VERSION`,执行 `npm ci --ignore-scripts`、`docs:check`(lint + 契约 + astro check + metadata)、`docs:build`,然后复制 `build/` 到 `dist/docs/`。本地联调:
+门户仓库 `docs/migo-docs-source.json` 指定仓库、`ref` 和 `expectedVersion`。`npm run build:docs` 会临时浅克隆该 ref,校验 `release/VERSION`,执行 `npm ci --ignore-scripts`、`docs:check`(lint + 契约 + astro check + metadata)、`docs:build`,然后复制 `build/` 到 `dist/docs/`。本地联调:
 
 ```bash
 MIGO_DOCS_SOURCE_DIR=/绝对路径/migo npm run build:docs
@@ -155,5 +155,5 @@ Playwright 覆盖:路由矩阵、`/docs/next/` 必须 404、英文实译与未�
 | `npm run docs:dev` 字体/样式不变 | Vite 缓存了旧 `custom.css`;重启 dev server(Starlight 对 customCss 的 HMR 不可靠)。 |
 | 页面 h1 字体没变 | Starlight 的页面标题 h1 在 `.sl-markdown-content` 外,选择器要含 `h1[id='_top']`。 |
 | 0.9 归档页出现在 sitemap | sitemap `filter` 被改;恢复仅排除 `/docs/0.9/` 与 `/docs/en/0.9/` 的规则并跑 `docs:build`;不要排除 latest 英文页。 |
-| `release/VERSION` 与期望不一致 | `migo-www/docs/migo-docs-source.json` 的 `expectedVersion` 未随 SDK 更新。 |
+| `release/VERSION` 与期望不一致 | 门户仓库 `docs/migo-docs-source.json` 的 `expectedVersion` 未随 SDK 更新。 |
 | 出现 `docusaurus` 字样的报错或引用 | 清理不彻底;phase1 契约第 6 节列了全部禁留文件。 |

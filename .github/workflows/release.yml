@@ -1318,7 +1318,7 @@ jobs:
   # Opt-in, and NOT a publish dependency, until the two things #136 shipped it
   # without both exist:
   #   1. a runner labelled `self-hosted, android-device` -- none is registered;
-  #   2. `../migo-test-suite` with the `install.sh` / `run.sh` entry points
+  #   2. the sibling device-test-suite checkout, with the `install.sh` / `run.sh` entry points
   #      `run_android_device_evidence.sh` calls -- that repo ships neither.
   # With it gating `publish` the first tagged release since #136 could not
   # publish at all: the job sat queued forever waiting for a runner. A gate that
@@ -1482,13 +1482,14 @@ jobs:
           retention-days: 1
 
   # ── OpenHarmony SDK ─────────────────────────────────────────────────────
-  # The last platform to have nothing published at all. Unblocked once the two
-  # librusty_v8-*-linux-ohos.a archives went onto the v8-archives tag: their component
-  # manifests were already committed, so the sha256 to verify a download against
-  # existed before the download did.
+  # OpenHarmony was the last platform to have nothing published at all; this
+  # lane unblocked once the two librusty_v8-*-linux-ohos.a archives went onto
+  # the v8-archives tag: their component manifests were already committed, so
+  # the sha256 to verify a download against existed before the download did.
   #
-  # Also the first release to carry OHOS arm64. Every release so far shipped only
-  # ohos-x86_64, which is the emulator architecture -- real HarmonyOS devices are arm64.
+  # This lane also carried the first OHOS arm64 release. Releases before it
+  # shipped only ohos-x86_64, which is the emulator architecture -- real
+  # HarmonyOS devices are arm64.
   release-ohos:
     needs: [quality-gate, host-engine-tests]
     runs-on: ubuntu-latest
@@ -1564,7 +1565,7 @@ jobs:
   # because the build itself needed CI-only capability -- build-windows-sdk.sh
   # has produced a correct, contract-verified package all along -- but because
   # that script crosses a WSL/Windows boundary (wslpath, a synced
-  # /mnt/c/migo-win worktree, cmd.exe-dispatched batch files) that only exists
+  # Windows-side worktree under /mnt/c/..., cmd.exe-dispatched batch files) that only exists
   # on this project's own dual-boot dev machine. A windows-latest runner has no
   # WSL: the checkout already sits on native NTFS, so there is no boundary for
   # that machinery to cross. scripts/build-windows-sdk-native.sh is the other

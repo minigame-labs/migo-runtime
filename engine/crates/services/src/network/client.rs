@@ -26,7 +26,7 @@ use super::gate::{GateKind, GateReject, evaluate_policy};
 /// pre-flight check needed, no double-resolution TOCTOU window.
 ///
 /// Note: hyper-util bypasses the resolver for IP-literal hosts, so callers
-/// must also call `reject_blocked_ip_literal()` before sending requests.
+/// must also run the shared IP-literal gate (network::gate) before sending requests.
 struct SsrfCheckingResolver {
     operation: &'static str,
 }

@@ -1,4 +1,4 @@
-//! Thread-safe measureText façade (F-2).
+//! Thread-safe measureText façade.
 //!
 //! The render thread's `TextContext` owns HarfBuzz + ICU + Skia
 //! shaping state that is naturally on the render side for
@@ -85,7 +85,7 @@ pub trait TextMeasurer: Send + Sync + 'static {
     /// parse failure.
     fn register_font(&self, aliases: &[String], bytes: &[u8]) -> Option<String>;
 
-    /// G-2: convenience overload that takes a raw CSS font
+    /// Convenience overload that takes a raw CSS font
     /// shorthand and forwards it through [`crate::css_font::
     /// parse_css_font`] so callers on the JS thread don't need
     /// their own parser.  Default impl so existing implementors
@@ -95,7 +95,7 @@ pub trait TextMeasurer: Send + Sync + 'static {
         self.measure(text, &f.families, f.size, f.weight, f.italic)
     }
 
-    /// G-2 companion to [`Self::measure_css`] — same parse flow
+    /// Companion to [`Self::measure_css`] — same parse flow
     /// but for `getTextLineHeight`.
     fn line_height_css(&self, css_font: &str) -> f32 {
         let f = parse_family_list(css_font);

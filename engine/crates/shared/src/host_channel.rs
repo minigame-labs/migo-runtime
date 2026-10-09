@@ -722,7 +722,7 @@ mod tests {
         producer.join().unwrap();
     }
 
-    /// Section 7.3: zero steady-state allocation on the input transport.
+    /// Steady-state allocation gate on the input transport.
     ///
     /// This counts allocations rather than reading the source for
     /// `VecDeque::with_capacity`, which is what

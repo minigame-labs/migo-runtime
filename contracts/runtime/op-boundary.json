@@ -9,7 +9,7 @@
     "dispatch them. Every op therefore needs a decided answer to one question -- where is this",
     "call answered -- and the answer decides its latency, its failure mode and what it costs per",
     "frame. Written once, here, it is the single source both halves are generated or checked from:",
-    "the producer's op shim and the host's decoders (plan D15).",
+    "the producer's op shim and the host's decoders.",
     "",
     "HOW IT IS CHECKED. The op list is DERIVED by scripts/lib/runtime_ops.py from the",
     "deno_core::extension! registrations and the engine's `ext:core/ops` imports; this file",
@@ -45,7 +45,7 @@
       }
     },
     "host_v8_audio": {
-      "reason": "Audio plays on the host (profile D18: PCM never crosses the process boundary; control messages do). A decode is adopted on the host as the AudioBuffer's PCM, so its samples cross only when content reads its channels (materialize, synchronous) or starts a buffer it wrote. Graph edits and parameter changes are ordered commands; analyser reads and decodes are awaited; creation that can fail in a way content catches is synchronous, and so is setInnerAudioOption, whose refusal is what its facade reports as fail. Recording needs the microphone, which the profile does not grant.",
+      "reason": "Audio plays on the host (PCM never crosses the process boundary; control messages do). A decode is adopted on the host as the AudioBuffer's PCM, so its samples cross only when content reads its channels (materialize, synchronous) or starts a buffer it wrote. Graph edits and parameter changes are ordered commands; analyser reads and decodes are awaited; creation that can fail in a way content catches is synchronous, and so is setInnerAudioOption, whose refusal is what its facade reports as fail. Recording needs the microphone, which the profile does not grant.",
       "ops": {
         "op_audio_abort_buffer": "command",
         "op_audio_analyser_byte_frequency": "async",

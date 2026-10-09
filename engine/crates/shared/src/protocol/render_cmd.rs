@@ -311,7 +311,7 @@ mod render_cmd_resp_drop_tests {
     use super::*;
     use crossbeam_channel::bounded;
 
-    /// P2-6: confirm the Drop impl fires on a dropped responder
+    /// Confirm the Drop impl fires on a dropped responder
     /// and surfaces an `ErrorCode::Internal` instead of the
     /// previous silent `channel disconnected`.  This is the
     /// core safety net for bugs in the same class as the
@@ -3303,7 +3303,7 @@ impl GLCmd {
 
 impl Canvas2DCmd {
     /// Feed each image id this command references into `sink`.
-    /// Used by the render thread (F-1) to pin image entries in
+    /// Used by the render thread to pin image entries in
     /// the `ImageStore` for as long as a `FramePacket` carrying
     /// the command is in flight — a concurrent `DestroyImage`
     /// then defers the GL `glDeleteTextures` call until the

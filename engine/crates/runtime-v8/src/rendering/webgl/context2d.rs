@@ -159,7 +159,7 @@ pub fn op_measure_text(
     // Flush pending commands so the render thread has the latest font state.
     flush_pending_commands_for_state_sync(state, canvas_id);
     let ctx = state.borrow::<CanvasOpState>();
-    // P0-1 (drop-safety) + P1-4 (measure has 4 ms deadline): the fallback needs
+    // Drop-safety and 4 ms measure deadline: the fallback needs
     // to reason about the text if the render thread times out, but the command
     // must own the `String` to carry it across the thread boundary.
     //
@@ -174,7 +174,7 @@ pub fn op_measure_text(
     }) {
         Ok(m) => m,
         Err(e) => {
-            // P2-5: do not collapse to zero metrics on failure.
+            // Do not collapse to zero metrics on failure.
             // Zero width made auto-layout code stack every label
             // at (0, 0), producing the visible "text missing"
             // symptom even before the P0 responder bug was
@@ -186,7 +186,7 @@ pub fn op_measure_text(
     }
 }
 
-/// R-7: flat-buffer variant of `op_measure_text` that skips
+/// Flat-buffer variant of `op_measure_text` that skips
 /// serde_v8's per-property V8 object construction.
 ///
 /// The 12 f32 fields of [`TextMetrics`] are written little-endian
@@ -221,7 +221,7 @@ pub fn op_measure_text_flat(
     #[string] text: String,
     #[string] css_font: String,
 ) -> Vec<u8> {
-    // F-2 + G-2: fast lane.  When the host has published a
+    // Fast lane.  When the host has published a
     // `SharedTextMeasurer` on `CanvasOpState`, the measurement
     // runs inline on the JS thread via a mutex-guarded
     // TextContext — no command channel trip, no `flush`
@@ -229,7 +229,7 @@ pub fn op_measure_text_flat(
     // ~30 μs to ~5 μs; cache-miss cost (shaping via Skia) is
     // unchanged because that's the real work either way.
     //
-    // G-2: the JS side now hands us the raw CSS `font` string
+    // The JS side now hands us the raw CSS `font` string
     // and the single source of truth for parsing lives in
     // `shared::css_font`.  This eliminates the previous
     // JS/Rust parser duplication where `_parseCssFont` in JS

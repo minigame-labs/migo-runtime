@@ -303,9 +303,8 @@ pub(crate) struct UnifiedFrameCollector {
     barrier_in_frame: bool,
 }
 
-/// The JavaScript-to-native crossing count, which is the whole of
-/// `android-ceiling-review.md`'s G2 and the number a command stream exists to
-/// move.
+/// The JavaScript-to-native crossing count — the number a command stream
+/// exists to move.
 ///
 /// **Counted rather than inferred.** The alternative is reading it off the shape
 /// of the code -- "2D goes through the stream now, so it must be one" -- which
@@ -2677,7 +2676,7 @@ mod tests {
     }
 }
 
-// ── Section 7.3: zero steady-state allocation on the render command path ────
+// ── Zero steady-state allocation on the render command path ─────────────────
 
 #[cfg(test)]
 mod steady_state_allocation {
@@ -2752,7 +2751,7 @@ mod steady_state_allocation {
         drop(collector.build_frame_packet(true));
     }
 
-    /// Section 7.3, on the per-event unit of the render command path: one `gl.*`
+    /// Steady-state allocation gate, on the per-event unit of the render command path: one `gl.*`
     /// call from content becomes one command in the open segment. Cocos and
     /// three.js emit hundreds of these per frame, so this is the highest-rate
     /// event the engine handles.
@@ -2777,7 +2776,7 @@ mod steady_state_allocation {
         end_frame(&mut collector);
     }
 
-    /// Section 7.3, on the set the packet builder gathers its `Materialize`
+    /// Steady-state allocation gate, on the set the packet builder gathers its `Materialize`
     /// targets into. One entry per distinct Canvas2D target in the run — one per
     /// text label on the UI this collector was profiled against — and nothing
     /// caps how many a scene has. Above the set's inline capacity a per-frame
@@ -2862,7 +2861,7 @@ mod steady_state_allocation {
         );
     }
 
-    /// Section 7.3, on the batched half of the same path: `op_submit_render_stream`
+    /// Steady-state allocation gate, on the batched half of the same path: `op_submit_render_stream`
     /// takes a vector from the pool, decodes a stream into it and hands it to
     /// `append_gl_batch`, which appends and recycles. That is one event per
     /// submit, and Pixi reaches it twice a frame with every draw batched behind

@@ -43,7 +43,7 @@ use super::paint::{PatternResolver, build_fill_paint, build_stroke_paint};
 use super::state::{Canvas2DState, StyleKind, TextAttrs};
 use super::text_attrs::{ResolvedTextAlign, y_baseline_offset};
 
-// F-2 Send/Sync safety argument.  `TextContext` holds
+// Send/Sync safety argument.  `TextContext` holds
 // `RCHandle` values backed by Skia's atomic-refcounted SkRefCnt
 // (Skia is compiled with `SK_REFCNT_ATOMIC` as the default),
 // plus `RefCell<LruCache<...>>` that's already `Send` when its
@@ -164,7 +164,7 @@ pub struct TextContext {
     /// exactly once in a session log.
     resolved_family_logs: core::cell::RefCell<std::collections::HashSet<String>>,
     /// Monotonically-incrementing version for the font registry
-    /// (R-4).  Every successful [`Self::register_family_aliases`]
+    /// Every successful [`Self::register_family_aliases`]
     /// / [`Self::register_typeface_data`] bumps this counter; the
     /// value becomes part of [`TextMeasureKey`] so stale LRU
     /// entries keyed at an older epoch are naturally evicted
@@ -233,7 +233,7 @@ struct TextMeasureKey {
     /// forms), so LTR and RTL hits MUST NOT share a cache slot even
     /// when every other attr matches.
     direction: ProtocolDirection,
-    /// Font-registry epoch (R-4).  Bumped by every successful
+    /// Font-registry epoch.  Bumped by every successful
     /// `register_*` call so entries cached at an older epoch are
     /// *key-mismatched* on the next lookup — LRU reclaims them on
     /// its own cadence without a blocking full-table clear.  The
@@ -440,7 +440,7 @@ impl TextContext {
         }
     }
 
-    /// R-4: bump the font-registry epoch.  Entries previously
+    /// Bump the font-registry epoch.  Entries previously
     /// cached at an older epoch will miss the key comparison on
     /// the next lookup and evict through ordinary LRU usage.
     /// This replaces the old full-table `clear()` with an O(1)
@@ -492,7 +492,7 @@ impl TextContext {
     fn resolve_primary_typeface(&self, attrs: &TextAttrs) -> Option<Typeface> {
         let style = self.font_style(attrs);
         // Try the head of the family list first, then the fallback.
-        // P1-10: reuse the cached `asset_font_mgr` instead of
+        // Reuse the cached `asset_font_mgr` instead of
         // cloning the provider on every call — on a UI-heavy
         // scene this helper runs hundreds of times per frame.
         for family in self.effective_families(attrs).iter() {
@@ -528,7 +528,7 @@ impl TextContext {
     const FAMILY_CHAIN_INLINE: usize = 12;
 
     /// Compute the family fallback chain used when building a
-    /// [`ParagraphStyle`] / [`TextStyle`].  R-1: the chain is
+    /// [`ParagraphStyle`] / [`TextStyle`].  The chain is
     /// deliberately kept minimal — author-supplied families
     /// first, then the generic `sans-serif` (which on Android
     /// routes through `SkFontMgr_Android` and implicitly covers
@@ -742,7 +742,7 @@ impl TextContext {
         // Re-sync the asset manager so the collection sees the new family.
         self.font_collection
             .set_asset_font_manager(Some(self.provider.clone().into()));
-        // P1-10: keep the cached `asset_font_mgr` in lock-step with
+        // Keep the cached `asset_font_mgr` in lock-step with
         // the provider so `resolve_primary_typeface` sees the newly
         // registered family on the very next call.
         self.rebuild_asset_font_mgr();
@@ -1264,7 +1264,7 @@ impl TextContext {
         let mut text_style = TextStyle::new();
         text_style.set_font_size(attrs.size.max(0.0));
         self.maybe_warn_missing_family_resolution(attrs);
-        // R-1: the fallback chain is kept minimal — author
+        // The fallback chain is kept minimal — author
         // families first, then `sans-serif` + bundled Noto.  Any
         // per-codepoint CJK / emoji resolution is left to Skia's
         // `FontCollection::defaultFallback`
@@ -1288,7 +1288,7 @@ impl TextContext {
     }
 }
 
-// R-1 / R-8: the previous `sample_text_scripts` heuristic has
+// The previous `sample_text_scripts` heuristic has
 // been removed.  SkParagraph's internal `FontCollection::
 // defaultFallback` performs per-codepoint
 // `matchFamilyStyleCharacter(unicode, …)` at shaping time, which
@@ -1658,7 +1658,7 @@ mod tests {
         );
     }
 
-    /// Section 7.3's steady-state requirement on `measureText`.
+    /// Steady-state allocation requirement on `measureText`.
     ///
     /// **This is the assertion the previous key could not have passed.** The
     /// key owned a `String`, built before the lookup, so every call — hit
@@ -1684,7 +1684,7 @@ mod tests {
         );
     }
 
-    /// Section 7.3 on the family chain, which every text draw builds.
+    /// Steady-state allocation gate on the family chain, which every text draw builds.
     ///
     /// Four heap events for `font-family: Arial` before this: the vector, the
     /// author family's clone, and one per appended fallback. Borrowed, it is
@@ -1978,7 +1978,7 @@ mod tests {
         assert!(ctx.measure_text("Hello", &internal_family_attrs).width > 0.0);
     }
 
-    /// G-3: smoke test the `unsafe impl Send for TextContext`
+    /// Smoke test the `unsafe impl Send for TextContext`
     /// promise — one thread writes (registers a font), another
     /// thread reads (measures), both serialised through a
     /// `parking_lot::Mutex`.  Asserts the data stays consistent

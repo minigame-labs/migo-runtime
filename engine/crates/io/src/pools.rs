@@ -1976,9 +1976,9 @@ mod r5_executor_tests {
         );
     }
 
-    /// Section 6.4 lists per-host fairness on the shared IO executor among the
-    /// properties that are "already enforced", and Section 7.3 records it as the
-    /// one of those with no gate named against it. `QueueState`'s own tests drive
+    /// Per-host fairness on the shared IO executor is among the
+    /// properties that are "already enforced"; this is the only named gate
+    /// for it. `QueueState`'s own tests drive
     /// the policy directly; this drives it the way a Session does -- through
     /// `submit`, real workers, and the dispatch that follows a completion.
     ///

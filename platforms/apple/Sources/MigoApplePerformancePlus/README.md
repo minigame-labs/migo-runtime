@@ -15,8 +15,7 @@ XHR is a second public blocking primitive, so a synchronous readback might be ex
 without `SharedArrayBuffer`, which would turn a capability fact into a performance
 trade-off. It said a probe is entitled to decide a trade-off. The probe has run.
 
-**iPhone 12 / iOS 17.0.3, release host, 200 samples per class, no errors** — records in
-`docs/performance/apple/g0/{capability,transport}/`:
+**iPhone 12 / iOS 17.0.3, release host, 200 samples per class, no errors** — records in the 2026-09-10 capability/transport probe bundles:
 
 | the question this file left open | what the device answered |
 |---|---|

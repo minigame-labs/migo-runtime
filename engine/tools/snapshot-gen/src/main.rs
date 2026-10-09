@@ -7,8 +7,9 @@
 //!
 //! # Usage
 //!
-//! Snapshots are platform-bound (OS + CPU arch), so this generator must be
-//! cross-compiled to a target Android ABI and run on that ABI's emulator
+//! Snapshots are platform-bound (OS + CPU arch). On Linux and macOS, build
+//! and run this generator natively on the target machine. For Android it
+//! must be cross-compiled to the target ABI and run on that ABI's emulator
 //! (x86_64) or device (arm64):
 //!
 //! ```bash
@@ -142,7 +143,7 @@ fn main() {
     // Output path. MIGO_SNAPSHOT_OUT overrides the default — required when the
     // generator runs cross-compiled on a device/emulator (V8 startup snapshots
     // are platform-bound, so each ABI's snapshot must be produced by the SAME
-    // android V8 the .so links), where the host CARGO_MANIFEST_DIR doesn't
+    // Android V8 the .so links), where the host CARGO_MANIFEST_DIR doesn't
     // exist: write to e.g. /data/local/tmp/SNAPSHOT.bin then `adb pull` it into
     // `crates/runtime-v8/snapshots/SNAPSHOT-<profile>-<arch>.bin`.
     //

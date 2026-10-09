@@ -1,6 +1,6 @@
 //! `AudioContext.close()` must settle the JS wrapper exactly once.
 //!
-//! Audit `docs/audits/2026-09-09/audio.md:107-115`: `close()` awaited the native
+//! `close()` awaited the native
 //! close and then touched `PENDING_CONTEXT_RELEASES`, a name that exists nowhere
 //! in the tree. Every close therefore threw `ReferenceError` *after* the audio
 //! thread had already dropped the context, so `_setState("closed")` and the

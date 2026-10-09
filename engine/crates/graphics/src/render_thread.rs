@@ -9,7 +9,7 @@
 //! The [`RenderThread::spawn`] body below has historically been
 //! one ~700-line lambda with three nested closures passing 11
 //! arguments each (`handle_one_cmd`, `drain_cmds`,
-//! `present_frame_and_signal_raf`).  F-3 landed the
+//! `present_frame_and_signal_raf`).  A refactor landed the
 //! [`crate::render_loop::RenderLoopState`] struct that bundles
 //! every mutable per-loop value; the migration to method
 //! dispatch is happening incrementally — adding a new command
@@ -131,7 +131,7 @@ pub struct RenderThread {
     /// forward events into JS or the debug overlay.  See
     /// [`shared::render_event`] for the policy.
     event_rx: RenderEventReceiver,
-    /// F-2: type-erased measurer handle shared with the JS
+    /// Type-erased measurer handle shared with the JS
     /// thread's `CanvasOpState`.  Cloned into the host runtime
     /// wiring layer via [`Self::text_measurer`]; subsequent
     /// `op_measure_text_flat` calls bypass the cross-thread
@@ -553,10 +553,10 @@ fn execute_canvas_batch(
         None
     };
 
-    // G-1: pin every image id this batch references so a
+    // Pin every image id this batch references so a
     // concurrent `DestroyImage` cannot free the underlying GL
     // texture mid-iteration.  The batch-scope retain is a
-    // strict subset of the frame-packet retain (F-1); both
+    // strict subset of the frame-packet retain; both
     // paths are safe to use independently because the refcount
     // is additive.  Released unconditionally at the bottom so
     // even an error mid-batch doesn't leak the retain.
@@ -591,7 +591,7 @@ fn execute_canvas_batch(
         }
     }
 
-    // G-1: release the batch-scope retain.  If any release drops
+    // Release the batch-scope retain.  If any release drops
     // the refcount to zero *and* a destroy was requested while
     // the image was in flight, `release_in_flight_image`
     // returns the entry so we can `glDeleteTextures` it here.
@@ -970,7 +970,7 @@ fn execute_frame_op(
             //      per-context `skia_state_stale` flag picks
             //      that up lazily the next time Skia draws.
             //
-            // P1-7 invariant: calling `cm.clear_2d_dirty(canvas_id)`
+            // Invariant: calling `cm.clear_2d_dirty(canvas_id)`
             // here guarantees that the end-of-frame
             // `flush_dirty_2d_contexts` sweep in
             // `present_frame_and_signal_raf` will NOT re-flush the
@@ -1011,7 +1011,7 @@ fn execute_frame_packet(
 ) -> bool {
     let mut should_present = false;
 
-    // F-1: pin every image id this packet references so a
+    // Pin every image id this packet references so a
     // concurrent `DestroyImage` defers its `glDeleteTextures`
     // until the Present barrier runs below.  The retained ids
     // are released in strict LIFO order at the end of the
@@ -1038,7 +1038,7 @@ fn execute_frame_packet(
         )
     });
 
-    // F-1 release-then-drain sequence.  Release every id the
+    // Release-then-drain sequence.  Release every id the
     // packet retained so any `DestroyImage` that arrived during
     // the frame can finally free its GL texture; then call
     // `drain_pending_image_deletions` which actually issues the
@@ -1477,7 +1477,7 @@ mod tests {
     /// stays here is the half that needs no pool at all — the classifier above —
     /// and the ordering the reorder produces.
 
-    /// Section 7.3, on a per-frame path: every packet the render thread executes
+    /// Steady-state allocation gate, on a per-frame path: every packet the render thread executes
     /// is classified first, so whatever this does, the engine does once a frame
     /// for as long as it runs.
     ///
@@ -1611,7 +1611,7 @@ mod tests {
         assert!(report_recovery_failure(&context, &events, &mut last_epoch,));
     }
 
-    // R1 demand-model contracts. These combine the real `RafDemand` latch with
+    // Demand-model contracts. These combine the real `RafDemand` latch with
     // the pure arm-decision helpers to pin the render-thread behaviour the
     // present/arm wiring depends on. (They run under `cargo ndk test -p graphics`
     // on device; on host the graphics test binary cannot link freetype/EGL.)
@@ -2233,13 +2233,13 @@ impl RenderThread {
         // the no-wake channel. Decoupled from `HostCommand` so the graphics crate
         // stays independent of the host command enum.
         wake: Option<Arc<dyn Fn() + Send + Sync>>,
-        // R1: shared RAF waiter demand latch. `op_await_next_frame` publishes a
+        // Shared RAF waiter demand latch. `op_await_next_frame` publishes a
         // waiter before awaiting; the render thread consumes it (and only then
         // signals RAF) so dirty-only / upload-only frames never write an
         // unconsumed timestamp, and a failed signal restores it so RAF cannot
         // freeze. Shared `Arc` survives JS soft restart with the RafReceiver.
         raf_demand: shared::raf_signal::RafDemandRef,
-        // R1: one-shot vsync arm. `Some` on platforms with a demand-driven
+        // One-shot vsync arm. `Some` on platforms with a demand-driven
         // display clock (Android Choreographer via a native->Java route);
         // `None` where the engine paces frames itself and in tests — that path
         // arms its own `SoftwareFrameClock` instead of asking anyone. The render
@@ -2283,7 +2283,7 @@ impl RenderThread {
             None => shared::render_event::channel(),
         };
 
-        // F-2: build the shared TextContext here (no GL deps —
+        // Build the shared TextContext here (no GL deps —
         // SkFontMgr + SkFontCollection are pure CPU objects) so
         // both halves — the render thread's `Renderer2d` and the
         // type-erased handle we expose on `RenderThread` — pick
@@ -2520,7 +2520,7 @@ impl RenderThread {
                 let cleanup_cadence = DeferredCleanupCadence::new(start_time.elapsed());
                 let mut dirty = true;
                 let mut paused = false;
-                // R1: whether a one-shot vsync callback has been requested but not
+                // Whether a one-shot vsync callback has been requested but not
                 // yet delivered. Suppresses redundant `request_vsync` JNI calls
                 // while a callback is already in flight; reset when a vsync is
                 // delivered or on any lifecycle edge (Pause/Resume/SurfaceDestroyed/
@@ -2784,7 +2784,7 @@ impl RenderThread {
                             }
                         },
                         RenderCommand::Canvas2D { canvas_id, cmd } => {
-                            // G-1: retain referenced image ids around
+                            // Retain referenced image ids around
                             // the dispatch so a concurrent `DestroyImage`
                             // still waits for the draw to land.
                             // SmallVec-backed; zero allocation for the
@@ -2860,18 +2860,18 @@ impl RenderThread {
                         RenderCommand::Pause => {
                             if !*paused {
                                 *paused = true;
-                                // R1: Java stops the scheduler on pause (removing
+                                // Java stops the scheduler on pause (removing
                                 // any posted callback); clear our in-flight flag so
                                 // Resume re-arms retained demand.
                                 vsync_armed.set(false);
                                 let live_canvases = cm.canvas_count();
                                 let surface_state_before = surface_system.state();
                                 surface_system.on_pause();
-                                // R1's engine-paced sibling: retire the pending
+                                // Engine-paced sibling: retire the pending
                                 // frame wakeup. Resume re-arms it through the
                                 // forced-dirty demand below.
                                 frame_clock.stop();
-                                // R-6: the game just went to background.
+                                // The game just went to background.
                                 // Release GPU memory aggressively so the
                                 // Android lowmemorykiller does not evict
                                 // the whole process under memory
@@ -2899,7 +2899,7 @@ impl RenderThread {
                         RenderCommand::Resume => {
                             if *paused {
                                 *paused = false;
-                                // R1: clear in-flight flag so the forced first-frame
+                                // Clear in-flight flag so the forced first-frame
                                 // dirty below re-arms even if a stale callback was
                                 // dropped while paused.
                                 vsync_armed.set(false);
@@ -2934,7 +2934,7 @@ impl RenderThread {
                                 let surface_state_before = surface_system.state();
                                 let paused_now = *paused;
                                 mark_surface_destroyed(surface_system);
-                                // R1: Java clears surfaceReady (removing any posted
+                                // Java clears surfaceReady (removing any posted
                                 // callback); clear our in-flight flag so a later
                                 // RecreateOnscreen re-arms retained demand.
                                 vsync_armed.set(false);
@@ -3059,7 +3059,7 @@ impl RenderThread {
                         }
 
                         RenderCommand::LoadFont { family, aliases, bytes, resp } => {
-                            // F-2: the render thread + the JS-thread
+                            // The render thread + the JS-thread
                             // measurer share the same `TextContext` via
                             // `Arc<Mutex<_>>`, so a single registration
                             // is visible to both sides.  Locking only
@@ -3171,7 +3171,7 @@ impl RenderThread {
                     const MAX_CMDS: usize = 512;
                     const MAX_DRAIN_US: u128 = 1_500; // 1.5 ms
                     let drain_start = Instant::now();
-                    // P1-9: track whether the loop exited because of
+                    // Track whether the loop exited because of
                     // the CPU budget vs naturally.  Budget exits
                     // bump a counter so the overlay can distinguish
                     // "engine busy" from "engine idle".
@@ -3387,7 +3387,7 @@ impl RenderThread {
                                     debug_stats
                                         .context_lost_events
                                         .fetch_add(1, Ordering::Relaxed);
-                                    // P1-2: fail any pending sync op the
+                                    // Fail any pending sync op the
                                     // manager is still holding on behalf of
                                     // a JS caller.  Prevents 10 s
                                     // COMMAND_TIMEOUT_MS stalls on
@@ -3401,7 +3401,7 @@ impl RenderThread {
                                             "Aborted {failed} pending sync responder(s) due to context loss"
                                         );
                                     }
-                                    // R-2: mark every Skia context
+                                    // Mark every Skia context
                                     // abandoned so `Drop` can't try
                                     // `glDelete*` against a dead EGL
                                     // context.  `try_recover_context`
@@ -3524,7 +3524,7 @@ impl RenderThread {
                     // RAF was already signalled before the drain (see `signal_raf`),
                     // so JS is producing the next frame in parallel with this swap.
 
-                    // R-3: robustness poll — if the driver flagged a
+                    // Robustness poll — if the driver flagged a
                     // GL reset between frames, short-circuit the
                     // present path and let the next-frame recovery
                     // handle teardown.  Without this poll, a silently
@@ -3602,7 +3602,7 @@ impl RenderThread {
                     crate::render_diagnostics::flush_frame();
                 };
 
-                // R1: request exactly one more display frame iff demand remains
+                // Request exactly one more display frame iff demand remains
                 // (RAF waiter / dirty / outstanding upload work) and we can present.
                 // Idle, paused, or surfaceless => no arm, so the frame clock stops
                 // and there is no idle JNI flood. `vsync_armed` suppresses a
@@ -3871,7 +3871,7 @@ impl RenderThread {
                                 continue;
                             };
                             // Choreographer VSync path (Android).
-                            // R1: the requested one-shot callback was delivered —
+                            // The requested one-shot callback was delivered —
                             // clear the in-flight flag so demand that remains this
                             // frame can re-arm the next one.
                             vsync_armed.set(false);
@@ -4030,7 +4030,7 @@ impl RenderThread {
                                     if dropped_recoveries > 0 {
                                         debug_stats.dropped_upload_recoveries.fetch_add(dropped_recoveries, Ordering::Relaxed);
                                     }
-                                    // R1: a command batch may have created demand
+                                    // A command batch may have created demand
                                     // (dirty onscreen content, or a LoadImage that
                                     // is now in-flight) — arm one frame to present
                                     // / poll the fence. Idle commands don't arm.
@@ -4122,7 +4122,7 @@ impl RenderThread {
         self.event_rx.clone()
     }
 
-    /// F-2: clone the shared `TextMeasurer` handle.  Host runtime
+    /// Clone the shared `TextMeasurer` handle.  Host runtime
     /// wiring installs this on `CanvasOpState` so JS-side
     /// `op_measure_text_flat` / `op_get_text_line_height` can
     /// bypass the render thread entirely for the measurement

@@ -3,7 +3,7 @@
 //! A host stamps input in its own clock -- the system uptime on Apple and Android -- and the C ABI names none. Content
 //! compares `event.timeStamp` with `performance.now()` and with the requestAnimationFrame timestamp, so a host's epoch
 //! reaching it makes every such comparison wrong on exactly the platforms whose clock disagrees. Found by
-//! migo-conformance's `input-touch-spec` on macOS: a touch arrived stamped 62 067 560 ms ahead of `performance.now()`.
+//! the conformance suite's `input-touch-spec` on macOS: a touch arrived stamped 62 067 560 ms ahead of `performance.now()`.
 //!
 //! These run the real input modules through the host bridge, as a host's events do.
 

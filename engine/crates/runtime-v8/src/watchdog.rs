@@ -1,4 +1,4 @@
-//! Process-wide, poll-scoped deadline watchdog (R4).
+//! Process-wide, poll-scoped deadline watchdog.
 
 use std::cell::{Cell, RefCell};
 use std::future::Future;

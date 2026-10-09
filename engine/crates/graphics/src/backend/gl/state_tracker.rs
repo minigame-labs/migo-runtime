@@ -1717,7 +1717,7 @@ mod tests {
         assert!(update_vertex_attrib_divisor(&mut s, 2, 1));
     }
 
-    /// Section 7.3's steady-state requirement on the attribute path: a settled
+    /// Steady-state allocation requirement on the attribute path: a settled
     /// frame re-asserting the same layout must not reach the heap. The slot
     /// vectors are bought once, when the content first touches each index.
     #[test]
@@ -2149,7 +2149,7 @@ mod tests {
         }
     }
 
-    /// Section 7.3's steady-state requirement, on the per-command dedup path.
+    /// Steady-state allocation requirement, on the per-command dedup path.
     ///
     /// **This is the assertion the defect could not have passed.** Attaching
     /// uniform invalidation to `glUseProgram` dropped the outgoing program's
@@ -2307,7 +2307,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------
-    // P11 dedup expansion — per-target framebuffer / renderbuffer,
+    // Dedup expansion — per-target framebuffer / renderbuffer,
     // vertex-attribute enable/pointer/divisor, and color mask.
     // ---------------------------------------------------------------------
 

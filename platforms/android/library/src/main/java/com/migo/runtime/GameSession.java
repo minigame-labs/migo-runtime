@@ -191,7 +191,7 @@ public final class GameSession implements Closeable {
         // Register session for lifecycle callbacks from native
         NativeExports.registerSession(sessionId, this);
 
-        // R1 bootstrap: native render initialization may request its first
+        // Bootstrap: native render initialization may request its first
         // one-shot before this Java wrapper is registered (notably through the
         // Context overload, which may be created off the UI thread). That early
         // request is intentionally a no-op because no live session exists yet.

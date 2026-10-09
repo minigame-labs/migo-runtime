@@ -3,7 +3,7 @@ import Foundation
 
 /// What this process has spent, sampled cheaply enough to bracket a batch.
 ///
-/// A32's threshold has two halves and only one of them was measurable from
+/// The comparison threshold has two halves and only one of them was measurable from
 /// latency: *"需预先声明阈值（例：合计 CPU 5% 或 p99 0.25 ms）才算赢"*. The p99 half
 /// is in the transport record already. This is the other half.
 ///

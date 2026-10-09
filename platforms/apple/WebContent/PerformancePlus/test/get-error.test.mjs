@@ -5,7 +5,7 @@
 // (`op_webgl_record_error`, `recordProducerError`). The host never sees the call, so its queue has nothing for it, and
 // `getError` has to answer from this side's queue: the doc comment on `drainProducerError` says the sync lane's
 // `op_webgl_get_error` does it before crossing, and it did not -- every such error was recorded and none was ever
-// returned (migo-conformance `webgl-spec/query-bad-index-is-null-and-invalid-value` on an iPhone 12).
+// returned (the conformance suite `webgl-spec/query-bad-index-is-null-and-invalid-value` on an iPhone 12).
 //
 // This answers each from where it lives: the producer's queue first (one error per call, oldest first, without
 // crossing), then the host's.

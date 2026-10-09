@@ -12,12 +12,12 @@
 //! # Scope: one cache per directory, not one per Session
 //!
 //! The directory comes from `MigoEngineConfig.code_cache_dir`, which is per Engine,
-//! so two Sessions on one Engine are handed the same directory. Section 6.5 says that
+//! so two Sessions on one Engine are handed the same directory. The shared-tier model says that
 //! is right -- compiled bytecode for a given source is the same bytes whichever
 //! Session asked for it, and the key is the source's own hash, so two games loading
 //! one module should hold one copy.
 //!
-//! What was wrong was the accounting, and in the shape Section 6.4 defect 4 names:
+//! What was wrong was the accounting, in the shared-resource budget shape:
 //! the budget's denominator was an instance and its numerator a directory. Each Host
 //! built its own `DiskCodeCache`, each scanned the directory once and then tracked its
 //! own writes, and neither could see the other's. Three consequences, all from that
@@ -494,7 +494,7 @@ mod tests {
 
     #[test]
     fn a_second_session_reads_what_the_first_compiled() {
-        // Section 6.5 puts this cache in the shared tier: the bytecode for a source is
+        // This cache is in the shared tier: the bytecode for a source is
         // the same bytes whichever Session compiled it, and both of them load the same
         // engine extension JS. Giving each Session its own directory would satisfy the
         // budget and lose exactly this, which is why the fix was accounting and not

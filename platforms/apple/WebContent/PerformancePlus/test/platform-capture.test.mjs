@@ -70,7 +70,7 @@ test("the platform record cannot be altered by content either", () => {
 
 // `decodeAudioData` hands the ArrayBuffer to the host by transferring it. It looked `structuredClone` up when it
 // ran, and by then the engine's namespace handling had retired the Worker's own names: on an iPhone every
-// `decodeAudioData` threw "audioData is detached or cannot be detached" (migo-conformance `audio-spec`, and so Howler's
+// `decodeAudioData` threw "audioData is detached or cannot be detached" (the conformance suite `audio-spec`, and so Howler's
 // and Phaser's audio) while the buffer was perfectly detachable.
 test("the audio transfer uses the platform's structuredClone after the global is gone", async () => {
   const { transferOut } = await import("../src/audio.mjs");

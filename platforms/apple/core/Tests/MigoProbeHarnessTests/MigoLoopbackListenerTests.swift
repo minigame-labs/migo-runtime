@@ -81,7 +81,7 @@ final class MigoLoopbackListenerTests: XCTestCase {
     }
 
     func testAPostBodyIsEchoedByteForByte() throws {
-        // A5's arm measures whether the bytes arrive. If this server truncated
+        // The body measurement checks whether the bytes arrive. If this server truncated
         // them, the probe would report a lost body and blame WebKit.
         let (listener, port) = try makeListener()
         defer { listener.stop() }
@@ -100,7 +100,7 @@ final class MigoLoopbackListenerTests: XCTestCase {
     }
 
     func testTheIsolationHeadersAreActuallySent() throws {
-        // A7 asks whether WebKit honours COOP and COEP at this origin. It cannot
+        // The probe asks whether WebKit honours COOP and COEP at this origin. It cannot
         // be asked unless they are sent, and a listener that stopped sending
         // them would answer "crossOriginIsolated === false" for a reason that
         // has nothing to do with the platform.

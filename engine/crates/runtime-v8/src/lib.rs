@@ -48,9 +48,9 @@
 //!
 //! - **Console**: `console.log()`, `console.warn()`, `console.error()`, etc.
 //! - **Timers**: `setTimeout()`, `setInterval()`, `requestAnimationFrame()`
-//! - **Network**: `fetch()` with streaming support
-//! - **URL**: `URL`, `URLSearchParams`
-//! - **Encoding**: `TextEncoder`, `TextDecoder`
+//! - **Network**: `request()`, `downloadFile()`, `uploadFile()`, `connectSocket()` (mini-game network APIs)
+//! - **URL**: `URL`
+//! - **Encoding**: `encode()`, `decode()` (multi-format codec)
 //! - **Canvas 2D**: Full CanvasRenderingContext2D API
 //! - **WebGL**: WebGLRenderingContext (WebGL 1.0)
 //! - **WebAudio**: AudioContext, AudioBufferSourceNode, GainNode
@@ -92,7 +92,7 @@
 //! runtime.run_event_loop(PollEventLoopOptions::default()).await?;
 //! ```
 
-// Section 7.3's steady-state allocation gate reads this. `#[cfg(test)]` scopes it
+// The steady-state allocation gate reads this. `#[cfg(test)]` scopes it
 // to this crate's own test binary: a `#[global_allocator]` is unique per binary, so
 // one declared unconditionally here would follow the library into every shipped
 // cdylib. Deleting it does not make the gates pass silently -- each burst proves the
@@ -229,7 +229,7 @@ deno_core::extension!(
 ///  1  base            CORE      ops, async utils, subpackage loader
 ///  2  console         CORE      console.log / warn / error
 ///  3  event           CORE      EventTarget / EventEmitter
-///  4  utility         CORE      TextEncoder / TextDecoder
+///  4  utility         CORE      encode() / decode()  (multi-format codec)
 ///  5  device          OPTIONAL  sensors, battery, clipboard, vibration, screen, network, location, scan
 ///  6  ui              OPTIONAL  Toast / Modal / Loading / ActionSheet / UserInfoButton
 ///  7  system          OPTIONAL  bluetooth, auth, window/system/device info, login, settings, navigate
@@ -261,7 +261,7 @@ pub fn main_extensions(host: HostOpState) -> Vec<deno_core::Extension> {
     exts.extend(io_state::io_state_extensions()); // shared IO scheduler state
     exts.extend(console::console_extensions()); // console.log / warn / error
     exts.extend(event::event_extensions()); // EventTarget / EventEmitter
-    exts.extend(utility::utility_extensions()); // TextEncoder / TextDecoder
+    exts.extend(utility::utility_extensions()); // encode() / decode() (multi-format codec)
 
     // ---- OPTIONAL: api-sensors ----
     #[cfg(feature = "api-sensors")]

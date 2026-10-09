@@ -84,7 +84,7 @@ pub const MAX_SERVICE_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 
 /// The largest answer carried inline on the socket, body included.
 ///
-/// G0's crossover (`transport-crossover-sweep.json`): below 64 KiB the loopback
+/// Transport crossover (`transport-crossover-sweep.json`): below 64 KiB the loopback
 /// socket is faster and cheaper on the host's CPU, above it a scheme request is.
 /// A larger answer is parked (see [`DOWN_REPLY_PARKED`]) and the producer takes
 /// it with one request -- the same rule the uplink follows, applied to the

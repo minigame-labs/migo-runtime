@@ -1,4 +1,4 @@
-//! AUD-11: exposed Web Audio operations must not report success for native no-ops.
+//! Exposed Web Audio operations must not report success for native no-ops.
 //!
 //! The audit identified five surfaces whose wrappers either only changed local
 //! state or used an operation that could not express the requested target. This

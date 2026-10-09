@@ -62,7 +62,7 @@ smallvec = { workspace = true }
 libc = "0.2"
 
 [dev-dependencies]
-# Section 7.3's steady-state allocation gate. Reached only through a dev
+# The steady-state allocation gate. Reached only through a dev
 # dependency so a `#[global_allocator]` cannot follow this crate into a shipped
 # cdylib -- cargo enforces that, rather than a comment asking for it.
 migo-alloc-probe = { path = "../../testing/alloc-probe", default-features = false }

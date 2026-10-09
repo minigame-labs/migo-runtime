@@ -35,7 +35,7 @@ public final class PermissionOperationGateTest {
     private static final long CONTENTION_PATIENCE_MILLIS = 2_000;
 
     /**
-     * Section 7.3: no per-event path acquires a lock shared beyond its own session.
+     * No per-event path acquires a lock shared beyond its own session.
      *
      * This is the gate that requirement was first written for on this side of the JNI
      * boundary, and the JVM half the Rust probe says nothing about. An earlier attempt was
@@ -564,8 +564,8 @@ public final class PermissionOperationGateTest {
      * A grant belongs to the Session that was granted it, and to no other. This gate is a
      * process-wide static keyed by session id, so two concurrent Sessions meet inside one
      * object -- and a grant that leaked between them would let one game use a capability
-     * the user approved for another. That is the permission half of Section 6.4's
-     * concurrent-session isolation, and it was the group task 0.21 recorded as untested.
+     * the user approved for another. That is the permission half of the
+     * concurrent-session isolation, and it was previously untested.
      *
      * <p>The existing cross-session test grants a scope and then checks the granted
      * session still works. This checks the other direction, which nothing did: that the

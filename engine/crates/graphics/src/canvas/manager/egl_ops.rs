@@ -302,7 +302,7 @@ pub(super) struct EglInitResult {
     pub gles_major: u32,
     /// Whether the driver supports `EGL_EXT_create_context_robustness` so
     /// subsequent `create_context` calls can add the reset-notification
-    /// strategy attribute (R-3).  Cached here rather than re-queried
+    /// strategy attribute.  Cached here rather than re-queried
     /// per context to avoid the extra `eglQueryString` on every canvas
     /// create.
     pub has_robust_context: bool,
@@ -513,7 +513,7 @@ pub(super) fn init_egl(provider: &dyn EglProvider) -> EngineResult<EglInitResult
 
 /// Build the `eglCreateContext` attribute list for a GLES
 /// context, optionally appending the robustness / reset
-/// notification attributes when the driver supports them (R-3).
+/// notification attributes when the driver supports them.
 /// `EGL_FIXED_SIZE_ANGLE`, from `EGL_ANGLE_window_fixed_size`.
 const EGL_FIXED_SIZE_ANGLE: egl::Int = 0x3201;
 

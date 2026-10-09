@@ -4,7 +4,7 @@ import Network
 
 /// The loopback origin gate 1 measures against.
 ///
-/// A6 is the assumption this exists to settle: `127.0.0.1` is a potentially
+/// The assumption this exists to settle is that `127.0.0.1` is a potentially
 /// trustworthy origin by specification, `localhost` as a *name* has been
 /// reported not to resolve inside WKWebView, and a loopback listener may or may
 /// not trip the local-network permission alert on a given iOS version. None of
@@ -14,11 +14,11 @@ import Network
 ///
 ///   * the probe page and its two scripts, with the COOP/COEP headers that
 ///     `crossOriginIsolated` requires -- served rather than assumed, because
-///     A7's question is whether WebKit honours them here, and it cannot be
+///     The question is whether WebKit honours them here, and it cannot be
 ///     asked without sending them;
 ///   * `POST /echo-body`, which the synchronous-XHR probe blocks on; and
 ///   * `GET /echo` upgraded to a WebSocket that echoes binary frames, which is
-///     A22's arm.
+///     the WebSocket measurement arm.
 ///
 /// WHY IT IS WRITTEN OUT RATHER THAN TAKEN FROM A PACKAGE. This package is the
 /// one that must resolve with nothing fetched and nothing built -- that
@@ -256,7 +256,7 @@ public final class MigoLoopbackListener {
     ) {
         let route = path.split(separator: "?").first.map(String.init) ?? path
 
-        // A32's other half, served rather than pushed. The page brackets each
+        // Host CPU measurement endpoint, served rather than pushed. The page brackets each
         // batch with two of these, which costs one round trip at each boundary
         // -- under a percent of a two-hundred-sample batch -- and needs no
         // second message channel. It is a GET so a page at either origin can
@@ -308,7 +308,7 @@ public final class MigoLoopbackListener {
         var head = "HTTP/1.1 \(status)\r\n"
         head += "Content-Type: \(mime)\r\n"
         head += "Content-Length: \(body.count)\r\n"
-        // A7 asks whether WebKit grants cross-origin isolation here. It cannot
+        // The probe asks whether WebKit grants cross-origin isolation here. It cannot
         // be asked without these two, and a listener that omitted them would
         // return `crossOriginIsolated === false` for a reason that has nothing
         // to do with the platform.

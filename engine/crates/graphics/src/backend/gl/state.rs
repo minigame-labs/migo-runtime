@@ -496,7 +496,7 @@ mod tests {
 
     // ---- save / restore is allocation-free, and stays that way ---------
 
-    /// Section 7.3 on `save()` / `restore()`.
+    /// Steady-state allocation gate on `save()` / `restore()`.
     ///
     /// **This gate protects a property that a single added field would break.**
     /// [`Canvas2DState`] is scalars plus `Arc`s — `line_dash`,
@@ -936,7 +936,7 @@ mod tests {
         }
     }
 
-    // ---- P3-2 latent-COW evidence -----------------------------------
+    // ---- Latent-COW evidence -----------------------------------
 
     #[test]
     fn deep_save_scales_heap_cost_by_arc_refcount_only() {

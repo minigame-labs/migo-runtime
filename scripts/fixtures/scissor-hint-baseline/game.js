@@ -7,7 +7,7 @@
 //
 // Compare render-thread CPU% against scissor-hint-composite
 // (scripts/measure-scissor-hint.sh): frame time is not the instrument here
-// either, for the same vsync-ceiling reason as T1/T6 -- 300 tiny rects is
+// either, for the same vsync-ceiling reason -- 300 tiny rects is
 // nowhere near expensive enough to miss 60fps on its own, composite-poisoned
 // or not, so a fps reading would show nothing regardless of the true cost.
 const canvas = migo.createCanvas();

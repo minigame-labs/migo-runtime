@@ -897,7 +897,7 @@ if [ "$MODE" = "build" ]; then
 
     for target in $NINJA_TARGETS; do
         # An array, not a space-joined string. A developer's Mac has a home
-        # directory named after them and "/Users/Jimmy McGill/..." is an
+        # directory named after them and "/Users/Some Person/..." is an
         # ordinary path there; a joined string would split it into two
         # arguments and lipo would report a missing file that exists. CI never
         # meets a space, so the string form would have passed every run and

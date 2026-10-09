@@ -23,20 +23,20 @@ use crate::{CanvasManager, canvas::BackingSizeOwner};
 /// the old femtovg `Renderer2d` so `render_thread.rs` can treat the
 /// dispatcher as a drop-in replacement.
 pub(crate) struct Renderer2d {
-    /// F-2: shared ownership with the JS-thread measurer.
+    /// Shared ownership with the JS-thread measurer.
     /// `fillText` / `strokeText` acquire this mutex for the
     /// duration of a paint (on the render thread), and the
     /// JS-thread `op_measure_text_flat` acquires it for each
     /// measurement.  The mutex is contended only on cache-miss
     /// paths where the shaping is the real cost anyway; steady-
     /// state `measureText` calls from JS hit the JS-side LRU
-    /// first (R-10) and never touch this lock at all.
+    /// first and never touch this lock at all.
     pub(crate) text: crate::text_measurer_impl::SharedTextContext,
 }
 
 impl Renderer2d {
     /// Construct with an externally-built shared `TextContext`
-    /// (F-2).  Used by `RenderThread::spawn`, which builds the
+    /// Used by `RenderThread::spawn`, which builds the
     /// pair off-thread so the `SharedTextMeasurer` half can be
     /// published before the render loop starts.
     pub(crate) fn from_shared_text(shared: crate::text_measurer_impl::SharedTextContext) -> Self {

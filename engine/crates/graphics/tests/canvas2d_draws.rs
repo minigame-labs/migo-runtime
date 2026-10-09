@@ -28,7 +28,7 @@ fn apply(ctx: &mut Canvas2DRenderer, canvas: &skia_safe::Canvas, cmds: &[Canvas2
 // ====== Image smoothing ====================================================
 //
 // `imageSmoothingEnabled` is drawing state. What the renderer does with it is pick `drawImage`'s sampling; the
-// pixels that follow from the sampling are checked end to end in migo-conformance (`canvas2d-image-smoothing`),
+// pixels that follow from the sampling are checked end to end in the conformance suite (`canvas2d-image-smoothing`),
 // because a scaled texture needs a GPU context and these tests run on a raster surface. What is checked here is
 // the half that has no GPU in it: the command lands in the state, and the state is saved, restored and reset the
 // way the specification says.

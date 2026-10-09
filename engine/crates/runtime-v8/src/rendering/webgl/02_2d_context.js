@@ -1213,7 +1213,7 @@ function _styleRgba(style) {
     return entry === null ? [0, 0, 0, 255] : entry.rgba;
 }
 
-// G-2: CSS `font` parsing used to live here as `_parseCssFont`
+// CSS `font` parsing used to live here as `_parseCssFont`
 // and in Rust as a separate implementation.  Both parsers could
 // subtly drift (different weight ladders, different unit
 // conversions), producing silent "measureText disagrees with
@@ -1275,7 +1275,7 @@ class CanvasRenderingContext2D {
     // (anything that moves / recolours / blends the glyph run beyond
     // the keyed fields).  Font identity is carried entirely by the
     // raw `font` string -- JS deliberately does not re-parse CSS font
-    // (see the G-2 note above), so size/weight/italic stay 0/false in
+    // (see the note above about CSS font parsing), so size/weight/italic stay 0/false in
     // the key; the render-thread resolves the string authoritatively
     // and identical strings always render identically within a
     // process generation.
@@ -1650,10 +1650,10 @@ class CanvasRenderingContext2D {
 
     measureText(text) {
         const s = String(text);
-        // R-10 + F-2: JS-side measure cache in front of the
+        // JS-side measure cache in front of the
         // native op.  Cross-thread RPC into the render thread
         // costs 30-50 us round-trip even on the cache-hit
-        // path; `op_measure_text_flat` (R-7 / F-2) drops that
+        // path; `op_measure_text_flat` drops that
         // to ~5-10 us when the shared measurer is installed,
         // and ~10 us otherwise.  Most UI code calls
         // `measureText` with a repeating set of strings per
@@ -1676,14 +1676,14 @@ class CanvasRenderingContext2D {
         const key = this._font + '\x1f' + s;
         const hit = this._measureCache.get(key);
         if (hit !== undefined) return hit;
-        // R-7: prefer the flat-buffer op so we skip serde_v8's
+        // Prefer the flat-buffer op so we skip serde_v8's
         // 12-field V8 object construction on the hot measure
         // path.  Layout is fixed little-endian f32 at the offsets
         // documented on `op_measure_text_flat`; the Float32Array
         // view is zero-copy.  Keep the old serde op as fallback
         // for older snapshots -- the engine exposes both.
         //
-        // G-2: pass the raw CSS font string; Rust-side
+        // Pass the raw CSS font string; Rust-side
         // `SharedTextMeasurer::measure_css` parses it through the
         // shared `css_font::parse_css_font` implementation, which
         // is also what the render-thread `SetFont` handler uses
@@ -1819,7 +1819,7 @@ class CanvasRenderingContext2D {
     get font() { return this._font; }
     set font(value) {
         if (this._font === value) return;
-        // G-2: no JS-side parsing needed.  `op_set_font` parses on
+        // No JS-side parsing needed.  `op_set_font` parses on
         // the Rust side via `shared::css_font_shorthand::
         // parse_font_shorthand`, the same function the render
         // thread uses for `Canvas2DCmd::SetFont`.  One parser, one

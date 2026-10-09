@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Validates the Starlight build output in build/ before it is copied into
-// migo-www/dist/docs. These are publication gates: crawlable SSG HTML, a real
+// the portal's dist/docs. These are publication gates: crawlable SSG HTML, a real
 // Pagefind index for the zh corpus, noindexed en stubs, and no Next/docusaurus
 // leftovers.
 import { existsSync, readFileSync, readdirSync } from 'node:fs';

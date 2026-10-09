@@ -99,7 +99,7 @@ GameSession 上 10 个 `set*Handler(...)` 外加 `setListener(GameSessionListene
 
 ## 分级:export 不存在 vs 能力不存在
 
-- **export 不存在**:`migo_engine_create` 本身在库里没有(`platform/oh.h` 链接错一类,平台头) — 编译/链接期失败,不进运行时。
+- **export 不存在**:`migo_engine_create` 本身在库里没有(`platform/openharmony.h` 链接错一类,平台头) — 编译/链接期失败,不进运行时。
 - **能力不存在**:`migo_query_capabilities` 报的 `platform_kinds` 位里没有那种 surface kind / 软键盘三分体没装齐 / `setAdHandler` 没注册 — 运行时按上表 settle,内容包括降级分支全在 migo.* 协议里有文档。
 
 运行库能力查询本身的字段与 ABI 检查协议见 [运行库能力查询](/docs/reference/capabilities/)。
