@@ -631,17 +631,17 @@
       }
     },
     "host_v8_worker": {
-      "reason": "Content workers are not offered on Performance+ yet: content already runs in a Worker, and a nested one needs its own frame channel identity.",
+      "reason": "Content already runs in a Worker, and WebKit offers no nested-Worker constructor inside one (confirmed on-device, iPhone 12 / iOS 17.0.3: `typeof Worker === \"undefined\"` there). migo.createWorker crosses a dedicated MessagePort to the page instead, which a Window context's Worker support has no such gap in -- see worker-relay.mjs and worker-page-relay.mjs.",
       "ops": {
-        "op_worker_create": "unsupported",
-        "op_worker_post_message": "unsupported",
-        "op_worker_recv_error": "unsupported",
-        "op_worker_recv_message": "unsupported",
-        "op_worker_terminate": "unsupported"
+        "op_worker_create": "async",
+        "op_worker_post_message": "command",
+        "op_worker_recv_error": "async",
+        "op_worker_recv_message": "async",
+        "op_worker_terminate": "command"
       }
     },
     "host_v8_worker_inner": {
-      "reason": "The inner half of content workers; see host_v8_worker.",
+      "reason": "The nested worker the page makes runs its own bootstrap (worker-nested-bootstrap.js) over its native self.postMessage/onmessage, not this shared module -- it has no Rust op boundary to answer for at all, and the in-process lane's audio/network/filesystem capabilities this module also exposes to a worker script are not yet proxied through the page relay either.",
       "ops": {
         "op_worker_inner_post_message": "unsupported",
         "op_worker_inner_recv_message": "unsupported"

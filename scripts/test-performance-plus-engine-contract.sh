@@ -60,7 +60,7 @@ FRAMES="$WORK/frames"
 
 PRODUCER="platforms/apple/WebContent/PerformancePlus/src"
 # Worker-side modules only: page-entry.mjs runs in the page, where no engine is.
-global_posts="$(grep -nE '(^|[^.A-Za-z_])(self|globalThis)?\.?postMessage\(' "$PRODUCER"/*.mjs \
+global_posts="$(grep -nE '(^|[^.A-Za-z_])(self\.|globalThis\.)?postMessage\(' "$PRODUCER"/*.mjs \
     | grep -v "^$PRODUCER/page-entry.mjs:" \
     | grep -vE '^[^:]+:[0-9]+:\s*(//|\*)' || true)"
 if [[ -n "$global_posts" ]]; then

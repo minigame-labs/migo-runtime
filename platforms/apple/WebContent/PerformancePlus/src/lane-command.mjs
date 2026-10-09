@@ -22,6 +22,7 @@ import { engineHost } from "./engine-host.mjs";
 import { servicesOf } from "./lane-async.mjs";
 import { f32BitsOf, optionalBytesOf, smiU32, stringOf, toBool, toF64, toU8 } from "./op-args.mjs";
 import { SERVICE_OP } from "./service-ops.mjs";
+import { postToWorkerAttempt, terminateWorkerAttempt } from "./worker-relay-channel.mjs";
 
 /// A console line, for the host's log.
 ///
@@ -655,4 +656,17 @@ export function op_game_log_report(logJson) {
 export function op_set_preferred_fps(fps) {
   const rate = toF64(fps, "fps");
   servicesOf(engineHost()).command(SERVICE_OP.op_set_preferred_fps, (w) => w.f64(rate));
+}
+
+// ---- content's migo.createWorker (the fire-and-forget half) -----------------
+//
+// `op_worker_post_message` and `op_worker_terminate` are synchronous, non-async functions in Rust, so they belong
+// here rather than in `lane-async.mjs` with the other three ops `01_worker.js` imports; `worker-relay-channel.mjs`
+// (that file's own header explains why) is the shared state both files need.
+export function op_worker_post_message(jsonMessage) {
+  postToWorkerAttempt(stringOf(jsonMessage, "json_message"));
+}
+
+export function op_worker_terminate() {
+  terminateWorkerAttempt();
 }

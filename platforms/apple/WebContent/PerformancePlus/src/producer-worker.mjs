@@ -44,6 +44,10 @@ self.onmessage = async (event) => {
   self.onmessage = null;
 
   const config = message.config ?? {};
+  // The page's own half of content's `migo.createWorker`: a port, not a message, so it has no "start"-only
+  // lifetime of its own and content can use it for as long as this worker runs. `event.ports` is empty for an
+  // older host that does not transfer one; `bindEngineHost` takes `undefined` the same way it takes no `sync`.
+  const workerRelayPort = event.ports[0];
 
   // The engine session, read before connecting: the service stream is stamped
   // with its generation and shares the socket the connection opens.
@@ -130,6 +134,7 @@ self.onmessage = async (event) => {
         sync,
         services,
         report,
+        workerRelayPort,
       });
       await import("./engine/boot.mjs");
       // The host bridge: its functions taken now -- the engine has loaded and
