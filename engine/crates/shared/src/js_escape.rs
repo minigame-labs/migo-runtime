@@ -42,20 +42,6 @@ pub fn hook_args_one<T: Serialize>(value: T) -> Cow<'static, str> {
     encode_hook_args(&(value,))
 }
 
-/// Two arguments -- `_internalOnActionSheetResult(requestId, tapIndex)`.
-pub fn hook_args_two<A: Serialize, B: Serialize>(a: A, b: B) -> Cow<'static, str> {
-    encode_hook_args(&(a, b))
-}
-
-/// Three arguments -- `_internalOnModalResult(requestId, confirm, cancel)`.
-pub fn hook_args_three<A: Serialize, B: Serialize, C: Serialize>(
-    a: A,
-    b: B,
-    c: C,
-) -> Cow<'static, str> {
-    encode_hook_args(&(a, b, c))
-}
-
 fn encode_hook_args<T: Serialize>(value: &T) -> Cow<'static, str> {
     match serde_json::to_string(value) {
         Ok(encoded) => Cow::Owned(encoded),
@@ -83,11 +69,6 @@ mod tests {
     #[test]
     fn one_argument_is_a_one_element_array() {
         assert_eq!(hook_args_one("payload"), r#"["payload"]"#);
-    }
-
-    #[test]
-    fn two_arguments_keep_their_order() {
-        assert_eq!(hook_args_two(1, 0), "[1,0]");
     }
 
     /// The hooks that take a JSON result are handed the *string*, exactly as

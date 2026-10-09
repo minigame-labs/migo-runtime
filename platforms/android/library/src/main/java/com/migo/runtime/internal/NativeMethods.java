@@ -546,29 +546,26 @@ public final class NativeMethods {
     /**
      * Callback for modal dialog result.
      *
-     * @param sessionId The session ID
-     * @param requestId The id the request carried, or
-     *                  {@link CallbackCorrelation#ABSENT}
-     * @param confirm   1 if user tapped confirm, 0 otherwise
-     * @param cancel    1 if user tapped cancel, 0 otherwise
+     * @param sessionId  The session ID
+     * @param resultJson {@code {requestId, confirm, cancel, content?}} or a
+     *                   {@link CallbackCorrelation#failure} document
      */
-    public static void onModalResult(int sessionId, int requestId, int confirm, int cancel) {
+    public static void onModalResult(int sessionId, String resultJson) {
         if (sessionId >= 0) {
-            NativeBridge.onModalResult(sessionId, requestId, confirm, cancel);
+            NativeBridge.onModalResult(sessionId, resultJson);
         }
     }
 
     /**
      * Callback for action sheet result.
      *
-     * @param sessionId The session ID
-     * @param requestId The id the request carried, or
-     *                  {@link CallbackCorrelation#ABSENT}
-     * @param tapIndex  Index of selected item (0-based), or -1 if cancelled
+     * @param sessionId  The session ID
+     * @param resultJson {@code {requestId, tapIndex}} or a
+     *                   {@link CallbackCorrelation#failure} document
      */
-    public static void onActionSheetResult(int sessionId, int requestId, int tapIndex) {
+    public static void onActionSheetResult(int sessionId, String resultJson) {
         if (sessionId >= 0) {
-            NativeBridge.onActionSheetResult(sessionId, requestId, tapIndex);
+            NativeBridge.onActionSheetResult(sessionId, resultJson);
         }
     }
 

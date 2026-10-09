@@ -473,8 +473,8 @@ mod tests {
 
     struct StubClipboard;
     impl ClipboardService for StubClipboard {
-        fn get_data(&self) -> Result<String, ServiceError> {
-            Ok("clipboard-content".to_string())
+        fn get_data(&self, _request_json: &str) -> Result<(), ServiceError> {
+            Ok(())
         }
     }
 
@@ -484,7 +484,11 @@ mod tests {
         let svc = mock
             .clipboard()
             .expect("clipboard should be Some after with_clipboard");
-        assert_eq!(svc.get_data().unwrap(), "clipboard-content");
+        assert!(svc.get_data(r#"{"requestId":1}"#).is_ok());
+        assert!(
+            svc.set_data(r#"{"requestId":2,"data":"x"}"#).is_err(),
+            "a method the stub left alone keeps the default refusal"
+        );
     }
 
     #[test]

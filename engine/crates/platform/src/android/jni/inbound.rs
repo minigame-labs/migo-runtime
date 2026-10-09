@@ -1,6 +1,6 @@
 #![allow(non_snake_case)]
 
-use shared::js_escape::{hook_args_one, hook_args_three, hook_args_two};
+use shared::js_escape::hook_args_one;
 // The generation Java captured when the manager was built, not one read here.
 use shared::protocol::host_cmd::captured_generation;
 
@@ -1010,38 +1010,8 @@ pub(crate) extern "system" fn onUserCaptureScreen(
     });
 }
 
-pub(crate) extern "system" fn onModalResult<'local>(
-    _env: JNIEnv<'local>,
-    _class: JClass<'local>,
-    host_id: jint,
-    request_id: jint,
-    confirm: jint,
-    cancel: jint,
-) {
-    jni_safe!("onModalResult", {
-        let cmd = HostCommand::InvokeHostHook {
-            hook: "_internalOnModalResult",
-            args_json: hook_args_three(request_id, confirm, cancel),
-        };
-        let _ = send_reliable_command_to_host(host_id, cmd);
-    });
-}
-
-pub(crate) extern "system" fn onActionSheetResult<'local>(
-    _env: JNIEnv<'local>,
-    _class: JClass<'local>,
-    host_id: jint,
-    request_id: jint,
-    tap_index: jint,
-) {
-    jni_safe!("onActionSheetResult", {
-        let cmd = HostCommand::InvokeHostHook {
-            hook: "_internalOnActionSheetResult",
-            args_json: hook_args_two(request_id, tap_index),
-        };
-        let _ = send_reliable_command_to_host(host_id, cmd);
-    });
-}
+jni_json_callback!(onModalResult, "_internalOnModalResult");
+jni_json_callback!(onActionSheetResult, "_internalOnActionSheetResult");
 
 // ==================== Device Sensor ====================
 

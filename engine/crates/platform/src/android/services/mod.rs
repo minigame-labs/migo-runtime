@@ -274,13 +274,83 @@ struct AndroidClipboard {
     host_id: i32,
 }
 
+/// Android's clipboard is reachable synchronously from this thread, so each
+/// request is carried out here and answered at once -- through the result hook
+/// every platform answers on, so content sees one shape however the host
+/// reaches its clipboard.
 impl ClipboardService for AndroidClipboard {
-    fn set_data(&self, data: &str) -> Result<(), ServiceError> {
-        Ok(jni::set_clipboard_data(self.host_id, data)?)
+    fn set_data(&self, request_json: &str) -> Result<(), ServiceError> {
+        let request = ClipboardRequest::parse("setClipboardData", request_json)?;
+        let data = request
+            .fields
+            .get("data")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| {
+                ServiceError::invalid_param("setClipboardData:fail data must be a string")
+            })?;
+        let outcome = jni::set_clipboard_data(self.host_id, data).map(|()| serde_json::Map::new());
+        request.answer(self.host_id, "_internalOnSetClipboardDataResult", outcome);
+        Ok(())
     }
 
-    fn get_data(&self) -> Result<String, ServiceError> {
-        Ok(jni::get_clipboard_data(self.host_id)?)
+    fn get_data(&self, request_json: &str) -> Result<(), ServiceError> {
+        let request = ClipboardRequest::parse("getClipboardData", request_json)?;
+        let outcome = jni::get_clipboard_data(self.host_id).map(|data| {
+            let mut fields = serde_json::Map::new();
+            fields.insert("data".into(), data.into());
+            fields
+        });
+        request.answer(self.host_id, "_internalOnGetClipboardDataResult", outcome);
+        Ok(())
+    }
+}
+
+/// One clipboard request: content's id and its options.
+struct ClipboardRequest {
+    request_id: u64,
+    fields: serde_json::Map<String, serde_json::Value>,
+}
+
+impl ClipboardRequest {
+    fn parse(api: &str, request_json: &str) -> Result<Self, ServiceError> {
+        let malformed = || ServiceError::invalid_param(format!("{api}:fail malformed request"));
+        let serde_json::Value::Object(fields) =
+            serde_json::from_str::<serde_json::Value>(request_json).map_err(|_| malformed())?
+        else {
+            return Err(malformed());
+        };
+        let request_id = fields
+            .get("requestId")
+            .and_then(serde_json::Value::as_u64)
+            .ok_or_else(malformed)?;
+        Ok(Self { request_id, fields })
+    }
+
+    /// Deliver the outcome to content's hook, keyed by the request's id.
+    fn answer(
+        &self,
+        host_id: i32,
+        hook: &'static str,
+        outcome: Result<serde_json::Map<String, serde_json::Value>, String>,
+    ) {
+        let mut result = match outcome {
+            Ok(fields) => fields,
+            Err(reason) => {
+                let mut fields = serde_json::Map::new();
+                fields.insert("error".into(), reason.into());
+                fields
+            }
+        };
+        result.insert("requestId".into(), self.request_id.into());
+        let _ = migo_core::send_reliable_command_to_host(
+            host_id,
+            shared::protocol::host_cmd::HostCommand::InvokeHostHook {
+                hook,
+                args_json: shared::js_escape::hook_args_one(
+                    serde_json::Value::Object(result).to_string(),
+                ),
+            },
+        );
     }
 }
 

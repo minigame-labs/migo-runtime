@@ -45,6 +45,10 @@ typedef uint32_t MigoHostService;
 #define MIGO_HOST_SERVICE_SUBPACKAGE 5U
 #define MIGO_HOST_SERVICE_PERMISSION 6U
 #define MIGO_HOST_SERVICE_SETTING 7U
+#define MIGO_HOST_SERVICE_INTERACTION 8U
+#define MIGO_HOST_SERVICE_CLIPBOARD 9U
+#define MIGO_HOST_SERVICE_SCAN_CODE 10U
+#define MIGO_HOST_SERVICE_LOCATION 11U
 
 /*
  * Ads. All six are commands addressed to the advert by the adId in their
@@ -108,6 +112,34 @@ typedef uint32_t MigoHostService;
 #define MIGO_SETTING_OPEN_SETTING 0U
 #define MIGO_SETTING_OPEN_SYSTEM_BLUETOOTH_SETTING 1U
 #define MIGO_SETTING_OPEN_APP_AUTHORIZE_SETTING 2U
+
+/*
+ * Native UI: toasts and loading indicators are commands; a modal and an action
+ * sheet are calls. A modal answers {"confirm", "cancel"} -- with "content", the
+ * input's text, when the request was "editable" -- and an action sheet
+ * {"tapIndex"}, or fails with the reason "cancel" when the player dismissed it.
+ */
+#define MIGO_INTERACTION_SHOW_TOAST 0U
+#define MIGO_INTERACTION_HIDE_TOAST 1U
+#define MIGO_INTERACTION_SHOW_MODAL 2U
+#define MIGO_INTERACTION_SHOW_LOADING 3U
+#define MIGO_INTERACTION_HIDE_LOADING 4U
+#define MIGO_INTERACTION_SHOW_ACTION_SHEET 5U
+
+/* The clipboard: setClipboardData ({"data"}) and getClipboardData (answers {"data"}). */
+#define MIGO_CLIPBOARD_SET_CLIPBOARD_DATA 0U
+#define MIGO_CLIPBOARD_GET_CLIPBOARD_DATA 1U
+
+/* scanCode: {"onlyFromCamera", "scanType"}; answers {"result", "scanType", ...}. */
+#define MIGO_SCAN_CODE_SCAN_CODE 0U
+
+/*
+ * Location, both gated on scope.userLocation before they reach the host: answers
+ * {"latitude", "longitude", "accuracy", ...} as getLocation and getFuzzyLocation
+ * define them.
+ */
+#define MIGO_LOCATION_GET_LOCATION 0U
+#define MIGO_LOCATION_GET_FUZZY_LOCATION 1U
 
 /*
  * Content's permission scopes, in migo.getSetting()'s order. The host decides

@@ -1254,12 +1254,14 @@ public final class NativeExports {
         final int requestId = CallbackCorrelation.requestIdOf(json);
         RuntimeContext context = RuntimeRegistry.get(sessionId);
         if (context == null) {
-            NativeMethods.onModalResult(sessionId, requestId, 0, 1);
+            NativeMethods.onModalResult(sessionId, CallbackCorrelation.failure(
+                    requestId, "showModal", "no activity to show it in"));
             return;
         }
         Activity activity = context.getActivity();
         if (activity == null) {
-            NativeMethods.onModalResult(sessionId, requestId, 0, 1);
+            NativeMethods.onModalResult(sessionId, CallbackCorrelation.failure(
+                    requestId, "showModal", "no activity to show it in"));
             return;
         }
         InteractionUI.showModal(activity, sessionId, json);
@@ -1302,12 +1304,14 @@ public final class NativeExports {
         final int requestId = CallbackCorrelation.requestIdOf(json);
         RuntimeContext context = RuntimeRegistry.get(sessionId);
         if (context == null) {
-            NativeMethods.onActionSheetResult(sessionId, requestId, -1);
+            NativeMethods.onActionSheetResult(sessionId, CallbackCorrelation.failure(
+                    requestId, "showActionSheet", "no activity to show it in"));
             return;
         }
         Activity activity = context.getActivity();
         if (activity == null) {
-            NativeMethods.onActionSheetResult(sessionId, requestId, -1);
+            NativeMethods.onActionSheetResult(sessionId, CallbackCorrelation.failure(
+                    requestId, "showActionSheet", "no activity to show it in"));
             return;
         }
         InteractionUI.showActionSheet(activity, sessionId, json);

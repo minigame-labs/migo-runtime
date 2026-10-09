@@ -27,21 +27,28 @@ use migo_capi_abi::{
     host_services::{
         HostServiceOutcome, MIGO_AD_CREATE, MIGO_AD_DESTROY, MIGO_AD_EVENT_LIFECYCLE, MIGO_AD_HIDE,
         MIGO_AD_LOAD, MIGO_AD_SHOW, MIGO_AD_UPDATE_STYLE, MIGO_AUTH_CHECK_SESSION,
-        MIGO_AUTH_GET_PHONE_NUMBER, MIGO_AUTH_GET_USER_INFO, MIGO_AUTH_LOGIN, MIGO_HOST_SERVICE_AD,
-        MIGO_HOST_SERVICE_AUTH, MIGO_HOST_SERVICE_NAVIGATE, MIGO_HOST_SERVICE_PAYMENT,
-        MIGO_HOST_SERVICE_PERMISSION, MIGO_HOST_SERVICE_SETTING, MIGO_HOST_SERVICE_SHARE,
-        MIGO_HOST_SERVICE_SUBPACKAGE, MIGO_NAVIGATE_NAVIGATE_BACK_MINI_PROGRAM,
-        MIGO_NAVIGATE_NAVIGATE_TO_MINI_PROGRAM, MIGO_NAVIGATE_OPEN_CUSTOMER_SERVICE_CONVERSATION,
-        MIGO_PAYMENT_REQUEST_MIDAS_PAYMENT, MIGO_PAYMENT_REQUEST_MIDAS_PAYMENT_GAME_ITEM,
-        MIGO_PERMISSION_REQUEST_SCOPE, MIGO_SETTING_OPEN_APP_AUTHORIZE_SETTING,
+        MIGO_AUTH_GET_PHONE_NUMBER, MIGO_AUTH_GET_USER_INFO, MIGO_AUTH_LOGIN,
+        MIGO_CLIPBOARD_GET_CLIPBOARD_DATA, MIGO_CLIPBOARD_SET_CLIPBOARD_DATA, MIGO_HOST_SERVICE_AD,
+        MIGO_HOST_SERVICE_AUTH, MIGO_HOST_SERVICE_CLIPBOARD, MIGO_HOST_SERVICE_INTERACTION,
+        MIGO_HOST_SERVICE_LOCATION, MIGO_HOST_SERVICE_NAVIGATE, MIGO_HOST_SERVICE_PAYMENT,
+        MIGO_HOST_SERVICE_PERMISSION, MIGO_HOST_SERVICE_SCAN_CODE, MIGO_HOST_SERVICE_SETTING,
+        MIGO_HOST_SERVICE_SHARE, MIGO_HOST_SERVICE_SUBPACKAGE, MIGO_INTERACTION_HIDE_LOADING,
+        MIGO_INTERACTION_HIDE_TOAST, MIGO_INTERACTION_SHOW_ACTION_SHEET,
+        MIGO_INTERACTION_SHOW_LOADING, MIGO_INTERACTION_SHOW_MODAL, MIGO_INTERACTION_SHOW_TOAST,
+        MIGO_LOCATION_GET_FUZZY_LOCATION, MIGO_LOCATION_GET_LOCATION,
+        MIGO_NAVIGATE_NAVIGATE_BACK_MINI_PROGRAM, MIGO_NAVIGATE_NAVIGATE_TO_MINI_PROGRAM,
+        MIGO_NAVIGATE_OPEN_CUSTOMER_SERVICE_CONVERSATION, MIGO_PAYMENT_REQUEST_MIDAS_PAYMENT,
+        MIGO_PAYMENT_REQUEST_MIDAS_PAYMENT_GAME_ITEM, MIGO_PERMISSION_REQUEST_SCOPE,
+        MIGO_SCAN_CODE_SCAN_CODE, MIGO_SETTING_OPEN_APP_AUTHORIZE_SETTING,
         MIGO_SETTING_OPEN_SETTING, MIGO_SETTING_OPEN_SYSTEM_BLUETOOTH_SETTING,
         MIGO_SHARE_SHARE_APP_MESSAGE, MIGO_SUBPACKAGE_DOWNLOAD, MigoHostServiceResult,
         copy_bounded,
     },
 };
 use migo_core::services::{
-    AdService, AuthService, NavigateService, PaymentService, PermissionService, Scope, ScopeState,
-    ShareService, SubpackageService,
+    AdService, AuthService, ClipboardService, InteractionService, LocationService, NavigateService,
+    PaymentService, PermissionService, ScanCodeService, Scope, ScopeState, ShareService,
+    SubpackageService,
 };
 use serde_json::{Map, Value};
 use shared::{
@@ -188,6 +195,63 @@ const OPEN_APP_AUTHORIZE_SETTING: Call = Call {
     withheld: Withheld::Nothing,
 };
 
+const SHOW_MODAL: Call = Call {
+    service: MIGO_HOST_SERVICE_INTERACTION,
+    method: MIGO_INTERACTION_SHOW_MODAL,
+    hook: "_internalOnModalResult",
+    error_code_field: None,
+    progress_hook: None,
+    withheld: Withheld::Nothing,
+};
+const SHOW_ACTION_SHEET: Call = Call {
+    service: MIGO_HOST_SERVICE_INTERACTION,
+    method: MIGO_INTERACTION_SHOW_ACTION_SHEET,
+    hook: "_internalOnActionSheetResult",
+    error_code_field: None,
+    progress_hook: None,
+    withheld: Withheld::Nothing,
+};
+const SET_CLIPBOARD_DATA: Call = Call {
+    service: MIGO_HOST_SERVICE_CLIPBOARD,
+    method: MIGO_CLIPBOARD_SET_CLIPBOARD_DATA,
+    hook: "_internalOnSetClipboardDataResult",
+    error_code_field: None,
+    progress_hook: None,
+    withheld: Withheld::Nothing,
+};
+const GET_CLIPBOARD_DATA: Call = Call {
+    service: MIGO_HOST_SERVICE_CLIPBOARD,
+    method: MIGO_CLIPBOARD_GET_CLIPBOARD_DATA,
+    hook: "_internalOnGetClipboardDataResult",
+    error_code_field: None,
+    progress_hook: None,
+    withheld: Withheld::Nothing,
+};
+const SCAN_CODE: Call = Call {
+    service: MIGO_HOST_SERVICE_SCAN_CODE,
+    method: MIGO_SCAN_CODE_SCAN_CODE,
+    hook: "_internalOnScanCodeResult",
+    error_code_field: None,
+    progress_hook: None,
+    withheld: Withheld::Nothing,
+};
+const GET_LOCATION: Call = Call {
+    service: MIGO_HOST_SERVICE_LOCATION,
+    method: MIGO_LOCATION_GET_LOCATION,
+    hook: "_internalOnLocationResult",
+    error_code_field: None,
+    progress_hook: None,
+    withheld: Withheld::Nothing,
+};
+const GET_FUZZY_LOCATION: Call = Call {
+    service: MIGO_HOST_SERVICE_LOCATION,
+    method: MIGO_LOCATION_GET_FUZZY_LOCATION,
+    hook: "_internalOnFuzzyLocationResult",
+    error_code_field: None,
+    progress_hook: None,
+    withheld: Withheld::Nothing,
+};
+
 const CALLS: &[&Call] = &[
     &REQUEST_MIDAS_PAYMENT,
     &REQUEST_MIDAS_PAYMENT_GAME_ITEM,
@@ -202,6 +266,13 @@ const CALLS: &[&Call] = &[
     &OPEN_SETTING,
     &OPEN_SYSTEM_BLUETOOTH_SETTING,
     &OPEN_APP_AUTHORIZE_SETTING,
+    &SHOW_MODAL,
+    &SHOW_ACTION_SHEET,
+    &SET_CLIPBOARD_DATA,
+    &GET_CLIPBOARD_DATA,
+    &SCAN_CODE,
+    &GET_LOCATION,
+    &GET_FUZZY_LOCATION,
 ];
 
 /// Fire-and-forget requests, as `(service, method)`. Listed so the contract test
@@ -223,6 +294,10 @@ const COMMANDS: &[(u32, u32)] = &[
         MIGO_HOST_SERVICE_NAVIGATE,
         MIGO_NAVIGATE_OPEN_CUSTOMER_SERVICE_CONVERSATION,
     ),
+    (MIGO_HOST_SERVICE_INTERACTION, MIGO_INTERACTION_SHOW_TOAST),
+    (MIGO_HOST_SERVICE_INTERACTION, MIGO_INTERACTION_HIDE_TOAST),
+    (MIGO_HOST_SERVICE_INTERACTION, MIGO_INTERACTION_SHOW_LOADING),
+    (MIGO_HOST_SERVICE_INTERACTION, MIGO_INTERACTION_HIDE_LOADING),
 ];
 
 /// A service's own events, as `(service, event, hook)`.
@@ -385,6 +460,67 @@ impl CapiHostServices {
 
     pub(crate) fn open_app_authorize_setting(&self, request_id: i32) -> Result<(), ServiceError> {
         self.call_by_id(&OPEN_APP_AUTHORIZE_SETTING, request_id)
+    }
+}
+
+impl InteractionService for CapiHostServices {
+    fn show_toast(&self, json: &str) -> Result<(), ServiceError> {
+        self.command(
+            MIGO_HOST_SERVICE_INTERACTION,
+            MIGO_INTERACTION_SHOW_TOAST,
+            json,
+        )
+    }
+    fn hide_toast(&self) -> Result<(), ServiceError> {
+        self.command(
+            MIGO_HOST_SERVICE_INTERACTION,
+            MIGO_INTERACTION_HIDE_TOAST,
+            "{}",
+        )
+    }
+    fn show_modal(&self, json: &str) -> Result<(), ServiceError> {
+        self.call(&SHOW_MODAL, json)
+    }
+    fn show_loading(&self, json: &str) -> Result<(), ServiceError> {
+        self.command(
+            MIGO_HOST_SERVICE_INTERACTION,
+            MIGO_INTERACTION_SHOW_LOADING,
+            json,
+        )
+    }
+    fn hide_loading(&self) -> Result<(), ServiceError> {
+        self.command(
+            MIGO_HOST_SERVICE_INTERACTION,
+            MIGO_INTERACTION_HIDE_LOADING,
+            "{}",
+        )
+    }
+    fn show_action_sheet(&self, json: &str) -> Result<(), ServiceError> {
+        self.call(&SHOW_ACTION_SHEET, json)
+    }
+}
+
+impl ClipboardService for CapiHostServices {
+    fn set_data(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&SET_CLIPBOARD_DATA, request_json)
+    }
+    fn get_data(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&GET_CLIPBOARD_DATA, request_json)
+    }
+}
+
+impl ScanCodeService for CapiHostServices {
+    fn scan_code(&self, options_json: &str) -> Result<(), ServiceError> {
+        self.call(&SCAN_CODE, options_json)
+    }
+}
+
+impl LocationService for CapiHostServices {
+    fn get_location(&self, options_json: &str) -> Result<(), ServiceError> {
+        self.call(&GET_LOCATION, options_json)
+    }
+    fn get_fuzzy_location(&self, options_json: &str) -> Result<(), ServiceError> {
+        self.call(&GET_FUZZY_LOCATION, options_json)
     }
 }
 
@@ -715,6 +851,10 @@ mod tests {
             "subpackage" => MIGO_HOST_SERVICE_SUBPACKAGE,
             "permission" => MIGO_HOST_SERVICE_PERMISSION,
             "setting" => MIGO_HOST_SERVICE_SETTING,
+            "interaction" => MIGO_HOST_SERVICE_INTERACTION,
+            "clipboard" => MIGO_HOST_SERVICE_CLIPBOARD,
+            "scan_code" => MIGO_HOST_SERVICE_SCAN_CODE,
+            "location" => MIGO_HOST_SERVICE_LOCATION,
             other => panic!("the contract names a service the ABI has no constant for: {other}"),
         }
     }

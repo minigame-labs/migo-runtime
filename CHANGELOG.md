@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- C ABI host-service channel: native UI, the clipboard, code scanning and location. `MIGO_HOST_SERVICE_INTERACTION`
+  carries `showToast` / `hideToast` / `showLoading` / `hideLoading` as commands and `showModal` / `showActionSheet` as
+  calls; `MIGO_HOST_SERVICE_CLIPBOARD`, `MIGO_HOST_SERVICE_SCAN_CODE` and `MIGO_HOST_SERVICE_LOCATION` (still gated on
+  `scope.userLocation`) carry the rest. `showModal` takes `editable` and `placeholderText` and answers with the typed
+  `content`, on Android too.
 - The engine reads the content's own `game.json`: its `subpackages` (or `subPackages`) and its `workers` directory,
   through the same verified mount the game is served from, on every platform and both executions. Only the Android SDK
   could declare them before -- its host app repeated them in a `RuntimeConfig` -- so on Apple, Linux, Windows and
@@ -248,6 +253,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- `setClipboardData` / `getClipboardData` are requests the host answers, as the asynchronous APIs they are, rather than
+  synchronous reads a host that owns its clipboard on another thread could not serve.
+- Android: a modal or action sheet that could not be shown -- no activity, malformed options -- fails with the reason
+  instead of reporting that the player cancelled it.
 - Ads: `load()` and `show()` resolve when the host's ad SDK says the advert loaded or is on screen, and reject with its
   error, as in wx -- not as soon as the command left. The host reports exposure with the new `AdEventSink.emitShow`
   (Android) or a `"show"` lifecycle event (C ABI); a full-screen ad's close counts as shown, and destroying an ad

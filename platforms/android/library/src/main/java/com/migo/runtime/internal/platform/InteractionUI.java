@@ -18,6 +18,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
+import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
@@ -41,6 +42,43 @@ public final class InteractionUI {
     private static final Handler sHandler = new Handler(Looper.getMainLooper());
 
     private InteractionUI() {}
+
+    // ==================== Results ====================
+    //
+    // In the shape every host result takes: the request's id and the answer,
+    // or the id and the reason it could not be given. A dialog that could not
+    // be shown is a failure, not a choice the player made.
+
+    static String modalResult(int requestId, boolean confirm, String content) {
+        try {
+            JSONObject result = new JSONObject();
+            result.put("confirm", confirm);
+            result.put("cancel", !confirm);
+            if (content != null) {
+                result.put("content", content);
+            }
+            CallbackCorrelation.stamp(result, requestId);
+            return result.toString();
+        } catch (org.json.JSONException impossible) {
+            return CallbackCorrelation.failure(requestId, "showModal", "result serialisation failed");
+        }
+    }
+
+    static String actionSheetResult(int requestId, int tapIndex) {
+        try {
+            JSONObject result = new JSONObject();
+            result.put("tapIndex", tapIndex);
+            CallbackCorrelation.stamp(result, requestId);
+            return result.toString();
+        } catch (org.json.JSONException impossible) {
+            return CallbackCorrelation.failure(requestId, "showActionSheet", "result serialisation failed");
+        }
+    }
+
+    /** The player dismissed the sheet, which wx reports as {@code showActionSheet:fail cancel}. */
+    static String actionSheetCancelled(int requestId) {
+        return CallbackCorrelation.failure(requestId, "showActionSheet", "cancel");
+    }
 
     // ==================== Toast ====================
 
@@ -135,12 +173,15 @@ public final class InteractionUI {
                 String confirmText = params.optString("confirmText", "\u786e\u5b9a"); // 确定
                 String cancelColor = params.optString("cancelColor", "#000000");
                 String confirmColor = params.optString("confirmColor", "#576B95");
+                boolean editable = params.optBoolean("editable", false);
+                String placeholderText = params.optString("placeholderText", "");
 
                 showModalDialog(activity, sessionId, requestId, title, content, showCancel,
-                        cancelText, confirmText, cancelColor, confirmColor);
+                        cancelText, confirmText, cancelColor, confirmColor, editable,
+                        placeholderText);
             } catch (Exception e) {
-                // Report cancel on error
-                NativeMethods.onModalResult(sessionId, requestId, 0, 1);
+                NativeMethods.onModalResult(sessionId, CallbackCorrelation.failure(
+                        requestId, "showModal", String.valueOf(e.getMessage())));
             }
         });
     }
@@ -148,9 +189,11 @@ public final class InteractionUI {
     private static void showModalDialog(Activity activity, int sessionId, int requestId,
                                          String title, String content, boolean showCancel,
                                          String cancelText, String confirmText,
-                                         String cancelColor, String confirmColor) {
+                                         String cancelColor, String confirmColor,
+                                         boolean editable, String placeholderText) {
         if (activity == null || activity.isFinishing() || activity.isDestroyed()) {
-            NativeMethods.onModalResult(sessionId, requestId, 0, 1);
+            NativeMethods.onModalResult(sessionId, CallbackCorrelation.failure(
+                    requestId, "showModal", "no activity to show it in"));
             return;
         }
 
@@ -179,8 +222,29 @@ public final class InteractionUI {
             layout.addView(titleView, titleParams);
         }
 
+        // An editable modal shows an input in place of the content: the
+        // content seeds it, the placeholder hints at it, and its text is the
+        // answer's `content`.
+        final EditText input;
+        if (editable) {
+            input = new EditText(activity);
+            input.setText(content);
+            input.setHint(placeholderText);
+            input.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+            input.setSingleLine(false);
+            LinearLayout.LayoutParams inputParams = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+            );
+            inputParams.topMargin = (int) (4 * density);
+            inputParams.bottomMargin = (int) (12 * density);
+            layout.addView(input, inputParams);
+        } else {
+            input = null;
+        }
+
         // Content
-        if (content != null && !content.isEmpty()) {
+        if (!editable && content != null && !content.isEmpty()) {
             TextView contentView = new TextView(activity);
             contentView.setText(content);
             contentView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
@@ -201,13 +265,15 @@ public final class InteractionUI {
 
         // Confirm button
         builder.setPositiveButton(confirmText, (dialog, which) ->
-                NativeMethods.onModalResult(sessionId, requestId, 1, 0)
+                NativeMethods.onModalResult(sessionId, modalResult(requestId, true,
+                        input != null ? input.getText().toString() : null))
         );
 
         // Cancel button
         if (showCancel) {
             builder.setNegativeButton(cancelText, (dialog, which) ->
-                    NativeMethods.onModalResult(sessionId, requestId, 0, 1)
+                    NativeMethods.onModalResult(sessionId, modalResult(requestId, false,
+                            input != null ? input.getText().toString() : null))
             );
         }
 
@@ -244,7 +310,8 @@ public final class InteractionUI {
 
                 showActionSheetDialog(activity, sessionId, requestId, alertText, items, itemColor);
             } catch (Exception e) {
-                NativeMethods.onActionSheetResult(sessionId, requestId, -1);
+                NativeMethods.onActionSheetResult(sessionId, CallbackCorrelation.failure(
+                        requestId, "showActionSheet", String.valueOf(e.getMessage())));
             }
         });
     }
@@ -252,7 +319,8 @@ public final class InteractionUI {
     private static void showActionSheetDialog(Activity activity, int sessionId, int requestId,
                                                String alertText, String[] items, String itemColor) {
         if (activity == null || activity.isFinishing() || activity.isDestroyed()) {
-            NativeMethods.onActionSheetResult(sessionId, requestId, -1);
+            NativeMethods.onActionSheetResult(sessionId, CallbackCorrelation.failure(
+                    requestId, "showActionSheet", "no activity to show it in"));
             return;
         }
 
@@ -332,7 +400,7 @@ public final class InteractionUI {
 
             itemView.setOnClickListener(v -> {
                 removeOverlay(activity, root);
-                NativeMethods.onActionSheetResult(sessionId, requestId, index);
+                NativeMethods.onActionSheetResult(sessionId, actionSheetResult(requestId, index));
             });
 
             itemsGroup.addView(itemView, new LinearLayout.LayoutParams(
@@ -373,7 +441,7 @@ public final class InteractionUI {
 
         cancelBtn.setOnClickListener(v -> {
             removeOverlay(activity, root);
-            NativeMethods.onActionSheetResult(sessionId, requestId, -1);
+            NativeMethods.onActionSheetResult(sessionId, actionSheetCancelled(requestId));
         });
 
         bottomContainer.addView(cancelBtn, new LinearLayout.LayoutParams(
@@ -385,7 +453,7 @@ public final class InteractionUI {
         // Tap on background to cancel
         root.setOnClickListener(v -> {
             removeOverlay(activity, root);
-            NativeMethods.onActionSheetResult(sessionId, requestId, -1);
+            NativeMethods.onActionSheetResult(sessionId, actionSheetCancelled(requestId));
         });
 
         // Prevent click-through on bottom container

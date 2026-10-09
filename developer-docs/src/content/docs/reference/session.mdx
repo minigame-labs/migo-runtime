@@ -335,6 +335,10 @@ typedef struct MigoHostServiceCall {
 | `MIGO_HOST_SERVICE_SUBPACKAGE` (5) | `DOWNLOAD` 0 | 调用，可报进度 | `loadSubpackage` · `preDownloadSubpackage` |
 | `MIGO_HOST_SERVICE_PERMISSION` (6) | `REQUEST_SCOPE` 0 | 调用 | `authorize`（及 `getWritePhotosAlbum` 等） |
 | `MIGO_HOST_SERVICE_SETTING` (7) | `OPEN_SETTING` 0 · `OPEN_SYSTEM_BLUETOOTH_SETTING` 1 · `OPEN_APP_AUTHORIZE_SETTING` 2 | 调用 | `openSetting` · `openSystemBluetoothSetting` · `openAppAuthorizeSetting` |
+| `MIGO_HOST_SERVICE_INTERACTION` (8) | `SHOW_TOAST` 0 · `HIDE_TOAST` 1 · `SHOW_LOADING` 3 · `HIDE_LOADING` 4（命令）· `SHOW_MODAL` 2 · `SHOW_ACTION_SHEET` 5（调用） | 见左 | `showToast` / `hideToast` / `showLoading` / `hideLoading` · `showModal`（含 `editable`）· `showActionSheet` |
+| `MIGO_HOST_SERVICE_CLIPBOARD` (9) | `SET_CLIPBOARD_DATA` 0 · `GET_CLIPBOARD_DATA` 1 | 调用 | `setClipboardData` · `getClipboardData` |
+| `MIGO_HOST_SERVICE_SCAN_CODE` (10) | `SCAN_CODE` 0 | 调用 | `scanCode` |
+| `MIGO_HOST_SERVICE_LOCATION` (11) | `GET_LOCATION` 0 · `GET_FUZZY_LOCATION` 1 | 调用（先经 `scope.userLocation` 授权检查） | `getLocation` · `getFuzzyLocation` |
 
 编号由 `contracts/runtime/host-services.json` 唯一定义，只追加、不复用、不重排。声明了支付服务的宿主
 即视为可支付（`checkIsSupportMidasPayment` 回答 `allow_pay: true`）。广告激励视频的奖励只认宿主
