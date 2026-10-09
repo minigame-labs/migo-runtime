@@ -6,10 +6,14 @@
 //! exist. Window information is the one always-available service because it is
 //! supplied directly by the versioned Surface descriptor.
 
+use migo_capi_abi::host_services::{
+    MIGO_HOST_SERVICE_AD, MIGO_HOST_SERVICE_AUTH, MIGO_HOST_SERVICE_NAVIGATE,
+    MIGO_HOST_SERVICE_PAYMENT, MIGO_HOST_SERVICE_SHARE,
+};
 use migo_core::services::{
-    BatteryService, CommerceServices, ConnectivityServices, GameLogService, KeyboardService,
-    MediaServices, NetworkService, ScreenService, SensorServices, SystemInfoService,
-    SystemUtilServices, VibrationService,
+    AdService, AuthService, BatteryService, CommerceServices, ConnectivityServices, GameLogService,
+    KeyboardService, MediaServices, NavigateService, NetworkService, PaymentService, ScreenService,
+    SensorServices, ShareService, SystemInfoService, SystemUtilServices, VibrationService,
 };
 use migo_core::{DeviceServiceProvider, FrameClock, HostNotifier};
 use shared::protocol::error::ServiceError;
@@ -25,6 +29,7 @@ use crate::{
         MIGO_KEYBOARD_TYPE_TEXT, Notifier, ShowOptions,
     },
     device::{CapiDevice, DeviceState},
+    host_services::CapiHostServices,
 };
 use migo_capi_abi::MIGO_ERROR_INTERNAL;
 
@@ -107,11 +112,20 @@ impl CapiHostKit {
                     notifier: Arc::clone(notifier),
                 }) as Arc<dyn KeyboardService>
             });
+        // Built once and shared by every service the host declared; which of
+        // them content is offered is decided per accessor, by the declaration.
+        let host_services = notifier.as_ref().map(|notifier| {
+            (
+                Arc::clone(notifier),
+                CapiHostServices::new(Arc::clone(notifier)),
+            )
+        });
         Self {
             device_services: Arc::new(CapiDeviceServices {
                 keyboard: host_keyboard,
                 window,
                 device: CapiDevice::new(notifier.clone(), device),
+                host_services,
             }),
             notifier,
             session,
@@ -123,6 +137,19 @@ struct CapiDeviceServices {
     keyboard: Option<Arc<dyn KeyboardService>>,
     window: Arc<HostWindowState>,
     device: Arc<CapiDevice>,
+    host_services: Option<(Arc<Notifier>, Arc<CapiHostServices>)>,
+}
+
+impl CapiDeviceServices {
+    /// The channel, when the host declared `service` on it. Offered exactly
+    /// when declared -- the keyboard's rule -- so content's API for a service
+    /// the host left out fails as it does on a platform without it.
+    fn host_service(&self, service: u32) -> Option<Arc<CapiHostServices>> {
+        self.host_services
+            .as_ref()
+            .filter(|(notifier, _)| notifier.supplies_host_service(service))
+            .map(|(_, services)| Arc::clone(services))
+    }
 }
 
 impl SensorServices for CapiDeviceServices {
@@ -151,6 +178,26 @@ impl CommerceServices for CapiDeviceServices {
     fn game_log(&self) -> Option<Arc<dyn GameLogService>> {
         self.device.game_log()
     }
+
+    fn ad(&self) -> Option<Arc<dyn AdService>> {
+        self.host_service(MIGO_HOST_SERVICE_AD)
+            .map(|services| services as Arc<dyn AdService>)
+    }
+
+    fn auth(&self) -> Option<Arc<dyn AuthService>> {
+        self.host_service(MIGO_HOST_SERVICE_AUTH)
+            .map(|services| services as Arc<dyn AuthService>)
+    }
+
+    fn share(&self) -> Option<Arc<dyn ShareService>> {
+        self.host_service(MIGO_HOST_SERVICE_SHARE)
+            .map(|services| services as Arc<dyn ShareService>)
+    }
+
+    fn payment(&self) -> Option<Arc<dyn PaymentService>> {
+        self.host_service(MIGO_HOST_SERVICE_PAYMENT)
+            .map(|services| services as Arc<dyn PaymentService>)
+    }
 }
 
 impl SystemUtilServices for CapiDeviceServices {
@@ -160,6 +207,11 @@ impl SystemUtilServices for CapiDeviceServices {
 
     fn system_info(&self) -> Option<Arc<dyn SystemInfoService>> {
         Some(Arc::new(HostWindowInfo::new(Arc::clone(&self.window))))
+    }
+
+    fn navigate(&self) -> Option<Arc<dyn NavigateService>> {
+        self.host_service(MIGO_HOST_SERVICE_NAVIGATE)
+            .map(|services| services as Arc<dyn NavigateService>)
     }
 }
 
@@ -405,6 +457,8 @@ mod tests {
             on_vibrate: None,
             on_keep_screen_on: None,
             on_game_log: None,
+            on_host_service_call: None,
+            host_services: 0,
         };
         let session = callback_session_pin();
         let notifier = Arc::new(Notifier::new(

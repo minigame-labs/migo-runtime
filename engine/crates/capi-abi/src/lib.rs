@@ -4,13 +4,14 @@ pub mod callbacks;
 pub mod config;
 pub mod external_frames;
 mod header;
+pub mod host_services;
 pub mod input;
 pub mod surface;
 pub mod validate;
 
 pub use header::{
-    AbiStruct, OutputVersionPolicy, VersionedHeader, copy_utf8, copy_versioned, validate_header,
-    write_versioned_output,
+    AbiStruct, OutputVersionPolicy, VersionedHeader, copy_utf8, copy_utf8_with_length,
+    copy_versioned, validate_header, write_versioned_output,
 };
 
 /// Mirrors `MigoResult` in `include/migo/types.h`.

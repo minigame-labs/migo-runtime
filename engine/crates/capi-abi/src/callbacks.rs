@@ -9,6 +9,8 @@ use std::{
 use crate::{
     AbiStruct, MIGO_ABI_VERSION_CURRENT, MIGO_ERROR_INVALID_ARGUMENT, MigoResult, VersionedHeader,
     copy_versioned,
+    host_services::{MIGO_HOST_SERVICES_KNOWN, MigoOnHostServiceCallFn},
+    validate::validate_flags,
 };
 
 pub type MigoTaskFn = unsafe extern "C" fn(*mut c_void);
@@ -79,6 +81,11 @@ pub struct MigoHostCallbacks {
     pub on_vibrate: Option<MigoOnVibrateFn>,
     pub on_keep_screen_on: Option<MigoOnKeepScreenOnFn>,
     pub on_game_log: Option<MigoOnGameLogFn>,
+    /// Appended: the host-service channel. `host_services` is the set of
+    /// services the host supplies, one bit per `MIGO_HOST_SERVICE_*`; the two
+    /// are installed together or not at all.
+    pub on_host_service_call: Option<MigoOnHostServiceCallFn>,
+    pub host_services: u64,
 }
 
 // SAFETY: the record consists only of integers, raw pointers and nullable C
@@ -123,6 +130,9 @@ pub struct ValidatedHostCallbacks {
     pub on_vibrate: Option<MigoOnVibrateFn>,
     pub on_keep_screen_on: Option<MigoOnKeepScreenOnFn>,
     pub on_game_log: Option<MigoOnGameLogFn>,
+    pub on_host_service_call: Option<MigoOnHostServiceCallFn>,
+    /// Zero exactly when `on_host_service_call` is absent.
+    pub host_services: u64,
 }
 
 // SAFETY: both pointers are opaque host tokens. Migo never dereferences them;
@@ -141,6 +151,12 @@ impl ValidatedHostCallbacks {
     #[inline]
     pub fn drives_frames(&self) -> bool {
         self.on_request_frame.is_some()
+    }
+
+    /// Whether the host declared it supplies `service` (a `MIGO_HOST_SERVICE_*`).
+    #[inline]
+    pub fn supplies_host_service(&self, service: u32) -> bool {
+        service < u64::BITS && self.host_services & (1u64 << service) != 0
     }
 }
 
@@ -168,6 +184,8 @@ impl MigoHostCallbacks {
             on_vibrate: None,
             on_keep_screen_on: None,
             on_game_log: None,
+            on_host_service_call: None,
+            host_services: 0,
         }
     }
 
@@ -199,6 +217,14 @@ impl MigoHostCallbacks {
         if keyboard_verbs != 0 && keyboard_verbs != 3 {
             return Err(MIGO_ERROR_INVALID_ARGUMENT);
         }
+        // A service declared with no callback to call, or a callback with no
+        // service it could ever be called for, is a host that wired half of
+        // the channel. A bit this library does not know is a host built against
+        // a newer header, which would wait for calls that never come.
+        validate_flags(self.host_services, MIGO_HOST_SERVICES_KNOWN)?;
+        if self.on_host_service_call.is_some() != (self.host_services != 0) {
+            return Err(MIGO_ERROR_INVALID_ARGUMENT);
+        }
 
         let has_callback = self.on_ready.is_some()
             || self.on_error.is_some()
@@ -212,7 +238,8 @@ impl MigoHostCallbacks {
             || self.on_surface_released.is_some()
             || self.on_vibrate.is_some()
             || self.on_keep_screen_on.is_some()
-            || self.on_game_log.is_some();
+            || self.on_game_log.is_some()
+            || self.on_host_service_call.is_some();
         let Some(dispatch) = self.dispatch else {
             return if has_callback {
                 Err(MIGO_ERROR_INVALID_ARGUMENT)
@@ -237,6 +264,8 @@ impl MigoHostCallbacks {
             on_vibrate: self.on_vibrate,
             on_keep_screen_on: self.on_keep_screen_on,
             on_game_log: self.on_game_log,
+            on_host_service_call: self.on_host_service_call,
+            host_services: self.host_services,
         }))
     }
 }
@@ -252,7 +281,7 @@ const _: () = assert!(size_of::<MigoKeyboardShowOptions>() == 40);
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(offset_of!(MigoKeyboardShowOptions, default_value_utf8) == 24);
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(size_of::<MigoHostCallbacks>() == 128);
+const _: () = assert!(size_of::<MigoHostCallbacks>() == 144);
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(offset_of!(MigoHostCallbacks, dispatch) == 24);
 #[cfg(target_pointer_width = "64")]
@@ -263,6 +292,10 @@ const _: () = assert!(offset_of!(MigoHostCallbacks, on_update_keyboard) == 88);
 const _: () = assert!(offset_of!(MigoHostCallbacks, on_surface_released) == 96);
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(offset_of!(MigoHostCallbacks, on_game_log) == 120);
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(offset_of!(MigoHostCallbacks, on_host_service_call) == 128);
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(offset_of!(MigoHostCallbacks, host_services) == 136);
 
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(size_of::<MigoError>() == 28);
@@ -270,8 +303,10 @@ const _: () = assert!(size_of::<MigoError>() == 28);
 const _: () = assert!(size_of::<MigoKeyboardShowOptions>() == 36);
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(offset_of!(MigoKeyboardShowOptions, default_value_utf8) == 24);
+// 8 bytes of header, fifteen 4-byte pointers, then the u64 service set at 72,
+// which is 8-aligned whatever the target's u64 alignment: no padding either way.
 #[cfg(target_pointer_width = "32")]
-const _: () = assert!(size_of::<MigoHostCallbacks>() == 68);
+const _: () = assert!(size_of::<MigoHostCallbacks>() == 80);
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(offset_of!(MigoHostCallbacks, dispatch) == 16);
 #[cfg(target_pointer_width = "32")]
@@ -282,3 +317,7 @@ const _: () = assert!(offset_of!(MigoHostCallbacks, on_update_keyboard) == 48);
 const _: () = assert!(offset_of!(MigoHostCallbacks, on_surface_released) == 52);
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(offset_of!(MigoHostCallbacks, on_game_log) == 64);
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(offset_of!(MigoHostCallbacks, on_host_service_call) == 68);
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(offset_of!(MigoHostCallbacks, host_services) == 72);

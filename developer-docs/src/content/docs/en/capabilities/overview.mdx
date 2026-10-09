@@ -97,6 +97,32 @@ Two categories of "fake fallback" are explicitly rejected:
 
 Details: [Ads](/docs/en/capabilities/commerce/ads/) / [Payment](/docs/en/capabilities/commerce/payment/).
 
+## 5. The Host-Service Channel: Ads, Payment, Sign-in, Sharing, Navigation for C ABI Hosts
+
+The table above is Android's Java-layer contract. Apple, Linux, Windows and
+OpenHarmony embed the C ABI, and the same capabilities reach them through one
+channel: the host declares the services it supplies, one bit each in
+`MigoHostCallbacks.host_services`, and installs `on_host_service_call`; content's
+requests arrive as a service, a method and JSON options; a call is completed
+exactly once with `migo_session_complete_host_service_call`, and an advert's
+load, close and other events are reported with
+`migo_session_post_host_service_event`.
+
+| Service | Content's migo.* calls | When the host does not declare it |
+| --- | --- | --- |
+| `MIGO_HOST_SERVICE_AD` | every ad (`createRewardedVideoAd`, ...) | the runtime's fallback: nothing plays, a rewarded video closes with `isEnded=false` |
+| `MIGO_HOST_SERVICE_PAYMENT` | `checkIsSupportMidasPayment` / `requestMidasPayment*` | `allow_pay=false`, requests not supported |
+| `MIGO_HOST_SERVICE_AUTH` | `login` / `checkSession` / `getUserInfo` / `getPhoneNumber` | not supported |
+| `MIGO_HOST_SERVICE_SHARE` | `shareAppMessage` | not supported |
+| `MIGO_HOST_SERVICE_NAVIGATE` | `navigateToMiniProgram` / `navigateBackMiniProgram` / `openCustomerServiceConversation` | not supported |
+
+The host gives the success fields or the failure's reason; the engine puts a
+failure's code in the field its API defines (`errno` or `errCode`), content
+composes `<api>:fail <reason>` from the API it actually called, and the host
+never handles content's callback ids. The numbers are append-only and defined
+once, in `contracts/runtime/host-services.json`. Details:
+[Session · Host-service channel](/docs/en/reference/session/#host-service-channel).
+
 ## Distinction: Symbol Missing vs Capability Missing
 
 - **Symbol missing**: `migo_engine_create` itself is absent from the library (`platform/openharmony.h` wrong-link class, platform header) — fails at compile/link time, never reaches the runtime.

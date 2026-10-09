@@ -10,7 +10,8 @@ use std::{
 };
 
 use crate::{
-    AbiStruct, MIGO_ERROR_INVALID_ARGUMENT, MigoResult, VersionedHeader, copy_utf8, copy_versioned,
+    AbiStruct, MIGO_ERROR_INVALID_ARGUMENT, MigoResult, VersionedHeader, copy_utf8,
+    copy_utf8_with_length, copy_versioned,
     validate::{validate_f32_range, validate_f64_range, validate_flags, validate_reserved},
 };
 
@@ -782,23 +783,6 @@ impl MigoGamepadStateEvent {
             timestamp_ms,
         })
     }
-}
-
-/// Copy an exact length-delimited UTF-8 string.
-///
-/// A null pointer is accepted only for an empty range, in which case it is not
-/// dereferenced. Embedded NUL bytes are data rather than terminators.
-unsafe fn copy_utf8_with_length(value: *const c_char, length: u32) -> Result<String, MigoResult> {
-    if length == 0 {
-        return Ok(String::new());
-    }
-    if value.is_null() {
-        return Err(MIGO_ERROR_INVALID_ARGUMENT);
-    }
-    let bytes = unsafe { std::slice::from_raw_parts(value.cast::<u8>(), length as usize) };
-    std::str::from_utf8(bytes)
-        .map(str::to_owned)
-        .map_err(|_| MIGO_ERROR_INVALID_ARGUMENT)
 }
 
 const _: () = assert!(size_of::<MigoTouchPoint>() == 20);

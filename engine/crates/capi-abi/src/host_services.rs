@@ -1,0 +1,377 @@
+//! The host-service channel: capabilities a C host supplies to content.
+//!
+//! Ads, payment, login, sharing and mini-program navigation are the host app's
+//! own integrations -- a vendor SDK, a store, a backend -- and never the
+//! engine's. The channel carries them in three moves: the engine hands the host
+//! a [`MigoHostServiceCall`] through its dispatcher, the host completes a call
+//! with a [`MigoHostServiceResult`], and the host reports a service's own events
+//! (an advert closing, say) with an event number and a JSON payload.
+//!
+//! The numbers are defined once, in `contracts/runtime/host-services.json`, and
+//! the constants here and in `include/migo/host_services.h` are held to it.
+
+use std::{
+    mem::{offset_of, size_of},
+    os::raw::c_char,
+};
+
+use crate::{
+    AbiStruct, MIGO_ERROR_INVALID_ARGUMENT, MigoResult, VersionedHeader, copy_utf8_with_length,
+    copy_versioned,
+    validate::{validate_flags, validate_reserved},
+};
+
+/// `void (*)(void *user_data, MigoSession *session, const MigoHostServiceCall *call)`.
+pub type MigoOnHostServiceCallFn =
+    unsafe extern "C" fn(*mut std::ffi::c_void, *mut std::ffi::c_void, *const MigoHostServiceCall);
+
+// ---- Services. A service's number is also its bit in `host_services`. ----
+
+pub const MIGO_HOST_SERVICE_AD: u32 = 0;
+pub const MIGO_HOST_SERVICE_PAYMENT: u32 = 1;
+pub const MIGO_HOST_SERVICE_AUTH: u32 = 2;
+pub const MIGO_HOST_SERVICE_SHARE: u32 = 3;
+pub const MIGO_HOST_SERVICE_NAVIGATE: u32 = 4;
+
+/// Every service this library knows. A host declaring a bit outside it was
+/// built against a newer header than the library it runs with.
+pub const MIGO_HOST_SERVICES_KNOWN: u64 = (1 << MIGO_HOST_SERVICE_AD)
+    | (1 << MIGO_HOST_SERVICE_PAYMENT)
+    | (1 << MIGO_HOST_SERVICE_AUTH)
+    | (1 << MIGO_HOST_SERVICE_SHARE)
+    | (1 << MIGO_HOST_SERVICE_NAVIGATE);
+
+// ---- Methods, numbered per service. ----
+
+pub const MIGO_AD_CREATE: u32 = 0;
+pub const MIGO_AD_LOAD: u32 = 1;
+pub const MIGO_AD_SHOW: u32 = 2;
+pub const MIGO_AD_HIDE: u32 = 3;
+pub const MIGO_AD_UPDATE_STYLE: u32 = 4;
+pub const MIGO_AD_DESTROY: u32 = 5;
+
+pub const MIGO_PAYMENT_REQUEST_MIDAS_PAYMENT: u32 = 0;
+pub const MIGO_PAYMENT_REQUEST_MIDAS_PAYMENT_GAME_ITEM: u32 = 1;
+
+pub const MIGO_AUTH_LOGIN: u32 = 0;
+pub const MIGO_AUTH_CHECK_SESSION: u32 = 1;
+pub const MIGO_AUTH_GET_USER_INFO: u32 = 2;
+pub const MIGO_AUTH_GET_PHONE_NUMBER: u32 = 3;
+
+pub const MIGO_SHARE_SHARE_APP_MESSAGE: u32 = 0;
+
+pub const MIGO_NAVIGATE_NAVIGATE_TO_MINI_PROGRAM: u32 = 0;
+pub const MIGO_NAVIGATE_NAVIGATE_BACK_MINI_PROGRAM: u32 = 1;
+pub const MIGO_NAVIGATE_OPEN_CUSTOMER_SERVICE_CONVERSATION: u32 = 2;
+
+// ---- Events, numbered per service. ----
+
+pub const MIGO_AD_EVENT_LIFECYCLE: u32 = 0;
+
+// ---- Completion. ----
+
+pub const MIGO_HOST_SERVICE_STATUS_OK: u32 = 0;
+pub const MIGO_HOST_SERVICE_STATUS_FAIL: u32 = 1;
+
+/// `error_code` carries a value. Without it a failure has no numeric code.
+pub const MIGO_HOST_SERVICE_RESULT_FLAG_ERROR_CODE: u32 = 1 << 0;
+const MIGO_HOST_SERVICE_RESULT_FLAGS_KNOWN: u32 = MIGO_HOST_SERVICE_RESULT_FLAG_ERROR_CODE;
+
+/// The largest payload or message either direction carries, in bytes.
+///
+/// Generous for what crosses here -- a user profile, an advert's size, a
+/// share's title -- and small enough that a host passing the wrong length
+/// cannot make the engine copy an arbitrary amount of its memory.
+pub const MIGO_HOST_SERVICE_PAYLOAD_MAX_BYTES: u32 = 1 << 20;
+
+/// A request content made of the host. Written by the library, borrowed by the
+/// host for the duration of the callback.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct MigoHostServiceCall {
+    pub header: VersionedHeader,
+    /// Nonzero for a call the host must complete exactly once; zero for a
+    /// command, which has nothing to complete. Opaque to the host.
+    pub call_id: u64,
+    pub service: u32,
+    pub method: u32,
+    /// The request's options, a JSON object, length-delimited UTF-8.
+    pub payload_json_utf8: *const c_char,
+    pub payload_length: u32,
+    pub reserved0: u32,
+}
+
+/// The host's completion of one call. Read by the library during
+/// `migo_session_complete_host_service_call` and not retained.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct MigoHostServiceResult {
+    pub header: VersionedHeader,
+    pub status: u32,
+    pub flags: u32,
+    pub error_code: i32,
+    /// A failure's reason, without the API's name: content sees
+    /// `<api>:fail <message>`. Required on failure, empty on success.
+    pub message_length: u32,
+    pub message_utf8: *const c_char,
+    /// A success's result, a JSON object, or empty for one with no fields.
+    /// Must be empty on failure.
+    pub payload_json_utf8: *const c_char,
+    pub payload_length: u32,
+    pub reserved0: u32,
+}
+
+// SAFETY: integers and nullable pointers only; v1 requires the complete record.
+unsafe impl AbiStruct for MigoHostServiceResult {}
+
+/// A completion the library has copied out of host memory and checked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HostServiceOutcome {
+    /// The JSON text as the host wrote it; empty when it gave none. Whether it
+    /// is an object is the engine's check, which owns a JSON parser.
+    Ok { payload_json: String },
+    Fail {
+        error_code: Option<i32>,
+        message: String,
+    },
+}
+
+impl MigoHostServiceResult {
+    /// Copy and validate a caller-owned completion.
+    ///
+    /// # Safety
+    /// `result` must be null or readable for its announced byte count, and each
+    /// string pointer readable for its length.
+    pub unsafe fn parse(result: *const Self) -> Result<HostServiceOutcome, MigoResult> {
+        // SAFETY: forwarded from this function's contract.
+        let raw = unsafe { copy_versioned::<Self>(result.cast::<VersionedHeader>()) }?;
+        validate_reserved(u64::from(raw.reserved0))?;
+        validate_flags(
+            u64::from(raw.flags),
+            u64::from(MIGO_HOST_SERVICE_RESULT_FLAGS_KNOWN),
+        )?;
+        match raw.status {
+            MIGO_HOST_SERVICE_STATUS_OK => {
+                // A success with a reason or a code is a host that has confused
+                // the two statuses; reading either would guess which it meant.
+                if raw.flags != 0 || raw.message_length != 0 {
+                    return Err(MIGO_ERROR_INVALID_ARGUMENT);
+                }
+                // SAFETY: forwarded from this function's contract.
+                let payload_json =
+                    unsafe { copy_bounded(raw.payload_json_utf8, raw.payload_length) }?;
+                Ok(HostServiceOutcome::Ok { payload_json })
+            }
+            MIGO_HOST_SERVICE_STATUS_FAIL => {
+                // A failure must say why: it is the only text content gets, and
+                // an empty reason is what content's settlers read as success.
+                if raw.payload_length != 0 || raw.message_length == 0 {
+                    return Err(MIGO_ERROR_INVALID_ARGUMENT);
+                }
+                // SAFETY: forwarded from this function's contract.
+                let message = unsafe { copy_bounded(raw.message_utf8, raw.message_length) }?;
+                let error_code = (raw.flags & MIGO_HOST_SERVICE_RESULT_FLAG_ERROR_CODE != 0)
+                    .then_some(raw.error_code);
+                Ok(HostServiceOutcome::Fail {
+                    error_code,
+                    message,
+                })
+            }
+            _ => Err(MIGO_ERROR_INVALID_ARGUMENT),
+        }
+    }
+}
+
+/// Copy a length-delimited UTF-8 payload no longer than the channel's limit.
+///
+/// # Safety
+/// `value` must be null with `length == 0`, or readable for `length` bytes.
+pub unsafe fn copy_bounded(value: *const c_char, length: u32) -> Result<String, MigoResult> {
+    if length > MIGO_HOST_SERVICE_PAYLOAD_MAX_BYTES {
+        return Err(MIGO_ERROR_INVALID_ARGUMENT);
+    }
+    // SAFETY: forwarded from this function's contract.
+    unsafe { copy_utf8_with_length(value, length) }
+}
+
+const _: () = assert!(offset_of!(MigoHostServiceCall, header) == 0);
+const _: () = assert!(offset_of!(MigoHostServiceCall, call_id) == 8);
+const _: () = assert!(offset_of!(MigoHostServiceCall, service) == 16);
+const _: () = assert!(offset_of!(MigoHostServiceCall, method) == 20);
+const _: () = assert!(offset_of!(MigoHostServiceCall, payload_json_utf8) == 24);
+const _: () = assert!(offset_of!(MigoHostServiceResult, header) == 0);
+const _: () = assert!(offset_of!(MigoHostServiceResult, status) == 8);
+const _: () = assert!(offset_of!(MigoHostServiceResult, flags) == 12);
+const _: () = assert!(offset_of!(MigoHostServiceResult, error_code) == 16);
+const _: () = assert!(offset_of!(MigoHostServiceResult, message_length) == 20);
+const _: () = assert!(offset_of!(MigoHostServiceResult, message_utf8) == 24);
+
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(size_of::<MigoHostServiceCall>() == 40);
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(offset_of!(MigoHostServiceCall, payload_length) == 32);
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(size_of::<MigoHostServiceResult>() == 48);
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(offset_of!(MigoHostServiceResult, payload_json_utf8) == 32);
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(offset_of!(MigoHostServiceResult, payload_length) == 40);
+
+// The call record ends on a 4-byte field after a u64, so its ILP32 size is the
+// target's u64 alignment's business: 40 where u64 aligns to 8 (ARMv7, MSVC
+// x86), 36 where it aligns to 4 (i386 System V). It is library-written, so the
+// host only ever reads the fields, never the tail padding.
+#[cfg(target_pointer_width = "32")]
+const _: () =
+    assert!(size_of::<MigoHostServiceCall>() == if align_of::<u64>() == 8 { 40 } else { 36 });
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(offset_of!(MigoHostServiceCall, payload_length) == 28);
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(size_of::<MigoHostServiceResult>() == 40);
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(offset_of!(MigoHostServiceResult, payload_json_utf8) == 28);
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(offset_of!(MigoHostServiceResult, payload_length) == 32);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{MIGO_ABI_VERSION_CURRENT, MIGO_ERROR_UNSUPPORTED_ABI};
+
+    fn result(status: u32) -> MigoHostServiceResult {
+        MigoHostServiceResult {
+            header: VersionedHeader {
+                struct_size: size_of::<MigoHostServiceResult>() as u32,
+                abi_version: MIGO_ABI_VERSION_CURRENT,
+            },
+            status,
+            flags: 0,
+            error_code: 0,
+            message_length: 0,
+            message_utf8: std::ptr::null(),
+            payload_json_utf8: std::ptr::null(),
+            payload_length: 0,
+            reserved0: 0,
+        }
+    }
+
+    fn parse(value: &MigoHostServiceResult) -> Result<HostServiceOutcome, MigoResult> {
+        unsafe { MigoHostServiceResult::parse(value) }
+    }
+
+    #[test]
+    fn a_success_carries_its_payload() {
+        let payload = br#"{"code":"abc"}"#;
+        let mut ok = result(MIGO_HOST_SERVICE_STATUS_OK);
+        ok.payload_json_utf8 = payload.as_ptr().cast();
+        ok.payload_length = payload.len() as u32;
+        assert_eq!(
+            parse(&ok),
+            Ok(HostServiceOutcome::Ok {
+                payload_json: r#"{"code":"abc"}"#.into()
+            })
+        );
+        assert_eq!(
+            parse(&result(MIGO_HOST_SERVICE_STATUS_OK)),
+            Ok(HostServiceOutcome::Ok {
+                payload_json: String::new()
+            })
+        );
+    }
+
+    #[test]
+    fn a_failure_carries_its_reason_and_only_a_flagged_code() {
+        let reason = b"cancel";
+        let mut fail = result(MIGO_HOST_SERVICE_STATUS_FAIL);
+        fail.message_utf8 = reason.as_ptr().cast();
+        fail.message_length = reason.len() as u32;
+        fail.error_code = -2;
+        assert_eq!(
+            parse(&fail),
+            Ok(HostServiceOutcome::Fail {
+                error_code: None,
+                message: "cancel".into()
+            }),
+            "a code the host did not flag is not one it meant to send"
+        );
+        fail.flags = MIGO_HOST_SERVICE_RESULT_FLAG_ERROR_CODE;
+        assert_eq!(
+            parse(&fail),
+            Ok(HostServiceOutcome::Fail {
+                error_code: Some(-2),
+                message: "cancel".into()
+            })
+        );
+    }
+
+    #[test]
+    fn mixed_statuses_and_unknown_bits_are_refused() {
+        let text = b"x";
+        let mut ok_with_reason = result(MIGO_HOST_SERVICE_STATUS_OK);
+        ok_with_reason.message_utf8 = text.as_ptr().cast();
+        ok_with_reason.message_length = 1;
+        assert_eq!(parse(&ok_with_reason), Err(MIGO_ERROR_INVALID_ARGUMENT));
+
+        let mut ok_with_code = result(MIGO_HOST_SERVICE_STATUS_OK);
+        ok_with_code.flags = MIGO_HOST_SERVICE_RESULT_FLAG_ERROR_CODE;
+        assert_eq!(parse(&ok_with_code), Err(MIGO_ERROR_INVALID_ARGUMENT));
+
+        let mut fail_with_payload = result(MIGO_HOST_SERVICE_STATUS_FAIL);
+        fail_with_payload.message_utf8 = text.as_ptr().cast();
+        fail_with_payload.message_length = 1;
+        fail_with_payload.payload_json_utf8 = text.as_ptr().cast();
+        fail_with_payload.payload_length = 1;
+        assert_eq!(parse(&fail_with_payload), Err(MIGO_ERROR_INVALID_ARGUMENT));
+
+        assert_eq!(
+            parse(&result(MIGO_HOST_SERVICE_STATUS_FAIL)),
+            Err(MIGO_ERROR_INVALID_ARGUMENT),
+            "a failure without a reason"
+        );
+
+        assert_eq!(parse(&result(2)), Err(MIGO_ERROR_INVALID_ARGUMENT));
+
+        let mut unknown_flag = result(MIGO_HOST_SERVICE_STATUS_FAIL);
+        unknown_flag.message_utf8 = text.as_ptr().cast();
+        unknown_flag.message_length = 1;
+        unknown_flag.flags = 1 << 1;
+        assert_eq!(parse(&unknown_flag), Err(MIGO_ERROR_INVALID_ARGUMENT));
+
+        let mut reserved = result(MIGO_HOST_SERVICE_STATUS_OK);
+        reserved.reserved0 = 1;
+        assert_eq!(parse(&reserved), Err(MIGO_ERROR_INVALID_ARGUMENT));
+    }
+
+    #[test]
+    fn strings_must_be_utf8_bounded_and_present_when_long() {
+        let mut missing = result(MIGO_HOST_SERVICE_STATUS_OK);
+        missing.payload_length = 3;
+        assert_eq!(parse(&missing), Err(MIGO_ERROR_INVALID_ARGUMENT));
+
+        let bad = [0xffu8, 0xfe];
+        let mut not_utf8 = result(MIGO_HOST_SERVICE_STATUS_FAIL);
+        not_utf8.message_utf8 = bad.as_ptr().cast();
+        not_utf8.message_length = 2;
+        assert_eq!(parse(&not_utf8), Err(MIGO_ERROR_INVALID_ARGUMENT));
+
+        // Refused on the length alone, before any byte is read.
+        let mut oversized = result(MIGO_HOST_SERVICE_STATUS_OK);
+        oversized.payload_json_utf8 = bad.as_ptr().cast();
+        oversized.payload_length = MIGO_HOST_SERVICE_PAYLOAD_MAX_BYTES + 1;
+        assert_eq!(parse(&oversized), Err(MIGO_ERROR_INVALID_ARGUMENT));
+    }
+
+    #[test]
+    fn the_record_is_versioned_like_every_other() {
+        assert_eq!(
+            unsafe { MigoHostServiceResult::parse(std::ptr::null()) },
+            Err(MIGO_ERROR_INVALID_ARGUMENT)
+        );
+        let mut newer = result(MIGO_HOST_SERVICE_STATUS_OK);
+        newer.header.struct_size += 8;
+        assert_eq!(parse(&newer), Err(MIGO_ERROR_UNSUPPORTED_ABI));
+        let mut truncated = result(MIGO_HOST_SERVICE_STATUS_OK);
+        truncated.header.struct_size = 16;
+        assert_eq!(parse(&truncated), Err(MIGO_ERROR_INVALID_ARGUMENT));
+    }
+}

@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- C ABI: the host-service channel (`include/migo/host_services.h`). Ads, payment, sign-in, sharing and mini-program
+  navigation are the host app's own integrations, and until now only Android could carry them (through the Java SDK's
+  handlers): every C ABI platform -- Apple, Linux, Windows, OpenHarmony -- answered content's `login`,
+  `requestMidasPayment`, `shareAppMessage`, `navigateToMiniProgram` and every advert with "not supported". A host now
+  declares the services it supplies in `MigoHostCallbacks.host_services` (one bit per `MIGO_HOST_SERVICE_*`) and installs
+  `on_host_service_call`; content's request arrives as a service, a method and its options as a JSON object; a call is
+  completed exactly once, from any thread, with `migo_session_complete_host_service_call`, and an advert's own events
+  (load, close with `isEnded`, resize) are reported with `migo_session_post_host_service_event`. A success
+  reaches content as `<api>:ok` with the host's fields; a failure carries the host's reason, which content composes into
+  `<api>:fail <reason>` from the API it actually called (one method can serve several: a subpackage download is both
+  `loadSubpackage` and `preDownloadSubpackage`), with the code in `errno` or `errCode` as that API has it. Content's
+  settlers now all compose that way, idempotently, so a host that already sends a whole `errMsg` -- as Android's
+  handlers do -- is read the same. The host never handles content's callback ids: a call id carries its own route,
+  so a host that never answers costs nothing to track. A service the host does not declare is never called. The numbers
+  are append-only and defined once, in `contracts/runtime/host-services.json`; `scripts/test-host-services-contract.sh`
+  holds the header and the library's constants to it in both directions, and the macOS archive gate now runs
+  `headless-host-services-probe`, which checks every result content receives from a fixed fake backend through the
+  shipping archive.
 - Performance+: `migo.createWorker` works. Content already runs as a Dedicated Worker in this lane, and WebKit offers
   no nested-Worker constructor inside one (confirmed on-device, iPhone 12 / iOS 17.0.3: `typeof Worker ===
   "undefined"` there); the page that constructed the content worker in the first place does not have that gap, so
@@ -203,6 +221,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a relink, is INVALID_OPERATION and null, as are a deleted program and one that did not link.
 
 ### Fixed
+- `shareMessageToFriend` and `showShareImageMenu` no longer report success for a share nobody made. Both went through
+  `shareAppMessage`'s op with a `type` field the host's share handler never received, and resolved as soon as the op
+  returned. Each is now its own request, settled by the host's answer (`_internalOnShareMessageToFriendResult`,
+  `_internalOnShowShareImageMenuResult`), and fails with "not supported" where the host offers neither.
+- C ABI ILP32 contract: the `MigoSurfaceDescriptor` size assertion consulted `_Alignof(uint64_t)`, which clang answers
+  with the type's preferred alignment (8) on i386 while the System V ABI places the member on a 4-byte boundary, so the
+  lane failed under `clang -m32` on macOS while passing under GCC. It now measures the member's alignment inside a
+  struct.
 - WebGL: `texImage2D`/`texImage3D` with no data zero-fills the image's storage instead of handing the driver a null
   pointer and trusting it to initialize to transparent black (ES 3.0 3.7.2, WebGL 1.0/2.0): reusing a texture object's
   storage at a level it previously held a smaller image at left that image's bytes visible at the equivalent offsets

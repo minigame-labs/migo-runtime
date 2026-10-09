@@ -18,7 +18,7 @@ use std::{
 };
 
 use crate::MigoSession;
-use migo_capi_abi::{MIGO_OK, MigoResult, VersionedHeader};
+use migo_capi_abi::{MIGO_OK, MigoResult, VersionedHeader, host_services::MigoHostServiceCall};
 
 // Some aliases are currently referenced only by host-facing tests, but keeping
 // the complete callback vocabulary together prevents signature drift.
@@ -63,16 +63,40 @@ pub struct ShowOptions {
 enum Event {
     Ready,
     ExitRequested,
-    Error { code: MigoResult, message: CString },
-    SurfaceLost { generation: u64, reason: u32 },
-    SurfaceReleased { generation: u64 },
+    Error {
+        code: MigoResult,
+        message: CString,
+    },
+    SurfaceLost {
+        generation: u64,
+        reason: u32,
+    },
+    SurfaceReleased {
+        generation: u64,
+    },
     RequestFrame,
-    ShowKeyboard { options: ShowOptions },
+    ShowKeyboard {
+        options: ShowOptions,
+    },
     HideKeyboard,
-    UpdateKeyboard { value: String },
-    Vibrate { vibration: u32 },
-    KeepScreenOn { keep_on: bool },
-    GameLog { entry_json: String },
+    UpdateKeyboard {
+        value: String,
+    },
+    Vibrate {
+        vibration: u32,
+    },
+    KeepScreenOn {
+        keep_on: bool,
+    },
+    GameLog {
+        entry_json: String,
+    },
+    HostServiceCall {
+        call_id: u64,
+        service: u32,
+        method: u32,
+        payload_json: String,
+    },
 }
 
 /// Payload owned by a dispatched task until it runs.
@@ -211,6 +235,30 @@ fn invoke_task(task: &Task) {
                 };
             }
         }
+        Event::HostServiceCall {
+            call_id,
+            service,
+            method,
+            payload_json,
+        } => {
+            if let Some(on_host_service_call) = task.callbacks.on_host_service_call {
+                let payload = payload_json.as_bytes();
+                let call = MigoHostServiceCall {
+                    header: VersionedHeader {
+                        struct_size: size_of::<MigoHostServiceCall>() as u32,
+                        abi_version: migo_capi_abi::MIGO_ABI_VERSION_CURRENT,
+                    },
+                    call_id: *call_id,
+                    service: *service,
+                    method: *method,
+                    payload_json_utf8: payload.as_ptr() as *const c_char,
+                    payload_length: payload.len() as u32,
+                    reserved0: 0,
+                };
+                // `payload_json` outlives the call because `task` is dropped after.
+                unsafe { on_host_service_call(user_data, session, &call) };
+            }
+        }
     }
 }
 
@@ -330,6 +378,30 @@ impl Notifier {
 
     pub fn game_log(&self, entry_json: String) -> bool {
         self.post(Event::GameLog { entry_json })
+    }
+
+    /// Hand content's request to the host's service channel. Like the keyboard
+    /// verbs, the flag is the dispatcher's acceptance and nothing more.
+    pub fn host_service_call(
+        &self,
+        service: u32,
+        method: u32,
+        call_id: u64,
+        payload_json: String,
+    ) -> bool {
+        self.post(Event::HostServiceCall {
+            call_id,
+            service,
+            method,
+            payload_json,
+        })
+    }
+
+    /// Whether the host declared it supplies `service`, which decides whether
+    /// content is offered it at all.
+    #[inline]
+    pub fn supplies_host_service(&self, service: u32) -> bool {
+        self.callbacks.supplies_host_service(service)
     }
 
     #[inline]
@@ -555,6 +627,8 @@ mod tests {
             on_vibrate: None,
             on_keep_screen_on: None,
             on_game_log: None,
+            on_host_service_call: None,
+            host_services: 0,
         }
     }
 
@@ -618,6 +692,8 @@ mod tests {
             on_vibrate: None,
             on_keep_screen_on: None,
             on_game_log: None,
+            on_host_service_call: None,
+            host_services: 0,
         }
     }
 
@@ -641,6 +717,8 @@ mod tests {
             on_vibrate: None,
             on_keep_screen_on: None,
             on_game_log: None,
+            on_host_service_call: None,
+            host_services: 0,
         };
         test_notifier(callbacks)
     }

@@ -83,6 +83,58 @@ MIGO_STATIC_ASSERT(offsetof(MigoHostCallbacks, dispatch) + sizeof(MigoDispatchFn
 #endif
 
 /*
+ * MigoHostCallbacks as it stood before the host-service channel was appended:
+ * through on_game_log, 128 bytes on LP64 and 68 on ILP32. A host built then
+ * announces that size and must be read as supplying no host services -- which
+ * the library can only do if the channel begins exactly where that struct
+ * ended.
+ */
+typedef struct DeviceEraHostCallbacks {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    void *user_data;
+    void *dispatcher_data;
+    MigoDispatchFn dispatch;
+    MigoOnReadyFn on_ready;
+    MigoOnErrorFn on_error;
+    MigoOnExitRequestedFn on_exit_requested;
+    MigoOnSurfaceLostFn on_surface_lost;
+    MigoOnRequestFrameFn on_request_frame;
+    MigoOnShowKeyboardFn on_show_keyboard;
+    MigoOnHideKeyboardFn on_hide_keyboard;
+    MigoOnUpdateKeyboardFn on_update_keyboard;
+    MigoOnSurfaceReleasedFn on_surface_released;
+    MigoOnVibrateFn on_vibrate;
+    MigoOnKeepScreenOnFn on_keep_screen_on;
+    MigoOnGameLogFn on_game_log;
+} DeviceEraHostCallbacks;
+
+#define MIGO_DEVICE_ERA_SAME_OFFSET(field)                                                       \
+    MIGO_STATIC_ASSERT(offsetof(DeviceEraHostCallbacks, field) ==                                 \
+                           offsetof(MigoHostCallbacks, field),                                    \
+                       "MigoHostCallbacks." #field " moved; appended fields must only append")
+
+MIGO_DEVICE_ERA_SAME_OFFSET(on_show_keyboard);
+MIGO_DEVICE_ERA_SAME_OFFSET(on_hide_keyboard);
+MIGO_DEVICE_ERA_SAME_OFFSET(on_update_keyboard);
+MIGO_DEVICE_ERA_SAME_OFFSET(on_surface_released);
+MIGO_DEVICE_ERA_SAME_OFFSET(on_vibrate);
+MIGO_DEVICE_ERA_SAME_OFFSET(on_keep_screen_on);
+MIGO_DEVICE_ERA_SAME_OFFSET(on_game_log);
+
+MIGO_STATIC_ASSERT(sizeof(DeviceEraHostCallbacks) ==
+                       offsetof(MigoHostCallbacks, on_host_service_call),
+                   "the host-service channel must begin exactly where the old struct ended");
+
+#if MIGO_LP64
+MIGO_STATIC_ASSERT(sizeof(DeviceEraHostCallbacks) == 128,
+                   "the pre-channel LP64 shape was 128 bytes");
+#else
+MIGO_STATIC_ASSERT(sizeof(DeviceEraHostCallbacks) == 68,
+                   "the pre-channel ILP32 shape was 68 bytes");
+#endif
+
+/*
  * MigoKeyEvent as it stood before modifiers and repeat were appended: 48 bytes
  * on LP64, 40 on ILP32. A host built then still writes exactly this and
  * announces that size, and the library must read its absent tail as zero --

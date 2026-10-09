@@ -34,6 +34,7 @@ mod concurrent_sessions;
 mod device;
 mod gamepad;
 mod host_kit;
+mod host_services;
 mod input;
 mod keyboard;
 mod layout;
@@ -1113,6 +1114,8 @@ mod tests {
             on_vibrate: None,
             on_keep_screen_on: None,
             on_game_log: None,
+            on_host_service_call: None,
+            host_services: 0,
         };
         session.state.lock().unwrap().notifier = Some(Arc::new(callbacks::Notifier::new(
             host_callbacks,
@@ -1763,6 +1766,8 @@ mod tests {
                 on_vibrate: None,
                 on_keep_screen_on: None,
                 on_game_log: None,
+                on_host_service_call: None,
+                host_services: 0,
             };
             assert_eq!(
                 unsafe { migo_session_set_host_callbacks(session, &host_callbacks) },

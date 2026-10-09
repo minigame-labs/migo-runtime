@@ -21,4 +21,24 @@ pub trait ShareService: Send + Sync {
             "shareAppMessage:fail not supported",
         ))
     }
+
+    /// Share to one friend from the relationship chain (Mode C, async).
+    ///
+    /// JSON fields (input): `requestId`, `openId`, `title`, `imageUrl`,
+    /// `imageUrlId`. Result delivered via `_internalOnShareMessageToFriendResult`.
+    fn share_message_to_friend(&self, _options_json: &str) -> Result<(), ServiceError> {
+        Err(ServiceError::not_supported(
+            "shareMessageToFriend:fail not supported",
+        ))
+    }
+
+    /// Open the host's share sheet for an image (Mode C, async).
+    ///
+    /// JSON fields (input): `requestId`, `path`, `style`, `needShowEntrance`,
+    /// `entrancePath`. Result delivered via `_internalOnShowShareImageMenuResult`.
+    fn show_share_image_menu(&self, _options_json: &str) -> Result<(), ServiceError> {
+        Err(ServiceError::not_supported(
+            "showShareImageMenu:fail not supported",
+        ))
+    }
 }

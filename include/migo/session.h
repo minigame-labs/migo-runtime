@@ -2,6 +2,7 @@
 #define MIGO_SESSION_H_
 
 #include <migo/surface.h>
+#include <migo/host_services.h>
 
 typedef uint64_t MigoEngineFlags;
 #define MIGO_ENGINE_FLAG_NONE 0ULL
@@ -365,12 +366,20 @@ typedef struct MigoHostCallbacks {
     MigoOnVibrateFn on_vibrate;
     MigoOnKeepScreenOnFn on_keep_screen_on;
     MigoOnGameLogFn on_game_log;
+    /* Appended: the host-service channel (migo/host_services.h). host_services
+     * is the set of services the host supplies, one bit per MIGO_HOST_SERVICE_*.
+     * Install both or neither: a callback with no service declared, a service
+     * declared with no callback, or a bit this header does not define returns
+     * MIGO_ERROR_INVALID_ARGUMENT. A host built before them supplies none, which
+     * is the pre-existing behaviour. */
+    MigoOnHostServiceCallFn on_host_service_call;
+    uint64_t host_services;
 } MigoHostCallbacks;
 
 MIGO_STATIC_ASSERT(offsetof(MigoHostCallbacks, struct_size) == 0,
                    "every versioned struct must begin with struct_size");
 #if MIGO_LP64
-MIGO_STATIC_ASSERT(sizeof(MigoHostCallbacks) == 128, "MigoHostCallbacks LP64 size changed");
+MIGO_STATIC_ASSERT(sizeof(MigoHostCallbacks) == 144, "MigoHostCallbacks LP64 size changed");
 MIGO_STATIC_ASSERT(offsetof(MigoHostCallbacks, dispatch) == 24, "MigoHostCallbacks.dispatch moved");
 MIGO_STATIC_ASSERT(offsetof(MigoHostCallbacks, on_request_frame) == 64,
                    "MigoHostCallbacks.on_request_frame moved");
@@ -380,6 +389,10 @@ MIGO_STATIC_ASSERT(offsetof(MigoHostCallbacks, on_surface_released) == 96,
                    "MigoHostCallbacks.on_surface_released moved");
 MIGO_STATIC_ASSERT(offsetof(MigoHostCallbacks, on_game_log) == 120,
                    "MigoHostCallbacks.on_game_log moved");
+MIGO_STATIC_ASSERT(offsetof(MigoHostCallbacks, on_host_service_call) == 128,
+                   "MigoHostCallbacks.on_host_service_call moved");
+MIGO_STATIC_ASSERT(offsetof(MigoHostCallbacks, host_services) == 136,
+                   "MigoHostCallbacks.host_services moved");
 #endif
 
 /*
