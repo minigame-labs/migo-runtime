@@ -360,8 +360,9 @@ impl Host {
             raf_rx: Some(raf_rx.clone()),
             raf_demand: raf_demand.clone(),
             request_vsync: request_vsync.clone(),
-            sub_packages: init_options.sub_packages().to_vec(),
-            workers_path: init_options.workers_path().map(|s| s.to_string()),
+            // Filled from the package's game.json when content is evaluated.
+            sub_packages: Vec::new(),
+            workers_path: None,
             network_policy: network_policy.clone(),
             backgrounded: backgrounded.clone(),
             timer_backgrounded: timer_backgrounded.clone(),
@@ -1348,8 +1349,9 @@ impl Host {
             raf_rx: Some(self.raf_rx.clone()),
             raf_demand: self.raf_demand.clone(),
             request_vsync: self.request_vsync.clone(),
-            sub_packages: self.init_options.sub_packages().to_vec(),
-            workers_path: self.init_options.workers_path().map(|s| s.to_string()),
+            // Filled from the package's game.json when content is evaluated.
+            sub_packages: Vec::new(),
+            workers_path: None,
             network_policy: self.network_policy.clone(),
             backgrounded: self.backgrounded.clone(),
             timer_backgrounded: self.timer_backgrounded.clone(),

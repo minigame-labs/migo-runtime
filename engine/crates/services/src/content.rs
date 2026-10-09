@@ -86,6 +86,8 @@ pub struct MountedContent {
     pub game_paths: Arc<GamePaths>,
     pub vfs: Arc<VirtualFS>,
     pub mount_table: Arc<MountTable>,
+    /// What the package's own `game.json` declares, read once at mount.
+    pub config: Arc<GameConfig>,
 }
 
 impl MountedContent {
@@ -101,10 +103,12 @@ impl MountedContent {
         let PreparedContent { game_paths, vfs } =
             prepare_content(files_dir, cache_dir, game_id, session_id)?;
         let mount_table = mount_code(&game_paths, false, scheduler);
+        let config = Arc::new(GameConfig::read(&mount_table)?);
         Ok(Self {
             game_paths: Arc::new(game_paths),
             vfs: Arc::new(vfs),
             mount_table,
+            config,
         })
     }
 }
@@ -185,10 +189,12 @@ impl MountedContent {
             verifier.verify_and_promote_for_launch(&code_dir, &receipt, entry)?;
         }
         let mount_table = mount_code(&game_paths, true, scheduler);
+        let config = Arc::new(GameConfig::read(&mount_table)?);
         Ok(Self {
             game_paths: Arc::new(game_paths),
             vfs: Arc::new(vfs),
             mount_table,
+            config,
         })
     }
 }
@@ -225,35 +231,7 @@ impl MountedContent {
     /// [`shared::cjs_compat::module_source`], so a CommonJS `game.js` runs as
     /// the same module in both executions.
     pub fn module_source(&self, request_path: &str) -> Result<Vec<u8>, ModuleError> {
-        let relative = request_path.strip_prefix('/').unwrap_or(request_path);
-        let mounts = &self.mount_table;
-        let bytes = match mounts.resolve(relative) {
-            // `resolve` verified the real path is inside its mount.
-            Some(found) => match found.real_path {
-                Some(path) => std::fs::read(&path).map_err(|error| {
-                    if error.kind() == std::io::ErrorKind::NotFound {
-                        ModuleError::NotFound(format!("no module at {request_path}"))
-                    } else {
-                        ModuleError::Unreadable(format!("{request_path}: {error}"))
-                    }
-                })?,
-                None => mounts.read(relative).map_err(|error| {
-                    ModuleError::Unreadable(format!(
-                        "failed to read module from package: {request_path}: {error}"
-                    ))
-                })?,
-            },
-            None if mounts.has_overlay_for(relative) => {
-                return Err(ModuleError::Refused(format!(
-                    "module import blocked by mounted overlay shadow: {request_path}"
-                )));
-            }
-            None => {
-                return Err(ModuleError::NotFound(format!(
-                    "no module at {request_path}"
-                )));
-            }
-        };
+        let bytes = package_file(&self.mount_table, request_path)?;
         let text = std::str::from_utf8(&bytes).map_err(|error| {
             ModuleError::Unreadable(format!(
                 "module source is not UTF-8: {request_path}: {error}"
@@ -263,6 +241,127 @@ impl MountedContent {
             Some(rewritten) => rewritten.into_bytes(),
             None => bytes,
         })
+    }
+}
+
+/// The bytes of one file in the package, through the mount table: a subpackage
+/// overlay or a pack-backed package serves its own files, a path an overlay
+/// claims is not found underneath it, and a symlink out of the package is
+/// refused.
+fn package_file(mounts: &MountTable, request_path: &str) -> Result<Vec<u8>, ModuleError> {
+    let relative = request_path.strip_prefix('/').unwrap_or(request_path);
+    match mounts.resolve(relative) {
+        // `resolve` verified the real path is inside its mount.
+        Some(found) => match found.real_path {
+            Some(path) => std::fs::read(&path).map_err(|error| {
+                if error.kind() == std::io::ErrorKind::NotFound {
+                    ModuleError::NotFound(format!("no module at {request_path}"))
+                } else {
+                    ModuleError::Unreadable(format!("{request_path}: {error}"))
+                }
+            }),
+            None => mounts.read(relative).map_err(|error| {
+                ModuleError::Unreadable(format!(
+                    "failed to read module from package: {request_path}: {error}"
+                ))
+            }),
+        },
+        None if mounts.has_overlay_for(relative) => Err(ModuleError::Refused(format!(
+            "module import blocked by mounted overlay shadow: {request_path}"
+        ))),
+        None => Err(ModuleError::NotFound(format!(
+            "no module at {request_path}"
+        ))),
+    }
+}
+
+/// What a game's own `game.json` declares that the engine acts on.
+///
+/// The package is the one source. These used to be told to the engine by the
+/// Android SDK, which had its host app repeat them in a `RuntimeConfig`, and
+/// every other platform had no way to say them at all -- so a game's
+/// `loadSubpackage` was "not configured" everywhere but Android, however its
+/// own manifest declared it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GameConfig {
+    /// `subpackages` (or `subPackages`): `(name, root)`, in declaration order.
+    /// A name may be empty; content derives one from the root.
+    pub sub_packages: Vec<(String, String)>,
+    /// `workers`: the directory Worker scripts are resolved under.
+    pub workers_path: Option<String>,
+}
+
+impl GameConfig {
+    /// Read the mounted package's `game.json`.
+    ///
+    /// A package without one declares nothing. One that is there and malformed
+    /// is refused rather than half-read: a game whose declarations the engine
+    /// skipped would fail later, at the first subpackage it loads, for a reason
+    /// it could no longer name.
+    pub fn read(mounts: &MountTable) -> EngineResult<Self> {
+        match package_file(mounts, "game.json") {
+            Ok(bytes) => Self::parse(&bytes).map_err(|why| {
+                EngineError::new(ErrorCode::ModuleLoadError)
+                    .with_msg("game.json")
+                    .with_detail(why)
+            }),
+            Err(ModuleError::NotFound(_)) => Ok(Self::default()),
+            Err(error) => Err(EngineError::new(ErrorCode::ModuleLoadError)
+                .with_msg("game.json")
+                .with_detail(error.to_string())),
+        }
+    }
+
+    fn parse(bytes: &[u8]) -> Result<Self, String> {
+        let manifest: serde_json::Value =
+            serde_json::from_slice(bytes).map_err(|error| format!("not valid JSON: {error}"))?;
+        let serde_json::Value::Object(manifest) = manifest else {
+            return Err("not a JSON object".to_owned());
+        };
+        let sub_packages = match (manifest.get("subpackages"), manifest.get("subPackages")) {
+            (Some(_), Some(_)) => {
+                return Err("declares both subpackages and subPackages".to_owned());
+            }
+            (Some(list), None) | (None, Some(list)) => Self::sub_packages(list)?,
+            (None, None) => Vec::new(),
+        };
+        let workers_path = match manifest.get("workers") {
+            None => None,
+            Some(serde_json::Value::String(path)) => Some(path.clone()),
+            Some(serde_json::Value::Object(workers)) => match workers.get("path") {
+                Some(serde_json::Value::String(path)) => Some(path.clone()),
+                _ => return Err("workers.path must be a string".to_owned()),
+            },
+            Some(_) => return Err("workers must be a path or an object with one".to_owned()),
+        };
+        Ok(Self {
+            sub_packages,
+            workers_path: workers_path.filter(|path| !path.trim().is_empty()),
+        })
+    }
+
+    fn sub_packages(list: &serde_json::Value) -> Result<Vec<(String, String)>, String> {
+        let serde_json::Value::Array(entries) = list else {
+            return Err("subpackages must be an array".to_owned());
+        };
+        entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                let root = entry
+                    .get("root")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::trim)
+                    .filter(|root| !root.is_empty())
+                    .ok_or_else(|| format!("subpackages[{index}] has no root"))?;
+                let name = match entry.get("name") {
+                    None => "",
+                    Some(serde_json::Value::String(name)) => name.trim(),
+                    Some(_) => return Err(format!("subpackages[{index}].name must be a string")),
+                };
+                Ok((name.to_owned(), root.to_owned()))
+            })
+            .collect()
     }
 }
 
@@ -277,6 +376,55 @@ impl std::fmt::Debug for MountedContent {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_game_json_declares_its_subpackages_and_workers() {
+        let config = GameConfig::parse(
+            br#"{"deviceOrientation":"portrait",
+                 "subpackages":[{"name":"stage1","root":"stage1/"},{"root":" packages/b "}],
+                 "workers":"workers"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            config,
+            GameConfig {
+                sub_packages: vec![
+                    ("stage1".into(), "stage1/".into()),
+                    (String::new(), "packages/b".into())
+                ],
+                workers_path: Some("workers".into()),
+            }
+        );
+        // The alternative spelling, and the object form of workers.
+        let config = GameConfig::parse(
+            br#"{"subPackages":[{"root":"a"}],"workers":{"path":"w","isSubpackage":true}}"#,
+        )
+        .unwrap();
+        assert_eq!(config.sub_packages, vec![(String::new(), "a".into())]);
+        assert_eq!(config.workers_path.as_deref(), Some("w"));
+        assert_eq!(GameConfig::parse(b"{}").unwrap(), GameConfig::default());
+    }
+
+    #[test]
+    fn a_malformed_game_json_is_refused_not_half_read() {
+        for manifest in [
+            &b"{"[..],
+            b"[]",
+            br#"{"subpackages":{}}"#,
+            br#"{"subpackages":[{"name":"x"}]}"#,
+            br#"{"subpackages":[{"root":""}]}"#,
+            br#"{"subpackages":[{"root":"a","name":1}]}"#,
+            br#"{"subpackages":[],"subPackages":[]}"#,
+            br#"{"workers":7}"#,
+            br#"{"workers":{"isSubpackage":true}}"#,
+        ] {
+            assert!(
+                GameConfig::parse(manifest).is_err(),
+                "{}",
+                String::from_utf8_lossy(manifest)
+            );
+        }
+    }
 
     #[test]
     fn mounting_creates_the_game_directories_and_resolves_code_under_the_install_root() {

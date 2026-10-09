@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The engine reads the content's own `game.json`: its `subpackages` (or `subPackages`) and its `workers` directory,
+  through the same verified mount the game is served from, on every platform and both executions. Only the Android SDK
+  could declare them before -- its host app repeated them in a `RuntimeConfig` -- so on Apple, Linux, Windows and
+  OpenHarmony every `loadSubpackage` was "subpackage not configured", and Performance+ answered an empty list whatever
+  the package said. A `game.json` that is not valid refuses the launch rather than being half-read.
 - C ABI host-service channel: subpackages, permission and the settings pages. `MIGO_HOST_SERVICE_SUBPACKAGE` carries
   `loadSubpackage` / `preDownloadSubpackage` downloads, with progress reported through the new
   `migo_session_update_host_service_call` and the downloaded zip's path kept by the engine for the install, never handed
@@ -229,6 +234,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the uniform holds (NaN and the infinities included). A uniform location now belongs to its program and the name
   it was looked up by until the program links again: `getUniform` with another program's location, or one from before
   a relink, is INVALID_OPERATION and null, as are a deleted program and one that did not link.
+
+### Removed
+- Android SDK: `RuntimeConfig.Builder.addSubPackage`, `setWorkersPath`, `getSubPackages` and `getWorkersPath`. Content
+  declares its subpackages and Worker directory in `game.json`, which the engine now reads itself; a second copy in
+  the host's configuration could only disagree with the first.
 
 ### Fixed
 - `getSetting` reports a scope nobody has been asked about as absent rather than `false`, as the mini-game convention

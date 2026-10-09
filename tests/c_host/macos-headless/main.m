@@ -314,6 +314,13 @@ static void MIGO_CALL on_host_service_call(void *user_data, MigoSession *session
             break;
         case MIGO_HOST_SERVICE_SUBPACKAGE:
             if (call->method == MIGO_SUBPACKAGE_DOWNLOAD) {
+                /* The subpackage the content's game.json declared, by name and
+                 * root -- the engine read the manifest, not this host. */
+                if (strstr(payload, "\"name\":\"stage1\"") == NULL
+                    || strstr(payload, "\"root\":\"stage1\"") == NULL) {
+                    probe_failure("the subpackage request does not name game.json's stage1");
+                    return;
+                }
                 static const char progress[] =
                     "{\"progress\":50,\"totalBytesWritten\":512,\"totalBytesExpectedToWrite\":1024}";
                 if (migo_session_update_host_service_call(session, call->call_id, progress,

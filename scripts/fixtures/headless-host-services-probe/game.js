@@ -118,6 +118,22 @@ async function run() {
   expect(app.cameraAuthorized === "authorized" && app.albumAuthorized === "denied" &&
     app.microphoneAuthorized === "not determined", "getAppAuthorizeSetting", app);
 
+  // Subpackages, as this package's own game.json declares them: stage1 is not
+  // on disk, so loading it asks the host to download it. The host reports
+  // half the bytes, then fails -- the progress reaches the task, and the
+  // failure is the host's reason under the API content called.
+  const progress = [];
+  const sub = await new Promise(function (resolve) {
+    const task = migo.loadSubpackage({
+      name: "stage1",
+      success: function (res) { resolve({ ok: true, res: res }); },
+      fail: function (res) { resolve({ ok: false, res: res }); },
+    });
+    task.onProgressUpdate(function (update) { progress.push(update.progress); });
+  });
+  expect(!sub.ok && sub.res.errMsg === "loadSubpackage:fail offline" && progress[0] === 50,
+    "loadSubpackage", { sub: sub, progress: progress });
+
   // The reward is the host's word: the close event's isEnded comes from it.
   const ad = migo.createRewardedVideoAd({ adUnitId: "probe-unit" });
   await new Promise(function (resolve) { ad.onLoad(resolve); });
