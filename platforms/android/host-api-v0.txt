@@ -23,6 +23,7 @@
   public abstract void emitLoad(int);
   public abstract void emitLoad(int, boolean);
   public abstract void emitResize(int, int, int);
+  public abstract void emitShow(int);
   public abstract void fail(int, java.lang.String);
   public abstract void fail(int, java.lang.String);
   public abstract void fail(int, java.lang.String);

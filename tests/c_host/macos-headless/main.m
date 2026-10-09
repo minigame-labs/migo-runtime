@@ -345,8 +345,11 @@ static void MIGO_CALL on_host_service_call(void *user_data, MigoSession *session
                 case MIGO_AD_LOAD:
                     post_ad_event(session, ad_id, "\"event\":\"load\"");
                     return;
-                /* Watched to the end: the one fact only this side can state. */
+                /* On screen, then watched to the end: the exposure settles
+                 * content's show(), and the verdict is the one fact only this
+                 * side can state. */
                 case MIGO_AD_SHOW:
+                    post_ad_event(session, ad_id, "\"event\":\"show\"");
                     post_ad_event(session, ad_id, "\"event\":\"close\",\"isEnded\":true");
                     return;
                 case MIGO_AD_HIDE:

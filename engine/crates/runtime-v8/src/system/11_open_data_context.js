@@ -125,12 +125,6 @@ function getGameClubData(options) {
     }, options);
 }
 
-function getUserGameLabel(options) {
-    return wrapAsync('getUserGameLabel', function () {
-        return { label: '' };
-    }, options);
-}
-
 export {
     onMessage,
     offMessage,
@@ -143,5 +137,4 @@ export {
     modifyFriendInteractiveStorage,
     getPotentialFriendList,
     getGameClubData,
-    getUserGameLabel,
 };

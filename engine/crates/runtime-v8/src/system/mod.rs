@@ -769,7 +769,6 @@ deno_core::extension!(
         "13_login.js",
         "14_setting.js",
         "15_navigate.js",
-        "16_jssdk.js",
         "17_analytics.js",
         "18_crypto.js",
         "19_log_manager.js",

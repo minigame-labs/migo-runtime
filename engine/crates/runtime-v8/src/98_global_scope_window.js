@@ -175,7 +175,6 @@ const WindowGlobalScope = {
     restartMiniProgramSync: core.propNonEnumerable(lifecycle.restartMiniProgramSync),
     exitMiniProgram: core.propNonEnumerable(lifecycle.exitMiniProgram),
     exitApplication: core.propNonEnumerable(lifecycle.exitApplication),
-    saveAppToDesktop: core.propNonEnumerable(lifecycle.saveAppToDesktop),
 
     // TCP Socket
     createTCPSocket: core.propNonEnumerable(tcpSocket.createTCPSocket),

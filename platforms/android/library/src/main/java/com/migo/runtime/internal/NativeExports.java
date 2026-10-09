@@ -3072,6 +3072,11 @@ public final class NativeExports {
         }
 
         @Override
+        public void emitShow(int adId) {
+            emit(adId, "show", null);
+        }
+
+        @Override
         public void emitError(int adId, int errCode, String errMsg) {
             try {
                 JSONObject extra = new JSONObject();

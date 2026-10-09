@@ -48,6 +48,11 @@ public final class AdSettlementTest {
         }
 
         @Override
+        public void emitShow(int adId) {
+            events.add("show:" + adId);
+        }
+
+        @Override
         public void emitError(int adId, int errCode, String errMsg) {
             events.add("error:" + adId + ":" + errCode + ":" + errMsg);
         }

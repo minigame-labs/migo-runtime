@@ -44,8 +44,8 @@ function allocateHostCallbackId() {
 // These are the app's functions, not ours. One that throws must not decide
 // whether the rest run: `complete` is documented as running either way, and a
 // caller awaiting the promise asked about the *operation*, not about its own
-// callback. Reported rather than swallowed, matching the `ready` callback in
-// 16_jssdk.js, so a throwing callback stays debuggable instead of vanishing.
+// callback. Reported rather than swallowed, so a throwing callback stays
+// debuggable instead of vanishing.
 // The message of something that was thrown, when there is no guarantee it is
 // an Error.
 //
