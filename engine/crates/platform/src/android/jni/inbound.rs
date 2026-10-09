@@ -718,8 +718,7 @@ pub(crate) extern "system" fn onOpenAppAuthorizeSetting<'local>(
 /// content composes the errMsg from the API it called.
 ///
 /// Absent stays absent: a non-positive id means the request carried none, and
-/// writing `0` would make the runtime discard the reply as *present and not an
-/// id* -- strictly worse than the fallback it would otherwise take.
+/// the reply then claims no id rather than one the runtime never issued.
 fn send_settings_page_result(
     host_id: jint,
     hook: &'static str,

@@ -20,6 +20,7 @@ import {
     parseHostCallbackId,
     invokeCallback,
     failMessage,
+    createSettlement,
 } from "ext:host_v8_base/02_async.js";
 
 const noop = function () {};
@@ -54,7 +55,10 @@ function requestMidasPayment(options) {
     var fail = typeof opts.fail === 'function' ? opts.fail : noop;
     var complete = typeof opts.complete === 'function' ? opts.complete : noop;
 
-    return new Promise(function (resolve, reject) {
+    const settlement = createSettlement(opts);
+    const resolve = settlement.resolve;
+    const reject = settlement.reject;
+    (function () {
         var requestId;
         try {
             requestId = allocateHostCallbackId();
@@ -75,7 +79,8 @@ function requestMidasPayment(options) {
             var res = { errMsg: failMessage('requestMidasPayment', e), errCode: -1 };
             queueMicrotask(function () { fail(res); complete(res); reject(res); });
         }
-    });
+    })();
+    return settlement.promise;
 }
 
 function _settleMidas(requestId, result) {
@@ -105,16 +110,9 @@ function _internalOnMidasPaymentResult(resultJson) {
         // id 1 and `1.5` as a lookup, and either could settle a purchase the
         // result does not belong to.
         if (requestId !== null) _settleMidas(requestId, result);
-    } else {
-        // Fallback for an omitted id only. Do not delete this until task 6 of
-        // the runtime-restart plan makes every platform result echo its id --
-        // without the fallback these promises would never settle at all.
-        var keys = _pendingMidas.keys();
-        var first = keys.next();
-        if (!first.done) {
-            _settleMidas(first.value, result);
-        }
     }
+    // No id names no purchase: settling the oldest pending one with it would
+    // settle somebody else's. Every host path stamps the id.
 }
 
 // ---- requestMidasPaymentGameItem -------------------------------------------
@@ -125,7 +123,10 @@ function requestMidasPaymentGameItem(options) {
     var fail = typeof opts.fail === 'function' ? opts.fail : noop;
     var complete = typeof opts.complete === 'function' ? opts.complete : noop;
 
-    return new Promise(function (resolve, reject) {
+    const settlement = createSettlement(opts);
+    const resolve = settlement.resolve;
+    const reject = settlement.reject;
+    (function () {
         var requestId;
         try {
             requestId = allocateHostCallbackId();
@@ -141,7 +142,8 @@ function requestMidasPaymentGameItem(options) {
             var res = { errMsg: failMessage('requestMidasPaymentGameItem', e), errCode: -1 };
             queueMicrotask(function () { fail(res); complete(res); reject(res); });
         }
-    });
+    })();
+    return settlement.promise;
 }
 
 function _settleMidasGameItem(requestId, result) {
@@ -171,16 +173,9 @@ function _internalOnMidasPaymentGameItemResult(resultJson) {
         // id 1 and `1.5` as a lookup, and either could settle a purchase the
         // result does not belong to.
         if (requestId !== null) _settleMidasGameItem(requestId, result);
-    } else {
-        // Fallback for an omitted id only. Do not delete this until task 6 of
-        // the runtime-restart plan makes every platform result echo its id --
-        // without the fallback these promises would never settle at all.
-        var keys = _pendingMidasGameItem.keys();
-        var first = keys.next();
-        if (!first.done) {
-            _settleMidasGameItem(first.value, result);
-        }
     }
+    // No id names no purchase: settling the oldest pending one with it would
+    // settle somebody else's. Every host path stamps the id.
 }
 
 export {

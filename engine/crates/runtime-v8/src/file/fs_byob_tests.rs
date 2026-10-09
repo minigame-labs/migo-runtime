@@ -184,19 +184,26 @@ fn public_read_commits_before_callbacks_and_preserves_identity_and_tail() {
         // Neither an own byteLength property nor a replaced set may redirect IO.
         Object.defineProperty(target.buffer, 'byteLength', { value: 800 });
         Uint8Array.prototype.set = () => { throw new Error('user set called'); };
-        fs.read({fd, arrayBuffer: target.buffer, offset: 2,
+        // Callback style: answered through the callbacks, returning nothing.
+        const returned = fs.read({fd, arrayBuffer: target.buffer, offset: 2,
             success(result) {
                 if (result.arrayBuffer !== target.buffer || result.bytesRead !== 3 ||
                     target.join(',') !== '165,165,1,2,3,165,165,165') throw new Error('bad commit');
                 events.push('success');
             },
             fail() { events.push('fail'); },
-            complete() { events.push('complete'); },
-        }).then(result => {
-            if (result.arrayBuffer !== target.buffer || result.bytesRead !== 3)
-                throw new Error('bad result');
-            events.push('promise'); done = true;
+            complete() {
+                events.push('complete');
+                // Promise style: the same commit, answered by the Promise.
+                const again = new Uint8Array(4);
+                fs.read({fd, arrayBuffer: again.buffer, position: 0}).then(result => {
+                    if (result.arrayBuffer !== again.buffer || result.bytesRead !== 3 ||
+                        again.join(',') !== '1,2,3,0') throw new Error('bad result');
+                    events.push('promise'); done = true;
+                });
+            },
         });
+        if (returned !== undefined) throw new Error('a callback-style read returned ' + returned);
     "#,
     );
     fixture.drain();
@@ -217,11 +224,11 @@ fn public_read_zero_length_seeks_eof_and_invalid_fd_settle_correctly() {
             if (read.bytesRead !== 3 || bytes.join(',') !== '100,101,102,165,165') throw new Error('zero seek');
             const eof = await fs.read({fd, arrayBuffer: bytes.buffer});
             if (eof.bytesRead !== 0 || bytes.join(',') !== '100,101,102,165,165') throw new Error('EOF');
-            let failed = 0, completed = 0, rejected = false;
-            try {
-                await fs.read({fd: 2147483647, arrayBuffer: empty,
-                    fail() { ++failed; }, complete() { ++completed; }});
-            } catch (_) { rejected = true; }
+            let failed = 0, completed = 0;
+            await new Promise(resolve => fs.read({fd: 2147483647, arrayBuffer: empty,
+                fail() { ++failed; }, complete() { ++completed; resolve(); }}));
+            const rejected = await fs.read({fd: 2147483647, arrayBuffer: empty})
+                .then(() => false, () => true);
             if (!rejected || failed !== 1 || completed !== 1) throw new Error('invalid fd settlement');
             done = true;
         })();
@@ -239,11 +246,16 @@ fn public_read_detached_before_completion_rejects_even_for_empty_reads() {
         (async () => {
             for (const length of [4, 0]) {
                 const buffer = new ArrayBuffer(length);
-                let succeeded = 0, failed = 0, completed = 0, rejected = false;
-                const pending = fs.read({fd, arrayBuffer: buffer, position: 0,
-                    success() { ++succeeded; }, fail() { ++failed; }, complete() { ++completed; }});
+                let succeeded = 0, failed = 0, completed = 0;
+                const answered = new Promise(resolve => fs.read({fd, arrayBuffer: buffer, position: 0,
+                    success() { ++succeeded; }, fail() { ++failed; },
+                    complete() { ++completed; resolve(); }}));
                 buffer.transfer();
-                try { await pending; } catch (_) { rejected = true; }
+                await answered;
+                const again = new ArrayBuffer(length);
+                const pending = fs.read({fd, arrayBuffer: again, position: 0});
+                again.transfer();
+                const rejected = await pending.then(() => false, () => true);
                 if (!rejected || succeeded || failed !== 1 || completed !== 1)
                     throw new Error('detached destination settled successfully');
             }

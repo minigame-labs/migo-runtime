@@ -27,12 +27,12 @@ import { wrapAsync, createDeferredApi, createListenerGroup } from "ext:host_v8_b
 
 // ==================== System Bluetooth Setting ====================
 
-const _openBluetoothSettingApi = createDeferredApi('openBluetoothAdapterSetting');
+// Named for the API content calls: its errMsg is `openSystemBluetoothSetting:ok`.
+const _openBluetoothSettingApi = createDeferredApi('openSystemBluetoothSetting');
 
 function openSystemBluetoothSetting(options = {}) {
     return _openBluetoothSettingApi.invoke(options, function (opts, requestId) {
-        // The id was always allocated here; the op simply dropped it, so every
-        // result came back bare and settled the oldest pending request.
+        // The result is correlated by this id and nothing else.
         op_open_system_bluetooth_setting(requestId);
     });
 }

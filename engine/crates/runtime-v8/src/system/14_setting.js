@@ -5,7 +5,7 @@
 // can be shown; falls back to returning current state if no host op available.
 
 import { op_open_setting, op_get_auth_setting, op_authorize } from "ext:core/ops";
-import { wrapAsync, createDeferredApi, createListenerGroup } from "ext:host_v8_base/02_async.js";
+import { wrapAsync, createDeferredApi, createListenerGroup, isCallbackStyle } from "ext:host_v8_base/02_async.js";
 
 // ---- authorisation state ---------------------------------------------------
 //
@@ -250,12 +250,17 @@ function getWritePhotosAlbum(options) {
     var wrap = function (cb) {
         return typeof cb === 'function' ? function (res) { cb(named(res)); } : undefined;
     };
-    return authorize({
-        scope: 'scope.writePhotosAlbum',
-        success: wrap(opts.success),
-        fail: wrap(opts.fail),
-        complete: wrap(opts.complete),
-    }).then(named, function (res) { throw named(res); });
+    if (isCallbackStyle(opts)) {
+        authorize({
+            scope: 'scope.writePhotosAlbum',
+            success: wrap(opts.success),
+            fail: wrap(opts.fail),
+            complete: wrap(opts.complete),
+        });
+        return undefined;
+    }
+    return authorize({ scope: 'scope.writePhotosAlbum' })
+        .then(named, function (res) { throw named(res); });
 }
 
 function checkWritePhotosAlbum(options) {

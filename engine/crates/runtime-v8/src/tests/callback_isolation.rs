@@ -143,7 +143,7 @@ mod callback_isolation_tests {
                     complete: function () { globalThis.__log.push('complete'); },
                 },
                 function (_opts, id) { globalThis.__ids.push(id); },
-            ).catch(function () {});
+            );
             "#,
         );
         exec(
@@ -172,7 +172,7 @@ mod callback_isolation_tests {
                     complete: function () { globalThis.__log.push('complete'); },
                 },
                 function (_opts, id) { globalThis.__ids.push(id); },
-            ).catch(function () {});
+            );
             "#,
         );
         exec(
@@ -264,21 +264,19 @@ mod callback_isolation_tests {
         }
     }
 
-    /// Every API on this surface is callback-and-Promise dual mode. Three were
-    /// not.
+    /// Every asynchronous API answers by callback or by Promise, by wx's rule:
+    /// options carrying `success`, `fail` or `complete` are answered through
+    /// them and the call returns nothing; options carrying none get a Promise.
     ///
-    /// `login`, `getUserInfo` and `getPhoneNumber` returned `undefined`, so
-    /// `await migo.login()` resolved immediately on nothing and content carried
-    /// on as though the call had finished. `checkSession` and `getUserProfile`,
-    /// in the same file, always returned one. A surface sweep of 25 APIs found
-    /// exactly these three.
-    ///
-    /// The assertion is the synchronous half -- that a thenable comes back at
-    /// all -- because that is precisely what was missing; how it settles is the
-    /// shared `_pending` machinery the other two already exercise.
+    /// The sign-in APIs once broke the Promise half -- `login`, `getUserInfo`
+    /// and `getPhoneNumber` returned `undefined`, so `await migo.login()`
+    /// resolved on nothing before the call had finished -- and then, with every
+    /// other API, broke the callback half: a Promise returned to callback-style
+    /// content that nobody held turned each handled failure into an unhandled
+    /// rejection.
     #[cfg(feature = "api-connectivity")]
     #[test]
-    fn the_login_apis_return_a_promise_like_every_other_api() {
+    fn the_login_apis_answer_by_callback_or_by_promise() {
         let mut rt = boot();
         for api in [
             "login",
@@ -292,13 +290,15 @@ mod callback_isolation_tests {
                 &format!(
                     r#"
                     globalThis.__log = [];
-                    var r = migo.{api}({{ desc: 'd', fail: function () {{}}, complete: function () {{}} }});
-                    globalThis.__log.push(r && typeof r.then === 'function' ? 'thenable' : 'MISSING');
-                    if (r && r.catch) {{ r.catch(function () {{}}); }}
+                    var withCallbacks = migo.{api}({{ desc: 'd', fail: function () {{}}, complete: function () {{}} }});
+                    globalThis.__log.push(withCallbacks === undefined ? 'nothing' : 'RETURNED');
+                    var without = migo.{api}({{ desc: 'd' }});
+                    globalThis.__log.push(without && typeof without.then === 'function' ? 'thenable' : 'MISSING');
+                    if (without && without.catch) {{ without.catch(function () {{}}); }}
                     "#
                 ),
             );
-            assert_js(&mut rt, "globalThis.__log.join(',') === 'thenable'");
+            assert_js(&mut rt, "globalThis.__log.join(',') === 'nothing,thenable'");
         }
     }
 }
