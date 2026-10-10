@@ -111,9 +111,9 @@ impl BluetoothService for FakeBluetooth {
         Ok(())
     }
 
-    fn get_adapter_state(&self) -> Result<String, ServiceError> {
+    fn get_adapter_state(&self, _request_json: &str) -> Result<(), ServiceError> {
         self.protected_calls.fetch_add(1, Ordering::SeqCst);
-        Ok("{}".to_string())
+        Ok(())
     }
 
     fn start_devices_discovery(&self, _options_json: &str) -> Result<(), ServiceError> {
@@ -131,12 +131,12 @@ impl BluetoothService for FakeBluetooth {
         Ok(())
     }
 
-    fn close_adapter(&self) -> Result<(), ServiceError> {
+    fn close_adapter(&self, _request_json: &str) -> Result<(), ServiceError> {
         self.cleanup_calls.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 
-    fn stop_devices_discovery(&self) -> Result<(), ServiceError> {
+    fn stop_devices_discovery(&self, _request_json: &str) -> Result<(), ServiceError> {
         self.cleanup_calls.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -146,7 +146,7 @@ impl BluetoothService for FakeBluetooth {
         Ok(())
     }
 
-    fn stop_beacon_discovery(&self) -> Result<(), ServiceError> {
+    fn stop_beacon_discovery(&self, _request_json: &str) -> Result<(), ServiceError> {
         self.cleanup_calls.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -335,7 +335,14 @@ fn boot_with(state: HostOpState) -> JsRuntime {
     runtime
 }
 
+/// Run `source` where the runtime's timers can be armed: a request that reaches
+/// the host starts its timeout, and the web timer needs a reactor to exist.
 fn run(runtime: &mut JsRuntime, source: &'static str) {
+    let reactor = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime for timers");
+    let _context = reactor.enter();
     runtime
         .execute_script(
             "<test:permission-revocation>",
@@ -406,7 +413,8 @@ fn denied_bluetooth_can_close_and_stop_but_not_acquire_query_or_write() {
          migo.getBluetoothAdapterState({ fail() {} }); \
          migo.startBluetoothDevicesDiscovery({ fail() {} }); \
          migo.createBLEConnection({ deviceId: 'device', fail() {} }); \
-         migo.writeBLECharacteristicValue({ deviceId: 'device', value: '00', fail() {} });",
+         migo.writeBLECharacteristicValue({ deviceId: 'device', serviceId: 'service', \
+             characteristicId: 'characteristic', value: new ArrayBuffer(1), fail() {} });",
     );
 
     assert_eq!(bundle.bluetooth.cleanup_calls.load(Ordering::SeqCst), 4);

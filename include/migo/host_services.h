@@ -52,6 +52,7 @@ typedef uint32_t MigoHostService;
 #define MIGO_HOST_SERVICE_IMAGE 12U
 #define MIGO_HOST_SERVICE_MOTION 13U
 #define MIGO_HOST_SERVICE_SCREEN 14U
+#define MIGO_HOST_SERVICE_BLUETOOTH 15U
 
 /*
  * Ads. All six are commands addressed to the advert by the adId in their
@@ -219,6 +220,77 @@ typedef uint32_t MigoHostService;
 #define MIGO_SCREEN_EVENT_RECORDING_STATE_CHANGE 2U
 
 /*
+ * Bluetooth: the adapter, scanning, pairing, iBeacons and BLE GATT as a central.
+ * Every method is a call, answered when the operation has happened -- a
+ * connection made (and its services discovered), a write acknowledged, an RSSI
+ * read -- not when it was issued. A failure carries the common mini-game
+ * platform's code as its error code (MIGO_HOST_SERVICE_RESULT_FLAG_ERROR_CODE):
+ * 10000 adapter not opened, 10001 Bluetooth unavailable, 10002 no such device,
+ * 10003 connection failed, 10004 no such service, 10005 no such characteristic,
+ * 10006 not connected, 10007 not supported by the characteristic, 10008 system
+ * error, 10012 timed out, 10013 invalid data; -1 already connected; iBeacons
+ * 11000-11006. Binary values (a write's "value", a pairing "pin", advertising and
+ * service data) are lower-case hex strings. Requests and answers, in order:
+ *
+ *   OPEN_ADAPTER {"mode"} -> {}            CLOSE_ADAPTER -> {}
+ *   GET_ADAPTER_STATE -> {"available", "discovering"}
+ *   START_DEVICES_DISCOVERY {"services", "allowDuplicatesKey", "interval", "powerLevel"} -> {}
+ *   STOP_DEVICES_DISCOVERY -> {}           GET_DEVICES -> {"devices"}
+ *   GET_CONNECTED_DEVICES {"services"} -> {"devices": [{"name", "deviceId"}]}
+ *   MAKE_PAIR {"deviceId", "pin", "timeout"} -> {} once paired
+ *   IS_DEVICE_PAIRED {"deviceId"} -> {} when paired, failed when not
+ *   START_BEACON_DISCOVERY {"uuids", "ignoreBluetoothAvailable"} -> {}
+ *   STOP_BEACON_DISCOVERY -> {}
+ *   GET_BEACONS -> {"beacons": [{"uuid", "major", "minor", "proximity", "accuracy", "rssi"}]}
+ *   CREATE_BLE_CONNECTION {"deviceId", "timeout"} -> {}    CLOSE_BLE_CONNECTION {"deviceId"} -> {}
+ *   GET_BLE_DEVICE_SERVICES {"deviceId"} -> {"services": [{"uuid", "isPrimary"}]}
+ *   GET_BLE_DEVICE_CHARACTERISTICS {"deviceId", "serviceId"}
+ *       -> {"characteristics": [{"uuid", "properties": {"read", "write", "notify",
+ *           "indicate", "writeNoResponse", "writeDefault"}}]}
+ *   READ_BLE_CHARACTERISTIC_VALUE {"deviceId", "serviceId", "characteristicId"} -> {}
+ *       once issued; the value arrives through migo_session_post_ble_characteristic_value
+ *   WRITE_BLE_CHARACTERISTIC_VALUE {..., "value", "writeType"} -> {}
+ *   NOTIFY_BLE_CHARACTERISTIC_VALUE_CHANGE {..., "state", "type"} -> {}
+ *   GET_BLE_DEVICE_RSSI {"deviceId"} -> {"RSSI"}
+ *   SET_BLE_MTU {"deviceId", "mtu"} -> {"mtu"}   GET_BLE_MTU {"deviceId", "writeType"} -> {"mtu"}
+ *
+ * Events: ADAPTER_STATE_CHANGE {"available", "discovering"}; DEVICE_FOUND
+ * {"devices": [{"deviceId", "name", "RSSI", "advertisData", "advertisServiceUUIDs",
+ * "localName", "serviceData": {uuid: hex}}]} -- advertisData being the
+ * manufacturer-specific segment, company identifier first; BLE_CONNECTION_STATE_CHANGE
+ * {"deviceId", "connected"}; BLE_MTU_CHANGE {"deviceId", "mtu"}; BEACON_UPDATE
+ * {"beacons"}; BEACON_SERVICE_CHANGE {"available", "discovering"}.
+ */
+#define MIGO_BLUETOOTH_OPEN_ADAPTER 0U
+#define MIGO_BLUETOOTH_CLOSE_ADAPTER 1U
+#define MIGO_BLUETOOTH_GET_ADAPTER_STATE 2U
+#define MIGO_BLUETOOTH_START_DEVICES_DISCOVERY 3U
+#define MIGO_BLUETOOTH_STOP_DEVICES_DISCOVERY 4U
+#define MIGO_BLUETOOTH_GET_DEVICES 5U
+#define MIGO_BLUETOOTH_GET_CONNECTED_DEVICES 6U
+#define MIGO_BLUETOOTH_MAKE_PAIR 7U
+#define MIGO_BLUETOOTH_IS_DEVICE_PAIRED 8U
+#define MIGO_BLUETOOTH_START_BEACON_DISCOVERY 9U
+#define MIGO_BLUETOOTH_STOP_BEACON_DISCOVERY 10U
+#define MIGO_BLUETOOTH_GET_BEACONS 11U
+#define MIGO_BLUETOOTH_CREATE_BLE_CONNECTION 12U
+#define MIGO_BLUETOOTH_CLOSE_BLE_CONNECTION 13U
+#define MIGO_BLUETOOTH_GET_BLE_DEVICE_SERVICES 14U
+#define MIGO_BLUETOOTH_GET_BLE_DEVICE_CHARACTERISTICS 15U
+#define MIGO_BLUETOOTH_READ_BLE_CHARACTERISTIC_VALUE 16U
+#define MIGO_BLUETOOTH_WRITE_BLE_CHARACTERISTIC_VALUE 17U
+#define MIGO_BLUETOOTH_NOTIFY_BLE_CHARACTERISTIC_VALUE_CHANGE 18U
+#define MIGO_BLUETOOTH_GET_BLE_DEVICE_RSSI 19U
+#define MIGO_BLUETOOTH_SET_BLE_MTU 20U
+#define MIGO_BLUETOOTH_GET_BLE_MTU 21U
+#define MIGO_BLUETOOTH_EVENT_ADAPTER_STATE_CHANGE 0U
+#define MIGO_BLUETOOTH_EVENT_DEVICE_FOUND 1U
+#define MIGO_BLUETOOTH_EVENT_BLE_CONNECTION_STATE_CHANGE 2U
+#define MIGO_BLUETOOTH_EVENT_BLE_MTU_CHANGE 3U
+#define MIGO_BLUETOOTH_EVENT_BEACON_UPDATE 4U
+#define MIGO_BLUETOOTH_EVENT_BEACON_SERVICE_CHANGE 5U
+
+/*
  * Content's permission scopes, in migo.getSetting()'s order. The host decides
  * each; until it reports one, content's capability calls that need it fail with
  * "auth deny", and getSetting omits it -- nobody has decided, which content
@@ -323,6 +395,25 @@ MIGO_STATIC_ASSERT(offsetof(MigoSensorSample, struct_size) == 0,
                    "every versioned struct must begin with struct_size");
 MIGO_STATIC_ASSERT(offsetof(MigoSensorSample, values) == 16, "MigoSensorSample layout changed");
 MIGO_STATIC_ASSERT(sizeof(MigoSensorSample) == 40, "MigoSensorSample size changed");
+
+/* One characteristic value a connected peripheral sent -- a notification, an
+ * indication or the answer to READ_BLE_CHARACTERISTIC_VALUE. The ids are UTF-8 as
+ * the requests named them; value is the raw bytes (at most 512). */
+typedef struct MigoBleCharacteristicValue {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    const char *device_id_utf8;
+    const char *service_id_utf8;
+    const char *characteristic_id_utf8;
+    const uint8_t *value;
+    uint32_t device_id_length;
+    uint32_t service_id_length;
+    uint32_t characteristic_id_length;
+    uint32_t value_length;
+} MigoBleCharacteristicValue;
+
+MIGO_STATIC_ASSERT(offsetof(MigoBleCharacteristicValue, struct_size) == 0,
+                   "every versioned struct must begin with struct_size");
 
 /*
  * The largest payload or message either direction carries, in bytes. A longer
@@ -470,6 +561,19 @@ MIGO_API MigoResult MIGO_CALL migo_session_set_app_authorize_setting(
  */
 MIGO_API MigoResult MIGO_CALL migo_session_post_sensor_sample(MigoSession *session,
                                                               const MigoSensorSample *sample);
+
+/*
+ * Deliver one characteristic value, from any thread, while a Surface is
+ * attached. Typed because a peripheral may notify a hundred times a second; the
+ * bytes are copied into a pooled slot, so the record is only borrowed for the
+ * call. Dropped rather than queued without bound when content falls behind.
+ * Returns MIGO_ERROR_INVALID_ARGUMENT for a NULL or malformed record, an id that
+ * is empty, longer than 256 bytes or not UTF-8, a value longer than 512 bytes, or
+ * when the host did not declare MIGO_HOST_SERVICE_BLUETOOTH;
+ * MIGO_ERROR_INVALID_STATE with no Surface attached.
+ */
+MIGO_API MigoResult MIGO_CALL migo_session_post_ble_characteristic_value(
+    MigoSession *session, const MigoBleCharacteristicValue *value);
 
 MIGO_END_DECLS
 

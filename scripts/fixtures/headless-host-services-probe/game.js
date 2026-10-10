@@ -239,6 +239,47 @@ async function run() {
   expect((await settle("setVisualEffectOnCapture", { visualEffect: "hidden" })).ok,
     "setVisualEffectOnCapture", null);
 
+  // Bluetooth: every operation is answered by the host when it has happened,
+  // binary data crosses as hex and reaches content as ArrayBuffers, and a
+  // failure carries the platform's Bluetooth errCode.
+  const bytes = function (buffer) { return Array.prototype.slice.call(new Uint8Array(buffer)); };
+  const adapterState = new Promise(function (resolve) { migo.onBluetoothAdapterStateChange(resolve); });
+  const adapter = await settle("openBluetoothAdapter");
+  expect(adapter.ok && adapter.res.errMsg === "openBluetoothAdapter:ok", "openBluetoothAdapter", adapter);
+  const state = await adapterState;
+  expect(state.available === true && state.discovering === false, "onBluetoothAdapterStateChange", state);
+  const found = new Promise(function (resolve) { migo.onBluetoothDeviceFound(resolve); });
+  expect((await settle("startBluetoothDevicesDiscovery")).ok, "startBluetoothDevicesDiscovery", null);
+  const device = (await found).devices[0];
+  expect(device.deviceId === "AA:BB:CC:DD:EE:FF" && device.advertisData instanceof ArrayBuffer &&
+    bytes(device.advertisData).join() === "76,0,1,2" &&
+    bytes(device.serviceData["0000180d-0000-1000-8000-00805f9b34fb"]).join() === "10,11",
+    "onBluetoothDeviceFound", device);
+  const linked = new Promise(function (resolve) { migo.onBLEConnectionStateChange(resolve); });
+  expect((await settle("createBLEConnection", { deviceId: device.deviceId })).ok, "createBLEConnection", null);
+  expect((await linked).connected === true, "onBLEConnectionStateChange", null);
+  const services = await settle("getBLEDeviceServices", { deviceId: device.deviceId });
+  expect(services.ok && services.res.services[0].uuid === "0000ffe0-0000-1000-8000-00805f9b34fb",
+    "getBLEDeviceServices", services);
+  const ble = { deviceId: device.deviceId, serviceId: "0000ffe0-0000-1000-8000-00805f9b34fb",
+    characteristicId: "0000ffe1-0000-1000-8000-00805f9b34fb" };
+  const notified = new Promise(function (resolve) { migo.onBLECharacteristicValueChange(resolve); });
+  expect((await settle("notifyBLECharacteristicValueChange", Object.assign({ state: true }, ble))).ok,
+    "notifyBLECharacteristicValueChange", null);
+  const change = await notified;
+  expect(change.characteristicId === ble.characteristicId && bytes(change.value).join() === "1,2,3",
+    "onBLECharacteristicValueChange", change);
+  const wrote = await settle("writeBLECharacteristicValue",
+    Object.assign({ value: new Uint8Array([0xca, 0xfe]).buffer }, ble));
+  expect(wrote.ok, "writeBLECharacteristicValue", wrote);
+  const rssi = await settle("getBLEDeviceRSSI", { deviceId: device.deviceId });
+  expect(rssi.ok && rssi.res.RSSI === -61, "getBLEDeviceRSSI", rssi);
+  const mtu = await settle("getBLEMTU", { deviceId: device.deviceId });
+  expect(!mtu.ok && mtu.res.errCode === 10006 && mtu.res.errMsg === "getBLEMTU:fail no connection",
+    "getBLEMTU failure", mtu);
+  expect((await settle("closeBLEConnection", { deviceId: device.deviceId })).ok, "closeBLEConnection", null);
+  expect((await settle("closeBluetoothAdapter")).ok, "closeBluetoothAdapter", null);
+
   // An advert's Promises are settled by what the host's SDK says: load()
   // when it has loaded, show() when it is on screen -- before it closes.
   // The reward is the host's word too: the close event's isEnded comes from it.

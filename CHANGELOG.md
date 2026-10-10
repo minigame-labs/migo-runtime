@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Bluetooth on every C ABI host: `MIGO_HOST_SERVICE_BLUETOOTH` carries the adapter, scanning, pairing, iBeacons and BLE
+  GATT as 22 calls and six events, with the common mini-game platform's Bluetooth codes as each failure's `errCode`;
+  characteristic values arrive through the typed `migo_session_post_ble_characteristic_value`
+  (`MigoBleCharacteristicValue`).
 - Motion sensors and the screen on every C ABI host. `MIGO_HOST_SERVICE_MOTION` starts and stops the accelerometer,
   gyroscope, compass and device-motion sensors, whose readings arrive through the typed
   `migo_session_post_sensor_sample` (`MigoSensorSample`) rather than as JSON; `MIGO_HOST_SERVICE_SCREEN` carries
@@ -265,6 +269,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- Bluetooth requests answered before anything had happened. `createBLEConnection` reported success before the device
+  connected (and before its services were discovered, so the `getBLEDeviceServices` after it found none),
+  `getBLEDeviceRSSI` returned the previous reading -- 0 the first time -- and writes, subscriptions, MTU negotiation and
+  pairing succeeded on being issued. Each now answers when the operation completes, and every failure carries the
+  platform's `errCode` (10000-10013, -1 already connected).
+- `startBluetoothDevicesDiscovery` no longer stops scanning silently after 30 seconds; a scan runs until stopped.
+- Bluetooth binary data reaches content as `ArrayBuffer`s: a found device's `advertisData` is the advertisement's
+  manufacturer-specific segment rather than the whole raw advertisement as a hex string, and `serviceData` and
+  `localName` are reported; a `makeBluetoothPair` `pin` is sent as bytes.
 - Starting a sensor the device does not have reported success; it fails with the reason. `getScreenBrightness`,
   `setScreenBrightness` and `setDeviceOrientation` are requests the host answers.
 - Android: `onAccelerometerChange` reported m/s² (a phone lying flat read z ≈ 9.8), so shake thresholds written in g

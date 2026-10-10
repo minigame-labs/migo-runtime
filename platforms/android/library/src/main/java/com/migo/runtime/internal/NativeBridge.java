@@ -467,6 +467,15 @@ final class NativeBridge {
      */
     static native void onThermalStatusChanged(int sessionId, int status);
 
+    // ==================== Bluetooth Callbacks ====================
+
+    /**
+     * Answers a Bluetooth request: {@code method} is its number in the host-service
+     * contract ({@code BluetoothManager.Method#ordinal}), the JSON its result or
+     * {@code {error, errCode}}, stamped with the request's id.
+     */
+    static native void onBluetoothResult(int sessionId, int method, String resultJson);
+
     // ==================== Image API Callbacks ====================
     //
     // A file a result names is handed over: the runtime moves it into the

@@ -1819,94 +1819,94 @@ public final class NativeExports {
 
     // ==================== Bluetooth (delegates to BluetoothExports) ====================
 
-    public static void bluetoothOpenAdapter(int sessionId, String optionsJson) {
-        BluetoothExports.bluetoothOpenAdapter(sessionId, optionsJson);
+    public static void bluetoothOpenAdapter(int sessionId, String requestJson) {
+        BluetoothExports.bluetoothOpenAdapter(sessionId, requestJson);
     }
 
-    public static void bluetoothCloseAdapter(int sessionId) {
-        BluetoothExports.bluetoothCloseAdapter(sessionId);
+    public static void bluetoothCloseAdapter(int sessionId, String requestJson) {
+        BluetoothExports.bluetoothCloseAdapter(sessionId, requestJson);
     }
 
-    public static String bluetoothGetAdapterState(int sessionId) {
-        return BluetoothExports.bluetoothGetAdapterState(sessionId);
+    public static void bluetoothGetAdapterState(int sessionId, String requestJson) {
+        BluetoothExports.bluetoothGetAdapterState(sessionId, requestJson);
     }
 
-    public static void bluetoothStartDevicesDiscovery(int sessionId, String optionsJson) {
-        BluetoothExports.bluetoothStartDevicesDiscovery(sessionId, optionsJson);
+    public static void bluetoothStartDevicesDiscovery(int sessionId, String requestJson) {
+        BluetoothExports.bluetoothStartDevicesDiscovery(sessionId, requestJson);
     }
 
-    public static void bluetoothStopDevicesDiscovery(int sessionId) {
-        BluetoothExports.bluetoothStopDevicesDiscovery(sessionId);
+    public static void bluetoothStopDevicesDiscovery(int sessionId, String requestJson) {
+        BluetoothExports.bluetoothStopDevicesDiscovery(sessionId, requestJson);
     }
 
-    public static String bluetoothGetDevices(int sessionId) {
-        return BluetoothExports.bluetoothGetDevices(sessionId);
+    public static void bluetoothGetDevices(int sessionId, String requestJson) {
+        BluetoothExports.bluetoothGetDevices(sessionId, requestJson);
     }
 
-    public static String bluetoothGetConnectedDevices(int sessionId, String optionsJson) {
-        return BluetoothExports.bluetoothGetConnectedDevices(sessionId, optionsJson);
+    public static void bluetoothGetConnectedDevices(int sessionId, String requestJson) {
+        BluetoothExports.bluetoothGetConnectedDevices(sessionId, requestJson);
     }
 
-    public static void bluetoothMakePair(int sessionId, String optionsJson) {
-        BluetoothExports.bluetoothMakePair(sessionId, optionsJson);
+    public static void bluetoothMakePair(int sessionId, String requestJson) {
+        BluetoothExports.bluetoothMakePair(sessionId, requestJson);
     }
 
-    public static void bluetoothIsDevicePaired(int sessionId, String optionsJson) {
-        BluetoothExports.bluetoothIsDevicePaired(sessionId, optionsJson);
+    public static void bluetoothIsDevicePaired(int sessionId, String requestJson) {
+        BluetoothExports.bluetoothIsDevicePaired(sessionId, requestJson);
     }
 
-    public static void bluetoothStartBeaconDiscovery(int sessionId, String optionsJson) {
-        BluetoothExports.bluetoothStartBeaconDiscovery(sessionId, optionsJson);
+    public static void bluetoothStartBeaconDiscovery(int sessionId, String requestJson) {
+        BluetoothExports.bluetoothStartBeaconDiscovery(sessionId, requestJson);
     }
 
-    public static void bluetoothStopBeaconDiscovery(int sessionId) {
-        BluetoothExports.bluetoothStopBeaconDiscovery(sessionId);
+    public static void bluetoothStopBeaconDiscovery(int sessionId, String requestJson) {
+        BluetoothExports.bluetoothStopBeaconDiscovery(sessionId, requestJson);
     }
 
-    public static String bluetoothGetBeacons(int sessionId) {
-        return BluetoothExports.bluetoothGetBeacons(sessionId);
+    public static void bluetoothGetBeacons(int sessionId, String requestJson) {
+        BluetoothExports.bluetoothGetBeacons(sessionId, requestJson);
     }
 
     // ---- BLE GATT (delegates to BluetoothExports) ----
 
-    public static void bleCreateConnection(int sessionId, String optionsJson) {
-        BluetoothExports.bleCreateConnection(sessionId, optionsJson);
+    public static void bleCreateConnection(int sessionId, String requestJson) {
+        BluetoothExports.bleCreateConnection(sessionId, requestJson);
     }
 
-    public static void bleCloseConnection(int sessionId, String optionsJson) {
-        BluetoothExports.bleCloseConnection(sessionId, optionsJson);
+    public static void bleCloseConnection(int sessionId, String requestJson) {
+        BluetoothExports.bleCloseConnection(sessionId, requestJson);
     }
 
-    public static String bleGetDeviceServices(int sessionId, String optionsJson) {
-        return BluetoothExports.bleGetDeviceServices(sessionId, optionsJson);
+    public static void bleGetDeviceServices(int sessionId, String requestJson) {
+        BluetoothExports.bleGetDeviceServices(sessionId, requestJson);
     }
 
-    public static String bleGetDeviceCharacteristics(int sessionId, String optionsJson) {
-        return BluetoothExports.bleGetDeviceCharacteristics(sessionId, optionsJson);
+    public static void bleGetDeviceCharacteristics(int sessionId, String requestJson) {
+        BluetoothExports.bleGetDeviceCharacteristics(sessionId, requestJson);
     }
 
-    public static void bleReadCharacteristicValue(int sessionId, String optionsJson) {
-        BluetoothExports.bleReadCharacteristicValue(sessionId, optionsJson);
+    public static void bleReadCharacteristicValue(int sessionId, String requestJson) {
+        BluetoothExports.bleReadCharacteristicValue(sessionId, requestJson);
     }
 
-    public static void bleWriteCharacteristicValue(int sessionId, String optionsJson) {
-        BluetoothExports.bleWriteCharacteristicValue(sessionId, optionsJson);
+    public static void bleWriteCharacteristicValue(int sessionId, String requestJson) {
+        BluetoothExports.bleWriteCharacteristicValue(sessionId, requestJson);
     }
 
-    public static void bleNotifyCharacteristicValueChange(int sessionId, String optionsJson) {
-        BluetoothExports.bleNotifyCharacteristicValueChange(sessionId, optionsJson);
+    public static void bleNotifyCharacteristicValueChange(int sessionId, String requestJson) {
+        BluetoothExports.bleNotifyCharacteristicValueChange(sessionId, requestJson);
     }
 
-    public static String bleGetDeviceRSSI(int sessionId, String optionsJson) {
-        return BluetoothExports.bleGetDeviceRSSI(sessionId, optionsJson);
+    public static void bleGetDeviceRSSI(int sessionId, String requestJson) {
+        BluetoothExports.bleGetDeviceRSSI(sessionId, requestJson);
     }
 
-    public static void bleSetMTU(int sessionId, String optionsJson) {
-        BluetoothExports.bleSetMTU(sessionId, optionsJson);
+    public static void bleSetMTU(int sessionId, String requestJson) {
+        BluetoothExports.bleSetMTU(sessionId, requestJson);
     }
 
-    public static String bleGetMTU(int sessionId, String optionsJson) {
-        return BluetoothExports.bleGetMTU(sessionId, optionsJson);
+    public static void bleGetMTU(int sessionId, String requestJson) {
+        BluetoothExports.bleGetMTU(sessionId, requestJson);
     }
 
     /**

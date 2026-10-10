@@ -173,7 +173,8 @@ static const uint64_t HOST_SERVICES = (UINT64_C(1) << MIGO_HOST_SERVICE_AD)
                                       | (UINT64_C(1) << MIGO_HOST_SERVICE_LOCATION)
                                       | (UINT64_C(1) << MIGO_HOST_SERVICE_IMAGE)
                                       | (UINT64_C(1) << MIGO_HOST_SERVICE_MOTION)
-                                      | (UINT64_C(1) << MIGO_HOST_SERVICE_SCREEN);
+                                      | (UINT64_C(1) << MIGO_HOST_SERVICE_SCREEN)
+                                      | (UINT64_C(1) << MIGO_HOST_SERVICE_BLUETOOTH);
 
 /* The clipboard this host keeps: what content last wrote. */
 static char g_clipboard[256] = "";
@@ -282,6 +283,88 @@ static int handle_motion_call(MigoSession *session, const MigoHostServiceCall *c
             return 1;
         case MIGO_MOTION_STOP_ACCELEROMETER:
             if (call->call_id != 0) probe_failure("a sensor stop carried a call id");
+            return 1;
+    }
+    return 0;
+}
+
+/* ---- Bluetooth: one peripheral, nearby and well behaved ----------------------- */
+
+static const char PROBE_DEVICE[] = "AA:BB:CC:DD:EE:FF";
+static const char PROBE_SERVICE[] = "0000ffe0-0000-1000-8000-00805f9b34fb";
+static const char PROBE_CHARACTERISTIC[] = "0000ffe1-0000-1000-8000-00805f9b34fb";
+
+static void post_bluetooth_event(MigoSession *session, uint32_t event, const char *json) {
+    if (migo_session_post_host_service_event(session, MIGO_HOST_SERVICE_BLUETOOTH, event, json,
+                                             (uint32_t)strlen(json)) != MIGO_OK) {
+        probe_failure("migo_session_post_host_service_event refused a Bluetooth event");
+    }
+}
+
+static int handle_bluetooth_call(MigoSession *session, const MigoHostServiceCall *call,
+                                 const char *payload) {
+    switch (call->method) {
+        case MIGO_BLUETOOTH_OPEN_ADAPTER:
+            complete_ok(session, call->call_id, "");
+            post_bluetooth_event(session, MIGO_BLUETOOTH_EVENT_ADAPTER_STATE_CHANGE,
+                                 "{\"available\":true,\"discovering\":false}");
+            return 1;
+        case MIGO_BLUETOOTH_START_DEVICES_DISCOVERY:
+            complete_ok(session, call->call_id, "");
+            post_bluetooth_event(session, MIGO_BLUETOOTH_EVENT_DEVICE_FOUND,
+                                 "{\"devices\":[{\"deviceId\":\"AA:BB:CC:DD:EE:FF\","
+                                 "\"name\":\"probe\",\"RSSI\":-50,\"advertisData\":\"4c000102\","
+                                 "\"advertisServiceUUIDs\":[],\"localName\":\"probe\","
+                                 "\"serviceData\":{\"0000180d-0000-1000-8000-00805f9b34fb\":\"0a0b\"}}]}");
+            return 1;
+        case MIGO_BLUETOOTH_CREATE_BLE_CONNECTION:
+            complete_ok(session, call->call_id, "");
+            post_bluetooth_event(session, MIGO_BLUETOOTH_EVENT_BLE_CONNECTION_STATE_CHANGE,
+                                 "{\"deviceId\":\"AA:BB:CC:DD:EE:FF\",\"connected\":true}");
+            return 1;
+        case MIGO_BLUETOOTH_GET_BLE_DEVICE_SERVICES:
+            complete_ok(session, call->call_id,
+                        "{\"services\":[{\"uuid\":\"0000ffe0-0000-1000-8000-00805f9b34fb\","
+                        "\"isPrimary\":true}]}");
+            return 1;
+        case MIGO_BLUETOOTH_NOTIFY_BLE_CHARACTERISTIC_VALUE_CHANGE: {
+            complete_ok(session, call->call_id, "");
+            /* Subscribed: the peripheral notifies at once. */
+            static const uint8_t bytes[] = {1, 2, 3};
+            MigoBleCharacteristicValue value;
+            memset(&value, 0, sizeof(value));
+            value.struct_size = (uint32_t)sizeof(value);
+            value.abi_version = MIGO_ABI_VERSION_CURRENT;
+            value.device_id_utf8 = PROBE_DEVICE;
+            value.device_id_length = (uint32_t)strlen(PROBE_DEVICE);
+            value.service_id_utf8 = PROBE_SERVICE;
+            value.service_id_length = (uint32_t)strlen(PROBE_SERVICE);
+            value.characteristic_id_utf8 = PROBE_CHARACTERISTIC;
+            value.characteristic_id_length = (uint32_t)strlen(PROBE_CHARACTERISTIC);
+            value.value = bytes;
+            value.value_length = sizeof(bytes);
+            if (migo_session_post_ble_characteristic_value(session, &value) != MIGO_OK) {
+                probe_failure("migo_session_post_ble_characteristic_value refused a value");
+            }
+            return 1;
+        }
+        case MIGO_BLUETOOTH_WRITE_BLE_CHARACTERISTIC_VALUE:
+            if (strstr(payload, "\"value\":\"cafe\"") == NULL) {
+                probe_failure("writeBLECharacteristicValue did not carry its bytes as hex");
+                return 1;
+            }
+            complete_ok(session, call->call_id, "");
+            return 1;
+        case MIGO_BLUETOOTH_GET_BLE_DEVICE_RSSI:
+            complete_ok(session, call->call_id, "{\"RSSI\":-61}");
+            return 1;
+        case MIGO_BLUETOOTH_GET_BLE_MTU:
+            /* A failure carries the platform's Bluetooth code. */
+            complete_fail(session, call->call_id, "no connection", 1, 10006);
+            return 1;
+        case MIGO_BLUETOOTH_CLOSE_BLE_CONNECTION:
+        case MIGO_BLUETOOTH_CLOSE_ADAPTER:
+            complete_ok(session, call->call_id, "");
             return 1;
     }
     return 0;
@@ -626,6 +709,9 @@ static void MIGO_CALL on_host_service_call(void *user_data, MigoSession *session
         case MIGO_HOST_SERVICE_SCREEN:
             if (handle_screen_call(session, call, payload)) return;
             break;
+        case MIGO_HOST_SERVICE_BLUETOOTH:
+            if (handle_bluetooth_call(session, call, payload)) return;
+            break;
         case MIGO_HOST_SERVICE_SUBPACKAGE:
             if (call->method == MIGO_SUBPACKAGE_DOWNLOAD) {
                 /* The subpackage the content's game.json declared, by name and
@@ -783,6 +869,8 @@ int main(int argc, char **argv) {
     result = migo_session_set_scope_state(session, MIGO_SCOPE_USER_LOCATION, MIGO_SCOPE_STATE_GRANTED);
     if (result != MIGO_OK) return fail("migo_session_set_scope_state", result);
     result = migo_session_set_scope_state(session, MIGO_SCOPE_WRITE_PHOTOS_ALBUM, MIGO_SCOPE_STATE_GRANTED);
+    if (result != MIGO_OK) return fail("migo_session_set_scope_state", result);
+    result = migo_session_set_scope_state(session, MIGO_SCOPE_BLUETOOTH, MIGO_SCOPE_STATE_GRANTED);
     if (result != MIGO_OK) return fail("migo_session_set_scope_state", result);
     result = migo_session_set_system_settings(
         session, MIGO_SYSTEM_SETTING_FLAG_BLUETOOTH_ENABLED | MIGO_SYSTEM_SETTING_FLAG_WIFI_ENABLED);

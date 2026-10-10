@@ -26,6 +26,7 @@ static COUNTING_ALLOCATOR: migo_alloc_probe::CountingAllocator =
 
 #[cfg(target_os = "android")]
 mod android;
+mod bluetooth;
 mod callback_gate;
 mod callbacks;
 mod capabilities;

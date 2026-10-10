@@ -2,13 +2,20 @@
 title: 蓝牙 / BLE / Beacon
 sidebar:
   order: 3
-description: migo.* 下的蓝牙能力组：经典蓝牙发现与配对、BLE GATT 读写通知、iBeacon 扫描，以及配套事件订阅接口。当前只有 Android 宿主提供实现；其他平台调用时返回 not supported 错误。
+description: migo.* 下的蓝牙能力组：经典蓝牙发现与配对、BLE GATT 读写通知、iBeacon 扫描，以及配套事件订阅接口。Android SDK 自带实现；其他平台由声明 MIGO_HOST_SERVICE_BLUETOOTH 的 C ABI 宿主提供，未声明时返回 not supported。
 audience: content-developer
 platforms:
   - android
+  - ios
+  - macos
+  - linux
+  - windows
+  - openharmony
 sourcePaths:
   - engine/crates/runtime-v8/src/system/01_bluetooth.js
   - engine/crates/runtime-v8/src/system/mod.rs
+  - contracts/runtime/host-services.json
+  - include/migo/host_services.h
   - platforms/android/library/src/main/java/com/migo/runtime/internal/platform/BluetoothManager.java
   - platforms/android/library/src/main/java/com/migo/runtime/internal/platform/BluetoothPermissionPolicy.java
   - platforms/android/library/src/main/java/com/migo/runtime/internal/platform/Permissions.java
@@ -21,6 +28,8 @@ sourcePaths:
 - **Beacon（iBeacon）**：基于 BLE 的信标扫描，独立于通用设备发现之外。
 
 操作 API 均挂载在 `migo.*` 命名空间下，按通用小游戏平台的规则作答：`options` 里带 `success` / `fail` / `complete` 时通过回调作答、调用本身无返回值；都不带时返回 Promise。事件 API 使用下文的 `on*` / `off*` 监听器方式。
+
+每个操作在**真正完成时**才作答——连接建立且服务已发现、写入被外设确认、RSSI 从设备读到——而不是在命令下发时。失败的结果带 `errCode`（见下文错误码），与 `errMsg` 并列。
 
 ---
 
@@ -56,14 +65,12 @@ migo.openBluetoothAdapter({
 
 | API | 说明 | 主要 options 字段 |
 | --- | --- | --- |
-| `migo.startBluetoothDevicesDiscovery` | 开始扫描附近设备，30 秒后自动停止 | `services`（过滤 UUID 数组）、`allowDuplicatesKey`（bool，默认 `false`）、`interval`（ms，默认 `0`）、`powerLevel`（`'low'`/`'medium'`/`'high'`，默认 `'medium'`） |
-| `migo.stopBluetoothDevicesDiscovery` | 停止扫描（同时取消自动停止计时器） | — |
+| `migo.startBluetoothDevicesDiscovery` | 开始扫描附近设备，直到调用 stop | `services`（过滤 UUID 数组）、`allowDuplicatesKey`（bool，默认 `false`）、`interval`（ms，默认 `0`）、`powerLevel`（`'low'`/`'medium'`/`'high'`，默认 `'medium'`） |
+| `migo.stopBluetoothDevicesDiscovery` | 停止扫描 | — |
 | `migo.getBluetoothDevices` | 返回本次 session 中扫描到的全部设备 | — |
-| `migo.getConnectedBluetoothDevices` | 返回当前已连接且匹配指定 UUID 的设备 | `services`（UUID 数组，空则返回全部已连设备） |
+| `migo.getConnectedBluetoothDevices` | 返回本游戏已连接、且提供指定服务的设备（`{ devices: [{ name, deviceId }] }`） | `services`（必填，UUID 数组；空数组返回全部） |
 
-**注意**：`startBluetoothDevicesDiscovery` 内置 30 秒自动停止，到时会静默调用底层 stop op，不触发 `fail` 回调。若需更长时间扫描，停止后重新调用。
-
-发现到新设备时通过 `onBluetoothDeviceFound` 事件推送（见下文事件订阅）。
+扫描持续到 `stopBluetoothDevicesDiscovery`，不会被静默停止；找到目标后应主动停止以省电。发现到新设备时通过 `onBluetoothDeviceFound` 事件推送（见下文事件订阅）。设备对象的 `advertisData` 是广播里的厂商自定义数据段（公司 ID 在前），`serviceData` 以服务 UUID 为键，二者都是 `ArrayBuffer`；另有 `localName`、`advertisServiceUUIDs`、`RSSI`。
 
 ---
 
@@ -71,8 +78,8 @@ migo.openBluetoothAdapter({
 
 | API | 说明 | 主要 options 字段 |
 | --- | --- | --- |
-| `migo.makeBluetoothPair` | 向指定设备发起配对请求 | `deviceId`（必填）、`pin`（配对 PIN）、`timeout`（ms，默认 `20000`） |
-| `migo.isBluetoothDevicePaired` | 查询设备是否已与系统配对 | `deviceId`（必填） |
+| `migo.makeBluetoothPair` | 与指定设备配对，配对完成时作答 | `deviceId`（必填）、`pin`（`ArrayBuffer`，可选）、`timeout`（ms，默认 `20000`，到时 `errCode` 10012） |
+| `migo.isBluetoothDevicePaired` | 已配对时成功，未配对时失败 | `deviceId`（必填） |
 
 ---
 
@@ -80,7 +87,7 @@ migo.openBluetoothAdapter({
 
 | API | 说明 | 主要 options 字段 |
 | --- | --- | --- |
-| `migo.createBLEConnection` | 建立 GATT 连接 | `deviceId`（必填）、`timeout`（ms，`0` 表示系统默认，默认 `0`） |
+| `migo.createBLEConnection` | 建立 GATT 连接，服务发现完成时作答（随后的 `getBLEDeviceServices` 一定拿得到服务）；已连接时以 `errCode` -1 失败 | `deviceId`（必填）、`timeout`（ms，可选，到时 `errCode` 10012） |
 | `migo.closeBLEConnection` | 断开 GATT 连接 | `deviceId`（必填） |
 
 ---
@@ -92,8 +99,8 @@ migo.openBluetoothAdapter({
 | `migo.getBLEDeviceServices` | 获取设备的 GATT 服务列表 | `deviceId`（必填） |
 | `migo.getBLEDeviceCharacteristics` | 获取指定服务的特征列表 | `deviceId`（必填）、`serviceId`（必填） |
 | `migo.readBLECharacteristicValue` | 读取特征值，结果通过 `onBLECharacteristicValueChange` 事件推送 | `deviceId`、`serviceId`、`characteristicId`（均必填） |
-| `migo.writeBLECharacteristicValue` | 写入特征值 | `deviceId`、`serviceId`、`characteristicId`（均必填）、`value`（`ArrayBuffer` / `ArrayBufferView` / hex 字符串）、`writeType`（`'write'` 或 `'writeNoResponse'`，默认 `'write'`） |
-| `migo.notifyBLECharacteristicValueChange` | 订阅或取消订阅特征通知 | `deviceId`、`serviceId`、`characteristicId`（均必填）、`state`（`true` 订阅，`false` 取消，默认 `false`） |
+| `migo.writeBLECharacteristicValue` | 写入特征值，外设确认后作答（`writeNoResponse` 无确认，发出即答） | `deviceId`、`serviceId`、`characteristicId`（均必填）、`value`（`ArrayBuffer` / `ArrayBufferView`）、`writeType`（`'write'` 或 `'writeNoResponse'`，默认 `'write'`） |
+| `migo.notifyBLECharacteristicValueChange` | 订阅或取消订阅特征通知，外设接受后作答 | `deviceId`、`serviceId`、`characteristicId`、`state`（均必填）、`type`（`'indication'` 默认 / `'notification'`） |
 
 `readBLECharacteristicValue` 的结果不在 Promise resolved 值中，而由后续 `onBLECharacteristicValueChange` 事件携带（`value` 字段为 `ArrayBuffer`）。
 
@@ -103,9 +110,9 @@ migo.openBluetoothAdapter({
 
 | API | 说明 | 主要 options 字段 |
 | --- | --- | --- |
-| `migo.getBLEDeviceRSSI` | 获取已连接设备的信号强度 | `deviceId`（必填） |
-| `migo.setBLEMTU` | 请求协商 MTU 大小 | `deviceId`（必填）、`mtu`（默认 `23`） |
-| `migo.getBLEMTU` | 获取当前协商的 MTU 值 | `deviceId`（必填） |
+| `migo.getBLEDeviceRSSI` | 从设备读取信号强度（`{ RSSI }`） | `deviceId`（必填） |
+| `migo.setBLEMTU` | 协商 MTU，以外设同意的值作答（`{ mtu }`） | `deviceId`、`mtu`（均必填，22–512） |
+| `migo.getBLEMTU` | 获取当前 MTU（未协商时为 23） | `deviceId`（必填）、`writeType` |
 
 ---
 
@@ -168,22 +175,33 @@ startBluetoothDevicesDiscovery:fail permission denied (BLUETOOTH_SCAN)
 
 ---
 
-## 其他平台回退
+## 错误码
 
-Linux、Windows、OpenHarmony、Apple（iOS / macOS）宿主均**未提供蓝牙服务实现**。在这些平台上，调用由 `op_*` 支持的蓝牙操作 API 会拒绝 Promise：
+| errCode | 含义 |
+| --- | --- |
+| -1 | 已连接 |
+| 10000 | 适配器未打开 |
+| 10001 | 蓝牙不可用 |
+| 10002 | 没有该设备 / 未配对 |
+| 10003 | 连接或配对失败 |
+| 10004 | 没有该服务 |
+| 10005 | 没有该特征 |
+| 10006 | 未连接 |
+| 10007 | 特征不支持该操作 |
+| 10008 | 系统错误 |
+| 10012 | 超时 |
+| 10013 | 数据无效 |
+| 11001 | Beacon：蓝牙不可用 |
 
-```text
-<apiName>:fail not supported
-```
+---
 
-事件 API 只注册或移除监听器；由于没有宿主蓝牙服务，不会有平台事件来源。
+## 其他平台
 
-例如，`openBluetoothAdapter` 在非 Android 平台会以 `"openBluetoothAdapter:fail not supported"` 拒绝 Promise。这是 Rust 侧 `op_*` 函数在找不到 `services.bluetooth()` 实现时的统一行为（`engine/crates/runtime-v8/src/system/mod.rs`）。
+Apple（iOS / macOS）、Linux、Windows、OpenHarmony 经 C ABI 宿主服务通道提供蓝牙：宿主声明 `MIGO_HOST_SERVICE_BLUETOOTH`，按 [Session 参考](/docs/reference/session/) 的约定应答每个请求、投递事件，并用 `migo_session_post_ble_characteristic_value` 投递特征值。未声明的宿主上，操作 API 以 `<apiName>:fail not supported` 失败，事件 API 只注册监听器、不会有事件。
 
 ---
 
 ## 已知注意事项
 
 - **适配器独占**：同一设备上同时运行多个使用 migo 的游戏时，只有首个打开适配器的 session 持有访问权；后续调用 `openBluetoothAdapter` 会收到 `fail in use by another game`，直至前一个 session 调用 `closeBluetoothAdapter`。
-- **扫描自动超时**：`startBluetoothDevicesDiscovery` 内置 30 秒上限，到期后扫描静默停止，不触发任何回调。
-- **特征值读取异步**：`readBLECharacteristicValue` 调用成功（Promise resolved）只代表命令下发成功，实际值通过后续 `onBLECharacteristicValueChange` 事件到达。
+- **特征值读取**：`readBLECharacteristicValue` 成功表示读请求已下发，值通过随后的 `onBLECharacteristicValueChange` 事件到达。

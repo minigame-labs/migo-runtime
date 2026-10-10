@@ -1822,6 +1822,34 @@ pub(crate) extern "system" fn onThermalStatusChanged(
     });
 }
 
+// ==================== Bluetooth Callbacks ====================
+
+/// The answer to a Bluetooth request, for the request's method number: the one
+/// table every SDK routes by (`shared::services::BLUETOOTH_RESULT_HOOKS`).
+pub(crate) extern "system" fn onBluetoothResult<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    host_id: jint,
+    method: jint,
+    result_json: JString<'local>,
+) {
+    jni_safe!("onBluetoothResult", {
+        let Some(hook) = usize::try_from(method)
+            .ok()
+            .and_then(|method| shared::services::BLUETOOTH_RESULT_HOOKS.get(method))
+        else {
+            error!("onBluetoothResult: no Bluetooth method {method}");
+            return;
+        };
+        let json = read_json_result(
+            &mut env,
+            &result_json,
+            r#"{"error":"failed to read result"}"#,
+        );
+        send_json_result_to_js(host_id, &json, hook);
+    });
+}
+
 // ==================== Image API Callbacks ====================
 
 jni_host_files_callback!(

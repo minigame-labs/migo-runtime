@@ -23,7 +23,7 @@ import {
     op_set_ble_mtu,
     op_get_ble_mtu,
 } from "ext:core/ops";
-import { wrapAsync, createDeferredApi, createListenerGroup } from "ext:host_v8_base/02_async.js";
+import { createDeferredApi, createListenerGroup } from "ext:host_v8_base/02_async.js";
 
 // ==================== System Bluetooth Setting ====================
 
@@ -41,254 +41,20 @@ function _internalOnOpenBluetoothSettingResult(resultJson) {
     _openBluetoothSettingApi.settle(resultJson);
 }
 
-// ==================== Bluetooth Adapter APIs ====================
-
-function openBluetoothAdapter(options = {}) {
-    const { mode = 'central' } = options;
-    return wrapAsync('openBluetoothAdapter', function () {
-        op_open_bluetooth_adapter(JSON.stringify({ mode }));
-    }, options);
-}
-
-function closeBluetoothAdapter(options = {}) {
-    return wrapAsync('closeBluetoothAdapter', function () {
-        op_close_bluetooth_adapter();
-    }, options);
-}
-
-function getBluetoothAdapterState(options = {}) {
-    return wrapAsync('getBluetoothAdapterState', function () {
-        const json = op_get_bluetooth_adapter_state();
-        return JSON.parse(json);
-    }, options);
-}
-
-// ==================== Device Discovery APIs ====================
-
-var _discoveryTimer = null;
-
-function startBluetoothDevicesDiscovery(options = {}) {
-    const { services, allowDuplicatesKey = false, interval = 0, powerLevel = 'medium' } = options;
-    return wrapAsync('startBluetoothDevicesDiscovery', function () {
-        op_start_bluetooth_devices_discovery(JSON.stringify({
-            services: services || [],
-            allowDuplicatesKey,
-            interval,
-            powerLevel,
-        }));
-        // Auto-stop scanning after 30 seconds to prevent battery drain.
-        if (_discoveryTimer !== null) {
-            clearTimeout(_discoveryTimer);
-        }
-        _discoveryTimer = setTimeout(function () {
-            _discoveryTimer = null;
-            try { op_stop_bluetooth_devices_discovery(); } catch (_) {}
-        }, 30000);
-    }, options);
-}
-
-function stopBluetoothDevicesDiscovery(options = {}) {
-    return wrapAsync('stopBluetoothDevicesDiscovery', function () {
-        if (_discoveryTimer !== null) {
-            clearTimeout(_discoveryTimer);
-            _discoveryTimer = null;
-        }
-        op_stop_bluetooth_devices_discovery();
-    }, options);
-}
-
-function getBluetoothDevices(options = {}) {
-    return wrapAsync('getBluetoothDevices', function () {
-        const json = op_get_bluetooth_devices();
-        return JSON.parse(json);
-    }, options);
-}
-
-function getConnectedBluetoothDevices(options = {}) {
-    const { services } = options;
-    return wrapAsync('getConnectedBluetoothDevices', function () {
-        const json = op_get_connected_bluetooth_devices(JSON.stringify({
-            services: services || [],
-        }));
-        return JSON.parse(json);
-    }, options);
-}
-
-// ==================== Pairing APIs ====================
-
-function makeBluetoothPair(options = {}) {
-    const { deviceId, pin, timeout = 20000 } = options;
-    return wrapAsync('makeBluetoothPair', function () {
-        op_make_bluetooth_pair(JSON.stringify({ deviceId, pin, timeout }));
-    }, options);
-}
-
-function isBluetoothDevicePaired(options = {}) {
-    const { deviceId } = options;
-    return wrapAsync('isBluetoothDevicePaired', function () {
-        op_is_bluetooth_device_paired(JSON.stringify({ deviceId }));
-    }, options);
-}
-
-// ==================== Bluetooth Event Listeners ====================
-
-const _adapterStateChangeListeners = createListenerGroup('onBluetoothAdapterStateChange');
-const _deviceFoundListeners = createListenerGroup('onBluetoothDeviceFound');
-
-function onBluetoothAdapterStateChange(listener) {
-    _adapterStateChangeListeners.on(listener);
-}
-
-function offBluetoothAdapterStateChange(listener) {
-    _adapterStateChangeListeners.off(listener);
-}
-
-function onBluetoothDeviceFound(listener) {
-    _deviceFoundListeners.on(listener);
-}
-
-function offBluetoothDeviceFound(listener) {
-    _deviceFoundListeners.off(listener);
-}
-
-// ==================== Internal Trigger Functions ====================
-
-function _internalTriggerBluetoothAdapterStateChange(available, discovering) {
-    _adapterStateChangeListeners.trigger({ available, discovering });
-}
-
-function _internalTriggerBluetoothDeviceFound(devicesJson) {
-    try {
-        _deviceFoundListeners.trigger({ devices: JSON.parse(devicesJson) });
-    } catch (e) {
-        console.error('Failed to parse bluetooth device data:', e);
-    }
-}
-
-// ==================== Beacon APIs ====================
-
-function startBeaconDiscovery(options = {}) {
-    const { uuids, ignoreBluetoothAvailable = false } = options;
-    return wrapAsync('startBeaconDiscovery', function () {
-        op_start_beacon_discovery(JSON.stringify({
-            uuids: uuids || [],
-            ignoreBluetoothAvailable,
-        }));
-    }, options);
-}
-
-function stopBeaconDiscovery(options = {}) {
-    return wrapAsync('stopBeaconDiscovery', function () {
-        op_stop_beacon_discovery();
-    }, options);
-}
-
-function getBeacons(options = {}) {
-    return wrapAsync('getBeacons', function () {
-        const json = op_get_beacons();
-        return JSON.parse(json);
-    }, options);
-}
-
-// ==================== Beacon Event Listeners ====================
-
-const _beaconUpdateListeners = createListenerGroup('onBeaconUpdate');
-const _beaconServiceChangeListeners = createListenerGroup('onBeaconServiceChange');
-
-function onBeaconUpdate(listener) {
-    _beaconUpdateListeners.on(listener);
-}
-
-function offBeaconUpdate(listener) {
-    _beaconUpdateListeners.off(listener);
-}
-
-function onBeaconServiceChange(listener) {
-    _beaconServiceChangeListeners.on(listener);
-}
-
-function offBeaconServiceChange(listener) {
-    _beaconServiceChangeListeners.off(listener);
-}
-
-// ==================== Beacon Internal Trigger Functions ====================
-
-function _internalTriggerBeaconUpdate(beaconsJson) {
-    try {
-        _beaconUpdateListeners.trigger({ beacons: JSON.parse(beaconsJson) });
-    } catch (e) {
-        console.error('Failed to parse beacon data:', e);
-    }
-}
-
-function _internalTriggerBeaconServiceChange(available, discovering) {
-    _beaconServiceChangeListeners.trigger({ available, discovering });
-}
-
-// ==================== BLE GATT Connection APIs ====================
-
-function createBLEConnection(options = {}) {
-    const { deviceId, timeout } = options;
-    return wrapAsync('createBLEConnection', function () {
-        op_create_ble_connection(JSON.stringify({
-            deviceId: deviceId || '',
-            timeout: timeout !== undefined ? timeout : 0,
-        }));
-    }, options);
-}
-
-function closeBLEConnection(options = {}) {
-    const { deviceId } = options;
-    return wrapAsync('closeBLEConnection', function () {
-        op_close_ble_connection(JSON.stringify({
-            deviceId: deviceId || '',
-        }));
-    }, options);
-}
-
-// ==================== BLE GATT Service/Characteristic APIs ====================
-
-function getBLEDeviceServices(options = {}) {
-    const { deviceId } = options;
-    return wrapAsync('getBLEDeviceServices', function () {
-        const json = op_get_ble_device_services(JSON.stringify({
-            deviceId: deviceId || '',
-        }));
-        return JSON.parse(json);
-    }, options);
-}
-
-function getBLEDeviceCharacteristics(options = {}) {
-    const { deviceId, serviceId } = options;
-    return wrapAsync('getBLEDeviceCharacteristics', function () {
-        const json = op_get_ble_device_characteristics(JSON.stringify({
-            deviceId: deviceId || '',
-            serviceId: serviceId || '',
-        }));
-        return JSON.parse(json);
-    }, options);
-}
-
-function readBLECharacteristicValue(options = {}) {
-    const { deviceId, serviceId, characteristicId } = options;
-    return wrapAsync('readBLECharacteristicValue', function () {
-        op_read_ble_characteristic_value(JSON.stringify({
-            deviceId: deviceId || '',
-            serviceId: serviceId || '',
-            characteristicId: characteristicId || '',
-        }));
-    }, options);
-}
+// ==================== The wire ====================
+//
+// Every Bluetooth operation is a request the host answers when the operation
+// has happened -- a connection made, a write acknowledged -- with the result or
+// with `{error, errCode}` in the platform's Bluetooth codes, which reach content
+// as `errCode` beside `errMsg`. Binary values cross as lower-case hex and reach
+// content as ArrayBuffers.
 
 function _bufferToHex(buf) {
-    if (!buf) return '';
     var bytes;
     if (buf instanceof ArrayBuffer) {
         bytes = new Uint8Array(buf);
     } else if (ArrayBuffer.isView(buf)) {
         bytes = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
-    } else if (typeof buf === 'string') {
-        return buf; // already hex string
     } else {
         return '';
     }
@@ -300,94 +66,227 @@ function _bufferToHex(buf) {
     return hex;
 }
 
-function writeBLECharacteristicValue(options = {}) {
-    const { deviceId, serviceId, characteristicId, value, writeType } = options;
-    return wrapAsync('writeBLECharacteristicValue', function () {
-        op_write_ble_characteristic_value(JSON.stringify({
-            deviceId: deviceId || '',
-            serviceId: serviceId || '',
-            characteristicId: characteristicId || '',
-            value: _bufferToHex(value),
-            writeType: writeType || 'write',
-        }));
-    }, options);
+function _hexToBuffer(hex) {
+    if (typeof hex !== 'string' || hex.length % 2 !== 0) return new ArrayBuffer(0);
+    var bytes = new Uint8Array(hex.length / 2);
+    for (var i = 0; i < bytes.length; i++) {
+        var byte = parseInt(hex.substr(i * 2, 2), 16);
+        if (byte !== byte) return new ArrayBuffer(0);
+        bytes[i] = byte;
+    }
+    return bytes.buffer;
 }
 
-function notifyBLECharacteristicValueChange(options = {}) {
-    const { deviceId, serviceId, characteristicId, state } = options;
-    return wrapAsync('notifyBLECharacteristicValueChange', function () {
-        op_notify_ble_characteristic_value_change(JSON.stringify({
-            deviceId: deviceId || '',
-            serviceId: serviceId || '',
-            characteristicId: characteristicId || '',
-            state: state !== undefined ? state : false,
-        }));
-    }, options);
+// A device as content sees it: its advertising data and service data as
+// ArrayBuffers, the rest as the host described it.
+function _device(raw) {
+    var device = Object.assign({}, raw);
+    if (typeof raw.advertisData === 'string') device.advertisData = _hexToBuffer(raw.advertisData);
+    if (raw.serviceData !== null && typeof raw.serviceData === 'object') {
+        device.serviceData = {};
+        var keys = Object.keys(raw.serviceData);
+        for (var i = 0; i < keys.length; i++) {
+            device.serviceData[keys[i]] = _hexToBuffer(raw.serviceData[keys[i]]);
+        }
+    }
+    return device;
 }
 
-// ==================== BLE RSSI / MTU APIs ====================
-
-function getBLEDeviceRSSI(options = {}) {
-    const { deviceId } = options;
-    return wrapAsync('getBLEDeviceRSSI', function () {
-        const json = op_get_ble_device_rssi(JSON.stringify({
-            deviceId: deviceId || '',
-        }));
-        return JSON.parse(json);
-    }, options);
+function _devices(list) {
+    return Array.isArray(list) ? list.map(_device) : [];
 }
 
-function setBLEMTU(options = {}) {
-    const { deviceId, mtu } = options;
-    return wrapAsync('setBLEMTU', function () {
-        op_set_ble_mtu(JSON.stringify({
-            deviceId: deviceId || '',
-            mtu: mtu !== undefined ? mtu : 23,
-        }));
-    }, options);
+// One request kind: its deferred API, the op that sends it, and its result hook.
+// `prepare` turns content's options into the request; `shape` turns the host's
+// answer into what content receives.
+function _request(apiName, timeoutMs, op, prepare, shape) {
+    var api = createDeferredApi(apiName, timeoutMs);
+    function call(options) {
+        return api.invoke(options, function (opts, requestId) {
+            var request = prepare ? prepare(opts) : {};
+            request.requestId = requestId;
+            op(JSON.stringify(request));
+        });
+    }
+    function onResult(resultJson) {
+        if (!shape) {
+            api.settle(resultJson);
+            return;
+        }
+        var parsed;
+        try { parsed = JSON.parse(resultJson); } catch (_) { parsed = {}; }
+        if (parsed !== null && typeof parsed === 'object' && !parsed.error) shape(parsed);
+        api.settleParsed(parsed);
+    }
+    return { call: call, onResult: onResult };
 }
 
-function getBLEMTU(options = {}) {
-    const { deviceId } = options;
-    return wrapAsync('getBLEMTU', function () {
-        const json = op_get_ble_mtu(JSON.stringify({
-            deviceId: deviceId || '',
-        }));
-        return JSON.parse(json);
-    }, options);
+function _required(opts, name) {
+    var value = opts[name];
+    if (typeof value !== 'string' || value.length === 0) throw new Error(name + ' is required');
+    return value;
 }
 
-// ==================== BLE GATT Event Listeners ====================
+function _characteristic(opts) {
+    return {
+        deviceId: _required(opts, 'deviceId'),
+        serviceId: _required(opts, 'serviceId'),
+        characteristicId: _required(opts, 'characteristicId'),
+    };
+}
 
+// The ones that wait on a person or carry their own timeout -- a permission
+// prompt, a connection, pairing -- have none here.
+
+// ==================== Adapter ====================
+
+const _openAdapter = _request('openBluetoothAdapter', 0, op_open_bluetooth_adapter, function (o) {
+    return { mode: o.mode === 'peripheral' ? 'peripheral' : 'central' };
+});
+const _closeAdapter = _request('closeBluetoothAdapter', undefined, op_close_bluetooth_adapter);
+const _getAdapterState = _request('getBluetoothAdapterState', undefined, op_get_bluetooth_adapter_state);
+
+// ==================== Discovery ====================
+
+const _startDiscovery = _request('startBluetoothDevicesDiscovery', undefined,
+    op_start_bluetooth_devices_discovery, function (o) {
+        return {
+            services: Array.isArray(o.services) ? o.services : [],
+            allowDuplicatesKey: o.allowDuplicatesKey === true,
+            interval: typeof o.interval === 'number' && o.interval > 0 ? o.interval : 0,
+            powerLevel: o.powerLevel === 'low' || o.powerLevel === 'high' ? o.powerLevel : 'medium',
+        };
+    });
+const _stopDiscovery = _request('stopBluetoothDevicesDiscovery', undefined,
+    op_stop_bluetooth_devices_discovery);
+const _getDevices = _request('getBluetoothDevices', undefined, op_get_bluetooth_devices, null,
+    function (res) { res.devices = _devices(res.devices); });
+const _getConnectedDevices = _request('getConnectedBluetoothDevices', undefined,
+    op_get_connected_bluetooth_devices, function (o) {
+        if (!Array.isArray(o.services)) throw new Error('services is required');
+        return { services: o.services };
+    });
+
+// ==================== Pairing ====================
+
+const _makePair = _request('makeBluetoothPair', 0, op_make_bluetooth_pair, function (o) {
+    return {
+        deviceId: _required(o, 'deviceId'),
+        pin: _bufferToHex(o.pin),
+        timeout: typeof o.timeout === 'number' && o.timeout > 0 ? o.timeout : 20000,
+    };
+});
+const _isPaired = _request('isBluetoothDevicePaired', undefined, op_is_bluetooth_device_paired,
+    function (o) { return { deviceId: _required(o, 'deviceId') }; });
+
+// ==================== iBeacon ====================
+
+const _startBeacons = _request('startBeaconDiscovery', undefined, op_start_beacon_discovery,
+    function (o) {
+        if (!Array.isArray(o.uuids) || o.uuids.length === 0) throw new Error('uuids is required');
+        return { uuids: o.uuids, ignoreBluetoothAvailable: o.ignoreBluetoothAvailable === true };
+    });
+const _stopBeacons = _request('stopBeaconDiscovery', undefined, op_stop_beacon_discovery);
+const _getBeacons = _request('getBeacons', undefined, op_get_beacons);
+
+// ==================== BLE GATT ====================
+
+const _createConnection = _request('createBLEConnection', 0, op_create_ble_connection,
+    function (o) {
+        var request = { deviceId: _required(o, 'deviceId') };
+        if (typeof o.timeout === 'number' && o.timeout > 0) request.timeout = o.timeout;
+        return request;
+    });
+const _closeConnection = _request('closeBLEConnection', undefined, op_close_ble_connection,
+    function (o) { return { deviceId: _required(o, 'deviceId') }; });
+const _getServices = _request('getBLEDeviceServices', undefined, op_get_ble_device_services,
+    function (o) { return { deviceId: _required(o, 'deviceId') }; });
+const _getCharacteristics = _request('getBLEDeviceCharacteristics', undefined,
+    op_get_ble_device_characteristics, function (o) {
+        return { deviceId: _required(o, 'deviceId'), serviceId: _required(o, 'serviceId') };
+    });
+const _readCharacteristic = _request('readBLECharacteristicValue', undefined,
+    op_read_ble_characteristic_value, _characteristic);
+const _writeCharacteristic = _request('writeBLECharacteristicValue', undefined,
+    op_write_ble_characteristic_value, function (o) {
+        var request = _characteristic(o);
+        if (!(o.value instanceof ArrayBuffer) && !ArrayBuffer.isView(o.value)) {
+            throw new Error('value must be an ArrayBuffer');
+        }
+        request.value = _bufferToHex(o.value);
+        request.writeType = o.writeType === 'writeNoResponse' ? 'writeNoResponse' : 'write';
+        return request;
+    });
+const _notifyCharacteristic = _request('notifyBLECharacteristicValueChange', undefined,
+    op_notify_ble_characteristic_value_change, function (o) {
+        var request = _characteristic(o);
+        if (typeof o.state !== 'boolean') throw new Error('state is required');
+        request.state = o.state;
+        request.type = o.type === 'notification' ? 'notification' : 'indication';
+        return request;
+    });
+const _getRSSI = _request('getBLEDeviceRSSI', undefined, op_get_ble_device_rssi,
+    function (o) { return { deviceId: _required(o, 'deviceId') }; });
+const _setMTU = _request('setBLEMTU', undefined, op_set_ble_mtu, function (o) {
+    if (typeof o.mtu !== 'number' || !(o.mtu >= 22 && o.mtu <= 512)) {
+        throw new Error('mtu must be a number from 22 to 512');
+    }
+    return { deviceId: _required(o, 'deviceId'), mtu: o.mtu };
+});
+const _getMTU = _request('getBLEMTU', undefined, op_get_ble_mtu, function (o) {
+    return {
+        deviceId: _required(o, 'deviceId'),
+        writeType: o.writeType === 'writeNoResponse' ? 'writeNoResponse' : 'write',
+    };
+});
+
+// ==================== Events ====================
+
+const _adapterStateChangeListeners = createListenerGroup('onBluetoothAdapterStateChange');
+const _deviceFoundListeners = createListenerGroup('onBluetoothDeviceFound');
+const _beaconUpdateListeners = createListenerGroup('onBeaconUpdate');
+const _beaconServiceChangeListeners = createListenerGroup('onBeaconServiceChange');
 const _bleConnectionStateChangeListeners = createListenerGroup('onBLEConnectionStateChange');
 const _bleCharacteristicValueChangeListeners = createListenerGroup('onBLECharacteristicValueChange');
 const _bleMTUChangeListeners = createListenerGroup('onBLEMTUChange');
 
-function onBLEConnectionStateChange(listener) {
-    _bleConnectionStateChangeListeners.on(listener);
+function onBluetoothAdapterStateChange(listener) { _adapterStateChangeListeners.on(listener); }
+function offBluetoothAdapterStateChange(listener) { _adapterStateChangeListeners.off(listener); }
+function onBluetoothDeviceFound(listener) { _deviceFoundListeners.on(listener); }
+function offBluetoothDeviceFound(listener) { _deviceFoundListeners.off(listener); }
+function onBeaconUpdate(listener) { _beaconUpdateListeners.on(listener); }
+function offBeaconUpdate(listener) { _beaconUpdateListeners.off(listener); }
+function onBeaconServiceChange(listener) { _beaconServiceChangeListeners.on(listener); }
+function offBeaconServiceChange(listener) { _beaconServiceChangeListeners.off(listener); }
+function onBLEConnectionStateChange(listener) { _bleConnectionStateChangeListeners.on(listener); }
+function offBLEConnectionStateChange(listener) { _bleConnectionStateChangeListeners.off(listener); }
+function onBLECharacteristicValueChange(listener) { _bleCharacteristicValueChangeListeners.on(listener); }
+function offBLECharacteristicValueChange(listener) { _bleCharacteristicValueChangeListeners.off(listener); }
+function onBLEMTUChange(listener) { _bleMTUChangeListeners.on(listener); }
+function offBLEMTUChange(listener) { _bleMTUChangeListeners.off(listener); }
+
+// The typed path (Android's commands) calls these with values; the host-service
+// events below call them with the JSON a C host posted.
+
+function _internalTriggerBluetoothAdapterStateChange(available, discovering) {
+    _adapterStateChangeListeners.trigger({ available: available, discovering: discovering });
 }
 
-function offBLEConnectionStateChange(listener) {
-    _bleConnectionStateChangeListeners.off(listener);
+function _internalTriggerBluetoothDeviceFound(devicesJson) {
+    var devices;
+    try { devices = JSON.parse(devicesJson); } catch (_) { return; }
+    _deviceFoundListeners.trigger({ devices: _devices(devices) });
 }
 
-function onBLECharacteristicValueChange(listener) {
-    _bleCharacteristicValueChangeListeners.on(listener);
+function _internalTriggerBeaconUpdate(beaconsJson) {
+    var beacons;
+    try { beacons = JSON.parse(beaconsJson); } catch (_) { return; }
+    _beaconUpdateListeners.trigger({ beacons: Array.isArray(beacons) ? beacons : [] });
 }
 
-function offBLECharacteristicValueChange(listener) {
-    _bleCharacteristicValueChangeListeners.off(listener);
+function _internalTriggerBeaconServiceChange(available, discovering) {
+    _beaconServiceChangeListeners.trigger({ available: available, discovering: discovering });
 }
-
-function onBLEMTUChange(listener) {
-    _bleMTUChangeListeners.on(listener);
-}
-
-function offBLEMTUChange(listener) {
-    _bleMTUChangeListeners.off(listener);
-}
-
-// ==================== BLE GATT Internal Trigger Functions ====================
 
 function _internalTriggerBLEConnectionStateChange(deviceId, connected) {
     _bleConnectionStateChangeListeners.trigger({ deviceId: deviceId, connected: connected });
@@ -406,58 +305,168 @@ function _internalTriggerBLEMTUChange(deviceId, mtu) {
     _bleMTUChangeListeners.trigger({ deviceId: deviceId, mtu: mtu });
 }
 
+function _event(eventJson) {
+    var event;
+    try { event = JSON.parse(eventJson); } catch (_) { return null; }
+    return event !== null && typeof event === 'object' ? event : null;
+}
+
+function _internalOnBluetoothAdapterStateEvent(eventJson) {
+    var e = _event(eventJson);
+    if (e) _internalTriggerBluetoothAdapterStateChange(e.available === true, e.discovering === true);
+}
+
+function _internalOnBluetoothDeviceFoundEvent(eventJson) {
+    var e = _event(eventJson);
+    if (e) _deviceFoundListeners.trigger({ devices: _devices(e.devices) });
+}
+
+function _internalOnBLEConnectionStateEvent(eventJson) {
+    var e = _event(eventJson);
+    if (e && typeof e.deviceId === 'string') {
+        _internalTriggerBLEConnectionStateChange(e.deviceId, e.connected === true);
+    }
+}
+
+function _internalOnBLEMTUEvent(eventJson) {
+    var e = _event(eventJson);
+    if (e && typeof e.deviceId === 'string' && typeof e.mtu === 'number') {
+        _internalTriggerBLEMTUChange(e.deviceId, e.mtu);
+    }
+}
+
+function _internalOnBeaconUpdateEvent(eventJson) {
+    var e = _event(eventJson);
+    if (e) _beaconUpdateListeners.trigger({ beacons: Array.isArray(e.beacons) ? e.beacons : [] });
+}
+
+function _internalOnBeaconServiceEvent(eventJson) {
+    var e = _event(eventJson);
+    if (e) _internalTriggerBeaconServiceChange(e.available === true, e.discovering === true);
+}
+
+// ==================== Content's API ====================
+
+const openBluetoothAdapter = _openAdapter.call;
+const _internalOnOpenBluetoothAdapterResult = _openAdapter.onResult;
+const closeBluetoothAdapter = _closeAdapter.call;
+const _internalOnCloseBluetoothAdapterResult = _closeAdapter.onResult;
+const getBluetoothAdapterState = _getAdapterState.call;
+const _internalOnGetBluetoothAdapterStateResult = _getAdapterState.onResult;
+const startBluetoothDevicesDiscovery = _startDiscovery.call;
+const _internalOnStartBluetoothDevicesDiscoveryResult = _startDiscovery.onResult;
+const stopBluetoothDevicesDiscovery = _stopDiscovery.call;
+const _internalOnStopBluetoothDevicesDiscoveryResult = _stopDiscovery.onResult;
+const getBluetoothDevices = _getDevices.call;
+const _internalOnGetBluetoothDevicesResult = _getDevices.onResult;
+const getConnectedBluetoothDevices = _getConnectedDevices.call;
+const _internalOnGetConnectedBluetoothDevicesResult = _getConnectedDevices.onResult;
+const makeBluetoothPair = _makePair.call;
+const _internalOnMakeBluetoothPairResult = _makePair.onResult;
+const isBluetoothDevicePaired = _isPaired.call;
+const _internalOnIsBluetoothDevicePairedResult = _isPaired.onResult;
+const startBeaconDiscovery = _startBeacons.call;
+const _internalOnStartBeaconDiscoveryResult = _startBeacons.onResult;
+const stopBeaconDiscovery = _stopBeacons.call;
+const _internalOnStopBeaconDiscoveryResult = _stopBeacons.onResult;
+const getBeacons = _getBeacons.call;
+const _internalOnGetBeaconsResult = _getBeacons.onResult;
+const createBLEConnection = _createConnection.call;
+const _internalOnCreateBLEConnectionResult = _createConnection.onResult;
+const closeBLEConnection = _closeConnection.call;
+const _internalOnCloseBLEConnectionResult = _closeConnection.onResult;
+const getBLEDeviceServices = _getServices.call;
+const _internalOnGetBLEDeviceServicesResult = _getServices.onResult;
+const getBLEDeviceCharacteristics = _getCharacteristics.call;
+const _internalOnGetBLEDeviceCharacteristicsResult = _getCharacteristics.onResult;
+const readBLECharacteristicValue = _readCharacteristic.call;
+const _internalOnReadBLECharacteristicValueResult = _readCharacteristic.onResult;
+const writeBLECharacteristicValue = _writeCharacteristic.call;
+const _internalOnWriteBLECharacteristicValueResult = _writeCharacteristic.onResult;
+const notifyBLECharacteristicValueChange = _notifyCharacteristic.call;
+const _internalOnNotifyBLECharacteristicValueChangeResult = _notifyCharacteristic.onResult;
+const getBLEDeviceRSSI = _getRSSI.call;
+const _internalOnGetBLEDeviceRSSIResult = _getRSSI.onResult;
+const setBLEMTU = _setMTU.call;
+const _internalOnSetBLEMTUResult = _setMTU.onResult;
+const getBLEMTU = _getMTU.call;
+const _internalOnGetBLEMTUResult = _getMTU.onResult;
+
 export {
     // System bluetooth setting
     openSystemBluetoothSetting,
     _internalOnOpenBluetoothSettingResult,
-    // Bluetooth adapter
+    // Requests and their result hooks
     openBluetoothAdapter,
+    _internalOnOpenBluetoothAdapterResult,
     closeBluetoothAdapter,
+    _internalOnCloseBluetoothAdapterResult,
     getBluetoothAdapterState,
-    // Device discovery
+    _internalOnGetBluetoothAdapterStateResult,
     startBluetoothDevicesDiscovery,
+    _internalOnStartBluetoothDevicesDiscoveryResult,
     stopBluetoothDevicesDiscovery,
+    _internalOnStopBluetoothDevicesDiscoveryResult,
     getBluetoothDevices,
+    _internalOnGetBluetoothDevicesResult,
     getConnectedBluetoothDevices,
-    // Pairing
+    _internalOnGetConnectedBluetoothDevicesResult,
     makeBluetoothPair,
+    _internalOnMakeBluetoothPairResult,
     isBluetoothDevicePaired,
-    // Bluetooth events
+    _internalOnIsBluetoothDevicePairedResult,
+    startBeaconDiscovery,
+    _internalOnStartBeaconDiscoveryResult,
+    stopBeaconDiscovery,
+    _internalOnStopBeaconDiscoveryResult,
+    getBeacons,
+    _internalOnGetBeaconsResult,
+    createBLEConnection,
+    _internalOnCreateBLEConnectionResult,
+    closeBLEConnection,
+    _internalOnCloseBLEConnectionResult,
+    getBLEDeviceServices,
+    _internalOnGetBLEDeviceServicesResult,
+    getBLEDeviceCharacteristics,
+    _internalOnGetBLEDeviceCharacteristicsResult,
+    readBLECharacteristicValue,
+    _internalOnReadBLECharacteristicValueResult,
+    writeBLECharacteristicValue,
+    _internalOnWriteBLECharacteristicValueResult,
+    notifyBLECharacteristicValueChange,
+    _internalOnNotifyBLECharacteristicValueChangeResult,
+    getBLEDeviceRSSI,
+    _internalOnGetBLEDeviceRSSIResult,
+    setBLEMTU,
+    _internalOnSetBLEMTUResult,
+    getBLEMTU,
+    _internalOnGetBLEMTUResult,
+    // Events
     onBluetoothAdapterStateChange,
     offBluetoothAdapterStateChange,
     onBluetoothDeviceFound,
     offBluetoothDeviceFound,
-    _internalTriggerBluetoothAdapterStateChange,
-    _internalTriggerBluetoothDeviceFound,
-    // Beacon
-    startBeaconDiscovery,
-    stopBeaconDiscovery,
-    getBeacons,
     onBeaconUpdate,
     offBeaconUpdate,
     onBeaconServiceChange,
     offBeaconServiceChange,
-    _internalTriggerBeaconUpdate,
-    _internalTriggerBeaconServiceChange,
-    // BLE GATT
-    createBLEConnection,
-    closeBLEConnection,
-    getBLEDeviceServices,
-    getBLEDeviceCharacteristics,
-    readBLECharacteristicValue,
-    writeBLECharacteristicValue,
-    notifyBLECharacteristicValueChange,
-    getBLEDeviceRSSI,
-    setBLEMTU,
-    getBLEMTU,
-    // BLE GATT events
     onBLEConnectionStateChange,
     offBLEConnectionStateChange,
     onBLECharacteristicValueChange,
     offBLECharacteristicValueChange,
     onBLEMTUChange,
     offBLEMTUChange,
+    _internalTriggerBluetoothAdapterStateChange,
+    _internalTriggerBluetoothDeviceFound,
+    _internalTriggerBeaconUpdate,
+    _internalTriggerBeaconServiceChange,
     _internalTriggerBLEConnectionStateChange,
     _internalTriggerBLECharacteristicValueChange,
     _internalTriggerBLEMTUChange,
+    _internalOnBluetoothAdapterStateEvent,
+    _internalOnBluetoothDeviceFoundEvent,
+    _internalOnBLEConnectionStateEvent,
+    _internalOnBLEMTUEvent,
+    _internalOnBeaconUpdateEvent,
+    _internalOnBeaconServiceEvent,
 };

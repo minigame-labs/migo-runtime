@@ -341,6 +341,7 @@ typedef struct MigoHostServiceCall {
 | `MIGO_HOST_SERVICE_LOCATION` (11) | `GET_LOCATION` 0 · `GET_FUZZY_LOCATION` 1 | 调用（先经 `scope.userLocation` 授权检查） | `getLocation` · `getFuzzyLocation` |
 | `MIGO_HOST_SERVICE_MOTION` (13) | `START_ACCELEROMETER` 0 · `START_GYROSCOPE` 2 · `START_COMPASS` 4 · `START_DEVICE_MOTION` 6（调用）· 对应 `STOP_*` 1/3/5/7（命令） | 见左；读数走 [`migo_session_post_sensor_sample`](#migo_session_post_sensor_sample) | `startAccelerometer` / `startGyroscope` / `startCompass` / `startDeviceMotionListening` 及 `stop*`、`on*Change` |
 | `MIGO_HOST_SERVICE_SCREEN` (14) | `GET_BRIGHTNESS` 0 · `SET_BRIGHTNESS` 1 · `SET_DEVICE_ORIENTATION` 2 · `GET_RECORDING_STATE` 5 · `SET_VISUAL_EFFECT_ON_CAPTURE` 8（调用）· `START`/`STOP_CAPTURE_OBSERVER` 3/4 · `START`/`STOP_RECORDING_OBSERVER` 6/7（命令）；事件 `USER_CAPTURE_SCREEN` 0 · `DEVICE_ORIENTATION_CHANGE` 1 · `RECORDING_STATE_CHANGE` 2 | 见左 | `getScreenBrightness` / `setScreenBrightness` / `setDeviceOrientation` / `onDeviceOrientationChange` / `onUserCaptureScreen` / `getScreenRecordingState` / `onScreenRecordingStateChanged` / `setVisualEffectOnCapture`（常亮仍是 `on_keep_screen_on`） |
+| `MIGO_HOST_SERVICE_BLUETOOTH` (15) | `OPEN_ADAPTER` 0 … `GET_BLE_MTU` 21（22 个，全部为调用，失败带 `errCode`）；事件 `ADAPTER_STATE_CHANGE` 0 · `DEVICE_FOUND` 1 · `BLE_CONNECTION_STATE_CHANGE` 2 · `BLE_MTU_CHANGE` 3 · `BEACON_UPDATE` 4 · `BEACON_SERVICE_CHANGE` 5 | 调用，操作完成时作答；特征值走 [`migo_session_post_ble_characteristic_value`](#migo_session_post_ble_characteristic_value) | `openBluetoothAdapter` 起的全部蓝牙 / BLE / iBeacon API（见[蓝牙](/docs/capabilities/bluetooth/)） |
 | `MIGO_HOST_SERVICE_IMAGE` (12) | `SAVE_IMAGE_TO_PHOTOS_ALBUM` 0 · `PREVIEW_IMAGE` 1 · `PREVIEW_MEDIA` 2 · `COMPRESS_IMAGE` 3 · `CHOOSE_IMAGE` 4 · `CHOOSE_MESSAGE_FILE` 5 · `CHOOSE_MEDIA` 6 | 调用；涉及文件（见下） | `saveImageToPhotosAlbum`（先经 `scope.writePhotosAlbum`）· `previewImage` · `previewMedia` · `compressImage` · `chooseImage` · `chooseMessageFile` · `chooseMedia` |
 
 **文件。** 内容只用沙箱路径（`/tmp/...`、`/user/...`、包内路径），宿主只用真实路径，两边都看不到对方的那种：
@@ -857,6 +858,37 @@ MIGO_API MigoResult MIGO_CALL migo_session_post_sensor_sample(
 - `MIGO_OK` — 已投递
 - `MIGO_ERROR_INVALID_ARGUMENT` — 样本为 NULL 或格式错误；`kind`/精度未定义；数值非有限；宿主未声明
   `MIGO_HOST_SERVICE_MOTION`
+- `MIGO_ERROR_INVALID_STATE` — 没有已 attach 的 Surface
+
+## migo_session_post_ble_characteristic_value
+
+```c
+typedef struct MigoBleCharacteristicValue {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    const char *device_id_utf8;
+    const char *service_id_utf8;
+    const char *characteristic_id_utf8;
+    const uint8_t *value;
+    uint32_t device_id_length;
+    uint32_t service_id_length;
+    uint32_t characteristic_id_length;
+    uint32_t value_length;
+} MigoBleCharacteristicValue;
+
+MIGO_API MigoResult MIGO_CALL migo_session_post_ble_characteristic_value(
+    MigoSession *session, const MigoBleCharacteristicValue *value);
+```
+
+已连接外设发来的一个特征值（通知、指示，或 `READ_BLE_CHARACTERISTIC_VALUE` 的结果），可在任意线程、Surface 已 attach
+时投递。外设每秒可能通知上百次，所以是类型化记录：只在调用期间借用，字节拷贝一次进池化槽位；内容落后时丢弃而不无界
+排队。三个 id 是请求里出现过的 UTF-8 字符串，值至多 512 字节。
+
+返回：
+
+- `MIGO_OK` — 已投递
+- `MIGO_ERROR_INVALID_ARGUMENT` — 记录为 NULL 或格式错误；某个 id 为空、超过 256 字节或不是 UTF-8；值超过 512 字节；
+  宿主未声明 `MIGO_HOST_SERVICE_BLUETOOTH`
 - `MIGO_ERROR_INVALID_STATE` — 没有已 attach 的 Surface
 
 ## migo_session_notify_vsync

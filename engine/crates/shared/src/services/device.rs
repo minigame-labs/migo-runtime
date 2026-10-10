@@ -332,240 +332,203 @@ pub trait KeyboardService: Send + Sync {
 
 // ==================== Bluetooth ====================
 
-/// Bluetooth service for BLE and Beacon operations.
+/// Bluetooth: the adapter, scanning, pairing, iBeacons and BLE GATT as a central.
+///
+/// Every method is a request `{"requestId", ...}` the host answers through the
+/// hook [`BLUETOOTH_RESULT_HOOKS`] names for its method number, with the result
+/// or with `{"error", "errCode"}` -- the common mini-game platform's Bluetooth
+/// codes: 10000 adapter not opened, 10001 Bluetooth unavailable, 10002 no such
+/// device, 10003 connection failed, 10004 no such service, 10005 no such
+/// characteristic, 10006 not connected, 10007 operation not supported by the
+/// characteristic, 10008 system error, 10009 system not supported, 10012 timed
+/// out, 10013 invalid data; and for iBeacons 11000-11006. Binary values travel
+/// as lower-case hex strings. A request answers when the operation has happened
+/// -- a connection is made, a write acknowledged -- not when it was issued.
+///
+/// What the host observes arrives as events: adapter state, devices found, BLE
+/// connection state and MTU, iBeacon updates, and characteristic values (typed,
+/// `HostCommand::OnBLECharacteristicValueChange`: a peripheral may notify a
+/// hundred times a second).
 pub trait BluetoothService: Send + Sync {
-    /// Initialize the Bluetooth adapter.
-    ///
-    /// JSON fields:
-    /// - `mode`: "central" (default) or "peripheral" (iOS only)
-    fn open_adapter(&self, _options_json: &str) -> Result<(), ServiceError> {
+    /// `openBluetoothAdapter` `{"mode"}` (`central`): answers `{}`.
+    fn open_adapter(&self, _request_json: &str) -> Result<(), ServiceError> {
         Err(ServiceError::not_supported(
             "openBluetoothAdapter:fail not supported",
         ))
     }
 
-    /// Close the Bluetooth adapter and release resources.
-    fn close_adapter(&self) -> Result<(), ServiceError> {
+    /// `closeBluetoothAdapter` `{}`: answers `{}`.
+    fn close_adapter(&self, _request_json: &str) -> Result<(), ServiceError> {
         Err(ServiceError::not_supported(
             "closeBluetoothAdapter:fail not supported",
         ))
     }
 
-    /// Get Bluetooth adapter state.
-    /// Returns JSON: `{"discovering": bool, "available": bool}`
-    fn get_adapter_state(&self) -> Result<String, ServiceError> {
+    /// `getBluetoothAdapterState` `{}`: answers `{"available", "discovering"}`.
+    fn get_adapter_state(&self, _request_json: &str) -> Result<(), ServiceError> {
         Err(ServiceError::not_supported(
             "getBluetoothAdapterState:fail not supported",
         ))
     }
 
-    /// Start scanning for BLE devices.
-    ///
-    /// JSON fields:
-    /// - `services`: array of service UUID strings to filter
-    /// - `allowDuplicatesKey`: bool (default false)
-    /// - `interval`: number in ms (default 0)
-    /// - `powerLevel`: "low" | "medium" | "high" (default "medium")
-    fn start_devices_discovery(&self, _options_json: &str) -> Result<(), ServiceError> {
+    /// `startBluetoothDevicesDiscovery` `{"services", "allowDuplicatesKey", "interval", "powerLevel"}`: answers `{}`.
+    fn start_devices_discovery(&self, _request_json: &str) -> Result<(), ServiceError> {
         Err(ServiceError::not_supported(
             "startBluetoothDevicesDiscovery:fail not supported",
         ))
     }
 
-    /// Stop scanning for BLE devices.
-    fn stop_devices_discovery(&self) -> Result<(), ServiceError> {
+    /// `stopBluetoothDevicesDiscovery` `{}`: answers `{}`.
+    fn stop_devices_discovery(&self, _request_json: &str) -> Result<(), ServiceError> {
         Err(ServiceError::not_supported(
             "stopBluetoothDevicesDiscovery:fail not supported",
         ))
     }
 
-    /// Get all discovered Bluetooth devices.
-    /// Returns JSON: `{"devices": [...]}`
-    fn get_devices(&self) -> Result<String, ServiceError> {
+    /// `getBluetoothDevices` `{}`: answers `{"devices"}`, each as the device-found event describes it.
+    fn get_devices(&self, _request_json: &str) -> Result<(), ServiceError> {
         Err(ServiceError::not_supported(
             "getBluetoothDevices:fail not supported",
         ))
     }
 
-    /// Get connected Bluetooth devices by service UUIDs.
-    ///
-    /// JSON fields:
-    /// - `services`: array of service UUID strings
-    ///
-    /// Returns JSON: `{"devices": [...]}`
-    fn get_connected_devices(&self, _options_json: &str) -> Result<String, ServiceError> {
+    /// `getConnectedBluetoothDevices` `{"services"}`: answers `{"devices": [{"name", "deviceId"}]}`.
+    fn get_connected_devices(&self, _request_json: &str) -> Result<(), ServiceError> {
         Err(ServiceError::not_supported(
             "getConnectedBluetoothDevices:fail not supported",
         ))
     }
 
-    /// Pair with a Bluetooth device (Android only).
-    ///
-    /// JSON fields:
-    /// - `deviceId`: string
-    /// - `pin`: string (Base64)
-    /// - `timeout`: number in ms (default 20000)
-    fn make_pair(&self, _options_json: &str) -> Result<(), ServiceError> {
+    /// `makeBluetoothPair` `{"deviceId", "pin" (hex), "timeout"}`: answers `{}` once paired.
+    fn make_pair(&self, _request_json: &str) -> Result<(), ServiceError> {
         Err(ServiceError::not_supported(
             "makeBluetoothPair:fail not supported",
         ))
     }
 
-    /// Check if a Bluetooth device is paired (Android only).
-    ///
-    /// JSON fields:
-    /// - `deviceId`: string
-    fn is_device_paired(&self, _options_json: &str) -> Result<(), ServiceError> {
+    /// `isBluetoothDevicePaired` `{"deviceId"}`: answers `{}` when paired; fails when not.
+    fn is_device_paired(&self, _request_json: &str) -> Result<(), ServiceError> {
         Err(ServiceError::not_supported(
             "isBluetoothDevicePaired:fail not supported",
         ))
     }
 
-    /// Start Beacon discovery.
-    ///
-    /// JSON fields:
-    /// - `uuids`: array of UUID strings
-    /// - `ignoreBluetoothAvailable`: bool (default false)
-    fn start_beacon_discovery(&self, _options_json: &str) -> Result<(), ServiceError> {
+    /// `startBeaconDiscovery` `{"uuids", "ignoreBluetoothAvailable"}`: answers `{}`.
+    fn start_beacon_discovery(&self, _request_json: &str) -> Result<(), ServiceError> {
         Err(ServiceError::not_supported(
             "startBeaconDiscovery:fail not supported",
         ))
     }
 
-    /// Stop Beacon discovery.
-    fn stop_beacon_discovery(&self) -> Result<(), ServiceError> {
+    /// `stopBeaconDiscovery` `{}`: answers `{}`.
+    fn stop_beacon_discovery(&self, _request_json: &str) -> Result<(), ServiceError> {
         Err(ServiceError::not_supported(
             "stopBeaconDiscovery:fail not supported",
         ))
     }
 
-    /// Get all discovered Beacon devices.
-    /// Returns JSON: `{"beacons": [...]}`
-    fn get_beacons(&self) -> Result<String, ServiceError> {
+    /// `getBeacons` `{}`: answers `{"beacons": [{"uuid", "major", "minor", "proximity", "accuracy", "rssi"}]}`.
+    fn get_beacons(&self, _request_json: &str) -> Result<(), ServiceError> {
         Err(ServiceError::not_supported("getBeacons:fail not supported"))
     }
 
-    // ==================== BLE GATT APIs ====================
-
-    /// Connect to a BLE peripheral device.
-    ///
-    /// JSON fields:
-    /// - `deviceId`: string (device MAC address or identifier)
-    /// - `timeout`: number in ms (default 0, system default)
-    fn create_ble_connection(&self, _options_json: &str) -> Result<(), ServiceError> {
+    /// `createBLEConnection` `{"deviceId", "timeout"}`: answers `{}` once connected.
+    fn create_ble_connection(&self, _request_json: &str) -> Result<(), ServiceError> {
         Err(ServiceError::not_supported(
             "createBLEConnection:fail not supported",
         ))
     }
 
-    /// Disconnect from a BLE peripheral device.
-    ///
-    /// JSON fields:
-    /// - `deviceId`: string
-    fn close_ble_connection(&self, _options_json: &str) -> Result<(), ServiceError> {
+    /// `closeBLEConnection` `{"deviceId"}`: answers `{}`.
+    fn close_ble_connection(&self, _request_json: &str) -> Result<(), ServiceError> {
         Err(ServiceError::not_supported(
             "closeBLEConnection:fail not supported",
         ))
     }
 
-    /// Get all GATT services of a connected BLE device.
-    ///
-    /// JSON fields:
-    /// - `deviceId`: string
-    ///
-    /// Returns JSON: `{"services": [{"uuid": "...", "isPrimary": true}]}`
-    fn get_ble_device_services(&self, _options_json: &str) -> Result<String, ServiceError> {
+    /// `getBLEDeviceServices` `{"deviceId"}`: answers `{"services": [{"uuid", "isPrimary"}]}`.
+    fn get_ble_device_services(&self, _request_json: &str) -> Result<(), ServiceError> {
         Err(ServiceError::not_supported(
             "getBLEDeviceServices:fail not supported",
         ))
     }
 
-    /// Get all characteristics of a BLE GATT service.
-    ///
-    /// JSON fields:
-    /// - `deviceId`: string
-    /// - `serviceId`: string (service UUID)
-    ///
-    /// Returns JSON: `{"characteristics": [{"uuid": "...", "properties": {...}}]}`
-    fn get_ble_device_characteristics(&self, _options_json: &str) -> Result<String, ServiceError> {
+    /// `getBLEDeviceCharacteristics` `{"deviceId", "serviceId"}`: answers `{"characteristics": [{"uuid", "properties": {"read", "write", "notify", "indicate", "writeNoResponse", "writeDefault"}}]}`.
+    fn get_ble_device_characteristics(&self, _request_json: &str) -> Result<(), ServiceError> {
         Err(ServiceError::not_supported(
             "getBLEDeviceCharacteristics:fail not supported",
         ))
     }
 
-    /// Read a BLE characteristic value.
-    ///
-    /// JSON fields:
-    /// - `deviceId`: string
-    /// - `serviceId`: string (service UUID)
-    /// - `characteristicId`: string (characteristic UUID)
-    fn read_ble_characteristic_value(&self, _options_json: &str) -> Result<(), ServiceError> {
+    /// `readBLECharacteristicValue` `{"deviceId", "serviceId", "characteristicId"}`: answers `{}` once read; the value arrives as a characteristic-value event.
+    fn read_ble_characteristic_value(&self, _request_json: &str) -> Result<(), ServiceError> {
         Err(ServiceError::not_supported(
             "readBLECharacteristicValue:fail not supported",
         ))
     }
 
-    /// Write a value to a BLE characteristic.
-    ///
-    /// JSON fields:
-    /// - `deviceId`: string
-    /// - `serviceId`: string (service UUID)
-    /// - `characteristicId`: string (characteristic UUID)
-    /// - `value`: string (hex-encoded bytes, e.g. "0a1b2c")
-    /// - `writeType`: string ("write" or "writeNoResponse")
-    fn write_ble_characteristic_value(&self, _options_json: &str) -> Result<(), ServiceError> {
+    /// `writeBLECharacteristicValue` `{"deviceId", "serviceId", "characteristicId", "value" (hex), "writeType"}`: answers `{}` once written.
+    fn write_ble_characteristic_value(&self, _request_json: &str) -> Result<(), ServiceError> {
         Err(ServiceError::not_supported(
             "writeBLECharacteristicValue:fail not supported",
         ))
     }
 
-    /// Subscribe or unsubscribe to BLE characteristic value changes.
-    ///
-    /// JSON fields:
-    /// - `deviceId`: string
-    /// - `serviceId`: string (service UUID)
-    /// - `characteristicId`: string (characteristic UUID)
-    /// - `state`: bool (true = subscribe, false = unsubscribe)
+    /// `notifyBLECharacteristicValueChange` `{"deviceId", "serviceId", "characteristicId", "state", "type"}`: answers `{}` once the descriptor is written.
     fn notify_ble_characteristic_value_change(
         &self,
-        _options_json: &str,
+        _request_json: &str,
     ) -> Result<(), ServiceError> {
         Err(ServiceError::not_supported(
             "notifyBLECharacteristicValueChange:fail not supported",
         ))
     }
 
-    /// Get the RSSI (signal strength) of a connected BLE device.
-    ///
-    /// JSON fields:
-    /// - `deviceId`: string
-    ///
-    /// Returns JSON: `{"RSSI": -50}`
-    fn get_ble_device_rssi(&self, _options_json: &str) -> Result<String, ServiceError> {
+    /// `getBLEDeviceRSSI` `{"deviceId"}`: answers `{"RSSI"}`, read from the device for this request.
+    fn get_ble_device_rssi(&self, _request_json: &str) -> Result<(), ServiceError> {
         Err(ServiceError::not_supported(
             "getBLEDeviceRSSI:fail not supported",
         ))
     }
 
-    /// Set the MTU for a BLE connection.
-    ///
-    /// JSON fields:
-    /// - `deviceId`: string
-    /// - `mtu`: number (22-512)
-    fn set_ble_mtu(&self, _options_json: &str) -> Result<(), ServiceError> {
+    /// `setBLEMTU` `{"deviceId", "mtu"}`: answers `{"mtu"}` as negotiated.
+    fn set_ble_mtu(&self, _request_json: &str) -> Result<(), ServiceError> {
         Err(ServiceError::not_supported("setBLEMTU:fail not supported"))
     }
 
-    /// Get the current MTU of a BLE connection.
-    ///
-    /// JSON fields:
-    /// - `deviceId`: string
-    ///
-    /// Returns JSON: `{"mtu": 23}`
-    fn get_ble_mtu(&self, _options_json: &str) -> Result<String, ServiceError> {
+    /// `getBLEMTU` `{"deviceId", "writeType"}`: answers `{"mtu"}`.
+    fn get_ble_mtu(&self, _request_json: &str) -> Result<(), ServiceError> {
         Err(ServiceError::not_supported("getBLEMTU:fail not supported"))
     }
 }
+
+/// The hook each Bluetooth request is answered through, indexed by its method
+/// number (`MIGO_BLUETOOTH_*` in `include/migo/host_services.h`). One table for
+/// every SDK: the C ABI's routing and Android's result callback both read it.
+pub const BLUETOOTH_RESULT_HOOKS: [&str; 22] = [
+    "_internalOnOpenBluetoothAdapterResult",
+    "_internalOnCloseBluetoothAdapterResult",
+    "_internalOnGetBluetoothAdapterStateResult",
+    "_internalOnStartBluetoothDevicesDiscoveryResult",
+    "_internalOnStopBluetoothDevicesDiscoveryResult",
+    "_internalOnGetBluetoothDevicesResult",
+    "_internalOnGetConnectedBluetoothDevicesResult",
+    "_internalOnMakeBluetoothPairResult",
+    "_internalOnIsBluetoothDevicePairedResult",
+    "_internalOnStartBeaconDiscoveryResult",
+    "_internalOnStopBeaconDiscoveryResult",
+    "_internalOnGetBeaconsResult",
+    "_internalOnCreateBLEConnectionResult",
+    "_internalOnCloseBLEConnectionResult",
+    "_internalOnGetBLEDeviceServicesResult",
+    "_internalOnGetBLEDeviceCharacteristicsResult",
+    "_internalOnReadBLECharacteristicValueResult",
+    "_internalOnWriteBLECharacteristicValueResult",
+    "_internalOnNotifyBLECharacteristicValueChangeResult",
+    "_internalOnGetBLEDeviceRSSIResult",
+    "_internalOnSetBLEMTUResult",
+    "_internalOnGetBLEMTUResult",
+];
 
 // ==================== Domain Sub-Traits ====================
 //
