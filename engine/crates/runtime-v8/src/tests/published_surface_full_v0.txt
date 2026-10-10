@@ -102,6 +102,7 @@ checkUpdate
 checkUserLocation
 checkWritePhotosAlbum
 chooseImage
+chooseMedia
 chooseMessageFile
 clearInterval
 clearStorage
@@ -475,6 +476,7 @@ checkUpdate
 checkUserLocation
 checkWritePhotosAlbum
 chooseImage
+chooseMedia
 chooseMessageFile
 clearInterval
 clearStorage

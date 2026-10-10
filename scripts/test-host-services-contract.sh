@@ -63,6 +63,8 @@ ops: dict[str, str] = {}
 hooks: dict[str, str] = {}
 service_ids: dict[int, str] = {}
 CODE_FIELDS = {"errCode", "errno", None}
+# A result field naming a handed-over file: `a`, `a[]`, `a.b`, `a[].b`, ...
+FILE_FIELD = re.compile(r"[A-Za-z][A-Za-z0-9]*(\[\])?(\.[A-Za-z][A-Za-z0-9]*(\[\])?)*")
 
 for name, service in services.items():
     if not re.fullmatch(r"[a-z][a-z_]*", name):
@@ -111,8 +113,13 @@ for name, service in services.items():
             withheld = method.get("withheld", [])
             if not isinstance(withheld, list) or not all(isinstance(f, str) and f for f in withheld):
                 fail(f"{where}: withheld must list result field names")
+            files = method.get("files", [])
+            if not isinstance(files, list) or not all(
+                isinstance(f, str) and FILE_FIELD.fullmatch(f) for f in files
+            ):
+                fail(f"{where}: files must list result fields as `a`, `a[]` or `a[].b`")
         elif kind == "command":
-            for key in ("api", "hook", "error_code_field", "progress_hook", "withheld"):
+            for key in ("api", "hook", "error_code_field", "progress_hook", "withheld", "files"):
                 if key in method:
                     fail(f"{where}: a command is answered by nothing, so `{key}` means nothing")
         else:

@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `chooseMedia`, and the image APIs on every C ABI host: `MIGO_HOST_SERVICE_IMAGE` carries `saveImageToPhotosAlbum`,
+  `previewImage`, `previewMedia`, `compressImage`, `chooseImage`, `chooseMessageFile` and `chooseMedia` as calls. A
+  path content names reaches the host as the real file behind its sandbox path; a file a result names is handed over
+  and moved into the session's `/tmp`, so content receives a path its own file APIs read and a host path never reaches
+  JavaScript (contract field `files`).
 - C ABI host-service channel: native UI, the clipboard, code scanning and location. `MIGO_HOST_SERVICE_INTERACTION`
   carries `showToast` / `hideToast` / `showLoading` / `hideLoading` as commands and `showModal` / `showActionSheet` as
   calls; `MIGO_HOST_SERVICE_CLIPBOARD`, `MIGO_HOST_SERVICE_SCAN_CODE` and `MIGO_HOST_SERVICE_LOCATION` (still gated on
@@ -253,6 +258,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- The image APIs handed the host content's path verbatim, so `saveImageToPhotosAlbum` could copy any file the host
+  process could read into the player's album. Paths are resolved through the sandbox first; one outside it fails.
+- Android: a picked or compressed image arrived as the SDK's absolute cache path, which no file API resolves, so
+  content could not read what it had just been given. It arrives as a `/tmp` path.
+- Android: `saveImageToPhotosAlbum`, `previewImage` and `previewMedia` ran on the JavaScript thread and reported
+  failures as thrown errors; they are requests the SDK answers, with the album write off the main thread. Picked
+  files are copied off the main thread and keep their real type's extension.
+- Android: previewing a local file inserted a row into the player's photo library (and failed on Android 10+); it is
+  lent read-only to the viewer instead. A photo taken for `chooseImage` is no longer saved to the gallery.
+- `chooseImage`, `chooseMessageFile`, `previewImage`, `previewMedia` and `saveImageToPhotosAlbum` no longer time out
+  after 30 seconds while the player is still choosing.
 - `setClipboardData` / `getClipboardData` are requests the host answers, as the asynchronous APIs they are, rather than
   synchronous reads a host that owns its clipboard on another thread could not serve.
 - Android: a modal or action sheet that could not be shown -- no activity, malformed options -- fails with the reason

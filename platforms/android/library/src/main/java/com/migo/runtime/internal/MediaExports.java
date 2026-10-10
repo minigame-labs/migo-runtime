@@ -315,29 +315,42 @@ public final class MediaExports {
         }
     }
 
+    // Every request is answered, here too: the runtime waits on a picker or a
+    // viewer without a timeout, so returning silently would leave the call
+    // pending for the rest of the session.
+
     public static void imageSaveToPhotosAlbum(int sessionId, String optionsJson) {
         ImageApiManager mgr = getOrCreateImageApiManager(sessionId);
-        if (mgr == null) return;
+        if (mgr == null) {
+            NativeMethods.onSaveImageToPhotosAlbumResult(sessionId, noContext(optionsJson,
+                    "saveImageToPhotosAlbum"));
+            return;
+        }
         mgr.saveToPhotosAlbum(optionsJson);
     }
 
     public static void imagePreviewMedia(int sessionId, String optionsJson) {
         ImageApiManager mgr = getOrCreateImageApiManager(sessionId);
-        if (mgr == null) return;
+        if (mgr == null) {
+            NativeMethods.onPreviewMediaResult(sessionId, noContext(optionsJson, "previewMedia"));
+            return;
+        }
         mgr.previewMedia(optionsJson);
     }
 
     public static void imagePreviewImage(int sessionId, String optionsJson) {
         ImageApiManager mgr = getOrCreateImageApiManager(sessionId);
-        if (mgr == null) return;
+        if (mgr == null) {
+            NativeMethods.onPreviewImageResult(sessionId, noContext(optionsJson, "previewImage"));
+            return;
+        }
         mgr.previewImage(optionsJson);
     }
 
     public static void imageCompress(int sessionId, String optionsJson) {
         ImageApiManager mgr = getOrCreateImageApiManager(sessionId);
         if (mgr == null) {
-            NativeMethods.onCompressImageResult(sessionId, CallbackCorrelation.failure(
-                    CallbackCorrelation.requestIdOf(optionsJson), "compressImage", "no context"));
+            NativeMethods.onCompressImageResult(sessionId, noContext(optionsJson, "compressImage"));
             return;
         }
         mgr.compressAsync(optionsJson);
@@ -346,11 +359,8 @@ public final class MediaExports {
     public static void imageChooseMessageFile(int sessionId, String optionsJson) {
         ImageApiManager mgr = getOrCreateImageApiManager(sessionId);
         if (mgr == null) {
-            // Returning silently leaves the request pending until the runtime's
-            // thirty-second timeout, and under the FIFO fallback that timeout
-            // then rejects whichever request happens to be oldest.
-            NativeMethods.onChooseMessageFileResult(sessionId, CallbackCorrelation.failure(
-                    CallbackCorrelation.requestIdOf(optionsJson), "chooseMessageFile", "no context"));
+            NativeMethods.onChooseMessageFileResult(sessionId, noContext(optionsJson,
+                    "chooseMessageFile"));
             return;
         }
         mgr.chooseMessageFile(optionsJson);
@@ -359,11 +369,24 @@ public final class MediaExports {
     public static void imageChooseImage(int sessionId, String optionsJson) {
         ImageApiManager mgr = getOrCreateImageApiManager(sessionId);
         if (mgr == null) {
-            NativeMethods.onChooseImageResult(sessionId, CallbackCorrelation.failure(
-                    CallbackCorrelation.requestIdOf(optionsJson), "chooseImage", "no context"));
+            NativeMethods.onChooseImageResult(sessionId, noContext(optionsJson, "chooseImage"));
             return;
         }
         mgr.chooseImage(optionsJson);
+    }
+
+    public static void imageChooseMedia(int sessionId, String optionsJson) {
+        ImageApiManager mgr = getOrCreateImageApiManager(sessionId);
+        if (mgr == null) {
+            NativeMethods.onChooseMediaResult(sessionId, noContext(optionsJson, "chooseMedia"));
+            return;
+        }
+        mgr.chooseMedia(optionsJson);
+    }
+
+    private static String noContext(String optionsJson, String apiName) {
+        return CallbackCorrelation.failure(
+                CallbackCorrelation.requestIdOf(optionsJson), apiName, "no activity to show it in");
     }
 
     public static void destroyImageApiManager(int sessionId) {

@@ -164,6 +164,51 @@ async function run() {
   expect(located.ok && located.res.latitude === 31.2 && located.res.longitude === 121.5,
     "getLocation", located);
 
+  // Files cross both ways as files. A path content names reaches the host as the
+  // real file behind it (the host checks), and only a path content can itself
+  // read: one outside the sandbox fails here and never reaches the host. A file
+  // a result names arrives as a /tmp path content's own file APIs read.
+  const fs = migo.getFileSystemManager();
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4]);
+  fs.writeFileSync("/user/probe.png", png.buffer);
+  const bytesOf = function (path) { return new Uint8Array(fs.readFileSync(path)); };
+  const isPng = function (path) {
+    const bytes = bytesOf(path);
+    return bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[3] === 0x47;
+  };
+  const inTmp = function (path) { return typeof path === "string" && path.indexOf("/tmp/") === 0; };
+
+  const saved = await settle("saveImageToPhotosAlbum", { filePath: "/user/probe.png" });
+  expect(saved.ok && saved.res.errMsg === "saveImageToPhotosAlbum:ok", "saveImageToPhotosAlbum", saved);
+  const escaped = await settle("saveImageToPhotosAlbum", { filePath: "/etc/hosts" });
+  expect(!escaped.ok && escaped.res.errMsg.indexOf("saveImageToPhotosAlbum:fail Path not allowed") === 0,
+    "saveImageToPhotosAlbum outside the sandbox", escaped);
+  const viewed = await settle("previewImage", {
+    urls: ["https://example.com/a.png", "/user/probe.png"], current: "/user/probe.png",
+  });
+  expect(viewed.ok, "previewImage", viewed);
+  const played = await settle("previewMedia", { sources: [{ url: "/user/probe.png", type: "image" }] });
+  expect(played.ok, "previewMedia", played);
+
+  const compressed = await settle("compressImage", { src: "/user/probe.png", quality: 50 });
+  expect(compressed.ok && inTmp(compressed.res.tempFilePath) && isPng(compressed.res.tempFilePath),
+    "compressImage", compressed);
+  const picked = await settle("chooseImage", { count: 1 });
+  expect(picked.ok && inTmp(picked.res.tempFilePaths[0]) &&
+    picked.res.tempFiles[0].path === picked.res.tempFilePaths[0] &&
+    picked.res.tempFiles[0].size === bytesOf(picked.res.tempFilePaths[0]).length &&
+    isPng(picked.res.tempFilePaths[0]), "chooseImage", picked);
+  const chosen = await settle("chooseMessageFile", { count: 1 });
+  expect(chosen.ok && inTmp(chosen.res.tempFiles[0].path) && chosen.res.tempFiles[0].name === "doc.txt" &&
+    fs.readFileSync(chosen.res.tempFiles[0].path, "utf8") === "probe document",
+    "chooseMessageFile", chosen);
+  const media = await settle("chooseMedia", { mediaType: ["video"] });
+  const clip = media.ok ? media.res.tempFiles[0] : null;
+  expect(media.ok && media.res.type === "video" && inTmp(clip.tempFilePath) &&
+    /\.mp4$/.test(clip.tempFilePath) && inTmp(clip.thumbTempFilePath) && clip.duration === 1.5 &&
+    fs.readFileSync(clip.tempFilePath, "utf8") === "probe video" &&
+    fs.readFileSync(clip.thumbTempFilePath, "utf8") === "probe cover", "chooseMedia", media);
+
   // An advert's Promises are settled by what the host's SDK says: load()
   // when it has loaded, show() when it is on screen -- before it closes.
   // The reward is the host's word too: the close event's isEnded comes from it.
@@ -184,5 +229,9 @@ async function run() {
 
 run().catch(function (error) {
   // Out of the promise chain, so it arrives as an uncaught error with its text.
-  setTimeout(function () { throw error; }, 0);
+  // A file API fails with a plain `{errMsg}` object, which has no text of its
+  // own to report: it is carried in an Error that does.
+  const reported = error instanceof Error ? error
+    : new Error("migo-host-services-probe: threw " + JSON.stringify(error));
+  setTimeout(function () { throw reported; }, 0);
 });

@@ -204,6 +204,45 @@ mod deferred_api_tests {
         );
     }
 
+    /// An asynchronous executor -- an op with work to do before the request
+    /// leaves -- that rejects fails the call as a throw would: once, with its
+    /// reason, and with nothing left pending. One that resolves leaves the call
+    /// waiting for its result.
+    #[test]
+    fn an_asynchronous_executor_that_rejects_fails_the_call_once() {
+        let mut rt = boot();
+        exec(
+            &mut rt,
+            "<async_executor_setup>",
+            r#"
+            var _failed = [], _completeCount = 0, _okPending = false;
+            var api = createDeferredApi('testApi', 0);
+            api.invoke({
+                fail:     function(res) { _failed.push(res.errMsg); },
+                complete: function() { _completeCount++; }
+            }, function(opts, id) {
+                return Promise.reject(new Error("file not found: /user/a.png"));
+            });
+            api.invoke({ fail: function(res) { _failed.push(res.errMsg); } }, function(opts, id) {
+                return Promise.resolve();
+            });
+            "#,
+        );
+        drain(&mut rt);
+        exec(
+            &mut rt,
+            "<async_executor_assert>",
+            r#"
+            if (_failed.length !== 1 || _failed[0] !== "testApi:fail file not found: /user/a.png")
+                throw new Error("failures: " + JSON.stringify(_failed));
+            if (_completeCount !== 1)
+                throw new Error("complete count: " + _completeCount + " (expected 1)");
+            if (api.pendingCount() !== 1)
+                throw new Error("pending: " + api.pendingCount() + " (expected the resolved one)");
+            "#,
+        );
+    }
+
     /// A timeout that fires must settle the JS side exactly once.
     ///
     /// Before the fix: correct behaviour, but `api.pendingCount()` does not exist.

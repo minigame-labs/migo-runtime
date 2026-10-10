@@ -936,6 +936,13 @@ impl ImageApiService for AndroidImageApi {
             options_json,
         )?)
     }
+
+    fn choose_media(&self, options_json: &str) -> Result<(), ServiceError> {
+        Ok(jni::image_choose_media(
+            self.session.host_id(),
+            options_json,
+        )?)
+    }
 }
 
 // ==================== Video ====================

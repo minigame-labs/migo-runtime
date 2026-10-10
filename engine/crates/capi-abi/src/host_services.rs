@@ -39,6 +39,7 @@ pub const MIGO_HOST_SERVICE_INTERACTION: u32 = 8;
 pub const MIGO_HOST_SERVICE_CLIPBOARD: u32 = 9;
 pub const MIGO_HOST_SERVICE_SCAN_CODE: u32 = 10;
 pub const MIGO_HOST_SERVICE_LOCATION: u32 = 11;
+pub const MIGO_HOST_SERVICE_IMAGE: u32 = 12;
 
 /// Every service this library knows. A host declaring a bit outside it was
 /// built against a newer header than the library it runs with.
@@ -53,7 +54,8 @@ pub const MIGO_HOST_SERVICES_KNOWN: u64 = (1 << MIGO_HOST_SERVICE_AD)
     | (1 << MIGO_HOST_SERVICE_INTERACTION)
     | (1 << MIGO_HOST_SERVICE_CLIPBOARD)
     | (1 << MIGO_HOST_SERVICE_SCAN_CODE)
-    | (1 << MIGO_HOST_SERVICE_LOCATION);
+    | (1 << MIGO_HOST_SERVICE_LOCATION)
+    | (1 << MIGO_HOST_SERVICE_IMAGE);
 
 // ---- Methods, numbered per service. ----
 
@@ -100,6 +102,14 @@ pub const MIGO_SCAN_CODE_SCAN_CODE: u32 = 0;
 
 pub const MIGO_LOCATION_GET_LOCATION: u32 = 0;
 pub const MIGO_LOCATION_GET_FUZZY_LOCATION: u32 = 1;
+
+pub const MIGO_IMAGE_SAVE_IMAGE_TO_PHOTOS_ALBUM: u32 = 0;
+pub const MIGO_IMAGE_PREVIEW_IMAGE: u32 = 1;
+pub const MIGO_IMAGE_PREVIEW_MEDIA: u32 = 2;
+pub const MIGO_IMAGE_COMPRESS_IMAGE: u32 = 3;
+pub const MIGO_IMAGE_CHOOSE_IMAGE: u32 = 4;
+pub const MIGO_IMAGE_CHOOSE_MESSAGE_FILE: u32 = 5;
+pub const MIGO_IMAGE_CHOOSE_MEDIA: u32 = 6;
 
 // ---- Events, numbered per service. ----
 

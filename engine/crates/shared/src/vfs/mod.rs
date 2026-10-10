@@ -374,9 +374,14 @@ impl VirtualFS {
         real_path: PathBuf,
         permissions: FilePermissions,
     ) -> PathMapping {
+        // Stored normalized, because every path resolved under it is: a root
+        // spelled `<files>/../cache/...` would otherwise never prefix the
+        // normalized paths compared against it, and every existing file in a
+        // writable root failed the symlink walk as a traversal.
+        let real_path = normalize_path(&real_path);
         let strict_root = Self::pin_strict_root(&real_path).ok().map(Arc::new);
         let canonical_base =
-            std::fs::canonicalize(&real_path).unwrap_or_else(|_| normalize_path(&real_path));
+            std::fs::canonicalize(&real_path).unwrap_or_else(|_| real_path.clone());
         PathMapping {
             virtual_prefix: prefix,
             prefix_with_slash: format!("{}/", prefix),
@@ -981,6 +986,35 @@ pub(crate) fn check_no_symlinks_in_chain(full_path: &Path, base: &Path) -> Resul
 
 #[cfg(test)]
 mod tests {
+
+    /// A root whose spelling climbs out of a directory (`<files>/../cache`, as a
+    /// host that keeps its cache beside its files may pass it) still serves the
+    /// files in it.
+    #[test]
+    fn a_root_spelled_through_a_parent_still_reads_its_files() {
+        let scratch = std::env::temp_dir().join(format!(
+            "migo-vfs-dotdot-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(scratch.join("files")).unwrap();
+        std::fs::create_dir_all(scratch.join("cache/tmp")).unwrap();
+        std::fs::write(scratch.join("cache/tmp/a.png"), b"png").unwrap();
+        let climbing = scratch.join("files/../cache");
+        let vfs = VirtualFS::new(
+            scratch.join("files/code"),
+            scratch.join("files/user"),
+            climbing.join("sandbox"),
+            climbing.join("tmp"),
+        );
+
+        let resolved = vfs.resolve("/tmp/a.png", FileOp::Read);
+        let _ = std::fs::remove_dir_all(&scratch);
+        assert!(resolved.is_ok(), "{resolved:?}");
+    }
     use super::*;
 
     // -----------------------------------------------------------------------

@@ -339,6 +339,18 @@ typedef struct MigoHostServiceCall {
 | `MIGO_HOST_SERVICE_CLIPBOARD` (9) | `SET_CLIPBOARD_DATA` 0 · `GET_CLIPBOARD_DATA` 1 | 调用 | `setClipboardData` · `getClipboardData` |
 | `MIGO_HOST_SERVICE_SCAN_CODE` (10) | `SCAN_CODE` 0 | 调用 | `scanCode` |
 | `MIGO_HOST_SERVICE_LOCATION` (11) | `GET_LOCATION` 0 · `GET_FUZZY_LOCATION` 1 | 调用（先经 `scope.userLocation` 授权检查） | `getLocation` · `getFuzzyLocation` |
+| `MIGO_HOST_SERVICE_IMAGE` (12) | `SAVE_IMAGE_TO_PHOTOS_ALBUM` 0 · `PREVIEW_IMAGE` 1 · `PREVIEW_MEDIA` 2 · `COMPRESS_IMAGE` 3 · `CHOOSE_IMAGE` 4 · `CHOOSE_MESSAGE_FILE` 5 · `CHOOSE_MEDIA` 6 | 调用；涉及文件（见下） | `saveImageToPhotosAlbum`（先经 `scope.writePhotosAlbum`）· `previewImage` · `previewMedia` · `compressImage` · `chooseImage` · `chooseMessageFile` · `chooseMedia` |
+
+**文件。** 内容只用沙箱路径（`/tmp/...`、`/user/...`、包内路径），宿主只用真实路径，两边都看不到对方的那种：
+
+- **请求里的路径**由引擎先经沙箱解析成真实路径再发给宿主（两个预览 API 还可以是 http(s) URL）。内容只能指名它自己
+  读得到的文件——沙箱外的路径在内容侧就失败，不会到达宿主。该路径在调用完成前一直可读；宿主若在完成之后还要用
+  （例如交给仍在显示的查看器），须先打开或复制。
+- **结果里的文件**（契约的 `files` 字段：`COMPRESS_IMAGE` 的 `tempFilePath`、`CHOOSE_IMAGE` 的 `tempFilePaths[]` 与
+  `tempFiles[].path`、`CHOOSE_MESSAGE_FILE` 的 `tempFiles[].path`、`CHOOSE_MEDIA` 的 `tempFiles[].tempFilePath` 与
+  `thumbTempFilePath`）在完成调用时**移交**给引擎：引擎把它移进本会话的 `/tmp`（同卷即 rename），改写字段后再交给
+  内容，宿主路径永不进入 JavaScript。只移交宿主自己创建、之后不再碰的文件；文件对话框选出的是用户的原件，须先复制。
+  某个文件无法接收时，这次调用对内容以失败结算。
 
 编号由 `contracts/runtime/host-services.json` 唯一定义，只追加、不复用、不重排。声明了支付服务的宿主
 即视为可支付（`checkIsSupportMidasPayment` 回答 `allow_pay: true`）。广告激励视频的奖励只认宿主

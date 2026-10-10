@@ -19,6 +19,7 @@ mod codec;
 mod device;
 mod file;
 mod game_log;
+pub mod host_files;
 mod image_api;
 mod interaction;
 mod location;

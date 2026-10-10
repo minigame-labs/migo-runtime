@@ -37,6 +37,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #define SURFACE_WIDTH 256
 #define SURFACE_HEIGHT 256
@@ -169,10 +170,16 @@ static const uint64_t HOST_SERVICES = (UINT64_C(1) << MIGO_HOST_SERVICE_AD)
                                       | (UINT64_C(1) << MIGO_HOST_SERVICE_INTERACTION)
                                       | (UINT64_C(1) << MIGO_HOST_SERVICE_CLIPBOARD)
                                       | (UINT64_C(1) << MIGO_HOST_SERVICE_SCAN_CODE)
-                                      | (UINT64_C(1) << MIGO_HOST_SERVICE_LOCATION);
+                                      | (UINT64_C(1) << MIGO_HOST_SERVICE_LOCATION)
+                                      | (UINT64_C(1) << MIGO_HOST_SERVICE_IMAGE);
 
 /* The clipboard this host keeps: what content last wrote. */
 static char g_clipboard[256] = "";
+
+/* Where this host makes the files it hands over, and the engine's data root:
+ * every path content names must arrive as a real file under the latter. */
+static NSString *g_host_files;
+static NSString *g_engine_data;
 
 static void probe_failure(const char *what) {
     pthread_mutex_lock(&g_lock);
@@ -181,6 +188,141 @@ static void probe_failure(const char *what) {
     fprintf(stderr, "[macos-headless] host-service probe: %s\n", what);
     fflush(stderr);
     publish(OUTCOME_ERROR);
+}
+
+/* ---- images: real files both ways --------------------------------------------- */
+
+static NSDictionary *payload_object(const char *payload) {
+    NSData *data = [NSData dataWithBytes:payload length:strlen(payload)];
+    id object = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+    return [object isKindOfClass:[NSDictionary class]] ? object : nil;
+}
+
+static const unsigned char PNG_SIGNATURE[8] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+
+/* A path content named: the real file behind its sandbox path, inside the
+ * engine's data -- never content's own string, never anything else -- and still
+ * readable while the call is open. */
+static BOOL is_content_png(id value) {
+    if (![value isKindOfClass:[NSString class]]) return NO;
+    NSString *real = [value stringByResolvingSymlinksInPath];
+    if (![real hasPrefix:g_engine_data]) return NO;
+    NSData *bytes = [NSData dataWithContentsOfFile:real];
+    return bytes.length >= sizeof(PNG_SIGNATURE)
+           && memcmp(bytes.bytes, PNG_SIGNATURE, sizeof(PNG_SIGNATURE)) == 0;
+}
+
+/* A file made for a result, handed over with it. */
+static NSString *host_file(NSString *name, NSData *bytes) {
+    NSString *path = [g_host_files stringByAppendingPathComponent:name];
+    if (![bytes writeToFile:path atomically:NO]) {
+        probe_failure("could not write a file to hand over");
+        return nil;
+    }
+    return path;
+}
+
+static NSData *png_bytes(const char *tail) {
+    NSMutableData *bytes = [NSMutableData dataWithBytes:PNG_SIGNATURE length:sizeof(PNG_SIGNATURE)];
+    [bytes appendBytes:tail length:strlen(tail)];
+    return bytes;
+}
+
+static void complete_ok(MigoSession *session, uint64_t call_id, const char *payload_json);
+static void complete_object(MigoSession *session, uint64_t call_id, id object);
+
+/* Answer with `object`, which hands `files` over: once the completion returns
+ * they are the engine's, moved out of this host's directory. */
+static void hand_over(MigoSession *session, uint64_t call_id, id object, NSArray<NSString *> *files) {
+    complete_object(session, call_id, object);
+    for (NSString *path in files) {
+        if ([[NSFileManager defaultManager] fileExistsAtPath:path]) {
+            probe_failure("a file handed over in a result stayed with the host");
+            return;
+        }
+    }
+}
+
+static int handle_image_call(MigoSession *session, const MigoHostServiceCall *call,
+                             const char *payload) {
+    NSDictionary *request = payload_object(payload);
+    if (request == nil) {
+        probe_failure("an image request is not a JSON object");
+        return 1;
+    }
+    switch (call->method) {
+        case MIGO_IMAGE_SAVE_IMAGE_TO_PHOTOS_ALBUM:
+            if (!is_content_png(request[@"filePath"])) {
+                probe_failure("saveImageToPhotosAlbum named something other than content's file");
+                return 1;
+            }
+            complete_ok(session, call->call_id, "");
+            return 1;
+        case MIGO_IMAGE_PREVIEW_IMAGE: {
+            NSArray *urls = request[@"urls"];
+            if (![urls isKindOfClass:[NSArray class]] || urls.count != 2
+                || ![urls[0] isEqual:@"https://example.com/a.png"] || !is_content_png(urls[1])
+                || ![request[@"current"] isEqual:urls[1]]) {
+                probe_failure("previewImage did not carry the URL and content's file");
+                return 1;
+            }
+            complete_ok(session, call->call_id, "");
+            return 1;
+        }
+        case MIGO_IMAGE_PREVIEW_MEDIA: {
+            NSArray *sources = request[@"sources"];
+            if (![sources isKindOfClass:[NSArray class]] || sources.count != 1
+                || !is_content_png(sources[0][@"url"])) {
+                probe_failure("previewMedia did not carry content's file");
+                return 1;
+            }
+            complete_ok(session, call->call_id, "");
+            return 1;
+        }
+        case MIGO_IMAGE_COMPRESS_IMAGE: {
+            if (!is_content_png(request[@"src"])) {
+                probe_failure("compressImage named something other than content's file");
+                return 1;
+            }
+            NSString *out = host_file(@"compressed.png", png_bytes("compressed"));
+            if (out == nil) return 1;
+            hand_over(session, call->call_id, @{@"tempFilePath" : out}, @[ out ]);
+            return 1;
+        }
+        case MIGO_IMAGE_CHOOSE_IMAGE: {
+            NSData *bytes = png_bytes("picked");
+            NSString *picked = host_file(@"picked.png", bytes);
+            if (picked == nil) return 1;
+            hand_over(session, call->call_id, @{
+                @"tempFilePaths" : @[ picked ],
+                @"tempFiles" : @[ @{@"path" : picked, @"size" : @(bytes.length)} ],
+            }, @[ picked ]);
+            return 1;
+        }
+        case MIGO_IMAGE_CHOOSE_MESSAGE_FILE: {
+            NSData *bytes = [@"probe document" dataUsingEncoding:NSUTF8StringEncoding];
+            NSString *doc = host_file(@"doc.txt", bytes);
+            if (doc == nil) return 1;
+            hand_over(session, call->call_id, @{
+                @"tempFiles" : @[ @{@"path" : doc, @"size" : @(bytes.length), @"name" : @"doc.txt",
+                                    @"type" : @"file", @"time" : @1} ],
+            }, @[ doc ]);
+            return 1;
+        }
+        case MIGO_IMAGE_CHOOSE_MEDIA: {
+            NSString *clip = host_file(@"clip.mp4", [@"probe video" dataUsingEncoding:NSUTF8StringEncoding]);
+            NSString *thumb = host_file(@"clip-cover.jpg", [@"probe cover" dataUsingEncoding:NSUTF8StringEncoding]);
+            if (clip == nil || thumb == nil) return 1;
+            hand_over(session, call->call_id, @{
+                @"type" : @"video",
+                @"tempFiles" : @[ @{@"tempFilePath" : clip, @"thumbTempFilePath" : thumb,
+                                    @"size" : @11, @"duration" : @1.5, @"width" : @16,
+                                    @"height" : @9, @"fileType" : @"video"} ],
+            }, @[ clip, thumb ]);
+            return 1;
+        }
+    }
+    return 0;
 }
 
 static MigoHostServiceResult host_result(MigoHostServiceStatus status) {
@@ -199,6 +341,12 @@ static void complete_ok(MigoSession *session, uint64_t call_id, const char *payl
     if (migo_session_complete_host_service_call(session, call_id, &result) != MIGO_OK) {
         probe_failure("migo_session_complete_host_service_call refused a success");
     }
+}
+
+static void complete_object(MigoSession *session, uint64_t call_id, id object) {
+    NSData *json = [NSJSONSerialization dataWithJSONObject:object options:0 error:nil];
+    NSString *text = [[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding];
+    complete_ok(session, call_id, text.UTF8String);
 }
 
 static void complete_fail(MigoSession *session, uint64_t call_id, const char *message,
@@ -381,6 +529,9 @@ static void MIGO_CALL on_host_service_call(void *user_data, MigoSession *session
                     return;
             }
             break;
+        case MIGO_HOST_SERVICE_IMAGE:
+            if (handle_image_call(session, call, payload)) return;
+            break;
         case MIGO_HOST_SERVICE_SUBPACKAGE:
             if (call->method == MIGO_SUBPACKAGE_DOWNLOAD) {
                 /* The subpackage the content's game.json declared, by name and
@@ -460,6 +611,16 @@ int main(int argc, char **argv) {
     char cache_dir[1024];
     char code_cache_dir[1024];
     snprintf(cache_dir, sizeof(cache_dir), "%s/../cache", files_dir);
+    /* The engine's files and cache share this parent; a path content names
+     * must resolve to somewhere under it. */
+    g_engine_data = [[[NSString stringWithUTF8String:files_dir] stringByDeletingLastPathComponent]
+        stringByResolvingSymlinksInPath];
+    g_host_files = [NSTemporaryDirectory()
+        stringByAppendingPathComponent:[NSString stringWithFormat:@"migo-probe-host-%d", getpid()]];
+    [[NSFileManager defaultManager] createDirectoryAtPath:g_host_files
+                              withIntermediateDirectories:YES
+                                               attributes:nil
+                                                    error:nil];
     snprintf(code_cache_dir, sizeof(code_cache_dir), "%s/../code-cache", files_dir);
 
     /* Ask the library what it supports before building anything on it. The
@@ -526,6 +687,8 @@ int main(int argc, char **argv) {
     result = migo_session_set_scope_state(session, MIGO_SCOPE_USER_INFO, MIGO_SCOPE_STATE_GRANTED);
     if (result != MIGO_OK) return fail("migo_session_set_scope_state", result);
     result = migo_session_set_scope_state(session, MIGO_SCOPE_USER_LOCATION, MIGO_SCOPE_STATE_GRANTED);
+    if (result != MIGO_OK) return fail("migo_session_set_scope_state", result);
+    result = migo_session_set_scope_state(session, MIGO_SCOPE_WRITE_PHOTOS_ALBUM, MIGO_SCOPE_STATE_GRANTED);
     if (result != MIGO_OK) return fail("migo_session_set_scope_state", result);
     result = migo_session_set_system_settings(
         session, MIGO_SYSTEM_SETTING_FLAG_BLUETOOTH_ENABLED | MIGO_SYSTEM_SETTING_FLAG_WIFI_ENABLED);

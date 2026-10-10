@@ -8,16 +8,16 @@
 
 use migo_capi_abi::host_services::{
     MIGO_HOST_SERVICE_AD, MIGO_HOST_SERVICE_AUTH, MIGO_HOST_SERVICE_CLIPBOARD,
-    MIGO_HOST_SERVICE_INTERACTION, MIGO_HOST_SERVICE_LOCATION, MIGO_HOST_SERVICE_NAVIGATE,
-    MIGO_HOST_SERVICE_PAYMENT, MIGO_HOST_SERVICE_PERMISSION, MIGO_HOST_SERVICE_SCAN_CODE,
-    MIGO_HOST_SERVICE_SHARE, MIGO_HOST_SERVICE_SUBPACKAGE,
+    MIGO_HOST_SERVICE_IMAGE, MIGO_HOST_SERVICE_INTERACTION, MIGO_HOST_SERVICE_LOCATION,
+    MIGO_HOST_SERVICE_NAVIGATE, MIGO_HOST_SERVICE_PAYMENT, MIGO_HOST_SERVICE_PERMISSION,
+    MIGO_HOST_SERVICE_SCAN_CODE, MIGO_HOST_SERVICE_SHARE, MIGO_HOST_SERVICE_SUBPACKAGE,
 };
 use migo_core::services::{
     AdService, AuthService, BatteryService, ClipboardService, CommerceServices,
-    ConnectivityServices, GameLogService, InteractionService, KeyboardService, LocationService,
-    MediaServices, NavigateService, NetworkService, PaymentService, PermissionService,
-    ScanCodeService, ScreenService, SensorServices, ShareService, SubpackageService,
-    SystemInfoService, SystemUtilServices, VibrationService,
+    ConnectivityServices, GameLogService, ImageApiService, InteractionService, KeyboardService,
+    LocationService, MediaServices, NavigateService, NetworkService, PaymentService,
+    PermissionService, ScanCodeService, ScreenService, SensorServices, ShareService,
+    SubpackageService, SystemInfoService, SystemUtilServices, VibrationService,
 };
 use migo_core::{DeviceServiceProvider, FrameClock, HostNotifier};
 use shared::protocol::error::ServiceError;
@@ -174,7 +174,12 @@ impl SensorServices for CapiDeviceServices {
     }
 }
 
-impl MediaServices for CapiDeviceServices {}
+impl MediaServices for CapiDeviceServices {
+    fn image_api(&self) -> Option<Arc<dyn ImageApiService>> {
+        self.host_service(MIGO_HOST_SERVICE_IMAGE)
+            .map(|services| services as Arc<dyn ImageApiService>)
+    }
+}
 
 impl ConnectivityServices for CapiDeviceServices {
     fn network(&self) -> Option<Arc<dyn NetworkService>> {

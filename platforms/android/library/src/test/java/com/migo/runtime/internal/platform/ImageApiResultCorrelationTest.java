@@ -101,6 +101,34 @@ public final class ImageApiResultCorrelationTest {
     }
 
     @Test
+    public void a_chosen_media_result_names_its_kind_from_its_items() throws Exception {
+        JSONObject photo = new JSONObject().put("tempFilePath", "/c/a.jpg").put("fileType", "image");
+        JSONObject clip = new JSONObject().put("tempFilePath", "/c/b.mp4").put("fileType", "video")
+                .put("thumbTempFilePath", "/c/b.jpg");
+
+        JSONObject images = new JSONObject(ImageApiManager.chooseMediaResultJson(
+                3, Collections.singletonList(photo)));
+        JSONObject videos = new JSONObject(ImageApiManager.chooseMediaResultJson(
+                4, Collections.singletonList(clip)));
+        JSONObject mixed = new JSONObject(ImageApiManager.chooseMediaResultJson(
+                5, Arrays.asList(photo, clip)));
+
+        assertEquals(3, images.getInt("requestId"));
+        assertEquals("image", images.getString("type"));
+        assertEquals("video", videos.getString("type"));
+        assertEquals("mix", mixed.getString("type"));
+        assertEquals("/c/b.jpg",
+                mixed.getJSONArray("tempFiles").getJSONObject(1).getString("thumbTempFilePath"));
+    }
+
+    @Test
+    public void a_request_that_answers_only_success_still_names_its_request() throws Exception {
+        assertEquals(12, new JSONObject(ImageApiManager.doneJson(12)).getInt("requestId"));
+        assertFalse(new JSONObject(ImageApiManager.doneJson(CallbackCorrelation.ABSENT))
+                .has("requestId"));
+    }
+
+    @Test
     public void a_cancelled_picker_reports_failure_to_the_request_it_cancelled() throws Exception {
         JSONObject failure =
                 new JSONObject(CallbackCorrelation.failure(77, "chooseImage", "cancel"));

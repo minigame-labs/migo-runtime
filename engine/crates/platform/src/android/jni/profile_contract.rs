@@ -113,9 +113,13 @@ const NATIVE_MEDIA: &[JniMethod] = methods![
         "onCameraFrameData",
         "(IJILjava/nio/ByteBuffer;IILjava/nio/ByteBuffer;IILjava/nio/ByteBuffer;IIII)V"
     ),
+    ("onSaveImageToPhotosAlbumResult", "(ILjava/lang/String;)V"),
+    ("onPreviewImageResult", "(ILjava/lang/String;)V"),
+    ("onPreviewMediaResult", "(ILjava/lang/String;)V"),
     ("onCompressImageResult", "(ILjava/lang/String;)V"),
     ("onChooseImageResult", "(ILjava/lang/String;)V"),
     ("onChooseMessageFileResult", "(ILjava/lang/String;)V"),
+    ("onChooseMediaResult", "(ILjava/lang/String;)V"),
     ("onVideoEvent", "(IJILjava/lang/String;Ljava/lang/String;)V"),
 ];
 
@@ -241,6 +245,7 @@ const JAVA_MEDIA: &[JniMethod] = methods![
     ("imageCompress", "(ILjava/lang/String;)V"),
     ("imageChooseMessageFile", "(ILjava/lang/String;)V"),
     ("imageChooseImage", "(ILjava/lang/String;)V"),
+    ("imageChooseMedia", "(ILjava/lang/String;)V"),
     ("videoCreate", "(ILjava/lang/String;)Ljava/lang/String;"),
     ("videoPlay", "(II)V"),
     ("videoPause", "(II)V"),
@@ -444,8 +449,10 @@ mod tests {
         // Deriving the display period from the vsync timestamps the scheduler
         // already receives removes -1 native (`setDisplayRefreshRate`), which
         // reported a rate once per session and never again when the display
-        // changed mode.
-        assert_eq!(native.len(), 68, "full NativeBridge surface changed");
+        // changed mode. Image requests the SDK answers rather than throws from
+        // add +4 native (`onSaveImageToPhotosAlbumResult`, `onPreviewImageResult`,
+        // `onPreviewMediaResult`, and `onChooseMediaResult` for the new API).
+        assert_eq!(native.len(), 72, "full NativeBridge surface changed");
         // Runtime-generation fencing adds +2 Java (`beginRuntimeRestart`,
         // `completeRuntimeRestart`), both Core: every profile restarts.
         // Concurrent-session correctness removes -1 Java (`getCacheDirPath`,
@@ -453,7 +460,8 @@ mod tests {
         // through whichever session came first). Surface-loss delivery adds
         // +1 Java (`onSurfaceLost`), Core: it is the only signal that reaches
         // an Android host when presentation fails on a Surface it still holds.
-        assert_eq!(java.len(), 127, "full NativeExports surface changed");
+        // `chooseMedia` adds +1 Java (`imageChooseMedia`).
+        assert_eq!(java.len(), 128, "full NativeExports surface changed");
         assert_unique(&native);
         assert_unique(&java);
     }

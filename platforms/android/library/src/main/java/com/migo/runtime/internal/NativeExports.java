@@ -1912,6 +1912,10 @@ public final class NativeExports {
         MediaExports.imageChooseImage(sessionId, optionsJson);
     }
 
+    public static void imageChooseMedia(int sessionId, String optionsJson) {
+        MediaExports.imageChooseMedia(sessionId, optionsJson);
+    }
+
     /**
      * Clean up Image API resources for a session. Call on session shutdown.
      */
