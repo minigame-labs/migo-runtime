@@ -22,6 +22,9 @@ public final class GameSurfaceView extends SurfaceView {
 
     public GameSurfaceView(Context context) {
         super(context);
+        // A keyboard's keys and a gamepad's motion go to the focused view.
+        setFocusable(true);
+        setFocusableInTouchMode(true);
     }
 
     public void setPointerCaptureListener(PointerCaptureListener listener) {

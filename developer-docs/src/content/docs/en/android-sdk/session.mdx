@@ -79,6 +79,18 @@ use `session.dispatchGenericMotionEvent(ev)`. When the window moves between free
 (Android 11+), content hears `onWindowStateChange`; an Android app cannot size its own window, so `setWindowSize` is not
 supported.
 
+### Physical keyboard and gamepads
+
+The same view's key listener becomes the session's too. With a keyboard attached, keys reach `onKeyDown` / `onKeyUp` as
+DOM `key` / `code` (with modifiers and `repeat`); system keys -- back, home, volume, media -- stay Android's. With a
+gamepad attached, it appears in `migo.getGamepads()` on the standard mapping (`mapping: "standard"`, 4 axes, 17 buttons)
+and arriving or leaving fires `onGamepadConnected` / `onGamepadDisconnected`; a stick counts only past the device's dead
+zone, an analogue trigger with no button signal of its own is pressed past 30/255 of its travel, and a hat switch is the
+d-pad. A pad's back key is not given to the game: it is the player's way out of it. Android sends keys and gamepad
+motion to the **focused** view: `GameSurfaceView` is focusable and takes focus in `setInputView`, and a view of your own
+must be focusable and take focus; when forwarding by hand, use `session.dispatchKeyEvent(ev)`. Pads already connected
+when the session is created arrive at once, and all of them leave when it closes.
+
 ## State broadcasts: `OnStateChangeListener`
 
 `setOnStateChangeListener(listener)` receives the engine's loading / running / error state transitions — use it to drive the loading UI; **do not** estimate state with `SystemClock`. `GameSessionListener` (a separate interface) provides finer-grained loadingStart/loadingEnd hooks.

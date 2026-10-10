@@ -486,10 +486,10 @@ MIGO_API MigoResult MIGO_CALL migo_session_send_composition_event(
 /*
  * Gamepads.
  *
- * Mainstream mini-game platforms have no gamepad API, so the shape here is the Web one Migo replaces:
- * content calls navigator.getGamepads() and listens for gamepadconnected.
- * Inventing a Migo-shaped API instead would make existing HTML5 games not work
- * for no reason.
+ * The common mini-game platform's gamepad API (getGamepads, onGamepadConnected,
+ * onGamepadDisconnected) follows the browser standard, the W3C Gamepad API --
+ * what content in a WebView reads through navigator.getGamepads() -- and this
+ * is its shape.
  *
  * The Web API is POLLED, not evented: content reads whatever is current each
  * frame. So a host announces a pad once, then pushes samples as often as it

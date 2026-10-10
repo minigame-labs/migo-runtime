@@ -144,6 +144,7 @@ use jni::{JNIEnv, JavaVM};
 use shared::services::host_files::HostFiles;
 use tracing::{error, info, warn};
 
+use crate::android_gamepad_buffer::{gamepad_state, gamepad_state_bytes};
 use migo_core::{
     HostIngress, HostIngressSendError, host_ingress, lease_surface, retire_surface,
     send_command_to_host, send_critical_command_to_host, send_reliable_command_to_host,
@@ -154,7 +155,10 @@ use shared::protocol::camera_frame::{
     take_camera_frame, validate_camera_frame_dimensions, validate_camera_frame_payload_lengths,
     with_camera_frame_admission,
 };
-use shared::protocol::host_cmd::{HostCommand, TouchData, TouchPoint, TouchType};
+use shared::protocol::host_cmd::{
+    GAMEPAD_MAX_AXES, GAMEPAD_MAX_BUTTONS, GAMEPAD_MAX_COUNT, HostCommand, TouchData, TouchPoint,
+    TouchType,
+};
 use shared::protocol::recorder_frame::with_recorder_frame_credit;
 use shared::surface::{PixelRatio, SurfaceRef};
 
@@ -1161,6 +1165,161 @@ pub(crate) extern "system" fn onPointerLockChanged(
 }
 
 jni_json_callback!(onWindowStateChanged, "_internalOnWindowStateEvent");
+
+// ==================== Keyboard and gamepads ====================
+//
+// A physical keyboard and gamepads, which an Android device takes as readily
+// as a PC: the SDK is the host that turns Android key codes into DOM `key` and
+// `code` and lays gamepads out on the standard mapping, as a C ABI host does.
+
+/// One physical key press (`down`) or release, as DOM `key` and `code`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) extern "system" fn onKeyEvent<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    host_id: jint,
+    down: jboolean,
+    key: JString<'local>,
+    code: JString<'local>,
+    modifiers: jint,
+    repeat: jboolean,
+    timestamp_ms: jdouble,
+) -> jboolean {
+    jni_safe!("onKeyEvent", JNI_FALSE, {
+        let (Ok(key), Ok(code)) = (env.get_string(&key), env.get_string(&code)) else {
+            return JNI_FALSE;
+        };
+        let (key, code): (String, String) = (key.into(), code.into());
+        // A code always names a physical key; a key may be empty (a dead key).
+        if code.is_empty() {
+            return JNI_FALSE;
+        }
+        let modifiers = modifiers as u32;
+        let command = if down == JNI_TRUE {
+            HostCommand::OnKeyDown {
+                key,
+                code,
+                timestamp_ms,
+                modifiers,
+                repeat: repeat == JNI_TRUE,
+            }
+        } else {
+            HostCommand::OnKeyUp {
+                key,
+                code,
+                timestamp_ms,
+                modifiers,
+                repeat: false,
+            }
+        };
+        match with_hot_ingress(host_id, |ingress| ingress.try_send_key(command)) {
+            Some(Ok(_)) => JNI_TRUE,
+            _ => JNI_FALSE,
+        }
+    })
+}
+
+/// A gamepad appearing in slot `index` with its axis and button counts, or
+/// leaving it.
+#[allow(clippy::too_many_arguments)]
+pub(crate) extern "system" fn onGamepadConnection<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    host_id: jint,
+    index: jint,
+    connected: jboolean,
+    id: JString<'local>,
+    mapping: JString<'local>,
+    axis_count: jint,
+    button_count: jint,
+) -> jboolean {
+    jni_safe!("onGamepadConnection", JNI_FALSE, {
+        let Ok(index) = u32::try_from(index) else {
+            return JNI_FALSE;
+        };
+        if index as usize >= GAMEPAD_MAX_COUNT {
+            return JNI_FALSE;
+        }
+        let command = if connected == JNI_TRUE {
+            let (Ok(axis_count), Ok(button_count)) =
+                (u8::try_from(axis_count), u8::try_from(button_count))
+            else {
+                return JNI_FALSE;
+            };
+            if axis_count as usize > GAMEPAD_MAX_AXES || button_count as usize > GAMEPAD_MAX_BUTTONS
+            {
+                return JNI_FALSE;
+            }
+            let (Ok(id), Ok(mapping)) = (env.get_string(&id), env.get_string(&mapping)) else {
+                return JNI_FALSE;
+            };
+            HostCommand::OnGamepadConnected {
+                index,
+                id: id.into(),
+                mapping: mapping.into(),
+                axis_count,
+                button_count,
+            }
+        } else {
+            HostCommand::OnGamepadDisconnected { index }
+        };
+        match with_hot_ingress(host_id, |ingress| {
+            ingress.try_send_gamepad_connection(command)
+        }) {
+            Some(Ok(_)) => JNI_TRUE,
+            _ => JNI_FALSE,
+        }
+    })
+}
+
+/// One sample of a connected gamepad, read from a direct buffer laid out as
+/// `gamepad_state` reads it.
+#[allow(clippy::too_many_arguments)]
+pub(crate) extern "system" fn onGamepadState<'local>(
+    env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    host_id: jint,
+    index: jint,
+    axis_count: jint,
+    button_count: jint,
+    buffer: JObject<'local>,
+    timestamp_ms: jdouble,
+) -> jboolean {
+    jni_safe!("onGamepadState", JNI_FALSE, {
+        let (Ok(index), Ok(axis_count), Ok(button_count)) = (
+            u32::try_from(index),
+            usize::try_from(axis_count),
+            usize::try_from(button_count),
+        ) else {
+            return JNI_FALSE;
+        };
+        if index as usize >= GAMEPAD_MAX_COUNT
+            || axis_count > GAMEPAD_MAX_AXES
+            || button_count > GAMEPAD_MAX_BUTTONS
+        {
+            return JNI_FALSE;
+        }
+        let buffer = JByteBuffer::from(buffer);
+        let (Ok(address), Ok(capacity)) = (
+            env.get_direct_buffer_address(&buffer),
+            env.get_direct_buffer_capacity(&buffer),
+        ) else {
+            return JNI_FALSE;
+        };
+        let needed = gamepad_state_bytes(axis_count, button_count);
+        if needed > capacity {
+            return JNI_FALSE;
+        }
+        // SAFETY: the address is a live direct buffer holding at least `needed`
+        // bytes (checked above), borrowed for this call.
+        let bytes = unsafe { std::slice::from_raw_parts(address as *const u8, needed) };
+        let state = gamepad_state(index, axis_count, button_count, bytes, timestamp_ms);
+        match with_hot_ingress(host_id, |ingress| ingress.try_send_gamepad_state(state)) {
+            Some(Ok(_)) => JNI_TRUE,
+            _ => JNI_FALSE,
+        }
+    })
+}
 
 // ==================== Device Sensor ====================
 

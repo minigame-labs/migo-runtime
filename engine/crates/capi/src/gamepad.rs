@@ -28,6 +28,7 @@ pub use migo_capi_abi::input::{MigoGamepadButton, MigoGamepadInfo, MigoGamepadSt
 use migo_capi_abi::input::{MIGO_GAMEPAD_BUTTON_FLAG_PRESSED, MIGO_GAMEPAD_BUTTON_FLAG_TOUCHED};
 
 const _: () = assert!(GAMEPAD_MAX_AXES == MIGO_GAMEPAD_MAX_AXES);
+const _: () = assert!(shared::protocol::host_cmd::GAMEPAD_MAX_COUNT == MIGO_GAMEPAD_MAX_COUNT);
 const _: () = assert!(GAMEPAD_MAX_BUTTONS == MIGO_GAMEPAD_MAX_BUTTONS);
 
 // Four bits cover 0..=8 axes and five cover 0..=20 buttons. The upper bits

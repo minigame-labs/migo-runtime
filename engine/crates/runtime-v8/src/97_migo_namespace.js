@@ -7,13 +7,10 @@
 // etc.) gets that platform's global from an external, platform-specific
 // adapter package instead (the same pattern the BOM/DOM adapter already
 // uses -- see minigame-labs/migo-web-adapter), loaded by the host or the game
-// itself, not baked into every build whether it's wanted or not.
-// `_NON_MINIGAME_API` below is
-// kept as reference data for those adapters and for
-// `scripts/test-content-namespace-contract.sh`: it documents which of
-// migo's own capabilities go beyond the common mini-game API surface, which
-// the engine still knows and still needs to publish accurately even though
-// it no longer acts on it to build anything itself.
+// itself, not baked into every build whether it's wanted or not. Every name
+// published here is the common mini-game platform's -- the gamepad API too
+// (getGamepads, on/offGamepadConnected, on/offGamepadDisconnected), which a
+// list here once excluded as if the platform had none.
 //
 // migo registers its low-level APIs directly on globalThis; this file
 // projects them onto one deliberate namespace object so app code has a
@@ -98,18 +95,6 @@ const _NON_API = new Set([
     "console",                           // standard JS, not namespaced
     "_CCSettings",                       // engine-compat shim (Cocos)
     ..._RUNTIME_INTERNALS,
-]);
-
-// Browser content capabilities implemented by the native runtime and surfaced
-// by the HTML5 adapter. No mini-game platform (a mainstream mini-game client, a quick-game alliance
-// member, etc.) has a corresponding public name for these -- kept here as
-// reference data for any platform-compat adapter and for
-// scripts/test-content-namespace-contract.sh, neither of which this file
-// acts on directly anymore.
-const _NON_MINIGAME_API = new Set([
-    "getGamepads",
-    "onGamepadConnected", "offGamepadConnected",
-    "onGamepadDisconnected", "offGamepadDisconnected",
 ]);
 
 function _shouldMirrorApi(key) {

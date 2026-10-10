@@ -8,6 +8,10 @@ mod android_permission_gate;
 mod android_frame_rate;
 
 #[cfg(any(target_os = "android", test))]
+#[path = "android/gamepad_buffer.rs"]
+mod android_gamepad_buffer;
+
+#[cfg(any(target_os = "android", test))]
 mod host_owners;
 
 #[cfg(any(target_os = "android", test))]

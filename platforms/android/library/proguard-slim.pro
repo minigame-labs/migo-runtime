@@ -13,6 +13,9 @@
     static native *** onTouchEvent(...);
     static native *** onPointerEvent(...);
     static native *** onWheelEvent(...);
+    static native *** onKeyEvent(...);
+    static native *** onGamepadConnection(...);
+    static native *** onGamepadState(...);
     static native *** modMain(...);
     static native *** executeScript(...);
     static native *** onVsync(...);

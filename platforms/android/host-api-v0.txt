@@ -64,6 +64,7 @@
   public abstract void succeed(java.util.Map<java.lang.String, ?>);
   public android.view.View getInputView();
   public boolean dispatchGenericMotionEvent(android.view.MotionEvent);
+  public boolean dispatchKeyEvent(android.view.KeyEvent);
   public boolean dispatchTouchEvent(android.view.MotionEvent);
   public boolean initIcuData(java.lang.String);
   public boolean isCodeSigningEnabled();

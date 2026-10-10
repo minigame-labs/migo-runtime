@@ -76,6 +76,8 @@ pub struct TouchData {
 /// The public ABI rejects a topology past these limits instead of silently
 /// truncating buttons or axes that content may rely on; a platform adapter may
 /// deliberately remap a device before it enters this transport.
+/// How many gamepad slots a session has.
+pub const GAMEPAD_MAX_COUNT: usize = 16;
 pub const GAMEPAD_MAX_AXES: usize = 8;
 pub const GAMEPAD_MAX_BUTTONS: usize = 20;
 
