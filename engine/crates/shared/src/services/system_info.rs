@@ -77,14 +77,26 @@ pub trait SystemInfoService: Send + Sync {
         ))
     }
 
-    /// Get the bounding client rect of the menu button (capsule) as JSON.
+    /// The bounding client rect of the host's menu button (the capsule), in the
+    /// window's CSS pixels: `width`, `height`, `top`, `bottom`, `left`, `right`.
     ///
-    /// Expected JSON fields: `width`, `height`, `top`, `bottom`, `left`, `right`.
-    /// On platforms without a menu button, returns a reasonable default rect
-    /// positioned at the top-right corner.
+    /// A host has a menu button only when it says so by overriding this. One
+    /// that does not has none: an empty rect at the top-right corner of the
+    /// safe area, so content that lays itself out around the button loses
+    /// nothing. A rect made up to look like the common platform's capsule --
+    /// what this once answered, sized for a 375-pixel-wide window -- would have
+    /// content leave room for a button that is not there, wherever it is not.
     fn get_menu_button_bounding_client_rect_json(&self) -> Result<String, ServiceError> {
-        // Default: 87x32 rect at top-right, typical for mini-game capsule button.
-        Ok(r#"{"width":87,"height":32,"top":4,"bottom":36,"left":278,"right":365}"#.to_string())
+        let window: crate::surface::WindowInfo =
+            serde_json::from_str(&self.get_window_info_json()?).map_err(|error| {
+                ServiceError::system(format!("getMenuButtonBoundingClientRect:fail {error}"))
+            })?;
+        let right = window.window_width - window.safe_area.right;
+        let top = window.safe_area.top;
+        Ok(serde_json::json!({
+            "width": 0, "height": 0, "top": top, "bottom": top, "left": right, "right": right,
+        })
+        .to_string())
     }
 
     /// Get window info as JSON string.

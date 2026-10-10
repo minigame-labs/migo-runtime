@@ -136,6 +136,7 @@ createImageData
 createInnerAudioContext
 createInterstitialAd
 createMediaAudioPlayer
+createOpenSettingButton
 createPageManager
 createPath2D
 createRewardedVideoAd
@@ -605,6 +606,7 @@ createImageData
 createInnerAudioContext
 createInterstitialAd
 createMediaAudioPlayer
+createOpenSettingButton
 createPageManager
 createPath2D
 createRewardedVideoAd

@@ -354,6 +354,7 @@
         "op_close_ble_connection": "unsupported",
         "op_close_bluetooth_adapter": "unsupported",
         "op_create_ble_connection": "unsupported",
+        "op_crypto_random_values": "local",
         "op_ecosystem_available": "local",
         "op_ecosystem_call": "unsupported",
         "op_ecosystem_reply": "unsupported",

@@ -287,6 +287,15 @@ pub fn op_get_ble_mtu(state: &mut OpState, #[string] request_json: &str) -> Resu
         .map_err(JsErrorBox::generic)
 }
 
+// ==================== Crypto ====================
+
+/// Fill `out` from the OS's cryptographically secure random source.
+#[op2(fast)]
+pub fn op_crypto_random_values(#[buffer] out: &mut [u8]) -> Result<(), JsErrorBox> {
+    getrandom::fill(out)
+        .map_err(|error| JsErrorBox::generic(format!("no secure random source: {error}")))
+}
+
 // ==================== Ecosystem ====================
 //
 // The host's ecosystem features, routed by content API name (the closed list in
@@ -699,6 +708,7 @@ deno_core::extension!(
         op_get_app_authorization_setting,
         op_game_log_report,
         op_get_auth_setting,
+        op_crypto_random_values,
         op_ecosystem_available,
         op_ecosystem_call,
         op_ecosystem_reply,

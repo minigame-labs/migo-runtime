@@ -58,9 +58,10 @@ const ECOSYSTEM_CALLS = [
     'updateHostApp',
 ];
 
-// Requests content makes through an object rather than a function of their
-// own -- the call that creates it (getMiniReportManager) or its methods -- so
-// none is published as a global; the objects are in 21_ecosystem_objects.js.
+// Requests content makes through a facade of their own rather than a function
+// published from here -- an object's call (getMiniReportManager, its methods;
+// 21_ecosystem_objects.js) or a function with its own signature (reportEvent;
+// 17_analytics.js).
 const ECOSYSTEM_OBJECT_CALLS = [
     'GameServerManager.broadcastInRoom', 'GameServerManager.cancelMatch',
     'GameServerManager.changeSeat', 'GameServerManager.createRoom', 'GameServerManager.endGame',
@@ -77,6 +78,8 @@ const ECOSYSTEM_OBJECT_CALLS = [
     'RankManager.abort', 'RankManager.createChallenge', 'RankManager.getScore',
     'RankManager.middleUpdate', 'RankManager.update',
     'getMiniReportManager', 'MiniReportManager.report',
+    'GameClubButton.open', 'FeedbackButton.open',
+    'reportEvent', 'reportMonitor', 'reportPerformance', 'reportScene',
     'ScenePerformanceManager.setData',
     'StoreGift.getOrderInfo', 'StoreGift.open',
     'UserCryptoManager.getLatestUserKey',

@@ -12,7 +12,9 @@ public interface GameLogHandler {
     /**
      * Called when the game reports a log entry.
      *
-     * @param logJson JSON string containing: level, key, value, commonInfo
+     * @param logJson JSON string containing: source, level, key, value -- source
+     *                {@code "gameLog"} (getGameLogManager, with commonInfo) or
+     *                {@code "realtime"} (getRealtimeLogManager, with filterMsg)
      */
     void onLog(String logJson);
 }
