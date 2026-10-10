@@ -711,6 +711,43 @@
           "hook": "_internalOnBeaconServiceEvent"
         }
       }
+    },
+    "window": {
+      "id": 16,
+      "methods": {
+        "set_window_size": {
+          "id": 0,
+          "kind": "call",
+          "op": "op_set_window_size",
+          "hook": "_internalOnSetWindowSizeResult",
+          "error_code_field": null
+        },
+        "set_cursor": {
+          "id": 1,
+          "kind": "command",
+          "op": "op_set_cursor"
+        },
+        "request_pointer_lock": {
+          "id": 2,
+          "kind": "command",
+          "op": "op_request_pointer_lock"
+        },
+        "exit_pointer_lock": {
+          "id": 3,
+          "kind": "command",
+          "op": "op_exit_pointer_lock"
+        }
+      },
+      "events": {
+        "window_state_change": {
+          "id": 0,
+          "hook": "_internalOnWindowStateEvent"
+        },
+        "pointer_lock_change": {
+          "id": 1,
+          "hook": "_internalOnPointerLockEvent"
+        }
+      }
     }
   }
 }

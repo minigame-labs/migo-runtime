@@ -174,7 +174,8 @@ static const uint64_t HOST_SERVICES = (UINT64_C(1) << MIGO_HOST_SERVICE_AD)
                                       | (UINT64_C(1) << MIGO_HOST_SERVICE_IMAGE)
                                       | (UINT64_C(1) << MIGO_HOST_SERVICE_MOTION)
                                       | (UINT64_C(1) << MIGO_HOST_SERVICE_SCREEN)
-                                      | (UINT64_C(1) << MIGO_HOST_SERVICE_BLUETOOTH);
+                                      | (UINT64_C(1) << MIGO_HOST_SERVICE_BLUETOOTH)
+                                      | (UINT64_C(1) << MIGO_HOST_SERVICE_WINDOW);
 
 /* The clipboard this host keeps: what content last wrote. */
 static char g_clipboard[256] = "";
@@ -365,6 +366,48 @@ static int handle_bluetooth_call(MigoSession *session, const MigoHostServiceCall
         case MIGO_BLUETOOTH_CLOSE_BLE_CONNECTION:
         case MIGO_BLUETOOTH_CLOSE_ADAPTER:
             complete_ok(session, call->call_id, "");
+            return 1;
+    }
+    return 0;
+}
+
+/* ---- the desktop window ---------------------------------------------------- */
+
+static void post_window_event(MigoSession *session, uint32_t event, const char *json) {
+    if (migo_session_post_host_service_event(session, MIGO_HOST_SERVICE_WINDOW, event, json,
+                                             (uint32_t)strlen(json)) != MIGO_OK) {
+        probe_failure("migo_session_post_host_service_event refused a window event");
+    }
+}
+
+static int handle_window_call(MigoSession *session, const MigoHostServiceCall *call,
+                              const char *payload) {
+    switch (call->method) {
+        case MIGO_WINDOW_SET_WINDOW_SIZE:
+            if (strstr(payload, "\"width\":800") == NULL || strstr(payload, "\"height\":600") == NULL) {
+                probe_failure("setWindowSize did not carry its size");
+                return 1;
+            }
+            complete_ok(session, call->call_id, "");
+            post_window_event(session, MIGO_WINDOW_EVENT_WINDOW_STATE_CHANGE,
+                              "{\"state\":\"normalize\"}");
+            return 1;
+        case MIGO_WINDOW_SET_CURSOR: {
+            if (call->call_id != 0) {
+                probe_failure("setCursor carried a call id");
+                return 1;
+            }
+            NSDictionary *cursor = payload_object(payload);
+            if (cursor[@"keyword"] == nil && !is_content_png(cursor[@"path"])) {
+                probe_failure("setCursor named neither a keyword nor content's file");
+            }
+            return 1;
+        }
+        case MIGO_WINDOW_REQUEST_POINTER_LOCK:
+            post_window_event(session, MIGO_WINDOW_EVENT_POINTER_LOCK_CHANGE, "{\"locked\":true}");
+            return 1;
+        case MIGO_WINDOW_EXIT_POINTER_LOCK:
+            post_window_event(session, MIGO_WINDOW_EVENT_POINTER_LOCK_CHANGE, "{\"locked\":false}");
             return 1;
     }
     return 0;
@@ -711,6 +754,9 @@ static void MIGO_CALL on_host_service_call(void *user_data, MigoSession *session
             break;
         case MIGO_HOST_SERVICE_BLUETOOTH:
             if (handle_bluetooth_call(session, call, payload)) return;
+            break;
+        case MIGO_HOST_SERVICE_WINDOW:
+            if (handle_window_call(session, call, payload)) return;
             break;
         case MIGO_HOST_SERVICE_SUBPACKAGE:
             if (call->method == MIGO_SUBPACKAGE_DOWNLOAD) {

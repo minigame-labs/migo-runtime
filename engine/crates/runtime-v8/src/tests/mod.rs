@@ -51,3 +51,4 @@ mod deferred_api;
 #[cfg(feature = "api-system")]
 mod update_manager_reports_no_update;
 mod v8_limits;
+mod window_service;

@@ -3,6 +3,7 @@
 import * as interaction from 'ext:host_v8_ui/01_interaction.js';
 import * as buttonsApi from 'ext:host_v8_ui/02_buttons.js';
 import * as pageManagerApi from 'ext:host_v8_ui/03_page_manager.js';
+import * as windowApi from 'ext:host_v8_ui/04_window.js';
 
 import { primordials, core } from "ext:core/mod.js";
 const { ObjectDefineProperties } = primordials;
@@ -26,4 +27,16 @@ ObjectDefineProperties(globalThis, {
 
     // Page Manager
     createPageManager: core.propNonEnumerable(pageManagerApi.createPageManager),
+
+    // Desktop window: size, cursor, pointer lock
+    setWindowSize: core.propNonEnumerable(windowApi.setWindowSize),
+    _internalOnSetWindowSizeResult: core.propNonEnumerable(windowApi._internalOnSetWindowSizeResult),
+    onWindowStateChange: core.propNonEnumerable(windowApi.onWindowStateChange),
+    offWindowStateChange: core.propNonEnumerable(windowApi.offWindowStateChange),
+    _internalOnWindowStateEvent: core.propNonEnumerable(windowApi._internalOnWindowStateEvent),
+    setCursor: core.propNonEnumerable(windowApi.setCursor),
+    requestPointerLock: core.propNonEnumerable(windowApi.requestPointerLock),
+    exitPointerLock: core.propNonEnumerable(windowApi.exitPointerLock),
+    isPointerLocked: core.propNonEnumerable(windowApi.isPointerLocked),
+    _internalOnPointerLockEvent: core.propNonEnumerable(windowApi._internalOnPointerLockEvent),
 });

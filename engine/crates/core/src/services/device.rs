@@ -10,5 +10,5 @@ pub use shared::services::{
     LocationService, MediaServices, NavigateService, NetworkService, PaymentService,
     PermissionService, RecorderService, ScanCodeService, Scope, ScopeState, ScreenService,
     SensorServices, ServiceError, ServiceErrorCode, ShareService, SubpackageService,
-    SystemInfoService, SystemUtilServices, VibrationService, VideoService,
+    SystemInfoService, SystemUtilServices, VibrationService, VideoService, WindowService,
 };

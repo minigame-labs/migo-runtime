@@ -8,7 +8,7 @@ use super::{
     AdService, AuthService, CameraService, ClipboardService, CodecService, FileService,
     GameLogService, ImageApiService, InteractionService, LocationService, NavigateService,
     NetworkService, PaymentService, PermissionService, ScanCodeService, ShareService,
-    SubpackageService, SystemInfoService, VideoService,
+    SubpackageService, SystemInfoService, VideoService, WindowService,
 };
 
 // ==================== Battery ====================
@@ -655,6 +655,11 @@ pub trait SystemUtilServices: Send + Sync {
         None
     }
     fn navigate(&self) -> Option<Arc<dyn NavigateService>> {
+        None
+    }
+    /// The desktop window, where the host has one content may size, point at
+    /// and lock the pointer in.
+    fn window(&self) -> Option<Arc<dyn WindowService>> {
         None
     }
 }

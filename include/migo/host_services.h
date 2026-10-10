@@ -53,6 +53,7 @@ typedef uint32_t MigoHostService;
 #define MIGO_HOST_SERVICE_MOTION 13U
 #define MIGO_HOST_SERVICE_SCREEN 14U
 #define MIGO_HOST_SERVICE_BLUETOOTH 15U
+#define MIGO_HOST_SERVICE_WINDOW 16U
 
 /*
  * Ads. All six are commands addressed to the advert by the adId in their
@@ -289,6 +290,26 @@ typedef uint32_t MigoHostService;
 #define MIGO_BLUETOOTH_EVENT_BLE_MTU_CHANGE 3U
 #define MIGO_BLUETOOTH_EVENT_BEACON_UPDATE 4U
 #define MIGO_BLUETOOTH_EVENT_BEACON_SERVICE_CHANGE 5U
+
+/*
+ * The desktop window. SET_WINDOW_SIZE is a call {"width", "height"} (pixels) ->
+ * {}. SET_CURSOR is a command: {"keyword"} -- a CSS cursor keyword, "default"
+ * restoring the system cursor -- or {"path", "x", "y"}, a real path to the image
+ * (ico, cur, or whatever the platform reads) and its hotspot. REQUEST_ and
+ * EXIT_POINTER_LOCK are commands; report the outcome as POINTER_LOCK_CHANGE
+ * {"locked"} -- a host may refuse a request that did not follow a user action,
+ * and the player may release the lock -- and while locked keep reporting mouse
+ * MOVE positions that accumulate the raw motion (they may leave the surface), so
+ * content's movementX/movementY keep moving while the cursor stands still.
+ * WINDOW_STATE_CHANGE {"state": "minimize" | "normalize" | "maximize"} reports
+ * each change. A mobile host declares none of this.
+ */
+#define MIGO_WINDOW_SET_WINDOW_SIZE 0U
+#define MIGO_WINDOW_SET_CURSOR 1U
+#define MIGO_WINDOW_REQUEST_POINTER_LOCK 2U
+#define MIGO_WINDOW_EXIT_POINTER_LOCK 3U
+#define MIGO_WINDOW_EVENT_WINDOW_STATE_CHANGE 0U
+#define MIGO_WINDOW_EVENT_POINTER_LOCK_CHANGE 1U
 
 /*
  * Content's permission scopes, in migo.getSetting()'s order. The host decides

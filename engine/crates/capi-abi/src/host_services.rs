@@ -43,6 +43,7 @@ pub const MIGO_HOST_SERVICE_IMAGE: u32 = 12;
 pub const MIGO_HOST_SERVICE_MOTION: u32 = 13;
 pub const MIGO_HOST_SERVICE_SCREEN: u32 = 14;
 pub const MIGO_HOST_SERVICE_BLUETOOTH: u32 = 15;
+pub const MIGO_HOST_SERVICE_WINDOW: u32 = 16;
 
 /// Every service this library knows. A host declaring a bit outside it was
 /// built against a newer header than the library it runs with.
@@ -61,7 +62,8 @@ pub const MIGO_HOST_SERVICES_KNOWN: u64 = (1 << MIGO_HOST_SERVICE_AD)
     | (1 << MIGO_HOST_SERVICE_IMAGE)
     | (1 << MIGO_HOST_SERVICE_MOTION)
     | (1 << MIGO_HOST_SERVICE_SCREEN)
-    | (1 << MIGO_HOST_SERVICE_BLUETOOTH);
+    | (1 << MIGO_HOST_SERVICE_BLUETOOTH)
+    | (1 << MIGO_HOST_SERVICE_WINDOW);
 
 // ---- Methods, numbered per service. ----
 
@@ -167,6 +169,13 @@ pub const MIGO_BLUETOOTH_EVENT_BLE_CONNECTION_STATE_CHANGE: u32 = 2;
 pub const MIGO_BLUETOOTH_EVENT_BLE_MTU_CHANGE: u32 = 3;
 pub const MIGO_BLUETOOTH_EVENT_BEACON_UPDATE: u32 = 4;
 pub const MIGO_BLUETOOTH_EVENT_BEACON_SERVICE_CHANGE: u32 = 5;
+
+pub const MIGO_WINDOW_SET_WINDOW_SIZE: u32 = 0;
+pub const MIGO_WINDOW_SET_CURSOR: u32 = 1;
+pub const MIGO_WINDOW_REQUEST_POINTER_LOCK: u32 = 2;
+pub const MIGO_WINDOW_EXIT_POINTER_LOCK: u32 = 3;
+pub const MIGO_WINDOW_EVENT_WINDOW_STATE_CHANGE: u32 = 0;
+pub const MIGO_WINDOW_EVENT_POINTER_LOCK_CHANGE: u32 = 1;
 
 // ---- Events, numbered per service. ----
 

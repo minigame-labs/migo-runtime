@@ -280,6 +280,30 @@ async function run() {
   expect((await settle("closeBLEConnection", { deviceId: device.deviceId })).ok, "closeBLEConnection", null);
   expect((await settle("closeBluetoothAdapter")).ok, "closeBluetoothAdapter", null);
 
+  // The desktop window: the cursor is a keyword or content's own file, the size
+  // is the host's to set, and the pointer is locked while the host says so.
+  expect(migo.setCursor("pointer") === true, "setCursor keyword", null);
+  expect(migo.setCursor("/user/probe.png", 1, 2) === true, "setCursor file", null);
+  expect(migo.setCursor("/etc/hosts", 0, 0) === false, "setCursor outside the sandbox", null);
+  const windowState = new Promise(function (resolve) { migo.onWindowStateChange(resolve); });
+  expect((await settle("setWindowSize", { width: 800, height: 600 })).ok, "setWindowSize", null);
+  expect((await windowState).state === "normalize", "onWindowStateChange", null);
+  const lockedTo = function (locked) {
+    return new Promise(function (resolve, reject) {
+      const deadline = Date.now() + 2000;
+      (function poll() {
+        if (migo.isPointerLocked() === locked) return resolve();
+        if (Date.now() > deadline) return reject(new Error("pointer lock never became " + locked));
+        setTimeout(poll, 5);
+      })();
+    });
+  };
+  migo.requestPointerLock();
+  await lockedTo(true);
+  migo.exitPointerLock();
+  await lockedTo(false);
+  expect(migo.createPath2D() instanceof Path2D, "createPath2D", null);
+
   // An advert's Promises are settled by what the host's SDK says: load()
   // when it has loaded, show() when it is on screen -- before it closes.
   // The reward is the host's word too: the close event's isEnded comes from it.
