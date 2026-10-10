@@ -26,6 +26,7 @@ ObjectDefineProperties(globalThis, {
     _internalTriggerDeviceMotionChange: core.propNonEnumerable(deviceMotion._internalTriggerDeviceMotionChange),
     startDeviceMotionListening: core.propNonEnumerable(deviceMotion.startDeviceMotionListening),
     stopDeviceMotionListening: core.propNonEnumerable(deviceMotion.stopDeviceMotionListening),
+    _internalOnStartDeviceMotionListeningResult: core.propNonEnumerable(deviceMotion._internalOnStartDeviceMotionListeningResult),
 
     // Gyroscope
     onGyroscopeChange: core.propNonEnumerable(gyroscope.onGyroscopeChange),
@@ -33,11 +34,13 @@ ObjectDefineProperties(globalThis, {
     _internalTriggerGyroscopeChange: core.propNonEnumerable(gyroscope._internalTriggerGyroscopeChange),
     startGyroscope: core.propNonEnumerable(gyroscope.startGyroscope),
     stopGyroscope: core.propNonEnumerable(gyroscope.stopGyroscope),
+    _internalOnStartGyroscopeResult: core.propNonEnumerable(gyroscope._internalOnStartGyroscopeResult),
 
     // Device Orientation
     onDeviceOrientationChange: core.propNonEnumerable(orientation.onDeviceOrientationChange),
     offDeviceOrientationChange: core.propNonEnumerable(orientation.offDeviceOrientationChange),
     _internalTriggerDeviceOrientationChange: core.propNonEnumerable(orientation._internalTriggerDeviceOrientationChange),
+    _internalOnDeviceOrientationEvent: core.propNonEnumerable(orientation._internalOnDeviceOrientationEvent),
 
     // Compass
     onCompassChange: core.propNonEnumerable(compass.onCompassChange),
@@ -45,6 +48,7 @@ ObjectDefineProperties(globalThis, {
     _internalTriggerCompassChange: core.propNonEnumerable(compass._internalTriggerCompassChange),
     startCompass: core.propNonEnumerable(compass.startCompass),
     stopCompass: core.propNonEnumerable(compass.stopCompass),
+    _internalOnStartCompassResult: core.propNonEnumerable(compass._internalOnStartCompassResult),
 
     // Accelerometer
     onAccelerometerChange: core.propNonEnumerable(accelerometer.onAccelerometerChange),
@@ -52,6 +56,7 @@ ObjectDefineProperties(globalThis, {
     _internalTriggerAccelerometerChange: core.propNonEnumerable(accelerometer._internalTriggerAccelerometerChange),
     startAccelerometer: core.propNonEnumerable(accelerometer.startAccelerometer),
     stopAccelerometer: core.propNonEnumerable(accelerometer.stopAccelerometer),
+    _internalOnStartAccelerometerResult: core.propNonEnumerable(accelerometer._internalOnStartAccelerometerResult),
 
     // Battery
     getBatteryInfo: core.propNonEnumerable(battery.getBatteryInfo),
@@ -69,9 +74,19 @@ ObjectDefineProperties(globalThis, {
 
     // Screen
     getScreenBrightness: core.propNonEnumerable(screen.getScreenBrightness),
+    _internalOnGetScreenBrightnessResult: core.propNonEnumerable(screen._internalOnGetScreenBrightnessResult),
     setScreenBrightness: core.propNonEnumerable(screen.setScreenBrightness),
+    _internalOnSetScreenBrightnessResult: core.propNonEnumerable(screen._internalOnSetScreenBrightnessResult),
     setKeepScreenOn: core.propNonEnumerable(screen.setKeepScreenOn),
     setDeviceOrientation: core.propNonEnumerable(screen.setDeviceOrientation),
+    _internalOnSetDeviceOrientationResult: core.propNonEnumerable(screen._internalOnSetDeviceOrientationResult),
+    getScreenRecordingState: core.propNonEnumerable(screen.getScreenRecordingState),
+    _internalOnGetScreenRecordingStateResult: core.propNonEnumerable(screen._internalOnGetScreenRecordingStateResult),
+    onScreenRecordingStateChanged: core.propNonEnumerable(screen.onScreenRecordingStateChanged),
+    offScreenRecordingStateChanged: core.propNonEnumerable(screen.offScreenRecordingStateChanged),
+    _internalOnScreenRecordingStateEvent: core.propNonEnumerable(screen._internalOnScreenRecordingStateEvent),
+    setVisualEffectOnCapture: core.propNonEnumerable(screen.setVisualEffectOnCapture),
+    _internalOnSetVisualEffectOnCaptureResult: core.propNonEnumerable(screen._internalOnSetVisualEffectOnCaptureResult),
     setEnableDebug: core.propNonEnumerable(screen.setEnableDebug),
     onUserCaptureScreen: core.propNonEnumerable(screen.onUserCaptureScreen),
     offUserCaptureScreen: core.propNonEnumerable(screen.offUserCaptureScreen),

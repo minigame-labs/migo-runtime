@@ -92,6 +92,7 @@ const NATIVE_SENSORS: &[JniMethod] = methods![
     ("onAccelerometerChange", "(IJDDD)V"),
     ("onNetworkStatusChange", "(IZLjava/lang/String;)V"),
     ("onUserCaptureScreen", "(IJ)V"),
+    ("onScreenRecordingStateChanged", "(ILjava/lang/String;)V"),
     ("onLocationResult", "(ILjava/lang/String;)V"),
     ("onFuzzyLocationResult", "(ILjava/lang/String;)V"),
     ("onScanCodeResult", "(ILjava/lang/String;)V"),
@@ -198,14 +199,18 @@ const JAVA_SENSORS: &[JniMethod] = methods![
     ("setDeviceOrientation", "(ILjava/lang/String;)I"),
     ("startCaptureScreen", "(I)V"),
     ("stopCaptureScreen", "(I)V"),
+    ("getScreenRecordingState", "(I)I"),
+    ("startScreenRecordingObserver", "(I)V"),
+    ("stopScreenRecordingObserver", "(I)V"),
+    ("setVisualEffectOnCapture", "(IZ)I"),
     ("setEnableDebug", "(IZ)I"),
-    ("startDeviceMotionListening", "(ILjava/lang/String;)V"),
+    ("startDeviceMotionListening", "(ILjava/lang/String;)Z"),
     ("stopDeviceMotionListening", "(I)V"),
-    ("startGyroscope", "(ILjava/lang/String;)V"),
+    ("startGyroscope", "(ILjava/lang/String;)Z"),
     ("stopGyroscope", "(I)V"),
-    ("startCompass", "(I)V"),
+    ("startCompass", "(I)Z"),
     ("stopCompass", "(I)V"),
-    ("startAccelerometer", "(ILjava/lang/String;)V"),
+    ("startAccelerometer", "(ILjava/lang/String;)Z"),
     ("stopAccelerometer", "(I)V"),
     ("startNetworkMonitoring", "(I)V"),
     ("stopNetworkMonitoring", "(I)V"),
@@ -452,7 +457,8 @@ mod tests {
         // changed mode. Image requests the SDK answers rather than throws from
         // add +4 native (`onSaveImageToPhotosAlbumResult`, `onPreviewImageResult`,
         // `onPreviewMediaResult`, and `onChooseMediaResult` for the new API).
-        assert_eq!(native.len(), 72, "full NativeBridge surface changed");
+        // Screen-recording state adds +1 native (`onScreenRecordingStateChanged`).
+        assert_eq!(native.len(), 73, "full NativeBridge surface changed");
         // Runtime-generation fencing adds +2 Java (`beginRuntimeRestart`,
         // `completeRuntimeRestart`), both Core: every profile restarts.
         // Concurrent-session correctness removes -1 Java (`getCacheDirPath`,
@@ -460,8 +466,10 @@ mod tests {
         // through whichever session came first). Surface-loss delivery adds
         // +1 Java (`onSurfaceLost`), Core: it is the only signal that reaches
         // an Android host when presentation fails on a Surface it still holds.
-        // `chooseMedia` adds +1 Java (`imageChooseMedia`).
-        assert_eq!(java.len(), 128, "full NativeExports surface changed");
+        // `chooseMedia` adds +1 Java (`imageChooseMedia`). Screen recording adds
+        // +4 Java (`getScreenRecordingState`, `start`/`stopScreenRecordingObserver`,
+        // `setVisualEffectOnCapture`).
+        assert_eq!(java.len(), 132, "full NativeExports surface changed");
         assert_unique(&native);
         assert_unique(&java);
     }

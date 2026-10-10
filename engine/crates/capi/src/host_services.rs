@@ -30,28 +30,38 @@ use migo_capi_abi::{
         MIGO_AUTH_GET_PHONE_NUMBER, MIGO_AUTH_GET_USER_INFO, MIGO_AUTH_LOGIN,
         MIGO_CLIPBOARD_GET_CLIPBOARD_DATA, MIGO_CLIPBOARD_SET_CLIPBOARD_DATA, MIGO_HOST_SERVICE_AD,
         MIGO_HOST_SERVICE_AUTH, MIGO_HOST_SERVICE_CLIPBOARD, MIGO_HOST_SERVICE_IMAGE,
-        MIGO_HOST_SERVICE_INTERACTION, MIGO_HOST_SERVICE_LOCATION, MIGO_HOST_SERVICE_NAVIGATE,
-        MIGO_HOST_SERVICE_PAYMENT, MIGO_HOST_SERVICE_PERMISSION, MIGO_HOST_SERVICE_SCAN_CODE,
-        MIGO_HOST_SERVICE_SETTING, MIGO_HOST_SERVICE_SHARE, MIGO_HOST_SERVICE_SUBPACKAGE,
-        MIGO_IMAGE_CHOOSE_IMAGE, MIGO_IMAGE_CHOOSE_MEDIA, MIGO_IMAGE_CHOOSE_MESSAGE_FILE,
-        MIGO_IMAGE_COMPRESS_IMAGE, MIGO_IMAGE_PREVIEW_IMAGE, MIGO_IMAGE_PREVIEW_MEDIA,
-        MIGO_IMAGE_SAVE_IMAGE_TO_PHOTOS_ALBUM, MIGO_INTERACTION_HIDE_LOADING,
-        MIGO_INTERACTION_HIDE_TOAST, MIGO_INTERACTION_SHOW_ACTION_SHEET,
-        MIGO_INTERACTION_SHOW_LOADING, MIGO_INTERACTION_SHOW_MODAL, MIGO_INTERACTION_SHOW_TOAST,
-        MIGO_LOCATION_GET_FUZZY_LOCATION, MIGO_LOCATION_GET_LOCATION,
-        MIGO_NAVIGATE_NAVIGATE_BACK_MINI_PROGRAM, MIGO_NAVIGATE_NAVIGATE_TO_MINI_PROGRAM,
-        MIGO_NAVIGATE_OPEN_CUSTOMER_SERVICE_CONVERSATION, MIGO_PAYMENT_REQUEST_MIDAS_PAYMENT,
-        MIGO_PAYMENT_REQUEST_MIDAS_PAYMENT_GAME_ITEM, MIGO_PERMISSION_REQUEST_SCOPE,
-        MIGO_SCAN_CODE_SCAN_CODE, MIGO_SETTING_OPEN_APP_AUTHORIZE_SETTING,
-        MIGO_SETTING_OPEN_SETTING, MIGO_SETTING_OPEN_SYSTEM_BLUETOOTH_SETTING,
-        MIGO_SHARE_SHARE_APP_MESSAGE, MIGO_SUBPACKAGE_DOWNLOAD, MigoHostServiceResult,
-        copy_bounded,
+        MIGO_HOST_SERVICE_INTERACTION, MIGO_HOST_SERVICE_LOCATION, MIGO_HOST_SERVICE_MOTION,
+        MIGO_HOST_SERVICE_NAVIGATE, MIGO_HOST_SERVICE_PAYMENT, MIGO_HOST_SERVICE_PERMISSION,
+        MIGO_HOST_SERVICE_SCAN_CODE, MIGO_HOST_SERVICE_SCREEN, MIGO_HOST_SERVICE_SETTING,
+        MIGO_HOST_SERVICE_SHARE, MIGO_HOST_SERVICE_SUBPACKAGE, MIGO_IMAGE_CHOOSE_IMAGE,
+        MIGO_IMAGE_CHOOSE_MEDIA, MIGO_IMAGE_CHOOSE_MESSAGE_FILE, MIGO_IMAGE_COMPRESS_IMAGE,
+        MIGO_IMAGE_PREVIEW_IMAGE, MIGO_IMAGE_PREVIEW_MEDIA, MIGO_IMAGE_SAVE_IMAGE_TO_PHOTOS_ALBUM,
+        MIGO_INTERACTION_HIDE_LOADING, MIGO_INTERACTION_HIDE_TOAST,
+        MIGO_INTERACTION_SHOW_ACTION_SHEET, MIGO_INTERACTION_SHOW_LOADING,
+        MIGO_INTERACTION_SHOW_MODAL, MIGO_INTERACTION_SHOW_TOAST, MIGO_LOCATION_GET_FUZZY_LOCATION,
+        MIGO_LOCATION_GET_LOCATION, MIGO_MOTION_START_ACCELEROMETER, MIGO_MOTION_START_COMPASS,
+        MIGO_MOTION_START_DEVICE_MOTION, MIGO_MOTION_START_GYROSCOPE,
+        MIGO_MOTION_STOP_ACCELEROMETER, MIGO_MOTION_STOP_COMPASS, MIGO_MOTION_STOP_DEVICE_MOTION,
+        MIGO_MOTION_STOP_GYROSCOPE, MIGO_NAVIGATE_NAVIGATE_BACK_MINI_PROGRAM,
+        MIGO_NAVIGATE_NAVIGATE_TO_MINI_PROGRAM, MIGO_NAVIGATE_OPEN_CUSTOMER_SERVICE_CONVERSATION,
+        MIGO_PAYMENT_REQUEST_MIDAS_PAYMENT, MIGO_PAYMENT_REQUEST_MIDAS_PAYMENT_GAME_ITEM,
+        MIGO_PERMISSION_REQUEST_SCOPE, MIGO_SCAN_CODE_SCAN_CODE,
+        MIGO_SCREEN_EVENT_DEVICE_ORIENTATION_CHANGE, MIGO_SCREEN_EVENT_RECORDING_STATE_CHANGE,
+        MIGO_SCREEN_EVENT_USER_CAPTURE_SCREEN, MIGO_SCREEN_GET_BRIGHTNESS,
+        MIGO_SCREEN_GET_RECORDING_STATE, MIGO_SCREEN_SET_BRIGHTNESS,
+        MIGO_SCREEN_SET_DEVICE_ORIENTATION, MIGO_SCREEN_SET_VISUAL_EFFECT_ON_CAPTURE,
+        MIGO_SCREEN_START_CAPTURE_OBSERVER, MIGO_SCREEN_START_RECORDING_OBSERVER,
+        MIGO_SCREEN_STOP_CAPTURE_OBSERVER, MIGO_SCREEN_STOP_RECORDING_OBSERVER,
+        MIGO_SETTING_OPEN_APP_AUTHORIZE_SETTING, MIGO_SETTING_OPEN_SETTING,
+        MIGO_SETTING_OPEN_SYSTEM_BLUETOOTH_SETTING, MIGO_SHARE_SHARE_APP_MESSAGE,
+        MIGO_SUBPACKAGE_DOWNLOAD, MigoHostServiceResult, copy_bounded,
     },
 };
 use migo_core::services::{
-    AdService, AuthService, ClipboardService, ImageApiService, InteractionService, LocationService,
+    AccelerometerService, AdService, AuthService, ClipboardService, CompassService,
+    DeviceMotionService, GyroscopeService, ImageApiService, InteractionService, LocationService,
     NavigateService, PaymentService, PermissionService, ScanCodeService, Scope, ScopeState,
-    ShareService, SubpackageService,
+    ScreenService, ShareService, SubpackageService,
 };
 use serde_json::{Map, Value};
 use shared::{
@@ -319,6 +329,79 @@ const CHOOSE_MEDIA: Call = Call {
     delivery: Delivery::HostFiles(&HostFiles::CHOOSE_MEDIA),
 };
 
+const START_ACCELEROMETER: Call = Call {
+    service: MIGO_HOST_SERVICE_MOTION,
+    method: MIGO_MOTION_START_ACCELEROMETER,
+    hook: "_internalOnStartAccelerometerResult",
+    error_code_field: None,
+    progress_hook: None,
+    delivery: Delivery::Verbatim,
+};
+const START_GYROSCOPE: Call = Call {
+    service: MIGO_HOST_SERVICE_MOTION,
+    method: MIGO_MOTION_START_GYROSCOPE,
+    hook: "_internalOnStartGyroscopeResult",
+    error_code_field: None,
+    progress_hook: None,
+    delivery: Delivery::Verbatim,
+};
+const START_COMPASS: Call = Call {
+    service: MIGO_HOST_SERVICE_MOTION,
+    method: MIGO_MOTION_START_COMPASS,
+    hook: "_internalOnStartCompassResult",
+    error_code_field: None,
+    progress_hook: None,
+    delivery: Delivery::Verbatim,
+};
+const START_DEVICE_MOTION: Call = Call {
+    service: MIGO_HOST_SERVICE_MOTION,
+    method: MIGO_MOTION_START_DEVICE_MOTION,
+    hook: "_internalOnStartDeviceMotionListeningResult",
+    error_code_field: None,
+    progress_hook: None,
+    delivery: Delivery::Verbatim,
+};
+const GET_SCREEN_BRIGHTNESS: Call = Call {
+    service: MIGO_HOST_SERVICE_SCREEN,
+    method: MIGO_SCREEN_GET_BRIGHTNESS,
+    hook: "_internalOnGetScreenBrightnessResult",
+    error_code_field: None,
+    progress_hook: None,
+    delivery: Delivery::Verbatim,
+};
+const SET_SCREEN_BRIGHTNESS: Call = Call {
+    service: MIGO_HOST_SERVICE_SCREEN,
+    method: MIGO_SCREEN_SET_BRIGHTNESS,
+    hook: "_internalOnSetScreenBrightnessResult",
+    error_code_field: None,
+    progress_hook: None,
+    delivery: Delivery::Verbatim,
+};
+const SET_DEVICE_ORIENTATION: Call = Call {
+    service: MIGO_HOST_SERVICE_SCREEN,
+    method: MIGO_SCREEN_SET_DEVICE_ORIENTATION,
+    hook: "_internalOnSetDeviceOrientationResult",
+    error_code_field: None,
+    progress_hook: None,
+    delivery: Delivery::Verbatim,
+};
+const GET_SCREEN_RECORDING_STATE: Call = Call {
+    service: MIGO_HOST_SERVICE_SCREEN,
+    method: MIGO_SCREEN_GET_RECORDING_STATE,
+    hook: "_internalOnGetScreenRecordingStateResult",
+    error_code_field: None,
+    progress_hook: None,
+    delivery: Delivery::Verbatim,
+};
+const SET_VISUAL_EFFECT_ON_CAPTURE: Call = Call {
+    service: MIGO_HOST_SERVICE_SCREEN,
+    method: MIGO_SCREEN_SET_VISUAL_EFFECT_ON_CAPTURE,
+    hook: "_internalOnSetVisualEffectOnCaptureResult",
+    error_code_field: None,
+    progress_hook: None,
+    delivery: Delivery::Verbatim,
+};
+
 const CALLS: &[&Call] = &[
     &REQUEST_MIDAS_PAYMENT,
     &REQUEST_MIDAS_PAYMENT_GAME_ITEM,
@@ -347,6 +430,15 @@ const CALLS: &[&Call] = &[
     &CHOOSE_IMAGE,
     &CHOOSE_MESSAGE_FILE,
     &CHOOSE_MEDIA,
+    &START_ACCELEROMETER,
+    &START_GYROSCOPE,
+    &START_COMPASS,
+    &START_DEVICE_MOTION,
+    &GET_SCREEN_BRIGHTNESS,
+    &SET_SCREEN_BRIGHTNESS,
+    &SET_DEVICE_ORIENTATION,
+    &GET_SCREEN_RECORDING_STATE,
+    &SET_VISUAL_EFFECT_ON_CAPTURE,
 ];
 
 /// Fire-and-forget requests, as `(service, method)`. Listed so the contract test
@@ -372,14 +464,45 @@ const COMMANDS: &[(u32, u32)] = &[
     (MIGO_HOST_SERVICE_INTERACTION, MIGO_INTERACTION_HIDE_TOAST),
     (MIGO_HOST_SERVICE_INTERACTION, MIGO_INTERACTION_SHOW_LOADING),
     (MIGO_HOST_SERVICE_INTERACTION, MIGO_INTERACTION_HIDE_LOADING),
+    (MIGO_HOST_SERVICE_MOTION, MIGO_MOTION_STOP_ACCELEROMETER),
+    (MIGO_HOST_SERVICE_MOTION, MIGO_MOTION_STOP_GYROSCOPE),
+    (MIGO_HOST_SERVICE_MOTION, MIGO_MOTION_STOP_COMPASS),
+    (MIGO_HOST_SERVICE_MOTION, MIGO_MOTION_STOP_DEVICE_MOTION),
+    (MIGO_HOST_SERVICE_SCREEN, MIGO_SCREEN_START_CAPTURE_OBSERVER),
+    (MIGO_HOST_SERVICE_SCREEN, MIGO_SCREEN_STOP_CAPTURE_OBSERVER),
+    (
+        MIGO_HOST_SERVICE_SCREEN,
+        MIGO_SCREEN_START_RECORDING_OBSERVER,
+    ),
+    (
+        MIGO_HOST_SERVICE_SCREEN,
+        MIGO_SCREEN_STOP_RECORDING_OBSERVER,
+    ),
 ];
 
 /// A service's own events, as `(service, event, hook)`.
-const EVENTS: &[(u32, u32, &str)] = &[(
-    MIGO_HOST_SERVICE_AD,
-    MIGO_AD_EVENT_LIFECYCLE,
-    "_internalOnAdEvent",
-)];
+const EVENTS: &[(u32, u32, &str)] = &[
+    (
+        MIGO_HOST_SERVICE_AD,
+        MIGO_AD_EVENT_LIFECYCLE,
+        "_internalOnAdEvent",
+    ),
+    (
+        MIGO_HOST_SERVICE_SCREEN,
+        MIGO_SCREEN_EVENT_USER_CAPTURE_SCREEN,
+        "_internalTriggerUserCaptureScreen",
+    ),
+    (
+        MIGO_HOST_SERVICE_SCREEN,
+        MIGO_SCREEN_EVENT_DEVICE_ORIENTATION_CHANGE,
+        "_internalOnDeviceOrientationEvent",
+    ),
+    (
+        MIGO_HOST_SERVICE_SCREEN,
+        MIGO_SCREEN_EVENT_RECORDING_STATE_CHANGE,
+        "_internalOnScreenRecordingStateEvent",
+    ),
+];
 
 fn event_hook(service: u32, event: u32) -> Option<&'static str> {
     EVENTS
@@ -621,6 +744,98 @@ impl ImageApiService for CapiHostServices {
     }
     fn choose_media(&self, request_json: &str) -> Result<(), ServiceError> {
         self.call(&CHOOSE_MEDIA, request_json)
+    }
+}
+
+impl AccelerometerService for CapiHostServices {
+    fn start(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&START_ACCELEROMETER, request_json)
+    }
+    fn stop(&self) -> Result<(), ServiceError> {
+        self.command(
+            MIGO_HOST_SERVICE_MOTION,
+            MIGO_MOTION_STOP_ACCELEROMETER,
+            "{}",
+        )
+    }
+}
+
+impl GyroscopeService for CapiHostServices {
+    fn start(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&START_GYROSCOPE, request_json)
+    }
+    fn stop(&self) -> Result<(), ServiceError> {
+        self.command(MIGO_HOST_SERVICE_MOTION, MIGO_MOTION_STOP_GYROSCOPE, "{}")
+    }
+}
+
+impl CompassService for CapiHostServices {
+    fn start(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&START_COMPASS, request_json)
+    }
+    fn stop(&self) -> Result<(), ServiceError> {
+        self.command(MIGO_HOST_SERVICE_MOTION, MIGO_MOTION_STOP_COMPASS, "{}")
+    }
+}
+
+impl DeviceMotionService for CapiHostServices {
+    fn start(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&START_DEVICE_MOTION, request_json)
+    }
+    fn stop(&self) -> Result<(), ServiceError> {
+        self.command(
+            MIGO_HOST_SERVICE_MOTION,
+            MIGO_MOTION_STOP_DEVICE_MOTION,
+            "{}",
+        )
+    }
+}
+
+// Keeping the screen on is the typed callback, not this channel
+// (`host_kit::CapiScreen` joins the two).
+impl ScreenService for CapiHostServices {
+    fn get_brightness(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&GET_SCREEN_BRIGHTNESS, request_json)
+    }
+    fn set_brightness(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&SET_SCREEN_BRIGHTNESS, request_json)
+    }
+    fn set_orientation(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&SET_DEVICE_ORIENTATION, request_json)
+    }
+    fn start_capture_screen(&self) -> Result<(), ServiceError> {
+        self.command(
+            MIGO_HOST_SERVICE_SCREEN,
+            MIGO_SCREEN_START_CAPTURE_OBSERVER,
+            "{}",
+        )
+    }
+    fn stop_capture_screen(&self) -> Result<(), ServiceError> {
+        self.command(
+            MIGO_HOST_SERVICE_SCREEN,
+            MIGO_SCREEN_STOP_CAPTURE_OBSERVER,
+            "{}",
+        )
+    }
+    fn get_screen_recording_state(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&GET_SCREEN_RECORDING_STATE, request_json)
+    }
+    fn start_screen_recording_observer(&self) -> Result<(), ServiceError> {
+        self.command(
+            MIGO_HOST_SERVICE_SCREEN,
+            MIGO_SCREEN_START_RECORDING_OBSERVER,
+            "{}",
+        )
+    }
+    fn stop_screen_recording_observer(&self) -> Result<(), ServiceError> {
+        self.command(
+            MIGO_HOST_SERVICE_SCREEN,
+            MIGO_SCREEN_STOP_RECORDING_OBSERVER,
+            "{}",
+        )
+    }
+    fn set_visual_effect_on_capture(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&SET_VISUAL_EFFECT_ON_CAPTURE, request_json)
     }
 }
 
@@ -959,6 +1174,8 @@ mod tests {
             "scan_code" => MIGO_HOST_SERVICE_SCAN_CODE,
             "location" => MIGO_HOST_SERVICE_LOCATION,
             "image" => MIGO_HOST_SERVICE_IMAGE,
+            "motion" => MIGO_HOST_SERVICE_MOTION,
+            "screen" => MIGO_HOST_SERVICE_SCREEN,
             other => panic!("the contract names a service the ABI has no constant for: {other}"),
         }
     }

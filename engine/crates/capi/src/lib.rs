@@ -43,6 +43,7 @@ mod platform;
 // Which execution this product compiled: a JavaScript runtime in this process,
 // or frames produced by one somewhere else.
 mod retirement;
+mod sensors;
 mod session_engine;
 mod settings;
 // The frame transport's entry points, in the product that has a transport.

@@ -91,30 +91,37 @@ pub fn op_vibrate_long(state: &mut OpState) -> Result<(), JsErrorBox> {
 
 // ==================== Screen Ops ====================
 
-#[op2(fast)]
-pub fn op_get_screen_brightness(state: &mut OpState) -> Result<f32, JsErrorBox> {
-    let host = state.borrow::<HostOpState>();
-    if let Some(ref services) = host.device_services {
-        if let Some(screen) = services.screen() {
-            return screen.get_brightness().map_err(JsErrorBox::generic);
-        }
-    }
-    Err(JsErrorBox::generic(
-        "getScreenBrightness:fail not supported",
-    ))
+/// The screen service, or `err_msg` when the host supplies none.
+fn screen(
+    state: &OpState,
+    err_msg: &'static str,
+) -> Result<std::sync::Arc<dyn shared::services::ScreenService>, JsErrorBox> {
+    state
+        .borrow::<HostOpState>()
+        .device_services
+        .as_ref()
+        .and_then(|services| services.screen())
+        .ok_or_else(|| JsErrorBox::generic(err_msg))
 }
 
 #[op2(fast)]
-pub fn op_set_screen_brightness(state: &mut OpState, value: f32) -> Result<(), JsErrorBox> {
-    let host = state.borrow::<HostOpState>();
-    if let Some(ref services) = host.device_services {
-        if let Some(screen) = services.screen() {
-            return screen.set_brightness(value).map_err(JsErrorBox::generic);
-        }
-    }
-    Err(JsErrorBox::generic(
-        "setScreenBrightness:fail not supported",
-    ))
+pub fn op_get_screen_brightness(
+    state: &mut OpState,
+    #[string] request_json: &str,
+) -> Result<(), JsErrorBox> {
+    screen(state, "getScreenBrightness:fail not supported")?
+        .get_brightness(request_json)
+        .map_err(JsErrorBox::generic)
+}
+
+#[op2(fast)]
+pub fn op_set_screen_brightness(
+    state: &mut OpState,
+    #[string] request_json: &str,
+) -> Result<(), JsErrorBox> {
+    screen(state, "setScreenBrightness:fail not supported")?
+        .set_brightness(request_json)
+        .map_err(JsErrorBox::generic)
 }
 
 #[op2(fast)]
@@ -133,17 +140,45 @@ pub fn op_set_keep_screen_on(state: &mut OpState, keep_on: bool) -> Result<(), J
 #[op2(fast)]
 pub fn op_set_device_orientation(
     state: &mut OpState,
-    #[string] value: String,
+    #[string] request_json: &str,
 ) -> Result<(), JsErrorBox> {
-    let host = state.borrow::<HostOpState>();
-    if let Some(ref services) = host.device_services {
-        if let Some(screen) = services.screen() {
-            return screen.set_orientation(&value).map_err(JsErrorBox::generic);
-        }
-    }
-    Err(JsErrorBox::generic(
-        "setDeviceOrientation:fail not supported",
-    ))
+    screen(state, "setDeviceOrientation:fail not supported")?
+        .set_orientation(request_json)
+        .map_err(JsErrorBox::generic)
+}
+
+#[op2(fast)]
+pub fn op_get_screen_recording_state(
+    state: &mut OpState,
+    #[string] request_json: &str,
+) -> Result<(), JsErrorBox> {
+    screen(state, "getScreenRecordingState:fail not supported")?
+        .get_screen_recording_state(request_json)
+        .map_err(JsErrorBox::generic)
+}
+
+#[op2(fast)]
+pub fn op_start_screen_recording_observer(state: &mut OpState) -> Result<(), JsErrorBox> {
+    screen(state, "onScreenRecordingStateChanged:fail not supported")?
+        .start_screen_recording_observer()
+        .map_err(JsErrorBox::generic)
+}
+
+#[op2(fast)]
+pub fn op_stop_screen_recording_observer(state: &mut OpState) -> Result<(), JsErrorBox> {
+    screen(state, "offScreenRecordingStateChanged:fail not supported")?
+        .stop_screen_recording_observer()
+        .map_err(JsErrorBox::generic)
+}
+
+#[op2(fast)]
+pub fn op_set_visual_effect_on_capture(
+    state: &mut OpState,
+    #[string] request_json: &str,
+) -> Result<(), JsErrorBox> {
+    screen(state, "setVisualEffectOnCapture:fail not supported")?
+        .set_visual_effect_on_capture(request_json)
+        .map_err(JsErrorBox::generic)
 }
 
 // ==================== Debug Ops ====================
@@ -194,17 +229,15 @@ pub fn op_stop_capture_screen(state: &mut OpState) -> Result<(), JsErrorBox> {
 #[op2(fast)]
 pub fn op_start_device_motion(
     state: &mut OpState,
-    #[string] interval: String,
+    #[string] request_json: &str,
 ) -> Result<(), JsErrorBox> {
     let host = state.borrow::<HostOpState>();
-    if let Some(ref services) = host.device_services {
-        if let Some(motion) = services.device_motion() {
-            return motion.start(&interval).map_err(JsErrorBox::generic);
-        }
-    }
-    Err(JsErrorBox::generic(
-        "startDeviceMotionListening:fail not supported",
-    ))
+    host.device_services
+        .as_ref()
+        .and_then(|services| services.device_motion())
+        .ok_or_else(|| JsErrorBox::generic("startDeviceMotionListening:fail not supported"))?
+        .start(request_json)
+        .map_err(JsErrorBox::generic)
 }
 
 #[op2(fast)]
@@ -225,15 +258,15 @@ pub fn op_stop_device_motion(state: &mut OpState) -> Result<(), JsErrorBox> {
 #[op2(fast)]
 pub fn op_start_gyroscope(
     state: &mut OpState,
-    #[string] interval: String,
+    #[string] request_json: &str,
 ) -> Result<(), JsErrorBox> {
     let host = state.borrow::<HostOpState>();
-    if let Some(ref services) = host.device_services {
-        if let Some(gyro) = services.gyroscope() {
-            return gyro.start(&interval).map_err(JsErrorBox::generic);
-        }
-    }
-    Err(JsErrorBox::generic("startGyroscope:fail not supported"))
+    host.device_services
+        .as_ref()
+        .and_then(|services| services.gyroscope())
+        .ok_or_else(|| JsErrorBox::generic("startGyroscope:fail not supported"))?
+        .start(request_json)
+        .map_err(JsErrorBox::generic)
 }
 
 #[op2(fast)]
@@ -250,14 +283,17 @@ pub fn op_stop_gyroscope(state: &mut OpState) -> Result<(), JsErrorBox> {
 // ==================== Compass Ops ====================
 
 #[op2(fast)]
-pub fn op_start_compass(state: &mut OpState) -> Result<(), JsErrorBox> {
+pub fn op_start_compass(
+    state: &mut OpState,
+    #[string] request_json: &str,
+) -> Result<(), JsErrorBox> {
     let host = state.borrow::<HostOpState>();
-    if let Some(ref services) = host.device_services {
-        if let Some(compass) = services.compass() {
-            return compass.start().map_err(JsErrorBox::generic);
-        }
-    }
-    Err(JsErrorBox::generic("startCompass:fail not supported"))
+    host.device_services
+        .as_ref()
+        .and_then(|services| services.compass())
+        .ok_or_else(|| JsErrorBox::generic("startCompass:fail not supported"))?
+        .start(request_json)
+        .map_err(JsErrorBox::generic)
 }
 
 #[op2(fast)]
@@ -276,15 +312,15 @@ pub fn op_stop_compass(state: &mut OpState) -> Result<(), JsErrorBox> {
 #[op2(fast)]
 pub fn op_start_accelerometer(
     state: &mut OpState,
-    #[string] interval: String,
+    #[string] request_json: &str,
 ) -> Result<(), JsErrorBox> {
     let host = state.borrow::<HostOpState>();
-    if let Some(ref services) = host.device_services {
-        if let Some(accel) = services.accelerometer() {
-            return accel.start(&interval).map_err(JsErrorBox::generic);
-        }
-    }
-    Err(JsErrorBox::generic("startAccelerometer:fail not supported"))
+    host.device_services
+        .as_ref()
+        .and_then(|services| services.accelerometer())
+        .ok_or_else(|| JsErrorBox::generic("startAccelerometer:fail not supported"))?
+        .start(request_json)
+        .map_err(JsErrorBox::generic)
 }
 
 #[op2(fast)]
@@ -422,6 +458,10 @@ deno_core::extension!(
         op_set_device_orientation,
         op_start_capture_screen,
         op_stop_capture_screen,
+        op_get_screen_recording_state,
+        op_start_screen_recording_observer,
+        op_stop_screen_recording_observer,
+        op_set_visual_effect_on_capture,
         // Debug
         op_set_enable_debug,
         // Device Motion

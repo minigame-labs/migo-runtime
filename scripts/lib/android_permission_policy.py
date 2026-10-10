@@ -29,6 +29,8 @@ FULL_PERMISSION_POLICY: dict[str, str | None] = {
     "android.permission.ACCESS_COARSE_LOCATION": None,
     "android.permission.ACCESS_FINE_LOCATION": None,
     "android.permission.WRITE_EXTERNAL_STORAGE": "28",
+    # Install-time ("normal"): the window's screen-recording state, Android 15+.
+    "android.permission.DETECT_SCREEN_RECORDING": None,
 }
 
 # Carried by every profile. None of these is a runtime permission, which is why they

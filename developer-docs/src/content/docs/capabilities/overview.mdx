@@ -118,6 +118,8 @@ GameSession 上 10 个 `set*Handler(...)` 外加 `setListener(GameSessionListene
 | `MIGO_HOST_SERVICE_CLIPBOARD` | `setClipboardData` / `getClipboardData` | not supported |
 | `MIGO_HOST_SERVICE_SCAN_CODE` | `scanCode` | not supported |
 | `MIGO_HOST_SERVICE_LOCATION` | `getLocation` / `getFuzzyLocation` | not supported |
+| `MIGO_HOST_SERVICE_MOTION` | `startAccelerometer` / `startGyroscope` / `startCompass` / `startDeviceMotionListening` 等 | not supported |
+| `MIGO_HOST_SERVICE_SCREEN` | `getScreenBrightness` / `setDeviceOrientation` / `onUserCaptureScreen` / `getScreenRecordingState` / `setVisualEffectOnCapture` 等 | not supported |
 | `MIGO_HOST_SERVICE_IMAGE` | `chooseImage` / `chooseMedia` / `chooseMessageFile` / `compressImage` / `previewImage` / `previewMedia` / `saveImageToPhotosAlbum` | not supported |
 
 宿主只给成功字段或失败原因,引擎按每个 API 的约定把错误码放进 `errno` / `errCode`,`errMsg` 由内容侧按它实际调用的

@@ -19,10 +19,10 @@ use crate::{
         onMidasPaymentResult, onModalResult, onNavigateToMiniProgramResult, onNetworkStatusChange,
         onOpenAppAuthorizeSetting, onOpenSettingResult, onOpenSystemBluetoothSetting,
         onPreviewImageResult, onPreviewMediaResult, onRecorderEvent, onRecorderFrameData,
-        onRestart, onSaveImageToPhotosAlbumResult, onScanCodeResult, onShareAppMessageResult,
-        onShow, onSubpackageProgress, onSubpackageResult, onSurfaceDestroyed,
-        onThermalStatusChanged, onTouch, onUserCaptureScreen, onVideoEvent, onVsync, shutdown,
-        updatePermission, updateSurface, version,
+        onRestart, onSaveImageToPhotosAlbumResult, onScanCodeResult, onScreenRecordingStateChanged,
+        onShareAppMessageResult, onShow, onSubpackageProgress, onSubpackageResult,
+        onSurfaceDestroyed, onThermalStatusChanged, onTouch, onUserCaptureScreen, onVideoEvent,
+        onVsync, shutdown, updatePermission, updateSurface, version,
     },
     jni_profile_contract::{self, JniMethod, MethodDirection},
 };
@@ -68,6 +68,8 @@ fn native_fn_ptr(name: &str) -> Option<*mut c_void> {
         "onNetworkStatusChange" => onNetworkStatusChange as *mut c_void,
         #[cfg(feature = "api-sensors")]
         "onUserCaptureScreen" => onUserCaptureScreen as *mut c_void,
+        #[cfg(feature = "api-sensors")]
+        "onScreenRecordingStateChanged" => onScreenRecordingStateChanged as *mut c_void,
         #[cfg(feature = "api-sensors")]
         "onLocationResult" => onLocationResult as *mut c_void,
         #[cfg(feature = "api-sensors")]

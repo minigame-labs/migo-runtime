@@ -502,15 +502,19 @@ pub enum HostCommand {
         runtime_generation: Option<NonZeroI64>,
     },
 
-    /// Accelerometer data (acceleration in m/s^2).
+    /// Accelerometer data, in units of standard gravity (g), gravity included.
     ///
-    /// Sent by the platform accelerometer listener at the requested interval.
+    /// The device's axes as Android and the W3C define them: x to the right, y
+    /// up the screen, z out of it, so a device lying face up reads z = +1. Every
+    /// host reports the same convention -- one whose platform reports m/s^2 or
+    /// the opposite sign converts -- so a shake threshold means one thing on
+    /// every device. Sent at the requested interval.
     OnAccelerometerChange {
-        /// Acceleration along X axis in m/s^2.
+        /// Acceleration along X axis in g.
         x: f64,
-        /// Acceleration along Y axis in m/s^2.
+        /// Acceleration along Y axis in g.
         y: f64,
-        /// Acceleration along Z axis in m/s^2.
+        /// Acceleration along Z axis in g.
         z: f64,
         /// See [`HostCommand::callback_generation`].
         runtime_generation: Option<NonZeroI64>,

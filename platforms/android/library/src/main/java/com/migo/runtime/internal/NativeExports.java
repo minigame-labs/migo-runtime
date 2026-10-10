@@ -1342,8 +1342,8 @@ public final class NativeExports {
      * @param sessionId The session ID
      * @param interval  "game", "ui", or "normal"
      */
-    public static void startDeviceMotionListening(int sessionId, String interval) {
-        SensorExports.startDeviceMotionListening(sessionId, interval);
+    public static boolean startDeviceMotionListening(int sessionId, String interval) {
+        return SensorExports.startDeviceMotionListening(sessionId, interval);
     }
 
     /**
@@ -1363,8 +1363,8 @@ public final class NativeExports {
      * @param sessionId The session ID
      * @param interval  "game", "ui", or "normal"
      */
-    public static void startGyroscope(int sessionId, String interval) {
-        SensorExports.startGyroscope(sessionId, interval);
+    public static boolean startGyroscope(int sessionId, String interval) {
+        return SensorExports.startGyroscope(sessionId, interval);
     }
 
     /**
@@ -1383,8 +1383,8 @@ public final class NativeExports {
      *
      * @param sessionId The session ID
      */
-    public static void startCompass(int sessionId) {
-        SensorExports.startCompass(sessionId);
+    public static boolean startCompass(int sessionId) {
+        return SensorExports.startCompass(sessionId);
     }
 
     /**
@@ -1404,8 +1404,8 @@ public final class NativeExports {
      * @param sessionId The session ID
      * @param interval  "game", "ui", or "normal"
      */
-    public static void startAccelerometer(int sessionId, String interval) {
-        SensorExports.startAccelerometer(sessionId, interval);
+    public static boolean startAccelerometer(int sessionId, String interval) {
+        return SensorExports.startAccelerometer(sessionId, interval);
     }
 
     /**
@@ -1467,6 +1467,36 @@ public final class NativeExports {
      */
     public static void stopCaptureScreen(int sessionId) {
         SensorExports.stopCaptureScreen(sessionId);
+    }
+
+    /**
+     * Whether the session's window is being recorded: 1 yes, 0 no, -1 this Android
+     * version cannot tell (before Android 15), -2 no activity.
+     *
+     * @hide
+     */
+    public static int getScreenRecordingState(int sessionId) {
+        return SensorExports.getScreenRecordingState(sessionId);
+    }
+
+    /** @hide */
+    public static void startScreenRecordingObserver(int sessionId) {
+        SensorExports.startScreenRecordingObserver(sessionId);
+    }
+
+    /** @hide */
+    public static void stopScreenRecordingObserver(int sessionId) {
+        SensorExports.stopScreenRecordingObserver(sessionId);
+    }
+
+    /**
+     * Keep the window out of screenshots and recordings ({@code hidden}) or not.
+     *
+     * @return 0 once applied, -1 when the session has no activity
+     * @hide
+     */
+    public static int setVisualEffectOnCapture(int sessionId, boolean hidden) {
+        return SensorExports.setVisualEffectOnCapture(sessionId, hidden);
     }
 
     /**

@@ -596,27 +596,99 @@ pub fn set_enable_debug(host_id: i32, enabled: bool) -> Result<i32, String> {
     )
 }
 
-// ==================== Device Sensor ====================
+// ==================== Motion sensors ====================
+//
+// Each start answers whether the device has the sensor -- and so whether it
+// started, or will once the session is in front again.
 
-jni_void_json!(start_device_motion, "startDeviceMotionListening");
+/// `(int, String) -> boolean`.
+fn call_bool_with_string(method_name: &str, host_id: i32, value: &str) -> Result<bool, String> {
+    with_env(|env| {
+        let jstr = env
+            .new_string(value)
+            .map_err(|e| format!("Failed to create Java string: {e}"))?;
+        let cache = JAVA_METHOD_CACHE
+            .get()
+            .ok_or("NativeExports class cache not initialized")?;
+        let method_id = *cache
+            .get_method_id(method_name)
+            .ok_or("Method ID not found")?;
+        // Keep jstr alive until after the call so the local ref remains valid.
+        let args = [
+            jvalue { i: host_id },
+            jvalue {
+                l: jstr.as_raw() as *mut _,
+            },
+        ];
+        invoke_static_method(
+            env,
+            cache,
+            method_id,
+            method_name,
+            ReturnType::Primitive(Primitive::Boolean),
+            |_env, val| Ok(val.z().unwrap_or(false)),
+            &args,
+        )
+    })
+}
+
+pub fn start_device_motion(host_id: i32, interval: &str) -> Result<bool, String> {
+    call_bool_with_string("startDeviceMotionListening", host_id, interval)
+}
 jni_void!(stop_device_motion, "stopDeviceMotionListening");
-jni_void_json!(start_gyroscope, "startGyroscope");
+
+pub fn start_gyroscope(host_id: i32, interval: &str) -> Result<bool, String> {
+    call_bool_with_string("startGyroscope", host_id, interval)
+}
 jni_void!(stop_gyroscope, "stopGyroscope");
 
-// ==================== Compass ====================
-
-jni_void!(start_compass, "startCompass");
+pub fn start_compass(host_id: i32) -> Result<bool, String> {
+    call_static_method(
+        "startCompass",
+        ReturnType::Primitive(Primitive::Boolean),
+        |_env, val| Ok(val.z().unwrap_or(false)),
+        &[jvalue { i: host_id }],
+    )
+}
 jni_void!(stop_compass, "stopCompass");
 
-// ==================== Accelerometer ====================
-
-jni_void_json!(start_accelerometer, "startAccelerometer");
+pub fn start_accelerometer(host_id: i32, interval: &str) -> Result<bool, String> {
+    call_bool_with_string("startAccelerometer", host_id, interval)
+}
 jni_void!(stop_accelerometer, "stopAccelerometer");
 
 // ==================== Screen Capture ====================
 
 jni_void!(start_capture_screen, "startCaptureScreen");
 jni_void!(stop_capture_screen, "stopCaptureScreen");
+
+/// 1 recorded, 0 not, -1 this Android version cannot tell, -2 no activity.
+pub fn get_screen_recording_state(host_id: i32) -> Result<i32, String> {
+    call_static_method(
+        "getScreenRecordingState",
+        ReturnType::Primitive(Primitive::Int),
+        |_env, val| Ok(val.i().unwrap_or(-2)),
+        &[jvalue { i: host_id }],
+    )
+}
+jni_void!(
+    start_screen_recording_observer,
+    "startScreenRecordingObserver"
+);
+jni_void!(
+    stop_screen_recording_observer,
+    "stopScreenRecordingObserver"
+);
+
+/// 0 once applied, -1 no activity.
+pub fn set_visual_effect_on_capture(host_id: i32, hidden: bool) -> Result<i32, String> {
+    call_static_method(
+        "setVisualEffectOnCapture",
+        ReturnType::Primitive(Primitive::Int),
+        |_env, val| Ok(val.i().unwrap_or(-1)),
+        &[jvalue { i: host_id }, jvalue { z: hidden as u8 }],
+    )
+}
 
 // ==================== Network ====================
 

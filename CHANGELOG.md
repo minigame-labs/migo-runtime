@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Motion sensors and the screen on every C ABI host. `MIGO_HOST_SERVICE_MOTION` starts and stops the accelerometer,
+  gyroscope, compass and device-motion sensors, whose readings arrive through the typed
+  `migo_session_post_sensor_sample` (`MigoSensorSample`) rather than as JSON; `MIGO_HOST_SERVICE_SCREEN` carries
+  brightness, `setDeviceOrientation`, screenshot and screen-recording observation and the device-orientation event.
+- `getScreenRecordingState`, `onScreenRecordingStateChanged` / `offScreenRecordingStateChanged` and
+  `setVisualEffectOnCapture`. On Android the recording state is read from Android 15 on (the Full profile declares the
+  install-time `DETECT_SCREEN_RECORDING`), and `hidden` keeps the game out of captures with `FLAG_SECURE`.
 - `chooseMedia`, and the image APIs on every C ABI host: `MIGO_HOST_SERVICE_IMAGE` carries `saveImageToPhotosAlbum`,
   `previewImage`, `previewMedia`, `compressImage`, `chooseImage`, `chooseMessageFile` and `chooseMedia` as calls. A
   path content names reaches the host as the real file behind its sandbox path; a file a result names is handed over
@@ -258,6 +265,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- Starting a sensor the device does not have reported success; it fails with the reason. `getScreenBrightness`,
+  `setScreenBrightness` and `setDeviceOrientation` are requests the host answers.
+- Android: `onAccelerometerChange` reported m/s² (a phone lying flat read z ≈ 9.8), so shake thresholds written in g
+  fired constantly. Every host now reports g, with one axis convention.
 - The image APIs handed the host content's path verbatim, so `saveImageToPhotosAlbum` could copy any file the host
   process could read into the player's album. Paths are resolved through the sandbox first; one outside it fails.
 - Android: a picked or compressed image arrived as the SDK's absolute cache path, which no file API resolves, so

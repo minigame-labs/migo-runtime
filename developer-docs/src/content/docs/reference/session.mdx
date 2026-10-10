@@ -339,6 +339,8 @@ typedef struct MigoHostServiceCall {
 | `MIGO_HOST_SERVICE_CLIPBOARD` (9) | `SET_CLIPBOARD_DATA` 0 · `GET_CLIPBOARD_DATA` 1 | 调用 | `setClipboardData` · `getClipboardData` |
 | `MIGO_HOST_SERVICE_SCAN_CODE` (10) | `SCAN_CODE` 0 | 调用 | `scanCode` |
 | `MIGO_HOST_SERVICE_LOCATION` (11) | `GET_LOCATION` 0 · `GET_FUZZY_LOCATION` 1 | 调用（先经 `scope.userLocation` 授权检查） | `getLocation` · `getFuzzyLocation` |
+| `MIGO_HOST_SERVICE_MOTION` (13) | `START_ACCELEROMETER` 0 · `START_GYROSCOPE` 2 · `START_COMPASS` 4 · `START_DEVICE_MOTION` 6（调用）· 对应 `STOP_*` 1/3/5/7（命令） | 见左；读数走 [`migo_session_post_sensor_sample`](#migo_session_post_sensor_sample) | `startAccelerometer` / `startGyroscope` / `startCompass` / `startDeviceMotionListening` 及 `stop*`、`on*Change` |
+| `MIGO_HOST_SERVICE_SCREEN` (14) | `GET_BRIGHTNESS` 0 · `SET_BRIGHTNESS` 1 · `SET_DEVICE_ORIENTATION` 2 · `GET_RECORDING_STATE` 5 · `SET_VISUAL_EFFECT_ON_CAPTURE` 8（调用）· `START`/`STOP_CAPTURE_OBSERVER` 3/4 · `START`/`STOP_RECORDING_OBSERVER` 6/7（命令）；事件 `USER_CAPTURE_SCREEN` 0 · `DEVICE_ORIENTATION_CHANGE` 1 · `RECORDING_STATE_CHANGE` 2 | 见左 | `getScreenBrightness` / `setScreenBrightness` / `setDeviceOrientation` / `onDeviceOrientationChange` / `onUserCaptureScreen` / `getScreenRecordingState` / `onScreenRecordingStateChanged` / `setVisualEffectOnCapture`（常亮仍是 `on_keep_screen_on`） |
 | `MIGO_HOST_SERVICE_IMAGE` (12) | `SAVE_IMAGE_TO_PHOTOS_ALBUM` 0 · `PREVIEW_IMAGE` 1 · `PREVIEW_MEDIA` 2 · `COMPRESS_IMAGE` 3 · `CHOOSE_IMAGE` 4 · `CHOOSE_MESSAGE_FILE` 5 · `CHOOSE_MEDIA` 6 | 调用；涉及文件（见下） | `saveImageToPhotosAlbum`（先经 `scope.writePhotosAlbum`）· `previewImage` · `previewMedia` · `compressImage` · `chooseImage` · `chooseMessageFile` · `chooseMedia` |
 
 **文件。** 内容只用沙箱路径（`/tmp/...`、`/user/...`、包内路径），宿主只用真实路径，两边都看不到对方的那种：
@@ -824,6 +826,38 @@ MIGO_API MigoResult MIGO_CALL migo_session_set_app_authorize_setting(
 - `MIGO_OK` — 已保留
 - `MIGO_ERROR_INVALID_ARGUMENT` — 记录为 NULL 或格式错误；取值超出 `MIGO_AUTHORIZATION_*`
 - `MIGO_ERROR_INVALID_STATE` — Session 已销毁
+
+## migo_session_post_sensor_sample
+
+```c
+typedef struct MigoSensorSample {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    MigoSensorKind kind;                  /* MIGO_SENSOR_* */
+    MigoCompassAccuracy compass_accuracy; /* 罗盘读数为 MIGO_COMPASS_ACCURACY_*，其他为 0 */
+    double values[3];
+} MigoSensorSample;
+
+MIGO_API MigoResult MIGO_CALL migo_session_post_sensor_sample(
+    MigoSession *session, const MigoSensorSample *sample);
+```
+
+`MIGO_HOST_SERVICE_MOTION` 启动的传感器的读数，可在任意线程、Surface 已 attach 时投递。读数每秒可达 50 次，
+所以是类型化结构体而不是 JSON 事件；内容落后时丢弃而不无界排队。`values` 的含义按 `kind`：
+
+- `MIGO_SENSOR_ACCELEROMETER` — x、y、z，单位 g（含重力）。轴向：x 向右、y 沿屏幕向上、z 朝屏幕外，平放朝上读
+  z = +1。平台若报 m/s² 或反号须换算——每个平台同一约定，摇一摇阈值才有同一含义。
+- `MIGO_SENSOR_GYROSCOPE` — 绕上述三轴的角速度，rad/s。
+- `MIGO_SENSOR_DEVICE_MOTION` — alpha（0..360）、beta（-180..180）、gamma（-90..90），度。
+- `MIGO_SENSOR_COMPASS` — `values[0]` 为相对磁北的航向（度），其余为 0；精度见 `MIGO_COMPASS_ACCURACY_*`
+  （`UNKNOWN` 为 0）。
+
+返回：
+
+- `MIGO_OK` — 已投递
+- `MIGO_ERROR_INVALID_ARGUMENT` — 样本为 NULL 或格式错误；`kind`/精度未定义；数值非有限；宿主未声明
+  `MIGO_HOST_SERVICE_MOTION`
+- `MIGO_ERROR_INVALID_STATE` — 没有已 attach 的 Surface
 
 ## migo_session_notify_vsync
 

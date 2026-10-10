@@ -315,6 +315,8 @@ Windows, OpenHarmony) embeds the C ABI and reaches them through this channel:
 | `MIGO_HOST_SERVICE_CLIPBOARD` (9) | `SET_CLIPBOARD_DATA` 0 · `GET_CLIPBOARD_DATA` 1 | calls | `setClipboardData` · `getClipboardData` |
 | `MIGO_HOST_SERVICE_SCAN_CODE` (10) | `SCAN_CODE` 0 | call | `scanCode` |
 | `MIGO_HOST_SERVICE_LOCATION` (11) | `GET_LOCATION` 0 · `GET_FUZZY_LOCATION` 1 | calls (checked against `scope.userLocation` first) | `getLocation` · `getFuzzyLocation` |
+| `MIGO_HOST_SERVICE_MOTION` (13) | `START_ACCELEROMETER` 0 · `START_GYROSCOPE` 2 · `START_COMPASS` 4 · `START_DEVICE_MOTION` 6 (calls) · the matching `STOP_*` 1/3/5/7 (commands) | as listed; readings through [`migo_session_post_sensor_sample`](#migo_session_post_sensor_sample) | `startAccelerometer` / `startGyroscope` / `startCompass` / `startDeviceMotionListening`, their `stop*` and `on*Change` |
+| `MIGO_HOST_SERVICE_SCREEN` (14) | `GET_BRIGHTNESS` 0 · `SET_BRIGHTNESS` 1 · `SET_DEVICE_ORIENTATION` 2 · `GET_RECORDING_STATE` 5 · `SET_VISUAL_EFFECT_ON_CAPTURE` 8 (calls) · `START`/`STOP_CAPTURE_OBSERVER` 3/4 · `START`/`STOP_RECORDING_OBSERVER` 6/7 (commands); events `USER_CAPTURE_SCREEN` 0 · `DEVICE_ORIENTATION_CHANGE` 1 · `RECORDING_STATE_CHANGE` 2 | as listed | `getScreenBrightness` / `setScreenBrightness` / `setDeviceOrientation` / `onDeviceOrientationChange` / `onUserCaptureScreen` / `getScreenRecordingState` / `onScreenRecordingStateChanged` / `setVisualEffectOnCapture` (keeping the screen on stays `on_keep_screen_on`) |
 | `MIGO_HOST_SERVICE_IMAGE` (12) | `SAVE_IMAGE_TO_PHOTOS_ALBUM` 0 · `PREVIEW_IMAGE` 1 · `PREVIEW_MEDIA` 2 · `COMPRESS_IMAGE` 3 · `CHOOSE_IMAGE` 4 · `CHOOSE_MESSAGE_FILE` 5 · `CHOOSE_MEDIA` 6 | calls; carry files (below) | `saveImageToPhotosAlbum` (checked against `scope.writePhotosAlbum`) · `previewImage` · `previewMedia` · `compressImage` · `chooseImage` · `chooseMessageFile` · `chooseMedia` |
 
 **Files.** Content names files only by sandbox path (`/tmp/...`, `/user/...`, a path in its package) and a host only
@@ -820,6 +822,40 @@ Returns:
 - `MIGO_ERROR_INVALID_ARGUMENT` — a NULL or malformed record; a value outside
   `MIGO_AUTHORIZATION_*`
 - `MIGO_ERROR_INVALID_STATE` — the Session has been destroyed
+
+## migo_session_post_sensor_sample
+
+```c
+typedef struct MigoSensorSample {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    MigoSensorKind kind;                  /* MIGO_SENSOR_* */
+    MigoCompassAccuracy compass_accuracy; /* MIGO_COMPASS_ACCURACY_* for a compass reading, else 0 */
+    double values[3];
+} MigoSensorSample;
+
+MIGO_API MigoResult MIGO_CALL migo_session_post_sensor_sample(
+    MigoSession *session, const MigoSensorSample *sample);
+```
+
+A reading from a sensor started through `MIGO_HOST_SERVICE_MOTION`, from any thread, while a Surface is attached.
+Readings come up to fifty times a second, so this is a typed record rather than a JSON event; when content falls
+behind they are dropped rather than queued without bound. What `values` holds depends on `kind`:
+
+- `MIGO_SENSOR_ACCELEROMETER` — x, y, z in g, gravity included. Axes: x right, y up the screen, z out of it, so a
+  device lying face up reads z = +1. Convert a platform that reports m/s² or the opposite sign: one convention on
+  every platform is what gives a shake threshold one meaning.
+- `MIGO_SENSOR_GYROSCOPE` — angular velocity about those axes, rad/s.
+- `MIGO_SENSOR_DEVICE_MOTION` — alpha (0..360), beta (-180..180), gamma (-90..90), in degrees.
+- `MIGO_SENSOR_COMPASS` — `values[0]` is the heading from magnetic north in degrees, the others 0; accuracy is a
+  `MIGO_COMPASS_ACCURACY_*` (`UNKNOWN` is 0).
+
+Returns:
+
+- `MIGO_OK` — delivered
+- `MIGO_ERROR_INVALID_ARGUMENT` — a NULL or malformed sample; a kind or accuracy the header does not define; a value
+  that is not finite; the host did not declare `MIGO_HOST_SERVICE_MOTION`
+- `MIGO_ERROR_INVALID_STATE` — no Surface attached
 
 ## migo_session_notify_vsync
 

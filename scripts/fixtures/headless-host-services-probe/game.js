@@ -209,6 +209,36 @@ async function run() {
     fs.readFileSync(clip.tempFilePath, "utf8") === "probe video" &&
     fs.readFileSync(clip.thumbTempFilePath, "utf8") === "probe cover", "chooseMedia", media);
 
+  // Motion sensors: a start is answered by the host -- the compass it lacks
+  // fails -- and readings arrive typed, in g, as onAccelerometerChange.
+  const reading = new Promise(function (resolve) { migo.onAccelerometerChange(resolve); });
+  const accel = await settle("startAccelerometer", { interval: "game" });
+  expect(accel.ok && accel.res.errMsg === "startAccelerometer:ok", "startAccelerometer", accel);
+  const flat = await reading;
+  expect(flat.x === 0 && flat.y === 0 && flat.z === 1, "onAccelerometerChange", flat);
+  expect((await settle("stopAccelerometer")).ok, "stopAccelerometer", null);
+  const compass = await settle("startCompass");
+  expect(!compass.ok && compass.res.errMsg === "startCompass:fail no such sensor on this device",
+    "startCompass without a compass", compass);
+
+  // The screen: brightness, orientation and capture are the host's to answer,
+  // and what it observes arrives as events.
+  const bright = await settle("getScreenBrightness");
+  expect(bright.ok && bright.res.value === 0.5, "getScreenBrightness", bright);
+  expect((await settle("setScreenBrightness", { value: 0.25 })).ok, "setScreenBrightness", null);
+  const turned = new Promise(function (resolve) { migo.onDeviceOrientationChange(resolve); });
+  expect((await settle("setDeviceOrientation", { value: "landscape" })).ok, "setDeviceOrientation", null);
+  const orientation = await turned;
+  expect(orientation.value === "landscape", "onDeviceOrientationChange", orientation);
+  const recording = await settle("getScreenRecordingState");
+  expect(recording.ok && recording.res.state === "off", "getScreenRecordingState", recording);
+  const recorded = await new Promise(function (resolve) { migo.onScreenRecordingStateChanged(resolve); });
+  expect(recorded.state === "on", "onScreenRecordingStateChanged", recorded);
+  const captured = await new Promise(function (resolve) { migo.onUserCaptureScreen(resolve); });
+  expect(captured !== undefined, "onUserCaptureScreen", captured);
+  expect((await settle("setVisualEffectOnCapture", { visualEffect: "hidden" })).ok,
+    "setVisualEffectOnCapture", null);
+
   // An advert's Promises are settled by what the host's SDK says: load()
   // when it has loaded, show() when it is on screen -- before it closes.
   // The reward is the host's word too: the close event's isEnded comes from it.

@@ -171,7 +171,9 @@ static const uint64_t HOST_SERVICES = (UINT64_C(1) << MIGO_HOST_SERVICE_AD)
                                       | (UINT64_C(1) << MIGO_HOST_SERVICE_CLIPBOARD)
                                       | (UINT64_C(1) << MIGO_HOST_SERVICE_SCAN_CODE)
                                       | (UINT64_C(1) << MIGO_HOST_SERVICE_LOCATION)
-                                      | (UINT64_C(1) << MIGO_HOST_SERVICE_IMAGE);
+                                      | (UINT64_C(1) << MIGO_HOST_SERVICE_IMAGE)
+                                      | (UINT64_C(1) << MIGO_HOST_SERVICE_MOTION)
+                                      | (UINT64_C(1) << MIGO_HOST_SERVICE_SCREEN);
 
 /* The clipboard this host keeps: what content last wrote. */
 static char g_clipboard[256] = "";
@@ -229,6 +231,8 @@ static NSData *png_bytes(const char *tail) {
 }
 
 static void complete_ok(MigoSession *session, uint64_t call_id, const char *payload_json);
+static void complete_fail(MigoSession *session, uint64_t call_id, const char *message,
+                          int has_code, int32_t code);
 static void complete_object(MigoSession *session, uint64_t call_id, id object);
 
 /* Answer with `object`, which hands `files` over: once the completion returns
@@ -241,6 +245,90 @@ static void hand_over(MigoSession *session, uint64_t call_id, id object, NSArray
             return;
         }
     }
+}
+
+/* ---- motion and screen ---------------------------------------------------------- */
+
+static void post_screen_event(MigoSession *session, uint32_t event, const char *json) {
+    if (migo_session_post_host_service_event(session, MIGO_HOST_SERVICE_SCREEN, event, json,
+                                             (uint32_t)strlen(json)) != MIGO_OK) {
+        probe_failure("migo_session_post_host_service_event refused a screen event");
+    }
+}
+
+/* This host has an accelerometer, held flat and face up, and no compass. */
+static int handle_motion_call(MigoSession *session, const MigoHostServiceCall *call,
+                              const char *payload) {
+    switch (call->method) {
+        case MIGO_MOTION_START_ACCELEROMETER: {
+            if (strstr(payload, "\"interval\":\"game\"") == NULL) {
+                probe_failure("startAccelerometer did not carry its interval");
+                return 1;
+            }
+            complete_ok(session, call->call_id, "");
+            MigoSensorSample sample;
+            memset(&sample, 0, sizeof(sample));
+            sample.struct_size = (uint32_t)sizeof(sample);
+            sample.abi_version = MIGO_ABI_VERSION_CURRENT;
+            sample.kind = MIGO_SENSOR_ACCELEROMETER;
+            sample.values[2] = 1.0;
+            if (migo_session_post_sensor_sample(session, &sample) != MIGO_OK) {
+                probe_failure("migo_session_post_sensor_sample refused a reading");
+            }
+            return 1;
+        }
+        case MIGO_MOTION_START_COMPASS:
+            complete_fail(session, call->call_id, "no such sensor on this device", 0, 0);
+            return 1;
+        case MIGO_MOTION_STOP_ACCELEROMETER:
+            if (call->call_id != 0) probe_failure("a sensor stop carried a call id");
+            return 1;
+    }
+    return 0;
+}
+
+static int handle_screen_call(MigoSession *session, const MigoHostServiceCall *call,
+                              const char *payload) {
+    switch (call->method) {
+        case MIGO_SCREEN_GET_BRIGHTNESS:
+            complete_ok(session, call->call_id, "{\"value\":0.5}");
+            return 1;
+        case MIGO_SCREEN_SET_BRIGHTNESS:
+            if (strstr(payload, "\"value\":0.25") == NULL) {
+                probe_failure("setScreenBrightness did not carry its value");
+                return 1;
+            }
+            complete_ok(session, call->call_id, "");
+            return 1;
+        case MIGO_SCREEN_SET_DEVICE_ORIENTATION:
+            complete_ok(session, call->call_id, "");
+            /* The device turns as asked. */
+            post_screen_event(session, MIGO_SCREEN_EVENT_DEVICE_ORIENTATION_CHANGE,
+                              "{\"value\":\"landscape\"}");
+            return 1;
+        case MIGO_SCREEN_GET_RECORDING_STATE:
+            complete_ok(session, call->call_id, "{\"state\":\"off\"}");
+            return 1;
+        case MIGO_SCREEN_SET_VISUAL_EFFECT_ON_CAPTURE:
+            if (strstr(payload, "\"visualEffect\":\"hidden\"") == NULL) {
+                probe_failure("setVisualEffectOnCapture did not carry its effect");
+                return 1;
+            }
+            complete_ok(session, call->call_id, "");
+            return 1;
+        /* Observing starts, and the player does at once what is observed. */
+        case MIGO_SCREEN_START_CAPTURE_OBSERVER:
+            post_screen_event(session, MIGO_SCREEN_EVENT_USER_CAPTURE_SCREEN, "{}");
+            return 1;
+        case MIGO_SCREEN_START_RECORDING_OBSERVER:
+            post_screen_event(session, MIGO_SCREEN_EVENT_RECORDING_STATE_CHANGE,
+                              "{\"state\":\"on\"}");
+            return 1;
+        case MIGO_SCREEN_STOP_CAPTURE_OBSERVER:
+        case MIGO_SCREEN_STOP_RECORDING_OBSERVER:
+            return 1;
+    }
+    return 0;
 }
 
 static int handle_image_call(MigoSession *session, const MigoHostServiceCall *call,
@@ -531,6 +619,12 @@ static void MIGO_CALL on_host_service_call(void *user_data, MigoSession *session
             break;
         case MIGO_HOST_SERVICE_IMAGE:
             if (handle_image_call(session, call, payload)) return;
+            break;
+        case MIGO_HOST_SERVICE_MOTION:
+            if (handle_motion_call(session, call, payload)) return;
+            break;
+        case MIGO_HOST_SERVICE_SCREEN:
+            if (handle_screen_call(session, call, payload)) return;
             break;
         case MIGO_HOST_SERVICE_SUBPACKAGE:
             if (call->method == MIGO_SUBPACKAGE_DOWNLOAD) {

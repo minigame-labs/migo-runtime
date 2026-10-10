@@ -44,17 +44,23 @@ pub trait VibrationService: Send + Sync {
 
 // ==================== Screen ====================
 
-/// Screen brightness and orientation service.
+/// The screen: brightness, orientation, keep-awake, and what is captured of it.
+///
+/// A method taking `request_json` is a request the host answers through its hook
+/// with `{"requestId", ...}` or `{"requestId", "error"}`. The `start_*`/`stop_*`
+/// observers are commands: what they observe arrives as an event.
 pub trait ScreenService: Send + Sync {
-    /// Get screen brightness (0.0-1.0).
-    fn get_brightness(&self) -> Result<f32, ServiceError> {
+    /// `getScreenBrightness`: answers `{"value"}` (0.0-1.0) through
+    /// `_internalOnGetScreenBrightnessResult`.
+    fn get_brightness(&self, _request_json: &str) -> Result<(), ServiceError> {
         Err(ServiceError::not_supported(
             "getScreenBrightness:fail not supported",
         ))
     }
 
-    /// Set screen brightness (0.0-1.0).
-    fn set_brightness(&self, _value: f32) -> Result<(), ServiceError> {
+    /// `setScreenBrightness` `{"value"}` (0.0-1.0): answers through
+    /// `_internalOnSetScreenBrightnessResult`.
+    fn set_brightness(&self, _request_json: &str) -> Result<(), ServiceError> {
         Err(ServiceError::not_supported(
             "setScreenBrightness:fail not supported",
         ))
@@ -67,8 +73,9 @@ pub trait ScreenService: Send + Sync {
         ))
     }
 
-    /// Set device orientation: "portrait", "landscape", "landscapeReverse"
-    fn set_orientation(&self, _value: &str) -> Result<(), ServiceError> {
+    /// `setDeviceOrientation` `{"value"}` (`portrait` or `landscape`): answers
+    /// through `_internalOnSetDeviceOrientationResult`.
+    fn set_orientation(&self, _request_json: &str) -> Result<(), ServiceError> {
         Err(ServiceError::not_supported(
             "setDeviceOrientation:fail not supported",
         ))
@@ -88,6 +95,38 @@ pub trait ScreenService: Send + Sync {
         ))
     }
 
+    /// `getScreenRecordingState`: answers `{"state"}` (`on` or `off`) through
+    /// `_internalOnGetScreenRecordingStateResult`.
+    fn get_screen_recording_state(&self, _request_json: &str) -> Result<(), ServiceError> {
+        Err(ServiceError::not_supported(
+            "getScreenRecordingState:fail not supported",
+        ))
+    }
+
+    /// Start observing whether the screen is being recorded; each change is the
+    /// event `{"state"}`.
+    fn start_screen_recording_observer(&self) -> Result<(), ServiceError> {
+        Err(ServiceError::not_supported(
+            "onScreenRecordingStateChanged:fail not supported",
+        ))
+    }
+
+    /// Stop observing screen recording.
+    fn stop_screen_recording_observer(&self) -> Result<(), ServiceError> {
+        Err(ServiceError::not_supported(
+            "offScreenRecordingStateChanged:fail not supported",
+        ))
+    }
+
+    /// `setVisualEffectOnCapture` `{"visualEffect"}` (`none` or `hidden`: keep the
+    /// game out of screenshots and recordings): answers through
+    /// `_internalOnSetVisualEffectOnCaptureResult`.
+    fn set_visual_effect_on_capture(&self, _request_json: &str) -> Result<(), ServiceError> {
+        Err(ServiceError::not_supported(
+            "setVisualEffectOnCapture:fail not supported",
+        ))
+    }
+
     /// Set whether to enable debug mode at runtime.
     fn set_enable_debug(&self, _enabled: bool) -> Result<(), ServiceError> {
         Err(ServiceError::not_supported(
@@ -96,12 +135,19 @@ pub trait ScreenService: Send + Sync {
     }
 }
 
-// ==================== Device Motion ====================
+// ==================== Motion sensors ====================
+//
+// Each `start` is a request `{"requestId", "interval"}` -- `game` (20 ms), `ui`
+// (60 ms) or `normal` (200 ms); the compass has none -- that the host answers
+// through the sensor's hook, failing it when the device has no such sensor or may
+// not use it. `stop` is a command. Readings arrive as typed samples
+// (`HostCommand::OnAccelerometerChange` and its siblings), never as JSON: they
+// come up to fifty times a second.
 
-/// Device motion sensor (rotation angles).
+/// Device motion: the rotation angles `alpha`, `beta`, `gamma`.
 pub trait DeviceMotionService: Send + Sync {
-    /// Start listening. interval: "game" (20ms), "ui" (60ms), "normal" (200ms)
-    fn start(&self, _interval: &str) -> Result<(), ServiceError> {
+    /// Answers through `_internalOnStartDeviceMotionListeningResult`.
+    fn start(&self, _request_json: &str) -> Result<(), ServiceError> {
         Err(ServiceError::not_supported(
             "startDeviceMotionListening:fail not supported",
         ))
@@ -114,11 +160,10 @@ pub trait DeviceMotionService: Send + Sync {
     }
 }
 
-// ==================== Gyroscope ====================
-
-/// Gyroscope sensor (angular velocity rad/s).
+/// Gyroscope: angular velocity in rad/s.
 pub trait GyroscopeService: Send + Sync {
-    fn start(&self, _interval: &str) -> Result<(), ServiceError> {
+    /// Answers through `_internalOnStartGyroscopeResult`.
+    fn start(&self, _request_json: &str) -> Result<(), ServiceError> {
         Err(ServiceError::not_supported(
             "startGyroscope:fail not supported",
         ))
@@ -131,11 +176,10 @@ pub trait GyroscopeService: Send + Sync {
     }
 }
 
-// ==================== Compass ====================
-
-/// Compass sensor (magnetic heading degrees).
+/// Compass: magnetic heading in degrees, with its accuracy.
 pub trait CompassService: Send + Sync {
-    fn start(&self) -> Result<(), ServiceError> {
+    /// Answers through `_internalOnStartCompassResult`.
+    fn start(&self, _request_json: &str) -> Result<(), ServiceError> {
         Err(ServiceError::not_supported(
             "startCompass:fail not supported",
         ))
@@ -148,11 +192,10 @@ pub trait CompassService: Send + Sync {
     }
 }
 
-// ==================== Accelerometer ====================
-
-/// Accelerometer sensor (acceleration m/s²).
+/// Accelerometer: acceleration in units of g.
 pub trait AccelerometerService: Send + Sync {
-    fn start(&self, _interval: &str) -> Result<(), ServiceError> {
+    /// Answers through `_internalOnStartAccelerometerResult`.
+    fn start(&self, _request_json: &str) -> Result<(), ServiceError> {
         Err(ServiceError::not_supported(
             "startAccelerometer:fail not supported",
         ))

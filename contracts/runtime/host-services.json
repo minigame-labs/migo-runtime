@@ -398,6 +398,134 @@
         }
       },
       "events": {}
+    },
+    "motion": {
+      "id": 13,
+      "methods": {
+        "start_accelerometer": {
+          "id": 0,
+          "kind": "call",
+          "op": "op_start_accelerometer",
+          "hook": "_internalOnStartAccelerometerResult",
+          "error_code_field": null
+        },
+        "stop_accelerometer": {
+          "id": 1,
+          "kind": "command",
+          "op": "op_stop_accelerometer"
+        },
+        "start_gyroscope": {
+          "id": 2,
+          "kind": "call",
+          "op": "op_start_gyroscope",
+          "hook": "_internalOnStartGyroscopeResult",
+          "error_code_field": null
+        },
+        "stop_gyroscope": {
+          "id": 3,
+          "kind": "command",
+          "op": "op_stop_gyroscope"
+        },
+        "start_compass": {
+          "id": 4,
+          "kind": "call",
+          "op": "op_start_compass",
+          "hook": "_internalOnStartCompassResult",
+          "error_code_field": null
+        },
+        "stop_compass": {
+          "id": 5,
+          "kind": "command",
+          "op": "op_stop_compass"
+        },
+        "start_device_motion": {
+          "id": 6,
+          "kind": "call",
+          "op": "op_start_device_motion",
+          "hook": "_internalOnStartDeviceMotionListeningResult",
+          "error_code_field": null
+        },
+        "stop_device_motion": {
+          "id": 7,
+          "kind": "command",
+          "op": "op_stop_device_motion"
+        }
+      },
+      "events": {}
+    },
+    "screen": {
+      "id": 14,
+      "methods": {
+        "get_brightness": {
+          "id": 0,
+          "kind": "call",
+          "op": "op_get_screen_brightness",
+          "hook": "_internalOnGetScreenBrightnessResult",
+          "error_code_field": null
+        },
+        "set_brightness": {
+          "id": 1,
+          "kind": "call",
+          "op": "op_set_screen_brightness",
+          "hook": "_internalOnSetScreenBrightnessResult",
+          "error_code_field": null
+        },
+        "set_device_orientation": {
+          "id": 2,
+          "kind": "call",
+          "op": "op_set_device_orientation",
+          "hook": "_internalOnSetDeviceOrientationResult",
+          "error_code_field": null
+        },
+        "start_capture_observer": {
+          "id": 3,
+          "kind": "command",
+          "op": "op_start_capture_screen"
+        },
+        "stop_capture_observer": {
+          "id": 4,
+          "kind": "command",
+          "op": "op_stop_capture_screen"
+        },
+        "get_recording_state": {
+          "id": 5,
+          "kind": "call",
+          "op": "op_get_screen_recording_state",
+          "hook": "_internalOnGetScreenRecordingStateResult",
+          "error_code_field": null
+        },
+        "start_recording_observer": {
+          "id": 6,
+          "kind": "command",
+          "op": "op_start_screen_recording_observer"
+        },
+        "stop_recording_observer": {
+          "id": 7,
+          "kind": "command",
+          "op": "op_stop_screen_recording_observer"
+        },
+        "set_visual_effect_on_capture": {
+          "id": 8,
+          "kind": "call",
+          "op": "op_set_visual_effect_on_capture",
+          "hook": "_internalOnSetVisualEffectOnCaptureResult",
+          "error_code_field": null
+        }
+      },
+      "events": {
+        "user_capture_screen": {
+          "id": 0,
+          "hook": "_internalTriggerUserCaptureScreen"
+        },
+        "device_orientation_change": {
+          "id": 1,
+          "hook": "_internalOnDeviceOrientationEvent"
+        },
+        "recording_state_change": {
+          "id": 2,
+          "hook": "_internalOnScreenRecordingStateEvent"
+        }
+      }
     }
   }
 }
