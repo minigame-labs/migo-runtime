@@ -2,80 +2,106 @@
 title: Share
 sidebar:
   order: 4
-description: Android ShareHandler contract — ShareRequest fields, ShareSink settle semantics, and the "shareAppMessage:fail not supported" fallback when no handler is registered.
+description: The three share requests content makes (shareAppMessage / shareMessageToFriend / showShareImageMenu) on the Android ShareHandler and the C ABI share service — request fields, image paths resolved through the sandbox, ShareSink settle semantics, and the fallback with no host.
 audience: host-integrator
 platforms:
   - android
+  - ios
+  - macos
+  - linux
+  - windows
+  - openharmony
 sourcePaths:
   - platforms/android/library/src/main/java/com/migo/runtime/callback/ShareHandler.java
   - platforms/android/library/src/main/java/com/migo/runtime/callback/ShareSink.java
   - platforms/android/library/src/main/java/com/migo/runtime/GameSession.java
+  - include/migo/host_services.h
+  - engine/crates/runtime-v8/src/share/01_share.js
 ---
 
-::::caution[Platform scope]
-`ShareHandler` is the Android Java facade contract. The C ABI and cross-platform layer have no public share entry point in `0.9`.
-::::
+## Three requests
 
-## What the host must implement
+Every share content starts is a request the host answers, each through its own method:
 
-Register via `GameSession#setShareHandler(ShareHandler)`, corresponding to line **808** of `GameSession.java`.
+| migo API | Android `ShareHandler` | C ABI `MIGO_HOST_SERVICE_SHARE` |
+| --- | --- | --- |
+| `migo.shareAppMessage(options)` | `shareAppMessage(ShareRequest, ShareSink)` | `SHARE_APP_MESSAGE` 0 |
+| `migo.shareMessageToFriend(options)` | `shareMessageToFriend(FriendShareRequest, ShareSink)` | `SHARE_MESSAGE_TO_FRIEND` 1 |
+| `migo.showShareImageMenu(options)` | `showShareImageMenu(ImageShareRequest, ShareSink)` | `SHOW_SHARE_IMAGE_MENU` 2 |
 
-The `ShareHandler` entry point is:
+On Android, register with `GameSession#setShareHandler(ShareHandler)`. A C ABI host declares `MIGO_HOST_SERVICE_SHARE` in
+its `host_services` and answers by method number in `on_host_service_call`.
 
-```java
-default void shareAppMessage(ShareRequest request, ShareSink sink)
-```
+A request is what content passed to the call, as it passed it. The `migo.onShareAppMessage` listeners answer the
+menu's "share" item, a different flow, and have no say over an active `shareAppMessage`. An option content did not
+set is absent (an empty string on the Android request objects).
 
-Override this method to bridge the request to the host's own share panel: a system chooser, an in-app friend picker, or a social SDK. The runtime does not link a share SDK and holds no social graph.
+## Image paths
 
-`ShareRequest` fields are populated by the runtime:
+Each request names at most one image — `imageUrl` for `shareAppMessage` and `shareMessageToFriend`, `path` for
+`showShareImageMenu`. The host receives the **real file path** behind it in the game's sandbox (a file under `/user`,
+`/tmp`, `/cache` or in the package; a relative path is resolved against the package root), readable until the request
+settles. It is never content's own string, so content cannot have the host read a file outside the sandbox; a path
+outside it, or one with no file, fails before the request leaves the engine. Only `shareAppMessage`'s `imageUrl` may
+be an http(s) URL, which reaches the host as is; the other two refuse network images.
 
-| Field | Semantics |
+## Request fields
+
+`ShareRequest` (`SHARE_APP_MESSAGE`):
+
+| Field | Meaning |
 | --- | --- |
-| `title` | Share title; empty string when not set by content |
-| `imageUrl` | Share image URL; empty string when not set by content |
-| `query` | Query string received by the target game, e.g. `a=1&b=2`, without a leading `?` |
-| `imageUrlId` | Platform image id; ignore when the host cannot resolve it for that platform |
+| `title` | Share title; empty when content set none |
+| `imageUrl` | An http(s) URL or a real file path; empty when unset |
+| `query` | Query string the launched game receives, such as `a=1&b=2`, without a leading `?` |
+| `imageUrlId` | Platform image id; ignore it if the host cannot resolve ids for that platform |
+| `toCurrentGroup` | Whether a share made from a group's toolbar goes back to that group; `true` unless content said otherwise |
+| `path` | Independent subpackage path; empty when unset |
 
-After the share panel completes, settle the `ShareSink` exactly once:
+`FriendShareRequest` (`SHARE_MESSAGE_TO_FRIEND`):
 
-| Method | Semantics |
+| Field | Meaning |
 | --- | --- |
-| `settleShared()` | The share panel flow has ended; does not imply the user actually sent a message |
-| `fail(int errCode, String errMsg)` | Failure; `errMsg` is passed to content as-is |
+| `openId` | The friend's openId, as content supplied it; never empty |
+| `title` / `imageUrl` / `imageUrlId` | As above; `imageUrl` is only ever a real file path |
+| `query` | The query `migo.setMessageToFriendQuery()` set, which the friend's enter options carry as `query.query` |
+| `shareMessageToFriendScene` | Likewise `query.shareMessageToFriendScene`, 0–50; `null` when unset (absent on the C ABI) |
 
-Calls arrive on the runtime host thread; do not block. `ShareSink` may be called from any thread. The content-side `migo.onShareAppMessage` listener runs before the handler is invoked; the request is the final merged content and default values must not be re-derived.
+`ImageShareRequest` (`SHOW_SHARE_IMAGE_MENU`):
 
-## What happens without an implementation
-
-From the `ShareHandler.java` header comment:
-
-> `migo.shareAppMessage()` fails with
-> `shareAppMessage:fail not supported` and code `-2`. It settles
-> rather than staying silent: content commonly awaits the share before resuming,
-> so a dropped request is a paused game.
-
-The default implementation verbatim:
-
-```java
-sink.fail(-2, "shareAppMessage:fail not supported");
-```
-
-## What content sees
-
-| migo API | Corresponding handler method |
+| Field | Meaning |
 | --- | --- |
-| `migo.shareAppMessage(options)` | `shareAppMessage(request, sink)` |
-| `migo.onShareAppMessage(listener)` | Modifies the final share request before the handler is called |
+| `path` | A real file path; never empty |
+| `needShowEntrance` | Whether the image's message carries an entry into the game |
+| `entrancePath` | Where that entry opens the game; empty for its default |
 
-A successful `migo.shareAppMessage()` only means the share panel flow has ended. In line with the common mini-game contract, `ShareSink` does not tell content whether the user actually sent a message; using it to directly issue rewards has no factual basis.
-`ShareRequest.query` does not include a leading `?`, so if the host appends it to a target URL, it should be treated as the query-parameter body. `imageUrlId` is meaningful only when the host has the ability to resolve platform image ids for the corresponding platform.
+## Answering
 
-`ShareSink` is also a one-shot channel: the first `settleShared()` or `fail(...)` takes effect; subsequent calls are ignored. The host may settle from the result-callback thread of a system share Activity.
+Settle each request exactly once through its `ShareSink` (on the C ABI, `migo_session_complete_host_service_call`):
+
+| Method | Meaning |
+| --- | --- |
+| `settleShared()` | The share flow finished; it does not mean the user actually sent a message |
+| `fail(int errCode, String errMsg)` | Failure; `errMsg` is passed to content verbatim |
+
+A share waits on the player for as long as they take; the runtime sets no deadline. Calls arrive on the runtime's host
+thread, so do not block in them; `ShareSink` may be called from any thread, and the first settle wins.
+
+When a `shareMessageToFriend` ends, content's `migo.onShareMessageToFriend` listeners receive `{success, errMsg}` —
+derived from that request's settlement; the host posts no event of its own.
+
+## Without a host
+
+With no handler (or a C ABI host that did not declare the share service), all three fail with
+`<api>:fail not supported` and code `-2`. They settle rather than stay silent: content commonly awaits a share before
+resuming, so a dropped request is a paused game.
+
+A `migo.shareAppMessage()` success only means the share flow finished; as on common mini-game platforms, content is not
+told whether the user really sent a message, and rewarding on it has no factual basis.
 
 ## Platform availability
 
 | Layer | Status |
 | --- | --- |
-| Android Java facade | ✓ |
-| C ABI | none |
+| Android Java facade | ✓ `ShareHandler` |
+| C ABI (Apple / Linux / Windows / OpenHarmony hosts) | ✓ `MIGO_HOST_SERVICE_SHARE` |

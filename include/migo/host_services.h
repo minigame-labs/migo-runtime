@@ -87,8 +87,25 @@ typedef uint32_t MigoHostService;
 #define MIGO_AUTH_GET_USER_INFO 2U
 #define MIGO_AUTH_GET_PHONE_NUMBER 3U
 
-/* Sharing: one call. */
+/*
+ * Sharing: three calls, each naming at most one image -- a real path the engine
+ * resolved through the sandbox, readable until the call completes (only
+ * SHARE_APP_MESSAGE may name an http(s) URL instead). An option content did not
+ * set is absent.
+ *
+ *   SHARE_APP_MESSAGE {"title"?, "imageUrl"?, "query"?, "imageUrlId"?,
+ *                      "toCurrentGroup"?, "path"?} -- the share content asked for.
+ *   SHARE_MESSAGE_TO_FRIEND {"openId", "title"?, "imageUrl"?, "imageUrlId"?,
+ *                            "query"?, "shareMessageToFriendScene"?} -- to one
+ *                            friend; query and shareMessageToFriendScene are what
+ *                            setMessageToFriendQuery set, for the friend's enter
+ *                            options.
+ *   SHOW_SHARE_IMAGE_MENU {"path", "needShowEntrance", "entrancePath"?} -- the
+ *                          share sheet for one image.
+ */
 #define MIGO_SHARE_SHARE_APP_MESSAGE 0U
+#define MIGO_SHARE_SHARE_MESSAGE_TO_FRIEND 1U
+#define MIGO_SHARE_SHOW_SHARE_IMAGE_MENU 2U
 
 /* Navigation: one call and two commands. */
 #define MIGO_NAVIGATE_NAVIGATE_TO_MINI_PROGRAM 0U

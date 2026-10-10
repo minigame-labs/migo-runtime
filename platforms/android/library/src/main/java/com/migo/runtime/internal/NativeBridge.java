@@ -685,6 +685,10 @@ final class NativeBridge {
      */
     static native void onShareAppMessageResult(int sessionId, String resultJson);
 
+    static native void onShareMessageToFriendResult(int sessionId, String resultJson);
+
+    static native void onShowShareImageMenuResult(int sessionId, String resultJson);
+
     // ==================== Navigate Callback ====================
 
     /**

@@ -1254,6 +1254,20 @@ public final class NativeMethods {
         }
     }
 
+    /** Callback for shareMessageToFriend result. */
+    public static void onShareMessageToFriendResult(int sessionId, String resultJson) {
+        if (sessionId >= 0 && resultJson != null) {
+            NativeBridge.onShareMessageToFriendResult(sessionId, resultJson);
+        }
+    }
+
+    /** Callback for showShareImageMenu result. */
+    public static void onShowShareImageMenuResult(int sessionId, String resultJson) {
+        if (sessionId >= 0 && resultJson != null) {
+            NativeBridge.onShowShareImageMenuResult(sessionId, resultJson);
+        }
+    }
+
     // ==================== Navigate Callback ====================
 
     /**

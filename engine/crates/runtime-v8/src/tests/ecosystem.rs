@@ -3,19 +3,20 @@
 
 use std::{
     collections::HashMap,
-    path::PathBuf,
     sync::{Arc, Mutex},
 };
 
-use deno_core::{FastString, JsRuntime, PollEventLoopOptions, RuntimeOptions, serde_json};
+use deno_core::{FastString, JsRuntime, serde_json};
 use shared::{
     protocol::error::ServiceError,
     services::{
         CommerceServices, ConnectivityServices, DeviceServices, EcosystemService, MediaServices,
         SensorServices, SystemUtilServices,
     },
-    vfs::{GamePaths, VirtualFS},
+    vfs::VirtualFS,
 };
+
+use super::support::{SETTLE, Sandbox, boot_with_services, is_true, run_to_idle as run};
 
 #[derive(Default)]
 struct FakeEcosystem {
@@ -50,87 +51,12 @@ impl SystemUtilServices for Host {
     }
 }
 
-struct Sandbox {
-    root: PathBuf,
-    paths: GamePaths,
-}
-
-impl Sandbox {
-    fn new() -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "migo-ecosystem-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let paths =
-            GamePaths::new(root.join("files"), root.join("cache"), "eco", 1).expect("game paths");
-        paths.ensure_directories().expect("sandbox directories");
-        Self { root, paths }
-    }
-}
-
-impl Drop for Sandbox {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
-    }
-}
-
 fn boot(host: Option<Arc<FakeEcosystem>>, vfs: Option<Arc<VirtualFS>>) -> JsRuntime {
-    let mut state = super::support::test_host_state();
-    state.device_services = host.map(|host| Arc::new(Host(host)) as Arc<dyn DeviceServices>);
-    state.vfs = vfs;
-    let mut runtime = JsRuntime::new(RuntimeOptions {
-        extensions: crate::main_extensions(state),
-        ..Default::default()
-    });
-    crate::harden_global_scope(&mut runtime);
-    runtime
+    boot_with_services(
+        host.map(|host| Arc::new(Host(host)) as Arc<dyn DeviceServices>),
+        vfs,
+    )
 }
-
-/// Run `source`, let every op and microtask it started finish, then evaluate
-/// `check` and return it as a string.
-fn run(runtime: &mut JsRuntime, source: &'static str, check: &'static str) -> String {
-    let reactor = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("tokio runtime");
-    reactor.block_on(async {
-        runtime
-            .execute_script("<test:ecosystem>", FastString::from_static(source))
-            .expect("ecosystem script");
-        runtime
-            .run_event_loop(PollEventLoopOptions::default())
-            .await
-            .expect("event loop");
-    });
-    let value = runtime
-        .execute_script("<test:ecosystem-check>", FastString::from_static(check))
-        .expect("ecosystem check");
-    deno_core::scope!(scope, runtime);
-    let local = deno_core::v8::Local::new(scope, value);
-    local.to_rust_string_lossy(scope)
-}
-
-fn is_true(runtime: &mut JsRuntime, source: &'static str) -> bool {
-    let value = runtime
-        .execute_script("<test:ecosystem-check>", FastString::from_static(source))
-        .expect("ecosystem check");
-    deno_core::scope!(scope, runtime);
-    deno_core::v8::Local::new(scope, value).is_true()
-}
-
-const SETTLE: &str = r#"
-    globalThis.__results = {};
-    globalThis.__settle = function (name, options) {
-        const opts = Object.assign({}, options || {});
-        opts.success = function (res) { globalThis.__results[name] = { ok: true, res: res }; };
-        opts.fail = function (res) { globalThis.__results[name] = { ok: false, res: res }; };
-        migo[name](opts);
-    };
-"#;
 
 #[test]
 fn without_a_host_only_true_answers_are_given() {
@@ -182,14 +108,11 @@ fn without_a_host_only_true_answers_are_given() {
 
 #[test]
 fn a_request_reaches_the_host_by_name_and_its_files_through_the_sandbox() {
-    let sandbox = Sandbox::new();
+    let sandbox = Sandbox::new("ecosystem");
     let image = sandbox.paths.user_data_dir().join("share.png");
     std::fs::write(&image, b"png").unwrap();
     let host = Arc::new(FakeEcosystem::default());
-    let mut runtime = boot(
-        Some(host.clone()),
-        Some(Arc::new(VirtualFS::from_game_paths(&sandbox.paths))),
-    );
+    let mut runtime = boot(Some(host.clone()), Some(sandbox.vfs()));
     runtime
         .execute_script("<test:ecosystem-setup>", FastString::from_static(SETTLE))
         .unwrap();

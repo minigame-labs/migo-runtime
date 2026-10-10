@@ -247,7 +247,27 @@ final class HostDelegation {
                 options.optString("title", ""),
                 options.optString("imageUrl", ""),
                 options.optString("query", ""),
-                options.optString("imageUrlId", ""));
+                options.optString("imageUrlId", ""),
+                options.optBoolean("toCurrentGroup", true),
+                options.optString("path", ""));
+    }
+
+    static ShareHandler.FriendShareRequest friendShareRequest(JSONObject options) {
+        Object scene = options.opt("shareMessageToFriendScene");
+        return new ShareHandler.FriendShareRequest(
+                options.optString("openId", ""),
+                options.optString("title", ""),
+                options.optString("imageUrl", ""),
+                options.optString("imageUrlId", ""),
+                options.optString("query", ""),
+                scene instanceof Integer ? (Integer) scene : null);
+    }
+
+    static ShareHandler.ImageShareRequest imageShareRequest(JSONObject options) {
+        return new ShareHandler.ImageShareRequest(
+                options.optString("path", ""),
+                options.optBoolean("needShowEntrance", false),
+                options.optString("entrancePath", ""));
     }
 
     static NavigationHandler.NavigateRequest navigateRequest(JSONObject options) {

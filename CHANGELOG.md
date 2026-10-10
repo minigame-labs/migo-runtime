@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `shareMessageToFriend` and `showShareImageMenu` on every host: the C ABI share service gains
+  `MIGO_SHARE_SHARE_MESSAGE_TO_FRIEND` and `MIGO_SHARE_SHOW_SHARE_IMAGE_MENU`, and the Android `ShareHandler` gains
+  `shareMessageToFriend(FriendShareRequest, ShareSink)` and `showShareImageMenu(ImageShareRequest, ShareSink)`.
+  `shareAppMessage` carries `toCurrentGroup` and `path`.
 - The host's own ecosystem, on every host: `MIGO_HOST_SERVICE_ECOSYSTEM` on the C ABI and `EcosystemHandler` on
   Android (`GameSession.setEcosystemHandler`, `postEcosystemEvent`, `setEcosystemValue`). 69 APIs -- groups and friends,
   open-data cloud and interactive storage, gifts, live channels, voice chat, handoff, chat tools, facial verification,
@@ -289,6 +293,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- The image a share names reached the host as content's own string, so a host that opened it read whatever file
+  content named. `shareAppMessage`'s and `shareMessageToFriend`'s `imageUrl` and `showShareImageMenu`'s `path` now
+  reach it as the real file behind the sandbox path (only `shareAppMessage` may name an http(s) image), and a path
+  outside the sandbox fails before the request leaves.
+- `shareAppMessage` ran the `onShareAppMessage` listeners and folded their answers into the request; those answer the
+  share menu, and an active share sends what content passed. `setMessageToFriendQuery` stored a query nothing sent and
+  returned nothing: it returns whether the query was set (`query` at most 128 characters, `shareMessageToFriendScene`
+  0-50) and `shareMessageToFriend` carries it. `onShareMessageToFriend` hears how every `shareMessageToFriend` ended,
+  where only an internal trigger nothing called could raise it. A share no longer fails as timed out after 30 seconds
+  of the player choosing.
 - Ecosystem APIs that reported success while doing nothing: `requestSubscribeMessage` and
   `requestSubscribeSystemMessage` reported every template accepted, `setUserCloudStorage` /
   `removeUserCloudStorage` / `modifyFriendInteractiveStorage` stored nothing, `getFriendCloudStorage`,

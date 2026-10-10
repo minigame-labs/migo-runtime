@@ -4,46 +4,99 @@
 //! The three requests the host answers are each their own op (Mode C): sharing,
 //! sharing to one friend, and the image share sheet are different host flows
 //! with different results, and folding them into one op left the host unable
-//! to tell them apart. The host can also trigger share via
-//! `_internalTriggerShareAppMessage`.
+//! to tell them apart.
+//!
+//! Each names an image content chose, and the host is handed the real file behind
+//! it, resolved through the sandbox (`crate::file::host_paths`) -- never content's
+//! string, which could name any file the host's process can read. The ops are
+//! eager: an image with a file of its own needs no wait, so the request leaves in
+//! the call's own tick.
+
+use std::cell::RefCell;
+use std::rc::Rc;
+use std::sync::Arc;
 
 use deno_core::{Extension, OpState, op2};
 use deno_error::JsErrorBox;
 use shared::op_state::HostOpState;
+use shared::services::ShareService;
+use shared::services::host_files::Step;
 
-/// Generate a Mode C share op that forwards its request to the host's
-/// [`ShareService`](shared::services::ShareService).
-macro_rules! share_op {
-    ($op_name:ident, $method:ident, $api:literal) => {
-        #[op2(fast)]
-        pub fn $op_name(
-            state: &mut OpState,
-            #[string] options_json: String,
-        ) -> Result<(), JsErrorBox> {
-            let host = state.borrow::<HostOpState>();
-            match host
-                .device_services
-                .as_ref()
-                .and_then(|services| services.share())
-            {
-                Some(svc) => svc.$method(&options_json).map_err(JsErrorBox::generic),
-                None => Err(JsErrorBox::generic(concat!($api, ":fail not supported"))),
-            }
-        }
-    };
+use crate::file::host_paths::{Remote, export_paths};
+
+/// `shareAppMessage`'s image, which may also be a network image.
+const SHARE_APP_MESSAGE_FILES: &[&[Step]] = &[&[Step::Key("imageUrl")]];
+/// `shareMessageToFriend`'s image, which may not.
+const SHARE_MESSAGE_TO_FRIEND_FILES: &[&[Step]] = &[&[Step::Key("imageUrl")]];
+/// `showShareImageMenu`'s image, a local file.
+const SHOW_SHARE_IMAGE_MENU_FILES: &[&[Step]] = &[&[Step::Key("path")]];
+
+fn share_service(
+    state: &Rc<RefCell<OpState>>,
+    err_msg: &'static str,
+) -> Result<Arc<dyn ShareService>, JsErrorBox> {
+    state
+        .borrow()
+        .borrow::<HostOpState>()
+        .device_services
+        .as_ref()
+        .and_then(|services| services.share())
+        .ok_or_else(|| JsErrorBox::generic(err_msg))
 }
 
-share_op!(op_share_app_message, share_app_message, "shareAppMessage");
-share_op!(
-    op_share_message_to_friend,
-    share_message_to_friend,
-    "shareMessageToFriend"
-);
-share_op!(
-    op_show_share_image_menu,
-    show_share_image_menu,
-    "showShareImageMenu"
-);
+#[op2]
+pub async fn op_share_app_message(
+    state: Rc<RefCell<OpState>>,
+    #[string] request_json: String,
+) -> Result<(), JsErrorBox> {
+    let service = share_service(&state, "shareAppMessage:fail not supported")?;
+    let request = export_paths(
+        &state,
+        &request_json,
+        SHARE_APP_MESSAGE_FILES,
+        Remote::Allowed,
+    )
+    .await?;
+    service
+        .share_app_message(&request)
+        .map_err(JsErrorBox::generic)
+}
+
+#[op2]
+pub async fn op_share_message_to_friend(
+    state: Rc<RefCell<OpState>>,
+    #[string] request_json: String,
+) -> Result<(), JsErrorBox> {
+    let service = share_service(&state, "shareMessageToFriend:fail not supported")?;
+    let request = export_paths(
+        &state,
+        &request_json,
+        SHARE_MESSAGE_TO_FRIEND_FILES,
+        Remote::Refused,
+    )
+    .await?;
+    service
+        .share_message_to_friend(&request)
+        .map_err(JsErrorBox::generic)
+}
+
+#[op2]
+pub async fn op_show_share_image_menu(
+    state: Rc<RefCell<OpState>>,
+    #[string] request_json: String,
+) -> Result<(), JsErrorBox> {
+    let service = share_service(&state, "showShareImageMenu:fail not supported")?;
+    let request = export_paths(
+        &state,
+        &request_json,
+        SHOW_SHARE_IMAGE_MENU_FILES,
+        Remote::Refused,
+    )
+    .await?;
+    service
+        .show_share_image_menu(&request)
+        .map_err(JsErrorBox::generic)
+}
 
 deno_core::extension!(
     host_v8_share,

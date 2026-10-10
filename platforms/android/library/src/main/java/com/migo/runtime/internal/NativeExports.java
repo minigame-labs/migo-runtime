@@ -2833,6 +2833,39 @@ public final class NativeExports {
                         HostDelegation.shareSink(settlement)));
     }
 
+    /**
+     * Share to one friend. Delegates to the session's {@link ShareHandler}.
+     *
+     * @param sessionId   The session ID
+     * @param optionsJson JSON with openId, and title, imageUrl, imageUrlId, query and
+     *                    shareMessageToFriendScene when set
+     */
+    public static void shareMessageToFriend(int sessionId, String optionsJson) {
+        JSONObject options = HostDelegation.options(optionsJson);
+        HostDelegation.Settlement settlement =
+                settlement(sessionId, options, NativeMethods::onShareMessageToFriendResult);
+        delegate(sessionId, sShareHandlers, "shareMessageToFriend", settlement,
+                handler -> handler.shareMessageToFriend(
+                        HostDelegation.friendShareRequest(options),
+                        HostDelegation.shareSink(settlement)));
+    }
+
+    /**
+     * Open the share sheet for an image. Delegates to the session's {@link ShareHandler}.
+     *
+     * @param sessionId   The session ID
+     * @param optionsJson JSON with path, needShowEntrance, and entrancePath when set
+     */
+    public static void showShareImageMenu(int sessionId, String optionsJson) {
+        JSONObject options = HostDelegation.options(optionsJson);
+        HostDelegation.Settlement settlement =
+                settlement(sessionId, options, NativeMethods::onShowShareImageMenuResult);
+        delegate(sessionId, sShareHandlers, "showShareImageMenu", settlement,
+                handler -> handler.showShareImageMenu(
+                        HostDelegation.imageShareRequest(options),
+                        HostDelegation.shareSink(settlement)));
+    }
+
     // ==================== Navigate ====================
 
     /**

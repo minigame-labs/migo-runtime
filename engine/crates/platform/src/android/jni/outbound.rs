@@ -1567,6 +1567,8 @@ jni_void_json!(open_setting, "openSetting");
 // ==================== Share ====================
 
 jni_void_json!(share_app_message, "shareAppMessage");
+jni_void_json!(share_message_to_friend, "shareMessageToFriend");
+jni_void_json!(show_share_image_menu, "showShareImageMenu");
 
 // ==================== Ecosystem ====================
 

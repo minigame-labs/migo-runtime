@@ -83,7 +83,7 @@ GameSession 上 11 个 `set*Handler(...)` 外加 `setListener(GameSessionListene
 | PermissionHandler | `migo.getSetting` 及请求授权类 | 每个 scope 都是 deny;能力调用带 `auth deny` |
 | AdHandler | `createAd / loadAd / showAd / hideAd` | 所有调用 settle;`showAd` 关时带 `isEnded=false` |
 | SettingHandler | `migo.openSetting` | `-2 openSetting:fail not supported`(但那句代码还要 settle,否则被拒绝授权的内容进不去设置页) |
-| ShareHandler | `migo.shareAppMessage` | `-2 shareAppMessage:fail not supported`(分享等待路径绝不空转) |
+| ShareHandler | `migo.shareAppMessage` / `shareMessageToFriend` / `showShareImageMenu` | `-2 <api>:fail not supported`(分享等待路径绝不空转) |
 | NavigationHandler | `navigateToMiniProgram / openCustomerServiceConversation` 等 | `-2 navigateToMiniProgram:fail not supported` |
 | PaymentHandler | `requestMidasPayment*` | `isMidasPaymentSupported=false`,任何请求 `-2 not supported` |
 | SubpackageHandler | `loadSubpackage / preDownloadSubpackage` | 下载失败回执;`loadSubpackage()` 退回本地已下载文件执行 |
@@ -110,7 +110,7 @@ GameSession 上 11 个 `set*Handler(...)` 外加 `setListener(GameSessionListene
 | `MIGO_HOST_SERVICE_AD` | 全部广告(`createRewardedVideoAd` 等) | 运行时降级:不播放,激励视频以 `isEnded=false` 关 |
 | `MIGO_HOST_SERVICE_PAYMENT` | `checkIsSupportMidasPayment` / `requestMidasPayment*` | `allow_pay=false`,请求 not supported |
 | `MIGO_HOST_SERVICE_AUTH` | `login` / `checkSession` / `getUserInfo` / `getPhoneNumber` | not supported |
-| `MIGO_HOST_SERVICE_SHARE` | `shareAppMessage` | not supported |
+| `MIGO_HOST_SERVICE_SHARE` | `shareAppMessage` / `shareMessageToFriend` / `showShareImageMenu` | not supported |
 | `MIGO_HOST_SERVICE_NAVIGATE` | `navigateToMiniProgram` / `navigateBackMiniProgram` / `openCustomerServiceConversation` | not supported |
 | `MIGO_HOST_SERVICE_SUBPACKAGE` | `loadSubpackage` / `preDownloadSubpackage` | 只执行内容包里已有的分包 |
 | `MIGO_HOST_SERVICE_PERMISSION` | `authorize`;`getSetting` 与每个受控能力读宿主用 `migo_session_set_scope_state` 记录的决定 | 一切 scope 拒绝 |

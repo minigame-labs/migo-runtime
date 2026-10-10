@@ -174,6 +174,34 @@ public final class HostDelegationTest {
         assertEquals("https://x/i.png", request.imageUrl);
         assertEquals("lvl=7&ref=a", request.query);
         assertEquals("image-2", request.imageUrlId);
+        assertTrue("a share goes back to its group unless content says not", request.toCurrentGroup);
+        assertEquals("", request.path);
+    }
+
+    @Test
+    public void aFriendShareCarriesItsQueryAndAnAbsentSceneIsNull() {
+        ShareHandler.FriendShareRequest request =
+                HostDelegation.friendShareRequest(HostDelegation.options(
+                        "{\"requestId\":4,\"openId\":\"friend\",\"imageUrl\":\"/data/x/card.png\","
+                                + "\"query\":\"room=7\",\"shareMessageToFriendScene\":3}"));
+        assertEquals("friend", request.openId);
+        assertEquals("/data/x/card.png", request.imageUrl);
+        assertEquals("", request.title);
+        assertEquals("room=7", request.query);
+        assertEquals(Integer.valueOf(3), request.shareMessageToFriendScene);
+
+        assertNull(HostDelegation.friendShareRequest(HostDelegation.options(
+                "{\"openId\":\"friend\"}")).shareMessageToFriendScene);
+    }
+
+    @Test
+    public void anImageShareCarriesItsEntrance() {
+        ShareHandler.ImageShareRequest request =
+                HostDelegation.imageShareRequest(HostDelegation.options(
+                        "{\"requestId\":5,\"path\":\"/data/x/card.png\",\"needShowEntrance\":true}"));
+        assertEquals("/data/x/card.png", request.path);
+        assertTrue(request.needShowEntrance);
+        assertEquals("", request.entrancePath);
     }
 
     @Test

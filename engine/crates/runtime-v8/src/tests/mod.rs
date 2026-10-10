@@ -41,6 +41,7 @@ mod prelude;
 mod published_namespace_isolation;
 mod request_through_the_engine;
 mod runtime_restart_boundary;
+mod share;
 mod snapshot_fingerprint;
 mod storage_isolation;
 mod support;

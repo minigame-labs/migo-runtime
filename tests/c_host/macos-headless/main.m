@@ -693,12 +693,35 @@ static void MIGO_CALL on_host_service_call(void *user_data, MigoSession *session
                     return;
             }
             break;
-        case MIGO_HOST_SERVICE_SHARE:
-            if (call->method == MIGO_SHARE_SHARE_APP_MESSAGE) {
-                complete_ok(session, call->call_id, "{}");
-                return;
+        case MIGO_HOST_SERVICE_SHARE: {
+            /* Each share names content's image as the real file behind it. */
+            NSDictionary *share = payload_object(payload);
+            switch (call->method) {
+                case MIGO_SHARE_SHARE_APP_MESSAGE:
+                    if (share[@"imageUrl"] != nil && !is_content_png(share[@"imageUrl"])) {
+                        probe_failure("shareAppMessage named something other than content's image");
+                        return;
+                    }
+                    complete_ok(session, call->call_id, "{}");
+                    return;
+                case MIGO_SHARE_SHARE_MESSAGE_TO_FRIEND:
+                    if (![share[@"openId"] isEqual:@"probe-friend"] || ![share[@"query"] isEqual:@"room=7"]
+                        || !is_content_png(share[@"imageUrl"])) {
+                        probe_failure("shareMessageToFriend did not carry its friend, query and image");
+                        return;
+                    }
+                    complete_ok(session, call->call_id, "");
+                    return;
+                case MIGO_SHARE_SHOW_SHARE_IMAGE_MENU:
+                    if (!is_content_png(share[@"path"])) {
+                        probe_failure("showShareImageMenu named something other than content's image");
+                        return;
+                    }
+                    complete_fail(session, call->call_id, "cancel", 0, 0);
+                    return;
             }
             break;
+        }
         case MIGO_HOST_SERVICE_NAVIGATE:
             switch (call->method) {
                 case MIGO_NAVIGATE_NAVIGATE_TO_MINI_PROGRAM:

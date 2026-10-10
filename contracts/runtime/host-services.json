@@ -153,6 +153,20 @@
           "op": "op_share_app_message",
           "hook": "_internalOnShareAppMessageResult",
           "error_code_field": "errCode"
+        },
+        "share_message_to_friend": {
+          "id": 1,
+          "kind": "call",
+          "op": "op_share_message_to_friend",
+          "hook": "_internalOnShareMessageToFriendResult",
+          "error_code_field": "errCode"
+        },
+        "show_share_image_menu": {
+          "id": 2,
+          "kind": "call",
+          "op": "op_show_share_image_menu",
+          "hook": "_internalOnShowShareImageMenuResult",
+          "error_code_field": "errCode"
         }
       },
       "events": {}
