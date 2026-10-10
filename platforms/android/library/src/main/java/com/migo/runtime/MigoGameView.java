@@ -21,6 +21,7 @@ import com.migo.runtime.internal.NativeMethods;
 import com.migo.runtime.internal.ThreadCheck;
 import com.migo.runtime.internal.platform.DisplayCompat;
 import com.migo.runtime.internal.platform.OrientationWaitHelper;
+import com.migo.runtime.internal.platform.GameSurfaceView;
 
 /**
  * Self-contained game view that manages the full game lifecycle internally.
@@ -72,7 +73,7 @@ public class MigoGameView extends FrameLayout implements SurfaceHolder.Callback 
     }
 
     private void init() {
-        surfaceView = new SurfaceView(getContext());
+        surfaceView = new GameSurfaceView(getContext());
         addView(surfaceView, new LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT));
@@ -273,6 +274,8 @@ public class MigoGameView extends FrameLayout implements SurfaceHolder.Callback 
         }
 
         session = result.getValue();
+        // The pointer's icon and capture on a desktop-form device are this view's.
+        session.setInputView(surfaceView);
 
         if (sessionCreatedListener != null) {
             try {

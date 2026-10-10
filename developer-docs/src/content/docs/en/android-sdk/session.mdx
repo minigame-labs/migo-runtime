@@ -61,6 +61,24 @@ session.setMessageHandler((type, payload) -> { /* JSON String, may be null */ })
 
 `evaluateJavaScript` returns immediately; the script is queued asynchronously on the host thread. To receive a reply, pair `migo.sendToHost` with `MessageHandler`.
 
+### Desktop form: mouse, cursor, pointer lock
+
+On a device with a mouse (a docked phone, a Chromebook, desktop windowing), give the session the view the game is in:
+
+```java
+session.setInputView(surfaceView);
+```
+
+The session takes over that view's generic-motion and captured-pointer listeners: hovering, buttons and the wheel reach
+content's `onMouseMove` / `onMouseDown` / `onMouseUp` / `onWheel` (CSS pixels, DOM button order; the touches Android
+makes of mouse clicks still reach `onTouch*`, as on the platform's PC client), `migo.setCursor()` sets the view's
+`PointerIcon`, and `requestPointerLock()` uses pointer capture, whose relative motion accumulates into positions so
+`movementX/Y` keep coming. `MigoGameView` and `MigoGameActivity` do all of this themselves. A view of your own calls
+`session.onPointerCaptureChanged(hasCapture)` from its `View.onPointerCaptureChange`; when forwarding events by hand,
+use `session.dispatchGenericMotionEvent(ev)`. When the window moves between freeform/split screen and maximized
+(Android 11+), content hears `onWindowStateChange`; an Android app cannot size its own window, so `setWindowSize` is not
+supported.
+
 ## State broadcasts: `OnStateChangeListener`
 
 `setOnStateChangeListener(listener)` receives the engine's loading / running / error state transitions — use it to drive the loading UI; **do not** estimate state with `SystemClock`. `GameSessionListener` (a separate interface) provides finer-grained loadingStart/loadingEnd hooks.

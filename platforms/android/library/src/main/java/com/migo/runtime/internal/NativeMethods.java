@@ -493,6 +493,31 @@ public final class NativeMethods {
         return false;
     }
 
+    /**
+     * One mouse press (0), motion (1) or release (2), in CSS pixels and DOM
+     * button order.
+     */
+    public static boolean onPointerEvent(int sessionId, int kind, int button, float x, float y,
+                                         double timeMs) {
+        return sessionId >= 0 && NativeBridge.onPointerEvent(sessionId, kind, button, x, y, timeMs);
+    }
+
+    /** One scroll, in the unit DOM {@code WheelEvent.deltaMode} {@code deltaMode} names. */
+    public static boolean onWheelEvent(int sessionId, int deltaMode, double dx, double dy, double dz,
+                                       double timeMs) {
+        return sessionId >= 0 && NativeBridge.onWheelEvent(sessionId, deltaMode, dx, dy, dz, timeMs);
+    }
+
+    /** Whether the game's view now holds the pointer. */
+    public static void onPointerLockChanged(int sessionId, boolean locked) {
+        if (sessionId >= 0) NativeBridge.onPointerLockChanged(sessionId, locked);
+    }
+
+    /** The game's window became {@code {"state": "maximize" | "normalize"}}. */
+    public static void onWindowStateChanged(int sessionId, String stateJson) {
+        if (sessionId >= 0 && stateJson != null) NativeBridge.onWindowStateChanged(sessionId, stateJson);
+    }
+
     // ==================== Game Loading ====================
 
     /**

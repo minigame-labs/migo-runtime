@@ -1572,6 +1572,16 @@ jni_void_json!(show_share_image_menu, "showShareImageMenu");
 jni_void_json!(share_menu_changed, "shareMenuChanged");
 jni_void_json!(share_menu_reply, "shareMenuReply");
 
+// ==================== Desktop window ====================
+
+/// Set the pointer's icon over the game's view: `{"keyword"}` or
+/// `{"path", "x", "y"}`. Answers whether it was set.
+pub fn set_cursor(host_id: i32, json: &str) -> Result<bool, String> {
+    call_bool_with_string("setCursor", host_id, json)
+}
+jni_void!(request_pointer_lock, "requestPointerLock");
+jni_void!(exit_pointer_lock, "exitPointerLock");
+
 // ==================== Ecosystem ====================
 
 /// Whether the session's host installed an ecosystem handler.

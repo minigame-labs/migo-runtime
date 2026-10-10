@@ -52,6 +52,8 @@ impl MethodGroup {
 
 const NATIVE_CORE: &[JniMethod] = methods![
     ("version", "()Ljava/lang/String;"),
+    ("onPointerEvent", "(IIIFFD)Z"),
+    ("onWheelEvent", "(IIDDDD)Z"),
     ("getMinApiLevel", "()I"),
     ("initIcuData", "(Ljava/lang/String;)Z"),
     (
@@ -163,6 +165,8 @@ const NATIVE_SYSTEM: &[JniMethod] = methods![
     ("onActionSheetResult", "(ILjava/lang/String;)V"),
     ("onEcosystemResult", "(ILjava/lang/String;)V"),
     ("onEcosystemEvent", "(ILjava/lang/String;)V"),
+    ("onPointerLockChanged", "(IZ)V"),
+    ("onWindowStateChanged", "(ILjava/lang/String;)V"),
 ];
 
 const JAVA_CORE: &[JniMethod] = methods![
@@ -339,6 +343,9 @@ const JAVA_SYSTEM: &[JniMethod] = methods![
     ("showLoading", "(ILjava/lang/String;)V"),
     ("hideLoading", "(I)V"),
     ("showActionSheet", "(ILjava/lang/String;)V"),
+    ("setCursor", "(ILjava/lang/String;)Z"),
+    ("requestPointerLock", "(I)V"),
+    ("exitPointerLock", "(I)V"),
     ("ecosystemAvailable", "(I)Z"),
     ("ecosystemCall", "(ILjava/lang/String;)V"),
     ("ecosystemReply", "(ILjava/lang/String;)V"),
@@ -466,8 +473,11 @@ mod tests {
         // every API and event it carries by name. Sharing to one friend and the
         // image share sheet add +2 native (`onShareMessageToFriendResult`,
         // `onShowShareImageMenuResult`). The host's share menu adds +1 native
-        // (`onShareMenuEvent`, the item the player picked).
-        assert_eq!(native.len(), 79, "full NativeBridge surface changed");
+        // (`onShareMenuEvent`, the item the player picked). A desktop-form
+        // device's mouse adds +2 native, Core (`onPointerEvent`, `onWheelEvent`:
+        // every profile takes input), and its window +2 native
+        // (`onPointerLockChanged`, `onWindowStateChanged`).
+        assert_eq!(native.len(), 83, "full NativeBridge surface changed");
         // Runtime-generation fencing adds +2 Java (`beginRuntimeRestart`,
         // `completeRuntimeRestart`), both Core: every profile restarts.
         // Concurrent-session correctness removes -1 Java (`getCacheDirPath`,
@@ -481,8 +491,10 @@ mod tests {
         // (`ecosystemAvailable`, `ecosystemCall`, `ecosystemReply`,
         // `ecosystemValue`). Sharing to one friend and the image share sheet add
         // +2 Java (`shareMessageToFriend`, `showShareImageMenu`). The host's share
-        // menu adds +2 Java (`shareMenuChanged`, `shareMenuReply`).
-        assert_eq!(java.len(), 140, "full NativeExports surface changed");
+        // menu adds +2 Java (`shareMenuChanged`, `shareMenuReply`). A desktop-form
+        // device's window adds +3 Java (`setCursor`, `requestPointerLock`,
+        // `exitPointerLock`).
+        assert_eq!(java.len(), 143, "full NativeExports surface changed");
         assert_unique(&native);
         assert_unique(&java);
     }

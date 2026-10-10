@@ -12,7 +12,7 @@ use migo_core::services::{
     LocationService, MediaServices, NavigateService, NetworkService, PaymentService,
     PermissionService, RecorderService, ScanCodeService, Scope, ScopeState, ScreenService,
     SensorServices, ServiceError, ServiceErrorCode, ShareService, SubpackageService,
-    SystemInfoService, SystemUtilServices, VibrationService, VideoService,
+    SystemInfoService, SystemUtilServices, VibrationService, VideoService, WindowService,
 };
 
 use crate::android::jni;
@@ -261,6 +261,12 @@ impl SystemUtilServices for AndroidDeviceServices {
     #[cfg(feature = "api-connectivity")]
     fn navigate(&self) -> Option<Arc<dyn NavigateService>> {
         Some(Arc::new(AndroidNavigate {
+            host_id: self.host_id,
+        }))
+    }
+    #[cfg(feature = "api-system")]
+    fn window(&self) -> Option<Arc<dyn WindowService>> {
+        Some(Arc::new(AndroidWindow {
             host_id: self.host_id,
         }))
     }
@@ -1400,6 +1406,33 @@ impl NavigateService for AndroidNavigate {
             self.host_id,
             options_json,
         )?)
+    }
+}
+
+// ==================== Desktop window ====================
+
+/// The game's view on a desktop-form device: its pointer icon and pointer
+/// capture. An Android app cannot size its own window, so `setWindowSize` keeps
+/// the trait's not supported.
+struct AndroidWindow {
+    host_id: i32,
+}
+
+impl WindowService for AndroidWindow {
+    fn set_cursor(&self, json: &str) -> Result<(), ServiceError> {
+        if jni::set_cursor(self.host_id, json)? {
+            Ok(())
+        } else {
+            Err(ServiceError::not_supported("setCursor:fail not supported"))
+        }
+    }
+
+    fn request_pointer_lock(&self) -> Result<(), ServiceError> {
+        Ok(jni::request_pointer_lock(self.host_id)?)
+    }
+
+    fn exit_pointer_lock(&self) -> Result<(), ServiceError> {
+        Ok(jni::exit_pointer_lock(self.host_id)?)
     }
 }
 

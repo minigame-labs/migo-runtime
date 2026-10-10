@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Android on desktop-form devices: the mouse reaches `onMouseMove` / `onMouseDown` / `onMouseUp` / `onWheel` (hover,
+  every button, the wheel in lines), `setCursor` sets the view's `PointerIcon`, pointer lock is pointer capture with
+  relative motion accumulated into positions, and `onWindowStateChange` reports maximize / normalize from the window's
+  metrics (Android 11+). `GameSession.setInputView`, `dispatchGenericMotionEvent` and `onPointerCaptureChanged`;
+  `MigoGameView` and `MigoGameActivity` wire them. Screenshots are heard through Android 14's
+  `registerScreenCaptureCallback` (Full declares the install-time `DETECT_SCREEN_CAPTURE`), where a MediaStore query
+  sees no other app's images from Android 13 on.
 - `createOpenSettingButton`. `UserCryptoManager.getRandomValues` answers from the OS's cryptographically secure
   random source (up to 1048576 bytes).
 - The share menu on every host. After each `showShareMenu` / `hideShareMenu` / `updateShareMenu` the host receives the
