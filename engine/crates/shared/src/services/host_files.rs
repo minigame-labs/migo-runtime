@@ -144,6 +144,8 @@ pub fn unregister_session(host_id: i32) {
 }
 
 /// Hold `path`, a copy made for request `request_id`, until its result arrives.
+/// Request 0, which no request carries, holds it for the rest of the session --
+/// for a copy a command names, which no result releases.
 ///
 /// Returns `false` when the session is gone or was never registered; the caller
 /// then removes the copy itself, since nothing will.

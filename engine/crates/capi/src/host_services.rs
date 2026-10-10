@@ -47,13 +47,14 @@ use migo_capi_abi::{
         MIGO_HOST_SERVICE_INTERACTION, MIGO_HOST_SERVICE_LOCATION, MIGO_HOST_SERVICE_MOTION,
         MIGO_HOST_SERVICE_NAVIGATE, MIGO_HOST_SERVICE_PAYMENT, MIGO_HOST_SERVICE_PERMISSION,
         MIGO_HOST_SERVICE_SCAN_CODE, MIGO_HOST_SERVICE_SCREEN, MIGO_HOST_SERVICE_SETTING,
-        MIGO_HOST_SERVICE_SHARE, MIGO_HOST_SERVICE_SUBPACKAGE, MIGO_IMAGE_CHOOSE_IMAGE,
-        MIGO_IMAGE_CHOOSE_MEDIA, MIGO_IMAGE_CHOOSE_MESSAGE_FILE, MIGO_IMAGE_COMPRESS_IMAGE,
-        MIGO_IMAGE_PREVIEW_IMAGE, MIGO_IMAGE_PREVIEW_MEDIA, MIGO_IMAGE_SAVE_IMAGE_TO_PHOTOS_ALBUM,
-        MIGO_INTERACTION_HIDE_LOADING, MIGO_INTERACTION_HIDE_TOAST,
-        MIGO_INTERACTION_SHOW_ACTION_SHEET, MIGO_INTERACTION_SHOW_LOADING,
-        MIGO_INTERACTION_SHOW_MODAL, MIGO_INTERACTION_SHOW_TOAST, MIGO_LOCATION_GET_FUZZY_LOCATION,
-        MIGO_LOCATION_GET_LOCATION, MIGO_MOTION_START_ACCELEROMETER, MIGO_MOTION_START_COMPASS,
+        MIGO_HOST_SERVICE_SHARE, MIGO_HOST_SERVICE_SUBPACKAGE, MIGO_HOST_SERVICE_WINDOW,
+        MIGO_IMAGE_CHOOSE_IMAGE, MIGO_IMAGE_CHOOSE_MEDIA, MIGO_IMAGE_CHOOSE_MESSAGE_FILE,
+        MIGO_IMAGE_COMPRESS_IMAGE, MIGO_IMAGE_PREVIEW_IMAGE, MIGO_IMAGE_PREVIEW_MEDIA,
+        MIGO_IMAGE_SAVE_IMAGE_TO_PHOTOS_ALBUM, MIGO_INTERACTION_HIDE_LOADING,
+        MIGO_INTERACTION_HIDE_TOAST, MIGO_INTERACTION_SHOW_ACTION_SHEET,
+        MIGO_INTERACTION_SHOW_LOADING, MIGO_INTERACTION_SHOW_MODAL, MIGO_INTERACTION_SHOW_TOAST,
+        MIGO_LOCATION_GET_FUZZY_LOCATION, MIGO_LOCATION_GET_LOCATION,
+        MIGO_MOTION_START_ACCELEROMETER, MIGO_MOTION_START_COMPASS,
         MIGO_MOTION_START_DEVICE_MOTION, MIGO_MOTION_START_GYROSCOPE,
         MIGO_MOTION_STOP_ACCELEROMETER, MIGO_MOTION_STOP_COMPASS, MIGO_MOTION_STOP_DEVICE_MOTION,
         MIGO_MOTION_STOP_GYROSCOPE, MIGO_NAVIGATE_NAVIGATE_BACK_MINI_PROGRAM,
@@ -68,14 +69,17 @@ use migo_capi_abi::{
         MIGO_SCREEN_STOP_CAPTURE_OBSERVER, MIGO_SCREEN_STOP_RECORDING_OBSERVER,
         MIGO_SETTING_OPEN_APP_AUTHORIZE_SETTING, MIGO_SETTING_OPEN_SETTING,
         MIGO_SETTING_OPEN_SYSTEM_BLUETOOTH_SETTING, MIGO_SHARE_SHARE_APP_MESSAGE,
-        MIGO_SUBPACKAGE_DOWNLOAD, MigoHostServiceResult, copy_bounded,
+        MIGO_SUBPACKAGE_DOWNLOAD, MIGO_WINDOW_EVENT_POINTER_LOCK_CHANGE,
+        MIGO_WINDOW_EVENT_WINDOW_STATE_CHANGE, MIGO_WINDOW_EXIT_POINTER_LOCK,
+        MIGO_WINDOW_REQUEST_POINTER_LOCK, MIGO_WINDOW_SET_CURSOR, MIGO_WINDOW_SET_WINDOW_SIZE,
+        MigoHostServiceResult, copy_bounded,
     },
 };
 use migo_core::services::{
     AccelerometerService, AdService, AuthService, BluetoothService, ClipboardService,
     CompassService, DeviceMotionService, GyroscopeService, ImageApiService, InteractionService,
     LocationService, NavigateService, PaymentService, PermissionService, ScanCodeService, Scope,
-    ScopeState, ScreenService, ShareService, SubpackageService,
+    ScopeState, ScreenService, ShareService, SubpackageService, WindowService,
 };
 use serde_json::{Map, Value};
 use shared::{
@@ -462,6 +466,15 @@ const BLUETOOTH_GET_BLE_DEVICE_RSSI: Call = bluetooth_call(MIGO_BLUETOOTH_GET_BL
 const BLUETOOTH_SET_BLE_MTU: Call = bluetooth_call(MIGO_BLUETOOTH_SET_BLE_MTU);
 const BLUETOOTH_GET_BLE_MTU: Call = bluetooth_call(MIGO_BLUETOOTH_GET_BLE_MTU);
 
+const SET_WINDOW_SIZE: Call = Call {
+    service: MIGO_HOST_SERVICE_WINDOW,
+    method: MIGO_WINDOW_SET_WINDOW_SIZE,
+    hook: "_internalOnSetWindowSizeResult",
+    error_code_field: None,
+    progress_hook: None,
+    delivery: Delivery::Verbatim,
+};
+
 const CALLS: &[&Call] = &[
     &REQUEST_MIDAS_PAYMENT,
     &REQUEST_MIDAS_PAYMENT_GAME_ITEM,
@@ -521,6 +534,7 @@ const CALLS: &[&Call] = &[
     &BLUETOOTH_GET_BLE_DEVICE_RSSI,
     &BLUETOOTH_SET_BLE_MTU,
     &BLUETOOTH_GET_BLE_MTU,
+    &SET_WINDOW_SIZE,
 ];
 
 /// Fire-and-forget requests, as `(service, method)`. Listed so the contract test
@@ -560,6 +574,9 @@ const COMMANDS: &[(u32, u32)] = &[
         MIGO_HOST_SERVICE_SCREEN,
         MIGO_SCREEN_STOP_RECORDING_OBSERVER,
     ),
+    (MIGO_HOST_SERVICE_WINDOW, MIGO_WINDOW_SET_CURSOR),
+    (MIGO_HOST_SERVICE_WINDOW, MIGO_WINDOW_REQUEST_POINTER_LOCK),
+    (MIGO_HOST_SERVICE_WINDOW, MIGO_WINDOW_EXIT_POINTER_LOCK),
 ];
 
 /// A service's own events, as `(service, event, hook)`.
@@ -613,6 +630,16 @@ const EVENTS: &[(u32, u32, &str)] = &[
         MIGO_HOST_SERVICE_BLUETOOTH,
         MIGO_BLUETOOTH_EVENT_BEACON_SERVICE_CHANGE,
         "_internalOnBeaconServiceEvent",
+    ),
+    (
+        MIGO_HOST_SERVICE_WINDOW,
+        MIGO_WINDOW_EVENT_WINDOW_STATE_CHANGE,
+        "_internalOnWindowStateEvent",
+    ),
+    (
+        MIGO_HOST_SERVICE_WINDOW,
+        MIGO_WINDOW_EVENT_POINTER_LOCK_CHANGE,
+        "_internalOnPointerLockEvent",
     ),
 ];
 
@@ -1026,6 +1053,29 @@ impl BluetoothService for CapiHostServices {
     }
 }
 
+impl WindowService for CapiHostServices {
+    fn set_window_size(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&SET_WINDOW_SIZE, request_json)
+    }
+    fn set_cursor(&self, json: &str) -> Result<(), ServiceError> {
+        self.command(MIGO_HOST_SERVICE_WINDOW, MIGO_WINDOW_SET_CURSOR, json)
+    }
+    fn request_pointer_lock(&self) -> Result<(), ServiceError> {
+        self.command(
+            MIGO_HOST_SERVICE_WINDOW,
+            MIGO_WINDOW_REQUEST_POINTER_LOCK,
+            "{}",
+        )
+    }
+    fn exit_pointer_lock(&self) -> Result<(), ServiceError> {
+        self.command(
+            MIGO_HOST_SERVICE_WINDOW,
+            MIGO_WINDOW_EXIT_POINTER_LOCK,
+            "{}",
+        )
+    }
+}
+
 impl AdService for CapiHostServices {
     fn create_ad(&self, request_json: &str) -> Result<(), ServiceError> {
         self.command(MIGO_HOST_SERVICE_AD, MIGO_AD_CREATE, request_json)
@@ -1364,6 +1414,7 @@ mod tests {
             "motion" => MIGO_HOST_SERVICE_MOTION,
             "screen" => MIGO_HOST_SERVICE_SCREEN,
             "bluetooth" => MIGO_HOST_SERVICE_BLUETOOTH,
+            "window" => MIGO_HOST_SERVICE_WINDOW,
             other => panic!("the contract names a service the ABI has no constant for: {other}"),
         }
     }

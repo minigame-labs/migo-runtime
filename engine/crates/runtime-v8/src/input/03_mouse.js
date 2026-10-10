@@ -44,9 +44,10 @@ function offMouseMove(listener) {
 // The common mini-game platform's onMouseMove carries movementX/movementY, the offset from the previous
 // move. It is derived here rather than in each host: every host already sends
 // consecutive positions, so computing it once keeps Android, Linux and Windows
-// from arriving at three different answers, and there is no pointer lock in this
-// runtime -- the one case where the cursor stops moving but movement must still
-// be reported, and the only case a host could answer and this cannot.
+// from arriving at three different answers. Pointer lock -- where the cursor
+// stands still but movement must still be reported -- keeps that true: while
+// locked, a host reports positions that go on accumulating the motion (they may
+// leave the surface), so the same subtraction answers.
 //
 // The position is not reset when the pointer leaves and re-enters. DOM
 // movementX is defined as the difference from the previous event's position and

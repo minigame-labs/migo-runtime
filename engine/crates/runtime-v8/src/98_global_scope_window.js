@@ -76,6 +76,10 @@ const WindowGlobalScope = {
     // and `putImageData` takes nothing else.
     ImageData: core.propNonEnumerable(context2d.ImageData),
     Path2D: core.propNonEnumerable(context2d.Path2D),
+    // The common mini-game platform's factory for the same object.
+    createPath2D: core.propNonEnumerable(function createPath2D() {
+        return new context2d.Path2D();
+    }),
     TextMetrics: core.propNonEnumerable(context2d.TextMetrics),
 
     performance: core.propNonEnumerable(performance.performance),

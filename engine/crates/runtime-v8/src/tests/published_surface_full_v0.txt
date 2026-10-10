@@ -133,6 +133,7 @@ createInnerAudioContext
 createInterstitialAd
 createMediaAudioPlayer
 createPageManager
+createPath2D
 createRewardedVideoAd
 createTCPSocket
 createUDPSocket
@@ -154,6 +155,7 @@ escape
 eval
 exitApplication
 exitMiniProgram
+exitPointerLock
 getAccountInfoSync
 getAppAuthorizeSetting
 getAppBaseInfo
@@ -222,6 +224,7 @@ hideToast
 isBluetoothDevicePaired
 isFinite
 isNaN
+isPointerLocked
 loadFont
 loadSubpackage
 login
@@ -287,6 +290,7 @@ offUnhandledRejection
 offUserCaptureScreen
 offWheel
 offWindowResize
+offWindowStateChange
 onAccelerometerChange
 onAddToFavorites
 onAppHide
@@ -343,6 +347,7 @@ onUnhandledRejection
 onUserCaptureScreen
 onWheel
 onWindowResize
+onWindowStateChange
 openAppAuthorizeSetting
 openBluetoothAdapter
 openBusinessView
@@ -373,6 +378,7 @@ request
 requestAnimationFrame
 requestMidasPayment
 requestMidasPaymentGameItem
+requestPointerLock
 requestSubscribeMessage
 requestSubscribeSystemMessage
 require
@@ -388,6 +394,7 @@ scanCode
 sendSocketMessage
 setBLEMTU
 setClipboardData
+setCursor
 setDeviceOrientation
 setEnableDebug
 setImmediate
@@ -402,6 +409,7 @@ setStorageSync
 setTimeout
 setUserCloudStorage
 setVisualEffectOnCapture
+setWindowSize
 shareAppMessage
 shareMessageToFriend
 showActionSheet
@@ -510,6 +518,7 @@ createInnerAudioContext
 createInterstitialAd
 createMediaAudioPlayer
 createPageManager
+createPath2D
 createRewardedVideoAd
 createTCPSocket
 createUDPSocket
@@ -525,6 +534,7 @@ encode
 env
 exitApplication
 exitMiniProgram
+exitPointerLock
 getAccountInfoSync
 getAppAuthorizeSetting
 getAppBaseInfo
@@ -589,6 +599,7 @@ hideLoading
 hideShareMenu
 hideToast
 isBluetoothDevicePaired
+isPointerLocked
 loadFont
 loadSubpackage
 login
@@ -653,6 +664,7 @@ offUnhandledRejection
 offUserCaptureScreen
 offWheel
 offWindowResize
+offWindowStateChange
 onAccelerometerChange
 onAddToFavorites
 onAppHide
@@ -709,6 +721,7 @@ onUnhandledRejection
 onUserCaptureScreen
 onWheel
 onWindowResize
+onWindowStateChange
 openAppAuthorizeSetting
 openBluetoothAdapter
 openBusinessView
@@ -737,6 +750,7 @@ request
 requestAnimationFrame
 requestMidasPayment
 requestMidasPaymentGameItem
+requestPointerLock
 requestSubscribeMessage
 requestSubscribeSystemMessage
 require
@@ -752,6 +766,7 @@ scanCode
 sendSocketMessage
 setBLEMTU
 setClipboardData
+setCursor
 setDeviceOrientation
 setEnableDebug
 setImmediate
@@ -766,6 +781,7 @@ setStorageSync
 setTimeout
 setUserCloudStorage
 setVisualEffectOnCapture
+setWindowSize
 shareAppMessage
 shareMessageToFriend
 showActionSheet

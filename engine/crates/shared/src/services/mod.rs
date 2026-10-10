@@ -32,6 +32,7 @@ mod share;
 mod subpackage;
 mod system_info;
 mod video;
+mod window;
 
 pub use ad::AdService;
 pub use auth::AuthService;
@@ -62,5 +63,6 @@ pub use system_info::{
     SystemInfoService, default_device_info_json, host_os_name, host_platform_name,
 };
 pub use video::VideoService;
+pub use window::WindowService;
 
 pub use crate::protocol::error::{ServiceError, ServiceErrorCode};

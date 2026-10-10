@@ -82,6 +82,7 @@ createCanvas
 createImage
 createImageBitmap
 createImageData
+createPath2D
 createTCPSocket
 createUDPSocket
 decode
@@ -235,6 +236,7 @@ createCanvas
 createImage
 createImageBitmap
 createImageData
+createPath2D
 createTCPSocket
 createUDPSocket
 decode

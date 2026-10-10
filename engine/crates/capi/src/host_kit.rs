@@ -12,6 +12,7 @@ use migo_capi_abi::host_services::{
     MIGO_HOST_SERVICE_LOCATION, MIGO_HOST_SERVICE_MOTION, MIGO_HOST_SERVICE_NAVIGATE,
     MIGO_HOST_SERVICE_PAYMENT, MIGO_HOST_SERVICE_PERMISSION, MIGO_HOST_SERVICE_SCAN_CODE,
     MIGO_HOST_SERVICE_SCREEN, MIGO_HOST_SERVICE_SHARE, MIGO_HOST_SERVICE_SUBPACKAGE,
+    MIGO_HOST_SERVICE_WINDOW,
 };
 use migo_core::services::{
     AccelerometerService, AdService, AuthService, BatteryService, BluetoothService,
@@ -19,7 +20,7 @@ use migo_core::services::{
     GameLogService, GyroscopeService, ImageApiService, InteractionService, KeyboardService,
     LocationService, MediaServices, NavigateService, NetworkService, PaymentService,
     PermissionService, ScanCodeService, ScreenService, SensorServices, ShareService,
-    SubpackageService, SystemInfoService, SystemUtilServices, VibrationService,
+    SubpackageService, SystemInfoService, SystemUtilServices, VibrationService, WindowService,
 };
 use migo_core::{DeviceServiceProvider, FrameClock, HostNotifier};
 use shared::protocol::error::ServiceError;
@@ -344,6 +345,11 @@ impl SystemUtilServices for CapiDeviceServices {
     fn scan_code(&self) -> Option<Arc<dyn ScanCodeService>> {
         self.host_service(MIGO_HOST_SERVICE_SCAN_CODE)
             .map(|services| services as Arc<dyn ScanCodeService>)
+    }
+
+    fn window(&self) -> Option<Arc<dyn WindowService>> {
+        self.host_service(MIGO_HOST_SERVICE_WINDOW)
+            .map(|services| services as Arc<dyn WindowService>)
     }
 
     fn navigate(&self) -> Option<Arc<dyn NavigateService>> {

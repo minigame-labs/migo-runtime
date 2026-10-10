@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The desktop window: `setCursor`, `requestPointerLock` / `exitPointerLock` / `isPointerLocked`, `setWindowSize` and
+  `onWindowStateChange` / `offWindowStateChange`, through `MIGO_HOST_SERVICE_WINDOW` on any C ABI host with a window.
+  `setCursor` takes a CSS cursor keyword or an image path resolved through the sandbox; while the pointer is locked a
+  host keeps reporting positions that accumulate the motion, so `onMouseMove`'s `movementX` / `movementY` keep coming.
+  Where there is no window (mobile), `setCursor` answers `false` and pointer lock does nothing, as on the common
+  mini-game platform's mobile clients.
+- `createPath2D`.
 - Bluetooth on every C ABI host: `MIGO_HOST_SERVICE_BLUETOOTH` carries the adapter, scanning, pairing, iBeacons and BLE
   GATT as 22 calls and six events, with the common mini-game platform's Bluetooth codes as each failure's `errCode`;
   characteristic values arrive through the typed `migo_session_post_ble_characteristic_value`

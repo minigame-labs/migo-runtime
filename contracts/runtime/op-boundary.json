@@ -399,9 +399,13 @@
     "host_v8_ui": {
       "reason": "Toasts, modals, loading indicators and action sheets are native UI a host bridge would expose (guideline 4.7.2); the menu-button rectangle is layout the environment snapshot carries.",
       "ops": {
+        "op_exit_pointer_lock": "unsupported",
         "op_get_menu_button_rect": "local",
         "op_hide_loading": "unsupported",
         "op_hide_toast": "unsupported",
+        "op_request_pointer_lock": "unsupported",
+        "op_set_cursor": "unsupported",
+        "op_set_window_size": "unsupported",
         "op_show_action_sheet": "unsupported",
         "op_show_loading": "unsupported",
         "op_show_modal": "unsupported",

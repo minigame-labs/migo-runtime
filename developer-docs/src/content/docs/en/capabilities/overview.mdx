@@ -125,6 +125,7 @@ load, close and other events are reported with
 | `MIGO_HOST_SERVICE_MOTION` | `startAccelerometer` / `startGyroscope` / `startCompass` / `startDeviceMotionListening`, ... | not supported |
 | `MIGO_HOST_SERVICE_SCREEN` | `getScreenBrightness` / `setDeviceOrientation` / `onUserCaptureScreen` / `getScreenRecordingState` / `setVisualEffectOnCapture`, ... | not supported |
 | `MIGO_HOST_SERVICE_BLUETOOTH` | every Bluetooth / BLE / iBeacon API | not supported |
+| `MIGO_HOST_SERVICE_WINDOW` | `setWindowSize` / `setCursor` / `requestPointerLock` / `onWindowStateChange`, ... (desktop) | `setCursor` returns `false`, pointer lock does nothing, `setWindowSize` not supported |
 | `MIGO_HOST_SERVICE_IMAGE` | `chooseImage` / `chooseMedia` / `chooseMessageFile` / `compressImage` / `previewImage` / `previewMedia` / `saveImageToPhotosAlbum` | not supported |
 
 The host gives the success fields or the failure's reason; the engine puts a
