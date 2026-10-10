@@ -1167,6 +1167,7 @@ jni_void_json!(image_preview_image, "imagePreviewImage");
 jni_void_json!(image_compress, "imageCompress");
 jni_void_json!(image_choose_message_file, "imageChooseMessageFile");
 jni_void_json!(image_choose_image, "imageChooseImage");
+jni_void_json!(image_choose_media, "imageChooseMedia");
 
 // ==================== Subpackage ====================
 

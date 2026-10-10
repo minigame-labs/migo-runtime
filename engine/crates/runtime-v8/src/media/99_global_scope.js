@@ -16,14 +16,19 @@ ObjectDefineProperties(globalThis, {
 
     // Image API
     saveImageToPhotosAlbum: core.propNonEnumerable(imageApi.saveImageToPhotosAlbum),
+    _internalOnSaveImageToPhotosAlbumResult: core.propNonEnumerable(imageApi._internalOnSaveImageToPhotosAlbumResult),
     previewMedia: core.propNonEnumerable(imageApi.previewMedia),
+    _internalOnPreviewMediaResult: core.propNonEnumerable(imageApi._internalOnPreviewMediaResult),
     previewImage: core.propNonEnumerable(imageApi.previewImage),
+    _internalOnPreviewImageResult: core.propNonEnumerable(imageApi._internalOnPreviewImageResult),
     compressImage: core.propNonEnumerable(imageApi.compressImage),
     _internalOnCompressImageResult: core.propNonEnumerable(imageApi._internalOnCompressImageResult),
     chooseMessageFile: core.propNonEnumerable(imageApi.chooseMessageFile),
-    chooseImage: core.propNonEnumerable(imageApi.chooseImage),
     _internalOnChooseMessageFileResult: core.propNonEnumerable(imageApi._internalOnChooseMessageFileResult),
+    chooseImage: core.propNonEnumerable(imageApi.chooseImage),
     _internalOnChooseImageResult: core.propNonEnumerable(imageApi._internalOnChooseImageResult),
+    chooseMedia: core.propNonEnumerable(imageApi.chooseMedia),
+    _internalOnChooseMediaResult: core.propNonEnumerable(imageApi._internalOnChooseMediaResult),
 
     // VideoDecoder
     createVideoDecoder: core.propNonEnumerable(videoDecoderApi.createVideoDecoder),

@@ -1,10 +1,22 @@
 //! Media service ops (Camera, Image API, Video) and ESM modules.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::rc::Rc;
+use std::sync::Arc;
+
+use deno_core::serde_json::{self, Value};
 use deno_core::{Extension, OpState, op2};
 use deno_error::JsErrorBox;
+use migo_services::fs;
 use shared::op_state::HostOpState;
 use shared::protocol::error::ServiceError;
+use shared::services::host_files::{self, Step};
 use shared::services::{CameraService, ImageApiService, Scope, VideoService};
+use shared::vfs::FileOp;
+
+use crate::io_state::IoSchedulerState;
 
 /// Look up the camera service and call `f` on it.
 fn with_camera_service<F, T>(
@@ -18,20 +30,6 @@ where
     let host = state.borrow::<HostOpState>();
     if let Some(ref services) = host.device_services {
         if let Some(svc) = services.camera() {
-            return f(svc.as_ref()).map_err(JsErrorBox::generic);
-        }
-    }
-    Err(JsErrorBox::generic(err_msg))
-}
-
-/// Look up the image API service and call `f` on it.
-fn with_image_api<F, T>(state: &mut OpState, err_msg: &'static str, f: F) -> Result<T, JsErrorBox>
-where
-    F: FnOnce(&dyn ImageApiService) -> Result<T, ServiceError>,
-{
-    let host = state.borrow::<HostOpState>();
-    if let Some(ref services) = host.device_services {
-        if let Some(svc) = services.image_api() {
             return f(svc.as_ref()).map_err(JsErrorBox::generic);
         }
     }
@@ -159,72 +157,241 @@ pub fn op_camera_close_frame_change(
 }
 
 // ==================== Image API Ops ====================
+//
+// Every one is a request the host answers through a hook. A request that names
+// content's files has them resolved through the sandbox first (`export_paths`), so
+// a host is only ever asked to read what the game itself can read: the path is
+// content's to choose, and before this the host was handed it verbatim --
+// `saveImageToPhotosAlbum({filePath: "<the host app's database>"})` put that file in
+// the player's photo album. What a result names comes back through
+// `shared::services::host_files`.
+//
+// The ones that name files are eager: a path that resolves to a file of its own
+// needs no wait, so the request leaves in the call's own tick; only a package
+// entry that has to be copied out first defers it.
 
-/// Save image to system photo album.
-#[op2(fast)]
-pub fn op_save_image_to_photos_album(
-    state: &mut OpState,
-    #[string] options_json: &str,
-) -> Result<(), JsErrorBox> {
-    crate::permission::require_scope(state, Scope::WritePhotosAlbum)?;
-    with_image_api(state, "saveImageToPhotosAlbum:fail not supported", |svc| {
-        svc.save_image_to_photos_album(options_json)
-    })
+/// `saveImageToPhotosAlbum`: the file to save.
+const SAVE_IMAGE_FILES: &[&[Step]] = &[&[Step::Key("filePath")]];
+/// `compressImage`: the image to compress.
+const COMPRESS_IMAGE_FILES: &[&[Step]] = &[&[Step::Key("src")]];
+/// `previewImage`: every url, and the one shown first, which is one of them.
+const PREVIEW_IMAGE_FILES: &[&[Step]] =
+    &[&[Step::Key("urls"), Step::Each], &[Step::Key("current")]];
+/// `previewMedia`: each source and its cover.
+const PREVIEW_MEDIA_FILES: &[&[Step]] = &[
+    &[Step::Key("sources"), Step::Each, Step::Key("url")],
+    &[Step::Key("sources"), Step::Each, Step::Key("poster")],
+];
+
+/// Whether a request may name a remote resource where it names a file.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Remote {
+    /// A viewer can show an http(s) URL itself.
+    Allowed,
+    Refused,
 }
 
-/// Preview images and videos.
-#[op2(fast)]
-pub fn op_preview_media(
-    state: &mut OpState,
-    #[string] options_json: &str,
-) -> Result<(), JsErrorBox> {
-    with_image_api(state, "previewMedia:fail not supported", |svc| {
-        svc.preview_media(options_json)
-    })
+fn image_api(
+    state: &OpState,
+    err_msg: &'static str,
+) -> Result<Arc<dyn ImageApiService>, JsErrorBox> {
+    state
+        .borrow::<HostOpState>()
+        .device_services
+        .as_ref()
+        .and_then(|services| services.image_api())
+        .ok_or_else(|| JsErrorBox::generic(err_msg))
 }
 
-/// Preview images fullscreen.
-#[op2(fast)]
-pub fn op_preview_image(
-    state: &mut OpState,
-    #[string] options_json: &str,
-) -> Result<(), JsErrorBox> {
-    with_image_api(state, "previewImage:fail not supported", |svc| {
-        svc.preview_image(options_json)
-    })
+/// `request_json` with every path `fields` names replaced by a real path the host
+/// can open.
+///
+/// A path in the game's package that has no file of its own (a pack-backed
+/// `/code`) is copied out; the copy is held for request `requestId` and removed
+/// when its result arrives.
+async fn export_paths(
+    state: &Rc<RefCell<OpState>>,
+    request_json: &str,
+    fields: &[&[Step]],
+    remote: Remote,
+) -> Result<String, JsErrorBox> {
+    let mut request: Value = serde_json::from_str(request_json)
+        .map_err(|e| JsErrorBox::generic(format!("malformed request: {e}")))?;
+    let request_id = request
+        .get("requestId")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| JsErrorBox::generic("malformed request: no requestId"))?;
+
+    let mut named: Vec<String> = Vec::new();
+    for field in fields {
+        host_files::visit_fields(&mut request, field, &mut |value| match value {
+            Value::String(path) => {
+                if !named.contains(path) {
+                    named.push(path.clone());
+                }
+                Ok(())
+            }
+            _ => Err("a file path is not a string".to_string()),
+        })
+        .map_err(JsErrorBox::generic)?;
+    }
+
+    let (host_id, scheduler, vfs, mount_table) = {
+        let st = state.borrow();
+        let host = st.borrow::<HostOpState>();
+        (
+            host.id,
+            st.borrow::<IoSchedulerState>().0.clone(),
+            host.vfs.clone(),
+            host.mount_table.clone(),
+        )
+    };
+
+    let mut real: HashMap<String, String> = HashMap::with_capacity(named.len());
+    for path in named {
+        if remote == Remote::Allowed
+            && (path.starts_with("https://") || path.starts_with("http://"))
+        {
+            real.insert(path.clone(), path);
+            continue;
+        }
+        let resolved =
+            fs::resolve_path_vfs(vfs.as_deref(), mount_table.as_deref(), &path, FileOp::Read)
+                .map_err(|e| JsErrorBox::generic(e.message))?;
+        let host_path = match resolved {
+            fs::ResolvedPath::Filesystem(file) => {
+                if !std::fs::metadata(&file).is_ok_and(|meta| meta.is_file()) {
+                    return Err(JsErrorBox::generic(format!("file not found: {path}")));
+                }
+                file
+            }
+            fs::ResolvedPath::Pack { virtual_path } => {
+                let mount_table = mount_table
+                    .clone()
+                    .ok_or_else(|| JsErrorBox::generic("mount table not initialized"))?;
+                // The extension is what tells the host's decoder or viewer what
+                // the bytes are.
+                let suffix = std::path::Path::new(&virtual_path)
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(|ext| format!(".{ext}"))
+                    .unwrap_or_default();
+                let copy = fs::materialize_pack_to_temp_async(
+                    scheduler.clone(),
+                    mount_table,
+                    virtual_path,
+                    suffix,
+                )
+                .await
+                .map_err(|e| JsErrorBox::generic(e.message))?;
+                if !host_files::hold_export(host_id, request_id, PathBuf::from(&copy)) {
+                    let _ = std::fs::remove_file(&copy);
+                    return Err(JsErrorBox::generic("the session has ended"));
+                }
+                copy
+            }
+        };
+        real.insert(path, host_path);
+    }
+
+    for field in fields {
+        host_files::visit_fields(&mut request, field, &mut |value| {
+            if let Value::String(path) = value
+                && let Some(host_path) = real.get(path.as_str())
+            {
+                *value = Value::String(host_path.clone());
+            }
+            Ok(())
+        })
+        .map_err(JsErrorBox::generic)?;
+    }
+    Ok(request.to_string())
 }
 
-/// Compress image (async, result via callback).
-#[op2(fast)]
-pub fn op_compress_image(
-    state: &mut OpState,
-    #[string] options_json: &str,
+/// Save an image to the system photo album.
+#[op2]
+pub async fn op_save_image_to_photos_album(
+    state: Rc<RefCell<OpState>>,
+    #[string] request_json: String,
 ) -> Result<(), JsErrorBox> {
-    with_image_api(state, "compressImage:fail not supported", |svc| {
-        svc.compress_image(options_json)
-    })
+    let service = {
+        let mut st = state.borrow_mut();
+        crate::permission::require_scope(&mut st, Scope::WritePhotosAlbum)?;
+        image_api(&st, "saveImageToPhotosAlbum:fail not supported")?
+    };
+    let request = export_paths(&state, &request_json, SAVE_IMAGE_FILES, Remote::Refused).await?;
+    service
+        .save_image_to_photos_album(&request)
+        .map_err(JsErrorBox::generic)
 }
 
-/// Choose files from client session (async, result via callback).
+/// Show images and videos in a full-screen viewer.
+#[op2]
+pub async fn op_preview_media(
+    state: Rc<RefCell<OpState>>,
+    #[string] request_json: String,
+) -> Result<(), JsErrorBox> {
+    let service = image_api(&state.borrow(), "previewMedia:fail not supported")?;
+    let request = export_paths(&state, &request_json, PREVIEW_MEDIA_FILES, Remote::Allowed).await?;
+    service.preview_media(&request).map_err(JsErrorBox::generic)
+}
+
+/// Show images in a full-screen viewer.
+#[op2]
+pub async fn op_preview_image(
+    state: Rc<RefCell<OpState>>,
+    #[string] request_json: String,
+) -> Result<(), JsErrorBox> {
+    let service = image_api(&state.borrow(), "previewImage:fail not supported")?;
+    let request = export_paths(&state, &request_json, PREVIEW_IMAGE_FILES, Remote::Allowed).await?;
+    service.preview_image(&request).map_err(JsErrorBox::generic)
+}
+
+/// Compress an image.
+#[op2]
+pub async fn op_compress_image(
+    state: Rc<RefCell<OpState>>,
+    #[string] request_json: String,
+) -> Result<(), JsErrorBox> {
+    let service = image_api(&state.borrow(), "compressImage:fail not supported")?;
+    let request =
+        export_paths(&state, &request_json, COMPRESS_IMAGE_FILES, Remote::Refused).await?;
+    service
+        .compress_image(&request)
+        .map_err(JsErrorBox::generic)
+}
+
+/// Let the player choose files.
 #[op2(fast)]
 pub fn op_choose_message_file(
     state: &mut OpState,
-    #[string] options_json: &str,
+    #[string] request_json: &str,
 ) -> Result<(), JsErrorBox> {
-    with_image_api(state, "chooseMessageFile:fail not supported", |svc| {
-        svc.choose_message_file(options_json)
-    })
+    image_api(state, "chooseMessageFile:fail not supported")?
+        .choose_message_file(request_json)
+        .map_err(JsErrorBox::generic)
 }
 
-/// Choose images from album or camera (async, result via callback).
+/// Let the player choose images from the album or the camera.
 #[op2(fast)]
 pub fn op_choose_image(
     state: &mut OpState,
-    #[string] options_json: &str,
+    #[string] request_json: &str,
 ) -> Result<(), JsErrorBox> {
-    with_image_api(state, "chooseImage:fail not supported", |svc| {
-        svc.choose_image(options_json)
-    })
+    image_api(state, "chooseImage:fail not supported")?
+        .choose_image(request_json)
+        .map_err(JsErrorBox::generic)
+}
+
+/// Let the player choose or capture images and videos.
+#[op2(fast)]
+pub fn op_choose_media(
+    state: &mut OpState,
+    #[string] request_json: &str,
+) -> Result<(), JsErrorBox> {
+    image_api(state, "chooseMedia:fail not supported")?
+        .choose_media(request_json)
+        .map_err(JsErrorBox::generic)
 }
 
 // ==================== Video Ops ====================
@@ -336,6 +503,7 @@ deno_core::extension!(
         op_compress_image,
         op_choose_message_file,
         op_choose_image,
+        op_choose_media,
         op_video_create,
         op_video_play,
         op_video_pause,

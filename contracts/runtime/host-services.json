@@ -36,6 +36,15 @@
     "downloaded subpackage's `zipPath` is a host path that must never reach content, so the engine",
     "records it for the install and strips it.",
     "",
+    "FILES. A path in a request is a real path the engine resolved from content's sandbox path (an",
+    "http(s) URL where a viewer may show one); it stays readable until the call is completed, so a host",
+    "that needs it longer -- a viewer still showing it -- opens or copies it first. `files` names result",
+    "fields that name files the host hands over (`a[].b`: field b of every element of array a): when the",
+    "host completes the call, the engine moves each one into the session's /tmp -- a rename on the same",
+    "volume -- and rewrites the field to the sandbox path, so a host path never reaches content. A host",
+    "names only files it owns and will not touch again; a file dialog's answer is the user's original,",
+    "which the host copies first.",
+    "",
     "Checked by engine/crates/capi/src/host_services.rs's tests (the Rust table) and",
     "scripts/test-host-services-contract.sh (the C header, the ops and the hooks)."
   ],
@@ -317,6 +326,75 @@
           "op": "op_get_fuzzy_location",
           "hook": "_internalOnFuzzyLocationResult",
           "error_code_field": null
+        }
+      },
+      "events": {}
+    },
+    "image": {
+      "id": 12,
+      "methods": {
+        "save_image_to_photos_album": {
+          "id": 0,
+          "kind": "call",
+          "op": "op_save_image_to_photos_album",
+          "hook": "_internalOnSaveImageToPhotosAlbumResult",
+          "error_code_field": null
+        },
+        "preview_image": {
+          "id": 1,
+          "kind": "call",
+          "op": "op_preview_image",
+          "hook": "_internalOnPreviewImageResult",
+          "error_code_field": null
+        },
+        "preview_media": {
+          "id": 2,
+          "kind": "call",
+          "op": "op_preview_media",
+          "hook": "_internalOnPreviewMediaResult",
+          "error_code_field": null
+        },
+        "compress_image": {
+          "id": 3,
+          "kind": "call",
+          "op": "op_compress_image",
+          "hook": "_internalOnCompressImageResult",
+          "error_code_field": null,
+          "files": [
+            "tempFilePath"
+          ]
+        },
+        "choose_image": {
+          "id": 4,
+          "kind": "call",
+          "op": "op_choose_image",
+          "hook": "_internalOnChooseImageResult",
+          "error_code_field": null,
+          "files": [
+            "tempFilePaths[]",
+            "tempFiles[].path"
+          ]
+        },
+        "choose_message_file": {
+          "id": 5,
+          "kind": "call",
+          "op": "op_choose_message_file",
+          "hook": "_internalOnChooseMessageFileResult",
+          "error_code_field": null,
+          "files": [
+            "tempFiles[].path"
+          ]
+        },
+        "choose_media": {
+          "id": 6,
+          "kind": "call",
+          "op": "op_choose_media",
+          "hook": "_internalOnChooseMediaResult",
+          "error_code_field": null,
+          "files": [
+            "tempFiles[].tempFilePath",
+            "tempFiles[].thumbTempFilePath"
+          ]
         }
       },
       "events": {}

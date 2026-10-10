@@ -29,10 +29,13 @@ use migo_capi_abi::{
         MIGO_AD_LOAD, MIGO_AD_SHOW, MIGO_AD_UPDATE_STYLE, MIGO_AUTH_CHECK_SESSION,
         MIGO_AUTH_GET_PHONE_NUMBER, MIGO_AUTH_GET_USER_INFO, MIGO_AUTH_LOGIN,
         MIGO_CLIPBOARD_GET_CLIPBOARD_DATA, MIGO_CLIPBOARD_SET_CLIPBOARD_DATA, MIGO_HOST_SERVICE_AD,
-        MIGO_HOST_SERVICE_AUTH, MIGO_HOST_SERVICE_CLIPBOARD, MIGO_HOST_SERVICE_INTERACTION,
-        MIGO_HOST_SERVICE_LOCATION, MIGO_HOST_SERVICE_NAVIGATE, MIGO_HOST_SERVICE_PAYMENT,
-        MIGO_HOST_SERVICE_PERMISSION, MIGO_HOST_SERVICE_SCAN_CODE, MIGO_HOST_SERVICE_SETTING,
-        MIGO_HOST_SERVICE_SHARE, MIGO_HOST_SERVICE_SUBPACKAGE, MIGO_INTERACTION_HIDE_LOADING,
+        MIGO_HOST_SERVICE_AUTH, MIGO_HOST_SERVICE_CLIPBOARD, MIGO_HOST_SERVICE_IMAGE,
+        MIGO_HOST_SERVICE_INTERACTION, MIGO_HOST_SERVICE_LOCATION, MIGO_HOST_SERVICE_NAVIGATE,
+        MIGO_HOST_SERVICE_PAYMENT, MIGO_HOST_SERVICE_PERMISSION, MIGO_HOST_SERVICE_SCAN_CODE,
+        MIGO_HOST_SERVICE_SETTING, MIGO_HOST_SERVICE_SHARE, MIGO_HOST_SERVICE_SUBPACKAGE,
+        MIGO_IMAGE_CHOOSE_IMAGE, MIGO_IMAGE_CHOOSE_MEDIA, MIGO_IMAGE_CHOOSE_MESSAGE_FILE,
+        MIGO_IMAGE_COMPRESS_IMAGE, MIGO_IMAGE_PREVIEW_IMAGE, MIGO_IMAGE_PREVIEW_MEDIA,
+        MIGO_IMAGE_SAVE_IMAGE_TO_PHOTOS_ALBUM, MIGO_INTERACTION_HIDE_LOADING,
         MIGO_INTERACTION_HIDE_TOAST, MIGO_INTERACTION_SHOW_ACTION_SHEET,
         MIGO_INTERACTION_SHOW_LOADING, MIGO_INTERACTION_SHOW_MODAL, MIGO_INTERACTION_SHOW_TOAST,
         MIGO_LOCATION_GET_FUZZY_LOCATION, MIGO_LOCATION_GET_LOCATION,
@@ -46,13 +49,14 @@ use migo_capi_abi::{
     },
 };
 use migo_core::services::{
-    AdService, AuthService, ClipboardService, InteractionService, LocationService, NavigateService,
-    PaymentService, PermissionService, ScanCodeService, Scope, ScopeState, ShareService,
-    SubpackageService,
+    AdService, AuthService, ClipboardService, ImageApiService, InteractionService, LocationService,
+    NavigateService, PaymentService, PermissionService, ScanCodeService, Scope, ScopeState,
+    ShareService, SubpackageService,
 };
 use serde_json::{Map, Value};
 use shared::{
     js_escape::hook_args_one, protocol::error::ServiceError, protocol::host_cmd::HostCommand,
+    services::host_files::HostFiles,
 };
 
 use crate::{
@@ -72,14 +76,15 @@ struct Call {
     /// Where progress reported while the call is in flight is delivered;
     /// `None` for a call that reports none.
     progress_hook: Option<&'static str>,
-    /// What a success carries that content must never see.
-    withheld: Withheld,
+    /// What happens to a result between the host and content.
+    delivery: Delivery,
 }
 
-/// Result fields the engine keeps rather than delivers.
+/// What happens to a result between the host and content.
 #[derive(Debug, PartialEq, Eq)]
-enum Withheld {
-    Nothing,
+enum Delivery {
+    /// Delivered as the host completed it.
+    Verbatim,
     /// A downloaded subpackage's `zipPath`: a host path, which content must
     /// not name -- the install ingests whatever file it names, so a path
     /// content could choose would make any zip the process can read installable
@@ -87,6 +92,11 @@ enum Withheld {
     /// (`shared::services::intercept_download_result`), exactly as the Android
     /// SDK's path does.
     SubpackageZip,
+    /// Fields naming files the host hands over (the contract's `files`): each is
+    /// moved into the session's `/tmp` and the field rewritten to the sandbox
+    /// path, and what the engine copied out for the request is released
+    /// (`shared::services::host_files::deliver_result`).
+    HostFiles(&'static HostFiles),
 }
 
 const REQUEST_MIDAS_PAYMENT: Call = Call {
@@ -95,7 +105,7 @@ const REQUEST_MIDAS_PAYMENT: Call = Call {
     hook: "_internalOnMidasPaymentResult",
     error_code_field: Some("errCode"),
     progress_hook: None,
-    withheld: Withheld::Nothing,
+    delivery: Delivery::Verbatim,
 };
 const REQUEST_MIDAS_PAYMENT_GAME_ITEM: Call = Call {
     service: MIGO_HOST_SERVICE_PAYMENT,
@@ -103,7 +113,7 @@ const REQUEST_MIDAS_PAYMENT_GAME_ITEM: Call = Call {
     hook: "_internalOnMidasPaymentGameItemResult",
     error_code_field: Some("errCode"),
     progress_hook: None,
-    withheld: Withheld::Nothing,
+    delivery: Delivery::Verbatim,
 };
 const LOGIN: Call = Call {
     service: MIGO_HOST_SERVICE_AUTH,
@@ -111,7 +121,7 @@ const LOGIN: Call = Call {
     hook: "_internalOnLoginResult",
     error_code_field: Some("errno"),
     progress_hook: None,
-    withheld: Withheld::Nothing,
+    delivery: Delivery::Verbatim,
 };
 const CHECK_SESSION: Call = Call {
     service: MIGO_HOST_SERVICE_AUTH,
@@ -119,7 +129,7 @@ const CHECK_SESSION: Call = Call {
     hook: "_internalOnCheckSessionResult",
     error_code_field: Some("errno"),
     progress_hook: None,
-    withheld: Withheld::Nothing,
+    delivery: Delivery::Verbatim,
 };
 const GET_USER_INFO: Call = Call {
     service: MIGO_HOST_SERVICE_AUTH,
@@ -127,7 +137,7 @@ const GET_USER_INFO: Call = Call {
     hook: "_internalOnGetUserInfoResult",
     error_code_field: None,
     progress_hook: None,
-    withheld: Withheld::Nothing,
+    delivery: Delivery::Verbatim,
 };
 const GET_PHONE_NUMBER: Call = Call {
     service: MIGO_HOST_SERVICE_AUTH,
@@ -135,7 +145,7 @@ const GET_PHONE_NUMBER: Call = Call {
     hook: "_internalOnGetPhoneNumberResult",
     error_code_field: Some("errno"),
     progress_hook: None,
-    withheld: Withheld::Nothing,
+    delivery: Delivery::Verbatim,
 };
 const SHARE_APP_MESSAGE: Call = Call {
     service: MIGO_HOST_SERVICE_SHARE,
@@ -143,7 +153,7 @@ const SHARE_APP_MESSAGE: Call = Call {
     hook: "_internalOnShareAppMessageResult",
     error_code_field: Some("errCode"),
     progress_hook: None,
-    withheld: Withheld::Nothing,
+    delivery: Delivery::Verbatim,
 };
 const NAVIGATE_TO_MINI_PROGRAM: Call = Call {
     service: MIGO_HOST_SERVICE_NAVIGATE,
@@ -151,7 +161,7 @@ const NAVIGATE_TO_MINI_PROGRAM: Call = Call {
     hook: "_internalOnNavigateToMiniProgramResult",
     error_code_field: Some("errCode"),
     progress_hook: None,
-    withheld: Withheld::Nothing,
+    delivery: Delivery::Verbatim,
 };
 
 const SUBPACKAGE_DOWNLOAD: Call = Call {
@@ -160,7 +170,7 @@ const SUBPACKAGE_DOWNLOAD: Call = Call {
     hook: "_internalOnSubpackageResult",
     error_code_field: None,
     progress_hook: Some("_internalOnSubpackageProgress"),
-    withheld: Withheld::SubpackageZip,
+    delivery: Delivery::SubpackageZip,
 };
 const REQUEST_SCOPE: Call = Call {
     service: MIGO_HOST_SERVICE_PERMISSION,
@@ -168,7 +178,7 @@ const REQUEST_SCOPE: Call = Call {
     hook: "_internalOnAuthorizeResult",
     error_code_field: None,
     progress_hook: None,
-    withheld: Withheld::Nothing,
+    delivery: Delivery::Verbatim,
 };
 const OPEN_SETTING: Call = Call {
     service: MIGO_HOST_SERVICE_SETTING,
@@ -176,7 +186,7 @@ const OPEN_SETTING: Call = Call {
     hook: "_internalOnOpenSettingResult",
     error_code_field: Some("errCode"),
     progress_hook: None,
-    withheld: Withheld::Nothing,
+    delivery: Delivery::Verbatim,
 };
 const OPEN_SYSTEM_BLUETOOTH_SETTING: Call = Call {
     service: MIGO_HOST_SERVICE_SETTING,
@@ -184,7 +194,7 @@ const OPEN_SYSTEM_BLUETOOTH_SETTING: Call = Call {
     hook: "_internalOnOpenBluetoothSettingResult",
     error_code_field: Some("errCode"),
     progress_hook: None,
-    withheld: Withheld::Nothing,
+    delivery: Delivery::Verbatim,
 };
 const OPEN_APP_AUTHORIZE_SETTING: Call = Call {
     service: MIGO_HOST_SERVICE_SETTING,
@@ -192,7 +202,7 @@ const OPEN_APP_AUTHORIZE_SETTING: Call = Call {
     hook: "_internalOnOpenAppAuthorizeSettingFinished",
     error_code_field: Some("errCode"),
     progress_hook: None,
-    withheld: Withheld::Nothing,
+    delivery: Delivery::Verbatim,
 };
 
 const SHOW_MODAL: Call = Call {
@@ -201,7 +211,7 @@ const SHOW_MODAL: Call = Call {
     hook: "_internalOnModalResult",
     error_code_field: None,
     progress_hook: None,
-    withheld: Withheld::Nothing,
+    delivery: Delivery::Verbatim,
 };
 const SHOW_ACTION_SHEET: Call = Call {
     service: MIGO_HOST_SERVICE_INTERACTION,
@@ -209,7 +219,7 @@ const SHOW_ACTION_SHEET: Call = Call {
     hook: "_internalOnActionSheetResult",
     error_code_field: None,
     progress_hook: None,
-    withheld: Withheld::Nothing,
+    delivery: Delivery::Verbatim,
 };
 const SET_CLIPBOARD_DATA: Call = Call {
     service: MIGO_HOST_SERVICE_CLIPBOARD,
@@ -217,7 +227,7 @@ const SET_CLIPBOARD_DATA: Call = Call {
     hook: "_internalOnSetClipboardDataResult",
     error_code_field: None,
     progress_hook: None,
-    withheld: Withheld::Nothing,
+    delivery: Delivery::Verbatim,
 };
 const GET_CLIPBOARD_DATA: Call = Call {
     service: MIGO_HOST_SERVICE_CLIPBOARD,
@@ -225,7 +235,7 @@ const GET_CLIPBOARD_DATA: Call = Call {
     hook: "_internalOnGetClipboardDataResult",
     error_code_field: None,
     progress_hook: None,
-    withheld: Withheld::Nothing,
+    delivery: Delivery::Verbatim,
 };
 const SCAN_CODE: Call = Call {
     service: MIGO_HOST_SERVICE_SCAN_CODE,
@@ -233,7 +243,7 @@ const SCAN_CODE: Call = Call {
     hook: "_internalOnScanCodeResult",
     error_code_field: None,
     progress_hook: None,
-    withheld: Withheld::Nothing,
+    delivery: Delivery::Verbatim,
 };
 const GET_LOCATION: Call = Call {
     service: MIGO_HOST_SERVICE_LOCATION,
@@ -241,7 +251,7 @@ const GET_LOCATION: Call = Call {
     hook: "_internalOnLocationResult",
     error_code_field: None,
     progress_hook: None,
-    withheld: Withheld::Nothing,
+    delivery: Delivery::Verbatim,
 };
 const GET_FUZZY_LOCATION: Call = Call {
     service: MIGO_HOST_SERVICE_LOCATION,
@@ -249,7 +259,64 @@ const GET_FUZZY_LOCATION: Call = Call {
     hook: "_internalOnFuzzyLocationResult",
     error_code_field: None,
     progress_hook: None,
-    withheld: Withheld::Nothing,
+    delivery: Delivery::Verbatim,
+};
+
+const SAVE_IMAGE_TO_PHOTOS_ALBUM: Call = Call {
+    service: MIGO_HOST_SERVICE_IMAGE,
+    method: MIGO_IMAGE_SAVE_IMAGE_TO_PHOTOS_ALBUM,
+    hook: "_internalOnSaveImageToPhotosAlbumResult",
+    error_code_field: None,
+    progress_hook: None,
+    delivery: Delivery::HostFiles(&HostFiles::NONE),
+};
+const PREVIEW_IMAGE: Call = Call {
+    service: MIGO_HOST_SERVICE_IMAGE,
+    method: MIGO_IMAGE_PREVIEW_IMAGE,
+    hook: "_internalOnPreviewImageResult",
+    error_code_field: None,
+    progress_hook: None,
+    delivery: Delivery::HostFiles(&HostFiles::NONE),
+};
+const PREVIEW_MEDIA: Call = Call {
+    service: MIGO_HOST_SERVICE_IMAGE,
+    method: MIGO_IMAGE_PREVIEW_MEDIA,
+    hook: "_internalOnPreviewMediaResult",
+    error_code_field: None,
+    progress_hook: None,
+    delivery: Delivery::HostFiles(&HostFiles::NONE),
+};
+const COMPRESS_IMAGE: Call = Call {
+    service: MIGO_HOST_SERVICE_IMAGE,
+    method: MIGO_IMAGE_COMPRESS_IMAGE,
+    hook: "_internalOnCompressImageResult",
+    error_code_field: None,
+    progress_hook: None,
+    delivery: Delivery::HostFiles(&HostFiles::COMPRESS_IMAGE),
+};
+const CHOOSE_IMAGE: Call = Call {
+    service: MIGO_HOST_SERVICE_IMAGE,
+    method: MIGO_IMAGE_CHOOSE_IMAGE,
+    hook: "_internalOnChooseImageResult",
+    error_code_field: None,
+    progress_hook: None,
+    delivery: Delivery::HostFiles(&HostFiles::CHOOSE_IMAGE),
+};
+const CHOOSE_MESSAGE_FILE: Call = Call {
+    service: MIGO_HOST_SERVICE_IMAGE,
+    method: MIGO_IMAGE_CHOOSE_MESSAGE_FILE,
+    hook: "_internalOnChooseMessageFileResult",
+    error_code_field: None,
+    progress_hook: None,
+    delivery: Delivery::HostFiles(&HostFiles::CHOOSE_MESSAGE_FILE),
+};
+const CHOOSE_MEDIA: Call = Call {
+    service: MIGO_HOST_SERVICE_IMAGE,
+    method: MIGO_IMAGE_CHOOSE_MEDIA,
+    hook: "_internalOnChooseMediaResult",
+    error_code_field: None,
+    progress_hook: None,
+    delivery: Delivery::HostFiles(&HostFiles::CHOOSE_MEDIA),
 };
 
 const CALLS: &[&Call] = &[
@@ -273,6 +340,13 @@ const CALLS: &[&Call] = &[
     &SCAN_CODE,
     &GET_LOCATION,
     &GET_FUZZY_LOCATION,
+    &SAVE_IMAGE_TO_PHOTOS_ALBUM,
+    &PREVIEW_IMAGE,
+    &PREVIEW_MEDIA,
+    &COMPRESS_IMAGE,
+    &CHOOSE_IMAGE,
+    &CHOOSE_MESSAGE_FILE,
+    &CHOOSE_MEDIA,
 ];
 
 /// Fire-and-forget requests, as `(service, method)`. Listed so the contract test
@@ -524,6 +598,32 @@ impl LocationService for CapiHostServices {
     }
 }
 
+// Paths in these requests were resolved from the sandbox by the ops that make
+// them, and the files their results name are taken over on delivery.
+impl ImageApiService for CapiHostServices {
+    fn save_image_to_photos_album(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&SAVE_IMAGE_TO_PHOTOS_ALBUM, request_json)
+    }
+    fn preview_image(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&PREVIEW_IMAGE, request_json)
+    }
+    fn preview_media(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&PREVIEW_MEDIA, request_json)
+    }
+    fn compress_image(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&COMPRESS_IMAGE, request_json)
+    }
+    fn choose_image(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&CHOOSE_IMAGE, request_json)
+    }
+    fn choose_message_file(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&CHOOSE_MESSAGE_FILE, request_json)
+    }
+    fn choose_media(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&CHOOSE_MEDIA, request_json)
+    }
+}
+
 impl AdService for CapiHostServices {
     fn create_ad(&self, request_json: &str) -> Result<(), ServiceError> {
         self.command(MIGO_HOST_SERVICE_AD, MIGO_AD_CREATE, request_json)
@@ -639,7 +739,7 @@ fn completion_json(
             }
             // A download that succeeded has a file to install; without one
             // the install would fail later, far from the host's mistake.
-            if call.withheld == Withheld::SubpackageZip
+            if call.delivery == Delivery::SubpackageZip
                 && !fields
                     .get("zipPath")
                     .and_then(Value::as_str)
@@ -685,14 +785,14 @@ fn progress_json(request_id: u32, payload_json: &str) -> Result<String, MigoResu
 /// Hand `json` to content's `hook`, if `service` is one this host declared and
 /// there is content to tell.
 ///
-/// `withheld` is applied with the Host's id in hand, because what it keeps is
+/// `delivery` is applied with the Host's id in hand, because what it keeps is
 /// keyed by the Host the content runs in.
 fn deliver(
     session: &MigoSession,
     service: u32,
     hook: &'static str,
     json: String,
-    withheld: &Withheld,
+    delivery: &Delivery,
 ) -> MigoResult {
     let Ok(state) = session.state.lock() else {
         return MIGO_ERROR_INTERNAL;
@@ -710,9 +810,12 @@ fn deliver(
         return MIGO_OK;
     };
     drop(state);
-    let json = match withheld {
-        Withheld::Nothing => json,
-        Withheld::SubpackageZip => shared::services::intercept_download_result(host, &json),
+    let json = match delivery {
+        Delivery::Verbatim => json,
+        Delivery::SubpackageZip => shared::services::intercept_download_result(host, &json),
+        Delivery::HostFiles(files) => {
+            shared::services::host_files::deliver_result(host, files, &json)
+        }
     };
     if let Err(error) = migo_core::send_reliable_command_to_host(
         host,
@@ -748,7 +851,7 @@ pub unsafe extern "C" fn migo_session_complete_host_service_call(
             Err(error) => return error,
         };
         match completion_json(call, request_id, outcome) {
-            Ok(json) => deliver(&session, call.service, call.hook, json, &call.withheld),
+            Ok(json) => deliver(&session, call.service, call.hook, json, &call.delivery),
             Err(error) => error,
         }
     })
@@ -780,7 +883,7 @@ pub unsafe extern "C" fn migo_session_update_host_service_call(
             Err(error) => return error,
         };
         match progress_json(request_id, &payload) {
-            Ok(json) => deliver(&session, call.service, hook, json, &Withheld::Nothing),
+            Ok(json) => deliver(&session, call.service, hook, json, &Delivery::Verbatim),
             Err(error) => error,
         }
     })
@@ -817,7 +920,7 @@ pub unsafe extern "C" fn migo_session_post_host_service_event(
         ) {
             return MIGO_ERROR_INVALID_ARGUMENT;
         }
-        deliver(&session, service, hook, payload, &Withheld::Nothing)
+        deliver(&session, service, hook, payload, &Delivery::Verbatim)
     })
 }
 
@@ -855,6 +958,7 @@ mod tests {
             "clipboard" => MIGO_HOST_SERVICE_CLIPBOARD,
             "scan_code" => MIGO_HOST_SERVICE_SCAN_CODE,
             "location" => MIGO_HOST_SERVICE_LOCATION,
+            "image" => MIGO_HOST_SERVICE_IMAGE,
             other => panic!("the contract names a service the ABI has no constant for: {other}"),
         }
     }
@@ -899,16 +1003,26 @@ mod tests {
                             method.get("progress_hook").and_then(Value::as_str),
                             "{method_name} progress_hook"
                         );
-                        let withheld: Vec<&str> = method
-                            .get("withheld")
-                            .and_then(Value::as_array)
-                            .map(|fields| fields.iter().filter_map(Value::as_str).collect())
-                            .unwrap_or_default();
-                        let expected: &[&str] = match call.withheld {
-                            Withheld::Nothing => &[],
-                            Withheld::SubpackageZip => &["zipPath"],
+                        let listed = |key: &str| -> Vec<String> {
+                            method
+                                .get(key)
+                                .and_then(Value::as_array)
+                                .map(|fields| {
+                                    fields
+                                        .iter()
+                                        .filter_map(Value::as_str)
+                                        .map(str::to_owned)
+                                        .collect()
+                                })
+                                .unwrap_or_default()
                         };
-                        assert_eq!(withheld, expected, "{method_name} withheld");
+                        let (withheld, files): (Vec<String>, Vec<String>) = match call.delivery {
+                            Delivery::Verbatim => (vec![], vec![]),
+                            Delivery::SubpackageZip => (vec!["zipPath".into()], vec![]),
+                            Delivery::HostFiles(files) => (vec![], files.describe()),
+                        };
+                        assert_eq!(listed("withheld"), withheld, "{method_name} withheld");
+                        assert_eq!(listed("files"), files, "{method_name} files");
                         calls_seen += 1;
                     }
                     Some("command") => {

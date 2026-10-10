@@ -320,6 +320,18 @@ function createDeferredApi(apiName, defaultTimeoutMs) {
             _pending.set(requestId, pendingEntry);
             _deferredPendingCount++;
 
+            // The request failed before the host saw it: whatever the executor
+            // threw, or the rejection of the Promise it returned.
+            function failStart(e) {
+                var entry = removePending(requestId);
+                if (!entry) return;
+                clearTimeout(entry._timer);
+                var res = { errMsg: failMessage(apiName, e) };
+                invokeCallback(apiName, 'fail', entry.fail, res);
+                invokeCallback(apiName, 'complete', entry.complete, res);
+                entry.reject(res);
+            }
+
             // Timer admission and executor dispatch are one rollback scope:
             // either both start, or the pending entry and timer are removed and
             // the caller receives exactly one failure settlement.
@@ -335,15 +347,15 @@ function createDeferredApi(apiName, defaultTimeoutMs) {
                         e.reject(res);
                     }, ms);
                 }
-                executor(opts, requestId);
+                // An executor may be asynchronous -- an op that has work to do
+                // before the request can leave, such as resolving the files it
+                // names. Its rejection fails the request as a throw would.
+                var started = executor(opts, requestId);
+                if (started !== undefined && started !== null && typeof started.then === 'function') {
+                    started.then(undefined, failStart);
+                }
             } catch (e) {
-                var entry = removePending(requestId);
-                if (!entry) return;
-                clearTimeout(entry._timer);
-                var res = { errMsg: failMessage(apiName, e) };
-                invokeCallback(apiName, 'fail', entry.fail, res);
-                invokeCallback(apiName, 'complete', entry.complete, res);
-                entry.reject(res);
+                failStart(e);
             }
         })();
         return settlement.promise;

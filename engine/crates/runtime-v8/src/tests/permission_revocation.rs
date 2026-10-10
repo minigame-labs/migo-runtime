@@ -20,6 +20,7 @@ use shared::{
         DeviceServices, ImageApiService, MediaServices, PermissionService, RecorderService, Scope,
         ScopeState, SensorServices, SystemUtilServices,
     },
+    vfs::{GamePaths, VirtualFS},
 };
 
 #[derive(Default)]
@@ -152,11 +153,23 @@ impl BluetoothService for FakeBluetooth {
 }
 
 #[derive(Default)]
-struct FakeImageApi(AtomicUsize);
+struct FakeImageApi(AtomicUsize, std::sync::Mutex<Vec<String>>);
+
+impl FakeImageApi {
+    fn requests(&self) -> Vec<String> {
+        self.1.lock().unwrap().clone()
+    }
+}
 
 impl ImageApiService for FakeImageApi {
-    fn save_image_to_photos_album(&self, _options_json: &str) -> Result<(), ServiceError> {
+    fn save_image_to_photos_album(&self, request_json: &str) -> Result<(), ServiceError> {
         self.0.fetch_add(1, Ordering::SeqCst);
+        self.1.lock().unwrap().push(request_json.to_string());
+        Ok(())
+    }
+
+    fn preview_image(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.1.lock().unwrap().push(request_json.to_string());
         Ok(())
     }
 }
@@ -239,7 +252,44 @@ impl SystemUtilServices for Bundle {
     }
 }
 
+/// A game's sandbox in a scratch directory, removed when dropped.
+struct Sandbox {
+    root: PathBuf,
+    paths: GamePaths,
+}
+
+impl Sandbox {
+    fn new(tag: &str) -> Self {
+        let root = std::env::temp_dir().join(format!(
+            "migo-permission-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let paths = GamePaths::new(root.join("files"), root.join("cache"), "sandboxed", 1)
+            .expect("game paths");
+        paths.ensure_directories().expect("sandbox directories");
+        Self { root, paths }
+    }
+
+    fn vfs(&self) -> Arc<VirtualFS> {
+        Arc::new(VirtualFS::from_game_paths(&self.paths))
+    }
+}
+
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
 fn host_state(bundle: Arc<Bundle>) -> HostOpState {
+    host_state_in(bundle, None)
+}
+
+fn host_state_in(bundle: Arc<Bundle>, vfs: Option<Arc<VirtualFS>>) -> HostOpState {
     let (render_tx, _render_rx) = CommandSender::new();
     let (host_tx, _critical_host_tx, _host_rx) = shared::host_channel::channel(1);
     HostOpState {
@@ -250,7 +300,7 @@ fn host_state(bundle: Arc<Bundle>) -> HostOpState {
         app_files_dir: PathBuf::from("/tmp/files"),
         code_dir: None,
         game_paths: None,
-        vfs: None,
+        vfs,
         mount_table: None,
         render_tx,
         text_measurer: None,
@@ -273,8 +323,12 @@ fn host_state(bundle: Arc<Bundle>) -> HostOpState {
 }
 
 fn boot(bundle: Arc<Bundle>) -> JsRuntime {
+    boot_with(host_state(bundle))
+}
+
+fn boot_with(state: HostOpState) -> JsRuntime {
     let mut runtime = JsRuntime::new(RuntimeOptions {
-        extensions: crate::main_extensions(host_state(bundle)),
+        extensions: crate::main_extensions(state),
         ..Default::default()
     });
     crate::harden_global_scope(&mut runtime);
@@ -361,8 +415,11 @@ fn denied_bluetooth_can_close_and_stop_but_not_acquire_query_or_write() {
 
 #[test]
 fn album_write_and_shared_user_info_op_require_their_scopes() {
+    let sandbox = Sandbox::new("album");
+    std::fs::write(sandbox.paths.temp_dir().join("image.png"), b"png").unwrap();
+
     let denied = Bundle::new(false);
-    let mut denied_runtime = boot(denied.clone());
+    let mut denied_runtime = boot_with(host_state_in(denied.clone(), Some(sandbox.vfs())));
     run(
         &mut denied_runtime,
         "migo.saveImageToPhotosAlbum({ filePath: '/tmp/image.png', fail() {} }); \
@@ -373,7 +430,7 @@ fn album_write_and_shared_user_info_op_require_their_scopes() {
     assert_eq!(denied.auth.0.load(Ordering::SeqCst), 0);
 
     let granted = Bundle::new(true);
-    let mut granted_runtime = boot(granted.clone());
+    let mut granted_runtime = boot_with(host_state_in(granted.clone(), Some(sandbox.vfs())));
     run(
         &mut granted_runtime,
         "migo.saveImageToPhotosAlbum({ filePath: '/tmp/image.png', fail() {} }); \
@@ -382,4 +439,51 @@ fn album_write_and_shared_user_info_op_require_their_scopes() {
     );
     assert_eq!(granted.image_api.0.load(Ordering::SeqCst), 1);
     assert_eq!(granted.auth.0.load(Ordering::SeqCst), 2);
+}
+
+/// A path content names reaches the host as the real file behind it -- and only a
+/// file the game can itself read. The host used to be handed content's string
+/// verbatim, so any path the host process could read went into the album.
+#[test]
+fn a_content_path_reaches_the_host_as_the_sandbox_file_and_nothing_else_does() {
+    let sandbox = Sandbox::new("paths");
+    let image = sandbox.paths.user_data_dir().join("shot.png");
+    std::fs::write(&image, b"png").unwrap();
+    let bundle = Bundle::new(true);
+    let mut runtime = boot_with(host_state_in(bundle.clone(), Some(sandbox.vfs())));
+
+    run(
+        &mut runtime,
+        "migo.saveImageToPhotosAlbum({ filePath: '/user/shot.png', fail() {} }); \
+         migo.saveImageToPhotosAlbum({ filePath: '/etc/hosts', fail() {} }); \
+         migo.saveImageToPhotosAlbum({ filePath: '/user/../../outside.png', fail() {} }); \
+         migo.saveImageToPhotosAlbum({ filePath: 'https://example.com/a.png', fail() {} }); \
+         migo.previewImage({ urls: ['https://example.com/a.png', '/user/shot.png'], \
+                             current: '/user/shot.png', fail() {} });",
+    );
+
+    let requests = bundle.image_api.requests();
+    assert_eq!(
+        requests.len(),
+        2,
+        "only the sandbox file and the preview leave: {requests:?}"
+    );
+    let saved: deno_core::serde_json::Value =
+        deno_core::serde_json::from_str(&requests[0]).unwrap();
+    let real = std::fs::canonicalize(&image).unwrap();
+    assert_eq!(
+        std::fs::canonicalize(saved["filePath"].as_str().unwrap()).unwrap(),
+        real
+    );
+    let previewed: deno_core::serde_json::Value =
+        deno_core::serde_json::from_str(&requests[1]).unwrap();
+    assert_eq!(
+        previewed["urls"][0], "https://example.com/a.png",
+        "a viewer takes a URL"
+    );
+    assert_eq!(previewed["urls"][1], previewed["current"]);
+    assert_eq!(
+        std::fs::canonicalize(previewed["current"].as_str().unwrap()).unwrap(),
+        real
+    );
 }

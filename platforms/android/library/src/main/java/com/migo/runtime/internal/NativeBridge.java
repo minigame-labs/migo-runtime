@@ -465,6 +465,19 @@ final class NativeBridge {
     static native void onThermalStatusChanged(int sessionId, int status);
 
     // ==================== Image API Callbacks ====================
+    //
+    // A file a result names is handed over: the runtime moves it into the
+    // session's /tmp before content sees the result, so it must be one this
+    // SDK created for the request and will not touch again.
+
+    /** Answers a saveImageToPhotosAlbum request: {@code {requestId}} or {@code {requestId, error}}. */
+    static native void onSaveImageToPhotosAlbumResult(int sessionId, String resultJson);
+
+    /** Answers a previewImage request once the viewer is shown. */
+    static native void onPreviewImageResult(int sessionId, String resultJson);
+
+    /** Answers a previewMedia request once the viewer is shown. */
+    static native void onPreviewMediaResult(int sessionId, String resultJson);
 
     /**
      * Callback when compressImage operation completes.
@@ -489,6 +502,9 @@ final class NativeBridge {
      * @param resultJson JSON-encoded result with tempFiles or error
      */
     static native void onChooseMessageFileResult(int sessionId, String resultJson);
+
+    /** Answers a chooseMedia request: {@code {requestId, type, tempFiles}} or {@code {requestId, error}}. */
+    static native void onChooseMediaResult(int sessionId, String resultJson);
 
     // ==================== Location Callbacks ====================
 

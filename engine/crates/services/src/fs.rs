@@ -474,8 +474,9 @@ pub async fn materialize_pack_to_temp_async(
     scheduler: Arc<IoScheduler>,
     mount_table: Arc<MountTable>,
     virtual_path: String,
-    suffix: &'static str,
+    suffix: impl Into<String>,
 ) -> FsResult<String> {
+    let suffix = suffix.into();
     let relative = code_relative(&virtual_path).to_string();
     if let Some(size) = mount_table.entry_size(&relative) {
         if size > MAX_MATERIALIZE_LENGTH {
@@ -489,7 +490,7 @@ pub async fn materialize_pack_to_temp_async(
     let request = copy_request(BackendKind::Pack, RequestKind::Async);
     scheduler
         .run_async(request, move || {
-            fs_ops::materialize_mount_entry_to_temp(&mount_table, &relative, suffix)
+            fs_ops::materialize_mount_entry_to_temp(&mount_table, &relative, &suffix)
         })
         .await
         .map_err(pool_err)?

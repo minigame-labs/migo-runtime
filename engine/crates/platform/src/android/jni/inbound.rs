@@ -113,9 +113,35 @@ macro_rules! jni_json_callback {
         }
     };
 }
+/// Generate a JNI callback for a result that may name files the host hands
+/// over: they are moved into the session's `/tmp` and the result rewritten to
+/// name them there, so a host path never reaches content
+/// (`shared::services::host_files`). It also releases what the runtime copied
+/// out for the request.
+macro_rules! jni_host_files_callback {
+    ($fn_name:ident, $js_callback:literal, $files:expr) => {
+        pub(crate) extern "system" fn $fn_name<'local>(
+            mut env: JNIEnv<'local>,
+            _class: JClass<'local>,
+            host_id: jint,
+            result_json: JString<'local>,
+        ) {
+            jni_safe!(stringify!($fn_name), {
+                let json = read_json_result(
+                    &mut env,
+                    &result_json,
+                    r#"{"error":"failed to read result"}"#,
+                );
+                let for_js = shared::services::host_files::deliver_result(host_id, &$files, &json);
+                send_json_result_to_js(host_id, &for_js, $js_callback);
+            });
+        }
+    };
+}
 use jni::sys::{JNI_FALSE, JNI_TRUE, jboolean, jdouble, jfloat, jint, jlong, jobject, jstring};
 use jni::{JNIEnv, JavaVM};
 
+use shared::services::host_files::HostFiles;
 use tracing::{error, info, warn};
 
 use migo_core::{
@@ -1794,11 +1820,40 @@ pub(crate) extern "system" fn onThermalStatusChanged(
 
 // ==================== Image API Callbacks ====================
 
-jni_json_callback!(onCompressImageResult, "_internalOnCompressImageResult");
-jni_json_callback!(onChooseImageResult, "_internalOnChooseImageResult");
-jni_json_callback!(
+jni_host_files_callback!(
+    onSaveImageToPhotosAlbumResult,
+    "_internalOnSaveImageToPhotosAlbumResult",
+    HostFiles::NONE
+);
+jni_host_files_callback!(
+    onPreviewImageResult,
+    "_internalOnPreviewImageResult",
+    HostFiles::NONE
+);
+jni_host_files_callback!(
+    onPreviewMediaResult,
+    "_internalOnPreviewMediaResult",
+    HostFiles::NONE
+);
+jni_host_files_callback!(
+    onCompressImageResult,
+    "_internalOnCompressImageResult",
+    HostFiles::COMPRESS_IMAGE
+);
+jni_host_files_callback!(
+    onChooseImageResult,
+    "_internalOnChooseImageResult",
+    HostFiles::CHOOSE_IMAGE
+);
+jni_host_files_callback!(
     onChooseMessageFileResult,
-    "_internalOnChooseMessageFileResult"
+    "_internalOnChooseMessageFileResult",
+    HostFiles::CHOOSE_MESSAGE_FILE
+);
+jni_host_files_callback!(
+    onChooseMediaResult,
+    "_internalOnChooseMediaResult",
+    HostFiles::CHOOSE_MEDIA
 );
 
 // ==================== Location Callbacks ====================

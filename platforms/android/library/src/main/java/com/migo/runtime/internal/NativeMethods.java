@@ -925,12 +925,36 @@ public final class NativeMethods {
 
     // ==================== Image API Callbacks ====================
 
+    public static void onSaveImageToPhotosAlbumResult(int sessionId, String resultJson) {
+        if (sessionId >= 0 && resultJson != null) {
+            NativeBridge.onSaveImageToPhotosAlbumResult(sessionId, resultJson);
+        }
+    }
+
+    public static void onPreviewImageResult(int sessionId, String resultJson) {
+        if (sessionId >= 0 && resultJson != null) {
+            NativeBridge.onPreviewImageResult(sessionId, resultJson);
+        }
+    }
+
+    public static void onPreviewMediaResult(int sessionId, String resultJson) {
+        if (sessionId >= 0 && resultJson != null) {
+            NativeBridge.onPreviewMediaResult(sessionId, resultJson);
+        }
+    }
+
+    public static void onChooseMediaResult(int sessionId, String resultJson) {
+        if (sessionId >= 0 && resultJson != null) {
+            NativeBridge.onChooseMediaResult(sessionId, resultJson);
+        }
+    }
+
     /**
-     * Callback for chooseImage result.
+     * Callback for compressImage result.
      * Called from {@link com.migo.runtime.internal.platform.ImageApiManager}.
      *
      * @param sessionId  The session ID
-     * @param resultJson JSON result with tempFilePaths/tempFiles or error
+     * @param resultJson JSON result with tempFilePath or error
      */
     public static void onCompressImageResult(int sessionId, String resultJson) {
         if (sessionId >= 0 && resultJson != null) {

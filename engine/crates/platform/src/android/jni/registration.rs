@@ -11,14 +11,15 @@ use crate::{
         onAudioInterruptionEnd, onAuthorizeResult, onBLECharacteristicValueChange,
         onBLEConnectionStateChange, onBLEMTUChange, onBeaconServiceChange, onBeaconUpdate,
         onBluetoothAdapterStateChange, onBluetoothDeviceFound, onCameraEvent, onCameraFrameData,
-        onCheckSessionResult, onChooseImageResult, onChooseMessageFileResult, onCompassChange,
-        onCompressImageResult, onDeviceMotionChange, onDeviceOrientationChange,
+        onCheckSessionResult, onChooseImageResult, onChooseMediaResult, onChooseMessageFileResult,
+        onCompassChange, onCompressImageResult, onDeviceMotionChange, onDeviceOrientationChange,
         onFuzzyLocationResult, onGetPhoneNumberResult, onGetUserInfoResult, onGyroscopeChange,
         onHide, onKeyboardComplete, onKeyboardConfirm, onKeyboardHeightChange, onKeyboardInput,
         onLocationResult, onLoginResult, onMemoryWarning, onMidasPaymentGameItemResult,
         onMidasPaymentResult, onModalResult, onNavigateToMiniProgramResult, onNetworkStatusChange,
         onOpenAppAuthorizeSetting, onOpenSettingResult, onOpenSystemBluetoothSetting,
-        onRecorderEvent, onRecorderFrameData, onRestart, onScanCodeResult, onShareAppMessageResult,
+        onPreviewImageResult, onPreviewMediaResult, onRecorderEvent, onRecorderFrameData,
+        onRestart, onSaveImageToPhotosAlbumResult, onScanCodeResult, onShareAppMessageResult,
         onShow, onSubpackageProgress, onSubpackageResult, onSurfaceDestroyed,
         onThermalStatusChanged, onTouch, onUserCaptureScreen, onVideoEvent, onVsync, shutdown,
         updatePermission, updateSurface, version,
@@ -86,11 +87,19 @@ fn native_fn_ptr(name: &str) -> Option<*mut c_void> {
         #[cfg(feature = "api-media")]
         "onCameraFrameData" => onCameraFrameData as *mut c_void,
         #[cfg(feature = "api-media")]
+        "onSaveImageToPhotosAlbumResult" => onSaveImageToPhotosAlbumResult as *mut c_void,
+        #[cfg(feature = "api-media")]
+        "onPreviewImageResult" => onPreviewImageResult as *mut c_void,
+        #[cfg(feature = "api-media")]
+        "onPreviewMediaResult" => onPreviewMediaResult as *mut c_void,
+        #[cfg(feature = "api-media")]
         "onCompressImageResult" => onCompressImageResult as *mut c_void,
         #[cfg(feature = "api-media")]
         "onChooseImageResult" => onChooseImageResult as *mut c_void,
         #[cfg(feature = "api-media")]
         "onChooseMessageFileResult" => onChooseMessageFileResult as *mut c_void,
+        #[cfg(feature = "api-media")]
+        "onChooseMediaResult" => onChooseMediaResult as *mut c_void,
         #[cfg(feature = "api-media")]
         "onVideoEvent" => onVideoEvent as *mut c_void,
         #[cfg(feature = "api-connectivity")]

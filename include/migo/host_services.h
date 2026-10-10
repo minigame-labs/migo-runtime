@@ -49,6 +49,7 @@ typedef uint32_t MigoHostService;
 #define MIGO_HOST_SERVICE_CLIPBOARD 9U
 #define MIGO_HOST_SERVICE_SCAN_CODE 10U
 #define MIGO_HOST_SERVICE_LOCATION 11U
+#define MIGO_HOST_SERVICE_IMAGE 12U
 
 /*
  * Ads. All six are commands addressed to the advert by the adId in their
@@ -140,6 +141,39 @@ typedef uint32_t MigoHostService;
  */
 #define MIGO_LOCATION_GET_LOCATION 0U
 #define MIGO_LOCATION_GET_FUZZY_LOCATION 1U
+
+/*
+ * Images and media, all calls. A path in a request is a real path the engine
+ * resolved from the game's sandbox -- or, for the two previews, an http(s) URL --
+ * readable until the call is completed: a host that hands it to a viewer still
+ * showing it after that opens or copies it first. A file a result names is
+ * handed over when the call is completed: the engine moves it into the session's
+ * /tmp (a rename on the same volume) and content sees only that path. Name only
+ * files the host owns and will not touch again -- copy a file dialog's answer,
+ * which is the user's original, first.
+ *
+ *   SAVE_IMAGE_TO_PHOTOS_ALBUM {"filePath"}                         -> {}
+ *   PREVIEW_IMAGE  {"urls", "current", "showmenu", "referrerPolicy"} -> {} once shown
+ *   PREVIEW_MEDIA  {"sources": [{"url", "type", "poster"}], "current", ...} -> {} once shown
+ *   COMPRESS_IMAGE {"src", "quality", "compressedWidth", "compressedHeight"}
+ *                  -> {"tempFilePath"*}
+ *   CHOOSE_IMAGE   {"count", "sizeType", "sourceType"}
+ *                  -> {"tempFilePaths"*: [...], "tempFiles": [{"path"*, "size"}]}
+ *   CHOOSE_MESSAGE_FILE {"count", "type", "extension"}
+ *                  -> {"tempFiles": [{"path"*, "size", "name", "type", "time"}]}
+ *   CHOOSE_MEDIA   {"count", "mediaType", "sourceType", "maxDuration", "sizeType", "camera"}
+ *                  -> {"type", "tempFiles": [{"tempFilePath"*, "thumbTempFilePath"*, "size",
+ *                      "duration", "width", "height", "fileType"}]}
+ *
+ * (* a file handed over.) A player who dismisses a picker is the failure "cancel".
+ */
+#define MIGO_IMAGE_SAVE_IMAGE_TO_PHOTOS_ALBUM 0U
+#define MIGO_IMAGE_PREVIEW_IMAGE 1U
+#define MIGO_IMAGE_PREVIEW_MEDIA 2U
+#define MIGO_IMAGE_COMPRESS_IMAGE 3U
+#define MIGO_IMAGE_CHOOSE_IMAGE 4U
+#define MIGO_IMAGE_CHOOSE_MESSAGE_FILE 5U
+#define MIGO_IMAGE_CHOOSE_MEDIA 6U
 
 /*
  * Content's permission scopes, in migo.getSetting()'s order. The host decides

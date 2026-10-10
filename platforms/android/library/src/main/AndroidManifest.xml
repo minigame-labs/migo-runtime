@@ -19,6 +19,14 @@
             android:excludeFromRecents="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
+        <!-- Lends a game's file to a viewer for previewImage / previewMedia,
+             read-only, one granted URI at a time. -->
+        <provider
+            android:name=".internal.LentFileProvider"
+            android:authorities="${applicationId}.migo.lent"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+
         <activity
             android:name=".MigoGameActivity"
             android:exported="false"

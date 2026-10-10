@@ -315,6 +315,22 @@ Windows, OpenHarmony) embeds the C ABI and reaches them through this channel:
 | `MIGO_HOST_SERVICE_CLIPBOARD` (9) | `SET_CLIPBOARD_DATA` 0 · `GET_CLIPBOARD_DATA` 1 | calls | `setClipboardData` · `getClipboardData` |
 | `MIGO_HOST_SERVICE_SCAN_CODE` (10) | `SCAN_CODE` 0 | call | `scanCode` |
 | `MIGO_HOST_SERVICE_LOCATION` (11) | `GET_LOCATION` 0 · `GET_FUZZY_LOCATION` 1 | calls (checked against `scope.userLocation` first) | `getLocation` · `getFuzzyLocation` |
+| `MIGO_HOST_SERVICE_IMAGE` (12) | `SAVE_IMAGE_TO_PHOTOS_ALBUM` 0 · `PREVIEW_IMAGE` 1 · `PREVIEW_MEDIA` 2 · `COMPRESS_IMAGE` 3 · `CHOOSE_IMAGE` 4 · `CHOOSE_MESSAGE_FILE` 5 · `CHOOSE_MEDIA` 6 | calls; carry files (below) | `saveImageToPhotosAlbum` (checked against `scope.writePhotosAlbum`) · `previewImage` · `previewMedia` · `compressImage` · `chooseImage` · `chooseMessageFile` · `chooseMedia` |
+
+**Files.** Content names files only by sandbox path (`/tmp/...`, `/user/...`, a path in its package) and a host only
+by real path; neither sees the other's kind:
+
+- **A path in a request** is resolved through the sandbox before the request reaches the host (the two previews may
+  also carry an http(s) URL). Content can only name a file it can itself read: a path outside the sandbox fails on
+  content's side and never reaches the host. The path stays readable until the call is completed; a host that needs
+  it after that -- a viewer still showing it -- opens or copies it first.
+- **A file a result names** (the contract's `files`: `COMPRESS_IMAGE`'s `tempFilePath`, `CHOOSE_IMAGE`'s
+  `tempFilePaths[]` and `tempFiles[].path`, `CHOOSE_MESSAGE_FILE`'s `tempFiles[].path`, `CHOOSE_MEDIA`'s
+  `tempFiles[].tempFilePath` and `thumbTempFilePath`) is **handed over** when the call is completed: the engine moves
+  it into the session's `/tmp` (a rename on the same volume), rewrites the field and only then delivers the result,
+  so a host path never reaches JavaScript. Hand over only files the host created and will not touch again; a file
+  dialog's answer is the user's original and is copied first. A file the engine cannot take fails the call for
+  content.
 
 The numbers are defined once, in `contracts/runtime/host-services.json`, append
 only. A host that declares the payment service is one that takes payments

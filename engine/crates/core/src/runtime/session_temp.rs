@@ -21,8 +21,13 @@ use shared::vfs::game_paths::GamePaths;
 use super::HostId;
 
 /// Owns one session's temporary directory for the length of that session.
+///
+/// It is also where files a host hands over in a result land
+/// (`shared::services::host_files`), so the directory is registered there for
+/// the same span.
 pub(crate) struct SessionTemp {
     paths: GamePaths,
+    session_id: HostId,
 }
 
 impl SessionTemp {
@@ -42,12 +47,17 @@ impl SessionTemp {
     ) -> Option<Self> {
         let paths = GamePaths::new(files_dir, cache_dir, game_id, session_id).ok()?;
         let _ = paths.clean_temp();
-        Some(Self { paths })
+        shared::services::host_files::register_session_temp(
+            session_id,
+            paths.temp_dir().to_path_buf(),
+        );
+        Some(Self { paths, session_id })
     }
 }
 
 impl Drop for SessionTemp {
     fn drop(&mut self) {
+        shared::services::host_files::unregister_session(self.session_id);
         let _ = self.paths.remove_temp();
     }
 }
