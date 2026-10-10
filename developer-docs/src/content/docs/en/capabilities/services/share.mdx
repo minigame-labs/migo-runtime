@@ -90,6 +90,25 @@ thread, so do not block in them; `ShareSink` may be called from any thread, and 
 When a `shareMessageToFriend` ends, content's `migo.onShareMessageToFriend` listeners receive `{success, errMsg}` —
 derived from that request's settlement; the host posts no event of its own.
 
+## The share menu
+
+The menu ("share", "share to moments", "add to favorites") is the host's. A mini game's share items start hidden, and
+content turns them on with `showShareMenu`:
+
+- After every `showShareMenu` / `hideShareMenu` / `updateShareMenu` the host receives the menu's **whole state** —
+  Android `ShareHandler.onShareMenuChanged(ShareMenu)`, C ABI command `SET_SHARE_MENU` 3 (`{"menus", "withShareTicket",
+  ...the updateShareMenu fields}`). "Share to moments" is only ever offered beside "share".
+- When the player picks an item, the host asks the game what to share — Android
+  `GameSession.requestMenuShare(menu, MenuShareCallback)`, C ABI event `EVENT_MENU_SHARE` 0 (`{"menu", "replyId"}`, `menu`
+  being `shareAppMessage`, `shareTimeline` or `addToFavorites`).
+- Content's `onShareAppMessage` / `onShareTimeline` / `onAddToFavorites` listener answers (the last one that returns an
+  object decides; a `promise` in an `onShareAppMessage` answer is waited on for up to three seconds and its result
+  decides), exactly once — `MenuShareCallback.onShareContent(MenuShareContent)`, C ABI command `MENU_SHARE_REPLY` 4
+  (`{"replyId", "menu", "content"}`). With nothing listening, or when the runtime restarts first, the answer is `null`
+  and the host shares its own defaults (the game's name, its icon). An image in the answer is again a real file
+  resolved through the sandbox (readable for the session) or an http(s) URL; an image that is not the game's own file
+  is dropped.
+
 ## Without a host
 
 With no handler (or a C ABI host that did not declare the share service), all three fail with

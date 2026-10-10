@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The share menu on every host. After each `showShareMenu` / `hideShareMenu` / `updateShareMenu` the host receives the
+  menu's whole state (C ABI `MIGO_SHARE_SET_SHARE_MENU`, Android `ShareHandler.onShareMenuChanged`); when the player
+  picks "share", "share to moments" or "add to favorites" the host asks the game (`MIGO_SHARE_EVENT_MENU_SHARE`,
+  `GameSession.requestMenuShare`) and the `onShareAppMessage` / `onShareTimeline` / `onAddToFavorites` listener's
+  answer comes back once (`MIGO_SHARE_MENU_SHARE_REPLY`, `MenuShareCallback`) -- an `onShareAppMessage` promise waited
+  on for up to three seconds, images resolved through the sandbox, null when nothing answers. A mini game's share items
+  start hidden.
 - `createAdSkipCard`, through the ad service as ad type `skipCard`: `load()` fetches the offer and `show()` opens the
   host's purchase sheet; `onClose` carries `result` (`close` / `pay_cancel` / `pay_success`) and `onUse` the passes
   spent today. Android's `AdEventSink` gains `emitSkipCardClose` and `emitUse`. Without a host, `load()` and `show()`
@@ -293,6 +300,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a relink, is INVALID_OPERATION and null, as are a deleted program and one that did not link.
 
 ### Removed
+- `onAddToFavorites` / `offAddToFavorites` leave the Slim profile with the rest of sharing; the internal hooks that
+  read the share listeners and that nothing called are gone.
 - APIs no mini-game platform's content could rely on, because they answered without asking anyone: `addColorSign`,
   `addRecentColorSign`, `isColorSignExistSync`, `fetchSecondFloorIconOptionSync`, `updateSecondFloorChannel`,
   `checkScene`, `navigateToScene`, `openPage`, `getUserGameLabel`, `requestSubscribeWhatsNew` and

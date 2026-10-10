@@ -61,6 +61,17 @@ public interface ShareHandler {
         sink.fail(-2, "showShareImageMenu:fail not supported");
     }
 
+    /**
+     * Your menu's share items, as the game set them -- after every
+     * {@code showShareMenu}, {@code hideShareMenu} and {@code updateShareMenu}.
+     * A game's share items start hidden. When the player picks one, ask the game
+     * what to share with {@link com.migo.runtime.GameSession#requestMenuShare}.
+     *
+     * @param menu the menu's whole state now
+     */
+    default void onShareMenuChanged(ShareMenu menu) {
+    }
+
     /** What content asked to share. */
     final class ShareRequest {
         /** Share title, empty when content set none. */
@@ -138,6 +149,33 @@ public interface ShareHandler {
             this.imageUrlId = imageUrlId;
             this.query = query;
             this.shareMessageToFriendScene = shareMessageToFriendScene;
+        }
+    }
+
+    /** The share items of your menu. */
+    final class ShareMenu {
+        /** Whether "share" is offered. */
+        public final boolean shareAppMessage;
+        /** Whether "share to moments" is offered; never without "share". */
+        public final boolean shareTimeline;
+        /** Whether a share carries a share ticket. */
+        public final boolean withShareTicket;
+        /**
+         * The updatable-message fields the game set through {@code updateShareMenu}
+         * ({@code isUpdatableMessage}, {@code activityId}, {@code templateInfo},
+         * ...), as an immutable tree; empty when it set none.
+         */
+        public final java.util.Map<String, Object> options;
+
+        public ShareMenu(
+                boolean shareAppMessage,
+                boolean shareTimeline,
+                boolean withShareTicket,
+                java.util.Map<String, Object> options) {
+            this.shareAppMessage = shareAppMessage;
+            this.shareTimeline = shareTimeline;
+            this.withShareTicket = withShareTicket;
+            this.options = options;
         }
     }
 

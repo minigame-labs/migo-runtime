@@ -167,9 +167,24 @@
           "op": "op_show_share_image_menu",
           "hook": "_internalOnShowShareImageMenuResult",
           "error_code_field": "errCode"
+        },
+        "set_share_menu": {
+          "id": 3,
+          "kind": "command",
+          "op": "op_share_set_menu"
+        },
+        "menu_share_reply": {
+          "id": 4,
+          "kind": "command",
+          "op": "op_share_menu_reply"
         }
       },
-      "events": {}
+      "events": {
+        "menu_share": {
+          "id": 0,
+          "hook": "_internalOnShareMenuEvent"
+        }
+      }
     },
     "navigate": {
       "id": 4,

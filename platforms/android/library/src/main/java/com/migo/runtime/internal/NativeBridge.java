@@ -687,6 +687,8 @@ final class NativeBridge {
 
     static native void onShareMessageToFriendResult(int sessionId, String resultJson);
 
+    static native void onShareMenuEvent(int sessionId, String eventJson);
+
     static native void onShowShareImageMenuResult(int sessionId, String resultJson);
 
     // ==================== Navigate Callback ====================

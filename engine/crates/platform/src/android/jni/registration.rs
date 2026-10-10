@@ -21,10 +21,10 @@ use crate::{
         onOpenAppAuthorizeSetting, onOpenSettingResult, onOpenSystemBluetoothSetting,
         onPreviewImageResult, onPreviewMediaResult, onRecorderEvent, onRecorderFrameData,
         onRestart, onSaveImageToPhotosAlbumResult, onScanCodeResult, onScreenRecordingStateChanged,
-        onShareAppMessageResult, onShareMessageToFriendResult, onShow, onShowShareImageMenuResult,
-        onSubpackageProgress, onSubpackageResult, onSurfaceDestroyed, onThermalStatusChanged,
-        onTouch, onUserCaptureScreen, onVideoEvent, onVsync, shutdown, updatePermission,
-        updateSurface, version,
+        onShareAppMessageResult, onShareMenuEvent, onShareMessageToFriendResult, onShow,
+        onShowShareImageMenuResult, onSubpackageProgress, onSubpackageResult, onSurfaceDestroyed,
+        onThermalStatusChanged, onTouch, onUserCaptureScreen, onVideoEvent, onVsync, shutdown,
+        updatePermission, updateSurface, version,
     },
     jni_profile_contract::{self, JniMethod, MethodDirection},
 };
@@ -148,6 +148,7 @@ fn native_fn_ptr(name: &str) -> Option<*mut c_void> {
         "onShareAppMessageResult" => onShareAppMessageResult as *mut c_void,
         "onShareMessageToFriendResult" => onShareMessageToFriendResult as *mut c_void,
         "onShowShareImageMenuResult" => onShowShareImageMenuResult as *mut c_void,
+        "onShareMenuEvent" => onShareMenuEvent as *mut c_void,
         #[cfg(feature = "api-commerce")]
         "onMidasPaymentResult" => onMidasPaymentResult as *mut c_void,
         #[cfg(feature = "api-commerce")]

@@ -335,6 +335,14 @@ async function run() {
   expect(friendShare.ok, "shareMessageToFriend", friendShare);
   const told = await heard;
   expect(told.success === true && told.errMsg === "shareMessageToFriend:ok", "onShareMessageToFriend", told);
+  // The share menu is the host's: showing "share" offers it, the player picks
+  // it, and the game's listener answers with what to share.
+  const menuShared = new Promise(function (resolve) {
+    migo.onOfficialComponentsInfoChange(function (data) { if (data.menuShared) resolve(); });
+  });
+  migo.onShareAppMessage(function () { return { title: "menu", imageUrl: "/user/probe.png" }; });
+  migo.showShareMenu({ menus: ["shareAppMessage"] });
+  await menuShared;
   const imageSheet = await settle("showShareImageMenu", { path: "/user/probe.png" });
   expect(!imageSheet.ok && imageSheet.res.errMsg === "showShareImageMenu:fail cancel", "showShareImageMenu", imageSheet);
 

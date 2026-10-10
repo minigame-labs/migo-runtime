@@ -727,6 +727,34 @@ static void MIGO_CALL on_host_service_call(void *user_data, MigoSession *session
                     }
                     complete_fail(session, call->call_id, "cancel", 0, 0);
                     return;
+                case MIGO_SHARE_SET_SHARE_MENU: {
+                    /* Once the game shows "share", the player picks it. */
+                    static int picked = 0;
+                    NSArray *menus = share[@"menus"];
+                    if (picked || ![menus isKindOfClass:[NSArray class]]
+                        || ![menus containsObject:@"shareAppMessage"]) {
+                        return;
+                    }
+                    picked = 1;
+                    static const char pick[] = "{\"menu\":\"shareAppMessage\",\"replyId\":11}";
+                    if (migo_session_post_host_service_event(session, MIGO_HOST_SERVICE_SHARE,
+                                                             MIGO_SHARE_EVENT_MENU_SHARE, pick,
+                                                             (uint32_t)strlen(pick)) != MIGO_OK) {
+                        probe_failure("migo_session_post_host_service_event refused a menu share");
+                    }
+                    return;
+                }
+                case MIGO_SHARE_MENU_SHARE_REPLY: {
+                    NSDictionary *content = share[@"content"];
+                    if (![share[@"replyId"] isEqual:@11] || ![content isKindOfClass:[NSDictionary class]]
+                        || ![content[@"title"] isEqual:@"menu"] || !is_content_png(content[@"imageUrl"])) {
+                        probe_failure("the menu share was not answered with the game's title and image");
+                        return;
+                    }
+                    post_ecosystem_event(session,
+                                         "{\"name\":\"onOfficialComponentsInfoChange\",\"data\":{\"menuShared\":true}}");
+                    return;
+                }
             }
             break;
         }

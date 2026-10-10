@@ -150,6 +150,7 @@ const NATIVE_COMMERCE: &[JniMethod] = methods![
     ("onShareAppMessageResult", "(ILjava/lang/String;)V"),
     ("onShareMessageToFriendResult", "(ILjava/lang/String;)V"),
     ("onShowShareImageMenuResult", "(ILjava/lang/String;)V"),
+    ("onShareMenuEvent", "(ILjava/lang/String;)V"),
     ("onAdEvent", "(ILjava/lang/String;)V"),
     ("onMidasPaymentResult", "(ILjava/lang/String;)V"),
     ("onMidasPaymentGameItemResult", "(ILjava/lang/String;)V"),
@@ -313,6 +314,8 @@ const JAVA_COMMERCE: &[JniMethod] = methods![
     ("shareAppMessage", "(ILjava/lang/String;)V"),
     ("shareMessageToFriend", "(ILjava/lang/String;)V"),
     ("showShareImageMenu", "(ILjava/lang/String;)V"),
+    ("shareMenuChanged", "(ILjava/lang/String;)V"),
+    ("shareMenuReply", "(ILjava/lang/String;)V"),
     (
         "checkIsSupportMidasPayment",
         "(ILjava/lang/String;)Ljava/lang/String;"
@@ -462,8 +465,9 @@ mod tests {
         // adds +2 native (`onEcosystemResult`, `onEcosystemEvent`), one each for
         // every API and event it carries by name. Sharing to one friend and the
         // image share sheet add +2 native (`onShareMessageToFriendResult`,
-        // `onShowShareImageMenuResult`).
-        assert_eq!(native.len(), 78, "full NativeBridge surface changed");
+        // `onShowShareImageMenuResult`). The host's share menu adds +1 native
+        // (`onShareMenuEvent`, the item the player picked).
+        assert_eq!(native.len(), 79, "full NativeBridge surface changed");
         // Runtime-generation fencing adds +2 Java (`beginRuntimeRestart`,
         // `completeRuntimeRestart`), both Core: every profile restarts.
         // Concurrent-session correctness removes -1 Java (`getCacheDirPath`,
@@ -476,8 +480,9 @@ mod tests {
         // `setVisualEffectOnCapture`). The host's ecosystem adds +4 Java
         // (`ecosystemAvailable`, `ecosystemCall`, `ecosystemReply`,
         // `ecosystemValue`). Sharing to one friend and the image share sheet add
-        // +2 Java (`shareMessageToFriend`, `showShareImageMenu`).
-        assert_eq!(java.len(), 138, "full NativeExports surface changed");
+        // +2 Java (`shareMessageToFriend`, `showShareImageMenu`). The host's share
+        // menu adds +2 Java (`shareMenuChanged`, `shareMenuReply`).
+        assert_eq!(java.len(), 140, "full NativeExports surface changed");
         assert_unique(&native);
         assert_unique(&java);
     }

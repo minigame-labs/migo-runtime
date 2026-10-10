@@ -1254,6 +1254,18 @@ public final class NativeMethods {
         }
     }
 
+    /**
+     * The player picked a share item from the host's menu.
+     *
+     * @param sessionId The session ID
+     * @param eventJson {@code {"menu", "replyId"}}
+     */
+    public static void onShareMenuEvent(int sessionId, String eventJson) {
+        if (sessionId >= 0 && eventJson != null) {
+            NativeBridge.onShareMenuEvent(sessionId, eventJson);
+        }
+    }
+
     /** Callback for shareMessageToFriend result. */
     public static void onShareMessageToFriendResult(int sessionId, String resultJson) {
         if (sessionId >= 0 && resultJson != null) {

@@ -49,10 +49,32 @@ pub(crate) async fn export_paths(
         .get("requestId")
         .and_then(Value::as_u64)
         .ok_or_else(|| JsErrorBox::generic("malformed request: no requestId"))?;
+    export_fields(state, &mut request, request_id, fields, remote).await?;
+    Ok(request.to_string())
+}
 
+/// `message`'s paths, as `export_paths` makes them, for a message no result
+/// answers -- a command or a reply: what it copies out is held for the rest of
+/// the session (`host_files::hold_export`'s request 0).
+pub(crate) async fn export_paths_for_session(
+    state: &Rc<RefCell<OpState>>,
+    message: &mut Value,
+    fields: &[&[Step]],
+    remote: Remote,
+) -> Result<(), JsErrorBox> {
+    export_fields(state, message, 0, fields, remote).await
+}
+
+async fn export_fields(
+    state: &Rc<RefCell<OpState>>,
+    request: &mut Value,
+    request_id: u64,
+    fields: &[&[Step]],
+    remote: Remote,
+) -> Result<(), JsErrorBox> {
     let mut named: Vec<String> = Vec::new();
     for field in fields {
-        host_files::visit_fields(&mut request, field, &mut |value| match value {
+        host_files::visit_fields(request, field, &mut |value| match value {
             Value::String(path) => {
                 if !named.contains(path) {
                     named.push(path.clone());
@@ -123,7 +145,7 @@ pub(crate) async fn export_paths(
     }
 
     for field in fields {
-        host_files::visit_fields(&mut request, field, &mut |value| {
+        host_files::visit_fields(request, field, &mut |value| {
             if let Value::String(path) = value
                 && let Some(host_path) = real.get(path.as_str())
             {
@@ -133,5 +155,5 @@ pub(crate) async fn export_paths(
         })
         .map_err(JsErrorBox::generic)?;
     }
-    Ok(request.to_string())
+    Ok(())
 }

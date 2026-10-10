@@ -237,38 +237,6 @@ function _internalGetFocusState() {
     return _focused;
 }
 
-// ---- onAddToFavorites / offAddToFavorites ----------------------------------
-
-const _addToFavoritesListeners = createListenerGroup('onAddToFavorites');
-
-function onAddToFavorites(listener) {
-    _addToFavoritesListeners.on(listener);
-}
-
-function offAddToFavorites(listener) {
-    _addToFavoritesListeners.off(listener);
-}
-
-// @stub - called by host when user triggers "add to favorites".
-// Returns aggregated data from registered listeners.
-function _internalTriggerAddToFavorites() {
-    var result = { title: '', imageUrl: '', query: '' };
-    var listeners = _addToFavoritesListeners.snapshot();
-    for (var i = 0; i < listeners.length; i++) {
-        try {
-            var override = listeners[i]();
-            if (override && typeof override === 'object') {
-                if (typeof override.title === 'string') result.title = override.title;
-                if (typeof override.imageUrl === 'string') result.imageUrl = override.imageUrl;
-                if (typeof override.query === 'string') result.query = override.query;
-            }
-        } catch (e) {
-            console.error('onAddToFavorites listener error:', e);
-        }
-    }
-    return result;
-}
-
 export {
     onShow,
     onHide,
@@ -281,7 +249,4 @@ export {
     _internalTriggerFocusChanged,
     _internalInstallFocusAdapter,
     _internalGetFocusState,
-    onAddToFavorites,
-    offAddToFavorites,
-    _internalTriggerAddToFavorites,
 };

@@ -47,6 +47,7 @@
   public abstract void onProgress(int, long, long);
   public abstract void onReply(java.util.Map<java.lang.String, java.lang.Object>, boolean);
   public abstract void onSessionCreated(com.migo.runtime.GameSession);
+  public abstract void onShareContent(com.migo.runtime.callback.MenuShareContent);
   public abstract void onStateChanged(com.migo.runtime.GameSession, com.migo.runtime.SessionState, com.migo.runtime.SessionState);
   public abstract void onSuccess();
   public abstract void onSuccess(com.migo.runtime.callback.AuthHandler$UserInfoResult);
@@ -80,6 +81,7 @@
   public boolean performClick();
   public boolean postEcosystemEvent(java.lang.String, java.util.Map<java.lang.String, ?>);
   public boolean postEcosystemEvent(java.lang.String, java.util.Map<java.lang.String, ?>, com.migo.runtime.callback.EcosystemReply);
+  public boolean requestMenuShare(java.lang.String, com.migo.runtime.callback.MenuShareCallback);
   public com.migo.runtime.BuildConfig();
   public com.migo.runtime.ConsoleLogView(android.content.Context, int);
   public com.migo.runtime.DebugOverlayView getDebugOverlay();
@@ -120,12 +122,14 @@
   public com.migo.runtime.callback.AuthHandler$UserInfo();
   public com.migo.runtime.callback.AuthHandler$UserInfoResult();
   public com.migo.runtime.callback.EcosystemHandler$Request(java.lang.String, java.util.Map<java.lang.String, java.lang.Object>);
+  public com.migo.runtime.callback.MenuShareContent(java.lang.String, java.lang.String, java.lang.String, java.lang.String, boolean, java.lang.String, java.lang.String, java.lang.String, boolean);
   public com.migo.runtime.callback.NavigationHandler$CustomerServiceRequest(java.lang.String, boolean, java.lang.String, java.lang.String, java.lang.String);
   public com.migo.runtime.callback.NavigationHandler$NavigateRequest(java.lang.String, java.lang.String, java.util.Map<java.lang.String, java.lang.Object>, java.lang.String);
   public com.migo.runtime.callback.PaymentHandler$GameItemPaymentRequest(java.lang.String, java.lang.String, java.lang.String);
   public com.migo.runtime.callback.PaymentHandler$PaymentRequest(java.lang.String, int, java.lang.String, java.lang.String, java.lang.String, int, int, java.lang.String);
   public com.migo.runtime.callback.ShareHandler$FriendShareRequest(java.lang.String, java.lang.String, java.lang.String, java.lang.String, java.lang.String, java.lang.Integer);
   public com.migo.runtime.callback.ShareHandler$ImageShareRequest(java.lang.String, boolean, java.lang.String);
+  public com.migo.runtime.callback.ShareHandler$ShareMenu(boolean, boolean, boolean, java.util.Map<java.lang.String, java.lang.Object>);
   public com.migo.runtime.callback.ShareHandler$ShareRequest(java.lang.String, java.lang.String, java.lang.String, java.lang.String, boolean, java.lang.String);
   public com.migo.runtime.callback.SubpackageHandler$SubpackageRequest(java.lang.String, java.lang.String);
   public default boolean isMidasPaymentSupported();
@@ -144,6 +148,7 @@
   public default void onLoadingStart();
   public default void onPaused();
   public default void onResumed();
+  public default void onShareMenuChanged(com.migo.runtime.callback.ShareHandler$ShareMenu);
   public default void onSurfaceLost(int);
   public default void openSetting(com.migo.runtime.callback.SettingSink);
   public default void requestMidasPayment(com.migo.runtime.callback.PaymentHandler$PaymentRequest, com.migo.runtime.callback.PaymentSink);
@@ -153,9 +158,14 @@
   public default void showAd(int, com.migo.runtime.callback.AdEventSink);
   public default void showShareImageMenu(com.migo.runtime.callback.ShareHandler$ImageShareRequest, com.migo.runtime.callback.ShareSink);
   public default void updateAdStyle(int, java.lang.String, com.migo.runtime.callback.AdEventSink);
+  public final boolean disableForward;
   public final boolean needShowEntrance;
+  public final boolean shareAppMessage;
+  public final boolean shareTimeline;
   public final boolean showMessageCard;
   public final boolean toCurrentGroup;
+  public final boolean toCurrentGroup;
+  public final boolean withShareTicket;
   public final float fps;
   public final float frameTimeMs;
   public final int buyQuantity;
@@ -175,8 +185,12 @@
   public final java.lang.String currencyType;
   public final java.lang.String entrancePath;
   public final java.lang.String envVersion;
+  public final java.lang.String imagePreviewUrl;
+  public final java.lang.String imagePreviewUrlId;
   public final java.lang.String imageUrl;
   public final java.lang.String imageUrl;
+  public final java.lang.String imageUrl;
+  public final java.lang.String imageUrlId;
   public final java.lang.String imageUrlId;
   public final java.lang.String imageUrlId;
   public final java.lang.String mode;
@@ -187,8 +201,10 @@
   public final java.lang.String path;
   public final java.lang.String path;
   public final java.lang.String path;
+  public final java.lang.String path;
   public final java.lang.String paySig;
   public final java.lang.String platform;
+  public final java.lang.String query;
   public final java.lang.String query;
   public final java.lang.String query;
   public final java.lang.String root;
@@ -202,7 +218,9 @@
   public final java.lang.String signature;
   public final java.lang.String title;
   public final java.lang.String title;
+  public final java.lang.String title;
   public final java.util.Map<java.lang.String, java.lang.Object> extraData;
+  public final java.util.Map<java.lang.String, java.lang.Object> options;
   public final java.util.Map<java.lang.String, java.lang.Object> options;
   public float getDisplayDensity();
   public int gender;
@@ -309,6 +327,9 @@
   public static final java.lang.String EXTRA_GAME_ID;
   public static final java.lang.String FLAVOR;
   public static final java.lang.String LIBRARY_PACKAGE_NAME;
+  public static final java.lang.String MENU_ADD_TO_FAVORITES;
+  public static final java.lang.String MENU_SHARE_APP_MESSAGE;
+  public static final java.lang.String MENU_SHARE_TIMELINE;
   public static final java.lang.String SDK_VERSION;
   public static final java.lang.String SKIP_CARD_CLOSED;
   public static final java.lang.String SKIP_CARD_PAID;
@@ -416,12 +437,14 @@ public final class com.migo.runtime.SessionState extends java.lang.Enum<com.migo
 public final class com.migo.runtime.callback.AuthHandler$UserInfo {
 public final class com.migo.runtime.callback.AuthHandler$UserInfoResult {
 public final class com.migo.runtime.callback.EcosystemHandler$Request {
+public final class com.migo.runtime.callback.MenuShareContent {
 public final class com.migo.runtime.callback.NavigationHandler$CustomerServiceRequest {
 public final class com.migo.runtime.callback.NavigationHandler$NavigateRequest {
 public final class com.migo.runtime.callback.PaymentHandler$GameItemPaymentRequest {
 public final class com.migo.runtime.callback.PaymentHandler$PaymentRequest {
 public final class com.migo.runtime.callback.ShareHandler$FriendShareRequest {
 public final class com.migo.runtime.callback.ShareHandler$ImageShareRequest {
+public final class com.migo.runtime.callback.ShareHandler$ShareMenu {
 public final class com.migo.runtime.callback.ShareHandler$ShareRequest {
 public final class com.migo.runtime.callback.SubpackageHandler$SubpackageRequest {
 public interface com.migo.runtime.GameSession$MessageHandler {
@@ -440,6 +463,7 @@ public interface com.migo.runtime.callback.EcosystemReply {
 public interface com.migo.runtime.callback.EcosystemSink {
 public interface com.migo.runtime.callback.GameLogHandler {
 public interface com.migo.runtime.callback.GameSessionListener {
+public interface com.migo.runtime.callback.MenuShareCallback {
 public interface com.migo.runtime.callback.NavigationHandler {
 public interface com.migo.runtime.callback.NavigationSink {
 public interface com.migo.runtime.callback.PaymentHandler {
@@ -452,6 +476,9 @@ public interface com.migo.runtime.callback.ShareHandler {
 public interface com.migo.runtime.callback.ShareSink {
 public interface com.migo.runtime.callback.SubpackageHandler {
 public interface com.migo.runtime.callback.SubpackageHandler$DownloadCallback {
+}
+}
+}
 }
 }
 }

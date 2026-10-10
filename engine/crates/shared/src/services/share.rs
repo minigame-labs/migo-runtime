@@ -42,4 +42,19 @@ pub trait ShareService: Send + Sync {
             "showShareImageMenu:fail not supported",
         ))
     }
+
+    /// The share menu's whole state after content changed it, a command:
+    /// `{"menus": ["shareAppMessage", "shareTimeline"] (those shown),
+    /// "withShareTicket", ...the updateShareMenu fields content set}`.
+    fn set_share_menu(&self, _json: &str) -> Result<(), ServiceError> {
+        Err(ServiceError::not_supported("share menu: not supported"))
+    }
+
+    /// Content's answer to the share the player picked from the host's menu,
+    /// a command: `{"replyId", "menu", "content"}` -- `content` null when
+    /// nothing in the game answered, its images real paths resolved through
+    /// the sandbox or http(s) URLs.
+    fn menu_share_reply(&self, _json: &str) -> Result<(), ServiceError> {
+        Err(ServiceError::not_supported("share menu: not supported"))
+    }
 }

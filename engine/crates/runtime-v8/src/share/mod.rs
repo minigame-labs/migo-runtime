@@ -22,7 +22,9 @@ use shared::op_state::HostOpState;
 use shared::services::ShareService;
 use shared::services::host_files::Step;
 
-use crate::file::host_paths::{Remote, export_paths};
+use deno_core::serde_json::{self, Value};
+
+use crate::file::host_paths::{Remote, export_paths, export_paths_for_session};
 
 /// `shareAppMessage`'s image, which may also be a network image.
 const SHARE_APP_MESSAGE_FILES: &[&[Step]] = &[&[Step::Key("imageUrl")]];
@@ -30,6 +32,11 @@ const SHARE_APP_MESSAGE_FILES: &[&[Step]] = &[&[Step::Key("imageUrl")]];
 const SHARE_MESSAGE_TO_FRIEND_FILES: &[&[Step]] = &[&[Step::Key("imageUrl")]];
 /// `showShareImageMenu`'s image, a local file.
 const SHOW_SHARE_IMAGE_MENU_FILES: &[&[Step]] = &[&[Step::Key("path")]];
+/// The images a menu share's content may name, network images included.
+const MENU_SHARE_FILES: [&[Step]; 2] = [
+    &[Step::Key("content"), Step::Key("imageUrl")],
+    &[Step::Key("content"), Step::Key("imagePreviewUrl")],
+];
 
 fn share_service(
     state: &Rc<RefCell<OpState>>,
@@ -98,6 +105,49 @@ pub async fn op_show_share_image_menu(
         .map_err(JsErrorBox::generic)
 }
 
+/// Tell the host's menu what it offers now.
+#[op2(fast)]
+pub fn op_share_set_menu(state: &mut OpState, #[string] json: &str) -> Result<(), JsErrorBox> {
+    state
+        .borrow::<HostOpState>()
+        .device_services
+        .as_ref()
+        .and_then(|services| services.share())
+        .ok_or_else(|| JsErrorBox::generic("share menu: not supported"))?
+        .set_share_menu(json)
+        .map_err(JsErrorBox::generic)
+}
+
+/// Answer the share the player picked from the host's menu. No result follows
+/// a reply, so what it copies out of the package is held for the session; an
+/// image that is not one of content's files is dropped, and the host shares
+/// with its own default.
+#[op2]
+pub async fn op_share_menu_reply(
+    state: Rc<RefCell<OpState>>,
+    #[string] reply_json: String,
+) -> Result<(), JsErrorBox> {
+    let service = share_service(&state, "share menu: not supported")?;
+    let mut reply: Value = serde_json::from_str(&reply_json)
+        .map_err(|e| JsErrorBox::generic(format!("malformed reply: {e}")))?;
+    for field in MENU_SHARE_FILES {
+        if let Err(error) =
+            export_paths_for_session(&state, &mut reply, &[field], Remote::Allowed).await
+        {
+            tracing::warn!("share menu image dropped: {error}");
+            let Some((Step::Key(name), _)) = field.split_last() else {
+                continue;
+            };
+            if let Some(content) = reply.get_mut("content").and_then(Value::as_object_mut) {
+                content.remove(*name);
+            }
+        }
+    }
+    service
+        .menu_share_reply(&reply.to_string())
+        .map_err(JsErrorBox::generic)
+}
+
 deno_core::extension!(
     host_v8_share,
     deps = [host_v8_base],
@@ -105,6 +155,8 @@ deno_core::extension!(
         op_share_app_message,
         op_share_message_to_friend,
         op_show_share_image_menu,
+        op_share_set_menu,
+        op_share_menu_reply,
     ],
     esm_entry_point = "ext:host_v8_share/99_global_scope.js",
     esm = [
