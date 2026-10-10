@@ -2,7 +2,7 @@
 title: GameSession
 sidebar:
   order: 3
-description: GameSession lifecycle — startGame/pause/resume/close, the three Surface callbacks, touch forwarding, 10 set*Handler setters plus setListener (11 registration points total), and state broadcasts.
+description: GameSession lifecycle — startGame/pause/resume/close, the three Surface callbacks, touch forwarding, 11 set*Handler setters plus setListener (12 registration points total), and state broadcasts.
 audience: host-integrator
 platforms:
   - android
@@ -74,7 +74,7 @@ session.setMessageHandler((type, payload) -> { /* JSON String, may be null */ })
 | `setDebugEnabled(boolean)` | Toggles DebugOverlay at runtime |
 | `getPaths()` | Provides `GamePaths.getCodeDir()` and others; the location for `game.js` |
 
-## Handler setters (10 domains + Listener)
+## Handler setters (11 domains + Listener)
 
 Install these before opening the package; see the detailed contract in [Host capabilities overview](/docs/en/capabilities/overview/):
 
@@ -84,7 +84,10 @@ session.setPermissionHandler(...);   setAdHandler(...);
 session.setSettingHandler(...);      setShareHandler(...);
 session.setNavigationHandler(...);   setPaymentHandler(...);
 session.setSubpackageHandler(...);   setGameLogHandler(...);
+session.setEcosystemHandler(...);
 session.setListener(GameSessionListener);   // loading-level hooks
 ```
 
 Not setting a handler means the fallback in the overview table applies. After installing one, do not swap it mid-session — in-flight requests already hold the sink for the old handler.
+
+`EcosystemHandler` is the host's own ecosystem (friends and groups, cloud storage, live channels, subscription messages, privacy agreements, ...): requests arrive by content API name at one `call(request, sink)`, the names being the closed set in the contract's `ecosystem.names.calls`. Two things go the other way. `postEcosystemEvent(name, data[, reply])` posts events such as `onVoIPChatStateChanged`; with an `EcosystemReply` (`onCopyUrl` / `onHandoff` / `onNeedPrivacyAuthorization`) content's answers come back, the last with `done=true`, and nothing listening or a runtime restart still ends it with `null`. `setEcosystemValue(name, value)` reports what `getExtConfigSync`, `isChatTool` and the other synchronous getters return; `null` withdraws it.

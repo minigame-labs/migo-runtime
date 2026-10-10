@@ -35,15 +35,8 @@ function getAccountInfoSync() {
     };
 }
 
-function checkIsAddedToMyMiniProgram(options) {
-    return wrapAsync('checkIsAddedToMyMiniProgram', function () {
-        return { added: false };
-    }, options);
-}
-
 export {
     getAppBaseInfo,
     getAccountInfoSync,
-    checkIsAddedToMyMiniProgram,
     _internalSetAppId,
 };

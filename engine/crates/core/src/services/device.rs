@@ -5,10 +5,10 @@
 pub use shared::services::{
     AccelerometerService, AdService, AudioPlatformService, AuthService, BatteryService,
     BluetoothService, CameraService, ClipboardService, CodecService, CommerceServices,
-    CompassService, ConnectivityServices, DeviceMotionService, DeviceServices, FileService,
-    GameLogService, GyroscopeService, ImageApiService, InteractionService, KeyboardService,
-    LocationService, MediaServices, NavigateService, NetworkService, PaymentService,
-    PermissionService, RecorderService, ScanCodeService, Scope, ScopeState, ScreenService,
-    SensorServices, ServiceError, ServiceErrorCode, ShareService, SubpackageService,
+    CompassService, ConnectivityServices, DeviceMotionService, DeviceServices, EcosystemService,
+    FileService, GameLogService, GyroscopeService, ImageApiService, InteractionService,
+    KeyboardService, LocationService, MediaServices, NavigateService, NetworkService,
+    PaymentService, PermissionService, RecorderService, ScanCodeService, Scope, ScopeState,
+    ScreenService, SensorServices, ServiceError, ServiceErrorCode, ShareService, SubpackageService,
     SystemInfoService, SystemUtilServices, VibrationService, VideoService, WindowService,
 };

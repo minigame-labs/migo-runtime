@@ -4,10 +4,16 @@
 //! device info, system settings, bluetooth/authorization settings) using
 //! trait-based services injected via `HostOpState.device_services`.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use deno_core::{Extension, OpState, op2};
 use deno_error::JsErrorBox;
 use shared::op_state::HostOpState;
+use shared::services::host_files::Step;
 use shared::services::{Scope, ScopeState};
+
+use crate::file::host_paths::{Remote, export_paths};
 
 // ==================== Bluetooth Settings ====================
 
@@ -279,6 +285,80 @@ pub fn op_get_ble_mtu(state: &mut OpState, #[string] request_json: &str) -> Resu
     bluetooth(state, "getBLEMTU:fail not supported")?
         .get_ble_mtu(request_json)
         .map_err(JsErrorBox::generic)
+}
+
+// ==================== Ecosystem ====================
+//
+// The host's ecosystem features, routed by content API name (the closed list in
+// `20_ecosystem.js`, which the host-service contract names).
+
+fn ecosystem(state: &OpState) -> Option<std::sync::Arc<dyn shared::services::EcosystemService>> {
+    state
+        .borrow::<HostOpState>()
+        .device_services
+        .as_ref()
+        .and_then(|services| services.ecosystem())
+}
+
+/// Whether the host offers ecosystem features at all: the few APIs with a true
+/// answer for a host that has none -- no privacy agreement to accept, not in a
+/// chat tool -- give it only then.
+#[op2(fast)]
+pub fn op_ecosystem_available(state: &mut OpState) -> bool {
+    ecosystem(state).is_some_and(|service| service.available())
+}
+
+/// The ecosystem requests that name content's files, and where. Which fields
+/// are files is the engine's to know, not content's to declare: each is resolved
+/// through the sandbox before the request leaves (`crate::file::host_paths`).
+const ECOSYSTEM_FILES: &[(&str, &[&[Step]])] = &[
+    (
+        "shareImageToGroup",
+        &[&[Step::Key("options"), Step::Key("imagePath")]],
+    ),
+    (
+        "shareEmojiToGroup",
+        &[&[Step::Key("options"), Step::Key("imagePath")]],
+    ),
+    (
+        "shareVideoToGroup",
+        &[
+            &[Step::Key("options"), Step::Key("videoPath")],
+            &[Step::Key("options"), Step::Key("thumbPath")],
+        ],
+    ),
+];
+
+/// `{"requestId", "api", "options"}` for the API `api` names, answered through
+/// `_internalOnEcosystemResult`. Eager: a request that names no package entry
+/// leaves in the call's own tick, and only one that names files is parsed here.
+#[op2]
+pub async fn op_ecosystem_call(
+    state: Rc<RefCell<OpState>>,
+    #[string] api: String,
+    #[string] request_json: String,
+) -> Result<(), JsErrorBox> {
+    let service = ecosystem(&state.borrow()).ok_or_else(|| JsErrorBox::generic("not supported"))?;
+    let request = match ECOSYSTEM_FILES.iter().find(|(name, _)| *name == api) {
+        Some((_, fields)) => export_paths(&state, &request_json, fields, Remote::Refused).await?,
+        None => request_json,
+    };
+    service.call(&request).map_err(JsErrorBox::generic)
+}
+
+#[op2(fast)]
+pub fn op_ecosystem_reply(state: &mut OpState, #[string] json: &str) -> Result<(), JsErrorBox> {
+    ecosystem(state)
+        .ok_or_else(|| JsErrorBox::generic("not supported"))?
+        .reply(json)
+        .map_err(JsErrorBox::generic)
+}
+
+/// The host's value for a synchronous getter, or `null`.
+#[op2]
+#[string]
+pub fn op_ecosystem_value(state: &mut OpState, #[string] name: &str) -> Option<String> {
+    ecosystem(state)?.value(name)
 }
 
 // ==================== Open Setting (Mode C) ====================
@@ -619,6 +699,10 @@ deno_core::extension!(
         op_get_app_authorization_setting,
         op_game_log_report,
         op_get_auth_setting,
+        op_ecosystem_available,
+        op_ecosystem_call,
+        op_ecosystem_reply,
+        op_ecosystem_value,
         op_authorize,
         op_open_setting,
         op_navigate_to_mini_program,
@@ -646,6 +730,7 @@ deno_core::extension!(
         "17_analytics.js",
         "18_crypto.js",
         "19_log_manager.js",
+        "20_ecosystem.js",
         "99_global_scope.js",
     ]
 );

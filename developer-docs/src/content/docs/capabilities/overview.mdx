@@ -74,7 +74,7 @@ import { CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 ## 4. Android 端 handler 合同:宿主在 Java 层接单
 
-GameSession 上 10 个 `set*Handler(...)` 外加 `setListener(GameSessionListener)` 共 11 个注册点,都是宿主侧能力,不接就走运行时级默认降级 —— 每个接口都自带「不接时内容看到什么」的文档契约:
+GameSession 上 11 个 `set*Handler(...)` 外加 `setListener(GameSessionListener)` 共 12 个注册点,都是宿主侧能力,不接就走运行时级默认降级 —— 每个接口都自带「不接时内容看到什么」的文档契约:
 
 | Handler | 内容的 migo.* 调用 | 未注册时的答案 |
 | --- | --- | --- |
@@ -88,6 +88,7 @@ GameSession 上 10 个 `set*Handler(...)` 外加 `setListener(GameSessionListene
 | PaymentHandler | `requestMidasPayment*` | `isMidasPaymentSupported=false`,任何请求 `-2 not supported` |
 | SubpackageHandler | `loadSubpackage / preDownloadSubpackage` | 下载失败回执;`loadSubpackage()` 退回本地已下载文件执行 |
 | GameLogHandler | `migo 上报的调试/统计日志` | 写到 Android logcat |
+| EcosystemHandler | 宿主生态 API(群与好友、云存储、视频号、订阅消息、隐私协议等,契约 `ecosystem.names`) | 有真答案的给真答案(`getPrivacySetting` 无需授权等),其余 `-2 <api>:fail not supported` |
 | GameSessionListener | 会话状态广播 | 无广播(Listener 本身不传,所有回调 no-op) |
 
 两类「假的降级」被特意拒绝:
@@ -122,6 +123,7 @@ GameSession 上 10 个 `set*Handler(...)` 外加 `setListener(GameSessionListene
 | `MIGO_HOST_SERVICE_SCREEN` | `getScreenBrightness` / `setDeviceOrientation` / `onUserCaptureScreen` / `getScreenRecordingState` / `setVisualEffectOnCapture` 等 | not supported |
 | `MIGO_HOST_SERVICE_BLUETOOTH` | 蓝牙 / BLE / iBeacon 全部 API | not supported |
 | `MIGO_HOST_SERVICE_WINDOW` | `setWindowSize` / `setCursor` / `requestPointerLock` / `onWindowStateChange` 等（桌面） | `setCursor` 返回 `false`，指针锁定不生效，`setWindowSize` not supported |
+| `MIGO_HOST_SERVICE_ECOSYSTEM` | 宿主自己的生态：好友与群、开放数据域云存储、视频号、音视频通话、接力、订阅消息、隐私协议等，按 API 名经一个 `CALL` 到达（清单见契约 `ecosystem.names`）；`onCopyUrl` / `onNeedPrivacyAuthorization` 等事件由宿主投递，内容的答复经 `REPLY` 回来；`getExtConfigSync` / `isChatTool` 等同步读宿主用 `migo_session_set_ecosystem_value` 报告的值 | 只有真答案的给真答案（`getPrivacySetting` 无需授权、`getExtConfig` 为空、`checkIsAddedToMyMiniProgram` 未添加），其余 not supported |
 | `MIGO_HOST_SERVICE_IMAGE` | `chooseImage` / `chooseMedia` / `chooseMessageFile` / `compressImage` / `previewImage` / `previewMedia` / `saveImageToPhotosAlbum` | not supported |
 
 宿主只给成功字段或失败原因,引擎按每个 API 的约定把错误码放进 `errno` / `errCode`,`errMsg` 由内容侧按它实际调用的

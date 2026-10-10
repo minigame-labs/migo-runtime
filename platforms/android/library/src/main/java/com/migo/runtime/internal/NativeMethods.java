@@ -1268,6 +1268,30 @@ public final class NativeMethods {
         }
     }
 
+    /**
+     * Settle an ecosystem request.
+     *
+     * @param sessionId  The session ID
+     * @param resultJson the API's result, or a {@link CallbackCorrelation#failure} document
+     */
+    public static void onEcosystemResult(int sessionId, String resultJson) {
+        if (sessionId >= 0 && resultJson != null) {
+            NativeBridge.onEcosystemResult(sessionId, resultJson);
+        }
+    }
+
+    /**
+     * Post an ecosystem event to content.
+     *
+     * @param sessionId The session ID
+     * @param eventJson {@code {"name", "data", "replyId"?}}
+     */
+    public static void onEcosystemEvent(int sessionId, String eventJson) {
+        if (sessionId >= 0 && eventJson != null) {
+            NativeBridge.onEcosystemEvent(sessionId, eventJson);
+        }
+    }
+
     // ==================== Video Callbacks ====================
 
     /**

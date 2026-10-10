@@ -5,10 +5,10 @@ use std::sync::Arc;
 use crate::protocol::error::ServiceError;
 
 use super::{
-    AdService, AuthService, CameraService, ClipboardService, CodecService, FileService,
-    GameLogService, ImageApiService, InteractionService, LocationService, NavigateService,
-    NetworkService, PaymentService, PermissionService, ScanCodeService, ShareService,
-    SubpackageService, SystemInfoService, VideoService, WindowService,
+    AdService, AuthService, CameraService, ClipboardService, CodecService, EcosystemService,
+    FileService, GameLogService, ImageApiService, InteractionService, LocationService,
+    NavigateService, NetworkService, PaymentService, PermissionService, ScanCodeService,
+    ShareService, SubpackageService, SystemInfoService, VideoService, WindowService,
 };
 
 // ==================== Battery ====================
@@ -660,6 +660,10 @@ pub trait SystemUtilServices: Send + Sync {
     /// The desktop window, where the host has one content may size, point at
     /// and lock the pointer in.
     fn window(&self) -> Option<Arc<dyn WindowService>> {
+        None
+    }
+    /// The host's ecosystem features, routed by content API name.
+    fn ecosystem(&self) -> Option<Arc<dyn EcosystemService>> {
         None
     }
 }

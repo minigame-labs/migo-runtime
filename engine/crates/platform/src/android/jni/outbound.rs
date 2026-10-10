@@ -1568,6 +1568,24 @@ jni_void_json!(open_setting, "openSetting");
 
 jni_void_json!(share_app_message, "shareAppMessage");
 
+// ==================== Ecosystem ====================
+
+/// Whether the session's host installed an ecosystem handler.
+pub fn ecosystem_available(host_id: i32) -> Result<bool, String> {
+    call_static_method(
+        "ecosystemAvailable",
+        ReturnType::Primitive(Primitive::Boolean),
+        |_env, val| Ok(val.z().unwrap_or(false)),
+        &[jvalue { i: host_id }],
+    )
+}
+jni_void_json!(ecosystem_call, "ecosystemCall");
+jni_void_json!(ecosystem_reply, "ecosystemReply");
+/// The JSON the host reported for the getter `name`, empty when none.
+pub fn ecosystem_value(host_id: i32, name: &str) -> Result<String, String> {
+    call_json_method("ecosystemValue", host_id, name)
+}
+
 // ==================== Navigate ====================
 
 jni_void_json!(navigate_to_mini_program, "navigateToMiniProgram");

@@ -748,6 +748,122 @@
           "hook": "_internalOnPointerLockEvent"
         }
       }
+    },
+    "ecosystem": {
+      "id": 17,
+      "methods": {
+        "call": {
+          "id": 0,
+          "kind": "call",
+          "op": "op_ecosystem_call",
+          "hook": "_internalOnEcosystemResult",
+          "error_code_field": "errCode"
+        },
+        "reply": {
+          "id": 1,
+          "kind": "command",
+          "op": "op_ecosystem_reply"
+        }
+      },
+      "events": {
+        "event": {
+          "id": 0,
+          "hook": "_internalOnEcosystemEvent"
+        }
+      },
+      "names": {
+        "declared_in": "engine/crates/runtime-v8/src/system/20_ecosystem.js",
+        "calls": [
+          "addCard",
+          "authPrivateMessage",
+          "checkHandoffEnabled",
+          "checkIsAddedToMyMiniProgram",
+          "checkIsSupportFacialRecognition",
+          "enableOfflineModeDebug",
+          "enterChatToolMode",
+          "exitChatTool",
+          "exitVoIPChat",
+          "getBackgroundFetchData",
+          "getBackgroundFetchToken",
+          "getChannelsLiveInfo",
+          "getChannelsLiveNoticeInfo",
+          "getChatToolInfo",
+          "getExtConfig",
+          "getFriendCloudStorage",
+          "getFriendSendGiftStatus",
+          "getGameClubData",
+          "getGameExptInfo",
+          "getGroupCloudStorage",
+          "getGroupEnterInfo",
+          "getGroupInfo",
+          "getGroupMembersInfo",
+          "getLatestUserKey",
+          "getPotentialFriendList",
+          "getPrivacySetting",
+          "getRelationFriendList",
+          "getShareInfo",
+          "getUserCloudStorage",
+          "getUserCloudStorageKeys",
+          "getUserInteractiveStorage",
+          "getWeRunData",
+          "joinVoIPChat",
+          "modifyFriendInteractiveStorage",
+          "notifyGroupMembers",
+          "openBusinessView",
+          "openCard",
+          "openChannelsActivity",
+          "openChannelsEvent",
+          "openChannelsLive",
+          "openChannelsUserProfile",
+          "openChatTool",
+          "openCustomerServiceChat",
+          "openPhotoTopicView",
+          "openPrivacyContract",
+          "removeUserCloudStorage",
+          "reportUserBehaviorBranchAnalytics",
+          "requestFacialRecognition",
+          "requestFacialVerify",
+          "requestMidasFriendPayment",
+          "requestSubscribeMessage",
+          "requestSubscribeSystemMessage",
+          "requirePrivacyAuthorize",
+          "reserveChannelsLive",
+          "selectGroupMembers",
+          "sendGiftToFriend",
+          "setBackgroundFetchToken",
+          "setHandoffQuery",
+          "setMenuStyle",
+          "setStatusBarStyle",
+          "setUserCloudStorage",
+          "shareAppMessageToGroup",
+          "shareEmojiToGroup",
+          "shareImageToGroup",
+          "shareTextToGroup",
+          "shareVideoToGroup",
+          "startHandoff",
+          "updateHostApp",
+          "updateVoIPChatMuteConfig"
+        ],
+        "events": [
+          "onBackgroundFetchData",
+          "onCopyUrl",
+          "onHandoff",
+          "onInteractiveStorageModified",
+          "onNeedPrivacyAuthorization",
+          "onOfficialComponentsInfoChange",
+          "onOfflineModeStateChange",
+          "onVoIPChatInterrupted",
+          "onVoIPChatMembersChanged",
+          "onVoIPChatSpeakersChanged",
+          "onVoIPChatStateChanged"
+        ],
+        "values": [
+          "getExptInfoSync",
+          "getExtConfigSync",
+          "getOfficialComponentsInfo",
+          "isChatTool"
+        ]
+      }
     }
   }
 }

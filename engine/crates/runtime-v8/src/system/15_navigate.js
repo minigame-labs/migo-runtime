@@ -55,18 +55,9 @@ function openCustomerServiceConversation(options) {
     }, options);
 }
 
-// ---- openBusinessView (Mode A stub) ----------------------------------------
-
-function openBusinessView(options) {
-    return wrapAsync('openBusinessView', function () {
-        throw new Error('not supported');
-    }, options);
-}
-
 export {
     navigateToMiniProgram,
     navigateBackMiniProgram,
     _internalOnNavigateToMiniProgramResult,
     openCustomerServiceConversation,
-    openBusinessView,
 };

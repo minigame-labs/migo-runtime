@@ -5,7 +5,7 @@
 // can be shown; falls back to returning current state if no host op available.
 
 import { op_open_setting, op_get_auth_setting, op_authorize } from "ext:core/ops";
-import { wrapAsync, createDeferredApi, createListenerGroup, isCallbackStyle } from "ext:host_v8_base/02_async.js";
+import { wrapAsync, createDeferredApi, isCallbackStyle } from "ext:host_v8_base/02_async.js";
 
 // ---- authorisation state ---------------------------------------------------
 //
@@ -103,88 +103,8 @@ function _internalOnOpenSettingResult(resultJson) {
 // answer content can write is not a permission answer.
 function _internalUpdateAuthSetting(_scope, _authorized) {}
 
-// ---- Privacy APIs --------------------------------------------------------
-// @stub getPrivacySetting returns hardcoded { needAuthorization: false }.
-// @stub openPrivacyContract is a no-op.
-// @stub onNeedPrivacyAuthorization listener infra is ready but host-side
-//       dispatch (HostCommand or EvalScript) is not yet wired.
-
-function getPrivacySetting(options) {
-    return wrapAsync('getPrivacySetting', function () {
-        return { needAuthorization: false, privacyContractName: '' };
-    }, options);
-}
-
-function openPrivacyContract(options) {
-    return wrapAsync('openPrivacyContract', function () {}, options);
-}
-
-// ---- onNeedPrivacyAuthorization / offNeedPrivacyAuthorization (Mode D) ---
-
-var _privacyAuthListeners = createListenerGroup('onNeedPrivacyAuthorization');
-
-function onNeedPrivacyAuthorization(listener) {
-    _privacyAuthListeners.on(listener);
-}
-
-function offNeedPrivacyAuthorization(listener) {
-    _privacyAuthListeners.off(listener);
-}
-
-function _internalTriggerNeedPrivacyAuthorization(resolve) {
-    _privacyAuthListeners.trigger({ resolve: resolve });
-}
-
-// ---- requirePrivacyAuthorize (stub - resolves immediately) -----------------
-
-function requirePrivacyAuthorize(options) {
-    return wrapAsync('requirePrivacyAuthorize', function () {
-        return {};
-    }, options);
-}
-
-// ---- requestSubscribeMessage (stub - simulates all accepted) ---------------
-
-function requestSubscribeMessage(options) {
-    return wrapAsync('requestSubscribeMessage', function () {
-        var opts = options || {};
-        var tmplIds = opts.tmplIds || [];
-        var result = {};
-        for (var i = 0; i < tmplIds.length; i++) {
-            result[tmplIds[i]] = 'accept';
-        }
-        return result;
-    }, options);
-}
-
-// ---- requestSubscribeSystemMessage ------------------------------------------
-
-function _buildAcceptMap(values) {
-    var result = {};
-    if (!Array.isArray(values)) return result;
-    for (var i = 0; i < values.length; i++) {
-        var key = values[i];
-        if (typeof key === 'string' && key.length > 0) {
-            result[key] = 'accept';
-        }
-    }
-    return result;
-}
-
-function requestSubscribeSystemMessage(options) {
-    return wrapAsync('requestSubscribeSystemMessage', function () {
-        var opts = options || {};
-        return _buildAcceptMap(opts.msgTypeList || []);
-    }, options);
-}
-
-function authPrivateMessage(options) {
-    return wrapAsync('authPrivateMessage', function () {
-        return {
-            valid: true,
-        };
-    }, options);
-}
+// The privacy, subscription and private-message APIs are the host's to answer:
+// see 20_ecosystem.js.
 
 function checkUserLocation(options) {
     return wrapAsync('checkUserLocation', function () {
@@ -246,15 +166,6 @@ export {
     _internalOnOpenSettingResult,
     _internalOnAuthorizeResult,
     _internalUpdateAuthSetting,
-    getPrivacySetting,
-    openPrivacyContract,
-    onNeedPrivacyAuthorization,
-    offNeedPrivacyAuthorization,
-    _internalTriggerNeedPrivacyAuthorization,
-    requirePrivacyAuthorize,
-    requestSubscribeMessage,
-    requestSubscribeSystemMessage,
-    authPrivateMessage,
     checkUserLocation,
     getWritePhotosAlbum,
     checkWritePhotosAlbum,

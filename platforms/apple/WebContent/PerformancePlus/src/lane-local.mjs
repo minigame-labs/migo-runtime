@@ -331,6 +331,21 @@ export function op_get_menu_button_rect() {
   return described("menuButtonRect", "getMenuButtonBoundingClientRect");
 }
 
+// ---- the host's ecosystem -------------------------------------------------------
+//
+// This profile carries no ecosystem channel, so there is no ecosystem: the
+// APIs with a true answer for a host without one give it, and the requests
+// themselves are unsupported (20_ecosystem.js).
+
+export function op_ecosystem_available() {
+  return false;
+}
+
+export function op_ecosystem_value(name) {
+  stringOf(name, "name");
+  return null;
+}
+
 // ---- counters and hints -------------------------------------------------------
 
 /**

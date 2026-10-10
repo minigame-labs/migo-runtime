@@ -54,6 +54,7 @@ typedef uint32_t MigoHostService;
 #define MIGO_HOST_SERVICE_SCREEN 14U
 #define MIGO_HOST_SERVICE_BLUETOOTH 15U
 #define MIGO_HOST_SERVICE_WINDOW 16U
+#define MIGO_HOST_SERVICE_ECOSYSTEM 17U
 
 /*
  * Ads. All six are commands addressed to the advert by the adId in their
@@ -310,6 +311,32 @@ typedef uint32_t MigoHostService;
 #define MIGO_WINDOW_EXIT_POINTER_LOCK 3U
 #define MIGO_WINDOW_EVENT_WINDOW_STATE_CHANGE 0U
 #define MIGO_WINDOW_EVENT_POINTER_LOCK_CHANGE 1U
+
+/*
+ * The host's own ecosystem: friends and groups, cloud storage, live channels,
+ * voice chat, handoff, subscriptions, privacy agreements -- features whose
+ * meaning is the host's. They cross by content API name -- a method's by its
+ * own (UserCryptoManager's "getLatestUserKey") -- and the contract
+ * (contracts/runtime/host-services.json, service "ecosystem", "names") lists
+ * every name that may arrive.
+ *
+ *   CALL {"api", "options"} -> the API's result, or a failure with the code the
+ *        API defines (MIGO_HOST_SERVICE_RESULT_FLAG_ERROR_CODE). A path among an
+ *        API's options (shareImageToGroup's imagePath, ...) is already a real path
+ *        resolved through the sandbox, readable until the call completes.
+ *   EVENT {"name", "data", "replyId"?} -- name is one of the contract's events
+ *        (onCopyUrl, onVoIPChatStateChanged, ...). An event with a replyId is
+ *        always answered by REPLY, a command {"replyId", "data", "done"}: what an
+ *        onCopyUrl or onHandoff listener returned, or each resolve() of the
+ *        onNeedPrivacyAuthorization listener; data null when no listener
+ *        answered. The last reply for a replyId has done true; drop it then.
+ *
+ * The synchronous getters (getExtConfigSync, isChatTool, ...) read the values
+ * reported through migo_session_set_ecosystem_value.
+ */
+#define MIGO_ECOSYSTEM_CALL 0U
+#define MIGO_ECOSYSTEM_REPLY 1U
+#define MIGO_ECOSYSTEM_EVENT_EVENT 0U
 
 /*
  * Content's permission scopes, in migo.getSetting()'s order. The host decides
@@ -595,6 +622,22 @@ MIGO_API MigoResult MIGO_CALL migo_session_post_sensor_sample(MigoSession *sessi
  */
 MIGO_API MigoResult MIGO_CALL migo_session_post_ble_characteristic_value(
     MigoSession *session, const MigoBleCharacteristicValue *value);
+
+/*
+ * Report the value a synchronous ecosystem getter answers with -- name is one of
+ * the contract's "values" (getExtConfigSync, isChatTool, ...), json what the API
+ * returns -- from any thread, whenever it changes. An empty json withdraws it,
+ * and the getter answers as for a host with none. Returns
+ * MIGO_ERROR_INVALID_ARGUMENT for a name that is not an API name (letters only,
+ * at most 64), json that is not JSON or larger than
+ * MIGO_HOST_SERVICE_PAYLOAD_MAX_BYTES, or when the host did not declare
+ * MIGO_HOST_SERVICE_ECOSYSTEM. May be called before a Surface is attached.
+ */
+MIGO_API MigoResult MIGO_CALL migo_session_set_ecosystem_value(MigoSession *session,
+                                                               const char *name_utf8,
+                                                               uint32_t name_length,
+                                                               const char *json_utf8,
+                                                               uint32_t json_length);
 
 MIGO_END_DECLS
 

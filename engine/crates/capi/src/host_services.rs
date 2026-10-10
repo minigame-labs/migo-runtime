@@ -42,19 +42,20 @@ use migo_capi_abi::{
         MIGO_BLUETOOTH_START_BEACON_DISCOVERY, MIGO_BLUETOOTH_START_DEVICES_DISCOVERY,
         MIGO_BLUETOOTH_STOP_BEACON_DISCOVERY, MIGO_BLUETOOTH_STOP_DEVICES_DISCOVERY,
         MIGO_BLUETOOTH_WRITE_BLE_CHARACTERISTIC_VALUE, MIGO_CLIPBOARD_GET_CLIPBOARD_DATA,
-        MIGO_CLIPBOARD_SET_CLIPBOARD_DATA, MIGO_HOST_SERVICE_AD, MIGO_HOST_SERVICE_AUTH,
-        MIGO_HOST_SERVICE_BLUETOOTH, MIGO_HOST_SERVICE_CLIPBOARD, MIGO_HOST_SERVICE_IMAGE,
-        MIGO_HOST_SERVICE_INTERACTION, MIGO_HOST_SERVICE_LOCATION, MIGO_HOST_SERVICE_MOTION,
-        MIGO_HOST_SERVICE_NAVIGATE, MIGO_HOST_SERVICE_PAYMENT, MIGO_HOST_SERVICE_PERMISSION,
-        MIGO_HOST_SERVICE_SCAN_CODE, MIGO_HOST_SERVICE_SCREEN, MIGO_HOST_SERVICE_SETTING,
-        MIGO_HOST_SERVICE_SHARE, MIGO_HOST_SERVICE_SUBPACKAGE, MIGO_HOST_SERVICE_WINDOW,
-        MIGO_IMAGE_CHOOSE_IMAGE, MIGO_IMAGE_CHOOSE_MEDIA, MIGO_IMAGE_CHOOSE_MESSAGE_FILE,
-        MIGO_IMAGE_COMPRESS_IMAGE, MIGO_IMAGE_PREVIEW_IMAGE, MIGO_IMAGE_PREVIEW_MEDIA,
-        MIGO_IMAGE_SAVE_IMAGE_TO_PHOTOS_ALBUM, MIGO_INTERACTION_HIDE_LOADING,
-        MIGO_INTERACTION_HIDE_TOAST, MIGO_INTERACTION_SHOW_ACTION_SHEET,
-        MIGO_INTERACTION_SHOW_LOADING, MIGO_INTERACTION_SHOW_MODAL, MIGO_INTERACTION_SHOW_TOAST,
-        MIGO_LOCATION_GET_FUZZY_LOCATION, MIGO_LOCATION_GET_LOCATION,
-        MIGO_MOTION_START_ACCELEROMETER, MIGO_MOTION_START_COMPASS,
+        MIGO_CLIPBOARD_SET_CLIPBOARD_DATA, MIGO_ECOSYSTEM_CALL, MIGO_ECOSYSTEM_EVENT_EVENT,
+        MIGO_ECOSYSTEM_REPLY, MIGO_HOST_SERVICE_AD, MIGO_HOST_SERVICE_AUTH,
+        MIGO_HOST_SERVICE_BLUETOOTH, MIGO_HOST_SERVICE_CLIPBOARD, MIGO_HOST_SERVICE_ECOSYSTEM,
+        MIGO_HOST_SERVICE_IMAGE, MIGO_HOST_SERVICE_INTERACTION, MIGO_HOST_SERVICE_LOCATION,
+        MIGO_HOST_SERVICE_MOTION, MIGO_HOST_SERVICE_NAVIGATE, MIGO_HOST_SERVICE_PAYMENT,
+        MIGO_HOST_SERVICE_PERMISSION, MIGO_HOST_SERVICE_SCAN_CODE, MIGO_HOST_SERVICE_SCREEN,
+        MIGO_HOST_SERVICE_SETTING, MIGO_HOST_SERVICE_SHARE, MIGO_HOST_SERVICE_SUBPACKAGE,
+        MIGO_HOST_SERVICE_WINDOW, MIGO_IMAGE_CHOOSE_IMAGE, MIGO_IMAGE_CHOOSE_MEDIA,
+        MIGO_IMAGE_CHOOSE_MESSAGE_FILE, MIGO_IMAGE_COMPRESS_IMAGE, MIGO_IMAGE_PREVIEW_IMAGE,
+        MIGO_IMAGE_PREVIEW_MEDIA, MIGO_IMAGE_SAVE_IMAGE_TO_PHOTOS_ALBUM,
+        MIGO_INTERACTION_HIDE_LOADING, MIGO_INTERACTION_HIDE_TOAST,
+        MIGO_INTERACTION_SHOW_ACTION_SHEET, MIGO_INTERACTION_SHOW_LOADING,
+        MIGO_INTERACTION_SHOW_MODAL, MIGO_INTERACTION_SHOW_TOAST, MIGO_LOCATION_GET_FUZZY_LOCATION,
+        MIGO_LOCATION_GET_LOCATION, MIGO_MOTION_START_ACCELEROMETER, MIGO_MOTION_START_COMPASS,
         MIGO_MOTION_START_DEVICE_MOTION, MIGO_MOTION_START_GYROSCOPE,
         MIGO_MOTION_STOP_ACCELEROMETER, MIGO_MOTION_STOP_COMPASS, MIGO_MOTION_STOP_DEVICE_MOTION,
         MIGO_MOTION_STOP_GYROSCOPE, MIGO_NAVIGATE_NAVIGATE_BACK_MINI_PROGRAM,
@@ -77,9 +78,10 @@ use migo_capi_abi::{
 };
 use migo_core::services::{
     AccelerometerService, AdService, AuthService, BluetoothService, ClipboardService,
-    CompassService, DeviceMotionService, GyroscopeService, ImageApiService, InteractionService,
-    LocationService, NavigateService, PaymentService, PermissionService, ScanCodeService, Scope,
-    ScopeState, ScreenService, ShareService, SubpackageService, WindowService,
+    CompassService, DeviceMotionService, EcosystemService, GyroscopeService, ImageApiService,
+    InteractionService, LocationService, NavigateService, PaymentService, PermissionService,
+    ScanCodeService, Scope, ScopeState, ScreenService, ShareService, SubpackageService,
+    WindowService,
 };
 use serde_json::{Map, Value};
 use shared::{
@@ -475,6 +477,17 @@ const SET_WINDOW_SIZE: Call = Call {
     delivery: Delivery::Verbatim,
 };
 
+const ECOSYSTEM_CALL: Call = Call {
+    service: MIGO_HOST_SERVICE_ECOSYSTEM,
+    method: MIGO_ECOSYSTEM_CALL,
+    hook: "_internalOnEcosystemResult",
+    error_code_field: Some("errCode"),
+    progress_hook: None,
+    // Names no file the host hands over, but releases what was copied out of the
+    // package for the request (shareImageToGroup's image, ...).
+    delivery: Delivery::HostFiles(&HostFiles::NONE),
+};
+
 const CALLS: &[&Call] = &[
     &REQUEST_MIDAS_PAYMENT,
     &REQUEST_MIDAS_PAYMENT_GAME_ITEM,
@@ -535,6 +548,7 @@ const CALLS: &[&Call] = &[
     &BLUETOOTH_SET_BLE_MTU,
     &BLUETOOTH_GET_BLE_MTU,
     &SET_WINDOW_SIZE,
+    &ECOSYSTEM_CALL,
 ];
 
 /// Fire-and-forget requests, as `(service, method)`. Listed so the contract test
@@ -577,6 +591,7 @@ const COMMANDS: &[(u32, u32)] = &[
     (MIGO_HOST_SERVICE_WINDOW, MIGO_WINDOW_SET_CURSOR),
     (MIGO_HOST_SERVICE_WINDOW, MIGO_WINDOW_REQUEST_POINTER_LOCK),
     (MIGO_HOST_SERVICE_WINDOW, MIGO_WINDOW_EXIT_POINTER_LOCK),
+    (MIGO_HOST_SERVICE_ECOSYSTEM, MIGO_ECOSYSTEM_REPLY),
 ];
 
 /// A service's own events, as `(service, event, hook)`.
@@ -640,6 +655,11 @@ const EVENTS: &[(u32, u32, &str)] = &[
         MIGO_HOST_SERVICE_WINDOW,
         MIGO_WINDOW_EVENT_POINTER_LOCK_CHANGE,
         "_internalOnPointerLockEvent",
+    ),
+    (
+        MIGO_HOST_SERVICE_ECOSYSTEM,
+        MIGO_ECOSYSTEM_EVENT_EVENT,
+        "_internalOnEcosystemEvent",
     ),
 ];
 
@@ -1076,6 +1096,18 @@ impl WindowService for CapiHostServices {
     }
 }
 
+impl EcosystemService for CapiHostServices {
+    fn call(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&ECOSYSTEM_CALL, request_json)
+    }
+    fn reply(&self, json: &str) -> Result<(), ServiceError> {
+        self.command(MIGO_HOST_SERVICE_ECOSYSTEM, MIGO_ECOSYSTEM_REPLY, json)
+    }
+    fn value(&self, name: &str) -> Option<String> {
+        self.reports.ecosystem_value(name)
+    }
+}
+
 impl AdService for CapiHostServices {
     fn create_ad(&self, request_json: &str) -> Result<(), ServiceError> {
         self.command(MIGO_HOST_SERVICE_AD, MIGO_AD_CREATE, request_json)
@@ -1415,6 +1447,7 @@ mod tests {
             "screen" => MIGO_HOST_SERVICE_SCREEN,
             "bluetooth" => MIGO_HOST_SERVICE_BLUETOOTH,
             "window" => MIGO_HOST_SERVICE_WINDOW,
+            "ecosystem" => MIGO_HOST_SERVICE_ECOSYSTEM,
             other => panic!("the contract names a service the ABI has no constant for: {other}"),
         }
     }

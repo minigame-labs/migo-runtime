@@ -1,5 +1,7 @@
 package com.migo.runtime.internal;
 
+import com.migo.runtime.callback.EcosystemHandler;
+import com.migo.runtime.callback.EcosystemSink;
 import com.migo.runtime.callback.NavigationHandler;
 import com.migo.runtime.callback.NavigationSink;
 import com.migo.runtime.callback.PaymentHandler;
@@ -13,6 +15,7 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -77,15 +80,17 @@ final class HostDelegation {
          *
          * @param payload fields content reads off the result, or null for none
          */
-        void succeed(Map<String, Object> payload) {
+        void succeed(Map<String, ?> payload) {
             if (!claim()) return;
             String resultJson;
             try {
                 JSONObject result = new JSONObject();
                 CallbackCorrelation.stamp(result, requestId);
                 if (payload != null) {
-                    for (Map.Entry<String, Object> field : payload.entrySet()) {
-                        result.put(field.getKey(), field.getValue());
+                    for (Map.Entry<String, ?> field : payload.entrySet()) {
+                        // An absent field and a null one read the same to content.
+                        if (field.getValue() == null) continue;
+                        result.put(field.getKey(), jsonValue(field.getValue()));
                     }
                 }
                 resultJson = result.toString();
@@ -209,6 +214,20 @@ final class HostDelegation {
         };
     }
 
+    static EcosystemSink ecosystemSink(Settlement settlement) {
+        return new EcosystemSink() {
+            @Override
+            public void succeed(Map<String, ?> result) {
+                settlement.succeed(result);
+            }
+
+            @Override
+            public void fail(int errCode, String errMsg) {
+                settlement.fail(errCode, errMsg);
+            }
+        };
+    }
+
     // ==================== Request parsing ====================
 
     /** Request options, or an empty object when the engine sent nothing readable. */
@@ -267,6 +286,52 @@ final class HostDelegation {
                 options.optString("signature", ""));
     }
 
+    /** {@code {"requestId", "api", "options"}} as the request a handler sees. */
+    static EcosystemHandler.Request ecosystemRequest(JSONObject request) {
+        return new EcosystemHandler.Request(
+                request.optString("api", ""), immutableMap(request.optJSONObject("options")));
+    }
+
+    /**
+     * A tree of plain collections -- what a host hands back -- as the
+     * {@code org.json} value it serialises as: the inverse of {@link #immutableMap}.
+     *
+     * @throws JSONException for a value no JSON can carry: a non-finite number, a
+     *         map key that is not a string, or any other type
+     */
+    static Object jsonValue(Object value) throws JSONException {
+        if (value == null) return JSONObject.NULL;
+        if (value instanceof String || value instanceof Boolean
+                || value instanceof JSONObject || value instanceof JSONArray) {
+            return value;
+        }
+        if (value instanceof Number) {
+            double number = ((Number) value).doubleValue();
+            if (Double.isNaN(number) || Double.isInfinite(number)) {
+                throw new JSONException("a number JSON cannot carry: " + value);
+            }
+            return value;
+        }
+        if (value instanceof Map) {
+            JSONObject object = new JSONObject();
+            for (Map.Entry<?, ?> entry : ((Map<?, ?>) value).entrySet()) {
+                if (!(entry.getKey() instanceof String)) {
+                    throw new JSONException("a key that is not a string: " + entry.getKey());
+                }
+                object.put((String) entry.getKey(), jsonValue(entry.getValue()));
+            }
+            return object;
+        }
+        if (value instanceof Collection) {
+            JSONArray array = new JSONArray();
+            for (Object item : (Collection<?>) value) {
+                array.put(jsonValue(item));
+            }
+            return array;
+        }
+        throw new JSONException("a value JSON cannot carry: " + value.getClass().getName());
+    }
+
     /**
      * A JSON tree as plain immutable collections.
      *
@@ -277,7 +342,7 @@ final class HostDelegation {
      * the platform's rather than the one this module compiles against. Unmodifiable because
      * a host is not the owner of what content sent.
      */
-    private static Map<String, Object> immutableMap(JSONObject source) {
+    static Map<String, Object> immutableMap(JSONObject source) {
         if (source == null || source.length() == 0) return Collections.emptyMap();
         Map<String, Object> out = new LinkedHashMap<>();
         for (java.util.Iterator<String> keys = source.keys(); keys.hasNext(); ) {

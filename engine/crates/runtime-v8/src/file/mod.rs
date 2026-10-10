@@ -12,6 +12,7 @@ use crate::file::fs::{
 };
 
 mod fs;
+pub(crate) mod host_paths;
 
 extension!(host_v8_file,
     deps = [host_v8_console, host_v8_base, host_v8_io_state],

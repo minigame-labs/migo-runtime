@@ -18,6 +18,7 @@ import * as navigateApi from 'ext:host_v8_system/15_navigate.js';
 import * as analyticsApi from 'ext:host_v8_system/17_analytics.js';
 import * as cryptoApi from 'ext:host_v8_system/18_crypto.js';
 import * as logManagerApi from 'ext:host_v8_system/19_log_manager.js';
+import * as ecosystem from 'ext:host_v8_system/20_ecosystem.js';
 
 import { primordials, core } from "ext:core/mod.js";
 const { ObjectDefineProperties } = primordials;
@@ -112,8 +113,6 @@ ObjectDefineProperties(globalThis, {
     _internalOnOpenSettingResult: core.propNonEnumerable(settingApi._internalOnOpenSettingResult),
     _internalOnAuthorizeResult: core.propNonEnumerable(settingApi._internalOnAuthorizeResult),
     _internalUpdateAuthSetting: core.propNonEnumerable(settingApi._internalUpdateAuthSetting),
-    requestSubscribeSystemMessage: core.propNonEnumerable(settingApi.requestSubscribeSystemMessage),
-    authPrivateMessage: core.propNonEnumerable(settingApi.authPrivateMessage),
     checkUserLocation: core.propNonEnumerable(settingApi.checkUserLocation),
     getWritePhotosAlbum: core.propNonEnumerable(settingApi.getWritePhotosAlbum),
     checkWritePhotosAlbum: core.propNonEnumerable(settingApi.checkWritePhotosAlbum),
@@ -123,7 +122,6 @@ ObjectDefineProperties(globalThis, {
     navigateBackMiniProgram: core.propNonEnumerable(navigateApi.navigateBackMiniProgram),
     _internalOnNavigateToMiniProgramResult: core.propNonEnumerable(navigateApi._internalOnNavigateToMiniProgramResult),
     openCustomerServiceConversation: core.propNonEnumerable(navigateApi.openCustomerServiceConversation),
-    openBusinessView: core.propNonEnumerable(navigateApi.openBusinessView),
 
     // Login
     login: core.propNonEnumerable(loginApi.login),
@@ -151,7 +149,6 @@ ObjectDefineProperties(globalThis, {
     // App Info
     getAppBaseInfo: core.propNonEnumerable(appInfo.getAppBaseInfo),
     getAccountInfoSync: core.propNonEnumerable(appInfo.getAccountInfoSync),
-    checkIsAddedToMyMiniProgram: core.propNonEnumerable(appInfo.checkIsAddedToMyMiniProgram),
     _internalSetAppId: core.propNonEnumerable(appInfo._internalSetAppId),
 
     // Authorize Setting
@@ -168,12 +165,6 @@ ObjectDefineProperties(globalThis, {
     postMessage: core.propNonEnumerable(openDataContext.postMessage),
     getOpenDataContext: core.propNonEnumerable(openDataContext.getOpenDataContext),
     getSharedCanvas: core.propNonEnumerable(openDataContext.getSharedCanvas),
-    getFriendCloudStorage: core.propNonEnumerable(openDataContext.getFriendCloudStorage),
-    setUserCloudStorage: core.propNonEnumerable(openDataContext.setUserCloudStorage),
-    removeUserCloudStorage: core.propNonEnumerable(openDataContext.removeUserCloudStorage),
-    modifyFriendInteractiveStorage: core.propNonEnumerable(openDataContext.modifyFriendInteractiveStorage),
-    getPotentialFriendList: core.propNonEnumerable(openDataContext.getPotentialFriendList),
-    getGameClubData: core.propNonEnumerable(openDataContext.getGameClubData),
 
     // Window Resize
     //
@@ -187,17 +178,6 @@ ObjectDefineProperties(globalThis, {
     // Game Log
     getGameLogManager: core.propNonEnumerable(gameLog.getGameLogManager),
 
-    // JSSDK Lifecycle
-
-    // Privacy
-    getPrivacySetting: core.propNonEnumerable(settingApi.getPrivacySetting),
-    openPrivacyContract: core.propNonEnumerable(settingApi.openPrivacyContract),
-    requirePrivacyAuthorize: core.propNonEnumerable(settingApi.requirePrivacyAuthorize),
-    onNeedPrivacyAuthorization: core.propNonEnumerable(settingApi.onNeedPrivacyAuthorization),
-    offNeedPrivacyAuthorization: core.propNonEnumerable(settingApi.offNeedPrivacyAuthorization),
-    _internalTriggerNeedPrivacyAuthorization: core.propNonEnumerable(settingApi._internalTriggerNeedPrivacyAuthorization),
-    requestSubscribeMessage: core.propNonEnumerable(settingApi.requestSubscribeMessage),
-
     // Analytics
     reportEvent: core.propNonEnumerable(analyticsApi.reportEvent),
     reportMonitor: core.propNonEnumerable(analyticsApi.reportMonitor),
@@ -210,4 +190,15 @@ ObjectDefineProperties(globalThis, {
     // LogManager
     getLogManager: core.propNonEnumerable(logManagerApi.getLogManager),
     getRealtimeLogManager: core.propNonEnumerable(logManagerApi.getRealtimeLogManager),
+
+    // Ecosystem: requests, events and getters the host answers (20_ecosystem.js)
+    _internalOnEcosystemResult: core.propNonEnumerable(ecosystem._internalOnEcosystemResult),
+    _internalOnEcosystemEvent: core.propNonEnumerable(ecosystem._internalOnEcosystemEvent),
 });
+
+// One property per name on the module's closed lists.
+const ecosystemProperties = {};
+for (const name of Object.keys(ecosystem.ecosystemApis)) {
+    ecosystemProperties[name] = core.propNonEnumerable(ecosystem.ecosystemApis[name]);
+}
+ObjectDefineProperties(globalThis, ecosystemProperties);

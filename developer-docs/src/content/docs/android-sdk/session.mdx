@@ -2,7 +2,7 @@
 title: GameSession
 sidebar:
   order: 3
-description: GameSession 会话生命周期:startGame/pause/resume/close、Surface 三件套、触控转发、10 个 `set*Handler` setter + `setListener`(共 11 个注册点)、状态广播。
+description: GameSession 会话生命周期:startGame/pause/resume/close、Surface 三件套、触控转发、11 个 `set*Handler` setter + `setListener`(共 12 个注册点)、状态广播。
 audience: host-integrator
 platforms:
   - android
@@ -74,7 +74,7 @@ session.setMessageHandler((type, payload) -> { /* JSON String,可能 null */ });
 | `setDebugEnabled(boolean)` | 运行时切换 DebugOverlay |
 | `getPaths()` | `GamePaths.getCodeDir()` 等;放置 game.js 的位置 |
 
-## Handler setter(10 个域 + Listener)
+## Handler setter(11 个域 + Listener)
 
 以下开包前就装;详细合同见 [宿主能力总览](/docs/capabilities/overview/):
 
@@ -84,7 +84,14 @@ session.setPermissionHandler(...);   setAdHandler(...);
 session.setSettingHandler(...);      setShareHandler(...);
 session.setNavigationHandler(...);   setPaymentHandler(...);
 session.setSubpackageHandler(...);   setGameLogHandler(...);
+session.setEcosystemHandler(...);
 session.setListener(GameSessionListener);   // loading 级钩子
 ```
 
 不设置 = 按总览表降级;装了之后不要中途换 handler — 正在进行的请求已经握着旧 handler 的 sink。
+
+`EcosystemHandler` 是宿主自己的生态(好友与群、云存储、视频号、订阅消息、隐私协议……):请求按内容 API 名到达同一个
+`call(request, sink)`,名字是契约 `ecosystem.names.calls` 的闭集。反方向两件事:`postEcosystemEvent(name, data[, reply])`
+投递 `onVoIPChatStateChanged` 一类事件,带 `EcosystemReply` 的(`onCopyUrl` / `onHandoff` / `onNeedPrivacyAuthorization`)
+收到内容的答复,最后一次 `done=true`,没人监听或运行时重启也会以 `null` 收尾;`setEcosystemValue(name, value)` 报告
+`getExtConfigSync` / `isChatTool` 等同步 getter 的返回值,`null` 撤回。
