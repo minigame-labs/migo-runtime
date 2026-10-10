@@ -7,6 +7,7 @@ const { ObjectDefineProperties } = primordials;
 
 ObjectDefineProperties(globalThis, {
     // Ad
+    createAdSkipCard: core.propNonEnumerable(adApi.createAdSkipCard),
     createBannerAd: core.propNonEnumerable(adApi.createBannerAd),
     createCustomAd: core.propNonEnumerable(adApi.createCustomAd),
     createGridAd: core.propNonEnumerable(adApi.createGridAd),

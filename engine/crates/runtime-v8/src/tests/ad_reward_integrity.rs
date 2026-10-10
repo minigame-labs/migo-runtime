@@ -652,4 +652,74 @@ mod ad_reward_integrity_tests {
         );
         assert_js(&mut rt, "globalThis.__closesB[0].isEnded === true");
     }
+
+    // ---------------------------------------------------------------
+    // The ad skip card: the host sells it, so its outcomes are the host's.
+    // ---------------------------------------------------------------
+
+    const WATCH_SKIP_CARD: &str = "\
+        globalThis.__card = createAdSkipCard(); \
+        globalThis.__seen = []; \
+        __card.onLoad(() => __seen.push('load')); \
+        __card.onShow(() => __seen.push('show')); \
+        __card.onClose((res) => __seen.push('close:' + res.result)); \
+        __card.onUse((res) => __seen.push('use:' + res.usedCount)); \
+        __card.onError((res) => __seen.push('error:' + res.errCode));";
+
+    #[tokio::test(start_paused = true)]
+    async fn the_skip_card_reports_what_the_host_saw() {
+        let (mut rt, calls) = boot_hosted();
+        exec(&mut rt, WATCH_SKIP_CARD);
+        assert_js(&mut rt, "createAdSkipCard() === globalThis.__card");
+        exec(
+            &mut rt,
+            "globalThis.__loaded = false; globalThis.__shown = false; \
+             __card.load().then(() => { __loaded = true; }); \
+             __card.show().then(() => { __shown = true; });",
+        );
+        drain_ready(&mut rt).await;
+        let create = calls.lock().unwrap()[0].clone();
+        assert!(create.starts_with("create:"), "{create}");
+        assert!(create.contains(r#""adType":"skipCard""#), "{create}");
+
+        deliver_ad_event(&mut rt, r#"{"adId":1,"event":"load"}"#);
+        deliver_ad_event(&mut rt, r#"{"adId":1,"event":"show"}"#);
+        deliver_ad_event(
+            &mut rt,
+            r#"{"adId":1,"event":"close","result":"pay_success"}"#,
+        );
+        deliver_ad_event(&mut rt, r#"{"adId":1,"event":"use","usedCount":2}"#);
+        deliver_ad_event(
+            &mut rt,
+            r#"{"adId":1,"event":"close","result":"free_pass"}"#,
+        );
+        drain_ready(&mut rt).await;
+
+        assert_js(&mut rt, "globalThis.__loaded && globalThis.__shown");
+        assert_js(
+            &mut rt,
+            "globalThis.__seen.join() === 'load,show,close:pay_success,use:2,close:close'",
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn without_a_host_the_skip_card_fails_with_the_platform_codes() {
+        let mut rt = boot_unhosted();
+        exec(&mut rt, WATCH_SKIP_CARD);
+        exec(
+            &mut rt,
+            "globalThis.__failed = []; \
+             __card.load().catch((e) => __failed.push(e.errCode + ' ' + e.errMsg)); \
+             __card.show().catch((e) => __failed.push(e.errCode + ' ' + e.errMsg));",
+        );
+        drain_ready(&mut rt).await;
+        assert_js(
+            &mut rt,
+            "globalThis.__failed.join() === '-1001 load:fail not supported,-1002 show:fail not supported'",
+        );
+        assert_js(
+            &mut rt,
+            "globalThis.__seen.join() === 'error:-1001,error:-1002'",
+        );
+    }
 }

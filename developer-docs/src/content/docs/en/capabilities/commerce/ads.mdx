@@ -33,13 +33,21 @@ Type constants use `AdHandler.TYPE_*`:
 | `custom` | Custom (native style) |
 | `grid` | Grid ad |
 | `gameBanner` / `gameIcon` / `gamePortal` | Three cross-promotion container surfaces |
+| `skipCard` | The ad skip card: content's `createAdSkipCard()`, with an empty `adUnitId` |
+
+A `skipCard` is the pass you sell that lets the player skip adverts, not an advert: `loadAd` fetches the offer, `showAd`
+opens your purchase sheet (`emitShow` once it is open), `emitSkipCardClose(adId, result)` reports what the player did
+when the sheet closes (`SKIP_CARD_CLOSED` / `SKIP_CARD_PAY_CANCELLED` / `SKIP_CARD_PAID`), and `emitUse(adId,
+usedCount)` reports a pass spent (passes spent today). It has no fallback: with no host there is nothing to buy, and
+content's `load()` / `show()` fail with the platform's -1001 / -1002. A C ABI host receives `adType: "skipCard"` too,
+its close event carries `result`, and it has a `use` event.
 
 The host does not need to implement every type — each `create*` has a default `not supported` settle (the reason this default is still active behavior is explained below).
 
 ## adId Handles and Callback Threads
 
 - The `adId` in `createAd(adId, adType, adUnitId, optionsJson)` is a **runtime-assigned handle** and remains unchanged for its entire lifetime. Every event for this ad object must be reported with the same ID;
-- Every AdHandler method is called on the **runtime's host thread**. Do not block this thread with SDK work. Callbacks to content go through `AdEventSink` (safe from any thread), whose complete API has eight methods: `emitLoad(int)` / `emitLoad(int, boolean)` (whether to fall back to a share-page-style alternative), `emitShow` (the SDK's exposure callback), `emitError`, `emitClose(adId, isEnded)`, `emitShowFailed` (= `emitError` + `emitClose(false)`), `emitResize`, and `emitHide`. There is no `emitClick` or `emitReward` — reward delivery is carried by `emitClose`'s `isEnded` value.
+- Every AdHandler method is called on the **runtime's host thread**. Do not block this thread with SDK work. Callbacks to content go through `AdEventSink` (safe from any thread), whose complete API has ten methods (two of them, `emitSkipCardClose` and `emitUse`, for `skipCard` only): `emitLoad(int)` / `emitLoad(int, boolean)` (whether to fall back to a share-page-style alternative), `emitShow` (the SDK's exposure callback), `emitError`, `emitClose(adId, isEnded)`, `emitShowFailed` (= `emitError` + `emitClose(false)`), `emitResize`, and `emitHide`. There is no `emitClick` or `emitReward` — reward delivery is carried by `emitClose`'s `isEnded` value.
 - The Promises content's `load()` / `show()` return are settled by these events, as on the common mini-game platform: `emitLoad` settles `load()`, `emitShow` settles `show()` (a full-screen ad's `emitClose` counts as shown too), and `emitError` rejects both. Banner, grid, custom and game-banner ads have no close, so they **must** `emitShow` on exposure, or content awaiting `ad.show()` waits forever.
 
 Do not report events after destruction: after `destroyAd`, every `emit*` for that `adId` is discarded — the engine's memory discipline means content has already returned the handle. `AdEventSink` sends are safe from any thread, but have no retry semantics; do not expect terminal state to queue inside the SDK.

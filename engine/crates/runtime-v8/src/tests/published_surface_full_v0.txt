@@ -117,6 +117,7 @@ closeSocket
 compressImage
 connectSocket
 console
+createAdSkipCard
 createBLEConnection
 createBannerAd
 createBufferURL
@@ -585,6 +586,7 @@ closeBluetoothAdapter
 closeSocket
 compressImage
 connectSocket
+createAdSkipCard
 createBLEConnection
 createBannerAd
 createBufferURL

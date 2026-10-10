@@ -352,6 +352,15 @@ async function run() {
   expect(close && close.isEnded === true && order.join(",") === "shown,close",
     "rewarded video", { close: close, order: order });
 
+  // The ad skip card rides the same ad channel as its own type: the host's load
+  // settles load(), its exposure show(), and its close says what the player
+  // did -- this host's close names no purchase, so nothing was bought.
+  const card = migo.createAdSkipCard();
+  await card.load();
+  const cardClosed = new Promise(function (resolve) { card.onClose(resolve); });
+  await card.show();
+  expect((await cardClosed).result === "close", "ad skip card", null);
+
   console.error("migo-host-services-probe: every host service round-tripped");
   migo.exitMiniProgram();
 }

@@ -25,6 +25,8 @@
   public abstract void emitLoad(int, boolean);
   public abstract void emitResize(int, int, int);
   public abstract void emitShow(int);
+  public abstract void emitSkipCardClose(int, java.lang.String);
+  public abstract void emitUse(int, int);
   public abstract void fail(int, java.lang.String);
   public abstract void fail(int, java.lang.String);
   public abstract void fail(int, java.lang.String);
@@ -308,6 +310,9 @@
   public static final java.lang.String FLAVOR;
   public static final java.lang.String LIBRARY_PACKAGE_NAME;
   public static final java.lang.String SDK_VERSION;
+  public static final java.lang.String SKIP_CARD_CLOSED;
+  public static final java.lang.String SKIP_CARD_PAID;
+  public static final java.lang.String SKIP_CARD_PAY_CANCELLED;
   public static final java.lang.String TYPE_BANNER;
   public static final java.lang.String TYPE_CUSTOM;
   public static final java.lang.String TYPE_GAME_BANNER;
@@ -316,6 +321,7 @@
   public static final java.lang.String TYPE_GRID;
   public static final java.lang.String TYPE_INTERSTITIAL;
   public static final java.lang.String TYPE_REWARDED_VIDEO;
+  public static final java.lang.String TYPE_SKIP_CARD;
   public static final java.lang.String VERSION;
   public static java.lang.String deviceAbi();
   public static java.lang.String getMessage(int);
