@@ -314,6 +314,13 @@ async function run() {
   expect(!subscribe.ok && subscribe.res.errCode === 20001 &&
     subscribe.res.errMsg === "requestSubscribeMessage:fail template not found",
     "requestSubscribeMessage failure", subscribe);
+  const gameServer = migo.getGameServerManager();
+  const firstFrame = new Promise(function (resolve) { gameServer.onSyncFrame(resolve); });
+  const room = await gameServer.createRoom({ maxMemberNum: 2 });
+  expect(room.errMsg === "createRoom:ok" && room.data.accessInfo === "probe-room", "createRoom", room);
+  const frame = await firstFrame;
+  expect(frame.frameId === 1 && Array.from(new Uint8Array(frame.actionList[0])).join() === "10,255",
+    "onSyncFrame", { frameId: frame.frameId, actions: frame.actionList.length });
 
   // Sharing names content's image, which the host receives as the real file; a
   // share to one friend carries setMessageToFriendQuery's query, and the game

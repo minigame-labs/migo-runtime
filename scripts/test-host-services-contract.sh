@@ -169,16 +169,24 @@ def compare(label: str, defined: dict[str, int]) -> None:
 # a name only one side knows is a request no host expects, or one content cannot
 # make.
 
+# A name is an API's, or an object member's as `Class.member`.
+NAME = r"'([A-Za-z]+(?:\.[A-Za-z]+)?)'"
+
+
 def js_names(text: str, kind: str) -> list[str]:
+    names = []
     if kind == "events":
         block = re.search(r"const ECOSYSTEM_EVENTS = \{(.*?)\};", text, re.S)
-        return re.findall(r"^\s+(on[A-Za-z]+):", block.group(1), re.M) if block else []
-    # A request is made by a function of its own or by an object's method.
-    constants = {"calls": ("ECOSYSTEM_CALLS", "ECOSYSTEM_METHODS"), "values": ("ECOSYSTEM_VALUES",)}
-    names = []
+        names += re.findall(r"^\s+(on[A-Za-z]+):", block.group(1), re.M) if block else []
+    # A request (or an event) is a function's of its own, or an object's.
+    constants = {
+        "calls": ("ECOSYSTEM_CALLS", "ECOSYSTEM_OBJECT_CALLS"),
+        "events": ("ECOSYSTEM_OBJECT_EVENTS",),
+        "values": ("ECOSYSTEM_VALUES",),
+    }
     for constant in constants[kind]:
         block = re.search(r"const " + constant + r" = \[(.*?)\];", text, re.S)
-        names += re.findall(r"'([A-Za-z]+)'", block.group(1)) if block else []
+        names += re.findall(NAME, block.group(1)) if block else []
     return names
 
 

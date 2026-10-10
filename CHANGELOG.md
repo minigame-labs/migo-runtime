@@ -8,15 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The objects of the host's ecosystem, through the same channel: `getGameServerManager` (frame sync: rooms, matching,
+  frames, state service and its twelve events), `getRankManager` (challenges; a challenge the player accepted before the
+  game listened reaches its first `onChallengeStart` listener), `getMiniReportManager`, `getScenePerformanceManager`
+  (the common info is merged into every `setData`, the scene's own fields winning) and `createStoreGift`
+  (`isSupported` reads a value the host reports; without a host `open` fails with -1005). An object's members cross as
+  `Class.member` -- `UserCryptoManager.getLatestUserKey` too -- and report as the member (`createRoom:ok`); the frame
+  service's methods return their promise whether or not content passed callbacks, and binary frame actions cross as
+  hex. Value names take the same `Class.member` form on both SDKs.
 - `shareMessageToFriend` and `showShareImageMenu` on every host: the C ABI share service gains
   `MIGO_SHARE_SHARE_MESSAGE_TO_FRIEND` and `MIGO_SHARE_SHOW_SHARE_IMAGE_MENU`, and the Android `ShareHandler` gains
   `shareMessageToFriend(FriendShareRequest, ShareSink)` and `showShareImageMenu(ImageShareRequest, ShareSink)`.
   `shareAppMessage` carries `toCurrentGroup` and `path`.
 - The host's own ecosystem, on every host: `MIGO_HOST_SERVICE_ECOSYSTEM` on the C ABI and `EcosystemHandler` on
-  Android (`GameSession.setEcosystemHandler`, `postEcosystemEvent`, `setEcosystemValue`). 69 APIs -- groups and friends,
+  Android (`GameSession.setEcosystemHandler`, `postEcosystemEvent`, `setEcosystemValue`). 68 APIs -- groups and friends,
   open-data cloud and interactive storage, gifts, live channels, voice chat, handoff, chat tools, facial verification,
-  background fetch, subscription messages, privacy agreements, `UserCryptoManager.getLatestUserKey` and the rest --
-  cross as one request keyed by the content API's name, from a closed list the host-service contract names (`ecosystem.names`) and the gate holds to the runtime.
+  background fetch, subscription messages, privacy agreements and the rest -- cross as one request keyed by the content
+  API's name, from a closed list the host-service contract names (`ecosystem.names`) and the gate holds to the runtime.
   Eleven events (`onCopyUrl`, `onHandoff`, `onNeedPrivacyAuthorization`, `onVoIPChat*`, ...) are posted by the host;
   those content answers come back through `MIGO_ECOSYSTEM_REPLY`, every one finally with `done`. `getExtConfigSync`,
   `getExptInfoSync`, `getOfficialComponentsInfo` and `isChatTool` read what the host reported through

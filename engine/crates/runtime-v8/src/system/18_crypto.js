@@ -6,11 +6,11 @@
 // (20_ecosystem.js).
 
 import { wrapAsync } from "ext:host_v8_base/02_async.js";
-import { ecosystemMethod } from "ext:host_v8_system/20_ecosystem.js";
+import { ecosystemObjectCall } from "ext:host_v8_system/20_ecosystem.js";
 
 class UserCryptoManager {
     getLatestUserKey(options) {
-        return ecosystemMethod('getLatestUserKey', options);
+        return ecosystemObjectCall('UserCryptoManager.getLatestUserKey', options);
     }
 
     getRandomValues(options) {

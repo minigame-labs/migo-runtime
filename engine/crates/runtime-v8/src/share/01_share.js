@@ -17,8 +17,9 @@ import {
     wrapAsync,
     createDeferredApi,
     createListenerGroup,
-    invokeCallback,
     isCallbackStyle,
+    withCallbacks,
+    withoutCallbacks,
 } from "ext:host_v8_base/02_async.js";
 
 // The string options content set, under their own names: an option it left out
@@ -165,11 +166,7 @@ const _shareToFriendListeners = createListenerGroup('onShareMessageToFriend');
 
 function shareMessageToFriend(options) {
     const opts = options || {};
-    const bare = Object.assign({}, opts);
-    delete bare.success;
-    delete bare.fail;
-    delete bare.complete;
-    const outcome = _shareMessageToFriendApi.invoke(bare, function (o, requestId) {
+    const outcome = _shareMessageToFriendApi.invoke(withoutCallbacks(opts), function (o, requestId) {
         if (typeof o.openId !== 'string' || o.openId.length === 0) {
             throw new Error('openId is required');
         }
@@ -184,14 +181,9 @@ function shareMessageToFriend(options) {
         _shareToFriendListeners.trigger({ success: false, errMsg: res.errMsg });
         throw res;
     });
-    if (!isCallbackStyle(opts)) return outcome;
-    outcome.then(function (res) {
-        invokeCallback('shareMessageToFriend', 'success', opts.success, res);
-        invokeCallback('shareMessageToFriend', 'complete', opts.complete, res);
-    }, function (res) {
-        invokeCallback('shareMessageToFriend', 'fail', opts.fail, res);
-        invokeCallback('shareMessageToFriend', 'complete', opts.complete, res);
-    });
+    withCallbacks('shareMessageToFriend', outcome, opts);
+    // A callback-style call returns nothing, as every other one does.
+    return isCallbackStyle(opts) ? undefined : outcome;
 }
 
 function _internalOnShareMessageToFriendResult(resultJson) {

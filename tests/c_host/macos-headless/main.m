@@ -420,6 +420,14 @@ static int handle_ecosystem_call(MigoSession *session, const MigoHostServiceCall
         complete_ok(session, call->call_id, "");
         return 1;
     }
+    if ([api isEqual:@"GameServerManager.createRoom"]) {
+        /* An object's member, by class and name; the room's first frame follows. */
+        complete_ok(session, call->call_id, "{\"data\":{\"accessInfo\":\"probe-room\",\"clientId\":1}}");
+        post_ecosystem_event(session,
+                             "{\"name\":\"GameServerManager.onSyncFrame\",\"data\":"
+                             "{\"frameId\":1,\"actionList\":[\"0aff\"],\"binary\":true}}");
+        return 1;
+    }
     if ([api isEqual:@"requestSubscribeMessage"]) {
         /* The code the API defines for a template the player has not seen. */
         complete_fail(session, call->call_id, "template not found", 1, 20001);

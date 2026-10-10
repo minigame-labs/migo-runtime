@@ -19,6 +19,7 @@ import * as analyticsApi from 'ext:host_v8_system/17_analytics.js';
 import * as cryptoApi from 'ext:host_v8_system/18_crypto.js';
 import * as logManagerApi from 'ext:host_v8_system/19_log_manager.js';
 import * as ecosystem from 'ext:host_v8_system/20_ecosystem.js';
+import * as ecosystemObjects from 'ext:host_v8_system/21_ecosystem_objects.js';
 
 import { primordials, core } from "ext:core/mod.js";
 const { ObjectDefineProperties } = primordials;
@@ -194,6 +195,13 @@ ObjectDefineProperties(globalThis, {
     // Ecosystem: requests, events and getters the host answers (20_ecosystem.js)
     _internalOnEcosystemResult: core.propNonEnumerable(ecosystem._internalOnEcosystemResult),
     _internalOnEcosystemEvent: core.propNonEnumerable(ecosystem._internalOnEcosystemEvent),
+
+    // Ecosystem objects (21_ecosystem_objects.js)
+    getGameServerManager: core.propNonEnumerable(ecosystemObjects.getGameServerManager),
+    getRankManager: core.propNonEnumerable(ecosystemObjects.getRankManager),
+    getMiniReportManager: core.propNonEnumerable(ecosystemObjects.getMiniReportManager),
+    getScenePerformanceManager: core.propNonEnumerable(ecosystemObjects.getScenePerformanceManager),
+    createStoreGift: core.propNonEnumerable(ecosystemObjects.createStoreGift),
 });
 
 // One property per name on the module's closed lists.

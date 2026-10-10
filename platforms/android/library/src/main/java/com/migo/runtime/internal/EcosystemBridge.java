@@ -44,12 +44,21 @@ final class EcosystemBridge {
     private static final ConcurrentHashMap<Integer, Map<String, String>> sValues =
             new ConcurrentHashMap<>();
 
-    /** An API name: ASCII letters, at most {@link #NAME_MAX}. */
+    /**
+     * An API's name, or an object member's as {@code Class.member}: ASCII letters
+     * with at most one dot between two of them, at most {@link #NAME_MAX} in all.
+     */
     static boolean isApiName(String name) {
         if (name == null || name.isEmpty() || name.length() > NAME_MAX) return false;
+        int dot = -1;
         for (int index = 0; index < name.length(); index++) {
             char c = name.charAt(index);
-            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))) return false;
+            if (c == '.') {
+                if (dot != -1 || index == 0 || index == name.length() - 1) return false;
+                dot = index;
+            } else if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'))) {
+                return false;
+            }
         }
         return true;
     }
