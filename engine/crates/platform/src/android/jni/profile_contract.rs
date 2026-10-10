@@ -54,6 +54,12 @@ const NATIVE_CORE: &[JniMethod] = methods![
     ("version", "()Ljava/lang/String;"),
     ("onPointerEvent", "(IIIFFD)Z"),
     ("onWheelEvent", "(IIDDDD)Z"),
+    ("onKeyEvent", "(IZLjava/lang/String;Ljava/lang/String;IZD)Z"),
+    (
+        "onGamepadConnection",
+        "(IIZLjava/lang/String;Ljava/lang/String;II)Z"
+    ),
+    ("onGamepadState", "(IIIILjava/nio/ByteBuffer;D)Z"),
     ("getMinApiLevel", "()I"),
     ("initIcuData", "(Ljava/lang/String;)Z"),
     (
@@ -476,8 +482,10 @@ mod tests {
         // (`onShareMenuEvent`, the item the player picked). A desktop-form
         // device's mouse adds +2 native, Core (`onPointerEvent`, `onWheelEvent`:
         // every profile takes input), and its window +2 native
-        // (`onPointerLockChanged`, `onWindowStateChanged`).
-        assert_eq!(native.len(), 83, "full NativeBridge surface changed");
+        // (`onPointerLockChanged`, `onWindowStateChanged`). A physical keyboard and
+        // gamepads add +3 native, Core (`onKeyEvent`, `onGamepadConnection`,
+        // `onGamepadState`).
+        assert_eq!(native.len(), 86, "full NativeBridge surface changed");
         // Runtime-generation fencing adds +2 Java (`beginRuntimeRestart`,
         // `completeRuntimeRestart`), both Core: every profile restarts.
         // Concurrent-session correctness removes -1 Java (`getCacheDirPath`,

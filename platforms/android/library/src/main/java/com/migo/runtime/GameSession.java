@@ -6,6 +6,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 import android.view.InputDevice;
+import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.Surface;
 import android.view.View;
@@ -25,6 +26,8 @@ import com.migo.runtime.callback.GameLogHandler;
 import com.migo.runtime.callback.GameSessionListener;
 import com.migo.runtime.callback.SubpackageHandler;
 import com.migo.runtime.internal.ExclusiveDeviceArbiter;
+import com.migo.runtime.internal.GamepadInput;
+import com.migo.runtime.internal.KeyMapping;
 import com.migo.runtime.internal.MouseEventHandler;
 import com.migo.runtime.internal.NativeExports;
 import com.migo.runtime.internal.NativeMethods;
@@ -108,6 +111,7 @@ public final class GameSession implements Closeable {
     private final GamePaths paths;
     private final TouchEventHandler touchHandler;
     private final MouseEventHandler mouseHandler;
+    private final GamepadInput gamepads;
     /** The view the game is shown in: the pointer's icon and capture are its. */
     private volatile View inputView;
     /**
@@ -175,6 +179,8 @@ public final class GameSession implements Closeable {
         Logger.registerSession(sessionId, config.getLogLevel());
         this.touchHandler = new TouchEventHandler(config.getDisplayDensity());
         this.mouseHandler = new MouseEventHandler(config.getDisplayDensity());
+        this.gamepads = new GamepadInput(sessionId, context);
+        gamepads.start();
         this.audioFocusManager = BuildConfig.MIGO_API_MEDIA ? new AudioFocusManager(sessionId, context) : null;
         this.vsyncScheduler = new VsyncScheduler(sessionId);
         this.mainHandler = new Handler(Looper.getMainLooper());
@@ -602,8 +608,10 @@ public final class GameSession implements Closeable {
     @Override
     public void close() {
         ThreadCheck.ensureMainThread();
-        // The view outlives the session; its listeners must not.
+        // The view outlives the session; its listeners must not, and the pads it
+        // announced leave with it.
         setInputView(null);
+        gamepads.stop();
         SessionState prev;
         boolean firstClose;
         synchronized (lock) {
@@ -762,21 +770,50 @@ public final class GameSession implements Closeable {
     public boolean dispatchGenericMotionEvent(MotionEvent event) {
         ThreadCheck.ensureMainThread();
         if (event == null || state.get() == SessionState.DESTROYED) return false;
+        if (event.isFromSource(InputDevice.SOURCE_JOYSTICK)) return gamepads.onMotion(event);
         if (!event.isFromSource(InputDevice.SOURCE_MOUSE)) return false;
         return mouseHandler.dispatch(sessionId, event, false);
     }
 
     /**
-     * The view the game is shown in, on a desktop-form device: the pointer's
-     * icon ({@code setCursor}) and its capture ({@code requestPointerLock}) are
-     * this view's, and its generic-motion and captured-pointer listeners become
-     * the session's, carrying the mouse to the game. {@link MigoGameView} and
-     * {@link MigoGameActivity} set theirs. Null clears it: the cursor cannot be
-     * set and the pointer cannot be locked.
+     * Dispatch a key event -- a physical keyboard's, or a gamepad's button -- to
+     * the game: a gamepad's buttons reach {@code getGamepads()}, a keyboard's keys
+     * {@code onKeyDown} / {@code onKeyUp} as DOM {@code key} and {@code code}.
+     * System keys (back, home, volume, media) are not the game's and are left to
+     * Android. A view given to {@link #setInputView} forwards these itself.
      * <p>
-     * A view that is not the SDK's own must tell the session when it gains or
-     * loses pointer capture: override {@code View.onPointerCaptureChange} and call
-     * {@link #onPointerCaptureChanged}.
+     * Must be called on the main thread.
+     *
+     * @param event the KeyEvent from the view or Activity
+     * @return whether the game took it
+     */
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        ThreadCheck.ensureMainThread();
+        if (event == null || state.get() == SessionState.DESTROYED) return false;
+        if (gamepads.onKey(event)) return true;
+        if (event.isSystem()) return false;
+        int action = event.getAction();
+        if (action != KeyEvent.ACTION_DOWN && action != KeyEvent.ACTION_UP) return false;
+        String code = KeyMapping.code(event.getKeyCode());
+        if (code == null) return false;
+        String key = KeyMapping.key(event.getKeyCode(), event.getUnicodeChar(event.getMetaState()));
+        return NativeMethods.onKeyEvent(sessionId, action == KeyEvent.ACTION_DOWN, key, code,
+                KeyMapping.modifiers(event.getMetaState()), event.getRepeatCount() > 0,
+                event.getEventTime());
+    }
+
+    /**
+     * The view the game is shown in: the pointer's icon ({@code setCursor}) and
+     * its capture ({@code requestPointerLock}) are this view's, and its
+     * generic-motion, key and captured-pointer listeners become the session's,
+     * carrying the mouse, a keyboard and gamepads to the game.
+     * {@link MigoGameView} and {@link MigoGameActivity} set theirs. Null clears
+     * it: the cursor cannot be set and the pointer cannot be locked.
+     * <p>
+     * A view that is not the SDK's own must be focusable and take focus, since
+     * Android gives keys and gamepad motion to the focused view, and must tell
+     * the session when it gains or loses pointer capture: override
+     * {@code View.onPointerCaptureChange} and call {@link #onPointerCaptureChanged}.
      *
      * @param view the game's view, or null
      */
@@ -786,6 +823,7 @@ public final class GameSession implements Closeable {
         if (previous != null && previous != view && sInputViewOwners.get(previous) == this) {
             sInputViewOwners.remove(previous);
             previous.setOnGenericMotionListener(null);
+            previous.setOnKeyListener(null);
             previous.setOnCapturedPointerListener(null);
             if (previous instanceof GameSurfaceView) {
                 ((GameSurfaceView) previous).setPointerCaptureListener(null);
@@ -795,11 +833,14 @@ public final class GameSession implements Closeable {
         if (view == null) return;
         sInputViewOwners.put(view, this);
         view.setOnGenericMotionListener((v, event) -> dispatchGenericMotionEvent(event));
+        view.setOnKeyListener((v, keyCode, event) -> dispatchKeyEvent(event));
         view.setOnCapturedPointerListener((v, event) ->
                 state.get() != SessionState.DESTROYED
                         && mouseHandler.dispatch(sessionId, event, true));
         if (view instanceof GameSurfaceView) {
             ((GameSurfaceView) view).setPointerCaptureListener(this::onPointerCaptureChanged);
+            // Keys and gamepad motion go to the focused view.
+            view.requestFocus();
         }
     }
 

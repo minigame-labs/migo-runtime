@@ -508,6 +508,28 @@ public final class NativeMethods {
         return sessionId >= 0 && NativeBridge.onWheelEvent(sessionId, deltaMode, dx, dy, dz, timeMs);
     }
 
+    /** One physical key press or release, as DOM {@code key} and {@code code}. */
+    public static boolean onKeyEvent(int sessionId, boolean down, String key, String code,
+                                     int modifiers, boolean repeat, double timeMs) {
+        return sessionId >= 0 && code != null && key != null
+                && NativeBridge.onKeyEvent(sessionId, down, key, code, modifiers, repeat, timeMs);
+    }
+
+    /** A gamepad taking slot {@code index}, or leaving it. */
+    public static boolean onGamepadConnection(int sessionId, int index, boolean connected,
+                                              String id, String mapping, int axisCount,
+                                              int buttonCount) {
+        return sessionId >= 0 && NativeBridge.onGamepadConnection(sessionId, index, connected,
+                id != null ? id : "", mapping != null ? mapping : "", axisCount, buttonCount);
+    }
+
+    /** One sample of the pad in slot {@code index}, laid out as GamepadPad writes it. */
+    public static boolean onGamepadState(int sessionId, int index, int axisCount, int buttonCount,
+                                         java.nio.ByteBuffer state, double timeMs) {
+        return sessionId >= 0 && state != null
+                && NativeBridge.onGamepadState(sessionId, index, axisCount, buttonCount, state, timeMs);
+    }
+
     /** Whether the game's view now holds the pointer. */
     public static void onPointerLockChanged(int sessionId, boolean locked) {
         if (sessionId >= 0) NativeBridge.onPointerLockChanged(sessionId, locked);

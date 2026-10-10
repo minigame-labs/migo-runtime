@@ -77,6 +77,15 @@ session.setInputView(surfaceView);
 `session.dispatchGenericMotionEvent(ev)`。窗口在自由窗口/分屏与最大化之间变化时(Android 11+),内容收到
 `onWindowStateChange`;Android 应用不能自定窗口大小,`setWindowSize` 为 not supported。
 
+### 物理键盘与手柄
+
+同一个视图也接管 key 监听。接了键盘时,按键以 DOM `key` / `code` 进入 `onKeyDown` / `onKeyUp`(带修饰键与
+`repeat`);返回、Home、音量、媒体等系统键仍归 Android。接了手柄时,手柄按标准布局(`mapping: "standard"`,4 轴、17 键)
+出现在 `migo.getGamepads()` 里,上线/下线触发 `onGamepadConnected` / `onGamepadDisconnected`;摇杆过了设备死区才计数,
+没有独立按键信号的模拟扳机行程超过 30/255 计为按下,方向帽映射成十字键;手柄的返回键不交给游戏,是玩家退出游戏的路。
+Android 把按键与手柄运动发给**获得焦点**的视图:`GameSurfaceView` 自己可聚焦并在 `setInputView` 时取得焦点,自己的视图
+要可聚焦并取得焦点;手动转发时用 `session.dispatchKeyEvent(ev)`。会话创建时已连接的手柄立即上线,关闭会话时全部下线。
+
 ## 状态广播:`OnStateChangeListener`
 
 `setOnStateChangeListener(listener)` 拿引擎的 loading / running / error 状态跳变 — 用它驱动 loading UI,**不要**用 `SystemClock` 估算。`GameSessionListener`(另一接口)是更细的 loadingStart/loadingEnd 级钩子。

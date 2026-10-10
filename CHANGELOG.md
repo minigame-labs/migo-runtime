@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Android keyboards and gamepads. A physical keyboard's keys reach `onKeyDown` / `onKeyUp` as DOM `key` / `code` with
+  modifiers and `repeat` (system keys stay Android's), and gamepads appear in `getGamepads()` on the standard mapping
+  with `onGamepadConnected` / `onGamepadDisconnected` -- sticks past the device's dead zone, analogue triggers, a hat
+  switch as the d-pad. `GameSession.dispatchKeyEvent`; `setInputView` now also takes the view's key listener.
 - Android on desktop-form devices: the mouse reaches `onMouseMove` / `onMouseDown` / `onMouseUp` / `onWheel` (hover,
   every button, the wheel in lines), `setCursor` sets the view's `PointerIcon`, pointer lock is pointer capture with
   relative motion accumulated into positions, and `onWindowStateChange` reports maximize / normalize from the window's

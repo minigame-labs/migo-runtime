@@ -232,13 +232,9 @@ mod published_namespace_isolation_tests {
         );
     }
 
-    /// `_NON_MINIGAME_API` (which capabilities are deliberately migo-only) is
-    /// reference data for an external platform-compat adapter now, not
-    /// something the engine acts on -- the engine never builds a second
-    /// namespace to keep names off of. This just confirms migo publishes
-    /// them, which is what matters at this layer; whether an adapter
-    /// correctly excludes them from its own namespace is that adapter's own
-    /// test surface.
+    /// The gamepad API is the common mini-game platform's (getGamepads and its
+    /// connection events, which follow the browser standard), so migo
+    /// publishes it like every other name.
     #[test]
     fn gamepad_capabilities_are_published_on_migo() {
         let mut rt = boot();

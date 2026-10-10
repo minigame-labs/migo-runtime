@@ -160,6 +160,15 @@ final class NativeBridge {
 
     static native void onPointerLockChanged(int sessionId, boolean locked);
 
+    static native boolean onKeyEvent(int sessionId, boolean down, String key, String code,
+                                     int modifiers, boolean repeat, double timeMs);
+
+    static native boolean onGamepadConnection(int sessionId, int index, boolean connected, String id,
+                                              String mapping, int axisCount, int buttonCount);
+
+    static native boolean onGamepadState(int sessionId, int index, int axisCount, int buttonCount,
+                                         java.nio.ByteBuffer state, double timeMs);
+
     static native void onWindowStateChanged(int sessionId, String stateJson);
 
     static native boolean onTouchEvent(int sessionId, int action, long time, int count,
