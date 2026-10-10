@@ -70,6 +70,7 @@ use migo_capi_abi::{
         MIGO_SCREEN_STOP_CAPTURE_OBSERVER, MIGO_SCREEN_STOP_RECORDING_OBSERVER,
         MIGO_SETTING_OPEN_APP_AUTHORIZE_SETTING, MIGO_SETTING_OPEN_SETTING,
         MIGO_SETTING_OPEN_SYSTEM_BLUETOOTH_SETTING, MIGO_SHARE_SHARE_APP_MESSAGE,
+        MIGO_SHARE_SHARE_MESSAGE_TO_FRIEND, MIGO_SHARE_SHOW_SHARE_IMAGE_MENU,
         MIGO_SUBPACKAGE_DOWNLOAD, MIGO_WINDOW_EVENT_POINTER_LOCK_CHANGE,
         MIGO_WINDOW_EVENT_WINDOW_STATE_CHANGE, MIGO_WINDOW_EXIT_POINTER_LOCK,
         MIGO_WINDOW_REQUEST_POINTER_LOCK, MIGO_WINDOW_SET_CURSOR, MIGO_WINDOW_SET_WINDOW_SIZE,
@@ -179,13 +180,30 @@ const GET_PHONE_NUMBER: Call = Call {
     progress_hook: None,
     delivery: Delivery::Verbatim,
 };
+// The share calls name content's images and release the copies made of them.
 const SHARE_APP_MESSAGE: Call = Call {
     service: MIGO_HOST_SERVICE_SHARE,
     method: MIGO_SHARE_SHARE_APP_MESSAGE,
     hook: "_internalOnShareAppMessageResult",
     error_code_field: Some("errCode"),
     progress_hook: None,
-    delivery: Delivery::Verbatim,
+    delivery: Delivery::HostFiles(&HostFiles::NONE),
+};
+const SHARE_MESSAGE_TO_FRIEND: Call = Call {
+    service: MIGO_HOST_SERVICE_SHARE,
+    method: MIGO_SHARE_SHARE_MESSAGE_TO_FRIEND,
+    hook: "_internalOnShareMessageToFriendResult",
+    error_code_field: Some("errCode"),
+    progress_hook: None,
+    delivery: Delivery::HostFiles(&HostFiles::NONE),
+};
+const SHOW_SHARE_IMAGE_MENU: Call = Call {
+    service: MIGO_HOST_SERVICE_SHARE,
+    method: MIGO_SHARE_SHOW_SHARE_IMAGE_MENU,
+    hook: "_internalOnShowShareImageMenuResult",
+    error_code_field: Some("errCode"),
+    progress_hook: None,
+    delivery: Delivery::HostFiles(&HostFiles::NONE),
 };
 const NAVIGATE_TO_MINI_PROGRAM: Call = Call {
     service: MIGO_HOST_SERVICE_NAVIGATE,
@@ -496,6 +514,8 @@ const CALLS: &[&Call] = &[
     &GET_USER_INFO,
     &GET_PHONE_NUMBER,
     &SHARE_APP_MESSAGE,
+    &SHARE_MESSAGE_TO_FRIEND,
+    &SHOW_SHARE_IMAGE_MENU,
     &NAVIGATE_TO_MINI_PROGRAM,
     &SUBPACKAGE_DOWNLOAD,
     &REQUEST_SCOPE,
@@ -1162,6 +1182,12 @@ impl AuthService for CapiHostServices {
 impl ShareService for CapiHostServices {
     fn share_app_message(&self, options_json: &str) -> Result<(), ServiceError> {
         self.call(&SHARE_APP_MESSAGE, options_json)
+    }
+    fn share_message_to_friend(&self, options_json: &str) -> Result<(), ServiceError> {
+        self.call(&SHARE_MESSAGE_TO_FRIEND, options_json)
+    }
+    fn show_share_image_menu(&self, options_json: &str) -> Result<(), ServiceError> {
+        self.call(&SHOW_SHARE_IMAGE_MENU, options_json)
     }
 }
 

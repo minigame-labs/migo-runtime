@@ -1366,6 +1366,14 @@ impl ShareService for AndroidShare {
     fn share_app_message(&self, options_json: &str) -> Result<(), ServiceError> {
         Ok(jni::share_app_message(self.host_id, options_json)?)
     }
+
+    fn share_message_to_friend(&self, options_json: &str) -> Result<(), ServiceError> {
+        Ok(jni::share_message_to_friend(self.host_id, options_json)?)
+    }
+
+    fn show_share_image_menu(&self, options_json: &str) -> Result<(), ServiceError> {
+        Ok(jni::show_share_image_menu(self.host_id, options_json)?)
+    }
 }
 
 // ==================== Navigate ====================

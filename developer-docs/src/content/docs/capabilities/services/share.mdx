@@ -2,80 +2,101 @@
 title: 分享
 sidebar:
   order: 4
-description: Android ShareHandler 合同:shareAppMessage 的请求字段、ShareSink 的 settle 语义、无 handler 时 "shareAppMessage:fail not supported" 的降级。
+description: 三个主动分享请求（shareAppMessage / shareMessageToFriend / showShareImageMenu）在 Android ShareHandler 与 C ABI share 服务上的合同：请求字段、图片路径经沙箱解析、ShareSink 的 settle 语义、无宿主时的降级。
 audience: host-integrator
 platforms:
   - android
+  - ios
+  - macos
+  - linux
+  - windows
+  - openharmony
 sourcePaths:
   - platforms/android/library/src/main/java/com/migo/runtime/callback/ShareHandler.java
   - platforms/android/library/src/main/java/com/migo/runtime/callback/ShareSink.java
   - platforms/android/library/src/main/java/com/migo/runtime/GameSession.java
+  - include/migo/host_services.h
+  - engine/crates/runtime-v8/src/share/01_share.js
 ---
 
-::::caution[平台范围]
-`ShareHandler` 是 Android Java facade 的合同。C ABI 与跨平台层在 `0.9` 没有公开的分享出口。
-::::
+## 三个请求
 
-## 宿主要实现什么
+内容主动发起的分享都是宿主作答的请求，各走一个方法：
 
-通过 `GameSession#setShareHandler(ShareHandler)` 注册,对应 `GameSession.java` 第 **808** 行。
+| migo API | Android `ShareHandler` | C ABI `MIGO_HOST_SERVICE_SHARE` |
+| --- | --- | --- |
+| `migo.shareAppMessage(options)` | `shareAppMessage(ShareRequest, ShareSink)` | `SHARE_APP_MESSAGE` 0 |
+| `migo.shareMessageToFriend(options)` | `shareMessageToFriend(FriendShareRequest, ShareSink)` | `SHARE_MESSAGE_TO_FRIEND` 1 |
+| `migo.showShareImageMenu(options)` | `showShareImageMenu(ImageShareRequest, ShareSink)` | `SHOW_SHARE_IMAGE_MENU` 2 |
 
-`ShareHandler` 的入口是:
+Android 通过 `GameSession#setShareHandler(ShareHandler)` 注册；C ABI 宿主在 `host_services` 里声明 `MIGO_HOST_SERVICE_SHARE`，
+在 `on_host_service_call` 里按方法号作答。
 
-```java
-default void shareAppMessage(ShareRequest request, ShareSink sink)
-```
+请求就是内容传给这次调用的内容，原样：`migo.onShareAppMessage` 监听器回答的是菜单里的「转发」，与主动的
+`shareAppMessage` 无关，不参与这次请求。内容没设置的选项不出现（Android 的请求对象里是空串）。
 
-覆盖此方法,把请求桥接到宿主自己的分享面板:系统 chooser、应用内好友选择器或社交 SDK。runtime 不链接分享 SDK,也不持有社交关系。
+## 图片路径
 
-`ShareRequest` 字段由 runtime 填好:
+每个请求至多指名一张图片——`shareAppMessage` / `shareMessageToFriend` 的 `imageUrl`、`showShareImageMenu` 的
+`path`。宿主收到的是这张图在游戏沙箱里对应的**真实文件路径**（`/user`、`/tmp`、`/cache` 或代码包里的文件；相对路径按代码包根目录解析），
+在请求结束前一直可读；它绝不是内容给的原始字符串，所以内容无法借此让宿主读到沙箱外的文件。沙箱外或不存在的路径在离开引擎前就失败。
+只有 `shareAppMessage` 的 `imageUrl` 可以是 http(s) URL，原样交给宿主；另两个拒绝网络图片。
+
+## 请求字段
+
+`ShareRequest`（`SHARE_APP_MESSAGE`）：
 
 | 字段 | 语义 |
 | --- | --- |
-| `title` | 分享标题;内容未设置时为空串 |
-| `imageUrl` | 分享图片 URL;内容未设置时为空串 |
-| `query` | 目标游戏收到的查询串,如 `a=1&b=2`,不带前导 `?` |
-| `imageUrlId` | 平台图片 id;宿主不能按该平台解析时忽略 |
+| `title` | 分享标题；内容未设置时为空串 |
+| `imageUrl` | http(s) URL 或真实文件路径；未设置时为空串 |
+| `query` | 目标游戏收到的查询串，如 `a=1&b=2`，不带前导 `?` |
+| `imageUrlId` | 平台图片 id；宿主不能按该平台解析时忽略 |
+| `toCurrentGroup` | 从群工具栏打开时是否转发回该群；内容未设置时为 `true` |
+| `path` | 独立分包路径；未设置时为空串 |
 
-分享面板结束后,通过 `ShareSink` 恰好 settle 一次:
+`FriendShareRequest`（`SHARE_MESSAGE_TO_FRIEND`）：
+
+| 字段 | 语义 |
+| --- | --- |
+| `openId` | 好友的 openId，内容给的原样；不为空 |
+| `title` / `imageUrl` / `imageUrlId` | 同上；`imageUrl` 只能是真实文件路径 |
+| `query` | `migo.setMessageToFriendQuery()` 设的查询，好友进入时出现在 enter options 的 `query.query` |
+| `shareMessageToFriendScene` | 同上的 `query.shareMessageToFriendScene`，0–50；未设置为 `null`（C ABI 里缺省） |
+
+`ImageShareRequest`（`SHOW_SHARE_IMAGE_MENU`）：
+
+| 字段 | 语义 |
+| --- | --- |
+| `path` | 真实文件路径；不为空 |
+| `needShowEntrance` | 图片消息是否带进入游戏的入口 |
+| `entrancePath` | 入口打开的路径；为空表示默认 |
+
+## 怎么作答
+
+每个请求通过 `ShareSink`（C ABI：`migo_session_complete_host_service_call`）恰好 settle 一次：
 
 | 方法 | 语义 |
 | --- | --- |
-| `settleShared()` | 分享面板流程结束;不代表用户实际发送了消息 |
-| `fail(int errCode, String errMsg)` | 失败,`errMsg` 原样交给内容 |
+| `settleShared()` | 分享流程结束；不代表用户实际发送了消息 |
+| `fail(int errCode, String errMsg)` | 失败，`errMsg` 原样交给内容 |
 
-调用从 runtime 宿主线程到达,不要在其中阻塞;`ShareSink` 可从任意线程调用。内容侧的 `migo.onShareAppMessage` 监听器在 handler 调用前已经运行,请求是合并后的最终内容,不应重新推导默认值。
+分享等的是玩家，玩家用多久就等多久，runtime 不设超时。调用从 runtime 宿主线程到达，不要在其中阻塞；`ShareSink` 可从任意线程调用，
+首个 settle 生效、后续被忽略。
+
+`shareMessageToFriend` 结束后，内容的 `migo.onShareMessageToFriend` 监听器会收到 `{success, errMsg}`——由这次请求的结算派生，
+宿主不需要另发事件。
 
 ## 不实现会怎样
 
-引自 `ShareHandler.java` 头注释:
+没有 handler（或 C ABI 宿主没声明 share 服务）时，三个请求都以 `<api>:fail not supported`、错误码 `-2` 失败。它们会 settle 而不是沉默：
+内容常常等分享结束才继续，丢掉的请求就是一局暂停的游戏。
 
-> `migo.shareAppMessage()` fails with
-> `shareAppMessage:fail not supported` and code `-2`. It settles
-> rather than staying silent: content commonly awaits the share before resuming,
-> so a dropped request is a paused game.
-
-默认实现逐字为:
-
-```java
-sink.fail(-2, "shareAppMessage:fail not supported");
-```
-
-## 内容侧看到什么
-
-| migo API | 对应 handler 方法 |
-| --- | --- |
-| `migo.shareAppMessage(options)` | `shareAppMessage(request, sink)` |
-| `migo.onShareAppMessage(listener)` | 在 handler 之前修改最终分享请求 |
-
-`migo.shareAppMessage()` 的成功只表示分享面板流程结束。`ShareSink` 与平台常见小游戏合同一样,不告诉内容用户是否真的发送消息;用它直接发奖励没有事实依据。
-`ShareRequest.query` 不含前导 `?`,因此宿主若把它拼到目标 URL,应按查询参数本体处理。`imageUrlId` 只有在宿主拥有对应平台图片解析能力时才有意义。
-
-`ShareSink` 同样是一次性通道:首个 `settleShared()` 或 `fail(...)` 生效,后续调用被忽略。宿主可在系统分享 Activity 的结果回调线程中 settle。
+`migo.shareAppMessage()` 的成功只表示分享流程结束；与常见小游戏平台一样，内容不会知道用户是否真的发送了消息，凭它发奖励没有事实依据。
 
 ## 平台可用性
 
 | 层 | 状态 |
 | --- | --- |
-| Android Java facade | ✓ |
-| C ABI | none |
+| Android Java facade | ✓ `ShareHandler` |
+| C ABI（Apple / Linux / Windows / OpenHarmony 宿主） | ✓ `MIGO_HOST_SERVICE_SHARE` |

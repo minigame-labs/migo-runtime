@@ -1997,7 +1997,22 @@ jni_json_callback!(onOpenSettingResult, "_internalOnOpenSettingResult");
 
 // ==================== Share (Mode C) ====================
 
-jni_json_callback!(onShareAppMessageResult, "_internalOnShareAppMessageResult");
+// Each names content's image, so its result releases the copy made of it.
+jni_host_files_callback!(
+    onShareAppMessageResult,
+    "_internalOnShareAppMessageResult",
+    HostFiles::NONE
+);
+jni_host_files_callback!(
+    onShareMessageToFriendResult,
+    "_internalOnShareMessageToFriendResult",
+    HostFiles::NONE
+);
+jni_host_files_callback!(
+    onShowShareImageMenuResult,
+    "_internalOnShowShareImageMenuResult",
+    HostFiles::NONE
+);
 
 // ==================== Navigate (Mode C) ====================
 

@@ -76,12 +76,6 @@ async function run() {
   const back = await settle("navigateBackMiniProgram");
   expect(back.ok, "navigateBackMiniProgram", back);
 
-  // Not something this host offers, and not something the engine pretends to:
-  // the request fails rather than claiming a share nobody made.
-  const friend = await settle("shareMessageToFriend", { openId: "probe-friend" });
-  expect(!friend.ok && friend.res.errMsg === "shareMessageToFriend:fail not supported",
-    "shareMessageToFriend", friend);
-
   // Permission. getSetting reports what the host decided and nothing else: the
   // granted scope is true and a scope nobody has been asked about is absent.
   const before = await settle("getSetting");
@@ -320,6 +314,22 @@ async function run() {
   expect(!subscribe.ok && subscribe.res.errCode === 20001 &&
     subscribe.res.errMsg === "requestSubscribeMessage:fail template not found",
     "requestSubscribeMessage failure", subscribe);
+
+  // Sharing names content's image, which the host receives as the real file; a
+  // share to one friend carries setMessageToFriendQuery's query, and the game
+  // hears how it ended.
+  const imageShare = await settle("shareAppMessage", { imageUrl: "/user/probe.png" });
+  expect(imageShare.ok, "shareAppMessage with an image", imageShare);
+  expect(migo.setMessageToFriendQuery({ query: "room=7", shareMessageToFriendScene: 1 }) === true,
+    "setMessageToFriendQuery", null);
+  const heard = new Promise(function (resolve) { migo.onShareMessageToFriend(resolve); });
+  const friendShare = await settle("shareMessageToFriend",
+    { openId: "probe-friend", imageUrl: "/user/probe.png" });
+  expect(friendShare.ok, "shareMessageToFriend", friendShare);
+  const told = await heard;
+  expect(told.success === true && told.errMsg === "shareMessageToFriend:ok", "onShareMessageToFriend", told);
+  const imageSheet = await settle("showShareImageMenu", { path: "/user/probe.png" });
+  expect(!imageSheet.ok && imageSheet.res.errMsg === "showShareImageMenu:fail cancel", "showShareImageMenu", imageSheet);
 
   // An advert's Promises are settled by what the host's SDK says: load()
   // when it has loaded, show() when it is on screen -- before it closes.

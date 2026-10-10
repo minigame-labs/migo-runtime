@@ -122,7 +122,9 @@
   public com.migo.runtime.callback.NavigationHandler$NavigateRequest(java.lang.String, java.lang.String, java.util.Map<java.lang.String, java.lang.Object>, java.lang.String);
   public com.migo.runtime.callback.PaymentHandler$GameItemPaymentRequest(java.lang.String, java.lang.String, java.lang.String);
   public com.migo.runtime.callback.PaymentHandler$PaymentRequest(java.lang.String, int, java.lang.String, java.lang.String, java.lang.String, int, int, java.lang.String);
-  public com.migo.runtime.callback.ShareHandler$ShareRequest(java.lang.String, java.lang.String, java.lang.String, java.lang.String);
+  public com.migo.runtime.callback.ShareHandler$FriendShareRequest(java.lang.String, java.lang.String, java.lang.String, java.lang.String, java.lang.String, java.lang.Integer);
+  public com.migo.runtime.callback.ShareHandler$ImageShareRequest(java.lang.String, boolean, java.lang.String);
+  public com.migo.runtime.callback.ShareHandler$ShareRequest(java.lang.String, java.lang.String, java.lang.String, java.lang.String, boolean, java.lang.String);
   public com.migo.runtime.callback.SubpackageHandler$SubpackageRequest(java.lang.String, java.lang.String);
   public default boolean isMidasPaymentSupported();
   public default boolean openCustomerServiceConversation(com.migo.runtime.callback.NavigationHandler$CustomerServiceRequest);
@@ -145,9 +147,13 @@
   public default void requestMidasPayment(com.migo.runtime.callback.PaymentHandler$PaymentRequest, com.migo.runtime.callback.PaymentSink);
   public default void requestMidasPaymentGameItem(com.migo.runtime.callback.PaymentHandler$GameItemPaymentRequest, com.migo.runtime.callback.PaymentSink);
   public default void shareAppMessage(com.migo.runtime.callback.ShareHandler$ShareRequest, com.migo.runtime.callback.ShareSink);
+  public default void shareMessageToFriend(com.migo.runtime.callback.ShareHandler$FriendShareRequest, com.migo.runtime.callback.ShareSink);
   public default void showAd(int, com.migo.runtime.callback.AdEventSink);
+  public default void showShareImageMenu(com.migo.runtime.callback.ShareHandler$ImageShareRequest, com.migo.runtime.callback.ShareSink);
   public default void updateAdStyle(int, java.lang.String, com.migo.runtime.callback.AdEventSink);
+  public final boolean needShowEntrance;
   public final boolean showMessageCard;
+  public final boolean toCurrentGroup;
   public final float fps;
   public final float frameTimeMs;
   public final int buyQuantity;
@@ -159,21 +165,29 @@
   public final int inputReliableReserveUses;
   public final int inputSaturationEvents;
   public final int zoneId;
+  public final java.lang.Integer shareMessageToFriendScene;
   public final java.lang.String abi;
   public final java.lang.String api;
   public final java.lang.String appId;
   public final java.lang.String artifactId;
   public final java.lang.String currencyType;
+  public final java.lang.String entrancePath;
   public final java.lang.String envVersion;
   public final java.lang.String imageUrl;
+  public final java.lang.String imageUrl;
+  public final java.lang.String imageUrlId;
   public final java.lang.String imageUrlId;
   public final java.lang.String mode;
   public final java.lang.String name;
   public final java.lang.String offerId;
+  public final java.lang.String openId;
   public final java.lang.String outTradeNo;
+  public final java.lang.String path;
+  public final java.lang.String path;
   public final java.lang.String path;
   public final java.lang.String paySig;
   public final java.lang.String platform;
+  public final java.lang.String query;
   public final java.lang.String query;
   public final java.lang.String root;
   public final java.lang.String sdkVersion;
@@ -184,6 +198,7 @@
   public final java.lang.String sha256;
   public final java.lang.String signData;
   public final java.lang.String signature;
+  public final java.lang.String title;
   public final java.lang.String title;
   public final java.util.Map<java.lang.String, java.lang.Object> extraData;
   public final java.util.Map<java.lang.String, java.lang.Object> options;
@@ -399,6 +414,8 @@ public final class com.migo.runtime.callback.NavigationHandler$CustomerServiceRe
 public final class com.migo.runtime.callback.NavigationHandler$NavigateRequest {
 public final class com.migo.runtime.callback.PaymentHandler$GameItemPaymentRequest {
 public final class com.migo.runtime.callback.PaymentHandler$PaymentRequest {
+public final class com.migo.runtime.callback.ShareHandler$FriendShareRequest {
+public final class com.migo.runtime.callback.ShareHandler$ImageShareRequest {
 public final class com.migo.runtime.callback.ShareHandler$ShareRequest {
 public final class com.migo.runtime.callback.SubpackageHandler$SubpackageRequest {
 public interface com.migo.runtime.GameSession$MessageHandler {
@@ -429,6 +446,8 @@ public interface com.migo.runtime.callback.ShareHandler {
 public interface com.migo.runtime.callback.ShareSink {
 public interface com.migo.runtime.callback.SubpackageHandler {
 public interface com.migo.runtime.callback.SubpackageHandler$DownloadCallback {
+}
+}
 }
 }
 }
