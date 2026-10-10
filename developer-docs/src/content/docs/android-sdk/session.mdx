@@ -61,6 +61,22 @@ session.setMessageHandler((type, payload) -> { /* JSON String,可能 null */ });
 
 `evaluateJavaScript` 立即返回,脚本在 host 线程异步入队执行;想得到回执要用 `migo.sendToHost` 配合 MessageHandler。
 
+### 桌面形态:鼠标、光标、指针锁定
+
+在接了鼠标的设备上(扩展坞模式、Chromebook、桌面窗口化),把游戏所在的视图交给会话:
+
+```java
+session.setInputView(surfaceView);
+```
+
+会话接管该视图的 generic-motion 与 captured-pointer 监听:悬停、按键、滚轮进入内容的 `onMouseMove` / `onMouseDown` /
+`onMouseUp` / `onWheel`(CSS 像素、DOM 按键序;Android 自己把鼠标点击变成的触摸照常进 `onTouch*`,与平台 PC 版一致),
+`migo.setCursor()` 设置该视图的 `PointerIcon`,`requestPointerLock()` 用 pointer capture,捕获期间的相对位移累积成位置,
+`movementX/Y` 照常可得。`MigoGameView` / `MigoGameActivity` 自动完成这些。自己的视图需要在
+`View.onPointerCaptureChange` 里调用 `session.onPointerCaptureChanged(hasCapture)`;手动转发事件时用
+`session.dispatchGenericMotionEvent(ev)`。窗口在自由窗口/分屏与最大化之间变化时(Android 11+),内容收到
+`onWindowStateChange`;Android 应用不能自定窗口大小,`setWindowSize` 为 not supported。
+
 ## 状态广播:`OnStateChangeListener`
 
 `setOnStateChangeListener(listener)` 拿引擎的 loading / running / error 状态跳变 — 用它驱动 loading UI,**不要**用 `SystemClock` 估算。`GameSessionListener`(另一接口)是更细的 loadingStart/loadingEnd 级钩子。

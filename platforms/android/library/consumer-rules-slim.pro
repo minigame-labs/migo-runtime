@@ -12,6 +12,8 @@
     static native *** updateSurface(...);
     static native *** onSurfaceDestroyed(...);
     static native *** onTouchEvent(...);
+    static native *** onPointerEvent(...);
+    static native *** onWheelEvent(...);
     static native *** modMain(...);
     static native *** executeScript(...);
     static native *** onVsync(...);

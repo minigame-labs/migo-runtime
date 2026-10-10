@@ -16,7 +16,14 @@ import com.migo.runtime.internal.RuntimeGenerationBoundary;
 import com.migo.runtime.internal.RuntimeScoped;
 
 /**
- * Observes screenshot events by monitoring MediaStore changes.
+ * Observes screenshot events.
+ * <p>
+ * From Android 14 (API 34) the system says so itself: an Activity's
+ * {@code ScreenCaptureCallback} fires when the user captures it, needing only
+ * the install-time {@code DETECT_SCREEN_CAPTURE} -- and without it a MediaStore
+ * query sees no other app's screenshots from Android 13 on, so the older path
+ * below would miss them silently. Before 14, and with no Activity to register
+ * on, newly added MediaStore images are watched instead:
  * <p>
  * When the user takes a screenshot, Android writes the image to MediaStore.
  * This observer detects that by querying the actual file path/name of newly
@@ -54,7 +61,10 @@ public final class ScreenCaptureObserver implements RuntimeScoped {
     private final ContentResolver contentResolver;
     private final Handler handler;
 
+    private final Context context;
     private ContentObserver observer;
+    /** The Android 14 registration while it is active, else null. */
+    private CaptureCallback captureCallback;
     private long lastNotifyTime = 0;
 
 
@@ -74,6 +84,7 @@ public final class ScreenCaptureObserver implements RuntimeScoped {
     }
     public ScreenCaptureObserver(int sessionId, Context context) {
         this.sessionId = sessionId;
+        this.context = context;
         this.token = RuntimeGenerationBoundary.acquire(sessionId);
         this.contentResolver = context.getContentResolver();
         this.handler = new Handler(Looper.getMainLooper());
@@ -84,6 +95,12 @@ public final class ScreenCaptureObserver implements RuntimeScoped {
      */
     public void start() {
         stop();
+
+        if (Build.VERSION.SDK_INT >= 34 && context instanceof android.app.Activity) {
+            captureCallback = new CaptureCallback((android.app.Activity) context,
+                    () -> notifyCapture(System.currentTimeMillis()));
+            return;
+        }
 
         observer = new ContentObserver(handler) {
             @Override
@@ -108,6 +125,10 @@ public final class ScreenCaptureObserver implements RuntimeScoped {
      * Stop observing screenshot events.
      */
     public void stop() {
+        if (captureCallback != null) {
+            captureCallback.unregister();
+            captureCallback = null;
+        }
         if (observer != null) {
             try {
                 contentResolver.unregisterContentObserver(observer);
@@ -219,5 +240,21 @@ public final class ScreenCaptureObserver implements RuntimeScoped {
                 || s.contains("screenshots")
                 || s.contains("截屏")
                 || s.contains("截图");
+    }
+
+    /** The Android 14 registration, apart so no older device resolves its types. */
+    private static final class CaptureCallback {
+        private final android.app.Activity activity;
+        private final android.app.Activity.ScreenCaptureCallback callback;
+
+        CaptureCallback(android.app.Activity activity, Runnable onCapture) {
+            this.activity = activity;
+            this.callback = onCapture::run;
+            activity.registerScreenCaptureCallback(activity.getMainExecutor(), callback);
+        }
+
+        void unregister() {
+            activity.unregisterScreenCaptureCallback(callback);
+        }
     }
 }

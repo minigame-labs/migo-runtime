@@ -5,6 +5,7 @@ import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+import android.view.InputDevice;
 import android.view.MotionEvent;
 import android.view.Surface;
 import android.view.View;
@@ -24,6 +25,7 @@ import com.migo.runtime.callback.GameLogHandler;
 import com.migo.runtime.callback.GameSessionListener;
 import com.migo.runtime.callback.SubpackageHandler;
 import com.migo.runtime.internal.ExclusiveDeviceArbiter;
+import com.migo.runtime.internal.MouseEventHandler;
 import com.migo.runtime.internal.NativeExports;
 import com.migo.runtime.internal.NativeMethods;
 import com.migo.runtime.internal.RuntimeContext;
@@ -35,6 +37,7 @@ import com.migo.runtime.internal.TouchEventHandler;
 import com.migo.runtime.internal.VsyncScheduler;
 import com.migo.runtime.internal.platform.AudioFocusManager;
 import com.migo.runtime.internal.platform.DisplayCompat;
+import com.migo.runtime.internal.platform.GameSurfaceView;
 import com.migo.runtime.internal.util.Logger;
 
 import java.io.Closeable;
@@ -104,6 +107,18 @@ public final class GameSession implements Closeable {
     private final Context context;
     private final GamePaths paths;
     private final TouchEventHandler touchHandler;
+    private final MouseEventHandler mouseHandler;
+    /** The view the game is shown in: the pointer's icon and capture are its. */
+    private volatile View inputView;
+    /**
+     * Which session each input view's listeners are, so a session that ends
+     * after another took its view over leaves the other's listeners alone.
+     * Main-thread confined; weak, so a view the app dropped is not kept.
+     */
+    private static final java.util.WeakHashMap<View, GameSession> sInputViewOwners =
+            new java.util.WeakHashMap<>();
+    /** The window state last reported, so only changes are. */
+    private String reportedWindowState;
     private final AudioFocusManager audioFocusManager;
     private final VsyncScheduler vsyncScheduler;
     private final Handler mainHandler;
@@ -159,6 +174,7 @@ public final class GameSession implements Closeable {
         // not be able to lower the level a live one asked for.
         Logger.registerSession(sessionId, config.getLogLevel());
         this.touchHandler = new TouchEventHandler(config.getDisplayDensity());
+        this.mouseHandler = new MouseEventHandler(config.getDisplayDensity());
         this.audioFocusManager = BuildConfig.MIGO_API_MEDIA ? new AudioFocusManager(sessionId, context) : null;
         this.vsyncScheduler = new VsyncScheduler(sessionId);
         this.mainHandler = new Handler(Looper.getMainLooper());
@@ -547,6 +563,8 @@ public final class GameSession implements Closeable {
                     + ", size=" + width + "x" + height);
             final float density = DisplayCompat.getDensity(context);
             touchHandler.updateDensity(density);
+            mouseHandler.updateDensity(density);
+            reportWindowState();
             hasLiveSurface = surface.isValid();
             NativeMethods.updateSurface(sessionId, surface, width, height, density);
             vsyncScheduler.setSurfaceReady(hasLiveSurface);
@@ -584,6 +602,8 @@ public final class GameSession implements Closeable {
     @Override
     public void close() {
         ThreadCheck.ensureMainThread();
+        // The view outlives the session; its listeners must not.
+        setInputView(null);
         SessionState prev;
         boolean firstClose;
         synchronized (lock) {
@@ -720,7 +740,102 @@ public final class GameSession implements Closeable {
         ThreadCheck.ensureMainThread();
         if (event == null) return false;
         if (state.get() == SessionState.DESTROYED) return false;
+        // A mouse drag arrives as touch moves: content listening for the mouse
+        // hears it move too. Its presses come as generic motion.
+        if (event.isFromSource(InputDevice.SOURCE_MOUSE)
+                && event.getActionMasked() == MotionEvent.ACTION_MOVE) {
+            mouseHandler.dispatch(sessionId, event, false);
+        }
         return touchHandler.dispatch(sessionId, event);
+    }
+
+    /**
+     * Dispatch a generic motion event -- a mouse hovering, pressing a button or
+     * scrolling -- to the game. A view given to {@link #setInputView} forwards
+     * these itself; call this when forwarding a view's events by hand.
+     * <p>
+     * Must be called on the main thread.
+     *
+     * @param event the MotionEvent from the view
+     * @return whether the game took it
+     */
+    public boolean dispatchGenericMotionEvent(MotionEvent event) {
+        ThreadCheck.ensureMainThread();
+        if (event == null || state.get() == SessionState.DESTROYED) return false;
+        if (!event.isFromSource(InputDevice.SOURCE_MOUSE)) return false;
+        return mouseHandler.dispatch(sessionId, event, false);
+    }
+
+    /**
+     * The view the game is shown in, on a desktop-form device: the pointer's
+     * icon ({@code setCursor}) and its capture ({@code requestPointerLock}) are
+     * this view's, and its generic-motion and captured-pointer listeners become
+     * the session's, carrying the mouse to the game. {@link MigoGameView} and
+     * {@link MigoGameActivity} set theirs. Null clears it: the cursor cannot be
+     * set and the pointer cannot be locked.
+     * <p>
+     * A view that is not the SDK's own must tell the session when it gains or
+     * loses pointer capture: override {@code View.onPointerCaptureChange} and call
+     * {@link #onPointerCaptureChanged}.
+     *
+     * @param view the game's view, or null
+     */
+    public void setInputView(View view) {
+        ThreadCheck.ensureMainThread();
+        View previous = inputView;
+        if (previous != null && previous != view && sInputViewOwners.get(previous) == this) {
+            sInputViewOwners.remove(previous);
+            previous.setOnGenericMotionListener(null);
+            previous.setOnCapturedPointerListener(null);
+            if (previous instanceof GameSurfaceView) {
+                ((GameSurfaceView) previous).setPointerCaptureListener(null);
+            }
+        }
+        inputView = view;
+        if (view == null) return;
+        sInputViewOwners.put(view, this);
+        view.setOnGenericMotionListener((v, event) -> dispatchGenericMotionEvent(event));
+        view.setOnCapturedPointerListener((v, event) ->
+                state.get() != SessionState.DESTROYED
+                        && mouseHandler.dispatch(sessionId, event, true));
+        if (view instanceof GameSurfaceView) {
+            ((GameSurfaceView) view).setPointerCaptureListener(this::onPointerCaptureChanged);
+        }
+    }
+
+    /**
+     * Tell the game that its view gained or lost pointer capture -- what it
+     * reports as {@code isPointerLocked} and {@code onPointerLockChange}.
+     *
+     * @param hasCapture whether the view holds the pointer now
+     */
+    public void onPointerCaptureChanged(boolean hasCapture) {
+        if (state.get() == SessionState.DESTROYED) return;
+        NativeMethods.onPointerLockChanged(sessionId, hasCapture);
+    }
+
+    /** @hide The view {@code setCursor} and pointer lock act on. */
+    public View getInputView() {
+        return inputView;
+    }
+
+    // A window as large as the display allows is maximized; anything smaller --
+    // a freeform window, a split screen -- is not. Reported when it changes.
+    private void reportWindowState() {
+        if (android.os.Build.VERSION.SDK_INT < 30 || !(context instanceof Activity)) return;
+        android.view.WindowManager windowManager = ((Activity) context).getWindowManager();
+        boolean maximized = windowManager.getCurrentWindowMetrics().getBounds()
+                .equals(windowManager.getMaximumWindowMetrics().getBounds());
+        String windowState = maximized ? "maximize" : "normalize";
+        if (reportedWindowState == null) {
+            // The state the game starts in is no change.
+            reportedWindowState = windowState;
+            return;
+        }
+        if (!windowState.equals(reportedWindowState)) {
+            reportedWindowState = windowState;
+            NativeMethods.onWindowStateChanged(sessionId, "{\"state\":\"" + windowState + "\"}");
+        }
     }
 
     // ==================== Callback ====================

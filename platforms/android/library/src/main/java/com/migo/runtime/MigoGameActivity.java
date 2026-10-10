@@ -18,6 +18,7 @@ import com.migo.runtime.callback.GameSessionListener;
 import com.migo.runtime.internal.NativeMethods;
 import com.migo.runtime.internal.platform.DisplayCompat;
 import com.migo.runtime.internal.platform.OrientationWaitHelper;
+import com.migo.runtime.internal.platform.GameSurfaceView;
 
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -209,7 +210,7 @@ public class MigoGameActivity extends Activity
 
         // Create surface view
         FrameLayout root = new FrameLayout(this);
-        surfaceView = new SurfaceView(this);
+        surfaceView = new GameSurfaceView(this);
         root.addView(surfaceView, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT));
@@ -293,6 +294,8 @@ public class MigoGameActivity extends Activity
         if (listener != null) {
             session.setListener(listener);
         }
+        // The pointer's icon and capture on a desktop-form device are this view's.
+        session.setInputView(surfaceView);
         return true;
     }
 

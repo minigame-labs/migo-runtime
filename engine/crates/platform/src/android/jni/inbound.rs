@@ -1054,6 +1054,114 @@ jni_host_files_callback!(
 );
 jni_json_callback!(onEcosystemEvent, "_internalOnEcosystemEvent");
 
+// ==================== Desktop pointer ====================
+//
+// The mouse of a desktop-form device (a docked phone, a Chromebook, desktop
+// windowing), beside touch: the SDK reports the mouse stream as a C ABI host
+// does (MigoPointerEvent, MigoWheelEvent), in CSS pixels and DOM button order.
+
+/// Highest accepted button ordinal, as `MIGO_POINTER_BUTTON_MAX`.
+const POINTER_BUTTON_MAX: u32 = 31;
+
+/// One mouse press (`kind` 0), motion (1) or release (2). A motion may be
+/// coalesced; a press and a release are not dropped.
+pub(crate) extern "system" fn onPointerEvent(
+    _env: JNIEnv,
+    _class: JClass,
+    host_id: jint,
+    kind: jint,
+    button: jint,
+    x: jni::sys::jfloat,
+    y: jni::sys::jfloat,
+    timestamp_ms: jni::sys::jdouble,
+) -> jni::sys::jboolean {
+    jni_safe!("onPointerEvent", JNI_FALSE, {
+        let Ok(button) = u32::try_from(button) else {
+            return JNI_FALSE;
+        };
+        if button > POINTER_BUTTON_MAX || !x.is_finite() || !y.is_finite() {
+            return JNI_FALSE;
+        }
+        let command = match kind {
+            0 => HostCommand::OnMouseDown {
+                x,
+                y,
+                button,
+                timestamp_ms,
+            },
+            1 => HostCommand::OnMouseMove {
+                x,
+                y,
+                button,
+                timestamp_ms,
+            },
+            2 => HostCommand::OnMouseUp {
+                x,
+                y,
+                button,
+                timestamp_ms,
+            },
+            _ => return JNI_FALSE,
+        };
+        match with_hot_ingress(host_id, |ingress| ingress.try_send_pointer(command)) {
+            Some(Ok(_)) => JNI_TRUE,
+            _ => JNI_FALSE,
+        }
+    })
+}
+
+/// One scroll, its deltas in the unit `delta_mode` (DOM `WheelEvent.deltaMode`)
+/// names.
+pub(crate) extern "system" fn onWheelEvent(
+    _env: JNIEnv,
+    _class: JClass,
+    host_id: jint,
+    delta_mode: jint,
+    delta_x: jni::sys::jdouble,
+    delta_y: jni::sys::jdouble,
+    delta_z: jni::sys::jdouble,
+    timestamp_ms: jni::sys::jdouble,
+) -> jni::sys::jboolean {
+    jni_safe!("onWheelEvent", JNI_FALSE, {
+        let Ok(delta_mode) = u32::try_from(delta_mode) else {
+            return JNI_FALSE;
+        };
+        if delta_mode > 2 || !(delta_x.is_finite() && delta_y.is_finite() && delta_z.is_finite()) {
+            return JNI_FALSE;
+        }
+        let command = HostCommand::OnWheel {
+            delta_x,
+            delta_y,
+            delta_z,
+            delta_mode,
+            timestamp_ms,
+        };
+        match with_hot_ingress(host_id, |ingress| ingress.try_send(command)) {
+            Some(Ok(())) => JNI_TRUE,
+            _ => JNI_FALSE,
+        }
+    })
+}
+
+/// Whether the session's view now holds the pointer.
+pub(crate) extern "system" fn onPointerLockChanged(
+    _env: JNIEnv,
+    _class: JClass,
+    host_id: jint,
+    locked: jni::sys::jboolean,
+) {
+    jni_safe!("onPointerLockChanged", {
+        let json = if locked == JNI_TRUE {
+            r#"{"locked":true}"#
+        } else {
+            r#"{"locked":false}"#
+        };
+        send_json_result_to_js(host_id, json, "_internalOnPointerLockEvent");
+    });
+}
+
+jni_json_callback!(onWindowStateChanged, "_internalOnWindowStateEvent");
+
 // ==================== Device Sensor ====================
 
 pub(crate) extern "system" fn onDeviceMotionChange(

@@ -16,6 +16,7 @@ import com.migo.runtime.internal.platform.LocationProvider;
 import com.migo.runtime.internal.platform.Permissions;
 import com.migo.runtime.internal.platform.ScreenBrightness;
 import com.migo.runtime.internal.platform.SystemSettings;
+import com.migo.runtime.internal.platform.PointerIcons;
 import com.migo.runtime.internal.platform.Vibrator;
 import com.migo.runtime.callback.AdEventSink;
 import com.migo.runtime.callback.AdHandler;
@@ -42,6 +43,8 @@ import android.graphics.BitmapFactory;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.view.PointerIcon;
+import android.view.View;
 
 import org.json.JSONException;
 import org.json.JSONObject;
@@ -2951,6 +2954,54 @@ public final class NativeExports {
             throw new UnsupportedOperationException(
                     "openCustomerServiceConversation:fail not supported");
         }
+    }
+
+    // ==================== Desktop window ====================
+
+    /**
+     * Set the pointer's icon over the game's view: {@code {"keyword"}}, a CSS
+     * cursor, or {@code {"path", "x", "y"}}, a real image path and its hotspot.
+     *
+     * @return whether it was set -- false with no input view, for a keyword Android
+     *         has no icon for, or for a file that is no image it decodes
+     */
+    public static boolean setCursor(int sessionId, String json) {
+        View view = inputViewOf(sessionId);
+        if (view == null) return false;
+        JSONObject request = HostDelegation.options(json);
+        String keyword = request.optString("keyword", "");
+        PointerIcon icon = !keyword.isEmpty()
+                ? PointerIcons.system(view.getContext(), keyword)
+                : PointerIcons.image(request.optString("path", ""),
+                        (float) request.optDouble("x", 0), (float) request.optDouble("y", 0));
+        if (icon == null) return false;
+        view.post(() -> view.setPointerIcon(icon));
+        return true;
+    }
+
+    /**
+     * Capture the pointer to the game's view. The change arrives through
+     * {@link GameSession#onPointerCaptureChanged}; with no view to capture to, the
+     * lock is refused at once.
+     */
+    public static void requestPointerLock(int sessionId) {
+        View view = inputViewOf(sessionId);
+        if (view == null) {
+            NativeMethods.onPointerLockChanged(sessionId, false);
+            return;
+        }
+        view.post(view::requestPointerCapture);
+    }
+
+    /** Release the pointer the game's view holds. */
+    public static void exitPointerLock(int sessionId) {
+        View view = inputViewOf(sessionId);
+        if (view != null) view.post(view::releasePointerCapture);
+    }
+
+    private static View inputViewOf(int sessionId) {
+        GameSession session = sSessions.get(sessionId);
+        return session != null && !isSessionTerminated(sessionId) ? session.getInputView() : null;
     }
 
     // ==================== Ecosystem ====================

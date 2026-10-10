@@ -62,6 +62,8 @@
   public abstract void settlePaid();
   public abstract void settleShared();
   public abstract void succeed(java.util.Map<java.lang.String, ?>);
+  public android.view.View getInputView();
+  public boolean dispatchGenericMotionEvent(android.view.MotionEvent);
   public boolean dispatchTouchEvent(android.view.MotionEvent);
   public boolean initIcuData(java.lang.String);
   public boolean isCodeSigningEnabled();
@@ -374,6 +376,7 @@
   public void onActivityStopped(android.app.Activity);
   public void onConfigurationChanged(android.content.res.Configuration);
   public void onLowMemory();
+  public void onPointerCaptureChanged(boolean);
   public void onSurfaceDestroyed();
   public void onTrimMemory(int);
   public void pause();
@@ -388,6 +391,7 @@
   public void setEcosystemValue(java.lang.String, java.lang.Object);
   public void setGameListener(com.migo.runtime.callback.GameSessionListener);
   public void setGameLogHandler(com.migo.runtime.callback.GameLogHandler);
+  public void setInputView(android.view.View);
   public void setListener(com.migo.runtime.callback.GameSessionListener);
   public void setMessageHandler(com.migo.runtime.GameSession$MessageHandler);
   public void setNavigationHandler(com.migo.runtime.callback.NavigationHandler);

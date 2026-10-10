@@ -152,6 +152,16 @@ final class NativeBridge {
      * @param count     Number of touch points
      * @param buffer    DirectByteBuffer containing packed TouchPoint data
      */
+    static native boolean onPointerEvent(int sessionId, int kind, int button, float x, float y,
+                                         double timeMs);
+
+    static native boolean onWheelEvent(int sessionId, int deltaMode, double dx, double dy,
+                                       double dz, double timeMs);
+
+    static native void onPointerLockChanged(int sessionId, boolean locked);
+
+    static native void onWindowStateChanged(int sessionId, String stateJson);
+
     static native boolean onTouchEvent(int sessionId, int action, long time, int count,
                                               ByteBuffer buffer);
 
