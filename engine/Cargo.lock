@@ -1869,6 +1869,7 @@ dependencies = [
  "deno_core",
  "deno_error",
  "futures",
+ "getrandom 0.3.4",
  "glow",
  "http",
  "image",

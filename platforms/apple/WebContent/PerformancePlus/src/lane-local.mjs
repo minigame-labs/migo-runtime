@@ -331,6 +331,19 @@ export function op_get_menu_button_rect() {
   return described("menuButtonRect", "getMenuButtonBoundingClientRect");
 }
 
+// ---- secure random values -------------------------------------------------------
+
+// WebCrypto fills at most this many bytes per call.
+const RANDOM_CHUNK = 65536;
+
+/** `op_crypto_random_values`: the page's cryptographically secure source. */
+export function op_crypto_random_values(out) {
+  const bytes = bytesOf(out, "out");
+  for (let offset = 0; offset < bytes.byteLength; offset += RANDOM_CHUNK) {
+    crypto.getRandomValues(bytes.subarray(offset, Math.min(offset + RANDOM_CHUNK, bytes.byteLength)));
+  }
+}
+
 // ---- the host's ecosystem -------------------------------------------------------
 //
 // This profile carries no ecosystem channel, so there is no ecosystem: the

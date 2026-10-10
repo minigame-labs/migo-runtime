@@ -75,6 +75,9 @@ migo-services = { path = "../services", default-features = false }
 serde.workspace = true
 reqwest.workspace = true
 base64 = "0.22"
+# The OS's cryptographically secure random source, for
+# UserCryptoManager.getRandomValues. Already in the graph through tungstenite.
+getrandom = "0.3"
 percent-encoding = "2.3"
 thiserror.workspace = true
 http.workspace = true

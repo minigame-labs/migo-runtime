@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `createOpenSettingButton`. `UserCryptoManager.getRandomValues` answers from the OS's cryptographically secure
+  random source (up to 1048576 bytes).
 - The share menu on every host. After each `showShareMenu` / `hideShareMenu` / `updateShareMenu` the host receives the
   menu's whole state (C ABI `MIGO_SHARE_SET_SHARE_MENU`, Android `ShareHandler.onShareMenuChanged`); when the player
   picks "share", "share to moments" or "add to favorites" the host asks the game (`MIGO_SHARE_EVENT_MENU_SHARE`,
@@ -314,6 +316,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- The native buttons were inert objects, and a user-info button's tap could only be raised by an internal hook with an
+  empty profile. `createUserInfoButton`, `createOpenSettingButton`, `createGameClubButton` and `createFeedbackButton`
+  are hit-tested by the engine: a touch that begins on a shown button is the button's and content does not see it, and
+  a tap does what the button does -- the user-info button asks the host for `scope.userInfo` when it is not yet granted
+  and hands `onTap` the host's `getUserInfo` answer, the setting button opens the settings, the game-club and feedback
+  buttons ask the host to open its pages. A button is shown from creation; moving it is writing its style. (Drawing
+  the button is yet to come; one laid over content's own art already works.)
+- `getMenuButtonBoundingClientRect` answered a capsule rect sized for a 375-pixel-wide window on every host. A host
+  without a menu button now answers an empty rect at the top-right of the safe area.
+- `getRealtimeLogManager`'s entries reach the host's game log (`source: "realtime"`, with the `setFilterMsg` /
+  `addFilterMsg` keywords; the console when no host takes them), and `reportEvent`, `reportMonitor`,
+  `reportPerformance` and `reportScene` reach the host's analytics through the ecosystem channel -- all were no-ops
+  reporting success. `reportScene` takes the platform's `reportScene(Object)` and makes the platform's checks,
+  including a scene reported twice in one launch. Game log entries carry `source: "gameLog"`.
 - The image a share names reached the host as content's own string, so a host that opened it read whatever file
   content named. `shareAppMessage`'s and `shareMessageToFriend`'s `imageUrl` and `showShareImageMenu`'s `path` now
   reach it as the real file behind the sandbox path (only `shareAppMessage` may name an http(s) image), and a path

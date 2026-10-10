@@ -21,6 +21,7 @@ ObjectDefineProperties(globalThis, {
 
     // UI Buttons
     createUserInfoButton: core.propNonEnumerable(buttonsApi.createUserInfoButton),
+    createOpenSettingButton: core.propNonEnumerable(buttonsApi.createOpenSettingButton),
     createGameClubButton: core.propNonEnumerable(buttonsApi.createGameClubButton),
     createFeedbackButton: core.propNonEnumerable(buttonsApi.createFeedbackButton),
     getMenuButtonBoundingClientRect: core.propNonEnumerable(buttonsApi.getMenuButtonBoundingClientRect),

@@ -30,6 +30,7 @@ mod inner_audio_canplay;
 mod input_clock;
 mod install_receipt;
 mod intl;
+mod native_buttons;
 mod op_args_agreement;
 #[cfg(feature = "api-connectivity")]
 mod permission_reporting;
@@ -39,6 +40,7 @@ mod permission_reporting;
 mod permission_revocation;
 mod prelude;
 mod published_namespace_isolation;
+mod reporting;
 mod request_through_the_engine;
 mod runtime_restart_boundary;
 mod share;

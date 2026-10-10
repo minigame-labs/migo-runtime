@@ -47,6 +47,17 @@ export const offTouchCancel = (fn) => removeListener('cancel', fn);
 let _queue = [];
 let _scheduled = false;
 
+// A native control above the game -- a user-info button -- owns the touches
+// that begin on it, as the common platform's native views do: content does not
+// see them. The claimer is asked about every touch while it is `active()`;
+// `claims(type, touch, changed)` answers whether the touch is the control's.
+let _claimer = null;
+
+/** Install the one claimer (ui/02_buttons.js). */
+export function _setTouchClaimer(claimer) {
+  _claimer = claimer;
+}
+
 /**
  * Called from native (Rust / V8 binding)
  *
@@ -88,7 +99,8 @@ function _drain() {
 
     const type = TYPE_MAP[ev.typeCode] || 'move';
     const listeners = TOUCH_LISTENERS[type];
-    if (!listeners || listeners.size === 0) continue;
+    const claiming = _claimer !== null && _claimer.active();
+    if ((!listeners || listeners.size === 0) && !claiming) continue;
 
     // Snapshot listeners: a handler that adds/removes listeners mid-dispatch
     // must not change who receives the current event (stable event semantics).
@@ -130,11 +142,15 @@ function _drain() {
       const flags = view.getUint32(base + 16, true);
 
       const touch = _makeTouch(id, x, y, pressure);
+      if (claiming && _claimer.claims(type, touch, (flags & FLAG_CHANGED) !== 0)) continue;
       // `touches` = points still on the surface; a lifted/cancelled pointer
       // (FLAG_REMOVED) appears only in `changedTouches`.
       if (!(flags & FLAG_REMOVED)) touches.push(touch);
       if (flags & FLAG_CHANGED) changedTouches.push(touch);
     }
+    // Every changed touch was a control's: content has no event to hear.
+    if (claiming && changedTouches.length === 0) continue;
+    if (!listeners || listeners.size === 0) continue;
 
     const event = {
       type,

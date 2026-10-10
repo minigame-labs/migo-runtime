@@ -97,8 +97,9 @@ pub fn op_get_menu_button_rect(state: &mut OpState) -> Result<String, JsErrorBox
                 .map_err(JsErrorBox::generic);
         }
     }
-    // Fallback: default rect (same as trait default)
-    Ok(r#"{"width":87,"height":32,"top":4,"bottom":36,"left":278,"right":365}"#.to_string())
+    Err(JsErrorBox::generic(
+        "getMenuButtonBoundingClientRect:fail not supported",
+    ))
 }
 
 // ==================== Extension Definition ====================

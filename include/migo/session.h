@@ -325,8 +325,11 @@ typedef void(MIGO_CALL *MigoOnKeepScreenOnFn)(void *user_data, MigoSession *sess
                                               uint8_t keep_on);
 /*
  * One entry from content's game log, for the host to keep or upload: a JSON
- * object with level, key, value and commonInfo, length-delimited UTF-8 borrowed
- * for the call. It stays JSON because value is whatever content logged.
+ * object with source, level, key and value, length-delimited UTF-8 borrowed for
+ * the call. source is "gameLog" (getGameLogManager, with its commonInfo) or
+ * "realtime" (getRealtimeLogManager, with the filterMsg keywords content set and
+ * value the arguments it logged). It stays JSON because value is whatever
+ * content logged.
  */
 typedef void(MIGO_CALL *MigoOnGameLogFn)(void *user_data, MigoSession *session,
                                          const char *entry_json_utf8, uint32_t entry_length);

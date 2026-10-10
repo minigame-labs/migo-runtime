@@ -803,6 +803,8 @@
       "names": {
         "declared_in": "engine/crates/runtime-v8/src/system/20_ecosystem.js",
         "calls": [
+          "FeedbackButton.open",
+          "GameClubButton.open",
           "GameServerManager.broadcastInRoom",
           "GameServerManager.cancelMatch",
           "GameServerManager.changeSeat",
@@ -885,6 +887,10 @@
           "openPhotoTopicView",
           "openPrivacyContract",
           "removeUserCloudStorage",
+          "reportEvent",
+          "reportMonitor",
+          "reportPerformance",
+          "reportScene",
           "reportUserBehaviorBranchAnalytics",
           "requestFacialRecognition",
           "requestFacialVerify",

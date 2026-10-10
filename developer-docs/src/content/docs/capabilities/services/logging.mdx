@@ -23,7 +23,7 @@ sourcePaths:
 void onLog(String logJson);
 ```
 
-`logJson` 是原始 JSON 字符串,解析责任在宿主:javadoc 列出的字段是 `level`(级别)、`key`(事件/指标名)、`value`(值)、`commonInfo`(公共上下文) — 对这 4 个之外的字段不要假定 schema。`onLog` 无返回值、无 sink:不向内容侧回执,不要在回调里做阻塞 I/O(转发到后端请异步)。
+`logJson` 是原始 JSON 字符串,解析责任在宿主:javadoc 列出的字段是 `source`(`gameLog` = `getGameLogManager`、`realtime` = `getRealtimeLogManager`)、`level`(级别)、`key`(事件/指标名或 tag)、`value`(值;实时日志为内容传入的参数数组),以及 `gameLog` 的 `commonInfo`(公共上下文)、`realtime` 的 `filterMsg`(过滤关键字) — 对这些之外的字段不要假定 schema。没有宿主接收时,实时日志写入本地 console。`onLog` 无返回值、无 sink:不向内容侧回执,不要在回调里做阻塞 I/O(转发到后端请异步)。
 
 ## 不实现会怎样
 

@@ -25,6 +25,7 @@ class GameLogManager {
                 throw new Error('log count limit exceeded (max ' + MAX_LOG_COUNT + ')');
             }
             var payload = JSON.stringify({
+                source: 'gameLog',
                 level: level,
                 key: (options.key !== undefined && options.key !== null) ? String(options.key) : 'default',
                 value: options.value,

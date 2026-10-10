@@ -23,7 +23,7 @@ Registration point: `GameSession#setGameLogHandler(GameLogHandler)` (`GameSessio
 void onLog(String logJson);
 ```
 
-`logJson` is a raw JSON string; parsing is the host's responsibility. The fields documented in the javadoc are `level` (severity), `key` (event/metric name), `value` (value), and `commonInfo` (shared context) — do not assume a schema for fields beyond these four. `onLog` has no return value and no sink: it does not acknowledge back to content. Do not perform blocking I/O inside the callback; fan out to a backend asynchronously.
+`logJson` is a raw JSON string; parsing is the host's responsibility. The fields documented in the javadoc are `source` (`gameLog` for `getGameLogManager`, `realtime` for `getRealtimeLogManager`), `level` (severity), `key` (event/metric name or tag), `value` (value; for a realtime entry the arguments content logged), and `gameLog`'s `commonInfo` (shared context) or `realtime`'s `filterMsg` (filter keywords) — do not assume a schema for fields beyond these. With no host to take them, realtime entries go to the local console. `onLog` has no return value and no sink: it does not acknowledge back to content. Do not perform blocking I/O inside the callback; fan out to a backend asynchronously.
 
 ## What happens without an implementation
 
