@@ -94,7 +94,7 @@ public final class DeviceSensorManager implements RuntimeScoped {
      *
      * @param interval "game", "ui", or "normal"
      */
-    public synchronized void startDeviceMotionListening(String interval) {
+    public synchronized boolean startDeviceMotionListening(String interval) {
         LifecycleRequestState.Action action = motionRequest.requestStart(interval);
         if (action == LifecycleRequestState.Action.RESTART) {
             stopDeviceMotionListeningInternal();
@@ -103,7 +103,9 @@ public final class DeviceSensorManager implements RuntimeScoped {
                 || action == LifecycleRequestState.Action.RESTART)
                 && !startDeviceMotionListeningInternal(interval)) {
             motionRequest.startFailed(true);
+            return false;
         }
+        return true;
     }
 
     private boolean startDeviceMotionListeningInternal(String interval) {
@@ -186,7 +188,7 @@ public final class DeviceSensorManager implements RuntimeScoped {
      *
      * @param interval "game", "ui", or "normal"
      */
-    public synchronized void startGyroscope(String interval) {
+    public synchronized boolean startGyroscope(String interval) {
         LifecycleRequestState.Action action = gyroscopeRequest.requestStart(interval);
         if (action == LifecycleRequestState.Action.RESTART) {
             stopGyroscopeInternal();
@@ -195,7 +197,9 @@ public final class DeviceSensorManager implements RuntimeScoped {
                 || action == LifecycleRequestState.Action.RESTART)
                 && !startGyroscopeInternal(interval)) {
             gyroscopeRequest.startFailed(true);
+            return false;
         }
+        return true;
     }
 
     private boolean startGyroscopeInternal(String interval) {
@@ -261,7 +265,7 @@ public final class DeviceSensorManager implements RuntimeScoped {
      * <p>
      * Frequency: ~5 times/second (200ms interval, SENSOR_DELAY_NORMAL).
      */
-    public synchronized void startCompass() {
+    public synchronized boolean startCompass() {
         LifecycleRequestState.Action action = compassRequest.requestStart(Boolean.TRUE);
         if (action == LifecycleRequestState.Action.RESTART) {
             stopCompassInternal();
@@ -270,7 +274,9 @@ public final class DeviceSensorManager implements RuntimeScoped {
                 || action == LifecycleRequestState.Action.RESTART)
                 && !startCompassInternal()) {
             compassRequest.startFailed(true);
+            return false;
         }
+        return true;
     }
 
     private boolean startCompassInternal() {
@@ -408,7 +414,7 @@ public final class DeviceSensorManager implements RuntimeScoped {
      *
      * @param interval "game", "ui", or "normal"
      */
-    public synchronized void startAccelerometer(String interval) {
+    public synchronized boolean startAccelerometer(String interval) {
         LifecycleRequestState.Action action = accelerometerRequest.requestStart(interval);
         if (action == LifecycleRequestState.Action.RESTART) {
             stopAccelerometerInternal();
@@ -417,7 +423,9 @@ public final class DeviceSensorManager implements RuntimeScoped {
                 || action == LifecycleRequestState.Action.RESTART)
                 && !startAccelerometerInternal(interval)) {
             accelerometerRequest.startFailed(true);
+            return false;
         }
+        return true;
     }
 
     private boolean startAccelerometerInternal(String interval) {
@@ -433,12 +441,14 @@ public final class DeviceSensorManager implements RuntimeScoped {
             public void onSensorChanged(SensorEvent event) {
                 synchronized (DeviceSensorManager.this) {
                     if (accelerometerListener != this || !accelerometerRequest.isActive()) return;
+                    // In g, as every host reports it: Android's m/s^2 divided by
+                    // standard gravity. The axes are already the convention.
                     NativeMethods.onAccelerometerChange(
                             sessionId,
                             token.generation(),
-                            event.values[0],
-                            event.values[1],
-                            event.values[2]
+                            event.values[0] / SensorManager.STANDARD_GRAVITY,
+                            event.values[1] / SensorManager.STANDARD_GRAVITY,
+                            event.values[2] / SensorManager.STANDARD_GRAVITY
                     );
                 }
             }

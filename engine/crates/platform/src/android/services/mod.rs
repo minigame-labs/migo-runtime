@@ -280,7 +280,7 @@ struct AndroidClipboard {
 /// reaches its clipboard.
 impl ClipboardService for AndroidClipboard {
     fn set_data(&self, request_json: &str) -> Result<(), ServiceError> {
-        let request = ClipboardRequest::parse("setClipboardData", request_json)?;
+        let request = HostRequest::parse("setClipboardData", request_json)?;
         let data = request
             .fields
             .get("data")
@@ -294,7 +294,7 @@ impl ClipboardService for AndroidClipboard {
     }
 
     fn get_data(&self, request_json: &str) -> Result<(), ServiceError> {
-        let request = ClipboardRequest::parse("getClipboardData", request_json)?;
+        let request = HostRequest::parse("getClipboardData", request_json)?;
         let outcome = jni::get_clipboard_data(self.host_id).map(|data| {
             let mut fields = serde_json::Map::new();
             fields.insert("data".into(), data.into());
@@ -305,13 +305,16 @@ impl ClipboardService for AndroidClipboard {
     }
 }
 
-/// One clipboard request: content's id and its options.
-struct ClipboardRequest {
+/// One request content made that the SDK answers synchronously: its id and its
+/// options. The answer still travels through the request's hook, in the shape
+/// every host result takes, so content settles it the same way whether this SDK
+/// or a C ABI host answered.
+struct HostRequest {
     request_id: u64,
     fields: serde_json::Map<String, serde_json::Value>,
 }
 
-impl ClipboardRequest {
+impl HostRequest {
     fn parse(api: &str, request_json: &str) -> Result<Self, ServiceError> {
         let malformed = || ServiceError::invalid_param(format!("{api}:fail malformed request"));
         let serde_json::Value::Object(fields) =
@@ -324,6 +327,16 @@ impl ClipboardRequest {
             .and_then(serde_json::Value::as_u64)
             .ok_or_else(malformed)?;
         Ok(Self { request_id, fields })
+    }
+
+    /// The string option `name`, or the request's failure.
+    fn str_field(&self, api: &str, name: &str) -> Result<&str, ServiceError> {
+        self.fields
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                ServiceError::invalid_param(format!("{api}:fail {name} must be a string"))
+            })
     }
 
     /// Deliver the outcome to content's hook, keyed by the request's id.
@@ -385,14 +398,47 @@ struct AndroidScreen {
 }
 
 impl ScreenService for AndroidScreen {
-    fn get_brightness(&self) -> Result<f32, ServiceError> {
-        Ok(jni::get_screen_brightness(self.host_id)?)
+    fn get_brightness(&self, request_json: &str) -> Result<(), ServiceError> {
+        let request = HostRequest::parse("getScreenBrightness", request_json)?;
+        let outcome = jni::get_screen_brightness(self.host_id).and_then(|value| {
+            if value < 0.0 {
+                return Err("no activity".to_string());
+            }
+            let mut fields = serde_json::Map::new();
+            fields.insert("value".into(), f64::from(value).into());
+            Ok(fields)
+        });
+        request.answer(
+            self.host_id,
+            "_internalOnGetScreenBrightnessResult",
+            outcome,
+        );
+        Ok(())
     }
 
-    fn set_brightness(&self, value: f32) -> Result<(), ServiceError> {
-        jni::set_screen_brightness(self.host_id, value)
-            .map(|_| ())
-            .map_err(Into::into)
+    fn set_brightness(&self, request_json: &str) -> Result<(), ServiceError> {
+        let request = HostRequest::parse("setScreenBrightness", request_json)?;
+        let value = request
+            .fields
+            .get("value")
+            .and_then(serde_json::Value::as_f64)
+            .filter(|value| (0.0..=1.0).contains(value))
+            .ok_or_else(|| {
+                ServiceError::invalid_param("setScreenBrightness:fail value must be from 0 to 1")
+            })?;
+        let outcome = jni::set_screen_brightness(self.host_id, value as f32).and_then(|code| {
+            if code == 0 {
+                Ok(serde_json::Map::new())
+            } else {
+                Err("no activity".to_string())
+            }
+        });
+        request.answer(
+            self.host_id,
+            "_internalOnSetScreenBrightnessResult",
+            outcome,
+        );
+        Ok(())
     }
 
     fn set_keep_screen_on(&self, keep_on: bool) -> Result<(), ServiceError> {
@@ -401,10 +447,21 @@ impl ScreenService for AndroidScreen {
             .map_err(Into::into)
     }
 
-    fn set_orientation(&self, value: &str) -> Result<(), ServiceError> {
-        jni::set_device_orientation(self.host_id, value)
-            .map(|_| ())
-            .map_err(Into::into)
+    fn set_orientation(&self, request_json: &str) -> Result<(), ServiceError> {
+        let request = HostRequest::parse("setDeviceOrientation", request_json)?;
+        let value = request.str_field("setDeviceOrientation", "value")?;
+        let outcome =
+            jni::set_device_orientation(self.host_id, value).and_then(|code| match code {
+                0 => Ok(serde_json::Map::new()),
+                -2 => Err(format!("invalid value {value}")),
+                _ => Err("no activity".to_string()),
+            });
+        request.answer(
+            self.host_id,
+            "_internalOnSetDeviceOrientationResult",
+            outcome,
+        );
+        Ok(())
     }
 
     fn start_capture_screen(&self) -> Result<(), ServiceError> {
@@ -415,10 +472,68 @@ impl ScreenService for AndroidScreen {
         Ok(jni::stop_capture_screen(self.host_id)?)
     }
 
+    fn get_screen_recording_state(&self, request_json: &str) -> Result<(), ServiceError> {
+        let request = HostRequest::parse("getScreenRecordingState", request_json)?;
+        let outcome = jni::get_screen_recording_state(self.host_id).and_then(|state| {
+            let state = match state {
+                1 => "on",
+                0 => "off",
+                -1 => return Err("not supported".to_string()),
+                _ => return Err("no activity".to_string()),
+            };
+            let mut fields = serde_json::Map::new();
+            fields.insert("state".into(), state.into());
+            Ok(fields)
+        });
+        request.answer(
+            self.host_id,
+            "_internalOnGetScreenRecordingStateResult",
+            outcome,
+        );
+        Ok(())
+    }
+
+    fn start_screen_recording_observer(&self) -> Result<(), ServiceError> {
+        Ok(jni::start_screen_recording_observer(self.host_id)?)
+    }
+
+    fn stop_screen_recording_observer(&self) -> Result<(), ServiceError> {
+        Ok(jni::stop_screen_recording_observer(self.host_id)?)
+    }
+
+    fn set_visual_effect_on_capture(&self, request_json: &str) -> Result<(), ServiceError> {
+        let request = HostRequest::parse("setVisualEffectOnCapture", request_json)?;
+        let hidden = request.str_field("setVisualEffectOnCapture", "visualEffect")? == "hidden";
+        let outcome = jni::set_visual_effect_on_capture(self.host_id, hidden).and_then(|code| {
+            if code == 0 {
+                Ok(serde_json::Map::new())
+            } else {
+                Err("no activity".to_string())
+            }
+        });
+        request.answer(
+            self.host_id,
+            "_internalOnSetVisualEffectOnCaptureResult",
+            outcome,
+        );
+        Ok(())
+    }
+
     fn set_enable_debug(&self, enabled: bool) -> Result<(), ServiceError> {
         jni::set_enable_debug(self.host_id, enabled)
             .map(|_| ())
             .map_err(Into::into)
+    }
+}
+
+// ==================== Motion sensors ====================
+
+/// A sensor start's answer: started, or the device has no such sensor.
+fn sensor_started(started: bool) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    if started {
+        Ok(serde_json::Map::new())
+    } else {
+        Err("no such sensor on this device".to_string())
     }
 }
 
@@ -429,8 +544,19 @@ struct AndroidDeviceMotion {
 }
 
 impl DeviceMotionService for AndroidDeviceMotion {
-    fn start(&self, interval: &str) -> Result<(), ServiceError> {
-        Ok(jni::start_device_motion(self.host_id, interval)?)
+    fn start(&self, request_json: &str) -> Result<(), ServiceError> {
+        let request = HostRequest::parse("startDeviceMotionListening", request_json)?;
+        let outcome = jni::start_device_motion(
+            self.host_id,
+            request.str_field("startDeviceMotionListening", "interval")?,
+        )
+        .and_then(sensor_started);
+        request.answer(
+            self.host_id,
+            "_internalOnStartDeviceMotionListeningResult",
+            outcome,
+        );
+        Ok(())
     }
 
     fn stop(&self) -> Result<(), ServiceError> {
@@ -445,8 +571,15 @@ struct AndroidGyroscope {
 }
 
 impl GyroscopeService for AndroidGyroscope {
-    fn start(&self, interval: &str) -> Result<(), ServiceError> {
-        Ok(jni::start_gyroscope(self.host_id, interval)?)
+    fn start(&self, request_json: &str) -> Result<(), ServiceError> {
+        let request = HostRequest::parse("startGyroscope", request_json)?;
+        let outcome = jni::start_gyroscope(
+            self.host_id,
+            request.str_field("startGyroscope", "interval")?,
+        )
+        .and_then(sensor_started);
+        request.answer(self.host_id, "_internalOnStartGyroscopeResult", outcome);
+        Ok(())
     }
 
     fn stop(&self) -> Result<(), ServiceError> {
@@ -461,8 +594,11 @@ struct AndroidCompass {
 }
 
 impl CompassService for AndroidCompass {
-    fn start(&self) -> Result<(), ServiceError> {
-        Ok(jni::start_compass(self.host_id)?)
+    fn start(&self, request_json: &str) -> Result<(), ServiceError> {
+        let request = HostRequest::parse("startCompass", request_json)?;
+        let outcome = jni::start_compass(self.host_id).and_then(sensor_started);
+        request.answer(self.host_id, "_internalOnStartCompassResult", outcome);
+        Ok(())
     }
 
     fn stop(&self) -> Result<(), ServiceError> {
@@ -477,8 +613,15 @@ struct AndroidAccelerometer {
 }
 
 impl AccelerometerService for AndroidAccelerometer {
-    fn start(&self, interval: &str) -> Result<(), ServiceError> {
-        Ok(jni::start_accelerometer(self.host_id, interval)?)
+    fn start(&self, request_json: &str) -> Result<(), ServiceError> {
+        let request = HostRequest::parse("startAccelerometer", request_json)?;
+        let outcome = jni::start_accelerometer(
+            self.host_id,
+            request.str_field("startAccelerometer", "interval")?,
+        )
+        .and_then(sensor_started);
+        request.answer(self.host_id, "_internalOnStartAccelerometerResult", outcome);
+        Ok(())
     }
 
     fn stop(&self) -> Result<(), ServiceError> {

@@ -9,15 +9,17 @@
 use migo_capi_abi::host_services::{
     MIGO_HOST_SERVICE_AD, MIGO_HOST_SERVICE_AUTH, MIGO_HOST_SERVICE_CLIPBOARD,
     MIGO_HOST_SERVICE_IMAGE, MIGO_HOST_SERVICE_INTERACTION, MIGO_HOST_SERVICE_LOCATION,
-    MIGO_HOST_SERVICE_NAVIGATE, MIGO_HOST_SERVICE_PAYMENT, MIGO_HOST_SERVICE_PERMISSION,
-    MIGO_HOST_SERVICE_SCAN_CODE, MIGO_HOST_SERVICE_SHARE, MIGO_HOST_SERVICE_SUBPACKAGE,
+    MIGO_HOST_SERVICE_MOTION, MIGO_HOST_SERVICE_NAVIGATE, MIGO_HOST_SERVICE_PAYMENT,
+    MIGO_HOST_SERVICE_PERMISSION, MIGO_HOST_SERVICE_SCAN_CODE, MIGO_HOST_SERVICE_SCREEN,
+    MIGO_HOST_SERVICE_SHARE, MIGO_HOST_SERVICE_SUBPACKAGE,
 };
 use migo_core::services::{
-    AdService, AuthService, BatteryService, ClipboardService, CommerceServices,
-    ConnectivityServices, GameLogService, ImageApiService, InteractionService, KeyboardService,
-    LocationService, MediaServices, NavigateService, NetworkService, PaymentService,
-    PermissionService, ScanCodeService, ScreenService, SensorServices, ShareService,
-    SubpackageService, SystemInfoService, SystemUtilServices, VibrationService,
+    AccelerometerService, AdService, AuthService, BatteryService, ClipboardService,
+    CommerceServices, CompassService, ConnectivityServices, DeviceMotionService, GameLogService,
+    GyroscopeService, ImageApiService, InteractionService, KeyboardService, LocationService,
+    MediaServices, NavigateService, NetworkService, PaymentService, PermissionService,
+    ScanCodeService, ScreenService, SensorServices, ShareService, SubpackageService,
+    SystemInfoService, SystemUtilServices, VibrationService,
 };
 use migo_core::{DeviceServiceProvider, FrameClock, HostNotifier};
 use shared::protocol::error::ServiceError;
@@ -170,7 +172,92 @@ impl SensorServices for CapiDeviceServices {
     }
 
     fn screen(&self) -> Option<Arc<dyn ScreenService>> {
-        self.device.screen()
+        let keep_on = self.device.screen();
+        let channel = self.host_service(MIGO_HOST_SERVICE_SCREEN);
+        (keep_on.is_some() || channel.is_some())
+            .then(|| Arc::new(CapiScreen { keep_on, channel }) as Arc<dyn ScreenService>)
+    }
+
+    fn accelerometer(&self) -> Option<Arc<dyn AccelerometerService>> {
+        self.host_service(MIGO_HOST_SERVICE_MOTION)
+            .map(|services| services as Arc<dyn AccelerometerService>)
+    }
+
+    fn gyroscope(&self) -> Option<Arc<dyn GyroscopeService>> {
+        self.host_service(MIGO_HOST_SERVICE_MOTION)
+            .map(|services| services as Arc<dyn GyroscopeService>)
+    }
+
+    fn compass(&self) -> Option<Arc<dyn CompassService>> {
+        self.host_service(MIGO_HOST_SERVICE_MOTION)
+            .map(|services| services as Arc<dyn CompassService>)
+    }
+
+    fn device_motion(&self) -> Option<Arc<dyn DeviceMotionService>> {
+        self.host_service(MIGO_HOST_SERVICE_MOTION)
+            .map(|services| services as Arc<dyn DeviceMotionService>)
+    }
+}
+
+/// The screen as a C host supplies it: keeping it on is the typed
+/// `on_keep_screen_on` callback the ABI has always had, and everything else is the
+/// channel's screen service. Either may be absent; each method fails as not
+/// supported without its own.
+struct CapiScreen {
+    keep_on: Option<Arc<dyn ScreenService>>,
+    channel: Option<Arc<CapiHostServices>>,
+}
+
+impl CapiScreen {
+    fn channel(&self, what: &str) -> Result<&CapiHostServices, ServiceError> {
+        self.channel
+            .as_deref()
+            .ok_or_else(|| ServiceError::not_supported(format!("{what}:fail not supported")))
+    }
+}
+
+impl ScreenService for CapiScreen {
+    fn set_keep_screen_on(&self, keep_on: bool) -> Result<(), ServiceError> {
+        match &self.keep_on {
+            Some(screen) => screen.set_keep_screen_on(keep_on),
+            None => Err(ServiceError::not_supported(
+                "setKeepScreenOn:fail not supported",
+            )),
+        }
+    }
+    fn get_brightness(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.channel("getScreenBrightness")?
+            .get_brightness(request_json)
+    }
+    fn set_brightness(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.channel("setScreenBrightness")?
+            .set_brightness(request_json)
+    }
+    fn set_orientation(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.channel("setDeviceOrientation")?
+            .set_orientation(request_json)
+    }
+    fn start_capture_screen(&self) -> Result<(), ServiceError> {
+        self.channel("onUserCaptureScreen")?.start_capture_screen()
+    }
+    fn stop_capture_screen(&self) -> Result<(), ServiceError> {
+        self.channel("offUserCaptureScreen")?.stop_capture_screen()
+    }
+    fn get_screen_recording_state(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.channel("getScreenRecordingState")?
+            .get_screen_recording_state(request_json)
+    }
+    fn start_screen_recording_observer(&self) -> Result<(), ServiceError> {
+        self.channel("onScreenRecordingStateChanged")?
+            .start_screen_recording_observer()
+    }
+    fn stop_screen_recording_observer(&self) -> Result<(), ServiceError> {
+        self.channel("offScreenRecordingStateChanged")?
+            .stop_screen_recording_observer()
+    }
+    fn set_visual_effect_on_capture(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.channel("setVisualEffectOnCapture")?
+            .set_visual_effect_on_capture(request_json)
     }
 }
 
@@ -401,7 +488,6 @@ impl migo_core::RuntimeGenerationNotifier for CapiHostKit {}
 mod tests {
     use super::*;
     use shared::surface::{HostWindowMetrics, PixelRatio};
-    use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
     fn window(width: u32, height: u32, ratio: f32) -> Arc<HostWindowState> {
         Arc::new(HostWindowState::new(HostWindowMetrics::new(

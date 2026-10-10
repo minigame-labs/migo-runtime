@@ -194,6 +194,7 @@ getPrivacySetting
 getRealtimeLogManager
 getRecorderManager
 getScreenBrightness
+getScreenRecordingState
 getSetting
 getSharedCanvas
 getShowSplashAdStatus
@@ -269,6 +270,7 @@ offMouseUp
 offNeedPrivacyAuthorization
 offNetworkStatusChange
 offNetworkWeakChange
+offScreenRecordingStateChanged
 offShareAppMessage
 offShareMessageToFriend
 offShareTimeline
@@ -324,6 +326,7 @@ onMouseUp
 onNeedPrivacyAuthorization
 onNetworkStatusChange
 onNetworkWeakChange
+onScreenRecordingStateChanged
 onShareAppMessage
 onShareMessageToFriend
 onShareTimeline
@@ -398,6 +401,7 @@ setStorage
 setStorageSync
 setTimeout
 setUserCloudStorage
+setVisualEffectOnCapture
 shareAppMessage
 shareMessageToFriend
 showActionSheet
@@ -561,6 +565,7 @@ getPrivacySetting
 getRealtimeLogManager
 getRecorderManager
 getScreenBrightness
+getScreenRecordingState
 getSetting
 getSharedCanvas
 getShowSplashAdStatus
@@ -631,6 +636,7 @@ offMouseUp
 offNeedPrivacyAuthorization
 offNetworkStatusChange
 offNetworkWeakChange
+offScreenRecordingStateChanged
 offShareAppMessage
 offShareMessageToFriend
 offShareTimeline
@@ -686,6 +692,7 @@ onMouseUp
 onNeedPrivacyAuthorization
 onNetworkStatusChange
 onNetworkWeakChange
+onScreenRecordingStateChanged
 onShareAppMessage
 onShareMessageToFriend
 onShareTimeline
@@ -758,6 +765,7 @@ setStorage
 setStorageSync
 setTimeout
 setUserCloudStorage
+setVisualEffectOnCapture
 shareAppMessage
 shareMessageToFriend
 showActionSheet

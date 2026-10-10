@@ -5,6 +5,7 @@ import android.content.Context;
 
 import com.migo.runtime.internal.platform.DeviceSensorManager;
 import com.migo.runtime.internal.platform.ScreenCaptureObserver;
+import com.migo.runtime.internal.platform.ScreenRecordingMonitor;
 
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -77,11 +78,10 @@ public final class SensorExports {
         }
     }
 
-    public static void startDeviceMotionListening(int sessionId, String interval) {
+    /** Whether the sensor started (or will, once the session is in front); false when there is none. */
+    public static boolean startDeviceMotionListening(int sessionId, String interval) {
         DeviceSensorManager mgr = getOrCreateSensorManager(sessionId);
-        if (mgr != null) {
-            mgr.startDeviceMotionListening(interval);
-        }
+        return mgr != null && mgr.startDeviceMotionListening(interval);
     }
 
     public static void stopDeviceMotionListening(int sessionId) {
@@ -91,11 +91,10 @@ public final class SensorExports {
         }
     }
 
-    public static void startGyroscope(int sessionId, String interval) {
+    /** Whether the sensor started (or will, once the session is in front); false when there is none. */
+    public static boolean startGyroscope(int sessionId, String interval) {
         DeviceSensorManager mgr = getOrCreateSensorManager(sessionId);
-        if (mgr != null) {
-            mgr.startGyroscope(interval);
-        }
+        return mgr != null && mgr.startGyroscope(interval);
     }
 
     public static void stopGyroscope(int sessionId) {
@@ -105,11 +104,10 @@ public final class SensorExports {
         }
     }
 
-    public static void startCompass(int sessionId) {
+    /** Whether the sensor started (or will, once the session is in front); false when there is none. */
+    public static boolean startCompass(int sessionId) {
         DeviceSensorManager mgr = getOrCreateSensorManager(sessionId);
-        if (mgr != null) {
-            mgr.startCompass();
-        }
+        return mgr != null && mgr.startCompass();
     }
 
     public static void stopCompass(int sessionId) {
@@ -119,11 +117,10 @@ public final class SensorExports {
         }
     }
 
-    public static void startAccelerometer(int sessionId, String interval) {
+    /** Whether the sensor started (or will, once the session is in front); false when there is none. */
+    public static boolean startAccelerometer(int sessionId, String interval) {
         DeviceSensorManager mgr = getOrCreateSensorManager(sessionId);
-        if (mgr != null) {
-            mgr.startAccelerometer(interval);
-        }
+        return mgr != null && mgr.startAccelerometer(interval);
     }
 
     public static void stopAccelerometer(int sessionId) {
@@ -187,9 +184,42 @@ public final class SensorExports {
                 ScreenCaptureObserver::destroy);
     }
 
+    // ==================== Screen recording ====================
+
+    private static Activity activityOf(int sessionId) {
+        RuntimeContext ctx = RuntimeRegistry.get(sessionId);
+        return ctx != null ? ctx.getActivity() : null;
+    }
+
+    /** {@link ScreenRecordingMonitor#currentState}, or -2 when the session has no activity. */
+    public static int getScreenRecordingState(int sessionId) {
+        Activity activity = activityOf(sessionId);
+        return activity != null ? ScreenRecordingMonitor.currentState(activity) : -2;
+    }
+
+    public static void startScreenRecordingObserver(int sessionId) {
+        Activity activity = activityOf(sessionId);
+        if (activity != null) {
+            ScreenRecordingMonitor.start(sessionId, activity);
+        }
+    }
+
+    public static void stopScreenRecordingObserver(int sessionId) {
+        ScreenRecordingMonitor.stop(sessionId);
+    }
+
+    /** 0 once applied, -1 when the session has no activity. */
+    public static int setVisualEffectOnCapture(int sessionId, boolean hidden) {
+        Activity activity = activityOf(sessionId);
+        if (activity == null) return -1;
+        ScreenRecordingMonitor.setHiddenFromCapture(activity, hidden);
+        return 0;
+    }
+
     public static void destroyAll(int sessionId) {
         ResourceCleanup.runAll(
                 () -> destroySensorManager(sessionId),
-                () -> destroyCaptureObserver(sessionId));
+                () -> destroyCaptureObserver(sessionId),
+                () -> stopScreenRecordingObserver(sessionId));
     }
 }

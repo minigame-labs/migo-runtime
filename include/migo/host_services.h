@@ -50,6 +50,8 @@ typedef uint32_t MigoHostService;
 #define MIGO_HOST_SERVICE_SCAN_CODE 10U
 #define MIGO_HOST_SERVICE_LOCATION 11U
 #define MIGO_HOST_SERVICE_IMAGE 12U
+#define MIGO_HOST_SERVICE_MOTION 13U
+#define MIGO_HOST_SERVICE_SCREEN 14U
 
 /*
  * Ads. All six are commands addressed to the advert by the adId in their
@@ -176,6 +178,47 @@ typedef uint32_t MigoHostService;
 #define MIGO_IMAGE_CHOOSE_MEDIA 6U
 
 /*
+ * Motion sensors. Each START is a call {"interval"} -- "game" (20 ms), "ui"
+ * (60 ms) or "normal" (200 ms); the compass takes none -- answered {} once the
+ * sensor runs, or failed when the device has none. Each STOP is a command.
+ * Readings go to migo_session_post_sensor_sample, typed: they come up to fifty
+ * times a second.
+ */
+#define MIGO_MOTION_START_ACCELEROMETER 0U
+#define MIGO_MOTION_STOP_ACCELEROMETER 1U
+#define MIGO_MOTION_START_GYROSCOPE 2U
+#define MIGO_MOTION_STOP_GYROSCOPE 3U
+#define MIGO_MOTION_START_COMPASS 4U
+#define MIGO_MOTION_STOP_COMPASS 5U
+#define MIGO_MOTION_START_DEVICE_MOTION 6U
+#define MIGO_MOTION_STOP_DEVICE_MOTION 7U
+
+/*
+ * The screen. Calls: GET_BRIGHTNESS -> {"value"} (0..1); SET_BRIGHTNESS
+ * {"value"}; SET_DEVICE_ORIENTATION {"value": "portrait" | "landscape"};
+ * GET_RECORDING_STATE -> {"state": "on" | "off"}, failed where the platform
+ * cannot tell; SET_VISUAL_EFFECT_ON_CAPTURE {"visualEffect": "none" | "hidden"},
+ * hidden keeping the game out of screenshots and recordings. The observer
+ * commands run while content listens, and report through the events:
+ * USER_CAPTURE_SCREEN {} when the player takes a screenshot,
+ * RECORDING_STATE_CHANGE {"state"}, and DEVICE_ORIENTATION_CHANGE {"value":
+ * "portrait" | "landscape" | "landscapeReverse"} whenever the device turns.
+ * Keeping the screen on stays MigoHostCallbacks.on_keep_screen_on.
+ */
+#define MIGO_SCREEN_GET_BRIGHTNESS 0U
+#define MIGO_SCREEN_SET_BRIGHTNESS 1U
+#define MIGO_SCREEN_SET_DEVICE_ORIENTATION 2U
+#define MIGO_SCREEN_START_CAPTURE_OBSERVER 3U
+#define MIGO_SCREEN_STOP_CAPTURE_OBSERVER 4U
+#define MIGO_SCREEN_GET_RECORDING_STATE 5U
+#define MIGO_SCREEN_START_RECORDING_OBSERVER 6U
+#define MIGO_SCREEN_STOP_RECORDING_OBSERVER 7U
+#define MIGO_SCREEN_SET_VISUAL_EFFECT_ON_CAPTURE 8U
+#define MIGO_SCREEN_EVENT_USER_CAPTURE_SCREEN 0U
+#define MIGO_SCREEN_EVENT_DEVICE_ORIENTATION_CHANGE 1U
+#define MIGO_SCREEN_EVENT_RECORDING_STATE_CHANGE 2U
+
+/*
  * Content's permission scopes, in migo.getSetting()'s order. The host decides
  * each; until it reports one, content's capability calls that need it fail with
  * "auth deny", and getSetting omits it -- nobody has decided, which content
@@ -242,6 +285,44 @@ MIGO_STATIC_ASSERT(offsetof(MigoAppAuthorizeSetting, struct_size) == 0,
                    "every versioned struct must begin with struct_size");
 MIGO_STATIC_ASSERT(sizeof(MigoAppAuthorizeSetting) == 20,
                    "MigoAppAuthorizeSetting size changed");
+
+/* Which sensor a MigoSensorSample comes from, and what its values are. */
+typedef uint32_t MigoSensorKind;
+/* values = x, y, z in g, gravity included: x right, y up the screen, z out of it,
+ * so a device lying face up reads z = +1. Convert a platform that reports m/s^2
+ * or the opposite sign. */
+#define MIGO_SENSOR_ACCELEROMETER 0U
+/* values = x, y, z angular velocity in rad/s about the same axes. */
+#define MIGO_SENSOR_GYROSCOPE 1U
+/* values = alpha (0..360), beta (-180..180), gamma (-90..90), in degrees. */
+#define MIGO_SENSOR_DEVICE_MOTION 2U
+/* values[0] = heading in degrees from magnetic north (0..360); the others 0. */
+#define MIGO_SENSOR_COMPASS 3U
+
+/* How far a compass heading can be trusted. Zero is "unknown". */
+typedef uint32_t MigoCompassAccuracy;
+#define MIGO_COMPASS_ACCURACY_UNKNOWN 0U
+#define MIGO_COMPASS_ACCURACY_HIGH 1U
+#define MIGO_COMPASS_ACCURACY_MEDIUM 2U
+#define MIGO_COMPASS_ACCURACY_LOW 3U
+#define MIGO_COMPASS_ACCURACY_NO_CONTACT 4U
+#define MIGO_COMPASS_ACCURACY_UNRELIABLE 5U
+
+/* One reading from a sensor content started through MIGO_HOST_SERVICE_MOTION.
+ * compass_accuracy is a MIGO_COMPASS_ACCURACY_* for a compass reading and 0
+ * otherwise. */
+typedef struct MigoSensorSample {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    MigoSensorKind kind;
+    MigoCompassAccuracy compass_accuracy;
+    double values[3];
+} MigoSensorSample;
+
+MIGO_STATIC_ASSERT(offsetof(MigoSensorSample, struct_size) == 0,
+                   "every versioned struct must begin with struct_size");
+MIGO_STATIC_ASSERT(offsetof(MigoSensorSample, values) == 16, "MigoSensorSample layout changed");
+MIGO_STATIC_ASSERT(sizeof(MigoSensorSample) == 40, "MigoSensorSample size changed");
 
 /*
  * The largest payload or message either direction carries, in bytes. A longer
@@ -378,6 +459,17 @@ MIGO_API MigoResult MIGO_CALL migo_session_set_system_settings(MigoSession *sess
  */
 MIGO_API MigoResult MIGO_CALL migo_session_set_app_authorize_setting(
     MigoSession *session, const MigoAppAuthorizeSetting *setting);
+
+/*
+ * Deliver one sensor reading, from any thread, while a Surface is attached.
+ * Readings are dropped rather than queued without bound when content falls
+ * behind. Returns MIGO_ERROR_INVALID_ARGUMENT for a NULL or malformed sample, a
+ * kind or accuracy this header does not define, a value that is not finite, or
+ * when the host did not declare MIGO_HOST_SERVICE_MOTION; MIGO_ERROR_INVALID_STATE
+ * with no Surface attached.
+ */
+MIGO_API MigoResult MIGO_CALL migo_session_post_sensor_sample(MigoSession *session,
+                                                              const MigoSensorSample *sample);
 
 MIGO_END_DECLS
 

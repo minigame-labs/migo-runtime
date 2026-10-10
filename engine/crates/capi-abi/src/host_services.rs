@@ -40,6 +40,8 @@ pub const MIGO_HOST_SERVICE_CLIPBOARD: u32 = 9;
 pub const MIGO_HOST_SERVICE_SCAN_CODE: u32 = 10;
 pub const MIGO_HOST_SERVICE_LOCATION: u32 = 11;
 pub const MIGO_HOST_SERVICE_IMAGE: u32 = 12;
+pub const MIGO_HOST_SERVICE_MOTION: u32 = 13;
+pub const MIGO_HOST_SERVICE_SCREEN: u32 = 14;
 
 /// Every service this library knows. A host declaring a bit outside it was
 /// built against a newer header than the library it runs with.
@@ -55,7 +57,9 @@ pub const MIGO_HOST_SERVICES_KNOWN: u64 = (1 << MIGO_HOST_SERVICE_AD)
     | (1 << MIGO_HOST_SERVICE_CLIPBOARD)
     | (1 << MIGO_HOST_SERVICE_SCAN_CODE)
     | (1 << MIGO_HOST_SERVICE_LOCATION)
-    | (1 << MIGO_HOST_SERVICE_IMAGE);
+    | (1 << MIGO_HOST_SERVICE_IMAGE)
+    | (1 << MIGO_HOST_SERVICE_MOTION)
+    | (1 << MIGO_HOST_SERVICE_SCREEN);
 
 // ---- Methods, numbered per service. ----
 
@@ -110,6 +114,28 @@ pub const MIGO_IMAGE_COMPRESS_IMAGE: u32 = 3;
 pub const MIGO_IMAGE_CHOOSE_IMAGE: u32 = 4;
 pub const MIGO_IMAGE_CHOOSE_MESSAGE_FILE: u32 = 5;
 pub const MIGO_IMAGE_CHOOSE_MEDIA: u32 = 6;
+
+pub const MIGO_MOTION_START_ACCELEROMETER: u32 = 0;
+pub const MIGO_MOTION_STOP_ACCELEROMETER: u32 = 1;
+pub const MIGO_MOTION_START_GYROSCOPE: u32 = 2;
+pub const MIGO_MOTION_STOP_GYROSCOPE: u32 = 3;
+pub const MIGO_MOTION_START_COMPASS: u32 = 4;
+pub const MIGO_MOTION_STOP_COMPASS: u32 = 5;
+pub const MIGO_MOTION_START_DEVICE_MOTION: u32 = 6;
+pub const MIGO_MOTION_STOP_DEVICE_MOTION: u32 = 7;
+
+pub const MIGO_SCREEN_GET_BRIGHTNESS: u32 = 0;
+pub const MIGO_SCREEN_SET_BRIGHTNESS: u32 = 1;
+pub const MIGO_SCREEN_SET_DEVICE_ORIENTATION: u32 = 2;
+pub const MIGO_SCREEN_START_CAPTURE_OBSERVER: u32 = 3;
+pub const MIGO_SCREEN_STOP_CAPTURE_OBSERVER: u32 = 4;
+pub const MIGO_SCREEN_GET_RECORDING_STATE: u32 = 5;
+pub const MIGO_SCREEN_START_RECORDING_OBSERVER: u32 = 6;
+pub const MIGO_SCREEN_STOP_RECORDING_OBSERVER: u32 = 7;
+pub const MIGO_SCREEN_SET_VISUAL_EFFECT_ON_CAPTURE: u32 = 8;
+pub const MIGO_SCREEN_EVENT_USER_CAPTURE_SCREEN: u32 = 0;
+pub const MIGO_SCREEN_EVENT_DEVICE_ORIENTATION_CHANGE: u32 = 1;
+pub const MIGO_SCREEN_EVENT_RECORDING_STATE_CHANGE: u32 = 2;
 
 // ---- Events, numbered per service. ----
 
@@ -180,6 +206,62 @@ pub struct MigoAppAuthorizeSetting {
 
 // SAFETY: integers only; v1 requires the complete record.
 unsafe impl AbiStruct for MigoAppAuthorizeSetting {}
+
+pub const MIGO_SENSOR_ACCELEROMETER: u32 = 0;
+pub const MIGO_SENSOR_GYROSCOPE: u32 = 1;
+pub const MIGO_SENSOR_DEVICE_MOTION: u32 = 2;
+pub const MIGO_SENSOR_COMPASS: u32 = 3;
+
+pub const MIGO_COMPASS_ACCURACY_UNKNOWN: u32 = 0;
+pub const MIGO_COMPASS_ACCURACY_HIGH: u32 = 1;
+pub const MIGO_COMPASS_ACCURACY_MEDIUM: u32 = 2;
+pub const MIGO_COMPASS_ACCURACY_LOW: u32 = 3;
+pub const MIGO_COMPASS_ACCURACY_NO_CONTACT: u32 = 4;
+pub const MIGO_COMPASS_ACCURACY_UNRELIABLE: u32 = 5;
+
+/// One reading from a sensor content started through the motion service.
+///
+/// Typed rather than a JSON event: readings come up to fifty times a second per
+/// sensor, and each would otherwise be formatted by the host and parsed twice.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MigoSensorSample {
+    pub header: VersionedHeader,
+    /// A `MIGO_SENSOR_*`.
+    pub kind: u32,
+    /// A `MIGO_COMPASS_ACCURACY_*` for a compass reading, else 0.
+    pub compass_accuracy: u32,
+    /// The reading; see each `MIGO_SENSOR_*` for what the three values are.
+    pub values: [f64; 3],
+}
+
+// SAFETY: integers and floats only; v1 requires the complete record.
+unsafe impl AbiStruct for MigoSensorSample {}
+
+impl MigoSensorSample {
+    /// Copy and validate a caller-owned reading.
+    ///
+    /// # Safety
+    /// `sample` must be null or readable for its announced byte count.
+    pub unsafe fn parse(sample: *const Self) -> Result<Self, MigoResult> {
+        // SAFETY: forwarded from this function's contract.
+        let raw = unsafe { copy_versioned::<Self>(sample.cast::<VersionedHeader>()) }?;
+        let accuracy_ok = if raw.kind == MIGO_SENSOR_COMPASS {
+            raw.compass_accuracy <= MIGO_COMPASS_ACCURACY_UNRELIABLE
+                && raw.values[1] == 0.0
+                && raw.values[2] == 0.0
+        } else {
+            raw.compass_accuracy == 0
+        };
+        if raw.kind > MIGO_SENSOR_COMPASS
+            || !accuracy_ok
+            || raw.values.iter().any(|value| !value.is_finite())
+        {
+            return Err(MIGO_ERROR_INVALID_ARGUMENT);
+        }
+        Ok(raw)
+    }
+}
 
 impl MigoAppAuthorizeSetting {
     /// Copy and validate a caller-owned report.
@@ -340,6 +422,10 @@ pub unsafe fn copy_bounded(value: *const c_char, length: u32) -> Result<String, 
 }
 
 const _: () = assert!(size_of::<MigoAppAuthorizeSetting>() == 20);
+const _: () = assert!(size_of::<MigoSensorSample>() == 40);
+const _: () = assert!(offset_of!(MigoSensorSample, kind) == 8);
+const _: () = assert!(offset_of!(MigoSensorSample, compass_accuracy) == 12);
+const _: () = assert!(offset_of!(MigoSensorSample, values) == 16);
 const _: () = assert!(offset_of!(MigoAppAuthorizeSetting, album) == 8);
 const _: () = assert!(offset_of!(MigoAppAuthorizeSetting, location_reduced_accuracy) == 18);
 const _: () = assert!(offset_of!(MigoHostServiceCall, header) == 0);

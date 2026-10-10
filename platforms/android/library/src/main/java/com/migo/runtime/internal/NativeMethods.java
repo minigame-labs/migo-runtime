@@ -826,6 +826,12 @@ public final class NativeMethods {
 
     // ==================== Screen Capture ====================
 
+    public static void onScreenRecordingStateChanged(int sessionId, String eventJson) {
+        if (sessionId >= 0 && eventJson != null) {
+            NativeBridge.onScreenRecordingStateChanged(sessionId, eventJson);
+        }
+    }
+
     /**
      * Notify that the user took a screenshot.
      * Triggers migo.onUserCaptureScreen listener in JS.

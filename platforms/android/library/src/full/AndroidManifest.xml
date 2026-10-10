@@ -18,6 +18,10 @@
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
+    <!-- onScreenRecordingStateChanged / getScreenRecordingState read the window's
+         recording state (Android 15+). An install-time permission: nothing is asked
+         of the player. -->
+    <uses-permission android:name="android.permission.DETECT_SCREEN_RECORDING" />
 
     <uses-feature
         android:name="android.hardware.camera.any"

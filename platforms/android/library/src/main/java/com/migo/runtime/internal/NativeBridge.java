@@ -433,6 +433,9 @@ final class NativeBridge {
 
     // ==================== Screen Capture ====================
 
+    /** Whether the window is being recorded changed: {@code {"state":"on"|"off"}}. */
+    static native void onScreenRecordingStateChanged(int sessionId, String eventJson);
+
     /**
      * Notify that the user took a screenshot (system screenshot button).
      * Triggers migo.onUserCaptureScreen listener in JS.

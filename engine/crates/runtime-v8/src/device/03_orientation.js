@@ -14,8 +14,18 @@ function _internalTriggerDeviceOrientationChange(value) {
     _listeners.trigger({ value });
 }
 
+// The same change reported as a host-service event, `{"value"}`.
+function _internalOnDeviceOrientationEvent(eventJson) {
+    var event;
+    try { event = JSON.parse(eventJson); } catch (_) { return; }
+    if (event !== null && typeof event === 'object' && typeof event.value === 'string') {
+        _internalTriggerDeviceOrientationChange(event.value);
+    }
+}
+
 export {
     onDeviceOrientationChange,
     offDeviceOrientationChange,
     _internalTriggerDeviceOrientationChange,
+    _internalOnDeviceOrientationEvent,
 };

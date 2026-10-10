@@ -1036,6 +1036,10 @@ pub(crate) extern "system" fn onUserCaptureScreen(
     });
 }
 
+jni_json_callback!(
+    onScreenRecordingStateChanged,
+    "_internalOnScreenRecordingStateEvent"
+);
 jni_json_callback!(onModalResult, "_internalOnModalResult");
 jni_json_callback!(onActionSheetResult, "_internalOnActionSheetResult");
 
