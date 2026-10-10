@@ -124,4 +124,28 @@ public interface AdEventSink {
      * @param adId the handle passed to {@link AdHandler#createAd}
      */
     void emitHide(int adId);
+
+    /** {@link #emitSkipCardClose}: closed without buying. */
+    String SKIP_CARD_CLOSED = "close";
+    /** {@link #emitSkipCardClose}: started buying and did not pay. */
+    String SKIP_CARD_PAY_CANCELLED = "pay_cancel";
+    /** {@link #emitSkipCardClose}: bought the pass. */
+    String SKIP_CARD_PAID = "pay_success";
+
+    /**
+     * Report that the skip card's purchase sheet closed, and what the player did.
+     *
+     * @param adId   the handle passed to {@link AdHandler#createAd}
+     * @param result {@link #SKIP_CARD_CLOSED}, {@link #SKIP_CARD_PAY_CANCELLED}
+     *               or {@link #SKIP_CARD_PAID}; anything else reads as closed
+     */
+    void emitSkipCardClose(int adId, String result);
+
+    /**
+     * Report that the player spent a skip-card pass.
+     *
+     * @param adId      the handle passed to {@link AdHandler#createAd}
+     * @param usedCount passes spent today, this one included
+     */
+    void emitUse(int adId, int usedCount);
 }

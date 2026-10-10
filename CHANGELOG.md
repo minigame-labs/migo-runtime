@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `createAdSkipCard`, through the ad service as ad type `skipCard`: `load()` fetches the offer and `show()` opens the
+  host's purchase sheet; `onClose` carries `result` (`close` / `pay_cancel` / `pay_success`) and `onUse` the passes
+  spent today. Android's `AdEventSink` gains `emitSkipCardClose` and `emitUse`. Without a host, `load()` and `show()`
+  fail with the platform's -1001 and -1002. An advert's `show` event now also reaches `onShow` listeners.
 - The objects of the host's ecosystem, through the same channel: `getGameServerManager` (frame sync: rooms, matching,
   frames, state service and its twelve events), `getRankManager` (challenges; a challenge the player accepted before the
   game listened reaches its first `onChallengeStart` listener), `getMiniReportManager`, `getScenePerformanceManager`

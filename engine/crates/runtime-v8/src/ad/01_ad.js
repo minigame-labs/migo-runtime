@@ -180,6 +180,7 @@ const _AD_CREATE_API = {
   gameBanner: "createGameBanner",
   gameIcon: "createGameIcon",
   gamePortal: "createGamePortal",
+  skipCard: "createAdSkipCard",
 };
 
 class AdBase {
@@ -365,6 +366,7 @@ class AdBase {
         this.#resolveAwaiting("load");
         break;
       case "show":
+        this.#fire("show");
         this.#resolveAwaiting("show");
         break;
       case "error": {
@@ -390,6 +392,11 @@ class AdBase {
         break;
       case "hide":
         this.#fire("hide");
+        break;
+      case "use":
+        this.#fire("use", {
+          usedCount: NumberIsFinite(Number(event.usedCount)) ? Number(event.usedCount) : 0,
+        });
         break;
       default:
         break;
@@ -803,6 +810,65 @@ class RewardedVideoAd extends AdBase {
   offClose(listener) { this._off("close", listener); }
 }
 
+// ==================== AdSkipCard ====================
+
+// What the player did with the purchase sheet.
+const SKIP_CARD_RESULTS = ["close", "pay_cancel", "pay_success"];
+// The common platform's codes for an offer that did not load and a sheet that
+// did not open.
+const SKIP_CARD_LOAD_FAILED = -1001;
+const SKIP_CARD_SHOW_FAILED = -1002;
+
+let _adSkipCard = null;
+
+// The pass that lets the player skip adverts, which the host sells: load()
+// fetches the offer, show() opens the purchase sheet, close says what the
+// player did with it and use that a pass was spent. There is no fallback --
+// without a host there is nothing to buy, and both fail with the platform's
+// codes.
+class AdSkipCard extends AdBase {
+  constructor() {
+    super(["load", "show", "close", "error", "use"], "skipCard", "", {});
+  }
+
+  _closePayload(event) {
+    return { result: SKIP_CARD_RESULTS.includes(event.result) ? event.result : "close" };
+  }
+
+  load() {
+    if (this._hosted) return this._hostRequest(op_ad_load, "load");
+    return this.#withoutHost(SKIP_CARD_LOAD_FAILED, "load");
+  }
+
+  show() {
+    if (this._hosted) return this._hostRequest(op_ad_show, "show");
+    return this.#withoutHost(SKIP_CARD_SHOW_FAILED, "show");
+  }
+
+  #withoutHost(errCode, member) {
+    const res = { errCode, errMsg: member + ":fail not supported" };
+    queueMicrotask(() => _fireAdEvent(this, "error", res));
+    return Promise.reject(res);
+  }
+
+  onLoad(listener) { this._on("load", listener); }
+  offLoad(listener) { this._off("load", listener); }
+  onShow(listener) { this._on("show", listener); }
+  offShow(listener) { this._off("show", listener); }
+  onClose(listener) { this._on("close", listener); }
+  offClose(listener) { this._off("close", listener); }
+  onError(listener) { this._on("error", listener); }
+  offError(listener) { this._off("error", listener); }
+  onUse(listener) { this._on("use", listener); }
+  offUse(listener) { this._off("use", listener); }
+}
+
+/** The one ad skip card. */
+function createAdSkipCard() {
+  if (_adSkipCard === null) _adSkipCard = new AdSkipCard();
+  return _adSkipCard;
+}
+
 // ==================== Factory Functions ====================
 
 function createBannerAd(obj) {
@@ -1069,6 +1135,7 @@ function createGamePortal(obj) {
 }
 
 export {
+  createAdSkipCard,
   createBannerAd,
   createCustomAd,
   createGridAd,

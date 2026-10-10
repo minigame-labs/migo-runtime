@@ -54,6 +54,14 @@ public interface AdHandler {
     String TYPE_GAME_ICON = "gameIcon";
     /** Game recommendation portal: {@code adType} value for {@link #createAd}. */
     String TYPE_GAME_PORTAL = "gamePortal";
+    /**
+     * The pass that lets the player skip adverts, which you sell: {@code adType}
+     * value for {@link #createAd}, with an empty {@code adUnitId}. {@link #loadAd}
+     * fetches the offer and {@link #showAd} opens your purchase sheet; report
+     * what the player did with {@link AdEventSink#emitSkipCardClose} and a pass
+     * spent with {@link AdEventSink#emitUse}.
+     */
+    String TYPE_SKIP_CARD = "skipCard";
 
     /**
      * Create an ad object.

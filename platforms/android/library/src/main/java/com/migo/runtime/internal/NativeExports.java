@@ -3268,6 +3268,28 @@ public final class NativeExports {
         public void emitHide(int adId) {
             emit(adId, "hide", null);
         }
+
+        @Override
+        public void emitSkipCardClose(int adId, String result) {
+            try {
+                JSONObject extra = new JSONObject();
+                extra.put("result", result != null ? result : SKIP_CARD_CLOSED);
+                emit(adId, "close", extra);
+            } catch (JSONException e) {
+                emit(adId, "close", null);
+            }
+        }
+
+        @Override
+        public void emitUse(int adId, int usedCount) {
+            try {
+                JSONObject extra = new JSONObject();
+                extra.put("usedCount", usedCount);
+                emit(adId, "use", extra);
+            } catch (JSONException e) {
+                emit(adId, "use", null);
+            }
+        }
     }
 
     /** Per-session sinks, created on first use and dropped with the session. */

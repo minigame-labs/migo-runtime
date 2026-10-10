@@ -66,6 +66,13 @@ typedef uint32_t MigoHostService;
  * The host is authoritative for an incentivised video's reward: content grants
  * one only when the host's close event says the video was watched to the end
  * (isEnded), and the engine never reports that on the host's behalf.
+ *
+ * CREATE's "adType" is "rewardedVideo", "interstitial", "banner", "custom",
+ * "grid", "gameBanner", "gameIcon", "gamePortal" or "skipCard" -- the pass that
+ * lets a player skip adverts, which the host sells: LOAD fetches the offer, SHOW
+ * opens the purchase sheet, its "close" carries "result" ("close", "pay_cancel"
+ * or "pay_success") and "use" ({"usedCount": passes spent today}) reports a pass
+ * spent.
  */
 #define MIGO_AD_CREATE 0U
 #define MIGO_AD_LOAD 1U
@@ -74,7 +81,7 @@ typedef uint32_t MigoHostService;
 #define MIGO_AD_UPDATE_STYLE 4U
 #define MIGO_AD_DESTROY 5U
 /* {"adId": <the advert's id>, "event": "load"|"error"|"show"|"hide"|"close"|
- * "resize", ...the event's own fields, e.g. "isEnded" on close}. */
+ * "resize"|"use", ...the event's own fields, e.g. "isEnded" on close}. */
 #define MIGO_AD_EVENT_LIFECYCLE 0U
 
 /* Payment: two calls. */

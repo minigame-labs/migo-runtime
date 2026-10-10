@@ -71,6 +71,16 @@ public final class AdSettlementTest {
         public void emitHide(int adId) {
             events.add("hide:" + adId);
         }
+
+        @Override
+        public void emitSkipCardClose(int adId, String result) {
+            events.add("close:" + adId + ":" + result);
+        }
+
+        @Override
+        public void emitUse(int adId, int usedCount) {
+            events.add("use:" + adId + ":" + usedCount);
+        }
     }
 
     private static final int AD_ID = 7;
