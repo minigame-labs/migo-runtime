@@ -17,6 +17,7 @@ mod camera;
 mod clipboard;
 mod codec;
 mod device;
+mod ecosystem;
 mod file;
 mod game_log;
 pub mod host_files;
@@ -45,6 +46,7 @@ pub use device::{
     DeviceServices, GyroscopeService, KeyboardService, MediaServices, RecorderService,
     ScreenService, SensorServices, SystemUtilServices, VibrationService,
 };
+pub use ecosystem::EcosystemService;
 pub use file::FileService;
 pub use game_log::GameLogService;
 pub use image_api::ImageApiService;

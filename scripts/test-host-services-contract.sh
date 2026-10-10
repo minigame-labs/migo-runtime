@@ -162,6 +162,45 @@ def compare(label: str, defined: dict[str, int]) -> None:
         fail(f"{label}: {name} is a number the contract does not reserve")
 
 
+# ---- a service's closed list of names -------------------------------------------
+#
+# The ecosystem service carries content APIs by name; its contract lists every
+# name it may carry, and the runtime module that defines them must list the same:
+# a name only one side knows is a request no host expects, or one content cannot
+# make.
+
+def js_names(text: str, kind: str) -> list[str]:
+    if kind == "events":
+        block = re.search(r"const ECOSYSTEM_EVENTS = \{(.*?)\};", text, re.S)
+        return re.findall(r"^\s+(on[A-Za-z]+):", block.group(1), re.M) if block else []
+    # A request is made by a function of its own or by an object's method.
+    constants = {"calls": ("ECOSYSTEM_CALLS", "ECOSYSTEM_METHODS"), "values": ("ECOSYSTEM_VALUES",)}
+    names = []
+    for constant in constants[kind]:
+        block = re.search(r"const " + constant + r" = \[(.*?)\];", text, re.S)
+        names += re.findall(r"'([A-Za-z]+)'", block.group(1)) if block else []
+    return names
+
+
+for name, service in services.items():
+    names = service.get("names")
+    if names is None:
+        continue
+    source = root / names.get("declared_in", "")
+    if not source.is_file():
+        fail(f"{name}: names.declared_in {names.get('declared_in')!r} is not a file")
+        continue
+    text = runtime_ops.strip_js_comments(source.read_text(encoding="utf-8"))
+    for kind in ("calls", "events", "values"):
+        declared = sorted(js_names(text, kind))
+        listed = names.get(kind, [])
+        if listed != sorted(listed):
+            fail(f"{name}: names.{kind} is not sorted")
+        for missing in sorted(set(declared) - set(listed)):
+            fail(f"{name}: {source.name} declares {kind[:-1]} {missing}, the contract does not")
+        for extra in sorted(set(listed) - set(declared)):
+            fail(f"{name}: the contract lists {kind[:-1]} {extra}, {source.name} does not declare it")
+
 # ---- the C header ----------------------------------------------------------------
 
 header_path = root / "include/migo/host_services.h"

@@ -1043,6 +1043,17 @@ jni_json_callback!(
 jni_json_callback!(onModalResult, "_internalOnModalResult");
 jni_json_callback!(onActionSheetResult, "_internalOnActionSheetResult");
 
+// ==================== Ecosystem ====================
+
+// A result names no file the host hands over, but delivering it releases what
+// was copied out of the package for its request.
+jni_host_files_callback!(
+    onEcosystemResult,
+    "_internalOnEcosystemResult",
+    HostFiles::NONE
+);
+jni_json_callback!(onEcosystemEvent, "_internalOnEcosystemEvent");
+
 // ==================== Device Sensor ====================
 
 pub(crate) extern "system" fn onDeviceMotionChange(

@@ -10,6 +10,8 @@ import android.view.Surface;
 import android.view.View;
 
 import com.migo.runtime.callback.AdHandler;
+import com.migo.runtime.callback.EcosystemHandler;
+import com.migo.runtime.callback.EcosystemReply;
 import com.migo.runtime.callback.NavigationHandler;
 import com.migo.runtime.callback.PaymentHandler;
 import com.migo.runtime.callback.PermissionHandler;
@@ -36,6 +38,7 @@ import com.migo.runtime.internal.util.Logger;
 
 import java.io.Closeable;
 import java.io.File;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -827,6 +830,87 @@ public final class GameSession implements Closeable {
         synchronized (lock) {
             if (state.get() == SessionState.DESTROYED) return;
             NativeExports.setNavigationHandler(sessionId, handler);
+        }
+    }
+
+    /**
+     * Set or clear the ecosystem handler for this session: your app's friends
+     * and groups, cloud storage, live channels, subscriptions and privacy
+     * agreements, which content reaches by API name. With no handler installed
+     * there is no ecosystem -- see {@link EcosystemHandler}.
+     * <p>
+     * Call this before {@link #startGame(String)} for best compatibility.
+     *
+     * @param handler host ecosystem handler, or null to clear
+     */
+    public void setEcosystemHandler(EcosystemHandler handler) {
+        synchronized (lock) {
+            if (state.get() == SessionState.DESTROYED) return;
+            NativeExports.setEcosystemHandler(sessionId, handler);
+        }
+    }
+
+    /**
+     * Post an ecosystem event to the game: {@code onVoIPChatStateChanged},
+     * {@code onBackgroundFetchData}, ... -- one of the events in the runtime's
+     * host-service contract. A name the game does not know reaches no listener.
+     *
+     * @param name the event's API name, such as {@code "onInteractiveStorageModified"}
+     * @param data what its listeners receive, as a tree of {@code Map},
+     *             {@code List}, {@code String}, {@code Number}, {@code Boolean}
+     *             and {@code null}; or null for an empty object
+     * @return whether the event was handed to a running game
+     * @throws IllegalArgumentException for a name that is not an API name, or data
+     *         that is not a JSON tree or is larger than 1 MiB as JSON
+     */
+    public boolean postEcosystemEvent(String name, Map<String, ?> data) {
+        return postEcosystemEvent(name, data, null);
+    }
+
+    /**
+     * Post an ecosystem event whose listeners answer: {@code onCopyUrl} and
+     * {@code onHandoff} (what the listener returns) and
+     * {@code onNeedPrivacyAuthorization} (each {@code resolve()}).
+     * <p>
+     * {@code reply} is called with every answer, the last with {@code done} set:
+     * it is answered even when nothing listens or the runtime restarts first. It
+     * is not called once the session has ended.
+     *
+     * @param name  the event's API name
+     * @param data  what its listeners receive; or null for an empty object
+     * @param reply where content's answers go, or null for none
+     * @return whether the event was handed to a running game; when not,
+     *         {@code reply} is never called
+     * @throws IllegalArgumentException as {@link #postEcosystemEvent(String, Map)}
+     */
+    public boolean postEcosystemEvent(String name, Map<String, ?> data, EcosystemReply reply) {
+        if (!BuildConfig.MIGO_API_SYSTEM) return false;
+        synchronized (lock) {
+            if (!isGameStarted()) return false;
+            NativeExports.postEcosystemEvent(sessionId, name, data, reply);
+            return true;
+        }
+    }
+
+    /**
+     * Report what a synchronous ecosystem getter answers with:
+     * {@code getExtConfigSync}, {@code getExptInfoSync},
+     * {@code getOfficialComponentsInfo} or {@code isChatTool}. Call it whenever
+     * the value changes; the getter reads the latest. Callable before
+     * {@link #startGame(String)}.
+     *
+     * @param name  the getter's API name
+     * @param value what it returns, as a tree of {@code Map}, {@code List},
+     *              {@code String}, {@code Number} and {@code Boolean}; null
+     *              withdraws it, and the getter answers as with no host
+     * @throws IllegalArgumentException for a name that is not an API name, a value
+     *         that is not a JSON tree or is larger than 1 MiB as JSON, or more than
+     *         64 names
+     */
+    public void setEcosystemValue(String name, Object value) {
+        synchronized (lock) {
+            if (state.get() == SessionState.DESTROYED) return;
+            NativeExports.setEcosystemValue(sessionId, name, value);
         }
     }
 

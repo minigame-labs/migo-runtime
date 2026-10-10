@@ -310,6 +310,7 @@ ADDED_AFTER_ARCHIVE = {
     "migo_session_set_app_authorize_setting": "0.9.20",
     "migo_session_post_sensor_sample": "0.9.20",
     "migo_session_post_ble_characteristic_value": "0.9.20",
+    "migo_session_set_ecosystem_value": "0.9.20",
 }
 
 for page in sorted((docs_root / "reference").glob("*.mdx")):

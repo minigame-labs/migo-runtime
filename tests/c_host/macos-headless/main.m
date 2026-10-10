@@ -175,7 +175,8 @@ static const uint64_t HOST_SERVICES = (UINT64_C(1) << MIGO_HOST_SERVICE_AD)
                                       | (UINT64_C(1) << MIGO_HOST_SERVICE_MOTION)
                                       | (UINT64_C(1) << MIGO_HOST_SERVICE_SCREEN)
                                       | (UINT64_C(1) << MIGO_HOST_SERVICE_BLUETOOTH)
-                                      | (UINT64_C(1) << MIGO_HOST_SERVICE_WINDOW);
+                                      | (UINT64_C(1) << MIGO_HOST_SERVICE_WINDOW)
+                                      | (UINT64_C(1) << MIGO_HOST_SERVICE_ECOSYSTEM);
 
 /* The clipboard this host keeps: what content last wrote. */
 static char g_clipboard[256] = "";
@@ -369,6 +370,63 @@ static int handle_bluetooth_call(MigoSession *session, const MigoHostServiceCall
             return 1;
     }
     return 0;
+}
+
+/* ---- the host's ecosystem ------------------------------------------------- */
+
+static void post_ecosystem_event(MigoSession *session, const char *json) {
+    if (migo_session_post_host_service_event(session, MIGO_HOST_SERVICE_ECOSYSTEM,
+                                             MIGO_ECOSYSTEM_EVENT_EVENT, json,
+                                             (uint32_t)strlen(json)) != MIGO_OK) {
+        probe_failure("migo_session_post_host_service_event refused an ecosystem event");
+    }
+}
+
+/* Requests arrive by content API name; the host answers the ones it offers.
+ * Once a group's entry info is asked for, the host asks content what a copied
+ * link carries -- onCopyUrl, answered by REPLY. */
+static int handle_ecosystem_call(MigoSession *session, const MigoHostServiceCall *call,
+                                 const char *payload) {
+    NSDictionary *request = payload_object(payload);
+    if (call->method == MIGO_ECOSYSTEM_REPLY) {
+        if (call->call_id != 0) {
+            probe_failure("an ecosystem reply carried a call id");
+            return 1;
+        }
+        NSDictionary *data = request[@"data"];
+        if (![request[@"replyId"] isEqual:@7] || ![request[@"done"] isEqual:@YES]
+            || ![data isKindOfClass:[NSDictionary class]] || ![data[@"query"] isEqual:@"from=probe"]) {
+            probe_failure("onCopyUrl was not answered with the listener's query");
+            return 1;
+        }
+        /* Content learns its answer arrived from the event that follows it. */
+        post_ecosystem_event(session,
+                             "{\"name\":\"onOfficialComponentsInfoChange\",\"data\":{\"replied\":true}}");
+        return 1;
+    }
+    if (call->method != MIGO_ECOSYSTEM_CALL || request == nil) return 0;
+    NSString *api = request[@"api"];
+    NSDictionary *options = request[@"options"];
+    if ([api isEqual:@"getGroupEnterInfo"]) {
+        complete_ok(session, call->call_id, "{\"encryptedData\":\"probe\",\"iv\":\"iv\"}");
+        post_ecosystem_event(session, "{\"name\":\"onCopyUrl\",\"data\":{},\"replyId\":7}");
+        return 1;
+    }
+    if ([api isEqual:@"shareImageToGroup"]) {
+        if (![options isKindOfClass:[NSDictionary class]] || !is_content_png(options[@"imagePath"])) {
+            probe_failure("shareImageToGroup named something other than content's file");
+            return 1;
+        }
+        complete_ok(session, call->call_id, "");
+        return 1;
+    }
+    if ([api isEqual:@"requestSubscribeMessage"]) {
+        /* The code the API defines for a template the player has not seen. */
+        complete_fail(session, call->call_id, "template not found", 1, 20001);
+        return 1;
+    }
+    complete_fail(session, call->call_id, "not supported", 1, -2);
+    return 1;
 }
 
 /* ---- the desktop window ---------------------------------------------------- */
@@ -758,6 +816,9 @@ static void MIGO_CALL on_host_service_call(void *user_data, MigoSession *session
         case MIGO_HOST_SERVICE_WINDOW:
             if (handle_window_call(session, call, payload)) return;
             break;
+        case MIGO_HOST_SERVICE_ECOSYSTEM:
+            if (handle_ecosystem_call(session, call, payload)) return;
+            break;
         case MIGO_HOST_SERVICE_SUBPACKAGE:
             if (call->method == MIGO_SUBPACKAGE_DOWNLOAD) {
                 /* The subpackage the content's game.json declared, by name and
@@ -929,6 +990,13 @@ int main(int argc, char **argv) {
     authorizations.album = MIGO_AUTHORIZATION_DENIED;
     result = migo_session_set_app_authorize_setting(session, &authorizations);
     if (result != MIGO_OK) return fail("migo_session_set_app_authorize_setting", result);
+    /* The game runs inside a chat tool, with the ext configuration it was given. */
+    static const char ext_config[] = "{\"channel\":\"probe\"}";
+    result = migo_session_set_ecosystem_value(session, "isChatTool", 10, "true", 4);
+    if (result != MIGO_OK) return fail("migo_session_set_ecosystem_value", result);
+    result = migo_session_set_ecosystem_value(session, "getExtConfigSync", 16, ext_config,
+                                              (uint32_t)strlen(ext_config));
+    if (result != MIGO_OK) return fail("migo_session_set_ecosystem_value", result);
 
     /* The layer is owned by this host for the length of the run. Migo retains
      * it across attach and releases its own reference during retirement; the

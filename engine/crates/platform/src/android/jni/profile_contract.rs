@@ -158,6 +158,8 @@ const NATIVE_SYSTEM: &[JniMethod] = methods![
     ("updatePermission", "(ILjava/lang/String;Z)Z"),
     ("onModalResult", "(ILjava/lang/String;)V"),
     ("onActionSheetResult", "(ILjava/lang/String;)V"),
+    ("onEcosystemResult", "(ILjava/lang/String;)V"),
+    ("onEcosystemEvent", "(ILjava/lang/String;)V"),
 ];
 
 const JAVA_CORE: &[JniMethod] = methods![
@@ -330,6 +332,10 @@ const JAVA_SYSTEM: &[JniMethod] = methods![
     ("showLoading", "(ILjava/lang/String;)V"),
     ("hideLoading", "(I)V"),
     ("showActionSheet", "(ILjava/lang/String;)V"),
+    ("ecosystemAvailable", "(I)Z"),
+    ("ecosystemCall", "(ILjava/lang/String;)V"),
+    ("ecosystemReply", "(ILjava/lang/String;)V"),
+    ("ecosystemValue", "(ILjava/lang/String;)Ljava/lang/String;"),
 ];
 
 pub(crate) fn group_methods(
@@ -448,8 +454,10 @@ mod tests {
         // `onPreviewMediaResult`, and `onChooseMediaResult` for the new API).
         // Screen-recording state adds +1 native (`onScreenRecordingStateChanged`).
         // Bluetooth requests the SDK answers add +1 native (`onBluetoothResult`,
-        // one for all of them, keyed by method number).
-        assert_eq!(native.len(), 74, "full NativeBridge surface changed");
+        // one for all of them, keyed by method number). The host's ecosystem
+        // adds +2 native (`onEcosystemResult`, `onEcosystemEvent`), one each for
+        // every API and event it carries by name.
+        assert_eq!(native.len(), 76, "full NativeBridge surface changed");
         // Runtime-generation fencing adds +2 Java (`beginRuntimeRestart`,
         // `completeRuntimeRestart`), both Core: every profile restarts.
         // Concurrent-session correctness removes -1 Java (`getCacheDirPath`,
@@ -459,8 +467,10 @@ mod tests {
         // an Android host when presentation fails on a Surface it still holds.
         // `chooseMedia` adds +1 Java (`imageChooseMedia`). Screen recording adds
         // +4 Java (`getScreenRecordingState`, `start`/`stopScreenRecordingObserver`,
-        // `setVisualEffectOnCapture`).
-        assert_eq!(java.len(), 132, "full NativeExports surface changed");
+        // `setVisualEffectOnCapture`). The host's ecosystem adds +4 Java
+        // (`ecosystemAvailable`, `ecosystemCall`, `ecosystemReply`,
+        // `ecosystemValue`).
+        assert_eq!(java.len(), 136, "full NativeExports surface changed");
         assert_unique(&native);
         assert_unique(&java);
     }

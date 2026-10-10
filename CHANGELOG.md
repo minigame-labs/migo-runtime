@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The host's own ecosystem, on every host: `MIGO_HOST_SERVICE_ECOSYSTEM` on the C ABI and `EcosystemHandler` on
+  Android (`GameSession.setEcosystemHandler`, `postEcosystemEvent`, `setEcosystemValue`). 69 APIs -- groups and friends,
+  open-data cloud and interactive storage, gifts, live channels, voice chat, handoff, chat tools, facial verification,
+  background fetch, subscription messages, privacy agreements, `UserCryptoManager.getLatestUserKey` and the rest --
+  cross as one request keyed by the content API's name, from a closed list the host-service contract names (`ecosystem.names`) and the gate holds to the runtime.
+  Eleven events (`onCopyUrl`, `onHandoff`, `onNeedPrivacyAuthorization`, `onVoIPChat*`, ...) are posted by the host;
+  those content answers come back through `MIGO_ECOSYSTEM_REPLY`, every one finally with `done`. `getExtConfigSync`,
+  `getExptInfoSync`, `getOfficialComponentsInfo` and `isChatTool` read what the host reported through
+  `migo_session_set_ecosystem_value`. A file a request names (`shareImageToGroup`'s `imagePath`, ...) reaches the host
+  as the real file behind its sandbox path. With no host to ask, the APIs with a true answer give it --
+  `getPrivacySetting` needs no authorization, `getExtConfig` is empty, `checkIsAddedToMyMiniProgram` is not added --
+  and every other one fails as not supported. The common platform's API that updates its own app is `updateHostApp`
+  here, named for what it does; an adapter maps the platform's name onto it.
 - The desktop window: `setCursor`, `requestPointerLock` / `exitPointerLock` / `isPointerLocked`, `setWindowSize` and
   `onWindowStateChange` / `offWindowStateChange`, through `MIGO_HOST_SERVICE_WINDOW` on any C ABI host with a window.
   `setCursor` takes a CSS cursor keyword or an image path resolved through the sandbox; while the pointer is locked a
@@ -276,6 +289,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- Ecosystem APIs that reported success while doing nothing: `requestSubscribeMessage` and
+  `requestSubscribeSystemMessage` reported every template accepted, `setUserCloudStorage` /
+  `removeUserCloudStorage` / `modifyFriendInteractiveStorage` stored nothing, `getFriendCloudStorage`,
+  `getPotentialFriendList` and `getGameClubData` answered empty lists, `authPrivateMessage` and `openBusinessView`
+  succeeded, and `onNeedPrivacyAuthorization` could only be triggered by content itself. Each now asks the host.
 - Bluetooth requests answered before anything had happened. `createBLEConnection` reported success before the device
   connected (and before its services were discovered, so the `getBLEDeviceServices` after it found none),
   `getBLEDeviceRSSI` returned the previous reading -- 0 the first time -- and writes, subscriptions, MTU negotiation and

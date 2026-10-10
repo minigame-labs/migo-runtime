@@ -892,6 +892,28 @@ Returns:
   value longer than 512 bytes; the host did not declare `MIGO_HOST_SERVICE_BLUETOOTH`
 - `MIGO_ERROR_INVALID_STATE` — no Surface attached
 
+## migo_session_set_ecosystem_value
+
+```c
+MIGO_API MigoResult MIGO_CALL migo_session_set_ecosystem_value(MigoSession *session,
+                                                               const char *name_utf8,
+                                                               uint32_t name_length,
+                                                               const char *json_utf8,
+                                                               uint32_t json_length);
+```
+
+Report what a synchronous ecosystem getter returns: `name` is an API name from the contract's
+`ecosystem.names.values` (`getExtConfigSync`, `getExptInfoSync`, `getOfficialComponentsInfo`, `isChatTool`) and `json`
+is what that API returns. From any thread, whenever the value changes; the getter reads the latest. Callable before a
+Surface is attached. An empty `json` withdraws the value, and the getter answers as for a host with none.
+
+Returns:
+
+- `MIGO_OK` — recorded
+- `MIGO_ERROR_INVALID_ARGUMENT` — a name that is not an API name (letters only, at most 64 bytes); `json` that is not
+  JSON or is larger than `MIGO_HOST_SERVICE_PAYLOAD_MAX_BYTES`; a new name once the session holds 64; the host did not
+  declare `MIGO_HOST_SERVICE_ECOSYSTEM`
+
 ## migo_session_notify_vsync
 
 ```c

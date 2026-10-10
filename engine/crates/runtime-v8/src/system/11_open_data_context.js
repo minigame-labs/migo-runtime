@@ -89,52 +89,10 @@ function postMessage(message) {
 // These APIs are standard but require server-side backend integration.
 // Stub implementations return empty data / succeed silently to prevent crashes.
 
-function getFriendCloudStorage(options) {
-    return wrapAsync('getFriendCloudStorage', function () {
-        return { data: [] };
-    }, options);
-}
-
-function setUserCloudStorage(options) {
-    return wrapAsync('setUserCloudStorage', function () {
-        return {};
-    }, options);
-}
-
-function removeUserCloudStorage(options) {
-    return wrapAsync('removeUserCloudStorage', function () {
-        return {};
-    }, options);
-}
-
-function modifyFriendInteractiveStorage(options) {
-    return wrapAsync('modifyFriendInteractiveStorage', function () {
-        return {};
-    }, options);
-}
-
-function getPotentialFriendList(options) {
-    return wrapAsync('getPotentialFriendList', function () {
-        return { list: [] };
-    }, options);
-}
-
-function getGameClubData(options) {
-    return wrapAsync('getGameClubData', function () {
-        return { data: [] };
-    }, options);
-}
-
 export {
     onMessage,
     offMessage,
     postMessage,
     getOpenDataContext,
     getSharedCanvas,
-    getFriendCloudStorage,
-    setUserCloudStorage,
-    removeUserCloudStorage,
-    modifyFriendInteractiveStorage,
-    getPotentialFriendList,
-    getGameClubData,
 };

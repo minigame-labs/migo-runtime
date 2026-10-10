@@ -7,12 +7,12 @@ use std::sync::{Arc, OnceLock};
 use migo_core::services::{
     AccelerometerService, AdService, AudioPlatformService, AuthService, BatteryService,
     BluetoothService, CameraService, ClipboardService, CodecService, CommerceServices,
-    CompassService, ConnectivityServices, DeviceMotionService, FileService, GameLogService,
-    GyroscopeService, ImageApiService, InteractionService, KeyboardService, LocationService,
-    MediaServices, NavigateService, NetworkService, PaymentService, PermissionService,
-    RecorderService, ScanCodeService, Scope, ScopeState, ScreenService, SensorServices,
-    ServiceError, ServiceErrorCode, ShareService, SubpackageService, SystemInfoService,
-    SystemUtilServices, VibrationService, VideoService,
+    CompassService, ConnectivityServices, DeviceMotionService, EcosystemService, FileService,
+    GameLogService, GyroscopeService, ImageApiService, InteractionService, KeyboardService,
+    LocationService, MediaServices, NavigateService, NetworkService, PaymentService,
+    PermissionService, RecorderService, ScanCodeService, Scope, ScopeState, ScreenService,
+    SensorServices, ServiceError, ServiceErrorCode, ShareService, SubpackageService,
+    SystemInfoService, SystemUtilServices, VibrationService, VideoService,
 };
 
 use crate::android::jni;
@@ -261,6 +261,12 @@ impl SystemUtilServices for AndroidDeviceServices {
     #[cfg(feature = "api-connectivity")]
     fn navigate(&self) -> Option<Arc<dyn NavigateService>> {
         Some(Arc::new(AndroidNavigate {
+            host_id: self.host_id,
+        }))
+    }
+    #[cfg(feature = "api-system")]
+    fn ecosystem(&self) -> Option<Arc<dyn EcosystemService>> {
+        Some(Arc::new(AndroidEcosystem {
             host_id: self.host_id,
         }))
     }
@@ -1378,6 +1384,34 @@ impl NavigateService for AndroidNavigate {
             self.host_id,
             options_json,
         )?)
+    }
+}
+
+// ==================== Ecosystem ====================
+
+/// Forwards the host's ecosystem to the Java `EcosystemHandler` the embedder
+/// installed; with none installed there is no ecosystem.
+struct AndroidEcosystem {
+    host_id: i32,
+}
+
+impl EcosystemService for AndroidEcosystem {
+    fn available(&self) -> bool {
+        jni::ecosystem_available(self.host_id).unwrap_or(false)
+    }
+
+    fn call(&self, request_json: &str) -> Result<(), ServiceError> {
+        Ok(jni::ecosystem_call(self.host_id, request_json)?)
+    }
+
+    fn reply(&self, json: &str) -> Result<(), ServiceError> {
+        Ok(jni::ecosystem_reply(self.host_id, json)?)
+    }
+
+    fn value(&self, name: &str) -> Option<String> {
+        jni::ecosystem_value(self.host_id, name)
+            .ok()
+            .filter(|json| !json.is_empty())
     }
 }
 

@@ -9,15 +9,18 @@
 //! Each is a closed set, so each has a typed entry point rather than a JSON
 //! payload: a host should not need a JSON parser to grant the camera.
 
+use std::collections::HashMap;
+use std::os::raw::c_char;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicU8, AtomicU32, Ordering},
 };
 
 use migo_capi_abi::{
-    MIGO_ERROR_INTERNAL, MIGO_ERROR_INVALID_ARGUMENT, MIGO_OK, MigoResult,
+    MIGO_ERROR_INTERNAL, MIGO_ERROR_INVALID_ARGUMENT, MIGO_OK, MigoResult, copy_utf8_with_length,
     host_services::{
-        MIGO_AUTHORIZATION_AUTHORIZED, MIGO_AUTHORIZATION_DENIED, MIGO_HOST_SERVICE_PERMISSION,
+        MIGO_AUTHORIZATION_AUTHORIZED, MIGO_AUTHORIZATION_DENIED, MIGO_HOST_SERVICE_ECOSYSTEM,
+        MIGO_HOST_SERVICE_PAYLOAD_MAX_BYTES, MIGO_HOST_SERVICE_PERMISSION,
         MIGO_HOST_SERVICE_SETTING, MIGO_SCOPE_COUNT, MIGO_SCOPE_STATE_DENIED,
         MIGO_SCOPE_STATE_GRANTED, MIGO_SCOPE_STATE_UNKNOWN,
         MIGO_SYSTEM_SETTING_FLAG_BLUETOOTH_ENABLED, MIGO_SYSTEM_SETTING_FLAG_LOCATION_ENABLED,
@@ -41,6 +44,8 @@ pub(crate) struct HostReports {
     /// off: a switch nobody said is on is not one content may rely on.
     system_settings: AtomicU32,
     app_authorize: Mutex<Option<MigoAppAuthorizeSetting>>,
+    /// What each synchronous ecosystem getter answers, by API name.
+    ecosystem_values: Mutex<HashMap<String, String>>,
 }
 
 impl Default for HostReports {
@@ -49,6 +54,7 @@ impl Default for HostReports {
             scopes: std::array::from_fn(|_| AtomicU8::new(MIGO_SCOPE_STATE_UNKNOWN as u8)),
             system_settings: AtomicU32::new(0),
             app_authorize: Mutex::new(None),
+            ecosystem_values: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -82,6 +88,15 @@ impl HostReports {
 
     fn system_settings(&self) -> u32 {
         self.system_settings.load(Ordering::Acquire)
+    }
+
+    /// The JSON the host last reported for the getter `name`.
+    pub(crate) fn ecosystem_value(&self, name: &str) -> Option<String> {
+        self.ecosystem_values
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(name)
+            .cloned()
     }
 
     fn app_authorize(&self) -> Option<MigoAppAuthorizeSetting> {
@@ -263,6 +278,71 @@ pub unsafe extern "C" fn migo_session_set_system_settings(
     })
 }
 
+/// The longest API name a getter has.
+const ECOSYSTEM_VALUE_NAME_MAX: u32 = 64;
+/// How many getters one session may hold values for: the contract lists a few;
+/// the bound is against a host that reports names nobody reads.
+const ECOSYSTEM_VALUES_MAX: usize = 64;
+
+/// # Safety
+/// `session` must be a live session handle; `name_utf8` readable for
+/// `name_length` bytes and `json_utf8` for `json_length` (either may be null when
+/// its length is 0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn migo_session_set_ecosystem_value(
+    session: *mut MigoSession,
+    name_utf8: *const c_char,
+    name_length: u32,
+    json_utf8: *const c_char,
+    json_length: u32,
+) -> MigoResult {
+    guard("migo_session_set_ecosystem_value", || {
+        let session = match unsafe { pin_session(session) } {
+            Ok(session) => session,
+            Err(error) => return error,
+        };
+        if name_length == 0
+            || name_length > ECOSYSTEM_VALUE_NAME_MAX
+            || json_length > MIGO_HOST_SERVICE_PAYLOAD_MAX_BYTES
+        {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        }
+        let Ok(name) = (unsafe { copy_utf8_with_length(name_utf8, name_length) }) else {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        };
+        if !name.bytes().all(|byte| byte.is_ascii_alphabetic()) {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        }
+        let Ok(json) = (unsafe { copy_utf8_with_length(json_utf8, json_length) }) else {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        };
+        if !json.is_empty() && serde_json::from_str::<serde_json::Value>(&json).is_err() {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        }
+        let declared = session.state.lock().is_ok_and(|state| {
+            state.callbacks.as_ref().is_some_and(|callbacks| {
+                callbacks.supplies_host_service(MIGO_HOST_SERVICE_ECOSYSTEM)
+            })
+        });
+        if !declared {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        }
+        let mut values = session
+            .host_reports
+            .ecosystem_values
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if json.is_empty() {
+            values.remove(&name);
+        } else if values.len() >= ECOSYSTEM_VALUES_MAX && !values.contains_key(&name) {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        } else {
+            values.insert(name, json);
+        }
+        MIGO_OK
+    })
+}
+
 /// # Safety
 /// `session` must be a live session handle and `setting` null or readable for
 /// its announced size.
@@ -428,6 +508,41 @@ mod tests {
 
     fn json(text: Result<String, ServiceError>) -> serde_json::Value {
         serde_json::from_str(&text.expect("answered")).expect("json")
+    }
+
+    #[test]
+    fn an_ecosystem_value_is_kept_by_name_and_withdrawn_by_an_empty_report() {
+        let set = |session, name: &str, json: &str| unsafe {
+            migo_session_set_ecosystem_value(
+                session,
+                name.as_ptr().cast(),
+                name.len() as u32,
+                json.as_ptr().cast(),
+                json.len() as u32,
+            )
+        };
+        with_session("ecosystem-undeclared", |session| {
+            install(session, 1 << MIGO_HOST_SERVICE_PERMISSION);
+            assert_eq!(
+                set(session, "isChatTool", "true"),
+                MIGO_ERROR_INVALID_ARGUMENT,
+                "a value no getter of this host would read"
+            );
+        });
+        with_session("ecosystem-value", |session| {
+            install(session, 1 << MIGO_HOST_SERVICE_ECOSYSTEM);
+            let reports = reports_of(session);
+            assert_eq!(set(session, "getExtConfigSync", r#"{"a":1}"#), MIGO_OK);
+            assert_eq!(
+                reports.ecosystem_value("getExtConfigSync").as_deref(),
+                Some(r#"{"a":1}"#)
+            );
+            assert_eq!(set(session, "getExtConfigSync", ""), MIGO_OK);
+            assert_eq!(reports.ecosystem_value("getExtConfigSync"), None);
+            assert_eq!(set(session, "not-a-name", "1"), MIGO_ERROR_INVALID_ARGUMENT);
+            assert_eq!(set(session, "isChatTool", "{"), MIGO_ERROR_INVALID_ARGUMENT);
+            assert_eq!(set(session, "", "true"), MIGO_ERROR_INVALID_ARGUMENT);
+        });
     }
 
     #[test]

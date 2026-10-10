@@ -8,19 +8,20 @@
 
 use migo_capi_abi::host_services::{
     MIGO_HOST_SERVICE_AD, MIGO_HOST_SERVICE_AUTH, MIGO_HOST_SERVICE_BLUETOOTH,
-    MIGO_HOST_SERVICE_CLIPBOARD, MIGO_HOST_SERVICE_IMAGE, MIGO_HOST_SERVICE_INTERACTION,
-    MIGO_HOST_SERVICE_LOCATION, MIGO_HOST_SERVICE_MOTION, MIGO_HOST_SERVICE_NAVIGATE,
-    MIGO_HOST_SERVICE_PAYMENT, MIGO_HOST_SERVICE_PERMISSION, MIGO_HOST_SERVICE_SCAN_CODE,
-    MIGO_HOST_SERVICE_SCREEN, MIGO_HOST_SERVICE_SHARE, MIGO_HOST_SERVICE_SUBPACKAGE,
-    MIGO_HOST_SERVICE_WINDOW,
+    MIGO_HOST_SERVICE_CLIPBOARD, MIGO_HOST_SERVICE_ECOSYSTEM, MIGO_HOST_SERVICE_IMAGE,
+    MIGO_HOST_SERVICE_INTERACTION, MIGO_HOST_SERVICE_LOCATION, MIGO_HOST_SERVICE_MOTION,
+    MIGO_HOST_SERVICE_NAVIGATE, MIGO_HOST_SERVICE_PAYMENT, MIGO_HOST_SERVICE_PERMISSION,
+    MIGO_HOST_SERVICE_SCAN_CODE, MIGO_HOST_SERVICE_SCREEN, MIGO_HOST_SERVICE_SHARE,
+    MIGO_HOST_SERVICE_SUBPACKAGE, MIGO_HOST_SERVICE_WINDOW,
 };
 use migo_core::services::{
     AccelerometerService, AdService, AuthService, BatteryService, BluetoothService,
     ClipboardService, CommerceServices, CompassService, ConnectivityServices, DeviceMotionService,
-    GameLogService, GyroscopeService, ImageApiService, InteractionService, KeyboardService,
-    LocationService, MediaServices, NavigateService, NetworkService, PaymentService,
-    PermissionService, ScanCodeService, ScreenService, SensorServices, ShareService,
-    SubpackageService, SystemInfoService, SystemUtilServices, VibrationService, WindowService,
+    EcosystemService, GameLogService, GyroscopeService, ImageApiService, InteractionService,
+    KeyboardService, LocationService, MediaServices, NavigateService, NetworkService,
+    PaymentService, PermissionService, ScanCodeService, ScreenService, SensorServices,
+    ShareService, SubpackageService, SystemInfoService, SystemUtilServices, VibrationService,
+    WindowService,
 };
 use migo_core::{DeviceServiceProvider, FrameClock, HostNotifier};
 use shared::protocol::error::ServiceError;
@@ -345,6 +346,11 @@ impl SystemUtilServices for CapiDeviceServices {
     fn scan_code(&self) -> Option<Arc<dyn ScanCodeService>> {
         self.host_service(MIGO_HOST_SERVICE_SCAN_CODE)
             .map(|services| services as Arc<dyn ScanCodeService>)
+    }
+
+    fn ecosystem(&self) -> Option<Arc<dyn EcosystemService>> {
+        self.host_service(MIGO_HOST_SERVICE_ECOSYSTEM)
+            .map(|services| services as Arc<dyn EcosystemService>)
     }
 
     fn window(&self) -> Option<Arc<dyn WindowService>> {

@@ -74,7 +74,7 @@ Who provides them: the Android Java SDK implements these calls in its own platfo
 
 ## 4. Android Handler Contracts: Host Registers in the Java Layer
 
-Ten `set*Handler(...)` methods on `GameSession` plus `setListener(GameSessionListener)` — 11 registration points in total, all host-side capabilities. An unregistered handler falls back to a runtime-level default — each interface has a documented contract for "what content sees when not registered":
+Eleven `set*Handler(...)` methods on `GameSession` plus `setListener(GameSessionListener)` — 12 registration points in total, all host-side capabilities. An unregistered handler falls back to a runtime-level default — each interface has a documented contract for "what content sees when not registered":
 
 | Handler | Content's `migo.*` call | Answer when unregistered |
 | --- | --- | --- |
@@ -88,6 +88,7 @@ Ten `set*Handler(...)` methods on `GameSession` plus `setListener(GameSessionLis
 | PaymentHandler | `requestMidasPayment*` | `isMidasPaymentSupported=false`; every request returns `-2 not supported` |
 | SubpackageHandler | `loadSubpackage / preDownloadSubpackage` | Download failure receipt; `loadSubpackage()` falls back to any locally downloaded file |
 | GameLogHandler | Debug/stats logs from migo | Written to Android logcat |
+| EcosystemHandler | The host's ecosystem APIs (groups and friends, cloud storage, live channels, subscription messages, privacy agreements, ...; the contract's `ecosystem.names`) | The APIs with a true answer give it (`getPrivacySetting` needs no authorization, ...); every other one `-2 <api>:fail not supported` |
 | GameSessionListener | Session state broadcasts | No broadcasts; all callbacks are no-ops |
 
 Two categories of "fake fallback" are explicitly rejected:
@@ -126,6 +127,7 @@ load, close and other events are reported with
 | `MIGO_HOST_SERVICE_SCREEN` | `getScreenBrightness` / `setDeviceOrientation` / `onUserCaptureScreen` / `getScreenRecordingState` / `setVisualEffectOnCapture`, ... | not supported |
 | `MIGO_HOST_SERVICE_BLUETOOTH` | every Bluetooth / BLE / iBeacon API | not supported |
 | `MIGO_HOST_SERVICE_WINDOW` | `setWindowSize` / `setCursor` / `requestPointerLock` / `onWindowStateChange`, ... (desktop) | `setCursor` returns `false`, pointer lock does nothing, `setWindowSize` not supported |
+| `MIGO_HOST_SERVICE_ECOSYSTEM` | the host's own ecosystem -- friends and groups, open-data cloud storage, live channels, voice chat, handoff, subscription messages, privacy agreements -- each arriving by API name through one `CALL` (the list is the contract's `ecosystem.names`); events such as `onCopyUrl` / `onNeedPrivacyAuthorization` are posted by the host and content's answers come back through `REPLY`; `getExtConfigSync` / `isChatTool` and the other getters read what the host reported with `migo_session_set_ecosystem_value` | the APIs with a true answer give it (`getPrivacySetting` needs no authorization, `getExtConfig` is empty, `checkIsAddedToMyMiniProgram` is not added); every other one not supported |
 | `MIGO_HOST_SERVICE_IMAGE` | `chooseImage` / `chooseMedia` / `chooseMessageFile` / `compressImage` / `previewImage` / `previewMedia` / `saveImageToPhotosAlbum` | not supported |
 
 The host gives the success fields or the failure's reason; the engine puts a

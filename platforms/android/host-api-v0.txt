@@ -15,6 +15,7 @@
   public T getOrThrow();
   public T getValue();
   public abstract java.io.File resolve(java.lang.String);
+  public abstract void call(com.migo.runtime.callback.EcosystemHandler$Request, com.migo.runtime.callback.EcosystemSink);
   public abstract void checkSession(com.migo.runtime.callback.AuthHandler$CheckSessionCallback);
   public abstract void download(com.migo.runtime.callback.SubpackageHandler$SubpackageRequest, com.migo.runtime.callback.SubpackageHandler$DownloadCallback);
   public abstract void emitClose(int, boolean);
@@ -24,6 +25,7 @@
   public abstract void emitLoad(int, boolean);
   public abstract void emitResize(int, int, int);
   public abstract void emitShow(int);
+  public abstract void fail(int, java.lang.String);
   public abstract void fail(int, java.lang.String);
   public abstract void fail(int, java.lang.String);
   public abstract void fail(int, java.lang.String);
@@ -41,6 +43,7 @@
   public abstract void onLog(java.lang.String);
   public abstract void onMessage(java.lang.String, java.lang.String);
   public abstract void onProgress(int, long, long);
+  public abstract void onReply(java.util.Map<java.lang.String, java.lang.Object>, boolean);
   public abstract void onSessionCreated(com.migo.runtime.GameSession);
   public abstract void onStateChanged(com.migo.runtime.GameSession, com.migo.runtime.SessionState, com.migo.runtime.SessionState);
   public abstract void onSuccess();
@@ -55,6 +58,7 @@
   public abstract void settleOpened(java.util.Map<java.lang.String, java.lang.Boolean>);
   public abstract void settlePaid();
   public abstract void settleShared();
+  public abstract void succeed(java.util.Map<java.lang.String, ?>);
   public boolean dispatchTouchEvent(android.view.MotionEvent);
   public boolean initIcuData(java.lang.String);
   public boolean isCodeSigningEnabled();
@@ -72,6 +76,8 @@
   public boolean onTouchEvent(android.view.MotionEvent);
   public boolean onTouchEvent(android.view.MotionEvent);
   public boolean performClick();
+  public boolean postEcosystemEvent(java.lang.String, java.util.Map<java.lang.String, ?>);
+  public boolean postEcosystemEvent(java.lang.String, java.util.Map<java.lang.String, ?>, com.migo.runtime.callback.EcosystemReply);
   public com.migo.runtime.BuildConfig();
   public com.migo.runtime.ConsoleLogView(android.content.Context, int);
   public com.migo.runtime.DebugOverlayView getDebugOverlay();
@@ -111,6 +117,7 @@
   public com.migo.runtime.callback.AuthHandler$UserInfo userInfo;
   public com.migo.runtime.callback.AuthHandler$UserInfo();
   public com.migo.runtime.callback.AuthHandler$UserInfoResult();
+  public com.migo.runtime.callback.EcosystemHandler$Request(java.lang.String, java.util.Map<java.lang.String, java.lang.Object>);
   public com.migo.runtime.callback.NavigationHandler$CustomerServiceRequest(java.lang.String, boolean, java.lang.String, java.lang.String, java.lang.String);
   public com.migo.runtime.callback.NavigationHandler$NavigateRequest(java.lang.String, java.lang.String, java.util.Map<java.lang.String, java.lang.Object>, java.lang.String);
   public com.migo.runtime.callback.PaymentHandler$GameItemPaymentRequest(java.lang.String, java.lang.String, java.lang.String);
@@ -153,6 +160,7 @@
   public final int inputSaturationEvents;
   public final int zoneId;
   public final java.lang.String abi;
+  public final java.lang.String api;
   public final java.lang.String appId;
   public final java.lang.String artifactId;
   public final java.lang.String currencyType;
@@ -178,6 +186,7 @@
   public final java.lang.String signature;
   public final java.lang.String title;
   public final java.util.Map<java.lang.String, java.lang.Object> extraData;
+  public final java.util.Map<java.lang.String, java.lang.Object> options;
   public float getDisplayDensity();
   public int gender;
   public int getActiveSessionCount();
@@ -333,6 +342,8 @@
   public void setAuthHandler(com.migo.runtime.callback.AuthHandler);
   public void setConfig(com.migo.runtime.RuntimeConfig);
   public void setDebugEnabled(boolean);
+  public void setEcosystemHandler(com.migo.runtime.callback.EcosystemHandler);
+  public void setEcosystemValue(java.lang.String, java.lang.Object);
   public void setGameListener(com.migo.runtime.callback.GameSessionListener);
   public void setGameLogHandler(com.migo.runtime.callback.GameLogHandler);
   public void setListener(com.migo.runtime.callback.GameSessionListener);
@@ -383,6 +394,7 @@ public final class com.migo.runtime.RuntimeConfig$LogLevel extends java.lang.Enu
 public final class com.migo.runtime.SessionState extends java.lang.Enum<com.migo.runtime.SessionState> {
 public final class com.migo.runtime.callback.AuthHandler$UserInfo {
 public final class com.migo.runtime.callback.AuthHandler$UserInfoResult {
+public final class com.migo.runtime.callback.EcosystemHandler$Request {
 public final class com.migo.runtime.callback.NavigationHandler$CustomerServiceRequest {
 public final class com.migo.runtime.callback.NavigationHandler$NavigateRequest {
 public final class com.migo.runtime.callback.PaymentHandler$GameItemPaymentRequest {
@@ -400,6 +412,9 @@ public interface com.migo.runtime.callback.AuthHandler$CheckSessionCallback {
 public interface com.migo.runtime.callback.AuthHandler$LoginCallback {
 public interface com.migo.runtime.callback.AuthHandler$PhoneNumberCallback {
 public interface com.migo.runtime.callback.AuthHandler$UserInfoCallback {
+public interface com.migo.runtime.callback.EcosystemHandler {
+public interface com.migo.runtime.callback.EcosystemReply {
+public interface com.migo.runtime.callback.EcosystemSink {
 public interface com.migo.runtime.callback.GameLogHandler {
 public interface com.migo.runtime.callback.GameSessionListener {
 public interface com.migo.runtime.callback.NavigationHandler {
@@ -414,6 +429,10 @@ public interface com.migo.runtime.callback.ShareHandler {
 public interface com.migo.runtime.callback.ShareSink {
 public interface com.migo.runtime.callback.SubpackageHandler {
 public interface com.migo.runtime.callback.SubpackageHandler$DownloadCallback {
+}
+}
+}
+}
 }
 }
 }

@@ -1,16 +1,16 @@
 // UserCryptoManager
 //
-// @stub All methods always call fail callback with "not supported".
-// Requires platform-level crypto key management to be functional.
-// getUserCryptoManager() returns a stub instance.
+// @stub getUserCryptoManager: its getRandomValues always calls fail callback
+// with "not supported". Its getLatestUserKey is the host's to answer: the
+// user's key is issued by the host's backend, so it is an ecosystem request
+// (20_ecosystem.js).
 
 import { wrapAsync } from "ext:host_v8_base/02_async.js";
+import { ecosystemMethod } from "ext:host_v8_system/20_ecosystem.js";
 
 class UserCryptoManager {
     getLatestUserKey(options) {
-        return wrapAsync('getLatestUserKey', function () {
-            throw new Error('not supported');
-        }, options);
+        return ecosystemMethod('getLatestUserKey', options);
     }
 
     getRandomValues(options) {

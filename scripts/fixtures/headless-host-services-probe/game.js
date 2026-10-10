@@ -304,6 +304,23 @@ async function run() {
   await lockedTo(false);
   expect(migo.createPath2D() instanceof Path2D, "createPath2D", null);
 
+  // The host's ecosystem: requests by name, a file through the sandbox, a code
+  // the API defines, getters from what the host reported, and an event content
+  // answers -- the host confirms the answer with the event after it.
+  expect(migo.isChatTool() === true && migo.getExtConfigSync().channel === "probe",
+    "ecosystem values", null);
+  const replied = new Promise(function (resolve) { migo.onOfficialComponentsInfoChange(resolve); });
+  migo.onCopyUrl(function () { return { query: "from=probe" }; });
+  const enter = await settle("getGroupEnterInfo");
+  expect(enter.ok && enter.res.encryptedData === "probe", "getGroupEnterInfo", enter);
+  expect((await replied).replied === true, "onCopyUrl reply", null);
+  const groupShare = await settle("shareImageToGroup", { imagePath: "/user/probe.png" });
+  expect(groupShare.ok, "shareImageToGroup", groupShare);
+  const subscribe = await settle("requestSubscribeMessage", { tmplIds: ["t"] });
+  expect(!subscribe.ok && subscribe.res.errCode === 20001 &&
+    subscribe.res.errMsg === "requestSubscribeMessage:fail template not found",
+    "requestSubscribeMessage failure", subscribe);
+
   // An advert's Promises are settled by what the host's SDK says: load()
   // when it has loaded, show() when it is on screen -- before it closes.
   // The reward is the host's word too: the close event's isEnded comes from it.

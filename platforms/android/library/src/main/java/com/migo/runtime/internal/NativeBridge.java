@@ -212,6 +212,10 @@ final class NativeBridge {
      */
     static native void onActionSheetResult(int sessionId, String resultJson);
 
+    static native void onEcosystemResult(int sessionId, String resultJson);
+
+    static native void onEcosystemEvent(int sessionId, String eventJson);
+
     // ==================== Device Sensor Callbacks ====================
 
     /**

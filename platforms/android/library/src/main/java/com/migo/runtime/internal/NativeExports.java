@@ -21,6 +21,8 @@ import com.migo.runtime.callback.AdEventSink;
 import com.migo.runtime.callback.AdHandler;
 import com.migo.runtime.callback.AuthHandler;
 import com.migo.runtime.callback.GameLogHandler;
+import com.migo.runtime.callback.EcosystemHandler;
+import com.migo.runtime.callback.EcosystemReply;
 import com.migo.runtime.callback.NavigationHandler;
 import com.migo.runtime.callback.PaymentHandler;
 import com.migo.runtime.callback.PermissionHandler;
@@ -46,6 +48,7 @@ import org.json.JSONObject;
 import java.io.File;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BooleanSupplier;
 
@@ -157,6 +160,8 @@ public final class NativeExports {
 
     /** Per-session payment handlers set via GameSession API. */
     private static final ConcurrentHashMap<Integer, PaymentHandler> sPaymentHandlers =
+            new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<Integer, EcosystemHandler> sEcosystemHandlers =
             new ConcurrentHashMap<>();
 
     /** Per-session message handlers set via GameSession.setMessageHandler(). */
@@ -308,6 +313,12 @@ public final class NativeExports {
         // is authoritative rather than matched against a remembered candidate.
         RuntimeGenerationBoundary.beginRestart(sessionId, retired, next);
         destroyRuntimeScopedManagers(sessionId);
+        // The listeners that would have answered these are in the retired isolate.
+        try {
+            EcosystemBridge.abandonReplies(sessionId);
+        } catch (RuntimeException thrown) {
+            android.util.Log.w(TAG, "ecosystem reply threw: " + thrown);
+        }
     }
 
     /**
@@ -2716,6 +2727,36 @@ public final class NativeExports {
     }
 
     /**
+     * Set or clear the ecosystem handler for a session.
+     *
+     * @hide Called by
+     * {@link com.migo.runtime.GameSession#setEcosystemHandler(EcosystemHandler)}.
+     */
+    public static void setEcosystemHandler(int sessionId, EcosystemHandler handler) {
+        if (handler == null) {
+            sEcosystemHandlers.remove(sessionId);
+        } else {
+            sEcosystemHandlers.put(sessionId, handler);
+        }
+    }
+
+    /** @hide Called by {@link com.migo.runtime.GameSession#postEcosystemEvent}. */
+    public static void postEcosystemEvent(
+            int sessionId, String name, Map<String, ?> data, EcosystemReply reply) {
+        EcosystemBridge.post(sessionId, name, data, reply, NativeMethods::onEcosystemEvent);
+    }
+
+    /** @hide Called by {@link com.migo.runtime.GameSession#setEcosystemValue}. */
+    public static void setEcosystemValue(int sessionId, String name, Object value) {
+        EcosystemBridge.setValue(sessionId, name, value);
+    }
+
+    private static void clearEcosystem(int sessionId) {
+        sEcosystemHandlers.remove(sessionId);
+        EcosystemBridge.forget(sessionId);
+    }
+
+    /**
      * Claim one deferred request, so that whatever answers it answers once.
      *
      * <p>Answering is unconditional from here on: the handler settles it, the absence of a
@@ -2842,6 +2883,41 @@ public final class NativeExports {
             throw new UnsupportedOperationException(
                     "openCustomerServiceConversation:fail not supported");
         }
+    }
+
+    // ==================== Ecosystem ====================
+
+    /** Whether the session's host installed an ecosystem handler. */
+    public static boolean ecosystemAvailable(int sessionId) {
+        return sEcosystemHandlers.containsKey(sessionId) && !isSessionTerminated(sessionId);
+    }
+
+    /**
+     * One ecosystem request, {@code {"requestId", "api", "options"}}.
+     * Delegates to the session's {@link EcosystemHandler}.
+     */
+    public static void ecosystemCall(int sessionId, String requestJson) {
+        JSONObject request = HostDelegation.options(requestJson);
+        HostDelegation.Settlement settlement =
+                settlement(sessionId, request, NativeMethods::onEcosystemResult);
+        delegate(sessionId, sEcosystemHandlers, request.optString("api", "ecosystem"), settlement,
+                handler -> handler.call(
+                        HostDelegation.ecosystemRequest(request),
+                        HostDelegation.ecosystemSink(settlement)));
+    }
+
+    /** Content's answer to an event the host posted, {@code {"replyId", "data", "done"}}. */
+    public static void ecosystemReply(int sessionId, String replyJson) {
+        try {
+            EcosystemBridge.reply(sessionId, replyJson);
+        } catch (RuntimeException thrown) {
+            android.util.Log.w(TAG, "ecosystem reply threw: " + thrown);
+        }
+    }
+
+    /** What the getter {@code name} answers with, empty when the host reported nothing. */
+    public static String ecosystemValue(int sessionId, String name) {
+        return EcosystemBridge.value(sessionId, name);
     }
 
     // ==================== Payment ====================
@@ -2983,6 +3059,7 @@ public final class NativeExports {
                 () -> clearShareHandler(sessionId),
                 () -> clearNavigationHandler(sessionId),
                 () -> clearPaymentHandler(sessionId),
+                () -> clearEcosystem(sessionId),
                 () -> clearPermissionHandler(sessionId),
                 () -> sPermissionSinks.remove(sessionId),
                 () -> unregisterErrorCallback(sessionId),
