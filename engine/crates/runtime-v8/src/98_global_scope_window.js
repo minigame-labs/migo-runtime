@@ -170,9 +170,6 @@ const WindowGlobalScope = {
     _internalGetFocusState: core.propNonEnumerable(
         appLifecycle._internalGetFocusState,
     ),
-    onAddToFavorites: core.propNonEnumerable(appLifecycle.onAddToFavorites),
-    offAddToFavorites: core.propNonEnumerable(appLifecycle.offAddToFavorites),
-    _internalTriggerAddToFavorites: core.propNonEnumerable(appLifecycle._internalTriggerAddToFavorites),
 
     // App Lifecycle (restart/exit)
     restartMiniProgram: core.propNonEnumerable(lifecycle.restartMiniProgram),

@@ -117,7 +117,6 @@ isNaN
 loadFont
 loadSubpackage
 migo
-offAddToFavorites
 offAppHide
 offAppShow
 offCompositionEnd
@@ -147,7 +146,6 @@ offTouchMove
 offTouchStart
 offUnhandledRejection
 offWheel
-onAddToFavorites
 onAppHide
 onAppShow
 onCompositionEnd
@@ -260,7 +258,6 @@ getTextLineHeight
 hideKeyboard
 loadFont
 loadSubpackage
-offAddToFavorites
 offAppHide
 offAppShow
 offCompositionEnd
@@ -290,7 +287,6 @@ offTouchMove
 offTouchStart
 offUnhandledRejection
 offWheel
-onAddToFavorites
 onAppHide
 onAppShow
 onCompositionEnd

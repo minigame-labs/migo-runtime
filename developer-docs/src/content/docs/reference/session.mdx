@@ -330,7 +330,7 @@ typedef struct MigoHostServiceCall {
 | `MIGO_HOST_SERVICE_AD` (0) | `CREATE` 0 · `LOAD` 1 · `SHOW` 2 · `HIDE` 3 · `UPDATE_STYLE` 4 · `DESTROY` 5 | 命令；结果走事件 `MIGO_AD_EVENT_LIFECYCLE` | `createRewardedVideoAd` 等全部广告 |
 | `MIGO_HOST_SERVICE_PAYMENT` (1) | `REQUEST_MIDAS_PAYMENT` 0 · `REQUEST_MIDAS_PAYMENT_GAME_ITEM` 1 | 调用 | `requestMidasPayment` · `requestMidasPaymentGameItem` |
 | `MIGO_HOST_SERVICE_AUTH` (2) | `LOGIN` 0 · `CHECK_SESSION` 1 · `GET_USER_INFO` 2 · `GET_PHONE_NUMBER` 3 | 调用 | `login` · `checkSession` · `getUserInfo` · `getPhoneNumber` |
-| `MIGO_HOST_SERVICE_SHARE` (3) | `SHARE_APP_MESSAGE` 0 · `SHARE_MESSAGE_TO_FRIEND` 1 · `SHOW_SHARE_IMAGE_MENU` 2 | 调用；图片路径是经沙箱解析的真实文件（仅 `SHARE_APP_MESSAGE` 可以是 http(s) URL） | `shareAppMessage` · `shareMessageToFriend`（带 `setMessageToFriendQuery` 设的 query；`onShareMessageToFriend` 由其结算派生）· `showShareImageMenu` |
+| `MIGO_HOST_SERVICE_SHARE` (3) | `SHARE_APP_MESSAGE` 0 · `SHARE_MESSAGE_TO_FRIEND` 1 · `SHOW_SHARE_IMAGE_MENU` 2（调用）· `SET_SHARE_MENU` 3 · `MENU_SHARE_REPLY` 4（命令）；事件 `EVENT_MENU_SHARE` 0 | 见左；图片路径是经沙箱解析的真实文件（仅 `SHARE_APP_MESSAGE` 可以是 http(s) URL） | `shareAppMessage` · `shareMessageToFriend`（带 `setMessageToFriendQuery` 设的 query；`onShareMessageToFriend` 由其结算派生）· `showShareImageMenu` |
 | `MIGO_HOST_SERVICE_NAVIGATE` (4) | `NAVIGATE_TO_MINI_PROGRAM` 0（调用）· `NAVIGATE_BACK_MINI_PROGRAM` 1 · `OPEN_CUSTOMER_SERVICE_CONVERSATION` 2（命令） | 见左 | `navigateToMiniProgram` · `navigateBackMiniProgram` · `openCustomerServiceConversation` |
 | `MIGO_HOST_SERVICE_SUBPACKAGE` (5) | `DOWNLOAD` 0 | 调用，可报进度 | `loadSubpackage` · `preDownloadSubpackage` |
 | `MIGO_HOST_SERVICE_PERMISSION` (6) | `REQUEST_SCOPE` 0 | 调用 | `authorize`（及 `getWritePhotosAlbum` 等） |

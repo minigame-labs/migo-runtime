@@ -23,6 +23,7 @@ import com.migo.runtime.callback.AuthHandler;
 import com.migo.runtime.callback.GameLogHandler;
 import com.migo.runtime.callback.EcosystemHandler;
 import com.migo.runtime.callback.EcosystemReply;
+import com.migo.runtime.callback.MenuShareCallback;
 import com.migo.runtime.callback.NavigationHandler;
 import com.migo.runtime.callback.PaymentHandler;
 import com.migo.runtime.callback.PermissionHandler;
@@ -318,6 +319,11 @@ public final class NativeExports {
             EcosystemBridge.abandonReplies(sessionId);
         } catch (RuntimeException thrown) {
             android.util.Log.w(TAG, "ecosystem reply threw: " + thrown);
+        }
+        try {
+            ShareMenuBridge.abandon(sessionId);
+        } catch (RuntimeException thrown) {
+            android.util.Log.w(TAG, "menu share callback threw: " + thrown);
         }
     }
 
@@ -2716,6 +2722,7 @@ public final class NativeExports {
 
     private static void clearShareHandler(int sessionId) {
         sShareHandlers.remove(sessionId);
+        ShareMenuBridge.forget(sessionId);
     }
 
     private static void clearNavigationHandler(int sessionId) {
@@ -2831,6 +2838,34 @@ public final class NativeExports {
                 handler -> handler.shareAppMessage(
                         HostDelegation.shareRequest(options),
                         HostDelegation.shareSink(settlement)));
+    }
+
+    /**
+     * The share menu's whole state after the game changed it. Tells the session's
+     * {@link ShareHandler}, if any.
+     */
+    public static void shareMenuChanged(int sessionId, String menuJson) {
+        ShareHandler handler = sShareHandlers.get(sessionId);
+        if (handler == null || isSessionTerminated(sessionId)) return;
+        try {
+            handler.onShareMenuChanged(HostDelegation.shareMenu(HostDelegation.options(menuJson)));
+        } catch (RuntimeException thrown) {
+            android.util.Log.w(TAG, "onShareMenuChanged: handler threw: " + thrown);
+        }
+    }
+
+    /** The game's answer to a menu share, {@code {"replyId", "menu", "content"}}. */
+    public static void shareMenuReply(int sessionId, String replyJson) {
+        try {
+            ShareMenuBridge.reply(sessionId, replyJson);
+        } catch (RuntimeException thrown) {
+            android.util.Log.w(TAG, "menu share callback threw: " + thrown);
+        }
+    }
+
+    /** @hide Called by {@link com.migo.runtime.GameSession#requestMenuShare}. */
+    public static void requestMenuShare(int sessionId, String menu, MenuShareCallback callback) {
+        ShareMenuBridge.request(sessionId, menu, callback, NativeMethods::onShareMenuEvent);
     }
 
     /**

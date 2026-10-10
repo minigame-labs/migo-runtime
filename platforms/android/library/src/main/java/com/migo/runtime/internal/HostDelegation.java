@@ -263,6 +263,30 @@ final class HostDelegation {
                 scene instanceof Integer ? (Integer) scene : null);
     }
 
+    /** {@code {"menus": [...], "withShareTicket", ...updateShareMenu fields}} as the menu a handler sees. */
+    static ShareHandler.ShareMenu shareMenu(JSONObject menu) {
+        JSONArray menus = menu.optJSONArray("menus");
+        boolean share = false;
+        boolean timeline = false;
+        for (int i = 0; menus != null && i < menus.length(); i++) {
+            String item = menus.optString(i, "");
+            share |= item.equals("shareAppMessage");
+            timeline |= item.equals("shareTimeline");
+        }
+        JSONObject options = new JSONObject();
+        for (java.util.Iterator<String> keys = menu.keys(); keys.hasNext(); ) {
+            String key = keys.next();
+            if (key.equals("menus") || key.equals("withShareTicket")) continue;
+            try {
+                options.put(key, menu.opt(key));
+            } catch (JSONException impossible) {
+                // A key read from a JSON object is never null.
+            }
+        }
+        return new ShareHandler.ShareMenu(
+                share, timeline, menu.optBoolean("withShareTicket", false), immutableMap(options));
+    }
+
     static ShareHandler.ImageShareRequest imageShareRequest(JSONObject options) {
         return new ShareHandler.ImageShareRequest(
                 options.optString("path", ""),

@@ -87,6 +87,20 @@ Android 通过 `GameSession#setShareHandler(ShareHandler)` 注册；C ABI 宿主
 `shareMessageToFriend` 结束后，内容的 `migo.onShareMessageToFriend` 监听器会收到 `{success, errMsg}`——由这次请求的结算派生，
 宿主不需要另发事件。
 
+## 分享菜单
+
+菜单（右上角的「转发」「分享到朋友圈」「收藏」）是宿主的。小游戏的分享项默认隐藏，内容用 `showShareMenu` 打开：
+
+- 每次 `showShareMenu` / `hideShareMenu` / `updateShareMenu` 之后，宿主收到菜单的**完整状态**——Android
+  `ShareHandler.onShareMenuChanged(ShareMenu)`，C ABI 命令 `SET_SHARE_MENU` 3（`{"menus", "withShareTicket", ...updateShareMenu 的字段}`）。
+  「分享到朋友圈」只和「转发」一起出现。
+- 玩家点了某项，宿主问游戏分享什么——Android `GameSession.requestMenuShare(menu, MenuShareCallback)`，C ABI 事件
+  `EVENT_MENU_SHARE` 0（`{"menu", "replyId"}`，`menu` 为 `shareAppMessage` / `shareTimeline` / `addToFavorites`）。
+- 内容对应的 `onShareAppMessage` / `onShareTimeline` / `onAddToFavorites` 监听器作答（最后一个返回对象的为准；`onShareAppMessage`
+  返回值里的 `promise` 最多等 3 秒，以其 resolve 结果为准），答复恰好一次——`MenuShareCallback.onShareContent(MenuShareContent)`，
+  C ABI 命令 `MENU_SHARE_REPLY` 4（`{"replyId", "menu", "content"}`）。没有监听者、或运行时先重启时，答复为 `null`，宿主按自己的默认
+  （游戏名、图标）分享。答复里的图片同样是经沙箱解析的真实文件（会话期内可读）或 http(s) URL；不是游戏自己文件的图片被丢弃。
+
 ## 不实现会怎样
 
 没有 handler（或 C ABI 宿主没声明 share 服务）时，三个请求都以 `<api>:fail not supported`、错误码 `-2` 失败。它们会 settle 而不是沉默：

@@ -9,7 +9,6 @@ import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * The host's ecosystem, per session: the replies its posted events wait for and
@@ -36,10 +35,7 @@ final class EcosystemBridge {
     /** The largest event or value, in UTF-8 bytes. */
     static final int PAYLOAD_MAX_BYTES = 1 << 20;
 
-    /** Process-wide, so a reply can never reach another session's event. */
-    private static final AtomicLong sNextReply = new AtomicLong(1);
-    private static final ConcurrentHashMap<Integer, ConcurrentHashMap<Long, EcosystemReply>>
-            sReplies = new ConcurrentHashMap<>();
+    private static final ReplyRegistry<EcosystemReply> sReplies = new ReplyRegistry<>();
     /** Guarded by the inner map itself. */
     private static final ConcurrentHashMap<Integer, Map<String, String>> sValues =
             new ConcurrentHashMap<>();
@@ -80,7 +76,7 @@ final class EcosystemBridge {
         if (!isApiName(name)) {
             throw new IllegalArgumentException("not an event name: " + name);
         }
-        long replyId = reply != null ? sNextReply.getAndIncrement() : 0;
+        long replyId = reply != null ? sReplies.newId() : 0;
         String json;
         try {
             JSONObject event = new JSONObject();
@@ -95,9 +91,7 @@ final class EcosystemBridge {
         if (json.getBytes(StandardCharsets.UTF_8).length > PAYLOAD_MAX_BYTES) {
             throw new IllegalArgumentException("event larger than " + PAYLOAD_MAX_BYTES + " bytes");
         }
-        if (reply != null) {
-            sReplies.computeIfAbsent(sessionId, id -> new ConcurrentHashMap<>()).put(replyId, reply);
-        }
+        if (reply != null) sReplies.put(sessionId, replyId, reply);
         channel.deliver(sessionId, json);
     }
 
@@ -108,9 +102,7 @@ final class EcosystemBridge {
         if (!(raw instanceof Integer || raw instanceof Long)) return;
         long replyId = ((Number) raw).longValue();
         boolean done = answer.optBoolean("done", true);
-        Map<Long, EcosystemReply> pending = sReplies.get(sessionId);
-        if (pending == null) return;
-        EcosystemReply waiting = done ? pending.remove(replyId) : pending.get(replyId);
+        EcosystemReply waiting = sReplies.take(sessionId, replyId, done);
         if (waiting == null) return;
         JSONObject data = answer.optJSONObject("data");
         waiting.onReply(data != null ? HostDelegation.immutableMap(data) : null, done);
@@ -122,10 +114,8 @@ final class EcosystemBridge {
      * exception is rethrown after.
      */
     static void abandonReplies(int sessionId) {
-        Map<Long, EcosystemReply> pending = sReplies.remove(sessionId);
-        if (pending == null) return;
         RuntimeException first = null;
-        for (EcosystemReply waiting : pending.values()) {
+        for (EcosystemReply waiting : sReplies.abandon(sessionId)) {
             try {
                 waiting.onReply(null, true);
             } catch (RuntimeException thrown) {
@@ -184,7 +174,7 @@ final class EcosystemBridge {
 
     /** Forget the session: its pending replies are dropped, not answered. */
     static void forget(int sessionId) {
-        sReplies.remove(sessionId);
+        sReplies.forget(sessionId);
         sValues.remove(sessionId);
     }
 }

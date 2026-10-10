@@ -40,6 +40,12 @@ impl ShareService for FakeShare {
     fn show_share_image_menu(&self, request_json: &str) -> Result<(), ServiceError> {
         self.record("showShareImageMenu", request_json)
     }
+    fn set_share_menu(&self, json: &str) -> Result<(), ServiceError> {
+        self.record("setShareMenu", json)
+    }
+    fn menu_share_reply(&self, json: &str) -> Result<(), ServiceError> {
+        self.record("menuShareReply", json)
+    }
 }
 
 struct Host(Arc<FakeShare>);
@@ -186,4 +192,113 @@ fn without_a_host_a_friend_share_fails_and_the_game_hears_it() {
         checked,
         r#"[{"success":false,"errMsg":"shareMessageToFriend:fail not supported"}]"#
     );
+}
+
+#[test]
+fn the_host_s_menu_follows_what_content_shows_and_hides() {
+    let host = Arc::new(FakeShare::default());
+    let mut runtime = boot_with_services(
+        Some(Arc::new(Host(host.clone())) as Arc<dyn DeviceServices>),
+        None,
+    );
+    run_to_idle(
+        &mut runtime,
+        r#"
+        migo.showShareMenu({ menus: ['shareTimeline'], withShareTicket: true });
+        migo.hideShareMenu({ menus: ['shareTimeline'] });
+        migo.updateShareMenu({ isUpdatableMessage: true, activityId: 'act' });
+        migo.hideShareMenu();
+        "#,
+        "0",
+    );
+    let menus: Vec<Value> = host
+        .requests()
+        .into_iter()
+        .filter(|(api, _)| *api == "setShareMenu")
+        .map(|(_, menu)| menu)
+        .collect();
+    assert_eq!(
+        menus,
+        [
+            serde_json::json!({ "menus": ["shareAppMessage", "shareTimeline"], "withShareTicket": true }),
+            serde_json::json!({ "menus": ["shareAppMessage"], "withShareTicket": true }),
+            serde_json::json!({
+                "menus": ["shareAppMessage"], "withShareTicket": true,
+                "isUpdatableMessage": true, "activityId": "act",
+            }),
+            serde_json::json!({
+                "menus": [], "withShareTicket": true,
+                "isUpdatableMessage": true, "activityId": "act",
+            }),
+        ],
+        "moments sharing comes with sharing to a friend, and the whole state follows each change"
+    );
+}
+
+#[test]
+fn a_menu_share_is_answered_by_the_game_with_its_images_through_the_sandbox() {
+    let sandbox = Sandbox::new("menu-share");
+    let image = sandbox.paths.user_data_dir().join("card.png");
+    std::fs::write(&image, b"png").unwrap();
+    let host = Arc::new(FakeShare::default());
+    let mut runtime = boot_with_services(
+        Some(Arc::new(Host(host.clone())) as Arc<dyn DeviceServices>),
+        Some(sandbox.vfs()),
+    );
+    run_to_idle(
+        &mut runtime,
+        r#"
+        migo.onShareAppMessage(function () {
+            return {
+                title: 'now', query: 'a=1',
+                promise: Promise.resolve({ title: 'later', imageUrl: '/user/card.png' }),
+            };
+        });
+        migo.onShareTimeline(function () {
+            return { title: 'moments', imagePreviewUrl: 'https://example.com/p.png' };
+        });
+        migo.onAddToFavorites(function () {
+            return { title: 'kept', imageUrl: '/etc/hosts', disableForward: true };
+        });
+        const menu = (json) => globalThis[Symbol.for('Migo.hostBridge')]
+            ._internalDispatch('_internalOnShareMenuEvent', JSON.stringify([json]));
+        menu(JSON.stringify({ menu: 'shareAppMessage', replyId: 1 }));
+        menu(JSON.stringify({ menu: 'shareTimeline', replyId: 2 }));
+        menu(JSON.stringify({ menu: 'addToFavorites', replyId: 3 }));
+        menu(JSON.stringify({ menu: 'somethingElse', replyId: 4 }));
+        "#,
+        "0",
+    );
+    let mut replies: Vec<Value> = host
+        .requests()
+        .into_iter()
+        .filter(|(api, _)| *api == "menuShareReply")
+        .map(|(_, reply)| reply)
+        .collect();
+    replies.sort_by_key(|reply| reply["replyId"].as_u64());
+    assert_eq!(
+        replies.len(),
+        4,
+        "every menu share is answered: {replies:?}"
+    );
+    assert_eq!(replies[0]["menu"], "shareAppMessage");
+    assert_eq!(
+        replies[0]["content"]["title"], "later",
+        "the promise's answer decides"
+    );
+    assert!(replies[0]["content"].get("query").is_none());
+    assert_eq!(
+        canonical(&replies[0]["content"]["imageUrl"]),
+        std::fs::canonicalize(&image).unwrap()
+    );
+    assert_eq!(
+        replies[1]["content"],
+        serde_json::json!({ "title": "moments", "imagePreviewUrl": "https://example.com/p.png" })
+    );
+    assert_eq!(
+        replies[2]["content"],
+        serde_json::json!({ "title": "kept", "disableForward": true }),
+        "an image that is not the game's file is dropped"
+    );
+    assert_eq!(replies[3]["content"], Value::Null);
 }

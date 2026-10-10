@@ -323,7 +323,9 @@
       "reason": "Sharing is native UI outside the profile.",
       "ops": {
         "op_share_app_message": "unsupported",
+        "op_share_menu_reply": "unsupported",
         "op_share_message_to_friend": "unsupported",
+        "op_share_set_menu": "unsupported",
         "op_show_share_image_menu": "unsupported"
       }
     },

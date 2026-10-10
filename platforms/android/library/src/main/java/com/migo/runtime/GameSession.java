@@ -12,6 +12,7 @@ import android.view.View;
 import com.migo.runtime.callback.AdHandler;
 import com.migo.runtime.callback.EcosystemHandler;
 import com.migo.runtime.callback.EcosystemReply;
+import com.migo.runtime.callback.MenuShareCallback;
 import com.migo.runtime.callback.NavigationHandler;
 import com.migo.runtime.callback.PaymentHandler;
 import com.migo.runtime.callback.PermissionHandler;
@@ -830,6 +831,30 @@ public final class GameSession implements Closeable {
         synchronized (lock) {
             if (state.get() == SessionState.DESTROYED) return;
             NativeExports.setNavigationHandler(sessionId, handler);
+        }
+    }
+
+    /**
+     * Ask the game what to share for the item the player picked from your menu --
+     * one of {@link MenuShareCallback}'s {@code MENU_*}. The game's listener
+     * answers ({@code onShareAppMessage} may take up to three seconds to), and
+     * {@code callback} receives the answer exactly once, with null when the game
+     * set none; then share it. Which items to offer is
+     * {@link com.migo.runtime.callback.ShareHandler#onShareMenuChanged}'s.
+     *
+     * @param menu     the item picked
+     * @param callback where the game's answer goes
+     * @return whether the request was handed to a running game; when not,
+     *         {@code callback} is never called
+     * @throws IllegalArgumentException for an item that is not one of the three,
+     *         or a null callback
+     */
+    public boolean requestMenuShare(String menu, MenuShareCallback callback) {
+        if (!BuildConfig.MIGO_API_COMMERCE) return false;
+        synchronized (lock) {
+            if (!isGameStarted()) return false;
+            NativeExports.requestMenuShare(sessionId, menu, callback);
+            return true;
         }
     }
 

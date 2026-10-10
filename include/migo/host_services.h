@@ -109,10 +109,28 @@ typedef uint32_t MigoHostService;
  *                            options.
  *   SHOW_SHARE_IMAGE_MENU {"path", "needShowEntrance", "entrancePath"?} -- the
  *                          share sheet for one image.
+ *
+ * The share menu is the host's, and two commands keep it in step with content:
+ *
+ *   SET_SHARE_MENU {"menus": [...], "withShareTicket", ...} -- the menu's whole
+ *                   state after each change: the share items shown
+ *                   ("shareAppMessage", "shareTimeline"; none until content
+ *                   shows them), and the updateShareMenu fields content set.
+ *   MENU_SHARE_REPLY {"replyId", "menu", "content"} -- what to share for the
+ *                   item the player picked, answering EVENT_MENU_SHARE
+ *                   {"menu", "replyId"} ("shareAppMessage", "shareTimeline" or
+ *                   "addToFavorites"). Every event is answered once; content is
+ *                   null when nothing in the game answered, and the host shares
+ *                   with its own defaults (the game's name, its icon). An image
+ *                   in it is a real path resolved through the sandbox, readable
+ *                   for the rest of the session, or an http(s) URL.
  */
 #define MIGO_SHARE_SHARE_APP_MESSAGE 0U
 #define MIGO_SHARE_SHARE_MESSAGE_TO_FRIEND 1U
 #define MIGO_SHARE_SHOW_SHARE_IMAGE_MENU 2U
+#define MIGO_SHARE_SET_SHARE_MENU 3U
+#define MIGO_SHARE_MENU_SHARE_REPLY 4U
+#define MIGO_SHARE_EVENT_MENU_SHARE 0U
 
 /* Navigation: one call and two commands. */
 #define MIGO_NAVIGATE_NAVIGATE_TO_MINI_PROGRAM 0U
