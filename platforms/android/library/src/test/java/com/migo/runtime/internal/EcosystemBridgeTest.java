@@ -108,6 +108,13 @@ public final class EcosystemBridgeTest {
         assertEquals("", EcosystemBridge.value(SESSION + 1, "getExtConfigSync"));
         assertThrows(IllegalArgumentException.class,
                 () -> EcosystemBridge.setValue(SESSION, "", true));
+
+        EcosystemBridge.setValue(SESSION, "StoreGift.isSupported", true);
+        assertEquals("true", EcosystemBridge.value(SESSION, "StoreGift.isSupported"));
+        for (String bad : new String[] {"StoreGift.", ".isSupported", "A.b.c", "a..b"}) {
+            assertThrows(bad, IllegalArgumentException.class,
+                    () -> EcosystemBridge.setValue(SESSION, bad, true));
+        }
     }
 
     @Test

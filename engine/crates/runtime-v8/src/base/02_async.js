@@ -119,6 +119,32 @@ function createSettlement(options) {
     return { promise: promise, resolve: resolve, reject: reject };
 }
 
+// `options` without content's callbacks: for a call whose promise is made
+// first and handed to the callbacks after (`withCallbacks`).
+function withoutCallbacks(options) {
+    var bare = Object.assign({}, options || {});
+    delete bare.success;
+    delete bare.fail;
+    delete bare.complete;
+    return bare;
+}
+
+// `promise`, its outcome also handed to the callbacks in `options` -- for an API
+// that returns its promise whether or not content passed callbacks, or that has
+// work of its own to do with the outcome first. Content that passed callbacks
+// and never looks at the promise leaves no rejection unhandled.
+function withCallbacks(apiName, promise, options) {
+    if (!isCallbackStyle(options)) return promise;
+    promise.then(function (res) {
+        invokeCallback(apiName, 'success', options.success, res);
+        invokeCallback(apiName, 'complete', options.complete, res);
+    }, function (res) {
+        invokeCallback(apiName, 'fail', options.fail, res);
+        invokeCallback(apiName, 'complete', options.complete, res);
+    });
+    return promise;
+}
+
 function wrapAsync(apiName, fn, options) {
     const { success, fail, complete } = options || {};
     const callbackStyle = isCallbackStyle(options);
@@ -514,6 +540,8 @@ export {
     failMessage,
     isCallbackStyle,
     createSettlement,
+    withoutCallbacks,
+    withCallbacks,
     wrapAsync,
     promisify,
     createDeferredApi,

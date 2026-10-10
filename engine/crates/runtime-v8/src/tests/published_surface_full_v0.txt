@@ -138,6 +138,7 @@ createMediaAudioPlayer
 createPageManager
 createPath2D
 createRewardedVideoAd
+createStoreGift
 createTCPSocket
 createUDPSocket
 createUserInfoButton
@@ -197,6 +198,7 @@ getFuzzyLocation
 getGameClubData
 getGameExptInfo
 getGameLogManager
+getGameServerManager
 getGamepads
 getGroupCloudStorage
 getGroupEnterInfo
@@ -208,6 +210,7 @@ getLocalIPAddress
 getLocation
 getLogManager
 getMenuButtonBoundingClientRect
+getMiniReportManager
 getNetworkType
 getOfficialComponentsInfo
 getOpenDataContext
@@ -215,9 +218,11 @@ getPerformance
 getPhoneNumber
 getPotentialFriendList
 getPrivacySetting
+getRankManager
 getRealtimeLogManager
 getRecorderManager
 getRelationFriendList
+getScenePerformanceManager
 getScreenBrightness
 getScreenRecordingState
 getSetting
@@ -601,6 +606,7 @@ createMediaAudioPlayer
 createPageManager
 createPath2D
 createRewardedVideoAd
+createStoreGift
 createTCPSocket
 createUDPSocket
 createUserInfoButton
@@ -654,6 +660,7 @@ getFuzzyLocation
 getGameClubData
 getGameExptInfo
 getGameLogManager
+getGameServerManager
 getGamepads
 getGroupCloudStorage
 getGroupEnterInfo
@@ -665,6 +672,7 @@ getLocalIPAddress
 getLocation
 getLogManager
 getMenuButtonBoundingClientRect
+getMiniReportManager
 getNetworkType
 getOfficialComponentsInfo
 getOpenDataContext
@@ -672,9 +680,11 @@ getPerformance
 getPhoneNumber
 getPotentialFriendList
 getPrivacySetting
+getRankManager
 getRealtimeLogManager
 getRecorderManager
 getRelationFriendList
+getScenePerformanceManager
 getScreenBrightness
 getScreenRecordingState
 getSetting

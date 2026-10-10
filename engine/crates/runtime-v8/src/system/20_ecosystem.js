@@ -16,8 +16,10 @@ import { createDeferredApi, createListenerGroup } from "ext:host_v8_base/02_asyn
 //
 // The lists below are closed, and the host-service contract
 // (contracts/runtime/host-services.json, service "ecosystem") names the same
-// ones -- its "calls" are ECOSYSTEM_CALLS and ECOSYSTEM_METHODS together: a
-// host knows the whole set it may be asked for.
+// ones -- its "calls" are ECOSYSTEM_CALLS and ECOSYSTEM_OBJECT_CALLS together,
+// its "events" ECOSYSTEM_EVENTS and ECOSYSTEM_OBJECT_EVENTS: a host knows the
+// whole set it may be asked for. What an object does crosses under the name the
+// common platform documents it by, `Class.member`.
 
 // Requests the host answers.
 const ECOSYSTEM_CALLS = [
@@ -56,11 +58,28 @@ const ECOSYSTEM_CALLS = [
     'updateHostApp',
 ];
 
-// Requests the host answers that content makes through an object's method --
-// UserCryptoManager's getLatestUserKey -- rather than a function of their own,
-// so they are not published as globals.
-const ECOSYSTEM_METHODS = [
-    'getLatestUserKey',
+// Requests content makes through an object rather than a function of their
+// own -- the call that creates it (getMiniReportManager) or its methods -- so
+// none is published as a global; the objects are in 21_ecosystem_objects.js.
+const ECOSYSTEM_OBJECT_CALLS = [
+    'GameServerManager.broadcastInRoom', 'GameServerManager.cancelMatch',
+    'GameServerManager.changeSeat', 'GameServerManager.createRoom', 'GameServerManager.endGame',
+    'GameServerManager.endStateService', 'GameServerManager.getFriendsStateData',
+    'GameServerManager.getJoinVoIPChatSignature', 'GameServerManager.getLastRoomInfo',
+    'GameServerManager.getLostFrames', 'GameServerManager.getRoomInfo',
+    'GameServerManager.inviteFriend', 'GameServerManager.joinRoom',
+    'GameServerManager.kickoutMember', 'GameServerManager.login', 'GameServerManager.logout',
+    'GameServerManager.memberLeaveRoom', 'GameServerManager.ownerLeaveRoom',
+    'GameServerManager.reconnect', 'GameServerManager.restart', 'GameServerManager.setState',
+    'GameServerManager.startGame', 'GameServerManager.startMatch',
+    'GameServerManager.startStateService', 'GameServerManager.updateReadyStatus',
+    'GameServerManager.uploadFrame',
+    'RankManager.abort', 'RankManager.createChallenge', 'RankManager.getScore',
+    'RankManager.middleUpdate', 'RankManager.update',
+    'getMiniReportManager', 'MiniReportManager.report',
+    'ScenePerformanceManager.setData',
+    'StoreGift.getOrderInfo', 'StoreGift.open',
+    'UserCryptoManager.getLatestUserKey',
 ];
 
 // Events the host posts, as `{"name", "data", "replyId"?}`. An event with a
@@ -84,9 +103,21 @@ const ECOSYSTEM_EVENTS = {
     onVoIPChatStateChanged: null,
 };
 
+// Events of the objects, posted as the others are; none is answered.
+const ECOSYSTEM_OBJECT_EVENTS = [
+    'GameServerManager.onBeKickedOut', 'GameServerManager.onBroadcast',
+    'GameServerManager.onDisconnect', 'GameServerManager.onGameEnd',
+    'GameServerManager.onGameStart', 'GameServerManager.onInvite',
+    'GameServerManager.onLockStepError', 'GameServerManager.onLogout',
+    'GameServerManager.onMatch', 'GameServerManager.onRoomInfoChange',
+    'GameServerManager.onStateUpdate', 'GameServerManager.onSyncFrame',
+    'RankManager.onChallengeStart',
+];
+
 // Synchronous getters, answered from what the host last reported for each.
 const ECOSYSTEM_VALUES = [
     'getExptInfoSync', 'getExtConfigSync', 'getOfficialComponentsInfo', 'isChatTool',
+    'StoreGift.isSupported',
 ];
 
 // The true answer, for a host that offers no ecosystem at all: with no privacy
@@ -109,8 +140,10 @@ function _deferred(name) {
     let api = _apis.get(name);
     if (api === undefined) {
         // Most wait on a person -- a picker, a payment, a live room -- so none
-        // times out here; the host answers or fails each one.
-        api = createDeferredApi(name, 0);
+        // times out here; the host answers or fails each one. An object's
+        // member reports under its own name (`createRoom:ok`), as the common
+        // platform's objects do.
+        api = createDeferredApi(name.slice(name.indexOf('.') + 1), 0);
         _apis.set(name, api);
     }
     return api;
@@ -139,10 +172,27 @@ function _call(name, options) {
     });
 }
 
-/** The request behind an object's method; `name` is one of ECOSYSTEM_METHODS. */
-function ecosystemMethod(name, options) {
-    if (!ECOSYSTEM_METHODS.includes(name)) throw new TypeError('not an ecosystem method: ' + name);
+/**
+ * The request behind an object's call; `name` is one of ECOSYSTEM_OBJECT_CALLS.
+ * Settles as any other: `options`' callbacks, or the returned promise.
+ */
+function ecosystemObjectCall(name, options) {
+    if (!ECOSYSTEM_OBJECT_CALLS.includes(name)) throw new TypeError('not an ecosystem call: ' + name);
     return _call(name, options);
+}
+
+// The handler of each object event, which its object installs once.
+const _objectEventHandlers = new Map();
+
+/** `handler(data)` receives every `name` event; `name` is one of ECOSYSTEM_OBJECT_EVENTS. */
+function onEcosystemObjectEvent(name, handler) {
+    if (!ECOSYSTEM_OBJECT_EVENTS.includes(name)) throw new TypeError('not an ecosystem event: ' + name);
+    _objectEventHandlers.set(name, handler);
+}
+
+/** Whether a host answers ecosystem requests at all. */
+function ecosystemAvailable() {
+    return op_ecosystem_available();
 }
 
 function _internalOnEcosystemResult(resultJson) {
@@ -202,6 +252,16 @@ function _internalOnEcosystemEvent(eventJson) {
     try { event = JSON.parse(eventJson); } catch (_) { return; }
     if (event === null || typeof event !== 'object' || typeof event.name !== 'string') return;
     const replyId = typeof event.replyId === 'number' ? event.replyId : undefined;
+    const objectHandler = _objectEventHandlers.get(event.name);
+    if (objectHandler !== undefined) {
+        try {
+            objectHandler(event.data === undefined ? {} : event.data);
+        } catch (e) {
+            console.error(event.name + ' listener error:', e);
+        }
+        if (replyId !== undefined) _reply(replyId, null, true);
+        return;
+    }
     if (!Object.prototype.hasOwnProperty.call(ECOSYSTEM_EVENTS, event.name)) {
         // No such event: nothing will answer, and a host must not wait for it.
         if (replyId !== undefined) _reply(replyId, null, true);
@@ -250,6 +310,11 @@ function _internalOnEcosystemEvent(eventJson) {
 }
 
 // ---- synchronous getters -------------------------------------------------------
+
+/** The JSON the host reported for the getter `name`, parsed; `fallback` when none. */
+function ecosystemValue(name, fallback) {
+    return _value(name, fallback);
+}
 
 function _value(name, fallback) {
     const json = op_ecosystem_value(name);
@@ -311,11 +376,15 @@ ecosystemApis.isChatTool = isChatTool;
 
 export {
     ECOSYSTEM_CALLS,
-    ECOSYSTEM_METHODS,
+    ECOSYSTEM_OBJECT_CALLS,
     ECOSYSTEM_EVENTS,
+    ECOSYSTEM_OBJECT_EVENTS,
     ECOSYSTEM_VALUES,
     ecosystemApis,
-    ecosystemMethod,
+    ecosystemAvailable,
+    ecosystemObjectCall,
+    ecosystemValue,
+    onEcosystemObjectEvent,
     _internalOnEcosystemResult,
     _internalOnEcosystemEvent,
 };

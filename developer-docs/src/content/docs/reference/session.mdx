@@ -343,7 +343,7 @@ typedef struct MigoHostServiceCall {
 | `MIGO_HOST_SERVICE_SCREEN` (14) | `GET_BRIGHTNESS` 0 · `SET_BRIGHTNESS` 1 · `SET_DEVICE_ORIENTATION` 2 · `GET_RECORDING_STATE` 5 · `SET_VISUAL_EFFECT_ON_CAPTURE` 8（调用）· `START`/`STOP_CAPTURE_OBSERVER` 3/4 · `START`/`STOP_RECORDING_OBSERVER` 6/7（命令）；事件 `USER_CAPTURE_SCREEN` 0 · `DEVICE_ORIENTATION_CHANGE` 1 · `RECORDING_STATE_CHANGE` 2 | 见左 | `getScreenBrightness` / `setScreenBrightness` / `setDeviceOrientation` / `onDeviceOrientationChange` / `onUserCaptureScreen` / `getScreenRecordingState` / `onScreenRecordingStateChanged` / `setVisualEffectOnCapture`（常亮仍是 `on_keep_screen_on`） |
 | `MIGO_HOST_SERVICE_BLUETOOTH` (15) | `OPEN_ADAPTER` 0 … `GET_BLE_MTU` 21（22 个，全部为调用，失败带 `errCode`）；事件 `ADAPTER_STATE_CHANGE` 0 · `DEVICE_FOUND` 1 · `BLE_CONNECTION_STATE_CHANGE` 2 · `BLE_MTU_CHANGE` 3 · `BEACON_UPDATE` 4 · `BEACON_SERVICE_CHANGE` 5 | 调用，操作完成时作答；特征值走 [`migo_session_post_ble_characteristic_value`](#migo_session_post_ble_characteristic_value) | `openBluetoothAdapter` 起的全部蓝牙 / BLE / iBeacon API（见[蓝牙](/docs/capabilities/bluetooth/)） |
 | `MIGO_HOST_SERVICE_WINDOW` (16) | `SET_WINDOW_SIZE` 0（调用）· `SET_CURSOR` 1 · `REQUEST_POINTER_LOCK` 2 · `EXIT_POINTER_LOCK` 3（命令）；事件 `WINDOW_STATE_CHANGE` 0 · `POINTER_LOCK_CHANGE` 1 | 见左；指针锁定期间，宿主继续上报**累积**了原始位移的鼠标 MOVE 位置（可超出 Surface），内容的 `movementX/Y` 因而照常可得 | `setWindowSize` · `setCursor`（关键字或经沙箱解析的图片路径）· `requestPointerLock` / `exitPointerLock` / `isPointerLocked` · `onWindowStateChange`（仅桌面宿主声明） |
-| `MIGO_HOST_SERVICE_ECOSYSTEM` (17) | `CALL` 0（调用，`{"api","options"}`）· `REPLY` 1（命令，`{"replyId","data","done"}`）；事件 `EVENT` 0（`{"name","data","replyId"?}`） | 按内容 API 名透传，名字是契约 `ecosystem.names` 的闭集；同步 getter 读 [`migo_session_set_ecosystem_value`](#migo_session_set_ecosystem_value) 报告的值 | 群与好友、云存储、视频号、音视频通话、接力、订阅消息、隐私协议、`UserCryptoManager.getLatestUserKey` 等 69 个请求与 11 个事件 |
+| `MIGO_HOST_SERVICE_ECOSYSTEM` (17) | `CALL` 0（调用，`{"api","options"}`）· `REPLY` 1（命令，`{"replyId","data","done"}`）；事件 `EVENT` 0（`{"name","data","replyId"?}`） | 按内容 API 名透传，名字是契约 `ecosystem.names` 的闭集；同步 getter 读 [`migo_session_set_ecosystem_value`](#migo_session_set_ecosystem_value) 报告的值 | 群与好友、云存储、视频号、音视频通话、接力、订阅消息、隐私协议等 68 个 API，以及对象的成员（`Class.member`）：`GameServerManager`（帧同步）、`RankManager`、`MiniReportManager`、`ScenePerformanceManager`、`StoreGift`、`UserCryptoManager.getLatestUserKey`——共 105 个请求、24 个事件 |
 | `MIGO_HOST_SERVICE_IMAGE` (12) | `SAVE_IMAGE_TO_PHOTOS_ALBUM` 0 · `PREVIEW_IMAGE` 1 · `PREVIEW_MEDIA` 2 · `COMPRESS_IMAGE` 3 · `CHOOSE_IMAGE` 4 · `CHOOSE_MESSAGE_FILE` 5 · `CHOOSE_MEDIA` 6 | 调用；涉及文件（见下） | `saveImageToPhotosAlbum`（先经 `scope.writePhotosAlbum`）· `previewImage` · `previewMedia` · `compressImage` · `chooseImage` · `chooseMessageFile` · `chooseMedia` |
 
 **文件。** 内容只用沙箱路径（`/tmp/...`、`/user/...`、包内路径），宿主只用真实路径，两边都看不到对方的那种：
@@ -904,13 +904,13 @@ MIGO_API MigoResult MIGO_CALL migo_session_set_ecosystem_value(MigoSession *sess
 ```
 
 报告一个同步生态 getter 返回什么：`name` 是契约 `ecosystem.names.values` 里的 API 名（`getExtConfigSync`、
-`getExptInfoSync`、`getOfficialComponentsInfo`、`isChatTool`），`json` 是该 API 的返回值。任意线程、值变化时调用，getter
+`getExptInfoSync`、`getOfficialComponentsInfo`、`isChatTool`、`StoreGift.isSupported`），`json` 是该 API 的返回值。任意线程、值变化时调用，getter
 读最新一次；Surface attach 之前也可调用。空 `json` 撤回该值，getter 退回无宿主时的答案。
 
 返回：
 
 - `MIGO_OK` — 已记录
-- `MIGO_ERROR_INVALID_ARGUMENT` — 名字不是 API 名（只含字母、至多 64 字节）；`json` 不是 JSON 或超过
+- `MIGO_ERROR_INVALID_ARGUMENT` — 名字不是 API 名（字母，或对象成员 `Class.member`；至多 64 字节）；`json` 不是 JSON 或超过
   `MIGO_HOST_SERVICE_PAYLOAD_MAX_BYTES`；会话已记录 64 个名字时再加新名字；宿主未声明 `MIGO_HOST_SERVICE_ECOSYSTEM`
 
 ## migo_session_notify_vsync

@@ -332,10 +332,12 @@ typedef uint32_t MigoHostService;
 /*
  * The host's own ecosystem: friends and groups, cloud storage, live channels,
  * voice chat, handoff, subscriptions, privacy agreements -- features whose
- * meaning is the host's. They cross by content API name -- a method's by its
- * own (UserCryptoManager's "getLatestUserKey") -- and the contract
- * (contracts/runtime/host-services.json, service "ecosystem", "names") lists
- * every name that may arrive.
+ * meaning is the host's. They cross by content API name -- an object's member
+ * as Class.member, the name the platform documents it by
+ * ("GameServerManager.createRoom", "RankManager.onChallengeStart") -- and the
+ * contract (contracts/runtime/host-services.json, service "ecosystem", "names")
+ * lists every name that may arrive. A frame-sync action list that is binary
+ * crosses as lower-case hex with "binary": true beside it, both ways.
  *
  *   CALL {"api", "options"} -> the API's result, or a failure with the code the
  *        API defines (MIGO_HOST_SERVICE_RESULT_FLAG_ERROR_CODE). A path among an
@@ -645,8 +647,8 @@ MIGO_API MigoResult MIGO_CALL migo_session_post_ble_characteristic_value(
  * the contract's "values" (getExtConfigSync, isChatTool, ...), json what the API
  * returns -- from any thread, whenever it changes. An empty json withdraws it,
  * and the getter answers as for a host with none. Returns
- * MIGO_ERROR_INVALID_ARGUMENT for a name that is not an API name (letters only,
- * at most 64), json that is not JSON or larger than
+ * MIGO_ERROR_INVALID_ARGUMENT for a name that is not an API name (letters, or
+ * an object's member as Class.member; at most 64), json that is not JSON or larger than
  * MIGO_HOST_SERVICE_PAYLOAD_MAX_BYTES, or when the host did not declare
  * MIGO_HOST_SERVICE_ECOSYSTEM. May be called before a Surface is attached.
  */

@@ -280,6 +280,19 @@ pub unsafe extern "C" fn migo_session_set_system_settings(
 
 /// The longest API name a getter has.
 const ECOSYSTEM_VALUE_NAME_MAX: u32 = 64;
+
+/// An API's name, or an object member's as `Class.member`: letters, with at
+/// most one dot between two of them.
+fn is_api_name(name: &str) -> bool {
+    let mut parts = name.split('.');
+    let valid =
+        |part: &str| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_alphabetic());
+    match (parts.next(), parts.next(), parts.next()) {
+        (Some(only), None, _) => valid(only),
+        (Some(class), Some(member), None) => valid(class) && valid(member),
+        _ => false,
+    }
+}
 /// How many getters one session may hold values for: the contract lists a few;
 /// the bound is against a host that reports names nobody reads.
 const ECOSYSTEM_VALUES_MAX: usize = 64;
@@ -310,7 +323,7 @@ pub unsafe extern "C" fn migo_session_set_ecosystem_value(
         let Ok(name) = (unsafe { copy_utf8_with_length(name_utf8, name_length) }) else {
             return MIGO_ERROR_INVALID_ARGUMENT;
         };
-        if !name.bytes().all(|byte| byte.is_ascii_alphabetic()) {
+        if !is_api_name(&name) {
             return MIGO_ERROR_INVALID_ARGUMENT;
         }
         let Ok(json) = (unsafe { copy_utf8_with_length(json_utf8, json_length) }) else {
@@ -540,6 +553,14 @@ mod tests {
             assert_eq!(set(session, "getExtConfigSync", ""), MIGO_OK);
             assert_eq!(reports.ecosystem_value("getExtConfigSync"), None);
             assert_eq!(set(session, "not-a-name", "1"), MIGO_ERROR_INVALID_ARGUMENT);
+            assert_eq!(set(session, "StoreGift.isSupported", "true"), MIGO_OK);
+            assert_eq!(
+                reports.ecosystem_value("StoreGift.isSupported").as_deref(),
+                Some("true")
+            );
+            for bad in ["StoreGift.", ".isSupported", "A.b.c", "a..b"] {
+                assert_eq!(set(session, bad, "1"), MIGO_ERROR_INVALID_ARGUMENT, "{bad}");
+            }
             assert_eq!(set(session, "isChatTool", "{"), MIGO_ERROR_INVALID_ARGUMENT);
             assert_eq!(set(session, "", "true"), MIGO_ERROR_INVALID_ARGUMENT);
         });

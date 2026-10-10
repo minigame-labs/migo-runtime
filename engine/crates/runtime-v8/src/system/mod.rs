@@ -712,6 +712,7 @@ deno_core::extension!(
     esm_entry_point = "ext:host_v8_system/99_global_scope.js",
     esm = [
         dir "src/system",
+        "00_host_binary.js",
         "01_bluetooth.js",
         "02_authorize.js",
         "03_window_info.js",
@@ -731,6 +732,7 @@ deno_core::extension!(
         "18_crypto.js",
         "19_log_manager.js",
         "20_ecosystem.js",
+        "21_ecosystem_objects.js",
         "99_global_scope.js",
     ]
 );

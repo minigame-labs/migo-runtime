@@ -24,6 +24,7 @@ import {
     op_get_ble_mtu,
 } from "ext:core/ops";
 import { createDeferredApi, createListenerGroup } from "ext:host_v8_base/02_async.js";
+import { bytesToHex, hexToBytes } from "ext:host_v8_system/00_host_binary.js";
 
 // ==================== System Bluetooth Setting ====================
 
@@ -49,44 +50,16 @@ function _internalOnOpenBluetoothSettingResult(resultJson) {
 // as `errCode` beside `errMsg`. Binary values cross as lower-case hex and reach
 // content as ArrayBuffers.
 
-function _bufferToHex(buf) {
-    var bytes;
-    if (buf instanceof ArrayBuffer) {
-        bytes = new Uint8Array(buf);
-    } else if (ArrayBuffer.isView(buf)) {
-        bytes = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
-    } else {
-        return '';
-    }
-    var hex = '';
-    for (var i = 0; i < bytes.length; i++) {
-        var b = bytes[i].toString(16);
-        hex += b.length < 2 ? '0' + b : b;
-    }
-    return hex;
-}
-
-function _hexToBuffer(hex) {
-    if (typeof hex !== 'string' || hex.length % 2 !== 0) return new ArrayBuffer(0);
-    var bytes = new Uint8Array(hex.length / 2);
-    for (var i = 0; i < bytes.length; i++) {
-        var byte = parseInt(hex.substr(i * 2, 2), 16);
-        if (byte !== byte) return new ArrayBuffer(0);
-        bytes[i] = byte;
-    }
-    return bytes.buffer;
-}
-
 // A device as content sees it: its advertising data and service data as
 // ArrayBuffers, the rest as the host described it.
 function _device(raw) {
     var device = Object.assign({}, raw);
-    if (typeof raw.advertisData === 'string') device.advertisData = _hexToBuffer(raw.advertisData);
+    if (typeof raw.advertisData === 'string') device.advertisData = hexToBytes(raw.advertisData) || new ArrayBuffer(0);
     if (raw.serviceData !== null && typeof raw.serviceData === 'object') {
         device.serviceData = {};
         var keys = Object.keys(raw.serviceData);
         for (var i = 0; i < keys.length; i++) {
-            device.serviceData[keys[i]] = _hexToBuffer(raw.serviceData[keys[i]]);
+            device.serviceData[keys[i]] = hexToBytes(raw.serviceData[keys[i]]) || new ArrayBuffer(0);
         }
     }
     return device;
@@ -172,7 +145,7 @@ const _getConnectedDevices = _request('getConnectedBluetoothDevices', undefined,
 const _makePair = _request('makeBluetoothPair', 0, op_make_bluetooth_pair, function (o) {
     return {
         deviceId: _required(o, 'deviceId'),
-        pin: _bufferToHex(o.pin),
+        pin: bytesToHex(o.pin) || '',
         timeout: typeof o.timeout === 'number' && o.timeout > 0 ? o.timeout : 20000,
     };
 });
@@ -213,7 +186,7 @@ const _writeCharacteristic = _request('writeBLECharacteristicValue', undefined,
         if (!(o.value instanceof ArrayBuffer) && !ArrayBuffer.isView(o.value)) {
             throw new Error('value must be an ArrayBuffer');
         }
-        request.value = _bufferToHex(o.value);
+        request.value = bytesToHex(o.value);
         request.writeType = o.writeType === 'writeNoResponse' ? 'writeNoResponse' : 'write';
         return request;
     });

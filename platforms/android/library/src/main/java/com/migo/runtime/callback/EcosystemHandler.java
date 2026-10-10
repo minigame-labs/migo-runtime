@@ -14,8 +14,9 @@ import java.util.Map;
  * <h2>One method, keyed by name</h2>
  * What each of these APIs means is yours, not the runtime's, so they arrive as
  * one request carrying the content API's name ({@code getGroupCloudStorage},
- * {@code requestSubscribeMessage}, ...) and its options, rather than as an
- * interface per API. The names that can arrive are a closed list -- the
+ * {@code requestSubscribeMessage}, ...) -- an object's member as
+ * {@code Class.member} ({@code GameServerManager.createRoom}) -- and its
+ * options, rather than as an interface per API. The names that can arrive are a closed list -- the
  * {@code ecosystem} service in the runtime's host-service contract -- so a
  * handler can switch over them and fail the rest:
  * <pre>{@code
@@ -59,7 +60,10 @@ public interface EcosystemHandler {
 
     /** One ecosystem API call. */
     final class Request {
-        /** The content API's name, one of the contract's; never empty. */
+        /**
+         * The content API's name, or an object member's as {@code Class.member};
+         * one of the contract's, never empty.
+         */
         public final String api;
         /**
          * The options content passed, without its callbacks, as an immutable tree
