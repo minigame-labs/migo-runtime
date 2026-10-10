@@ -526,6 +526,191 @@
           "hook": "_internalOnScreenRecordingStateEvent"
         }
       }
+    },
+    "bluetooth": {
+      "id": 15,
+      "methods": {
+        "open_adapter": {
+          "id": 0,
+          "kind": "call",
+          "op": "op_open_bluetooth_adapter",
+          "hook": "_internalOnOpenBluetoothAdapterResult",
+          "error_code_field": "errCode"
+        },
+        "close_adapter": {
+          "id": 1,
+          "kind": "call",
+          "op": "op_close_bluetooth_adapter",
+          "hook": "_internalOnCloseBluetoothAdapterResult",
+          "error_code_field": "errCode"
+        },
+        "get_adapter_state": {
+          "id": 2,
+          "kind": "call",
+          "op": "op_get_bluetooth_adapter_state",
+          "hook": "_internalOnGetBluetoothAdapterStateResult",
+          "error_code_field": "errCode"
+        },
+        "start_devices_discovery": {
+          "id": 3,
+          "kind": "call",
+          "op": "op_start_bluetooth_devices_discovery",
+          "hook": "_internalOnStartBluetoothDevicesDiscoveryResult",
+          "error_code_field": "errCode"
+        },
+        "stop_devices_discovery": {
+          "id": 4,
+          "kind": "call",
+          "op": "op_stop_bluetooth_devices_discovery",
+          "hook": "_internalOnStopBluetoothDevicesDiscoveryResult",
+          "error_code_field": "errCode"
+        },
+        "get_devices": {
+          "id": 5,
+          "kind": "call",
+          "op": "op_get_bluetooth_devices",
+          "hook": "_internalOnGetBluetoothDevicesResult",
+          "error_code_field": "errCode"
+        },
+        "get_connected_devices": {
+          "id": 6,
+          "kind": "call",
+          "op": "op_get_connected_bluetooth_devices",
+          "hook": "_internalOnGetConnectedBluetoothDevicesResult",
+          "error_code_field": "errCode"
+        },
+        "make_pair": {
+          "id": 7,
+          "kind": "call",
+          "op": "op_make_bluetooth_pair",
+          "hook": "_internalOnMakeBluetoothPairResult",
+          "error_code_field": "errCode"
+        },
+        "is_device_paired": {
+          "id": 8,
+          "kind": "call",
+          "op": "op_is_bluetooth_device_paired",
+          "hook": "_internalOnIsBluetoothDevicePairedResult",
+          "error_code_field": "errCode"
+        },
+        "start_beacon_discovery": {
+          "id": 9,
+          "kind": "call",
+          "op": "op_start_beacon_discovery",
+          "hook": "_internalOnStartBeaconDiscoveryResult",
+          "error_code_field": "errCode"
+        },
+        "stop_beacon_discovery": {
+          "id": 10,
+          "kind": "call",
+          "op": "op_stop_beacon_discovery",
+          "hook": "_internalOnStopBeaconDiscoveryResult",
+          "error_code_field": "errCode"
+        },
+        "get_beacons": {
+          "id": 11,
+          "kind": "call",
+          "op": "op_get_beacons",
+          "hook": "_internalOnGetBeaconsResult",
+          "error_code_field": "errCode"
+        },
+        "create_ble_connection": {
+          "id": 12,
+          "kind": "call",
+          "op": "op_create_ble_connection",
+          "hook": "_internalOnCreateBLEConnectionResult",
+          "error_code_field": "errCode"
+        },
+        "close_ble_connection": {
+          "id": 13,
+          "kind": "call",
+          "op": "op_close_ble_connection",
+          "hook": "_internalOnCloseBLEConnectionResult",
+          "error_code_field": "errCode"
+        },
+        "get_ble_device_services": {
+          "id": 14,
+          "kind": "call",
+          "op": "op_get_ble_device_services",
+          "hook": "_internalOnGetBLEDeviceServicesResult",
+          "error_code_field": "errCode"
+        },
+        "get_ble_device_characteristics": {
+          "id": 15,
+          "kind": "call",
+          "op": "op_get_ble_device_characteristics",
+          "hook": "_internalOnGetBLEDeviceCharacteristicsResult",
+          "error_code_field": "errCode"
+        },
+        "read_ble_characteristic_value": {
+          "id": 16,
+          "kind": "call",
+          "op": "op_read_ble_characteristic_value",
+          "hook": "_internalOnReadBLECharacteristicValueResult",
+          "error_code_field": "errCode"
+        },
+        "write_ble_characteristic_value": {
+          "id": 17,
+          "kind": "call",
+          "op": "op_write_ble_characteristic_value",
+          "hook": "_internalOnWriteBLECharacteristicValueResult",
+          "error_code_field": "errCode"
+        },
+        "notify_ble_characteristic_value_change": {
+          "id": 18,
+          "kind": "call",
+          "op": "op_notify_ble_characteristic_value_change",
+          "hook": "_internalOnNotifyBLECharacteristicValueChangeResult",
+          "error_code_field": "errCode"
+        },
+        "get_ble_device_rssi": {
+          "id": 19,
+          "kind": "call",
+          "op": "op_get_ble_device_rssi",
+          "hook": "_internalOnGetBLEDeviceRSSIResult",
+          "error_code_field": "errCode"
+        },
+        "set_ble_mtu": {
+          "id": 20,
+          "kind": "call",
+          "op": "op_set_ble_mtu",
+          "hook": "_internalOnSetBLEMTUResult",
+          "error_code_field": "errCode"
+        },
+        "get_ble_mtu": {
+          "id": 21,
+          "kind": "call",
+          "op": "op_get_ble_mtu",
+          "hook": "_internalOnGetBLEMTUResult",
+          "error_code_field": "errCode"
+        }
+      },
+      "events": {
+        "adapter_state_change": {
+          "id": 0,
+          "hook": "_internalOnBluetoothAdapterStateEvent"
+        },
+        "device_found": {
+          "id": 1,
+          "hook": "_internalOnBluetoothDeviceFoundEvent"
+        },
+        "ble_connection_state_change": {
+          "id": 2,
+          "hook": "_internalOnBLEConnectionStateEvent"
+        },
+        "ble_mtu_change": {
+          "id": 3,
+          "hook": "_internalOnBLEMTUEvent"
+        },
+        "beacon_update": {
+          "id": 4,
+          "hook": "_internalOnBeaconUpdateEvent"
+        },
+        "beacon_service_change": {
+          "id": 5,
+          "hook": "_internalOnBeaconServiceEvent"
+        }
+      }
     }
   }
 }

@@ -37,7 +37,8 @@ use crate::{
 use migo_capi_abi::{
     VersionedHeader,
     host_services::{
-        MigoAppAuthorizeSetting, MigoHostServiceCall, MigoHostServiceResult, MigoSensorSample,
+        MigoAppAuthorizeSetting, MigoBleCharacteristicValue, MigoHostServiceCall,
+        MigoHostServiceResult, MigoSensorSample,
     },
 };
 
@@ -66,6 +67,7 @@ header_is_first!(
     MigoHostServiceResult,
     MigoAppAuthorizeSetting,
     MigoSensorSample,
+    MigoBleCharacteristicValue,
     MigoError,
     MigoSurfaceDescriptor,
     MigoSurfaceMetrics,

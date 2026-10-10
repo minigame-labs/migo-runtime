@@ -39,10 +39,10 @@ pub use camera::CameraService;
 pub use clipboard::ClipboardService;
 pub use codec::CodecService;
 pub use device::{
-    AccelerometerService, AudioPlatformService, BatteryService, BluetoothService, CommerceServices,
-    CompassService, ConnectivityServices, DeviceMotionService, DeviceServices, GyroscopeService,
-    KeyboardService, MediaServices, RecorderService, ScreenService, SensorServices,
-    SystemUtilServices, VibrationService,
+    AccelerometerService, AudioPlatformService, BLUETOOTH_RESULT_HOOKS, BatteryService,
+    BluetoothService, CommerceServices, CompassService, ConnectivityServices, DeviceMotionService,
+    DeviceServices, GyroscopeService, KeyboardService, MediaServices, RecorderService,
+    ScreenService, SensorServices, SystemUtilServices, VibrationService,
 };
 pub use file::FileService;
 pub use game_log::GameLogService;

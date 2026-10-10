@@ -1152,45 +1152,24 @@ pub fn camera_close_frame_change(host_id: i32, camera_id: u32) -> Result<(), Str
 }
 
 // ==================== Bluetooth ====================
-
-/// Call a Java Bluetooth method that takes (hostId) and returns a JSON string.
-fn call_bluetooth_json_no_args(method_name: &str, host_id: i32) -> Result<String, String> {
-    call_static_method(
-        method_name,
-        ReturnType::Object,
-        |env, result| {
-            let jstring = result.l().map_err(|_| "Null string from Java")?;
-            let json_str = env
-                .get_string(&jni::objects::JString::from(jstring))
-                .map_err(|e| format!("Failed to convert bluetooth JSON string: {e}"))?
-                .into();
-            Ok(json_str)
-        },
-        &[jvalue { i: host_id }],
-    )
-}
+//
+// Every one is a request `{"requestId", ...}` the SDK answers through
+// `onBluetoothResult` -- once the operation has happened, which for a connection
+// or a write is later than the call returns.
 
 jni_void_json!(bluetooth_open_adapter, "bluetoothOpenAdapter");
-jni_void!(bluetooth_close_adapter, "bluetoothCloseAdapter");
-
-pub fn bluetooth_get_adapter_state(host_id: i32) -> Result<String, String> {
-    call_bluetooth_json_no_args("bluetoothGetAdapterState", host_id)
-}
-
+jni_void_json!(bluetooth_close_adapter, "bluetoothCloseAdapter");
+jni_void_json!(bluetooth_get_adapter_state, "bluetoothGetAdapterState");
 jni_void_json!(
     bluetooth_start_devices_discovery,
     "bluetoothStartDevicesDiscovery"
 );
-jni_void!(
+jni_void_json!(
     bluetooth_stop_devices_discovery,
     "bluetoothStopDevicesDiscovery"
 );
-
-pub fn bluetooth_get_devices(host_id: i32) -> Result<String, String> {
-    call_bluetooth_json_no_args("bluetoothGetDevices", host_id)
-}
-
-jni_json!(
+jni_void_json!(bluetooth_get_devices, "bluetoothGetDevices");
+jni_void_json!(
     bluetooth_get_connected_devices,
     "bluetoothGetConnectedDevices"
 );
@@ -1200,21 +1179,15 @@ jni_void_json!(
     bluetooth_start_beacon_discovery,
     "bluetoothStartBeaconDiscovery"
 );
-jni_void!(
+jni_void_json!(
     bluetooth_stop_beacon_discovery,
     "bluetoothStopBeaconDiscovery"
 );
-
-pub fn bluetooth_get_beacons(host_id: i32) -> Result<String, String> {
-    call_bluetooth_json_no_args("bluetoothGetBeacons", host_id)
-}
-
-// ---- BLE GATT ----
-
+jni_void_json!(bluetooth_get_beacons, "bluetoothGetBeacons");
 jni_void_json!(ble_create_connection, "bleCreateConnection");
 jni_void_json!(ble_close_connection, "bleCloseConnection");
-jni_json!(ble_get_device_services, "bleGetDeviceServices");
-jni_json!(
+jni_void_json!(ble_get_device_services, "bleGetDeviceServices");
+jni_void_json!(
     ble_get_device_characteristics,
     "bleGetDeviceCharacteristics"
 );
@@ -1227,9 +1200,9 @@ jni_void_json!(
     ble_notify_characteristic_value_change,
     "bleNotifyCharacteristicValueChange"
 );
-jni_json!(ble_get_device_rssi, "bleGetDeviceRSSI");
+jni_void_json!(ble_get_device_rssi, "bleGetDeviceRSSI");
 jni_void_json!(ble_set_mtu, "bleSetMTU");
-jni_json!(ble_get_mtu, "bleGetMTU");
+jni_void_json!(ble_get_mtu, "bleGetMTU");
 
 // ==================== Image API ====================
 

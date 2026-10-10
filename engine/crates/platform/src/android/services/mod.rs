@@ -852,141 +852,141 @@ struct AndroidBluetooth {
     session: SessionGate,
 }
 
+// The SDK answers every request through `onBluetoothResult`; using Bluetooth
+// needs `scope.bluetooth`, releasing what was acquired under it does not.
 impl BluetoothService for AndroidBluetooth {
-    fn open_adapter(&self, options_json: &str) -> Result<(), ServiceError> {
+    fn open_adapter(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, Some(Scope::Bluetooth), || {
-            jni::bluetooth_open_adapter(self.session.host_id(), options_json)
+            jni::bluetooth_open_adapter(self.session.host_id(), request_json)
         })
     }
 
-    fn close_adapter(&self) -> Result<(), ServiceError> {
+    fn close_adapter(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, None, || {
-            jni::bluetooth_close_adapter(self.session.host_id())
+            jni::bluetooth_close_adapter(self.session.host_id(), request_json)
         })
     }
 
-    fn get_adapter_state(&self) -> Result<String, ServiceError> {
+    fn get_adapter_state(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, Some(Scope::Bluetooth), || {
-            jni::bluetooth_get_adapter_state(self.session.host_id())
+            jni::bluetooth_get_adapter_state(self.session.host_id(), request_json)
         })
     }
 
-    fn start_devices_discovery(&self, options_json: &str) -> Result<(), ServiceError> {
+    fn start_devices_discovery(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, Some(Scope::Bluetooth), || {
-            jni::bluetooth_start_devices_discovery(self.session.host_id(), options_json)
+            jni::bluetooth_start_devices_discovery(self.session.host_id(), request_json)
         })
     }
 
-    fn stop_devices_discovery(&self) -> Result<(), ServiceError> {
+    fn stop_devices_discovery(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, None, || {
-            jni::bluetooth_stop_devices_discovery(self.session.host_id())
+            jni::bluetooth_stop_devices_discovery(self.session.host_id(), request_json)
         })
     }
 
-    fn get_devices(&self) -> Result<String, ServiceError> {
+    fn get_devices(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, Some(Scope::Bluetooth), || {
-            jni::bluetooth_get_devices(self.session.host_id())
+            jni::bluetooth_get_devices(self.session.host_id(), request_json)
         })
     }
 
-    fn get_connected_devices(&self, options_json: &str) -> Result<String, ServiceError> {
+    fn get_connected_devices(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, Some(Scope::Bluetooth), || {
-            jni::bluetooth_get_connected_devices(self.session.host_id(), options_json)
+            jni::bluetooth_get_connected_devices(self.session.host_id(), request_json)
         })
     }
 
-    fn make_pair(&self, options_json: &str) -> Result<(), ServiceError> {
+    fn make_pair(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, Some(Scope::Bluetooth), || {
-            jni::bluetooth_make_pair(self.session.host_id(), options_json)
+            jni::bluetooth_make_pair(self.session.host_id(), request_json)
         })
     }
 
-    fn is_device_paired(&self, options_json: &str) -> Result<(), ServiceError> {
+    fn is_device_paired(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, Some(Scope::Bluetooth), || {
-            jni::bluetooth_is_device_paired(self.session.host_id(), options_json)
+            jni::bluetooth_is_device_paired(self.session.host_id(), request_json)
         })
     }
 
-    fn start_beacon_discovery(&self, options_json: &str) -> Result<(), ServiceError> {
+    fn start_beacon_discovery(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, Some(Scope::Bluetooth), || {
-            jni::bluetooth_start_beacon_discovery(self.session.host_id(), options_json)
+            jni::bluetooth_start_beacon_discovery(self.session.host_id(), request_json)
         })
     }
 
-    fn stop_beacon_discovery(&self) -> Result<(), ServiceError> {
+    fn stop_beacon_discovery(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, None, || {
-            jni::bluetooth_stop_beacon_discovery(self.session.host_id())
+            jni::bluetooth_stop_beacon_discovery(self.session.host_id(), request_json)
         })
     }
 
-    fn get_beacons(&self) -> Result<String, ServiceError> {
+    fn get_beacons(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, Some(Scope::Bluetooth), || {
-            jni::bluetooth_get_beacons(self.session.host_id())
+            jni::bluetooth_get_beacons(self.session.host_id(), request_json)
         })
     }
 
-    // ---- BLE GATT ----
-
-    fn create_ble_connection(&self, options_json: &str) -> Result<(), ServiceError> {
+    fn create_ble_connection(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, Some(Scope::Bluetooth), || {
-            jni::ble_create_connection(self.session.host_id(), options_json)
+            jni::ble_create_connection(self.session.host_id(), request_json)
         })
     }
 
-    fn close_ble_connection(&self, options_json: &str) -> Result<(), ServiceError> {
+    fn close_ble_connection(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, None, || {
-            jni::ble_close_connection(self.session.host_id(), options_json)
+            jni::ble_close_connection(self.session.host_id(), request_json)
         })
     }
 
-    fn get_ble_device_services(&self, options_json: &str) -> Result<String, ServiceError> {
+    fn get_ble_device_services(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, Some(Scope::Bluetooth), || {
-            jni::ble_get_device_services(self.session.host_id(), options_json)
+            jni::ble_get_device_services(self.session.host_id(), request_json)
         })
     }
 
-    fn get_ble_device_characteristics(&self, options_json: &str) -> Result<String, ServiceError> {
+    fn get_ble_device_characteristics(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, Some(Scope::Bluetooth), || {
-            jni::ble_get_device_characteristics(self.session.host_id(), options_json)
+            jni::ble_get_device_characteristics(self.session.host_id(), request_json)
         })
     }
 
-    fn read_ble_characteristic_value(&self, options_json: &str) -> Result<(), ServiceError> {
+    fn read_ble_characteristic_value(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, Some(Scope::Bluetooth), || {
-            jni::ble_read_characteristic_value(self.session.host_id(), options_json)
+            jni::ble_read_characteristic_value(self.session.host_id(), request_json)
         })
     }
 
-    fn write_ble_characteristic_value(&self, options_json: &str) -> Result<(), ServiceError> {
+    fn write_ble_characteristic_value(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, Some(Scope::Bluetooth), || {
-            jni::ble_write_characteristic_value(self.session.host_id(), options_json)
+            jni::ble_write_characteristic_value(self.session.host_id(), request_json)
         })
     }
 
     fn notify_ble_characteristic_value_change(
         &self,
-        options_json: &str,
+        request_json: &str,
     ) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, Some(Scope::Bluetooth), || {
-            jni::ble_notify_characteristic_value_change(self.session.host_id(), options_json)
+            jni::ble_notify_characteristic_value_change(self.session.host_id(), request_json)
         })
     }
 
-    fn get_ble_device_rssi(&self, options_json: &str) -> Result<String, ServiceError> {
+    fn get_ble_device_rssi(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, Some(Scope::Bluetooth), || {
-            jni::ble_get_device_rssi(self.session.host_id(), options_json)
+            jni::ble_get_device_rssi(self.session.host_id(), request_json)
         })
     }
 
-    fn set_ble_mtu(&self, options_json: &str) -> Result<(), ServiceError> {
+    fn set_ble_mtu(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, Some(Scope::Bluetooth), || {
-            jni::ble_set_mtu(self.session.host_id(), options_json)
+            jni::ble_set_mtu(self.session.host_id(), request_json)
         })
     }
 
-    fn get_ble_mtu(&self, options_json: &str) -> Result<String, ServiceError> {
+    fn get_ble_mtu(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, Some(Scope::Bluetooth), || {
-            jni::ble_get_mtu(self.session.host_id(), options_json)
+            jni::ble_get_mtu(self.session.host_id(), request_json)
         })
     }
 }

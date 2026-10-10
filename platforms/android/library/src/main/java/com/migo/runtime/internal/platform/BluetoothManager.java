@@ -19,10 +19,15 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.bluetooth.le.ScanRecord;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.ParcelUuid;
 import android.util.Log;
+import android.util.SparseArray;
 
+import com.migo.runtime.internal.CallbackCorrelation;
 import com.migo.runtime.internal.ExclusiveDeviceArbiter;
 import com.migo.runtime.internal.NativeExports;
 import com.migo.runtime.internal.NativeMethods;
@@ -35,18 +40,142 @@ import org.json.JSONObject;
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
 
 /**
  * Manages Bluetooth adapter, BLE device discovery, pairing, and Beacon operations.
  * One instance per session.
+ *
+ * <p>Every operation is a request answered exactly once through its {@link Reply}:
+ * when the operation has happened -- a connection made, a write acknowledged, an
+ * RSSI read -- not when it was issued. Failures carry the common mini-game
+ * platform's Bluetooth codes ({@link BluetoothFailure}).
  */
 public class BluetoothManager {
 
     private static final String TAG = "BluetoothManager";
+
+    /**
+     * The Bluetooth requests, in the order the host-service contract numbers them
+     * ({@code contracts/runtime/host-services.json}, service {@code bluetooth}):
+     * an ordinal is the method number the runtime routes the answer by.
+     */
+    public enum Method {
+        OPEN_ADAPTER("openBluetoothAdapter"),
+        CLOSE_ADAPTER("closeBluetoothAdapter"),
+        GET_ADAPTER_STATE("getBluetoothAdapterState"),
+        START_DEVICES_DISCOVERY("startBluetoothDevicesDiscovery"),
+        STOP_DEVICES_DISCOVERY("stopBluetoothDevicesDiscovery"),
+        GET_DEVICES("getBluetoothDevices"),
+        GET_CONNECTED_DEVICES("getConnectedBluetoothDevices"),
+        MAKE_PAIR("makeBluetoothPair"),
+        IS_DEVICE_PAIRED("isBluetoothDevicePaired"),
+        START_BEACON_DISCOVERY("startBeaconDiscovery"),
+        STOP_BEACON_DISCOVERY("stopBeaconDiscovery"),
+        GET_BEACONS("getBeacons"),
+        CREATE_BLE_CONNECTION("createBLEConnection"),
+        CLOSE_BLE_CONNECTION("closeBLEConnection"),
+        GET_BLE_DEVICE_SERVICES("getBLEDeviceServices"),
+        GET_BLE_DEVICE_CHARACTERISTICS("getBLEDeviceCharacteristics"),
+        READ_BLE_CHARACTERISTIC_VALUE("readBLECharacteristicValue"),
+        WRITE_BLE_CHARACTERISTIC_VALUE("writeBLECharacteristicValue"),
+        NOTIFY_BLE_CHARACTERISTIC_VALUE_CHANGE("notifyBLECharacteristicValueChange"),
+        GET_BLE_DEVICE_RSSI("getBLEDeviceRSSI"),
+        SET_BLE_MTU("setBLEMTU"),
+        GET_BLE_MTU("getBLEMTU");
+
+        public final String apiName;
+
+        Method(String apiName) {
+            this.apiName = apiName;
+        }
+    }
+
+    /** Where a request's answer goes: the runtime's Bluetooth result callback. */
+    public interface ResultSink {
+        void deliver(int sessionId, int method, String resultJson);
+    }
+
+    /**
+     * The answer to one request, given once. A request answered twice would
+     * settle content's call with whichever arrived first and drop the other
+     * silently; refusing the second makes a double answer impossible instead.
+     */
+    public static final class Reply {
+        private final int sessionId;
+        private final Method method;
+        private final int requestId;
+        private final ResultSink sink;
+        private final AtomicBoolean answered = new AtomicBoolean(false);
+
+        public Reply(int sessionId, Method method, int requestId, ResultSink sink) {
+            this.sessionId = sessionId;
+            this.method = method;
+            this.requestId = requestId;
+            this.sink = sink;
+        }
+
+        public void ok(JSONObject result) {
+            if (!answered.compareAndSet(false, true)) return;
+            JSONObject answer = result != null ? result : new JSONObject();
+            try {
+                CallbackCorrelation.stamp(answer, requestId);
+            } catch (JSONException impossible) {
+                // stamp only puts an int.
+            }
+            sink.deliver(sessionId, method.ordinal(), answer.toString());
+        }
+
+        public void ok() {
+            ok(null);
+        }
+
+        public void fail(int errCode, String reason) {
+            if (!answered.compareAndSet(false, true)) return;
+            JSONObject answer = new JSONObject();
+            try {
+                answer.put("error", method.apiName + ":fail " + (reason != null ? reason : "system error"));
+                answer.put("errCode", errCode);
+                CallbackCorrelation.stamp(answer, requestId);
+            } catch (JSONException impossible) {
+                // Only strings and ints are put.
+            }
+            sink.deliver(sessionId, method.ordinal(), answer.toString());
+        }
+
+        public boolean isAnswered() {
+            return answered.get();
+        }
+    }
+
+    /** A failure with the platform's Bluetooth code. */
+    public static final class BluetoothFailure extends RuntimeException {
+        public final int errCode;
+
+        public BluetoothFailure(int errCode, String reason) {
+            super(reason);
+            this.errCode = errCode;
+        }
+    }
+
+    public static final int ALREADY_CONNECTED = -1;
+    public static final int NOT_INIT = 10000;
+    public static final int NOT_AVAILABLE = 10001;
+    public static final int NO_DEVICE = 10002;
+    public static final int CONNECTION_FAIL = 10003;
+    public static final int NO_SERVICE = 10004;
+    public static final int NO_CHARACTERISTIC = 10005;
+    public static final int NO_CONNECTION = 10006;
+    public static final int PROPERTY_NOT_SUPPORT = 10007;
+    public static final int SYSTEM_ERROR = 10008;
+    public static final int OPERATE_TIME_OUT = 10012;
+    public static final int INVALID_DATA = 10013;
+    public static final int BEACON_UNAVAILABLE = 11001;
 
     private final int sessionId;
     private final WeakReference<Activity> activityRef;
@@ -218,6 +347,39 @@ public class BluetoothManager {
     static final class GattAttempt {
         private GattConnection connection;
         private boolean acceptingCallbacks = true;
+        /** The createBLEConnection waiting for this attempt to connect. */
+        private Reply connectReply;
+        /** Requests waiting on this connection's GATT callbacks. */
+        final ConcurrentHashMap<String, Reply> pendingWrites = new ConcurrentHashMap<>();
+        final ConcurrentHashMap<String, Reply> pendingDescriptorWrites = new ConcurrentHashMap<>();
+        final List<Reply> pendingRssi = new ArrayList<>();
+        Reply pendingMtu;
+
+        synchronized void awaitConnection(Reply reply) {
+            connectReply = reply;
+        }
+
+        synchronized Reply takeConnectReply() {
+            Reply reply = connectReply;
+            connectReply = null;
+            return reply;
+        }
+
+        /** Fail everything still waiting on this connection, which is going. */
+        void failPending(int errCode, String reason) {
+            Reply connect = takeConnectReply();
+            if (connect != null) connect.fail(errCode, reason);
+            for (Reply reply : pendingWrites.values()) reply.fail(errCode, reason);
+            pendingWrites.clear();
+            for (Reply reply : pendingDescriptorWrites.values()) reply.fail(errCode, reason);
+            pendingDescriptorWrites.clear();
+            synchronized (this) {
+                for (Reply reply : pendingRssi) reply.fail(errCode, reason);
+                pendingRssi.clear();
+                if (pendingMtu != null) pendingMtu.fail(errCode, reason);
+                pendingMtu = null;
+            }
+        }
         /**
          * Created with the attempt, on the cold connect path, so no notification
          * ever pays for it. Shared by the read and notification paths, which its
@@ -615,22 +777,30 @@ public class BluetoothManager {
 
     // ==================== Adapter ====================
 
-    public void openAdapter(String optionsJson) {
+    public void openAdapter(JSONObject opts, Reply reply) {
         if (adapter == null) {
-            throw new RuntimeException("openBluetoothAdapter:fail not available");
+            throw new BluetoothFailure(NOT_AVAILABLE, "not available");
         }
         requireConnectPermission("openBluetoothAdapter");
-        if (!isAdapterEnabled()) {
-            throw new RuntimeException("openBluetoothAdapter:fail not available");
-        }
         // Claimed before any state is mutated, so a refusal leaves this manager
         // exactly as it was rather than half-opened.
-        if (!ExclusiveDeviceArbiter.tryAcquire(
+        if (!adapterOpened && !ExclusiveDeviceArbiter.tryAcquire(
                 ExclusiveDeviceArbiter.BLUETOOTH_ADAPTER, sessionId)) {
-            throw new RuntimeException("openBluetoothAdapter:fail in use by another game");
+            throw new BluetoothFailure(SYSTEM_ERROR, "in use by another game");
         }
         adapterOpened = true;
         registerAdapterStateReceiver();
+        // Opened either way, as the common platform has it: with Bluetooth off the
+        // call fails, and the adapter-state event reports when it comes on.
+        if (!isAdapterEnabled()) {
+            throw new BluetoothFailure(NOT_AVAILABLE, "not available");
+        }
+        reply.ok();
+    }
+
+    public void closeAdapter(JSONObject opts, Reply reply) {
+        closeAdapter();
+        reply.ok();
     }
 
     public void closeAdapter() {
@@ -643,33 +813,52 @@ public class BluetoothManager {
                 discoveredDevices::clear,
                 () -> ResourceCleanup.destroyMatching(
                         gattConnections, ignored -> true,
-                        attempt -> closeGatt(attempt.beginClose(), true)),
+                        attempt -> {
+                            attempt.failPending(NO_CONNECTION, "adapter closed");
+                            closeGatt(attempt.beginClose(), true);
+                        }),
                 this::retryUnclosedCandidates,
+                this::finishPairings,
                 negotiatedMtu::clear,
                 cachedRssi::clear);
     }
 
-    public String getAdapterState() {
-        boolean available = isAdapterEnabled();
-        JSONObject obj = new JSONObject();
+    public void getAdapterState(JSONObject opts, Reply reply) {
+        requireOpened();
+        JSONObject state = new JSONObject();
         try {
-            obj.put("discovering", discovering);
-            obj.put("available", available);
+            state.put("discovering", discovering);
+            state.put("available", isAdapterEnabled());
         } catch (JSONException ignored) {}
-        return obj.toString();
+        reply.ok(state);
+    }
+
+    private void requireOpened() {
+        if (adapter == null || !adapterOpened) {
+            throw new BluetoothFailure(NOT_INIT, "not init");
+        }
+    }
+
+    private static String requiredString(JSONObject opts, String name) {
+        String value = opts.optString(name, "");
+        if (value.isEmpty()) {
+            throw new BluetoothFailure(INVALID_DATA, name + " is required");
+        }
+        return value;
     }
 
     // ==================== Device Discovery ====================
 
-    public synchronized void startDiscovery(String optionsJson) {
-        if (adapter == null || !adapterOpened) {
-            throw new RuntimeException("startBluetoothDevicesDiscovery:fail adapter not opened");
-        }
+    public synchronized void startDiscovery(JSONObject opts, Reply reply) {
+        requireOpened();
+        String optionsJson = opts.toString();
 
         discoveredDevices.clear();
         LifecycleRequestState.Action action = discoveryRequest.requestStart(optionsJson);
         if (action == LifecycleRequestState.Action.NONE) {
+            // Suspended with the session: the scan starts when it resumes.
             discovering = false;
+            reply.ok();
             return;
         }
         if (action == LifecycleRequestState.Action.RESTART) {
@@ -686,14 +875,18 @@ public class BluetoothManager {
             discoveryRequest.startFailed(false);
             throw e;
         }
+        reply.ok();
     }
 
     @SuppressLint("MissingPermission")
     private void startDiscoveryInternal(String optionsJson) {
         requireConnectPermission("startBluetoothDevicesDiscovery");
         requireScanPermission("startBluetoothDevicesDiscovery");
-        if (adapter == null || !adapterOpened || !isAdapterEnabled()) {
-            throw new RuntimeException("startBluetoothDevicesDiscovery:fail adapter not opened");
+        if (adapter == null || !adapterOpened) {
+            throw new BluetoothFailure(NOT_INIT, "not init");
+        }
+        if (!isAdapterEnabled()) {
+            throw new BluetoothFailure(NOT_AVAILABLE, "not available");
         }
 
         List<ScanFilter> filters = new ArrayList<>();
@@ -731,7 +924,7 @@ public class BluetoothManager {
 
         leScanner = adapter.getBluetoothLeScanner();
         if (leScanner == null) {
-            throw new RuntimeException("startBluetoothDevicesDiscovery:fail scanner not available");
+            throw new BluetoothFailure(NOT_AVAILABLE, "scanner not available");
         }
 
         ScanSettings settings = new ScanSettings.Builder()
@@ -788,6 +981,11 @@ public class BluetoothManager {
         leScanner.startScan(filters.isEmpty() ? null : filters, settings, leScanCallback);
     }
 
+    public synchronized void stopDiscovery(JSONObject opts, Reply reply) {
+        stopDiscovery();
+        reply.ok();
+    }
+
     public synchronized void stopDiscovery() {
         boolean wasDiscovering = discovering;
         if (discoveryRequest.requestStop() == LifecycleRequestState.Action.STOP) {
@@ -808,66 +1006,193 @@ public class BluetoothManager {
         if (leScanner == scanner) leScanner = null;
     }
 
-    public String getDevices() {
-        JSONArray arr = new JSONArray();
-        for (JSONObject dev : discoveredDevices.values()) {
-            arr.put(dev);
+    public void getDevices(JSONObject opts, Reply reply) {
+        requireOpened();
+        JSONArray devices = new JSONArray();
+        for (JSONObject device : discoveredDevices.values()) {
+            devices.put(device);
         }
         JSONObject result = new JSONObject();
         try {
-            result.put("devices", arr);
+            result.put("devices", devices);
         } catch (JSONException ignored) {}
-        return result.toString();
+        reply.ok(result);
     }
 
-    public String getConnectedDevices(String optionsJson) {
-        JSONArray arr = new JSONArray();
-        // Android doesn't provide a direct way to get BLE connected devices by service UUID
-        // without using BluetoothGatt. Return empty for now.
+    /**
+     * The devices this game is connected to that offer one of {@code services}.
+     *
+     * <p>A device is known to offer a service only once its services are
+     * discovered, and Android tells an app the services of no connection but its
+     * own -- so these are the game's own connections, which are also the only
+     * ones it can use.
+     */
+    @SuppressLint("MissingPermission")
+    public void getConnectedDevices(JSONObject opts, Reply reply) {
+        requireOpened();
+        requireConnectPermission("getConnectedBluetoothDevices");
+        JSONArray wanted = opts.optJSONArray("services");
+        JSONArray devices = new JSONArray();
+        for (Map.Entry<String, GattAttempt> entry : gattConnections.entrySet()) {
+            GattConnection connection = entry.getValue().connection();
+            BluetoothGatt gatt = connection != null ? connection.raw() : null;
+            if (gatt == null || !offersAny(gatt, wanted)) continue;
+            JSONObject device = new JSONObject();
+            try {
+                String name = gatt.getDevice().getName();
+                device.put("name", name != null ? name : "");
+                device.put("deviceId", entry.getKey());
+            } catch (JSONException | SecurityException ignored) {
+                continue;
+            }
+            devices.put(device);
+        }
         JSONObject result = new JSONObject();
         try {
-            result.put("devices", arr);
+            result.put("devices", devices);
         } catch (JSONException ignored) {}
-        return result.toString();
+        reply.ok(result);
+    }
+
+    private static boolean offersAny(BluetoothGatt gatt, JSONArray services) {
+        if (services == null || services.length() == 0) return true;
+        for (int i = 0; i < services.length(); i++) {
+            try {
+                if (gatt.getService(UUID.fromString(services.optString(i))) != null) return true;
+            } catch (IllegalArgumentException notAUuid) {
+                // Not a service this device could offer.
+            }
+        }
+        return false;
     }
 
     // ==================== Pairing ====================
 
-    @SuppressLint("MissingPermission")
-    public void makePair(String optionsJson) {
-        if (adapter == null) {
-            throw new RuntimeException("makeBluetoothPair:fail not available");
+    /**
+     * The main thread, for the timeouts of pairing and connecting. A holder rather
+     * than a field: made on first use, by a request that has a timeout to keep.
+     */
+    private static final class MainThread {
+        static final Handler HANDLER = new Handler(Looper.getMainLooper());
+    }
+
+    /** Pairings waiting on the system's answer, finished at teardown. */
+    private final Set<PairingWatch> pairings = ConcurrentHashMap.newKeySet();
+
+    /**
+     * One {@code makeBluetoothPair}: the bond-state broadcasts for its device, the
+     * PIN to give the pairing request, and the reply the outcome answers.
+     */
+    private final class PairingWatch extends BroadcastReceiver {
+        private final Context context;
+        private final String address;
+        private final byte[] pin;
+        private final Reply reply;
+        private final AtomicBoolean finished = new AtomicBoolean(false);
+
+        PairingWatch(Context context, String address, byte[] pin, Reply reply) {
+            this.context = context;
+            this.address = address;
+            this.pin = pin;
+            this.reply = reply;
         }
-        requireConnectPermission("makeBluetoothPair");
+
+        void register() {
+            IntentFilter filter = new IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED);
+            filter.addAction(BluetoothDevice.ACTION_PAIRING_REQUEST);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                // System broadcasts reach a non-exported receiver; nothing else should.
+                context.registerReceiver(this, filter, Context.RECEIVER_NOT_EXPORTED);
+            } else {
+                context.registerReceiver(this, filter);
+            }
+            pairings.add(this);
+        }
+
+        /** Stop listening; true for the one caller that gets to answer. */
+        boolean finish() {
+            if (!finished.compareAndSet(false, true)) return false;
+            pairings.remove(this);
+            try {
+                context.unregisterReceiver(this);
+            } catch (IllegalArgumentException alreadyGone) {
+                // Unregistered with its context.
+            }
+            return true;
+        }
+
+        @SuppressLint("MissingPermission")
+        @Override
+        public void onReceive(Context ctx, Intent intent) {
+            BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+            if (device == null || !address.equalsIgnoreCase(device.getAddress())) return;
+            if (BluetoothDevice.ACTION_PAIRING_REQUEST.equals(intent.getAction())) {
+                if (pin.length > 0 && hasConnectPermission()) device.setPin(pin);
+                return;
+            }
+            int state = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.ERROR);
+            if (state == BluetoothDevice.BOND_BONDED) {
+                if (finish()) reply.ok();
+            } else if (state == BluetoothDevice.BOND_NONE) {
+                if (finish()) reply.fail(CONNECTION_FAIL, "pairing failed");
+            }
+        }
+    }
+
+    private void finishPairings() {
+        for (PairingWatch watch : new ArrayList<>(pairings)) {
+            if (watch.finish()) watch.reply.fail(NOT_INIT, "adapter closed");
+        }
+    }
+
+    private BluetoothDevice remoteDevice(String deviceId) {
         try {
-            JSONObject opts = new JSONObject(optionsJson);
-            String deviceId = opts.getString("deviceId");
-            BluetoothDevice device = adapter.getRemoteDevice(deviceId);
-            // createBond() is API 19+, safe since minSdk=21
-            device.createBond();
-        } catch (JSONException e) {
-            throw new RuntimeException("makeBluetoothPair:fail invalid options");
+            return adapter.getRemoteDevice(deviceId);
+        } catch (IllegalArgumentException notAnAddress) {
+            throw new BluetoothFailure(NO_DEVICE, "no device " + deviceId);
         }
     }
 
     @SuppressLint("MissingPermission")
-    public void isDevicePaired(String optionsJson) {
+    public void makePair(JSONObject opts, Reply reply) {
         if (adapter == null) {
-            throw new RuntimeException("isBluetoothDevicePaired:fail not available");
+            throw new BluetoothFailure(NOT_AVAILABLE, "not available");
+        }
+        requireConnectPermission("makeBluetoothPair");
+        String deviceId = requiredString(opts, "deviceId");
+        BluetoothDevice device = remoteDevice(deviceId);
+        if (device.getBondState() == BluetoothDevice.BOND_BONDED) {
+            reply.ok();
+            return;
+        }
+        Activity activity = getActivity();
+        if (activity == null) {
+            throw new BluetoothFailure(SYSTEM_ERROR, "no activity");
+        }
+        byte[] pin = hexToBytes(opts.optString("pin", ""));
+        PairingWatch watch = new PairingWatch(activity, device.getAddress(), pin, reply);
+        watch.register();
+        if (!device.createBond()) {
+            watch.finish();
+            throw new BluetoothFailure(CONNECTION_FAIL, "pairing could not start");
+        }
+        int timeout = opts.optInt("timeout", 20000);
+        MainThread.HANDLER.postDelayed(() -> {
+            if (watch.finish()) reply.fail(OPERATE_TIME_OUT, "timeout");
+        }, timeout > 0 ? timeout : 20000);
+    }
+
+    @SuppressLint("MissingPermission")
+    public void isDevicePaired(JSONObject opts, Reply reply) {
+        if (adapter == null) {
+            throw new BluetoothFailure(NOT_AVAILABLE, "not available");
         }
         requireConnectPermission("isBluetoothDevicePaired");
-        try {
-            JSONObject opts = new JSONObject(optionsJson);
-            String deviceId = opts.getString("deviceId");
-            Set<BluetoothDevice> bondedDevices = adapter.getBondedDevices();
-            for (BluetoothDevice device : bondedDevices) {
-                if (device.getAddress().equalsIgnoreCase(deviceId)) {
-                    return; // paired
-                }
-            }
-            throw new RuntimeException("isBluetoothDevicePaired:fail not paired");
-        } catch (JSONException e) {
-            throw new RuntimeException("isBluetoothDevicePaired:fail invalid options");
+        String deviceId = requiredString(opts, "deviceId");
+        if (remoteDevice(deviceId).getBondState() == BluetoothDevice.BOND_BONDED) {
+            reply.ok();
+        } else {
+            reply.fail(NO_DEVICE, "not paired");
         }
     }
 
@@ -881,17 +1206,19 @@ public class BluetoothManager {
     private ScanCallback beaconScanCallback;
     private final ConcurrentHashMap<String, JSONObject> discoveredBeacons = new ConcurrentHashMap<>();
 
-    public synchronized void startBeaconDiscovery(String optionsJson) {
+    public synchronized void startBeaconDiscovery(JSONObject opts, Reply reply) {
+        String optionsJson = opts.toString();
         requireConnectPermission("startBeaconDiscovery");
         requireScanPermission("startBeaconDiscovery");
         if (adapter == null || !isAdapterEnabled()) {
-            throw new RuntimeException("startBeaconDiscovery:fail not available");
+            throw new BluetoothFailure(BEACON_UNAVAILABLE, "bluetooth unavailable");
         }
 
         discoveredBeacons.clear();
         LifecycleRequestState.Action action = beaconRequest.requestStart(optionsJson);
         if (action == LifecycleRequestState.Action.NONE) {
             beaconDiscovering = false;
+            reply.ok();
             return;
         }
         if (action == LifecycleRequestState.Action.RESTART) {
@@ -908,6 +1235,7 @@ public class BluetoothManager {
             beaconRequest.startFailed(false);
             throw e;
         }
+        reply.ok();
     }
 
     @SuppressLint("MissingPermission")
@@ -915,12 +1243,12 @@ public class BluetoothManager {
         requireConnectPermission("startBeaconDiscovery");
         requireScanPermission("startBeaconDiscovery");
         if (adapter == null || !isAdapterEnabled()) {
-            throw new RuntimeException("startBeaconDiscovery:fail not available");
+            throw new BluetoothFailure(BEACON_UNAVAILABLE, "bluetooth unavailable");
         }
 
         beaconScanner = adapter.getBluetoothLeScanner();
         if (beaconScanner == null) {
-            throw new RuntimeException("startBeaconDiscovery:fail scanner not available");
+            throw new BluetoothFailure(BEACON_UNAVAILABLE, "scanner not available");
         }
 
         ScanSettings settings = new ScanSettings.Builder()
@@ -976,6 +1304,11 @@ public class BluetoothManager {
         beaconScanner.startScan(null, settings, beaconScanCallback);
     }
 
+    public synchronized void stopBeaconDiscovery(JSONObject opts, Reply reply) {
+        stopBeaconDiscovery();
+        reply.ok();
+    }
+
     public synchronized void stopBeaconDiscovery() {
         boolean wasDiscovering = beaconDiscovering;
         if (beaconRequest.requestStop() == LifecycleRequestState.Action.STOP) {
@@ -996,41 +1329,46 @@ public class BluetoothManager {
         if (beaconScanner == scanner) beaconScanner = null;
     }
 
-    public String getBeacons() {
-        JSONArray arr = new JSONArray();
+    public void getBeacons(JSONObject opts, Reply reply) {
+        JSONArray beacons = new JSONArray();
         for (JSONObject beacon : discoveredBeacons.values()) {
-            arr.put(beacon);
+            beacons.put(beacon);
         }
         JSONObject result = new JSONObject();
         try {
-            result.put("beacons", arr);
+            result.put("beacons", beacons);
         } catch (JSONException ignored) {}
-        return result.toString();
+        reply.ok(result);
     }
 
     // ==================== BLE GATT ====================
 
     @SuppressLint("MissingPermission")
-    public void createBLEConnection(String optionsJson) {
+    /**
+     * Connect, answering once the device's services are discovered -- so the
+     * getBLEDeviceServices a game makes next finds them -- or failing on a
+     * disconnect, a failed discovery, or {@code timeout} milliseconds.
+     */
+    public void createBLEConnection(JSONObject opts, Reply reply) {
         if (adapter == null) {
-            throw new RuntimeException("createBLEConnection:fail adapter not available");
+            throw new BluetoothFailure(NOT_AVAILABLE, "not available");
         }
         requireConnectPermission("createBLEConnection");
-        try {
-            JSONObject opts = new JSONObject(optionsJson);
-            String deviceId = opts.getString("deviceId");
+        {
+            String deviceId = requiredString(opts, "deviceId");
 
             GattAttempt attempt = new GattAttempt();
             if (gattConnections.putIfAbsent(deviceId, attempt) != null) {
-                return; // already connected
+                throw new BluetoothFailure(ALREADY_CONNECTED, "already connect");
             }
+            attempt.awaitConnection(reply);
 
             try {
-                BluetoothDevice device = adapter.getRemoteDevice(deviceId);
+                BluetoothDevice device = remoteDevice(deviceId);
                 Activity activity = getActivity();
                 Context ctx = activity != null ? activity : null;
                 if (ctx == null) {
-                    throw new RuntimeException("createBLEConnection:fail no context");
+                    throw new BluetoothFailure(SYSTEM_ERROR, "no activity");
                 }
 
                 BluetoothGattCallback callback = new BluetoothGattCallback() {
@@ -1067,7 +1405,29 @@ public class BluetoothManager {
 
                     @Override
                     public void onServicesDiscovered(BluetoothGatt gatt, int status) {
-                        // Services are cached in the BluetoothGatt object.
+                        // The services are cached in the BluetoothGatt object; the
+                        // connection the game asked for is ready now.
+                        handleGattServicesDiscovered(
+                                deviceId, attempt, status == BluetoothGatt.GATT_SUCCESS);
+                    }
+
+                    @Override
+                    public void onCharacteristicWrite(
+                            BluetoothGatt gatt,
+                            BluetoothGattCharacteristic characteristic,
+                            int status) {
+                        answerPending(attempt.pendingWrites,
+                                characteristicKey(characteristic), status, "write failed");
+                    }
+
+                    @Override
+                    public void onDescriptorWrite(
+                            BluetoothGatt gatt,
+                            BluetoothGattDescriptor descriptor,
+                            int status) {
+                        answerPending(attempt.pendingDescriptorWrites,
+                                characteristicKey(descriptor.getCharacteristic()), status,
+                                "notification setup failed");
                     }
 
                     @Override
@@ -1111,6 +1471,21 @@ public class BluetoothManager {
                                     new AndroidGattConnection(gatt),
                                     mtu);
                         }
+                        Reply pending;
+                        synchronized (attempt) {
+                            pending = attempt.pendingMtu;
+                            attempt.pendingMtu = null;
+                        }
+                        if (pending == null) return;
+                        if (status != BluetoothGatt.GATT_SUCCESS) {
+                            pending.fail(SYSTEM_ERROR, "MTU negotiation failed (status " + status + ")");
+                            return;
+                        }
+                        JSONObject result = new JSONObject();
+                        try {
+                            result.put("mtu", mtu);
+                        } catch (JSONException ignored) {}
+                        pending.ok(result);
                     }
 
                     @Override
@@ -1122,36 +1497,93 @@ public class BluetoothManager {
                                     new AndroidGattConnection(gatt),
                                     rssi);
                         }
+                        List<Reply> waiting;
+                        synchronized (attempt) {
+                            waiting = new ArrayList<>(attempt.pendingRssi);
+                            attempt.pendingRssi.clear();
+                        }
+                        for (Reply pending : waiting) {
+                            if (status != BluetoothGatt.GATT_SUCCESS) {
+                                pending.fail(SYSTEM_ERROR, "RSSI read failed (status " + status + ")");
+                                continue;
+                            }
+                            JSONObject result = new JSONObject();
+                            try {
+                                result.put("RSSI", rssi);
+                            } catch (JSONException ignored) {}
+                            pending.ok(result);
+                        }
                     }
                 };
 
                 BluetoothGatt gatt = device.connectGatt(
                         ctx, false, callback, BluetoothDevice.TRANSPORT_LE);
                 if (gatt == null) {
-                    throw new RuntimeException("createBLEConnection:fail connect failed");
+                    throw new BluetoothFailure(CONNECTION_FAIL, "connection failed");
                 }
                 if (!publishGattConnection(
                         deviceId, attempt, new AndroidGattConnection(gatt))) {
-                    throw new RuntimeException("createBLEConnection:fail connection cancelled");
+                    throw new BluetoothFailure(CONNECTION_FAIL, "connection cancelled");
                 }
             } catch (RuntimeException failure) {
+                attempt.takeConnectReply();
                 if (attempt.connection() == null) abandonGattAttempt(deviceId, attempt);
                 throw failure;
             }
-        } catch (JSONException e) {
-            throw new RuntimeException("createBLEConnection:fail invalid options");
-        } catch (IllegalArgumentException e) {
-            throw new RuntimeException("createBLEConnection:fail invalid deviceId");
+            int timeout = opts.optInt("timeout", 0);
+            if (timeout > 0) {
+                MainThread.HANDLER.postDelayed(() -> {
+                    Reply pending = attempt.takeConnectReply();
+                    if (pending == null) return;
+                    try {
+                        closeAndRemoveGatt(deviceId, attempt, true);
+                    } catch (RuntimeException cleanupFailure) {
+                        reportGattCleanupFailure("BLE connect timeout cleanup", cleanupFailure);
+                    }
+                    pending.fail(OPERATE_TIME_OUT, "timeout");
+                }, timeout);
+            }
         }
     }
 
-    public void closeBLEConnection(String optionsJson) {
-        try {
-            JSONObject opts = new JSONObject(optionsJson);
-            String deviceId = opts.getString("deviceId");
-            closeGattConnection(deviceId);
-        } catch (JSONException e) {
-            throw new RuntimeException("closeBLEConnection:fail invalid options");
+    public void closeBLEConnection(JSONObject opts, Reply reply) {
+        closeGattConnection(requiredString(opts, "deviceId"));
+        reply.ok();
+    }
+
+    /** The connection a request needs, or the failure for not having it. */
+    private BluetoothGatt connectedGatt(String deviceId) {
+        BluetoothGatt gatt = rawGatt(deviceId);
+        if (gatt == null) {
+            throw new BluetoothFailure(NO_CONNECTION, "no connection");
+        }
+        return gatt;
+    }
+
+    /** {@code service/characteristic}: what a pending GATT request is keyed by. */
+    private String characteristicKey(BluetoothGattCharacteristic characteristic) {
+        return uuidText(characteristic.getService().getUuid()) + "/"
+                + uuidText(characteristic.getUuid());
+    }
+
+    private static void answerPending(
+            ConcurrentHashMap<String, Reply> pending, String key, int status, String failure) {
+        Reply reply = pending.remove(key);
+        if (reply == null) return;
+        if (status == BluetoothGatt.GATT_SUCCESS) {
+            reply.ok();
+        } else {
+            reply.fail(SYSTEM_ERROR, failure + " (status " + status + ")");
+        }
+    }
+
+    void handleGattServicesDiscovered(String deviceId, GattAttempt attempt, boolean discovered) {
+        Reply pending = attempt.takeConnectReply();
+        if (pending == null) return;
+        if (discovered && gattConnections.get(deviceId) == attempt) {
+            pending.ok();
+        } else {
+            pending.fail(CONNECTION_FAIL, "service discovery failed");
         }
     }
 
@@ -1195,6 +1627,8 @@ public class BluetoothManager {
             return;
         }
         if (!connected) {
+            Reply connecting = attempt.takeConnectReply();
+            if (connecting != null) connecting.fail(CONNECTION_FAIL, "connection failed");
             try {
                 closeAndRemoveGatt(deviceId, attempt, false);
             } catch (RuntimeException cleanupFailure) {
@@ -1261,6 +1695,8 @@ public class BluetoothManager {
             Log.w(TAG, "discoverServices failed for " + deviceId, discoverFailure);
         }
         if (!discovered) {
+            Reply connecting = attempt.takeConnectReply();
+            if (connecting != null) connecting.fail(CONNECTION_FAIL, "service discovery failed");
             try {
                 closeAndRemoveGatt(deviceId, attempt, true);
             } catch (RuntimeException cleanupFailure) {
@@ -1418,6 +1854,7 @@ public class BluetoothManager {
             GattAttempt attempt,
             boolean disconnect) {
         if (attempt == null) return;
+        attempt.failPending(NO_CONNECTION, "no connection");
         GattConnection connection = attempt.beginClose();
         closeGatt(connection, disconnect);
         if (gattConnections.remove(deviceId, attempt)) {
@@ -1464,253 +1901,262 @@ public class BluetoothManager {
         }
     }
 
-    public String getBLEDeviceServices(String optionsJson) {
+    @SuppressLint("MissingPermission")
+    public void getBLEDeviceServices(JSONObject opts, Reply reply) {
         requireConnectPermission("getBLEDeviceServices");
+        BluetoothGatt gatt = connectedGatt(requiredString(opts, "deviceId"));
+        JSONArray services = new JSONArray();
         try {
-            JSONObject opts = new JSONObject(optionsJson);
-            String deviceId = opts.getString("deviceId");
-            BluetoothGatt gatt = rawGatt(deviceId);
-            if (gatt == null) {
-                throw new RuntimeException("getBLEDeviceServices:fail not connected");
+            for (BluetoothGattService service : gatt.getServices()) {
+                JSONObject entry = new JSONObject();
+                entry.put("uuid", uuidText(service.getUuid()));
+                entry.put("isPrimary", service.getType() == BluetoothGattService.SERVICE_TYPE_PRIMARY);
+                services.put(entry);
             }
-            List<BluetoothGattService> services = gatt.getServices();
-            JSONArray arr = new JSONArray();
-            for (BluetoothGattService svc : services) {
-                JSONObject svcJson = new JSONObject();
-                svcJson.put("uuid", svc.getUuid().toString());
-                svcJson.put("isPrimary", svc.getType() == BluetoothGattService.SERVICE_TYPE_PRIMARY);
-                arr.put(svcJson);
-            }
-            JSONObject result = new JSONObject();
-            result.put("services", arr);
-            return result.toString();
-        } catch (JSONException e) {
-            throw new RuntimeException("getBLEDeviceServices:fail invalid options");
+            reply.ok(new JSONObject().put("services", services));
+        } catch (JSONException impossible) {
+            throw new BluetoothFailure(SYSTEM_ERROR, "result serialisation failed");
         }
     }
 
-    public String getBLEDeviceCharacteristics(String optionsJson) {
+    @SuppressLint("MissingPermission")
+    public void getBLEDeviceCharacteristics(JSONObject opts, Reply reply) {
         requireConnectPermission("getBLEDeviceCharacteristics");
+        BluetoothGatt gatt = connectedGatt(requiredString(opts, "deviceId"));
+        BluetoothGattService service = findService(gatt, requiredString(opts, "serviceId"));
+        JSONArray characteristics = new JSONArray();
         try {
-            JSONObject opts = new JSONObject(optionsJson);
-            String deviceId = opts.getString("deviceId");
-            String serviceId = opts.getString("serviceId");
-            BluetoothGatt gatt = rawGatt(deviceId);
-            if (gatt == null) {
-                throw new RuntimeException("getBLEDeviceCharacteristics:fail not connected");
-            }
-            BluetoothGattService svc = gatt.getService(UUID.fromString(serviceId));
-            if (svc == null) {
-                throw new RuntimeException("getBLEDeviceCharacteristics:fail service not found");
-            }
-            JSONArray arr = new JSONArray();
-            for (BluetoothGattCharacteristic ch : svc.getCharacteristics()) {
-                JSONObject chJson = new JSONObject();
-                chJson.put("uuid", ch.getUuid().toString());
-                JSONObject props = new JSONObject();
+            for (BluetoothGattCharacteristic ch : service.getCharacteristics()) {
                 int p = ch.getProperties();
+                JSONObject props = new JSONObject();
                 props.put("read", (p & BluetoothGattCharacteristic.PROPERTY_READ) != 0);
                 props.put("write", (p & BluetoothGattCharacteristic.PROPERTY_WRITE) != 0);
                 props.put("notify", (p & BluetoothGattCharacteristic.PROPERTY_NOTIFY) != 0);
                 props.put("indicate", (p & BluetoothGattCharacteristic.PROPERTY_INDICATE) != 0);
-                chJson.put("properties", props);
-                arr.put(chJson);
+                props.put("writeNoResponse",
+                        (p & BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0);
+                props.put("writeDefault", (p & BluetoothGattCharacteristic.PROPERTY_WRITE) != 0);
+                JSONObject entry = new JSONObject();
+                entry.put("uuid", uuidText(ch.getUuid()));
+                entry.put("properties", props);
+                characteristics.put(entry);
             }
-            JSONObject result = new JSONObject();
-            result.put("characteristics", arr);
-            return result.toString();
-        } catch (JSONException e) {
-            throw new RuntimeException("getBLEDeviceCharacteristics:fail invalid options");
+            reply.ok(new JSONObject().put("characteristics", characteristics));
+        } catch (JSONException impossible) {
+            throw new BluetoothFailure(SYSTEM_ERROR, "result serialisation failed");
         }
     }
 
+    /** Answered once the read is issued: the value arrives as the characteristic event. */
     @SuppressLint("MissingPermission")
-    public void readBLECharacteristicValue(String optionsJson) {
+    public void readBLECharacteristicValue(JSONObject opts, Reply reply) {
         requireConnectPermission("readBLECharacteristicValue");
-        try {
-            JSONObject opts = new JSONObject(optionsJson);
-            String deviceId = opts.getString("deviceId");
-            String serviceId = opts.getString("serviceId");
-            String characteristicId = opts.getString("characteristicId");
-            BluetoothGatt gatt = rawGatt(deviceId);
-            if (gatt == null) {
-                throw new RuntimeException("readBLECharacteristicValue:fail not connected");
-            }
-            BluetoothGattCharacteristic ch = findCharacteristic(gatt, serviceId, characteristicId);
-            if (ch == null) {
-                throw new RuntimeException("readBLECharacteristicValue:fail characteristic not found");
-            }
-            if (!gatt.readCharacteristic(ch)) {
-                throw new RuntimeException("readBLECharacteristicValue:fail read request failed");
-            }
-            // Result delivered asynchronously via onCharacteristicRead callback
-        } catch (JSONException e) {
-            throw new RuntimeException("readBLECharacteristicValue:fail invalid options");
+        BluetoothGatt gatt = connectedGatt(requiredString(opts, "deviceId"));
+        BluetoothGattCharacteristic ch = findCharacteristic(gatt,
+                requiredString(opts, "serviceId"), requiredString(opts, "characteristicId"));
+        if ((ch.getProperties() & BluetoothGattCharacteristic.PROPERTY_READ) == 0) {
+            throw new BluetoothFailure(PROPERTY_NOT_SUPPORT, "property not support");
         }
+        if (!gatt.readCharacteristic(ch)) {
+            throw new BluetoothFailure(SYSTEM_ERROR, "read request failed");
+        }
+        reply.ok();
     }
 
+    /**
+     * Answered when the peripheral acknowledges the write -- or, for
+     * {@code writeNoResponse}, which has no acknowledgement, once it is sent.
+     */
     @SuppressLint("MissingPermission")
     @SuppressWarnings("deprecation")
-    public void writeBLECharacteristicValue(String optionsJson) {
+    public void writeBLECharacteristicValue(JSONObject opts, Reply reply) {
         requireConnectPermission("writeBLECharacteristicValue");
-        try {
-            JSONObject opts = new JSONObject(optionsJson);
-            String deviceId = opts.getString("deviceId");
-            String serviceId = opts.getString("serviceId");
-            String characteristicId = opts.getString("characteristicId");
-            String valueHex = opts.optString("value", "");
-            BluetoothGatt gatt = rawGatt(deviceId);
-            if (gatt == null) {
-                throw new RuntimeException("writeBLECharacteristicValue:fail not connected");
-            }
-            BluetoothGattCharacteristic ch = findCharacteristic(gatt, serviceId, characteristicId);
-            if (ch == null) {
-                throw new RuntimeException("writeBLECharacteristicValue:fail characteristic not found");
-            }
-            byte[] value = hexToBytes(valueHex);
-            String writeType = opts.optString("writeType", "write");
-            int writeTypeInt = "writeNoResponse".equals(writeType)
-                    ? BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-                    : BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT;
-            boolean ok;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                int result = gatt.writeCharacteristic(ch, value, writeTypeInt);
-                ok = (result == BluetoothGatt.GATT_SUCCESS); // BluetoothStatusCodes.SUCCESS == 0
-            } else {
-                ch.setValue(value);
-                ch.setWriteType(writeTypeInt);
-                ok = gatt.writeCharacteristic(ch);
-            }
-            if (!ok) {
-                throw new RuntimeException("writeBLECharacteristicValue:fail write request failed");
-            }
-        } catch (JSONException e) {
-            throw new RuntimeException("writeBLECharacteristicValue:fail invalid options");
+        String deviceId = requiredString(opts, "deviceId");
+        BluetoothGatt gatt = connectedGatt(deviceId);
+        BluetoothGattCharacteristic ch = findCharacteristic(gatt,
+                requiredString(opts, "serviceId"), requiredString(opts, "characteristicId"));
+        byte[] value = hexToBytes(opts.optString("value", ""));
+        boolean noResponse = "writeNoResponse".equals(opts.optString("writeType", "write"));
+        int required = noResponse
+                ? BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE
+                : BluetoothGattCharacteristic.PROPERTY_WRITE;
+        if ((ch.getProperties() & required) == 0) {
+            throw new BluetoothFailure(PROPERTY_NOT_SUPPORT, "property not support");
         }
+        GattAttempt attempt = gattConnections.get(deviceId);
+        String key = characteristicKey(ch);
+        if (!noResponse && attempt != null && attempt.pendingWrites.putIfAbsent(key, reply) != null) {
+            throw new BluetoothFailure(SYSTEM_ERROR, "a write to this characteristic is in progress");
+        }
+        int writeType = noResponse
+                ? BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                : BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT;
+        boolean sent;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            sent = gatt.writeCharacteristic(ch, value, writeType) == BluetoothGatt.GATT_SUCCESS;
+        } else {
+            ch.setValue(value);
+            ch.setWriteType(writeType);
+            sent = gatt.writeCharacteristic(ch);
+        }
+        if (!sent) {
+            if (attempt != null) attempt.pendingWrites.remove(key, reply);
+            throw new BluetoothFailure(SYSTEM_ERROR, "write request failed");
+        }
+        if (noResponse || attempt == null) reply.ok();
     }
 
+    /** Answered when the peripheral has taken the subscription (its CCCD written). */
     @SuppressLint("MissingPermission")
     @SuppressWarnings("deprecation")
-    public void notifyBLECharacteristicValueChange(String optionsJson) {
+    public void notifyBLECharacteristicValueChange(JSONObject opts, Reply reply) {
         requireConnectPermission("notifyBLECharacteristicValueChange");
-        try {
-            JSONObject opts = new JSONObject(optionsJson);
-            String deviceId = opts.getString("deviceId");
-            String serviceId = opts.getString("serviceId");
-            String characteristicId = opts.getString("characteristicId");
-            boolean state = opts.optBoolean("state", true);
-            BluetoothGatt gatt = rawGatt(deviceId);
-            if (gatt == null) {
-                throw new RuntimeException("notifyBLECharacteristicValueChange:fail not connected");
-            }
-            BluetoothGattCharacteristic ch = findCharacteristic(gatt, serviceId, characteristicId);
-            if (ch == null) {
-                throw new RuntimeException("notifyBLECharacteristicValueChange:fail characteristic not found");
-            }
-            if (!gatt.setCharacteristicNotification(ch, state)) {
-                throw new RuntimeException("notifyBLECharacteristicValueChange:fail set notification failed");
-            }
-            // Write CCCD to enable/disable server-side notifications
-            BluetoothGattDescriptor cccd = ch.getDescriptor(CCCD_UUID);
-            if (cccd != null) {
-                byte[] descriptorValue;
-                if (state) {
-                    int props = ch.getProperties();
-                    if ((props & BluetoothGattCharacteristic.PROPERTY_INDICATE) != 0) {
-                        descriptorValue = BluetoothGattDescriptor.ENABLE_INDICATION_VALUE;
-                    } else {
-                        descriptorValue = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE;
-                    }
-                } else {
-                    descriptorValue = BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE;
-                }
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    gatt.writeDescriptor(cccd, descriptorValue);
-                } else {
-                    cccd.setValue(descriptorValue);
-                    gatt.writeDescriptor(cccd);
-                }
-            }
-        } catch (JSONException e) {
-            throw new RuntimeException("notifyBLECharacteristicValueChange:fail invalid options");
+        String deviceId = requiredString(opts, "deviceId");
+        BluetoothGatt gatt = connectedGatt(deviceId);
+        BluetoothGattCharacteristic ch = findCharacteristic(gatt,
+                requiredString(opts, "serviceId"), requiredString(opts, "characteristicId"));
+        boolean state = opts.optBoolean("state", true);
+        int props = ch.getProperties();
+        boolean indicate = (props & BluetoothGattCharacteristic.PROPERTY_INDICATE) != 0;
+        boolean notify = (props & BluetoothGattCharacteristic.PROPERTY_NOTIFY) != 0;
+        if (state && !indicate && !notify) {
+            throw new BluetoothFailure(PROPERTY_NOT_SUPPORT, "property not support");
         }
+        if (!gatt.setCharacteristicNotification(ch, state)) {
+            throw new BluetoothFailure(SYSTEM_ERROR, "set notification failed");
+        }
+        BluetoothGattDescriptor cccd = ch.getDescriptor(CCCD_UUID);
+        if (cccd == null) {
+            // Nothing to write on the peripheral's side: local delivery is all there is.
+            reply.ok();
+            return;
+        }
+        byte[] descriptorValue = !state
+                ? BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE
+                : indicate && (!notify || "indication".equals(opts.optString("type", "indication")))
+                        ? BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
+                        : BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE;
+        GattAttempt attempt = gattConnections.get(deviceId);
+        String key = characteristicKey(ch);
+        if (attempt != null && attempt.pendingDescriptorWrites.putIfAbsent(key, reply) != null) {
+            throw new BluetoothFailure(SYSTEM_ERROR, "a subscription change is in progress");
+        }
+        boolean sent;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            sent = gatt.writeDescriptor(cccd, descriptorValue) == BluetoothGatt.GATT_SUCCESS;
+        } else {
+            cccd.setValue(descriptorValue);
+            sent = gatt.writeDescriptor(cccd);
+        }
+        if (!sent) {
+            if (attempt != null) attempt.pendingDescriptorWrites.remove(key, reply);
+            throw new BluetoothFailure(SYSTEM_ERROR, "descriptor write failed");
+        }
+        if (attempt == null) reply.ok();
     }
 
+    /** Answered with the RSSI read from the device for this request. */
     @SuppressLint("MissingPermission")
-    public String getBLEDeviceRSSI(String optionsJson) {
+    public void getBLEDeviceRSSI(JSONObject opts, Reply reply) {
         requireConnectPermission("getBLEDeviceRSSI");
-        try {
-            JSONObject opts = new JSONObject(optionsJson);
-            String deviceId = opts.getString("deviceId");
-            BluetoothGatt gatt = rawGatt(deviceId);
-            if (gatt == null) {
-                throw new RuntimeException("getBLEDeviceRSSI:fail not connected");
+        String deviceId = requiredString(opts, "deviceId");
+        BluetoothGatt gatt = connectedGatt(deviceId);
+        GattAttempt attempt = gattConnections.get(deviceId);
+        if (attempt == null) {
+            throw new BluetoothFailure(NO_CONNECTION, "no connection");
+        }
+        boolean first;
+        synchronized (attempt) {
+            first = attempt.pendingRssi.isEmpty();
+            attempt.pendingRssi.add(reply);
+        }
+        // Requests that arrive while a read is in flight share its answer.
+        if (first && !gatt.readRemoteRssi()) {
+            synchronized (attempt) {
+                attempt.pendingRssi.remove(reply);
             }
-            // Trigger async RSSI read - result cached in onReadRemoteRssi
-            gatt.readRemoteRssi();
-            // Return last cached value (0 if never read before)
-            Integer rssi = cachedRssi.get(deviceId);
-            JSONObject result = new JSONObject();
-            result.put("RSSI", rssi != null ? rssi.intValue() : 0);
-            return result.toString();
-        } catch (JSONException e) {
-            throw new RuntimeException("getBLEDeviceRSSI:fail invalid options");
+            throw new BluetoothFailure(SYSTEM_ERROR, "RSSI read failed");
         }
     }
 
+    /** Answered with the MTU the peripheral agreed to. */
     @SuppressLint("MissingPermission")
-    public void setBLEMTU(String optionsJson) {
+    public void setBLEMTU(JSONObject opts, Reply reply) {
         requireConnectPermission("setBLEMTU");
-        try {
-            JSONObject opts = new JSONObject(optionsJson);
-            String deviceId = opts.getString("deviceId");
-            int mtu = opts.optInt("mtu", 23);
-            BluetoothGatt gatt = rawGatt(deviceId);
-            if (gatt == null) {
-                throw new RuntimeException("setBLEMTU:fail not connected");
+        String deviceId = requiredString(opts, "deviceId");
+        BluetoothGatt gatt = connectedGatt(deviceId);
+        GattAttempt attempt = gattConnections.get(deviceId);
+        if (attempt == null) {
+            throw new BluetoothFailure(NO_CONNECTION, "no connection");
+        }
+        synchronized (attempt) {
+            if (attempt.pendingMtu != null) {
+                throw new BluetoothFailure(SYSTEM_ERROR, "an MTU negotiation is in progress");
             }
-            if (!gatt.requestMtu(mtu)) {
-                throw new RuntimeException("setBLEMTU:fail request failed");
+            attempt.pendingMtu = reply;
+        }
+        if (!gatt.requestMtu(opts.optInt("mtu", 23))) {
+            synchronized (attempt) {
+                attempt.pendingMtu = null;
             }
-            // Result delivered via onMtuChanged callback
-        } catch (JSONException e) {
-            throw new RuntimeException("setBLEMTU:fail invalid options");
+            throw new BluetoothFailure(SYSTEM_ERROR, "MTU request failed");
         }
     }
 
-    public String getBLEMTU(String optionsJson) {
+    public void getBLEMTU(JSONObject opts, Reply reply) {
+        String deviceId = requiredString(opts, "deviceId");
+        if (rawGatt(deviceId) == null) {
+            throw new BluetoothFailure(NO_CONNECTION, "no connection");
+        }
+        Integer mtu = negotiatedMtu.get(deviceId);
         try {
-            JSONObject opts = new JSONObject(optionsJson);
-            String deviceId = opts.getString("deviceId");
-            // Return cached negotiated MTU, or BLE default (23) if not yet negotiated
-            Integer mtu = negotiatedMtu.get(deviceId);
-            JSONObject result = new JSONObject();
-            result.put("mtu", mtu != null ? mtu.intValue() : 23);
-            return result.toString();
-        } catch (JSONException e) {
-            throw new RuntimeException("getBLEMTU:fail invalid options");
+            // The ATT default until a larger one is negotiated.
+            reply.ok(new JSONObject().put("mtu", mtu != null ? mtu.intValue() : 23));
+        } catch (JSONException impossible) {
+            throw new BluetoothFailure(SYSTEM_ERROR, "result serialisation failed");
         }
     }
 
-    private BluetoothGattCharacteristic findCharacteristic(
+    private static BluetoothGattService findService(BluetoothGatt gatt, String serviceId) {
+        BluetoothGattService service;
+        try {
+            service = gatt.getService(UUID.fromString(serviceId));
+        } catch (IllegalArgumentException notAUuid) {
+            throw new BluetoothFailure(INVALID_DATA, "invalid serviceId " + serviceId);
+        }
+        if (service == null) {
+            throw new BluetoothFailure(NO_SERVICE, "no service");
+        }
+        return service;
+    }
+
+    private static BluetoothGattCharacteristic findCharacteristic(
             BluetoothGatt gatt, String serviceId, String characteristicId) {
-        BluetoothGattService svc = gatt.getService(UUID.fromString(serviceId));
-        if (svc == null) return null;
-        return svc.getCharacteristic(UUID.fromString(characteristicId));
+        BluetoothGattService service = findService(gatt, serviceId);
+        BluetoothGattCharacteristic characteristic;
+        try {
+            characteristic = service.getCharacteristic(UUID.fromString(characteristicId));
+        } catch (IllegalArgumentException notAUuid) {
+            throw new BluetoothFailure(INVALID_DATA, "invalid characteristicId " + characteristicId);
+        }
+        if (characteristic == null) {
+            throw new BluetoothFailure(NO_CHARACTERISTIC, "no characteristic");
+        }
+        return characteristic;
     }
 
     private static byte[] hexToBytes(String hex) {
         if (hex == null || hex.isEmpty()) return new byte[0];
         int len = hex.length();
         if (len % 2 != 0) {
-            throw new IllegalArgumentException("writeBLECharacteristicValue:fail value hex string has odd length");
+            throw new BluetoothFailure(INVALID_DATA, "invalid data");
         }
         byte[] data = new byte[len / 2];
         for (int i = 0; i < len; i += 2) {
             int hi = Character.digit(hex.charAt(i), 16);
             int lo = Character.digit(hex.charAt(i + 1), 16);
             if (hi < 0 || lo < 0) {
-                throw new IllegalArgumentException("writeBLECharacteristicValue:fail value contains invalid hex character");
+                throw new BluetoothFailure(INVALID_DATA, "invalid data");
             }
             data[i / 2] = (byte) ((hi << 4) + lo);
         }
@@ -1777,6 +2223,7 @@ public class BluetoothManager {
                 this::stopDiscoveryInternal,
                 this::stopBeaconDiscoveryInternal,
                 this::closeAdapter,
+                this::finishPairings,
                 discoveredBeacons::clear,
                 () -> ResourceCleanup.destroyMatching(
                         gattConnections, ignored -> true,
@@ -1806,11 +2253,12 @@ public class BluetoothManager {
             devJson.put("deviceId", address);
             devJson.put("name", name);
             devJson.put("RSSI", result.getRssi());
-            // advertisData as hex string
-            if (result.getScanRecord() != null && result.getScanRecord().getBytes() != null) {
-                devJson.put("advertisData", bytesToHex(result.getScanRecord().getBytes()));
-            }
+            ScanRecord record = result.getScanRecord();
+            devJson.put("advertisData", manufacturerData(record));
             devJson.put("advertisServiceUUIDs", getServiceUuids(result));
+            String localName = record != null ? record.getDeviceName() : null;
+            devJson.put("localName", localName != null ? localName : "");
+            devJson.put("serviceData", serviceData(record));
         } catch (JSONException ignored) {}
 
         discoveredDevices.put(address, devJson);
@@ -1942,6 +2390,36 @@ public class BluetoothManager {
         }
         activity.unregisterReceiver(receiver);
         if (adapterStateReceiver == receiver) adapterStateReceiver = null;
+    }
+
+    /**
+     * The advertisement's manufacturer-specific segment as content receives it:
+     * the company identifier (little-endian, as on the air) and its data -- the
+     * segment, not the whole advertisement, which is what a game parses.
+     */
+    private static String manufacturerData(ScanRecord record) {
+        SparseArray<byte[]> segments = record != null ? record.getManufacturerSpecificData() : null;
+        if (segments == null || segments.size() == 0) return "";
+        int company = segments.keyAt(0);
+        byte[] data = segments.valueAt(0);
+        int length = data != null ? data.length : 0;
+        byte[] segment = new byte[length + 2];
+        segment[0] = (byte) (company & 0xFF);
+        segment[1] = (byte) ((company >>> 8) & 0xFF);
+        if (length > 0) System.arraycopy(data, 0, segment, 2, length);
+        return bytesToHex(segment);
+    }
+
+    /** Each service's data, keyed by its UUID. */
+    private static JSONObject serviceData(ScanRecord record) throws JSONException {
+        JSONObject result = new JSONObject();
+        Map<ParcelUuid, byte[]> data = record != null ? record.getServiceData() : null;
+        if (data == null) return result;
+        for (Map.Entry<ParcelUuid, byte[]> entry : data.entrySet()) {
+            byte[] bytes = entry.getValue();
+            result.put(entry.getKey().toString(), bytes != null ? bytesToHex(bytes) : "");
+        }
+        return result;
     }
 
     private static JSONArray getServiceUuids(ScanResult result) {

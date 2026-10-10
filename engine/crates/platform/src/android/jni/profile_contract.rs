@@ -127,6 +127,7 @@ const NATIVE_MEDIA: &[JniMethod] = methods![
 const NATIVE_CONNECTIVITY: &[JniMethod] = methods![
     ("onOpenSystemBluetoothSetting", "(III)V"),
     ("onOpenAppAuthorizeSetting", "(III)V"),
+    ("onBluetoothResult", "(IILjava/lang/String;)V"),
     ("onBluetoothAdapterStateChange", "(IZZ)V"),
     ("onBluetoothDeviceFound", "(ILjava/lang/String;)V"),
     ("onBeaconUpdate", "(ILjava/lang/String;)V"),
@@ -270,42 +271,30 @@ const JAVA_CONNECTIVITY: &[JniMethod] = methods![
     ("getDeviceInfoJson", "()Ljava/lang/String;"),
     ("getAppAuthorizationSettingJson", "(I)Ljava/lang/String;"),
     ("bluetoothOpenAdapter", "(ILjava/lang/String;)V"),
-    ("bluetoothCloseAdapter", "(I)V"),
-    ("bluetoothGetAdapterState", "(I)Ljava/lang/String;"),
+    ("bluetoothCloseAdapter", "(ILjava/lang/String;)V"),
+    ("bluetoothGetAdapterState", "(ILjava/lang/String;)V"),
     ("bluetoothStartDevicesDiscovery", "(ILjava/lang/String;)V"),
-    ("bluetoothStopDevicesDiscovery", "(I)V"),
-    ("bluetoothGetDevices", "(I)Ljava/lang/String;"),
-    (
-        "bluetoothGetConnectedDevices",
-        "(ILjava/lang/String;)Ljava/lang/String;"
-    ),
+    ("bluetoothStopDevicesDiscovery", "(ILjava/lang/String;)V"),
+    ("bluetoothGetDevices", "(ILjava/lang/String;)V"),
+    ("bluetoothGetConnectedDevices", "(ILjava/lang/String;)V"),
     ("bluetoothMakePair", "(ILjava/lang/String;)V"),
     ("bluetoothIsDevicePaired", "(ILjava/lang/String;)V"),
     ("bluetoothStartBeaconDiscovery", "(ILjava/lang/String;)V"),
-    ("bluetoothStopBeaconDiscovery", "(I)V"),
-    ("bluetoothGetBeacons", "(I)Ljava/lang/String;"),
+    ("bluetoothStopBeaconDiscovery", "(ILjava/lang/String;)V"),
+    ("bluetoothGetBeacons", "(ILjava/lang/String;)V"),
     ("bleCreateConnection", "(ILjava/lang/String;)V"),
     ("bleCloseConnection", "(ILjava/lang/String;)V"),
-    (
-        "bleGetDeviceServices",
-        "(ILjava/lang/String;)Ljava/lang/String;"
-    ),
-    (
-        "bleGetDeviceCharacteristics",
-        "(ILjava/lang/String;)Ljava/lang/String;"
-    ),
+    ("bleGetDeviceServices", "(ILjava/lang/String;)V"),
+    ("bleGetDeviceCharacteristics", "(ILjava/lang/String;)V"),
     ("bleReadCharacteristicValue", "(ILjava/lang/String;)V"),
     ("bleWriteCharacteristicValue", "(ILjava/lang/String;)V"),
     (
         "bleNotifyCharacteristicValueChange",
         "(ILjava/lang/String;)V"
     ),
-    (
-        "bleGetDeviceRSSI",
-        "(ILjava/lang/String;)Ljava/lang/String;"
-    ),
+    ("bleGetDeviceRSSI", "(ILjava/lang/String;)V"),
     ("bleSetMTU", "(ILjava/lang/String;)V"),
-    ("bleGetMTU", "(ILjava/lang/String;)Ljava/lang/String;"),
+    ("bleGetMTU", "(ILjava/lang/String;)V"),
     ("gameLogReport", "(ILjava/lang/String;)V"),
     ("authLogin", "(ILjava/lang/String;)V"),
     ("authCheckSession", "(ILjava/lang/String;)V"),
@@ -458,7 +447,9 @@ mod tests {
         // add +4 native (`onSaveImageToPhotosAlbumResult`, `onPreviewImageResult`,
         // `onPreviewMediaResult`, and `onChooseMediaResult` for the new API).
         // Screen-recording state adds +1 native (`onScreenRecordingStateChanged`).
-        assert_eq!(native.len(), 73, "full NativeBridge surface changed");
+        // Bluetooth requests the SDK answers add +1 native (`onBluetoothResult`,
+        // one for all of them, keyed by method number).
+        assert_eq!(native.len(), 74, "full NativeBridge surface changed");
         // Runtime-generation fencing adds +2 Java (`beginRuntimeRestart`,
         // `completeRuntimeRestart`), both Core: every profile restarts.
         // Concurrent-session correctness removes -1 Java (`getCacheDirPath`,

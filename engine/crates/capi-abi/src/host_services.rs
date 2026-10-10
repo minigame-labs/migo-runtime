@@ -42,6 +42,7 @@ pub const MIGO_HOST_SERVICE_LOCATION: u32 = 11;
 pub const MIGO_HOST_SERVICE_IMAGE: u32 = 12;
 pub const MIGO_HOST_SERVICE_MOTION: u32 = 13;
 pub const MIGO_HOST_SERVICE_SCREEN: u32 = 14;
+pub const MIGO_HOST_SERVICE_BLUETOOTH: u32 = 15;
 
 /// Every service this library knows. A host declaring a bit outside it was
 /// built against a newer header than the library it runs with.
@@ -59,7 +60,8 @@ pub const MIGO_HOST_SERVICES_KNOWN: u64 = (1 << MIGO_HOST_SERVICE_AD)
     | (1 << MIGO_HOST_SERVICE_LOCATION)
     | (1 << MIGO_HOST_SERVICE_IMAGE)
     | (1 << MIGO_HOST_SERVICE_MOTION)
-    | (1 << MIGO_HOST_SERVICE_SCREEN);
+    | (1 << MIGO_HOST_SERVICE_SCREEN)
+    | (1 << MIGO_HOST_SERVICE_BLUETOOTH);
 
 // ---- Methods, numbered per service. ----
 
@@ -136,6 +138,35 @@ pub const MIGO_SCREEN_SET_VISUAL_EFFECT_ON_CAPTURE: u32 = 8;
 pub const MIGO_SCREEN_EVENT_USER_CAPTURE_SCREEN: u32 = 0;
 pub const MIGO_SCREEN_EVENT_DEVICE_ORIENTATION_CHANGE: u32 = 1;
 pub const MIGO_SCREEN_EVENT_RECORDING_STATE_CHANGE: u32 = 2;
+
+pub const MIGO_BLUETOOTH_OPEN_ADAPTER: u32 = 0;
+pub const MIGO_BLUETOOTH_CLOSE_ADAPTER: u32 = 1;
+pub const MIGO_BLUETOOTH_GET_ADAPTER_STATE: u32 = 2;
+pub const MIGO_BLUETOOTH_START_DEVICES_DISCOVERY: u32 = 3;
+pub const MIGO_BLUETOOTH_STOP_DEVICES_DISCOVERY: u32 = 4;
+pub const MIGO_BLUETOOTH_GET_DEVICES: u32 = 5;
+pub const MIGO_BLUETOOTH_GET_CONNECTED_DEVICES: u32 = 6;
+pub const MIGO_BLUETOOTH_MAKE_PAIR: u32 = 7;
+pub const MIGO_BLUETOOTH_IS_DEVICE_PAIRED: u32 = 8;
+pub const MIGO_BLUETOOTH_START_BEACON_DISCOVERY: u32 = 9;
+pub const MIGO_BLUETOOTH_STOP_BEACON_DISCOVERY: u32 = 10;
+pub const MIGO_BLUETOOTH_GET_BEACONS: u32 = 11;
+pub const MIGO_BLUETOOTH_CREATE_BLE_CONNECTION: u32 = 12;
+pub const MIGO_BLUETOOTH_CLOSE_BLE_CONNECTION: u32 = 13;
+pub const MIGO_BLUETOOTH_GET_BLE_DEVICE_SERVICES: u32 = 14;
+pub const MIGO_BLUETOOTH_GET_BLE_DEVICE_CHARACTERISTICS: u32 = 15;
+pub const MIGO_BLUETOOTH_READ_BLE_CHARACTERISTIC_VALUE: u32 = 16;
+pub const MIGO_BLUETOOTH_WRITE_BLE_CHARACTERISTIC_VALUE: u32 = 17;
+pub const MIGO_BLUETOOTH_NOTIFY_BLE_CHARACTERISTIC_VALUE_CHANGE: u32 = 18;
+pub const MIGO_BLUETOOTH_GET_BLE_DEVICE_RSSI: u32 = 19;
+pub const MIGO_BLUETOOTH_SET_BLE_MTU: u32 = 20;
+pub const MIGO_BLUETOOTH_GET_BLE_MTU: u32 = 21;
+pub const MIGO_BLUETOOTH_EVENT_ADAPTER_STATE_CHANGE: u32 = 0;
+pub const MIGO_BLUETOOTH_EVENT_DEVICE_FOUND: u32 = 1;
+pub const MIGO_BLUETOOTH_EVENT_BLE_CONNECTION_STATE_CHANGE: u32 = 2;
+pub const MIGO_BLUETOOTH_EVENT_BLE_MTU_CHANGE: u32 = 3;
+pub const MIGO_BLUETOOTH_EVENT_BEACON_UPDATE: u32 = 4;
+pub const MIGO_BLUETOOTH_EVENT_BEACON_SERVICE_CHANGE: u32 = 5;
 
 // ---- Events, numbered per service. ----
 
@@ -237,6 +268,89 @@ pub struct MigoSensorSample {
 
 // SAFETY: integers and floats only; v1 requires the complete record.
 unsafe impl AbiStruct for MigoSensorSample {}
+
+/// The longest device, service or characteristic id a value may name.
+pub const MIGO_BLE_ID_MAX_BYTES: u32 = 256;
+/// The longest attribute value BLE carries.
+pub const MIGO_BLE_VALUE_MAX_BYTES: u32 = 512;
+
+/// One characteristic value a connected peripheral sent.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct MigoBleCharacteristicValue {
+    pub header: VersionedHeader,
+    pub device_id_utf8: *const c_char,
+    pub service_id_utf8: *const c_char,
+    pub characteristic_id_utf8: *const c_char,
+    pub value: *const u8,
+    pub device_id_length: u32,
+    pub service_id_length: u32,
+    pub characteristic_id_length: u32,
+    pub value_length: u32,
+}
+
+// SAFETY: pointers and integers, all zero-valid; v1 requires the complete record.
+unsafe impl AbiStruct for MigoBleCharacteristicValue {}
+
+/// A validated [`MigoBleCharacteristicValue`], borrowing the caller's memory for
+/// the call: the value path copies once, into a pooled slot, and nowhere else.
+#[derive(Debug, PartialEq, Eq)]
+pub struct BleCharacteristicValueView<'a> {
+    pub device_id: &'a str,
+    pub service_id: &'a str,
+    pub characteristic_id: &'a str,
+    pub value: &'a [u8],
+}
+
+impl MigoBleCharacteristicValue {
+    /// Validate a caller-owned record and borrow what it names.
+    ///
+    /// # Safety
+    /// `record` must be null or readable for its announced byte count, and each
+    /// range it announces readable for the call.
+    pub unsafe fn parse<'a>(
+        record: *const Self,
+    ) -> Result<BleCharacteristicValueView<'a>, MigoResult> {
+        // SAFETY: forwarded from this function's contract.
+        let raw = unsafe { copy_versioned::<Self>(record.cast::<VersionedHeader>()) }?;
+        // SAFETY: each range is the caller's to make readable.
+        unsafe {
+            Ok(BleCharacteristicValueView {
+                device_id: borrow_id(raw.device_id_utf8, raw.device_id_length)?,
+                service_id: borrow_id(raw.service_id_utf8, raw.service_id_length)?,
+                characteristic_id: borrow_id(
+                    raw.characteristic_id_utf8,
+                    raw.characteristic_id_length,
+                )?,
+                value: borrow_value(raw.value, raw.value_length)?,
+            })
+        }
+    }
+}
+
+/// # Safety
+/// `text` must be readable for `length` bytes when it is not null.
+unsafe fn borrow_id<'a>(text: *const c_char, length: u32) -> Result<&'a str, MigoResult> {
+    if text.is_null() || length == 0 || length > MIGO_BLE_ID_MAX_BYTES {
+        return Err(MIGO_ERROR_INVALID_ARGUMENT);
+    }
+    // SAFETY: the caller guarantees `length` readable bytes at `text`.
+    let bytes = unsafe { std::slice::from_raw_parts(text.cast::<u8>(), length as usize) };
+    std::str::from_utf8(bytes).map_err(|_| MIGO_ERROR_INVALID_ARGUMENT)
+}
+
+/// # Safety
+/// `value` must be readable for `length` bytes when it is not null.
+unsafe fn borrow_value<'a>(value: *const u8, length: u32) -> Result<&'a [u8], MigoResult> {
+    if length > MIGO_BLE_VALUE_MAX_BYTES || (value.is_null() && length != 0) {
+        return Err(MIGO_ERROR_INVALID_ARGUMENT);
+    }
+    if length == 0 {
+        return Ok(&[]);
+    }
+    // SAFETY: the caller guarantees `length` readable bytes at `value`.
+    Ok(unsafe { std::slice::from_raw_parts(value, length as usize) })
+}
 
 impl MigoSensorSample {
     /// Copy and validate a caller-owned reading.
@@ -426,6 +540,11 @@ const _: () = assert!(size_of::<MigoSensorSample>() == 40);
 const _: () = assert!(offset_of!(MigoSensorSample, kind) == 8);
 const _: () = assert!(offset_of!(MigoSensorSample, compass_accuracy) == 12);
 const _: () = assert!(offset_of!(MigoSensorSample, values) == 16);
+const _: () = assert!(offset_of!(MigoBleCharacteristicValue, device_id_utf8) == 8);
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(size_of::<MigoBleCharacteristicValue>() == 56);
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(offset_of!(MigoBleCharacteristicValue, device_id_length) == 40);
 const _: () = assert!(offset_of!(MigoAppAuthorizeSetting, album) == 8);
 const _: () = assert!(offset_of!(MigoAppAuthorizeSetting, location_reduced_accuracy) == 18);
 const _: () = assert!(offset_of!(MigoHostServiceCall, header) == 0);

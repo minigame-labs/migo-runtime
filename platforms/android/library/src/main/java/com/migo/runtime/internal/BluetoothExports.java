@@ -4,6 +4,9 @@ import android.app.Activity;
 
 import com.migo.runtime.internal.platform.BluetoothManager;
 
+import org.json.JSONException;
+import org.json.JSONObject;
+
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -52,149 +55,179 @@ public final class BluetoothExports {
         }
     }
 
-    public static void bluetoothOpenAdapter(int sessionId, String optionsJson) {
-        BluetoothManager mgr = getOrCreateBluetoothManager(sessionId);
-        if (mgr == null) return;
-        mgr.openAdapter(optionsJson);
+    // ==================== Requests ====================
+    //
+    // Every Bluetooth request is answered exactly once through
+    // NativeMethods.onBluetoothResult: by the manager when the operation has
+    // happened, or here with the reason it could not start. Nothing is thrown
+    // back across JNI -- the runtime waits on the answer, not on the call.
+
+    private interface Operation {
+        void run(BluetoothManager manager, JSONObject options, BluetoothManager.Reply reply);
     }
 
-    public static void bluetoothCloseAdapter(int sessionId) {
-        BluetoothManager mgr = sBluetoothManagers.get(sessionId);
-        if (mgr != null) {
-            mgr.closeAdapter();
+    private static final BluetoothManager.ResultSink SINK = NativeMethods::onBluetoothResult;
+
+    /**
+     * Run one request. {@code opens} is whether the request may bring the
+     * session's manager into being -- opening the adapter and the requests the
+     * platform allows without it; any other request before then is "not init".
+     * A release with nothing to release succeeds.
+     */
+    private static void request(int sessionId, BluetoothManager.Method method, String requestJson,
+                                boolean opens, Operation operation) {
+        JSONObject options;
+        try {
+            options = new JSONObject(requestJson);
+        } catch (JSONException malformed) {
+            new BluetoothManager.Reply(sessionId, method, CallbackCorrelation.ABSENT, SINK)
+                    .fail(BluetoothManager.INVALID_DATA, "invalid data");
+            return;
+        }
+        BluetoothManager.Reply reply = new BluetoothManager.Reply(
+                sessionId, method, CallbackCorrelation.requestIdOf(options), SINK);
+        BluetoothManager manager = opens
+                ? getOrCreateBluetoothManager(sessionId)
+                : sBluetoothManagers.get(sessionId);
+        if (manager == null) {
+            if (releases(method)) {
+                reply.ok();
+            } else {
+                reply.fail(BluetoothManager.NOT_INIT, "not init");
+            }
+            return;
+        }
+        try {
+            operation.run(manager, options, reply);
+        } catch (BluetoothManager.BluetoothFailure failure) {
+            reply.fail(failure.errCode, failure.getMessage());
+        } catch (SecurityException denied) {
+            reply.fail(BluetoothManager.SYSTEM_ERROR, denied.getMessage());
+        } catch (RuntimeException unexpected) {
+            reply.fail(BluetoothManager.SYSTEM_ERROR, String.valueOf(unexpected.getMessage()));
         }
     }
 
-    public static String bluetoothGetAdapterState(int sessionId) {
-        BluetoothManager mgr = sBluetoothManagers.get(sessionId);
-        if (mgr != null) {
-            return mgr.getAdapterState();
-        }
-        return "{\"discovering\":false,\"available\":false}";
-    }
-
-    public static void bluetoothStartDevicesDiscovery(int sessionId, String optionsJson) {
-        BluetoothManager mgr = getOrCreateBluetoothManager(sessionId);
-        if (mgr == null) return;
-        mgr.startDiscovery(optionsJson);
-    }
-
-    public static void bluetoothStopDevicesDiscovery(int sessionId) {
-        BluetoothManager mgr = sBluetoothManagers.get(sessionId);
-        if (mgr != null) {
-            mgr.stopDiscovery();
+    private static boolean releases(BluetoothManager.Method method) {
+        switch (method) {
+            case CLOSE_ADAPTER:
+            case STOP_DEVICES_DISCOVERY:
+            case STOP_BEACON_DISCOVERY:
+            case CLOSE_BLE_CONNECTION:
+                return true;
+            default:
+                return false;
         }
     }
 
-    public static String bluetoothGetDevices(int sessionId) {
-        BluetoothManager mgr = sBluetoothManagers.get(sessionId);
-        if (mgr != null) {
-            return mgr.getDevices();
-        }
-        return "{\"devices\":[]}";
+    public static void bluetoothOpenAdapter(int sessionId, String requestJson) {
+        request(sessionId, BluetoothManager.Method.OPEN_ADAPTER, requestJson, true,
+                BluetoothManager::openAdapter);
     }
 
-    public static String bluetoothGetConnectedDevices(int sessionId, String optionsJson) {
-        BluetoothManager mgr = sBluetoothManagers.get(sessionId);
-        if (mgr != null) {
-            return mgr.getConnectedDevices(optionsJson);
-        }
-        return "{\"devices\":[]}";
+    public static void bluetoothCloseAdapter(int sessionId, String requestJson) {
+        request(sessionId, BluetoothManager.Method.CLOSE_ADAPTER, requestJson, false,
+                BluetoothManager::closeAdapter);
     }
 
-    public static void bluetoothMakePair(int sessionId, String optionsJson) {
-        BluetoothManager mgr = getOrCreateBluetoothManager(sessionId);
-        if (mgr == null) return;
-        mgr.makePair(optionsJson);
+    public static void bluetoothGetAdapterState(int sessionId, String requestJson) {
+        request(sessionId, BluetoothManager.Method.GET_ADAPTER_STATE, requestJson, false,
+                BluetoothManager::getAdapterState);
     }
 
-    public static void bluetoothIsDevicePaired(int sessionId, String optionsJson) {
-        BluetoothManager mgr = getOrCreateBluetoothManager(sessionId);
-        if (mgr == null) return;
-        mgr.isDevicePaired(optionsJson);
+    public static void bluetoothStartDevicesDiscovery(int sessionId, String requestJson) {
+        request(sessionId, BluetoothManager.Method.START_DEVICES_DISCOVERY, requestJson, false,
+                BluetoothManager::startDiscovery);
     }
 
-    public static void bluetoothStartBeaconDiscovery(int sessionId, String optionsJson) {
-        BluetoothManager mgr = getOrCreateBluetoothManager(sessionId);
-        if (mgr == null) return;
-        mgr.startBeaconDiscovery(optionsJson);
+    public static void bluetoothStopDevicesDiscovery(int sessionId, String requestJson) {
+        request(sessionId, BluetoothManager.Method.STOP_DEVICES_DISCOVERY, requestJson, false,
+                BluetoothManager::stopDiscovery);
     }
 
-    public static void bluetoothStopBeaconDiscovery(int sessionId) {
-        BluetoothManager mgr = sBluetoothManagers.get(sessionId);
-        if (mgr != null) {
-            mgr.stopBeaconDiscovery();
-        }
+    public static void bluetoothGetDevices(int sessionId, String requestJson) {
+        request(sessionId, BluetoothManager.Method.GET_DEVICES, requestJson, false,
+                BluetoothManager::getDevices);
     }
 
-    public static String bluetoothGetBeacons(int sessionId) {
-        BluetoothManager mgr = sBluetoothManagers.get(sessionId);
-        if (mgr != null) {
-            return mgr.getBeacons();
-        }
-        return "{\"beacons\":[]}";
+    public static void bluetoothGetConnectedDevices(int sessionId, String requestJson) {
+        request(sessionId, BluetoothManager.Method.GET_CONNECTED_DEVICES, requestJson, false,
+                BluetoothManager::getConnectedDevices);
     }
 
-    // ---- BLE GATT ----
-
-    public static void bleCreateConnection(int sessionId, String optionsJson) {
-        BluetoothManager mgr = sBluetoothManagers.get(sessionId);
-        if (mgr == null) throw new RuntimeException("createBLEConnection:fail no bluetooth manager");
-        mgr.createBLEConnection(optionsJson);
+    public static void bluetoothMakePair(int sessionId, String requestJson) {
+        request(sessionId, BluetoothManager.Method.MAKE_PAIR, requestJson, true,
+                BluetoothManager::makePair);
     }
 
-    public static void bleCloseConnection(int sessionId, String optionsJson) {
-        BluetoothManager mgr = sBluetoothManagers.get(sessionId);
-        if (mgr == null) throw new RuntimeException("closeBLEConnection:fail no bluetooth manager");
-        mgr.closeBLEConnection(optionsJson);
+    public static void bluetoothIsDevicePaired(int sessionId, String requestJson) {
+        request(sessionId, BluetoothManager.Method.IS_DEVICE_PAIRED, requestJson, true,
+                BluetoothManager::isDevicePaired);
     }
 
-    public static String bleGetDeviceServices(int sessionId, String optionsJson) {
-        BluetoothManager mgr = sBluetoothManagers.get(sessionId);
-        if (mgr == null) throw new RuntimeException("getBLEDeviceServices:fail no bluetooth manager");
-        return mgr.getBLEDeviceServices(optionsJson);
+    public static void bluetoothStartBeaconDiscovery(int sessionId, String requestJson) {
+        request(sessionId, BluetoothManager.Method.START_BEACON_DISCOVERY, requestJson, true,
+                BluetoothManager::startBeaconDiscovery);
     }
 
-    public static String bleGetDeviceCharacteristics(int sessionId, String optionsJson) {
-        BluetoothManager mgr = sBluetoothManagers.get(sessionId);
-        if (mgr == null) throw new RuntimeException("getBLEDeviceCharacteristics:fail no bluetooth manager");
-        return mgr.getBLEDeviceCharacteristics(optionsJson);
+    public static void bluetoothStopBeaconDiscovery(int sessionId, String requestJson) {
+        request(sessionId, BluetoothManager.Method.STOP_BEACON_DISCOVERY, requestJson, false,
+                BluetoothManager::stopBeaconDiscovery);
     }
 
-    public static void bleReadCharacteristicValue(int sessionId, String optionsJson) {
-        BluetoothManager mgr = sBluetoothManagers.get(sessionId);
-        if (mgr == null) throw new RuntimeException("readBLECharacteristicValue:fail no bluetooth manager");
-        mgr.readBLECharacteristicValue(optionsJson);
+    public static void bluetoothGetBeacons(int sessionId, String requestJson) {
+        request(sessionId, BluetoothManager.Method.GET_BEACONS, requestJson, false,
+                BluetoothManager::getBeacons);
     }
 
-    public static void bleWriteCharacteristicValue(int sessionId, String optionsJson) {
-        BluetoothManager mgr = sBluetoothManagers.get(sessionId);
-        if (mgr == null) throw new RuntimeException("writeBLECharacteristicValue:fail no bluetooth manager");
-        mgr.writeBLECharacteristicValue(optionsJson);
+    public static void bleCreateConnection(int sessionId, String requestJson) {
+        request(sessionId, BluetoothManager.Method.CREATE_BLE_CONNECTION, requestJson, false,
+                BluetoothManager::createBLEConnection);
     }
 
-    public static void bleNotifyCharacteristicValueChange(int sessionId, String optionsJson) {
-        BluetoothManager mgr = sBluetoothManagers.get(sessionId);
-        if (mgr == null) throw new RuntimeException("notifyBLECharacteristicValueChange:fail no bluetooth manager");
-        mgr.notifyBLECharacteristicValueChange(optionsJson);
+    public static void bleCloseConnection(int sessionId, String requestJson) {
+        request(sessionId, BluetoothManager.Method.CLOSE_BLE_CONNECTION, requestJson, false,
+                BluetoothManager::closeBLEConnection);
     }
 
-    public static String bleGetDeviceRSSI(int sessionId, String optionsJson) {
-        BluetoothManager mgr = sBluetoothManagers.get(sessionId);
-        if (mgr == null) throw new RuntimeException("getBLEDeviceRSSI:fail no bluetooth manager");
-        return mgr.getBLEDeviceRSSI(optionsJson);
+    public static void bleGetDeviceServices(int sessionId, String requestJson) {
+        request(sessionId, BluetoothManager.Method.GET_BLE_DEVICE_SERVICES, requestJson, false,
+                BluetoothManager::getBLEDeviceServices);
     }
 
-    public static void bleSetMTU(int sessionId, String optionsJson) {
-        BluetoothManager mgr = sBluetoothManagers.get(sessionId);
-        if (mgr == null) throw new RuntimeException("setBLEMTU:fail no bluetooth manager");
-        mgr.setBLEMTU(optionsJson);
+    public static void bleGetDeviceCharacteristics(int sessionId, String requestJson) {
+        request(sessionId, BluetoothManager.Method.GET_BLE_DEVICE_CHARACTERISTICS, requestJson, false,
+                BluetoothManager::getBLEDeviceCharacteristics);
     }
 
-    public static String bleGetMTU(int sessionId, String optionsJson) {
-        BluetoothManager mgr = sBluetoothManagers.get(sessionId);
-        if (mgr == null) throw new RuntimeException("getBLEMTU:fail no bluetooth manager");
-        return mgr.getBLEMTU(optionsJson);
+    public static void bleReadCharacteristicValue(int sessionId, String requestJson) {
+        request(sessionId, BluetoothManager.Method.READ_BLE_CHARACTERISTIC_VALUE, requestJson, false,
+                BluetoothManager::readBLECharacteristicValue);
+    }
+
+    public static void bleWriteCharacteristicValue(int sessionId, String requestJson) {
+        request(sessionId, BluetoothManager.Method.WRITE_BLE_CHARACTERISTIC_VALUE, requestJson, false,
+                BluetoothManager::writeBLECharacteristicValue);
+    }
+
+    public static void bleNotifyCharacteristicValueChange(int sessionId, String requestJson) {
+        request(sessionId, BluetoothManager.Method.NOTIFY_BLE_CHARACTERISTIC_VALUE_CHANGE, requestJson, false,
+                BluetoothManager::notifyBLECharacteristicValueChange);
+    }
+
+    public static void bleGetDeviceRSSI(int sessionId, String requestJson) {
+        request(sessionId, BluetoothManager.Method.GET_BLE_DEVICE_RSSI, requestJson, false,
+                BluetoothManager::getBLEDeviceRSSI);
+    }
+
+    public static void bleSetMTU(int sessionId, String requestJson) {
+        request(sessionId, BluetoothManager.Method.SET_BLE_MTU, requestJson, false,
+                BluetoothManager::setBLEMTU);
+    }
+
+    public static void bleGetMTU(int sessionId, String requestJson) {
+        request(sessionId, BluetoothManager.Method.GET_BLE_MTU, requestJson, false,
+                BluetoothManager::getBLEMTU);
     }
 
     public static void destroyBluetoothManager(int sessionId) {

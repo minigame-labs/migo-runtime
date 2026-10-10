@@ -29,382 +29,256 @@ pub fn op_open_system_bluetooth_setting(
     ))
 }
 
-// ==================== Bluetooth Adapter ====================
+// ==================== Bluetooth ====================
+//
+// Every operation is a request the host answers through the hook
+// `shared::services::BLUETOOTH_RESULT_HOOKS` names. Using Bluetooth needs
+// `scope.bluetooth`; releasing what was acquired under it does not, so a
+// revocation never traps a scan or a connection.
+
+/// The Bluetooth service, or `err_msg` when the host supplies none.
+fn bluetooth(
+    state: &OpState,
+    err_msg: &'static str,
+) -> Result<std::sync::Arc<dyn shared::services::BluetoothService>, JsErrorBox> {
+    state
+        .borrow::<HostOpState>()
+        .device_services
+        .as_ref()
+        .and_then(|services| services.bluetooth())
+        .ok_or_else(|| JsErrorBox::generic(err_msg))
+}
 
 #[op2(fast)]
 pub fn op_open_bluetooth_adapter(
     state: &mut OpState,
-    #[string] options_json: String,
+    #[string] request_json: &str,
 ) -> Result<(), JsErrorBox> {
     crate::permission::require_scope(state, Scope::Bluetooth)?;
-    let host = state.borrow::<HostOpState>();
-    if let Some(ref services) = host.device_services {
-        if let Some(bt) = services.bluetooth() {
-            return bt.open_adapter(&options_json).map_err(JsErrorBox::generic);
-        }
-    }
-    Err(JsErrorBox::generic(
-        "openBluetoothAdapter:fail not supported",
-    ))
+    bluetooth(state, "openBluetoothAdapter:fail not supported")?
+        .open_adapter(request_json)
+        .map_err(JsErrorBox::generic)
 }
 
 #[op2(fast)]
-pub fn op_close_bluetooth_adapter(state: &mut OpState) -> Result<(), JsErrorBox> {
-    let host = state.borrow::<HostOpState>();
-    if let Some(ref services) = host.device_services {
-        if let Some(bt) = services.bluetooth() {
-            return bt.close_adapter().map_err(JsErrorBox::generic);
-        }
-    }
-    Err(JsErrorBox::generic(
-        "closeBluetoothAdapter:fail not supported",
-    ))
+pub fn op_close_bluetooth_adapter(
+    state: &mut OpState,
+    #[string] request_json: &str,
+) -> Result<(), JsErrorBox> {
+    bluetooth(state, "closeBluetoothAdapter:fail not supported")?
+        .close_adapter(request_json)
+        .map_err(JsErrorBox::generic)
 }
 
-#[op2]
-#[string]
-pub fn op_get_bluetooth_adapter_state(state: &mut OpState) -> Result<String, JsErrorBox> {
+#[op2(fast)]
+pub fn op_get_bluetooth_adapter_state(
+    state: &mut OpState,
+    #[string] request_json: &str,
+) -> Result<(), JsErrorBox> {
     crate::permission::require_scope(state, Scope::Bluetooth)?;
-    let host = state.borrow::<HostOpState>();
-    if let Some(ref services) = host.device_services {
-        if let Some(bt) = services.bluetooth() {
-            return bt.get_adapter_state().map_err(JsErrorBox::generic);
-        }
-    }
-    Err(JsErrorBox::generic(
-        "getBluetoothAdapterState:fail not supported",
-    ))
+    bluetooth(state, "getBluetoothAdapterState:fail not supported")?
+        .get_adapter_state(request_json)
+        .map_err(JsErrorBox::generic)
 }
 
 #[op2(fast)]
 pub fn op_start_bluetooth_devices_discovery(
     state: &mut OpState,
-    #[string] options_json: String,
+    #[string] request_json: &str,
 ) -> Result<(), JsErrorBox> {
     crate::permission::require_scope(state, Scope::Bluetooth)?;
-    let host = state.borrow::<HostOpState>();
-    if let Some(ref services) = host.device_services {
-        if let Some(bt) = services.bluetooth() {
-            return bt
-                .start_devices_discovery(&options_json)
-                .map_err(JsErrorBox::generic);
-        }
-    }
-    Err(JsErrorBox::generic(
-        "startBluetoothDevicesDiscovery:fail not supported",
-    ))
+    bluetooth(state, "startBluetoothDevicesDiscovery:fail not supported")?
+        .start_devices_discovery(request_json)
+        .map_err(JsErrorBox::generic)
 }
 
 #[op2(fast)]
-pub fn op_stop_bluetooth_devices_discovery(state: &mut OpState) -> Result<(), JsErrorBox> {
-    let host = state.borrow::<HostOpState>();
-    if let Some(ref services) = host.device_services {
-        if let Some(bt) = services.bluetooth() {
-            return bt.stop_devices_discovery().map_err(JsErrorBox::generic);
-        }
-    }
-    Err(JsErrorBox::generic(
-        "stopBluetoothDevicesDiscovery:fail not supported",
-    ))
+pub fn op_stop_bluetooth_devices_discovery(
+    state: &mut OpState,
+    #[string] request_json: &str,
+) -> Result<(), JsErrorBox> {
+    bluetooth(state, "stopBluetoothDevicesDiscovery:fail not supported")?
+        .stop_devices_discovery(request_json)
+        .map_err(JsErrorBox::generic)
 }
 
-#[op2]
-#[string]
-pub fn op_get_bluetooth_devices(state: &mut OpState) -> Result<String, JsErrorBox> {
+#[op2(fast)]
+pub fn op_get_bluetooth_devices(
+    state: &mut OpState,
+    #[string] request_json: &str,
+) -> Result<(), JsErrorBox> {
     crate::permission::require_scope(state, Scope::Bluetooth)?;
-    let host = state.borrow::<HostOpState>();
-    if let Some(ref services) = host.device_services {
-        if let Some(bt) = services.bluetooth() {
-            return bt.get_devices().map_err(JsErrorBox::generic);
-        }
-    }
-    Err(JsErrorBox::generic(
-        "getBluetoothDevices:fail not supported",
-    ))
+    bluetooth(state, "getBluetoothDevices:fail not supported")?
+        .get_devices(request_json)
+        .map_err(JsErrorBox::generic)
 }
 
-#[op2]
-#[string]
+#[op2(fast)]
 pub fn op_get_connected_bluetooth_devices(
     state: &mut OpState,
-    #[string] options_json: String,
-) -> Result<String, JsErrorBox> {
+    #[string] request_json: &str,
+) -> Result<(), JsErrorBox> {
     crate::permission::require_scope(state, Scope::Bluetooth)?;
-    let host = state.borrow::<HostOpState>();
-    if let Some(ref services) = host.device_services {
-        if let Some(bt) = services.bluetooth() {
-            return bt
-                .get_connected_devices(&options_json)
-                .map_err(JsErrorBox::generic);
-        }
-    }
-    Err(JsErrorBox::generic(
-        "getConnectedBluetoothDevices:fail not supported",
-    ))
+    bluetooth(state, "getConnectedBluetoothDevices:fail not supported")?
+        .get_connected_devices(request_json)
+        .map_err(JsErrorBox::generic)
 }
 
 #[op2(fast)]
 pub fn op_make_bluetooth_pair(
     state: &mut OpState,
-    #[string] options_json: String,
+    #[string] request_json: &str,
 ) -> Result<(), JsErrorBox> {
     crate::permission::require_scope(state, Scope::Bluetooth)?;
-    let host = state.borrow::<HostOpState>();
-    if let Some(ref services) = host.device_services {
-        if let Some(bt) = services.bluetooth() {
-            return bt.make_pair(&options_json).map_err(JsErrorBox::generic);
-        }
-    }
-    Err(JsErrorBox::generic("makeBluetoothPair:fail not supported"))
+    bluetooth(state, "makeBluetoothPair:fail not supported")?
+        .make_pair(request_json)
+        .map_err(JsErrorBox::generic)
 }
 
 #[op2(fast)]
 pub fn op_is_bluetooth_device_paired(
     state: &mut OpState,
-    #[string] options_json: String,
+    #[string] request_json: &str,
 ) -> Result<(), JsErrorBox> {
     crate::permission::require_scope(state, Scope::Bluetooth)?;
-    let host = state.borrow::<HostOpState>();
-    if let Some(ref services) = host.device_services {
-        if let Some(bt) = services.bluetooth() {
-            return bt
-                .is_device_paired(&options_json)
-                .map_err(JsErrorBox::generic);
-        }
-    }
-    Err(JsErrorBox::generic(
-        "isBluetoothDevicePaired:fail not supported",
-    ))
+    bluetooth(state, "isBluetoothDevicePaired:fail not supported")?
+        .is_device_paired(request_json)
+        .map_err(JsErrorBox::generic)
 }
 
-// ==================== BLE GATT ====================
+#[op2(fast)]
+pub fn op_start_beacon_discovery(
+    state: &mut OpState,
+    #[string] request_json: &str,
+) -> Result<(), JsErrorBox> {
+    crate::permission::require_scope(state, Scope::Bluetooth)?;
+    bluetooth(state, "startBeaconDiscovery:fail not supported")?
+        .start_beacon_discovery(request_json)
+        .map_err(JsErrorBox::generic)
+}
+
+#[op2(fast)]
+pub fn op_stop_beacon_discovery(
+    state: &mut OpState,
+    #[string] request_json: &str,
+) -> Result<(), JsErrorBox> {
+    bluetooth(state, "stopBeaconDiscovery:fail not supported")?
+        .stop_beacon_discovery(request_json)
+        .map_err(JsErrorBox::generic)
+}
+
+#[op2(fast)]
+pub fn op_get_beacons(state: &mut OpState, #[string] request_json: &str) -> Result<(), JsErrorBox> {
+    crate::permission::require_scope(state, Scope::Bluetooth)?;
+    bluetooth(state, "getBeacons:fail not supported")?
+        .get_beacons(request_json)
+        .map_err(JsErrorBox::generic)
+}
 
 #[op2(fast)]
 pub fn op_create_ble_connection(
     state: &mut OpState,
-    #[string] options_json: String,
+    #[string] request_json: &str,
 ) -> Result<(), JsErrorBox> {
     crate::permission::require_scope(state, Scope::Bluetooth)?;
-    let host = state.borrow::<HostOpState>();
-    if let Some(ref services) = host.device_services {
-        if let Some(bt) = services.bluetooth() {
-            return bt
-                .create_ble_connection(&options_json)
-                .map_err(JsErrorBox::generic);
-        }
-    }
-    Err(JsErrorBox::generic(
-        "createBLEConnection:fail not supported",
-    ))
+    bluetooth(state, "createBLEConnection:fail not supported")?
+        .create_ble_connection(request_json)
+        .map_err(JsErrorBox::generic)
 }
 
 #[op2(fast)]
 pub fn op_close_ble_connection(
     state: &mut OpState,
-    #[string] options_json: String,
+    #[string] request_json: &str,
 ) -> Result<(), JsErrorBox> {
-    let host = state.borrow::<HostOpState>();
-    if let Some(ref services) = host.device_services {
-        if let Some(bt) = services.bluetooth() {
-            return bt
-                .close_ble_connection(&options_json)
-                .map_err(JsErrorBox::generic);
-        }
-    }
-    Err(JsErrorBox::generic("closeBLEConnection:fail not supported"))
+    bluetooth(state, "closeBLEConnection:fail not supported")?
+        .close_ble_connection(request_json)
+        .map_err(JsErrorBox::generic)
 }
 
-#[op2]
-#[string]
+#[op2(fast)]
 pub fn op_get_ble_device_services(
     state: &mut OpState,
-    #[string] options_json: String,
-) -> Result<String, JsErrorBox> {
+    #[string] request_json: &str,
+) -> Result<(), JsErrorBox> {
     crate::permission::require_scope(state, Scope::Bluetooth)?;
-    let host = state.borrow::<HostOpState>();
-    if let Some(ref services) = host.device_services {
-        if let Some(bt) = services.bluetooth() {
-            return bt
-                .get_ble_device_services(&options_json)
-                .map_err(JsErrorBox::generic);
-        }
-    }
-    Err(JsErrorBox::generic(
-        "getBLEDeviceServices:fail not supported",
-    ))
+    bluetooth(state, "getBLEDeviceServices:fail not supported")?
+        .get_ble_device_services(request_json)
+        .map_err(JsErrorBox::generic)
 }
 
-#[op2]
-#[string]
+#[op2(fast)]
 pub fn op_get_ble_device_characteristics(
     state: &mut OpState,
-    #[string] options_json: String,
-) -> Result<String, JsErrorBox> {
+    #[string] request_json: &str,
+) -> Result<(), JsErrorBox> {
     crate::permission::require_scope(state, Scope::Bluetooth)?;
-    let host = state.borrow::<HostOpState>();
-    if let Some(ref services) = host.device_services {
-        if let Some(bt) = services.bluetooth() {
-            return bt
-                .get_ble_device_characteristics(&options_json)
-                .map_err(JsErrorBox::generic);
-        }
-    }
-    Err(JsErrorBox::generic(
-        "getBLEDeviceCharacteristics:fail not supported",
-    ))
+    bluetooth(state, "getBLEDeviceCharacteristics:fail not supported")?
+        .get_ble_device_characteristics(request_json)
+        .map_err(JsErrorBox::generic)
 }
 
 #[op2(fast)]
 pub fn op_read_ble_characteristic_value(
     state: &mut OpState,
-    #[string] options_json: String,
+    #[string] request_json: &str,
 ) -> Result<(), JsErrorBox> {
     crate::permission::require_scope(state, Scope::Bluetooth)?;
-    let host = state.borrow::<HostOpState>();
-    if let Some(ref services) = host.device_services {
-        if let Some(bt) = services.bluetooth() {
-            return bt
-                .read_ble_characteristic_value(&options_json)
-                .map_err(JsErrorBox::generic);
-        }
-    }
-    Err(JsErrorBox::generic(
-        "readBLECharacteristicValue:fail not supported",
-    ))
+    bluetooth(state, "readBLECharacteristicValue:fail not supported")?
+        .read_ble_characteristic_value(request_json)
+        .map_err(JsErrorBox::generic)
 }
 
 #[op2(fast)]
 pub fn op_write_ble_characteristic_value(
     state: &mut OpState,
-    #[string] options_json: String,
+    #[string] request_json: &str,
 ) -> Result<(), JsErrorBox> {
     crate::permission::require_scope(state, Scope::Bluetooth)?;
-    let host = state.borrow::<HostOpState>();
-    if let Some(ref services) = host.device_services {
-        if let Some(bt) = services.bluetooth() {
-            return bt
-                .write_ble_characteristic_value(&options_json)
-                .map_err(JsErrorBox::generic);
-        }
-    }
-    Err(JsErrorBox::generic(
-        "writeBLECharacteristicValue:fail not supported",
-    ))
+    bluetooth(state, "writeBLECharacteristicValue:fail not supported")?
+        .write_ble_characteristic_value(request_json)
+        .map_err(JsErrorBox::generic)
 }
 
 #[op2(fast)]
 pub fn op_notify_ble_characteristic_value_change(
     state: &mut OpState,
-    #[string] options_json: String,
+    #[string] request_json: &str,
 ) -> Result<(), JsErrorBox> {
     crate::permission::require_scope(state, Scope::Bluetooth)?;
-    let host = state.borrow::<HostOpState>();
-    if let Some(ref services) = host.device_services {
-        if let Some(bt) = services.bluetooth() {
-            return bt
-                .notify_ble_characteristic_value_change(&options_json)
-                .map_err(JsErrorBox::generic);
-        }
-    }
-    Err(JsErrorBox::generic(
+    bluetooth(
+        state,
         "notifyBLECharacteristicValueChange:fail not supported",
-    ))
+    )?
+    .notify_ble_characteristic_value_change(request_json)
+    .map_err(JsErrorBox::generic)
 }
 
-#[op2]
-#[string]
+#[op2(fast)]
 pub fn op_get_ble_device_rssi(
     state: &mut OpState,
-    #[string] options_json: String,
-) -> Result<String, JsErrorBox> {
-    crate::permission::require_scope(state, Scope::Bluetooth)?;
-    let host = state.borrow::<HostOpState>();
-    if let Some(ref services) = host.device_services {
-        if let Some(bt) = services.bluetooth() {
-            return bt
-                .get_ble_device_rssi(&options_json)
-                .map_err(JsErrorBox::generic);
-        }
-    }
-    Err(JsErrorBox::generic("getBLEDeviceRSSI:fail not supported"))
-}
-
-#[op2(fast)]
-pub fn op_set_ble_mtu(
-    state: &mut OpState,
-    #[string] options_json: String,
+    #[string] request_json: &str,
 ) -> Result<(), JsErrorBox> {
     crate::permission::require_scope(state, Scope::Bluetooth)?;
-    let host = state.borrow::<HostOpState>();
-    if let Some(ref services) = host.device_services {
-        if let Some(bt) = services.bluetooth() {
-            return bt.set_ble_mtu(&options_json).map_err(JsErrorBox::generic);
-        }
-    }
-    Err(JsErrorBox::generic("setBLEMTU:fail not supported"))
-}
-
-#[op2]
-#[string]
-pub fn op_get_ble_mtu(
-    state: &mut OpState,
-    #[string] options_json: String,
-) -> Result<String, JsErrorBox> {
-    crate::permission::require_scope(state, Scope::Bluetooth)?;
-    let host = state.borrow::<HostOpState>();
-    if let Some(ref services) = host.device_services {
-        if let Some(bt) = services.bluetooth() {
-            return bt.get_ble_mtu(&options_json).map_err(JsErrorBox::generic);
-        }
-    }
-    Err(JsErrorBox::generic("getBLEMTU:fail not supported"))
-}
-
-// ==================== Beacon ====================
-
-#[op2(fast)]
-pub fn op_start_beacon_discovery(
-    state: &mut OpState,
-    #[string] options_json: String,
-) -> Result<(), JsErrorBox> {
-    crate::permission::require_scope(state, Scope::Bluetooth)?;
-    let host = state.borrow::<HostOpState>();
-    if let Some(ref services) = host.device_services {
-        if let Some(bt) = services.bluetooth() {
-            return bt
-                .start_beacon_discovery(&options_json)
-                .map_err(JsErrorBox::generic);
-        }
-    }
-    Err(JsErrorBox::generic(
-        "startBeaconDiscovery:fail not supported",
-    ))
+    bluetooth(state, "getBLEDeviceRSSI:fail not supported")?
+        .get_ble_device_rssi(request_json)
+        .map_err(JsErrorBox::generic)
 }
 
 #[op2(fast)]
-pub fn op_stop_beacon_discovery(state: &mut OpState) -> Result<(), JsErrorBox> {
-    let host = state.borrow::<HostOpState>();
-    if let Some(ref services) = host.device_services {
-        if let Some(bt) = services.bluetooth() {
-            return bt.stop_beacon_discovery().map_err(JsErrorBox::generic);
-        }
-    }
-    Err(JsErrorBox::generic(
-        "stopBeaconDiscovery:fail not supported",
-    ))
+pub fn op_set_ble_mtu(state: &mut OpState, #[string] request_json: &str) -> Result<(), JsErrorBox> {
+    crate::permission::require_scope(state, Scope::Bluetooth)?;
+    bluetooth(state, "setBLEMTU:fail not supported")?
+        .set_ble_mtu(request_json)
+        .map_err(JsErrorBox::generic)
 }
 
-#[op2]
-#[string]
-pub fn op_get_beacons(state: &mut OpState) -> Result<String, JsErrorBox> {
+#[op2(fast)]
+pub fn op_get_ble_mtu(state: &mut OpState, #[string] request_json: &str) -> Result<(), JsErrorBox> {
     crate::permission::require_scope(state, Scope::Bluetooth)?;
-    let host = state.borrow::<HostOpState>();
-    if let Some(ref services) = host.device_services {
-        if let Some(bt) = services.bluetooth() {
-            return bt.get_beacons().map_err(JsErrorBox::generic);
-        }
-    }
-    Err(JsErrorBox::generic("getBeacons:fail not supported"))
+    bluetooth(state, "getBLEMTU:fail not supported")?
+        .get_ble_mtu(request_json)
+        .map_err(JsErrorBox::generic)
 }
 
 // ==================== Open Setting (Mode C) ====================

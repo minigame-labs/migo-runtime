@@ -7,19 +7,19 @@
 //! supplied directly by the versioned Surface descriptor.
 
 use migo_capi_abi::host_services::{
-    MIGO_HOST_SERVICE_AD, MIGO_HOST_SERVICE_AUTH, MIGO_HOST_SERVICE_CLIPBOARD,
-    MIGO_HOST_SERVICE_IMAGE, MIGO_HOST_SERVICE_INTERACTION, MIGO_HOST_SERVICE_LOCATION,
-    MIGO_HOST_SERVICE_MOTION, MIGO_HOST_SERVICE_NAVIGATE, MIGO_HOST_SERVICE_PAYMENT,
-    MIGO_HOST_SERVICE_PERMISSION, MIGO_HOST_SERVICE_SCAN_CODE, MIGO_HOST_SERVICE_SCREEN,
-    MIGO_HOST_SERVICE_SHARE, MIGO_HOST_SERVICE_SUBPACKAGE,
+    MIGO_HOST_SERVICE_AD, MIGO_HOST_SERVICE_AUTH, MIGO_HOST_SERVICE_BLUETOOTH,
+    MIGO_HOST_SERVICE_CLIPBOARD, MIGO_HOST_SERVICE_IMAGE, MIGO_HOST_SERVICE_INTERACTION,
+    MIGO_HOST_SERVICE_LOCATION, MIGO_HOST_SERVICE_MOTION, MIGO_HOST_SERVICE_NAVIGATE,
+    MIGO_HOST_SERVICE_PAYMENT, MIGO_HOST_SERVICE_PERMISSION, MIGO_HOST_SERVICE_SCAN_CODE,
+    MIGO_HOST_SERVICE_SCREEN, MIGO_HOST_SERVICE_SHARE, MIGO_HOST_SERVICE_SUBPACKAGE,
 };
 use migo_core::services::{
-    AccelerometerService, AdService, AuthService, BatteryService, ClipboardService,
-    CommerceServices, CompassService, ConnectivityServices, DeviceMotionService, GameLogService,
-    GyroscopeService, ImageApiService, InteractionService, KeyboardService, LocationService,
-    MediaServices, NavigateService, NetworkService, PaymentService, PermissionService,
-    ScanCodeService, ScreenService, SensorServices, ShareService, SubpackageService,
-    SystemInfoService, SystemUtilServices, VibrationService,
+    AccelerometerService, AdService, AuthService, BatteryService, BluetoothService,
+    ClipboardService, CommerceServices, CompassService, ConnectivityServices, DeviceMotionService,
+    GameLogService, GyroscopeService, ImageApiService, InteractionService, KeyboardService,
+    LocationService, MediaServices, NavigateService, NetworkService, PaymentService,
+    PermissionService, ScanCodeService, ScreenService, SensorServices, ShareService,
+    SubpackageService, SystemInfoService, SystemUtilServices, VibrationService,
 };
 use migo_core::{DeviceServiceProvider, FrameClock, HostNotifier};
 use shared::protocol::error::ServiceError;
@@ -276,6 +276,11 @@ impl ConnectivityServices for CapiDeviceServices {
     fn location(&self) -> Option<Arc<dyn LocationService>> {
         self.host_service(MIGO_HOST_SERVICE_LOCATION)
             .map(|services| services as Arc<dyn LocationService>)
+    }
+
+    fn bluetooth(&self) -> Option<Arc<dyn BluetoothService>> {
+        self.host_service(MIGO_HOST_SERVICE_BLUETOOTH)
+            .map(|services| services as Arc<dyn BluetoothService>)
     }
 }
 

@@ -929,6 +929,14 @@ public final class NativeMethods {
         }
     }
 
+    // ==================== Bluetooth Callbacks ====================
+
+    public static void onBluetoothResult(int sessionId, int method, String resultJson) {
+        if (sessionId >= 0 && resultJson != null) {
+            NativeBridge.onBluetoothResult(sessionId, method, resultJson);
+        }
+    }
+
     // ==================== Image API Callbacks ====================
 
     public static void onSaveImageToPhotosAlbumResult(int sessionId, String resultJson) {

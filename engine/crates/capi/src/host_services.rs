@@ -28,8 +28,22 @@ use migo_capi_abi::{
         HostServiceOutcome, MIGO_AD_CREATE, MIGO_AD_DESTROY, MIGO_AD_EVENT_LIFECYCLE, MIGO_AD_HIDE,
         MIGO_AD_LOAD, MIGO_AD_SHOW, MIGO_AD_UPDATE_STYLE, MIGO_AUTH_CHECK_SESSION,
         MIGO_AUTH_GET_PHONE_NUMBER, MIGO_AUTH_GET_USER_INFO, MIGO_AUTH_LOGIN,
-        MIGO_CLIPBOARD_GET_CLIPBOARD_DATA, MIGO_CLIPBOARD_SET_CLIPBOARD_DATA, MIGO_HOST_SERVICE_AD,
-        MIGO_HOST_SERVICE_AUTH, MIGO_HOST_SERVICE_CLIPBOARD, MIGO_HOST_SERVICE_IMAGE,
+        MIGO_BLUETOOTH_CLOSE_ADAPTER, MIGO_BLUETOOTH_CLOSE_BLE_CONNECTION,
+        MIGO_BLUETOOTH_CREATE_BLE_CONNECTION, MIGO_BLUETOOTH_EVENT_ADAPTER_STATE_CHANGE,
+        MIGO_BLUETOOTH_EVENT_BEACON_SERVICE_CHANGE, MIGO_BLUETOOTH_EVENT_BEACON_UPDATE,
+        MIGO_BLUETOOTH_EVENT_BLE_CONNECTION_STATE_CHANGE, MIGO_BLUETOOTH_EVENT_BLE_MTU_CHANGE,
+        MIGO_BLUETOOTH_EVENT_DEVICE_FOUND, MIGO_BLUETOOTH_GET_ADAPTER_STATE,
+        MIGO_BLUETOOTH_GET_BEACONS, MIGO_BLUETOOTH_GET_BLE_DEVICE_CHARACTERISTICS,
+        MIGO_BLUETOOTH_GET_BLE_DEVICE_RSSI, MIGO_BLUETOOTH_GET_BLE_DEVICE_SERVICES,
+        MIGO_BLUETOOTH_GET_BLE_MTU, MIGO_BLUETOOTH_GET_CONNECTED_DEVICES,
+        MIGO_BLUETOOTH_GET_DEVICES, MIGO_BLUETOOTH_IS_DEVICE_PAIRED, MIGO_BLUETOOTH_MAKE_PAIR,
+        MIGO_BLUETOOTH_NOTIFY_BLE_CHARACTERISTIC_VALUE_CHANGE, MIGO_BLUETOOTH_OPEN_ADAPTER,
+        MIGO_BLUETOOTH_READ_BLE_CHARACTERISTIC_VALUE, MIGO_BLUETOOTH_SET_BLE_MTU,
+        MIGO_BLUETOOTH_START_BEACON_DISCOVERY, MIGO_BLUETOOTH_START_DEVICES_DISCOVERY,
+        MIGO_BLUETOOTH_STOP_BEACON_DISCOVERY, MIGO_BLUETOOTH_STOP_DEVICES_DISCOVERY,
+        MIGO_BLUETOOTH_WRITE_BLE_CHARACTERISTIC_VALUE, MIGO_CLIPBOARD_GET_CLIPBOARD_DATA,
+        MIGO_CLIPBOARD_SET_CLIPBOARD_DATA, MIGO_HOST_SERVICE_AD, MIGO_HOST_SERVICE_AUTH,
+        MIGO_HOST_SERVICE_BLUETOOTH, MIGO_HOST_SERVICE_CLIPBOARD, MIGO_HOST_SERVICE_IMAGE,
         MIGO_HOST_SERVICE_INTERACTION, MIGO_HOST_SERVICE_LOCATION, MIGO_HOST_SERVICE_MOTION,
         MIGO_HOST_SERVICE_NAVIGATE, MIGO_HOST_SERVICE_PAYMENT, MIGO_HOST_SERVICE_PERMISSION,
         MIGO_HOST_SERVICE_SCAN_CODE, MIGO_HOST_SERVICE_SCREEN, MIGO_HOST_SERVICE_SETTING,
@@ -58,15 +72,17 @@ use migo_capi_abi::{
     },
 };
 use migo_core::services::{
-    AccelerometerService, AdService, AuthService, ClipboardService, CompassService,
-    DeviceMotionService, GyroscopeService, ImageApiService, InteractionService, LocationService,
-    NavigateService, PaymentService, PermissionService, ScanCodeService, Scope, ScopeState,
-    ScreenService, ShareService, SubpackageService,
+    AccelerometerService, AdService, AuthService, BluetoothService, ClipboardService,
+    CompassService, DeviceMotionService, GyroscopeService, ImageApiService, InteractionService,
+    LocationService, NavigateService, PaymentService, PermissionService, ScanCodeService, Scope,
+    ScopeState, ScreenService, ShareService, SubpackageService,
 };
 use serde_json::{Map, Value};
 use shared::{
-    js_escape::hook_args_one, protocol::error::ServiceError, protocol::host_cmd::HostCommand,
-    services::host_files::HostFiles,
+    js_escape::hook_args_one,
+    protocol::error::ServiceError,
+    protocol::host_cmd::HostCommand,
+    services::{BLUETOOTH_RESULT_HOOKS, host_files::HostFiles},
 };
 
 use crate::{
@@ -402,6 +418,50 @@ const SET_VISUAL_EFFECT_ON_CAPTURE: Call = Call {
     delivery: Delivery::Verbatim,
 };
 
+/// A Bluetooth request: answered through the hook the one shared table names
+/// for its method, with failures coded in `errCode`.
+const fn bluetooth_call(method: u32) -> Call {
+    Call {
+        service: MIGO_HOST_SERVICE_BLUETOOTH,
+        method,
+        hook: BLUETOOTH_RESULT_HOOKS[method as usize],
+        error_code_field: Some("errCode"),
+        progress_hook: None,
+        delivery: Delivery::Verbatim,
+    }
+}
+
+const BLUETOOTH_OPEN_ADAPTER: Call = bluetooth_call(MIGO_BLUETOOTH_OPEN_ADAPTER);
+const BLUETOOTH_CLOSE_ADAPTER: Call = bluetooth_call(MIGO_BLUETOOTH_CLOSE_ADAPTER);
+const BLUETOOTH_GET_ADAPTER_STATE: Call = bluetooth_call(MIGO_BLUETOOTH_GET_ADAPTER_STATE);
+const BLUETOOTH_START_DEVICES_DISCOVERY: Call =
+    bluetooth_call(MIGO_BLUETOOTH_START_DEVICES_DISCOVERY);
+const BLUETOOTH_STOP_DEVICES_DISCOVERY: Call =
+    bluetooth_call(MIGO_BLUETOOTH_STOP_DEVICES_DISCOVERY);
+const BLUETOOTH_GET_DEVICES: Call = bluetooth_call(MIGO_BLUETOOTH_GET_DEVICES);
+const BLUETOOTH_GET_CONNECTED_DEVICES: Call = bluetooth_call(MIGO_BLUETOOTH_GET_CONNECTED_DEVICES);
+const BLUETOOTH_MAKE_PAIR: Call = bluetooth_call(MIGO_BLUETOOTH_MAKE_PAIR);
+const BLUETOOTH_IS_DEVICE_PAIRED: Call = bluetooth_call(MIGO_BLUETOOTH_IS_DEVICE_PAIRED);
+const BLUETOOTH_START_BEACON_DISCOVERY: Call =
+    bluetooth_call(MIGO_BLUETOOTH_START_BEACON_DISCOVERY);
+const BLUETOOTH_STOP_BEACON_DISCOVERY: Call = bluetooth_call(MIGO_BLUETOOTH_STOP_BEACON_DISCOVERY);
+const BLUETOOTH_GET_BEACONS: Call = bluetooth_call(MIGO_BLUETOOTH_GET_BEACONS);
+const BLUETOOTH_CREATE_BLE_CONNECTION: Call = bluetooth_call(MIGO_BLUETOOTH_CREATE_BLE_CONNECTION);
+const BLUETOOTH_CLOSE_BLE_CONNECTION: Call = bluetooth_call(MIGO_BLUETOOTH_CLOSE_BLE_CONNECTION);
+const BLUETOOTH_GET_BLE_DEVICE_SERVICES: Call =
+    bluetooth_call(MIGO_BLUETOOTH_GET_BLE_DEVICE_SERVICES);
+const BLUETOOTH_GET_BLE_DEVICE_CHARACTERISTICS: Call =
+    bluetooth_call(MIGO_BLUETOOTH_GET_BLE_DEVICE_CHARACTERISTICS);
+const BLUETOOTH_READ_BLE_CHARACTERISTIC_VALUE: Call =
+    bluetooth_call(MIGO_BLUETOOTH_READ_BLE_CHARACTERISTIC_VALUE);
+const BLUETOOTH_WRITE_BLE_CHARACTERISTIC_VALUE: Call =
+    bluetooth_call(MIGO_BLUETOOTH_WRITE_BLE_CHARACTERISTIC_VALUE);
+const BLUETOOTH_NOTIFY_BLE_CHARACTERISTIC_VALUE_CHANGE: Call =
+    bluetooth_call(MIGO_BLUETOOTH_NOTIFY_BLE_CHARACTERISTIC_VALUE_CHANGE);
+const BLUETOOTH_GET_BLE_DEVICE_RSSI: Call = bluetooth_call(MIGO_BLUETOOTH_GET_BLE_DEVICE_RSSI);
+const BLUETOOTH_SET_BLE_MTU: Call = bluetooth_call(MIGO_BLUETOOTH_SET_BLE_MTU);
+const BLUETOOTH_GET_BLE_MTU: Call = bluetooth_call(MIGO_BLUETOOTH_GET_BLE_MTU);
+
 const CALLS: &[&Call] = &[
     &REQUEST_MIDAS_PAYMENT,
     &REQUEST_MIDAS_PAYMENT_GAME_ITEM,
@@ -439,6 +499,28 @@ const CALLS: &[&Call] = &[
     &SET_DEVICE_ORIENTATION,
     &GET_SCREEN_RECORDING_STATE,
     &SET_VISUAL_EFFECT_ON_CAPTURE,
+    &BLUETOOTH_OPEN_ADAPTER,
+    &BLUETOOTH_CLOSE_ADAPTER,
+    &BLUETOOTH_GET_ADAPTER_STATE,
+    &BLUETOOTH_START_DEVICES_DISCOVERY,
+    &BLUETOOTH_STOP_DEVICES_DISCOVERY,
+    &BLUETOOTH_GET_DEVICES,
+    &BLUETOOTH_GET_CONNECTED_DEVICES,
+    &BLUETOOTH_MAKE_PAIR,
+    &BLUETOOTH_IS_DEVICE_PAIRED,
+    &BLUETOOTH_START_BEACON_DISCOVERY,
+    &BLUETOOTH_STOP_BEACON_DISCOVERY,
+    &BLUETOOTH_GET_BEACONS,
+    &BLUETOOTH_CREATE_BLE_CONNECTION,
+    &BLUETOOTH_CLOSE_BLE_CONNECTION,
+    &BLUETOOTH_GET_BLE_DEVICE_SERVICES,
+    &BLUETOOTH_GET_BLE_DEVICE_CHARACTERISTICS,
+    &BLUETOOTH_READ_BLE_CHARACTERISTIC_VALUE,
+    &BLUETOOTH_WRITE_BLE_CHARACTERISTIC_VALUE,
+    &BLUETOOTH_NOTIFY_BLE_CHARACTERISTIC_VALUE_CHANGE,
+    &BLUETOOTH_GET_BLE_DEVICE_RSSI,
+    &BLUETOOTH_SET_BLE_MTU,
+    &BLUETOOTH_GET_BLE_MTU,
 ];
 
 /// Fire-and-forget requests, as `(service, method)`. Listed so the contract test
@@ -501,6 +583,36 @@ const EVENTS: &[(u32, u32, &str)] = &[
         MIGO_HOST_SERVICE_SCREEN,
         MIGO_SCREEN_EVENT_RECORDING_STATE_CHANGE,
         "_internalOnScreenRecordingStateEvent",
+    ),
+    (
+        MIGO_HOST_SERVICE_BLUETOOTH,
+        MIGO_BLUETOOTH_EVENT_ADAPTER_STATE_CHANGE,
+        "_internalOnBluetoothAdapterStateEvent",
+    ),
+    (
+        MIGO_HOST_SERVICE_BLUETOOTH,
+        MIGO_BLUETOOTH_EVENT_DEVICE_FOUND,
+        "_internalOnBluetoothDeviceFoundEvent",
+    ),
+    (
+        MIGO_HOST_SERVICE_BLUETOOTH,
+        MIGO_BLUETOOTH_EVENT_BLE_CONNECTION_STATE_CHANGE,
+        "_internalOnBLEConnectionStateEvent",
+    ),
+    (
+        MIGO_HOST_SERVICE_BLUETOOTH,
+        MIGO_BLUETOOTH_EVENT_BLE_MTU_CHANGE,
+        "_internalOnBLEMTUEvent",
+    ),
+    (
+        MIGO_HOST_SERVICE_BLUETOOTH,
+        MIGO_BLUETOOTH_EVENT_BEACON_UPDATE,
+        "_internalOnBeaconUpdateEvent",
+    ),
+    (
+        MIGO_HOST_SERVICE_BLUETOOTH,
+        MIGO_BLUETOOTH_EVENT_BEACON_SERVICE_CHANGE,
+        "_internalOnBeaconServiceEvent",
     ),
 ];
 
@@ -836,6 +948,81 @@ impl ScreenService for CapiHostServices {
     }
     fn set_visual_effect_on_capture(&self, request_json: &str) -> Result<(), ServiceError> {
         self.call(&SET_VISUAL_EFFECT_ON_CAPTURE, request_json)
+    }
+}
+
+impl BluetoothService for CapiHostServices {
+    fn open_adapter(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&BLUETOOTH_OPEN_ADAPTER, request_json)
+    }
+    fn close_adapter(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&BLUETOOTH_CLOSE_ADAPTER, request_json)
+    }
+    fn get_adapter_state(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&BLUETOOTH_GET_ADAPTER_STATE, request_json)
+    }
+    fn start_devices_discovery(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&BLUETOOTH_START_DEVICES_DISCOVERY, request_json)
+    }
+    fn stop_devices_discovery(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&BLUETOOTH_STOP_DEVICES_DISCOVERY, request_json)
+    }
+    fn get_devices(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&BLUETOOTH_GET_DEVICES, request_json)
+    }
+    fn get_connected_devices(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&BLUETOOTH_GET_CONNECTED_DEVICES, request_json)
+    }
+    fn make_pair(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&BLUETOOTH_MAKE_PAIR, request_json)
+    }
+    fn is_device_paired(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&BLUETOOTH_IS_DEVICE_PAIRED, request_json)
+    }
+    fn start_beacon_discovery(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&BLUETOOTH_START_BEACON_DISCOVERY, request_json)
+    }
+    fn stop_beacon_discovery(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&BLUETOOTH_STOP_BEACON_DISCOVERY, request_json)
+    }
+    fn get_beacons(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&BLUETOOTH_GET_BEACONS, request_json)
+    }
+    fn create_ble_connection(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&BLUETOOTH_CREATE_BLE_CONNECTION, request_json)
+    }
+    fn close_ble_connection(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&BLUETOOTH_CLOSE_BLE_CONNECTION, request_json)
+    }
+    fn get_ble_device_services(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&BLUETOOTH_GET_BLE_DEVICE_SERVICES, request_json)
+    }
+    fn get_ble_device_characteristics(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&BLUETOOTH_GET_BLE_DEVICE_CHARACTERISTICS, request_json)
+    }
+    fn read_ble_characteristic_value(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&BLUETOOTH_READ_BLE_CHARACTERISTIC_VALUE, request_json)
+    }
+    fn write_ble_characteristic_value(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&BLUETOOTH_WRITE_BLE_CHARACTERISTIC_VALUE, request_json)
+    }
+    fn notify_ble_characteristic_value_change(
+        &self,
+        request_json: &str,
+    ) -> Result<(), ServiceError> {
+        self.call(
+            &BLUETOOTH_NOTIFY_BLE_CHARACTERISTIC_VALUE_CHANGE,
+            request_json,
+        )
+    }
+    fn get_ble_device_rssi(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&BLUETOOTH_GET_BLE_DEVICE_RSSI, request_json)
+    }
+    fn set_ble_mtu(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&BLUETOOTH_SET_BLE_MTU, request_json)
+    }
+    fn get_ble_mtu(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&BLUETOOTH_GET_BLE_MTU, request_json)
     }
 }
 
@@ -1176,6 +1363,7 @@ mod tests {
             "image" => MIGO_HOST_SERVICE_IMAGE,
             "motion" => MIGO_HOST_SERVICE_MOTION,
             "screen" => MIGO_HOST_SERVICE_SCREEN,
+            "bluetooth" => MIGO_HOST_SERVICE_BLUETOOTH,
             other => panic!("the contract names a service the ABI has no constant for: {other}"),
         }
     }
