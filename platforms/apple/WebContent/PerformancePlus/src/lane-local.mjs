@@ -378,6 +378,15 @@ export function op_update_available() {
   return false;
 }
 
+// ---- video decoding --------------------------------------------------------------
+//
+// No decoder is integrated on this profile: createVideoDecoder's start() fails
+// as not supported rather than waiting for frames (media/03_video_decoder.js).
+
+export function op_video_decoder_available() {
+  return false;
+}
+
 export function op_ecosystem_value(name) {
   stringOf(name, "name");
   return null;

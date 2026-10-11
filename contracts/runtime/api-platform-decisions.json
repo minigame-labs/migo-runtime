@@ -84,7 +84,6 @@
       "onWheel": "wheel"
   },
   "gaps": {
-    "createVideoDecoder": {"platforms": "*", "reason": "every method is a no-op; no decoder is integrated"},
     "onAudioInterruptionBegin": {"platforms": ["ohos"], "reason": "the OpenHarmony audio output does not report interruptions yet"},
     "onAudioInterruptionEnd": {"platforms": ["ohos"], "reason": "the OpenHarmony audio output does not report interruptions yet"}
   },

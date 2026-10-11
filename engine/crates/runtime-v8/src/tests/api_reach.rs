@@ -35,8 +35,8 @@ use shared::services::{
     KeyboardService, LocationService, MediaServices, NavigateService, NetworkService,
     PaymentService, PermissionService, RecorderService, ScanCodeService, Scope, ScopeState,
     ScreenService, SensorServices, ServiceError, ShareService, SubpackageService,
-    SystemInfoService, SystemUtilServices, UpdateService, VibrationService, VideoService,
-    WindowService,
+    SystemInfoService, SystemUtilServices, UpdateService, VibrationService, VideoDecoderService,
+    VideoFrameSource, VideoService, WindowService,
 };
 
 type Log = Arc<Mutex<Vec<String>>>;
@@ -76,6 +76,7 @@ probe_accessors!(MediaServices {
     camera: CameraService,
     image_api: ImageApiService,
     video: VideoService,
+    video_decoder: VideoDecoderService,
 });
 probe_accessors!(ConnectivityServices {
     network: NetworkService,
@@ -155,6 +156,12 @@ impl Probe {
 
 fn refused<T>() -> Result<T, ServiceError> {
     Err(ServiceError::not_supported("probe:fail not supported"))
+}
+
+impl VideoDecoderService for ProbeService {
+    fn open(&self, _source: &str) -> Result<Box<dyn VideoFrameSource>, ServiceError> {
+        refused()
+    }
 }
 
 impl VideoService for ProbeService {
@@ -304,6 +311,10 @@ const CALLS: &[(&str, &str)] = &[
     (
         "createInterstitialAd",
         "__probeCall('createInterstitialAd', [{ adUnitId: 'probe' }])",
+    ),
+    (
+        "createVideoDecoder",
+        "migo.createVideoDecoder().start({ source: '/tmp/probe.png' }).then(function () {}, function () {})",
     ),
     (
         "createPageManager",

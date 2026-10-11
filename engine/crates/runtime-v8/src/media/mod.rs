@@ -11,6 +11,8 @@ use shared::protocol::error::ServiceError;
 use shared::services::host_files::Step;
 use shared::services::{CameraService, ImageApiService, Scope, VideoService};
 
+pub(crate) mod video_decoder;
+
 use crate::file::host_paths::{Remote, export_paths};
 
 /// Look up the camera service and call `f` on it.
@@ -395,6 +397,12 @@ deno_core::extension!(
         op_video_exit_fullscreen,
         op_video_set_property,
         op_video_destroy,
+        video_decoder::op_video_decoder_available,
+        video_decoder::op_video_decoder_start,
+        video_decoder::op_video_decoder_take_frame,
+        video_decoder::op_video_decoder_seek,
+        video_decoder::op_video_decoder_stop,
+        video_decoder::op_video_decoder_remove,
     ],
     esm_entry_point = "ext:host_v8_media/99_global_scope.js",
     esm = [

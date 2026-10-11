@@ -259,7 +259,7 @@
       }
     },
     "host_v8_media": {
-      "reason": "Camera, video and photo-album surfaces are native UI and native permissions, outside the Performance+ profile.",
+      "reason": "Camera, video and photo-album surfaces are native UI and native permissions, outside the Performance+ profile; so is video decoding, which content is told this profile does not have.",
       "ops": {
         "op_camera_close_frame_change": "unsupported",
         "op_camera_create": "unsupported",
@@ -277,6 +277,12 @@
         "op_preview_media": "unsupported",
         "op_save_image_to_photos_album": "unsupported",
         "op_video_create": "unsupported",
+        "op_video_decoder_available": "local",
+        "op_video_decoder_remove": "unsupported",
+        "op_video_decoder_seek": "unsupported",
+        "op_video_decoder_start": "unsupported",
+        "op_video_decoder_stop": "unsupported",
+        "op_video_decoder_take_frame": "unsupported",
         "op_video_destroy": "unsupported",
         "op_video_exit_fullscreen": "unsupported",
         "op_video_pause": "unsupported",
