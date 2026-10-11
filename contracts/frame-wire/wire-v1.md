@@ -282,6 +282,17 @@ assigning the canvas's size costs and a context reset every frame would otherwis
 moves, no existing value changes meaning, and a stream that never writes it draws as before. Same version audit as
 above. Until this existed content had no way to ask for the specification's `reset()` at all.
 
+### Amendment, 2026-10-11: the engine's overlay
+
+`SET_OVERLAY` (578) joins the 2D block, and `OP2D_END` moves from 578 to 579: `H x:I y:I shown:U`, under the
+selection of the canvas it names. It presents that canvas above the content's frame with its top-left corner at window
+pixel (`x`, `y`) -- or, `shown` 0, stops presenting it; `shown` is 0 or 1 and the reader refuses anything else. The canvas
+is the engine's own: the native buttons content creates are drawn by the engine into a canvas content has no handle on,
+and the renderer composites it over the window at present time, after the content's pixels reach it and before the
+swap, so nothing that reads the content's canvas sees them. Destroying the canvas withdraws it as well. Additive, and
+safe under the same audit: a stream that never writes it draws as before. Until this existed the native buttons were
+hit-tested but invisible.
+
 ## Conventions
 
 - Little-endian. Every multi-byte field.

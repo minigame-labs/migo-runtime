@@ -2409,6 +2409,16 @@ pub enum Canvas2DCmd {
         dw: f32,
         dh: f32,
     },
+    /// The engine's own overlay -- the native buttons the content created: this
+    /// canvas, presented above the content's frame with its top-left corner at
+    /// window pixel (`x`, `y`), or, `shown` false, no longer. Never content's: the
+    /// engine draws its button layer into a canvas content has no handle on.
+    /// Destroying the canvas withdraws it as well.
+    SetOverlay {
+        x: i32,
+        y: i32,
+        shown: bool,
+    },
     /// `createPattern(canvas)`: a copy of this canvas's pixels as they are now, kept in the renderer's image store under
     /// `image_id` (allocated by the producer) until the producer destroys that id. A pattern names it like any image.
     CaptureImage {
@@ -2498,6 +2508,7 @@ impl Canvas2DCmd {
 
             Self::RegisterCanvas { .. }
             | Self::DestroyCanvas
+            | Self::SetOverlay { .. }
             | Self::CreateContext2D
             | Self::ResizeCanvas { .. }
             | Self::BeginPath

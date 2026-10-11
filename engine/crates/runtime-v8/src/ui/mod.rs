@@ -295,6 +295,7 @@ deno_core::extension!(
         "02_buttons.js",
         "03_page_manager.js",
         "04_window.js",
+        "05_button_layer.js",
         "99_global_scope.js",
     ]
 );

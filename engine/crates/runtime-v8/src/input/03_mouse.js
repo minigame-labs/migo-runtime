@@ -12,6 +12,16 @@
 import { createListenerGroup } from "ext:host_v8_base/02_async.js";
 import { pageTime } from "ext:host_v8_touch/00_input_clock.js";
 
+// The native buttons' claim on the mouse (ui/02_buttons.js): a press that began
+// on a shown button, and the pointer moving over one, are the button's, as they
+// would be a native view's, and content does not hear them.
+let _claimer = null;
+
+/** Install the one claimer (ui/02_buttons.js). */
+function _setMouseClaimer(claimer) {
+    _claimer = claimer;
+}
+
 const _mouseDown = createListenerGroup('onMouseDown');
 const _mouseMove = createListenerGroup('onMouseMove');
 const _mouseUp = createListenerGroup('onMouseUp');
@@ -28,6 +38,7 @@ function offMouseDown(listener) {
 }
 
 function _internalTriggerMouseDown(x, y, button, timeStamp) {
+    if (_claimer !== null && _claimer.active() && _claimer.down(x, y, button)) return;
     _mouseDown.trigger({ x: x, y: y, button: button, timeStamp: pageTime(timeStamp) });
 }
 
@@ -61,6 +72,9 @@ function _internalTriggerMouseMove(x, y, button, timeStamp) {
     const movementY = _lastMoveY === null ? 0 : y - _lastMoveY;
     _lastMoveX = x;
     _lastMoveY = y;
+    // Claimed after the position is kept, so the move content next hears is
+    // measured from where the pointer really was.
+    if (_claimer !== null && _claimer.active() && _claimer.move(x, y)) return;
     _mouseMove.trigger({
         x: x,
         y: y,
@@ -82,6 +96,7 @@ function offMouseUp(listener) {
 }
 
 function _internalTriggerMouseUp(x, y, button, timeStamp) {
+    if (_claimer !== null && _claimer.active() && _claimer.up(x, y, button)) return;
     _mouseUp.trigger({ x: x, y: y, button: button, timeStamp: pageTime(timeStamp) });
 }
 
@@ -121,4 +136,5 @@ export {
     onMouseMove, offMouseMove, _internalTriggerMouseMove,
     onMouseUp, offMouseUp, _internalTriggerMouseUp,
     onWheel, offWheel, _internalTriggerWheel,
+    _setMouseClaimer,
 };

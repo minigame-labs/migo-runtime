@@ -229,6 +229,13 @@ pub fn decode_record(opcode: u32, record: &[u32]) -> Option<Canvas2DCmd> {
             enabled: record[1] == 1,
         },
 
+        // The spec table made `shown` exactly 0 or 1; the corner is signed, as a canvas may sit partly off the window.
+        OP2D_SET_OVERLAY => Canvas2DCmd::SetOverlay {
+            x: record[1] as i32,
+            y: record[2] as i32,
+            shown: record[3] == 1,
+        },
+
         OP2D_SET_FILL_STYLE => Canvas2DCmd::SetFillStyle {
             color: color_of(record),
         },

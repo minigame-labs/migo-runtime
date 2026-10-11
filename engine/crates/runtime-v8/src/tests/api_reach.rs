@@ -195,9 +195,11 @@ impl FileService for ProbeService {
 }
 
 /// The engine's own plumbing, which any call may touch and none needs a host
-/// for: microtasks, timers, the clock, callback ids, the console.
+/// for: microtasks, timers, the clock and the frame clock, callback ids, the
+/// console.
 const PLUMBING: &[&str] = &[
     "op_alloc_host_callback_id",
+    "op_await_next_frame",
     "op_console",
     "op_immediate_has_ref_count",
     "op_now",

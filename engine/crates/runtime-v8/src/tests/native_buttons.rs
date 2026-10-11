@@ -155,6 +155,218 @@ fn a_touch_on_a_button_is_the_button_s_and_a_tap_does_what_the_button_does() {
     );
 }
 
+/// The mouse, from a desktop host: a press that begins on a button is the button's from down to up, the pointer over
+/// a button is the button's, and one click a host delivers as both a mouse press and a touch taps once -- the button
+/// taps when the last press on it lifts on it.
+#[test]
+fn a_mouse_press_on_a_button_is_the_button_s_and_one_click_taps_once() {
+    let host = Arc::new(FakeHost::default());
+    let mut runtime = boot(Some(host));
+    let checked = run_to_idle(
+        &mut runtime,
+        r#"
+        globalThis.__content = [];
+        globalThis.__taps = 0;
+        const bridge = globalThis[Symbol.for('Migo.hostBridge')];
+        migo.onMouseDown(function (e) { __content.push('down:' + e.x); });
+        migo.onMouseMove(function (e) { __content.push('move:' + e.x + ':' + e.movementX); });
+        migo.onMouseUp(function (e) { __content.push('up:' + e.x); });
+        migo.onTouchStart(function () { __content.push('touch'); });
+        const button = migo.createFeedbackButton({
+            type: 'text', text: 'feedback', style: { left: 10, top: 10, width: 100, height: 40 },
+        });
+        button.onTap(function () { __taps += 1; });
+        const settle = function () { return new Promise(function (resolve) { setTimeout(resolve, 0); }); };
+        (async function () {
+            bridge._internalTriggerMouseMove(200, 200, 0, 0);   // content's
+            bridge._internalTriggerMouseMove(20, 20, 0, 0);     // over the button: its
+            bridge._internalTriggerMouseDown(20, 20, 0, 0);
+            bridge._internalTriggerMouseUp(20, 20, 0, 0);       // a click: one tap
+            await settle();
+            // The same click as a mouse press and a touch, interleaved as a host
+            // that delivers both does: still one tap.
+            bridge._internalTriggerMouseDown(30, 20, 0, 0);
+            __touch(0, 1, 30, 20, 1);
+            __touch(2, 1, 30, 20, 3);
+            await settle();
+            bridge._internalTriggerMouseUp(30, 20, 0, 0);
+            await settle();
+            // Pressed on the button, released off it: no tap, and the release
+            // is still the button's.
+            bridge._internalTriggerMouseDown(20, 20, 0, 0);
+            bridge._internalTriggerMouseMove(300, 300, 0, 0);
+            bridge._internalTriggerMouseUp(300, 300, 0, 0);
+            await settle();
+            bridge._internalTriggerMouseMove(310, 300, 0, 0);   // content's again
+            bridge._internalTriggerMouseDown(310, 300, 0, 0);
+            bridge._internalTriggerMouseUp(310, 300, 0, 0);
+            await settle();
+        })();
+        "#,
+        "JSON.stringify([__content, __taps])",
+    );
+    assert_eq!(
+        checked,
+        r#"[["move:200:0","move:310:10","down:310","up:310"],2]"#
+    );
+}
+
+/// A window of 400 x 800 CSS pixels at two device pixels each.
+struct Window;
+
+impl shared::services::SystemInfoService for Window {
+    fn get_window_info_json(&self) -> Result<String, ServiceError> {
+        Ok(r#"{"pixel_ratio":2,"screen_width":400,"screen_height":800,"window_width":400,"window_height":800,
+               "status_bar_height":0,"screen_top":0,"safe_area":{"left":0,"top":0,"right":0,"bottom":0}}"#
+            .to_string())
+    }
+}
+
+struct Windowed;
+
+impl SensorServices for Windowed {}
+impl MediaServices for Windowed {}
+impl ConnectivityServices for Windowed {}
+impl CommerceServices for Windowed {}
+impl SystemUtilServices for Windowed {
+    fn system_info(&self) -> Option<Arc<dyn shared::services::SystemInfoService>> {
+        Some(Arc::new(Window))
+    }
+}
+
+/// The overlay records the engine sent, frame by frame: `(canvas, x, y, shown)`, and whether the canvas carrying them
+/// was also drawn on in that frame.
+fn overlays(
+    frames: &crossbeam_channel::Receiver<shared::protocol::render_cmd::RenderCommand>,
+) -> Vec<(u32, i32, i32, bool, bool)> {
+    use shared::protocol::{
+        frame_packet::FrameOp,
+        render_cmd::{Canvas2DCmd, RenderCommand},
+    };
+    let mut found = Vec::new();
+    // The renderer stub hands frames over from its own thread: wait for the
+    // step's frame, then take whatever follows it closely.
+    let mut wait = std::time::Duration::from_secs(5);
+    while let Ok(command) = frames.recv_timeout(wait) {
+        wait = std::time::Duration::from_millis(50);
+        let RenderCommand::FramePacket(packet) = command else {
+            continue;
+        };
+        packet.into_ops().consume(|ops| {
+            for op in ops.iter() {
+                let FrameOp::CanvasBatch(batch) = op else {
+                    continue;
+                };
+                let drawn = batch.commands.iter().any(|command| {
+                    matches!(command, Canvas2DCmd::FillText { .. } | Canvas2DCmd::Fill)
+                });
+                for command in batch.commands.iter() {
+                    if let Canvas2DCmd::SetOverlay { x, y, shown } = command {
+                        found.push((u32::from(batch.canvas_id), *x, *y, *shown, drawn));
+                    }
+                }
+            }
+        });
+    }
+    found
+}
+
+/// A shown button is drawn in the engine's next frame into a canvas of the engine's own, presented as the overlay at
+/// the buttons' box in window pixels; moving it moves the box, and hiding the last one withdraws the overlay. Content
+/// runs no loop of its own here: the change alone makes the frame.
+#[test]
+fn shown_buttons_are_presented_as_the_overlay_and_hidden_ones_withdrawn() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let (raf_tx, raf_rx) = shared::raf_signal::create_raf_pair();
+    let (render_tx, render_rx) = shared::render_command_sender::CommandSender::new();
+    // The render thread, as far as this needs one: it answers the canvas queries
+    // the JavaScript half waits on and hands every frame to the assertions.
+    let (frames_tx, frames) = crossbeam_channel::unbounded();
+    let renderer = std::thread::spawn(move || {
+        use shared::protocol::render_cmd::{CanvasCmd, RenderCommand};
+        while let Ok(command) = render_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            match command {
+                RenderCommand::Canvas(CanvasCmd::GetInfo { resp, .. }) => resp.ok((1, 1)),
+                RenderCommand::Canvas(CanvasCmd::DestroyCanvas { resp, .. }) => resp.ok(()),
+                frame @ RenderCommand::FramePacket(_) => {
+                    let _ = frames_tx.send(frame);
+                }
+                _ => {}
+            }
+        }
+    });
+    let mut state = super::support::test_host_state();
+    state.render_tx = render_tx;
+    state.raf_rx = Some(raf_rx);
+    state.device_services = Some(Arc::new(Windowed));
+    // A display ticking every millisecond, as the render thread signals every
+    // vsync while animating; each signal answers whoever is waiting.
+    let stop = Arc::new(AtomicBool::new(false));
+    let ticker = {
+        let stop = Arc::clone(&stop);
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                raf_tx.signal(shared::time_origin::elapsed_ms(), u64::MAX);
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        })
+    };
+    // One reactor for the whole test: a timer the engine arms in one step must
+    // still be able to fire in the next.
+    let reactor = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let _inside = reactor.enter();
+    let mut runtime = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
+        extensions: crate::main_extensions(state),
+        ..Default::default()
+    });
+    crate::harden_global_scope(&mut runtime);
+    let mut step = |runtime: &mut deno_core::JsRuntime, source: &'static str| {
+        runtime
+            .execute_script("<test:step>", deno_core::FastString::from_static(source))
+            .expect("test step");
+        reactor.block_on(async {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                runtime.run_event_loop(deno_core::PollEventLoopOptions::default()),
+            )
+            .await
+            .expect("the frame came")
+            .expect("event loop");
+        });
+    };
+
+    step(
+        &mut runtime,
+        r#"
+        globalThis.__button = migo.createUserInfoButton({
+            type: 'text', text: 'sign in',
+            style: { left: 10.5, top: 20, width: 100, height: 40, backgroundColor: '#ff0000', borderRadius: 4 },
+        });
+        "#,
+    );
+    let shown = overlays(&frames);
+    step(&mut runtime, "__button.style.left = 30;");
+    let moved = overlays(&frames);
+    step(&mut runtime, "__button.hide();");
+    let hidden = overlays(&frames);
+    stop.store(true, Ordering::Relaxed);
+    ticker.join().unwrap();
+    drop(runtime);
+    renderer.join().unwrap();
+
+    // floor(10.5 * 2), 20 * 2: the box's corner in window pixels, drawn in the same frame.
+    assert_eq!(shown.len(), 1, "{shown:?}");
+    let (canvas, x, y, presented, drawn) = shown[0];
+    assert_ne!(canvas, 1, "never the content's canvas");
+    assert_eq!((x, y, presented, drawn), (21, 40, true, true));
+    assert_eq!(moved, [(canvas, 60, 40, true, true)]);
+    assert_eq!(hidden, [(canvas, 0, 0, false, false)]);
+}
+
 #[test]
 fn the_user_info_button_hands_on_tap_the_host_s_answer() {
     let host = Arc::new(FakeHost::default());

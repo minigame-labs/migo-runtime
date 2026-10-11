@@ -1541,6 +1541,12 @@ const OP2D_CLIP_PATH = 576;
 // `reset()`: the bitmap transparent black and every piece of state at its default, without the surface being made
 // again -- which is what assigning the canvas's size costs, and a context reset every frame would pay every frame.
 const OP2D_RESET = 577;
+
+// --- The engine's overlay ---
+//
+// The native buttons are the engine's, drawn into a canvas content has no handle on and presented above the frame:
+// this record names that canvas and where it goes, in order with the draws that made it (encode2dSetOverlay below).
+const OP2D_SET_OVERLAY = 578;
 // The longest 2D record a buffer holds: all of it but the stream header and the canvas selection `begin2d` reserves.
 const MAX_STREAM_2D_RECORD_WORDS = BUFFER_WORDS - 2 - 2;
 
@@ -1820,6 +1826,18 @@ function encode2dSetImageSmoothing(canvasId, enabled) {
     cursor = base + 2;
 }
 
+// 578 SET_OVERLAY: H I I B (4 words). x and y are the canvas's top-left corner in window pixels, signed; `shown` is a
+// bool on the wire, narrowed here like the smoothing flag.
+function encode2dSetOverlay(canvasId, x, y, shown) {
+    const base = begin2d(canvasId, 4);
+    _u32[base] = packHeader(OP2D_SET_OVERLAY, 4);
+    // Two's complement in a u32 word: the reader takes it back `as i32`.
+    _u32[base + 1] = (x | 0) >>> 0;
+    _u32[base + 2] = (y | 0) >>> 0;
+    _u32[base + 3] = shown ? 1 : 0;
+    cursor = base + 4;
+}
+
 function encode2dSetFillStyle(canvasId, r, g, b, a) { _encode2dColor(OP2D_SET_FILL_STYLE, canvasId, r, g, b, a); }
 function encode2dSetStrokeStyle(canvasId, r, g, b, a) { _encode2dColor(OP2D_SET_STROKE_STYLE, canvasId, r, g, b, a); }
 function encode2dSetShadowColor(canvasId, r, g, b, a) { _encode2dColor(OP2D_SET_SHADOW_COLOR, canvasId, r, g, b, a); }
@@ -2046,6 +2064,7 @@ export {
     encode2dSetLineJoin,
     encode2dSetCompositeOperation,
     encode2dSetImageSmoothing,
+    encode2dSetOverlay,
     encode2dSetFillStyle,
     encode2dSetStrokeStyle,
     encode2dSetShadowColor,
