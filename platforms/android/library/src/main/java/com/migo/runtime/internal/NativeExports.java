@@ -20,6 +20,7 @@ import com.migo.runtime.internal.platform.PointerIcons;
 import com.migo.runtime.internal.platform.Vibrator;
 import com.migo.runtime.callback.AdEventSink;
 import com.migo.runtime.callback.AdHandler;
+import com.migo.runtime.callback.UpdateHandler;
 import com.migo.runtime.callback.AuthHandler;
 import com.migo.runtime.callback.GameLogHandler;
 import com.migo.runtime.callback.EcosystemHandler;
@@ -3205,10 +3206,56 @@ public final class NativeExports {
                 () -> clearNavigationHandler(sessionId),
                 () -> clearPaymentHandler(sessionId),
                 () -> clearEcosystem(sessionId),
+                () -> sUpdateHandlers.remove(sessionId),
                 () -> clearPermissionHandler(sessionId),
                 () -> sPermissionSinks.remove(sessionId),
                 () -> unregisterErrorCallback(sessionId),
                 () -> destroyAdpfManager(sessionId));
+    }
+
+    // ==================== Package updates ====================
+
+    private static final ConcurrentHashMap<Integer, UpdateHandler> sUpdateHandlers =
+            new ConcurrentHashMap<>();
+
+    /**
+     * Set or clear the update handler for a session.
+     *
+     * @hide Called by {@link com.migo.runtime.GameSession#setUpdateHandler(UpdateHandler)}.
+     */
+    public static void setUpdateHandler(int sessionId, UpdateHandler handler) {
+        if (handler == null) {
+            sUpdateHandlers.remove(sessionId);
+        } else {
+            sUpdateHandlers.put(sessionId, handler);
+        }
+    }
+
+    /**
+     * Whether the session's app installed an update handler -- and so checks.
+     * Called from native code via JNI.
+     */
+    public static boolean updateAvailable(int sessionId) {
+        return sUpdateHandlers.containsKey(sessionId) && !isSessionTerminated(sessionId);
+    }
+
+    /**
+     * Content asked to restart on the version the app reported ready. Called
+     * from native code via JNI; the handler runs on the main thread.
+     */
+    public static void applyUpdate(int sessionId) {
+        UpdateHandler handler = sUpdateHandlers.get(sessionId);
+        if (handler == null || isSessionTerminated(sessionId)) {
+            throw new UnsupportedOperationException("applyUpdate:fail not supported");
+        }
+        sMainHandler.post(() -> {
+            if (isSessionTerminated(sessionId)) return;
+            try {
+                handler.applyUpdate();
+            } catch (Exception thrown) {
+                android.util.Log.w(TAG, "applyUpdate: handler threw: " + thrown);
+            }
+        });
     }
 
     // ==================== Host <-> JS Message Channel ====================

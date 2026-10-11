@@ -55,6 +55,7 @@ typedef uint32_t MigoHostService;
 #define MIGO_HOST_SERVICE_BLUETOOTH 15U
 #define MIGO_HOST_SERVICE_WINDOW 16U
 #define MIGO_HOST_SERVICE_ECOSYSTEM 17U
+#define MIGO_HOST_SERVICE_UPDATE 18U
 
 /*
  * Ads. All six are commands addressed to the advert by the adId in their
@@ -399,6 +400,23 @@ typedef uint32_t MigoHostService;
 #define MIGO_ECOSYSTEM_CALL 0U
 #define MIGO_ECOSYSTEM_REPLY 1U
 #define MIGO_ECOSYSTEM_EVENT_EVENT 0U
+
+/*
+ * Updates of the content package, which are the host's from start to finish:
+ * it checks for a new version every time the game starts (a warm start
+ * included), downloads what it finds, and restarts the game on it when content
+ * asks. Each step is reported as EVENT_STATE -- {"event": "checkForUpdate",
+ * "hasUpdate": true|false} for every check, then {"event": "updateReady"} or
+ * {"event": "updateFailed"} for the download a positive check started -- and
+ * content's UpdateManager hears it, a listener registered after the step
+ * included. APPLY_UPDATE {} is content asking for the restart, which it does
+ * only after updateReady.
+ *
+ * A host that declares this service is one that checks: content waits for its
+ * report. One that does not has no update, and content is told so at once.
+ */
+#define MIGO_UPDATE_APPLY_UPDATE 0U
+#define MIGO_UPDATE_EVENT_STATE 0U
 
 /*
  * Content's permission scopes, in migo.getSetting()'s order. The host decides

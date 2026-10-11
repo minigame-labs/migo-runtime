@@ -8,5 +8,5 @@ const { ObjectDefineProperties } = primordials;
 ObjectDefineProperties(globalThis, {
     // Update
     getUpdateManager: core.propNonEnumerable(updateMgr.getUpdateManager),
-    checkUpdate: core.propNonEnumerable(updateMgr.checkUpdate),
+    _internalOnUpdateEvent: core.propNonEnumerable(updateMgr._internalOnUpdateEvent),
 });

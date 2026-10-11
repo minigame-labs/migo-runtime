@@ -942,6 +942,49 @@ public final class GameSession implements Closeable {
         }
     }
 
+    /**
+     * Set or clear the update handler for this session: the app's updates of the
+     * content package. With one, content waits for the app's reports; without,
+     * there is no update. Call this before {@link #startGame(String)}.
+     *
+     * @param handler the app's update handler, or null to clear
+     */
+    public void setUpdateHandler(com.migo.runtime.callback.UpdateHandler handler) {
+        synchronized (lock) {
+            if (state.get() == SessionState.DESTROYED) return;
+            NativeExports.setUpdateHandler(sessionId, handler);
+        }
+    }
+
+    /**
+     * Report the result of the app's check for a new version of the content --
+     * made every time the game starts, a warm start included. Any thread.
+     *
+     * @param hasUpdate whether a new version exists, which the app now downloads
+     */
+    public void reportUpdateCheck(boolean hasUpdate) {
+        reportUpdateEvent("{\"event\":\"checkForUpdate\",\"hasUpdate\":" + hasUpdate + "}");
+    }
+
+    /**
+     * Report that the new version is downloaded: content may now ask for the
+     * restart ({@link com.migo.runtime.callback.UpdateHandler#applyUpdate()}).
+     * Any thread.
+     */
+    public void reportUpdateReady() {
+        reportUpdateEvent("{\"event\":\"updateReady\"}");
+    }
+
+    /** Report that downloading the new version failed. Any thread. */
+    public void reportUpdateFailed() {
+        reportUpdateEvent("{\"event\":\"updateFailed\"}");
+    }
+
+    private void reportUpdateEvent(String json) {
+        if (state.get() == SessionState.DESTROYED) return;
+        com.migo.runtime.internal.NativeMethods.onUpdateEvent(sessionId, json);
+    }
+
     /** The state of the cover advert the app shows as the game launches. */
     public enum SplashAdStatus {
         /** Nothing is known yet -- the state before any report. */

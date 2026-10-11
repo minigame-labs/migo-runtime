@@ -421,6 +421,13 @@
         "op_show_toast": "unsupported"
       }
     },
+    "host_v8_update": {
+      "reason": "A package update is the host's, and this profile's host offers none: content is told there is no update, which the producer answers without crossing.",
+      "ops": {
+        "op_apply_update": "unsupported",
+        "op_update_available": "local"
+      }
+    },
     "host_v8_utility": {
       "reason": "Text encoding is a pure computation the producer performs.",
       "ops": {

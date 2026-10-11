@@ -12,7 +12,7 @@ use migo_capi_abi::host_services::{
     MIGO_HOST_SERVICE_INTERACTION, MIGO_HOST_SERVICE_LOCATION, MIGO_HOST_SERVICE_MOTION,
     MIGO_HOST_SERVICE_NAVIGATE, MIGO_HOST_SERVICE_PAYMENT, MIGO_HOST_SERVICE_PERMISSION,
     MIGO_HOST_SERVICE_SCAN_CODE, MIGO_HOST_SERVICE_SCREEN, MIGO_HOST_SERVICE_SHARE,
-    MIGO_HOST_SERVICE_SUBPACKAGE, MIGO_HOST_SERVICE_WINDOW,
+    MIGO_HOST_SERVICE_SUBPACKAGE, MIGO_HOST_SERVICE_UPDATE, MIGO_HOST_SERVICE_WINDOW,
 };
 use migo_core::services::{
     AccelerometerService, AdService, AuthService, BatteryService, BluetoothService,
@@ -21,7 +21,7 @@ use migo_core::services::{
     InteractionService, KeyboardService, LocationService, MediaServices, NavigateService,
     NetworkService, PaymentService, PermissionService, ScanCodeService, ScreenService,
     SensorServices, ShareService, SubpackageService, SystemInfoService, SystemUtilServices,
-    VibrationService, WindowService,
+    UpdateService, VibrationService, WindowService,
 };
 use migo_core::{DeviceServiceProvider, FrameClock, HostNotifier};
 use shared::protocol::error::ServiceError;
@@ -355,6 +355,11 @@ impl SystemUtilServices for CapiDeviceServices {
     fn ecosystem(&self) -> Option<Arc<dyn EcosystemService>> {
         self.host_service(MIGO_HOST_SERVICE_ECOSYSTEM)
             .map(|services| services as Arc<dyn EcosystemService>)
+    }
+
+    fn update(&self) -> Option<Arc<dyn UpdateService>> {
+        self.host_service(MIGO_HOST_SERVICE_UPDATE)
+            .map(|services| services as Arc<dyn UpdateService>)
     }
 
     fn window(&self) -> Option<Arc<dyn WindowService>> {

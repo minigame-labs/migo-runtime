@@ -15,6 +15,7 @@
   public T getOrThrow();
   public T getValue();
   public abstract java.io.File resolve(java.lang.String);
+  public abstract void applyUpdate();
   public abstract void call(com.migo.runtime.callback.EcosystemHandler$Request, com.migo.runtime.callback.EcosystemSink);
   public abstract void checkSession(com.migo.runtime.callback.AuthHandler$CheckSessionCallback);
   public abstract void download(com.migo.runtime.callback.SubpackageHandler$SubpackageRequest, com.migo.runtime.callback.SubpackageHandler$DownloadCallback);
@@ -406,6 +407,9 @@
   public void onTrimMemory(int);
   public void pause();
   public void reportSplashAdStatus(com.migo.runtime.GameSession$SplashAdStatus, int);
+  public void reportUpdateCheck(boolean);
+  public void reportUpdateFailed();
+  public void reportUpdateReady();
   public void requestDebugEnabled(boolean);
   public void requestVsyncFrame();
   public void restart();
@@ -429,6 +433,7 @@
   public void setSettingHandler(com.migo.runtime.callback.SettingHandler);
   public void setShareHandler(com.migo.runtime.callback.ShareHandler);
   public void setSubpackageHandler(com.migo.runtime.callback.SubpackageHandler);
+  public void setUpdateHandler(com.migo.runtime.callback.UpdateHandler);
   public void setUpdateInterval(int);
   public void startGame(java.lang.String);
   public void startMonitoring();
@@ -509,6 +514,8 @@ public interface com.migo.runtime.callback.ShareHandler {
 public interface com.migo.runtime.callback.ShareSink {
 public interface com.migo.runtime.callback.SubpackageHandler {
 public interface com.migo.runtime.callback.SubpackageHandler$DownloadCallback {
+public interface com.migo.runtime.callback.UpdateHandler {
+}
 }
 }
 }

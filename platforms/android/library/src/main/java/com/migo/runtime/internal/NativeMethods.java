@@ -1369,6 +1369,19 @@ public final class NativeMethods {
         }
     }
 
+    /**
+     * Post a step of the app's package update to content.
+     *
+     * @param sessionId The session ID
+     * @param eventJson {@code {"event":"checkForUpdate","hasUpdate"}},
+     *                  {@code {"event":"updateReady"}} or {@code {"event":"updateFailed"}}
+     */
+    public static void onUpdateEvent(int sessionId, String eventJson) {
+        if (sessionId >= 0 && eventJson != null) {
+            NativeBridge.onUpdateEvent(sessionId, eventJson);
+        }
+    }
+
     // ==================== Video Callbacks ====================
 
     /**

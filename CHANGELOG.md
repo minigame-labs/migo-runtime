@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Package updates are the host's: a new host service, `MIGO_HOST_SERVICE_UPDATE` (18), reports each step as
+  `MIGO_UPDATE_EVENT_STATE` -- `{"event":"checkForUpdate","hasUpdate"}` for the check the host makes on every start,
+  then `{"event":"updateReady"}` or `{"event":"updateFailed"}` -- and carries content's `applyUpdate` back as
+  `MIGO_UPDATE_APPLY_UPDATE`. Android: `GameSession.setUpdateHandler` (`UpdateHandler.applyUpdate`) with
+  `reportUpdateCheck`, `reportUpdateReady` and `reportUpdateFailed`. `getUpdateManager()` keeps each step, so a
+  listener registered after it still hears it, and asks for the restart only once the host said the version is
+  ready; a host that offers no updates has none, and content is told so at once.
 - `createPageManager` opens the host platform's pages: a manager's `load` and `show` (`openlink`, `query`, `extraData`)
   are requests to the host's ecosystem (`PageManager.load`, `PageManager.show`, `PageManager.destroy`), each carrying
   the manager's own `pageId`, and the page's events (`PageManager.on`, `{"pageId","eventName","data"}`) reach that
@@ -362,6 +369,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a relink, is INVALID_OPERATION and null, as are a deleted program and one that did not link.
 
 ### Removed
+- `migo.checkUpdate`, which no platform defines, and `UpdateManager`'s `hasUpdate` and `isReady` properties, which
+  the platform's manager does not have: what an update is doing is heard through the manager's events.
 - `onAddToFavorites` / `offAddToFavorites` leave the Slim profile with the rest of sharing; the internal hooks that
   read the share listeners and that nothing called are gone.
 - APIs no mini-game platform's content could rely on, because they answered without asking anyone: `addColorSign`,

@@ -1,105 +1,107 @@
-// @stub getUpdateManager reports that no update exists, because this runtime has
-//       no update channel to find one on. Every listener is real; onUpdateReady
-//       and onUpdateFailed simply never fire, and applyUpdate has nothing to
-//       apply.
+// getUpdateManager: the host's updates of the content package, as content's
+// UpdateManager hears them.
 //
-// It used to invent them. `Math.random() < 0.3` decided at construction whether
-// content was told an update was waiting; a random 2-5 s later, a second coin
-// flip fired onUpdateReady (90%) or onUpdateFailed (10%). So roughly a quarter
-// of launches showed the game's own "new version -- restart?" prompt, the player
-// accepted, applyUpdate() logged "Application restarted with new version", and
-// nothing restarted. Nondeterministically, which is the worst way for content to
-// meet a missing capability: it works in testing and fails in the field, in a
-// different place each time.
+// The host checks for a new version every time the game starts, warm starts
+// included, downloads what it finds and restarts the game on it when content
+// asks (shared::services::UpdateService). Each step it reports -- the check's
+// result, then ready or failed -- is kept here as well as delivered, so a
+// listener registered after the step still hears it: the host's launch check
+// may well answer before the game asks for its manager. A host that offers no
+// updates has none to report, and content is told "no update" at once.
 //
-// The truthful answer was already in this file. `checkUpdate()` below -- the
-// callback-style API for the same question -- has always answered
-// `hasUpdate: false`. Two entry points to one question disagreed, and the one
-// that fabricated was the one with no test and no @stub marker, so the prescreen
-// report told customers it was supported.
+// Nothing here decides that an update exists. The manager once did, by coin
+// flip, and a quarter of launches offered a restart into a version that was
+// not there (tests/update_manager.rs).
 
-import { createListenerGroup, failMessage } from "ext:host_v8_base/02_async.js";
+import { op_apply_update, op_update_available } from "ext:core/ops";
+import { createListenerGroup } from "ext:host_v8_base/02_async.js";
+
+// What the host last reported: the check's result, and what became of the
+// update it found.
+let _check = null;
+let _outcome = null;
+
+const _checkListeners = createListenerGroup('UpdateManager onCheckForUpdate');
+const _readyListeners = createListenerGroup('UpdateManager onUpdateReady');
+const _failedListeners = createListenerGroup('UpdateManager onUpdateFailed');
+
+function _hearLate(listener, data) {
+    queueMicrotask(function () {
+        try {
+            listener(data);
+        } catch (e) {
+            console.error('UpdateManager listener error:', e);
+        }
+    });
+}
 
 class UpdateManager {
-    constructor() {
-        this.checkForUpdateListeners = createListenerGroup('UpdateManager onCheckForUpdate');
-        this.updateReadyListeners = createListenerGroup('UpdateManager onUpdateReady');
-        this.updateFailedListeners = createListenerGroup('UpdateManager onUpdateFailed');
-        this.hasUpdate = false;
-        this.isReady = false;
-
-        // The real API reports the result of a launch-time check asynchronously,
-        // so the shape is kept: listeners registered during startup still hear
-        // an answer. The answer is the same one checkUpdate() gives.
-        setTimeout(() => {
-            this._reportNoUpdate();
-        }, 1000);
-    }
-    
     onCheckForUpdate(listener) {
-        this.checkForUpdateListeners.on(listener);
-    }
-    
-    onUpdateReady(listener) {
-        this.updateReadyListeners.on(listener);
-    }
-    
-    onUpdateFailed(listener) {
-        this.updateFailedListeners.on(listener);
-    }
-    
-    applyUpdate() {
-        // isReady can never become true, so this is the only branch. Saying so is
-        // the point: the previous version's other branch claimed a restart that
-        // never happened.
-        console.warn(
-            'UpdateManager.applyUpdate: no update is ready to apply. This build has ' +
-            'no update channel, so onUpdateReady never fires and there is nothing ' +
-            'to apply.'
-        );
+        if (typeof listener !== 'function') return;
+        _checkListeners.on(listener);
+        if (_check !== null) _hearLate(listener, { hasUpdate: _check.hasUpdate });
     }
 
-    _reportNoUpdate() {
-        this.hasUpdate = false;
-        this.checkForUpdateListeners.trigger({ hasUpdate: false });
+    onUpdateReady(listener) {
+        if (typeof listener !== 'function') return;
+        _readyListeners.on(listener);
+        if (_outcome === 'ready') _hearLate(listener, {});
+    }
+
+    onUpdateFailed(listener) {
+        if (typeof listener !== 'function') return;
+        _failedListeners.on(listener);
+        if (_outcome === 'failed') _hearLate(listener, {});
+    }
+
+    // Restarts the game on the downloaded version: asked of the host, and only
+    // once it said the version is ready.
+    applyUpdate() {
+        if (_outcome !== 'ready') {
+            console.warn('UpdateManager.applyUpdate: no update is ready; call it after onUpdateReady');
+            return;
+        }
+        try {
+            op_apply_update();
+        } catch (e) {
+            console.error('UpdateManager.applyUpdate: ' + e);
+        }
     }
 }
 
-let updateManagerInstance = null;
+let _manager = null;
 
 function getUpdateManager() {
-    if (!updateManagerInstance) {
-        updateManagerInstance = new UpdateManager();
+    if (_manager === null) {
+        _manager = new UpdateManager();
+        // No host to check: the answer is already known.
+        if (_check === null && !op_update_available()) _check = { hasUpdate: false };
     }
-    return updateManagerInstance;
+    return _manager;
 }
 
-function checkUpdate(options = {}) {
-    const { success, fail, complete } = options;
+// `{"event": "checkForUpdate", "hasUpdate"}`, `{"event": "updateReady"}` or
+// `{"event": "updateFailed"}`, from the host.
+function _internalOnUpdateEvent(eventJson) {
+    let event;
     try {
-        const result = {
-            hasUpdate: false,
-            errMsg: 'checkUpdate:ok',
-        };
-        if (typeof success === 'function') {
-            success(result);
-        }
-        if (typeof complete === 'function') {
-            complete(result);
-        }
-        return Promise.resolve(result);
-    } catch (error) {
-        const errorResult = {
-            errMsg: failMessage('checkUpdate', error),
-        };
-        if (typeof fail === 'function') {
-            fail(errorResult);
-        }
-        if (typeof complete === 'function') {
-            complete(errorResult);
-        }
-        return Promise.reject(errorResult);
+        event = JSON.parse(eventJson);
+    } catch (_) {
+        return;
+    }
+    if (event === null || typeof event !== 'object') return;
+    if (event.event === 'checkForUpdate' && typeof event.hasUpdate === 'boolean') {
+        // A new check -- every launch has one -- starts the story again.
+        _check = { hasUpdate: event.hasUpdate };
+        _outcome = null;
+        _checkListeners.trigger({ hasUpdate: event.hasUpdate });
+    } else if (event.event === 'updateReady') {
+        _outcome = 'ready';
+        _readyListeners.trigger({});
+    } else if (event.event === 'updateFailed') {
+        _outcome = 'failed';
+        _failedListeners.trigger({});
     }
 }
 
-export { getUpdateManager, UpdateManager, checkUpdate };
+export { getUpdateManager, UpdateManager, _internalOnUpdateEvent };

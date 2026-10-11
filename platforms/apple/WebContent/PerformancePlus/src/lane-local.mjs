@@ -369,6 +369,15 @@ export function op_ecosystem_available() {
   return false;
 }
 
+// ---- package updates -----------------------------------------------------------
+//
+// The host's to offer, and this profile carries no update channel: content's
+// UpdateManager hears "no update" at once (update/02_update_mgr.js).
+
+export function op_update_available() {
+  return false;
+}
+
 export function op_ecosystem_value(name) {
   stringOf(name, "name");
   return null;

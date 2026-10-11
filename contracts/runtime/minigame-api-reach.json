@@ -142,7 +142,7 @@
     "getSystemInfoSync": {"ops":["op_get_app_authorization_setting","op_get_app_info","op_get_device_info","op_get_system_settings","op_get_window_info"],"services":["system_info"]},
     "getSystemSetting": {"ops":["op_get_system_settings"],"services":["system_info"]},
     "getTextLineHeight": {"ops":["op_get_text_line_height"],"services":[]},
-    "getUpdateManager": {"ops":[],"services":[]},
+    "getUpdateManager": {"ops":["op_update_available"],"services":["update"]},
     "getUserCloudStorage": {"ops":["op_ecosystem_call"],"services":["ecosystem"]},
     "getUserCloudStorageKeys": {"ops":["op_ecosystem_call"],"services":["ecosystem"]},
     "getUserCryptoManager": {"ops":["op_ecosystem_call"],"services":["ecosystem"]},

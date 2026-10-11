@@ -173,6 +173,7 @@ const NATIVE_SYSTEM: &[JniMethod] = methods![
     ("onEcosystemEvent", "(ILjava/lang/String;)V"),
     ("onPointerLockChanged", "(IZ)V"),
     ("onWindowStateChanged", "(ILjava/lang/String;)V"),
+    ("onUpdateEvent", "(ILjava/lang/String;)V"),
 ];
 
 const JAVA_CORE: &[JniMethod] = methods![
@@ -358,6 +359,8 @@ const JAVA_SYSTEM: &[JniMethod] = methods![
     ("ecosystemAvailable", "(I)Z"),
     ("ecosystemCall", "(ILjava/lang/String;)V"),
     ("ecosystemReply", "(ILjava/lang/String;)V"),
+    ("updateAvailable", "(I)Z"),
+    ("applyUpdate", "(I)V"),
     ("ecosystemValue", "(ILjava/lang/String;)Ljava/lang/String;"),
 ];
 
@@ -487,8 +490,9 @@ mod tests {
         // every profile takes input), and its window +2 native
         // (`onPointerLockChanged`, `onWindowStateChanged`). A physical keyboard and
         // gamepads add +3 native, Core (`onKeyEvent`, `onGamepadConnection`,
-        // `onGamepadState`).
-        assert_eq!(native.len(), 86, "full NativeBridge surface changed");
+        // `onGamepadState`). The host's package updates add +1 native, System
+        // (`onUpdateEvent`).
+        assert_eq!(native.len(), 87, "full NativeBridge surface changed");
         // Runtime-generation fencing adds +2 Java (`beginRuntimeRestart`,
         // `completeRuntimeRestart`), both Core: every profile restarts.
         // Concurrent-session correctness removes -1 Java (`getCacheDirPath`,
@@ -506,8 +510,9 @@ mod tests {
         // device's window adds +3 Java (`setCursor`, `requestPointerLock`,
         // `exitPointerLock`). A gamepad's motors add +1 Java, Core
         // (`gamepadRumble`). What the app says about itself and its content adds
-        // +1 Java (`getHostAppInfoJson`).
-        assert_eq!(java.len(), 145, "full NativeExports surface changed");
+        // +1 Java (`getHostAppInfoJson`). The host's package updates add +2
+        // Java, System (`updateAvailable`, `applyUpdate`).
+        assert_eq!(java.len(), 147, "full NativeExports surface changed");
         assert_unique(&native);
         assert_unique(&java);
     }

@@ -236,6 +236,8 @@ final class NativeBridge {
 
     static native void onEcosystemEvent(int sessionId, String eventJson);
 
+    static native void onUpdateEvent(int sessionId, String eventJson);
+
     // ==================== Device Sensor Callbacks ====================
 
     /**

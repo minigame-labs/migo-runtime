@@ -45,6 +45,7 @@ pub const MIGO_HOST_SERVICE_SCREEN: u32 = 14;
 pub const MIGO_HOST_SERVICE_BLUETOOTH: u32 = 15;
 pub const MIGO_HOST_SERVICE_WINDOW: u32 = 16;
 pub const MIGO_HOST_SERVICE_ECOSYSTEM: u32 = 17;
+pub const MIGO_HOST_SERVICE_UPDATE: u32 = 18;
 
 /// Every service this library knows. A host declaring a bit outside it was
 /// built against a newer header than the library it runs with.
@@ -65,7 +66,8 @@ pub const MIGO_HOST_SERVICES_KNOWN: u64 = (1 << MIGO_HOST_SERVICE_AD)
     | (1 << MIGO_HOST_SERVICE_SCREEN)
     | (1 << MIGO_HOST_SERVICE_BLUETOOTH)
     | (1 << MIGO_HOST_SERVICE_WINDOW)
-    | (1 << MIGO_HOST_SERVICE_ECOSYSTEM);
+    | (1 << MIGO_HOST_SERVICE_ECOSYSTEM)
+    | (1 << MIGO_HOST_SERVICE_UPDATE);
 
 // ---- Methods, numbered per service. ----
 
@@ -187,6 +189,9 @@ pub const MIGO_WINDOW_EVENT_POINTER_LOCK_CHANGE: u32 = 1;
 pub const MIGO_ECOSYSTEM_CALL: u32 = 0;
 pub const MIGO_ECOSYSTEM_REPLY: u32 = 1;
 pub const MIGO_ECOSYSTEM_EVENT_EVENT: u32 = 0;
+
+pub const MIGO_UPDATE_APPLY_UPDATE: u32 = 0;
+pub const MIGO_UPDATE_EVENT_STATE: u32 = 0;
 
 // ---- Events, numbered per service. ----
 

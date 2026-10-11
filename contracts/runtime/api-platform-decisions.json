@@ -15,8 +15,9 @@
       "gaps: the engine answers, but the answer is invented or a stub, or the host has no way to supply the real",
       "  one. Missing on the platforms named until fixed; each is a work item.",
       "unsupported: deliberately not offered on the platforms named, for the reason given; content feature-detects.",
-      "host_owned: needs that are the host app's by nature -- its ad, payment, account and social integrations, the",
-      "  consent it gives -- so a platform that offers them as a host interface is complete without a default.",
+      "host_owned: needs that are the host app's by nature -- its ad, payment, account and social integrations, its",
+      "  updates of the content package, the consent it gives -- so a platform that offers them as a host interface is",
+      "  complete without a default.",
       "",
       "Platforms: android, ios, macos, linux, windows, ohos; \"*\" is all of them."
   ],
@@ -84,7 +85,6 @@
   },
   "gaps": {
     "createVideoDecoder": {"platforms": "*", "reason": "every method is a no-op; no decoder is integrated"},
-    "getUpdateManager": {"platforms": "*", "reason": "always reports no update; a package update is the host's, with no host interface"},
     "navigateBackMiniProgram": {"platforms": ["android"], "reason": "the Java SDK's NavigationHandler has no way back to the mini program that opened this one"},
     "onAudioInterruptionBegin": {"platforms": ["ohos"], "reason": "the OpenHarmony audio output does not report interruptions yet"},
     "onAudioInterruptionEnd": {"platforms": ["ohos"], "reason": "the OpenHarmony audio output does not report interruptions yet"},
@@ -104,5 +104,5 @@
     "vibrateLong": {"platforms": ["macos", "linux", "windows"], "reason": "a desktop has no motor in the device the player holds, and the platform documents vibration for phones; a gamepad's motors are its vibrationActuator"},
     "vibrateShort": {"platforms": ["macos", "linux", "windows"], "reason": "a desktop has no motor in the device the player holds, and the platform documents vibration for phones; a gamepad's motors are its vibrationActuator"}
   },
-  "host_owned": ["ad", "auth", "ecosystem", "game_log", "navigate", "payment", "permission", "setting", "share", "subpackage"]
+  "host_owned": ["ad", "auth", "ecosystem", "game_log", "navigate", "payment", "permission", "setting", "share", "subpackage", "update"]
 }
