@@ -121,6 +121,10 @@ let configuration = MigoGameView.Configuration(
     directories: try .standard(), contentSigning: .unsigned, hostServices: AppServices())
 ```
 
+The SDK answers the services the system already offers the app itself, for every
+one the app does not name -- so far the pasteboard (`setClipboardData` /
+`getClipboardData`). Name a service to answer it your way, or to refuse it.
+
 A call is answered once, now or later (`reply.succeed(...)`, or `reply.fail("cancel")`
 for a player who dismissed it); a reply the app drops unanswered fails the call
 rather than leaving the game waiting. A service's events -- an advert's

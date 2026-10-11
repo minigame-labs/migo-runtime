@@ -230,7 +230,8 @@ public final class MigoEngineSession {
     ///
     /// `hostServices` is what the app supplies of the host-service channel --
     /// the services it names are declared to the engine here, the only time the
-    /// ABI takes them; `nil` supplies none.
+    /// ABI takes them -- beside the SDK's own (`MigoBuiltInHostServices`), which
+    /// answer every service with a system counterpart that the app does not name.
     public init(
         directories: Directories, contentSigning: ContentSigning, preferredFramesPerSecond: Int? = nil,
         hostServices: MigoHostServiceProvider? = nil
@@ -303,7 +304,9 @@ public final class MigoEngineSession {
         self.relayHandle = Unmanaged.passRetained(relay)
         relay.clock = clock
         relay.owner = self
-        relay.hostServices = hostServices
+        // The app's services, and the SDK's own for every service it does not name.
+        let composed = MigoComposedHostServices(app: hostServices)
+        relay.hostServices = composed
 
         var callbacks = MigoHostCallbacks()
         callbacks.struct_size = UInt32(MemoryLayout<MigoHostCallbacks>.size)
@@ -326,8 +329,8 @@ public final class MigoEngineSession {
         #endif
         callbacks.on_keep_screen_on = migoOnKeepScreenOn
         callbacks.on_game_log = migoOnGameLog
-        // The channel, with the services the app answers; none, and no channel.
-        let supplied = hostServices?.services.reduce(UInt64(0)) { $0 | $1.bit } ?? 0
+        // The channel, with the services the app and the SDK answer.
+        let supplied = composed.services.reduce(UInt64(0)) { $0 | $1.bit }
         if supplied != 0 {
             callbacks.on_host_service_call = migoOnHostServiceCall
             callbacks.host_services = supplied

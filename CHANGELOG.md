@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Apple: the Swift SDK answers the host services the system already offers itself, for every service the app does not
+  name -- first the pasteboard (`setClipboardData` / `getClipboardData`). The session declares the app's services and
+  the SDK's; a service the app names is the app's. The API x platform matrix counts a service the Swift SDK answers
+  itself (`MigoBuiltInHostServices`) as provided on Apple.
 - Apple: the host-service channel in the Swift SDK. `MigoGameView.Configuration.hostServices` takes a
   `MigoHostServiceProvider` that names the services the app supplies and answers each `MigoHostServiceRequest` through
   its `MigoHostServiceReply` -- once, now or later; a reply dropped unanswered fails the call -- and

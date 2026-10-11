@@ -236,7 +236,10 @@ def _swift_platforms(condition: str) -> set[str]:
 
 def lane_facts(root: pathlib.Path) -> dict[str, dict[str, set[str]]]:
     """platform -> {"callbacks", "reports", "entries", "services"} its host layer wires."""
-    facts = {platform: {"callbacks": set(), "reports": set(), "entries": set(), "services": set()} for platform in PLATFORMS}
+    facts = {
+        platform: {"callbacks": set(), "reports": set(), "entries": set(), "services": set(), "builtin": set()}
+        for platform in PLATFORMS
+    }
 
     def scan(platform_lines, files):
         for path in files:
@@ -251,6 +254,10 @@ def lane_facts(root: pathlib.Path) -> dict[str, dict[str, set[str]]]:
                     facts[platform]["entries"] |= set(re.findall(r"\b(migo_session_\w+)\s*\(", line))
                     if re.search(r"\bhost_services\s*=", line):
                         facts[platform]["services"].add("*")
+                    # A service the host layer answers itself when the app does not
+                    # (the Swift SDK's MigoBuiltInHostServices): `builtIn.insert(.name)`.
+                    for name in re.findall(r"\bbuiltIn\.insert\(\.(\w+)\)", line.split("//", 1)[0]):
+                        facts[platform]["builtin"].add(re.sub(r"(?<!^)([A-Z])", r"_\1", name).lower())
 
     apple = found("Apple host layer sources", sorted((root / APPLE_LAYER).glob("*.swift")))
     scan(["ios", "macos"], apple)
@@ -426,6 +433,8 @@ def need_status(need: str, platform: str, lanes, entries, android) -> str:
             return "default"
         return "host" if platform in ("linux", "windows") else "missing"
     if kind == "channel":
+        if lane is not None and detail.split(".")[0] in lane["builtin"]:
+            return "default"
         if lane is not None and "*" in lane["services"]:
             return "host"
         return "host" if platform in ("linux", "windows") else "missing"
