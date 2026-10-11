@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `MigoGamepadRumble` -- magnitudes and a duration, replacing what the pad plays. Android drives a pad's vibrators
   (`VibratorManager` from Android 12, strong and weak motors on their own channels) and stops them when the session
   ends.
+- The API x platform matrix, `contracts/runtime/api-platform-matrix.json`: every API of the common mini-game platform
+  (382, `contracts/runtime/minigame-api.json`) on Android, iOS, macOS, Linux, Windows and OpenHarmony, as engine,
+  default (the platform's host layer provides it), host (a host interface with no default yet), missing or
+  unsupported, with what each API needs from a host. Generated, not written: the runtime calls every API and records
+  the ops it dispatches and the host services it asks for (`minigame-api-reach.json`), each platform's host layer is
+  read for what it installs and feeds, and only what cannot be measured is decided, with a reason
+  (`api-platform-decisions.json`). `scripts/test-api-platform-matrix-contract.sh` regenerates it and fails on any
+  difference.
 - Android keyboards and gamepads. A physical keyboard's keys reach `onKeyDown` / `onKeyUp` as DOM `key` / `code` with
   modifiers and `repeat` (system keys stay Android's), and gamepads appear in `getGamepads()` on the standard mapping
   with `onGamepadConnected` / `onGamepadDisconnected` -- sticks past the device's dead zone, analogue triggers, a hat
