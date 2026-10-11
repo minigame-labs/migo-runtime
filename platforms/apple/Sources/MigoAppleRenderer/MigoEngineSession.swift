@@ -506,6 +506,15 @@ public final class MigoEngineSession {
         if result != MIGO_OK { NSLog("MigoEngineSession: migo_session_set_host_app_info returned \(result)") }
     }
 
+    /// The operating system warned about memory: the engine releases a share
+    /// of its caches for the level, then tells content (`onMemoryWarning`).
+    /// See `MigoDeviceStatusReporter`.
+    public func postMemoryWarning(_ level: MigoMemoryWarningLevel) {
+        guard !isClosed else { return }
+        let result = migo_session_post_memory_warning(session, level)
+        if result != MIGO_OK { NSLog("MigoEngineSession: migo_session_post_memory_warning returned \(result)") }
+    }
+
     // MARK: - input
 
     /// One touch event, points in CSS pixels. Returns the engine's answer;

@@ -29,6 +29,11 @@ function settle(api, options) {
   });
 }
 
+// The host posts a memory warning as soon as the game is loaded; registered as
+// the module runs, so it is listening by then.
+const memoryWarnings = [];
+migo.onMemoryWarning(function (res) { memoryWarnings.push(res.level); });
+
 async function run() {
   // A success's fields reach content as the host wrote them.
   const login = await settle("login", { timeout: 5000 });
@@ -311,6 +316,7 @@ async function run() {
     base.fontSizeScaleFactor === 1.25 && base.fontSizeSetting === 20 && base.enableDebug === true &&
     /^[0-9]+\.[0-9]+\.[0-9]+$/.test(base.SDKVersion) && /^[0-9]+\.[0-9]+\.[0-9]+/.test(base.version) &&
     !("theme" in base), "getAppBaseInfo", base);
+  expect(memoryWarnings.length === 1 && memoryWarnings[0] === 15, "onMemoryWarning", memoryWarnings);
   const account = migo.getAccountInfoSync();
   expect(account.miniProgram.appId === "headless-host-services-probe" &&
     account.miniProgram.envVersion === "release" && account.miniProgram.version === "1.4.2" &&

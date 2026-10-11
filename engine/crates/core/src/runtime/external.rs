@@ -3377,6 +3377,19 @@ fn handle_command(
             sink.host_hook("_internalTriggerUserCaptureScreen", HOOK_ARGS_NONE);
         }
 
+        // The release the embedded host makes -- the native caches are this
+        // process's on either execution -- and then content is told, by the
+        // hook the embedded runtime calls with the same argument.
+        HostCommand::OnMemoryWarning { level } => {
+            let trim = migo_io::image_cache::TrimLevel::from_android(level);
+            let freed = migo_io::image_cache::global_cache().trim(trim);
+            let _ = render
+                .sender()
+                .dispatch(shared::protocol::render_cmd::RenderCommand::TrimTextCache { level });
+            debug!("[Host {id}] memory warning {level}: image cache freed {freed}B");
+            sink.host_hook("_internalTriggerMemoryWarning", &format!("[{level}]"));
+        }
+
         // Sent only while content listens (the host kit's rule), and to the
         // hook the embedded runtime calls with the same two arguments.
         HostCommand::OnNetworkStatusChange {

@@ -693,6 +693,29 @@ migo_session_set_focus(MigoSession *session, uint8_t focused);
 - `MIGO_ERROR_INVALID_ARGUMENT` — `session` 为 NULL；`focused` 不为 `0` 或 `1`
 - `MIGO_ERROR_INVALID_STATE` — Session 已销毁
 
+## migo_session_post_memory_warning
+
+```c
+typedef int32_t MigoMemoryWarningLevel;
+#define MIGO_MEMORY_WARNING_MODERATE 5
+#define MIGO_MEMORY_WARNING_LOW 10
+#define MIGO_MEMORY_WARNING_CRITICAL 15
+
+MIGO_API MigoResult MIGO_CALL
+migo_session_post_memory_warning(MigoSession *session, MigoMemoryWarningLevel level);
+```
+
+操作系统向 App 发出内存告警时调用（任意线程）。级别是平台 `onMemoryWarning` 报告的三档（即 Android `onTrimMemory`
+的运行期取值），各平台把自己的信号映射过来：iOS 的内存警告为 `CRITICAL`，macOS 内存压力 warning 为 `LOW`、critical 为
+`CRITICAL`。引擎先按级别释放一部分缓存（解码后的图片、文字纹理），再通知内容（`onMemoryWarning`，`{level}`）。没有内容在
+运行时告警无人可告，直接丢弃。Apple 宿主由 `MigoDeviceStatusReporter` 自动上报。
+
+返回：
+
+- `MIGO_OK` — 已投递（或无内容在运行而丢弃）
+- `MIGO_ERROR_INVALID_ARGUMENT` — 级别不是本头文件定义的三档之一
+- `MIGO_ERROR_INVALID_STATE` — Session 已销毁
+
 ## migo_session_set_network_status
 
 ```c

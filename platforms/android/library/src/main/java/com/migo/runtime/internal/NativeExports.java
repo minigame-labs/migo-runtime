@@ -2954,8 +2954,8 @@ public final class NativeExports {
      * Open the customer service conversation.
      * Delegates to the session's {@link NavigationHandler}.
      *
-     * <p>Alone among its siblings this has no result channel to settle on: the engine
-     * defines none for it, and content's call resolves off this method's return across JNI
+     * <p>Like {@link #navigateBackMiniProgram} below, this has no result channel to settle on:
+     * the engine defines none for it, and content's call resolves off this method's return across JNI
      * rather than off a later callback. So a refusal is reported by throwing, which is what
      * the engine's void call converts into the {@code fail} content sees -- and why a host
      * that cannot open the conversation must return {@code false} rather than throw its own
@@ -2980,6 +2980,30 @@ public final class NativeExports {
         if (!opened) {
             throw new UnsupportedOperationException(
                     "openCustomerServiceConversation:fail not supported");
+        }
+    }
+
+    /**
+     * Return to the mini program that opened this one. Delegates to the
+     * session's {@link NavigationHandler}, and answers by its return value as
+     * {@link #openCustomerServiceConversation} does, for the same reason.
+     *
+     * @param sessionId   The session ID
+     * @param optionsJson JSON with extraData
+     */
+    public static void navigateBackMiniProgram(int sessionId, String optionsJson) {
+        NavigationHandler handler = sNavigationHandlers.get(sessionId);
+        boolean returned = false;
+        if (handler != null && !isSessionTerminated(sessionId)) {
+            try {
+                returned = handler.navigateBackMiniProgram(
+                        HostDelegation.extraData(HostDelegation.options(optionsJson)));
+            } catch (Exception thrown) {
+                android.util.Log.w(TAG, "navigateBackMiniProgram: handler threw: " + thrown);
+            }
+        }
+        if (!returned) {
+            throw new UnsupportedOperationException("navigateBackMiniProgram:fail not supported");
         }
     }
 

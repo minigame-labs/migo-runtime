@@ -8,8 +8,9 @@ import Network
 
 /// Tells one engine session what the device's network and battery are, and what
 /// the app says about itself (`getAppBaseInfo`: its bundle identifier, the
-/// language its interface is in, its text scale), now and at every change, for
-/// as long as the session runs.
+/// language its interface is in, its text scale), now and at every change, and
+/// passes on the system's memory warnings (`onMemoryWarning`), for as long as
+/// the session runs.
 ///
 /// The engine answers content's `getNetworkType` and `getBatteryInfo` from the
 /// last report and forwards a network change while content listens, so the host
@@ -28,6 +29,11 @@ public final class MigoDeviceStatusReporter {
     /// thread (see `start()`), which a main-queue handler could never deliver.
     private let monitorQueue = DispatchQueue(label: "dev.migo.device-status")
     private var observers: [NSObjectProtocol] = []
+    #if os(macOS)
+        /// The system's memory-pressure notifications, which a Mac has instead
+        /// of an app memory warning.
+        private var memoryPressure: DispatchSourceMemoryPressure?
+    #endif
     #if os(iOS)
         /// The app's own setting, put back on `stop()`: battery monitoring is
         /// process-wide, and turning it on for a game is not turning it on for
@@ -87,11 +93,29 @@ public final class MigoDeviceStatusReporter {
         }
         if let path { report(path) }
         reportHostApp()
+        #if os(macOS)
+            let pressure = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .main)
+            pressure.setEventHandler { [weak self, weak pressure] in
+                guard let self, self.running, let event = pressure?.data else { return }
+                let level = event.contains(.critical) ? MIGO_MEMORY_WARNING_CRITICAL : MIGO_MEMORY_WARNING_LOW
+                self.session?.postMemoryWarning(MigoMemoryWarningLevel(level))
+            }
+            pressure.resume()
+            memoryPressure = pressure
+        #endif
         #if os(iOS)
             observers.append(
                 NotificationCenter.default.addObserver(
                     forName: UIContentSizeCategory.didChangeNotification, object: nil, queue: .main
                 ) { [weak self] _ in self?.reportHostApp() })
+            // An app memory warning is the system about to end the process.
+            observers.append(
+                NotificationCenter.default.addObserver(
+                    forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main
+                ) { [weak self] _ in
+                    guard let self, self.running else { return }
+                    self.session?.postMemoryWarning(MigoMemoryWarningLevel(MIGO_MEMORY_WARNING_CRITICAL))
+                })
             let device = UIDevice.current
             batteryMonitoringWasEnabled = device.isBatteryMonitoringEnabled
             device.isBatteryMonitoringEnabled = true
@@ -112,6 +136,10 @@ public final class MigoDeviceStatusReporter {
     public func stop() {
         guard running else { return }
         running = false
+        #if os(macOS)
+            memoryPressure?.cancel()
+            memoryPressure = nil
+        #endif
         monitor.cancel()
         observers.forEach(NotificationCenter.default.removeObserver)
         observers = []

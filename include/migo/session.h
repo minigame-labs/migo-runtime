@@ -613,6 +613,28 @@ MIGO_API MigoResult MIGO_CALL
 migo_session_set_focus(MigoSession *session, uint8_t focused);
 
 /*
+ * How hard the operating system is pressing on memory: the three levels the
+ * common platform's onMemoryWarning reports (Android's onTrimMemory values,
+ * which every platform maps its own signal onto -- an iOS memory warning is
+ * CRITICAL, a macOS memory-pressure warning LOW and its critical CRITICAL).
+ */
+typedef int32_t MigoMemoryWarningLevel;
+#define MIGO_MEMORY_WARNING_MODERATE 5
+#define MIGO_MEMORY_WARNING_LOW 10
+#define MIGO_MEMORY_WARNING_CRITICAL 15
+
+/*
+ * Report that the operating system warned the app about memory, from any
+ * thread, as it warns. The engine releases a share of its caches for the level
+ * first -- decoded images, text textures -- and then tells content
+ * (onMemoryWarning, {level}). A warning while no content runs reaches nobody
+ * and is dropped. Returns MIGO_ERROR_INVALID_ARGUMENT for a level this header
+ * does not define.
+ */
+MIGO_API MigoResult MIGO_CALL
+migo_session_post_memory_warning(MigoSession *session, MigoMemoryWarningLevel level);
+
+/*
  * The device's network, as content's getNetworkType and onNetworkStatusChange
  * describe it. A host reports the network the device is on now and again each
  * time it changes; Migo keeps the last report and tells content about a change

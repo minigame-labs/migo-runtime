@@ -68,7 +68,7 @@ INPUT = {
     "key": ("migo_session_send_key_event", "onKeyEvent"),
     "gamepad": ("migo_session_set_gamepad_connected", "onGamepadConnection"),
     "visibility": ("migo_session_set_visibility", "onShow"),
-    "memory": (None, "onMemoryWarning"),
+    "memory": ("migo_session_post_memory_warning", "onMemoryWarning"),
 }
 
 # A service the Java SDK leaves to the host app: its handler interface. Every

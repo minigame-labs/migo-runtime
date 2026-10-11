@@ -1663,6 +1663,7 @@ jni_void!(apply_update, "applyUpdate");
 // ==================== Navigate ====================
 
 jni_void_json!(navigate_to_mini_program, "navigateToMiniProgram");
+jni_void_json!(navigate_back_mini_program, "navigateBackMiniProgram");
 jni_void_json!(
     open_customer_service_conversation,
     "openCustomerServiceConversation"
