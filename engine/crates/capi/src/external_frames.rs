@@ -2047,15 +2047,73 @@ pub unsafe extern "C" fn migo_session_copy_content_root(
         let Some(text) = root.to_str() else {
             return MIGO_ERROR_INTERNAL;
         };
-        *out_length = text.len();
-        if capacity < text.len() + 1 {
+        // SAFETY: forwarded from this function's contract; checked above.
+        unsafe { copy_text(text, buffer, capacity, out_length) }
+    })
+}
+
+/// Copy what `getAppBaseInfo`, `getAccountInfoSync` and `getDeviceBenchmarkInfo`
+/// answer, as the JSON the engine's JavaScript reads from its op.
+///
+/// # Safety
+/// `session` must be a live session handle. `buffer` must be writable for
+/// `capacity` bytes, or null when `capacity` is zero. `out_length` must be
+/// writable.
+#[cfg(feature = "external-frames")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn migo_session_copy_app_info(
+    session: *mut MigoSession,
+    buffer: *mut std::ffi::c_char,
+    capacity: usize,
+    out_length: *mut usize,
+) -> MigoResult {
+    guard("migo_session_copy_app_info", || {
+        let Some(out_length) = (unsafe { out_length.as_mut() }) else {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        };
+        *out_length = 0;
+        if buffer.is_null() && capacity != 0 {
             return MIGO_ERROR_INVALID_ARGUMENT;
         }
-        // SAFETY: non-null and at least `text.len() + 1` bytes, checked above.
-        unsafe {
-            std::ptr::copy_nonoverlapping(text.as_ptr(), buffer.cast::<u8>(), text.len());
-            buffer.add(text.len()).write(0);
-        }
-        MIGO_OK
+        let session = match unsafe { pin_session(session) } {
+            Ok(session) => session,
+            Err(error) => return error,
+        };
+        // The content's id is part of the answer, so there is none before it.
+        let Some(info) = session.host_reports.app_info() else {
+            return MIGO_ERROR_INVALID_STATE;
+        };
+        let Ok(json) = serde_json::to_string(&info) else {
+            return MIGO_ERROR_INTERNAL;
+        };
+        // SAFETY: forwarded from this function's contract; checked above.
+        unsafe { copy_text(&json, buffer, capacity, out_length) }
     })
+}
+
+/// Write `text` and a NUL into `buffer`, setting `out_length` to its length
+/// without the NUL; `MIGO_ERROR_INVALID_ARGUMENT` when it does not fit, so the
+/// caller can retry with the length it was told.
+///
+/// # Safety
+/// `buffer` must be writable for `capacity` bytes, or null when `capacity` is
+/// zero.
+#[cfg(feature = "external-frames")]
+unsafe fn copy_text(
+    text: &str,
+    buffer: *mut std::ffi::c_char,
+    capacity: usize,
+    out_length: &mut usize,
+) -> MigoResult {
+    *out_length = text.len();
+    if capacity < text.len() + 1 {
+        return MIGO_ERROR_INVALID_ARGUMENT;
+    }
+    // SAFETY: non-null (a zero capacity returned above) and at least
+    // `text.len() + 1` bytes, checked above.
+    unsafe {
+        std::ptr::copy_nonoverlapping(text.as_ptr(), buffer.cast::<u8>(), text.len());
+        buffer.add(text.len()).write(0);
+    }
+    MIGO_OK
 }

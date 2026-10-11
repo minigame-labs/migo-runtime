@@ -262,6 +262,9 @@ public typealias MigoContentSigning = MigoEngineSession.ContentSigning
             try engine.attach(layer: metalView.metalLayer, size: size)
             try engine.loadContent(id: id, entry: entry)
             let root = try Self.contentRoot(of: engine.session)
+            // After the reporter's first report and the load: the answer is the
+            // host's report and the content's descriptor, composed.
+            let appInfo = try Self.appInfo(of: engine.session)
 
             let insets = window.safeAreaInsets
             let device = MigoPerformancePlusHost.DeviceProfile(
@@ -274,7 +277,7 @@ public typealias MigoContentSigning = MigoEngineSession.ContentSigning
                     left: Double(insets.left), top: Double(insets.top), right: Double(insets.right),
                     bottom: Double(insets.bottom)),
                 brand: "Apple", model: Self.hardwareModel(),
-                system: "iOS \(UIDevice.current.systemVersion)", platform: "ios")
+                system: "iOS \(UIDevice.current.systemVersion)", platform: "ios", appInfo: appInfo)
             let host = try MigoPerformancePlusHost(
                 configuration: .init(
                     contentRoot: root, gameEntry: "/" + entry,
@@ -574,6 +577,17 @@ public typealias MigoContentSigning = MigoEngineSession.ContentSigning
                 throw MigoEngineSession.Failure.call("migo_session_copy_content_root", copied)
             }
             return URL(fileURLWithPath: String(cString: buffer), isDirectory: true)
+        }
+
+        private static func appInfo(of session: OpaquePointer) throws -> String {
+            var length = 0
+            _ = migo_session_copy_app_info(session, nil, 0, &length)
+            var buffer = [CChar](repeating: 0, count: length + 1)
+            let copied = migo_session_copy_app_info(session, &buffer, buffer.count, &length)
+            guard copied == MIGO_OK else {
+                throw MigoEngineSession.Failure.call("migo_session_copy_app_info", copied)
+            }
+            return String(cString: buffer)
         }
 
         /// `iPhone14,2`, not `iPhone`: games key quality settings on it.

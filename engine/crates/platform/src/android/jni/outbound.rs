@@ -373,6 +373,23 @@ pub fn get_device_info_json() -> Result<String, String> {
     )
 }
 
+/// What the app says about itself and the content the session runs (`HostAppInfo.toJson`).
+pub fn get_host_app_info_json(host_id: i32) -> Result<String, String> {
+    call_static_method(
+        "getHostAppInfoJson",
+        ReturnType::Object,
+        |env, result| {
+            let jstring = result.l().map_err(|_| "Null string from Java")?;
+            let json_str = env
+                .get_string(&jni::objects::JString::from(jstring))
+                .map_err(|e| format!("Failed to convert host app info JSON string: {}", e))?
+                .into();
+            Ok(json_str)
+        },
+        &[jvalue { i: host_id }],
+    )
+}
+
 pub fn get_app_authorization_setting_json(host_id: i32) -> Result<String, String> {
     call_static_method(
         "getAppAuthorizationSettingJson",

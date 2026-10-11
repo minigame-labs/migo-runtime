@@ -102,6 +102,12 @@ _Static_assert(offsetof(MigoAppAuthorizeSetting, album) == 8, "authorizations fo
 _Static_assert(offsetof(MigoAppAuthorizeSetting, location_reduced_accuracy) == 18,
                "reduced accuracy follows the ten authorizations");
 _Static_assert(MIGO_SCOPE_GAME_CLUB_DATA == 14U, "fifteen scopes, in getSetting order");
+MIGO_CHECK_PREFIX(MigoHostAppInfo);
+_Static_assert(offsetof(MigoHostAppInfo, app_id_utf8) == 8, "the host's id follows the header");
+MIGO_CHECK_PREFIX(MigoContentDescriptor);
+_Static_assert(offsetof(MigoContentDescriptor, environment) == 12,
+               "the environment is where reserved0 was");
+_Static_assert(MIGO_CONTENT_ENVIRONMENT_RELEASE == 0U, "a zeroed descriptor is a release");
 
 _Static_assert(offsetof(MigoSurfaceDescriptor, generation) == 8,
                "generation is naturally aligned");
@@ -148,6 +154,11 @@ _Static_assert(offsetof(MigoHostServiceResult, payload_json_utf8) == 32,
                "LP64 host-service result payload offset");
 _Static_assert(offsetof(MigoHostServiceResult, payload_length) == 40,
                "LP64 host-service result payload length offset");
+_Static_assert(sizeof(MigoHostAppInfo) == 40, "LP64 host app report layout");
+_Static_assert(offsetof(MigoHostAppInfo, font_scale) == 24, "LP64 host app report scalars");
+_Static_assert(sizeof(MigoContentDescriptor) == 40, "LP64 content descriptor layout");
+_Static_assert(offsetof(MigoContentDescriptor, version_utf8) == 32,
+               "the version is the append-only tail");
 #elif UINTPTR_MAX == UINT32_MAX
 /*
  * How a uint64_t member is aligned inside a struct, measured rather than asked
@@ -173,6 +184,11 @@ _Static_assert(sizeof(MigoSurfaceDescriptor) == (MIGO_U64_MEMBER_ALIGN == 8 ? 72
  * rounded up to the uint64_t member alignment. */
 _Static_assert(sizeof(MigoHostCallbacks) == (MIGO_U64_MEMBER_ALIGN == 8 ? 88 : 84),
                "ILP32 callback layout follows the target uint64_t member alignment");
+_Static_assert(sizeof(MigoHostAppInfo) == 32, "ILP32 host app report layout");
+_Static_assert(offsetof(MigoHostAppInfo, font_scale) == 16, "ILP32 host app report scalars");
+_Static_assert(sizeof(MigoContentDescriptor) == 28, "ILP32 content descriptor layout");
+_Static_assert(offsetof(MigoContentDescriptor, version_utf8) == 24,
+               "the version is the append-only tail");
 _Static_assert(offsetof(MigoHostCallbacks, on_surface_released) == 52,
                "ILP32 release wakeup offset");
 _Static_assert(offsetof(MigoHostCallbacks, on_game_log) == 64,
@@ -269,6 +285,8 @@ int migo_core_c_contract(void) {
         &migo_session_set_system_settings;
     MigoResult(MIGO_CALL *app_authorize_fn)(MigoSession *, const MigoAppAuthorizeSetting *) =
         &migo_session_set_app_authorize_setting;
+    MigoResult(MIGO_CALL *host_app_info_fn)(MigoSession *, const MigoHostAppInfo *) =
+        &migo_session_set_host_app_info;
 
     return (int)(engine_config.struct_size + session_config.struct_size +
                  surface.struct_size + callbacks.struct_size +
@@ -285,5 +303,6 @@ int migo_core_c_contract(void) {
                  (host_service_call != NULL) + (callbacks.host_services != 0) +
                  (gamepad_rumble != NULL) +
                  (update_call_fn != NULL) + (scope_fn != NULL) +
-                 (system_settings_fn != NULL) + (app_authorize_fn != NULL));
+                 (system_settings_fn != NULL) + (app_authorize_fn != NULL) +
+                 (host_app_info_fn != NULL));
 }

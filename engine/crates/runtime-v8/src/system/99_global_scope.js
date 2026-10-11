@@ -5,7 +5,6 @@ import * as authorize from 'ext:host_v8_system/02_authorize.js';
 import * as windowInfo from 'ext:host_v8_system/03_window_info.js';
 import * as systemSetting from 'ext:host_v8_system/04_system_settings.js';
 import * as deviceInfo from 'ext:host_v8_system/05_device_info.js';
-import * as benchmarkLevel from 'ext:host_v8_system/06_benchmark_level.js';
 import * as appInfo from 'ext:host_v8_system/07_app_info.js';
 import * as authorizeSetting from 'ext:host_v8_system/08_authorize_setting.js';
 import * as gameLog from 'ext:host_v8_system/09_game_log.js';
@@ -145,12 +144,11 @@ ObjectDefineProperties(globalThis, {
     getDeviceInfo: core.propNonEnumerable(deviceInfo.getDeviceInfo),
 
     // Benchmark Level
-    getDeviceBenchmarkInfo: core.propNonEnumerable(benchmarkLevel.getDeviceBenchmarkInfo),
+    getDeviceBenchmarkInfo: core.propNonEnumerable(appInfo.getDeviceBenchmarkInfo),
 
     // App Info
     getAppBaseInfo: core.propNonEnumerable(appInfo.getAppBaseInfo),
     getAccountInfoSync: core.propNonEnumerable(appInfo.getAccountInfoSync),
-    _internalSetAppId: core.propNonEnumerable(appInfo._internalSetAppId),
 
     // Authorize Setting
     getAppAuthorizeSetting: core.propNonEnumerable(authorizeSetting.getAppAuthorizeSetting),

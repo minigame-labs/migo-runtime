@@ -72,6 +72,8 @@ MIGO_CHECK_CXX_RECORD(MigoAppAuthorizeSetting);
 MIGO_CHECK_CXX_RECORD(MigoGamepadRumble);
 static_assert(sizeof(MigoGamepadRumble) == 32, "one rumble layout on every target");
 static_assert(sizeof(MigoAppAuthorizeSetting) == 20, "app authorization report layout");
+MIGO_CHECK_CXX_RECORD(MigoHostAppInfo);
+MIGO_CHECK_CXX_RECORD(MigoContentDescriptor);
 
 #if UINTPTR_MAX == UINT64_MAX
 static_assert(sizeof(MigoHostCallbacks) == 152, "LP64/LLP64 callback layout");
@@ -85,6 +87,8 @@ static_assert(offsetof(MigoHostCallbacks, on_gamepad_rumble) == 144,
               "the gamepad motors are the append-only tail");
 static_assert(sizeof(MigoHostServiceCall) == 40, "LP64/LLP64 host-service call layout");
 static_assert(sizeof(MigoHostServiceResult) == 48, "LP64/LLP64 host-service result layout");
+static_assert(sizeof(MigoHostAppInfo) == 40, "LP64/LLP64 host app report layout");
+static_assert(sizeof(MigoContentDescriptor) == 40, "LP64/LLP64 content descriptor layout");
 #elif UINTPTR_MAX == UINT32_MAX
 // host_services at 72, then on_gamepad_rumble at 80: the record ends at 84,
 // rounded up to the uint64_t member alignment (8 on ARM and Windows, 4 on i386).

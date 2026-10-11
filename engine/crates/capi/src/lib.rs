@@ -726,6 +726,12 @@ pub unsafe extern "C" fn migo_session_load_content(
         if state.content_loaded {
             return MIGO_ERROR_INVALID_STATE;
         }
+        // What the descriptor says about the content, kept once it is loaded.
+        let loaded = settings::LoadedContent::new(
+            content.content_id.clone(),
+            content.environment,
+            content.version.clone(),
+        );
 
         // The external execution mounts content here, synchronously: its entry
         // module is evaluated by WebKit in another process, and that process's
@@ -746,6 +752,7 @@ pub unsafe extern "C" fn migo_session_load_content(
                         content.entry
                     );
                     state.content_loaded = true;
+                    session.host_reports.record_content(loaded);
                     MIGO_OK
                 }
                 Err(error) => {
@@ -769,6 +776,7 @@ pub unsafe extern "C" fn migo_session_load_content(
         ) {
             Ok(()) => {
                 state.content_loaded = true;
+                session.host_reports.record_content(loaded);
                 MIGO_OK
             }
             Err(error) => {
@@ -1538,9 +1546,10 @@ mod tests {
                     abi_version: MIGO_ABI_VERSION_CURRENT,
                 },
                 flags: 0,
-                reserved0: 0,
+                environment: 0,
                 content_id_utf8: content_id.as_ptr(),
                 entry_utf8: entry.as_ptr(),
+                version_utf8: std::ptr::null(),
             };
             assert_eq!(
                 unsafe { migo_session_load_content(session, &content) },

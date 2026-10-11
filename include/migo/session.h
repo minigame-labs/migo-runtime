@@ -115,10 +115,31 @@ typedef uint32_t MigoContentFlags;
 #define MIGO_CONTENT_FLAG_NONE 0U
 
 /*
+ * Which build of the content a descriptor names -- what
+ * getAccountInfoSync().miniProgram.envVersion reports. Zero is the release, so
+ * a zeroed descriptor describes released content.
+ */
+typedef uint32_t MigoContentEnvironment;
+#define MIGO_CONTENT_ENVIRONMENT_RELEASE 0U
+#define MIGO_CONTENT_ENVIRONMENT_TRIAL 1U   /* a pre-release build for testers */
+#define MIGO_CONTENT_ENVIRONMENT_DEVELOP 2U /* a development build */
+
+/* The longest version_utf8 a descriptor may carry, in bytes. */
+#define MIGO_CONTENT_VERSION_MAX_BYTES 64U
+
+/*
  * Names content the host has already installed under the engine's files
  * directory, in the same layout the platform SDKs install into
- * (<files_dir>/migo/games/<content_id>/code/<entry>). Both strings are
+ * (<files_dir>/migo/games/<content_id>/code/<entry>). Every string is
  * NUL-terminated UTF-8, borrowed for the duration of the call.
+ *
+ * content_id is the content's one identity: the directory it is installed in,
+ * and the appId getAccountInfoSync() reports. version_utf8 is its released
+ * version (getAccountInfoSync().miniProgram.version), NULL or empty for none;
+ * a build that is not a release reports none whatever is passed, as the common
+ * platform does. Both environment (formerly reserved0, which had to be zero)
+ * and version_utf8 (appended) are zero for a host built before them, which
+ * describes a release with no version.
  *
  * Loading from an arbitrary host-chosen directory is deliberately not in v1:
  * it would make the engine's content resolution part of the frozen ABI. A
@@ -129,10 +150,21 @@ typedef struct MigoContentDescriptor {
     uint32_t struct_size;
     uint32_t abi_version;
     MigoContentFlags flags;
-    uint32_t reserved0;
+    MigoContentEnvironment environment;
     const char *content_id_utf8;
     const char *entry_utf8;
+    const char *version_utf8;
 } MigoContentDescriptor;
+
+MIGO_STATIC_ASSERT(offsetof(MigoContentDescriptor, struct_size) == 0,
+                   "every versioned struct must begin with struct_size");
+MIGO_STATIC_ASSERT(offsetof(MigoContentDescriptor, environment) == 12,
+                   "MigoContentDescriptor.environment moved");
+#if MIGO_LP64
+MIGO_STATIC_ASSERT(sizeof(MigoContentDescriptor) == 40, "MigoContentDescriptor LP64 size changed");
+MIGO_STATIC_ASSERT(offsetof(MigoContentDescriptor, version_utf8) == 32,
+                   "MigoContentDescriptor.version_utf8 moved");
+#endif
 
 typedef uint32_t MigoLifecycleState;
 #define MIGO_LIFECYCLE_CREATED 0U
@@ -534,6 +566,10 @@ MIGO_API MigoResult MIGO_CALL migo_session_create(
  * user, cache and temp directories -- before it returns, and refuses content
  * that was never installed with MIGO_ERROR_INTERNAL. The code directory is then
  * available from migo_session_copy_content_root (external_frames.h).
+ *
+ * Returns MIGO_ERROR_INVALID_ARGUMENT for a descriptor with flags set, an
+ * environment this header does not define, or a version longer than
+ * MIGO_CONTENT_VERSION_MAX_BYTES.
  */
 MIGO_API MigoResult MIGO_CALL migo_session_load_content(
     MigoSession *session,

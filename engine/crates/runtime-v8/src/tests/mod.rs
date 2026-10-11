@@ -53,6 +53,8 @@ mod support;
 mod timers;
 mod two_session_identity;
 // `getUpdateManager` ships with host_v8_update, which api-system gates.
+#[cfg(feature = "api-connectivity")]
+mod app_info;
 mod deferred_api;
 mod ecosystem;
 #[cfg(feature = "api-system")]

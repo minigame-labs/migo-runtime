@@ -1,5 +1,6 @@
 import { op_get_window_info, op_get_device_info, op_get_system_settings, op_get_app_authorization_setting } from "ext:core/ops";
 import { promisify } from "ext:host_v8_base/02_async.js";
+import { appInfo } from "ext:host_v8_system/07_app_info.js";
 
 function authToBool(val) {
     if (typeof val === 'boolean') return val;
@@ -23,13 +24,8 @@ function getSystemInfoSync() {
         windowWidth: 0,
         windowHeight: 0,
         statusBarHeight: 0,
-        language: 'zh_CN',
-        version: '1.0.0',
         system: '',
         platform: 'android',
-        fontSizeSetting: 16,
-        SDKVersion: '4.0.0',
-        benchmarkLevel: -1,
         albumAuthorized: false,
         cameraAuthorized: false,
         locationAuthorized: false,
@@ -44,11 +40,20 @@ function getSystemInfoSync() {
         wifiEnabled: false,
         safeArea: { left: 0, right: 0, top: 0, bottom: 0, width: 0, height: 0 },
         locationReducedAccuracy: false,
-        host: { appId: 'com.minigame.host' },
-        enableDebug: false,
         deviceOrientation: 'portrait',
         errMsg: 'getSystemInfo:ok'
     };
+
+    // The same facts getAppBaseInfo and getDeviceBenchmarkInfo answer with, from
+    // the same place, so no two APIs disagree about them.
+    var app = appInfo();
+    result.language = app.language;
+    result.version = app.version;
+    result.SDKVersion = app.SDKVersion;
+    result.fontSizeSetting = app.fontSizeSetting;
+    result.benchmarkLevel = app.benchmarkLevel;
+    result.host = app.hostAppId === null ? {} : { appId: app.hostAppId };
+    result.enableDebug = app.enableDebug;
 
     try {
         var deviceJson = op_get_device_info();
@@ -57,7 +62,6 @@ function getSystemInfoSync() {
         result.model = device.model || 'unknown';
         result.system = device.system || '';
         result.platform = device.platform || 'android';
-        result.benchmarkLevel = device.benchmarkLevel !== undefined ? device.benchmarkLevel : -1;
     } catch (e) { /* use defaults */ }
 
     try {

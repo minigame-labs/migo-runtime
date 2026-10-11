@@ -4,6 +4,8 @@ use migo_capi_abi::{
     MIGO_ABI_VERSION_CURRENT, MIGO_ERROR_INVALID_ARGUMENT, MIGO_OK, MigoResult, VersionedHeader,
     callbacks::{MigoError, MigoHostCallbacks, MigoKeyboardShowOptions, MigoTaskFn},
     config::{
+        MIGO_CONTENT_ENVIRONMENT_DEVELOP, MIGO_CONTENT_ENVIRONMENT_RELEASE,
+        MIGO_CONTENT_ENVIRONMENT_TRIAL, MIGO_CONTENT_VERSION_MAX_BYTES,
         MIGO_ENGINE_FLAG_ALLOW_UNSIGNED_CONTENT, MigoContentDescriptor, MigoEngineConfig,
         MigoSessionConfig,
     },
@@ -167,20 +169,23 @@ fn session_config_has_no_v1_flags() {
 }
 
 #[test]
-fn content_descriptor_owns_strings_and_rejects_flags_or_reserved_bits() {
+fn content_descriptor_owns_strings_and_rejects_flags_or_unknown_environments() {
     let content_id = CString::new("demo").unwrap();
     let entry = CString::new("game.js").unwrap();
     let mut raw = MigoContentDescriptor {
         header: header::<MigoContentDescriptor>(),
         flags: 0,
-        reserved0: 0,
+        environment: MIGO_CONTENT_ENVIRONMENT_RELEASE,
         content_id_utf8: content_id.as_ptr(),
         entry_utf8: entry.as_ptr(),
+        version_utf8: std::ptr::null(),
     };
 
     let validated = unsafe { raw.validate() }.expect("valid content");
     assert_eq!(validated.content_id, "demo");
     assert_eq!(validated.entry, "game.js");
+    assert_eq!(validated.environment, MIGO_CONTENT_ENVIRONMENT_RELEASE);
+    assert_eq!(validated.version, None);
 
     raw.flags = 1;
     assert_eq!(
@@ -188,11 +193,57 @@ fn content_descriptor_owns_strings_and_rejects_flags_or_reserved_bits() {
         MIGO_ERROR_INVALID_ARGUMENT,
     );
     raw.flags = 0;
-    raw.reserved0 = 1;
+    for environment in [
+        MIGO_CONTENT_ENVIRONMENT_TRIAL,
+        MIGO_CONTENT_ENVIRONMENT_DEVELOP,
+    ] {
+        raw.environment = environment;
+        assert_eq!(unsafe { raw.validate() }.unwrap().environment, environment);
+    }
+    raw.environment = MIGO_CONTENT_ENVIRONMENT_DEVELOP + 1;
     assert_eq!(
         unsafe { raw.validate() }.unwrap_err(),
         MIGO_ERROR_INVALID_ARGUMENT,
     );
+}
+
+#[test]
+fn content_descriptor_carries_a_bounded_version_and_accepts_the_v1_record() {
+    let content_id = CString::new("demo").unwrap();
+    let entry = CString::new("game.js").unwrap();
+    let version = CString::new("1.4.2").unwrap();
+    let mut raw = MigoContentDescriptor {
+        header: header::<MigoContentDescriptor>(),
+        flags: 0,
+        environment: MIGO_CONTENT_ENVIRONMENT_RELEASE,
+        content_id_utf8: content_id.as_ptr(),
+        entry_utf8: entry.as_ptr(),
+        version_utf8: version.as_ptr(),
+    };
+    assert_eq!(
+        unsafe { raw.validate() }.unwrap().version.as_deref(),
+        Some("1.4.2")
+    );
+
+    // An empty version is no version.
+    let empty = CString::new("").unwrap();
+    raw.version_utf8 = empty.as_ptr();
+    assert_eq!(unsafe { raw.validate() }.unwrap().version, None);
+
+    let long = CString::new("9".repeat(MIGO_CONTENT_VERSION_MAX_BYTES + 1)).unwrap();
+    raw.version_utf8 = long.as_ptr();
+    assert_eq!(
+        unsafe { raw.validate() }.unwrap_err(),
+        MIGO_ERROR_INVALID_ARGUMENT,
+    );
+
+    // A host built before the version was appended passes the shorter record;
+    // what lies past it is not read, and it has no version.
+    raw.version_utf8 = version.as_ptr();
+    raw.header.struct_size = std::mem::offset_of!(MigoContentDescriptor, version_utf8) as u32;
+    let parsed = unsafe { MigoContentDescriptor::parse(&raw) }.expect("the v1 record");
+    assert_eq!(parsed.version, None);
+    assert_eq!(parsed.content_id, "demo");
 }
 
 #[test]

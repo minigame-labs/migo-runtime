@@ -6,7 +6,10 @@ linked from the reference index's sidebar: `<category path>/<ns>.<name>.html`,
 where `<ns>` is the platform's global, the same on every top-level page, and a
 class member is `<Class>.<member>.html` (capitalised). This reads every
 top-level page off the index and writes the names with their category paths --
-the list every other API contract is checked against.
+the list every other API contract is checked against -- and, from each page's
+own "introduced in" line, the newest library level any of them was introduced
+at: the level the runtime claims as SDKVersion
+(shared::services::app_info::API_LIBRARY_LEVEL, which a test holds to it).
 
 The index URL is an argument rather than a constant: the repository carries no
 platform's brand, and the URL is the platform's. A name that carries the brand
@@ -14,9 +17,11 @@ is published by migo under what it does instead -- the brand segment becomes
 `Host` (an app update API is `updateHostApp`) -- and an adapter maps it back.
 
   python3 scripts/fetch-minigame-api-reference.py --index-url <reference index> [--check]
+  python3 scripts/fetch-minigame-api-reference.py --index-file <saved index> --pages-dir <saved pages> [--check]
 
 Network access, so not a gate: run it deliberately and review the diff, which
 is the platform adding, moving or removing an API. --check only compares.
+Saved pages are named as the reference names them (`<ns>.<name>.html`).
 Standard library only.
 """
 
@@ -29,6 +34,7 @@ import json
 import pathlib
 import re
 import sys
+import urllib.parse
 import urllib.request
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -36,7 +42,10 @@ CONTRACT = ROOT / "contracts/runtime/minigame-api.json"
 
 # `.../api/<category>/<ns>.<name>.html`; the namespace is told apart from a class
 # by case, and from other lowercase prefixes by being shared by every page.
-PAGE = re.compile(r'href="[^"]*?/api/(?P<category>[a-z0-9/_-]+)/(?P<ns>[a-z]+)\.(?P<name>[A-Za-z0-9_]+)\.html"')
+PAGE = re.compile(r'href="(?P<href>[^"]*?/api/(?P<category>[a-z0-9/_-]+)/(?P<ns>[a-z]+)\.(?P<name>[A-Za-z0-9_]+)\.html)"')
+
+# A page's own "introduced in library X" line, which comes before any parameter's.
+INTRODUCED = re.compile(r"\u57fa\u7840\u5e93\s*(\d+\.\d+\.\d+)\s*\u5f00\u59cb\u652f\u6301")
 
 COMMENT = [
     "The common mini-game platform's API, by name: every top-level function and property its API reference documents,",
@@ -48,6 +57,9 @@ COMMENT = [
     "",
     "Every API contract that speaks of the platform's API -- contracts/runtime/api-platform-matrix.json first -- is",
     "checked against this list, so an API the platform has and migo has not decided on is a failure, not a gap.",
+    "",
+    "library_level is the newest library level any of these APIs was introduced at, read from each one's page, and",
+    "the API that set it: the level the runtime reports as SDKVersion (shared::services::app_info::API_LIBRARY_LEVEL).",
 ]
 
 
@@ -72,7 +84,8 @@ def migo_name(name: str, brand: re.Pattern[str]) -> str:
     return renamed
 
 
-def reference(index_html: str) -> dict[str, str]:
+def reference(index_html: str) -> tuple[dict[str, str], dict[str, str]]:
+    """The APIs by migo name with their categories, and each one's page href."""
     pages = [m.groupdict() for m in PAGE.finditer(index_html)]
     namespaces = collections.Counter(page["ns"] for page in pages)
     if not namespaces:
@@ -82,6 +95,7 @@ def reference(index_html: str) -> dict[str, str]:
         raise SystemExit(f"only {count} pages share a namespace; the index's shape has changed")
     brand = brand_pattern()
     apis: dict[str, str] = {}
+    hrefs: dict[str, str] = {}
     for page in pages:
         if page["ns"] != namespace:
             continue
@@ -90,11 +104,32 @@ def reference(index_html: str) -> dict[str, str]:
         if apis.get(name, category) != category:
             raise SystemExit(f"{name} is documented under both {apis[name]} and {category}")
         apis[name] = category
-    return dict(sorted(apis.items()))
+        hrefs[name] = page["href"]
+    return dict(sorted(apis.items())), hrefs
 
 
-def render(apis: dict[str, str]) -> str:
-    document = {"schema_version": 1, "$comment": COMMENT, "apis": apis}
+def version_key(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in version.split("."))
+
+
+def library_level(hrefs: dict[str, str], read_page) -> dict[str, str]:
+    """The newest level an API was introduced at, and that API. A page with no
+    line was there from the first library."""
+    newest: tuple[tuple[int, ...], str, str] | None = None
+    for name, href in sorted(hrefs.items()):
+        found = INTRODUCED.search(read_page(href))
+        if found is None:
+            continue
+        candidate = (version_key(found.group(1)), found.group(1), name)
+        if newest is None or candidate[0] > newest[0]:
+            newest = candidate
+    if newest is None:
+        raise SystemExit("no page says which library introduced it; has the pages' shape changed?")
+    return {"version": newest[1], "api": newest[2]}
+
+
+def render(apis: dict[str, str], level: dict[str, str]) -> str:
+    document = {"schema_version": 1, "$comment": COMMENT, "library_level": level, "apis": apis}
     return json.dumps(document, ensure_ascii=False, indent=2) + "\n"
 
 
@@ -102,6 +137,7 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--index-url", help="the platform's API reference index")
     parser.add_argument("--index-file", type=pathlib.Path, help="a saved copy of the index instead")
+    parser.add_argument("--pages-dir", type=pathlib.Path, help="saved copies of the API pages instead")
     parser.add_argument("--check", action="store_true", help="compare, do not write")
     args = parser.parse_args(argv)
     if args.index_file:
@@ -111,7 +147,17 @@ def main(argv: list[str]) -> int:
             html = response.read().decode("utf-8")
     else:
         parser.error("--index-url or --index-file is required")
-    text = render(reference(html))
+    apis, hrefs = reference(html)
+    if args.pages_dir:
+        def read_page(href: str) -> str:
+            return (args.pages_dir / href.rsplit("/", 1)[1]).read_text(encoding="utf-8")
+    elif args.index_url:
+        def read_page(href: str) -> str:
+            with urllib.request.urlopen(urllib.parse.urljoin(args.index_url, href), timeout=60) as response:
+                return response.read().decode("utf-8")
+    else:
+        parser.error("--index-file needs --pages-dir: the library level is read from every page")
+    text = render(apis, library_level(hrefs, read_page))
     if args.check:
         current = CONTRACT.read_text(encoding="utf-8") if CONTRACT.exists() else ""
         if current != text:

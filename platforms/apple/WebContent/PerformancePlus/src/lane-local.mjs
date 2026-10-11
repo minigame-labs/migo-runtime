@@ -331,6 +331,21 @@ export function op_get_menu_button_rect() {
   return described("menuButtonRect", "getMenuButtonBoundingClientRect");
 }
 
+// The engine's op answers with an object (the native op serialises it), so the
+// JSON the host handed over -- what `migo_session_copy_app_info` answered -- is
+// parsed once and the object shared: the engine's JavaScript only reads it.
+let appInfoSource = null;
+let appInfoParsed = null;
+
+export function op_get_app_info() {
+  const json = described("appInfo", "getAppBaseInfo");
+  if (json !== appInfoSource) {
+    appInfoParsed = Object.freeze(JSON.parse(json));
+    appInfoSource = json;
+  }
+  return appInfoParsed;
+}
+
 // ---- secure random values -------------------------------------------------------
 
 // WebCrypto fills at most this many bytes per call.

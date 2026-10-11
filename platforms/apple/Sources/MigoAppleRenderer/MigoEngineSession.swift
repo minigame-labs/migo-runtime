@@ -484,6 +484,28 @@ public final class MigoEngineSession {
         if result != MIGO_OK { NSLog("MigoEngineSession: migo_session_set_battery_status returned \(result)") }
     }
 
+    /// What this app says about itself -- its id, its interface language, its
+    /// text scale -- reported now and at each change (`getAppBaseInfo`). See
+    /// `MigoDeviceStatusReporter`. `fontScale` 0 is "not reported".
+    public func setHostAppInfo(appId: String?, language: String?, fontScale: Float) {
+        guard !isClosed else { return }
+        let result = (appId ?? "").withCString { id in
+            (language ?? "").withCString { tag -> MigoResult in
+                var info = MigoHostAppInfo()
+                info.struct_size = UInt32(MemoryLayout<MigoHostAppInfo>.size)
+                info.abi_version = MIGO_ABI_VERSION_CURRENT
+                info.app_id_utf8 = id
+                info.language_utf8 = tag
+                info.font_scale = fontScale
+                // The engine measures no device, and neither does this host.
+                info.benchmark_level = -1
+                info.model_level = UInt32(MIGO_DEVICE_MODEL_LEVEL_UNKNOWN)
+                return migo_session_set_host_app_info(session, &info)
+            }
+        }
+        if result != MIGO_OK { NSLog("MigoEngineSession: migo_session_set_host_app_info returned \(result)") }
+    }
+
     // MARK: - input
 
     /// One touch event, points in CSS pixels. Returns the engine's answer;

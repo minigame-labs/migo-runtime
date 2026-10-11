@@ -84,9 +84,6 @@
   "gaps": {
     "createPageManager": {"platforms": "*", "reason": "a mock: load() resolves and show/hide do nothing; the page an open link names is the host's, with no host interface"},
     "createVideoDecoder": {"platforms": "*", "reason": "every method is a no-op; no decoder is integrated"},
-    "getAccountInfoSync": {"platforms": "*", "reason": "the package's version and environment are constants; the host knows the real ones and has no way to say"},
-    "getAppBaseInfo": {"platforms": "*", "reason": "SDKVersion, the host's id, language and version are constants"},
-    "getDeviceBenchmarkInfo": {"platforms": "*", "reason": "benchmarkLevel is a constant"},
     "getShowSplashAdStatus": {"platforms": "*", "reason": "always answers success; a splash advert is the host's"},
     "getUpdateManager": {"platforms": "*", "reason": "always reports no update; a package update is the host's, with no host interface"},
     "navigateBackMiniProgram": {"platforms": ["android"], "reason": "the Java SDK's NavigationHandler has no way back to the mini program that opened this one"},

@@ -110,7 +110,10 @@
   public com.migo.runtime.RuntimeConfig$Builder setCodeCacheDir(java.lang.String);
   public com.migo.runtime.RuntimeConfig$Builder setCodeSigningEnabled(boolean);
   public com.migo.runtime.RuntimeConfig$Builder setCodeSigningPubkey(java.lang.String);
+  public com.migo.runtime.RuntimeConfig$Builder setContentEnvironment(com.migo.runtime.RuntimeConfig$ContentEnvironment);
+  public com.migo.runtime.RuntimeConfig$Builder setContentVersion(java.lang.String);
   public com.migo.runtime.RuntimeConfig$Builder setDebugEnabled(boolean);
+  public com.migo.runtime.RuntimeConfig$Builder setDeviceBenchmark(int, int);
   public com.migo.runtime.RuntimeConfig$Builder setImmersiveMode(boolean);
   public com.migo.runtime.RuntimeConfig$Builder setLogLevel(com.migo.runtime.RuntimeConfig$LogLevel);
   public com.migo.runtime.RuntimeConfig$Builder setStartupOrientation(java.lang.String);
@@ -119,6 +122,7 @@
   public com.migo.runtime.RuntimeConfig$Builder setWatchdogTimeoutSecs(int);
   public com.migo.runtime.RuntimeConfig$Builder(android.content.Context);
   public com.migo.runtime.RuntimeConfig$Builder(java.lang.String, java.lang.String, float);
+  public com.migo.runtime.RuntimeConfig$ContentEnvironment getContentEnvironment();
   public com.migo.runtime.RuntimeConfig$LogLevel getLogLevel();
   public com.migo.runtime.SessionState getState();
   public com.migo.runtime.callback.AuthHandler$UserInfo userInfo;
@@ -228,9 +232,11 @@
   public float getDisplayDensity();
   public int gender;
   public int getActiveSessionCount();
+  public int getBenchmarkLevel();
   public int getErrorCode();
   public int getErrorCode();
   public int getMinSdkVersion();
+  public int getModelLevel();
   public int getSessionId();
   public int getTargetFps();
   public int getValue();
@@ -248,6 +254,7 @@
   public java.lang.String getCacheDir();
   public java.lang.String getCodeCacheDir();
   public java.lang.String getCodeSigningPubkey();
+  public java.lang.String getContentVersion();
   public java.lang.String getErrorMessage();
   public java.lang.String getFilesDir();
   public java.lang.String getGameId();
@@ -255,6 +262,7 @@
   public java.lang.String getNativeVersion();
   public java.lang.String getStartupOrientation();
   public java.lang.String getVersion();
+  public java.lang.String hostAppInfoJson();
   public java.lang.String iv;
   public java.lang.String language;
   public java.lang.String nickName;
@@ -279,6 +287,8 @@
   public static com.migo.runtime.MigoNativeLoader$State valueOf(java.lang.String);
   public static com.migo.runtime.MigoNativeLoader$State[] values();
   public static com.migo.runtime.MigoRuntime getInstance();
+  public static com.migo.runtime.RuntimeConfig$ContentEnvironment valueOf(java.lang.String);
+  public static com.migo.runtime.RuntimeConfig$ContentEnvironment[] values();
   public static com.migo.runtime.RuntimeConfig$LogLevel valueOf(java.lang.String);
   public static com.migo.runtime.RuntimeConfig$LogLevel[] values();
   public static com.migo.runtime.SessionState valueOf(java.lang.String);
@@ -292,6 +302,9 @@
   public static final com.migo.runtime.MigoNativeLoader$State FAILED;
   public static final com.migo.runtime.MigoNativeLoader$State LOADED;
   public static final com.migo.runtime.MigoNativeLoader$State NOT_LOADED;
+  public static final com.migo.runtime.RuntimeConfig$ContentEnvironment DEVELOP;
+  public static final com.migo.runtime.RuntimeConfig$ContentEnvironment RELEASE;
+  public static final com.migo.runtime.RuntimeConfig$ContentEnvironment TRIAL;
   public static final com.migo.runtime.RuntimeConfig$LogLevel DEBUG;
   public static final com.migo.runtime.RuntimeConfig$LogLevel ERROR;
   public static final com.migo.runtime.RuntimeConfig$LogLevel INFO;
@@ -302,6 +315,7 @@
   public static final com.migo.runtime.SessionState DESTROYED;
   public static final com.migo.runtime.SessionState PAUSED;
   public static final com.migo.runtime.SessionState RUNNING;
+  public static final int CONTENT_VERSION_MAX_BYTES;
   public static final int ERR_CLEANUP_FAILED;
   public static final int ERR_CODE_DIR_NOT_FOUND;
   public static final int ERR_ENTRY_NOT_FOUND;
@@ -381,6 +395,7 @@
   public void onSurfaceDestroyed();
   public void onTrimMemory(int);
   public void pause();
+  public void requestDebugEnabled(boolean);
   public void requestVsyncFrame();
   public void restart();
   public void resume();
@@ -437,6 +452,7 @@ public final class com.migo.runtime.MigoRuntime$Result<T> {
 public final class com.migo.runtime.PerformanceSnapshot {
 public final class com.migo.runtime.RuntimeConfig {
 public final class com.migo.runtime.RuntimeConfig$Builder {
+public final class com.migo.runtime.RuntimeConfig$ContentEnvironment extends java.lang.Enum<com.migo.runtime.RuntimeConfig$ContentEnvironment> {
 public final class com.migo.runtime.RuntimeConfig$LogLevel extends java.lang.Enum<com.migo.runtime.RuntimeConfig$LogLevel> {
 public final class com.migo.runtime.SessionState extends java.lang.Enum<com.migo.runtime.SessionState> {
 public final class com.migo.runtime.callback.AuthHandler$UserInfo {
@@ -481,6 +497,7 @@ public interface com.migo.runtime.callback.ShareHandler {
 public interface com.migo.runtime.callback.ShareSink {
 public interface com.migo.runtime.callback.SubpackageHandler {
 public interface com.migo.runtime.callback.SubpackageHandler$DownloadCallback {
+}
 }
 }
 }

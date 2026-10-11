@@ -1229,8 +1229,21 @@ public final class NativeExports {
     public static int setEnableDebug(int sessionId, boolean enableDebug) {
         GameSession session = sSessions.get(sessionId);
         if (session == null) return -1;
-        sMainHandler.post(() -> session.setDebugEnabled(enableDebug));
+        session.requestDebugEnabled(enableDebug);
         return 0;
+    }
+
+    /**
+     * What the app says about itself and the content a session runs: the JSON
+     * the engine composes getAppBaseInfo, getAccountInfoSync and
+     * getDeviceBenchmarkInfo from. Called from native code via JNI.
+     *
+     * @param sessionId The session ID
+     * @return the report; an empty one for a session that is gone
+     */
+    public static String getHostAppInfoJson(int sessionId) {
+        GameSession session = sSessions.get(sessionId);
+        return session != null ? session.hostAppInfoJson() : "{}";
     }
 
     // ==================== UI Interaction ====================

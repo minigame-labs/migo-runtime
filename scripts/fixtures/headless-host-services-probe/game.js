@@ -303,6 +303,25 @@ async function run() {
   // answers -- the host confirms the answer with the event after it.
   expect(migo.isChatTool() === true && migo.getExtConfigSync().channel === "probe",
     "ecosystem values", null);
+
+  // What the host says about itself and the content's descriptor, as content
+  // reads them -- next to what the engine knows of itself.
+  const base = migo.getAppBaseInfo();
+  expect(base.host.appId === "dev.migo.headless" && base.language === "en_GB" &&
+    base.fontSizeScaleFactor === 1.25 && base.fontSizeSetting === 20 && base.enableDebug === true &&
+    /^[0-9]+\.[0-9]+\.[0-9]+$/.test(base.SDKVersion) && /^[0-9]+\.[0-9]+\.[0-9]+/.test(base.version) &&
+    !("theme" in base), "getAppBaseInfo", base);
+  const account = migo.getAccountInfoSync();
+  expect(account.miniProgram.appId === "headless-host-services-probe" &&
+    account.miniProgram.envVersion === "release" && account.miniProgram.version === "1.4.2" &&
+    !("plugin" in account), "getAccountInfoSync", account);
+  const benchmark = await settle("getDeviceBenchmarkInfo");
+  expect(benchmark.ok && benchmark.res.benchmarkLevel === 30 && benchmark.res.modelLevel === 1,
+    "getDeviceBenchmarkInfo", benchmark);
+  const systemInfo = migo.getSystemInfoSync();
+  expect(systemInfo.SDKVersion === base.SDKVersion && systemInfo.language === "en_GB" &&
+    systemInfo.benchmarkLevel === 30 && systemInfo.host.appId === "dev.migo.headless",
+    "getSystemInfoSync agrees", systemInfo);
   const replied = new Promise(function (resolve) { migo.onOfficialComponentsInfoChange(resolve); });
   migo.onCopyUrl(function () { return { query: "from=probe" }; });
   const enter = await settle("getGroupEnterInfo");

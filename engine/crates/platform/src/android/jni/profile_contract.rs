@@ -287,6 +287,7 @@ const JAVA_CONNECTIVITY: &[JniMethod] = methods![
     ("getSystemSettingInfoBytes", "(I)[B"),
     ("getDeviceInfoJson", "()Ljava/lang/String;"),
     ("getAppAuthorizationSettingJson", "(I)Ljava/lang/String;"),
+    ("getHostAppInfoJson", "(I)Ljava/lang/String;"),
     ("bluetoothOpenAdapter", "(ILjava/lang/String;)V"),
     ("bluetoothCloseAdapter", "(ILjava/lang/String;)V"),
     ("bluetoothGetAdapterState", "(ILjava/lang/String;)V"),
@@ -504,8 +505,9 @@ mod tests {
         // menu adds +2 Java (`shareMenuChanged`, `shareMenuReply`). A desktop-form
         // device's window adds +3 Java (`setCursor`, `requestPointerLock`,
         // `exitPointerLock`). A gamepad's motors add +1 Java, Core
-        // (`gamepadRumble`).
-        assert_eq!(java.len(), 144, "full NativeExports surface changed");
+        // (`gamepadRumble`). What the app says about itself and its content adds
+        // +1 Java (`getHostAppInfoJson`).
+        assert_eq!(java.len(), 145, "full NativeExports surface changed");
         assert_unique(&native);
         assert_unique(&java);
     }

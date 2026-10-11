@@ -48,11 +48,11 @@ pub const fn host_os_name() -> &'static str {
 
 /// The device info a host that has none to give answers with: only what the build knows (the platform, the OS
 /// name, the CPU architecture), and nothing it would have to invent -- `model` stays `"unknown"`, `brand`
-/// and the sizes empty, `benchmarkLevel` `-1`. The fields are the ones `get_device_info_json` documents.
+/// and the sizes empty. The fields are the ones `get_device_info_json` documents.
 pub fn default_device_info_json() -> String {
     let arch = std::env::consts::ARCH;
     format!(
-        r#"{{"abi":"{arch}","deviceAbi":"{arch}","benchmarkLevel":-1,"brand":"","model":"unknown","system":"{}","platform":"{}","cpuType":"","memorySize":""}}"#,
+        r#"{{"abi":"{arch}","deviceAbi":"{arch}","brand":"","model":"unknown","system":"{}","platform":"{}","cpuType":"","memorySize":""}}"#,
         host_os_name(),
         host_platform_name(),
     )
@@ -122,13 +122,24 @@ pub trait SystemInfoService: Send + Sync {
 
     /// Get device info as JSON string.
     ///
-    /// Expected JSON fields: `abi`, `deviceAbi`, `benchmarkLevel`, `brand`,
-    /// `model`, `system`, `platform`, `cpuType`, `memorySize`.
+    /// Expected JSON fields: `abi`, `deviceAbi`, `brand`, `model`, `system`,
+    /// `platform`, `cpuType`, `memorySize`. The benchmark level content also
+    /// reads here is the host's score for the device, reported with the rest of
+    /// what it says about itself ([`Self::host_app_info`]), so the two APIs that
+    /// carry it cannot disagree.
     ///
     /// Defaults to what the build knows ([`default_device_info_json`]); a host that can say more (a brand, a
     /// model, an OS version) overrides it.
     fn get_device_info_json(&self) -> Result<String, ServiceError> {
         Ok(default_device_info_json())
+    }
+
+    /// What the host says about itself and the content it runs -- its id, language and text scale,
+    /// its debugging aids, its score for the device, and which build of the content this is. A host
+    /// that does not override it says nothing, and the engine answers from what it knows itself
+    /// ([`AppInfo::compose`](crate::services::app_info::AppInfo::compose)).
+    fn host_app_info(&self) -> crate::services::app_info::HostAppInfo {
+        crate::services::app_info::HostAppInfo::default()
     }
 
     /// Open the mini program setting page (Mode C, async).
@@ -184,15 +195,14 @@ mod tests {
         assert_ne!(json["platform"], not_this);
     }
 
-    /// The fields content reads are all present, and nothing is invented: the model is unknown, the
-    /// brand empty and the benchmark level the "not measured" `-1`.
+    /// The fields content reads are all present, and nothing is invented: the model is unknown and the
+    /// brand empty.
     #[test]
     fn the_default_has_the_documented_fields_and_invents_nothing() {
         let json: serde_json::Value = serde_json::from_str(&default_device_info_json()).unwrap();
         for field in [
             "abi",
             "deviceAbi",
-            "benchmarkLevel",
             "brand",
             "model",
             "system",
@@ -204,7 +214,6 @@ mod tests {
         }
         assert_eq!(json["model"], "unknown");
         assert_eq!(json["brand"], "");
-        assert_eq!(json["benchmarkLevel"], -1);
         assert_eq!(json["abi"], std::env::consts::ARCH);
     }
 

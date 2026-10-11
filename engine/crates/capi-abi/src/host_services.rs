@@ -16,8 +16,8 @@ use std::{
 };
 
 use crate::{
-    AbiStruct, MIGO_ERROR_INVALID_ARGUMENT, MigoResult, VersionedHeader, copy_utf8_with_length,
-    copy_versioned,
+    AbiStruct, MIGO_ERROR_INVALID_ARGUMENT, MigoResult, VersionedHeader, copy_utf8,
+    copy_utf8_with_length, copy_versioned,
     validate::{validate_flags, validate_reserved},
 };
 
@@ -257,6 +257,111 @@ pub struct MigoAppAuthorizeSetting {
 
 // SAFETY: integers only; v1 requires the complete record.
 unsafe impl AbiStruct for MigoAppAuthorizeSetting {}
+
+// ---- What the host app says about itself: `migo.getAppBaseInfo()`, `migo.getDeviceBenchmarkInfo()`. ----
+
+/// The host's debugging aids are on: `getAppBaseInfo().enableDebug`.
+pub const MIGO_HOST_APP_INFO_FLAG_DEBUG: u32 = 1 << 0;
+const MIGO_HOST_APP_INFO_FLAGS_KNOWN: u32 = MIGO_HOST_APP_INFO_FLAG_DEBUG;
+
+pub const MIGO_DEVICE_MODEL_LEVEL_UNKNOWN: u32 = 0;
+pub const MIGO_DEVICE_MODEL_LEVEL_HIGH: u32 = 1;
+pub const MIGO_DEVICE_MODEL_LEVEL_MEDIUM: u32 = 2;
+pub const MIGO_DEVICE_MODEL_LEVEL_LOW: u32 = 3;
+
+/// The longest host app id a report may carry, in bytes.
+pub const MIGO_HOST_APP_ID_MAX_BYTES: usize = 256;
+/// The longest language tag a report may carry, in bytes.
+pub const MIGO_LANGUAGE_TAG_MAX_BYTES: usize = 64;
+/// The largest text scale a report may carry: past every platform's largest
+/// accessibility size, and short of a font size no layout could hold.
+pub const MIGO_FONT_SCALE_MAX: f32 = 8.0;
+
+/// What the host app says about itself, which is what `migo.getAppBaseInfo()`
+/// and `migo.getDeviceBenchmarkInfo()` describe beyond what the engine knows.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct MigoHostAppInfo {
+    pub header: VersionedHeader,
+    /// The host app's own id -- bundle identifier, package name -- or null.
+    pub app_id_utf8: *const c_char,
+    /// The host app's language as a BCP 47 tag, or null for the system's.
+    pub language_utf8: *const c_char,
+    /// The host app's text scale, 1 standard; 0 for not reported.
+    pub font_scale: f32,
+    /// The host's score for the device: -1 unknown, 1 and up higher faster.
+    pub benchmark_level: i32,
+    /// `MIGO_DEVICE_MODEL_LEVEL_*`.
+    pub model_level: u32,
+    /// `MIGO_HOST_APP_INFO_FLAG_*`.
+    pub flags: u32,
+}
+
+// SAFETY: scalars and pointers only, all zero-valid; v1 requires the complete
+// record.
+unsafe impl AbiStruct for MigoHostAppInfo {}
+
+/// A host app report, copied and checked: everything the engine keeps.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ValidatedHostAppInfo {
+    pub app_id: Option<String>,
+    pub language: Option<String>,
+    pub font_scale: Option<f32>,
+    pub benchmark_level: i32,
+    pub model_level: u32,
+    pub debug: bool,
+}
+
+impl MigoHostAppInfo {
+    /// Copy and validate a caller-owned report. The language's form is the
+    /// caller's to check further: this only bounds it.
+    ///
+    /// # Safety
+    /// `info` must be null or readable for its announced byte count, and each
+    /// non-null string NUL-terminated and readable for this call.
+    pub unsafe fn parse(info: *const Self) -> Result<ValidatedHostAppInfo, MigoResult> {
+        // SAFETY: forwarded from this function's contract.
+        let raw = unsafe { copy_versioned::<Self>(info.cast::<VersionedHeader>()) }?;
+        if raw.flags & !MIGO_HOST_APP_INFO_FLAGS_KNOWN != 0
+            || raw.model_level > MIGO_DEVICE_MODEL_LEVEL_LOW
+            || raw.benchmark_level < -2
+            || !(raw.font_scale == 0.0
+                || (raw.font_scale.is_finite()
+                    && raw.font_scale > 0.0
+                    && raw.font_scale <= MIGO_FONT_SCALE_MAX))
+        {
+            return Err(MIGO_ERROR_INVALID_ARGUMENT);
+        }
+        // SAFETY: the copied pointers keep their call-duration validity.
+        let app_id = unsafe { optional_utf8(raw.app_id_utf8, MIGO_HOST_APP_ID_MAX_BYTES) }?;
+        let language = unsafe { optional_utf8(raw.language_utf8, MIGO_LANGUAGE_TAG_MAX_BYTES) }?;
+        Ok(ValidatedHostAppInfo {
+            app_id,
+            language,
+            font_scale: (raw.font_scale != 0.0).then_some(raw.font_scale),
+            benchmark_level: raw.benchmark_level,
+            model_level: raw.model_level,
+            debug: raw.flags & MIGO_HOST_APP_INFO_FLAG_DEBUG != 0,
+        })
+    }
+}
+
+/// A NUL-terminated UTF-8 string no longer than `max` bytes; null and empty are
+/// both absent.
+///
+/// # Safety
+/// `text` must be null or NUL-terminated and readable.
+unsafe fn optional_utf8(text: *const c_char, max: usize) -> Result<Option<String>, MigoResult> {
+    if text.is_null() {
+        return Ok(None);
+    }
+    // SAFETY: forwarded from this function's contract.
+    let text = unsafe { copy_utf8(text) }?;
+    if text.len() > max {
+        return Err(MIGO_ERROR_INVALID_ARGUMENT);
+    }
+    Ok(Some(text).filter(|text| !text.is_empty()))
+}
 
 pub const MIGO_SENSOR_ACCELEROMETER: u32 = 0;
 pub const MIGO_SENSOR_GYROSCOPE: u32 = 1;
@@ -556,6 +661,17 @@ pub unsafe fn copy_bounded(value: *const c_char, length: u32) -> Result<String, 
 }
 
 const _: () = assert!(size_of::<MigoAppAuthorizeSetting>() == 20);
+const _: () = assert!(offset_of!(MigoHostAppInfo, app_id_utf8) == 8);
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(size_of::<MigoHostAppInfo>() == 40);
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(offset_of!(MigoHostAppInfo, font_scale) == 24);
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(offset_of!(MigoHostAppInfo, flags) == 36);
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(size_of::<MigoHostAppInfo>() == 32);
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(offset_of!(MigoHostAppInfo, font_scale) == 16);
 const _: () = assert!(size_of::<MigoSensorSample>() == 40);
 const _: () = assert!(offset_of!(MigoSensorSample, kind) == 8);
 const _: () = assert!(offset_of!(MigoSensorSample, compass_accuracy) == 12);
@@ -732,6 +848,104 @@ mod tests {
         oversized.payload_json_utf8 = bad.as_ptr().cast();
         oversized.payload_length = MIGO_HOST_SERVICE_PAYLOAD_MAX_BYTES + 1;
         assert_eq!(parse(&oversized), Err(MIGO_ERROR_INVALID_ARGUMENT));
+    }
+
+    fn host_app_info() -> MigoHostAppInfo {
+        MigoHostAppInfo {
+            header: VersionedHeader {
+                struct_size: size_of::<MigoHostAppInfo>() as u32,
+                abi_version: MIGO_ABI_VERSION_CURRENT,
+            },
+            app_id_utf8: std::ptr::null(),
+            language_utf8: std::ptr::null(),
+            font_scale: 0.0,
+            benchmark_level: -1,
+            model_level: MIGO_DEVICE_MODEL_LEVEL_UNKNOWN,
+            flags: 0,
+        }
+    }
+
+    #[test]
+    fn a_host_app_report_that_says_nothing_is_all_absent() {
+        assert_eq!(
+            unsafe { MigoHostAppInfo::parse(&host_app_info()) },
+            Ok(ValidatedHostAppInfo {
+                benchmark_level: -1,
+                ..ValidatedHostAppInfo::default()
+            })
+        );
+    }
+
+    #[test]
+    fn a_host_app_report_is_copied() {
+        let id = std::ffi::CString::new("com.example.host").unwrap();
+        let language = std::ffi::CString::new("zh-Hans-CN").unwrap();
+        let mut report = host_app_info();
+        report.app_id_utf8 = id.as_ptr();
+        report.language_utf8 = language.as_ptr();
+        report.font_scale = 1.25;
+        report.benchmark_level = 30;
+        report.model_level = MIGO_DEVICE_MODEL_LEVEL_HIGH;
+        report.flags = MIGO_HOST_APP_INFO_FLAG_DEBUG;
+        assert_eq!(
+            unsafe { MigoHostAppInfo::parse(&report) },
+            Ok(ValidatedHostAppInfo {
+                app_id: Some("com.example.host".into()),
+                language: Some("zh-Hans-CN".into()),
+                font_scale: Some(1.25),
+                benchmark_level: 30,
+                model_level: MIGO_DEVICE_MODEL_LEVEL_HIGH,
+                debug: true,
+            })
+        );
+        // Empty strings are absent, like null ones.
+        let empty = std::ffi::CString::new("").unwrap();
+        report.app_id_utf8 = empty.as_ptr();
+        report.language_utf8 = empty.as_ptr();
+        let parsed = unsafe { MigoHostAppInfo::parse(&report) }.unwrap();
+        assert_eq!((parsed.app_id, parsed.language), (None, None));
+    }
+
+    #[test]
+    fn a_host_app_report_holds_only_values_in_range() {
+        let long_id = std::ffi::CString::new("a".repeat(MIGO_HOST_APP_ID_MAX_BYTES + 1)).unwrap();
+        let long_tag = std::ffi::CString::new("a".repeat(MIGO_LANGUAGE_TAG_MAX_BYTES + 1)).unwrap();
+        let cases: [(&str, fn(&mut MigoHostAppInfo)); 7] = [
+            ("an unknown flag", |r| r.flags = 1 << 1),
+            ("a model level past low", |r| {
+                r.model_level = MIGO_DEVICE_MODEL_LEVEL_LOW + 1
+            }),
+            ("a benchmark level below -2", |r| r.benchmark_level = -3),
+            ("a negative text scale", |r| r.font_scale = -1.0),
+            ("a text scale that is not a number", |r| {
+                r.font_scale = f32::NAN
+            }),
+            ("an infinite text scale", |r| r.font_scale = f32::INFINITY),
+            ("a text scale past the largest", |r| {
+                r.font_scale = MIGO_FONT_SCALE_MAX * 2.0
+            }),
+        ];
+        for (what, inject) in cases {
+            let mut report = host_app_info();
+            inject(&mut report);
+            assert_eq!(
+                unsafe { MigoHostAppInfo::parse(&report) },
+                Err(MIGO_ERROR_INVALID_ARGUMENT),
+                "{what}"
+            );
+        }
+        let mut report = host_app_info();
+        report.app_id_utf8 = long_id.as_ptr();
+        assert_eq!(
+            unsafe { MigoHostAppInfo::parse(&report) },
+            Err(MIGO_ERROR_INVALID_ARGUMENT)
+        );
+        let mut report = host_app_info();
+        report.language_utf8 = long_tag.as_ptr();
+        assert_eq!(
+            unsafe { MigoHostAppInfo::parse(&report) },
+            Err(MIGO_ERROR_INVALID_ARGUMENT)
+        );
     }
 
     fn authorization() -> MigoAppAuthorizeSetting {
