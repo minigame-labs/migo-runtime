@@ -123,6 +123,12 @@ public final class GameSession implements Closeable {
             new java.util.WeakHashMap<>();
     /** The window state last reported, so only changes are. */
     private String reportedWindowState;
+    /**
+     * Whether the debugging aids are on, as content asked last: read on the
+     * JS thread by getAppBaseInfo, while the overlay itself is changed on the
+     * main thread after the request.
+     */
+    private volatile boolean debugAids;
     private final AudioFocusManager audioFocusManager;
     private final VsyncScheduler vsyncScheduler;
     private final Handler mainHandler;
@@ -208,6 +214,7 @@ public final class GameSession implements Closeable {
         this.vsyncScheduler.start();
 
         // Create debug overlay and console log viewer if debug mode is enabled
+        this.debugAids = config.isDebugEnabled();
         if (config.isDebugEnabled()) {
             this.debugOverlay = new DebugOverlayView(context, sessionId);
             this.debugOverlay.startMonitoring();
@@ -1259,6 +1266,29 @@ public final class GameSession implements Closeable {
     // ==================== Debug ====================
 
     /**
+     * Ask for the debug overlay to be shown or hidden, from any thread: content
+     * is told the new state at once, and the overlay follows on the main thread.
+     *
+     * @param enabled true to show debug overlay, false to hide it
+     * @hide
+     */
+    public void requestDebugEnabled(boolean enabled) {
+        debugAids = enabled;
+        mainHandler.post(() -> setDebugEnabled(enabled));
+    }
+
+    /**
+     * What this app says about itself and the content it runs, as the JSON the
+     * engine reads for getAppBaseInfo, getAccountInfoSync and
+     * getDeviceBenchmarkInfo. Any thread.
+     *
+     * @hide
+     */
+    public String hostAppInfoJson() {
+        return com.migo.runtime.internal.platform.HostAppInfo.toJson(context, config, debugAids);
+    }
+
+    /**
      * Enable or disable the debug overlay at runtime.
      * <p>
      * Must be called on the main thread.
@@ -1267,6 +1297,7 @@ public final class GameSession implements Closeable {
      * @hide
      */
     public void setDebugEnabled(boolean enabled) {
+        debugAids = enabled;
         synchronized (lock) {
             if (state.get() == SessionState.DESTROYED) return;
             if (enabled) {

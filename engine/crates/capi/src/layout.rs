@@ -37,7 +37,7 @@ use crate::{
 use migo_capi_abi::{
     VersionedHeader,
     host_services::{
-        MigoAppAuthorizeSetting, MigoBleCharacteristicValue, MigoHostServiceCall,
+        MigoAppAuthorizeSetting, MigoBleCharacteristicValue, MigoHostAppInfo, MigoHostServiceCall,
         MigoHostServiceResult, MigoSensorSample,
     },
 };
@@ -66,6 +66,7 @@ header_is_first!(
     MigoHostServiceCall,
     MigoHostServiceResult,
     MigoAppAuthorizeSetting,
+    MigoHostAppInfo,
     MigoSensorSample,
     MigoBleCharacteristicValue,
     MigoError,
@@ -187,11 +188,12 @@ mod lp64 {
     const _: () = assert!(offset_of!(MigoEngineConfig, cache_dir_utf8) == 32);
     const _: () = assert!(offset_of!(MigoEngineConfig, code_cache_dir_utf8) == 40);
 
-    const _: () = assert!(size_of::<MigoContentDescriptor>() == 32);
+    const _: () = assert!(size_of::<MigoContentDescriptor>() == 40);
     const _: () = assert!(offset_of!(MigoContentDescriptor, flags) == 8);
-    const _: () = assert!(offset_of!(MigoContentDescriptor, reserved0) == 12);
+    const _: () = assert!(offset_of!(MigoContentDescriptor, environment) == 12);
     const _: () = assert!(offset_of!(MigoContentDescriptor, content_id_utf8) == 16);
     const _: () = assert!(offset_of!(MigoContentDescriptor, entry_utf8) == 24);
+    const _: () = assert!(offset_of!(MigoContentDescriptor, version_utf8) == 32);
 
     const _: () = assert!(size_of::<MigoError>() == 32);
     const _: () = assert!(offset_of!(MigoError, code) == 8);
@@ -231,6 +233,13 @@ mod lp64 {
     const _: () = assert!(offset_of!(MigoHostServiceCall, payload_length) == 32);
     const _: () = assert!(size_of::<MigoHostServiceResult>() == 48);
     const _: () = assert!(size_of::<MigoAppAuthorizeSetting>() == 20);
+    const _: () = assert!(size_of::<MigoHostAppInfo>() == 40);
+    const _: () = assert!(offset_of!(MigoHostAppInfo, app_id_utf8) == 8);
+    const _: () = assert!(offset_of!(MigoHostAppInfo, language_utf8) == 16);
+    const _: () = assert!(offset_of!(MigoHostAppInfo, font_scale) == 24);
+    const _: () = assert!(offset_of!(MigoHostAppInfo, benchmark_level) == 28);
+    const _: () = assert!(offset_of!(MigoHostAppInfo, model_level) == 32);
+    const _: () = assert!(offset_of!(MigoHostAppInfo, flags) == 36);
     const _: () = assert!(size_of::<MigoSensorSample>() == 40);
     const _: () = assert!(offset_of!(MigoSensorSample, values) == 16);
     const _: () = assert!(offset_of!(MigoHostServiceResult, status) == 8);

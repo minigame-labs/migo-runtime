@@ -1049,6 +1049,21 @@ int main(int argc, char **argv) {
     authorizations.album = MIGO_AUTHORIZATION_DENIED;
     result = migo_session_set_app_authorize_setting(session, &authorizations);
     if (result != MIGO_OK) return fail("migo_session_set_app_authorize_setting", result);
+    /* What the host app says about itself: its id, a British English UI at a
+     * larger text size with its debugging aids on, and its own tier for this
+     * machine. */
+    MigoHostAppInfo app_info;
+    memset(&app_info, 0, sizeof(app_info));
+    app_info.struct_size = (uint32_t)sizeof(app_info);
+    app_info.abi_version = MIGO_ABI_VERSION_CURRENT;
+    app_info.app_id_utf8 = "dev.migo.headless";
+    app_info.language_utf8 = "en-GB";
+    app_info.font_scale = 1.25f;
+    app_info.benchmark_level = 30;
+    app_info.model_level = MIGO_DEVICE_MODEL_LEVEL_HIGH;
+    app_info.flags = MIGO_HOST_APP_INFO_FLAG_DEBUG;
+    result = migo_session_set_host_app_info(session, &app_info);
+    if (result != MIGO_OK) return fail("migo_session_set_host_app_info", result);
     /* The game runs inside a chat tool, with the ext configuration it was given. */
     static const char ext_config[] = "{\"channel\":\"probe\"}";
     result = migo_session_set_ecosystem_value(session, "isChatTool", 10, "true", 4);
@@ -1133,6 +1148,9 @@ int main(int argc, char **argv) {
     content.flags = MIGO_CONTENT_FLAG_NONE;
     content.content_id_utf8 = content_id;
     content.entry_utf8 = "game.js";
+    /* A released build, with the version the host shipped it as. */
+    content.environment = MIGO_CONTENT_ENVIRONMENT_RELEASE;
+    content.version_utf8 = "1.4.2";
 
     result = migo_session_load_content(session, &content);
     if (result != MIGO_OK) return fail("migo_session_load_content", result);

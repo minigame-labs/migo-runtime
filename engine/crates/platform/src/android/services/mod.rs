@@ -855,6 +855,18 @@ impl SystemInfoService for AndroidSystemInfo {
         Ok(jni::get_device_info_json()?)
     }
 
+    /// The app's report. One that cannot be read is no report: content is told
+    /// what the engine knows, and the failure is logged rather than invented over.
+    fn host_app_info(&self) -> shared::services::app_info::HostAppInfo {
+        jni::get_host_app_info_json(self.host_id)
+            .map_err(|error| error.to_string())
+            .and_then(|json| serde_json::from_str(&json).map_err(|error| error.to_string()))
+            .unwrap_or_else(|error| {
+                tracing::warn!("host app info unavailable: {error}");
+                shared::services::app_info::HostAppInfo::default()
+            })
+    }
+
     fn get_app_authorization_setting_json(&self) -> Result<String, ServiceError> {
         Ok(jni::get_app_authorization_setting_json(self.host_id)?)
     }

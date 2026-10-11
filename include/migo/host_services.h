@@ -456,6 +456,61 @@ MIGO_STATIC_ASSERT(offsetof(MigoAppAuthorizeSetting, struct_size) == 0,
 MIGO_STATIC_ASSERT(sizeof(MigoAppAuthorizeSetting) == 20,
                    "MigoAppAuthorizeSetting size changed");
 
+/*
+ * What the host app says about itself: what getAppBaseInfo() and
+ * getDeviceBenchmarkInfo() describe beyond what the engine knows. The engine
+ * knows the rest -- the API level it implements (SDKVersion), its own version,
+ * the content's id -- and a host that reports nothing is answered with
+ * "unknown" where the platform has a word for it and the standard where it has
+ * one, never with a value made up to look plausible.
+ *
+ * app_id_utf8   the host app's own id (bundle identifier, package name):
+ *               getAppBaseInfo().host.appId. NULL or empty for none, and then
+ *               host has no appId. At most MIGO_HOST_APP_ID_MAX_BYTES.
+ * language_utf8 the host app's language, a BCP 47 tag ("zh-Hans-CN", "en-US");
+ *               content is told "zh_CN", "en_US". NULL or empty for the
+ *               system's, which the engine reads itself on macOS, iOS,
+ *               Windows and Linux. At most MIGO_LANGUAGE_TAG_MAX_BYTES.
+ * font_scale    the host app's text scale, 1 standard (fontSizeScaleFactor;
+ *               fontSizeSetting is 16 px times it). 0 for not reported, which
+ *               is 1. At most MIGO_FONT_SCALE_MAX.
+ * benchmark_level  the host's own score for the device, -1 for unknown, 1 and
+ *               up higher faster (-2 and 0: the device cannot run games).
+ * model_level   MIGO_DEVICE_MODEL_LEVEL_*.
+ * flags         MIGO_HOST_APP_INFO_FLAG_DEBUG: the host's debugging aids are
+ *               on (getAppBaseInfo().enableDebug).
+ *
+ * A zeroed record but for benchmark_level = -1 says nothing.
+ */
+#define MIGO_HOST_APP_INFO_FLAG_DEBUG (1U << 0)
+
+#define MIGO_DEVICE_MODEL_LEVEL_UNKNOWN 0U
+#define MIGO_DEVICE_MODEL_LEVEL_HIGH 1U
+#define MIGO_DEVICE_MODEL_LEVEL_MEDIUM 2U
+#define MIGO_DEVICE_MODEL_LEVEL_LOW 3U
+
+#define MIGO_HOST_APP_ID_MAX_BYTES 256U
+#define MIGO_LANGUAGE_TAG_MAX_BYTES 64U
+#define MIGO_FONT_SCALE_MAX 8.0f
+
+typedef struct MigoHostAppInfo {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    const char *app_id_utf8;
+    const char *language_utf8;
+    float font_scale;
+    int32_t benchmark_level;
+    uint32_t model_level;
+    uint32_t flags;
+} MigoHostAppInfo;
+
+MIGO_STATIC_ASSERT(offsetof(MigoHostAppInfo, struct_size) == 0,
+                   "every versioned struct must begin with struct_size");
+#if MIGO_LP64
+MIGO_STATIC_ASSERT(sizeof(MigoHostAppInfo) == 40, "MigoHostAppInfo LP64 size changed");
+MIGO_STATIC_ASSERT(offsetof(MigoHostAppInfo, font_scale) == 24, "MigoHostAppInfo.font_scale moved");
+#endif
+
 /* Which sensor a MigoSensorSample comes from, and what its values are. */
 typedef uint32_t MigoSensorKind;
 /* values = x, y, z in g, gravity included: x right, y up the screen, z out of it,
@@ -648,6 +703,20 @@ MIGO_API MigoResult MIGO_CALL migo_session_set_system_settings(MigoSession *sess
  */
 MIGO_API MigoResult MIGO_CALL migo_session_set_app_authorize_setting(
     MigoSession *session, const MigoAppAuthorizeSetting *setting);
+
+/*
+ * Report what the host app says about itself (MigoHostAppInfo), from any
+ * thread, at start and whenever it changes -- the player changing the text
+ * size, say. Each report replaces the last; strings are copied. Returns
+ * MIGO_ERROR_INVALID_ARGUMENT for a NULL or malformed record, a string that is
+ * not UTF-8 or longer than its bound, a language that does not begin with a
+ * language subtag, a font_scale that is negative, not finite or past
+ * MIGO_FONT_SCALE_MAX, a benchmark_level below -2, a model_level or a flag this
+ * header does not define. May be called before a Surface is attached; the
+ * report is kept.
+ */
+MIGO_API MigoResult MIGO_CALL migo_session_set_host_app_info(MigoSession *session,
+                                                             const MigoHostAppInfo *info);
 
 /*
  * Deliver one sensor reading, from any thread, while a Surface is attached.

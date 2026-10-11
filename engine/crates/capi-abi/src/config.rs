@@ -165,24 +165,49 @@ impl MigoSessionConfig {
     }
 }
 
+/// The released build of the content -- what a host that does not say loads.
+pub const MIGO_CONTENT_ENVIRONMENT_RELEASE: u32 = 0;
+/// A pre-release build handed to testers.
+pub const MIGO_CONTENT_ENVIRONMENT_TRIAL: u32 = 1;
+/// A development build.
+pub const MIGO_CONTENT_ENVIRONMENT_DEVELOP: u32 = 2;
+
+/// The longest content version a descriptor may carry, in bytes.
+pub const MIGO_CONTENT_VERSION_MAX_BYTES: usize = 64;
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct MigoContentDescriptor {
     pub header: VersionedHeader,
     pub flags: u32,
-    pub reserved0: u32,
+    /// Which build of the content this is, `MIGO_CONTENT_ENVIRONMENT_*`. It was
+    /// `reserved0`, which had to be zero -- and zero is the release, which is
+    /// what every host that set it loaded.
+    pub environment: u32,
     pub content_id_utf8: *const c_char,
     pub entry_utf8: *const c_char,
+    /// The content's released version, NUL-terminated UTF-8, or null for none.
+    ///
+    /// Appended: `copy_versioned` zero-extends a caller that passes the v1
+    /// record, and null is "no version", which is what that caller said.
+    pub version_utf8: *const c_char,
 }
 
 // SAFETY: the repr(C) record contains only zero-valid scalar and pointer
-// fields and its complete v1 shape is required.
-unsafe impl AbiStruct for MigoContentDescriptor {}
+// fields. The v1 record -- everything before the appended version -- is the
+// minimum accepted prefix.
+unsafe impl AbiStruct for MigoContentDescriptor {
+    const MINIMUM_SIZE: usize = offset_of!(MigoContentDescriptor, version_utf8);
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedContentDescriptor {
     pub content_id: String,
     pub entry: String,
+    /// `MIGO_CONTENT_ENVIRONMENT_*`, checked.
+    pub environment: u32,
+    /// `None` when the host gave no version.
+    pub version: Option<String>,
 }
 
 impl MigoContentDescriptor {
@@ -201,7 +226,8 @@ impl MigoContentDescriptor {
     /// Validate a full local record and copy its borrowed strings.
     ///
     /// # Safety
-    /// Both string pointers must be NUL-terminated and readable for this call.
+    /// Every non-null string pointer must be NUL-terminated and readable for
+    /// this call.
     pub unsafe fn validate(&self) -> Result<ValidatedContentDescriptor, MigoResult> {
         // SAFETY: a reference to Self supplies the complete local allocation.
         let raw =
@@ -212,12 +238,29 @@ impl MigoContentDescriptor {
 
     unsafe fn validate_fields(self) -> Result<ValidatedContentDescriptor, MigoResult> {
         validate_flags(self.flags.into(), 0)?;
-        validate_reserved(self.reserved0.into())?;
+        if self.environment > MIGO_CONTENT_ENVIRONMENT_DEVELOP {
+            return Err(crate::MIGO_ERROR_INVALID_ARGUMENT);
+        }
 
         // SAFETY: the parser/validator contract requires readable C strings.
         let content_id = unsafe { copy_utf8(self.content_id_utf8) }?;
         let entry = unsafe { copy_utf8(self.entry_utf8) }?;
-        Ok(ValidatedContentDescriptor { content_id, entry })
+        let version = if self.version_utf8.is_null() {
+            None
+        } else {
+            // SAFETY: as above; null was handled.
+            let version = unsafe { copy_utf8(self.version_utf8) }?;
+            if version.len() > MIGO_CONTENT_VERSION_MAX_BYTES {
+                return Err(crate::MIGO_ERROR_INVALID_ARGUMENT);
+            }
+            Some(version).filter(|version| !version.is_empty())
+        };
+        Ok(ValidatedContentDescriptor {
+            content_id,
+            entry,
+            environment: self.environment,
+            version,
+        })
     }
 }
 
@@ -231,7 +274,7 @@ const _: () = assert!(offset_of!(MigoSessionConfig, launch_nonce) == 16);
 const _: () = assert!(offset_of!(MigoSessionConfig, flags) == 8);
 const _: () = assert!(offset_of!(MigoContentDescriptor, header) == 0);
 const _: () = assert!(offset_of!(MigoContentDescriptor, flags) == 8);
-const _: () = assert!(offset_of!(MigoContentDescriptor, reserved0) == 12);
+const _: () = assert!(offset_of!(MigoContentDescriptor, environment) == 12);
 
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(size_of::<MigoEngineConfig>() == 80);
@@ -244,7 +287,9 @@ const _: () = assert!(offset_of!(MigoEngineConfig, cache_dir_utf8) == 32);
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(offset_of!(MigoEngineConfig, code_cache_dir_utf8) == 40);
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(size_of::<MigoContentDescriptor>() == 32);
+const _: () = assert!(size_of::<MigoContentDescriptor>() == 40);
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(offset_of!(MigoContentDescriptor, version_utf8) == 32);
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(offset_of!(MigoContentDescriptor, content_id_utf8) == 16);
 #[cfg(target_pointer_width = "64")]

@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- What the host says about itself and the content it runs. C ABI: `migo_session_set_host_app_info` reports a
+  `MigoHostAppInfo` -- the host app's id, its interface language (BCP 47), its text scale, its own score and tier for
+  the device, whether its debugging aids are on -- at start and whenever it changes; `MigoContentDescriptor` names the
+  content's build (`environment`, the field that was `reserved0`, `MIGO_CONTENT_ENVIRONMENT_*`, zero a release) and
+  its released `version_utf8` (appended); and `migo_session_copy_app_info` (Performance+) copies the composed answer
+  for the producer. Android: `RuntimeConfig.Builder.setContentEnvironment`, `setContentVersion` and
+  `setDeviceBenchmark`, with the app's package name, locale and font scale read from its configuration. The Apple
+  hosts report the bundle identifier, the app's locale and, on iOS, the text size the person chose.
 - Gamepad haptics: every pad in `getGamepads()` has the standard `vibrationActuator` -- `effects`, `playEffect`
   (`dual-rumble`, `trigger-rumble`; `startDelay`, `duration`, the four magnitudes) resolving `complete` or `preempted`,
   and `reset`. The engine times each effect (at most 5 s, delay included) and preempts it for the next effect, for
@@ -360,6 +368,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- `getAppBaseInfo`, `getAccountInfoSync` and `getDeviceBenchmarkInfo` answered constants -- an `SDKVersion` of `4.0.0`
+  (a library level that does not exist), a host id `com.minigame.host`, `zh_CN`, version `1.0.0`, a benchmark level
+  of 26 (25 from `getDeviceInfo`, and on Android a guess from the device's memory) -- and `getAccountInfoSync` never
+  had the content's id, because nothing set it. `SDKVersion` is now the library level the runtime implements
+  (`3.17.0`: the newest any API in the platform's reference was introduced at, which
+  `scripts/fetch-minigame-api-reference.py` measures from each API's page into `minigame-api.json` and a test holds the
+  engine to), `version` the runtime's own, `appId` the content's id, and the rest what the host reports: without a
+  report, no host id, the system's language (read by the engine on macOS, iOS, Windows and Linux), a text scale of 1,
+  a release with no version, a benchmark level of -1 and a model level of 0 -- the platform's words for unknown.
+  `getSystemInfoSync` and `getDeviceInfo` carry the same values from the same place. `theme`, which the platform does
+  not give mini games, and `plugin`, which only a plugin is given, are no longer answered.
 - An engine listener on the game's visibility -- the audio clock that freezes in the background -- was one of
   content's `onHide` / `onShow` listeners, so content calling `offHide()` with no listener removed it too. The engine
   now observes visibility on its own.

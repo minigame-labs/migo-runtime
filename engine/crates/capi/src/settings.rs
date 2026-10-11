@@ -17,7 +17,9 @@ use std::sync::{
 };
 
 use migo_capi_abi::{
-    MIGO_ERROR_INTERNAL, MIGO_ERROR_INVALID_ARGUMENT, MIGO_OK, MigoResult, copy_utf8_with_length,
+    MIGO_ERROR_INTERNAL, MIGO_ERROR_INVALID_ARGUMENT, MIGO_OK, MigoResult,
+    config::{MIGO_CONTENT_ENVIRONMENT_DEVELOP, MIGO_CONTENT_ENVIRONMENT_TRIAL},
+    copy_utf8_with_length,
     host_services::{
         MIGO_AUTHORIZATION_AUTHORIZED, MIGO_AUTHORIZATION_DENIED, MIGO_HOST_SERVICE_ECOSYSTEM,
         MIGO_HOST_SERVICE_PAYLOAD_MAX_BYTES, MIGO_HOST_SERVICE_PERMISSION,
@@ -25,11 +27,12 @@ use migo_capi_abi::{
         MIGO_SCOPE_STATE_GRANTED, MIGO_SCOPE_STATE_UNKNOWN,
         MIGO_SYSTEM_SETTING_FLAG_BLUETOOTH_ENABLED, MIGO_SYSTEM_SETTING_FLAG_LOCATION_ENABLED,
         MIGO_SYSTEM_SETTING_FLAG_WIFI_ENABLED, MIGO_SYSTEM_SETTING_FLAGS_KNOWN,
-        MigoAppAuthorizeSetting,
+        MigoAppAuthorizeSetting, MigoHostAppInfo, ValidatedHostAppInfo,
     },
 };
 use migo_core::services::{Scope, ScopeState, ServiceError, SystemInfoService};
 use shared::device::{Orientation, SystemSettings};
+use shared::services::app_info::{AppInfo, ContentEnvironment, HostAppInfo, language_name};
 use shared::surface::{HostWindowInfo, HostWindowState};
 
 use crate::{MigoSession, host_services::CapiHostServices, panic_barrier::guard, pin_session};
@@ -46,6 +49,34 @@ pub(crate) struct HostReports {
     app_authorize: Mutex<Option<MigoAppAuthorizeSetting>>,
     /// What each synchronous ecosystem getter answers, by API name.
     ecosystem_values: Mutex<HashMap<String, String>>,
+    /// What the host last said about itself; nothing until it does.
+    host_app: Mutex<ValidatedHostAppInfo>,
+    /// The content the session loaded, as its descriptor described it.
+    content: Mutex<Option<LoadedContent>>,
+}
+
+/// What a content descriptor said about the content, kept for the APIs that
+/// describe it.
+#[derive(Clone, Debug)]
+pub(crate) struct LoadedContent {
+    pub(crate) id: String,
+    pub(crate) environment: ContentEnvironment,
+    pub(crate) version: Option<String>,
+}
+
+impl LoadedContent {
+    pub(crate) fn new(id: String, environment: u32, version: Option<String>) -> Self {
+        Self {
+            id,
+            environment: match environment {
+                MIGO_CONTENT_ENVIRONMENT_TRIAL => ContentEnvironment::Trial,
+                MIGO_CONTENT_ENVIRONMENT_DEVELOP => ContentEnvironment::Develop,
+                // The descriptor's parser refuses any other value.
+                _ => ContentEnvironment::Release,
+            },
+            version,
+        }
+    }
 }
 
 impl Default for HostReports {
@@ -55,6 +86,11 @@ impl Default for HostReports {
             system_settings: AtomicU32::new(0),
             app_authorize: Mutex::new(None),
             ecosystem_values: Mutex::new(HashMap::new()),
+            host_app: Mutex::new(ValidatedHostAppInfo {
+                benchmark_level: -1,
+                ..ValidatedHostAppInfo::default()
+            }),
+            content: Mutex::new(None),
         }
     }
 }
@@ -97,6 +133,61 @@ impl HostReports {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(name)
             .cloned()
+    }
+
+    /// Keep what the descriptor of the content the session loads said about it.
+    pub(crate) fn record_content(&self, content: LoadedContent) {
+        *self
+            .content
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(content);
+    }
+
+    /// The content's id, once it is loaded.
+    pub(crate) fn content_id(&self) -> Option<String> {
+        self.content
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .map(|content| content.id.clone())
+    }
+
+    /// The host's report and the content's descriptor, as the engine's
+    /// composition reads them.
+    pub(crate) fn host_app_info(&self) -> HostAppInfo {
+        let host = self
+            .host_app
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let content = self
+            .content
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        HostAppInfo {
+            host_app_id: host.app_id,
+            language: host.language,
+            // The float's shortest decimal, so a reported 1.15 reaches content
+            // as 1.15 rather than as its binary expansion.
+            font_scale: host
+                .font_scale
+                .and_then(|scale| scale.to_string().parse::<f64>().ok()),
+            debug: host.debug,
+            benchmark_level: Some(host.benchmark_level),
+            model_level: Some(host.model_level),
+            content_environment: content
+                .as_ref()
+                .map_or(ContentEnvironment::Release, |content| content.environment),
+            content_version: content.and_then(|content| content.version),
+        }
+    }
+
+    /// What `getAppBaseInfo` and its kin answer, once content is loaded: for a
+    /// host that runs the engine's JavaScript elsewhere and serves it this.
+    pub(crate) fn app_info(&self) -> Option<AppInfo> {
+        let id = self.content_id()?;
+        Some(AppInfo::compose(self.host_app_info(), &id))
     }
 
     fn app_authorize(&self) -> Option<MigoAppAuthorizeSetting> {
@@ -143,6 +234,10 @@ impl CapiSystemInfo {
 }
 
 impl SystemInfoService for CapiSystemInfo {
+    fn host_app_info(&self) -> HostAppInfo {
+        self.reports.host_app_info()
+    }
+
     fn get_window_info_json(&self) -> Result<String, ServiceError> {
         HostWindowInfo::new(Arc::clone(&self.window)).get_window_info_json()
     }
@@ -352,6 +447,41 @@ pub unsafe extern "C" fn migo_session_set_ecosystem_value(
         } else {
             values.insert(name, json);
         }
+        MIGO_OK
+    })
+}
+
+/// # Safety
+/// `session` must be a live session handle and `info` null or readable for its
+/// announced size, with every non-null string NUL-terminated.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn migo_session_set_host_app_info(
+    session: *mut MigoSession,
+    info: *const MigoHostAppInfo,
+) -> MigoResult {
+    guard("migo_session_set_host_app_info", || {
+        let session = match unsafe { pin_session(session) } {
+            Ok(session) => session,
+            Err(error) => return error,
+        };
+        let report = match unsafe { MigoHostAppInfo::parse(info) } {
+            Ok(report) => report,
+            Err(error) => return error,
+        };
+        // A tag that names no language would reach content as none at all;
+        // refused, so the host learns its report said nothing.
+        if report
+            .language
+            .as_deref()
+            .is_some_and(|tag| language_name(tag).is_none())
+        {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        }
+        *session
+            .host_reports
+            .host_app
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = report;
         MIGO_OK
     })
 }
@@ -648,6 +778,92 @@ mod tests {
             assert!(info.open_setting(r#"{"requestId":1}"#).is_err());
             assert!(info.open_bluetooth_settings(1).is_err());
             assert!(info.open_app_authorize_setting(1).is_err());
+        });
+    }
+
+    fn host_app_report(app_id: &std::ffi::CStr, language: &std::ffi::CStr) -> MigoHostAppInfo {
+        MigoHostAppInfo {
+            header: VersionedHeader {
+                struct_size: size_of::<MigoHostAppInfo>() as u32,
+                abi_version: MIGO_ABI_VERSION_CURRENT,
+            },
+            app_id_utf8: app_id.as_ptr(),
+            language_utf8: language.as_ptr(),
+            font_scale: 1.15,
+            benchmark_level: 30,
+            model_level: migo_capi_abi::host_services::MIGO_DEVICE_MODEL_LEVEL_MEDIUM,
+            flags: migo_capi_abi::host_services::MIGO_HOST_APP_INFO_FLAG_DEBUG,
+        }
+    }
+
+    #[test]
+    fn what_the_host_says_about_itself_is_what_the_engine_composes_from() {
+        with_session("host-app-info", |session| {
+            let reports = reports_of(session);
+            // Before any report or content: the engine's own answer, and no
+            // composition for a producer, since the content's id is part of it.
+            assert_eq!(
+                system_info(1, 1, Arc::clone(&reports)).host_app_info(),
+                HostAppInfo {
+                    benchmark_level: Some(-1),
+                    model_level: Some(0),
+                    ..HostAppInfo::default()
+                }
+            );
+            assert!(reports.app_info().is_none());
+
+            let report = host_app_report(c"com.example.host", c"en-GB");
+            assert_eq!(
+                unsafe { migo_session_set_host_app_info(session, &report) },
+                MIGO_OK
+            );
+            reports.record_content(LoadedContent::new(
+                "demo".into(),
+                MIGO_CONTENT_ENVIRONMENT_TRIAL,
+                Some("1.4.2".into()),
+            ));
+            let host = system_info(1, 1, Arc::clone(&reports)).host_app_info();
+            assert_eq!(host.host_app_id.as_deref(), Some("com.example.host"));
+            assert_eq!(host.language.as_deref(), Some("en-GB"));
+            // The float's shortest decimal, not its binary expansion.
+            assert_eq!(host.font_scale, Some(1.15));
+            assert!(host.debug);
+            assert_eq!(
+                (host.benchmark_level, host.model_level),
+                (Some(30), Some(2))
+            );
+            assert_eq!(host.content_environment, ContentEnvironment::Trial);
+
+            let info = reports.app_info().expect("content is loaded");
+            assert_eq!(info.app_id, "demo");
+            assert_eq!(info.language, "en_GB");
+            // A trial build has no version, whatever the descriptor said.
+            assert_eq!(info.content_version, "");
+        });
+    }
+
+    #[test]
+    fn a_language_that_names_no_language_is_refused_and_the_last_report_kept() {
+        with_session("host-app-info-refused", |session| {
+            let good = host_app_report(c"com.example.host", c"fr-CA");
+            assert_eq!(
+                unsafe { migo_session_set_host_app_info(session, &good) },
+                MIGO_OK
+            );
+            for tag in [c"C", c"1x-US", c"english"] {
+                let bad = host_app_report(c"com.example.host", tag);
+                assert_eq!(
+                    unsafe { migo_session_set_host_app_info(session, &bad) },
+                    MIGO_ERROR_INVALID_ARGUMENT,
+                    "{tag:?}"
+                );
+            }
+            assert_eq!(
+                unsafe { migo_session_set_host_app_info(session, std::ptr::null()) },
+                MIGO_ERROR_INVALID_ARGUMENT
+            );
+            let host = system_info(1, 1, reports_of(session)).host_app_info();
+            assert_eq!(host.language.as_deref(), Some("fr-CA"));
         });
     }
 }

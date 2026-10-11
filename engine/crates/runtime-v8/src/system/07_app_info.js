@@ -1,42 +1,59 @@
+// getAppBaseInfo, getAccountInfoSync and getDeviceBenchmarkInfo.
+//
+// What they answer is composed natively (shared::services::app_info): what the
+// engine knows of itself -- the API level it implements, its own version, the
+// content's id -- what the host reports about itself and the content it runs,
+// and the system's language when the host names none. A host that says nothing
+// is told "unknown" where the platform has a word for it and the standard where
+// it has one; nothing here is a constant standing in for a fact.
+
+import { op_get_app_info } from "ext:core/ops";
 import { wrapAsync } from "ext:host_v8_base/02_async.js";
 
-// Cached appId -- set by host via _internalSetAppId(id) at startup.
-var _appId = "";
-
-function _internalSetAppId(appId) {
-    if (typeof appId === "string") _appId = appId;
+/** The composed facts, for the APIs here and getSystemInfoSync's copies of them. */
+function appInfo() {
+    return op_get_app_info();
 }
 
 function getAppBaseInfo() {
-    const appInfo = {
-        SDKVersion: "4.0.0",
-        enableDebug: false,
-        host: {
-            appId: "com.minigame.host",
-        },
-        language: "zh_CN",
-        version: "1.0.0",
-        theme: "light",
-        fontSizeScaleFactor: 1.0,
-        fontSizeSetting: 16
+    const info = op_get_app_info();
+    // `theme` is left out: the platform documents it as unavailable to mini
+    // games. `host.appId` is present only when the host names itself.
+    return {
+        SDKVersion: info.SDKVersion,
+        enableDebug: info.enableDebug,
+        host: info.hostAppId === null ? {} : { appId: info.hostAppId },
+        language: info.language,
+        version: info.version,
+        fontSizeScaleFactor: info.fontSizeScaleFactor,
+        fontSizeSetting: info.fontSizeSetting,
     };
-
-    return appInfo;
 }
 
 function getAccountInfoSync() {
+    const info = op_get_app_info();
+    // `plugin` is the platform's only for a call made inside a plugin, which
+    // content here never is.
     return {
         miniProgram: {
-            appId: _appId,
-            envVersion: "release",
-            version: "1.0.0",
+            appId: info.appId,
+            envVersion: info.envVersion,
+            version: info.contentVersion,
         },
-        plugin: {},
     };
 }
 
+// Callbacks only: the platform does not offer this one as a promise.
+function getDeviceBenchmarkInfo(options) {
+    wrapAsync('getDeviceBenchmarkInfo', function () {
+        const info = op_get_app_info();
+        return { benchmarkLevel: info.benchmarkLevel, modelLevel: info.modelLevel };
+    }, options);
+}
+
 export {
+    appInfo,
     getAppBaseInfo,
     getAccountInfoSync,
-    _internalSetAppId,
+    getDeviceBenchmarkInfo,
 };

@@ -367,6 +367,7 @@
         "op_get_ble_device_rssi": "unsupported",
         "op_get_ble_device_services": "unsupported",
         "op_get_ble_mtu": "unsupported",
+        "op_get_app_info": "local",
         "op_get_bluetooth_adapter_state": "unsupported",
         "op_get_bluetooth_devices": "unsupported",
         "op_get_connected_bluetooth_devices": "unsupported",

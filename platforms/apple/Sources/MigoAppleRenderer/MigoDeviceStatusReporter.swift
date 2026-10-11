@@ -6,8 +6,10 @@ import Network
     import UIKit
 #endif
 
-/// Tells one engine session what the device's network and battery are, now and
-/// at every change, for as long as the session runs.
+/// Tells one engine session what the device's network and battery are, and what
+/// the app says about itself (`getAppBaseInfo`: its bundle identifier, the
+/// language its interface is in, its text scale), now and at every change, for
+/// as long as the session runs.
 ///
 /// The engine answers content's `getNetworkType` and `getBatteryInfo` from the
 /// last report and forwards a network change while content listens, so the host
@@ -84,7 +86,12 @@ public final class MigoDeviceStatusReporter {
             return startup.path
         }
         if let path { report(path) }
+        reportHostApp()
         #if os(iOS)
+            observers.append(
+                NotificationCenter.default.addObserver(
+                    forName: UIContentSizeCategory.didChangeNotification, object: nil, queue: .main
+                ) { [weak self] _ in self?.reportHostApp() })
             let device = UIDevice.current
             batteryMonitoringWasEnabled = device.isBatteryMonitoringEnabled
             device.isBatteryMonitoringEnabled = true
@@ -130,7 +137,26 @@ public final class MigoDeviceStatusReporter {
         session?.setNetworkStatus(type, connected: connected)
     }
 
+    /// The app's id, the locale its interface runs in -- `Locale.current`
+    /// carries the app's own language, chosen per app on iOS, with the region
+    /// the person set -- and on iOS the text scale the person chose, as the
+    /// body style's size against its standard one. A Mac has no system text
+    /// scale; it is not reported there, which is the standard.
+    private func reportHostApp() {
+        guard running else { return }
+        #if os(iOS)
+            let fontScale = Float(UIFontMetrics(forTextStyle: .body).scaledValue(for: Self.standardBodySize) / Self.standardBodySize)
+        #else
+            let fontScale: Float = 0
+        #endif
+        session?.setHostAppInfo(
+            appId: Bundle.main.bundleIdentifier, language: Locale.current.identifier, fontScale: fontScale)
+    }
+
     #if os(iOS)
+        /// The body style's size at the standard content size category.
+        private static let standardBodySize: CGFloat = 17
+
         private func reportBattery() {
             guard running else { return }
             let device = UIDevice.current

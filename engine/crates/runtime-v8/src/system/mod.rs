@@ -10,6 +10,7 @@ use std::rc::Rc;
 use deno_core::{Extension, OpState, op2};
 use deno_error::JsErrorBox;
 use shared::op_state::HostOpState;
+use shared::services::app_info::AppInfo;
 use shared::services::host_files::Step;
 use shared::services::{Scope, ScopeState};
 
@@ -634,6 +635,28 @@ pub fn op_get_device_info(state: &mut OpState) -> Result<String, JsErrorBox> {
     Ok(shared::services::default_device_info_json())
 }
 
+// ==================== App Info ====================
+
+/// What `getAppBaseInfo`, `getAccountInfoSync` and `getDeviceBenchmarkInfo` answer -- and
+/// `getSystemInfoSync` and `getDeviceInfo` repeat: the engine's facts about itself, the host's
+/// report and the content's id, composed by [`AppInfo::compose`].
+#[op2]
+#[serde]
+pub fn op_get_app_info(state: &mut OpState) -> AppInfo {
+    let host = state.borrow::<HostOpState>();
+    let report = host
+        .device_services
+        .as_ref()
+        .and_then(|services| services.system_info())
+        .map(|system| system.host_app_info())
+        .unwrap_or_default();
+    let app_id = host
+        .game_paths
+        .as_deref()
+        .map_or("", |paths| paths.game_id());
+    AppInfo::compose(report, app_id)
+}
+
 // ==================== App Authorization Setting ====================
 
 #[op2]
@@ -705,6 +728,7 @@ deno_core::extension!(
         op_get_window_info,
         op_get_system_settings,
         op_get_device_info,
+        op_get_app_info,
         op_get_app_authorization_setting,
         op_game_log_report,
         op_get_auth_setting,
@@ -728,7 +752,6 @@ deno_core::extension!(
         "03_window_info.js",
         "04_system_settings.js",
         "05_device_info.js",
-        "06_benchmark_level.js",
         "07_app_info.js",
         "08_authorize_setting.js",
         "09_game_log.js",

@@ -9,8 +9,15 @@
     "replaced by `Host`; an adapter publishes it under the platform's name.",
     "",
     "Every API contract that speaks of the platform's API -- contracts/runtime/api-platform-matrix.json first -- is",
-    "checked against this list, so an API the platform has and migo has not decided on is a failure, not a gap."
+    "checked against this list, so an API the platform has and migo has not decided on is a failure, not a gap.",
+    "",
+    "library_level is the newest library level any of these APIs was introduced at, read from each one's page, and",
+    "the API that set it: the level the runtime reports as SDKVersion (shared::services::app_info::API_LIBRARY_LEVEL)."
   ],
+  "library_level": {
+    "version": "3.17.0",
+    "api": "openPhotoTopicView"
+  },
   "apis": {
     "addCard": "open-api/card",
     "authPrivateMessage": "share",

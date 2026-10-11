@@ -48,13 +48,19 @@ cfg.abi_version = MIGO_ABI_VERSION_CURRENT;
 ## MigoContentDescriptor
 
 ```c
+typedef uint32_t MigoContentEnvironment;
+#define MIGO_CONTENT_ENVIRONMENT_RELEASE 0U
+#define MIGO_CONTENT_ENVIRONMENT_TRIAL   1U
+#define MIGO_CONTENT_ENVIRONMENT_DEVELOP 2U
+
 typedef struct MigoContentDescriptor {
     uint32_t struct_size;
     uint32_t abi_version;
     MigoContentFlags flags;
-    uint32_t reserved0;
+    MigoContentEnvironment environment;  /* 0.9.20 前为 reserved0 */
     const char *content_id_utf8;
     const char *entry_utf8;
+    const char *version_utf8;            /* 0.9.20 追加 */
 } MigoContentDescriptor;
 ```
 
@@ -70,6 +76,12 @@ typedef struct MigoContentDescriptor {
 | `content_id_utf8` | `const char *` | 内容唯一标识，与存储根路径拼合定位游戏目录 |
 | `entry_utf8` | `const char *` | 相对于代码目录的入口文件名，例如 `"game.js"` |
 | `flags` | `MigoContentFlags` | 当前版本无已定义位，置 `MIGO_CONTENT_FLAG_NONE` |
+| `environment` | `MigoContentEnvironment` | 内容是哪个构建：`RELEASE`（0，正式版）、`TRIAL`（体验版）、`DEVELOP`（开发版），即 `getAccountInfoSync().miniProgram.envVersion`；其他值返回 `MIGO_ERROR_INVALID_ARGUMENT` |
+| `version_utf8` | `const char *` | 内容的线上版本号（`miniProgram.version`），NULL 或空为无，至多 64 字节；非正式版无论传什么都报告空，与平台一致 |
+
+`content_id_utf8` 是内容唯一的身份：既是安装目录，也是 `getAccountInfoSync()` 报告的 `appId`。`environment` 与
+`version_utf8` 对 0.9.20 之前构建的宿主都是零（前者原为必须为零的 `reserved0`，后者为追加字段，旧记录被零扩展），
+即"正式版、无版本号"。
 
 ## MigoLifecycleState
 
@@ -857,6 +869,48 @@ MIGO_API MigoResult MIGO_CALL migo_session_set_app_authorize_setting(
 
 - `MIGO_OK` — 已保留
 - `MIGO_ERROR_INVALID_ARGUMENT` — 记录为 NULL 或格式错误；取值超出 `MIGO_AUTHORIZATION_*`
+- `MIGO_ERROR_INVALID_STATE` — Session 已销毁
+
+## migo_session_set_host_app_info
+
+```c
+#define MIGO_HOST_APP_INFO_FLAG_DEBUG (1U << 0)
+#define MIGO_DEVICE_MODEL_LEVEL_UNKNOWN 0U  /* _HIGH 1U, _MEDIUM 2U, _LOW 3U */
+
+typedef struct MigoHostAppInfo {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    const char *app_id_utf8;    /* 宿主 App 自己的 id；NULL 为无 */
+    const char *language_utf8;  /* BCP 47；NULL 为系统语言 */
+    float font_scale;           /* 1 为标准；0 为未报告 */
+    int32_t benchmark_level;    /* -1 为未知 */
+    uint32_t model_level;       /* MIGO_DEVICE_MODEL_LEVEL_* */
+    uint32_t flags;             /* MIGO_HOST_APP_INFO_FLAG_* */
+} MigoHostAppInfo;
+
+MIGO_API MigoResult MIGO_CALL migo_session_set_host_app_info(MigoSession *session,
+                                                             const MigoHostAppInfo *info);
+```
+
+宿主 App 关于自己的陈述，即 `getAppBaseInfo` / `getDeviceBenchmarkInfo` 在引擎自知之外描述的部分。引擎自己知道其余的：
+实现的 API 级别（`SDKVersion`）、自身版本（`version`）、内容 id（`getAccountInfoSync` 的 `appId`，即
+`MigoContentDescriptor.content_id_utf8`）。不报告的宿主，平台有"未知"一词的答未知（`benchmarkLevel` -1、`modelLevel` 0），
+有标准的答标准（字号缩放 1），从不编一个看似合理的值。
+
+- `app_id_utf8`：宿主 App 的 bundle identifier / 包名，即 `host.appId`；NULL 或空则 `host` 不含 `appId`。至多 256 字节。
+- `language_utf8`：宿主 App 的语言（`"zh-Hans-CN"`），内容看到 `"zh_CN"`；NULL 或空用系统语言（macOS、iOS、Windows、
+  Linux 由引擎自己读取）。至多 64 字节。
+- `font_scale`：字号缩放（`fontSizeScaleFactor`；`fontSizeSetting` 为 16 px 乘它），至多 `MIGO_FONT_SCALE_MAX`（8）。
+- `benchmark_level` / `model_level`：宿主自己对设备的评分与档位（`getDeviceBenchmarkInfo`，`getDeviceInfo().benchmarkLevel`）。
+- `MIGO_HOST_APP_INFO_FLAG_DEBUG`：宿主的调试辅助已打开（`enableDebug`）。
+
+任意线程，启动时与变化时（如玩家改了字号）调用；每次替换上一次，字符串被拷贝。Surface attach 之前也可调用。
+
+返回：
+
+- `MIGO_OK` — 已保留
+- `MIGO_ERROR_INVALID_ARGUMENT` — 记录为 NULL 或格式错误；字符串不是 UTF-8 或超长；语言不以语言子标签开头；`font_scale`
+  为负、非有限或超过上限；`benchmark_level` 小于 -2；`model_level` 或标志位未定义
 - `MIGO_ERROR_INVALID_STATE` — Session 已销毁
 
 ## migo_session_post_sensor_sample

@@ -54,6 +54,22 @@ public final class RuntimeConfig {
         }
     }
 
+    /**
+     * Which build of the content a session runs: what {@code getAccountInfoSync}
+     * reports, as the constant's name in lower case.
+     */
+    public enum ContentEnvironment {
+        /** The released build -- the default. */
+        RELEASE,
+        /** A pre-release build handed to testers. */
+        TRIAL,
+        /** A development build. */
+        DEVELOP
+    }
+
+    /** The longest content version the engine keeps, in UTF-8 bytes. */
+    public static final int CONTENT_VERSION_MAX_BYTES = 64;
+
     // Core settings
     private final String cacheDir;
     private final String filesDir;
@@ -77,6 +93,12 @@ public final class RuntimeConfig {
     private final boolean codeSigningEnabled;
     private final String codeSigningPubkey;
 
+    // What the host says about the content and the device
+    private final ContentEnvironment contentEnvironment;
+    private final String contentVersion;
+    private final int benchmarkLevel;
+    private final int modelLevel;
+
     // Boot prelude scripts: pairs of {name, source} executed before every
     // EvaluateModule. Used to inject a BOM/DOM adapter so browser-style
     // games can run unchanged. See Builder#addPreludeScript.
@@ -98,6 +120,10 @@ public final class RuntimeConfig {
         this.watchdogTimeoutSecs = builder.watchdogTimeoutSecs;
         this.codeSigningEnabled = builder.codeSigningEnabled;
         this.codeSigningPubkey = builder.codeSigningPubkey;
+        this.contentEnvironment = builder.contentEnvironment;
+        this.contentVersion = builder.contentVersion;
+        this.benchmarkLevel = builder.benchmarkLevel;
+        this.modelLevel = builder.modelLevel;
         this.preludeScripts = Collections.unmodifiableList(new ArrayList<>(builder.preludeScripts));
         this.preludeScriptsJson = buildPreludeScriptsJson(this.preludeScripts);
     }
@@ -146,6 +172,18 @@ public final class RuntimeConfig {
 
     /** Get hex Ed25519 public key used by code signing verification (nullable) */
     public String getCodeSigningPubkey() { return codeSigningPubkey; }
+
+    /** Which build of the content the session runs. */
+    public ContentEnvironment getContentEnvironment() { return contentEnvironment; }
+
+    /** The content's released version, or null for none. */
+    public String getContentVersion() { return contentVersion; }
+
+    /** The app's own score for the device: -1 unknown, 1 and up higher faster. */
+    public int getBenchmarkLevel() { return benchmarkLevel; }
+
+    /** The app's own tier for the device: 0 unknown, 1 high, 2 middle, 3 low. */
+    public int getModelLevel() { return modelLevel; }
 
     /**
      * Get the configured boot prelude scripts.
@@ -249,6 +287,12 @@ public final class RuntimeConfig {
         private boolean codeSigningEnabled = true;
         private String codeSigningPubkey = null;
 
+        // Content and device
+        private ContentEnvironment contentEnvironment = ContentEnvironment.RELEASE;
+        private String contentVersion = null;
+        private int benchmarkLevel = -1;
+        private int modelLevel = 0;
+
         private final List<String[]> preludeScripts = new ArrayList<>();
 
         /**
@@ -336,6 +380,72 @@ public final class RuntimeConfig {
                 throw new IllegalArgumentException(
                         "startupOrientation must be \"landscape\" or \"portrait\"");
             }
+            return this;
+        }
+
+        /**
+         * Which build of the content the session runs: what
+         * {@code getAccountInfoSync().miniProgram.envVersion} reports.
+         * <p>
+         * Default: {@link ContentEnvironment#RELEASE}.
+         *
+         * @param environment the build
+         * @return this builder
+         */
+        public Builder setContentEnvironment(ContentEnvironment environment) {
+            if (environment == null) {
+                throw new IllegalArgumentException("contentEnvironment must not be null");
+            }
+            this.contentEnvironment = environment;
+            return this;
+        }
+
+        /**
+         * The content's released version, what
+         * {@code getAccountInfoSync().miniProgram.version} reports for a release.
+         * A build that is not a release reports none, as the platform does.
+         * <p>
+         * Default: none.
+         *
+         * @param version the version, or null or empty for none; at most
+         *                {@link #CONTENT_VERSION_MAX_BYTES} UTF-8 bytes
+         * @return this builder
+         */
+        public Builder setContentVersion(String version) {
+            if (version == null || version.isEmpty()) {
+                this.contentVersion = null;
+                return this;
+            }
+            if (version.getBytes(java.nio.charset.StandardCharsets.UTF_8).length
+                    > CONTENT_VERSION_MAX_BYTES) {
+                throw new IllegalArgumentException(
+                        "contentVersion is longer than " + CONTENT_VERSION_MAX_BYTES + " bytes");
+            }
+            this.contentVersion = version;
+            return this;
+        }
+
+        /**
+         * The app's own assessment of the device, what
+         * {@code getDeviceBenchmarkInfo} and {@code getDeviceInfo().benchmarkLevel}
+         * report. The engine measures neither: without this they report unknown.
+         * <p>
+         * Default: -1 and 0, unknown.
+         *
+         * @param benchmarkLevel -1 unknown, 1 and up higher faster (-2 and 0: the
+         *                       device cannot run games)
+         * @param modelLevel     0 unknown, 1 high, 2 middle, 3 low
+         * @return this builder
+         */
+        public Builder setDeviceBenchmark(int benchmarkLevel, int modelLevel) {
+            if (benchmarkLevel < -2) {
+                throw new IllegalArgumentException("benchmarkLevel must be -2 or more");
+            }
+            if (modelLevel < 0 || modelLevel > 3) {
+                throw new IllegalArgumentException("modelLevel must be 0 to 3");
+            }
+            this.benchmarkLevel = benchmarkLevel;
+            this.modelLevel = modelLevel;
             return this;
         }
 

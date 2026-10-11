@@ -12,6 +12,7 @@
 //! - `Err(ServiceError::invalid_param("vibrateShort:fail invalid type"))` - Bad input
 
 mod ad;
+pub mod app_info;
 mod auth;
 mod camera;
 mod clipboard;

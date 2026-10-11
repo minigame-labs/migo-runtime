@@ -203,30 +203,6 @@ public final class DeviceInfo {
         return locale.getLanguage() + "_" + locale.getCountry();
     }
 
-    // ==================== Benchmark ====================
-
-    /**
-     * Estimate device benchmark level based on hardware capabilities.
-     * <p>
-     * Uses total RAM as a heuristic to approximate the benchmark level
-     * returned by getDeviceInfo API.
-     *
-     * @param context The context (for memory info)
-     * @return Benchmark level (1-50), or -1 if cannot be determined
-     */
-    public static int getBenchmarkLevel(Context context) {
-        if (context == null) return -1;
-
-        long totalMemMB = getTotalMemoryMB(context);
-        if (totalMemMB <= 0) return -1;
-
-        double totalMemGB = totalMemMB / 1024.0;
-        int level = (int) Math.round(totalMemGB * 3.5);
-
-        // Clamp to reasonable range
-        return Math.max(1, Math.min(level, 50));
-    }
-
     // ==================== CPU Type ====================
 
     /**
@@ -260,14 +236,13 @@ public final class DeviceInfo {
         sb.append("\"platform\":\"android\",");
         sb.append("\"abi\":\"").append(abi).append("\",");
         sb.append("\"deviceAbi\":\"").append(abi).append("\",");
-        sb.append("\"cpuType\":\"").append(escapeJson(getCpuType())).append("\",");
-
+        sb.append("\"cpuType\":\"").append(escapeJson(getCpuType())).append("\"");
         if (context != null) {
-            sb.append("\"memorySize\":").append(getTotalMemoryMB(context)).append(",");
-            sb.append("\"benchmarkLevel\":").append(getBenchmarkLevel(context));
-        } else {
-            sb.append("\"benchmarkLevel\":-1");
+            sb.append(",\"memorySize\":").append(getTotalMemoryMB(context));
         }
+        // No benchmark level: content reads the app's own assessment of the
+        // device with what it says about itself (HostAppInfo). The engine
+        // measures none, and total memory is not a score.
 
         sb.append("}");
         return sb.toString();

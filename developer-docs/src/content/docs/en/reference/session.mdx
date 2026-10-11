@@ -41,13 +41,19 @@ cfg.abi_version = MIGO_ABI_VERSION_CURRENT;
 ## MigoContentDescriptor
 
 ```c
+typedef uint32_t MigoContentEnvironment;
+#define MIGO_CONTENT_ENVIRONMENT_RELEASE 0U
+#define MIGO_CONTENT_ENVIRONMENT_TRIAL   1U
+#define MIGO_CONTENT_ENVIRONMENT_DEVELOP 2U
+
 typedef struct MigoContentDescriptor {
     uint32_t struct_size;
     uint32_t abi_version;
     MigoContentFlags flags;
-    uint32_t reserved0;
+    MigoContentEnvironment environment;  /* reserved0 before 0.9.20 */
     const char *content_id_utf8;
     const char *entry_utf8;
+    const char *version_utf8;            /* appended in 0.9.20 */
 } MigoContentDescriptor;
 ```
 
@@ -60,6 +66,10 @@ Fields:
 | `content_id_utf8` | `const char *` | Unique content identifier, combined with the storage root to locate the game directory |
 | `entry_utf8` | `const char *` | Entry filename relative to the code directory, for example `"game.js"` |
 | `flags` | `MigoContentFlags` | No bits are defined in the current version; set `MIGO_CONTENT_FLAG_NONE` |
+| `environment` | `MigoContentEnvironment` | Which build of the content this is: `RELEASE` (0), `TRIAL` or `DEVELOP` -- `getAccountInfoSync().miniProgram.envVersion`; any other value returns `MIGO_ERROR_INVALID_ARGUMENT` |
+| `version_utf8` | `const char *` | The content's released version (`miniProgram.version`), NULL or empty for none, at most 64 bytes; a build that is not a release reports none whatever is passed, as the platform does |
+
+`content_id_utf8` is the content's one identity: the directory it is installed in, and the `appId` `getAccountInfoSync()` reports. `environment` and `version_utf8` are zero for a host built before 0.9.20 (the first was `reserved0`, which had to be zero; the second is appended, and a shorter record is zero-extended), which describes a release with no version.
 
 ## MigoLifecycleState
 
@@ -859,6 +869,58 @@ Returns:
 - `MIGO_ERROR_INVALID_ARGUMENT` — a NULL or malformed record; a value outside
   `MIGO_AUTHORIZATION_*`
 - `MIGO_ERROR_INVALID_STATE` — the Session has been destroyed
+
+## migo_session_set_host_app_info
+
+```c
+#define MIGO_HOST_APP_INFO_FLAG_DEBUG (1U << 0)
+#define MIGO_DEVICE_MODEL_LEVEL_UNKNOWN 0U  /* _HIGH 1U, _MEDIUM 2U, _LOW 3U */
+
+typedef struct MigoHostAppInfo {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    const char *app_id_utf8;    /* the host app's own id; NULL for none */
+    const char *language_utf8;  /* BCP 47; NULL for the system's */
+    float font_scale;           /* 1 standard; 0 not reported */
+    int32_t benchmark_level;    /* -1 unknown */
+    uint32_t model_level;       /* MIGO_DEVICE_MODEL_LEVEL_* */
+    uint32_t flags;             /* MIGO_HOST_APP_INFO_FLAG_* */
+} MigoHostAppInfo;
+
+MIGO_API MigoResult MIGO_CALL migo_session_set_host_app_info(MigoSession *session,
+                                                             const MigoHostAppInfo *info);
+```
+
+What the host app says about itself: what `getAppBaseInfo` and `getDeviceBenchmarkInfo`
+describe beyond what the engine knows. The engine knows the rest -- the API level it
+implements (`SDKVersion`), its own version (`version`), the content's id (the `appId` of
+`getAccountInfoSync`, which is `MigoContentDescriptor.content_id_utf8`). A host that reports
+nothing is answered with "unknown" where the platform has a word for it (`benchmarkLevel` -1,
+`modelLevel` 0) and the standard where it has one (a text scale of 1), never with a value made
+up to look plausible.
+
+- `app_id_utf8`: the host app's bundle identifier or package name, `host.appId`; NULL or
+  empty and `host` has no `appId`. At most 256 bytes.
+- `language_utf8`: the host app's language (`"zh-Hans-CN"`); content is told `"zh_CN"`. NULL
+  or empty for the system's, which the engine reads itself on macOS, iOS, Windows and Linux.
+  At most 64 bytes.
+- `font_scale`: the text scale (`fontSizeScaleFactor`; `fontSizeSetting` is 16 px times it),
+  at most `MIGO_FONT_SCALE_MAX` (8).
+- `benchmark_level` / `model_level`: the host's own score and tier for the device
+  (`getDeviceBenchmarkInfo`, `getDeviceInfo().benchmarkLevel`).
+- `MIGO_HOST_APP_INFO_FLAG_DEBUG`: the host's debugging aids are on (`enableDebug`).
+
+Any thread, at start and whenever it changes (the player changing the text size, say); each
+report replaces the last, and strings are copied. May be called before a Surface is attached.
+
+Returns:
+
+- `MIGO_OK` — kept
+- `MIGO_ERROR_INVALID_ARGUMENT` — a NULL or malformed record; a string that is not UTF-8 or
+  past its bound; a language that does not begin with a language subtag; a `font_scale` that
+  is negative, not finite or past the bound; a `benchmark_level` below -2; a `model_level` or
+  flag the header does not define
+- `MIGO_ERROR_INVALID_STATE` — the Session is destroyed
 
 ## migo_session_post_sensor_sample
 
