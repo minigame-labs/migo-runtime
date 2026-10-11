@@ -321,6 +321,7 @@ const JAVA_CONNECTIVITY: &[JniMethod] = methods![
     ("authGetPhoneNumber", "(ILjava/lang/String;)V"),
     ("openSetting", "(ILjava/lang/String;)V"),
     ("navigateToMiniProgram", "(ILjava/lang/String;)V"),
+    ("navigateBackMiniProgram", "(ILjava/lang/String;)V"),
     ("openCustomerServiceConversation", "(ILjava/lang/String;)V"),
 ];
 
@@ -511,8 +512,10 @@ mod tests {
         // `exitPointerLock`). A gamepad's motors add +1 Java, Core
         // (`gamepadRumble`). What the app says about itself and its content adds
         // +1 Java (`getHostAppInfoJson`). The host's package updates add +2
-        // Java, System (`updateAvailable`, `applyUpdate`).
-        assert_eq!(java.len(), 147, "full NativeExports surface changed");
+        // Java, System (`updateAvailable`, `applyUpdate`). Returning to the
+        // mini program that opened this one adds +1 Java, Connectivity
+        // (`navigateBackMiniProgram`).
+        assert_eq!(java.len(), 148, "full NativeExports surface changed");
         assert_unique(&native);
         assert_unique(&java);
     }

@@ -1432,6 +1432,10 @@ impl NavigateService for AndroidNavigate {
         Ok(jni::navigate_to_mini_program(self.host_id, options_json)?)
     }
 
+    fn navigate_back_mini_program(&self, options_json: &str) -> Result<(), ServiceError> {
+        Ok(jni::navigate_back_mini_program(self.host_id, options_json)?)
+    }
+
     fn open_customer_service_conversation(&self, options_json: &str) -> Result<(), ServiceError> {
         Ok(jni::open_customer_service_conversation(
             self.host_id,

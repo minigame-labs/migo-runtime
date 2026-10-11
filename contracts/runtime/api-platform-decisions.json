@@ -85,7 +85,6 @@
   },
   "gaps": {
     "createVideoDecoder": {"platforms": "*", "reason": "every method is a no-op; no decoder is integrated"},
-    "navigateBackMiniProgram": {"platforms": ["android"], "reason": "the Java SDK's NavigationHandler has no way back to the mini program that opened this one"},
     "onAudioInterruptionBegin": {"platforms": ["ohos"], "reason": "the OpenHarmony audio output does not report interruptions yet"},
     "onAudioInterruptionEnd": {"platforms": ["ohos"], "reason": "the OpenHarmony audio output does not report interruptions yet"},
     "saveFileToDisk": {"platforms": ["macos", "linux", "windows"], "reason": "throws; the save dialog is the platform's"}

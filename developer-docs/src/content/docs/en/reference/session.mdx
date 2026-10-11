@@ -659,6 +659,26 @@ Returns:
 - `MIGO_ERROR_INVALID_ARGUMENT` — `session` is NULL, or `focused` is not `0` or `1`.
 - `MIGO_ERROR_INVALID_STATE` — The Session was destroyed.
 
+## migo_session_post_memory_warning
+
+```c
+typedef int32_t MigoMemoryWarningLevel;
+#define MIGO_MEMORY_WARNING_MODERATE 5
+#define MIGO_MEMORY_WARNING_LOW 10
+#define MIGO_MEMORY_WARNING_CRITICAL 15
+
+MIGO_API MigoResult MIGO_CALL
+migo_session_post_memory_warning(MigoSession *session, MigoMemoryWarningLevel level);
+```
+
+Report that the operating system warned the app about memory, from any thread, as it warns. The level is one of the three the platform's `onMemoryWarning` reports (Android's running `onTrimMemory` values), onto which every platform maps its own signal: an iOS memory warning is `CRITICAL`, a macOS memory-pressure warning `LOW` and its critical `CRITICAL`. The engine first releases a share of its caches for the level -- decoded images, text textures -- and then tells content (`onMemoryWarning`, `{level}`). A warning while no content runs reaches nobody and is dropped. The Apple hosts report it through `MigoDeviceStatusReporter`.
+
+Returns:
+
+- `MIGO_OK` — Delivered (or dropped, with no content running).
+- `MIGO_ERROR_INVALID_ARGUMENT` — The level is not one of the three this header defines.
+- `MIGO_ERROR_INVALID_STATE` — The Session was destroyed.
+
 ## migo_session_set_network_status
 
 ```c

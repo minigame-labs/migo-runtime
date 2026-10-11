@@ -264,6 +264,8 @@ int migo_core_c_contract(void) {
         &migo_session_set_visibility;
     MigoResult(MIGO_CALL *set_focus_fn)(MigoSession *, uint8_t) =
         &migo_session_set_focus;
+    MigoResult(MIGO_CALL *memory_warning_fn)(MigoSession *, MigoMemoryWarningLevel) =
+        &migo_session_post_memory_warning;
     MigoResult(MIGO_CALL *destroy_fn)(MigoSession *) = &migo_session_destroy;
     MigoResult(MIGO_CALL *network_fn)(MigoSession *, MigoNetworkType, uint8_t) =
         &migo_session_set_network_status;
@@ -297,7 +299,7 @@ int migo_core_c_contract(void) {
                  (engine_create_fn != NULL) + (engine_destroy_fn != NULL) +
                  (session_create_fn != NULL) + (set_callbacks_fn != NULL) +
                  (set_lifecycle_fn != NULL) + (set_visibility_fn != NULL) +
-                 (set_focus_fn != NULL) + (destroy_fn != NULL) +
+                 (set_focus_fn != NULL) + (memory_warning_fn != NULL) + (destroy_fn != NULL) +
                  (network_fn != NULL) + (battery_fn != NULL) +
                  (complete_call_fn != NULL) + (post_event_fn != NULL) +
                  (host_service_call != NULL) + (callbacks.host_services != 0) +

@@ -20,14 +20,16 @@ import java.util.Map;
  * {@code migo.navigateToMiniProgram()} fails with
  * {@code navigateToMiniProgram:fail not supported} and code {@code -2}, and
  * {@code migo.openCustomerServiceConversation()} fails with
- * {@code openCustomerServiceConversation:fail not supported}.
+ * {@code openCustomerServiceConversation:fail not supported}, and so does
+ * {@code migo.navigateBackMiniProgram()} with its own name.
  *
  * <h2>Contract</h2>
  * <ul>
  *   <li>{@link #navigateToMiniProgram} must eventually settle, exactly once,
  *       through the {@link NavigationSink} it is given.</li>
- *   <li>{@link #openCustomerServiceConversation} answers with its return value
- *       instead, because the runtime gave it no result channel -- see there.</li>
+ *   <li>{@link #openCustomerServiceConversation} and {@link #navigateBackMiniProgram}
+ *       answer with their return value instead, because the runtime gave them no
+ *       result channel -- see there.</li>
  *   <li>Calls arrive on the runtime's host thread. Do not block: start the
  *       Activity and return. The sink is safe to use from any thread.</li>
  * </ul>
@@ -53,8 +55,9 @@ public interface NavigationHandler {
      * Open your support channel.
      * <p>
      * Answered by the return value rather than a sink, and the asymmetry is the
-     * engine's rather than a choice made here: this is the one API in this group
-     * the runtime exposes to content synchronously, with no result callback
+     * engine's rather than a choice made here: this and
+     * {@link #navigateBackMiniProgram} are the APIs in this group the runtime
+     * exposes to content synchronously, with no result callback
      * defined for it on either side of the boundary. So there is nothing to
      * settle later -- {@code true} resolves the content-side call and
      * {@code false} rejects it with
@@ -67,6 +70,24 @@ public interface NavigationHandler {
      * @return whether the conversation was opened
      */
     default boolean openCustomerServiceConversation(CustomerServiceRequest request) {
+        return false;
+    }
+
+    /**
+     * Return to the mini program that opened this one, handing it
+     * {@code extraData} -- which it reads in its {@code onShow}.
+     * <p>
+     * Answered by the return value, as {@link #openCustomerServiceConversation}
+     * is and for the same reason: content's call settles on it. {@code false}
+     * -- this game was not opened by another, or you do not take players back --
+     * rejects the call with {@code navigateBackMiniProgram:fail not supported}.
+     *
+     * @param extraData data for the mini program returned to, as an immutable
+     *                  tree of {@code String}, {@code Number}, {@code Boolean},
+     *                  {@code List} and {@code Map}; empty when content gave none
+     * @return whether the player is being taken back
+     */
+    default boolean navigateBackMiniProgram(java.util.Map<String, Object> extraData) {
         return false;
     }
 

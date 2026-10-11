@@ -1006,6 +1006,47 @@ pub unsafe extern "C" fn migo_session_set_focus(
     })
 }
 
+/// The levels `migo_session_post_memory_warning` accepts: the common
+/// platform's three, Android's `onTrimMemory` running levels.
+const MEMORY_WARNING_LEVELS: [i32; 3] = [5, 10, 15];
+
+/// # Safety
+/// `session` must be a live session handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn migo_session_post_memory_warning(
+    session: *mut MigoSession,
+    level: i32,
+) -> MigoResult {
+    guard("migo_session_post_memory_warning", || {
+        let session = match unsafe { pin_session(session) } {
+            Ok(session) => session,
+            Err(error) => return error,
+        };
+        if !MEMORY_WARNING_LEVELS.contains(&level) {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        }
+        let Ok(state) = session.state.lock() else {
+            return MIGO_ERROR_INTERNAL;
+        };
+        // No content running: nobody to warn, and nothing of its to release.
+        let Some(host) = state
+            .host
+            .as_ref()
+            .filter(|_| state.content_loaded)
+            .map(SessionEngine::id)
+        else {
+            return MIGO_OK;
+        };
+        match migo_core::send_command_to_host(host, HostCommand::OnMemoryWarning { level }) {
+            Ok(()) => MIGO_OK,
+            Err(error) => {
+                tracing::error!("memory warning command failed: {error}");
+                MIGO_ERROR_INTERNAL
+            }
+        }
+    })
+}
+
 // ---- Development logging ----------------------------------------------------
 
 /// The level `MIGO_CAPI_LOG` asks for, if a host set it.
@@ -1246,6 +1287,25 @@ mod tests {
             unsafe { migo_engine_create(&config, &mut engine) },
             MIGO_ERROR_INVALID_ARGUMENT
         );
+    }
+
+    #[test]
+    fn a_memory_warning_takes_the_platform_s_three_levels_and_reaches_nobody_without_content() {
+        crate::test_support::with_session("memory-warning", |session| {
+            for level in [5, 10, 15] {
+                assert_eq!(
+                    unsafe { migo_session_post_memory_warning(session, level) },
+                    MIGO_OK
+                );
+            }
+            for level in [0, -1, 7, 20, 80] {
+                assert_eq!(
+                    unsafe { migo_session_post_memory_warning(session, level) },
+                    MIGO_ERROR_INVALID_ARGUMENT,
+                    "{level}"
+                );
+            }
+        });
     }
 
     #[test]

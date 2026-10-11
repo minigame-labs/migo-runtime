@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `migo_session_post_memory_warning(session, level)`: a C ABI host reports the system's memory warnings at the
+  platform's three levels (`MIGO_MEMORY_WARNING_MODERATE` / `LOW` / `CRITICAL`, 5 / 10 / 15). The engine releases a
+  share of its caches for the level and then tells content (`onMemoryWarning`, `{level}`), on Performance+ too. The
+  Apple hosts report it: an iOS memory warning as critical, macOS memory pressure as low or critical.
+- Android: `NavigationHandler.navigateBackMiniProgram(extraData)` takes the player back to the mini program that opened
+  this one; `migo.navigateBackMiniProgram` settles on its answer, as it does on the C ABI channel.
 - Package updates are the host's: a new host service, `MIGO_HOST_SERVICE_UPDATE` (18), reports each step as
   `MIGO_UPDATE_EVENT_STATE` -- `{"event":"checkForUpdate","hasUpdate"}` for the check the host makes on every start,
   then `{"event":"updateReady"}` or `{"event":"updateFailed"}` -- and carries content's `applyUpdate` back as

@@ -302,6 +302,11 @@ final class HostDelegation {
                 options.optString("envVersion", "release"));
     }
 
+    /** The {@code extraData} of a request, as the handler receives it. */
+    static java.util.Map<String, Object> extraData(JSONObject options) {
+        return immutableMap(options.optJSONObject("extraData"));
+    }
+
     static NavigationHandler.CustomerServiceRequest customerServiceRequest(JSONObject options) {
         return new NavigationHandler.CustomerServiceRequest(
                 options.optString("sessionFrom", ""),

@@ -1154,6 +1154,10 @@ int main(int argc, char **argv) {
 
     result = migo_session_load_content(session, &content);
     if (result != MIGO_OK) return fail("migo_session_load_content", result);
+    /* The system warns about memory as the game starts; content's listener,
+     * registered as its module ran, hears the level. */
+    result = migo_session_post_memory_warning(session, MIGO_MEMORY_WARNING_CRITICAL);
+    if (result != MIGO_OK) return fail("migo_session_post_memory_warning", result);
 
     int64_t run_started = now_nanos();
     struct timespec deadline;
