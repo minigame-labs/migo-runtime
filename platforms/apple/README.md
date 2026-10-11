@@ -98,6 +98,37 @@ Mode; a Mac answers those two "not supported", as a device without the
 hardware does. Entries a game writes with `getGameLogManager().log` arrive as
 `onEvent(.gameLog(json))`, for the app to keep or upload.
 
+What content asks of the app -- ads, payments, sign-in, sharing, navigation,
+its dialogs and pickers -- reaches the app through the host-service channel.
+Name the services you supply in `Configuration.hostServices`, an object that
+answers each request (`include/migo/host_services.h` documents every method and
+its JSON; the numbers are `MigoHostServiceID.Clipboard.getClipboardData` and the
+rest):
+
+```swift
+final class AppServices: MigoHostServiceProvider {
+    let services: Set<MigoHostServiceID> = [.clipboard]
+    func handle(_ request: MigoHostServiceRequest) {
+        switch (request.service, request.method) {
+        case (.clipboard, MigoHostServiceID.Clipboard.getClipboardData):
+            request.reply?.succeed(["data": NSPasteboard.general.string(forType: .string) ?? ""])
+        default:
+            request.reply?.fail("not supported")
+        }
+    }
+}
+let configuration = MigoGameView.Configuration(
+    directories: try .standard(), contentSigning: .unsigned, hostServices: AppServices())
+```
+
+A call is answered once, now or later (`reply.succeed(...)`, or `reply.fail("cancel")`
+for a player who dismissed it); a reply the app drops unanswered fails the call
+rather than leaving the game waiting. A service's events -- an advert's
+progress, an update's steps -- go to the game with
+`gameView.postHostServiceEvent(_:event:json:)`. A service the app does not name
+is answered "not supported". On iOS the channel reaches Performance+ content
+once its producer forwards these calls (P1).
+
 Not offered on these lanes, and refused rather than faked:
 `setDeviceOrientation` (the size is fixed at start), `setEnableDebug` (there is
 no debug panel), `getHeapStatistics` on iOS (content runs in WebKit's

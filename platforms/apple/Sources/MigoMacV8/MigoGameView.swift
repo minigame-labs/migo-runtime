@@ -14,6 +14,14 @@ public typealias MigoGameInstaller = MigoContentInstaller
 /// Whether game packages must be signed; see `MigoEngineSession.ContentSigning`.
 public typealias MigoContentSigning = MigoEngineSession.ContentSigning
 
+/// A service the app supplies through the host-service channel; see
+/// `MigoHostServiceID` and `MigoHostServiceProvider`. Named here so an app that
+/// imports only this product can name them.
+public typealias MigoHostServiceID = MigoAppleRenderer.MigoHostServiceID
+public typealias MigoHostServiceRequest = MigoAppleRenderer.MigoHostServiceRequest
+public typealias MigoHostServiceReply = MigoAppleRenderer.MigoHostServiceReply
+public typealias MigoHostServiceProvider = MigoAppleRenderer.MigoHostServiceProvider
+
 #if os(macOS)
     import AppKit
     import IOKit.pwr_mgt
@@ -62,15 +70,22 @@ public typealias MigoContentSigning = MigoEngineSession.ContentSigning
             public var contentSigning: MigoContentSigning
             public var preferredFramesPerSecond: Int?
             public var mouse: MouseInput
+            /// What the app supplies of the host-service channel -- ads,
+            /// payments, sign-in, sharing, its dialogs -- for the services it
+            /// names; `nil` supplies none, and content is told each is not
+            /// supported. Held for as long as a game runs.
+            public var hostServices: MigoHostServiceProvider?
 
             public init(
                 directories: MigoGameDirectories, contentSigning: MigoContentSigning,
-                preferredFramesPerSecond: Int? = nil, mouse: MouseInput = .touch
+                preferredFramesPerSecond: Int? = nil, mouse: MouseInput = .touch,
+                hostServices: MigoHostServiceProvider? = nil
             ) {
                 self.directories = directories
                 self.contentSigning = contentSigning
                 self.preferredFramesPerSecond = preferredFramesPerSecond
                 self.mouse = mouse
+                self.hostServices = hostServices
             }
 
             public static func standard(contentSigning: MigoContentSigning) throws -> Configuration {
@@ -158,6 +173,14 @@ public typealias MigoContentSigning = MigoEngineSession.ContentSigning
             startIfPossible()
         }
 
+        /// Post one of a service's events to the game -- a `MIGO_<SERVICE>_EVENT_*`
+        /// number with the JSON object `host_services.h` documents for it: an
+        /// advert's progress, a package update's steps. Nothing while no game
+        /// runs. Main thread.
+        public func postHostServiceEvent(_ service: MigoHostServiceID, event: UInt32, json: Data) {
+            engine?.postHostServiceEvent(service, event: event, json: json)
+        }
+
         /// Stop the game and release everything it held.
         public func stop() {
             game = nil
@@ -237,7 +260,8 @@ public typealias MigoContentSigning = MigoEngineSession.ContentSigning
                 metalLayer.device = window?.screen.flatMap(Self.displayDevice)
                 let engine = try MigoEngineSession(
                     directories: configuration.directories, contentSigning: configuration.contentSigning,
-                    preferredFramesPerSecond: configuration.preferredFramesPerSecond)
+                    preferredFramesPerSecond: configuration.preferredFramesPerSecond,
+                    hostServices: configuration.hostServices)
                 self.engine = engine
                 engine.onEvent = { [weak self] event in self?.engineEvent(event) }
                 // Before content runs, so its first `getNetworkType` has a report.

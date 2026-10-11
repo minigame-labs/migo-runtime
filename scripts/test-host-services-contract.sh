@@ -10,6 +10,9 @@
 #   contracts/runtime/host-services.json       the definition
 #   include/migo/host_services.h               what a C, C++ or Swift host compiles
 #   engine/crates/capi-abi/src/host_services.rs the library's constants
+#   platforms/apple/.../MigoHostServiceNumbers.swift what a Swift app that imports
+#                                               only a product module sees,
+#                                               generated from the contract
 #   engine/crates/runtime-v8/src               the ops content's calls go through,
 #                                               and the hooks results land on
 #
@@ -36,6 +39,7 @@ python3 - "$ROOT" "$SCRIPTS/lib" <<'PY'
 import json
 import pathlib
 import re
+import subprocess
 import sys
 
 root = pathlib.Path(sys.argv[1])
@@ -254,6 +258,19 @@ for path in (root / runtime_ops.RUNTIME_SRC).rglob("*.js"):
 for hook, where in sorted(hooks.items()):
     if hook not in js_hooks:
         fail(f"{where}: hook {hook} is not installed by the engine's JavaScript")
+
+# ---- the Swift SDK's numbers -------------------------------------------------------
+#
+# An app that imports only a product module sees neither the header nor the Rust
+# constants: the SDK carries the numbers, generated from the contract.
+
+swift_check = subprocess.run(
+    [sys.executable, str(root / "scripts/gen-swift-host-services.py"), "--root", str(root), "--check"],
+    capture_output=True,
+    text=True,
+)
+if swift_check.returncode != 0:
+    fail(swift_check.stderr.strip() or "the Swift SDK's host-service numbers do not match the contract")
 
 if errors:
     for message in errors:

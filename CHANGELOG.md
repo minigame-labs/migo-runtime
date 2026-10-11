@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Apple: the host-service channel in the Swift SDK. `MigoGameView.Configuration.hostServices` takes a
+  `MigoHostServiceProvider` that names the services the app supplies and answers each `MigoHostServiceRequest` through
+  its `MigoHostServiceReply` -- once, now or later; a reply dropped unanswered fails the call -- and
+  `postHostServiceEvent` sends a service's events to the game. The service, method and event numbers
+  (`MigoHostServiceID.Clipboard.getClipboardData` and the rest) are generated from the contract by
+  `scripts/gen-swift-host-services.py`, and `scripts/test-host-services-contract.sh` holds them to it.
+  `scripts/test-macos-game-view.sh` proves a game reaching an app's services through the product surface.
 - `createVideoDecoder` runs on the engine: a platform supplies only its decoding (`VideoDecoderService` -- open a
   source, decode the next frame as RGBA, seek), and the engine runs it on a thread per decoder, paced by the frames'
   presentation times (`mode: 0`) or decoding up to three frames ahead of content (`mode: 1`), with `start` (with the
