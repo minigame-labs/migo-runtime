@@ -80,7 +80,11 @@ fn the_host_is_handed_the_real_file_and_its_answer_settles_the_call() {
         "0",
     );
     let requests = host.requests.lock().unwrap().clone();
-    assert_eq!(requests.len(), 2, "only the sandbox's own file crosses: {requests:?}");
+    assert_eq!(
+        requests.len(),
+        2,
+        "only the sandbox's own file crosses: {requests:?}"
+    );
     let request: serde_json::Value = serde_json::from_str(&requests[0]).unwrap();
     assert_eq!(
         std::fs::canonicalize(request["filePath"].as_str().unwrap()).unwrap(),
@@ -101,15 +105,21 @@ fn the_host_is_handed_the_real_file_and_its_answer_settles_the_call() {
 
     // The player cancelling the dialog is the host's failure, and content's.
     let second: serde_json::Value = serde_json::from_str(&requests[1]).unwrap();
-    run(&mut runtime, "__settle('saveFileToDisk', { filePath: '/user/save.txt' });", "0");
-    let third: serde_json::Value =
-        serde_json::from_str(&host.requests.lock().unwrap()[2]).unwrap();
+    run(
+        &mut runtime,
+        "__settle('saveFileToDisk', { filePath: '/user/save.txt' });",
+        "0",
+    );
+    let third: serde_json::Value = serde_json::from_str(&host.requests.lock().unwrap()[2]).unwrap();
     let checked = run(
         &mut runtime,
         &(answer(&third, "{ error: 'cancel' }") + &answer(&second, "{}")),
         "JSON.stringify(__results.saveFileToDisk)",
     );
-    assert_eq!(checked, r#"{"ok":false,"res":{"errMsg":"saveFileToDisk:fail cancel"}}"#);
+    assert_eq!(
+        checked,
+        r#"{"ok":false,"res":{"errMsg":"saveFileToDisk:fail cancel"}}"#
+    );
 }
 
 #[test]

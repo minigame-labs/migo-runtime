@@ -8,7 +8,8 @@ use super::{
     AdService, AuthService, CameraService, ClipboardService, CodecService, EcosystemService,
     FileService, GameLogService, ImageApiService, InteractionService, LocationService,
     NavigateService, NetworkService, PaymentService, PermissionService, ScanCodeService,
-    ShareService, SubpackageService, SystemInfoService, UpdateService, VideoService, WindowService,
+    ShareService, SubpackageService, SystemInfoService, UpdateService, VideoDecoderService,
+    VideoService, WindowService,
 };
 
 // ==================== Battery ====================
@@ -659,6 +660,11 @@ pub trait MediaServices: Send + Sync {
         None
     }
     fn video(&self) -> Option<Arc<dyn VideoService>> {
+        None
+    }
+    /// The platform's video decoding, for `createVideoDecoder`; `None` where
+    /// no decoder is integrated.
+    fn video_decoder(&self) -> Option<Arc<dyn VideoDecoderService>> {
         None
     }
 }

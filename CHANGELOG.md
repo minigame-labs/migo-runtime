@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `createVideoDecoder` runs on the engine: a platform supplies only its decoding (`VideoDecoderService` -- open a
+  source, decode the next frame as RGBA, seek), and the engine runs it on a thread per decoder, paced by the frames'
+  presentation times (`mode: 0`) or decoding up to three frames ahead of content (`mode: 1`), with `start` (with the
+  size), `seek`, `stop`, `ended` and `bufferchange` events and `start` / `seek` / `stop` / `remove` promises.
+  `getFrameData()` hands over the decoded buffer as the frame's `ArrayBuffer`, without a copy. The platform decoders
+  follow per platform; where none is integrated yet, `start()` fails as not supported -- every method was a no-op, so
+  content waiting for a frame waited forever.
 - `saveFileToDisk` saves a file of content's where the player chooses, through the host's save dialog: the image
   service's `MIGO_IMAGE_SAVE_FILE_TO_DISK` (7) is handed the real path resolved from the sandbox -- never a path
   outside it, never a remote URL -- and a player who cancels fails the call. It threw `Not Supported` on every

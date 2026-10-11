@@ -35,6 +35,7 @@ mod subpackage;
 mod system_info;
 mod update;
 mod video;
+mod video_decoder;
 mod window;
 
 pub use ad::AdService;
@@ -69,6 +70,7 @@ pub use system_info::{
 };
 pub use update::UpdateService;
 pub use video::VideoService;
+pub use video_decoder::{FrameTiming, VideoDecoderService, VideoFrameSource};
 pub use window::WindowService;
 
 pub use crate::protocol::error::{ServiceError, ServiceErrorCode};

@@ -32,6 +32,7 @@ ObjectDefineProperties(globalThis, {
 
     // VideoDecoder
     createVideoDecoder: core.propNonEnumerable(videoDecoderApi.createVideoDecoder),
+    _internalOnVideoDecoderEvent: core.propNonEnumerable(videoDecoderApi._internalOnVideoDecoderEvent),
 
     // Video
     createVideo: core.propNonEnumerable(videoApi.createVideo),

@@ -48,8 +48,8 @@ mod published_namespace_isolation;
 mod reporting;
 mod request_through_the_engine;
 mod runtime_restart_boundary;
-mod share;
 mod save_file_to_disk;
+mod share;
 mod snapshot_fingerprint;
 mod storage_isolation;
 mod support;
@@ -63,4 +63,6 @@ mod ecosystem;
 #[cfg(feature = "api-system")]
 mod update_manager;
 mod v8_limits;
+#[cfg(feature = "api-media")]
+mod video_decoder;
 mod window_service;
