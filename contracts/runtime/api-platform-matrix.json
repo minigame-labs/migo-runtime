@@ -18,11 +18,11 @@
   "platforms": ["android", "ios", "macos", "linux", "windows", "ohos"],
   "total": 382,
   "summary": {
-    "android": {"engine": 60, "default": 117, "host": 176, "missing": 19, "unsupported": 10, "ready": 363},
+    "android": {"engine": 60, "default": 117, "host": 178, "missing": 17, "unsupported": 10, "ready": 365},
     "ios": {"engine": 68, "default": 39, "host": 0, "missing": 265, "unsupported": 10, "ready": 117},
     "macos": {"engine": 72, "default": 39, "host": 0, "missing": 261, "unsupported": 10, "ready": 121},
-    "linux": {"engine": 72, "default": 12, "host": 262, "missing": 26, "unsupported": 10, "ready": 240},
-    "windows": {"engine": 72, "default": 0, "host": 274, "missing": 26, "unsupported": 10, "ready": 228},
+    "linux": {"engine": 72, "default": 12, "host": 264, "missing": 24, "unsupported": 10, "ready": 242},
+    "windows": {"engine": 72, "default": 0, "host": 276, "missing": 24, "unsupported": 10, "ready": 230},
     "ohos": {"engine": 70, "default": 4, "host": 0, "missing": 299, "unsupported": 9, "ready": 83}
   },
   "apis": {
@@ -63,7 +63,7 @@
     "createInterstitialAd": {"category": "ad", "needs": ["channel:ad.create", "channel:ad.destroy", "channel:ad.load", "channel:ad.show"], "android": "host", "ios": "missing", "macos": "missing", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "macos", "ohos"]},
     "createMediaAudioPlayer": {"category": "media/audio", "needs": [], "android": "engine", "ios": "engine", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine"},
     "createOpenSettingButton": {"category": "open-api/setting", "needs": ["channel:setting.open_setting"], "android": "default", "ios": "missing", "macos": "missing", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "macos", "ohos"]},
-    "createPageManager": {"category": "open-api/openlink", "needs": [], "android": "missing", "ios": "missing", "macos": "missing", "linux": "missing", "windows": "missing", "ohos": "missing", "not_ready": ["android", "ios", "macos", "linux", "windows", "ohos"]},
+    "createPageManager": {"category": "open-api/openlink", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "missing", "macos": "missing", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "macos", "ohos"]},
     "createPath2D": {"category": "render/canvas", "needs": [], "android": "engine", "ios": "engine", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine"},
     "createRewardedVideoAd": {"category": "ad", "needs": ["channel:ad.create", "channel:ad.destroy", "channel:ad.load", "channel:ad.show"], "android": "host", "ios": "missing", "macos": "missing", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "macos", "ohos"]},
     "createStoreGift": {"category": "open-api/store-gift", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "missing", "macos": "missing", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "macos", "ohos"]},
@@ -152,7 +152,7 @@
     "getSetting": {"category": "open-api/setting", "needs": ["channel:permission"], "android": "host", "ios": "missing", "macos": "missing", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "macos", "ohos"]},
     "getShareInfo": {"category": "share", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "missing", "macos": "missing", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "macos", "ohos"]},
     "getSharedCanvas": {"category": "open-api/data", "needs": [], "android": "engine", "ios": "engine", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine"},
-    "getShowSplashAdStatus": {"category": "ad", "needs": [], "android": "missing", "ios": "missing", "macos": "missing", "linux": "missing", "windows": "missing", "ohos": "missing", "not_ready": ["android", "ios", "macos", "linux", "windows", "ohos"]},
+    "getShowSplashAdStatus": {"category": "ad", "needs": ["channel:ad.create", "channel:ad.destroy", "channel:ad.load", "channel:ad.show"], "android": "host", "ios": "missing", "macos": "missing", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "macos", "ohos"]},
     "getStorage": {"category": "storage", "needs": [], "android": "engine", "ios": "engine", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine"},
     "getStorageInfo": {"category": "storage", "needs": [], "android": "engine", "ios": "engine", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine"},
     "getStorageInfoSync": {"category": "storage", "needs": [], "android": "engine", "ios": "engine", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine"},

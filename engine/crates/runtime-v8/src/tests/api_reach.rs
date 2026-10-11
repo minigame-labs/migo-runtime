@@ -298,6 +298,10 @@ const CALLS: &[(&str, &str)] = &[
         "__probeCall('createInterstitialAd', [{ adUnitId: 'probe' }])",
     ),
     (
+        "createPageManager",
+        "migo.createPageManager().load({ openlink: 'probe' }).then(function () {}, function () {})",
+    ),
+    (
         "createRewardedVideoAd",
         "__probeCall('createRewardedVideoAd', [{ adUnitId: 'probe' }])",
     ),

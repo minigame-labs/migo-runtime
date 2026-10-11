@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `createPageManager` opens the host platform's pages: a manager's `load` and `show` (`openlink`, `query`, `extraData`)
+  are requests to the host's ecosystem (`PageManager.load`, `PageManager.show`, `PageManager.destroy`), each carrying
+  the manager's own `pageId`, and the page's events (`PageManager.on`, `{"pageId","eventName","data"}`) reach that
+  manager's `on(eventName)` listeners only. Failures carry the platform's codes: -1 with no openlink, -3 with no host,
+  -5 after `destroy`.
+- The host reports its own cover advert -- the one it shows as the game launches -- as it changes: an ad event with no
+  `adId`, `{"event":"splashStatus","status","code"}` (C ABI), or `GameSession.reportSplashAdStatus` (Android).
+  `getShowSplashAdStatus` answers the last report.
 - What the host says about itself and the content it runs. C ABI: `migo_session_set_host_app_info` reports a
   `MigoHostAppInfo` -- the host app's id, its interface language (BCP 47), its text scale, its own score and tier for
   the device, whether its debugging aids are on -- at start and whenever it changes; `MigoContentDescriptor` names the
@@ -368,6 +376,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- `getShowSplashAdStatus` answered `success` / 1 whatever happened, and `createPageManager` was a mock whose `load`
+  resolved and whose `show` did nothing. The status is now the host's report (`unknown` / -1 before one, the
+  platform's initial value) and pages open through the host (see Added).
 - `getAppBaseInfo`, `getAccountInfoSync` and `getDeviceBenchmarkInfo` answered constants -- an `SDKVersion` of `4.0.0`
   (a library level that does not exist), a host id `com.minigame.host`, `zh_CN`, version `1.0.0`, a benchmark level
   of 26 (25 from `getDeviceInfo`, and on Android a guess from the device's memory) -- and `getAccountInfoSync` never

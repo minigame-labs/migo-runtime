@@ -419,3 +419,100 @@ fn without_a_host_the_objects_say_so() {
     );
     assert_eq!(out["rank"], "update:fail not supported");
 }
+
+#[test]
+fn every_page_manager_is_its_own_page_and_hears_only_its_own_events() {
+    let host = Arc::new(FakeEcosystem::default());
+    let mut runtime = boot(Some(host.clone()), None);
+    run(
+        &mut runtime,
+        r#"
+        globalThis.__heard = [];
+        const a = migo.createPageManager();
+        const b = migo.createPageManager();
+        globalThis.__b = b;
+        a.on('reward', function (data) { __heard.push(['a', data]); });
+        b.on('reward', function (data) { __heard.push(['b', data]); });
+        a.load({ openlink: 'link-a', query: { from: 'game' } })
+            .then(function (res) { globalThis.__loaded = res; });
+        b.show({ openlink: 'link-b', extraData: { level: 3 } });
+        a.load({}).catch(function (e) { globalThis.__noLink = e; });
+        migo.createPageManager().show().catch(function (e) { globalThis.__nothingLoaded = e; });
+        "#,
+        "0",
+    );
+    let load = request_for(&host, "PageManager.load");
+    let show = request_for(&host, "PageManager.show");
+    assert_eq!(
+        load["options"],
+        serde_json::json!({ "pageId": load["options"]["pageId"], "openlink": "link-a", "query": { "from": "game" } })
+    );
+    assert_eq!(show["options"]["openlink"], "link-b");
+    assert_eq!(
+        show["options"]["extraData"],
+        serde_json::json!({ "level": 3 })
+    );
+    assert_ne!(
+        load["options"]["pageId"], show["options"]["pageId"],
+        "two managers are two pages"
+    );
+
+    let b_page = &show["options"]["pageId"];
+    let script = answer(&load, "{ activity: 'spring' }")
+        + &post(
+            "PageManager.on",
+            &format!("{{ pageId: {b_page}, eventName: 'reward', data: {{ n: 1 }} }}"),
+        )
+        + &post(
+            "PageManager.on",
+            &format!("{{ pageId: {b_page}, eventName: 'other', data: {{}} }}"),
+        );
+    let checked = run(
+        &mut runtime,
+        &script,
+        "JSON.stringify([__loaded, __heard, __noLink, __nothingLoaded])",
+    );
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&checked).unwrap(),
+        serde_json::json!([
+            { "errMsg": "load:ok", "activity": "spring" },
+            [["b", { "n": 1 }]],
+            { "errCode": -1, "errMsg": "load:fail openlink is required" },
+            { "errCode": -1, "errMsg": "show:fail openlink is required" },
+        ])
+    );
+
+    // A destroyed manager releases its page, hears nothing more and opens nothing.
+    let checked = run(
+        &mut runtime,
+        &(String::from(
+            "__b.destroy(); __b.show().catch(function (e) { globalThis.__destroyed = e; });",
+        ) + &post(
+            "PageManager.on",
+            &format!("{{ pageId: {b_page}, eventName: 'reward', data: {{ n: 2 }} }}"),
+        )),
+        "JSON.stringify([__heard.length, __destroyed])",
+    );
+    assert_eq!(
+        checked,
+        r#"[1,{"errCode":-5,"errMsg":"show:fail the page manager is destroyed"}]"#
+    );
+    assert_eq!(
+        request_for(&host, "PageManager.destroy")["options"],
+        serde_json::json!({ "pageId": b_page })
+    );
+}
+
+#[test]
+fn without_a_host_a_page_does_not_open_and_says_so_with_the_platform_code() {
+    let mut runtime = boot(None, None);
+    let checked = run(
+        &mut runtime,
+        "migo.createPageManager().load({ openlink: 'x' }).catch(function (e) { globalThis.__e = e; });",
+        "JSON.stringify(__e)",
+    );
+    assert_eq!(
+        checked,
+        r#"{"errCode":-3,"errMsg":"load:fail not supported"}"#
+    );
+}

@@ -17,7 +17,7 @@
 // This module is baked into the V8 startup snapshot, so it must stay ASCII and
 // must not call ops at module scope (there is no HostOpState at snapshot time).
 
-import { allocateHostCallbackId, createListenerGroup } from "ext:host_v8_base/02_async.js";
+import { allocateHostCallbackId, createListenerGroup, wrapAsync } from "ext:host_v8_base/02_async.js";
 import { primordials } from "ext:core/mod.js";
 import {
   op_ad_is_supported,
@@ -105,6 +105,12 @@ function _parseEventJson(json) {
 function _internalOnAdEvent(eventJson) {
   const event = _parseEventJson(eventJson);
   if (!event) return;
+
+  // The host's own advert, not one content made.
+  if (event.event === "splashStatus") {
+    _reportSplashAdStatus(event);
+    return;
+  }
 
   const adId = Number(event.adId);
   if (!NumberIsFinite(adId)) return;
@@ -933,28 +939,29 @@ function getDirectAdStatusSync() {
   };
 }
 
-function getShowSplashAdStatus(obj = {}) {
-  const res = {
-    status: "success",
-    code: 1,
-    errMsg: "getShowSplashAdStatus:ok",
-  };
-  queueMicrotask(() => {
-    try {
-      if (typeof obj.success === "function") {
-        obj.success(res);
-      }
-    } catch (e) {
-      console.error("getShowSplashAdStatus success callback error:", e);
-    }
-    try {
-      if (typeof obj.complete === "function") {
-        obj.complete(res);
-      }
-    } catch (e) {
-      console.error("getShowSplashAdStatus complete callback error:", e);
-    }
-  });
+// The cover advert the host shows as the game launches is the host's from start
+// to finish: it reports the advert's state as it changes -- an ad event with no
+// adId, `{"event":"splashStatus","status","code"}` -- and content's query
+// answers from the last report. Until there is one, the platform's initial
+// value: unknown, -1.
+const SPLASH_STATUSES = ["unknown", "pending", "success", "fail"];
+const SPLASH_CODES = [-1, 1, 2, 3];
+let _splashAdStatus = { status: "unknown", code: -1 };
+
+function _reportSplashAdStatus(event) {
+  if (!SPLASH_STATUSES.includes(event.status) || !SPLASH_CODES.includes(event.code)) {
+    console.warn("ad: a splash status the platform does not define was ignored");
+    return;
+  }
+  _splashAdStatus = { status: event.status, code: event.code };
+}
+
+// Callbacks only: the platform does not offer this one as a promise.
+function getShowSplashAdStatus(obj) {
+  const reported = _splashAdStatus;
+  wrapAsync("getShowSplashAdStatus", function () {
+    return { status: reported.status, code: reported.code };
+  }, obj);
 }
 
 // ==================== GameBanner (createGameBanner) ====================

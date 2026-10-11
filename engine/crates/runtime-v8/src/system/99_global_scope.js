@@ -200,6 +200,7 @@ ObjectDefineProperties(globalThis, {
     getMiniReportManager: core.propNonEnumerable(ecosystemObjects.getMiniReportManager),
     getScenePerformanceManager: core.propNonEnumerable(ecosystemObjects.getScenePerformanceManager),
     createStoreGift: core.propNonEnumerable(ecosystemObjects.createStoreGift),
+    createPageManager: core.propNonEnumerable(ecosystemObjects.createPageManager),
 });
 
 // One property per name on the module's closed lists.
