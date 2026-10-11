@@ -62,7 +62,7 @@ OHOS_LAYER = "platforms/openharmony/entry/src/main"
 # Host input and lifecycle, by kind: the C ABI entry point a host feeds it
 # through, and the Java SDK's native for the same.
 INPUT = {
-    "touch": ("migo_session_send_touch_event", "onTouchEvent"),
+    "touch": ("migo_session_send_touch", "onTouchRaw"),
     "pointer": ("migo_session_send_pointer_event", "onPointerEvent"),
     "wheel": ("migo_session_send_wheel_event", "onWheelEvent"),
     "key": ("migo_session_send_key_event", "onKeyEvent"),
@@ -279,7 +279,11 @@ def android_facts(root: pathlib.Path) -> tuple[set[str], set[str], set[str]]:
     for path in (root / ANDROID_JAVA).rglob("*.java"):
         if path.name in ("NativeBridge.java", "NativeMethods.java"):
             continue
-        natives |= set(re.findall(r"\bNative(?:Methods|Bridge)\.(on\w+)\s*\(", path.read_text(encoding="utf-8")))
+        # A call, or a method reference handed to whatever calls it.
+        for call, reference in re.findall(
+            r"\bNative(?:Methods|Bridge)(?:\.(on\w+)\s*\(|::(on\w+)\b)", path.read_text(encoding="utf-8")
+        ):
+            natives.add(call or reference)
     return implemented, handlers, found("Android input natives", natives)
 
 
@@ -468,6 +472,15 @@ def generate(root: pathlib.Path) -> str:
     lanes = lane_facts(root)
     android = android_facts(root)
     implemented, handlers, natives = android
+    # The input table names real entry points: one it misspells reads as no
+    # platform feeding that input, which is how touch was missing everywhere.
+    bridge = (root / ANDROID_JAVA / "com/migo/runtime/internal/NativeMethods.java").read_text(encoding="utf-8")
+    bridge += (root / ANDROID_JAVA / "com/migo/runtime/internal/NativeBridge.java").read_text(encoding="utf-8")
+    for kind, (entry, native) in INPUT.items():
+        if entry is not None and entry not in entries:
+            raise Fail(f"input {kind}: {entry} is not a C ABI entry point")
+        if not re.search(rf"\bstatic\b[^;{{]*\b{native}\s*\(", bridge):
+            raise Fail(f"input {kind}: {native} is not a method of the Android SDK's native bridge")
     p_lanes = {}
     for extension in boundary["extensions"].values():
         for op, lane in extension["ops"].items():
