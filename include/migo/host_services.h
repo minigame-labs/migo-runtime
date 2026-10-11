@@ -225,8 +225,11 @@ typedef uint32_t MigoHostService;
  *   CHOOSE_MEDIA   {"count", "mediaType", "sourceType", "maxDuration", "sizeType", "camera"}
  *                  -> {"type", "tempFiles": [{"tempFilePath"*, "thumbTempFilePath"*, "size",
  *                      "duration", "width", "height", "fileType"}]}
+ *   SAVE_FILE_TO_DISK {"filePath"} -> {} once saved: the platform's save dialog,
+ *                  the file copied to where the player chose -- a desktop's.
  *
- * (* a file handed over.) A player who dismisses a picker is the failure "cancel".
+ * (* a file handed over.) A player who dismisses a picker or a save dialog is
+ * the failure "cancel".
  */
 #define MIGO_IMAGE_SAVE_IMAGE_TO_PHOTOS_ALBUM 0U
 #define MIGO_IMAGE_PREVIEW_IMAGE 1U
@@ -235,6 +238,7 @@ typedef uint32_t MigoHostService;
 #define MIGO_IMAGE_CHOOSE_IMAGE 4U
 #define MIGO_IMAGE_CHOOSE_MESSAGE_FILE 5U
 #define MIGO_IMAGE_CHOOSE_MEDIA 6U
+#define MIGO_IMAGE_SAVE_FILE_TO_DISK 7U
 
 /*
  * Motion sensors. Each START is a call {"interval"} -- "game" (20 ms), "ui"

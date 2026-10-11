@@ -21,6 +21,18 @@ pub trait ImageApiService: Send + Sync {
         ))
     }
 
+    /// Save a file of content's to wherever the player chooses on the computer's
+    /// disk -- the platform's save dialog, which is a desktop's.
+    ///
+    /// Request: `{"requestId", "filePath"}`. Answers `{}` once the file is saved,
+    /// or fails -- the player cancelling included -- through
+    /// `_internalOnSaveFileToDiskResult`.
+    fn save_file_to_disk(&self, _request_json: &str) -> Result<(), ServiceError> {
+        Err(ServiceError::not_supported(
+            "saveFileToDisk:fail not supported",
+        ))
+    }
+
     /// Show images and videos in a full-screen viewer.
     ///
     /// Request: `{"requestId", "sources": [{"url", "type", "poster"}], "current",

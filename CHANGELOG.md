@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `saveFileToDisk` saves a file of content's where the player chooses, through the host's save dialog: the image
+  service's `MIGO_IMAGE_SAVE_FILE_TO_DISK` (7) is handed the real path resolved from the sandbox -- never a path
+  outside it, never a remote URL -- and a player who cancels fails the call. It threw `Not Supported` on every
+  platform; the platform documents it for desktops, and Android, iOS and OpenHarmony still answer not supported.
 - `migo_session_post_memory_warning(session, level)`: a C ABI host reports the system's memory warnings at the
   platform's three levels (`MIGO_MEMORY_WARNING_MODERATE` / `LOW` / `CRITICAL`, 5 / 10 / 15). The engine releases a
   share of its caches for the level and then tells content (`onMemoryWarning`, `{level}`), on Performance+ too. The

@@ -86,8 +86,7 @@
   "gaps": {
     "createVideoDecoder": {"platforms": "*", "reason": "every method is a no-op; no decoder is integrated"},
     "onAudioInterruptionBegin": {"platforms": ["ohos"], "reason": "the OpenHarmony audio output does not report interruptions yet"},
-    "onAudioInterruptionEnd": {"platforms": ["ohos"], "reason": "the OpenHarmony audio output does not report interruptions yet"},
-    "saveFileToDisk": {"platforms": ["macos", "linux", "windows"], "reason": "throws; the save dialog is the platform's"}
+    "onAudioInterruptionEnd": {"platforms": ["ohos"], "reason": "the OpenHarmony audio output does not report interruptions yet"}
   },
   "unsupported": {
     "createInferenceSession": {"platforms": "*", "reason": "on-device inference needs a model runtime per platform; not offered"},
