@@ -1647,6 +1647,19 @@ pub fn ecosystem_value(host_id: i32, name: &str) -> Result<String, String> {
     call_json_method("ecosystemValue", host_id, name)
 }
 
+// ==================== Updates ====================
+
+/// Whether the session's host installed an update handler -- and so checks.
+pub fn update_available(host_id: i32) -> Result<bool, String> {
+    call_static_method(
+        "updateAvailable",
+        ReturnType::Primitive(Primitive::Boolean),
+        |_env, val| Ok(val.z().unwrap_or(false)),
+        &[jvalue { i: host_id }],
+    )
+}
+jni_void!(apply_update, "applyUpdate");
+
 // ==================== Navigate ====================
 
 jni_void_json!(navigate_to_mini_program, "navigateToMiniProgram");

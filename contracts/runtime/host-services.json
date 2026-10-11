@@ -953,6 +953,22 @@
           "isChatTool"
         ]
       }
+    },
+    "update": {
+      "id": 18,
+      "methods": {
+        "apply_update": {
+          "id": 0,
+          "kind": "command",
+          "op": "op_apply_update"
+        }
+      },
+      "events": {
+        "state": {
+          "id": 0,
+          "hook": "_internalOnUpdateEvent"
+        }
+      }
     }
   }
 }

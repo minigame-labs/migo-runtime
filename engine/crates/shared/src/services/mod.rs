@@ -33,6 +33,7 @@ mod scan_code;
 mod share;
 mod subpackage;
 mod system_info;
+mod update;
 mod video;
 mod window;
 
@@ -66,6 +67,7 @@ pub use subpackage::{
 pub use system_info::{
     SystemInfoService, default_device_info_json, host_os_name, host_platform_name,
 };
+pub use update::UpdateService;
 pub use video::VideoService;
 pub use window::WindowService;
 

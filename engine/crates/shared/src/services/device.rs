@@ -8,7 +8,7 @@ use super::{
     AdService, AuthService, CameraService, ClipboardService, CodecService, EcosystemService,
     FileService, GameLogService, ImageApiService, InteractionService, LocationService,
     NavigateService, NetworkService, PaymentService, PermissionService, ScanCodeService,
-    ShareService, SubpackageService, SystemInfoService, VideoService, WindowService,
+    ShareService, SubpackageService, SystemInfoService, UpdateService, VideoService, WindowService,
 };
 
 // ==================== Battery ====================
@@ -750,6 +750,11 @@ pub trait SystemUtilServices: Send + Sync {
     }
     /// The host's ecosystem features, routed by content API name.
     fn ecosystem(&self) -> Option<Arc<dyn EcosystemService>> {
+        None
+    }
+    /// The host's updates of the content package; `None` for a host that
+    /// offers none, which has no update to report.
+    fn update(&self) -> Option<Arc<dyn UpdateService>> {
         None
     }
 }

@@ -1057,6 +1057,7 @@ jni_host_files_callback!(
     HostFiles::NONE
 );
 jni_json_callback!(onEcosystemEvent, "_internalOnEcosystemEvent");
+jni_json_callback!(onUpdateEvent, "_internalOnUpdateEvent");
 
 // ==================== Desktop pointer ====================
 //

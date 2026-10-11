@@ -60,6 +60,6 @@ mod app_info;
 mod deferred_api;
 mod ecosystem;
 #[cfg(feature = "api-system")]
-mod update_manager_reports_no_update;
+mod update_manager;
 mod v8_limits;
 mod window_service;

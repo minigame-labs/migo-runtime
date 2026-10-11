@@ -101,7 +101,6 @@ checkIsAddedToMyMiniProgram
 checkIsSupportFacialRecognition
 checkIsSupportMidasPayment
 checkSession
-checkUpdate
 checkUserLocation
 checkWritePhotosAlbum
 chooseImage
@@ -572,7 +571,6 @@ checkIsAddedToMyMiniProgram
 checkIsSupportFacialRecognition
 checkIsSupportMidasPayment
 checkSession
-checkUpdate
 checkUserLocation
 checkWritePhotosAlbum
 chooseImage

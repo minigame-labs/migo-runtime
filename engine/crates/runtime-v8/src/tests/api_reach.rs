@@ -35,7 +35,8 @@ use shared::services::{
     KeyboardService, LocationService, MediaServices, NavigateService, NetworkService,
     PaymentService, PermissionService, RecorderService, ScanCodeService, Scope, ScopeState,
     ScreenService, SensorServices, ServiceError, ShareService, SubpackageService,
-    SystemInfoService, SystemUtilServices, VibrationService, VideoService, WindowService,
+    SystemInfoService, SystemUtilServices, UpdateService, VibrationService, VideoService,
+    WindowService,
 };
 
 type Log = Arc<Mutex<Vec<String>>>;
@@ -100,6 +101,7 @@ probe_accessors!(SystemUtilServices {
     navigate: NavigateService,
     window: WindowService,
     ecosystem: EcosystemService,
+    update: UpdateService,
 });
 
 impl BatteryService for ProbeService {}
@@ -131,6 +133,12 @@ impl ScanCodeService for ProbeService {}
 impl NavigateService for ProbeService {}
 impl WindowService for ProbeService {}
 impl EcosystemService for ProbeService {}
+
+impl UpdateService for ProbeService {
+    fn apply_update(&self) -> Result<(), ServiceError> {
+        refused()
+    }
+}
 
 /// Every scope granted, so a call gated on one goes on to what it is for.
 impl PermissionService for ProbeService {

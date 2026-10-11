@@ -82,6 +82,7 @@ ANDROID_HANDLER = {
     "permission": "PermissionHandler",
     "share": "ShareHandler",
     "subpackage": "SubpackageHandler",
+    "update": "UpdateHandler",
 }
 
 COMMENT = [

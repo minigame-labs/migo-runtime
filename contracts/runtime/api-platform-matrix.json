@@ -18,11 +18,11 @@
   "platforms": ["android", "ios", "macos", "linux", "windows", "ohos"],
   "total": 382,
   "summary": {
-    "android": {"engine": 60, "default": 117, "host": 178, "missing": 17, "unsupported": 10, "ready": 365},
+    "android": {"engine": 60, "default": 117, "host": 179, "missing": 16, "unsupported": 10, "ready": 366},
     "ios": {"engine": 68, "default": 39, "host": 0, "missing": 265, "unsupported": 10, "ready": 117},
     "macos": {"engine": 72, "default": 39, "host": 0, "missing": 261, "unsupported": 10, "ready": 121},
-    "linux": {"engine": 72, "default": 12, "host": 264, "missing": 24, "unsupported": 10, "ready": 242},
-    "windows": {"engine": 72, "default": 0, "host": 276, "missing": 24, "unsupported": 10, "ready": 230},
+    "linux": {"engine": 72, "default": 12, "host": 265, "missing": 23, "unsupported": 10, "ready": 243},
+    "windows": {"engine": 72, "default": 0, "host": 277, "missing": 23, "unsupported": 10, "ready": 231},
     "ohos": {"engine": 70, "default": 4, "host": 0, "missing": 299, "unsupported": 9, "ready": 83}
   },
   "apis": {
@@ -162,7 +162,7 @@
     "getSystemInfoSync": {"category": "base/system", "needs": [], "android": "default", "ios": "missing", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine", "not_ready": ["ios"]},
     "getSystemSetting": {"category": "base/system", "needs": [], "android": "default", "ios": "engine", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine"},
     "getTextLineHeight": {"category": "render/font", "needs": [], "android": "engine", "ios": "engine", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine"},
-    "getUpdateManager": {"category": "base/update", "needs": [], "android": "missing", "ios": "missing", "macos": "missing", "linux": "missing", "windows": "missing", "ohos": "missing", "not_ready": ["android", "ios", "macos", "linux", "windows", "ohos"]},
+    "getUpdateManager": {"category": "base/update", "needs": ["channel:update"], "android": "host", "ios": "missing", "macos": "missing", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "macos", "ohos"]},
     "getUserCloudStorage": {"category": "open-api/data", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "missing", "macos": "missing", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "macos", "ohos"]},
     "getUserCloudStorageKeys": {"category": "open-api/data", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "missing", "macos": "missing", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "macos", "ohos"]},
     "getUserCryptoManager": {"category": "base/crypto", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "missing", "macos": "missing", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "macos", "ohos"]},

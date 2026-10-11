@@ -24,8 +24,8 @@ use crate::{
         onRestart, onSaveImageToPhotosAlbumResult, onScanCodeResult, onScreenRecordingStateChanged,
         onShareAppMessageResult, onShareMenuEvent, onShareMessageToFriendResult, onShow,
         onShowShareImageMenuResult, onSubpackageProgress, onSubpackageResult, onSurfaceDestroyed,
-        onThermalStatusChanged, onTouch, onUserCaptureScreen, onVideoEvent, onVsync, onWheelEvent,
-        onWindowStateChanged, shutdown, updatePermission, updateSurface, version,
+        onThermalStatusChanged, onTouch, onUpdateEvent, onUserCaptureScreen, onVideoEvent, onVsync,
+        onWheelEvent, onWindowStateChanged, shutdown, updatePermission, updateSurface, version,
     },
     jni_profile_contract::{self, JniMethod, MethodDirection},
 };
@@ -157,6 +157,8 @@ fn native_fn_ptr(name: &str) -> Option<*mut c_void> {
         "onWheelEvent" => onWheelEvent as *mut c_void,
         "onPointerLockChanged" => onPointerLockChanged as *mut c_void,
         "onWindowStateChanged" => onWindowStateChanged as *mut c_void,
+        #[cfg(feature = "api-system")]
+        "onUpdateEvent" => onUpdateEvent as *mut c_void,
         #[cfg(feature = "api-commerce")]
         "onMidasPaymentResult" => onMidasPaymentResult as *mut c_void,
         #[cfg(feature = "api-commerce")]

@@ -49,9 +49,9 @@ use migo_capi_abi::{
         MIGO_HOST_SERVICE_MOTION, MIGO_HOST_SERVICE_NAVIGATE, MIGO_HOST_SERVICE_PAYMENT,
         MIGO_HOST_SERVICE_PERMISSION, MIGO_HOST_SERVICE_SCAN_CODE, MIGO_HOST_SERVICE_SCREEN,
         MIGO_HOST_SERVICE_SETTING, MIGO_HOST_SERVICE_SHARE, MIGO_HOST_SERVICE_SUBPACKAGE,
-        MIGO_HOST_SERVICE_WINDOW, MIGO_IMAGE_CHOOSE_IMAGE, MIGO_IMAGE_CHOOSE_MEDIA,
-        MIGO_IMAGE_CHOOSE_MESSAGE_FILE, MIGO_IMAGE_COMPRESS_IMAGE, MIGO_IMAGE_PREVIEW_IMAGE,
-        MIGO_IMAGE_PREVIEW_MEDIA, MIGO_IMAGE_SAVE_IMAGE_TO_PHOTOS_ALBUM,
+        MIGO_HOST_SERVICE_UPDATE, MIGO_HOST_SERVICE_WINDOW, MIGO_IMAGE_CHOOSE_IMAGE,
+        MIGO_IMAGE_CHOOSE_MEDIA, MIGO_IMAGE_CHOOSE_MESSAGE_FILE, MIGO_IMAGE_COMPRESS_IMAGE,
+        MIGO_IMAGE_PREVIEW_IMAGE, MIGO_IMAGE_PREVIEW_MEDIA, MIGO_IMAGE_SAVE_IMAGE_TO_PHOTOS_ALBUM,
         MIGO_INTERACTION_HIDE_LOADING, MIGO_INTERACTION_HIDE_TOAST,
         MIGO_INTERACTION_SHOW_ACTION_SHEET, MIGO_INTERACTION_SHOW_LOADING,
         MIGO_INTERACTION_SHOW_MODAL, MIGO_INTERACTION_SHOW_TOAST, MIGO_LOCATION_GET_FUZZY_LOCATION,
@@ -72,10 +72,10 @@ use migo_capi_abi::{
         MIGO_SETTING_OPEN_SYSTEM_BLUETOOTH_SETTING, MIGO_SHARE_EVENT_MENU_SHARE,
         MIGO_SHARE_MENU_SHARE_REPLY, MIGO_SHARE_SET_SHARE_MENU, MIGO_SHARE_SHARE_APP_MESSAGE,
         MIGO_SHARE_SHARE_MESSAGE_TO_FRIEND, MIGO_SHARE_SHOW_SHARE_IMAGE_MENU,
-        MIGO_SUBPACKAGE_DOWNLOAD, MIGO_WINDOW_EVENT_POINTER_LOCK_CHANGE,
-        MIGO_WINDOW_EVENT_WINDOW_STATE_CHANGE, MIGO_WINDOW_EXIT_POINTER_LOCK,
-        MIGO_WINDOW_REQUEST_POINTER_LOCK, MIGO_WINDOW_SET_CURSOR, MIGO_WINDOW_SET_WINDOW_SIZE,
-        MigoHostServiceResult, copy_bounded,
+        MIGO_SUBPACKAGE_DOWNLOAD, MIGO_UPDATE_APPLY_UPDATE, MIGO_UPDATE_EVENT_STATE,
+        MIGO_WINDOW_EVENT_POINTER_LOCK_CHANGE, MIGO_WINDOW_EVENT_WINDOW_STATE_CHANGE,
+        MIGO_WINDOW_EXIT_POINTER_LOCK, MIGO_WINDOW_REQUEST_POINTER_LOCK, MIGO_WINDOW_SET_CURSOR,
+        MIGO_WINDOW_SET_WINDOW_SIZE, MigoHostServiceResult, copy_bounded,
     },
 };
 use migo_core::services::{
@@ -83,7 +83,7 @@ use migo_core::services::{
     CompassService, DeviceMotionService, EcosystemService, GyroscopeService, ImageApiService,
     InteractionService, LocationService, NavigateService, PaymentService, PermissionService,
     ScanCodeService, Scope, ScopeState, ScreenService, ShareService, SubpackageService,
-    WindowService,
+    UpdateService, WindowService,
 };
 use serde_json::{Map, Value};
 use shared::{
@@ -615,6 +615,7 @@ const COMMANDS: &[(u32, u32)] = &[
     (MIGO_HOST_SERVICE_ECOSYSTEM, MIGO_ECOSYSTEM_REPLY),
     (MIGO_HOST_SERVICE_SHARE, MIGO_SHARE_SET_SHARE_MENU),
     (MIGO_HOST_SERVICE_SHARE, MIGO_SHARE_MENU_SHARE_REPLY),
+    (MIGO_HOST_SERVICE_UPDATE, MIGO_UPDATE_APPLY_UPDATE),
 ];
 
 /// A service's own events, as `(service, event, hook)`.
@@ -688,6 +689,11 @@ const EVENTS: &[(u32, u32, &str)] = &[
         MIGO_HOST_SERVICE_SHARE,
         MIGO_SHARE_EVENT_MENU_SHARE,
         "_internalOnShareMenuEvent",
+    ),
+    (
+        MIGO_HOST_SERVICE_UPDATE,
+        MIGO_UPDATE_EVENT_STATE,
+        "_internalOnUpdateEvent",
     ),
 ];
 
@@ -1136,6 +1142,12 @@ impl EcosystemService for CapiHostServices {
     }
 }
 
+impl UpdateService for CapiHostServices {
+    fn apply_update(&self) -> Result<(), ServiceError> {
+        self.command(MIGO_HOST_SERVICE_UPDATE, MIGO_UPDATE_APPLY_UPDATE, "{}")
+    }
+}
+
 impl AdService for CapiHostServices {
     fn create_ad(&self, request_json: &str) -> Result<(), ServiceError> {
         self.command(MIGO_HOST_SERVICE_AD, MIGO_AD_CREATE, request_json)
@@ -1488,6 +1500,7 @@ mod tests {
             "bluetooth" => MIGO_HOST_SERVICE_BLUETOOTH,
             "window" => MIGO_HOST_SERVICE_WINDOW,
             "ecosystem" => MIGO_HOST_SERVICE_ECOSYSTEM,
+            "update" => MIGO_HOST_SERVICE_UPDATE,
             other => panic!("the contract names a service the ABI has no constant for: {other}"),
         }
     }

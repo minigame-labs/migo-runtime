@@ -12,8 +12,8 @@ use migo_core::services::{
     InteractionService, KeyboardService, LocationService, MediaServices, NavigateService,
     NetworkService, PaymentService, PermissionService, RecorderService, ScanCodeService, Scope,
     ScopeState, ScreenService, SensorServices, ServiceError, ServiceErrorCode, ShareService,
-    SubpackageService, SystemInfoService, SystemUtilServices, VibrationService, VideoService,
-    WindowService,
+    SubpackageService, SystemInfoService, SystemUtilServices, UpdateService, VibrationService,
+    VideoService, WindowService,
 };
 
 use crate::android::jni;
@@ -281,6 +281,19 @@ impl SystemUtilServices for AndroidDeviceServices {
         Some(Arc::new(AndroidEcosystem {
             host_id: self.host_id,
         }))
+    }
+
+    /// The update handler the embedder installed; none, and there is no
+    /// update to report.
+    #[cfg(feature = "api-system")]
+    fn update(&self) -> Option<Arc<dyn UpdateService>> {
+        jni::update_available(self.host_id)
+            .unwrap_or(false)
+            .then(|| {
+                Arc::new(AndroidUpdate {
+                    host_id: self.host_id,
+                }) as Arc<dyn UpdateService>
+            })
     }
 }
 
@@ -1499,6 +1512,22 @@ impl EcosystemService for AndroidEcosystem {
         jni::ecosystem_value(self.host_id, name)
             .ok()
             .filter(|json| !json.is_empty())
+    }
+}
+
+// ==================== Updates ====================
+
+/// Forwards content's `applyUpdate` to the Java `UpdateHandler`; the handler's
+/// reports reach content on the `onUpdateEvent` channel.
+#[cfg(feature = "api-system")]
+struct AndroidUpdate {
+    host_id: i32,
+}
+
+#[cfg(feature = "api-system")]
+impl UpdateService for AndroidUpdate {
+    fn apply_update(&self) -> Result<(), ServiceError> {
+        Ok(jni::apply_update(self.host_id)?)
     }
 }
 
