@@ -772,6 +772,13 @@ jobs:
       - name: Host-service channel contract
         run: bash scripts/test-host-services-contract.sh
 
+      # Every API of the common mini-game platform x every platform Migo ships:
+      # engine, default, host, missing or unsupported. Planned from, so it is
+      # generated from what each API reaches when called and what each platform's
+      # host layer wires, never written by hand, and a stale cell is red.
+      - name: API x platform matrix contract
+        run: bash scripts/test-api-platform-matrix-contract.sh
+
       # `isEnabled` is answered on the producer side, from a ten-bit shadow of
       # the capabilities content has enabled. A capability missing from the
       # JavaScript half of that table is silent: the query answers `false`

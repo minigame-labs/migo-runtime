@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# The API x platform matrix is what its sources say, and nothing else.
+#
+# contracts/runtime/api-platform-matrix.json answers, for every API of the
+# common mini-game platform and every platform Migo ships, whether it works and
+# how: the engine alone, the platform's host layer by default, a host interface
+# with no default, missing, or deliberately unsupported. It is the status every
+# piece of platform work is planned from, so a stale cell is a plan built on a
+# false fact -- which is how "C ABI hosts get every service" went unnoticed
+# while the C ABI carried seven of thirty.
+#
+# So it is generated (scripts/gen-api-platform-matrix.py) from measured and
+# read facts -- what each API reaches when called (minigame-api-reach.json,
+# kept true by the runtime's api_reach test), the C ABI's host-service channel
+# and typed callbacks, what each platform's host layer installs and feeds --
+# plus the few decisions that cannot be measured, each with its reason
+# (api-platform-decisions.json). This gate regenerates it and fails on any
+# difference, then proves it would fail on each drift it exists to catch.
+#
+# Host-only: reads sources, runs no engine.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+GEN="$ROOT/scripts/gen-api-platform-matrix.py"
+fail() { echo "FAIL: $*" >&2; exit 1; }
+
+python3 "$GEN" --root "$ROOT" --check \
+    || fail "the API x platform matrix does not match its sources"
+
+# ---- each drift turns the gate red ---------------------------------------------
+
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
+# Every file the generator reads, copied where it expects it.
+inputs=(
+    contracts/runtime/minigame-api.json
+    contracts/runtime/minigame-api-reach.json
+    contracts/runtime/api-platform-decisions.json
+    contracts/runtime/api-platform-matrix.json
+    contracts/runtime/host-services.json
+    contracts/runtime/op-boundary.json
+    engine/crates/capi/src/host_kit.rs
+    engine/crates/capi/src/device.rs
+    engine/crates/capi/src/callbacks.rs
+    engine/crates/platform/src/android/services/mod.rs
+)
+while IFS= read -r path; do inputs+=("$path"); done < <(
+    cd "$ROOT" && git ls-files include/migo platforms/apple/Sources/MigoAppleRenderer \
+        platforms/linux/host-kit/src platforms/openharmony/entry/src/main \
+        platforms/android/library/src/main/java
+)
+
+fresh() {
+    rm -rf "$TMP/root"
+    mkdir -p "$TMP/root"
+    (cd "$ROOT" && tar cf - "${inputs[@]}") | (cd "$TMP/root" && tar xf -)
+}
+
+# Applies a Python edit to one copied file, then expects the generator to refuse
+# or the committed matrix to be stale.
+red() {
+    local what="$1" file="$2" edit="$3"
+    fresh
+    python3 - "$TMP/root/$file" "$edit" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+changed = eval(sys.argv[2], {"text": text, "json": __import__("json")})
+if changed == text:
+    sys.exit(f"the injection for {path} changed nothing")
+path.write_text(changed, encoding="utf-8")
+PY
+    if python3 "$GEN" --root "$TMP/root" --check >"$TMP/out" 2>&1; then
+        cat "$TMP/out" >&2
+        fail "red proof: $what was not caught"
+    fi
+    echo "  red: $what -- $(tail -1 "$TMP/out")"
+}
+
+echo "api-platform-matrix: proving each drift turns it red"
+fresh
+python3 "$GEN" --root "$TMP/root" --check >/dev/null || fail "the copied inputs do not reproduce the matrix"
+
+red "an API the probe has no record of" contracts/runtime/minigame-api-reach.json \
+    'text.replace("    \"vibrateShort\": ", "    \"vibrateShortGone\": ", 1)'
+red "an API that reaches nothing, undecided" contracts/runtime/api-platform-decisions.json \
+    'text.replace("    \"createPath2D\": \"a path is the engine'"'"'s own geometry\",\n", "", 1)'
+red "a decision about an API the platform does not have" contracts/runtime/api-platform-decisions.json \
+    'text.replace("\"via\": {", "\"via\": {\n    \"notAnApi\": \"loadSubpackage\",", 1)'
+red "an API that needs what it is via, in a cycle" contracts/runtime/api-platform-decisions.json \
+    'text.replace("\"via\": {", "\"via\": {\n    \"loadSubpackage\": \"preDownloadSubpackage\",", 1)'
+red "an API that starts reaching the host" contracts/runtime/minigame-api-reach.json \
+    'text.replace("\"getStorageSync\": {\"ops\":[", "\"getStorageSync\": {\"ops\":[\"op_get_location\",", 1)'
+red "a host layer that stops installing a callback" platforms/apple/Sources/MigoAppleRenderer/MigoEngineSession.swift \
+    'text.replace("callbacks.on_keep_screen_on = ", "// ", 1)'
+red "a channel method moving to another op" contracts/runtime/host-services.json \
+    'text.replace("\"op\": \"op_set_clipboard_data\"", "\"op\": \"op_set_clipboard_data_moved\"", 1)'
+red "an unsupported decision with no reason" contracts/runtime/api-platform-decisions.json \
+    'text.replace("\"reason\": \"WebGPU is not implemented on any platform; content feature-detects it\"", "\"reason\": \"\"", 1)'
+
+summary="$(python3 - "$ROOT/contracts/runtime/api-platform-matrix.json" <<'PY'
+import json, sys
+matrix = json.load(open(sys.argv[1]))
+total = matrix["total"]
+print(", ".join("%s %d/%d ready" % (p, matrix["summary"][p]["ready"], total) for p in matrix["platforms"]))
+PY
+)"
+echo "api-platform-matrix contract: PASS ($summary)"
