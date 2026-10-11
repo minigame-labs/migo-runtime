@@ -1,11 +1,20 @@
 import { primordials } from "ext:core/mod.js";
-import { op_create_offscreen_canvas, op_get_canvas_info, op_resize_canvas, op_destroy_canvas } from "ext:core/ops";
+import {
+    op_create_offscreen_canvas,
+    op_get_canvas_info,
+    op_resize_canvas,
+    op_destroy_canvas,
+    op_write_or_append_file,
+    op_write_or_append_file_sync,
+} from "ext:core/ops";
+import { withCallbacks } from "ext:host_v8_base/02_async.js";
 import {
     WebGLRenderingContext,
     WebGL2RenderingContext,
     _bumpCapabilityGeneration,
 } from "ext:host_v8_webgl/02_webgl_context.js";
-import { CanvasRenderingContext2D } from "ext:host_v8_webgl/02_2d_context.js";
+import { CanvasRenderingContext2D, _onceBeforePresent } from "ext:host_v8_webgl/02_2d_context.js";
+import { requestAnimationFrame } from "ext:host_v8_webgl/03_raf.js";
 import {
     flushRenderCommandStream,
     discardRenderCommandStream,
@@ -254,6 +263,42 @@ class Canvas {
         if (w === 0 || h === 0) return "data:,";
         return encodeDataUrl(this._readAllPixels(), w, h, type, quality);
     }
+    // `canvas.toTempFilePathSync(options)`: the region `x`, `y`, `width`, `height` of the canvas (the whole of it by
+    // default) as a PNG or JPEG file of `destWidth` x `destHeight` (the canvas's size by default), in the game's
+    // temporary directory; its path. Read now, as `toDataURL` is: a WebGL canvas whose drawing buffer is not preserved
+    // holds its frame until the frame is presented.
+    toTempFilePathSync(options) {
+        try {
+            const request = _tempFileRequest(this, options || {});
+            const path = _tempImagePath(request.fileType);
+            if (!op_write_or_append_file_sync(path, _encodeRegion(this, request), null, null, false, false)) {
+                throw new Error("the file could not be written");
+            }
+            return path;
+        } catch (e) {
+            throw new Error("toTempFilePathSync:fail " + _reason(e));
+        }
+    }
+    // `canvas.toTempFilePath(options)`: the same file, answered through `success` / `fail` / `complete` with
+    // `{ tempFilePath }`. The pixels are read when it is called; the file is written off the engine's thread. The
+    // platform's call has no promise form, so none is returned.
+    toTempFilePath(options) {
+        const opts = options || {};
+        let written;
+        try {
+            const request = _tempFileRequest(this, opts);
+            const path = _tempImagePath(request.fileType);
+            written = op_write_or_append_file(path, _encodeRegion(this, request), null, null, false, false)
+                .then(function () {
+                    return { errMsg: "toTempFilePath:ok", tempFilePath: path };
+                });
+        } catch (e) {
+            written = Promise.reject(e);
+        }
+        withCallbacks("toTempFilePath", written.then(undefined, function (e) {
+            throw { errMsg: "toTempFilePath:fail " + _reason(e) };
+        }), opts).then(undefined, function () {});
+    }
     // The encoded bytes, for the adapter's `toBlob`: `{ mime, bytes }`, or `null` for a canvas with no pixels.
     _encode(type, quality) {
         const w = this._width, h = this._height;
@@ -291,6 +336,101 @@ const createCanvas = () => {
     }
     return createOffscreenCanvas(1, 1);
 };
+
+// ---- temporary image files --------------------------------------------------------------------------------------------
+
+let _tempFileCounter = 0;
+// The run's own stamp, so a file named after a restart cannot be one the run before it handed out.
+const _tempFileStamp = Date.now().toString(36);
+
+function _tempImagePath(fileType) {
+    return "/tmp/canvas-" + _tempFileStamp + "-" + (++_tempFileCounter).toString(36) + "." + fileType;
+}
+
+function _reason(e) {
+    return e && typeof e.message === "string" ? e.message : String(e);
+}
+
+// `toTempFilePath`'s options, as numbers it can use: the region in canvas pixels, the file's size, type and quality
+// (a JPEG's quality is (0, 1], anything else 1).
+function _tempFileRequest(canvas, opts) {
+    const value = (given, fallback) => (given === undefined || given === null ? fallback : Number(given));
+    const x = value(opts.x, 0);
+    const y = value(opts.y, 0);
+    const width = value(opts.width, canvas._width);
+    const height = value(opts.height, canvas._height);
+    const destWidth = Math.round(value(opts.destWidth, canvas._width));
+    const destHeight = Math.round(value(opts.destHeight, canvas._height));
+    if (![x, y, width, height].every(Number.isFinite) || !(width > 0 && height > 0)) {
+        throw new Error("the region is empty");
+    }
+    if (!(destWidth > 0 && destHeight > 0)) {
+        throw new Error("destWidth and destHeight must be positive");
+    }
+    const fileType = opts.fileType === "jpg" ? "jpg" : "png";
+    const quality = typeof opts.quality === "number" && opts.quality > 0 && opts.quality <= 1 ? opts.quality : 1;
+    return { x, y, width, height, destWidth, destHeight, fileType, quality };
+}
+
+// The file's bytes: the region at the file's size. A canvas read whole at its own size is read as it is. A region is
+// first copied pixel for pixel onto a canvas of its own and only then scaled, by the renderer on the GPU: scaling
+// straight from the source would let the filter reach past the region's edge into pixels the file must not contain.
+function _encodeRegion(canvas, request) {
+    const { x, y, width, height, destWidth, destHeight } = request;
+    const whole = x === 0 && y === 0 && width === canvas._width && height === canvas._height;
+    let source = canvas;
+    if (!whole) {
+        const cropWidth = Math.max(1, Math.round(width));
+        const cropHeight = Math.max(1, Math.round(height));
+        source = createOffscreenCanvas(cropWidth, cropHeight);
+        source.getContext("2d").drawImage(canvas, x, y, width, height, 0, 0, cropWidth, cropHeight);
+    }
+    let pixels;
+    if (destWidth === source._width && destHeight === source._height) {
+        pixels = source._readAllPixels();
+    } else {
+        const target = createOffscreenCanvas(destWidth, destHeight);
+        target.getContext("2d").drawImage(source, 0, 0, destWidth, destHeight);
+        pixels = target._readAllPixels();
+    }
+    const type = request.fileType === "jpg" ? "image/jpeg" : "image/png";
+    return encodeImage(pixels, destWidth, destHeight, type, request.quality).bytes;
+}
+
+// What a share shows when content gives it no image: the screen as the player sees it, at the end of the next frame
+// (see `_onceBeforePresent`), cut to the 5:4 a share card shows from its top -- the full width of a tall screen, the
+// middle of a wide one -- and at most 1000 pixels wide. A temporary JPEG's path, or null with no screen to take.
+function captureScreenForShare() {
+    return new Promise(function (resolve) {
+        const canvas = _mainCanvas;
+        if (canvas === null || !canvas._context || canvas._width === 0 || canvas._height === 0) {
+            resolve(null);
+            return;
+        }
+        _onceBeforePresent(function () {
+            try {
+                const w = canvas._width, h = canvas._height;
+                const cropWidth = Math.min(w, Math.floor(h * 5 / 4));
+                const cropHeight = Math.min(h, Math.floor(cropWidth * 4 / 5));
+                const scale = Math.min(1, 1000 / cropWidth);
+                const request = {
+                    x: Math.floor((w - cropWidth) / 2), y: 0, width: cropWidth, height: cropHeight,
+                    destWidth: Math.max(1, Math.round(cropWidth * scale)),
+                    destHeight: Math.max(1, Math.round(cropHeight * scale)),
+                    fileType: "jpg", quality: 0.9,
+                };
+                const path = _tempImagePath("jpg");
+                resolve(op_write_or_append_file_sync(path, _encodeRegion(canvas, request), null, null, false, false)
+                    ? path : null);
+            } catch (e) {
+                console.error("share screenshot failed:", e);
+                resolve(null);
+            }
+        });
+        // A frame to take it from, if content is not already drawing one.
+        requestAnimationFrame(function () {});
+    });
+}
 
 // SDK internal: always creates an offscreen canvas, never touches rid 1.
 const createOffscreenCanvas = (width, height) => {
@@ -426,6 +566,7 @@ const handleSurfaceResized = () => {
 export {
     createCanvas,
     createOffscreenCanvas,
+    captureScreenForShare,
     getMainCanvas,
     adoptMainCanvasSurfaceSize,
     setWindowResizeReporter,

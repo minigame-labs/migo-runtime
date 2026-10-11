@@ -102,6 +102,9 @@ typedef uint32_t MigoHostService;
  *
  *   SHARE_APP_MESSAGE {"title"?, "imageUrl"?, "query"?, "imageUrlId"?,
  *                      "toCurrentGroup"?, "path"?} -- the share content asked for.
+ *                      Without an image of content's own (no imageUrl or
+ *                      imageUrlId), imageUrl is the screen as the engine took
+ *                      it: the top 5:4 of the frame, as a JPEG.
  *   SHARE_MESSAGE_TO_FRIEND {"openId", "title"?, "imageUrl"?, "imageUrlId"?,
  *                            "query"?, "shareMessageToFriendScene"?} -- to one
  *                            friend; query and shareMessageToFriendScene are what
@@ -121,7 +124,10 @@ typedef uint32_t MigoHostService;
  *                   {"menu", "replyId"} ("shareAppMessage", "shareTimeline" or
  *                   "addToFavorites"). Every event is answered once; content is
  *                   null when nothing in the game answered, and the host shares
- *                   with its own defaults (the game's name, its icon). An image
+ *                   with its own defaults (the game's name, its icon) -- except
+ *                   "shareAppMessage", which always has an image: one the game
+ *                   gave, or the screen as the engine took it (then the only
+ *                   field of an unanswered event's content). An image
  *                   in it is a real path resolved through the sandbox, readable
  *                   for the rest of the session, or an http(s) URL.
  */

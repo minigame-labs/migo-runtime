@@ -34,6 +34,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `style`, `text`, `image`, `type` or `icon` repaints it in the next frame, whether or not the game is running a loop.
   A mouse press on a button is the button's from press to release, and so is the pointer over it; a button taps once
   when the last press on it lifts on it, so a click a host delivers as both a mouse press and a touch taps once.
+- `canvas.toTempFilePath` and `canvas.toTempFilePathSync`: a region of any canvas (`x`, `y`, `width`, `height`, the
+  whole canvas by default) as a PNG or JPEG file (`fileType`, `quality`) of `destWidth` x `destHeight`, in the game's
+  temporary directory -- the region copied exactly and then scaled by the renderer, so nothing past its edge reaches
+  the file. The callback form writes the file off the engine's thread and, as on the common platform, has no promise
+  form. A share with no image of content's own -- `shareAppMessage`, or the menu's "share" when the game gives none
+  or does not answer -- now carries the screen: the top 5:4 of the frame the player sees, taken at the end of the next
+  frame before it is presented, so a WebGL game whose drawing buffer is not preserved is captured too.
 - Android keyboards and gamepads. A physical keyboard's keys reach `onKeyDown` / `onKeyUp` as DOM `key` / `code` with
   modifiers and `repeat` (system keys stay Android's), and gamepads appear in `getGamepads()` on the standard mapping
   with `onGamepadConnected` / `onGamepadDisconnected` -- sticks past the device's dead zone, analogue triggers, a hat

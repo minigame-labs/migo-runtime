@@ -7,6 +7,8 @@ package com.migo.runtime.callback;
  * Called exactly once per request, on the runtime's host thread -- with
  * {@code null} when nothing in the game answered, or when the game's runtime
  * restarted first. Then share with your own defaults: the game's name, its icon.
+ * "Share" is answered with an image even then: the screen as the engine took
+ * it, in content that has nothing else.
  */
 public interface MenuShareCallback {
 
