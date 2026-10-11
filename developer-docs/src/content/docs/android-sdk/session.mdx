@@ -86,6 +86,10 @@ session.setInputView(surfaceView);
 Android 把按键与手柄运动发给**获得焦点**的视图:`GameSurfaceView` 自己可聚焦并在 `setInputView` 时取得焦点,自己的视图
 要可聚焦并取得焦点;手动转发时用 `session.dispatchKeyEvent(ev)`。会话创建时已连接的手柄立即上线,关闭会话时全部下线。
 
+带马达的手柄有 `vibrationActuator`,可播放 `dual-rumble`:Android 12 起强、弱两个马达各走自己的通道
+(`InputDevice.getVibratorManager()`),更早的版本以两者中较大者驱动手柄唯一的振动器。Android 没有扳机马达,所以
+不提供 `trigger-rumble`。会话关闭时仍在转的马达会被停下。
+
 ## 状态广播:`OnStateChangeListener`
 
 `setOnStateChangeListener(listener)` 拿引擎的 loading / running / error 状态跳变 — 用它驱动 loading UI,**不要**用 `SystemClock` 估算。`GameSessionListener`(另一接口)是更细的 loadingStart/loadingEnd 级钩子。

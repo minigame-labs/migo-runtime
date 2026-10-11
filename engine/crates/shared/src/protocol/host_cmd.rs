@@ -81,6 +81,12 @@ pub const GAMEPAD_MAX_COUNT: usize = 16;
 pub const GAMEPAD_MAX_AXES: usize = 8;
 pub const GAMEPAD_MAX_BUTTONS: usize = 20;
 
+/// The haptic effects a pad's actuator plays, a bit each: the Web API's
+/// `GamepadHapticEffectType`s, which `vibrationActuator.effects` lists.
+pub const GAMEPAD_HAPTICS_DUAL_RUMBLE: u8 = 1 << 0;
+pub const GAMEPAD_HAPTICS_TRIGGER_RUMBLE: u8 = 1 << 1;
+pub const GAMEPAD_HAPTICS_KNOWN: u8 = GAMEPAD_HAPTICS_DUAL_RUMBLE | GAMEPAD_HAPTICS_TRIGGER_RUMBLE;
+
 /// One button's state, matching the Web `GamepadButton`.
 ///
 /// `value` is the analogue position for a trigger and 0.0/1.0 for a digital
@@ -789,6 +795,10 @@ pub enum HostCommand {
         /// `buttons.length` there to decide which layout it is looking at.
         axis_count: u8,
         button_count: u8,
+        /// The effects its actuator plays (`GAMEPAD_HAPTICS_*`), carried on
+        /// connect for the same reason: `vibrationActuator.effects` is read
+        /// before anything is played.
+        haptics: u8,
     },
 
     /// The gamepad in `index` went away.

@@ -44,6 +44,7 @@
     public static *** keyboardShow(...);
     public static *** keyboardHide(...);
     public static *** keyboardUpdate(...);
+    public static *** gamepadRumble(...);
     public static *** subpackageDownload(...);
     public static *** onGameReady(...);
     public static *** requestVsync(...);

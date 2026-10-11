@@ -57,7 +57,7 @@ const NATIVE_CORE: &[JniMethod] = methods![
     ("onKeyEvent", "(IZLjava/lang/String;Ljava/lang/String;IZD)Z"),
     (
         "onGamepadConnection",
-        "(IIZLjava/lang/String;Ljava/lang/String;II)Z"
+        "(IIZLjava/lang/String;Ljava/lang/String;III)Z"
     ),
     ("onGamepadState", "(IIIILjava/nio/ByteBuffer;D)Z"),
     ("getMinApiLevel", "()I"),
@@ -193,6 +193,8 @@ const JAVA_CORE: &[JniMethod] = methods![
     ("keyboardShow", "(ILjava/lang/String;)V"),
     ("keyboardHide", "(I)V"),
     ("keyboardUpdate", "(ILjava/lang/String;)V"),
+    // Core with the gamepads it drives: every profile takes their input.
+    ("gamepadRumble", "(IIFFI)V"),
     ("subpackageDownload", "(ILjava/lang/String;)V"),
     ("onGameReady", "(I)V"),
     ("requestVsync", "(I)V"),
@@ -501,8 +503,9 @@ mod tests {
         // +2 Java (`shareMessageToFriend`, `showShareImageMenu`). The host's share
         // menu adds +2 Java (`shareMenuChanged`, `shareMenuReply`). A desktop-form
         // device's window adds +3 Java (`setCursor`, `requestPointerLock`,
-        // `exitPointerLock`).
-        assert_eq!(java.len(), 143, "full NativeExports surface changed");
+        // `exitPointerLock`). A gamepad's motors add +1 Java, Core
+        // (`gamepadRumble`).
+        assert_eq!(java.len(), 144, "full NativeExports surface changed");
         assert_unique(&native);
         assert_unique(&java);
     }

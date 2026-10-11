@@ -515,12 +515,16 @@ public final class NativeMethods {
                 && NativeBridge.onKeyEvent(sessionId, down, key, code, modifiers, repeat, timeMs);
     }
 
-    /** A gamepad taking slot {@code index}, or leaving it. */
+    /**
+     * A gamepad taking slot {@code index}, with the effects its motors play
+     * ({@code GamepadMotors.DUAL_RUMBLE}), or leaving it.
+     */
     public static boolean onGamepadConnection(int sessionId, int index, boolean connected,
                                               String id, String mapping, int axisCount,
-                                              int buttonCount) {
+                                              int buttonCount, int haptics) {
         return sessionId >= 0 && NativeBridge.onGamepadConnection(sessionId, index, connected,
-                id != null ? id : "", mapping != null ? mapping : "", axisCount, buttonCount);
+                id != null ? id : "", mapping != null ? mapping : "", axisCount, buttonCount,
+                haptics);
     }
 
     /** One sample of the pad in slot {@code index}, laid out as GamepadPad writes it. */

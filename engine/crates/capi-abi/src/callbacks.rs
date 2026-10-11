@@ -29,6 +29,8 @@ pub type MigoOnUpdateKeyboardFn =
 pub type MigoOnVibrateFn = unsafe extern "C" fn(*mut c_void, *mut c_void, u32);
 pub type MigoOnKeepScreenOnFn = unsafe extern "C" fn(*mut c_void, *mut c_void, u8);
 pub type MigoOnGameLogFn = unsafe extern "C" fn(*mut c_void, *mut c_void, *const c_char, u32);
+pub type MigoOnGamepadRumbleFn =
+    unsafe extern "C" fn(*mut c_void, *mut c_void, *const MigoGamepadRumble);
 
 pub const MIGO_VIBRATION_SHORT_LIGHT: u32 = 0;
 pub const MIGO_VIBRATION_SHORT_MEDIUM: u32 = 1;
@@ -59,6 +61,21 @@ pub struct MigoKeyboardShowOptions {
     pub reserved0: u32,
 }
 
+/// One instruction to a pad's motors, borrowed for the callback: hold them at
+/// these magnitudes for `duration_ms`, then stop; it replaces whatever the pad
+/// in `index` was playing, and a zero duration stops it.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MigoGamepadRumble {
+    pub header: VersionedHeader,
+    pub index: u32,
+    pub duration_ms: u32,
+    pub strong_magnitude: f32,
+    pub weak_magnitude: f32,
+    pub left_trigger: f32,
+    pub right_trigger: f32,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct MigoHostCallbacks {
@@ -86,6 +103,8 @@ pub struct MigoHostCallbacks {
     /// are installed together or not at all.
     pub on_host_service_call: Option<MigoOnHostServiceCallFn>,
     pub host_services: u64,
+    /// Appended: the motors of the gamepads the host announces with haptics.
+    pub on_gamepad_rumble: Option<MigoOnGamepadRumbleFn>,
 }
 
 // SAFETY: the record consists only of integers, raw pointers and nullable C
@@ -133,6 +152,7 @@ pub struct ValidatedHostCallbacks {
     pub on_host_service_call: Option<MigoOnHostServiceCallFn>,
     /// Zero exactly when `on_host_service_call` is absent.
     pub host_services: u64,
+    pub on_gamepad_rumble: Option<MigoOnGamepadRumbleFn>,
 }
 
 // SAFETY: both pointers are opaque host tokens. Migo never dereferences them;
@@ -186,6 +206,7 @@ impl MigoHostCallbacks {
             on_game_log: None,
             on_host_service_call: None,
             host_services: 0,
+            on_gamepad_rumble: None,
         }
     }
 
@@ -239,7 +260,8 @@ impl MigoHostCallbacks {
             || self.on_vibrate.is_some()
             || self.on_keep_screen_on.is_some()
             || self.on_game_log.is_some()
-            || self.on_host_service_call.is_some();
+            || self.on_host_service_call.is_some()
+            || self.on_gamepad_rumble.is_some();
         let Some(dispatch) = self.dispatch else {
             return if has_callback {
                 Err(MIGO_ERROR_INVALID_ARGUMENT)
@@ -266,6 +288,7 @@ impl MigoHostCallbacks {
             on_game_log: self.on_game_log,
             on_host_service_call: self.on_host_service_call,
             host_services: self.host_services,
+            on_gamepad_rumble: self.on_gamepad_rumble,
         }))
     }
 }
@@ -273,6 +296,11 @@ impl MigoHostCallbacks {
 const _: () = assert!(offset_of!(MigoError, header) == 0);
 const _: () = assert!(offset_of!(MigoKeyboardShowOptions, header) == 0);
 const _: () = assert!(offset_of!(MigoHostCallbacks, header) == 0);
+const _: () = assert!(offset_of!(MigoGamepadRumble, header) == 0);
+// No pointers: one layout on every target.
+const _: () = assert!(size_of::<MigoGamepadRumble>() == 32);
+const _: () = assert!(offset_of!(MigoGamepadRumble, strong_magnitude) == 16);
+const _: () = assert!(offset_of!(MigoGamepadRumble, right_trigger) == 28);
 
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(size_of::<MigoError>() == 32);
@@ -281,7 +309,7 @@ const _: () = assert!(size_of::<MigoKeyboardShowOptions>() == 40);
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(offset_of!(MigoKeyboardShowOptions, default_value_utf8) == 24);
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(size_of::<MigoHostCallbacks>() == 144);
+const _: () = assert!(size_of::<MigoHostCallbacks>() == 152);
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(offset_of!(MigoHostCallbacks, dispatch) == 24);
 #[cfg(target_pointer_width = "64")]
@@ -296,6 +324,8 @@ const _: () = assert!(offset_of!(MigoHostCallbacks, on_game_log) == 120);
 const _: () = assert!(offset_of!(MigoHostCallbacks, on_host_service_call) == 128);
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(offset_of!(MigoHostCallbacks, host_services) == 136);
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(offset_of!(MigoHostCallbacks, on_gamepad_rumble) == 144);
 
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(size_of::<MigoError>() == 28);
@@ -304,9 +334,18 @@ const _: () = assert!(size_of::<MigoKeyboardShowOptions>() == 36);
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(offset_of!(MigoKeyboardShowOptions, default_value_utf8) == 24);
 // 8 bytes of header, fifteen 4-byte pointers, then the u64 service set at 72,
-// which is 8-aligned whatever the target's u64 alignment: no padding either way.
+// which is 8-aligned whatever the target's u64 alignment, then one more pointer
+// at 80. The record ends at 84, rounded up to the u64's alignment: 88 where a
+// u64 is 8-aligned in a struct (ARM, x86 Windows), 84 where it is 4 (x86 SysV).
 #[cfg(target_pointer_width = "32")]
-const _: () = assert!(size_of::<MigoHostCallbacks>() == 80);
+const _: () = assert!(
+    size_of::<MigoHostCallbacks>()
+        == if std::mem::align_of::<u64>() == 8 {
+            88
+        } else {
+            84
+        }
+);
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(offset_of!(MigoHostCallbacks, dispatch) == 16);
 #[cfg(target_pointer_width = "32")]
@@ -321,3 +360,5 @@ const _: () = assert!(offset_of!(MigoHostCallbacks, on_game_log) == 64);
 const _: () = assert!(offset_of!(MigoHostCallbacks, on_host_service_call) == 68);
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(offset_of!(MigoHostCallbacks, host_services) == 72);
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(offset_of!(MigoHostCallbacks, on_gamepad_rumble) == 80);

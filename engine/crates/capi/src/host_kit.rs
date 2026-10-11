@@ -17,11 +17,11 @@ use migo_capi_abi::host_services::{
 use migo_core::services::{
     AccelerometerService, AdService, AuthService, BatteryService, BluetoothService,
     ClipboardService, CommerceServices, CompassService, ConnectivityServices, DeviceMotionService,
-    EcosystemService, GameLogService, GyroscopeService, ImageApiService, InteractionService,
-    KeyboardService, LocationService, MediaServices, NavigateService, NetworkService,
-    PaymentService, PermissionService, ScanCodeService, ScreenService, SensorServices,
-    ShareService, SubpackageService, SystemInfoService, SystemUtilServices, VibrationService,
-    WindowService,
+    EcosystemService, GameLogService, GamepadService, GyroscopeService, ImageApiService,
+    InteractionService, KeyboardService, LocationService, MediaServices, NavigateService,
+    NetworkService, PaymentService, PermissionService, ScanCodeService, ScreenService,
+    SensorServices, ShareService, SubpackageService, SystemInfoService, SystemUtilServices,
+    VibrationService, WindowService,
 };
 use migo_core::{DeviceServiceProvider, FrameClock, HostNotifier};
 use shared::protocol::error::ServiceError;
@@ -322,6 +322,10 @@ impl SystemUtilServices for CapiDeviceServices {
         self.keyboard.clone()
     }
 
+    fn gamepad(&self) -> Option<Arc<dyn GamepadService>> {
+        self.device.gamepad()
+    }
+
     fn system_info(&self) -> Option<Arc<dyn SystemInfoService>> {
         Some(Arc::clone(&self.system_info))
     }
@@ -608,6 +612,7 @@ mod tests {
             on_game_log: None,
             on_host_service_call: None,
             host_services: 0,
+            on_gamepad_rumble: None,
         };
         let session = callback_session_pin();
         let notifier = Arc::new(Notifier::new(

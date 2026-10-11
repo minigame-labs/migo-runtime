@@ -156,8 +156,8 @@ use shared::protocol::camera_frame::{
     with_camera_frame_admission,
 };
 use shared::protocol::host_cmd::{
-    GAMEPAD_MAX_AXES, GAMEPAD_MAX_BUTTONS, GAMEPAD_MAX_COUNT, HostCommand, TouchData, TouchPoint,
-    TouchType,
+    GAMEPAD_HAPTICS_KNOWN, GAMEPAD_MAX_AXES, GAMEPAD_MAX_BUTTONS, GAMEPAD_MAX_COUNT, HostCommand,
+    TouchData, TouchPoint, TouchType,
 };
 use shared::protocol::recorder_frame::with_recorder_frame_credit;
 use shared::surface::{PixelRatio, SurfaceRef};
@@ -1219,8 +1219,8 @@ pub(crate) extern "system" fn onKeyEvent<'local>(
     })
 }
 
-/// A gamepad appearing in slot `index` with its axis and button counts, or
-/// leaving it.
+/// A gamepad appearing in slot `index` with its axis and button counts and the
+/// effects its motors play (`GAMEPAD_HAPTICS_*`), or leaving it.
 #[allow(clippy::too_many_arguments)]
 pub(crate) extern "system" fn onGamepadConnection<'local>(
     mut env: JNIEnv<'local>,
@@ -1232,6 +1232,7 @@ pub(crate) extern "system" fn onGamepadConnection<'local>(
     mapping: JString<'local>,
     axis_count: jint,
     button_count: jint,
+    haptics: jint,
 ) -> jboolean {
     jni_safe!("onGamepadConnection", JNI_FALSE, {
         let Ok(index) = u32::try_from(index) else {
@@ -1241,11 +1242,16 @@ pub(crate) extern "system" fn onGamepadConnection<'local>(
             return JNI_FALSE;
         }
         let command = if connected == JNI_TRUE {
-            let (Ok(axis_count), Ok(button_count)) =
-                (u8::try_from(axis_count), u8::try_from(button_count))
-            else {
+            let (Ok(axis_count), Ok(button_count), Ok(haptics)) = (
+                u8::try_from(axis_count),
+                u8::try_from(button_count),
+                u8::try_from(haptics),
+            ) else {
                 return JNI_FALSE;
             };
+            if haptics & !GAMEPAD_HAPTICS_KNOWN != 0 {
+                return JNI_FALSE;
+            }
             if axis_count as usize > GAMEPAD_MAX_AXES || button_count as usize > GAMEPAD_MAX_BUTTONS
             {
                 return JNI_FALSE;
@@ -1259,6 +1265,7 @@ pub(crate) extern "system" fn onGamepadConnection<'local>(
                 mapping: mapping.into(),
                 axis_count,
                 button_count,
+                haptics,
             }
         } else {
             HostCommand::OnGamepadDisconnected { index }

@@ -18,7 +18,11 @@ use std::{
 };
 
 use crate::MigoSession;
-use migo_capi_abi::{MIGO_OK, MigoResult, VersionedHeader, host_services::MigoHostServiceCall};
+use migo_capi_abi::{
+    MIGO_OK, MigoResult, VersionedHeader, callbacks::MigoGamepadRumble,
+    host_services::MigoHostServiceCall,
+};
+use shared::services::GamepadRumble;
 
 // Some aliases are currently referenced only by host-facing tests, but keeping
 // the complete callback vocabulary together prevents signature drift.
@@ -91,6 +95,7 @@ enum Event {
     GameLog {
         entry_json: String,
     },
+    GamepadRumble(GamepadRumble),
     HostServiceCall {
         call_id: u64,
         service: u32,
@@ -233,6 +238,23 @@ fn invoke_task(task: &Task) {
                         bytes.len() as u32,
                     )
                 };
+            }
+        }
+        Event::GamepadRumble(rumble) => {
+            if let Some(on_gamepad_rumble) = task.callbacks.on_gamepad_rumble {
+                let c_rumble = MigoGamepadRumble {
+                    header: VersionedHeader {
+                        struct_size: size_of::<MigoGamepadRumble>() as u32,
+                        abi_version: migo_capi_abi::MIGO_ABI_VERSION_CURRENT,
+                    },
+                    index: rumble.index,
+                    duration_ms: rumble.duration_ms,
+                    strong_magnitude: rumble.strong_magnitude,
+                    weak_magnitude: rumble.weak_magnitude,
+                    left_trigger: rumble.left_trigger,
+                    right_trigger: rumble.right_trigger,
+                };
+                unsafe { on_gamepad_rumble(user_data, session, &c_rumble) };
             }
         }
         Event::HostServiceCall {
@@ -380,6 +402,12 @@ impl Notifier {
         self.post(Event::GameLog { entry_json })
     }
 
+    /// Set a pad's motors. Like the keyboard verbs, the flag is the
+    /// dispatcher's acceptance.
+    pub fn gamepad_rumble(&self, rumble: GamepadRumble) -> bool {
+        self.post(Event::GamepadRumble(rumble))
+    }
+
     /// Hand content's request to the host's service channel. Like the keyboard
     /// verbs, the flag is the dispatcher's acceptance and nothing more.
     pub fn host_service_call(
@@ -417,6 +445,11 @@ impl Notifier {
     #[inline]
     pub fn supplies_game_log(&self) -> bool {
         self.callbacks.on_game_log.is_some()
+    }
+
+    #[inline]
+    pub fn supplies_gamepad_rumble(&self) -> bool {
+        self.callbacks.on_gamepad_rumble.is_some()
     }
 
     /// Whether the host offered to service the soft keyboard, which is what
@@ -629,6 +662,7 @@ mod tests {
             on_game_log: None,
             on_host_service_call: None,
             host_services: 0,
+            on_gamepad_rumble: None,
         }
     }
 
@@ -694,6 +728,7 @@ mod tests {
             on_game_log: None,
             on_host_service_call: None,
             host_services: 0,
+            on_gamepad_rumble: None,
         }
     }
 
@@ -719,6 +754,7 @@ mod tests {
             on_game_log: None,
             on_host_service_call: None,
             host_services: 0,
+            on_gamepad_rumble: None,
         };
         test_notifier(callbacks)
     }

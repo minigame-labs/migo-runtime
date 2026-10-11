@@ -91,6 +91,11 @@ motion to the **focused** view: `GameSurfaceView` is focusable and takes focus i
 must be focusable and take focus; when forwarding by hand, use `session.dispatchKeyEvent(ev)`. Pads already connected
 when the session is created arrive at once, and all of them leave when it closes.
 
+A pad with motors has a `vibrationActuator` that plays `dual-rumble`: from Android 12 its strong and weak motors run on
+their own channels (`InputDevice.getVibratorManager()`), before that the pad's one vibrator runs at the larger of the
+two. Android has no trigger motors, so no pad offers `trigger-rumble`. Motors still running when the session closes are
+stopped.
+
 ## State broadcasts: `OnStateChangeListener`
 
 `setOnStateChangeListener(listener)` receives the engine's loading / running / error state transitions — use it to drive the loading UI; **do not** estimate state with `SystemClock`. `GameSessionListener` (a separate interface) provides finer-grained loadingStart/loadingEnd hooks.

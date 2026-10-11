@@ -1036,6 +1036,23 @@ impl ServiceContext {
                     .update(&string(op, 0, value)?)
                     .map_err(device_error)
             }
+            // A gamepad's motors: the producer has timed the effect, and each
+            // command is the whole instruction -- these magnitudes for this long.
+            id::op_gamepad_rumble => {
+                let [index, strong, weak, left, right, duration_ms] = exactly(op, args)?;
+                let rumble = shared::services::GamepadRumble::new(
+                    u32_of(op, 0, index)?,
+                    f64_of(op, 1, strong)?,
+                    f64_of(op, 2, weak)?,
+                    f64_of(op, 3, left)?,
+                    f64_of(op, 4, right)?,
+                    u32_of(op, 5, duration_ms)?,
+                )
+                .map_err(device_error)?;
+                self.device("playEffect", |device| device.gamepad())?
+                    .rumble(&rumble)
+                    .map_err(device_error)
+            }
             // The device, as content asks the host to act on it.
             id::op_vibrate_short => {
                 let [vibrate_type] = exactly(op, args)?;
@@ -2380,6 +2397,75 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// A gamepad's motors reach the host's gamepad service as the instruction
+    /// the producer timed, an instruction out of range never reaches it, and a
+    /// host with no gamepad service is refused in the embedded op's words.
+    #[test]
+    fn gamepad_rumble_commands_reach_the_host_s_gamepad_or_are_refused() {
+        #[derive(Default)]
+        struct Recorded(parking_lot::Mutex<Vec<shared::services::GamepadRumble>>);
+        impl shared::services::GamepadService for Recorded {
+            fn rumble(
+                &self,
+                rumble: &shared::services::GamepadRumble,
+            ) -> Result<(), shared::services::ServiceError> {
+                self.0.lock().push(*rumble);
+                Ok(())
+            }
+        }
+        struct Platform(Arc<Recorded>);
+        impl shared::services::SensorServices for Platform {}
+        impl shared::services::MediaServices for Platform {}
+        impl shared::services::ConnectivityServices for Platform {}
+        impl shared::services::CommerceServices for Platform {}
+        impl shared::services::SystemUtilServices for Platform {
+            fn gamepad(&self) -> Option<Arc<dyn shared::services::GamepadService>> {
+                Some(Arc::clone(&self.0) as Arc<dyn shared::services::GamepadService>)
+            }
+        }
+        let root = std::env::temp_dir().join(format!("migo-gamepad-{}", std::process::id()));
+        let (sender, _commands) = shared::render_command_sender::CommandSender::new();
+        let render = RenderHandles {
+            canvas: shared::op_state::CanvasOpState::for_host(sender, 1),
+            gpu_caps: shared::device::gpu_caps::GpuCaps::new(),
+        };
+        let args = |index: u32, strong: f64, duration: u32| {
+            vec![
+                OwnedValue::U32(index),
+                OwnedValue::F64(strong),
+                OwnedValue::F64(0.5),
+                OwnedValue::F64(0.0),
+                OwnedValue::F64(0.25),
+                OwnedValue::U32(duration),
+            ]
+        };
+
+        let context = ServiceContext::new(root.join("files"), root.join("cache"));
+        let gamepad = Arc::new(Recorded::default());
+        context.bind_device(Some(Arc::new(Platform(Arc::clone(&gamepad)))));
+        context
+            .command(id::op_gamepad_rumble, args(1, 1.0, 300), &render)
+            .expect("played");
+        context
+            .command(id::op_gamepad_rumble, args(1, 1.5, 300), &render)
+            .expect_err("a magnitude past 1 is not a host's problem");
+        context
+            .command(id::op_gamepad_rumble, args(1, 1.0, 5001), &render)
+            .expect_err("nor is a duration past the limit");
+        assert_eq!(
+            *gamepad.0.lock(),
+            vec![shared::services::GamepadRumble::new(1, 1.0, 0.5, 0.0, 0.25, 300).unwrap()]
+        );
+
+        let none = ServiceContext::new(root.join("files"), root.join("cache"));
+        none.bind_device(None);
+        let error = none
+            .command(id::op_gamepad_rumble, args(0, 0.0, 0), &render)
+            .expect_err("no gamepad service");
+        assert_eq!(error.message, "playEffect:fail not supported");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// The compressed-texture query answers the renderer's formats in the
     /// embedded op's bits once the renderer publishes them, and none when the
     /// renderer failed -- the embedded op's answer before caps are set.
@@ -2890,6 +2976,7 @@ mod tests {
                 mapping: "standard".into(),
                 axis_count: 2,
                 button_count: 1,
+                haptics: 0,
             },
             HostCommand::OnGamepadState(pads.try_insert(pad).expect("a pooled sample")),
             HostCommand::OnFocusChanged { focused: false },

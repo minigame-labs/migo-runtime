@@ -1575,8 +1575,9 @@ impl InputSink for HostJsRuntime {
         mapping: &str,
         axis_count: u8,
         button_count: u8,
+        haptics: u8,
     ) {
-        self.dispatch_gamepad_connected(index, id, mapping, axis_count, button_count);
+        self.dispatch_gamepad_connected(index, id, mapping, axis_count, button_count, haptics);
     }
     fn gamepad_disconnected(&mut self, index: u32) {
         self.dispatch_gamepad_disconnected(index);

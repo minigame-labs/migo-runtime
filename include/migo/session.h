@@ -335,6 +335,43 @@ typedef void(MIGO_CALL *MigoOnGameLogFn)(void *user_data, MigoSession *session,
                                          const char *entry_json_utf8, uint32_t entry_length);
 
 /*
+ * A gamepad's motors (migo/input.h: a pad announced with MIGO_GAMEPAD_HAPTICS_*).
+ * Content's vibrationActuator.playEffect() and reset() arrive as these: set the
+ * motors of the pad in index to these magnitudes, hold them for duration_ms,
+ * then stop. Each replaces whatever that pad was playing, and duration_ms 0
+ * stops it. The engine has already applied the effect's start delay, and times
+ * its end and settles content's promise itself, so a host keeps no state per
+ * effect -- and because the duration travels with the magnitudes, the motors
+ * stop on time even if no further instruction comes.
+ *
+ * Each magnitude is 0.0 to 1.0: strong is the low-frequency handle motor, weak
+ * the high-frequency one, and the triggers the motors in standard buttons 6 and
+ * 7, which are nonzero only for a pad declared with TRIGGER_RUMBLE. duration_ms
+ * is at most 5000. A host whose motor has no amplitude control runs it at any
+ * nonzero magnitude; one whose pad has a single motor may drive it from the
+ * larger of strong and weak. The record is borrowed for the call.
+ */
+typedef struct MigoGamepadRumble {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint32_t index;
+    uint32_t duration_ms;
+    float strong_magnitude;
+    float weak_magnitude;
+    float left_trigger;
+    float right_trigger;
+} MigoGamepadRumble;
+
+MIGO_STATIC_ASSERT(offsetof(MigoGamepadRumble, struct_size) == 0,
+                   "every versioned struct must begin with struct_size");
+MIGO_STATIC_ASSERT(sizeof(MigoGamepadRumble) == 32, "MigoGamepadRumble size changed");
+MIGO_STATIC_ASSERT(offsetof(MigoGamepadRumble, strong_magnitude) == 16,
+                   "MigoGamepadRumble.strong_magnitude moved");
+
+typedef void(MIGO_CALL *MigoOnGamepadRumbleFn)(void *user_data, MigoSession *session,
+                                               const MigoGamepadRumble *rumble);
+
+/*
  * The implementation copies known fields covered by struct_size. A non-null
  * callback requires a non-null dispatcher. User callbacks run without Migo
  * engine/session/attachment locks and may re-enter detach or destroy. Callback
@@ -377,12 +414,16 @@ typedef struct MigoHostCallbacks {
      * is the pre-existing behaviour. */
     MigoOnHostServiceCallFn on_host_service_call;
     uint64_t host_services;
+    /* Appended: gamepad motors (see above). Required by a Session that
+     * announces any pad with haptics; a host built before it announces none,
+     * which is the pre-existing behaviour. */
+    MigoOnGamepadRumbleFn on_gamepad_rumble;
 } MigoHostCallbacks;
 
 MIGO_STATIC_ASSERT(offsetof(MigoHostCallbacks, struct_size) == 0,
                    "every versioned struct must begin with struct_size");
 #if MIGO_LP64
-MIGO_STATIC_ASSERT(sizeof(MigoHostCallbacks) == 144, "MigoHostCallbacks LP64 size changed");
+MIGO_STATIC_ASSERT(sizeof(MigoHostCallbacks) == 152, "MigoHostCallbacks LP64 size changed");
 MIGO_STATIC_ASSERT(offsetof(MigoHostCallbacks, dispatch) == 24, "MigoHostCallbacks.dispatch moved");
 MIGO_STATIC_ASSERT(offsetof(MigoHostCallbacks, on_request_frame) == 64,
                    "MigoHostCallbacks.on_request_frame moved");
@@ -396,6 +437,8 @@ MIGO_STATIC_ASSERT(offsetof(MigoHostCallbacks, on_host_service_call) == 128,
                    "MigoHostCallbacks.on_host_service_call moved");
 MIGO_STATIC_ASSERT(offsetof(MigoHostCallbacks, host_services) == 136,
                    "MigoHostCallbacks.host_services moved");
+MIGO_STATIC_ASSERT(offsetof(MigoHostCallbacks, on_gamepad_rumble) == 144,
+                   "MigoHostCallbacks.on_gamepad_rumble moved");
 #endif
 
 /*

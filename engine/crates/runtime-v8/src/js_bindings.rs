@@ -1143,7 +1143,9 @@ impl JsBindings {
         self.dispatch_composition(rt, self.composition_end_fn.as_ref(), data);
     }
 
-    /// Announce a gamepad. The id and mapping are the Web API's own fields.
+    /// Announce a gamepad. The id and mapping are the Web API's own fields;
+    /// haptics is the `GAMEPAD_HAPTICS_*` set its actuator plays.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn dispatch_gamepad_connected(
         &self,
         rt: &mut deno_core::JsRuntime,
@@ -1152,6 +1154,7 @@ impl JsBindings {
         mapping: &str,
         axis_count: u8,
         button_count: u8,
+        haptics: u8,
     ) {
         if let Some(func_g) = self.gamepad_connected_fn.as_ref() {
             self.with_main_context(rt, |scope, _ctx, global| {
@@ -1165,6 +1168,7 @@ impl JsBindings {
                         .into(),
                     v8::Integer::new_from_unsigned(scope, axis_count as u32).into(),
                     v8::Integer::new_from_unsigned(scope, button_count as u32).into(),
+                    v8::Integer::new_from_unsigned(scope, haptics as u32).into(),
                 ];
                 let func = v8::Local::new(scope, func_g);
                 let _ = func.call(scope, global.into(), &args);

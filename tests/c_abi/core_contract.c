@@ -124,7 +124,7 @@ _Static_assert(MIGO_SURFACE_RELEASE_RELEASED == UINT32_C(1), "released state val
 #if UINTPTR_MAX == UINT64_MAX
 _Static_assert(sizeof(MigoError) == 32, "LP64 error layout");
 _Static_assert(sizeof(MigoSurfaceDescriptor) == 72, "LP64 Surface layout");
-_Static_assert(sizeof(MigoHostCallbacks) == 144, "LP64 callback layout");
+_Static_assert(sizeof(MigoHostCallbacks) == 152, "LP64 callback layout");
 _Static_assert(offsetof(MigoHostCallbacks, on_surface_released) == 96,
                "release wakeup stays where it was appended");
 _Static_assert(offsetof(MigoHostCallbacks, on_game_log) == 120,
@@ -133,6 +133,9 @@ _Static_assert(offsetof(MigoHostCallbacks, on_host_service_call) == 128,
                "the host-service channel is the append-only tail");
 _Static_assert(offsetof(MigoHostCallbacks, host_services) == 136,
                "host_services follows its callback");
+_Static_assert(offsetof(MigoHostCallbacks, on_gamepad_rumble) == 144,
+               "the gamepad motors are the append-only tail");
+_Static_assert(sizeof(MigoGamepadRumble) == 32, "one rumble layout on every target");
 _Static_assert(sizeof(MigoHostServiceCall) == 40, "LP64 host-service call layout");
 _Static_assert(offsetof(MigoHostServiceCall, payload_json_utf8) == 24,
                "LP64 host-service call payload offset");
@@ -166,7 +169,10 @@ _Static_assert(sizeof(MigoSurfaceDescriptor) == (MIGO_U64_MEMBER_ALIGN == 8 ? 72
  * this one was not, and the soft-keyboard callbacks were then added on top of
  * the wrong base. Nothing caught it because every lane ran on an LP64 host, so
  * this branch had never once been compiled. */
-_Static_assert(sizeof(MigoHostCallbacks) == 80, "ILP32 callback layout");
+/* host_services at 72, then on_gamepad_rumble at 80: the record ends at 84,
+ * rounded up to the uint64_t member alignment. */
+_Static_assert(sizeof(MigoHostCallbacks) == (MIGO_U64_MEMBER_ALIGN == 8 ? 88 : 84),
+               "ILP32 callback layout follows the target uint64_t member alignment");
 _Static_assert(offsetof(MigoHostCallbacks, on_surface_released) == 52,
                "ILP32 release wakeup offset");
 _Static_assert(offsetof(MigoHostCallbacks, on_game_log) == 64,
@@ -177,6 +183,9 @@ _Static_assert(offsetof(MigoHostCallbacks, on_host_service_call) == 68,
                "ILP32 host-service callback offset");
 _Static_assert(offsetof(MigoHostCallbacks, host_services) == 72,
                "ILP32 host_services offset");
+_Static_assert(offsetof(MigoHostCallbacks, on_gamepad_rumble) == 80,
+               "ILP32 gamepad motors offset");
+_Static_assert(sizeof(MigoGamepadRumble) == 32, "one rumble layout on every target");
 _Static_assert(sizeof(MigoHostServiceCall) == (MIGO_U64_MEMBER_ALIGN == 8 ? 40 : 36),
                "ILP32 host-service call layout follows the target uint64_t member alignment");
 _Static_assert(offsetof(MigoHostServiceCall, payload_length) == 28,
@@ -251,6 +260,7 @@ int migo_core_c_contract(void) {
                                          const char *, uint32_t) =
         &migo_session_post_host_service_event;
     MigoOnHostServiceCallFn host_service_call = callbacks.on_host_service_call;
+    MigoOnGamepadRumbleFn gamepad_rumble = callbacks.on_gamepad_rumble;
     MigoResult(MIGO_CALL *update_call_fn)(MigoSession *, uint64_t, const char *, uint32_t) =
         &migo_session_update_host_service_call;
     MigoResult(MIGO_CALL *scope_fn)(MigoSession *, MigoScope, MigoScopeState) =
@@ -273,6 +283,7 @@ int migo_core_c_contract(void) {
                  (network_fn != NULL) + (battery_fn != NULL) +
                  (complete_call_fn != NULL) + (post_event_fn != NULL) +
                  (host_service_call != NULL) + (callbacks.host_services != 0) +
+                 (gamepad_rumble != NULL) +
                  (update_call_fn != NULL) + (scope_fn != NULL) +
                  (system_settings_fn != NULL) + (app_authorize_fn != NULL));
 }

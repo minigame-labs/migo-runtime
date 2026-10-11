@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Gamepad haptics: every pad in `getGamepads()` has the standard `vibrationActuator` -- `effects`, `playEffect`
+  (`dual-rumble`, `trigger-rumble`; `startDelay`, `duration`, the four magnitudes) resolving `complete` or `preempted`,
+  and `reset`. The engine times each effect (at most 5 s, delay included) and preempts it for the next effect, for
+  `reset`, when the game goes to the background or when the pad leaves; the host only sets motors. C ABI:
+  `MigoGamepadInfo.haptics` (the reserved field, so existing hosts announce pads without motors) declares the
+  `MIGO_GAMEPAD_HAPTICS_*` a pad plays, and the appended `MigoHostCallbacks.on_gamepad_rumble` receives a
+  `MigoGamepadRumble` -- magnitudes and a duration, replacing what the pad plays. Android drives a pad's vibrators
+  (`VibratorManager` from Android 12, strong and weak motors on their own channels) and stops them when the session
+  ends.
 - Android keyboards and gamepads. A physical keyboard's keys reach `onKeyDown` / `onKeyUp` as DOM `key` / `code` with
   modifiers and `repeat` (system keys stay Android's), and gamepads appear in `getGamepads()` on the standard mapping
   with `onGamepadConnected` / `onGamepadDisconnected` -- sticks past the device's dead zone, analogue triggers, a hat
@@ -327,6 +336,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- An engine listener on the game's visibility -- the audio clock that freezes in the background -- was one of
+  content's `onHide` / `onShow` listeners, so content calling `offHide()` with no listener removed it too. The engine
+  now observes visibility on its own.
 - The native buttons were inert objects, and a user-info button's tap could only be raised by an internal hook with an
   empty profile. `createUserInfoButton`, `createOpenSettingButton`, `createGameClubButton` and `createFeedbackButton`
   are hit-tested by the engine: a touch that begins on a shown button is the button's and content does not see it, and

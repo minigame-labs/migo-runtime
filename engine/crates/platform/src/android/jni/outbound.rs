@@ -1580,6 +1580,36 @@ pub fn set_cursor(host_id: i32, json: &str) -> Result<bool, String> {
     call_bool_with_string("setCursor", host_id, json)
 }
 jni_void!(request_pointer_lock, "requestPointerLock");
+
+// ==================== Gamepad ====================
+
+/// Set the motors of the session's pad in `index`: these magnitudes for
+/// `duration_ms`, replacing what it plays; 0 stops it. Android's input
+/// vibrators have no trigger motors, so the trigger magnitudes do not cross.
+pub fn gamepad_rumble(
+    host_id: i32,
+    index: u32,
+    strong_magnitude: f32,
+    weak_magnitude: f32,
+    duration_ms: u32,
+) -> Result<(), String> {
+    call_static_method(
+        "gamepadRumble",
+        ReturnType::Primitive(Primitive::Void),
+        |_env, _| Ok(()),
+        &[
+            jvalue { i: host_id },
+            jvalue { i: index as i32 },
+            jvalue {
+                f: strong_magnitude,
+            },
+            jvalue { f: weak_magnitude },
+            jvalue {
+                i: duration_ms as i32,
+            },
+        ],
+    )
+}
 jni_void!(exit_pointer_lock, "exitPointerLock");
 
 // ==================== Ecosystem ====================

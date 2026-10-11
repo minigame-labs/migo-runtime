@@ -330,6 +330,88 @@ pub trait KeyboardService: Send + Sync {
     }
 }
 
+// ==================== Gamepad ====================
+
+/// The longest a haptic effect plays, delay included, in milliseconds: the Web
+/// API's recommended limit, so an effect content forgets to stop cannot run on.
+pub const GAMEPAD_EFFECT_MAX_MS: u32 = 5000;
+
+/// One instruction to a pad's motors: hold them at these magnitudes for
+/// `duration_ms`, then stop. It replaces whatever the pad was playing, and a
+/// zero duration stops it.
+///
+/// The engine times an effect -- its start delay, its end, settling content's
+/// promise -- so a host only drives motors, and because the duration travels
+/// with the magnitudes the motors stop on time even if the engine never speaks
+/// again.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GamepadRumble {
+    /// The pad's slot, as `getGamepads()` indexes it.
+    pub index: u32,
+    /// The low-frequency (handle) motor, 0.0..=1.0.
+    pub strong_magnitude: f32,
+    /// The high-frequency (handle) motor, 0.0..=1.0.
+    pub weak_magnitude: f32,
+    /// The motors in the bottom front buttons (standard buttons 6 and 7),
+    /// 0.0..=1.0; zero unless the pad plays trigger-rumble.
+    pub left_trigger: f32,
+    pub right_trigger: f32,
+    /// At most [`GAMEPAD_EFFECT_MAX_MS`].
+    pub duration_ms: u32,
+}
+
+impl GamepadRumble {
+    /// The instruction, if every field is in range -- the one place a host's
+    /// promise about these values is kept.
+    pub fn new(
+        index: u32,
+        strong_magnitude: f64,
+        weak_magnitude: f64,
+        left_trigger: f64,
+        right_trigger: f64,
+        duration_ms: u32,
+    ) -> Result<Self, ServiceError> {
+        let magnitude = |value: f64| (0.0..=1.0).contains(&value).then_some(value as f32);
+        match (
+            magnitude(strong_magnitude),
+            magnitude(weak_magnitude),
+            magnitude(left_trigger),
+            magnitude(right_trigger),
+        ) {
+            (Some(strong), Some(weak), Some(left), Some(right))
+                if (index as usize) < crate::protocol::host_cmd::GAMEPAD_MAX_COUNT
+                    && duration_ms <= GAMEPAD_EFFECT_MAX_MS =>
+            {
+                Ok(Self {
+                    index,
+                    strong_magnitude: strong,
+                    weak_magnitude: weak,
+                    left_trigger: left,
+                    right_trigger: right,
+                    duration_ms,
+                })
+            }
+            _ => Err(ServiceError::invalid_param(
+                "playEffect:fail invalid gamepad effect",
+            )),
+        }
+    }
+
+    /// Stop the pad in `index`.
+    pub fn stop(index: u32) -> Result<Self, ServiceError> {
+        Self::new(index, 0.0, 0.0, 0.0, 0.0, 0)
+    }
+}
+
+/// A gamepad's actuator: what `vibrationActuator.playEffect()` and `reset()`
+/// ask of the host. Which pads have one, and which effects it plays, the host
+/// says when it announces each pad.
+pub trait GamepadService: Send + Sync {
+    fn rumble(&self, _rumble: &GamepadRumble) -> Result<(), ServiceError> {
+        Err(ServiceError::not_supported("playEffect:fail not supported"))
+    }
+}
+
 // ==================== Bluetooth ====================
 
 /// Bluetooth: the adapter, scanning, pairing, iBeacons and BLE GATT as a central.
@@ -623,12 +705,16 @@ pub trait CommerceServices: Send + Sync {
     }
 }
 
-/// System utility services: clipboard, keyboard, interaction, file, codec, etc.
+/// System utility services: clipboard, keyboard, gamepad, interaction, file, codec, etc.
 pub trait SystemUtilServices: Send + Sync {
     fn clipboard(&self) -> Option<Arc<dyn ClipboardService>> {
         None
     }
     fn keyboard(&self) -> Option<Arc<dyn KeyboardService>> {
+        None
+    }
+    /// The actuators of the gamepads the host feeds.
+    fn gamepad(&self) -> Option<Arc<dyn GamepadService>> {
         None
     }
     fn interaction(&self) -> Option<Arc<dyn InteractionService>> {
@@ -680,7 +766,7 @@ pub trait SystemUtilServices: Send + Sync {
 /// - [`MediaServices`]: Camera, image API, audio recording, audio platform
 /// - [`ConnectivityServices`]: Network, Bluetooth, location
 /// - [`CommerceServices`]: Payment, auth, share, game log, subpackage
-/// - [`SystemUtilServices`]: Clipboard, keyboard, interaction, system info, codec, file, scan code, navigate
+/// - [`SystemUtilServices`]: Clipboard, keyboard, gamepad, interaction, system info, codec, file, scan code, navigate
 pub trait DeviceServices:
     SensorServices + MediaServices + ConnectivityServices + CommerceServices + SystemUtilServices
 {

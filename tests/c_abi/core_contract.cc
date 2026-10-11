@@ -69,25 +69,38 @@ MIGO_CHECK_CXX_RECORD(MigoHostCallbacks);
 MIGO_CHECK_CXX_RECORD(MigoHostServiceCall);
 MIGO_CHECK_CXX_RECORD(MigoHostServiceResult);
 MIGO_CHECK_CXX_RECORD(MigoAppAuthorizeSetting);
+MIGO_CHECK_CXX_RECORD(MigoGamepadRumble);
+static_assert(sizeof(MigoGamepadRumble) == 32, "one rumble layout on every target");
 static_assert(sizeof(MigoAppAuthorizeSetting) == 20, "app authorization report layout");
 
 #if UINTPTR_MAX == UINT64_MAX
-static_assert(sizeof(MigoHostCallbacks) == 144, "LP64/LLP64 callback layout");
+static_assert(sizeof(MigoHostCallbacks) == 152, "LP64/LLP64 callback layout");
 static_assert(offsetof(MigoHostCallbacks, on_surface_released) == 96,
               "release wakeup stays where it was appended");
 static_assert(offsetof(MigoHostCallbacks, on_game_log) == 120,
               "the device callbacks stay where they were appended");
 static_assert(offsetof(MigoHostCallbacks, host_services) == 136,
-              "the host-service channel is the append-only tail");
+              "the host-service channel stays where it was appended");
+static_assert(offsetof(MigoHostCallbacks, on_gamepad_rumble) == 144,
+              "the gamepad motors are the append-only tail");
 static_assert(sizeof(MigoHostServiceCall) == 40, "LP64/LLP64 host-service call layout");
 static_assert(sizeof(MigoHostServiceResult) == 48, "LP64/LLP64 host-service result layout");
 #elif UINTPTR_MAX == UINT32_MAX
-static_assert(sizeof(MigoHostCallbacks) == 80, "ILP32 callback layout");
+// host_services at 72, then on_gamepad_rumble at 80: the record ends at 84,
+// rounded up to the uint64_t member alignment (8 on ARM and Windows, 4 on i386).
+struct MigoU64MemberAlignProbe {
+    char lead;
+    std::uint64_t value;
+};
+static_assert(sizeof(MigoHostCallbacks) ==
+                  (offsetof(MigoU64MemberAlignProbe, value) == 8 ? 88 : 84),
+              "ILP32 callback layout follows the target uint64_t member alignment");
 static_assert(offsetof(MigoHostCallbacks, on_surface_released) == 52,
               "ILP32 release wakeup offset");
 static_assert(offsetof(MigoHostCallbacks, on_game_log) == 64,
               "ILP32 device callbacks offset");
 static_assert(offsetof(MigoHostCallbacks, host_services) == 72, "ILP32 host_services offset");
+static_assert(offsetof(MigoHostCallbacks, on_gamepad_rumble) == 80, "ILP32 gamepad motors offset");
 static_assert(sizeof(MigoHostServiceResult) == 40, "ILP32 host-service result layout");
 #else
 #error "unsupported pointer width"

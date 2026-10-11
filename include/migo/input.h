@@ -495,6 +495,12 @@ MIGO_API MigoResult MIGO_CALL migo_session_send_composition_event(
  * frame. So a host announces a pad once, then pushes samples as often as it
  * samples, and a dropped sample is harmless because the next one replaces it
  * wholesale.
+ *
+ * Haptics run the other way. Each pad's vibrationActuator plays the effects
+ * its announcement declares; the engine times them -- start delay, end,
+ * preemption by the next effect or by reset(), the game going to the
+ * background -- and settles content's promises, so the host is told only what
+ * to set the motors to and for how long (on_gamepad_rumble, migo/session.h).
  */
 
 /* Bounded by the engine's fixed inline arrays; larger counts are rejected
@@ -528,6 +534,26 @@ MIGO_STATIC_ASSERT(sizeof(MigoGamepadButton) == 8,
 MIGO_STATIC_ASSERT(offsetof(MigoGamepadButton, value) == 4, "MigoGamepadButton.value moved");
 
 /*
+ * The haptic effects a pad's actuator plays -- its vibrationActuator.effects,
+ * the Web API's GamepadHapticEffectType values:
+ *
+ *   DUAL_RUMBLE     a motor in each handle, strong (low-frequency) and weak
+ *                   (high-frequency). A pad with a single motor may still
+ *                   declare it and drive that motor from both magnitudes.
+ *   TRIGGER_RUMBLE  dual rumble plus a motor in each bottom front button
+ *                   (standard buttons 6 and 7).
+ *
+ * A pad declared with any of them is driven through
+ * MigoHostCallbacks.on_gamepad_rumble (migo/session.h), which must then be
+ * installed. A pad with none has an actuator that plays nothing, so content's
+ * playEffect rejects as it does for such a pad in a browser.
+ */
+typedef uint32_t MigoGamepadHaptics;
+#define MIGO_GAMEPAD_HAPTICS_NONE 0U
+#define MIGO_GAMEPAD_HAPTICS_DUAL_RUMBLE (1U << 0)
+#define MIGO_GAMEPAD_HAPTICS_TRIGGER_RUMBLE (1U << 1)
+
+/*
  * A gamepad's identity, supplied when it appears and again when it goes away.
  *
  * axis_count and button_count are given on connect rather than inferred from
@@ -546,13 +572,16 @@ typedef struct MigoGamepadInfo {
     uint32_t index; /* the slot the pad holds for as long as it stays connected */
     uint32_t axis_count;
     uint32_t button_count;
-    uint32_t reserved0;
+    /* MIGO_GAMEPAD_HAPTICS_*. It was reserved and required zero, so a host
+     * built before it announces pads with no actuator -- what it had. */
+    MigoGamepadHaptics haptics;
     const char *id_utf8;
     const char *mapping_utf8;
 } MigoGamepadInfo;
 
 MIGO_STATIC_ASSERT(offsetof(MigoGamepadInfo, struct_size) == 0,
                    "every versioned struct must begin with struct_size");
+MIGO_STATIC_ASSERT(offsetof(MigoGamepadInfo, haptics) == 20, "MigoGamepadInfo.haptics moved");
 #if MIGO_LP64
 MIGO_STATIC_ASSERT(sizeof(MigoGamepadInfo) == 40, "MigoGamepadInfo LP64 size changed");
 MIGO_STATIC_ASSERT(offsetof(MigoGamepadInfo, id_utf8) == 24, "MigoGamepadInfo.id_utf8 moved");
@@ -594,7 +623,9 @@ MIGO_STATIC_ASSERT(offsetof(MigoGamepadStateEvent, buttons) == 32,
  *
  * Returns MIGO_ERROR_INVALID_STATE when no surface is attached -- there is
  * nothing to announce to -- and MIGO_ERROR_WOULD_BLOCK when the event was not
- * accepted.
+ * accepted. A pad announced with haptics this header does not define, or with
+ * any while the Session has no on_gamepad_rumble to drive them, returns
+ * MIGO_ERROR_INVALID_ARGUMENT: content would be offered effects nothing plays.
  */
 MIGO_API MigoResult MIGO_CALL migo_session_set_gamepad_connected(
     MigoSession *session,

@@ -164,7 +164,8 @@ final class NativeBridge {
                                      int modifiers, boolean repeat, double timeMs);
 
     static native boolean onGamepadConnection(int sessionId, int index, boolean connected, String id,
-                                              String mapping, int axisCount, int buttonCount);
+                                              String mapping, int axisCount, int buttonCount,
+                                              int haptics);
 
     static native boolean onGamepadState(int sessionId, int index, int axisCount, int buttonCount,
                                          java.nio.ByteBuffer state, double timeMs);

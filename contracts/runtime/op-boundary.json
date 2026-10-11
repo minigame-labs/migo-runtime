@@ -396,8 +396,9 @@
       }
     },
     "host_v8_touch": {
-      "reason": "The soft keyboard is host UI driven by commands; its input returns as events.",
+      "reason": "The soft keyboard is host UI driven by commands; its input returns as events. A gamepad's motors are set by command: the producer times each effect and settles its promise, and the command carries the duration, so nothing needs to answer.",
       "ops": {
+        "op_gamepad_rumble": "command",
         "op_hide_keyboard": "command",
         "op_show_keyboard": "command",
         "op_update_keyboard": "command"

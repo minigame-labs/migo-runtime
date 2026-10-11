@@ -202,6 +202,7 @@ service_ops! {
     op_get_network_type = 179,
     op_webgl_query_gpu_caps = 180,
     op_audio_watch_source_ended = 181,
+    op_gamepad_rumble = 182,
 }
 
 /// The op's name, for a refusal a person will read.

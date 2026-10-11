@@ -80,6 +80,12 @@ pub const MIGO_GAMEPAD_BUTTON_FLAG_PRESSED: u32 = 1 << 0;
 pub const MIGO_GAMEPAD_BUTTON_FLAG_TOUCHED: u32 = 1 << 1;
 const MIGO_GAMEPAD_BUTTON_FLAG_KNOWN_MASK: u32 =
     MIGO_GAMEPAD_BUTTON_FLAG_PRESSED | MIGO_GAMEPAD_BUTTON_FLAG_TOUCHED;
+/// The haptic effects a pad's actuator plays (`MigoGamepadInfo.haptics`).
+pub const MIGO_GAMEPAD_HAPTICS_NONE: u32 = 0;
+pub const MIGO_GAMEPAD_HAPTICS_DUAL_RUMBLE: u32 = 1 << 0;
+pub const MIGO_GAMEPAD_HAPTICS_TRIGGER_RUMBLE: u32 = 1 << 1;
+pub const MIGO_GAMEPAD_HAPTICS_KNOWN_MASK: u32 =
+    MIGO_GAMEPAD_HAPTICS_DUAL_RUMBLE | MIGO_GAMEPAD_HAPTICS_TRIGGER_RUMBLE;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -550,7 +556,9 @@ pub struct MigoGamepadInfo {
     pub index: u32,
     pub axis_count: u32,
     pub button_count: u32,
-    pub reserved0: u32,
+    /// `MIGO_GAMEPAD_HAPTICS_*`. Was `reserved0`, required zero: a host built
+    /// before it announces a pad with no actuator, which is what it had.
+    pub haptics: u32,
     pub id_utf8: *const c_char,
     pub mapping_utf8: *const c_char,
 }
@@ -564,6 +572,7 @@ pub enum ValidatedGamepadConnection {
         index: u32,
         axis_count: u8,
         button_count: u8,
+        haptics: u8,
         id: String,
         mapping: String,
     },
@@ -598,13 +607,15 @@ impl MigoGamepadInfo {
         self,
         connected: u32,
     ) -> Result<ValidatedGamepadConnection, MigoResult> {
-        validate_reserved(self.reserved0.into())?;
         if self.index as usize >= MIGO_GAMEPAD_MAX_COUNT {
             return Err(MIGO_ERROR_INVALID_ARGUMENT);
         }
         match connected {
+            // A withdrawal names only the slot; the rest of the record, haptics
+            // included, is the pad's description and is not read.
             0 => Ok(ValidatedGamepadConnection::Disconnected { index: self.index }),
             1 => {
+                validate_flags(self.haptics.into(), MIGO_GAMEPAD_HAPTICS_KNOWN_MASK.into())?;
                 if self.axis_count as usize > MIGO_GAMEPAD_MAX_AXES
                     || self.button_count as usize > MIGO_GAMEPAD_MAX_BUTTONS
                 {
@@ -619,6 +630,7 @@ impl MigoGamepadInfo {
                     index: self.index,
                     axis_count: self.axis_count as u8,
                     button_count: self.button_count as u8,
+                    haptics: self.haptics as u8,
                     id,
                     mapping,
                 })
@@ -818,6 +830,7 @@ const _: () = assert!(offset_of!(MigoWheelEvent, timestamp_ms) == 40);
 const _: () = assert!(size_of::<MigoGamepadButton>() == 8);
 const _: () = assert!(offset_of!(MigoGamepadButton, value) == 4);
 const _: () = assert!(offset_of!(MigoGamepadInfo, header) == 0);
+const _: () = assert!(offset_of!(MigoGamepadInfo, haptics) == 20);
 const _: () = assert!(offset_of!(MigoGamepadStateEvent, header) == 0);
 
 #[cfg(target_pointer_width = "64")]

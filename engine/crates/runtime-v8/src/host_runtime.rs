@@ -778,9 +778,18 @@ impl HostJsRuntime {
         mapping: &str,
         axis_count: u8,
         button_count: u8,
+        haptics: u8,
     ) {
         self.with_v8(|rt, bindings| {
-            bindings.dispatch_gamepad_connected(rt, index, id, mapping, axis_count, button_count)
+            bindings.dispatch_gamepad_connected(
+                rt,
+                index,
+                id,
+                mapping,
+                axis_count,
+                button_count,
+                haptics,
+            )
         });
     }
 
