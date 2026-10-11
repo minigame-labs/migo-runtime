@@ -337,6 +337,17 @@ impl MigoSession {
         self.callback_gate.is_open()
     }
 
+    /// Whether the host installed `on_gamepad_rumble`. Callbacks are final
+    /// before the first attach, and pads can only be announced while attached.
+    pub(crate) fn drives_gamepad_motors(&self) -> bool {
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .callbacks
+            .as_ref()
+            .is_some_and(|callbacks| callbacks.on_gamepad_rumble.is_some())
+    }
+
     #[inline]
     pub(crate) fn active_ingress(&self) -> Result<&migo_core::HostIngress, MigoResult> {
         if self.active_surface_generation.load(Ordering::Acquire) == 0 {
@@ -1123,6 +1134,7 @@ mod tests {
             on_game_log: None,
             on_host_service_call: None,
             host_services: 0,
+            on_gamepad_rumble: None,
         };
         session.state.lock().unwrap().notifier = Some(Arc::new(callbacks::Notifier::new(
             host_callbacks,
@@ -1775,6 +1787,7 @@ mod tests {
                 on_game_log: None,
                 on_host_service_call: None,
                 host_services: 0,
+                on_gamepad_rumble: None,
             };
             assert_eq!(
                 unsafe { migo_session_set_host_callbacks(session, &host_callbacks) },

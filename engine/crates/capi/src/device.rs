@@ -1,8 +1,9 @@
 //! Device capabilities for a C host: what content asks the host to do
-//! (vibrate, keep the display awake, keep a log entry) and what the host tells
-//! content about the device (its network and battery).
+//! (vibrate, keep the display awake, keep a log entry, drive a gamepad's
+//! motors) and what the host tells content about the device (its network and
+//! battery).
 //!
-//! The first three are callbacks, offered to content exactly when the host
+//! The first four are callbacks, offered to content exactly when the host
 //! installed them -- the rule the keyboard follows, and for the same reason: a
 //! capability the host did not supply must fail the way it fails on a device
 //! without it, not succeed into nothing.
@@ -27,7 +28,8 @@ use migo_capi_abi::{
     },
 };
 use migo_core::services::{
-    BatteryService, GameLogService, NetworkService, ScreenService, VibrationService,
+    BatteryService, GameLogService, GamepadRumble, GamepadService, NetworkService, ScreenService,
+    VibrationService,
 };
 use shared::protocol::error::ServiceError;
 use shared::protocol::host_cmd::HostCommand;
@@ -115,6 +117,11 @@ impl CapiDevice {
             .then(|| Arc::clone(self) as Arc<dyn GameLogService>)
     }
 
+    pub(crate) fn gamepad(self: &Arc<Self>) -> Option<Arc<dyn GamepadService>> {
+        self.notifier_if(Notifier::supplies_gamepad_rumble)
+            .then(|| Arc::clone(self) as Arc<dyn GamepadService>)
+    }
+
     /// Always offered: whether there is anything to answer with is decided per
     /// call by whether the host has reported yet, which can change mid-game.
     pub(crate) fn battery(self: &Arc<Self>) -> Arc<dyn BatteryService> {
@@ -151,6 +158,12 @@ impl VibrationService for CapiDevice {
         self.post("vibrateLong", |notifier| {
             notifier.vibrate(MIGO_VIBRATION_LONG)
         })
+    }
+}
+
+impl GamepadService for CapiDevice {
+    fn rumble(&self, rumble: &GamepadRumble) -> Result<(), ServiceError> {
+        self.post("playEffect", |notifier| notifier.gamepad_rumble(*rumble))
     }
 }
 
@@ -319,6 +332,7 @@ pub unsafe extern "C" fn migo_session_set_battery_status(
 mod tests {
     use super::*;
     use crate::callbacks::{MigoHostCallbacks, MigoTaskFn};
+    use crate::gamepad::MIGO_GAMEPAD_MAX_COUNT;
     use crate::test_support::{callback_session_pin, with_session};
     use std::ffi::c_void;
     use std::os::raw::c_char;
@@ -369,6 +383,24 @@ mod tests {
             .push(format!("log {entry}"));
     }
 
+    unsafe extern "C" fn on_gamepad_rumble(
+        user: *mut c_void,
+        _session: *mut c_void,
+        rumble: *const migo_capi_abi::callbacks::MigoGamepadRumble,
+    ) {
+        let rumble = unsafe { &*rumble };
+        unsafe { heard(user) }.0.lock().unwrap().push(format!(
+            "rumble size={} pad={} {}ms {} {} {} {}",
+            rumble.header.struct_size,
+            rumble.index,
+            rumble.duration_ms,
+            rumble.strong_magnitude,
+            rumble.weak_magnitude,
+            rumble.left_trigger,
+            rumble.right_trigger
+        ));
+    }
+
     fn device_with(heard: &Heard, installed: bool) -> (Arc<MigoSession>, Arc<CapiDevice>) {
         let mut raw = MigoHostCallbacks::empty();
         raw.user_data = heard as *const Heard as *mut c_void;
@@ -377,6 +409,7 @@ mod tests {
             raw.on_vibrate = Some(on_vibrate);
             raw.on_keep_screen_on = Some(on_keep_screen_on);
             raw.on_game_log = Some(on_game_log);
+            raw.on_gamepad_rumble = Some(on_gamepad_rumble);
         }
         let session = callback_session_pin();
         let notifier = Arc::new(Notifier::new(
@@ -415,6 +448,11 @@ mod tests {
             .expect("offered")
             .report_log(r#"{"key":"k"}"#)
             .unwrap();
+        let gamepad = device.gamepad().expect("offered");
+        gamepad
+            .rumble(&GamepadRumble::new(3, 1.0, 0.25, 0.0, 0.5, 120).unwrap())
+            .unwrap();
+        gamepad.rumble(&GamepadRumble::stop(3).unwrap()).unwrap();
         assert_eq!(
             *heard.0.lock().unwrap(),
             [
@@ -426,8 +464,24 @@ mod tests {
                 "keep 1".to_string(),
                 "keep 0".to_string(),
                 r#"log {"key":"k"}"#.to_string(),
+                "rumble size=32 pad=3 120ms 1 0.25 0 0.5".to_string(),
+                "rumble size=32 pad=3 0ms 0 0 0 0".to_string(),
             ]
         );
+    }
+
+    /// The one validation point for what a host is promised: magnitudes in
+    /// 0..=1, a duration within the limit, a slot that exists.
+    #[test]
+    fn a_rumble_out_of_range_is_never_built() {
+        use migo_core::services::GAMEPAD_EFFECT_MAX_MS;
+        assert!(GamepadRumble::new(0, 1.0, 1.0, 1.0, 1.0, GAMEPAD_EFFECT_MAX_MS).is_ok());
+        assert!(GamepadRumble::new(0, 1.01, 0.0, 0.0, 0.0, 10).is_err());
+        assert!(GamepadRumble::new(0, 0.0, -0.01, 0.0, 0.0, 10).is_err());
+        assert!(GamepadRumble::new(0, f64::NAN, 0.0, 0.0, 0.0, 10).is_err());
+        assert!(GamepadRumble::new(0, 0.0, 0.0, f64::INFINITY, 0.0, 10).is_err());
+        assert!(GamepadRumble::new(0, 0.0, 0.0, 0.0, 0.0, GAMEPAD_EFFECT_MAX_MS + 1).is_err());
+        assert!(GamepadRumble::new(MIGO_GAMEPAD_MAX_COUNT as u32, 0.0, 0.0, 0.0, 0.0, 0).is_err());
     }
 
     /// Offered exactly when installed: a host without a vibrator must make
@@ -439,6 +493,7 @@ mod tests {
         assert!(device.vibration().is_none());
         assert!(device.screen().is_none());
         assert!(device.game_log().is_none());
+        assert!(device.gamepad().is_none());
     }
 
     /// The battery and the network answer from the host's last report, fail

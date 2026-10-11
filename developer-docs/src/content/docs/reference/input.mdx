@@ -327,11 +327,13 @@ MIGO_API MigoResult MIGO_CALL migo_session_set_gamepad_connected(
 | `info->button_count` | 按键数量，最大 `MIGO_GAMEPAD_MAX_BUTTONS`（20）；超出被拒绝，不会截断（丢失按键比超限更危险）。 |
 | `info->id_utf8` | 设备名称，展示给玩家；NUL 结尾，仅在调用期间借用。 |
 | `info->mapping_utf8` | `"standard"` 或 `""`；NUL 结尾，仅在调用期间借用。 |
+| `info->haptics` | 手柄马达能播放的效果，`MIGO_GAMEPAD_HAPTICS_*`：`DUAL_RUMBLE`（握把一强一弱两个马达；单马达手柄也可声明）、`TRIGGER_RUMBLE`（另有两个扳机马达）。它们成为该手柄的 `vibrationActuator.effects`，经 [`on_gamepad_rumble`](/docs/reference/session/#手柄马达) 驱动。`0`（`NONE`）表示没有马达——该字段原为保留字段，旧宿主声明的正是这个。仅在上线时读取。 |
 | `connected` | `1` 上线，`0` 下线。 |
 
 返回：
 
 - `MIGO_OK`：声明已入队。
+- `MIGO_ERROR_INVALID_ARGUMENT`：计数超限、未知 mapping、本头文件未定义的 haptics 位，或声明了 haptics 而 Session 没有安装 `on_gamepad_rumble`。
 - `MIGO_ERROR_INVALID_STATE`：无已挂载 surface。
 - `MIGO_ERROR_WOULD_BLOCK`：事件未被接受。
 
@@ -505,4 +507,13 @@ typedef uint32_t MigoGamepadButtonFlags;
 #define MIGO_GAMEPAD_BUTTON_FLAG_NONE    0U
 #define MIGO_GAMEPAD_BUTTON_FLAG_PRESSED (1U << 0)  /* 设备判定为已按下 */
 #define MIGO_GAMEPAD_BUTTON_FLAG_TOUCHED (1U << 1)  /* 手指触及但未必按下（如扳机） */
+```
+
+### MigoGamepadHaptics
+
+```c
+typedef uint32_t MigoGamepadHaptics;
+#define MIGO_GAMEPAD_HAPTICS_NONE           0U
+#define MIGO_GAMEPAD_HAPTICS_DUAL_RUMBLE    (1U << 0)  /* 握把一强一弱两个马达 */
+#define MIGO_GAMEPAD_HAPTICS_TRIGGER_RUMBLE (1U << 1)  /* 另有按键 6、7 的马达 */
 ```

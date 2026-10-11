@@ -1,9 +1,10 @@
 //! Gamepads, inbound.
 //!
-//! Mainstream mini-game platforms have no gamepad API, so the shape here is the Web one Migo replaces: a
-//! host announces a pad, pushes samples while it is connected, and withdraws
-//! it. Content polls `getGamepads()` -- the Web API is polled, not evented --
-//! so a sample updates stored state rather than being delivered to a listener.
+//! The common mini-game platform's gamepad API follows the Web one: a host
+//! announces a pad, pushes samples while it is connected, and withdraws it.
+//! Content polls `getGamepads()` -- the Web API is polled, not evented -- so a
+//! sample updates stored state rather than being delivered to a listener. What
+//! a pad's motors are told goes out through `on_gamepad_rumble` (`device.rs`).
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -252,6 +253,15 @@ pub unsafe extern "C" fn migo_session_set_gamepad_connected(
             Ok(connection) => connection,
             Err(error) => return error,
         };
+        // Effects offered with nothing to play them would leave content
+        // waiting on motors that never move. Part of the record's validation,
+        // so it comes before any question of state.
+        if let ValidatedGamepadConnection::Connected { haptics, .. } = connection
+            && haptics != 0
+            && !session.drives_gamepad_motors()
+        {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        }
         let ingress = match session.active_ingress() {
             Ok(ingress) => ingress,
             Err(error) => return error,
@@ -270,6 +280,7 @@ pub unsafe extern "C" fn migo_session_set_gamepad_connected(
                 mapping,
                 axis_count,
                 button_count,
+                haptics,
             } => {
                 let reservation =
                     match session
@@ -286,6 +297,7 @@ pub unsafe extern "C" fn migo_session_set_gamepad_connected(
                         mapping,
                         axis_count,
                         button_count,
+                        haptics,
                     },
                     reservation,
                 )
@@ -344,8 +356,73 @@ pub unsafe extern "C" fn migo_session_send_gamepad_state(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use migo_capi_abi::{MIGO_ABI_VERSION_CURRENT, VersionedHeader};
+    use migo_capi_abi::input::{MIGO_GAMEPAD_HAPTICS_DUAL_RUMBLE, MIGO_GAMEPAD_HAPTICS_NONE};
+    use migo_capi_abi::{MIGO_ABI_VERSION_CURRENT, MIGO_OK, VersionedHeader};
+    use std::ffi::{CString, c_void};
     use std::mem::size_of;
+
+    unsafe extern "C" fn refuse_dispatch(
+        _dispatcher: *mut c_void,
+        _task: crate::callbacks::MigoTaskFn,
+        _context: *mut c_void,
+    ) -> MigoResult {
+        MIGO_ERROR_INVALID_STATE
+    }
+
+    unsafe extern "C" fn ignore_rumble(
+        _user: *mut c_void,
+        _session: *mut c_void,
+        _rumble: *const migo_capi_abi::callbacks::MigoGamepadRumble,
+    ) {
+    }
+
+    /// A pad announced with haptics needs the callback that drives its motors.
+    /// The check belongs to the record, so it answers before the question of
+    /// whether a surface is attached does.
+    #[test]
+    fn haptics_are_refused_without_the_callback_that_drives_them() {
+        let id = CString::new("Industrial Pad").unwrap();
+        let mapping = CString::new("standard").unwrap();
+        let info = MigoGamepadInfo {
+            header: VersionedHeader {
+                struct_size: size_of::<MigoGamepadInfo>() as u32,
+                abi_version: MIGO_ABI_VERSION_CURRENT,
+            },
+            index: 0,
+            axis_count: 4,
+            button_count: 17,
+            haptics: MIGO_GAMEPAD_HAPTICS_DUAL_RUMBLE,
+            id_utf8: id.as_ptr(),
+            mapping_utf8: mapping.as_ptr(),
+        };
+        let silent = MigoGamepadInfo {
+            haptics: MIGO_GAMEPAD_HAPTICS_NONE,
+            ..info
+        };
+        crate::test_support::with_session("gamepad-haptics-unwired", |session| {
+            assert_eq!(
+                unsafe { migo_session_set_gamepad_connected(session, &info, 1) },
+                MIGO_ERROR_INVALID_ARGUMENT
+            );
+            assert_eq!(
+                unsafe { migo_session_set_gamepad_connected(session, &silent, 1) },
+                MIGO_ERROR_INVALID_STATE
+            );
+        });
+        crate::test_support::with_session("gamepad-haptics-wired", |session| {
+            let mut callbacks = crate::callbacks::MigoHostCallbacks::empty();
+            callbacks.dispatch = Some(refuse_dispatch);
+            callbacks.on_gamepad_rumble = Some(ignore_rumble);
+            assert_eq!(
+                unsafe { crate::migo_session_set_host_callbacks(session, &callbacks) },
+                MIGO_OK
+            );
+            assert_eq!(
+                unsafe { migo_session_set_gamepad_connected(session, &info, 1) },
+                MIGO_ERROR_INVALID_STATE
+            );
+        });
+    }
 
     #[test]
     fn topology_is_published_only_after_connect_commit_and_rolls_back_on_failure() {

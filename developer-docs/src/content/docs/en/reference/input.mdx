@@ -328,11 +328,13 @@ Parameters:
 | `info->button_count` | Number of buttons, up to `MIGO_GAMEPAD_MAX_BUTTONS` (20); values above the limit are rejected rather than truncated (losing buttons is more dangerous than exceeding the limit). |
 | `info->id_utf8` | Device name shown to the player; NUL-terminated and borrowed only during the call. |
 | `info->mapping_utf8` | `"standard"` or `""`; NUL-terminated and borrowed only during the call. |
+| `info->haptics` | The effects the pad's motors play, `MIGO_GAMEPAD_HAPTICS_*`: `DUAL_RUMBLE` (a strong and a weak handle motor; a single-motor pad may declare it too), `TRIGGER_RUMBLE` (plus a motor in each bottom front button). They become its `vibrationActuator.effects` and are driven through [`on_gamepad_rumble`](/docs/en/reference/session/#gamepad-motors). `0` (`NONE`) is a pad without motors -- what a host built before the field announces, since it was reserved. Read only on connect. |
 | `connected` | `1` for connected, `0` for disconnected. |
 
 Returns:
 
 - `MIGO_OK`: The declaration was queued.
+- `MIGO_ERROR_INVALID_ARGUMENT`: A count over its limit, an unknown mapping, a haptics bit this header does not define, or haptics declared while the Session has no `on_gamepad_rumble`.
 - `MIGO_ERROR_INVALID_STATE`: No surface is attached.
 - `MIGO_ERROR_WOULD_BLOCK`: The event was not accepted.
 
@@ -506,4 +508,13 @@ typedef uint32_t MigoGamepadButtonFlags;
 #define MIGO_GAMEPAD_BUTTON_FLAG_NONE    0U
 #define MIGO_GAMEPAD_BUTTON_FLAG_PRESSED (1U << 0)  /* the device reports it pressed */
 #define MIGO_GAMEPAD_BUTTON_FLAG_TOUCHED (1U << 1)  /* touched but not necessarily pressed (a trigger, say) */
+```
+
+### MigoGamepadHaptics
+
+```c
+typedef uint32_t MigoGamepadHaptics;
+#define MIGO_GAMEPAD_HAPTICS_NONE           0U
+#define MIGO_GAMEPAD_HAPTICS_DUAL_RUMBLE    (1U << 0)  /* a strong and a weak handle motor */
+#define MIGO_GAMEPAD_HAPTICS_TRIGGER_RUMBLE (1U << 1)  /* plus a motor in buttons 6 and 7 */
 ```

@@ -1831,6 +1831,19 @@ public final class NativeExports {
     }
 
     /**
+     * Set the motors of the session's gamepad in slot {@code index}: these
+     * magnitudes (0..1) for {@code durationMs}, replacing what it plays; 0 stops
+     * it. The engine has timed the effect; this only drives the motors.
+     * <p>
+     * JNI signature: {@code (IIFFI)V}
+     */
+    public static void gamepadRumble(int sessionId, int index, float strong, float weak,
+                                     int durationMs) {
+        if (isSessionTerminated(sessionId)) return;
+        GamepadInput.rumble(sessionId, index, strong, weak, durationMs);
+    }
+
+    /**
      * Clean up Keyboard resources for a session. Call on session shutdown.
      */
     public static void destroyKeyboardManager(int sessionId) {

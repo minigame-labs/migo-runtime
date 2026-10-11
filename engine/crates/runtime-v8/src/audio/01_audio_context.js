@@ -44,7 +44,7 @@ import { IIRFilterNode } from "ext:host_v8_audio/00_iir_filter_node.js";
 import { ScriptProcessorNode } from "ext:host_v8_audio/00_script_processor_node.js";
 import { PeriodicWave } from "ext:host_v8_audio/00_periodic_wave.js";
 import { AudioListener } from "ext:host_v8_audio/00_audio_listener.js";
-import { onHide, onShow } from "ext:host_v8_lifecycle/01_lifecycle.js";
+import { _internalObserveVisibility } from "ext:host_v8_lifecycle/01_lifecycle.js";
 import { allocateHostCallbackId } from "ext:host_v8_base/02_async.js";
 
 const CONTEXT_REGISTRY = new Map();
@@ -89,13 +89,9 @@ function forEachLiveContext(callback) {
 // the native clock. Games pause/resume playback themselves via
 // onAudioInterruptionBegin/End if they want it to stop.
 let _appBackgrounded = false;
-onHide(() => {
-  _appBackgrounded = true;
-  forEachLiveContext((ctx) => ctx._setBackgrounded(true));
-});
-onShow(() => {
-  _appBackgrounded = false;
-  forEachLiveContext((ctx) => ctx._setBackgrounded(false));
+_internalObserveVisibility((visible) => {
+  _appBackgrounded = !visible;
+  forEachLiveContext((ctx) => ctx._setBackgrounded(!visible));
 });
 
 class BaseAudioContext {

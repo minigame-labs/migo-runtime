@@ -12,14 +12,17 @@ import android.view.MotionEvent;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Locale;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * The gamepads connected to the device, for one session: each takes the lowest
  * free slot when it appears and keeps it until it goes, as {@code getGamepads()}
  * indexes do, and its sticks, triggers, d-pad and buttons are pushed on the
- * standard mapping each time Android reports them.
+ * standard mapping each time Android reports them. Each pad's motors play what
+ * its {@code vibrationActuator} asks ({@link #rumble}).
  *
- * <p>Main-thread confined: the device listener and every input path run there.
+ * <p>Main-thread confined: the device listener and every input path run there,
+ * and a rumble from the engine's thread is posted there.
  *
  * @hide
  */
@@ -28,7 +31,7 @@ public final class GamepadInput implements InputManager.InputDeviceListener {
     /** Where pads go: {@code NativeMethods.onGamepadConnection} / {@code onGamepadState}. */
     interface Sink {
         boolean connection(int sessionId, int index, boolean connected, String id, String mapping,
-                           int axisCount, int buttonCount);
+                           int axisCount, int buttonCount, int haptics);
 
         boolean state(int sessionId, int index, int axisCount, int buttonCount, ByteBuffer state,
                       double timeMs);
@@ -37,10 +40,17 @@ public final class GamepadInput implements InputManager.InputDeviceListener {
     /** {@code MIGO_GAMEPAD_MAX_COUNT}. */
     static final int MAX_PADS = 16;
 
+    /** The started sessions' pads, for the engine's rumbles to find. */
+    private static final ConcurrentHashMap<Integer, GamepadInput> STARTED =
+            new ConcurrentHashMap<>();
+
     private final int sessionId;
+    private final Handler main = new Handler(Looper.getMainLooper());
     private final InputManager inputManager;
     private final Sink sink;
     private final GamepadPad[] slots = new GamepadPad[MAX_PADS];
+    /** Whether the pad in a slot has been told to run its motors this session. */
+    private final boolean[] driven = new boolean[MAX_PADS];
     private final ByteBuffer buffer =
             ByteBuffer.allocateDirect(GamepadPad.STATE_BYTES).order(ByteOrder.nativeOrder());
     private boolean started;
@@ -51,9 +61,10 @@ public final class GamepadInput implements InputManager.InputDeviceListener {
         this.sink = new Sink() {
             @Override
             public boolean connection(int session, int index, boolean connected, String id,
-                                      String mapping, int axisCount, int buttonCount) {
+                                      String mapping, int axisCount, int buttonCount,
+                                      int haptics) {
                 return NativeMethods.onGamepadConnection(session, index, connected, id, mapping,
-                        axisCount, buttonCount);
+                        axisCount, buttonCount, haptics);
             }
 
             @Override
@@ -69,20 +80,50 @@ public final class GamepadInput implements InputManager.InputDeviceListener {
     public void start() {
         if (started || inputManager == null) return;
         started = true;
-        inputManager.registerInputDeviceListener(this, new Handler(Looper.getMainLooper()));
+        STARTED.put(sessionId, this);
+        inputManager.registerInputDeviceListener(this, main);
         for (int deviceId : inputManager.getInputDeviceIds()) {
             onInputDeviceAdded(deviceId);
         }
     }
 
-    /** Stop hearing pads; every pad still in a slot leaves it. */
+    /**
+     * Stop hearing pads; every pad still in a slot leaves it, its motors
+     * stopped -- no effect outlives the session that played it.
+     */
     public void stop() {
         if (!started) return;
         started = false;
+        STARTED.remove(sessionId, this);
         inputManager.unregisterInputDeviceListener(this);
         for (int i = 0; i < MAX_PADS; i++) {
-            if (slots[i] != null) leave(i);
+            if (slots[i] == null) continue;
+            if (driven[i]) {
+                InputDevice device = inputManager.getInputDevice(slots[i].deviceId);
+                if (device != null) GamepadMotors.play(device, 0f, 0f, 0);
+            }
+            leave(i);
         }
+    }
+
+    /**
+     * The engine's instruction for the motors of the session's pad in
+     * {@code index}: these magnitudes for {@code durationMs}, replacing what it
+     * plays; 0 stops it. Any thread.
+     */
+    static void rumble(int sessionId, int index, float strong, float weak, int durationMs) {
+        GamepadInput input = STARTED.get(sessionId);
+        if (input == null || index < 0 || index >= MAX_PADS) return;
+        input.main.post(() -> input.drive(index, strong, weak, durationMs));
+    }
+
+    private void drive(int index, float strong, float weak, int durationMs) {
+        GamepadPad pad = started ? slots[index] : null;
+        if (pad == null) return;
+        InputDevice device = inputManager.getInputDevice(pad.deviceId);
+        if (device == null) return;
+        GamepadMotors.play(device, strong, weak, durationMs);
+        driven[index] |= durationMs > 0;
     }
 
     static boolean isGamepad(InputDevice device) {
@@ -106,7 +147,7 @@ public final class GamepadInput implements InputManager.InputDeviceListener {
             String id = String.format(Locale.ROOT, "%s (STANDARD GAMEPAD Vendor: %04x Product: %04x)",
                     device.getName(), device.getVendorId(), device.getProductId());
             if (!sink.connection(sessionId, index, true, id, "standard",
-                    GamepadPad.AXES, GamepadPad.BUTTONS)) {
+                    GamepadPad.AXES, GamepadPad.BUTTONS, GamepadMotors.haptics(device))) {
                 return null;
             }
             return slots[index] = new GamepadPad(device.getId(), index);
@@ -133,7 +174,8 @@ public final class GamepadInput implements InputManager.InputDeviceListener {
 
     private void leave(int index) {
         slots[index] = null;
-        sink.connection(sessionId, index, false, "", "", 0, 0);
+        driven[index] = false;
+        sink.connection(sessionId, index, false, "", "", 0, 0, 0);
     }
 
     private GamepadPad padOf(int deviceId) {

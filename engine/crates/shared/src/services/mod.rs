@@ -43,8 +43,9 @@ pub use codec::CodecService;
 pub use device::{
     AccelerometerService, AudioPlatformService, BLUETOOTH_RESULT_HOOKS, BatteryService,
     BluetoothService, CommerceServices, CompassService, ConnectivityServices, DeviceMotionService,
-    DeviceServices, GyroscopeService, KeyboardService, MediaServices, RecorderService,
-    ScreenService, SensorServices, SystemUtilServices, VibrationService,
+    DeviceServices, GAMEPAD_EFFECT_MAX_MS, GamepadRumble, GamepadService, GyroscopeService,
+    KeyboardService, MediaServices, RecorderService, ScreenService, SensorServices,
+    SystemUtilServices, VibrationService,
 };
 pub use ecosystem::EcosystemService;
 pub use file::FileService;

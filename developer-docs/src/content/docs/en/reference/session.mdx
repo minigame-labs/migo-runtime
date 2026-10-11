@@ -101,6 +101,7 @@ typedef struct MigoHostCallbacks {
     MigoOnGameLogFn         on_game_log;
     MigoOnHostServiceCallFn on_host_service_call;  /* optional: the host-service channel, with the next */
     uint64_t                host_services;         /* the services the host supplies, one bit each */
+    MigoOnGamepadRumbleFn   on_gamepad_rumble;     /* gamepad motors; required by pads with haptics */
 } MigoHostCallbacks;
 ```
 
@@ -127,6 +128,7 @@ Fields:
 | `on_game_log` | `MigoOnGameLogFn` | — | One entry of content's game log, for the host to keep or upload |
 | `on_host_service_call` | `MigoOnHostServiceCallFn` | both or neither with `host_services` | Content's requests of the host's services (ads, payment, sign-in, sharing, navigation); see [Host-service channel](#host-service-channel) |
 | `host_services` | `uint64_t` | as above | The services the host supplies, one bit per `MIGO_HOST_SERVICE_*`; a bit this header does not define returns `MIGO_ERROR_INVALID_ARGUMENT` |
+| `on_gamepad_rumble` | `MigoOnGamepadRumbleFn` | when any pad is announced with haptics | Set a gamepad's motors for its `vibrationActuator`; see [Gamepad motors](#gamepad-motors) |
 
 ### MigoDispatchFn
 
@@ -261,6 +263,38 @@ device without that hardware. Like every callback they arrive through
 - `on_game_log`: one entry from content's game log, a JSON object (`level`,
   `key`, `value`, `commonInfo`), length-delimited UTF-8 borrowed for the call.
   It stays JSON because `value` is whatever content logged.
+
+### Gamepad motors
+
+```c
+typedef struct MigoGamepadRumble {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint32_t index;           /* the pad's slot */
+    uint32_t duration_ms;     /* at most 5000; 0 stops the pad */
+    float strong_magnitude;   /* low-frequency handle motor, 0.0-1.0 */
+    float weak_magnitude;     /* high-frequency handle motor, 0.0-1.0 */
+    float left_trigger;       /* standard button 6's motor, 0.0-1.0 */
+    float right_trigger;      /* standard button 7's motor, 0.0-1.0 */
+} MigoGamepadRumble;
+
+typedef void (MIGO_CALL *MigoOnGamepadRumbleFn)(void *user_data, MigoSession *session,
+                                                const MigoGamepadRumble *rumble);
+```
+
+Each gamepad has the standard `vibrationActuator`, playing the effects its
+announcement declares (`MigoGamepadInfo.haptics`, see
+[`migo_session_set_gamepad_connected`](/docs/en/reference/input/#migo_session_set_gamepad_connected)).
+The engine times every effect -- its start delay, its end, preemption by the
+next effect, by `reset()`, by the game going to the background -- and settles
+content's promise itself, so the host is only told what to set the motors to:
+hold the pad in `index` at these magnitudes for `duration_ms`, then stop. Each
+instruction replaces whatever that pad was playing, and `duration_ms` 0 stops
+it. Because the duration travels with the magnitudes, the motors stop on time
+even if no further instruction comes. The trigger magnitudes are nonzero only
+for a pad declared with `MIGO_GAMEPAD_HAPTICS_TRIGGER_RUMBLE`. A motor without
+amplitude control runs at any nonzero magnitude; a pad with one motor may drive
+it from the larger of strong and weak. The record is borrowed for the call.
 
 ### Host-service channel
 

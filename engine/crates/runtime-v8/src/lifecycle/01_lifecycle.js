@@ -1,5 +1,32 @@
 import { createListenerGroup } from "ext:host_v8_base/02_async.js";
 
+// Engine modules that follow the game's visibility -- the audio clock, gamepad
+// effects -- observe it here, never through onShow/onHide: those listeners are
+// content's, and content's offHide() with no listener removes every one of
+// them. Observers run before content's listeners, in registration order.
+const _visibilityObservers = [];
+const ConsoleError = Function.prototype.call.bind(console.error, console);
+
+/** Engine-only: `observer(visible)` on every show and hide. */
+function _internalObserveVisibility(observer) {
+    if (typeof observer !== "function") {
+        throw new TypeError("visibility observer must be a function");
+    }
+    _visibilityObservers.push(observer);
+}
+
+function notifyVisibility(visible) {
+    for (let i = 0; i < _visibilityObservers.length; i++) {
+        try {
+            _visibilityObservers[i](visible);
+        } catch (e) {
+            try {
+                ConsoleError("visibility observer threw: " + e);
+            } catch (_) {}
+        }
+    }
+}
+
 function createDefaultLaunchOptions() {
     return {
         scene: 1001,
@@ -142,6 +169,7 @@ class AppLifecycleManager {
 
     _triggerShow(options) {
         this.isVisible = true;
+        notifyVisibility(true);
 
         const normalized = this._normalizeLaunchOptions(options);
 
@@ -161,6 +189,7 @@ class AppLifecycleManager {
 
     _triggerHide() {
         this.isVisible = false;
+        notifyVisibility(false);
         this.onHideListeners.trigger();
     }
 
@@ -246,6 +275,7 @@ export {
     getEnterOptionsSync,
     _internalTriggerOnHide,
     _internalTriggerOnShow,
+    _internalObserveVisibility,
     _internalTriggerFocusChanged,
     _internalInstallFocusAdapter,
     _internalGetFocusState,

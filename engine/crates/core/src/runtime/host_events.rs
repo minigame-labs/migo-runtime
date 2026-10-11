@@ -217,6 +217,7 @@ impl InputSink for ServiceEventSink<'_> {
         mapping: &str,
         axis_count: u8,
         button_count: u8,
+        haptics: u8,
     ) {
         self.send(
             event::_internalTriggerGamepadConnected,
@@ -226,6 +227,7 @@ impl InputSink for ServiceEventSink<'_> {
                 OwnedValue::Str(mapping.to_owned()),
                 OwnedValue::U32(u32::from(axis_count)),
                 OwnedValue::U32(u32::from(button_count)),
+                OwnedValue::U32(u32::from(haptics)),
             ],
         );
     }

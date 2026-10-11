@@ -36,7 +36,7 @@ pub(crate) trait InputSink {
     fn composition_update(&mut self, data: &str);
     /// `_internalTriggerCompositionEnd(data)`.
     fn composition_end(&mut self, data: &str);
-    /// `_internalTriggerGamepadConnected(index, id, mapping, axes, buttons)`.
+    /// `_internalTriggerGamepadConnected(index, id, mapping, axes, buttons, haptics)`.
     fn gamepad_connected(
         &mut self,
         index: u32,
@@ -44,6 +44,7 @@ pub(crate) trait InputSink {
         mapping: &str,
         axis_count: u8,
         button_count: u8,
+        haptics: u8,
     );
     /// `_internalTriggerGamepadDisconnected(index)`.
     fn gamepad_disconnected(&mut self, index: u32);
@@ -132,7 +133,8 @@ pub(crate) fn route(
             mapping,
             axis_count,
             button_count,
-        } => sink.gamepad_connected(index, &id, &mapping, axis_count, button_count),
+            haptics,
+        } => sink.gamepad_connected(index, &id, &mapping, axis_count, button_count, haptics),
         HostCommand::OnGamepadDisconnected { index } => sink.gamepad_disconnected(index),
         HostCommand::OnGamepadState(state_sample) => sink.gamepad_state(&state_sample),
         HostCommand::OnKeyDown {

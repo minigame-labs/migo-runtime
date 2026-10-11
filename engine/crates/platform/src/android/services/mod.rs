@@ -8,11 +8,12 @@ use migo_core::services::{
     AccelerometerService, AdService, AudioPlatformService, AuthService, BatteryService,
     BluetoothService, CameraService, ClipboardService, CodecService, CommerceServices,
     CompassService, ConnectivityServices, DeviceMotionService, EcosystemService, FileService,
-    GameLogService, GyroscopeService, ImageApiService, InteractionService, KeyboardService,
-    LocationService, MediaServices, NavigateService, NetworkService, PaymentService,
-    PermissionService, RecorderService, ScanCodeService, Scope, ScopeState, ScreenService,
-    SensorServices, ServiceError, ServiceErrorCode, ShareService, SubpackageService,
-    SystemInfoService, SystemUtilServices, VibrationService, VideoService, WindowService,
+    GameLogService, GamepadRumble, GamepadService, GyroscopeService, ImageApiService,
+    InteractionService, KeyboardService, LocationService, MediaServices, NavigateService,
+    NetworkService, PaymentService, PermissionService, RecorderService, ScanCodeService, Scope,
+    ScopeState, ScreenService, SensorServices, ServiceError, ServiceErrorCode, ShareService,
+    SubpackageService, SystemInfoService, SystemUtilServices, VibrationService, VideoService,
+    WindowService,
 };
 
 use crate::android::jni;
@@ -231,6 +232,11 @@ impl SystemUtilServices for AndroidDeviceServices {
             return Some(Arc::clone(host_keyboard));
         }
         Some(Arc::new(AndroidKeyboard {
+            host_id: self.host_id,
+        }))
+    }
+    fn gamepad(&self) -> Option<Arc<dyn GamepadService>> {
+        Some(Arc::new(AndroidGamepad {
             host_id: self.host_id,
         }))
     }
@@ -1405,6 +1411,26 @@ impl NavigateService for AndroidNavigate {
         Ok(jni::open_customer_service_conversation(
             self.host_id,
             options_json,
+        )?)
+    }
+}
+
+// ==================== Gamepad ====================
+
+/// The motors of the session's gamepads, which the SDK announces with the
+/// effects each plays: their vibrators, through `InputDevice`.
+struct AndroidGamepad {
+    host_id: i32,
+}
+
+impl GamepadService for AndroidGamepad {
+    fn rumble(&self, rumble: &GamepadRumble) -> Result<(), ServiceError> {
+        Ok(jni::gamepad_rumble(
+            self.host_id,
+            rumble.index,
+            rumble.strong_magnitude,
+            rumble.weak_magnitude,
+            rumble.duration_ms,
         )?)
     }
 }

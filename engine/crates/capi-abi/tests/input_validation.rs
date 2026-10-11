@@ -4,8 +4,10 @@ use migo_capi_abi::{
     MIGO_ABI_VERSION_CURRENT, MIGO_ERROR_INVALID_ARGUMENT, VersionedHeader,
     input::{
         MIGO_COMPOSITION_EVENT_END, MIGO_COMPOSITION_EVENT_START, MIGO_COMPOSITION_EVENT_UPDATE,
-        MIGO_GAMEPAD_BUTTON_FLAG_PRESSED, MIGO_GAMEPAD_BUTTON_FLAG_TOUCHED, MIGO_GAMEPAD_MAX_AXES,
-        MIGO_GAMEPAD_MAX_BUTTONS, MIGO_GAMEPAD_MAX_COUNT, MIGO_KEY_EVENT_DOWN, MIGO_KEY_EVENT_UP,
+        MIGO_GAMEPAD_BUTTON_FLAG_PRESSED, MIGO_GAMEPAD_BUTTON_FLAG_TOUCHED,
+        MIGO_GAMEPAD_HAPTICS_DUAL_RUMBLE, MIGO_GAMEPAD_HAPTICS_NONE,
+        MIGO_GAMEPAD_HAPTICS_TRIGGER_RUMBLE, MIGO_GAMEPAD_MAX_AXES, MIGO_GAMEPAD_MAX_BUTTONS,
+        MIGO_GAMEPAD_MAX_COUNT, MIGO_KEY_EVENT_DOWN, MIGO_KEY_EVENT_UP,
         MIGO_KEYBOARD_EVENT_COMPLETE, MIGO_KEYBOARD_EVENT_CONFIRM,
         MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE, MIGO_KEYBOARD_EVENT_INPUT, MIGO_TOUCH_CANCEL,
         MIGO_TOUCH_END, MIGO_TOUCH_FLAG_CHANGED, MIGO_TOUCH_FLAG_REMOVED, MIGO_TOUCH_MAX_POINTS,
@@ -299,14 +301,14 @@ fn gamepad_info(id: &CString, mapping: &CString) -> MigoGamepadInfo {
         index: 2,
         axis_count: 4,
         button_count: 17,
-        reserved0: 0,
+        haptics: MIGO_GAMEPAD_HAPTICS_NONE,
         id_utf8: id.as_ptr(),
         mapping_utf8: mapping.as_ptr(),
     }
 }
 
 #[test]
-fn gamepad_connection_boolean_reserved_counts_and_mapping_are_strict() {
+fn gamepad_connection_boolean_haptics_counts_and_mapping_are_strict() {
     let id = CString::new("Industrial Pad").unwrap();
     let standard = CString::new("standard").unwrap();
     let mut info = gamepad_info(&id, &standard);
@@ -323,12 +325,24 @@ fn gamepad_connection_boolean_reserved_counts_and_mapping_are_strict() {
         MIGO_ERROR_INVALID_ARGUMENT
     );
 
-    info.reserved0 = 1;
+    // Every defined effect is carried; a bit this library does not define is a
+    // host built against a newer header, refused rather than dropped.
+    info.haptics = MIGO_GAMEPAD_HAPTICS_DUAL_RUMBLE | MIGO_GAMEPAD_HAPTICS_TRIGGER_RUMBLE;
+    assert!(matches!(
+        unsafe { info.validate_connection(1) }.expect("a pad with motors"),
+        ValidatedGamepadConnection::Connected { haptics: 3, .. }
+    ));
+    info.haptics = 1 << 2;
     assert_eq!(
         unsafe { info.validate_connection(1) }.unwrap_err(),
         MIGO_ERROR_INVALID_ARGUMENT
     );
-    info.reserved0 = 0;
+    // Withdrawing reads only the slot, so the struct a pad connected with works.
+    assert!(matches!(
+        unsafe { info.validate_connection(0) }.expect("withdrawn"),
+        ValidatedGamepadConnection::Disconnected { index: 2 }
+    ));
+    info.haptics = MIGO_GAMEPAD_HAPTICS_NONE;
     info.index = MIGO_GAMEPAD_MAX_COUNT as u32;
     assert_eq!(
         unsafe { info.validate_connection(1) }.unwrap_err(),

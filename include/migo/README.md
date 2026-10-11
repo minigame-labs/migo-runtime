@@ -222,12 +222,14 @@ The candidate cannot be declared stable until all of the following exist:
   driven by `migo_session_send_composition_event`. It sits alongside the soft keyboard rather
   than replacing it: the keyboard reports committed text, composition reports what is still
   being typed, and content drawing its own text field needs both. **gamepad done**: the engine had none at all -- no JS
-  API, no `HostCommand`, no dispatch -- so this added both halves. Mainstream mini-game platforms have no gamepad API, so
-  the shape is the W3C one Migo replaces: `navigator.getGamepads()` plus
-  `gamepadconnected`/`gamepaddisconnected`, driven by `migo_session_set_gamepad_connected`
-  and `migo_session_send_gamepad_state`. The Web API is polled rather than evented, so a
-  sample updates stored state instead of being dispatched, and `pressed` is carried rather
-  than derived from `value` because a device picks its own threshold;
+  API, no `HostCommand`, no dispatch -- so this added both halves. The common mini-game platform's gamepad API follows
+  the W3C one: `getGamepads()` plus `gamepadconnected`/`gamepaddisconnected`, driven by
+  `migo_session_set_gamepad_connected` and `migo_session_send_gamepad_state`. The Web API is
+  polled rather than evented, so a sample updates stored state instead of being dispatched,
+  and `pressed` is carried rather than derived from `value` because a device picks its own
+  threshold. Each pad's `vibrationActuator` plays the effects its announcement declares
+  (`MigoGamepadInfo.haptics`, formerly reserved); the engine times them and the host only
+  sets motors, through the appended `MigoHostCallbacks.on_gamepad_rumble`;
 - asynchronous request IDs, cancellation races, and late-completion rules — **settled for
   v1**: v1 has exactly one asynchronous operation and it is single-shot per Session, so
   there is nothing to correlate and no request ID to carry. The rules are normative under
