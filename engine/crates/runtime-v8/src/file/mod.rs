@@ -1,4 +1,8 @@
-use deno_core::{Extension, extension};
+use std::{cell::RefCell, rc::Rc};
+
+use deno_core::{Extension, OpState, extension, op2};
+use deno_error::JsErrorBox;
+use shared::{op_state::HostOpState, services::host_files::Step};
 
 use crate::file::fs::{
     op_access, op_access_sync, op_close_file, op_close_file_sync, op_copy_file, op_copy_file_sync,
@@ -13,6 +17,36 @@ use crate::file::fs::{
 
 mod fs;
 pub(crate) mod host_paths;
+
+/// `saveFileToDisk`: the file to save, which must be content's own.
+const SAVE_FILE_FILES: &[&[Step]] = &[&[Step::Key("filePath")]];
+
+/// Save a file of content's to the player's disk, through the host's save
+/// dialog. The path crosses as a real one the host can read while the request
+/// is open; a remote URL is not a file content has.
+#[op2]
+pub async fn op_save_file_to_disk(
+    state: Rc<RefCell<OpState>>,
+    #[string] request_json: String,
+) -> Result<(), JsErrorBox> {
+    let service = state
+        .borrow()
+        .borrow::<HostOpState>()
+        .device_services
+        .as_ref()
+        .and_then(|services| services.image_api())
+        .ok_or_else(|| JsErrorBox::generic("saveFileToDisk:fail not supported"))?;
+    let request = host_paths::export_paths(
+        &state,
+        &request_json,
+        SAVE_FILE_FILES,
+        host_paths::Remote::Refused,
+    )
+    .await?;
+    service
+        .save_file_to_disk(&request)
+        .map_err(JsErrorBox::generic)
+}
 
 extension!(host_v8_file,
     deps = [host_v8_console, host_v8_base, host_v8_io_state],
@@ -58,6 +92,7 @@ extension!(host_v8_file,
         op_get_file_info,
         op_get_file_info_sync,
         op_list_saved_files,
+        op_save_file_to_disk,
     ],
     esm = [
         dir "src/file",

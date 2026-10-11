@@ -21,8 +21,8 @@
     "android": {"engine": 60, "default": 117, "host": 180, "missing": 15, "unsupported": 10, "ready": 367},
     "ios": {"engine": 68, "default": 41, "host": 0, "missing": 263, "unsupported": 10, "ready": 119},
     "macos": {"engine": 72, "default": 41, "host": 0, "missing": 259, "unsupported": 10, "ready": 123},
-    "linux": {"engine": 72, "default": 12, "host": 267, "missing": 21, "unsupported": 10, "ready": 243},
-    "windows": {"engine": 72, "default": 0, "host": 279, "missing": 21, "unsupported": 10, "ready": 231},
+    "linux": {"engine": 72, "default": 12, "host": 268, "missing": 20, "unsupported": 10, "ready": 243},
+    "windows": {"engine": 72, "default": 0, "host": 280, "missing": 20, "unsupported": 10, "ready": 231},
     "ohos": {"engine": 70, "default": 4, "host": 0, "missing": 299, "unsupported": 9, "ready": 83}
   },
   "apis": {
@@ -346,7 +346,7 @@
     "reserveChannelsLive": {"category": "open-api/channels", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "missing", "macos": "missing", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "macos", "ohos"]},
     "restartMiniProgram": {"category": "navigate", "needs": [], "android": "engine", "ios": "engine", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine"},
     "revokeBufferURL": {"category": "storage", "needs": [], "android": "engine", "ios": "engine", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine"},
-    "saveFileToDisk": {"category": "file", "needs": [], "android": "unsupported", "ios": "unsupported", "macos": "missing", "linux": "missing", "windows": "missing", "ohos": "unsupported", "not_ready": ["macos", "linux", "windows"]},
+    "saveFileToDisk": {"category": "file", "needs": ["channel:image.save_file_to_disk"], "android": "unsupported", "ios": "unsupported", "macos": "missing", "linux": "host", "windows": "host", "ohos": "unsupported", "not_ready": ["macos", "linux", "windows"]},
     "saveImageToPhotosAlbum": {"category": "media/image", "needs": ["channel:image.save_image_to_photos_album", "channel:permission"], "android": "host", "ios": "missing", "macos": "missing", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "macos", "linux", "windows", "ohos"]},
     "scanCode": {"category": "device/scan", "needs": ["channel:scan_code.scan_code"], "android": "default", "ios": "missing", "macos": "missing", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "macos", "linux", "windows", "ohos"]},
     "selectGroupMembers": {"category": "chattool", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "missing", "macos": "missing", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "macos", "ohos"]},

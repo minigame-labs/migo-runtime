@@ -49,6 +49,7 @@ mod reporting;
 mod request_through_the_engine;
 mod runtime_restart_boundary;
 mod share;
+mod save_file_to_disk;
 mod snapshot_fingerprint;
 mod storage_isolation;
 mod support;

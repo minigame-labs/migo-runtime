@@ -326,7 +326,7 @@
     "reserveChannelsLive": {"ops":["op_ecosystem_call"],"services":["ecosystem"]},
     "restartMiniProgram": {"ops":["op_restart_mini_program"],"services":[]},
     "revokeBufferURL": {"ops":["op_revoke_buffer_url"],"services":[]},
-    "saveFileToDisk": {"ops":[],"services":[]},
+    "saveFileToDisk": {"ops":["op_save_file_to_disk"],"services":["image_api"]},
     "saveImageToPhotosAlbum": {"ops":["op_save_image_to_photos_album"],"services":["image_api","permission"]},
     "scanCode": {"ops":["op_scan_code"],"services":["scan_code"]},
     "selectGroupMembers": {"ops":["op_ecosystem_call"],"services":["ecosystem"]},

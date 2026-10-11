@@ -224,6 +224,7 @@
         "op_rename_sync": "sync",
         "op_rmdir": "async",
         "op_rmdir_sync": "sync",
+        "op_save_file_to_disk": "unsupported",
         "op_stat": "async",
         "op_stat_sync": "sync",
         "op_unlink": "async",

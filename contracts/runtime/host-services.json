@@ -424,6 +424,13 @@
             "tempFiles[].tempFilePath",
             "tempFiles[].thumbTempFilePath"
           ]
+        },
+        "save_file_to_disk": {
+          "id": 7,
+          "kind": "call",
+          "op": "op_save_file_to_disk",
+          "hook": "_internalOnSaveFileToDiskResult",
+          "error_code_field": null
         }
       },
       "events": {}

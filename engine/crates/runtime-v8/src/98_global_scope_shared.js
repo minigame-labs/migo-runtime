@@ -59,6 +59,7 @@ const windowOrWorkerGlobalScope = {
 
     // File
     saveFileToDisk: core.propNonEnumerable(save.saveFileToDisk),
+    _internalOnSaveFileToDiskResult: core.propNonEnumerable(save._internalOnSaveFileToDiskResult),
     saveFile: core.propNonEnumerable(save.saveFile),
     saveFileSync: core.propNonEnumerable(save.saveFileSync),
     getFileSystemManager: core.propNonEnumerable(save.getFileSystemManager),
