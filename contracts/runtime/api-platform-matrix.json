@@ -20,7 +20,7 @@
   "summary": {
     "android": {"engine": 60, "default": 125, "host": 180, "missing": 7, "unsupported": 10, "ready": 375},
     "ios": {"engine": 68, "default": 49, "host": 0, "missing": 255, "unsupported": 10, "ready": 127},
-    "macos": {"engine": 72, "default": 49, "host": 236, "missing": 15, "unsupported": 10, "ready": 278},
+    "macos": {"engine": 72, "default": 51, "host": 234, "missing": 15, "unsupported": 10, "ready": 280},
     "linux": {"engine": 72, "default": 20, "host": 268, "missing": 12, "unsupported": 10, "ready": 251},
     "windows": {"engine": 72, "default": 0, "host": 288, "missing": 12, "unsupported": 10, "ready": 231},
     "ohos": {"engine": 70, "default": 12, "host": 0, "missing": 291, "unsupported": 9, "ready": 91}
@@ -104,7 +104,7 @@
     "getChannelsLiveInfo": {"category": "open-api/channels", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "missing", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "ohos"]},
     "getChannelsLiveNoticeInfo": {"category": "open-api/channels", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "missing", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "ohos"]},
     "getChatToolInfo": {"category": "chattool", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "missing", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "ohos"]},
-    "getClipboardData": {"category": "device/clipboard", "needs": ["channel:clipboard.get_clipboard_data"], "android": "default", "ios": "missing", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "macos", "linux", "windows", "ohos"]},
+    "getClipboardData": {"category": "device/clipboard", "needs": ["channel:clipboard.get_clipboard_data"], "android": "default", "ios": "missing", "macos": "default", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "linux", "windows", "ohos"]},
     "getConnectedBluetoothDevices": {"category": "device/bluetooth", "needs": ["channel:bluetooth.get_connected_devices", "channel:permission"], "android": "host", "ios": "missing", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "macos", "linux", "windows", "ohos"]},
     "getDeviceBenchmarkInfo": {"category": "base/system", "needs": [], "android": "default", "ios": "engine", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine"},
     "getDeviceInfo": {"category": "base/system", "needs": [], "android": "default", "ios": "engine", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine"},
@@ -354,7 +354,7 @@
     "sendSocketMessage": {"category": "network/websocket", "needs": [], "android": "engine", "ios": "engine", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine"},
     "setBLEMTU": {"category": "device/bluetooth-ble", "needs": ["channel:bluetooth.set_ble_mtu", "channel:permission"], "android": "host", "ios": "missing", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "macos", "linux", "windows", "ohos"]},
     "setBackgroundFetchToken": {"category": "storage/background-fetch", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "missing", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "ohos"]},
-    "setClipboardData": {"category": "device/clipboard", "needs": ["channel:clipboard.set_clipboard_data"], "android": "default", "ios": "missing", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "macos", "linux", "windows", "ohos"]},
+    "setClipboardData": {"category": "device/clipboard", "needs": ["channel:clipboard.set_clipboard_data"], "android": "default", "ios": "missing", "macos": "default", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "linux", "windows", "ohos"]},
     "setCursor": {"category": "render/cursor", "needs": ["channel:window.set_cursor"], "android": "default", "ios": "missing", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "macos", "linux", "windows", "ohos"]},
     "setDeviceOrientation": {"category": "device/orientation", "needs": ["channel:screen.set_device_orientation"], "android": "default", "ios": "missing", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "macos", "linux", "windows", "ohos"]},
     "setEnableDebug": {"category": "base/debug", "needs": ["callback:on_keep_screen_on"], "android": "default", "ios": "missing", "macos": "default", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "linux", "windows", "ohos"]},
