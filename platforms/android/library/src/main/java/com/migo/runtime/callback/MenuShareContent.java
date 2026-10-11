@@ -9,7 +9,11 @@ package com.migo.runtime.callback;
 public final class MenuShareContent {
     /** Share title, empty for the game's name. */
     public final String title;
-    /** Share image, empty for your default (a frame of the game, its icon). */
+    /**
+     * Share image, empty for your default (the game's icon). "Share" always has
+     * one: the game's, or the screen as the engine took it when the game gave
+     * none -- the top 5:4 of the frame, as a JPEG.
+     */
     public final String imageUrl;
     /** Query string the game opened from this share receives, without a leading {@code ?}. */
     public final String query;

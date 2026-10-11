@@ -26,6 +26,7 @@ import {
     withCallbacks,
     withoutCallbacks,
 } from "ext:host_v8_base/02_async.js";
+import { captureScreenForShare } from "ext:host_v8_web/03_canvas.js";
 
 // The string options content set, under their own names: an option it left out
 // is absent from the request rather than an empty string the host must tell
@@ -152,8 +153,20 @@ function _content(share, answer) {
 }
 
 function _replyMenuShare(replyId, menu, content) {
-    op_share_menu_reply(JSON.stringify({ replyId: replyId, menu: menu, content: content }))
-        .then(undefined, function (e) { console.error('share menu reply not delivered:', e); });
+    // A message card the game gave no image -- or did not answer for at all -- shows the screen, as the platform's
+    // does: the engine takes it, and the rest of an unanswered card is the host's default.
+    const image = menu === 'shareAppMessage' && !_hasImage(content)
+        ? captureScreenForShare()
+        : Promise.resolve(null);
+    image.then(function (path) {
+        if (path !== null) content = Object.assign({}, content, { imageUrl: path });
+        return op_share_menu_reply(JSON.stringify({ replyId: replyId, menu: menu, content: content }));
+    }).then(undefined, function (e) { console.error('share menu reply not delivered:', e); });
+}
+
+function _hasImage(content) {
+    return content !== null && (typeof content.imageUrl === 'string' && content.imageUrl !== '' ||
+        typeof content.imageUrlId === 'string' && content.imageUrlId !== '');
 }
 
 // The host's {"menu", "replyId"}: the player picked a share item. The last
@@ -213,7 +226,12 @@ function shareAppMessage(options) {
         const request = _strings({ requestId: requestId }, opts,
             ['title', 'imageUrl', 'query', 'imageUrlId', 'path']);
         if (typeof opts.toCurrentGroup === 'boolean') request.toCurrentGroup = opts.toCurrentGroup;
-        return op_share_app_message(JSON.stringify(request));
+        if (_hasImage(request)) return op_share_app_message(JSON.stringify(request));
+        // No image of its own: the card shows the screen, as on the common platform.
+        return captureScreenForShare().then(function (path) {
+            if (path !== null) request.imageUrl = path;
+            return op_share_app_message(JSON.stringify(request));
+        });
     });
 }
 

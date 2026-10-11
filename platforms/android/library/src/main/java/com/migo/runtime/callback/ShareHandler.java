@@ -78,7 +78,8 @@ public interface ShareHandler {
         public final String title;
         /**
          * Share image: an http(s) URL, or a real file path resolved inside the
-         * game's sandbox; empty when content set none.
+         * game's sandbox. When content gave neither this nor an image id, the
+         * screen as the engine took it -- the top 5:4 of the frame, as a JPEG.
          */
         public final String imageUrl;
         /**

@@ -3313,6 +3313,23 @@ function frameEndAll() {
         frameEndHooks[i]();
     }
 }
+// Engine-only, before anything else at the end of the next frame: once content has drawn it and before it is presented,
+// which is the one moment a WebGL drawing buffer that is not preserved still holds what the player is about to see.
+const _beforePresent = [];
+function _onceBeforePresent(callback) {
+    _beforePresent.push(callback);
+}
+frameEndHooks.push(() => {
+    if (_beforePresent.length === 0) return;
+    const callbacks = _beforePresent.splice(0);
+    for (let i = 0; i < callbacks.length; i++) {
+        try {
+            callbacks[i]();
+        } catch (e) {
+            console.error("before-present callback failed:", e);
+        }
+    }
+});
 // First, while the frame's snapshots are still the renderer's: read back the `ImageData` that
 // nobody has read and nothing has consumed (see `_migoMakeSnapshotImageData`).
 frameEndHooks.push(() => {
@@ -3354,4 +3371,13 @@ frameEndHooks.push(() => {
 // game script can run.
 globalThis._internalFrameEnd = frameEndAll;
 
-export { CanvasRenderingContext2D, CanvasGradient, CanvasPattern, ImageData, Path2D, TextMetrics, frameEndAll };
+export {
+    CanvasRenderingContext2D,
+    CanvasGradient,
+    CanvasPattern,
+    ImageData,
+    Path2D,
+    TextMetrics,
+    frameEndAll,
+    _onceBeforePresent,
+};
