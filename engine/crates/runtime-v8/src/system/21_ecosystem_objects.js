@@ -341,7 +341,121 @@ function createStoreGift(options) {
     return new StoreGift(order);
 }
 
+// ---- PageManager -----------------------------------------------------------------
+//
+// The host platform's open pages -- an activity, a feature -- named by an
+// openlink from whichever channel issued it. Every manager is its own page:
+// its requests carry the id it was given, and so does each event the page
+// sends back, which reaches that manager's listeners for the event's name --
+// a name the channel documents, not one this layer knows. A manager is known
+// here only while it has listeners, so one content drops is not kept.
+
+// The platform's codes for a load or show that fails.
+const PAGE_OPENLINK = -1;
+const PAGE_UNSUPPORTED = -3;
+const PAGE_OTHER = -5;
+
+let _nextPageId = 1;
+// pageId -> the manager's listeners, by event name.
+const _pageListeners = new Map();
+
+onEcosystemObjectEvent('PageManager.on', function (event) {
+    if (event === null || typeof event !== 'object') return;
+    const listeners = _pageListeners.get(event.pageId);
+    const group = listeners === undefined ? undefined : listeners.get(event.eventName);
+    if (group !== undefined) group.trigger(event.data);
+});
+
+function _pageFailure(member, errCode, reason) {
+    return Promise.reject({ errCode: errCode, errMsg: member + ':fail ' + reason });
+}
+
+function _pageDestroyed(member) {
+    return _pageFailure(member, PAGE_OTHER, 'the page manager is destroyed');
+}
+
+class PageManager {
+    #id = _nextPageId++;
+    #page = null;
+    #destroyed = false;
+
+    load(options) {
+        if (this.#destroyed) return _pageDestroyed('load');
+        const opts = options || {};
+        if (typeof opts.openlink !== 'string' || opts.openlink.length === 0) {
+            return _pageFailure('load', PAGE_OPENLINK, 'openlink is required');
+        }
+        const page = { openlink: opts.openlink, query: opts.query, extraData: opts.extraData };
+        // What show() opens when it is not told: the page last loaded.
+        this.#page = page;
+        return this.#request('load', page);
+    }
+
+    // Shows the page loaded last, or the one named here, which the host loads
+    // first if it has not.
+    show(options) {
+        if (this.#destroyed) return _pageDestroyed('show');
+        const opts = options || {};
+        const named = typeof opts.openlink === 'string' && opts.openlink.length > 0;
+        const page = named
+            ? { openlink: opts.openlink, query: opts.query, extraData: opts.extraData }
+            : this.#page;
+        if (page === null) return _pageFailure('show', PAGE_OPENLINK, 'openlink is required');
+        if (named) this.#page = page;
+        return this.#request('show', page);
+    }
+
+    on(eventName, callback) {
+        if (this.#destroyed || typeof eventName !== 'string' || typeof callback !== 'function') return;
+        let listeners = _pageListeners.get(this.#id);
+        if (listeners === undefined) {
+            listeners = new Map();
+            _pageListeners.set(this.#id, listeners);
+        }
+        let group = listeners.get(eventName);
+        if (group === undefined) {
+            group = createListenerGroup('PageManager ' + eventName);
+            listeners.set(eventName, group);
+        }
+        group.on(callback);
+    }
+
+    off(eventName, callback) {
+        const listeners = _pageListeners.get(this.#id);
+        if (listeners === undefined || typeof eventName !== 'string') return;
+        const group = listeners.get(eventName);
+        if (group === undefined) return;
+        // Without a callback, every listener for the event goes.
+        group.off(callback);
+        if (group.size() === 0) listeners.delete(eventName);
+        if (listeners.size === 0) _pageListeners.delete(this.#id);
+    }
+
+    destroy() {
+        if (this.#destroyed) return;
+        this.#destroyed = true;
+        this.#page = null;
+        _pageListeners.delete(this.#id);
+        if (!ecosystemAvailable()) return;
+        // Nothing waits on it: the host releases the page.
+        ecosystemObjectCall('PageManager.destroy', { pageId: this.#id }).then(_noop, _noop);
+    }
+
+    #request(member, page) {
+        if (!ecosystemAvailable()) return _pageFailure(member, PAGE_UNSUPPORTED, 'not supported');
+        const request = { pageId: this.#id, openlink: page.openlink };
+        if (page.query !== undefined) request.query = page.query;
+        if (page.extraData !== undefined) request.extraData = page.extraData;
+        return ecosystemObjectCall('PageManager.' + member, request);
+    }
+}
+
+function createPageManager() {
+    return new PageManager();
+}
+
 export {
+    createPageManager,
     createStoreGift,
     getGameServerManager,
     getMiniReportManager,

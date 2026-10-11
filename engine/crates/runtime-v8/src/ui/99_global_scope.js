@@ -2,7 +2,6 @@
 
 import * as interaction from 'ext:host_v8_ui/01_interaction.js';
 import * as buttonsApi from 'ext:host_v8_ui/02_buttons.js';
-import * as pageManagerApi from 'ext:host_v8_ui/03_page_manager.js';
 import * as windowApi from 'ext:host_v8_ui/04_window.js';
 
 import { primordials, core } from "ext:core/mod.js";
@@ -27,7 +26,6 @@ ObjectDefineProperties(globalThis, {
     getMenuButtonBoundingClientRect: core.propNonEnumerable(buttonsApi.getMenuButtonBoundingClientRect),
 
     // Page Manager
-    createPageManager: core.propNonEnumerable(pageManagerApi.createPageManager),
 
     // Desktop window: size, cursor, pointer lock
     setWindowSize: core.propNonEnumerable(windowApi.setWindowSize),

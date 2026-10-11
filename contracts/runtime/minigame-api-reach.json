@@ -43,7 +43,7 @@
     "createInterstitialAd": {"ops":["op_ad_create","op_ad_destroy","op_ad_is_supported","op_ad_load","op_ad_show"],"services":["ad"]},
     "createMediaAudioPlayer": {"ops":["op_media_audio_player_create"],"services":[]},
     "createOpenSettingButton": {"ops":["op_open_setting"],"services":["system_info"]},
-    "createPageManager": {"ops":[],"services":[]},
+    "createPageManager": {"ops":["op_ecosystem_available","op_ecosystem_call"],"services":["ecosystem"]},
     "createPath2D": {"ops":[],"services":[]},
     "createRewardedVideoAd": {"ops":["op_ad_create","op_ad_destroy","op_ad_is_supported","op_ad_load","op_ad_show"],"services":["ad"]},
     "createStoreGift": {"ops":["op_ecosystem_available","op_ecosystem_call","op_ecosystem_value"],"services":["ecosystem"]},

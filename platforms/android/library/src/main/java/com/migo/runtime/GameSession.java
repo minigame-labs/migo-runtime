@@ -942,6 +942,52 @@ public final class GameSession implements Closeable {
         }
     }
 
+    /** The state of the cover advert the app shows as the game launches. */
+    public enum SplashAdStatus {
+        /** Nothing is known yet -- the state before any report. */
+        UNKNOWN,
+        /** The advert is being shown. */
+        PENDING,
+        /** The advert was shown. */
+        SUCCESS,
+        /** The advert was not shown. */
+        FAIL
+    }
+
+    /** {@link #reportSplashAdStatus} code: nothing is known yet. */
+    public static final int SPLASH_AD_CODE_UNKNOWN = -1;
+    /** {@link #reportSplashAdStatus} code: the advert was shown. */
+    public static final int SPLASH_AD_CODE_SHOWN = 1;
+    /** {@link #reportSplashAdStatus} code: the advert was filtered out and not shown. */
+    public static final int SPLASH_AD_CODE_FILTERED = 2;
+    /** {@link #reportSplashAdStatus} code: showing the advert timed out. */
+    public static final int SPLASH_AD_CODE_TIMED_OUT = 3;
+
+    /**
+     * Report the state of the cover advert the app shows as the game launches,
+     * whenever it changes. The advert is the app's from start to finish -- no
+     * content call creates it -- and content's {@code getShowSplashAdStatus}
+     * answers with the last report ({@code UNKNOWN}, -1 before one). Any
+     * thread.
+     *
+     * @param status the advert's state
+     * @param code   one of the {@code SPLASH_AD_CODE_*} constants
+     */
+    public void reportSplashAdStatus(SplashAdStatus status, int code) {
+        if (status == null) {
+            throw new IllegalArgumentException("status must not be null");
+        }
+        if (code != SPLASH_AD_CODE_UNKNOWN && code != SPLASH_AD_CODE_SHOWN
+                && code != SPLASH_AD_CODE_FILTERED && code != SPLASH_AD_CODE_TIMED_OUT) {
+            throw new IllegalArgumentException("code must be one of the SPLASH_AD_CODE_* constants");
+        }
+        if (state.get() == SessionState.DESTROYED) return;
+        com.migo.runtime.internal.NativeMethods.onAdEvent(sessionId,
+                "{\"event\":\"splashStatus\",\"status\":\""
+                        + status.name().toLowerCase(java.util.Locale.ROOT)
+                        + "\",\"code\":" + code + "}");
+    }
+
     /**
      * Set or clear the setting handler for this session.
      * <p>

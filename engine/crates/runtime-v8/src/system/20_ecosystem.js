@@ -78,6 +78,7 @@ const ECOSYSTEM_OBJECT_CALLS = [
     'RankManager.abort', 'RankManager.createChallenge', 'RankManager.getScore',
     'RankManager.middleUpdate', 'RankManager.update',
     'getMiniReportManager', 'MiniReportManager.report',
+    'PageManager.destroy', 'PageManager.load', 'PageManager.show',
     'GameClubButton.open', 'FeedbackButton.open',
     'reportEvent', 'reportMonitor', 'reportPerformance', 'reportScene',
     'ScenePerformanceManager.setData',
@@ -114,7 +115,7 @@ const ECOSYSTEM_OBJECT_EVENTS = [
     'GameServerManager.onLockStepError', 'GameServerManager.onLogout',
     'GameServerManager.onMatch', 'GameServerManager.onRoomInfoChange',
     'GameServerManager.onStateUpdate', 'GameServerManager.onSyncFrame',
-    'RankManager.onChallengeStart',
+    'PageManager.on', 'RankManager.onChallengeStart',
 ];
 
 // Synchronous getters, answered from what the host last reported for each.

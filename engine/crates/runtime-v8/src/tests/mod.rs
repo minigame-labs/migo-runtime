@@ -14,6 +14,8 @@
 
 #[cfg(feature = "api-system")]
 mod ad_reward_integrity;
+#[cfg(feature = "api-system")]
+mod ad_splash_status;
 mod api_failures;
 mod api_reach;
 mod audio_aud11;

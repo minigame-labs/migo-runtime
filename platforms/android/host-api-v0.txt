@@ -282,6 +282,8 @@
   public static boolean isRecoverable(int);
   public static boolean isSuccess(int);
   public static boolean isValidGameId(java.lang.String);
+  public static com.migo.runtime.GameSession$SplashAdStatus valueOf(java.lang.String);
+  public static com.migo.runtime.GameSession$SplashAdStatus[] values();
   public static com.migo.runtime.MigoNativeLoader$RequiredArtifact requiredArtifact(android.content.Context);
   public static com.migo.runtime.MigoNativeLoader$State state();
   public static com.migo.runtime.MigoNativeLoader$State valueOf(java.lang.String);
@@ -299,6 +301,10 @@
   public static final boolean MIGO_API_MEDIA;
   public static final boolean MIGO_API_SENSORS;
   public static final boolean MIGO_API_SYSTEM;
+  public static final com.migo.runtime.GameSession$SplashAdStatus FAIL;
+  public static final com.migo.runtime.GameSession$SplashAdStatus PENDING;
+  public static final com.migo.runtime.GameSession$SplashAdStatus SUCCESS;
+  public static final com.migo.runtime.GameSession$SplashAdStatus UNKNOWN;
   public static final com.migo.runtime.MigoNativeLoader$State FAILED;
   public static final com.migo.runtime.MigoNativeLoader$State LOADED;
   public static final com.migo.runtime.MigoNativeLoader$State NOT_LOADED;
@@ -335,6 +341,10 @@
   public static final int NATIVE_INPUT_SATURATED;
   public static final int NATIVE_JS_EXECUTION_TIMEOUT;
   public static final int NATIVE_OUT_OF_MEMORY;
+  public static final int SPLASH_AD_CODE_FILTERED;
+  public static final int SPLASH_AD_CODE_SHOWN;
+  public static final int SPLASH_AD_CODE_TIMED_OUT;
+  public static final int SPLASH_AD_CODE_UNKNOWN;
   public static final int SUCCESS;
   public static final java.lang.String BUILD_TIME;
   public static final java.lang.String BUILD_TYPE;
@@ -395,6 +405,7 @@
   public void onSurfaceDestroyed();
   public void onTrimMemory(int);
   public void pause();
+  public void reportSplashAdStatus(com.migo.runtime.GameSession$SplashAdStatus, int);
   public void requestDebugEnabled(boolean);
   public void requestVsyncFrame();
   public void restart();
@@ -444,6 +455,7 @@ public final class com.migo.runtime.BuildInfo {
 public final class com.migo.runtime.ErrorCode {
 public final class com.migo.runtime.GamePaths {
 public final class com.migo.runtime.GameSession implements java.io.Closeable {
+public final class com.migo.runtime.GameSession$SplashAdStatus extends java.lang.Enum<com.migo.runtime.GameSession$SplashAdStatus> {
 public final class com.migo.runtime.MigoNativeLoader {
 public final class com.migo.runtime.MigoNativeLoader$RequiredArtifact {
 public final class com.migo.runtime.MigoNativeLoader$State extends java.lang.Enum<com.migo.runtime.MigoNativeLoader$State> {
@@ -497,6 +509,7 @@ public interface com.migo.runtime.callback.ShareHandler {
 public interface com.migo.runtime.callback.ShareSink {
 public interface com.migo.runtime.callback.SubpackageHandler {
 public interface com.migo.runtime.callback.SubpackageHandler$DownloadCallback {
+}
 }
 }
 }

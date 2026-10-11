@@ -81,7 +81,14 @@ typedef uint32_t MigoHostService;
 #define MIGO_AD_UPDATE_STYLE 4U
 #define MIGO_AD_DESTROY 5U
 /* {"adId": <the advert's id>, "event": "load"|"error"|"show"|"hide"|"close"|
- * "resize"|"use", ...the event's own fields, e.g. "isEnded" on close}. */
+ * "resize"|"use", ...the event's own fields, e.g. "isEnded" on close}.
+ *
+ * The host's own cover advert -- the one it shows as the game launches, which
+ * no content call creates -- is reported here too, with no adId, whenever its
+ * state changes: {"event": "splashStatus", "status": "unknown"|"pending"|
+ * "success"|"fail", "code": -1|1|2|3} (1 shown, 2 filtered out, 3 timed out).
+ * getShowSplashAdStatus() answers the last report, and "unknown", -1 before
+ * one. */
 #define MIGO_AD_EVENT_LIFECYCLE 0U
 
 /* Payment: two calls. */
@@ -369,6 +376,11 @@ typedef uint32_t MigoHostService;
  * contract (contracts/runtime/host-services.json, service "ecosystem", "names")
  * lists every name that may arrive. A frame-sync action list that is binary
  * crosses as lower-case hex with "binary": true beside it, both ways.
+ * An object content can make more than one of names the one each request is
+ * for: every PageManager request carries the "pageId" of its manager, and so
+ * must every "PageManager.on" event, {"pageId", "eventName", "data"} -- an
+ * event the opened page sends, by a name its channel documents. "PageManager.
+ * destroy" releases the page; nothing arrives for that pageId after it.
  *
  *   CALL {"api", "options"} -> the API's result, or a failure with the code the
  *        API defines (MIGO_HOST_SERVICE_RESULT_FLAG_ERROR_CODE). A path among an
