@@ -25,6 +25,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   read for what it installs and feeds, and only what cannot be measured is decided, with a reason
   (`api-platform-decisions.json`). `scripts/test-api-platform-matrix-contract.sh` regenerates it and fails on any
   difference.
+- The native buttons are drawn. `createUserInfoButton`, `createOpenSettingButton`, `createGameClubButton` and
+  `createFeedbackButton` show their background, rounded corners, border, text (`color`, `fontSize`, `textAlign`,
+  `lineHeight`) or picture -- a game-club button without one shows a neutral mark in the tone `icon` names -- above the
+  game on every platform, Performance+ included. The engine draws them into a canvas of its own the size of the
+  buttons' box and composites it over the window when it presents (wire record `SET_OVERLAY`, 578), so nothing that
+  reads the content's canvas -- `getImageData`, `readPixels`, a screenshot of the game -- sees them. Writing a button's
+  `style`, `text`, `image`, `type` or `icon` repaints it in the next frame, whether or not the game is running a loop.
+  A mouse press on a button is the button's from press to release, and so is the pointer over it; a button taps once
+  when the last press on it lifts on it, so a click a host delivers as both a mouse press and a touch taps once.
 - Android keyboards and gamepads. A physical keyboard's keys reach `onKeyDown` / `onKeyUp` as DOM `key` / `code` with
   modifiers and `repeat` (system keys stay Android's), and gamepads appear in `getGamepads()` on the standard mapping
   with `onGamepadConnected` / `onGamepadDisconnected` -- sticks past the device's dead zone, analogue triggers, a hat
@@ -352,8 +361,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are hit-tested by the engine: a touch that begins on a shown button is the button's and content does not see it, and
   a tap does what the button does -- the user-info button asks the host for `scope.userInfo` when it is not yet granted
   and hands `onTap` the host's `getUserInfo` answer, the setting button opens the settings, the game-club and feedback
-  buttons ask the host to open its pages. A button is shown from creation; moving it is writing its style. (Drawing
-  the button is yet to come; one laid over content's own art already works.)
+  buttons ask the host to open its pages. A button is shown from creation; moving it is writing its style.
 - `getMenuButtonBoundingClientRect` answered a capsule rect sized for a 375-pixel-wide window on every host. A host
   without a menu button now answers an empty rect at the top-right of the safe area.
 - `getRealtimeLogManager`'s entries reach the host's game log (`source: "realtime"`, with the `setFilterMsg` /

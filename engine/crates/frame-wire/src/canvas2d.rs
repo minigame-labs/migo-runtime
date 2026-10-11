@@ -377,8 +377,19 @@ pub const OP2D_CLIP_PATH: u32 = 576;
 /// is what assigning the canvas's size does.
 pub const OP2D_RESET: u32 = 577;
 
+// ─── The engine's overlay (578) ──────────────────────────────────────────────
+
+/// `H x:I y:I shown:U`, under the selection of the canvas it names: present that canvas above the content's frame,
+/// its top-left corner at window pixel (`x`, `y`), or -- `shown` 0 -- stop presenting it.
+///
+/// The engine's, never content's: the native buttons content creates (`createUserInfoButton` and its kind) are drawn by
+/// the engine into a canvas of its own, which the renderer composites over the frame at present time, after the content's
+/// pixels reach the window and before the swap -- the content's canvas, and everything that reads it, never sees them, as
+/// it would not see a native view above it. In stream order, so the overlay changes with the frame that drew it.
+pub const OP2D_SET_OVERLAY: u32 = 578;
+
 /// One past the last 2D opcode in this block.
-pub const OP2D_END: u32 = 578;
+pub const OP2D_END: u32 = 579;
 
 /// The most words of segments a path carried by value may hold: some 50,000 cubic curves, far above a shape anybody
 /// keeps in a `Path2D` and far below a record that would cost a frame anything.
@@ -565,6 +576,8 @@ pub fn record_spec(opcode: u32) -> Option<RecordSpec> {
 
         // enabled: a boolean, not a number a producer may round -- 2 is a bug
         OP2D_SET_IMAGE_SMOOTHING => (2, &[1]),
+        // x, y, shown
+        OP2D_SET_OVERLAY => (4, &[3]),
 
         // image_id, repeat_x, repeat_y
         OP2D_SET_FILL_STYLE_PATTERN | OP2D_SET_STROKE_STYLE_PATTERN => (4, &[2, 3]),

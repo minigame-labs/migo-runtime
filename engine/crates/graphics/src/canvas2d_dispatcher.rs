@@ -117,6 +117,12 @@ impl Renderer2d {
                 cm.init_skia_for_canvas(canvas_id)?;
                 Ok(false)
             }
+            // The engine's overlay, in stream order with the draws that made it. Not
+            // a paint: the canvas's pixels are what they were.
+            Canvas2DCmd::SetOverlay { x, y, shown } => {
+                cm.set_overlay(canvas_id, x, y, shown);
+                Ok(false)
+            }
             // In-band resize: keeps surface dimension changes serialised
             // with the surrounding `FillText` / `TexImageSource` (a canvas source)
             // commands.  Errors are logged but not propagated — a failed

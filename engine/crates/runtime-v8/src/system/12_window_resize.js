@@ -3,6 +3,19 @@ import { setWindowResizeReporter } from "ext:host_v8_web/03_canvas.js";
 import { createListenerGroup } from "ext:host_v8_base/02_async.js";
 
 const _resize = createListenerGroup("onWindowResize");
+// Engine modules that follow the window's size -- the native buttons' layer --
+// observe it here, apart from content's listeners, which content's
+// offWindowResize() with no listener clears.
+const _observers = [];
+const ConsoleError = Function.prototype.call.bind(console.error, console);
+
+/** Engine-only: `observer()` after every change of the window's size. */
+function _internalObserveWindowResize(observer) {
+    if (typeof observer !== "function") {
+        throw new TypeError("window resize observer must be a function");
+    }
+    _observers.push(observer);
+}
 let _lastWidth = -1;
 let _lastHeight = -1;
 
@@ -55,6 +68,15 @@ function _reportWindowResize() {
     _lastWidth = data.windowWidth;
     _lastHeight = data.windowHeight;
 
+    for (let i = 0; i < _observers.length; i++) {
+        try {
+            _observers[i]();
+        } catch (e) {
+            try {
+                ConsoleError("window resize observer threw: " + e);
+            } catch (_) {}
+        }
+    }
     _resize.trigger(data);
 }
 
@@ -63,4 +85,5 @@ setWindowResizeReporter(_reportWindowResize);
 export {
     onWindowResize,
     offWindowResize,
+    _internalObserveWindowResize,
 };

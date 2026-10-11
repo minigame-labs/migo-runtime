@@ -377,6 +377,43 @@ fn the_even_odd_records_decode_to_their_own_commands() {
     assert!(validate_stream(&words, words.len() as u32).is_err());
 }
 
+/// The engine's overlay: the corner is signed (a canvas may sit partly off the window), `shown` is a real bool, and the
+/// record names the selected canvas in order with the draws around it.
+#[test]
+fn overlay_carries_a_signed_corner_and_a_real_bool() {
+    let words = stream_of(&[
+        record(OP2D_SELECT_CANVAS, &[7]),
+        record(OP2D_FILL, &[]),
+        record(OP2D_SET_OVERLAY, &[(-3i32) as u32, 40, 1]),
+        record(OP2D_SET_OVERLAY, &[0, 0, 0]),
+    ]);
+    let (ops, _) = decode(&words);
+    let FrameOp::CanvasBatch(batch) = &ops[0] else {
+        panic!("expected a canvas batch");
+    };
+    assert!(matches!(batch.commands[0], Canvas2DCmd::Fill));
+    assert!(matches!(
+        batch.commands[1],
+        Canvas2DCmd::SetOverlay {
+            x: -3,
+            y: 40,
+            shown: true
+        }
+    ));
+    assert!(matches!(
+        batch.commands[2],
+        Canvas2DCmd::SetOverlay { shown: false, .. }
+    ));
+    let words = stream_of(&[
+        record(OP2D_SELECT_CANVAS, &[7]),
+        record(OP2D_SET_OVERLAY, &[0, 0, 2]),
+    ]);
+    assert!(
+        validate_stream(&words, words.len() as u32).is_err(),
+        "shown is 0 or 1: anything else is a malformed record"
+    );
+}
+
 /// `imageSmoothingEnabled` is a bool on the wire: 0 and 1 decode to the two settings and keep their place among the
 /// other state, and the validator refuses anything else, so the decoder can read it without re-checking.
 #[test]

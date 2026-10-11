@@ -78,6 +78,7 @@ pub(crate) mod drawing_buffer;
 mod egl_ops;
 pub(crate) mod gl_object;
 mod image;
+mod overlay;
 mod pbo_upload;
 mod texture_source;
 pub(crate) use texture_source::SourceUpload;
@@ -526,6 +527,14 @@ pub(crate) struct CanvasManager {
     /// How many times each canvas that has been used as a source has been painted on since it was created. Only
     /// canvases that have been a source are here, so a canvas nothing draws from costs nothing per draw.
     canvas_generations: HashMap<CanvasId, u64>,
+    /// The engine's overlay (`Canvas2DCmd::SetOverlay`): the canvas presented above the content's frame, and where.
+    overlay: Option<overlay::Placement>,
+    /// What this frame's present composites, prepared before its damage is declared. See [`overlay::Prepared`].
+    overlay_prepared: Option<overlay::Prepared>,
+    /// What the last present composited, so a change repairs the whole surface. See [`overlay::Presented`].
+    overlay_presented: Option<overlay::Presented>,
+    /// The program that draws the overlay, made in the window context it belongs to.
+    overlay_compositor: Option<overlay::Compositor>,
     /// Pbuffer canvases whose WebGL context has not yet been given its initial viewport and scissor box; see
     /// [`CanvasManager::ensure_gl_initial_state`].
     gl_initial_state_pending: HashSet<CanvasId>,
@@ -1221,6 +1230,10 @@ impl CanvasManager {
             canvas_source_cache_bytes: 0,
             canvas_source_clock: 0,
             canvas_generations: HashMap::new(),
+            overlay: None,
+            overlay_prepared: None,
+            overlay_presented: None,
+            overlay_compositor: None,
             gl_initial_state_pending: HashSet::new(),
             last_swap_interval: -1, // force first eglSwapInterval call
             context_lost: false,
@@ -3265,6 +3278,11 @@ impl CanvasManager {
             ErrorCode::InvalidArgument,
             "cannot destroy onscreen canvas"
         );
+        // An overlay canvas that goes takes the overlay with it; the next present
+        // repairs where it was.
+        if self.overlay.is_some_and(|overlay| overlay.canvas == id) {
+            self.overlay = None;
+        }
 
         if let Some(entry) = self.canvases.remove(&id) {
             let saved_bound = self.bound;
@@ -4156,7 +4174,13 @@ impl CanvasManager {
                 size == (e.physical_width, e.physical_height) && size == e.presented_size()
             })
         });
-        let canvas_count = self.canvases.len();
+        // The overlay is composited at present and never drawn into by WebGL, so
+        // it does not make the onscreen canvas one of several.
+        let canvas_count = self.canvases.len()
+            - self
+                .overlay
+                .is_some_and(|overlay| self.canvases.contains_key(&overlay.canvas))
+                as usize;
         let onscreen_has_2d_context = self.contexts_2d.contains_key(&onscreen_id);
         // A swap leaves the window's back buffer undefined, so a drawing buffer whose contents have to outlive a
         // present is the DrawingBuffer.
@@ -4907,7 +4931,96 @@ impl CanvasManager {
     /// can skip loading unchanged tiles.
     ///
     /// Called from the render thread right before `flush_dirty_2d_contexts()`.
+    /// `Canvas2DCmd::SetOverlay`: present `canvas` above the content's frame with
+    /// its top-left corner at window pixel (`x`, `y`), or, `shown` false, stop
+    /// presenting it. Another canvas's withdrawal leaves the overlay alone.
+    pub(crate) fn set_overlay(&mut self, canvas: CanvasId, x: i32, y: i32, shown: bool) {
+        if shown {
+            self.overlay = Some(overlay::Placement { canvas, x, y });
+        } else if self.overlay.is_some_and(|overlay| overlay.canvas == canvas) {
+            self.overlay = None;
+        } else {
+            return;
+        }
+        self.evaluate_bypass();
+    }
+
+    /// Take this frame's copy of the overlay, if there is one, before the frame's
+    /// damage is declared: taking it may make another context current, which the
+    /// present itself must not do. Anything different from what the last present
+    /// showed repairs the whole surface.
+    fn prepare_overlay(&mut self) {
+        self.overlay_prepared = None;
+        let mut presented = None;
+        if let Some(placement) = self.overlay {
+            match self.source_copy_image(placement.canvas) {
+                Ok(Some(_)) => {
+                    if let Some(copy) = self.canvas_source_cache.get(&placement.canvas) {
+                        self.overlay_prepared = Some(overlay::Prepared {
+                            texture: copy.tex,
+                            x: placement.x,
+                            y: placement.y,
+                            width: copy.width,
+                            height: copy.height,
+                        });
+                        presented = Some(overlay::Presented {
+                            placement,
+                            generation: copy.generation,
+                            width: copy.width,
+                            height: copy.height,
+                        });
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => tracing::warn!(
+                    "overlay copy failed: canvas={:?}, err={}",
+                    placement.canvas,
+                    e
+                ),
+            }
+        }
+        if presented != self.overlay_presented {
+            self.overlay_presented = presented;
+            self.damage
+                .add(crate::damage_effect::DamageEffect::FullSurface);
+        }
+    }
+
+    /// Composite the prepared overlay over the window, in its context.
+    fn composite_overlay(
+        &mut self,
+        context: *mut std::ffi::c_void,
+        surface_w: u32,
+        surface_h: u32,
+    ) {
+        let Some(prepared) = self.overlay_prepared else {
+            return;
+        };
+        // A WebGL 1-only device presents without the ES 3.0 the compositor's
+        // shader is written in -- and without the blit the DrawingBuffer needs.
+        if self.gles_major < 3 {
+            return;
+        }
+        if !self
+            .overlay_compositor
+            .as_ref()
+            .is_some_and(|compositor| compositor.belongs_to(context))
+        {
+            // A compositor from a window context that is gone went with it.
+            self.overlay_compositor = overlay::Compositor::new(&self.gl, context);
+            if self.overlay_compositor.is_none() {
+                tracing::warn!("overlay compositor unavailable; native buttons are not drawn");
+                self.overlay = None;
+                return;
+            }
+        }
+        if let Some(compositor) = &self.overlay_compositor {
+            compositor.draw(&self.gl, &prepared, surface_w, surface_h);
+        }
+    }
+
     pub(crate) fn declare_frame_damage(&mut self, id: CanvasId) {
+        self.prepare_overlay();
         let plan = self.prepare_present_plan(id);
         self.pending_present_plan = Some((id, plan));
     }
@@ -4939,6 +5052,13 @@ impl CanvasManager {
             }
             None => self.prepare_present_plan(id),
         };
+
+        // A present whose damage was not declared this frame prepares its overlay
+        // here, before anything is written to the window.
+        if self.overlay.is_some() && self.overlay_prepared.is_none() {
+            self.prepare_overlay();
+            self.make_current_needed(id)?;
+        }
 
         let entry = self
             .canvases
@@ -4974,6 +5094,13 @@ impl CanvasManager {
             }
         }
 
+        // The engine's overlay goes over the content's pixels, here, so it is in
+        // the presented frame and never in the content's canvas.
+        let entry_surf = entry.ctx.surf;
+        let window_context = entry.ctx.ctx.as_ptr();
+        self.composite_overlay(window_context, buffer_w, buffer_h);
+        self.overlay_prepared = None;
+
         // One-shot offscreen capture for the headless dev player: read the final
         // frame from FBO 0 after the blit and before eglSwapBuffers, while the
         // context is current and the back buffer is still valid. No-op (single
@@ -4991,7 +5118,7 @@ impl CanvasManager {
         // reaches here. An offscreen one has nothing to swap; FullSurface is
         // the conservative answer, since a caller reading it repairs everything
         // rather than trusting a region no present ever wrote.
-        let Some(entry_surf) = entry.ctx.surf else {
+        let Some(entry_surf) = entry_surf else {
             return Ok(ResolvedDamage::FullSurface);
         };
         // Surface damage first: tell the compositor what actually changed since
@@ -6018,10 +6145,14 @@ impl CanvasManager {
 
     /// Evict least-recently-used copies until `incoming` more bytes fit.
     fn evict_source_copies_to_fit(&mut self, incoming: usize) {
+        // The overlay's copy is what this frame's present draws; it goes only
+        // when the overlay does or is painted again.
+        let overlay = self.overlay.map(|overlay| overlay.canvas);
         while self.canvas_source_cache_bytes + incoming > CANVAS_SOURCE_CACHE_BYTES {
             let Some(oldest) = self
                 .canvas_source_cache
                 .iter()
+                .filter(|(id, _)| Some(**id) != overlay)
                 .min_by_key(|(_, copy)| copy.last_used)
                 .map(|(id, _)| *id)
             else {
@@ -7211,6 +7342,54 @@ mod recovery_source_guards {
             }
         }
         panic!("function body must close");
+    }
+
+    /// The engine's overlay is composited into the presented frame, never the content's canvas: after the
+    /// DrawingBuffer reaches the window and before the frame is captured or swapped. Prepared before the frame's
+    /// damage is declared, so the present itself never switches contexts.
+    #[test]
+    fn the_overlay_is_composited_between_the_blit_and_the_swap() {
+        let swap = function_body(MGR, "pub(crate) fn swap_buffers_no_restore(");
+        let blit = swap.find("blit_to_surface(").expect("the swap blits");
+        let overlay = swap
+            .find("self.composite_overlay(")
+            .expect("the swap composites the overlay");
+        let capture = swap
+            .find("capture_default_fbo(")
+            .expect("the swap captures");
+        let swapped = swap.find("try_swap_with_damage(").expect("the swap swaps");
+        assert!(blit < overlay && overlay < capture && capture < swapped);
+        let declare = function_body(MGR, "pub(crate) fn declare_frame_damage(");
+        assert!(
+            declare
+                .find("self.prepare_overlay()")
+                .expect("declared damage prepares the overlay")
+                < declare
+                    .find("self.prepare_present_plan(")
+                    .expect("then plans the present"),
+            "a change of overlay must be in the damage the plan is built from"
+        );
+    }
+
+    /// What the present draws stays: the overlay's copy is never evicted for another, and destroying its canvas
+    /// withdraws the overlay rather than leaving the present a texture that is gone.
+    #[test]
+    fn the_overlay_s_copy_is_kept_and_its_canvas_withdraws_it() {
+        let evict = function_body(MGR, "fn evict_source_copies_to_fit(");
+        assert!(
+            evict.contains("Some(**id) != overlay"),
+            "eviction skips the overlay's copy"
+        );
+        let destroy = function_body(MGR, "pub(crate) fn destroy_canvas(");
+        assert!(
+            destroy.contains("self.overlay = None"),
+            "destroying the overlay canvas withdraws it"
+        );
+        let bypass = function_body(MGR, "pub(crate) fn evaluate_bypass(");
+        assert!(
+            bypass.contains(".overlay"),
+            "the overlay does not count as a second canvas"
+        );
     }
 
     fn snapshot_entry_at(epoch: u64) -> super::Canvas2DSnapshotEntry {
