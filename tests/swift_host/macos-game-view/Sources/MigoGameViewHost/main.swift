@@ -90,10 +90,31 @@ do {
     exit(2)
 }
 
+/// What the app supplies of the host-service channel: a clipboard of its own,
+/// so a game can prove a provider answers it (scripts/fixtures/swift-host-services-probe).
+final class HostServices: MigoHostServiceProvider {
+    let services: Set<MigoHostServiceID> = [.clipboard]
+    private var clipboard = ""
+
+    func handle(_ request: MigoHostServiceRequest) {
+        switch (request.service, request.method) {
+        case (.clipboard, MigoHostServiceID.Clipboard.setClipboardData):
+            clipboard = request.object["data"] as? String ?? ""
+            request.reply?.succeed()
+        case (.clipboard, MigoHostServiceID.Clipboard.getClipboardData):
+            request.reply?.succeed(["data": clipboard])
+        default:
+            request.reply?.fail("not supported")
+        }
+    }
+}
+
 let window = NSWindow(
     contentRect: NSRect(x: 0, y: 0, width: 256, height: 256), styleMask: [.titled, .resizable],
     backing: .buffered, defer: false)
-let view = MigoGameView(configuration: .init(directories: directories, contentSigning: contentSigning))
+let view = MigoGameView(
+    configuration: .init(
+        directories: directories, contentSigning: contentSigning, hostServices: HostServices()))
 window.contentView = view
 window.center()
 window.makeKeyAndOrderFront(nil)

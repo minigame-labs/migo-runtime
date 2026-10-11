@@ -91,6 +91,8 @@ on:
       - 'tests/swift_host/macos-game-view/**'
       - 'scripts/fixtures/headless-js-probe/**'
       - 'scripts/fixtures/headless-host-services-probe/**'
+      - 'scripts/fixtures/swift-host-services-probe/**'
+      - 'scripts/gen-swift-host-services.py'
       - 'scripts/apple-sdk-package.py'
       - 'scripts/embed-apple-angle.sh'
       - 'scripts/fetch-apple-angle.sh'

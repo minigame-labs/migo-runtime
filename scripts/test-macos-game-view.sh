@@ -92,7 +92,7 @@ manifest.write_text(text.replace(old, f'path: "{sys.argv[2]}"'))
 PY
 HOST_PACKAGE="$WORK/host"
 
-echo "[1/4] building the host app against $PACKAGE"
+echo "[1/5] building the host app against $PACKAGE"
 swift build --package-path "$HOST_PACKAGE" --scratch-path "$WORK/build" -c debug \
   > "$WORK/build.log" 2>&1 || { tail -40 "$WORK/build.log"; fail "the host did not build"; }
 BIN_DIR="$(swift build --package-path "$HOST_PACKAGE" --scratch-path "$WORK/build" -c debug --show-bin-path)"
@@ -128,17 +128,18 @@ sign() {
 }
 
 run() {
-  local log="$WORK/$1-${2:-unsigned}.log" status
+  local name="$1-${2:-unsigned}${RUN_TAG:+-$RUN_TAG}" status
+  local log="$WORK/$name.log"
   set +e
-  MIGO_CAPI_LOG=info "$HOST" "$FIXTURE" "$WORK/data-$1-${2:-unsigned}" 120 "${2:-unsigned}" > "$log" 2>&1
+  MIGO_CAPI_LOG=info "$HOST" "$FIXTURE" "$WORK/data-$name" 120 "${2:-unsigned}" > "$log" 2>&1
   status=$?
   set -e
-  grep -E '^\[game-view-host\]|migo-headless-probe' "$log" | sed 's/^/    /'
+  grep -E '^\[game-view-host\]|migo-(headless|swift-host)-probe' "$log" | sed 's/^/    /'
   LAST_LOG="$log"
   return $status
 }
 
-echo "[2/4] hardened runtime WITH allow-jit: the game runs"
+echo "[2/5] hardened runtime WITH allow-jit: the game runs"
 sign with-jit
 status=0
 run with-jit || status=$?
@@ -171,7 +172,7 @@ device="$(grep -o 'migo-headless-probe: device .*' "$LAST_LOG" | tail -1)"
 [[ "$device" == *"/true keep=ok log=ok"* ]] || fail "the device did not answer through MigoGameView: ${device:-no report}"
 grep -q '\[game-view-host\] game log: .*"key":"probe"' "$LAST_LOG" \
   || fail "the game's log entry did not reach the app"
-echo "[3/4] signed content: verified with its key runs, tampered is refused"
+echo "[3/5] signed content: verified with its key runs, tampered is refused"
 status=0
 run with-jit signed || status=$?
 ((status == 0)) || { tail -40 "$LAST_LOG"; fail "a correctly signed package did not run under contentSigning .verified (exit $status)"; }
@@ -182,7 +183,21 @@ grep -qiE 'hash|integrity|signature' "$LAST_LOG" \
   || fail "the tampered package was refused without saying it failed verification"
 grep -q '\[game-view-host\] ready' "$LAST_LOG" && fail "the tampered package became ready before it was refused"
 
-echo "[4/4] hardened runtime WITHOUT allow-jit: the view refuses, and says why"
+echo "[4/5] the app's host services answer the game through MigoGameView.Configuration.hostServices"
+# The host app supplies a clipboard of its own (tests/swift_host/macos-game-view);
+# the game writes it, reads it back, and is refused a service the app did not name.
+GAME_FIXTURE="$FIXTURE"
+FIXTURE="$ROOT/scripts/fixtures/swift-host-services-probe"
+RUN_TAG=host-services
+status=0
+run with-jit || status=$?
+FIXTURE="$GAME_FIXTURE"
+RUN_TAG=
+((status == 0)) || { tail -40 "$LAST_LOG"; fail "the game did not reach the app's host services (exit $status)"; }
+grep -q 'migo-swift-host-probe: clipboard=migo-swift-host' "$LAST_LOG" \
+  || fail "the game did not report the clipboard the app answered"
+
+echo "[5/5] hardened runtime WITHOUT allow-jit: the view refuses, and says why"
 sign without-jit
 status=0
 run without-jit || status=$?
@@ -190,4 +205,4 @@ run without-jit || status=$?
 grep -q 'allow-jit is not in this process' "$LAST_LOG" \
   || fail "the view refused without naming the missing entitlement"
 
-echo "PASS: MigoGameView ran the game with JIT, verified signed content and refused tampered content, and refused to start without allow-jit"
+echo "PASS: MigoGameView ran the game with JIT, verified signed content and refused tampered content, answered the game from the app's host services, and refused to start without allow-jit"

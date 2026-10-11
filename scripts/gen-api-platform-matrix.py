@@ -362,12 +362,30 @@ def accessors_of(name, reach, reference, decisions):
     return services
 
 
-def ops_of(name, reach, decisions):
+def ops_of(name, reach, reference, decisions):
+    """The ops an API dispatches, following via and its kind's siblings -- the
+    same rule its needs are derived by."""
     seen = set()
     while name in decisions["via"] and name not in seen:
         seen.add(name)
         name = decisions["via"][name]
-    return set(reach[name]["ops"])
+    entry = reach[name]
+    ops = set(entry["ops"])
+    # Removing a listener reaches what adding it does, and nothing else.
+    if name.startswith("off") and not ops and not entry["services"]:
+        paired = "on" + name[3:]
+        if reach.get(paired) is not None:
+            return ops_of(paired, reach, reference, decisions)
+    if (
+        name.startswith(("on", "off"))
+        and not entry["services"]
+        and name not in decisions["pure"]
+        and name not in decisions["input"]
+    ):
+        for other, value in reach.items():
+            if value and reference[other] == reference[name] and not other.startswith(("on", "off")):
+                ops |= set(value["ops"])
+    return ops
 
 
 # ---- per platform --------------------------------------------------------------
@@ -502,7 +520,14 @@ def generate(root: pathlib.Path) -> str:
             else:
                 status = worst(need_status(need, platform, lanes, entries, android) for need in needs)
                 if platform == "ios" and status != "missing":
-                    if any(p_lanes.get(op) == "unsupported" for op in ops_of(name, reach, decisions)):
+                    lanes_of_ops = [p_lanes.get(op) for op in ops_of(name, reach, reference, decisions)]
+                    # iOS runs content on the Performance+ producer: an op it does
+                    # not offer reaches nothing, and one it answers itself
+                    # (`local`) never reaches the host's channel, whatever the
+                    # host supplies.
+                    if "unsupported" in lanes_of_ops or (
+                        "local" in lanes_of_ops and any(need.startswith("channel:") for need in needs)
+                    ):
                         status = "missing"
             statuses[platform] = status
             ready = status in ("engine", "default", "unsupported") or (

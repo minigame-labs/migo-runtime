@@ -220,15 +220,20 @@ public final class MigoEngineSession {
     private var attachment: OpaquePointer?
     private var layer: CAMetalLayer?
     private var metricsGeneration: UInt64 = 0
-    private var isClosed = false
+    private(set) var isClosed = false
 
     /// Create the engine and the session and install the host callbacks.
     ///
     /// Callbacks are installed here and nowhere else because the ABI accepts
     /// them once, before the first attach; a type that let them be set later
     /// would be a type whose second setter silently did nothing.
+    ///
+    /// `hostServices` is what the app supplies of the host-service channel --
+    /// the services it names are declared to the engine here, the only time the
+    /// ABI takes them; `nil` supplies none.
     public init(
-        directories: Directories, contentSigning: ContentSigning, preferredFramesPerSecond: Int? = nil
+        directories: Directories, contentSigning: ContentSigning, preferredFramesPerSecond: Int? = nil,
+        hostServices: MigoHostServiceProvider? = nil
     ) throws {
         var signingKey = [UInt8](repeating: 0, count: 32)
         var engineFlags = MIGO_ENGINE_FLAG_NONE
@@ -298,6 +303,7 @@ public final class MigoEngineSession {
         self.relayHandle = Unmanaged.passRetained(relay)
         relay.clock = clock
         relay.owner = self
+        relay.hostServices = hostServices
 
         var callbacks = MigoHostCallbacks()
         callbacks.struct_size = UInt32(MemoryLayout<MigoHostCallbacks>.size)
@@ -320,6 +326,12 @@ public final class MigoEngineSession {
         #endif
         callbacks.on_keep_screen_on = migoOnKeepScreenOn
         callbacks.on_game_log = migoOnGameLog
+        // The channel, with the services the app answers; none, and no channel.
+        let supplied = hostServices?.services.reduce(UInt64(0)) { $0 | $1.bit } ?? 0
+        if supplied != 0 {
+            callbacks.on_host_service_call = migoOnHostServiceCall
+            callbacks.host_services = supplied
+        }
         let installed = migo_session_set_host_callbacks(session, &callbacks)
         guard installed == MIGO_OK else {
             _ = migo_session_destroy(session)
@@ -745,15 +757,22 @@ public final class MigoEngineSession {
 /// What the C callbacks reach. Separate from the session so the session can be
 /// held weakly: the engine holds `user_data` for as long as it lives, and a
 /// strong pointer there would keep a closed session alive through it.
-private final class CallbackRelay {
+final class CallbackRelay {
     weak var owner: MigoEngineSession?
     var clock: MigoSessionFrameClock?
     var releaseWaiter: (() -> Void)?
+    /// What the app supplies of the host-service channel, for as long as the
+    /// session can call it.
+    var hostServices: MigoHostServiceProvider?
+}
+
+func callbackRelay(_ userData: UnsafeMutableRawPointer?) -> CallbackRelay? {
+    guard let userData else { return nil }
+    return Unmanaged<CallbackRelay>.fromOpaque(userData).takeUnretainedValue()
 }
 
 private func relay(_ userData: UnsafeMutableRawPointer?) -> CallbackRelay? {
-    guard let userData else { return nil }
-    return Unmanaged<CallbackRelay>.fromOpaque(userData).takeUnretainedValue()
+    callbackRelay(userData)
 }
 
 /// Every task onto the main queue. The ABI lets the host pick the thread and
