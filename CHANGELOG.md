@@ -409,6 +409,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- The API x platform matrix counted the touch events missing on every platform: its input table named a C entry point
+  that does not exist (`migo_session_send_touch_event`) and missed the Android SDK's touch path, which hands
+  `NativeMethods::onTouchRaw` over as a method reference. The generator now refuses an input table naming an entry
+  point the ABI or the Android bridge does not have, and the gate proves a host layer that stops feeding touch is seen.
 - `getShowSplashAdStatus` answered `success` / 1 whatever happened, and `createPageManager` was a mock whose `load`
   resolved and whose `show` did nothing. The status is now the host's report (`unknown` / -1 before one, the
   platform's initial value) and pages open through the host (see Added).

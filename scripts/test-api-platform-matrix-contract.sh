@@ -96,6 +96,8 @@ red "a host layer that stops installing a callback" platforms/apple/Sources/Migo
     'text.replace("callbacks.on_keep_screen_on = ", "// ", 1)'
 red "a channel method moving to another op" contracts/runtime/host-services.json \
     'text.replace("\"op\": \"op_set_clipboard_data\"", "\"op\": \"op_set_clipboard_data_moved\"", 1)'
+red "a host layer that stops feeding touch" platforms/linux/host-kit/src/qt6/x11_surface_view.cpp \
+    'text.replace("migo_session_send_touch(", "migo_session_send_touch_removed(")'
 red "an unsupported decision with no reason" contracts/runtime/api-platform-decisions.json \
     'text.replace("\"reason\": \"WebGPU is not implemented on any platform; content feature-detects it\"", "\"reason\": \"\"", 1)'
 
