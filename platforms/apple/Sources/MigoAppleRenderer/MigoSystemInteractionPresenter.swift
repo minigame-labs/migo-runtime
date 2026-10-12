@@ -163,23 +163,31 @@ import Foundation
     /// The system's dialogs on iOS: alerts and action sheets presented from the
     /// top view controller of the key window, and a toast or a loading
     /// indicator as a heads-up view over the window.
-    final class MigoSystemInteractionPresenter: MigoInteractionPresenter {
-        private var hud: UIView?
-
-        init() {}
-
-        private func keyWindow() -> UIWindow? {
+    /// Where the system's own UI is presented from: the key window, and the
+    /// controller on top of it.
+    enum MigoSystemPresentation {
+        static func keyWindow() -> UIWindow? {
             UIApplication.shared.connectedScenes
                 .compactMap { $0 as? UIWindowScene }
                 .flatMap(\.windows)
                 .first { $0.isKeyWindow }
         }
 
-        private func topController() -> UIViewController? {
+        static func topController() -> UIViewController? {
             var top = keyWindow()?.rootViewController
             while let presented = top?.presentedViewController { top = presented }
             return top
         }
+    }
+
+    final class MigoSystemInteractionPresenter: MigoInteractionPresenter {
+        private var hud: UIView?
+
+        init() {}
+
+        private func keyWindow() -> UIWindow? { MigoSystemPresentation.keyWindow() }
+
+        private func topController() -> UIViewController? { MigoSystemPresentation.topController() }
 
         func showHud(_ hud: MigoHud) {
             hideHud()

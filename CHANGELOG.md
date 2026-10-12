@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Apple: the image service, answered by the system when the app does not name it. `compressImage` re-encodes with
+  ImageIO (decoded no larger than the target, orientation applied, a PNG kept a PNG and anything else a JPEG, at most
+  50 megapixels as on Android); `chooseImage` and `chooseMedia` show PHPicker on iOS -- which needs no access to the
+  library and no purpose string -- and the open panel on a Mac; `chooseMessageFile` the document picker or the open
+  panel, filtered by kind and extension; `saveFileToDisk` the save panel on a Mac. Picked files are copied into the
+  host's staging directory before the engine takes them, an image content cannot draw becomes a JPEG, and a video is
+  described with its duration, displayed size and a cover frame. A call that allows only the camera is refused until
+  the camera capability exists; previews and saving to the photo library are recorded as gaps in the matrix.
 - Apple: the settings pages, answered by the system when the app does not name the setting service:
   `openAppAuthorizeSetting` opens this app's page in the system's settings (Settings on iOS, Privacy & Security on a
   Mac), as does `openSetting` while the SDK decides content's scopes through a linked capability. Each is answered

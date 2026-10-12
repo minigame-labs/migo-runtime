@@ -203,6 +203,8 @@ expected_wifi=false
 if [[ -n "$wifi_device" ]] && networksetup -getairportpower "$wifi_device" | grep -q ': On$'; then
   expected_wifi=true
 fi
+grep -q 'migo-swift-host-probe: compressed=16x8' "$LAST_LOG" \
+  || fail "the SDK's image service did not compress the game's image"
 grep -q 'migo-swift-host-probe: location=.* scope=refused' "$LAST_LOG" \
   || fail "the location capability did not decide scope.userLocation for the game"
 grep -q "migo-swift-host-probe: wifi=$expected_wifi camera=not determined" "$LAST_LOG" \
