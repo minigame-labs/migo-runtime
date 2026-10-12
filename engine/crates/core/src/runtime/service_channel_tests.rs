@@ -75,6 +75,19 @@ fn the_table_is_the_contract_s_commands_with_the_contract_s_hooks() {
         !is_channel(id::op_vibrate_short),
         "a command of the host's own"
     );
+
+    // The requests that name content's files arrive awaited, and are the
+    // contract's awaited methods -- every one of them.
+    let awaited: BTreeSet<&str> = methods
+        .keys()
+        .map(String::as_str)
+        .filter(|op| lanes.get(*op).map(String::as_str) == Some("async"))
+        .collect();
+    assert_eq!(FILE_OPS.iter().copied().collect::<BTreeSet<_>>(), awaited);
+    for op in FILE_OPS {
+        assert!(names_files(numbers[op]), "{op}");
+        assert!(!is_channel(numbers[op]), "{op} is not also a command");
+    }
 }
 
 #[derive(Default)]

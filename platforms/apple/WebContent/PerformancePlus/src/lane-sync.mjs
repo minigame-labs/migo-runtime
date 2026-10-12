@@ -897,6 +897,19 @@ export function op_update_available() {
   return callService(SERVICE_OP.op_update_available);
 }
 
+/// Whether the host app integrates ads: asked once, as the embedded op is, by
+/// content's ad layer before it creates one.
+export function op_ad_is_supported() {
+  return callService(SERVICE_OP.op_ad_is_supported);
+}
+
+/// Whether the host app's store allows paying, as its payment service says; a
+/// host with none answers that it does not.
+export function op_check_is_support_midas_payment(optionsJson) {
+  const options = stringOf(optionsJson, "options_json");
+  return callService(SERVICE_OP.op_check_is_support_midas_payment, (w) => w.str(options));
+}
+
 // ---- readPixels -------------------------------------------------------------
 //
 // The one query whose answer is pixels rather than a number, and the one whose

@@ -406,6 +406,70 @@ import XCTest
                 "refused before the host, in the embedded op's words: \(lines)")
         }
 
+        /// A request that names one of content's files reaches the host app
+        /// with a real file it can open -- the package's own image, resolved
+        /// through the game's sandbox -- and one whose scope is not granted
+        /// fails before the app is asked.
+        func testContentPreviewsAPackagedImageThroughTheHostApp() throws {
+            final class App: MigoHostServiceProvider {
+                let services: Set<MigoHostServiceID> = [.image]
+                var previewed: [String] = []
+                func handle(_ request: MigoHostServiceRequest) {
+                    if request.method == MigoHostServiceID.Image.previewImage {
+                        previewed = request.object["urls"] as? [String] ?? []
+                        request.reply?.succeed()
+                    } else {
+                        request.reply?.fail("unexpected")
+                    }
+                }
+            }
+            let game = try package(
+                named: "preview",
+                game: """
+                    const say = (line) => console.log(line);
+                    migo.previewImage({ urls: ["pic.png"],
+                      success() { say("previewed"); }, fail(error) { say("preview-fail " + error.errMsg); } });
+                    migo.saveImageToPhotosAlbum({ filePath: "pic.png",
+                      success() { say("saved"); }, fail(error) { say("save-fail " + error.errMsg); } });
+                    """)
+            let picture = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+            try picture.write(to: game.appendingPathComponent("pic.png"))
+            try MigoGameInstaller.install(package: game, id: "preview", into: directories)
+            let app = App()
+            let view = MigoGameView(
+                configuration: .init(directories: directories, contentSigning: .unsigned, hostServices: app))
+
+            var lines: [String] = []
+            var failure: String?
+            let answered = expectation(description: "content heard both answers")
+            answered.expectedFulfillmentCount = 2
+            view.onEvent = { event in
+                switch event {
+                case .console(_, let message):
+                    lines.append(message)
+                    if ["previewed", "preview-fail ", "saved", "save-fail "].contains(where: message.hasPrefix) {
+                        answered.fulfill()
+                    }
+                case .failed(let reason):
+                    failure = reason
+                default: break
+                }
+            }
+            mount(view)
+            view.loadGame(id: "preview")
+            wait(for: [answered], timeout: 240)
+            XCTAssertNil(failure)
+            XCTAssertTrue(lines.contains("previewed"), "\(lines)")
+            let path = try XCTUnwrap(app.previewed.first, "the app was asked")
+            XCTAssertTrue(path.hasPrefix("/"), "a real path, not content's: \(path)")
+            XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), picture, "the package's own image")
+            XCTAssertTrue(
+                lines.contains(
+                    "save-fail saveImageToPhotosAlbum:fail auth deny: scope.writePhotosAlbum is not granted"),
+                "\(lines)")
+            view.stop()
+        }
+
         /// A copy of `package`, signed: every file's SHA-256 in manifest.json and
         /// the raw Ed25519 signature of its bytes in manifest.sig.
         private func signed(_ package: URL, with key: Curve25519.Signing.PrivateKey, tamper: Bool = false) throws -> URL {

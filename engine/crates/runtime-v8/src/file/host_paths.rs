@@ -1,159 +1,59 @@
 //! Paths content names in a request to the host, made into paths the host can
-//! open -- and only for files the game can itself read.
-//!
-//! A host is handed a real path, never content's string: content chooses the
-//! path, and a host that opened it verbatim would read whatever its own process
-//! can -- `saveImageToPhotosAlbum({filePath: "<the host app's database>"})` once
-//! put that file in the player's photo album. Every path goes through the
-//! sandbox first. What a result names comes back through
-//! `shared::services::host_files`.
+//! open: `migo_services::host_paths`, over this runtime's sandbox. The rules and
+//! which fields are files are there, shared with the external session's host.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
-use std::path::PathBuf;
 use std::rc::Rc;
 
 use deno_core::OpState;
-use deno_core::serde_json::{self, Value};
+use deno_core::serde_json::Value;
 use deno_error::JsErrorBox;
-use migo_services::fs;
+use migo_services::host_paths::{self, Files, Sandbox};
 use shared::op_state::HostOpState;
-use shared::services::host_files::{self, Step};
-use shared::vfs::FileOp;
+use shared::services::host_files::Step;
+
+pub(crate) use migo_services::host_paths::Remote;
 
 use crate::io_state::IoSchedulerState;
 
-/// Whether a request may name a remote resource where it names a file.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Remote {
-    /// A viewer can show an http(s) URL itself.
-    Allowed,
-    Refused,
+fn sandbox(state: &Rc<RefCell<OpState>>) -> Sandbox {
+    let st = state.borrow();
+    let host = st.borrow::<HostOpState>();
+    Sandbox {
+        host_id: host.id,
+        scheduler: st.borrow::<IoSchedulerState>().0.clone(),
+        vfs: host.vfs.clone(),
+        mount_table: host.mount_table.clone(),
+    }
 }
 
-/// `request_json` with every path `fields` names replaced by a real path the host
-/// can open.
-///
-/// A path in the game's package that has no file of its own (a pack-backed
-/// `/code`) is copied out; the copy is held for request `requestId` and removed
-/// when its result arrives.
+/// `request_json` with every path `files` names replaced by a real path the host
+/// can open; a package entry copied out is held until the request's result.
 pub(crate) async fn export_paths(
     state: &Rc<RefCell<OpState>>,
     request_json: &str,
-    fields: &[&[Step]],
-    remote: Remote,
+    files: Files,
 ) -> Result<String, JsErrorBox> {
-    let mut request: Value = serde_json::from_str(request_json)
-        .map_err(|e| JsErrorBox::generic(format!("malformed request: {e}")))?;
-    let request_id = request
-        .get("requestId")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| JsErrorBox::generic("malformed request: no requestId"))?;
-    export_fields(state, &mut request, request_id, fields, remote).await?;
-    Ok(request.to_string())
+    host_paths::export_paths(&sandbox(state), request_json, files)
+        .await
+        .map_err(|error| JsErrorBox::generic(error.message))
 }
 
-/// `message`'s paths, as `export_paths` makes them, for a message no result
-/// answers -- a command or a reply: what it copies out is held for the rest of
-/// the session (`host_files::hold_export`'s request 0).
+/// `message`'s paths, for a message no result answers: what is copied out is
+/// held for the rest of the session.
 pub(crate) async fn export_paths_for_session(
     state: &Rc<RefCell<OpState>>,
     message: &mut Value,
     fields: &[&[Step]],
     remote: Remote,
 ) -> Result<(), JsErrorBox> {
-    export_fields(state, message, 0, fields, remote).await
+    host_paths::export_paths_for_session(&sandbox(state), message, fields, remote)
+        .await
+        .map_err(|error| JsErrorBox::generic(error.message))
 }
 
-async fn export_fields(
-    state: &Rc<RefCell<OpState>>,
-    request: &mut Value,
-    request_id: u64,
-    fields: &[&[Step]],
-    remote: Remote,
-) -> Result<(), JsErrorBox> {
-    let mut named: Vec<String> = Vec::new();
-    for field in fields {
-        host_files::visit_fields(request, field, &mut |value| match value {
-            Value::String(path) => {
-                if !named.contains(path) {
-                    named.push(path.clone());
-                }
-                Ok(())
-            }
-            _ => Err("a file path is not a string".to_string()),
-        })
-        .map_err(JsErrorBox::generic)?;
-    }
-
-    let (host_id, scheduler, vfs, mount_table) = {
-        let st = state.borrow();
-        let host = st.borrow::<HostOpState>();
-        (
-            host.id,
-            st.borrow::<IoSchedulerState>().0.clone(),
-            host.vfs.clone(),
-            host.mount_table.clone(),
-        )
-    };
-
-    let mut real: HashMap<String, String> = HashMap::with_capacity(named.len());
-    for path in named {
-        if remote == Remote::Allowed
-            && (path.starts_with("https://") || path.starts_with("http://"))
-        {
-            real.insert(path.clone(), path);
-            continue;
-        }
-        let resolved =
-            fs::resolve_path_vfs(vfs.as_deref(), mount_table.as_deref(), &path, FileOp::Read)
-                .map_err(|e| JsErrorBox::generic(e.message))?;
-        let host_path = match resolved {
-            fs::ResolvedPath::Filesystem(file) => {
-                if !std::fs::metadata(&file).is_ok_and(|meta| meta.is_file()) {
-                    return Err(JsErrorBox::generic(format!("file not found: {path}")));
-                }
-                file
-            }
-            fs::ResolvedPath::Pack { virtual_path } => {
-                let mount_table = mount_table
-                    .clone()
-                    .ok_or_else(|| JsErrorBox::generic("mount table not initialized"))?;
-                // The extension is what tells the host's decoder or viewer what
-                // the bytes are.
-                let suffix = std::path::Path::new(&virtual_path)
-                    .extension()
-                    .and_then(|ext| ext.to_str())
-                    .map(|ext| format!(".{ext}"))
-                    .unwrap_or_default();
-                let copy = fs::materialize_pack_to_temp_async(
-                    scheduler.clone(),
-                    mount_table,
-                    virtual_path,
-                    suffix,
-                )
-                .await
-                .map_err(|e| JsErrorBox::generic(e.message))?;
-                if !host_files::hold_export(host_id, request_id, PathBuf::from(&copy)) {
-                    let _ = std::fs::remove_file(&copy);
-                    return Err(JsErrorBox::generic("the session has ended"));
-                }
-                copy
-            }
-        };
-        real.insert(path, host_path);
-    }
-
-    for field in fields {
-        host_files::visit_fields(request, field, &mut |value| {
-            if let Value::String(path) = value
-                && let Some(host_path) = real.get(path.as_str())
-            {
-                *value = Value::String(host_path.clone());
-            }
-            Ok(())
-        })
-        .map_err(JsErrorBox::generic)?;
-    }
-    Ok(())
+/// A menu share's reply with its images exported for the session; one that is
+/// not content's file is dropped.
+pub(crate) async fn export_menu_share(state: &Rc<RefCell<OpState>>, reply: &mut Value) {
+    host_paths::export_menu_share(&sandbox(state), reply).await;
 }

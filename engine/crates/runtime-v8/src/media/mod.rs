@@ -8,12 +8,12 @@ use deno_core::{Extension, OpState, op2};
 use deno_error::JsErrorBox;
 use shared::op_state::HostOpState;
 use shared::protocol::error::ServiceError;
-use shared::services::host_files::Step;
 use shared::services::{CameraService, ImageApiService, Scope, VideoService};
 
 pub(crate) mod video_decoder;
 
-use crate::file::host_paths::{Remote, export_paths};
+use crate::file::host_paths::export_paths;
+use migo_services::host_paths as files;
 
 /// Look up the camera service and call `f` on it.
 fn with_camera_service<F, T>(
@@ -167,19 +167,6 @@ pub fn op_camera_close_frame_change(
 // needs no wait, so the request leaves in the call's own tick; only a package
 // entry that has to be copied out first defers it.
 
-/// `saveImageToPhotosAlbum`: the file to save.
-const SAVE_IMAGE_FILES: &[&[Step]] = &[&[Step::Key("filePath")]];
-/// `compressImage`: the image to compress.
-const COMPRESS_IMAGE_FILES: &[&[Step]] = &[&[Step::Key("src")]];
-/// `previewImage`: every url, and the one shown first, which is one of them.
-const PREVIEW_IMAGE_FILES: &[&[Step]] =
-    &[&[Step::Key("urls"), Step::Each], &[Step::Key("current")]];
-/// `previewMedia`: each source and its cover.
-const PREVIEW_MEDIA_FILES: &[&[Step]] = &[
-    &[Step::Key("sources"), Step::Each, Step::Key("url")],
-    &[Step::Key("sources"), Step::Each, Step::Key("poster")],
-];
-
 fn image_api(
     state: &OpState,
     err_msg: &'static str,
@@ -203,7 +190,7 @@ pub async fn op_save_image_to_photos_album(
         crate::permission::require_scope(&mut st, Scope::WritePhotosAlbum)?;
         image_api(&st, "saveImageToPhotosAlbum:fail not supported")?
     };
-    let request = export_paths(&state, &request_json, SAVE_IMAGE_FILES, Remote::Refused).await?;
+    let request = export_paths(&state, &request_json, files::SAVE_IMAGE_TO_PHOTOS_ALBUM).await?;
     service
         .save_image_to_photos_album(&request)
         .map_err(JsErrorBox::generic)
@@ -216,7 +203,7 @@ pub async fn op_preview_media(
     #[string] request_json: String,
 ) -> Result<(), JsErrorBox> {
     let service = image_api(&state.borrow(), "previewMedia:fail not supported")?;
-    let request = export_paths(&state, &request_json, PREVIEW_MEDIA_FILES, Remote::Allowed).await?;
+    let request = export_paths(&state, &request_json, files::PREVIEW_MEDIA).await?;
     service.preview_media(&request).map_err(JsErrorBox::generic)
 }
 
@@ -227,7 +214,7 @@ pub async fn op_preview_image(
     #[string] request_json: String,
 ) -> Result<(), JsErrorBox> {
     let service = image_api(&state.borrow(), "previewImage:fail not supported")?;
-    let request = export_paths(&state, &request_json, PREVIEW_IMAGE_FILES, Remote::Allowed).await?;
+    let request = export_paths(&state, &request_json, files::PREVIEW_IMAGE).await?;
     service.preview_image(&request).map_err(JsErrorBox::generic)
 }
 
@@ -238,8 +225,7 @@ pub async fn op_compress_image(
     #[string] request_json: String,
 ) -> Result<(), JsErrorBox> {
     let service = image_api(&state.borrow(), "compressImage:fail not supported")?;
-    let request =
-        export_paths(&state, &request_json, COMPRESS_IMAGE_FILES, Remote::Refused).await?;
+    let request = export_paths(&state, &request_json, files::COMPRESS_IMAGE).await?;
     service
         .compress_image(&request)
         .map_err(JsErrorBox::generic)

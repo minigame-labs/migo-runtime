@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- iOS: content on Performance+ reaches the host app's services that take content's files -- `compressImage`,
+  `previewImage`, `previewMedia`, `saveImageToPhotosAlbum`, `saveFileToDisk`, `shareAppMessage`,
+  `shareMessageToFriend`, `showShareImageMenu`, a menu share's reply and the ecosystem's group shares. The host resolves
+  every path content names through the game's sandbox into a file the app can open, copying a package entry out where
+  it has no file of its own, before the app is asked -- the same export the embedded ops make, now one implementation
+  for both executions (`migo_services::host_paths`, with which fields of each request are files). These are awaited
+  requests, as their embedded ops are: a scope not granted, a missing service or a path that is not content's file
+  fails content's call in the embedded op's words. Ads reach the host app's ad integration the same way (whether it has
+  one is asked once, and each ad's lifecycle is a command), and `checkIsSupportMidasPayment` asks the app's store. The
+  embedded ad ops are now one function each rather than macro-stamped, so the producer's conversions of their
+  arguments are checked against their signatures.
 - iOS: content on Performance+ reaches the host app's services. The host-service channel's methods that the embedded
   runtime answers with one scope check and one device-service call -- toasts, modals, loading and action sheets, the
   clipboard, location, the screen's brightness and capture state, code scanning, the motion sensors, the image, media

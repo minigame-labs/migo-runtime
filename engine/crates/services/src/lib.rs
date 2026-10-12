@@ -8,6 +8,7 @@ pub mod audio;
 pub mod content;
 pub mod error;
 pub mod fs;
+pub mod host_paths;
 pub mod image;
 pub mod network;
 pub mod require;
