@@ -4,14 +4,14 @@ use crate::protocol::error::ServiceError;
 
 /// Location service for getting device geographic position.
 ///
-/// Both methods are fire-and-forget: the Java side starts an async location
-/// request and delivers the result via JNI inbound callback
-/// (`onLocationResult` / `onFuzzyLocationResult` -> `EvalScript`).
+/// Both methods are fire-and-forget: the host starts an async location request
+/// and answers it later. A host answers in WGS-84, the datum every positioning
+/// system reports; the engine converts to GCJ-02 when content asked for it, and
+/// rounds getFuzzyLocation's position to 0.01 degrees itself.
 pub trait LocationService: Send + Sync {
     /// Start a precise location request (getLocation).
     ///
     /// Options JSON fields:
-    /// - `type`: "wgs84" (default) or "gcj02"
     /// - `altitude`: bool (default false) -- include altitude
     /// - `isHighAccuracy`: bool (default false)
     /// - `highAccuracyExpireTime`: number in ms
@@ -21,10 +21,8 @@ pub trait LocationService: Send + Sync {
         ))
     }
 
-    /// Start a fuzzy location request (getFuzzyLocation).
-    ///
-    /// Options JSON fields:
-    /// - `type`: "wgs84" (default) or "gcj02"
+    /// Start a fuzzy location request (getFuzzyLocation): the host's coarse
+    /// position, which the engine rounds.
     fn get_fuzzy_location(&self, _options_json: &str) -> Result<(), ServiceError> {
         Err(ServiceError::not_supported(
             "getFuzzyLocation:fail not supported",

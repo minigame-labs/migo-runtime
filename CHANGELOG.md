@@ -424,6 +424,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it was looked up by until the program links again: `getUniform` with another program's location, or one from before
   a relink, is INVALID_OPERATION and null, as are a deleted program and one that did not link.
 
+### Changed
+- Location: hosts answer in WGS-84 and the engine does the rest, the same on every platform -- GCJ-02 when content
+  asks for it (`type: 'gcj02'`), and `getFuzzyLocation`'s position rounded to 0.01 degrees, whatever the host's
+  precision. `GET_LOCATION` and `GET_FUZZY_LOCATION` no longer carry `type`, and a fuzzy answer passes on the position
+  only. The Android SDK's own converter and rounding are gone; the deferred-API helper takes a per-request shaping
+  function for results like these.
+
 ### Removed
 - `migo.checkUpdate`, which no platform defines, and `UpdateManager`'s `hasUpdate` and `isReady` properties, which
   the platform's manager does not have: what an update is doing is heard through the manager's events.

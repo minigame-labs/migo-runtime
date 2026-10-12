@@ -238,13 +238,15 @@ function promisify(apiName, executor) {
 //
 //   function getLocation(options = {}) {
 //       return _loc.invoke(options, function (opts, requestId) {
-//           op_get_location(JSON.stringify({ type: opts.type || 'wgs84' }));
+//           op_get_location(JSON.stringify({ requestId: requestId }));
 //       });
 //   }
 //   function _internalOnLocationResult(json) { _loc.settle(json); }
 //
-// - invoke(options, executor): stores callbacks + resolve/reject, calls executor, returns the
-//   Promise -- or nothing, for callback-style options (see isCallbackStyle)
+// - invoke(options, executor, shape): stores callbacks + resolve/reject, calls executor, returns
+//   the Promise -- or nothing, for callback-style options (see isCallbackStyle). `shape`, when
+//   given, turns this request's successful result into what content sees -- what the caller asked
+//   for that the host does not answer, such as coordinates in another datum.
 // - settle(resultJson): parses JSON, resolves/rejects, fires success/fail/complete
 //
 // Both callback and Promise styles are supported:
@@ -288,6 +290,7 @@ function createDeferredApi(apiName, defaultTimeoutMs) {
             invokeCallback(apiName, 'complete', entry.complete, res);
             entry.reject(res);
         } else {
+            if (entry.shape) parsed = entry.shape(parsed);
             var res = { errMsg: apiName + ':ok' };
             var keys = Object.keys(parsed);
             for (var i = 0; i < keys.length; i++) {
@@ -300,7 +303,7 @@ function createDeferredApi(apiName, defaultTimeoutMs) {
         }
     }
 
-    function invoke(options, executor) {
+    function invoke(options, executor, shape) {
         var opts = options || {};
         var success = typeof opts.success === 'function' ? opts.success : null;
         var fail = typeof opts.fail === 'function' ? opts.fail : null;
@@ -340,6 +343,7 @@ function createDeferredApi(apiName, defaultTimeoutMs) {
                 success: success,
                 fail: fail,
                 complete: complete,
+                shape: typeof shape === 'function' ? shape : null,
                 _timer: 0,
                 _t0: _perf.enabled ? performance.now() : 0,
             };
