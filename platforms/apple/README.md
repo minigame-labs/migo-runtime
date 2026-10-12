@@ -122,8 +122,11 @@ let configuration = MigoGameView.Configuration(
 ```
 
 The SDK answers the services the system already offers the app itself, for every
-one the app does not name -- so far the pasteboard (`setClipboardData` /
-`getClipboardData`). Name a service to answer it your way, or to refuse it.
+one the app does not name: the pasteboard (`setClipboardData` /
+`getClipboardData`), and the system's dialogs and indicators (`showToast`,
+`showLoading`, `showModal` -- an editable one too -- and `showActionSheet`, as an
+alert sheet on a Mac and an alert controller on iOS; the system's dialogs take no
+button colours). Name a service to answer it your way, or to refuse it.
 
 A call is answered once, now or later (`reply.succeed(...)`, or `reply.fail("cancel")`
 for a player who dismissed it); a reply the app drops unanswered fails the call

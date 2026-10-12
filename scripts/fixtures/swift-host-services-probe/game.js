@@ -27,6 +27,12 @@ async function run() {
     refused = e;
   }
   expect(refused !== null && /^scanCode:fail/.test(refused.errMsg), "scanCode refused", refused);
+  // The SDK's own interaction service, which the app did not name: a toast is
+  // shown and hidden by the system's indicator.
+  const toast = await call("showToast", { title: "migo", icon: "none", duration: 60000 });
+  expect(toast.errMsg === "showToast:ok", "showToast", toast);
+  const hidden = await call("hideToast");
+  expect(hidden.errMsg === "hideToast:ok", "hideToast", hidden);
   console.error("migo-swift-host-probe: clipboard=" + got.data);
 }
 

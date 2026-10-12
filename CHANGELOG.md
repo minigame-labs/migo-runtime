@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Apple: the system's dialogs and indicators answer the interaction service when the app does not name it -- a toast
+  or a loading indicator over the game (one at a time; `hideToast` hides only a toast, a toast hides itself after its
+  duration, `mask` holds touches back), `showModal` as an alert (an editable one with an input, its text the answer's
+  `content`) and `showActionSheet` as an alert sheet on a Mac or an action sheet on iOS, a dismissed one failing with
+  `cancel`.
 - Apple: the Swift SDK answers the host services the system already offers itself, for every service the app does not
   name -- first the pasteboard (`setClipboardData` / `getClipboardData`). The session declares the app's services and
   the SDK's; a service the app names is the app's. The API x platform matrix counts a service the Swift SDK answers

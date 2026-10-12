@@ -33,7 +33,7 @@ final class MigoBuiltInHostServiceTests: XCTestCase {
 
     func testTheSessionDeclaresTheAppsServicesAndTheSdksOwn() {
         let composed = MigoComposedHostServices(app: AppProvider([.ad, .payment]))
-        XCTAssertEqual(composed.services, [.ad, .payment, .clipboard])
+        XCTAssertEqual(composed.services, [.ad, .payment, .clipboard, .interaction])
         XCTAssertEqual(MigoComposedHostServices(app: nil).services, MigoBuiltInHostServices.services)
     }
 

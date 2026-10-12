@@ -7,8 +7,8 @@ import Foundation
 #endif
 
 /// What the SDK supplies itself of the host-service channel: the services the
-/// system already offers the app -- the pasteboard first -- answered by the
-/// system's own, for every service the app does not name. An app that names a
+/// system already offers the app -- the pasteboard, its dialogs and
+/// indicators -- answered by the system's own, for every service the app does not name. An app that names a
 /// service answers it instead, and one that wants a service refused names it
 /// and refuses.
 ///
@@ -19,15 +19,21 @@ final class MigoBuiltInHostServices: MigoHostServiceProvider {
     static let services: Set<MigoHostServiceID> = {
         var builtIn: Set<MigoHostServiceID> = []
         builtIn.insert(.clipboard)
+        builtIn.insert(.interaction)
         return builtIn
     }()
 
     var services: Set<MigoHostServiceID> { Self.services }
 
+    /// Kept for the session: which indicator is up is state.
+    private lazy var interaction = MigoSystemInteraction(presenter: MigoSystemInteractionPresenter())
+
     func handle(_ request: MigoHostServiceRequest) {
         switch request.service {
         case .clipboard:
             MigoSystemClipboard.handle(request)
+        case .interaction:
+            interaction.handle(request)
         default:
             request.reply?.fail("not supported")
         }
