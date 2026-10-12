@@ -839,8 +839,30 @@ impl PermissionService for CapiHostServices {
         self.reports.scope_state(scope)
     }
 
+    /// The scope travels by name and by number: the host reports its decision
+    /// with the number (`migo_session_set_scope_state`), so it keeps no table
+    /// of names.
     fn request_scope(&self, request_json: &str) -> Result<(), ServiceError> {
-        self.call(&REQUEST_SCOPE, request_json)
+        let Some((request_id, payload)) = split_request(request_json) else {
+            return Err(ServiceError::invalid_param("malformed request"));
+        };
+        let Ok(Value::Object(mut payload)) = serde_json::from_str::<Value>(&payload) else {
+            return Err(ServiceError::invalid_param("malformed request"));
+        };
+        let number = payload
+            .get("scope")
+            .and_then(Value::as_str)
+            .and_then(Scope::from_minigame_str)
+            .and_then(|scope| Scope::ALL.iter().position(|known| *known == scope));
+        let Some(number) = number else {
+            return Err(ServiceError::invalid_param("invalid scope"));
+        };
+        payload.insert("scopeId".to_owned(), Value::from(number));
+        self.post_call(
+            &REQUEST_SCOPE,
+            request_id,
+            Value::Object(payload).to_string(),
+        )
     }
 }
 
@@ -1956,9 +1978,18 @@ mod tests {
                 encode_call_id(&REQUEST_SCOPE, 5),
                 MIGO_HOST_SERVICE_PERMISSION,
                 MIGO_PERMISSION_REQUEST_SCOPE,
-                r#"{"desc":"","scope":"scope.record"}"#.to_owned()
+                r#"{"desc":"","scope":"scope.record","scopeId":7}"#.to_owned()
             )
         );
+        // A name the platform does not define asks the host nothing.
+        assert!(
+            PermissionService::request_scope(
+                &*services,
+                r#"{"requestId":6,"scope":"scope.everything","desc":""}"#,
+            )
+            .is_err()
+        );
+        assert_eq!(heard.0.lock().unwrap().len(), 1);
     }
 
     #[test]

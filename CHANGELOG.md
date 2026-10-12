@@ -425,6 +425,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a relink, is INVALID_OPERATION and null, as are a deleted program and one that did not link.
 
 ### Changed
+- C ABI: a permission request carries the scope's `MIGO_SCOPE_*` number as `scopeId` beside its name, the number the
+  host reports the decision with (`migo_session_set_scope_state`), so a C host keeps no table of scope names.
+  `authorize` with a scope the platform does not define fails `authorize:fail invalid scope` before any host is asked.
 - Location: hosts answer in WGS-84 and the engine does the rest, the same on every platform -- GCJ-02 when content
   asks for it (`type: 'gcj02'`), and `getFuzzyLocation`'s position rounded to 0.01 degrees, whatever the host's
   precision. `GET_LOCATION` and `GET_FUZZY_LOCATION` no longer carry `type`, and a fuzzy answer passes on the position

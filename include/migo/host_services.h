@@ -162,11 +162,14 @@ typedef uint32_t MigoHostService;
 #define MIGO_SUBPACKAGE_DOWNLOAD 0U
 
 /*
- * Permission: content's authorize({scope}) asks the host, {"scope", "desc"} --
- * desc is the reason the game declared, for an honest prompt. Success means
- * granted; refusal is a failure with the reason "auth deny". Completing the call
- * does not record the decision: report it with migo_session_set_scope_state,
- * which is also how every gated capability is checked.
+ * Permission: content's authorize({scope}) asks the host, {"scope", "scopeId",
+ * "desc"} -- the scope's name and its MIGO_SCOPE_* number, the one the decision
+ * is reported with, and desc the reason the game declared, for an honest
+ * prompt. A scope the platform does not define never reaches the host. Success
+ * means granted; refusal is a failure with the reason "auth deny". Completing
+ * the call does not record the decision: report it with
+ * migo_session_set_scope_state, which is also how every gated capability is
+ * checked.
  */
 #define MIGO_PERMISSION_REQUEST_SCOPE 0U
 

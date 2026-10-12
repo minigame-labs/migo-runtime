@@ -771,17 +771,22 @@ static void MIGO_CALL on_host_service_call(void *user_data, MigoSession *session
             break;
         case MIGO_HOST_SERVICE_PERMISSION:
             if (call->method == MIGO_PERMISSION_REQUEST_SCOPE) {
-                /* The player says yes to the camera and no to the microphone.
-                 * The decision is recorded first, then the request settled --
-                 * the order a real host keeps, so content that acts on success
-                 * finds the scope already granted. */
-                if (strstr(payload, "\"scope.camera\"") != NULL) {
-                    migo_session_set_scope_state(session, MIGO_SCOPE_CAMERA,
-                                                 MIGO_SCOPE_STATE_GRANTED);
+                /* The player says yes to the camera and no to anything else.
+                 * The decision is recorded first, by the number the request
+                 * carries, then the request settled -- the order a real host
+                 * keeps, so content that acts on success finds the scope
+                 * already granted. */
+                const char *key = strstr(payload, "\"scopeId\":");
+                if (key == NULL) {
+                    probe_failure("a scope request carried no scopeId");
+                    return;
+                }
+                MigoScope scope = (MigoScope)strtol(key + strlen("\"scopeId\":"), NULL, 10);
+                if (scope == MIGO_SCOPE_CAMERA) {
+                    migo_session_set_scope_state(session, scope, MIGO_SCOPE_STATE_GRANTED);
                     complete_ok(session, call->call_id, "");
                 } else {
-                    migo_session_set_scope_state(session, MIGO_SCOPE_RECORD,
-                                                 MIGO_SCOPE_STATE_DENIED);
+                    migo_session_set_scope_state(session, scope, MIGO_SCOPE_STATE_DENIED);
                     complete_fail(session, call->call_id, "auth deny", 0, 0);
                 }
                 return;
