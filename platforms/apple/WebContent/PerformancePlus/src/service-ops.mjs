@@ -280,4 +280,7 @@ export const SERVICE_OP = Object.freeze({
   op_ad_show: 270,
   op_ad_update_style: 271,
   op_check_is_support_midas_payment: 272,
+  op_get_app_authorization_setting: 273,
+  op_get_auth_setting: 274,
+  op_get_system_settings: 275,
 });

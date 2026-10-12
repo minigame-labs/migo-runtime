@@ -224,6 +224,40 @@ pub fn op_scope(op: &str) -> Option<Scope> {
         .map(|(_, scope)| *scope)
 }
 
+/// `getSetting`'s `authSetting`: only the scopes somebody has decided -- a
+/// granted one `true`, a refused one `false` -- and one nobody has been asked
+/// about absent. Content tells the last two apart: the mini-game convention
+/// does not re-prompt after a refusal, so `false` sends the player to
+/// `openSetting` while an absent scope is one to authorize, and reporting the
+/// undecided as `false` made every game that followed it send the player to
+/// settings for a question it had never asked. No permission service is
+/// nobody decided anything.
+pub fn auth_setting_json(permission: Option<&dyn PermissionService>) -> String {
+    let mut out = String::from("{");
+    let mut first = true;
+    let Some(permission) = permission else {
+        out.push('}');
+        return out;
+    };
+    for scope in Scope::ALL {
+        let granted = match permission.scope_state(*scope) {
+            ScopeState::Granted => true,
+            ScopeState::Denied => false,
+            ScopeState::Unknown => continue,
+        };
+        if !first {
+            out.push(',');
+        }
+        first = false;
+        out.push('"');
+        out.push_str(scope.as_minigame_str());
+        out.push_str("\":");
+        out.push_str(if granted { "true" } else { "false" });
+    }
+    out.push('}');
+    out
+}
+
 /// What the host has decided about one scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScopeState {

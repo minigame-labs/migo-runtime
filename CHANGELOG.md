@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- iOS: on Performance+, `getSetting`, `getAppAuthorizeSetting`, `getSystemSetting` and the authorization and switch
+  fields of `getSystemInfoSync` read the host's last report, as the embedded ops do, rather than failing or answering
+  defaults: each changes during a session -- a prompt answered, a setting changed and come back from -- so they are
+  asked of the host synchronously, as the network type is. `getSetting`'s composition (a decided scope only) is one
+  function both executions answer with.
 - iOS: content on Performance+ reaches the host app's services that take content's files -- `compressImage`,
   `previewImage`, `previewMedia`, `saveImageToPhotosAlbum`, `saveFileToDisk`, `shareAppMessage`,
   `shareMessageToFriend`, `showShareImageMenu`, a menu share's reply and the ecosystem's group shares. The host resolves

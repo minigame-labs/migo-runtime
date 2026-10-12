@@ -776,6 +776,34 @@ impl ServiceContext {
                     .map(OwnedValue::Str)
                     .map_err(device_error)
             }
+            // The host's last report of what changes during a session -- the
+            // scopes decided, the app's authorization, the system's switches --
+            // asked of the services the embedded ops ask.
+            id::op_get_auth_setting => {
+                let [] = exactly(op, args)?;
+                let permission = self
+                    .device
+                    .get()
+                    .and_then(Option::as_deref)
+                    .and_then(|device| device.permission());
+                Ok(OwnedValue::Str(shared::services::auth_setting_json(
+                    permission.as_deref(),
+                )))
+            }
+            id::op_get_app_authorization_setting => {
+                let [] = exactly(op, args)?;
+                self.device("getAppAuthorizeSetting", |device| device.system_info())?
+                    .get_app_authorization_setting_json()
+                    .map(OwnedValue::Str)
+                    .map_err(device_error)
+            }
+            id::op_get_system_settings => {
+                let [] = exactly(op, args)?;
+                self.device("getSystemSetting", |device| device.system_info())?
+                    .get_system_settings_json()
+                    .map(OwnedValue::Str)
+                    .map_err(device_error)
+            }
             id::op_ad_is_supported => {
                 let [] = exactly(op, args)?;
                 let device = self.device.get().and_then(Option::as_deref);
@@ -1953,6 +1981,82 @@ mod tests {
             "a malformed game.json refuses the mount"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// What changes during a session is read from the host's last report, as
+    /// the embedded ops read it: the scopes decided (an undecided one absent),
+    /// the app's authorization and the system's switches as the platform
+    /// composes them -- and with no platform, the embedded ops' answers.
+    #[test]
+    fn the_host_s_reports_are_read_as_the_embedded_ops_read_them() {
+        use shared::services::{
+            PermissionService, Scope, ScopeState, ServiceError as DeviceError, SystemInfoService,
+        };
+        struct Reports;
+        impl PermissionService for Reports {
+            fn scope_state(&self, scope: Scope) -> ScopeState {
+                match scope {
+                    Scope::Camera => ScopeState::Granted,
+                    Scope::Record => ScopeState::Denied,
+                    _ => ScopeState::Unknown,
+                }
+            }
+        }
+        impl SystemInfoService for Reports {
+            fn get_app_authorization_setting_json(&self) -> Result<String, DeviceError> {
+                Ok(r#"{"cameraAuthorized":"authorized"}"#.into())
+            }
+            fn get_system_settings_json(&self) -> Result<String, DeviceError> {
+                Ok(r#"{"wifi_enabled":true}"#.into())
+            }
+        }
+        struct Platform(Arc<Reports>);
+        impl shared::services::SensorServices for Platform {}
+        impl shared::services::ConnectivityServices for Platform {}
+        impl shared::services::CommerceServices for Platform {}
+        impl shared::services::MediaServices for Platform {}
+        impl shared::services::SystemUtilServices for Platform {
+            fn permission(&self) -> Option<Arc<dyn PermissionService>> {
+                Some(Arc::clone(&self.0) as Arc<dyn PermissionService>)
+            }
+            fn system_info(&self) -> Option<Arc<dyn SystemInfoService>> {
+                Some(Arc::clone(&self.0) as Arc<dyn SystemInfoService>)
+            }
+        }
+        let root = std::env::temp_dir().join(format!("migo-reports-{}", std::process::id()));
+        let read = |context: &ServiceContext, op| match context.call_sync(op, Vec::new()) {
+            Ok(OwnedValue::Str(json)) => Ok(json),
+            Ok(other) => panic!("a JSON string, not {other:?}"),
+            Err(error) => Err(error.message),
+        };
+
+        let context = ServiceContext::new(root.join("files"), root.join("cache"));
+        context.bind_device(Some(Arc::new(Platform(Arc::new(Reports)))));
+        assert_eq!(
+            read(&context, id::op_get_auth_setting).as_deref(),
+            Ok(r#"{"scope.record":false,"scope.camera":true}"#),
+            "in Scope::ALL's order"
+        );
+        assert_eq!(
+            read(&context, id::op_get_app_authorization_setting).as_deref(),
+            Ok(r#"{"cameraAuthorized":"authorized"}"#)
+        );
+        assert_eq!(
+            read(&context, id::op_get_system_settings).as_deref(),
+            Ok(r#"{"wifi_enabled":true}"#)
+        );
+
+        let none = ServiceContext::new(root.join("files"), root.join("cache"));
+        none.bind_device(None);
+        assert_eq!(read(&none, id::op_get_auth_setting).as_deref(), Ok("{}"));
+        assert_eq!(
+            read(&none, id::op_get_app_authorization_setting),
+            Err("getAppAuthorizeSetting:fail not supported".to_owned())
+        );
+        assert_eq!(
+            read(&none, id::op_get_system_settings),
+            Err("getSystemSetting:fail not supported".to_owned())
+        );
     }
 
     /// A request of the host app's that names content's files reaches it with
