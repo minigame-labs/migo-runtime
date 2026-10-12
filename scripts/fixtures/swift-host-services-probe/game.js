@@ -2,8 +2,9 @@
 // host-service channel, end to end through the product surface:
 // tests/swift_host/macos-game-view supplies a clipboard of its own, and this
 // writes to it, reads it back, and checks that a service the app did not name is
-// refused. Any failure is thrown out of a timer, so it reaches the app as an
-// error with the step in it; success is migo.exitMiniProgram().
+// refused; the SDK's own services and the view's window answer the rest. Any
+// failure is thrown out of a timer, so it reaches the app as an error with the
+// step in it; success is migo.exitMiniProgram().
 
 function call(api, options) {
   return new Promise(function (resolve, reject) {
@@ -33,6 +34,26 @@ async function run() {
   expect(toast.errMsg === "showToast:ok", "showToast", toast);
   const hidden = await call("hideToast");
   expect(hidden.errMsg === "hideToast:ok", "hideToast", hidden);
+  // The game view's own window service: the window grows so the game gets the
+  // size it asked for, in pixels, and the game hears it as a resize.
+  let seen = null;
+  const resized = new Promise(function (resolve, reject) {
+    const timer = setTimeout(function () {
+      reject(new Error("migo-swift-host-probe: resize got " + JSON.stringify(seen)));
+    }, 5000);
+    migo.onWindowResize(function listener(size) {
+      seen = size;
+      if (size.windowWidth !== 320 || size.windowHeight !== 200) return;
+      clearTimeout(timer);
+      migo.offWindowResize(listener);
+      resolve(size);
+    });
+  });
+  const ratio = migo.getWindowInfo().pixelRatio;
+  const sized = await call("setWindowSize", { width: 320 * ratio, height: 200 * ratio });
+  expect(sized.errMsg === "setWindowSize:ok", "setWindowSize", sized);
+  await resized;
+  expect(migo.setCursor("pointer") === true, "setCursor", false);
   console.error("migo-swift-host-probe: clipboard=" + got.data);
 }
 

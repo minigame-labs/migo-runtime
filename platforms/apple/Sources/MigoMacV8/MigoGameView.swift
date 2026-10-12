@@ -52,6 +52,10 @@ public typealias MigoHostServiceProvider = MigoAppleRenderer.MigoHostServiceProv
     /// neither from the other -- only the host knows its content -- so
     /// `Configuration.mouse` says which to send. Physical keys are always sent
     /// while the view is first responder.
+    ///
+    /// While content holds a pointer lock the cursor stands still and hidden,
+    /// and the mouse's raw motion moves content's pointer; Esc, or the window
+    /// losing key, releases it.
     public final class MigoGameView: NSView {
 
         /// Which stream a mouse feeds.
@@ -72,8 +76,11 @@ public typealias MigoHostServiceProvider = MigoAppleRenderer.MigoHostServiceProv
             public var mouse: MouseInput
             /// What the app supplies of the host-service channel -- ads,
             /// payments, sign-in, sharing, its dialogs -- for the services it
-            /// names; `nil` supplies none, and content is told each is not
-            /// supported. Held for as long as a game runs.
+            /// names. A service it does not name the SDK answers where the
+            /// system can -- the pasteboard, its dialogs, the screen, and this
+            /// view's window: its size, the cursor, pointer lock -- and content
+            /// is told the rest is not supported. Held for as long as a game
+            /// runs.
             public var hostServices: MigoHostServiceProvider?
 
             public init(
@@ -137,6 +144,12 @@ public typealias MigoHostServiceProvider = MigoAppleRenderer.MigoHostServiceProv
         private var observers: [NSObjectProtocol] = []
         private var mouseDown = false
         private var trackingArea: NSTrackingArea?
+        /// The window service for the game that runs: the cursor content
+        /// asked for, the pointer lock.
+        private var windowService: MigoWindowService?
+        /// An Esc that released the pointer lock is the player's, not the
+        /// game's: its key-up is held back too.
+        private var escapeReleasedLock = false
         /// Content's `migo.showKeyboard` on a machine with no soft keyboard: a
         /// text field along the game's bottom edge while content asks for one.
         private lazy var keyboard = KeyboardField(owner: self)
@@ -258,10 +271,17 @@ public typealias MigoHostServiceProvider = MigoAppleRenderer.MigoHostServiceProv
                 // held on its integrated one renders on the discrete one and
                 // shows nothing.
                 metalLayer.device = window?.screen.flatMap(Self.displayDevice)
+                let windowService = MigoWindowService(view: self) { [weak self] event, object in
+                    guard let json = try? JSONSerialization.data(withJSONObject: object) else { return }
+                    self?.engine?.postHostServiceEvent(.window, event: event, json: json)
+                }
+                self.windowService = windowService
+                // The app's services, then what only this view can answer;
+                // the session adds the SDK's own behind them.
                 let engine = try MigoEngineSession(
                     directories: configuration.directories, contentSigning: configuration.contentSigning,
                     preferredFramesPerSecond: configuration.preferredFramesPerSecond,
-                    hostServices: configuration.hostServices)
+                    hostServices: MigoGameViewHostServices(app: configuration.hostServices, window: windowService))
                 self.engine = engine
                 engine.onEvent = { [weak self] event in self?.engineEvent(event) }
                 // Before content runs, so its first `getNetworkType` has a report.
@@ -284,6 +304,9 @@ public typealias MigoHostServiceProvider = MigoAppleRenderer.MigoHostServiceProv
             isRunning = false
             keyboard.hide(reportingTo: nil)
             mouseDown = false
+            windowService?.close()
+            windowService = nil
+            escapeReleasedLock = false
             deviceStatus?.stop()
             deviceStatus = nil
             keepDisplayAwake(false)
@@ -409,9 +432,24 @@ public typealias MigoHostServiceProvider = MigoAppleRenderer.MigoHostServiceProv
 
         // MARK: - mouse
 
+        public override func resetCursorRects() {
+            // The visible rect alone reaches past the bounds where nothing clips the view.
+            addCursorRect(visibleRect.intersection(bounds), cursor: windowService?.cursor ?? .arrow)
+        }
+
         private func cssPoint(_ event: NSEvent) -> CGPoint {
+            // Locked, the cursor stands still and the mouse's raw motion moves
+            // content's pointer, past the view's edges if it goes there.
+            if let windowService, let position = windowService.lockedPosition {
+                switch event.type {
+                case .mouseMoved, .leftMouseDragged, .rightMouseDragged, .otherMouseDragged:
+                    return windowService.movePointer(by: CGVector(dx: event.deltaX, dy: event.deltaY)) ?? position
+                default:
+                    return position
+                }
+            }
             // Points are CSS pixels: the surface's scale is the backing scale.
-            convert(event.locationInWindow, from: nil)
+            return convert(event.locationInWindow, from: nil)
         }
 
         private func milliseconds(_ event: NSEvent) -> Double { event.timestamp * 1000 }
@@ -443,12 +481,20 @@ public typealias MigoHostServiceProvider = MigoAppleRenderer.MigoHostServiceProv
             pointerOnly(MIGO_POINTER_EVENT_DOWN, button: 2, event)
         }
 
+        public override func rightMouseDragged(with event: NSEvent) {
+            pointerOnly(MIGO_POINTER_EVENT_MOVE, button: 0, event)
+        }
+
         public override func rightMouseUp(with event: NSEvent) {
             pointerOnly(MIGO_POINTER_EVENT_UP, button: 2, event)
         }
 
         public override func otherMouseDown(with event: NSEvent) {
             pointerOnly(MIGO_POINTER_EVENT_DOWN, button: 1, event)
+        }
+
+        public override func otherMouseDragged(with event: NSEvent) {
+            pointerOnly(MIGO_POINTER_EVENT_MOVE, button: 0, event)
         }
 
         public override func otherMouseUp(with event: NSEvent) {
@@ -500,11 +546,25 @@ public typealias MigoHostServiceProvider = MigoAppleRenderer.MigoHostServiceProv
         // MARK: - keys
 
         public override func keyDown(with event: NSEvent) {
+            // Esc is the player's way out of a pointer lock, as in a browser.
+            if let windowService, windowService.pointerLocked, isEscape(event) {
+                windowService.exitPointerLock()
+                escapeReleasedLock = true
+                return
+            }
             key(MIGO_KEY_EVENT_DOWN, event)
         }
 
         public override func keyUp(with event: NSEvent) {
+            if escapeReleasedLock, isEscape(event) {
+                escapeReleasedLock = false
+                return
+            }
             key(MIGO_KEY_EVENT_UP, event)
+        }
+
+        private func isEscape(_ event: NSEvent) -> Bool {
+            MigoMacKeyCodes.code(forKeyCode: event.keyCode) == "Escape"
         }
 
         public override func flagsChanged(with event: NSEvent) {

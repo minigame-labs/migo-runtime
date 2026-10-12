@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- macOS: the game view answers the window service when the app does not name it. `setWindowSize` sizes the window
+  so the game's view gets the size asked for (pixels), its title bar kept in place; `setCursor` maps the CSS keywords
+  to the system's cursors (macOS 15's resize and zoom cursors where present; the arrow where macOS has none) or takes
+  an image file with its hotspot; `onWindowStateChange` reports minimized, maximized (zoomed or full screen) and
+  normal; `requestPointerLock` freezes and hides the cursor and keeps reporting mouse positions that accumulate the
+  raw motion, granted only while the window is key and the cursor over the game, and released by Esc, the window
+  losing key, or the game ending. Right- and middle-button drags now report pointer moves too.
 - Apple: the screen service, answered by the system when the app does not name it. iOS: `getScreenBrightness` /
   `setScreenBrightness`, `onUserCaptureScreen` (the screenshot notice), `getScreenRecordingState` and
   `onScreenRecordingStateChanged` (`UIScreen.isCaptured`), and `onDeviceOrientationChange` (`landscape` with the home
