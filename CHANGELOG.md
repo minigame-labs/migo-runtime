@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Apple: game controllers as content's gamepads on both lanes (`getGamepads`, `onGamepadConnected` /
+  `onGamepadDisconnected`). Each pad with an extended profile is announced in the lowest free slot once the session
+  has a surface, in the standard layout (17 buttons, 4 axes, up negative), sampled whenever an element changes, and
+  withdrawn when it goes; its motors play `vibrationActuator` effects through CoreHaptics -- the strong effect on the
+  left handle and the weak on the right where there are two, the larger on a single motor, and trigger rumble where
+  the triggers have motors. The session installs `on_gamepad_rumble`, which a pad with motors needs.
 - Apple: `MigoApplePhotos`, an optional capability: `saveImageToPhotosAlbum` through PhotoKit, asking only to add to
   the library; the photo-library grant (`albumAuthorized`, a limited library counting as authorized); and
   `scope.writePhotosAlbum` decided by the system's prompt, refused without one when the app declares no

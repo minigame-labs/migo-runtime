@@ -215,6 +215,12 @@ JavaScriptCore, which exposes no heap figures), and downloaded subpackages --
 the engine refuses a dynamic install whenever signing is enforced, because a
 downloaded subpackage carries no signature; subpackages inside the package work.
 
+Game controllers reach the game as gamepads on both lanes, with nothing for the
+app to do: every pad with an extended profile (Xbox, PlayStation, MFi) the
+system knows is announced in the standard layout once the game has a surface,
+sampled as its elements change, and its motors play content's
+`vibrationActuator` effects through CoreHaptics.
+
 **iOS.** The game's size is fixed when it starts (a mini-game lays itself out
 once), so lock the hosting controller to the game's orientation before the view's
 first layout: an Info.plist that declares only that orientation, or a controller
