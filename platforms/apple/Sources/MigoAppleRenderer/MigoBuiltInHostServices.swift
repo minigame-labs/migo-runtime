@@ -36,6 +36,7 @@ final class MigoBuiltInHostServices: MigoHostServiceProvider {
     /// `appServices` are the services the app answers itself: when they
     /// include permission, content's scopes are the app's to decide.
     init(capabilities: [MigoSystemCapability] = [], appServices: Set<MigoHostServiceID> = []) {
+        self.capabilities = capabilities
         permission = MigoSystemPermission(capabilities: capabilities)
         services = permission == nil ? Self.services : Self.services.union([.permission])
         settings = MigoSystemSettings(decidesScopes: permission != nil && !appServices.contains(.permission))
@@ -54,7 +55,9 @@ final class MigoBuiltInHostServices: MigoHostServiceProvider {
     /// Kept for the session: which indicator is up is state.
     private lazy var interaction = MigoSystemInteraction(presenter: MigoSystemInteractionPresenter())
     /// Kept for the session: a picker up is state.
-    private lazy var images = MigoSystemImages()
+    private lazy var images = MigoSystemImages(
+        photoLibrary: capabilities.lazy.compactMap { $0 as? MigoPhotoLibrarySaving }.first)
+    private let capabilities: [MigoSystemCapability]
     /// Kept for the session: what content listens for is state.
     private lazy var screen = MigoSystemScreen(post: { [weak self] event, object in
         self?.post?(.screen, event, object)

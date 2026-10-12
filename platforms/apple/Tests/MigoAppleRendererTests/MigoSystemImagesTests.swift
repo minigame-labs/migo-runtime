@@ -1,5 +1,6 @@
 import Foundation
 import ImageIO
+import MigoEngine
 import UniformTypeIdentifiers
 import XCTest
 
@@ -162,6 +163,38 @@ final class MigoSystemImagesTests: XCTestCase {
             call(images, Method.chooseMedia, ["sourceType": ["camera"]]),
             .failure(message: "not supported", code: nil))
         XCTAssertEqual(picker.asked.count, 1)
+    }
+
+    /// A linked photo library, as the image service sees it.
+    private final class FakeLibrary: MigoPhotoLibrarySaving {
+        var services: Set<MigoHostServiceID> { [] }
+        var scopes: Set<MigoScope> { [] }
+        var saved: [URL] = []
+        var failure: String?
+        func handle(_ request: MigoHostServiceRequest) {}
+        func report(to reports: MigoCapabilityReports?) {}
+        func requestScope(_ scope: MigoScope, completion: @escaping (Bool) -> Void) { completion(false) }
+        func saveImageToPhotoLibrary(_ file: URL, completion: @escaping (String?) -> Void) {
+            saved.append(file)
+            completion(failure)
+        }
+    }
+
+    func testSavingToThePhotoLibraryIsTheLinkedCapabilitysOrRefused() {
+        let picture = image("save.png", 2, 2, .png)
+        XCTAssertEqual(
+            call(MigoSystemImages(picker: FakePicker(), staging: root), Method.saveImageToPhotosAlbum,
+                ["filePath": picture.path]),
+            .failure(message: "not supported", code: nil))
+        let library = FakeLibrary()
+        let images = MigoSystemImages(picker: FakePicker(), photoLibrary: library, staging: root)
+        XCTAssertEqual(
+            call(images, Method.saveImageToPhotosAlbum, ["filePath": picture.path]), .success(json: Data("{}".utf8)))
+        XCTAssertEqual(library.saved, [picture])
+        library.failure = "system permission denied"
+        XCTAssertEqual(
+            call(images, Method.saveImageToPhotosAlbum, ["filePath": picture.path]),
+            .failure(message: "system permission denied", code: nil))
     }
 
     func testAChosenMessageFileKeepsItsNameAndOnlyTheKindAskedFor() throws {

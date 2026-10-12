@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Apple: `MigoApplePhotos`, an optional capability: `saveImageToPhotosAlbum` through PhotoKit, asking only to add to
+  the library; the photo-library grant (`albumAuthorized`, a limited library counting as authorized); and
+  `scope.writePhotosAlbum` decided by the system's prompt, refused without one when the app declares no
+  `NSPhotoLibraryAddUsageDescription`. The SDK's image service hands it that one method through the
+  `MigoPhotoLibrarySaving` role, keeping the rest of the service its own.
 - Apple: `previewImage` and `previewMedia` in QuickLook when the app does not name the image service -- full screen
   on iOS, a window with a step control on a Mac -- from the item content asked for. Each item is the host's own copy
   first (a clone on APFS), an http(s) URL downloaded with no referrer, so the viewer outlives the call that lent the

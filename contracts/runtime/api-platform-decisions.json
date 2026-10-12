@@ -87,8 +87,7 @@
   },
   "gaps": {
     "onAudioInterruptionBegin": {"platforms": ["ohos"], "reason": "the OpenHarmony audio output does not report interruptions yet"},
-    "onAudioInterruptionEnd": {"platforms": ["ohos"], "reason": "the OpenHarmony audio output does not report interruptions yet"},
-    "saveImageToPhotosAlbum": {"platforms": ["ios", "macos"], "reason": "the photo library is an optional capability product not built yet; the core SDK references no Photos API"}
+    "onAudioInterruptionEnd": {"platforms": ["ohos"], "reason": "the OpenHarmony audio output does not report interruptions yet"}
   },
   "unsupported": {
     "createInferenceSession": {"platforms": "*", "reason": "on-device inference needs a model runtime per platform; not offered"},

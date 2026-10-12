@@ -139,8 +139,9 @@ iOS (no library access, no purpose string) and the open panel on a Mac,
 `saveFileToDisk` through the save panel. What the player picks is copied first,
 and an image content cannot draw (HEIC, TIFF) arrives as a JPEG -- and
 `previewImage` / `previewMedia` in QuickLook (full screen on iOS, a window on a
-Mac), each item copied or downloaded first, answered once it shows; the camera
-and saving to the photo library are not part of this yet. On a Mac the
+Mac), each item copied or downloaded first, answered once it shows; saving to
+the photo library is the `MigoApplePhotos` capability's, and the camera is not
+part of this yet. On a Mac the
 game view also answers the window it is shown in: `setWindowSize` (the window grows or shrinks
 by what the game's view must), `setCursor` (CSS keywords as the system's
 cursors -- the arrow where macOS has none -- or an image file with its hotspot),
@@ -193,6 +194,11 @@ with the system's prompt. Declare `NSLocationWhenInUseUsageDescription` (a Mac:
 without it the system shows no prompt and the scope is refused without asking. A
 capability answers its services only when `hostServices` does not name them, and
 decides its scopes only when the app answers no permission service of its own.
+
+`MigoApplePhotos` (`MigoPhotoLibrary()`) saves to the photo library for
+`saveImageToPhotosAlbum` -- adding only, never reading: the pickers need no
+access -- reports the photo-library grant, and decides `scope.writePhotosAlbum`
+with the system's prompt. Declare `NSPhotoLibraryAddUsageDescription`.
 
 A Mac offers apps no public control of display brightness, no device orientation,
 no screenshot notice, no way to tell the screen is recorded, and no motion sensors

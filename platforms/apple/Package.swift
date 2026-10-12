@@ -32,6 +32,7 @@ let package = Package(
         // references, so an app links only the ones it declares a purpose for.
         // Each is a `MigoSystemCapability` handed to either lane's game view.
         .library(name: "MigoAppleLocation", targets: ["MigoAppleLocation"]),
+        .library(name: "MigoApplePhotos", targets: ["MigoApplePhotos"]),
         // The two below are for `DeviceTestHost`, not for integrators. SwiftPM
         // test targets are tool-hosted and `xcodebuild test` refuses them on a
         // device; the only way to run these tests on a phone is an Xcode unit-test
@@ -241,6 +242,18 @@ let package = Package(
             name: "MigoAppleLocationTests",
             dependencies: ["MigoAppleLocation"],
             path: "Tests/MigoAppleLocationTests"
+        ),
+
+        // Saving to the photo library through PhotoKit, for either lane.
+        .target(
+            name: "MigoApplePhotos",
+            dependencies: ["MigoAppleRenderer", "MigoEngine"],
+            path: "Sources/MigoApplePhotos"
+        ),
+        .testTarget(
+            name: "MigoApplePhotosTests",
+            dependencies: ["MigoApplePhotos"],
+            path: "Tests/MigoApplePhotosTests"
         ),
     ]
 )

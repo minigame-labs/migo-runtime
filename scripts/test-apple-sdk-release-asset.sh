@@ -109,6 +109,8 @@ build_product MigoMacV8 "platform=macOS"
 # An optional capability builds for both platforms either lane runs on.
 build_product MigoAppleLocation "generic/platform=iOS"
 build_product MigoAppleLocation "platform=macOS"
+build_product MigoApplePhotos "generic/platform=iOS"
+build_product MigoApplePhotos "platform=macOS"
 signed=0
 while IFS= read -r -d '' bundle; do
   copy="$WORK/signing/$(basename "$(dirname "$bundle")")/$(basename "$bundle")"
