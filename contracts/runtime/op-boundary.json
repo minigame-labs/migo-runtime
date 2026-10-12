@@ -33,15 +33,15 @@
   "profile": "performance_plus",
   "extensions": {
     "host_v8_ad": {
-      "reason": "Ad SDKs are native surfaces a host app integrates and reviews itself; the engine offers none on this lane.",
+      "reason": "Ads are the host app's integration with its ad SDK, as on every platform: whether it has one is asked once, synchronously, and each ad's lifecycle -- create, load, show, hide, restyle, destroy -- is a command through the host-service channel, whose events reach content through the hooks the embedded runtime calls.",
       "ops": {
-        "op_ad_create": "unsupported",
-        "op_ad_destroy": "unsupported",
-        "op_ad_hide": "unsupported",
-        "op_ad_is_supported": "unsupported",
-        "op_ad_load": "unsupported",
-        "op_ad_show": "unsupported",
-        "op_ad_update_style": "unsupported"
+        "op_ad_create": "command",
+        "op_ad_destroy": "command",
+        "op_ad_hide": "command",
+        "op_ad_is_supported": "sync",
+        "op_ad_load": "command",
+        "op_ad_show": "command",
+        "op_ad_update_style": "command"
       }
     },
     "host_v8_audio": {
@@ -190,7 +190,7 @@
       }
     },
     "host_v8_file": {
-      "reason": "The sandboxed file system is the host's. The synchronous API is the barrier and the asynchronous one is awaited, preserving which calls content may block on.",
+      "reason": "The sandboxed file system is the host's. The synchronous API is the barrier and the asynchronous one is awaited, preserving which calls content may block on. Saving a file to the player's disk is the host app's save dialog, awaited while the path is resolved through the game's sandbox.",
       "ops": {
         "op_access": "async",
         "op_access_sync": "sync",
@@ -224,7 +224,7 @@
         "op_rename_sync": "sync",
         "op_rmdir": "async",
         "op_rmdir_sync": "sync",
-        "op_save_file_to_disk": "unsupported",
+        "op_save_file_to_disk": "async",
         "op_stat": "async",
         "op_stat_sync": "sync",
         "op_unlink": "async",
@@ -259,7 +259,7 @@
       }
     },
     "host_v8_media": {
-      "reason": "Camera, video and photo-album surfaces are native UI and native permissions, outside the Performance+ profile; so is video decoding, which content is told this profile does not have. Choosing images, media and files is the host app's picker, reached as a command through the host-service channel; the files it hands over are taken into the session's /tmp, as in process. Compressing, previewing and saving, which hand the host a path of content's, are not carried.",
+      "reason": "Camera, video and photo-album surfaces are native UI and native permissions, outside the Performance+ profile; so is video decoding, which content is told this profile does not have. Choosing images, media and files is the host app's picker, reached as a command through the host-service channel; the files it hands over are taken into the session's /tmp, as in process. Compressing, previewing and saving to the album name content's files: they are awaited, because the host resolves each path through the game's sandbox into a file the app can open before it asks (migo_services::host_paths, as the embedded ops do), and a refusal fails the call.",
       "ops": {
         "op_camera_close_frame_change": "unsupported",
         "op_camera_create": "unsupported",
@@ -272,10 +272,10 @@
         "op_choose_image": "command",
         "op_choose_media": "command",
         "op_choose_message_file": "command",
-        "op_compress_image": "unsupported",
-        "op_preview_image": "unsupported",
-        "op_preview_media": "unsupported",
-        "op_save_image_to_photos_album": "unsupported",
+        "op_compress_image": "async",
+        "op_preview_image": "async",
+        "op_preview_media": "async",
+        "op_save_image_to_photos_album": "async",
         "op_video_create": "unsupported",
         "op_video_decoder_available": "local",
         "op_video_decoder_remove": "unsupported",
@@ -319,21 +319,21 @@
       }
     },
     "host_v8_payment": {
-      "reason": "In-app purchase is the host app's store integration, not the engine's: a request reaches it as a command through the host-service channel, and its result reaches content through the hook the embedded runtime calls. The synchronous support query is not carried.",
+      "reason": "In-app purchase is the host app's store integration, not the engine's: whether its store allows paying is asked synchronously, a request reaches it as a command through the host-service channel, and its result reaches content through the hook the embedded runtime calls.",
       "ops": {
-        "op_check_is_support_midas_payment": "unsupported",
+        "op_check_is_support_midas_payment": "sync",
         "op_request_midas_payment": "command",
         "op_request_midas_payment_game_item": "command"
       }
     },
     "host_v8_share": {
-      "reason": "Sharing is native UI outside the profile. The share menu's state is the host app's, set as a command through the host-service channel.",
+      "reason": "Sharing is the host app's: the share menu's state is set as a command through the host-service channel, and a share -- to the app's chooser, to a friend, from the image menu, or the menu's reply -- is awaited while the host resolves the image it names through the game's sandbox (migo_services::host_paths), as the embedded ops do.",
       "ops": {
-        "op_share_app_message": "unsupported",
-        "op_share_menu_reply": "unsupported",
-        "op_share_message_to_friend": "unsupported",
+        "op_share_app_message": "async",
+        "op_share_menu_reply": "async",
+        "op_share_message_to_friend": "async",
         "op_share_set_menu": "command",
-        "op_show_share_image_menu": "unsupported"
+        "op_show_share_image_menu": "async"
       }
     },
     "host_v8_storage": {
@@ -354,7 +354,7 @@
       }
     },
     "host_v8_system": {
-      "reason": "Device, window and system descriptions are an environment snapshot the host injects and updates by event. Login, account, permission requests, the settings pages, Bluetooth, beacons and mini-program navigation are the host app's services: each request is a command the host makes the embedded op's scope check and device-service call for (engine/crates/core/src/runtime/service_channel.rs), and its result, a refusal included, and the host's reports reach content through the hooks the embedded runtime calls. The scope and app-authorization snapshots, read synchronously, and ecosystem calls are not carried.",
+      "reason": "Device, window and system descriptions are an environment snapshot the host injects and updates by event. Login, account, permission requests, the settings pages, Bluetooth, beacons and mini-program navigation are the host app's services: each request is a command the host makes the embedded op's scope check and device-service call for (engine/crates/core/src/runtime/service_channel.rs), and its result, a refusal included, and the host's reports reach content through the hooks the embedded runtime calls. Ecosystem calls are awaited while the files a group share names are resolved through the game's sandbox. The scope and app-authorization snapshots, read synchronously, are not carried.",
       "ops": {
         "op_authorize": "command",
         "op_check_session": "command",
@@ -363,7 +363,7 @@
         "op_create_ble_connection": "command",
         "op_crypto_random_values": "local",
         "op_ecosystem_available": "local",
-        "op_ecosystem_call": "unsupported",
+        "op_ecosystem_call": "async",
         "op_ecosystem_reply": "command",
         "op_ecosystem_value": "local",
         "op_game_log_report": "command",

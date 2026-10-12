@@ -2,7 +2,7 @@ use std::{cell::RefCell, rc::Rc};
 
 use deno_core::{Extension, OpState, extension, op2};
 use deno_error::JsErrorBox;
-use shared::{op_state::HostOpState, services::host_files::Step};
+use shared::op_state::HostOpState;
 
 use crate::file::fs::{
     op_access, op_access_sync, op_close_file, op_close_file_sync, op_copy_file, op_copy_file_sync,
@@ -17,9 +17,6 @@ use crate::file::fs::{
 
 mod fs;
 pub(crate) mod host_paths;
-
-/// `saveFileToDisk`: the file to save, which must be content's own.
-const SAVE_FILE_FILES: &[&[Step]] = &[&[Step::Key("filePath")]];
 
 /// Save a file of content's to the player's disk, through the host's save
 /// dialog. The path crosses as a real one the host can read while the request
@@ -39,8 +36,7 @@ pub async fn op_save_file_to_disk(
     let request = host_paths::export_paths(
         &state,
         &request_json,
-        SAVE_FILE_FILES,
-        host_paths::Remote::Refused,
+        migo_services::host_paths::SAVE_FILE_TO_DISK,
     )
     .await?;
     service

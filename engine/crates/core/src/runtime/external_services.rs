@@ -622,6 +622,20 @@ impl ServiceContext {
             .map(|content| Arc::clone(&content.config))
     }
 
+    /// The game's sandbox, as the embedded ops resolve content's paths in:
+    /// what a request to the host app names is exported from here.
+    fn sandbox(&self) -> Result<migo_services::host_paths::Sandbox, ServiceError> {
+        let content = self.content.read();
+        Ok(migo_services::host_paths::Sandbox {
+            host_id: self.session(),
+            scheduler: self.scheduler()?,
+            vfs: content.as_ref().map(|content| Arc::clone(&content.vfs)),
+            mount_table: content
+                .as_ref()
+                .map(|content| Arc::clone(&content.mount_table)),
+        })
+    }
+
     fn game_paths(&self) -> Option<Arc<shared::vfs::GamePaths>> {
         self.content
             .read()
@@ -762,6 +776,33 @@ impl ServiceContext {
                     .map(OwnedValue::Str)
                     .map_err(device_error)
             }
+            id::op_ad_is_supported => {
+                let [] = exactly(op, args)?;
+                let device = self.device.get().and_then(Option::as_deref);
+                Ok(OwnedValue::Bool(
+                    device.is_some_and(|device| device.ad().is_some()),
+                ))
+            }
+            id::op_check_is_support_midas_payment => {
+                let [options] = exactly(op, args)?;
+                let options = string(op, 0, options)?;
+                // A platform with no payment service answers that paying is not
+                // allowed, as the embedded op does, rather than failing.
+                match self
+                    .device
+                    .get()
+                    .and_then(Option::as_deref)
+                    .and_then(|device| device.payment())
+                {
+                    Some(payment) => payment
+                        .check_is_support_midas_payment(&options)
+                        .map(OwnedValue::Str)
+                        .map_err(device_error),
+                    None => Ok(OwnedValue::Str(
+                        r#"{"data":{"allow_pay":false}}"#.to_owned(),
+                    )),
+                }
+            }
             id::op_update_available => {
                 let [] = exactly(op, args)?;
                 let device = self.device.get().and_then(Option::as_deref);
@@ -854,6 +895,12 @@ impl ServiceContext {
     ) -> Result<BoxFuture<'static, Result<OwnedValue, ServiceError>>, ServiceError> {
         let paths = self.game_paths();
         Ok(match op {
+            files if service_channel::names_files(files) => service_channel::request_with_files(
+                self.sandbox()?,
+                self.device.get().cloned().flatten(),
+                files,
+                args,
+            )?,
             id::op_load_image => {
                 let [image_id, src, tw, th] = exactly(op, args)?;
                 let (image_id, src) = (u32_of(op, 0, image_id)?, string(op, 1, src)?);
@@ -1908,6 +1955,126 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// A request of the host app's that names content's files reaches it with
+    /// real paths the app can open, resolved in the mounted game's sandbox --
+    /// and is refused, in the embedded op's words, before the app is asked when
+    /// its scope is not granted, the platform has no such service, or a path is
+    /// not one of content's files.
+    #[test]
+    fn requests_that_name_content_s_files_reach_the_host_app_with_real_paths() {
+        use shared::services::{ImageApiService, ServiceError as DeviceError};
+        #[derive(Default)]
+        struct Viewer(parking_lot::Mutex<Vec<String>>);
+        impl ImageApiService for Viewer {
+            fn preview_image(&self, request_json: &str) -> Result<(), DeviceError> {
+                self.0.lock().push(request_json.to_owned());
+                Ok(())
+            }
+        }
+        struct Platform(Arc<Viewer>);
+        impl shared::services::SensorServices for Platform {}
+        impl shared::services::ConnectivityServices for Platform {}
+        impl shared::services::CommerceServices for Platform {}
+        impl shared::services::SystemUtilServices for Platform {}
+        impl shared::services::MediaServices for Platform {
+            fn image_api(&self) -> Option<Arc<dyn ImageApiService>> {
+                Some(Arc::clone(&self.0) as Arc<dyn ImageApiService>)
+            }
+        }
+
+        let root =
+            std::env::temp_dir().join(format!("migo-external-host-files-{}", std::process::id()));
+        let files = root.join("files");
+        let cache = root.join("cache");
+        let installed = shared::vfs::GamePaths::new(&files, &cache, "g", 1).unwrap();
+        std::fs::create_dir_all(installed.code_dir()).unwrap();
+        std::fs::write(installed.code_dir().join("pic.png"), b"png").unwrap();
+        let viewer = Arc::new(Viewer::default());
+        let context = Arc::new(ServiceContext::new(files.clone(), cache.clone()));
+        context.bind_session(1);
+        context.bind_device(Some(Arc::new(Platform(Arc::clone(&viewer)))));
+        context.load_content("g", "game.js").expect("mounts");
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (sender, _commands) = shared::render_command_sender::CommandSender::new();
+        let render = RenderHandles {
+            canvas: shared::op_state::CanvasOpState::for_host(sender, 1),
+            gpu_caps: shared::device::gpu_caps::GpuCaps::new(),
+        };
+        let ask = |context: &ServiceContext, op, request: &str| {
+            let call = context.call_async(op, vec![OwnedValue::Str(request.to_owned())], &render);
+            match call {
+                Ok(future) => runtime.block_on(future).map(drop).map_err(|e| e.message),
+                Err(error) => Err(error.message),
+            }
+        };
+
+        ask(
+            &context,
+            id::op_preview_image,
+            r#"{"requestId":7,"urls":["pic.png","https://cdn.example/a.png"],"current":"pic.png"}"#,
+        )
+        .expect("the viewer is asked");
+        let asked: serde_json::Value =
+            serde_json::from_str(&viewer.0.lock()[0]).expect("the request, as JSON");
+        let real = installed.code_dir().join("pic.png");
+        let real = real.to_str().unwrap();
+        assert_eq!(
+            asked["urls"],
+            serde_json::json!([real, "https://cdn.example/a.png"])
+        );
+        assert_eq!(asked["current"], real);
+        assert_eq!(asked["requestId"], 7);
+
+        assert_eq!(
+            ask(
+                &context,
+                id::op_preview_image,
+                r#"{"requestId":8,"urls":["missing.png"]}"#
+            ),
+            Err("Path resolution failed: missing.png".to_owned()),
+            "a path that is not content's file is refused before the app sees it"
+        );
+        assert_eq!(
+            ask(
+                &context,
+                id::op_save_image_to_photos_album,
+                r#"{"requestId":9,"filePath":"pic.png"}"#
+            ),
+            Err("auth deny: scope.writePhotosAlbum is not granted".to_owned()),
+        );
+        assert_eq!(
+            ask(
+                &context,
+                id::op_compress_image,
+                r#"{"requestId":10,"src":"pic.png"}"#
+            ),
+            Err("compressImage:fail not supported".to_owned()),
+            "the service's own refusal, here the trait's default, after the export"
+        );
+        assert_eq!(
+            viewer.0.lock().len(),
+            1,
+            "only the first reached the viewer"
+        );
+
+        let none = Arc::new(ServiceContext::new(files, cache));
+        none.bind_session(2);
+        none.bind_device(None);
+        assert_eq!(
+            ask(
+                &none,
+                id::op_preview_image,
+                r#"{"requestId":11,"urls":["pic.png"]}"#
+            ),
+            Err("previewImage:fail not supported".to_owned()),
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// A storage round trip through the real services, the way the producer
     /// makes one: content mounted, a synchronous set, an awaited get.
     #[test]
@@ -2716,6 +2883,20 @@ mod tests {
             |context: &ServiceContext| context.call_sync(id::op_update_available, Vec::new());
         assert!(matches!(updates(&context), Ok(OwnedValue::Bool(true))));
         assert!(matches!(updates(&none), Ok(OwnedValue::Bool(false))));
+        // Ads and the store's allowance, asked the same way; a platform with no
+        // payment service says paying is not allowed rather than failing.
+        assert!(matches!(
+            none.call_sync(id::op_ad_is_supported, Vec::new()),
+            Ok(OwnedValue::Bool(false))
+        ));
+        assert_eq!(
+            none.call_sync(
+                id::op_check_is_support_midas_payment,
+                vec![OwnedValue::Str("{}".into())]
+            )
+            .ok(),
+            Some(OwnedValue::Str(r#"{"data":{"allow_pay":false}}"#.into()))
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 

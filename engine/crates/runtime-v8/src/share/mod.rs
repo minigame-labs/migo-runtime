@@ -20,23 +20,11 @@ use deno_core::{Extension, OpState, op2};
 use deno_error::JsErrorBox;
 use shared::op_state::HostOpState;
 use shared::services::ShareService;
-use shared::services::host_files::Step;
 
 use deno_core::serde_json::{self, Value};
 
-use crate::file::host_paths::{Remote, export_paths, export_paths_for_session};
-
-/// `shareAppMessage`'s image, which may also be a network image.
-const SHARE_APP_MESSAGE_FILES: &[&[Step]] = &[&[Step::Key("imageUrl")]];
-/// `shareMessageToFriend`'s image, which may not.
-const SHARE_MESSAGE_TO_FRIEND_FILES: &[&[Step]] = &[&[Step::Key("imageUrl")]];
-/// `showShareImageMenu`'s image, a local file.
-const SHOW_SHARE_IMAGE_MENU_FILES: &[&[Step]] = &[&[Step::Key("path")]];
-/// The images a menu share's content may name, network images included.
-const MENU_SHARE_FILES: [&[Step]; 2] = [
-    &[Step::Key("content"), Step::Key("imageUrl")],
-    &[Step::Key("content"), Step::Key("imagePreviewUrl")],
-];
+use crate::file::host_paths::{self, export_paths};
+use migo_services::host_paths as files;
 
 fn share_service(
     state: &Rc<RefCell<OpState>>,
@@ -57,13 +45,7 @@ pub async fn op_share_app_message(
     #[string] request_json: String,
 ) -> Result<(), JsErrorBox> {
     let service = share_service(&state, "shareAppMessage:fail not supported")?;
-    let request = export_paths(
-        &state,
-        &request_json,
-        SHARE_APP_MESSAGE_FILES,
-        Remote::Allowed,
-    )
-    .await?;
+    let request = export_paths(&state, &request_json, files::SHARE_APP_MESSAGE).await?;
     service
         .share_app_message(&request)
         .map_err(JsErrorBox::generic)
@@ -75,13 +57,7 @@ pub async fn op_share_message_to_friend(
     #[string] request_json: String,
 ) -> Result<(), JsErrorBox> {
     let service = share_service(&state, "shareMessageToFriend:fail not supported")?;
-    let request = export_paths(
-        &state,
-        &request_json,
-        SHARE_MESSAGE_TO_FRIEND_FILES,
-        Remote::Refused,
-    )
-    .await?;
+    let request = export_paths(&state, &request_json, files::SHARE_MESSAGE_TO_FRIEND).await?;
     service
         .share_message_to_friend(&request)
         .map_err(JsErrorBox::generic)
@@ -93,13 +69,7 @@ pub async fn op_show_share_image_menu(
     #[string] request_json: String,
 ) -> Result<(), JsErrorBox> {
     let service = share_service(&state, "showShareImageMenu:fail not supported")?;
-    let request = export_paths(
-        &state,
-        &request_json,
-        SHOW_SHARE_IMAGE_MENU_FILES,
-        Remote::Refused,
-    )
-    .await?;
+    let request = export_paths(&state, &request_json, files::SHOW_SHARE_IMAGE_MENU).await?;
     service
         .show_share_image_menu(&request)
         .map_err(JsErrorBox::generic)
@@ -130,19 +100,7 @@ pub async fn op_share_menu_reply(
     let service = share_service(&state, "share menu: not supported")?;
     let mut reply: Value = serde_json::from_str(&reply_json)
         .map_err(|e| JsErrorBox::generic(format!("malformed reply: {e}")))?;
-    for field in MENU_SHARE_FILES {
-        if let Err(error) =
-            export_paths_for_session(&state, &mut reply, &[field], Remote::Allowed).await
-        {
-            tracing::warn!("share menu image dropped: {error}");
-            let Some((Step::Key(name), _)) = field.split_last() else {
-                continue;
-            };
-            if let Some(content) = reply.get_mut("content").and_then(Value::as_object_mut) {
-                content.remove(*name);
-            }
-        }
-    }
+    host_paths::export_menu_share(&state, &mut reply).await;
     service
         .menu_share_reply(&reply.to_string())
         .map_err(JsErrorBox::generic)

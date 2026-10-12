@@ -20,12 +20,15 @@
 use std::sync::Arc;
 
 use frame_wire::value::OwnedValue;
+use futures::future::BoxFuture;
+use migo_services::ServiceError;
+use migo_services::host_paths::{self, Sandbox};
 use shared::js_escape::hook_args_one;
 use shared::services::{DeviceServices, ScopeState, op_scope};
 use tracing::warn;
 
 use super::host_events::ServiceEventSink;
-use super::service_args::{exactly, i32_of, string};
+use super::service_args::{exactly, i32_of, not_a, string};
 use super::service_ops::id;
 
 /// Why a channel op did not reach the host app, and which call it fails.
@@ -34,9 +37,9 @@ struct Refusal {
     message: String,
 }
 
-impl From<migo_services::ServiceError> for Refusal {
+impl From<ServiceError> for Refusal {
     /// A request that is not the shape its op takes: it names no call to fail.
-    fn from(error: migo_services::ServiceError) -> Self {
+    fn from(error: ServiceError) -> Self {
         Self {
             request_id: None,
             message: error.message,
@@ -170,6 +173,12 @@ macro_rules! channel {
 // `media`, `share`, `system`, `ui` and `update` modules), and the hook its
 // result reaches content through.
 channel! {
+    op_ad_create(json) => ad.create_ad;
+    op_ad_destroy(json) => ad.destroy_ad;
+    op_ad_hide(json) => ad.hide_ad;
+    op_ad_load(json) => ad.load_ad;
+    op_ad_show(json) => ad.show_ad;
+    op_ad_update_style(json) => ad.update_ad_style;
     op_apply_update(none) => update.apply_update;
     op_authorize(json) => permission.request_scope, "_internalOnAuthorizeResult";
     op_check_session(json) => auth.check_session, "_internalOnCheckSessionResult";
@@ -293,6 +302,158 @@ pub(crate) fn command(
             refusal.message
         ),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Requests that name content's files
+// ---------------------------------------------------------------------------
+//
+// A request that names one of content's files -- an image to preview, a file
+// to save, a picture to share -- is not forwarded as content wrote it: each
+// path is resolved through the game's sandbox into a real file the host app
+// can open (`migo_services::host_paths`, which the embedded ops export through
+// too), and a package entry with no file of its own is copied out first. That
+// takes the io scheduler, so these are awaited requests, as their embedded ops
+// are: a refusal -- a scope not granted, no such service, a path that is not
+// content's file -- rejects the call, and content's facade fails it in the
+// embedded op's words. What the host app answers reaches content through the
+// method's hook, as for every other channel method.
+
+/// A refusal of the embedded op's, with its words.
+fn refused(message: impl Into<String>) -> ServiceError {
+    ServiceError::generic(message)
+}
+
+/// The scope check, then the service: what the embedded op makes sure of
+/// before it exports anything.
+fn reach<S: ?Sized>(
+    device: Option<&dyn DeviceServices>,
+    op: &str,
+    unsupported: &str,
+    service: impl FnOnce(&dyn DeviceServices) -> Option<Arc<S>>,
+) -> Result<Arc<S>, ServiceError> {
+    if let Some(message) = scope_refusal(device, op) {
+        return Err(refused(message));
+    }
+    device.and_then(service).ok_or_else(|| refused(unsupported))
+}
+
+/// One row of the table below, by the shape of what its op is given.
+macro_rules! file_request_row {
+    (files $files:ident, $sandbox:ident, $device:ident, $op:ident, $args:ident,
+        $accessor:ident . $method:ident, $unsupported:literal) => {{
+        let [request] = exactly(id::$op, $args)?;
+        let request = string(id::$op, 0, request)?;
+        let service = reach(
+            $device.as_deref(),
+            stringify!($op),
+            $unsupported,
+            |device| device.$accessor(),
+        )?;
+        Box::pin(async move {
+            let request = host_paths::export_paths(&$sandbox, &request, host_paths::$files).await?;
+            service
+                .$method(&request)
+                .map(|()| OwnedValue::Null)
+                .map_err(|error| refused(error.message))
+        })
+    }};
+    (ecosystem, $sandbox:ident, $device:ident, $op:ident, $args:ident,
+        $accessor:ident . $method:ident, $unsupported:literal) => {{
+        let [api, request] = exactly(id::$op, $args)?;
+        let (api, request) = (string(id::$op, 0, api)?, string(id::$op, 1, request)?);
+        let service = reach(
+            $device.as_deref(),
+            stringify!($op),
+            $unsupported,
+            |device| device.$accessor(),
+        )?;
+        Box::pin(async move {
+            // Only a request that names files is parsed here.
+            let request = match host_paths::ecosystem_files(&api) {
+                Some(files) => host_paths::export_paths(&$sandbox, &request, files).await?,
+                None => request,
+            };
+            service
+                .$method(&request)
+                .map(|()| OwnedValue::Null)
+                .map_err(|error| refused(error.message))
+        })
+    }};
+    (menu_reply, $sandbox:ident, $device:ident, $op:ident, $args:ident,
+        $accessor:ident . $method:ident, $unsupported:literal) => {{
+        let [reply] = exactly(id::$op, $args)?;
+        let reply = string(id::$op, 0, reply)?;
+        let service = reach(
+            $device.as_deref(),
+            stringify!($op),
+            $unsupported,
+            |device| device.$accessor(),
+        )?;
+        Box::pin(async move {
+            let mut reply: serde_json::Value = serde_json::from_str(&reply)
+                .map_err(|e| refused(format!("malformed reply: {e}")))?;
+            host_paths::export_menu_share(&$sandbox, &mut reply).await;
+            service
+                .$method(&reply.to_string())
+                .map(|()| OwnedValue::Null)
+                .map_err(|error| refused(error.message))
+        })
+    }};
+}
+
+macro_rules! file_requests {
+    ($($op:ident($form:ident $($files:ident)?) => $accessor:ident . $method:ident,
+        $unsupported:literal;)*) => {
+        /// Whether `op` is a channel request that names content's files.
+        pub(crate) fn names_files(op: u32) -> bool {
+            matches!(op, $(id::$op)|*)
+        }
+
+        /// Export the paths `op`'s request names, then make its call; the
+        /// answer is the host's acceptance, or the refusal.
+        pub(crate) fn request_with_files(
+            sandbox: Sandbox,
+            device: Option<Arc<dyn DeviceServices>>,
+            op: u32,
+            args: Vec<OwnedValue>,
+        ) -> Result<BoxFuture<'static, Result<OwnedValue, ServiceError>>, ServiceError> {
+            Ok(match op {
+                $(id::$op => file_request_row!(
+                    $form $($files)?, sandbox, device, $op, args, $accessor.$method, $unsupported
+                ),)*
+                other => return Err(not_a(other, "file request")),
+            })
+        }
+
+        /// Every op of the table's, by name.
+        #[cfg(test)]
+        const FILE_OPS: &[&str] = &[$(stringify!($op)),*];
+    };
+}
+
+// What the embedded op of each method takes, which of its fields are files
+// (`migo_services::host_paths`), what it calls, and the words it refuses with
+// when the platform has no such service.
+file_requests! {
+    op_compress_image(files COMPRESS_IMAGE) => image_api.compress_image,
+        "compressImage:fail not supported";
+    op_ecosystem_call(ecosystem) => ecosystem.call, "not supported";
+    op_preview_image(files PREVIEW_IMAGE) => image_api.preview_image,
+        "previewImage:fail not supported";
+    op_preview_media(files PREVIEW_MEDIA) => image_api.preview_media,
+        "previewMedia:fail not supported";
+    op_save_file_to_disk(files SAVE_FILE_TO_DISK) => image_api.save_file_to_disk,
+        "saveFileToDisk:fail not supported";
+    op_save_image_to_photos_album(files SAVE_IMAGE_TO_PHOTOS_ALBUM) =>
+        image_api.save_image_to_photos_album, "saveImageToPhotosAlbum:fail not supported";
+    op_share_app_message(files SHARE_APP_MESSAGE) => share.share_app_message,
+        "shareAppMessage:fail not supported";
+    op_share_menu_reply(menu_reply) => share.menu_share_reply, "share menu: not supported";
+    op_share_message_to_friend(files SHARE_MESSAGE_TO_FRIEND) => share.share_message_to_friend,
+        "shareMessageToFriend:fail not supported";
+    op_show_share_image_menu(files SHOW_SHARE_IMAGE_MENU) => share.show_share_image_menu,
+        "showShareImageMenu:fail not supported";
 }
 
 #[cfg(test)]

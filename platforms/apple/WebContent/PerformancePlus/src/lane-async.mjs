@@ -728,6 +728,49 @@ export function op_prefetch_assets(urlsJson) {
     .then(nothing);
 }
 
+// ---- the host app's services, for requests that name content's files -----------------
+//
+// An image to preview, a file to save, a picture to share: the host resolves each
+// path content names through the game's sandbox into a file the host app can open
+// before asking it (core/src/runtime/service_channel.rs), which is why these are
+// awaited as their embedded ops are -- a refusal rejects, and content's facade
+// fails the call with it. The host app's answer reaches content through the
+// method's hook.
+
+function hostRequestWithFiles(op) {
+  return (requestJson) => {
+    const request = stringOf(requestJson, "request_json");
+    return servicesOf(engineHost()).request(op, (w) => w.str(request)).then(nothing);
+  };
+}
+
+export const op_compress_image = hostRequestWithFiles(SERVICE_OP.op_compress_image);
+export const op_preview_image = hostRequestWithFiles(SERVICE_OP.op_preview_image);
+export const op_preview_media = hostRequestWithFiles(SERVICE_OP.op_preview_media);
+export const op_save_file_to_disk = hostRequestWithFiles(SERVICE_OP.op_save_file_to_disk);
+export const op_save_image_to_photos_album = hostRequestWithFiles(SERVICE_OP.op_save_image_to_photos_album);
+export const op_share_app_message = hostRequestWithFiles(SERVICE_OP.op_share_app_message);
+export const op_share_message_to_friend = hostRequestWithFiles(SERVICE_OP.op_share_message_to_friend);
+export const op_show_share_image_menu = hostRequestWithFiles(SERVICE_OP.op_show_share_image_menu);
+
+export function op_ecosystem_call(api, requestJson) {
+  const name = stringOf(api, "api");
+  const request = stringOf(requestJson, "request_json");
+  return servicesOf(engineHost())
+    .request(SERVICE_OP.op_ecosystem_call, (w) => {
+      w.str(name);
+      w.str(request);
+    })
+    .then(nothing);
+}
+
+/// The share the player picked from the host's menu; an image in it that is not
+/// one of content's files is dropped by the host, which shares its own default.
+export function op_share_menu_reply(replyJson) {
+  const reply = stringOf(replyJson, "reply_json");
+  return servicesOf(engineHost()).request(SERVICE_OP.op_share_menu_reply, (w) => w.str(reply)).then(nothing);
+}
+
 // ---- content's migo.createWorker (the async half: op_worker_create, op_worker_recv_message, op_worker_recv_error)
 //
 // `01_worker.js` (shared with the in-process lane) imports five ops from `ext:core/ops`; these three return a

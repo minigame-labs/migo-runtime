@@ -30,10 +30,9 @@ use deno_core::{OpState, op2};
 use deno_error::JsErrorBox;
 use shared::op_state::{HostOpState, HostTx};
 use shared::protocol::host_cmd::HostCommand;
-use shared::services::host_files::Step;
 use shared::services::{FrameTiming, VideoDecoderService};
 
-use crate::file::host_paths::{Remote, export_paths_for_session};
+use crate::file::host_paths::export_paths_for_session;
 
 /// Frames decoded ahead of content when decoding as fast as possible: enough
 /// that a frame is ready when content asks, few enough that a 4K video holds
@@ -164,9 +163,6 @@ pub fn op_video_decoder_available(state: &mut OpState) -> bool {
     service(state).is_some()
 }
 
-/// `source` is the field a start names its video by.
-const START_FILES: &[&[Step]] = &[&[Step::Key("source")]];
-
 /// Start decoding `{"source", "mode", "abortVideo"}` as decoder `id`,
 /// replacing whatever it was decoding. The source opens on the decode thread;
 /// content hears `start` -- or `error` -- from there.
@@ -181,7 +177,13 @@ pub async fn op_video_decoder_start(
     let mut request: Value = serde_json::from_str(&request_json)
         .map_err(|error| JsErrorBox::generic(format!("start:fail malformed request: {error}")))?;
     // Held for the session: the decoder reads the file for as long as it runs.
-    export_paths_for_session(&state, &mut request, START_FILES, Remote::Allowed).await?;
+    export_paths_for_session(
+        &state,
+        &mut request,
+        migo_services::host_paths::VIDEO_DECODER_START.fields,
+        migo_services::host_paths::VIDEO_DECODER_START.remote,
+    )
+    .await?;
     let source = request["source"].as_str().unwrap_or_default().to_owned();
     let mode = if request["mode"].as_u64() == Some(0) {
         Mode::Pts

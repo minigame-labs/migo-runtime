@@ -704,6 +704,12 @@ function hostRequestId(op) {
   };
 }
 
+export const op_ad_create = hostRequest(SERVICE_OP.op_ad_create);
+export const op_ad_destroy = hostRequest(SERVICE_OP.op_ad_destroy);
+export const op_ad_hide = hostRequest(SERVICE_OP.op_ad_hide);
+export const op_ad_load = hostRequest(SERVICE_OP.op_ad_load);
+export const op_ad_show = hostRequest(SERVICE_OP.op_ad_show);
+export const op_ad_update_style = hostRequest(SERVICE_OP.op_ad_update_style);
 export const op_apply_update = hostCommand(SERVICE_OP.op_apply_update);
 export const op_authorize = hostRequest(SERVICE_OP.op_authorize);
 export const op_check_session = hostOptions(SERVICE_OP.op_check_session);

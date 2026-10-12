@@ -47,33 +47,70 @@ pub fn op_ad_is_supported(state: &mut OpState) -> bool {
     ad_service(state).is_some()
 }
 
-/// Generate a fire-and-forget ad op that forwards a JSON request to the host.
+/// Forward a fire-and-forget ad request to the host.
 ///
 /// When no host ad service is installed the op returns `Ok(())` rather than an
 /// error: the JS layer has already decided to run its no-host path, and making
 /// these ops throw would turn "this build has no ad host" into a content-
 /// visible exception on every ad call.
-macro_rules! ad_command_op {
-    ($op_name:ident, $method:ident) => {
-        #[op2(fast)]
-        pub fn $op_name(
-            state: &mut OpState,
-            #[string] request_json: String,
-        ) -> Result<(), JsErrorBox> {
-            match ad_service(state) {
-                Some(svc) => svc.$method(&request_json).map_err(JsErrorBox::generic),
-                None => Ok(()),
-            }
-        }
-    };
+///
+/// One function per op rather than one macro stamping them, so each op's
+/// signature is one the producer's argument conversions can be checked against.
+fn ad_command(
+    state: &mut OpState,
+    request_json: &str,
+    call: impl FnOnce(&dyn AdService, &str) -> Result<(), shared::services::ServiceError>,
+) -> Result<(), JsErrorBox> {
+    match ad_service(state) {
+        Some(service) => call(&*service, request_json).map_err(JsErrorBox::generic),
+        None => Ok(()),
+    }
 }
 
-ad_command_op!(op_ad_create, create_ad);
-ad_command_op!(op_ad_load, load_ad);
-ad_command_op!(op_ad_show, show_ad);
-ad_command_op!(op_ad_hide, hide_ad);
-ad_command_op!(op_ad_update_style, update_ad_style);
-ad_command_op!(op_ad_destroy, destroy_ad);
+#[op2(fast)]
+pub fn op_ad_create(state: &mut OpState, #[string] request_json: &str) -> Result<(), JsErrorBox> {
+    ad_command(state, request_json, |service, request| {
+        service.create_ad(request)
+    })
+}
+
+#[op2(fast)]
+pub fn op_ad_load(state: &mut OpState, #[string] request_json: &str) -> Result<(), JsErrorBox> {
+    ad_command(state, request_json, |service, request| {
+        service.load_ad(request)
+    })
+}
+
+#[op2(fast)]
+pub fn op_ad_show(state: &mut OpState, #[string] request_json: &str) -> Result<(), JsErrorBox> {
+    ad_command(state, request_json, |service, request| {
+        service.show_ad(request)
+    })
+}
+
+#[op2(fast)]
+pub fn op_ad_hide(state: &mut OpState, #[string] request_json: &str) -> Result<(), JsErrorBox> {
+    ad_command(state, request_json, |service, request| {
+        service.hide_ad(request)
+    })
+}
+
+#[op2(fast)]
+pub fn op_ad_update_style(
+    state: &mut OpState,
+    #[string] request_json: &str,
+) -> Result<(), JsErrorBox> {
+    ad_command(state, request_json, |service, request| {
+        service.update_ad_style(request)
+    })
+}
+
+#[op2(fast)]
+pub fn op_ad_destroy(state: &mut OpState, #[string] request_json: &str) -> Result<(), JsErrorBox> {
+    ad_command(state, request_json, |service, request| {
+        service.destroy_ad(request)
+    })
+}
 
 deno_core::extension!(
     host_v8_ad,

@@ -11,10 +11,9 @@ use deno_core::{Extension, OpState, op2};
 use deno_error::JsErrorBox;
 use shared::op_state::HostOpState;
 use shared::services::app_info::AppInfo;
-use shared::services::host_files::Step;
 use shared::services::{Scope, ScopeState};
 
-use crate::file::host_paths::{Remote, export_paths};
+use crate::file::host_paths::export_paths;
 
 // ==================== Bluetooth Settings ====================
 
@@ -318,27 +317,6 @@ pub fn op_ecosystem_available(state: &mut OpState) -> bool {
     ecosystem(state).is_some_and(|service| service.available())
 }
 
-/// The ecosystem requests that name content's files, and where. Which fields
-/// are files is the engine's to know, not content's to declare: each is resolved
-/// through the sandbox before the request leaves (`crate::file::host_paths`).
-const ECOSYSTEM_FILES: &[(&str, &[&[Step]])] = &[
-    (
-        "shareImageToGroup",
-        &[&[Step::Key("options"), Step::Key("imagePath")]],
-    ),
-    (
-        "shareEmojiToGroup",
-        &[&[Step::Key("options"), Step::Key("imagePath")]],
-    ),
-    (
-        "shareVideoToGroup",
-        &[
-            &[Step::Key("options"), Step::Key("videoPath")],
-            &[Step::Key("options"), Step::Key("thumbPath")],
-        ],
-    ),
-];
-
 /// `{"requestId", "api", "options"}` for the API `api` names, answered through
 /// `_internalOnEcosystemResult`. Eager: a request that names no package entry
 /// leaves in the call's own tick, and only one that names files is parsed here.
@@ -349,8 +327,8 @@ pub async fn op_ecosystem_call(
     #[string] request_json: String,
 ) -> Result<(), JsErrorBox> {
     let service = ecosystem(&state.borrow()).ok_or_else(|| JsErrorBox::generic("not supported"))?;
-    let request = match ECOSYSTEM_FILES.iter().find(|(name, _)| *name == api) {
-        Some((_, fields)) => export_paths(&state, &request_json, fields, Remote::Refused).await?,
+    let request = match migo_services::host_paths::ecosystem_files(&api) {
+        Some(files) => export_paths(&state, &request_json, files).await?,
         None => request_json,
     };
     service.call(&request).map_err(JsErrorBox::generic)
