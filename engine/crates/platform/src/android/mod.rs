@@ -56,3 +56,5 @@ pub mod platform;
 pub mod presenter;
 pub mod services;
 pub mod surface;
+#[cfg(feature = "api-media")]
+pub(crate) mod video_decoder;

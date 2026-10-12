@@ -13,7 +13,7 @@ use migo_core::services::{
     NetworkService, PaymentService, PermissionService, RecorderService, ScanCodeService, Scope,
     ScopeState, ScreenService, SensorServices, ServiceError, ServiceErrorCode, ShareService,
     SubpackageService, SystemInfoService, SystemUtilServices, UpdateService, VibrationService,
-    VideoService, WindowService,
+    VideoDecoderService, VideoService, WindowService,
 };
 
 use crate::android::jni;
@@ -146,6 +146,12 @@ impl MediaServices for AndroidDeviceServices {
         Some(Arc::new(AndroidVideo {
             host_id: self.host_id,
         }))
+    }
+    /// The NDK's extractor and codec, in the engine: no Java in the way of
+    /// frames content reads as pixels.
+    #[cfg(feature = "api-media")]
+    fn video_decoder(&self) -> Option<Arc<dyn VideoDecoderService>> {
+        Some(Arc::new(crate::android::video_decoder::AndroidVideoDecoder))
     }
 }
 

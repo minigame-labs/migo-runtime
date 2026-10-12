@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Android: `createVideoDecoder` decodes on the device's own codec. The NDK's media extractor and codec run in the
+  engine, the codec rendering into an image reader of YUV_420_888 -- the one output every decoder supports, whatever
+  its buffer layout -- whose planes become straight RGBA through their strides, in the matrix and range the codec
+  reports (BT.601 below 720 lines and BT.709 from there, limited range, for a stream that says nothing). Rendered
+  images are matched to their buffers by timestamp, so none from before a seek's flush is taken for one after it, and
+  a seek continues from the frame shown at that position. A local file is opened by the engine and lent to the
+  extractor as a descriptor; an http(s) URL is opened by the extractor. `scripts/test-android-video-decoder.sh`
+  checks it on a device or emulator against a clip of known frames.
 - Apple: game controllers as content's gamepads on both lanes (`getGamepads`, `onGamepadConnected` /
   `onGamepadDisconnected`). Each pad with an extended profile is announced in the lowest free slot once the session
   has a surface, in the standard layout (17 buttons, 4 axes, up negative), sampled whenever an element changes, and

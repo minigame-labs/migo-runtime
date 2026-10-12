@@ -18,7 +18,7 @@
   "platforms": ["android", "ios", "macos", "linux", "windows", "ohos"],
   "total": 382,
   "summary": {
-    "android": {"engine": 60, "default": 125, "host": 180, "missing": 7, "unsupported": 10, "ready": 375},
+    "android": {"engine": 60, "default": 126, "host": 180, "missing": 6, "unsupported": 10, "ready": 376},
     "ios": {"engine": 67, "default": 52, "host": 0, "missing": 250, "unsupported": 13, "ready": 132},
     "macos": {"engine": 70, "default": 80, "host": 183, "missing": 12, "unsupported": 37, "ready": 333},
     "linux": {"engine": 70, "default": 20, "host": 270, "missing": 12, "unsupported": 10, "ready": 249},
@@ -72,7 +72,7 @@
     "createUserInfoButton": {"category": "open-api/user-info", "needs": ["channel:auth.get_user_info", "channel:permission"], "android": "host", "ios": "missing", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "ohos"]},
     "createVKSession": {"category": "ai/visionkit", "needs": ["unpublished"], "android": "unsupported", "ios": "unsupported", "macos": "unsupported", "linux": "unsupported", "windows": "unsupported", "ohos": "unsupported"},
     "createVideo": {"category": "media/video", "needs": ["service:video"], "android": "default", "ios": "missing", "macos": "missing", "linux": "missing", "windows": "missing", "ohos": "missing", "not_ready": ["ios", "macos", "linux", "windows", "ohos"]},
-    "createVideoDecoder": {"category": "media/video-decoder", "needs": ["service:video_decoder"], "android": "missing", "ios": "missing", "macos": "missing", "linux": "missing", "windows": "missing", "ohos": "missing", "not_ready": ["android", "ios", "macos", "linux", "windows", "ohos"]},
+    "createVideoDecoder": {"category": "media/video-decoder", "needs": ["service:video_decoder"], "android": "default", "ios": "missing", "macos": "missing", "linux": "missing", "windows": "missing", "ohos": "missing", "not_ready": ["ios", "macos", "linux", "windows", "ohos"]},
     "createWebAudioContext": {"category": "media/audio", "needs": [], "android": "engine", "ios": "engine", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine"},
     "createWorker": {"category": "worker", "needs": [], "android": "engine", "ios": "engine", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine"},
     "decode": {"category": "util", "needs": [], "android": "engine", "ios": "engine", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine"},
