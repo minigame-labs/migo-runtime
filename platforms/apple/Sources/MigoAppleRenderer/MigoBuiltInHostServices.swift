@@ -8,8 +8,8 @@ import Foundation
 
 /// What the SDK supplies itself of the host-service channel: the services the
 /// system already offers the app -- the pasteboard, its dialogs and
-/// indicators, its screen, its settings pages -- answered by the system's own,
-/// for every service the app does not name. An app that names a
+/// indicators, its screen, its settings pages, its pickers and image encoder --
+/// answered by the system's own, for every service the app does not name. An app that names a
 /// service answers it instead, and one that wants a service refused names it
 /// and refuses.
 ///
@@ -23,6 +23,7 @@ final class MigoBuiltInHostServices: MigoHostServiceProvider {
         builtIn.insert(.interaction)
         builtIn.insert(.screen)
         builtIn.insert(.setting)
+        builtIn.insert(.image)
         return builtIn
     }()
 
@@ -52,6 +53,8 @@ final class MigoBuiltInHostServices: MigoHostServiceProvider {
 
     /// Kept for the session: which indicator is up is state.
     private lazy var interaction = MigoSystemInteraction(presenter: MigoSystemInteractionPresenter())
+    /// Kept for the session: a picker up is state.
+    private lazy var images = MigoSystemImages()
     /// Kept for the session: what content listens for is state.
     private lazy var screen = MigoSystemScreen(post: { [weak self] event, object in
         self?.post?(.screen, event, object)
@@ -72,6 +75,8 @@ final class MigoBuiltInHostServices: MigoHostServiceProvider {
             permission?.handle(request)
         case .setting:
             settings.handle(request)
+        case .image:
+            images.handle(request)
         default:
             request.reply?.fail("not supported")
         }

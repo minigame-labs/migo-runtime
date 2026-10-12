@@ -75,6 +75,25 @@ async function run() {
   }
   expect(located !== null && located.errMsg === "authorize:fail auth deny", "authorize location", located);
   console.error("migo-swift-host-probe: location=" + grants.locationAuthorized + " scope=refused");
+  // The SDK's image service compresses with the system's encoder: a 64 x 32
+  // PNG of the game's, scaled to 16 wide, handed back as a file of the game's.
+  const canvas = migo.createCanvas();
+  canvas.width = 64;
+  canvas.height = 32;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#0080ff";
+  ctx.fillRect(0, 0, 64, 32);
+  const png = canvas.toTempFilePathSync({ fileType: "png" });
+  const compressed = await call("compressImage", { src: png, compressedWidth: 16 });
+  expect(typeof compressed.tempFilePath === "string", "compressImage", compressed);
+  const size = await new Promise(function (resolve, reject) {
+    const image = migo.createImage();
+    image.onload = function () { resolve(image.width + "x" + image.height); };
+    image.onerror = function () { reject(new Error("migo-swift-host-probe: the compressed image did not load")); };
+    image.src = compressed.tempFilePath;
+  });
+  expect(size === "16x8", "compressed size", size);
+  console.error("migo-swift-host-probe: compressed=" + size);
   console.error("migo-swift-host-probe: clipboard=" + got.data);
 }
 
