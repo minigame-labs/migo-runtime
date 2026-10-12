@@ -11,21 +11,26 @@ import UniformTypeIdentifiers
 
 /// The image service, answered with what the system offers every app without a
 /// purpose string: compressing an image (ImageIO), the system's pickers for
-/// images, media and files, and on a Mac saving a file where the player
-/// chooses. Saving to the photo library and the camera are an optional
-/// capability's, and are refused here.
+/// images, media and files, its viewer (`MigoSystemPreview`), and on a Mac
+/// saving a file where the player chooses. Saving to the photo library and the
+/// camera are an optional capability's, and are refused here.
 ///
 /// A file this answers with is the host's own copy, in its staging directory:
 /// the engine moves it into the session when the call completes, so a file the
 /// player picked is never handed over itself.
 final class MigoSystemImages {
     private let picker: MigoFilePicker
+    private let preview: MigoSystemPreview
     private let staging: URL
     /// Where the slow parts -- decoding, encoding, describing a video -- run.
     private let work = DispatchQueue(label: "dev.migo.images", qos: .userInitiated, attributes: .concurrent)
 
-    init(picker: MigoFilePicker = MigoSystemFilePicker(), staging: URL = MigoSystemImages.defaultStaging) {
+    init(
+        picker: MigoFilePicker = MigoSystemFilePicker(), preview: MigoSystemPreview? = nil,
+        staging: URL = MigoSystemImages.defaultStaging
+    ) {
         self.picker = picker
+        self.preview = preview ?? MigoSystemPreview(staging: staging)
         self.staging = staging
     }
 
@@ -38,6 +43,8 @@ final class MigoSystemImages {
         typealias Method = MigoHostServiceID.Image
         let options = request.object
         switch request.method {
+        case Method.previewImage, Method.previewMedia:
+            preview.handle(request)
         case Method.compressImage:
             work.async { self.compress(options, reply) }
         case Method.chooseImage:

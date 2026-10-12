@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Apple: `previewImage` and `previewMedia` in QuickLook when the app does not name the image service -- full screen
+  on iOS, a window with a step control on a Mac -- from the item content asked for. Each item is the host's own copy
+  first (a clone on APFS), an http(s) URL downloaded with no referrer, so the viewer outlives the call that lent the
+  files; the call is answered once the viewer shows, and the copies go when it closes.
 - Apple: the image service, answered by the system when the app does not name it. `compressImage` re-encodes with
   ImageIO (decoded no larger than the target, orientation applied, a PNG kept a PNG and anything else a JPEG, at most
   50 megapixels as on Android); `chooseImage` and `chooseMedia` show PHPicker on iOS -- which needs no access to the
