@@ -1,6 +1,7 @@
 import AppKit
 import CryptoKit
 import Metal
+import MigoAppleLocation
 import MigoMacV8
 import QuartzCore
 
@@ -114,7 +115,8 @@ let window = NSWindow(
     backing: .buffered, defer: false)
 let view = MigoGameView(
     configuration: .init(
-        directories: directories, contentSigning: contentSigning, hostServices: HostServices()))
+        directories: directories, contentSigning: contentSigning, hostServices: HostServices(),
+        capabilities: [MigoLocation()]))
 window.contentView = view
 window.center()
 window.makeKeyAndOrderFront(nil)

@@ -13,7 +13,11 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "MigoGameViewHost",
-            dependencies: [.product(name: "MigoMacV8", package: "Migo")],
+            dependencies: [
+                .product(name: "MigoMacV8", package: "Migo"),
+                // An optional capability, linked the way an app links one.
+                .product(name: "MigoAppleLocation", package: "Migo"),
+            ],
             path: "Sources/MigoGameViewHost"
         )
     ]

@@ -62,6 +62,19 @@ async function run() {
   const words = ["authorized", "denied", "not determined"];
   expect(words.indexOf(grants.notificationAuthorized) >= 0, "getAppAuthorizeSetting", grants);
   console.error("migo-swift-host-probe: wifi=" + system.wifiEnabled + " camera=" + grants.cameraAuthorized);
+  // The location capability the app linked reports its grant and decides
+  // scope.userLocation with the system's prompt -- which this app, declaring no
+  // purpose for location, never shows: the scope is refused without asking.
+  expect(words.indexOf(grants.locationAuthorized) >= 0, "locationAuthorized", grants);
+  expect(typeof system.locationEnabled === "boolean", "locationEnabled", system);
+  let located = null;
+  try {
+    await call("authorize", { scope: "scope.userLocation" });
+  } catch (e) {
+    located = e;
+  }
+  expect(located !== null && located.errMsg === "authorize:fail auth deny", "authorize location", located);
+  console.error("migo-swift-host-probe: location=" + grants.locationAuthorized + " scope=refused");
   console.error("migo-swift-host-probe: clipboard=" + got.data);
 }
 

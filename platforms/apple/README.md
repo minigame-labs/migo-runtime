@@ -142,17 +142,45 @@ A call is answered once, now or later (`reply.succeed(...)`, or `reply.fail("can
 for a player who dismissed it); a reply the app drops unanswered fails the call
 rather than leaving the game waiting. A service's events -- an advert's
 progress, an update's steps -- go to the game with
-`gameView.postHostServiceEvent(_:event:json:)`. A service the app does not name
-is answered "not supported". On iOS the channel reaches Performance+ content
-once its producer forwards these calls (P1).
+`gameView.postHostServiceEvent(_:event:json:)`. An app that answers the
+permission service (`authorize`) records each decision with
+`gameView.setScopeState(_:_:)` -- the request's `scopeId` and a
+`MIGO_SCOPE_STATE_*` -- since content's calls that need a scope are checked
+against it. A service the app does not name is answered "not supported". On iOS
+the channel reaches Performance+ content once its producer forwards these calls
+(P1).
 
 The SDK also reports to the game what the system says about the app: the Wi-Fi
 switch (`getSystemSetting`; on iOS, which offers no read of the switch, whether
 the network has a Wi-Fi interface) and the notification grants
 (`getAppAuthorizeSetting`). The core SDK does not read a grant behind a purpose
 string -- location, the camera, the microphone, the photo library, Bluetooth,
-calendars -- so it never makes an app declare a purpose it does not have; such a
-grant reads "not determined".
+calendars -- because App Store review asks for a purpose string for every such
+API a binary references, used or not; such a grant reads "not determined"
+unless the app opts into the capability that reads it.
+
+### Optional capabilities
+
+Each privacy-sensitive part of the system is a product of its own, linked only by
+an app that declares its purpose, and handed to the game view as a
+`MigoSystemCapability`:
+
+```swift
+import MigoAppleLocation
+
+let configuration = MigoGameView.Configuration(
+    directories: try .standard(), contentSigning: .unsigned, capabilities: [MigoLocation()])
+```
+
+`MigoAppleLocation` answers `getLocation` and `getFuzzyLocation` from
+CoreLocation (WGS-84; the engine converts to GCJ-02 when content asks and rounds
+a fuzzy position, which comes from a reduced-accuracy manager), reports the
+location grant and the location services switch, and decides `scope.userLocation`
+with the system's prompt. Declare `NSLocationWhenInUseUsageDescription` (a Mac:
+`NSLocationUsageDescription`, and the location entitlement when sandboxed);
+without it the system shows no prompt and the scope is refused without asking. A
+capability answers its services only when `hostServices` does not name them, and
+decides its scopes only when the app answers no permission service of its own.
 
 A Mac offers apps no public control of display brightness, no device orientation,
 no screenshot notice, no way to tell the screen is recorded, and no motion sensors

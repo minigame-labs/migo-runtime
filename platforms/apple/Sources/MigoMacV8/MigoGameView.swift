@@ -21,6 +21,7 @@ public typealias MigoHostServiceID = MigoAppleRenderer.MigoHostServiceID
 public typealias MigoHostServiceRequest = MigoAppleRenderer.MigoHostServiceRequest
 public typealias MigoHostServiceReply = MigoAppleRenderer.MigoHostServiceReply
 public typealias MigoHostServiceProvider = MigoAppleRenderer.MigoHostServiceProvider
+public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
 
 #if os(macOS)
     import AppKit
@@ -83,16 +84,26 @@ public typealias MigoHostServiceProvider = MigoAppleRenderer.MigoHostServiceProv
             /// runs.
             public var hostServices: MigoHostServiceProvider?
 
+            /// The optional parts of the system the app linked and opts into --
+            /// `MigoLocation` from MigoAppleLocation, say -- each answering its
+            /// services when `hostServices` does not name them, and deciding
+            /// its scopes with the system's prompt when the app answers no
+            /// permission service itself. The app declares their purpose
+            /// strings. Held for as long as a game runs.
+            public var capabilities: [MigoSystemCapability]
+
             public init(
                 directories: MigoGameDirectories, contentSigning: MigoContentSigning,
                 preferredFramesPerSecond: Int? = nil, mouse: MouseInput = .touch,
-                hostServices: MigoHostServiceProvider? = nil
+                hostServices: MigoHostServiceProvider? = nil,
+                capabilities: [MigoSystemCapability] = []
             ) {
                 self.directories = directories
                 self.contentSigning = contentSigning
                 self.preferredFramesPerSecond = preferredFramesPerSecond
                 self.mouse = mouse
                 self.hostServices = hostServices
+                self.capabilities = capabilities
             }
 
             public static func standard(contentSigning: MigoContentSigning) throws -> Configuration {
@@ -194,6 +205,16 @@ public typealias MigoHostServiceProvider = MigoAppleRenderer.MigoHostServiceProv
             engine?.postHostServiceEvent(service, event: event, json: json)
         }
 
+        /// Record the app's standing decision for one of content's scopes -- a
+        /// `MIGO_SCOPE_*` number and a `MIGO_SCOPE_STATE_*` -- when the app
+        /// answers the permission service itself: after deciding a request,
+        /// and whenever the decision changes. Content's calls that need the
+        /// scope are checked against it. Nothing while no game runs. Main
+        /// thread.
+        public func setScopeState(_ scope: MigoScope, _ state: MigoScopeState) {
+            engine?.setScopeState(scope, state)
+        }
+
         /// Stop the game and release everything it held.
         public func stop() {
             game = nil
@@ -281,7 +302,8 @@ public typealias MigoHostServiceProvider = MigoAppleRenderer.MigoHostServiceProv
                 let engine = try MigoEngineSession(
                     directories: configuration.directories, contentSigning: configuration.contentSigning,
                     preferredFramesPerSecond: configuration.preferredFramesPerSecond,
-                    hostServices: MigoGameViewHostServices(app: configuration.hostServices, window: windowService))
+                    hostServices: MigoGameViewHostServices(app: configuration.hostServices, window: windowService),
+                    capabilities: configuration.capabilities)
                 self.engine = engine
                 engine.onEvent = { [weak self] event in self?.engineEvent(event) }
                 // Before content runs, so its first `getNetworkType` has a report.

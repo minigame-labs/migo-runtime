@@ -62,6 +62,7 @@ required = [
     "Sources/MigoMacV8/PrivacyInfo.xcprivacy",
     "Sources/MigoApplePerformancePlus/MigoGameView.swift",
     "Sources/MigoMacV8/MigoGameView.swift",
+    "Sources/MigoAppleLocation/MigoLocation.swift",
 ]
 for relative in required:
     if not (package / relative).is_file():
@@ -105,6 +106,9 @@ build_product() {
 build_product MigoApplePerformancePlus "generic/platform=iOS"
 build_product MigoApplePerformancePlus "generic/platform=iOS Simulator"
 build_product MigoMacV8 "platform=macOS"
+# An optional capability builds for both platforms either lane runs on.
+build_product MigoAppleLocation "generic/platform=iOS"
+build_product MigoAppleLocation "platform=macOS"
 signed=0
 while IFS= read -r -d '' bundle; do
   copy="$WORK/signing/$(basename "$(dirname "$bundle")")/$(basename "$bundle")"

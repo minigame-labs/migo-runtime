@@ -27,6 +27,11 @@ let package = Package(
         .library(name: "MigoAppleWebKit", targets: ["MigoAppleWebKit"]),
         .library(name: "MigoApplePerformancePlus", targets: ["MigoApplePerformancePlus"]),
         .library(name: "MigoMacV8", targets: ["MigoMacV8"]),
+        // Optional parts of the system, one product each: App Store review asks
+        // for a purpose string for every privacy-sensitive API a binary
+        // references, so an app links only the ones it declares a purpose for.
+        // Each is a `MigoSystemCapability` handed to either lane's game view.
+        .library(name: "MigoAppleLocation", targets: ["MigoAppleLocation"]),
         // The two below are for `DeviceTestHost`, not for integrators. SwiftPM
         // test targets are tool-hosted and `xcodebuild test` refuses them on a
         // device; the only way to run these tests on a phone is an Xcode unit-test
@@ -224,6 +229,18 @@ let package = Package(
             dependencies: [.product(name: "MigoAppleCore", package: "core"), "MigoAppleRenderer"],
             path: "Sources/MigoMacV8",
             resources: [.process("PrivacyInfo.xcprivacy")]
+        ),
+
+        // Location through CoreLocation, for either lane. See the product.
+        .target(
+            name: "MigoAppleLocation",
+            dependencies: ["MigoAppleRenderer", "MigoEngine"],
+            path: "Sources/MigoAppleLocation"
+        ),
+        .testTarget(
+            name: "MigoAppleLocationTests",
+            dependencies: ["MigoAppleLocation"],
+            path: "Tests/MigoAppleLocationTests"
         ),
     ]
 )

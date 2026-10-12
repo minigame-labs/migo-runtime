@@ -21,6 +21,7 @@ public typealias MigoHostServiceID = MigoAppleRenderer.MigoHostServiceID
 public typealias MigoHostServiceRequest = MigoAppleRenderer.MigoHostServiceRequest
 public typealias MigoHostServiceReply = MigoAppleRenderer.MigoHostServiceReply
 public typealias MigoHostServiceProvider = MigoAppleRenderer.MigoHostServiceProvider
+public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
 
 #if os(iOS)
     import AVFoundation
@@ -81,14 +82,25 @@ public typealias MigoHostServiceProvider = MigoAppleRenderer.MigoHostServiceProv
             public var webContentTerminationBudget: Int
             /// What the app supplies of the host-service channel -- ads,
             /// payments, sign-in, sharing, its dialogs -- for the services it
-            /// names; `nil` supplies none, and content is told each is not
-            /// supported. Held for as long as a game runs.
+            /// names. A service it does not name the SDK answers where the
+            /// system can -- the pasteboard, its dialogs, the screen -- and
+            /// content is told the rest is not supported. Held for as long as a
+            /// game runs.
             public var hostServices: MigoHostServiceProvider?
+
+            /// The optional parts of the system the app linked and opts into --
+            /// `MigoLocation` from MigoAppleLocation, say -- each answering its
+            /// services when `hostServices` does not name them, and deciding
+            /// its scopes with the system's prompt when the app answers no
+            /// permission service itself. The app declares their purpose
+            /// strings. Held for as long as a game runs.
+            public var capabilities: [MigoSystemCapability]
 
             public init(
                 directories: MigoGameDirectories, contentSigning: MigoContentSigning,
                 preferredFramesPerSecond: Int? = nil, managesAudioSession: Bool = true,
-                webContentTerminationBudget: Int = 2, hostServices: MigoHostServiceProvider? = nil
+                webContentTerminationBudget: Int = 2, hostServices: MigoHostServiceProvider? = nil,
+                capabilities: [MigoSystemCapability] = []
             ) {
                 self.directories = directories
                 self.contentSigning = contentSigning
@@ -96,6 +108,7 @@ public typealias MigoHostServiceProvider = MigoAppleRenderer.MigoHostServiceProv
                 self.managesAudioSession = managesAudioSession
                 self.webContentTerminationBudget = webContentTerminationBudget
                 self.hostServices = hostServices
+                self.capabilities = capabilities
             }
 
             /// The standard directories under Application Support and Caches.
@@ -219,6 +232,16 @@ public typealias MigoHostServiceProvider = MigoAppleRenderer.MigoHostServiceProv
             engine?.postHostServiceEvent(service, event: event, json: json)
         }
 
+        /// Record the app's standing decision for one of content's scopes -- a
+        /// `MIGO_SCOPE_*` number and a `MIGO_SCOPE_STATE_*` -- when the app
+        /// answers the permission service itself: after deciding a request,
+        /// and whenever the decision changes. Content's calls that need the
+        /// scope are checked against it. Nothing while no game runs. Main
+        /// thread.
+        public func setScopeState(_ scope: MigoScope, _ state: MigoScopeState) {
+            engine?.setScopeState(scope, state)
+        }
+
         /// Stop the game and release everything it held. The view can load
         /// another game afterwards.
         public func stop() {
@@ -275,7 +298,7 @@ public typealias MigoHostServiceProvider = MigoAppleRenderer.MigoHostServiceProv
             let engine = try MigoEngineSession(
                 directories: configuration.directories, contentSigning: configuration.contentSigning,
                 preferredFramesPerSecond: configuration.preferredFramesPerSecond,
-                hostServices: configuration.hostServices)
+                hostServices: configuration.hostServices, capabilities: configuration.capabilities)
             self.engine = engine
             engine.onEvent = { [weak self] event in self?.engineEvent(event) }
             // Before content runs, so its first `getNetworkType` has a report.

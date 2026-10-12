@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Apple: optional capabilities, one product per privacy-sensitive part of the system, so an app links -- and declares
+  a purpose string for -- only what it uses (`MigoSystemCapability`, handed to either game view's
+  `Configuration.capabilities`). The first is `MigoAppleLocation`: `getLocation` / `getFuzzyLocation` from
+  CoreLocation (a high-accuracy call given 3 s or more waits it out for the best fix; a fuzzy one reads a
+  reduced-accuracy manager), the location grant and the location services switch, and `scope.userLocation` decided
+  by the system's prompt -- refused without one when the app declares no purpose. A capability answers its services
+  behind the app's own and decides its scopes only while the app answers no permission service. An app that does
+  answer it records its decisions with the game views' new `setScopeState(_:_:)`, which until now it had no way to
+  do. Each reporter now owns its own fields of the grants and switches the session reports.
 - macOS: the accelerometer, gyroscope, device-motion and compass APIs are decided unsupported in the API x platform
   matrix, with the reason: a Mac has no motion sensors or magnetometer an app can read -- CoreMotion's motion manager
   is unavailable on macOS and CoreLocation reports no heading there. Content feature-detects them, as on any device
