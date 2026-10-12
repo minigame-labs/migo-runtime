@@ -128,8 +128,11 @@ one the app does not name: the pasteboard (`setClipboardData` /
 alert sheet on a Mac and an alert controller on iOS; the system's dialogs take no
 button colours), and the screen -- on iOS its brightness, screenshots, screen
 recording and the device turning; on a Mac `setVisualEffectOnCapture` keeping the
-game's window out of screenshots and recordings. On a Mac the game view also
-answers the window it is shown in: `setWindowSize` (the window grows or shrinks
+game's window out of screenshots and recordings -- and the settings pages: this
+app's page in the system's settings (Settings on iOS, Privacy & Security on a
+Mac) for `openAppAuthorizeSetting`, and for `openSetting` while the SDK decides
+content's scopes, each answered when the player comes back. On a Mac the game
+view also answers the window it is shown in: `setWindowSize` (the window grows or shrinks
 by what the game's view must), `setCursor` (CSS keywords as the system's
 cursors -- the arrow where macOS has none -- or an image file with its hotspot),
 `onWindowStateChange` (minimized, zoomed or full screen, normal), and pointer
@@ -187,6 +190,8 @@ no screenshot notice, no way to tell the screen is recorded, and no motion senso
 or magnetometer (CoreMotion's motion manager is unavailable on macOS), so those
 APIs -- the accelerometer, gyroscope, device motion and compass among them -- are
 refused there; iOS offers no public way to keep content out of a screenshot.
+`openSystemBluetoothSetting` is documented for Android only, and iOS offers apps
+no link to its Bluetooth settings: refused on both.
 
 Not offered on these lanes, and refused rather than faked:
 `setDeviceOrientation` (the size is fixed at start), `setEnableDebug` (there is

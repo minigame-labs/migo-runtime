@@ -8,7 +8,8 @@ import Foundation
 
 /// What the SDK supplies itself of the host-service channel: the services the
 /// system already offers the app -- the pasteboard, its dialogs and
-/// indicators -- answered by the system's own, for every service the app does not name. An app that names a
+/// indicators, its screen, its settings pages -- answered by the system's own,
+/// for every service the app does not name. An app that names a
 /// service answers it instead, and one that wants a service refused names it
 /// and refuses.
 ///
@@ -21,6 +22,7 @@ final class MigoBuiltInHostServices: MigoHostServiceProvider {
         builtIn.insert(.clipboard)
         builtIn.insert(.interaction)
         builtIn.insert(.screen)
+        builtIn.insert(.setting)
         return builtIn
     }()
 
@@ -30,9 +32,22 @@ final class MigoBuiltInHostServices: MigoHostServiceProvider {
 
     let services: Set<MigoHostServiceID>
 
-    init(capabilities: [MigoSystemCapability] = []) {
+    /// `appServices` are the services the app answers itself: when they
+    /// include permission, content's scopes are the app's to decide.
+    init(capabilities: [MigoSystemCapability] = [], appServices: Set<MigoHostServiceID> = []) {
         permission = MigoSystemPermission(capabilities: capabilities)
         services = permission == nil ? Self.services : Self.services.union([.permission])
+        settings = MigoSystemSettings(decidesScopes: permission != nil && !appServices.contains(.permission))
+    }
+
+    /// Kept for the session: a settings page is answered when the player
+    /// returns.
+    private let settings: MigoSystemSettings
+
+    /// Has the linked capabilities report again; the session sets it.
+    var refreshCapabilities: (() -> Void)? {
+        get { settings.refresh }
+        set { settings.refresh = newValue }
     }
 
     /// Kept for the session: which indicator is up is state.
@@ -55,6 +70,8 @@ final class MigoBuiltInHostServices: MigoHostServiceProvider {
             screen.handle(request)
         case .permission where permission != nil:
             permission?.handle(request)
+        case .setting:
+            settings.handle(request)
         default:
             request.reply?.fail("not supported")
         }
@@ -75,7 +92,7 @@ final class MigoComposedHostServices: MigoHostServiceProvider {
         self.app = app
         self.capabilities = capabilities
         appServices = app?.services ?? []
-        builtIn = MigoBuiltInHostServices(capabilities: capabilities)
+        builtIn = MigoBuiltInHostServices(capabilities: capabilities, appServices: appServices)
         services = capabilities.reduce(appServices.union(builtIn.services)) { $0.union($1.services) }
     }
 
