@@ -32,7 +32,8 @@ import java.util.function.Consumer;
  *   <li>Uses {@link LocationManager#getLastKnownLocation} first for a quick result,
  *       then requests a single async update if high accuracy is needed or
  *       last-known is stale (>60s).</li>
- *   <li>Coordinate conversion (WGS-84 to GCJ-02) is done on the Java side.</li>
+ *   <li>Results are WGS-84, as the platform reports them: the engine converts to GCJ-02
+ *       when content asks, and rounds a fuzzy position, the same on every platform.</li>
  *   <li>Results are delivered via {@link NativeMethods} callbacks — no thread blocking.</li>
  * </ul>
  */
@@ -191,7 +192,7 @@ public final class LocationProvider {
      *
      * @param context     Android context
      * @param sessionId   Session ID for the callback
-     * @param optionsJson JSON with: type, altitude, isHighAccuracy, highAccuracyExpireTime
+     * @param optionsJson JSON with: altitude, isHighAccuracy, highAccuracyExpireTime
      */
     public static void getLocationAsync(
             Context context,
@@ -207,7 +208,6 @@ public final class LocationProvider {
         final int requestId = CallbackCorrelation.requestIdOf(optionsJson);
         try {
             JSONObject opts = new JSONObject(optionsJson);
-            String type = opts.optString("type", "wgs84");
             boolean altitude = opts.optBoolean("altitude", false);
             boolean isHighAccuracy = opts.optBoolean("isHighAccuracy", false);
             long highAccuracyExpireTime = opts.optLong("highAccuracyExpireTime", 0);
@@ -247,7 +247,7 @@ public final class LocationProvider {
             if (!needFresh && lastKnown != null) {
                 // Fast path: return immediately
                 NativeMethods.onLocationResult(sessionId,
-                        buildLocationResult(requestId, lastKnown, type, altitude));
+                        buildLocationResult(requestId, lastKnown, altitude));
                 return;
             }
 
@@ -258,7 +258,7 @@ public final class LocationProvider {
                     (location) -> {
                         if (location != null) {
                             NativeMethods.onLocationResult(sessionId,
-                                    buildLocationResult(requestId, location, type, altitude));
+                                    buildLocationResult(requestId, location, altitude));
                         } else {
                             NativeMethods.onLocationResult(sessionId,
                                     errorJson(requestId, "getLocation", "unable to get location"));
@@ -280,7 +280,7 @@ public final class LocationProvider {
      *
      * @param context     Android context
      * @param sessionId   Session ID for the callback
-     * @param optionsJson JSON with: type
+     * @param optionsJson JSON with the request id only
      */
     public static void getFuzzyLocationAsync(
             Context context,
@@ -295,9 +295,6 @@ public final class LocationProvider {
         // unparseable input as "no id" rather than throwing.
         final int requestId = CallbackCorrelation.requestIdOf(optionsJson);
         try {
-            JSONObject opts = new JSONObject(optionsJson);
-            String type = opts.optString("type", "wgs84");
-
             if (!hasLocationPermission(context)) {
                 NativeMethods.onFuzzyLocationResult(sessionId,
                         errorJson(requestId, "getFuzzyLocation", "no location permission"));
@@ -332,7 +329,7 @@ public final class LocationProvider {
             if (lastKnown != null) {
                 // Fast path
                 NativeMethods.onFuzzyLocationResult(sessionId,
-                        buildFuzzyResult(requestId, lastKnown, type));
+                        buildFuzzyResult(requestId, lastKnown));
                 return;
             }
 
@@ -343,7 +340,7 @@ public final class LocationProvider {
                     (location) -> {
                         if (location != null) {
                             NativeMethods.onFuzzyLocationResult(sessionId,
-                                    buildFuzzyResult(requestId, location, type));
+                                    buildFuzzyResult(requestId, location));
                         } else {
                             NativeMethods.onFuzzyLocationResult(sessionId,
                                     errorJson(requestId, "getFuzzyLocation", "unable to get location"));
@@ -464,20 +461,11 @@ public final class LocationProvider {
     // ==================== Result builders ====================
 
     private static String buildLocationResult(
-            int requestId, Location location, String type, boolean includeAltitude) {
+            int requestId, Location location, boolean includeAltitude) {
         try {
-            double lat = location.getLatitude();
-            double lng = location.getLongitude();
-
-            if ("gcj02".equals(type)) {
-                double[] gcj = CoordinateConverter.wgs84ToGcj02(lat, lng);
-                lat = gcj[0];
-                lng = gcj[1];
-            }
-
             JSONObject result = new JSONObject();
-            result.put("latitude", lat);
-            result.put("longitude", lng);
+            result.put("latitude", location.getLatitude());
+            result.put("longitude", location.getLongitude());
             result.put("speed", location.hasSpeed() ? location.getSpeed() : 0);
             result.put("accuracy", location.hasAccuracy() ? location.getAccuracy() : 0);
 
@@ -503,24 +491,11 @@ public final class LocationProvider {
         }
     }
 
-    private static String buildFuzzyResult(int requestId, Location location, String type) {
+    private static String buildFuzzyResult(int requestId, Location location) {
         try {
-            double lat = location.getLatitude();
-            double lng = location.getLongitude();
-
-            // Apply fuzzing: round to ~1km precision (approx 0.01 degree)
-            lat = Math.round(lat * 100.0) / 100.0;
-            lng = Math.round(lng * 100.0) / 100.0;
-
-            if ("gcj02".equals(type)) {
-                double[] gcj = CoordinateConverter.wgs84ToGcj02(lat, lng);
-                lat = gcj[0];
-                lng = gcj[1];
-            }
-
             JSONObject result = new JSONObject();
-            result.put("latitude", lat);
-            result.put("longitude", lng);
+            result.put("latitude", location.getLatitude());
+            result.put("longitude", location.getLongitude());
             CallbackCorrelation.stamp(result, requestId);
             return result.toString();
         } catch (JSONException e) {

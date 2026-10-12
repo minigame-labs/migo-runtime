@@ -196,9 +196,13 @@ typedef uint32_t MigoHostService;
 #define MIGO_SCAN_CODE_SCAN_CODE 0U
 
 /*
- * Location, both gated on scope.userLocation before they reach the host: answers
- * {"latitude", "longitude", "accuracy", ...} as getLocation and getFuzzyLocation
- * define them.
+ * Location, both gated on scope.userLocation before they reach the host.
+ * GET_LOCATION {"altitude", "isHighAccuracy", "highAccuracyExpireTime"} answers
+ * {"latitude", "longitude", "speed", "accuracy", "altitude", "verticalAccuracy",
+ * "horizontalAccuracy"}; GET_FUZZY_LOCATION {} answers {"latitude",
+ * "longitude"}, the host's coarse position. Answer in WGS-84: the engine converts
+ * to GCJ-02 when content asked for it, and rounds a fuzzy position to 0.01
+ * degrees itself.
  */
 #define MIGO_LOCATION_GET_LOCATION 0U
 #define MIGO_LOCATION_GET_FUZZY_LOCATION 1U

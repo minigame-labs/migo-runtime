@@ -35,6 +35,7 @@ mod inner_audio_canplay;
 mod input_clock;
 mod install_receipt;
 mod intl;
+mod location_coordinates;
 mod native_buttons;
 mod op_args_agreement;
 #[cfg(feature = "api-connectivity")]
