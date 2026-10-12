@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- macOS: `createVideoDecoder` decodes with AVFoundation's asset reader in the engine -- its decoders, VideoToolbox's
+  hardware where there is one, and its colour handling -- each BGRA frame becoming straight RGBA. A reader reads only
+  forward, so a seek starts a new one two seconds before the position and continues from the frame shown there,
+  stepping further back when it started past the last frame. The API x platform matrix now reads an engine-side
+  accessor compiled for some operating systems only (`#[cfg(target_os = ...)]` in the C ABI's services) as provided on
+  those, and its gate proves one moved to another system turns it red. The video-decoder probe (renamed from the
+  Android one) runs through the macOS headless host too, whose fixtures now carry every file beside `game.js`.
 - Android: `createVideoDecoder` decodes on the device's own codec. The NDK's media extractor and codec run in the
   engine, the codec rendering into an image reader of YUV_420_888 -- the one output every decoder supports, whatever
   its buffer layout -- whose planes become straight RGBA through their strides, in the matrix and range the codec

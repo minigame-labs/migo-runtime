@@ -62,6 +62,9 @@ APPLE_CAPABILITIES = ("platforms/apple/Sources/MigoAppleLocation",)
 LINUX_LAYER = "platforms/linux/host-kit/src"
 OHOS_LAYER = "platforms/openharmony/entry/src/main"
 
+# Rust's target_os for the platforms the matrix names.
+TARGET_OS = {"macos": "macos", "ios": "ios", "linux": "linux", "windows": "windows", "android": "android"}
+
 # Host input, lifecycle and reported state, by kind: the C ABI entry point a host
 # feeds it through, and the Java SDK's native for the same -- None where the
 # Android SDK reads the state from the platform itself, through the engine
@@ -163,8 +166,11 @@ def capi_services(root: pathlib.Path) -> dict[str, tuple[str, str | None]]:
     """accessor -> how a C ABI host supplies it.
 
     ("channel", service), ("callback", field), ("report", accessor),
-    ("always", None), or ("mixed", "service|field") for an accessor that is a
-    typed callback for one op and the channel for the rest.
+    ("always", None), ("native", "platform,...") for an engine-side
+    implementation compiled only for some operating systems
+    (`#[cfg(target_os = ...)]` on the accessor), or ("mixed", "service|field")
+    for an accessor that is a typed callback for one op and the channel for the
+    rest.
     """
     kit = read(root, CAPI_HOST_KIT)
     device = read(root, CAPI_DEVICE)
@@ -182,7 +188,17 @@ def capi_services(root: pathlib.Path) -> dict[str, tuple[str, str | None]]:
     kinds: dict[str, tuple[str, str | None]] = {}
     for block in re.finditer(r"impl \w+ for CapiDeviceServices \{", kit):
         body = braced(kit, block.start())
-        for name, accessor in re.findall(r"fn (\w+)\(&self\) -> Option<Arc<dyn \w+>> \{(.*?)\n    \}", body, re.S):
+        for found_fn in re.finditer(r"fn (\w+)\(&self\) -> Option<Arc<dyn \w+>> \{(.*?)\n    \}", body, re.S):
+            name, accessor = found_fn.group(1), found_fn.group(2)
+            # The attribute on the line before the function, if any.
+            before = body[: found_fn.start()].rstrip().rsplit("\n", 1)[-1].strip()
+            only = re.fullmatch(r"#\[cfg\((.*)\)\]", before)
+            if only:
+                systems = re.findall(r'target_os = "(\w+)"', only.group(1))
+                if not systems or not re.fullmatch(r'(any\()?target_os = "\w+"(, target_os = "\w+")*\)?', only.group(1)):
+                    raise Fail(f"C ABI accessor {name}: cfg({only.group(1)}) is not a list of operating systems")
+                kinds[name] = ("native", ",".join(sorted(TARGET_OS[system] for system in systems)))
+                continue
             channel = re.search(r"MIGO_HOST_SERVICE_(\w+)", accessor)
             typed = re.search(r"self\.device\.(\w+)\(\)", accessor)
             if channel and typed:
@@ -364,6 +380,8 @@ def needs_of(name, reach, reference, decisions, channel, capi, memo, stack=()):
             needs.add(f"callback:{detail}")
         elif kind == "report":
             needs.add(f"report:{detail}")
+        elif kind == "native":
+            needs.add(f"native:{accessor}({detail})")
         elif kind == "absent":
             needs.add(f"service:{accessor}")
     memo[name] = needs
@@ -431,6 +449,10 @@ def need_status(need: str, platform: str, lanes, entries, android) -> str:
     lane = lanes.get(platform)
     if kind == "service":
         return "missing"
+    if kind == "native":
+        # The engine's own implementation, on the operating systems it is
+        # compiled for.
+        return "default" if platform in detail.split("(", 1)[1].rstrip(")").split(",") else "missing"
     if kind == "input":
         entry = INPUT[detail][0]
         if entry is None or entry not in entries:

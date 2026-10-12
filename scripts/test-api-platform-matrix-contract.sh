@@ -106,6 +106,8 @@ red "the Swift SDK that stops reporting the system's switches" platforms/apple/S
     'text.replace("migo_session_set_system_settings(session", "migo_session_set_system_settings_gone(session", 1)'
 red "a capability product that stops answering its service" platforms/apple/Sources/MigoAppleLocation/MigoLocation.swift \
     'text.replace("builtIn.insert(.location)", "// builtIn.insert(.location)", 1)'
+red "an engine decoder compiled for another system" engine/crates/capi/src/host_kit.rs \
+    'text.replace("#[cfg(target_os = \"macos\")]\n    fn video_decoder", "#[cfg(target_os = \"windows\")]\n    fn video_decoder", 1)'
 red "a host layer that stops feeding touch" platforms/linux/host-kit/src/qt6/x11_surface_view.cpp \
     'text.replace("migo_session_send_touch(", "migo_session_send_touch_removed(")'
 red "an unsupported decision with no reason" contracts/runtime/api-platform-decisions.json \

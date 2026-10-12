@@ -14,6 +14,8 @@ use migo_capi_abi::host_services::{
     MIGO_HOST_SERVICE_SCAN_CODE, MIGO_HOST_SERVICE_SCREEN, MIGO_HOST_SERVICE_SHARE,
     MIGO_HOST_SERVICE_SUBPACKAGE, MIGO_HOST_SERVICE_UPDATE, MIGO_HOST_SERVICE_WINDOW,
 };
+#[cfg(target_os = "macos")]
+use migo_core::services::VideoDecoderService;
 use migo_core::services::{
     AccelerometerService, AdService, AuthService, BatteryService, BluetoothService,
     ClipboardService, CommerceServices, CompassService, ConnectivityServices, DeviceMotionService,
@@ -267,6 +269,13 @@ impl MediaServices for CapiDeviceServices {
     fn image_api(&self) -> Option<Arc<dyn ImageApiService>> {
         self.host_service(MIGO_HOST_SERVICE_IMAGE)
             .map(|services| services as Arc<dyn ImageApiService>)
+    }
+
+    /// The platform's own decoders, in the engine: AVFoundation's on macOS.
+    /// A platform without one answers `createVideoDecoder` not supported.
+    #[cfg(target_os = "macos")]
+    fn video_decoder(&self) -> Option<Arc<dyn VideoDecoderService>> {
+        Some(Arc::new(platform::apple::video_decoder::AppleVideoDecoder))
     }
 }
 
