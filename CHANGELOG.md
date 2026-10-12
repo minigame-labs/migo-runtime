@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- iOS: iBeacons. `MigoLocation` ranges them with CoreLocation, under the location grant (asked for if the player has not
+  decided): `startBeaconDiscovery` ranges the proximity UUIDs it names in place of what was being ranged,
+  `onBeaconUpdate` hears every beacon in range as each ranging reports, `getBeacons` answers them, and
+  `onBeaconServiceChange` hears ranging start, stop or fail. A capability that ranges beacons (`MigoBeaconRanging`) is
+  handed the Bluetooth service's three beacon methods by the session -- and declares that service so they reach it --
+  while the rest of the service stays with `MigoBluetooth`; failures carry the common platform's codes 11000-11006
+  (`MigoBeaconError`). Content still holds `scope.bluetooth` for them, which the engine checks.
 - iOS: on Performance+, `getSetting`, `getAppAuthorizeSetting`, `getSystemSetting` and the authorization and switch
   fields of `getSystemInfoSync` read the host's last report, as the embedded ops do, rather than failing or answering
   defaults: each changes during a session -- a prompt answered, a setting changed and come back from -- so they are

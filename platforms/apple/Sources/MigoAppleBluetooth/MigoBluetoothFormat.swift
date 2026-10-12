@@ -113,7 +113,6 @@ enum MigoBluetoothError: Int32 {
     case timedOut = 10012
     case invalidData = 10013
     case alreadyConnected = -1
-    case beaconUnsupported = 11000
 
     var message: String {
         switch self {
@@ -129,7 +128,6 @@ enum MigoBluetoothError: Int32 {
         case .timedOut: return "operate time out"
         case .invalidData: return "invalid data"
         case .alreadyConnected: return "already connect"
-        case .beaconUnsupported: return "unsupport"
         }
     }
 }
