@@ -24,7 +24,16 @@ final class MigoBuiltInHostServices: MigoHostServiceProvider {
         return builtIn
     }()
 
-    var services: Set<MigoHostServiceID> { Self.services }
+    /// The permission service, for the scopes the linked capabilities decide;
+    /// `nil` when none does.
+    private let permission: MigoSystemPermission?
+
+    let services: Set<MigoHostServiceID>
+
+    init(capabilities: [MigoSystemCapability] = []) {
+        permission = MigoSystemPermission(capabilities: capabilities)
+        services = permission == nil ? Self.services : Self.services.union([.permission])
+    }
 
     /// Kept for the session: which indicator is up is state.
     private lazy var interaction = MigoSystemInteraction(presenter: MigoSystemInteractionPresenter())
@@ -44,29 +53,37 @@ final class MigoBuiltInHostServices: MigoHostServiceProvider {
             interaction.handle(request)
         case .screen:
             screen.handle(request)
+        case .permission where permission != nil:
+            permission?.handle(request)
         default:
             request.reply?.fail("not supported")
         }
     }
 }
 
-/// The app's provider and the SDK's, as the session sees them: a service the
-/// app names is the app's; any other the SDK answers if it can.
+/// The app's provider, the capabilities it linked and the SDK's own, as the
+/// session sees them: a service the app names is the app's; then the first
+/// capability that names it; any other the SDK answers if it can.
 final class MigoComposedHostServices: MigoHostServiceProvider {
     private let app: MigoHostServiceProvider?
-    let builtIn = MigoBuiltInHostServices()
     private let appServices: Set<MigoHostServiceID>
+    private let capabilities: [MigoSystemCapability]
+    let builtIn: MigoBuiltInHostServices
     let services: Set<MigoHostServiceID>
 
-    init(app: MigoHostServiceProvider?) {
+    init(app: MigoHostServiceProvider?, capabilities: [MigoSystemCapability] = []) {
         self.app = app
+        self.capabilities = capabilities
         appServices = app?.services ?? []
-        services = appServices.union(builtIn.services)
+        builtIn = MigoBuiltInHostServices(capabilities: capabilities)
+        services = capabilities.reduce(appServices.union(builtIn.services)) { $0.union($1.services) }
     }
 
     func handle(_ request: MigoHostServiceRequest) {
         if let app, appServices.contains(request.service) {
             app.handle(request)
+        } else if let capability = capabilities.first(where: { $0.services.contains(request.service) }) {
+            capability.handle(request)
         } else {
             builtIn.handle(request)
         }

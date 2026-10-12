@@ -203,6 +203,8 @@ expected_wifi=false
 if [[ -n "$wifi_device" ]] && networksetup -getairportpower "$wifi_device" | grep -q ': On$'; then
   expected_wifi=true
 fi
+grep -q 'migo-swift-host-probe: location=.* scope=refused' "$LAST_LOG" \
+  || fail "the location capability did not decide scope.userLocation for the game"
 grep -q "migo-swift-host-probe: wifi=$expected_wifi camera=not determined" "$LAST_LOG" \
   || fail "the game did not read the Mac's Wi-Fi switch ($expected_wifi) and an undetermined camera: $(grep -o 'migo-swift-host-probe: wifi=.*' "$LAST_LOG")"
 

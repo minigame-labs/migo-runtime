@@ -221,6 +221,14 @@ public final class MigoEngineSession {
     private var layer: CAMetalLayer?
     private var metricsGeneration: UInt64 = 0
     private(set) var isClosed = false
+    /// The optional parts of the system the app linked, reporting to this
+    /// session while it is open.
+    private let capabilities: [MigoSystemCapability]
+    /// What the session last reported of the system's switches and of the
+    /// app's grants. Each reporter -- the device status reporter, a capability
+    /// -- owns some of the fields and changes only those.
+    private var systemSettings = MigoSystemSettingFlags(MIGO_SYSTEM_SETTING_FLAG_NONE)
+    private var appAuthorization = MigoAppAuthorizeSetting()
 
     /// Create the engine and the session and install the host callbacks.
     ///
@@ -232,10 +240,14 @@ public final class MigoEngineSession {
     /// the services it names are declared to the engine here, the only time the
     /// ABI takes them -- beside the SDK's own (`MigoBuiltInHostServices`), which
     /// answer every service with a system counterpart that the app does not name.
+    /// `capabilities` are the optional parts of the system the app linked --
+    /// location, say -- which answer their services when the app does not, and
+    /// report to this session while it is open.
     public init(
         directories: Directories, contentSigning: ContentSigning, preferredFramesPerSecond: Int? = nil,
-        hostServices: MigoHostServiceProvider? = nil
+        hostServices: MigoHostServiceProvider? = nil, capabilities: [MigoSystemCapability] = []
     ) throws {
+        self.capabilities = capabilities
         var signingKey = [UInt8](repeating: 0, count: 32)
         var engineFlags = MIGO_ENGINE_FLAG_NONE
         switch contentSigning {
@@ -304,8 +316,9 @@ public final class MigoEngineSession {
         self.relayHandle = Unmanaged.passRetained(relay)
         relay.clock = clock
         relay.owner = self
-        // The app's services, and the SDK's own for every service it does not name.
-        let composed = MigoComposedHostServices(app: hostServices)
+        // The app's services, then the capabilities it linked, then the SDK's
+        // own for every service neither names.
+        let composed = MigoComposedHostServices(app: hostServices, capabilities: capabilities)
         relay.hostServices = composed
 
         var callbacks = MigoHostCallbacks()
@@ -347,6 +360,12 @@ public final class MigoEngineSession {
             guard let json = try? JSONSerialization.data(withJSONObject: object) else { return }
             self?.postHostServiceEvent(service, event: event, json: json)
         }
+        // Before content runs, so its first read of a grant has a report. The
+        // SDK decides content's scopes unless the app answers the permission
+        // service itself.
+        let reports = MigoCapabilityReports(
+            session: self, decidesScopes: !(hostServices?.services.contains(.permission) ?? false))
+        for capability in capabilities { capability.report(to: reports) }
     }
 
     deinit {
@@ -504,26 +523,40 @@ public final class MigoEngineSession {
         if result != MIGO_OK { NSLog("MigoEngineSession: migo_session_set_battery_status returned \(result)") }
     }
 
-    /// The system switches -- Bluetooth, location services, Wi-Fi -- reported
-    /// now and at each change (`getSystemSetting`); one not reported reads as
-    /// off. See `MigoDeviceStatusReporter`.
-    public func setSystemSettings(_ flags: MigoSystemSettingFlags) {
+    /// One system switch -- Bluetooth, location services, Wi-Fi -- reported
+    /// now and at each change (`getSystemSetting`); one nobody reports reads as
+    /// off. Each switch has one reporter: `MigoDeviceStatusReporter` for Wi-Fi,
+    /// the capability that reads it for the others. Main thread.
+    func setSystemSetting(_ flag: MigoSystemSettingFlags, enabled: Bool) {
         guard !isClosed else { return }
-        let result = migo_session_set_system_settings(session, flags)
+        if enabled { systemSettings |= flag } else { systemSettings &= ~flag }
+        let result = migo_session_set_system_settings(session, systemSettings)
         if result != MIGO_OK { NSLog("MigoEngineSession: migo_session_set_system_settings returned \(result)") }
     }
 
     /// What the system has granted this app, reported now and at each change
-    /// (`getAppAuthorizeSetting`): each field a `MIGO_AUTHORIZATION_*`, and one
-    /// the app cannot read left "not determined". See
-    /// `MigoDeviceStatusReporter`.
-    public func setAppAuthorizeSetting(_ setting: MigoAppAuthorizeSetting) {
+    /// (`getAppAuthorizeSetting`): `update` changes the fields its reporter
+    /// owns -- each a `MIGO_AUTHORIZATION_*` -- and every field nobody reports
+    /// stays "not determined". Main thread.
+    func updateAppAuthorization(_ update: (inout MigoAppAuthorizeSetting) -> Void) {
         guard !isClosed else { return }
-        var setting = setting
-        setting.struct_size = UInt32(MemoryLayout<MigoAppAuthorizeSetting>.size)
-        setting.abi_version = MIGO_ABI_VERSION_CURRENT
-        let result = migo_session_set_app_authorize_setting(session, &setting)
+        update(&appAuthorization)
+        appAuthorization.struct_size = UInt32(MemoryLayout<MigoAppAuthorizeSetting>.size)
+        appAuthorization.abi_version = MIGO_ABI_VERSION_CURRENT
+        let result = migo_session_set_app_authorize_setting(session, &appAuthorization)
         if result != MIGO_OK { NSLog("MigoEngineSession: migo_session_set_app_authorize_setting returned \(result)") }
+    }
+
+    /// The standing decision for one of content's scopes -- a
+    /// `MIGO_SCOPE_STATE_*` -- reported whenever it changes, a revocation in
+    /// Settings included: what content's calls that need the scope are checked
+    /// against. An app that answers the permission service reports its
+    /// decisions here (its game view passes them on); otherwise the
+    /// capabilities that decide scopes do. Main thread.
+    public func setScopeState(_ scope: MigoScope, _ state: MigoScopeState) {
+        guard !isClosed else { return }
+        let result = migo_session_set_scope_state(session, scope, state)
+        if result != MIGO_OK { NSLog("MigoEngineSession: migo_session_set_scope_state returned \(result)") }
     }
 
     /// What this app says about itself -- its id, its interface language, its
@@ -687,6 +720,7 @@ public final class MigoEngineSession {
         isClosed = true
         clock.stop()
         onEvent = nil
+        for capability in capabilities { capability.report(to: nil) }
         guard let live = attachment else {
             finish(released: true, completion: completion)
             return

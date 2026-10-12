@@ -31,9 +31,10 @@ import UserNotifications
 /// purpose for it: notifications. Location, the camera, the microphone, the
 /// photo library, Bluetooth and calendars are not read here -- App Store
 /// review asks for a purpose string for every such API a binary references,
-/// used or not -- and read as "not determined". Grants are read again whenever
-/// the app comes back to the front, which is where a player who changed one in
-/// Settings returns.
+/// used or not -- but by the optional capability that uses each
+/// (`MigoSystemCapability`), and read as "not determined" without one. Grants
+/// are read again whenever the app comes back to the front, which is where a
+/// player who changed one in Settings returns.
 ///
 /// Main thread only, like the session it reports to.
 public final class MigoDeviceStatusReporter {
@@ -241,13 +242,12 @@ public final class MigoDeviceStatusReporter {
         }
     #endif
 
-    /// The system switches the SDK reads itself: Wi-Fi. Location services and
-    /// Bluetooth are the optional products' to read.
+    /// The system switch the SDK reads itself: Wi-Fi. Location services and
+    /// Bluetooth are the capabilities' to read.
     private func report(wifiOn on: Bool) {
         guard running, on != wifiOn else { return }
         wifiOn = on
-        let flags = on ? MIGO_SYSTEM_SETTING_FLAG_WIFI_ENABLED : MIGO_SYSTEM_SETTING_FLAG_NONE
-        session?.setSystemSettings(MigoSystemSettingFlags(flags))
+        session?.setSystemSetting(MigoSystemSettingFlags(MIGO_SYSTEM_SETTING_FLAG_WIFI_ENABLED), enabled: on)
     }
 
     /// The notification grants, read from the system -- asynchronously, so a
@@ -260,23 +260,23 @@ public final class MigoDeviceStatusReporter {
         // has no notification setting to read.
         guard Bundle.main.bundleIdentifier != nil, Bundle.main.bundleURL.pathExtension == "app" else { return }
         UNUserNotificationCenter.current().getNotificationSettings { [weak self] settings in
-            let setting = Self.authorizations(
-                notification: settings.authorizationStatus, alert: settings.alertSetting,
-                badge: settings.badgeSetting, sound: settings.soundSetting)
+            let (status, alert, badge, sound) =
+                (settings.authorizationStatus, settings.alertSetting, settings.badgeSetting, settings.soundSetting)
             DispatchQueue.main.async {
                 guard let self, self.running else { return }
-                self.session?.setAppAuthorizeSetting(setting)
+                self.session?.updateAppAuthorization {
+                    Self.setNotifications(&$0, notification: status, alert: alert, badge: badge, sound: sound)
+                }
             }
         }
     }
 
-    /// The grants as the engine words them, everything not given "not
-    /// determined".
-    static func authorizations(
-        notification: UNAuthorizationStatus, alert: UNNotificationSetting, badge: UNNotificationSetting,
-        sound: UNNotificationSetting
-    ) -> MigoAppAuthorizeSetting {
-        var setting = MigoAppAuthorizeSetting()
+    /// The notification grants as the engine words them; the other fields are
+    /// other reporters' and are left as they are.
+    static func setNotifications(
+        _ setting: inout MigoAppAuthorizeSetting, notification: UNAuthorizationStatus,
+        alert: UNNotificationSetting, badge: UNNotificationSetting, sound: UNNotificationSetting
+    ) {
         switch notification {
         case .notDetermined: setting.notification = UInt8(MIGO_AUTHORIZATION_NOT_DETERMINED)
         case .denied: setting.notification = UInt8(MIGO_AUTHORIZATION_DENIED)
@@ -294,7 +294,6 @@ public final class MigoDeviceStatusReporter {
         setting.notification_alert = word(alert)
         setting.notification_badge = word(badge)
         setting.notification_sound = word(sound)
-        return setting
     }
 
     /// The app's id, the locale its interface runs in -- `Locale.current`

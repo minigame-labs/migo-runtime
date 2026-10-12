@@ -20,7 +20,7 @@
   "summary": {
     "android": {"engine": 60, "default": 125, "host": 180, "missing": 7, "unsupported": 10, "ready": 375},
     "ios": {"engine": 67, "default": 49, "host": 0, "missing": 254, "unsupported": 12, "ready": 128},
-    "macos": {"engine": 70, "default": 67, "host": 194, "missing": 15, "unsupported": 36, "ready": 320},
+    "macos": {"engine": 70, "default": 67, "host": 194, "missing": 15, "unsupported": 36, "ready": 322},
     "linux": {"engine": 70, "default": 20, "host": 270, "missing": 12, "unsupported": 10, "ready": 249},
     "windows": {"engine": 70, "default": 0, "host": 290, "missing": 12, "unsupported": 10, "ready": 229},
     "ohos": {"engine": 68, "default": 12, "host": 0, "missing": 293, "unsupported": 9, "ready": 89}
@@ -116,7 +116,7 @@
     "getFileSystemManager": {"category": "file", "needs": [], "android": "engine", "ios": "engine", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine"},
     "getFriendCloudStorage": {"category": "open-api/data", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "missing", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "ohos"]},
     "getFriendSendGiftStatus": {"category": "open-api/data", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "missing", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "ohos"]},
-    "getFuzzyLocation": {"category": "location", "needs": ["channel:location.get_fuzzy_location", "channel:permission"], "android": "host", "ios": "missing", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "macos", "linux", "windows", "ohos"]},
+    "getFuzzyLocation": {"category": "location", "needs": ["channel:location.get_fuzzy_location", "channel:permission"], "android": "host", "ios": "missing", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "linux", "windows", "ohos"]},
     "getGPU": {"category": "render/gpu", "needs": ["unpublished"], "android": "unsupported", "ios": "unsupported", "macos": "unsupported", "linux": "unsupported", "windows": "unsupported", "ohos": "unsupported"},
     "getGameClubData": {"category": "open-api/game-club", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "missing", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "ohos"]},
     "getGameExptInfo": {"category": "data-analysis", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "missing", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "ohos"]},
@@ -131,7 +131,7 @@
     "getInferenceEnvInfo": {"category": "ai/inference", "needs": ["unpublished"], "android": "unsupported", "ios": "unsupported", "macos": "unsupported", "linux": "unsupported", "windows": "unsupported", "ohos": "unsupported"},
     "getLaunchOptionsSync": {"category": "base/app/life-cycle", "needs": [], "android": "engine", "ios": "engine", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine"},
     "getLocalIPAddress": {"category": "device/network", "needs": ["report:network"], "android": "default", "ios": "missing", "macos": "default", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "linux", "windows", "ohos"]},
-    "getLocation": {"category": "location", "needs": ["channel:location.get_location", "channel:permission"], "android": "host", "ios": "missing", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "macos", "linux", "windows", "ohos"]},
+    "getLocation": {"category": "location", "needs": ["channel:location.get_location", "channel:permission"], "android": "host", "ios": "missing", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "linux", "windows", "ohos"]},
     "getLogManager": {"category": "base/debug", "needs": [], "android": "engine", "ios": "engine", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine"},
     "getMenuButtonBoundingClientRect": {"category": "ui/menu", "needs": [], "android": "default", "ios": "engine", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine"},
     "getMiniReportManager": {"category": "data-analysis", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "missing", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "ohos"]},
