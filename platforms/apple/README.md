@@ -195,6 +195,15 @@ without it the system shows no prompt and the scope is refused without asking. A
 capability answers its services only when `hostServices` does not name them, and
 decides its scopes only when the app answers no permission service of its own.
 
+`MigoAppleBluetooth` (`MigoBluetooth()`) is a BLE central through CoreBluetooth:
+the adapter, scanning (found devices reported at the interval content asks),
+the connected devices, and GATT -- a connection answered once its services and
+characteristics are known, reads (the value arriving as a characteristic value),
+writes, notifications, RSSI and the write MTU -- with the Bluetooth grant, the
+Bluetooth switch, and `scope.bluetooth` decided by the system's prompt. Declare
+`NSBluetoothAlwaysUsageDescription`. Pairing and setting the MTU are Android's
+and refused, as are the peripheral mode and, for now, iBeacons.
+
 `MigoApplePhotos` (`MigoPhotoLibrary()`) saves to the photo library for
 `saveImageToPhotosAlbum` -- adding only, never reading: the pickers need no
 access -- reports the photo-library grant, and decides `scope.writePhotosAlbum`

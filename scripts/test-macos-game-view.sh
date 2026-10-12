@@ -207,6 +207,8 @@ grep -q 'migo-swift-host-probe: compressed=16x8' "$LAST_LOG" \
   || fail "the SDK's image service did not compress the game's image"
 grep -q 'migo-swift-host-probe: previewed' "$LAST_LOG" \
   || fail "the SDK's viewer did not show the game's image"
+grep -q 'migo-swift-host-probe: bluetooth=.* scope=refused' "$LAST_LOG" \
+  || fail "the Bluetooth capability did not decide scope.bluetooth for the game"
 grep -q 'migo-swift-host-probe: album=.* scope=refused' "$LAST_LOG" \
   || fail "the photo library capability did not decide scope.writePhotosAlbum for the game"
 grep -q 'migo-swift-host-probe: location=.* scope=refused' "$LAST_LOG" \

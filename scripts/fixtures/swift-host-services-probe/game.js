@@ -86,6 +86,17 @@ async function run() {
   }
   expect(album !== null && album.errMsg === "authorize:fail auth deny", "authorize album", album);
   console.error("migo-swift-host-probe: album=" + grants.albumAuthorized + " scope=refused");
+  // Bluetooth, the same way: its grant reported, its scope refused without a
+  // prompt in an app declaring no purpose for it.
+  expect(words.indexOf(grants.bluetoothAuthorized) >= 0, "bluetoothAuthorized", grants);
+  let radio = null;
+  try {
+    await call("authorize", { scope: "scope.bluetooth" });
+  } catch (e) {
+    radio = e;
+  }
+  expect(radio !== null && radio.errMsg === "authorize:fail auth deny", "authorize bluetooth", radio);
+  console.error("migo-swift-host-probe: bluetooth=" + grants.bluetoothAuthorized + " scope=refused");
   // The SDK's image service compresses with the system's encoder: a 64 x 32
   // PNG of the game's, scaled to 16 wide, handed back as a file of the game's.
   const canvas = migo.createCanvas();

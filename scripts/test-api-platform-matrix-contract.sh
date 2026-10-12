@@ -48,7 +48,7 @@ inputs=(
 while IFS= read -r path; do inputs+=("$path"); done < <(
     cd "$ROOT" && git ls-files include/migo platforms/apple/Sources/MigoAppleRenderer \
         platforms/apple/Sources/MigoMacV8 \
-        platforms/apple/Sources/MigoAppleLocation \
+        platforms/apple/Sources/MigoAppleLocation platforms/apple/Sources/MigoAppleBluetooth \
         platforms/linux/host-kit/src platforms/openharmony/entry/src/main \
         platforms/android/library/src/main/java
 )

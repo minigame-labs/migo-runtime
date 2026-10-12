@@ -606,6 +606,35 @@ public final class MigoEngineSession {
 
     // MARK: - input
 
+    /// One BLE characteristic value, typed: the ids as the requests named
+    /// them, the bytes copied by the engine during the call. Main thread.
+    func postBleCharacteristicValue(deviceId: String, serviceId: String, characteristicId: String, value: Data) {
+        guard !isClosed else { return }
+        let result = deviceId.withCString { device in
+            serviceId.withCString { service in
+                characteristicId.withCString { characteristic in
+                    value.withUnsafeBytes { bytes -> MigoResult in
+                        var record = MigoBleCharacteristicValue()
+                        record.struct_size = UInt32(MemoryLayout<MigoBleCharacteristicValue>.size)
+                        record.abi_version = MIGO_ABI_VERSION_CURRENT
+                        record.device_id_utf8 = device
+                        record.service_id_utf8 = service
+                        record.characteristic_id_utf8 = characteristic
+                        record.value = bytes.bindMemory(to: UInt8.self).baseAddress
+                        record.device_id_length = UInt32(deviceId.utf8.count)
+                        record.service_id_length = UInt32(serviceId.utf8.count)
+                        record.characteristic_id_length = UInt32(characteristicId.utf8.count)
+                        record.value_length = UInt32(bytes.count)
+                        return migo_session_post_ble_characteristic_value(session, &record)
+                    }
+                }
+            }
+        }
+        if result != MIGO_OK, result != MIGO_ERROR_WOULD_BLOCK {
+            NSLog("MigoEngineSession: migo_session_post_ble_characteristic_value returned \(result)")
+        }
+    }
+
     /// Announce a game controller, or withdraw it. Main thread.
     func setGamepad(_ info: MigoGamepadInfo, connected: Bool) {
         guard !isClosed else { return }
