@@ -109,8 +109,8 @@ def read_all_tables(mapping: str, helper: str, android: str) -> tuple[
     return (
         read_table(mapping, "GATED_ACCESSORS", mapping_rs),
         read_table(mapping, "GATED_SERVICE_METHODS", mapping_rs),
-        read_table(helper, "PERMISSION_GATED_OPS", helper_rs),
-        read_table(helper, "PERMISSION_CLEANUP_OPS", helper_rs),
+        read_table(mapping, "PERMISSION_GATED_OPS", mapping_rs),
+        read_table(mapping, "PERMISSION_CLEANUP_OPS", mapping_rs),
         read_table(android, "ANDROID_PERMISSION_GATED_METHODS", android_services_rs),
         read_table(android, "ANDROID_PERMISSION_CLEANUP_METHODS", android_services_rs),
     )
@@ -437,8 +437,8 @@ if self_test:
     for table, owner in (
         ("GATED_ACCESSORS", "mapping"),
         ("GATED_SERVICE_METHODS", "mapping"),
-        ("PERMISSION_GATED_OPS", "helper"),
-        ("PERMISSION_CLEANUP_OPS", "helper"),
+        ("PERMISSION_GATED_OPS", "mapping"),
+        ("PERMISSION_CLEANUP_OPS", "mapping"),
         ("ANDROID_PERMISSION_GATED_METHODS", "android"),
         ("ANDROID_PERMISSION_CLEANUP_METHODS", "android"),
     ):

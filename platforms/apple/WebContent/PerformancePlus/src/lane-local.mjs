@@ -369,15 +369,6 @@ export function op_ecosystem_available() {
   return false;
 }
 
-// ---- package updates -----------------------------------------------------------
-//
-// The host's to offer, and this profile carries no update channel: content's
-// UpdateManager hears "no update" at once (update/02_update_mgr.js).
-
-export function op_update_available() {
-  return false;
-}
-
 // ---- video decoding --------------------------------------------------------------
 //
 // No decoder is integrated on this profile: createVideoDecoder's start() fails

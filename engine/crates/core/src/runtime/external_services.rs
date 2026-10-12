@@ -63,12 +63,15 @@ use migo_services::image::cache::{ImageCache, SharedImageCache};
 use shared::error::{EngineError, EngineResult, ErrorCode};
 
 use super::frame_endpoint::TransportCounters;
+use super::host_events::ServiceEventSink;
 use super::service_args::{
     boolean, bytes, exactly, f64_of, i32_of, not_a, string, strings, u32_of,
 };
 use super::service_audio::{self, AudioBinding, LocalSources};
+use super::service_channel;
 use super::service_network::{self, NetworkBinding, UploadSources};
 use super::service_ops::id;
+use super::session_temp::SessionTemp;
 
 /// The most messages held ahead of a predecessor that has not arrived.
 ///
@@ -281,6 +284,11 @@ pub(crate) struct ServiceContext {
     scheduler: OnceLock<Arc<IoScheduler>>,
     session_id: OnceLock<i32>,
     content: RwLock<Option<MountedContent>>,
+    /// The mounted content's `/tmp`: emptied when content mounts and removed
+    /// when the session ends, and where files the host app hands over in a
+    /// result land (`shared::services::host_files`) -- as in the embedded
+    /// execution.
+    temp: OnceLock<SessionTemp>,
     /// This session's image alias table: which texture each of content's image
     /// ids names. Loads fill it on the session thread; the frame decoder reads
     /// it on the transport's thread for `texImage2D(…, image)`.
@@ -324,6 +332,7 @@ impl ServiceContext {
             scheduler: OnceLock::new(),
             session_id: OnceLock::new(),
             content: RwLock::new(None),
+            temp: OnceLock::new(),
             aliases: Arc::new(parking_lot::Mutex::new(ImageCache::new())),
             audio: OnceLock::new(),
             network: OnceLock::new(),
@@ -638,6 +647,7 @@ impl ServiceContext {
             return Err(EngineError::new(ErrorCode::InvalidOperation)
                 .with_msg("content is already loaded in this session"));
         }
+        let temp = SessionTemp::prepare(&self.files_dir, &self.cache_dir, game_id, session_id);
         let mounted = MountedContent::mount_signed(
             &self.files_dir,
             &self.cache_dir,
@@ -655,6 +665,10 @@ impl ServiceContext {
             root.display()
         );
         *content = Some(mounted);
+        if let Some(temp) = temp {
+            // Content mounts once per session, so this is the only set.
+            let _ = self.temp.set(temp);
+        }
         Ok(root)
     }
 
@@ -747,6 +761,13 @@ impl ServiceContext {
                     .get_network_type_json()
                     .map(OwnedValue::Str)
                     .map_err(device_error)
+            }
+            id::op_update_available => {
+                let [] = exactly(op, args)?;
+                let device = self.device.get().and_then(Option::as_deref);
+                Ok(OwnedValue::Bool(
+                    device.is_some_and(|device| device.update().is_some()),
+                ))
             }
             id::op_require_resolve_and_read => {
                 let [specifier, referrer_dir] = exactly(op, args)?;
@@ -1524,6 +1545,18 @@ impl ServiceDispatcher {
                 }
                 Err(error) => self.outbox.reply(request_id, Err(error)),
             },
+            // A request of the host app's: refused, it fails content's call
+            // through the hook the host app's answer would have reached.
+            OwnedServiceRecord::Command { op, args } if service_channel::is_channel(op) => {
+                service_channel::command(
+                    self.context.device.get().and_then(Option::as_deref),
+                    op,
+                    args,
+                    &ServiceEventSink {
+                        outbox: &self.outbox,
+                    },
+                );
+            }
             OwnedServiceRecord::Command { op, args } => {
                 if let Err(error) = self.context.command(op, args, &self.render) {
                     warn!("service command refused: {error}");
@@ -2573,6 +2606,11 @@ mod tests {
                 Ok(r#"{"level":"80"}"#.into())
             }
         }
+        impl shared::services::UpdateService for Recorded {
+            fn apply_update(&self) -> Result<(), ServiceError> {
+                self.push("apply".into())
+            }
+        }
 
         let root = std::env::temp_dir().join(format!("migo-device-{}", std::process::id()));
         let (sender, _commands) = shared::render_command_sender::CommandSender::new();
@@ -2606,7 +2644,11 @@ mod tests {
             }
         }
         impl shared::services::MediaServices for Platform {}
-        impl shared::services::SystemUtilServices for Platform {}
+        impl shared::services::SystemUtilServices for Platform {
+            fn update(&self) -> Option<Arc<dyn shared::services::UpdateService>> {
+                Some(Arc::clone(&self.0) as Arc<dyn shared::services::UpdateService>)
+            }
+        }
         context.bind_device(Some(Arc::new(Platform(Arc::clone(&device)))));
         let commands = [
             (id::op_vibrate_short, vec![OwnedValue::Str("heavy".into())]),
@@ -2668,6 +2710,12 @@ mod tests {
             answer(&none, id::op_get_network_type),
             Err("getNetworkType:fail not supported".to_string())
         );
+        // Whether the host offers updates: asked of the platform, as in process,
+        // and no platform is one that offers none.
+        let updates =
+            |context: &ServiceContext| context.call_sync(id::op_update_available, Vec::new());
+        assert!(matches!(updates(&context), Ok(OwnedValue::Bool(true))));
+        assert!(matches!(updates(&none), Ok(OwnedValue::Bool(false))));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -2880,9 +2928,10 @@ mod tests {
         assert!(turn.send(()).is_err(), "nobody is waiting to run it");
     }
 
-    /// The host's input, routed and encoded as the external session does it,
-    /// written for `test/host-events.test.mjs` -- which delivers it to the
-    /// engine's own host bridge and checks what content's listeners see.
+    /// The host's input and the device's reports, routed and encoded as the
+    /// external session does it, written for `test/host-events.test.mjs` --
+    /// which delivers them to the engine's own host bridge and checks what
+    /// content's listeners see.
     ///
     /// The script ends in a focus loss with a finger, a mouse button, a key
     /// and a composition still held, so the retractions the shared routing
@@ -2892,7 +2941,8 @@ mod tests {
     fn the_host_s_input_as_the_producer_receives_it() {
         use shared::payload_pool::PayloadPool;
         use shared::protocol::host_cmd::{
-            GamepadButtonState, GamepadState, HostCommand, TouchData, TouchPoint, TouchType,
+            BleCharacteristicData, GamepadButtonState, GamepadState, HostCommand, TouchData,
+            TouchPoint, TouchType,
         };
 
         let dir = PathBuf::from(
@@ -2925,6 +2975,9 @@ mod tests {
                     .expect("a pooled touch"),
             )
         };
+        let bles = shared::payload_pool::RecyclePool::<BleCharacteristicData>::new(1);
+        let mut ble = bles.try_acquire().expect("a pooled notification");
+        ble.overwrite("AA", "180D", "2A37", &[0x00, 0x48, 0xff]);
         let pads = PayloadPool::new(1);
         let mut pad = GamepadState {
             index: 0,
@@ -2979,12 +3032,65 @@ mod tests {
                 haptics: 0,
             },
             HostCommand::OnGamepadState(pads.try_insert(pad).expect("a pooled sample")),
+            // What the device reports: one of each, in the bridge call's
+            // argument order.
+            HostCommand::OnAccelerometerChange {
+                x: 0.25,
+                y: -0.5,
+                z: 1.0,
+                runtime_generation: None,
+            },
+            HostCommand::OnGyroscopeChange {
+                x: 0.1,
+                y: 0.2,
+                z: 0.3,
+                runtime_generation: None,
+            },
+            HostCommand::OnDeviceMotionChange {
+                alpha: 10.0,
+                beta: 20.0,
+                gamma: 30.0,
+                runtime_generation: None,
+            },
+            HostCommand::OnCompassChange {
+                direction: 90.5,
+                accuracy: "high".into(),
+                runtime_generation: None,
+            },
+            HostCommand::OnDeviceOrientationChange {
+                value: "landscape".into(),
+            },
+            HostCommand::OnBluetoothAdapterStateChange {
+                available: true,
+                discovering: true,
+            },
+            HostCommand::OnBluetoothDeviceFound {
+                devices_json: r#"[{"deviceId":"AA","name":"band","RSSI":-40}]"#.into(),
+            },
+            HostCommand::OnBLEConnectionStateChange {
+                device_id: "AA".into(),
+                connected: true,
+            },
+            HostCommand::OnBLECharacteristicValueChange(ble),
+            HostCommand::OnBLEMTUChange {
+                device_id: "AA".into(),
+                mtu: 185,
+            },
+            HostCommand::OnBeaconServiceChange {
+                available: true,
+                discovering: false,
+            },
+            HostCommand::OnBeaconUpdate {
+                beacons_json:
+                    r#"[{"uuid":"FDA50693-A4E2-4FB1-AFCF-C6EB07647825","major":1,"minor":2}]"#
+                        .into(),
+            },
             HostCommand::OnFocusChanged { focused: false },
         ];
         for command in script {
             assert!(
                 crate::runtime::input_route::route(&mut state, &mut sink, command).is_none(),
-                "every scripted command is input"
+                "every scripted command is input or a device report"
             );
         }
         let mut written = 0;

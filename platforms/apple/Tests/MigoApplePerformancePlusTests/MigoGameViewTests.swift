@@ -325,6 +325,83 @@ import XCTest
             }
         }
 
+        /// The host app's services, from content in WebContent: calls the app
+        /// answers -- a sign-in, and a clipboard written and read back with
+        /// what content gave it -- a toast the SDK answers, and a request the
+        /// engine refuses before it reaches anyone -- a location without the
+        /// scope -- failing content's call in the embedded op's words instead
+        /// of leaving it to time out.
+        ///
+        /// The clipboard is the app's here, not the system's: reading another
+        /// process's pasteboard puts up the system's paste prompt, which blocks
+        /// the main thread until someone answers it.
+        func testContentReachesTheHostAppsServicesThroughTheChannel() throws {
+            final class App: MigoHostServiceProvider {
+                let services: Set<MigoHostServiceID> = [.auth, .clipboard]
+                var requests: [MigoHostServiceRequest] = []
+                var clipboard = ""
+                func handle(_ request: MigoHostServiceRequest) {
+                    requests.append(request)
+                    switch (request.service, request.method) {
+                    case (.clipboard, MigoHostServiceID.Clipboard.setClipboardData):
+                        clipboard = request.object["data"] as? String ?? ""
+                        request.reply?.succeed()
+                    case (.clipboard, MigoHostServiceID.Clipboard.getClipboardData):
+                        request.reply?.succeed(["data": clipboard])
+                    default:
+                        request.reply?.succeed(["code": "c0de"])
+                    }
+                }
+            }
+            let game = try package(
+                named: "channel",
+                game: """
+                    const say = (line) => console.log(line);
+                    const failed = (what) => (error) => say(what + "-fail " + error.errMsg);
+                    migo.login({ success(res) { say("login " + res.code); }, fail: failed("login") });
+                    migo.setClipboardData({ data: "migo-channel",
+                      success() {
+                        migo.getClipboardData({ success(res) { say("clipboard " + res.data); },
+                          fail: failed("clipboard") });
+                      },
+                      fail: failed("clipboard") });
+                    migo.showToast({ title: "hi", success() { say("toasted"); }, fail: failed("toast") });
+                    migo.getLocation({ success() { say("located"); }, fail: failed("location") });
+                    """)
+            try MigoGameInstaller.install(package: game, id: "channel", into: directories)
+            let app = App()
+            let view = MigoGameView(
+                configuration: .init(directories: directories, contentSigning: .unsigned, hostServices: app))
+            var lines: [String] = []
+            var failure: String?
+            let answered = expectation(description: "content heard every answer")
+            answered.expectedFulfillmentCount = 4  // login, clipboard, toast, location
+            let answers = ["login ", "login-fail ", "clipboard ", "clipboard-fail ", "toast", "location"]
+            view.onEvent = { event in
+                switch event {
+                case .console(_, let message):
+                    lines.append(message)
+                    if answers.contains(where: message.hasPrefix) { answered.fulfill() }
+                case .failed(let reason):
+                    failure = reason
+                default: break
+                }
+            }
+            mount(view)
+            view.loadGame(id: "channel")
+            wait(for: [answered], timeout: 240)
+            view.stop()
+            XCTAssertNil(failure)
+            XCTAssertTrue(lines.contains("login c0de"), "the app's answer reaches content: \(lines)")
+            XCTAssertEqual(app.requests.first?.service, .auth)
+            XCTAssertTrue(lines.contains("clipboard migo-channel"), "\(lines)")
+            XCTAssertEqual(app.clipboard, "migo-channel")
+            XCTAssertTrue(lines.contains("toasted"), "\(lines)")
+            XCTAssertTrue(
+                lines.contains("location-fail getLocation:fail auth deny: scope.userLocation is not granted"),
+                "refused before the host, in the embedded op's words: \(lines)")
+        }
+
         /// A copy of `package`, signed: every file's SHA-256 in manifest.json and
         /// the raw Ed25519 signature of its bytes in manifest.sig.
         private func signed(_ package: URL, with key: Curve25519.Signing.PrivateKey, tamper: Bool = false) throws -> URL {

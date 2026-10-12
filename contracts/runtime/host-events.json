@@ -4,7 +4,8 @@
     "The number each host event travels under on the service stream's return half (wire-v1.md, *The service stream*: EVENT).",
     "",
     "WHAT AN EVENT IS. The host tells content something no request asked for -- a touch, a key, the soft",
-    "keyboard's text, a gamepad sample -- by calling a function on the engine's host bridge",
+    "keyboard's text, a gamepad sample, a motion sensor's reading, a Bluetooth notification -- by calling a",
+    "function on the engine's host bridge",
     "(`globalThis[Symbol.for('Migo.hostBridge')]`). In the embedded runtime the host calls it in process",
     "(engine/crates/runtime-v8/src/js_bindings.rs resolves each by the name below); in the external session",
     "the host sends an EVENT record naming it by number, with the call's arguments as tagged values in the",
@@ -39,6 +40,18 @@
     "_internalTriggerMouseUp": 17,
     "_internalTriggerWheel": 18,
     "_internalEnqueueInnerAudioEvent": 19,
-    "_internalDispatch": 20
+    "_internalDispatch": 20,
+    "_internalTriggerDeviceMotionChange": 21,
+    "_internalTriggerGyroscopeChange": 22,
+    "_internalTriggerAccelerometerChange": 23,
+    "_internalTriggerCompassChange": 24,
+    "_internalTriggerDeviceOrientationChange": 25,
+    "_internalTriggerBluetoothAdapterStateChange": 26,
+    "_internalTriggerBluetoothDeviceFound": 27,
+    "_internalTriggerBeaconUpdate": 28,
+    "_internalTriggerBeaconServiceChange": 29,
+    "_internalTriggerBLEConnectionStateChange": 30,
+    "_internalTriggerBLECharacteristicValueChange": 31,
+    "_internalTriggerBLEMTUChange": 32
   }
 }

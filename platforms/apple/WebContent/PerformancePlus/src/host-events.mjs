@@ -1,7 +1,8 @@
 // Host events: what the host tells content that no request asked for.
 //
-// The host's input -- touches, keys, the soft keyboard, IME, gamepads -- is a
-// call of a function on the engine's host bridge, with the arguments the
+// The host's input -- touches, keys, the soft keyboard, IME, gamepads -- and
+// what the device reports -- its motion sensors, its Bluetooth -- each arrive
+// as a call of a function on the engine's host bridge, with the arguments the
 // embedded runtime passes it (engine/crates/runtime-v8/src/js_bindings.rs). On
 // this lane the host sends each as a service EVENT record naming the function
 // by the number below (contracts/runtime/host-events.json, checked entry for
@@ -35,6 +36,18 @@ export const HOST_EVENT = Object.freeze({
   _internalTriggerWheel: 18,
   _internalEnqueueInnerAudioEvent: 19,
   _internalDispatch: 20,
+  _internalTriggerDeviceMotionChange: 21,
+  _internalTriggerGyroscopeChange: 22,
+  _internalTriggerAccelerometerChange: 23,
+  _internalTriggerCompassChange: 24,
+  _internalTriggerDeviceOrientationChange: 25,
+  _internalTriggerBluetoothAdapterStateChange: 26,
+  _internalTriggerBluetoothDeviceFound: 27,
+  _internalTriggerBeaconUpdate: 28,
+  _internalTriggerBeaconServiceChange: 29,
+  _internalTriggerBLEConnectionStateChange: 30,
+  _internalTriggerBLECharacteristicValueChange: 31,
+  _internalTriggerBLEMTUChange: 32,
 });
 
 /** event number → the bridge function it calls, once the engine is bound. */

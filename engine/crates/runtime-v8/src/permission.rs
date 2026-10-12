@@ -24,64 +24,6 @@ use deno_error::JsErrorBox;
 use shared::op_state::HostOpState;
 use shared::services::{Scope, ScopeState};
 
-/// Operations that must hold a scope before reaching a host capability.
-///
-/// Kept beside the ops that enforce it rather than in `shared`: service traits
-/// do not know runtime operation names. The coverage contract checks this
-/// table in both directions and rejects unclassified service-wide operations.
-#[allow(dead_code)]
-pub(crate) const PERMISSION_GATED_OPS: &[(&str, Scope)] = &[
-    ("op_camera_create", Scope::Camera),
-    ("op_camera_take_photo", Scope::Camera),
-    ("op_camera_start_record", Scope::Camera),
-    ("op_camera_set_zoom", Scope::Camera),
-    ("op_camera_listen_frame_change", Scope::Camera),
-    ("op_save_image_to_photos_album", Scope::WritePhotosAlbum),
-    ("op_recorder_start", Scope::Record),
-    ("op_recorder_pause", Scope::Record),
-    ("op_recorder_resume", Scope::Record),
-    ("op_get_location", Scope::UserLocation),
-    ("op_get_fuzzy_location", Scope::UserLocation),
-    ("op_open_bluetooth_adapter", Scope::Bluetooth),
-    ("op_get_bluetooth_adapter_state", Scope::Bluetooth),
-    ("op_start_bluetooth_devices_discovery", Scope::Bluetooth),
-    ("op_get_bluetooth_devices", Scope::Bluetooth),
-    ("op_get_connected_bluetooth_devices", Scope::Bluetooth),
-    ("op_make_bluetooth_pair", Scope::Bluetooth),
-    ("op_is_bluetooth_device_paired", Scope::Bluetooth),
-    ("op_create_ble_connection", Scope::Bluetooth),
-    ("op_get_ble_device_services", Scope::Bluetooth),
-    ("op_get_ble_device_characteristics", Scope::Bluetooth),
-    ("op_read_ble_characteristic_value", Scope::Bluetooth),
-    ("op_write_ble_characteristic_value", Scope::Bluetooth),
-    (
-        "op_notify_ble_characteristic_value_change",
-        Scope::Bluetooth,
-    ),
-    ("op_get_ble_device_rssi", Scope::Bluetooth),
-    ("op_set_ble_mtu", Scope::Bluetooth),
-    ("op_get_ble_mtu", Scope::Bluetooth),
-    ("op_start_beacon_discovery", Scope::Bluetooth),
-    ("op_get_beacons", Scope::Bluetooth),
-    ("op_get_user_info", Scope::UserInfo),
-];
-
-/// Operations that may reach an existing capability only to release it.
-///
-/// Denial must not trap a camera, microphone, scan, or connection that was
-/// acquired while permission was granted.
-#[allow(dead_code)]
-pub(crate) const PERMISSION_CLEANUP_OPS: &[(&str, Scope)] = &[
-    ("op_camera_destroy", Scope::Camera),
-    ("op_camera_stop_record", Scope::Camera),
-    ("op_camera_close_frame_change", Scope::Camera),
-    ("op_recorder_stop", Scope::Record),
-    ("op_close_bluetooth_adapter", Scope::Bluetooth),
-    ("op_stop_bluetooth_devices_discovery", Scope::Bluetooth),
-    ("op_close_ble_connection", Scope::Bluetooth),
-    ("op_stop_beacon_discovery", Scope::Bluetooth),
-];
-
 /// Refuse an operation unless the host has granted its scope.
 ///
 /// The error text follows the common mini-game platform's `auth deny`

@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- iOS: content on Performance+ reaches the host app's services. The host-service channel's methods that the embedded
+  runtime answers with one scope check and one device-service call -- toasts, modals, loading and action sheets, the
+  clipboard, location, the screen's brightness and capture state, code scanning, the motion sensors, the image, media
+  and file pickers, login and the account, permission requests and the settings pages, Bluetooth and beacons,
+  payment, the share menu, mini-program navigation, the window's pointer lock and size, applying a package update --
+  cross from WebContent as commands under their ops' own numbers, and the host makes the same scope check, from the
+  same table (now in `shared::services`, for both executions), and the same call. What the host app answers reaches
+  content through the hook the embedded runtime calls, and so does a refusal -- a scope not granted, a service no one
+  supplies, a request the service turns down -- so content's call fails as it does in process instead of waiting out
+  its timeout. The motion sensors' readings and Bluetooth's reports (the adapter, found devices, connections,
+  characteristic values with their bytes, the MTU, beacons) reach content as typed events, routed for both executions
+  by one table, and whether the host offers package updates is asked of it. The external session now owns the mounted
+  content's `/tmp` as the embedded one does -- emptied at mount, removed at the end -- which is where the pickers' files
+  land. The staging generator checks that the host reads each channel op in the shape of the op's Rust signature.
 - Apple: `MigoAppleBluetooth`, an optional capability: a BLE central through CoreBluetooth -- the adapter and its
   state, scanning with found devices reported at content's interval (their manufacturer segment, services, service
   data and local name), the connected devices, connections answered once their services and characteristics are

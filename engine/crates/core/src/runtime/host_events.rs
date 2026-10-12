@@ -1,5 +1,5 @@
-//! Host events on the external session: input the host received, sent to the
-//! producer as service EVENT records.
+//! Host events on the external session: input the host received, and what the
+//! device reported, sent to the producer as service EVENT records.
 //!
 //! [`ServiceEventSink`] is the external execution's [`InputSink`]: where the
 //! embedded runtime calls a host-bridge function in process, this writes one
@@ -8,7 +8,8 @@
 //! producer makes the same call on the same engine JavaScript. Each argument is
 //! the value the embedded bindings hand V8 (`runtime-v8/src/js_bindings.rs`):
 //! numbers as numbers, text as strings, a touch's points as their 20-byte
-//! records, which the producer passes as an ArrayBuffer.
+//! records and a Bluetooth characteristic's value as its bytes, each of which
+//! the producer passes as an ArrayBuffer.
 
 use frame_wire::value::OwnedValue;
 use shared::protocol::host_cmd::{GamepadState, TouchPoint, TouchType};
@@ -51,6 +52,18 @@ host_events! {
     _internalTriggerWheel = 18,
     _internalEnqueueInnerAudioEvent = 19,
     _internalDispatch = 20,
+    _internalTriggerDeviceMotionChange = 21,
+    _internalTriggerGyroscopeChange = 22,
+    _internalTriggerAccelerometerChange = 23,
+    _internalTriggerCompassChange = 24,
+    _internalTriggerDeviceOrientationChange = 25,
+    _internalTriggerBluetoothAdapterStateChange = 26,
+    _internalTriggerBluetoothDeviceFound = 27,
+    _internalTriggerBeaconUpdate = 28,
+    _internalTriggerBeaconServiceChange = 29,
+    _internalTriggerBLEConnectionStateChange = 30,
+    _internalTriggerBLECharacteristicValueChange = 31,
+    _internalTriggerBLEMTUChange = 32,
 }
 
 /// The size of one `MigoTouchPoint` record, as `01_touch.js` reads it.
@@ -81,6 +94,17 @@ impl ServiceEventSink<'_> {
                 OwnedValue::F64(timestamp_ms),
             ],
         );
+    }
+
+    fn three(&self, event: u32, a: f64, b: f64, c: f64) {
+        self.send(
+            event,
+            vec![OwnedValue::F64(a), OwnedValue::F64(b), OwnedValue::F64(c)],
+        );
+    }
+
+    fn two_flags(&self, event: u32, a: bool, b: bool) {
+        self.send(event, vec![OwnedValue::Bool(a), OwnedValue::Bool(b)]);
     }
 
     fn key(
@@ -295,6 +319,84 @@ impl InputSink for ServiceEventSink<'_> {
                 OwnedValue::F64(timestamp_ms),
                 OwnedValue::U32(delta_mode),
             ],
+        );
+    }
+    fn device_motion(&mut self, alpha: f64, beta: f64, gamma: f64) {
+        self.three(
+            event::_internalTriggerDeviceMotionChange,
+            alpha,
+            beta,
+            gamma,
+        );
+    }
+    fn gyroscope(&mut self, x: f64, y: f64, z: f64) {
+        self.three(event::_internalTriggerGyroscopeChange, x, y, z);
+    }
+    fn accelerometer(&mut self, x: f64, y: f64, z: f64) {
+        self.three(event::_internalTriggerAccelerometerChange, x, y, z);
+    }
+    fn compass(&mut self, direction: f64, accuracy: &str) {
+        self.send(
+            event::_internalTriggerCompassChange,
+            vec![
+                OwnedValue::F64(direction),
+                OwnedValue::Str(accuracy.to_owned()),
+            ],
+        );
+    }
+    fn device_orientation(&mut self, value: &str) {
+        self.text(event::_internalTriggerDeviceOrientationChange, value);
+    }
+    fn bluetooth_adapter_state_change(&mut self, available: bool, discovering: bool) {
+        self.two_flags(
+            event::_internalTriggerBluetoothAdapterStateChange,
+            available,
+            discovering,
+        );
+    }
+    fn bluetooth_device_found(&mut self, devices_json: &str) {
+        self.text(event::_internalTriggerBluetoothDeviceFound, devices_json);
+    }
+    fn beacon_update(&mut self, beacons_json: &str) {
+        self.text(event::_internalTriggerBeaconUpdate, beacons_json);
+    }
+    fn beacon_service_change(&mut self, available: bool, discovering: bool) {
+        self.two_flags(
+            event::_internalTriggerBeaconServiceChange,
+            available,
+            discovering,
+        );
+    }
+    fn ble_connection_state_change(&mut self, device_id: &str, connected: bool) {
+        self.send(
+            event::_internalTriggerBLEConnectionStateChange,
+            vec![
+                OwnedValue::Str(device_id.to_owned()),
+                OwnedValue::Bool(connected),
+            ],
+        );
+    }
+    fn ble_characteristic_value_change(
+        &mut self,
+        device_id: &str,
+        service_id: &str,
+        characteristic_id: &str,
+        value: &[u8],
+    ) {
+        self.send(
+            event::_internalTriggerBLECharacteristicValueChange,
+            vec![
+                OwnedValue::Str(device_id.to_owned()),
+                OwnedValue::Str(service_id.to_owned()),
+                OwnedValue::Str(characteristic_id.to_owned()),
+                OwnedValue::Bytes(value.to_vec()),
+            ],
+        );
+    }
+    fn ble_mtu_change(&mut self, device_id: &str, mtu: u32) {
+        self.send(
+            event::_internalTriggerBLEMTUChange,
+            vec![OwnedValue::Str(device_id.to_owned()), OwnedValue::U32(mtu)],
         );
     }
 }

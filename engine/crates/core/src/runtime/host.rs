@@ -794,54 +794,6 @@ impl Host {
                 Ok(())
             }
 
-            // The generation is read at the top of `handle_command_inner`, which
-            // is the only place that may act on it: a handler comparing it again
-            // would be a second decision point that could disagree with the one
-            // that already let this command through. Hence `_` here and below.
-            HostCommand::OnDeviceMotionChange {
-                alpha,
-                beta,
-                gamma,
-                runtime_generation: _,
-            } => {
-                self.js.dispatch_device_motion(alpha, beta, gamma);
-                Ok(())
-            }
-
-            HostCommand::OnGyroscopeChange {
-                x,
-                y,
-                z,
-                runtime_generation: _,
-            } => {
-                self.js.dispatch_gyroscope(x, y, z);
-                Ok(())
-            }
-
-            HostCommand::OnDeviceOrientationChange { value } => {
-                self.js.dispatch_device_orientation(&value);
-                Ok(())
-            }
-
-            HostCommand::OnCompassChange {
-                direction,
-                accuracy,
-                runtime_generation: _,
-            } => {
-                self.js.dispatch_compass(direction, &accuracy);
-                Ok(())
-            }
-
-            HostCommand::OnAccelerometerChange {
-                x,
-                y,
-                z,
-                runtime_generation: _,
-            } => {
-                self.js.dispatch_accelerometer(x, y, z);
-                Ok(())
-            }
-
             HostCommand::OnNetworkStatusChange {
                 is_connected,
                 network_type,
@@ -850,6 +802,10 @@ impl Host {
                 Ok(())
             }
 
+            // The generation is read at the top of `handle_command_inner`, which
+            // is the only place that may act on it: a handler comparing it again
+            // would be a second decision point that could disagree with the one
+            // that already let this command through. Hence `_` here and below.
             HostCommand::RecorderEvent {
                 event_type,
                 json_payload,
@@ -894,58 +850,6 @@ impl Host {
                         entry.height,
                     );
                 }
-                Ok(())
-            }
-
-            HostCommand::OnBLEConnectionStateChange {
-                device_id,
-                connected,
-            } => {
-                self.js
-                    .dispatch_ble_connection_state_change(&device_id, connected);
-                Ok(())
-            }
-
-            HostCommand::OnBLECharacteristicValueChange(ble) => {
-                self.js.dispatch_ble_characteristic_value_change(
-                    ble.device_id(),
-                    ble.service_id(),
-                    ble.characteristic_id(),
-                    ble.value(),
-                );
-                Ok(())
-            }
-
-            HostCommand::OnBLEMTUChange { device_id, mtu } => {
-                self.js.dispatch_ble_mtu_change(&device_id, mtu);
-                Ok(())
-            }
-
-            HostCommand::OnBluetoothAdapterStateChange {
-                available,
-                discovering,
-            } => {
-                self.js
-                    .dispatch_bluetooth_adapter_state_change(available, discovering);
-                Ok(())
-            }
-
-            HostCommand::OnBluetoothDeviceFound { devices_json } => {
-                self.js.dispatch_bluetooth_device_found(&devices_json);
-                Ok(())
-            }
-
-            HostCommand::OnBeaconUpdate { beacons_json } => {
-                self.js.dispatch_beacon_update(&beacons_json);
-                Ok(())
-            }
-
-            HostCommand::OnBeaconServiceChange {
-                available,
-                discovering,
-            } => {
-                self.js
-                    .dispatch_beacon_service_change(available, discovering);
                 Ok(())
             }
 
@@ -1609,6 +1513,53 @@ impl InputSink for HostJsRuntime {
         timestamp_ms: f64,
     ) {
         self.dispatch_wheel(delta_x, delta_y, delta_z, delta_mode, timestamp_ms);
+    }
+    fn device_motion(&mut self, alpha: f64, beta: f64, gamma: f64) {
+        self.dispatch_device_motion(alpha, beta, gamma);
+    }
+    fn gyroscope(&mut self, x: f64, y: f64, z: f64) {
+        self.dispatch_gyroscope(x, y, z);
+    }
+    fn accelerometer(&mut self, x: f64, y: f64, z: f64) {
+        self.dispatch_accelerometer(x, y, z);
+    }
+    fn compass(&mut self, direction: f64, accuracy: &str) {
+        self.dispatch_compass(direction, accuracy);
+    }
+    fn device_orientation(&mut self, value: &str) {
+        self.dispatch_device_orientation(value);
+    }
+    fn bluetooth_adapter_state_change(&mut self, available: bool, discovering: bool) {
+        self.dispatch_bluetooth_adapter_state_change(available, discovering);
+    }
+    fn bluetooth_device_found(&mut self, devices_json: &str) {
+        self.dispatch_bluetooth_device_found(devices_json);
+    }
+    fn beacon_update(&mut self, beacons_json: &str) {
+        self.dispatch_beacon_update(beacons_json);
+    }
+    fn beacon_service_change(&mut self, available: bool, discovering: bool) {
+        self.dispatch_beacon_service_change(available, discovering);
+    }
+    fn ble_connection_state_change(&mut self, device_id: &str, connected: bool) {
+        self.dispatch_ble_connection_state_change(device_id, connected);
+    }
+    fn ble_characteristic_value_change(
+        &mut self,
+        device_id: &str,
+        service_id: &str,
+        characteristic_id: &str,
+        value: &[u8],
+    ) {
+        self.dispatch_ble_characteristic_value_change(
+            device_id,
+            service_id,
+            characteristic_id,
+            value,
+        );
+    }
+    fn ble_mtu_change(&mut self, device_id: &str, mtu: u32) {
+        self.dispatch_ble_mtu_change(device_id, mtu);
     }
 }
 
