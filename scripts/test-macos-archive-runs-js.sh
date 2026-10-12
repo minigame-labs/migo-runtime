@@ -141,9 +141,8 @@ trap cleanup EXIT
 CONTENT_ID="$CONTENT"
 CODE_DIR="$WORK/files/migo/games/$CONTENT_ID/code"
 mkdir -p "$CODE_DIR" "$WORK/cache" "$WORK/code-cache"
-for name in game.json game.js; do
-  cp "$ROOT/scripts/fixtures/$CONTENT_ID/$name" "$CODE_DIR/$name"
-done
+# The whole fixture: a probe may read files of its own beside game.js.
+cp -R "$ROOT/scripts/fixtures/$CONTENT_ID/." "$CODE_DIR/"
 
 HOST="$WORK/macos-headless-host"
 echo "[1/2] linking the host against $ARCHIVE"
@@ -160,7 +159,7 @@ clang -fobjc-arc -fmodules -O0 -g \
   -framework CoreFoundation -framework CoreGraphics -framework IOKit \
   -framework IOSurface -framework AppKit -framework Security \
   -framework CoreText -framework CoreServices -framework AudioToolbox \
-  -framework AVFoundation -framework CoreMedia -framework CoreAudio \
+  -framework AVFoundation -framework CoreMedia -framework CoreVideo -framework CoreAudio \
   -framework SystemConfiguration -framework GameController \
   -lc++ -lz \
   || fail "the host did not link against $ARCHIVE"

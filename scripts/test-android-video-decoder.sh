@@ -4,7 +4,7 @@
 # The decoder is the NDK's extractor and codec rendering into an image reader
 # (engine/crates/platform/src/android/video_decoder.rs), and nothing short of a
 # device or an emulator runs those: so this deploys
-# scripts/fixtures/android-video-decoder-probe -- ten 64 x 48 H.264 frames of
+# scripts/fixtures/video-decoder-probe -- ten 64 x 48 H.264 frames of
 # known colour, BT.709 said in the stream -- into a demo host built against
 # this tree's AAR, launches it, and reads the probe's verdict from logcat: every
 # frame in order with its presentation time and colour, then a seek landing on
@@ -14,14 +14,14 @@
 # (com.minigame.androiddemo, the examples repository's android-java app, built
 # with this tree's AAR: scripts/build-android-so.sh then scripts/build-aar.sh
 # for the device's ABI). The clip is regenerated, on a Mac, with
-#   swiftc -O scripts/fixtures/android-video-decoder-probe/make-clip.swift -o /tmp/make-clip
-#   /tmp/make-clip scripts/fixtures/android-video-decoder-probe/clip.mp4
+#   swiftc -O scripts/fixtures/video-decoder-probe/make-clip.swift -o /tmp/make-clip
+#   /tmp/make-clip scripts/fixtures/video-decoder-probe/clip.mp4
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-FIXTURE="$ROOT/scripts/fixtures/android-video-decoder-probe"
+FIXTURE="$ROOT/scripts/fixtures/video-decoder-probe"
 PKG="com.minigame.androiddemo"
-GAME="android-video-decoder-probe"
+GAME="video-decoder-probe"
 STAGE="/data/local/tmp/$GAME"
 ADB="${ADB:-adb}"
 

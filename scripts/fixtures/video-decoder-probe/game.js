@@ -3,10 +3,12 @@
 // (i * 25, 255 - i * 25, 128). Every frame must arrive, in order, with its
 // presentation time and its colour; then a seek to 450 ms must continue from
 // the frame shown there, the one at 400 ms. The verdict is one line on the
-// console; a failure names the step.
+// console -- a failure names the step -- and then the game exits.
 
+// The verdict, then the game ends: a host waiting for it to finish is done.
 function report(line) {
   console.error("migo-video-probe: " + line);
+  if (line.indexOf("PASS") === 0 || line.indexOf("FAIL") === 0) migo.exitMiniProgram();
 }
 
 function expected(i) {
