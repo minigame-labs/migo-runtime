@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Apple: the screen service, answered by the system when the app does not name it. iOS: `getScreenBrightness` /
+  `setScreenBrightness`, `onUserCaptureScreen` (the screenshot notice), `getScreenRecordingState` and
+  `onScreenRecordingStateChanged` (`UIScreen.isCaptured`), and `onDeviceOrientationChange` (`landscape` with the home
+  side to the right, `landscapeReverse`, `portrait`). macOS: `setVisualEffectOnCapture('hidden')` keeps the game's
+  window out of screenshots, recordings and screen sharing. The rest is decided unsupported with the platform's
+  reason -- a Mac has no public brightness control, device orientation, screenshot notice or recording state, and iOS
+  no public way to hide content from a capture.
 - Apple: the system's dialogs and indicators answer the interaction service when the app does not name it -- a toast
   or a loading indicator over the game (one at a time; `hideToast` hides only a toast, a toast hides itself after its
   duration, `mask` holds touches back), `showModal` as an alert (an editable one with an input, its text the answer's
