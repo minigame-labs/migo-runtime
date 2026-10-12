@@ -366,6 +366,11 @@ public final class MigoEngineSession {
             guard let json = try? JSONSerialization.data(withJSONObject: object) else { return }
             self?.postHostServiceEvent(service, event: event, json: json)
         }
+        #if os(iOS)
+            composed.builtIn.postSample = { [weak self] kind, values, accuracy in
+                self?.postSensorSample(kind, values, accuracy: accuracy)
+            }
+        #endif
         // Before content runs, so its first read of a grant has a report. The
         // SDK decides content's scopes unless the app answers the permission
         // service itself.
@@ -632,6 +637,25 @@ public final class MigoEngineSession {
         }
         if result != MIGO_OK, result != MIGO_ERROR_WOULD_BLOCK {
             NSLog("MigoEngineSession: migo_session_post_ble_characteristic_value returned \(result)")
+        }
+    }
+
+    /// One motion-sensor reading, typed. Main thread.
+    func postSensorSample(
+        _ kind: MigoSensorKind, _ values: (Double, Double, Double), accuracy: MigoCompassAccuracy
+    ) {
+        guard !isClosed else { return }
+        var sample = MigoSensorSample()
+        sample.struct_size = UInt32(MemoryLayout<MigoSensorSample>.size)
+        sample.abi_version = MIGO_ABI_VERSION_CURRENT
+        sample.kind = kind
+        sample.compass_accuracy = accuracy
+        sample.values = values
+        let result = migo_session_post_sensor_sample(session, &sample)
+        // Dropped when content falls behind, or before a surface is attached:
+        // the next reading supersedes it.
+        if result != MIGO_OK, result != MIGO_ERROR_WOULD_BLOCK, result != MIGO_ERROR_INVALID_STATE {
+            NSLog("MigoEngineSession: migo_session_post_sensor_sample returned \(result)")
         }
     }
 

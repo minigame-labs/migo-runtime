@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- iOS: the motion sensors -- `startAccelerometer`, `startGyroscope`, `startDeviceMotionListening` and `startCompass`
+  with their listeners -- read by CoreMotion as the SDK's own service (raw motion needs no purpose string), each at
+  content's interval, as typed sensor samples. The accelerometer reads the device's reaction to gravity in g (face up,
+  z = +1) and the gyroscope radians a second, on the device's axes. The orientation is the W3C DeviceOrientation
+  angles -- alpha [0, 360), beta [-180, 180), gamma [-90, 90) -- computed from the two vectors CoreMotion documents in
+  the device's frame, gravity and the calibrated magnetic field, so no attitude-matrix convention is assumed; the
+  compass is CoreMotion's heading from magnetic north with the field's calibration as its accuracy. One device-motion
+  stream serves both, referenced to magnetic north where there is a magnetometer.
 - iOS: iBeacons. `MigoLocation` ranges them with CoreLocation, under the location grant (asked for if the player has not
   decided): `startBeaconDiscovery` ranges the proximity UUIDs it names in place of what was being ranged,
   `onBeaconUpdate` hears every beacon in range as each ranging reports, `getBeacons` answers them, and

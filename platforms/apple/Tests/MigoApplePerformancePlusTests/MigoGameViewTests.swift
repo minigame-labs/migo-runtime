@@ -6,6 +6,7 @@ import XCTest
 @testable import MigoApplePerformancePlus
 
 #if os(iOS)
+    import CoreMotion
     import UIKit
 
     /// The product surface, the way an app uses it: install a package, put the
@@ -468,6 +469,66 @@ import XCTest
                     "save-fail saveImageToPhotosAlbum:fail auth deny: scope.writePhotosAlbum is not granted"),
                 "\(lines)")
             view.stop()
+        }
+
+        /// The motion sensors, from content in WebContent: a device's readings
+        /// reach the game's listeners -- the accelerometer's at about one g,
+        /// whichever way the device lies, and an orientation in the W3C
+        /// ranges. Needs the sensors: on the simulator, which has none, it is
+        /// skipped (the refusal there is MigoSystemMotionTests').
+        func testContentHearsTheMotionSensorsTheDeviceHas() throws {
+            try XCTSkipUnless(CMMotionManager().isDeviceMotionAvailable, "no motion sensors here")
+            let game = try package(
+                named: "motion",
+                game: """
+                    const say = (line) => console.log(line);
+                    let accelerometer = null;
+                    migo.onAccelerometerChange((res) => {
+                      if (accelerometer) return;
+                      accelerometer = res;
+                      say("accelerometer " + JSON.stringify(res));
+                    });
+                    let orientation = null;
+                    migo.onDeviceMotionChange((res) => {
+                      if (orientation) return;
+                      orientation = res;
+                      say("orientation " + JSON.stringify(res));
+                    });
+                    migo.startAccelerometer({ interval: "game", fail(e) { say("start-fail " + e.errMsg); } });
+                    migo.startDeviceMotionListening({ interval: "game", fail(e) { say("start-fail " + e.errMsg); } });
+                    """)
+            try MigoGameInstaller.install(package: game, id: "motion", into: directories)
+            let view = MigoGameView(configuration: .init(directories: directories, contentSigning: .unsigned))
+            var readings: [String: [String: Double]] = [:]
+            var failure: String?
+            let heard = expectation(description: "content heard both sensors")
+            heard.expectedFulfillmentCount = 2
+            view.onEvent = { event in
+                switch event {
+                case .console(_, let message):
+                    for kind in ["accelerometer", "orientation"] where message.hasPrefix(kind + " ") {
+                        let json = Data(message.dropFirst(kind.count + 1).utf8)
+                        readings[kind] = (try? JSONSerialization.jsonObject(with: json)) as? [String: Double]
+                        heard.fulfill()
+                    }
+                    if message.hasPrefix("start-fail ") { failure = message }
+                case .failed(let reason):
+                    failure = reason
+                default: break
+                }
+            }
+            mount(view)
+            view.loadGame(id: "motion")
+            wait(for: [heard], timeout: 60)
+            view.stop()
+            XCTAssertNil(failure)
+            let a = try XCTUnwrap(readings["accelerometer"])
+            let g = sqrt(pow(a["x"] ?? 0, 2) + pow(a["y"] ?? 0, 2) + pow(a["z"] ?? 0, 2))
+            XCTAssertEqual(g, 1, accuracy: 0.2, "gravity, in g: \(a)")
+            let o = try XCTUnwrap(readings["orientation"])
+            XCTAssertTrue((0..<360).contains(o["alpha"] ?? -1), "\(o)")
+            XCTAssertTrue((-180..<180).contains(o["beta"] ?? 999), "\(o)")
+            XCTAssertTrue((-90..<90).contains(o["gamma"] ?? 999), "\(o)")
         }
 
         /// A copy of `package`, signed: every file's SHA-256 in manifest.json and

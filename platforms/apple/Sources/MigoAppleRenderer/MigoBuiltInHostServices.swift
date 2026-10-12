@@ -8,7 +8,8 @@ import Foundation
 
 /// What the SDK supplies itself of the host-service channel: the services the
 /// system already offers the app -- the pasteboard, its dialogs and
-/// indicators, its screen, its settings pages, its pickers and image encoder --
+/// indicators, its screen, its settings pages, its pickers and image encoder,
+/// and on iOS its motion sensors --
 /// answered by the system's own, for every service the app does not name. An app that names a
 /// service answers it instead, and one that wants a service refused names it
 /// and refuses.
@@ -24,6 +25,9 @@ final class MigoBuiltInHostServices: MigoHostServiceProvider {
         builtIn.insert(.screen)
         builtIn.insert(.setting)
         builtIn.insert(.image)
+        #if os(iOS)
+            builtIn.insert(.motion)
+        #endif
         return builtIn
     }()
 
@@ -65,6 +69,14 @@ final class MigoBuiltInHostServices: MigoHostServiceProvider {
 
     /// Where a service's events go: the session's channel, once it is open.
     var post: ((MigoHostServiceID, UInt32, [String: Any]) -> Void)?
+    #if os(iOS)
+        /// Where the motion sensors' readings go: typed, up to fifty a second.
+        var postSample: MigoSystemMotion.Sample?
+        /// Kept for the session: which sensors run is state.
+        private lazy var motion = MigoSystemMotion(post: { [weak self] kind, values, accuracy in
+            self?.postSample?(kind, values, accuracy)
+        })
+    #endif
 
     func handle(_ request: MigoHostServiceRequest) {
         switch request.service {
@@ -80,6 +92,10 @@ final class MigoBuiltInHostServices: MigoHostServiceProvider {
             settings.handle(request)
         case .image:
             images.handle(request)
+        #if os(iOS)
+            case .motion:
+                motion.handle(request)
+        #endif
         default:
             request.reply?.fail("not supported")
         }
