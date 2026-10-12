@@ -38,6 +38,49 @@ public protocol MigoPhotoLibrarySaving: MigoSystemCapability {
     func saveImageToPhotoLibrary(_ file: URL, completion: @escaping (String?) -> Void)
 }
 
+/// A capability that ranges iBeacons: what the Bluetooth service's beacon
+/// methods -- `startBeaconDiscovery`, `stopBeaconDiscovery`, `getBeacons` --
+/// are handed to, the rest of that service being Bluetooth's. On Apple
+/// platforms a beacon is ranged by CoreLocation, under the location grant, not
+/// by CoreBluetooth; content still holds `scope.bluetooth` for it, which the
+/// engine checks. Its events are the Bluetooth service's `BEACON_UPDATE` and
+/// `BEACON_SERVICE_CHANGE`. Main thread.
+public protocol MigoBeaconRanging: MigoSystemCapability {
+    /// One of the three beacon methods, answered with the common platform's
+    /// codes (`MigoBeaconError`) when it fails.
+    func handleBeacons(_ request: MigoHostServiceRequest)
+}
+
+/// The common mini-game platform's codes for a beacon call that failed.
+public enum MigoBeaconError: Int32 {
+    case unsupported = 11000
+    case bluetoothUnavailable = 11001
+    case locationUnavailable = 11002
+    case alreadyStarted = 11003
+    case notStarted = 11004
+    case systemError = 11005
+    case invalidData = 11006
+
+    public var message: String {
+        switch self {
+        case .unsupported: return "unsupport"
+        case .bluetoothUnavailable: return "bluetooth service is unavailable"
+        case .locationUnavailable: return "location service is unavailable"
+        case .alreadyStarted: return "already start"
+        case .notStarted: return "not startBeaconDiscovery"
+        case .systemError: return "system error"
+        case .invalidData: return "invalid data"
+        }
+    }
+}
+
+extension MigoHostServiceReply {
+    /// A beacon call failed with `error`'s code and words.
+    public func fail(_ error: MigoBeaconError) {
+        fail(error.message, code: error.rawValue)
+    }
+}
+
 /// What a capability reports through, for one session: the fields of the
 /// app's grants and the system switches it owns, and -- while the SDK decides
 /// content's scopes, the app answering no permission service of its own -- the

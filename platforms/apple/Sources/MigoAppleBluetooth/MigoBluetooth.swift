@@ -15,8 +15,9 @@ import MigoEngine
 /// so the scope is refused without asking.
 ///
 /// What the platform documents for Android only -- pairing, asking whether a
-/// device is paired, setting the MTU -- is refused, as is the peripheral mode
-/// and, for now, iBeacon ranging, which is CoreLocation's.
+/// device is paired, setting the MTU -- is refused, as is the peripheral mode.
+/// iBeacons are CoreLocation's: ranged by `MigoLocation` on iOS when it is
+/// linked too, and refused otherwise.
 ///
 /// Create it on the main thread; it is used there.
 public final class MigoBluetooth: MigoSystemCapability {
@@ -221,7 +222,9 @@ public final class MigoBluetooth: MigoSystemCapability {
             // The ATT header the payload length leaves out.
             reply.succeed(["mtu": connection.peripheral.maximumWriteValueLength(for: type) + 3])
         case Method.startBeaconDiscovery, Method.stopBeaconDiscovery, Method.getBeacons:
-            fail(reply, .beaconUnsupported)
+            // Reached only when no linked capability ranges beacons
+            // (`MigoBeaconRanging`, which `MigoLocation` is on iOS).
+            reply.fail(MigoBeaconError.unsupported)
         default:
             // Pairing, asking whether a device is paired and setting the MTU are
             // Android's.

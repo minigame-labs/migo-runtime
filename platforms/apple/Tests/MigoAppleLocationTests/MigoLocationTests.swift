@@ -114,4 +114,47 @@ final class MigoLocationTests: XCTestCase {
         XCTAssertEqual(location.scopes, [MigoScope(MIGO_SCOPE_USER_LOCATION)])
         XCTAssertEqual(location.services, [.location])
     }
+
+    // MARK: - iBeacons
+
+    func testAStartNamesProximityUUIDsAndNothingElse() {
+        let a = "FDA50693-A4E2-4FB1-AFCF-C6EB07647825"
+        let b = "e2c56db5-dffb-48d2-b060-d0f5a71096e0"
+        XCTAssertEqual(MigoBeacons.uuids(["uuids": [a, b, a]]), [UUID(uuidString: a)!, UUID(uuidString: b)!])
+        XCTAssertNil(MigoBeacons.uuids(["uuids": []]), "a start names at least one")
+        XCTAssertNil(MigoBeacons.uuids([:]))
+        XCTAssertNil(MigoBeacons.uuids(["uuids": [a, "not-a-uuid"]]), "one bad name refuses the start")
+        XCTAssertNil(MigoBeacons.uuids(["uuids": [7]]))
+    }
+
+    func testEachRangingReplacesItsOwnBeaconsAndTheListKeepsItsOrder() {
+        let first = UUID(uuidString: "FDA50693-A4E2-4FB1-AFCF-C6EB07647825")!
+        let second = UUID(uuidString: "E2C56DB5-DFFB-48D2-B060-D0F5A71096E0")!
+        func beacon(_ uuid: UUID, _ minor: Int) -> MigoBeacons.Sighting {
+            MigoBeacons.Sighting(uuid: uuid, major: 1, minor: minor, proximity: 2, accuracy: 1.5, rssi: -60)
+        }
+        var table = MigoBeacons.Table()
+        table.update(first, [beacon(first, 1), beacon(first, 2)])
+        table.update(second, [beacon(second, 9)])
+        table.update(first, [beacon(first, 3)])
+        XCTAssertEqual(table.records.map { $0["minor"] as? Int }, [3, 9], "first's whole set replaced, in naming order")
+        table.remove(first)
+        XCTAssertEqual(table.records.map { $0["minor"] as? Int }, [9])
+        table.clear()
+        XCTAssertTrue(table.records.isEmpty)
+    }
+
+    func testABeaconIsReportedInThePlatformsFields() {
+        let uuid = UUID(uuidString: "fda50693-a4e2-4fb1-afcf-c6eb07647825")!
+        let record = MigoBeacons.Sighting(
+            uuid: uuid, major: 10, minor: 20, proximity: 1, accuracy: 0.4, rssi: -42
+        ).record
+        XCTAssertEqual(record["uuid"] as? String, "FDA50693-A4E2-4FB1-AFCF-C6EB07647825")
+        XCTAssertEqual(record["major"] as? Int, 10)
+        XCTAssertEqual(record["minor"] as? Int, 20)
+        XCTAssertEqual(record["proximity"] as? Int, 1, "CoreLocation's immediate, the platform's 1")
+        XCTAssertEqual(record["accuracy"] as? Double, 0.4)
+        XCTAssertEqual(record["rssi"] as? Int, -42)
+        XCTAssertEqual(CLProximity.far.rawValue, 3, "the platform's numbers are CoreLocation's")
+    }
 }

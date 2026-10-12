@@ -15,6 +15,9 @@ import MigoEngine
 /// sandboxed). Without a purpose string the system shows no prompt, so the
 /// scope is refused without asking.
 ///
+/// On iOS it also ranges iBeacons for the Bluetooth service's beacon methods
+/// (`MigoBeaconRanging`): CoreLocation ranges them, under the same grant.
+///
 /// Answers are WGS-84 as CoreLocation reports them; the engine converts to
 /// GCJ-02 when content asks and rounds a fuzzy position. A fuzzy position comes
 /// from a manager CoreLocation reports reduced accuracy to, so it is coarse
@@ -49,6 +52,13 @@ public final class MigoLocation: MigoSystemCapability {
     private var scopeWaiters: [(Bool) -> Void] = []
     /// The location services switch as last read: off fails a call at once.
     private var servicesEnabled = true
+    #if os(iOS)
+        /// Ranges iBeacons, apart from the managers that read position.
+        private let beaconManager = CLLocationManager()
+        /// The proximity UUIDs being ranged, and what each has in range.
+        private var ranging: [UUID] = []
+        private var beacons = MigoBeacons.Table()
+    #endif
 
     public init() {
         precise.desiredAccuracy = kCLLocationAccuracyHundredMeters
@@ -56,12 +66,18 @@ public final class MigoLocation: MigoSystemCapability {
         delegate.owner = self
         precise.delegate = delegate
         coarse.delegate = delegate
+        #if os(iOS)
+            beaconManager.delegate = delegate
+        #endif
     }
 
     deinit {
         precise.stopUpdatingLocation()
         coarse.stopUpdatingLocation()
         deadline?.invalidate()
+        #if os(iOS)
+            stopRanging()
+        #endif
     }
 
     // MARK: - reports
@@ -75,6 +91,9 @@ public final class MigoLocation: MigoSystemCapability {
             let waiters = scopeWaiters
             scopeWaiters = []
             waiters.forEach { $0(false) }
+            #if os(iOS)
+                stopRanging()
+            #endif
             return
         }
         reportState()
@@ -170,6 +189,13 @@ public final class MigoLocation: MigoSystemCapability {
         if !Self.isAuthorized(status) {
             fail(preciseRequests.drain() + fuzzyRequests.drain(), "system permission denied")
             idle()
+            #if os(iOS)
+                // Ranging stops with the grant; content hears the service go.
+                if !ranging.isEmpty {
+                    stopRanging()
+                    postBeaconService(available: false)
+                }
+            #endif
         }
         guard status != .notDetermined, !scopeWaiters.isEmpty else { return }
         let waiters = scopeWaiters
@@ -301,6 +327,60 @@ public final class MigoLocation: MigoSystemCapability {
         deadline = timer
     }
 
+    #if os(iOS)
+        // MARK: - iBeacons
+
+        private typealias Beacon = MigoHostServiceID.Bluetooth
+
+        private func stopRanging() {
+            for uuid in ranging {
+                beaconManager.stopRangingBeacons(satisfying: CLBeaconIdentityConstraint(uuid: uuid))
+            }
+            ranging = []
+            beacons.clear()
+        }
+
+        private func postBeaconService(available: Bool) {
+            reports?.postEvent(
+                .bluetooth, event: Beacon.Event.beaconServiceChange,
+                object: ["available": available, "discovering": !ranging.isEmpty])
+        }
+
+        /// Range the beacons `uuids` name, in place of what was being ranged.
+        private func range(_ uuids: [UUID]) {
+            for uuid in ranging where !uuids.contains(uuid) {
+                beaconManager.stopRangingBeacons(satisfying: CLBeaconIdentityConstraint(uuid: uuid))
+                beacons.remove(uuid)
+            }
+            for uuid in uuids where !ranging.contains(uuid) {
+                beaconManager.startRangingBeacons(satisfying: CLBeaconIdentityConstraint(uuid: uuid))
+            }
+            ranging = uuids
+            postBeaconService(available: true)
+        }
+
+        fileprivate func ranged(_ found: [CLBeacon], for constraint: CLBeaconIdentityConstraint) {
+            guard ranging.contains(constraint.uuid) else { return }
+            beacons.update(
+                constraint.uuid,
+                found.map {
+                    MigoBeacons.Sighting(
+                        uuid: $0.uuid, major: $0.major.intValue, minor: $0.minor.intValue,
+                        proximity: $0.proximity.rawValue, accuracy: $0.accuracy, rssi: $0.rssi)
+                })
+            reports?.postEvent(.bluetooth, event: Beacon.Event.beaconUpdate, object: ["beacons": beacons.records])
+        }
+
+        fileprivate func rangingFailed(for constraint: CLBeaconIdentityConstraint, _ error: Error) {
+            guard ranging.contains(constraint.uuid) else { return }
+            NSLog("MigoLocation: ranging beacons \(constraint.uuid) failed: \(error)")
+            beaconManager.stopRangingBeacons(satisfying: constraint)
+            ranging.removeAll { $0 == constraint.uuid }
+            beacons.remove(constraint.uuid)
+            postBeaconService(available: false)
+        }
+    #endif
+
     /// CoreLocation's delegate, apart so the capability's interface is its own.
     private final class Delegate: NSObject, CLLocationManagerDelegate {
         weak var owner: MigoLocation?
@@ -316,5 +396,68 @@ public final class MigoLocation: MigoSystemCapability {
         func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
             owner?.failed(error, from: manager)
         }
+
+        #if os(iOS)
+            func locationManager(
+                _ manager: CLLocationManager, didRange beacons: [CLBeacon],
+                satisfying constraint: CLBeaconIdentityConstraint
+            ) {
+                owner?.ranged(beacons, for: constraint)
+            }
+
+            func locationManager(
+                _ manager: CLLocationManager, didFailRangingFor constraint: CLBeaconIdentityConstraint,
+                error: Error
+            ) {
+                owner?.rangingFailed(for: constraint, error)
+            }
+        #endif
     }
 }
+
+#if os(iOS)
+    extension MigoLocation: MigoBeaconRanging {
+        /// `startBeaconDiscovery` ranges the UUIDs it names -- asking for the
+        /// location grant first if the player has not decided -- in place of
+        /// what was being ranged; `stopBeaconDiscovery` stops; `getBeacons`
+        /// answers what is in range. Bluetooth being off is not read here
+        /// (that is CoreBluetooth's, and its purpose string): ranging then
+        /// finds nothing.
+        public func handleBeacons(_ request: MigoHostServiceRequest) {
+            guard let reply = request.reply else { return }
+            switch request.method {
+            case Beacon.startBeaconDiscovery:
+                guard let uuids = MigoBeacons.uuids(request.object) else {
+                    reply.fail(MigoBeaconError.invalidData)
+                    return
+                }
+                guard CLLocationManager.isRangingAvailable() else {
+                    reply.fail(MigoBeaconError.unsupported)
+                    return
+                }
+                guard servicesEnabled else {
+                    reply.fail(MigoBeaconError.locationUnavailable)
+                    return
+                }
+                requestScope(MigoScope(MIGO_SCOPE_USER_LOCATION)) { [weak self] granted in
+                    guard let self, granted else {
+                        reply.fail(MigoBeaconError.locationUnavailable)
+                        return
+                    }
+                    self.range(uuids)
+                    reply.succeed()
+                }
+            case Beacon.stopBeaconDiscovery:
+                if !ranging.isEmpty {
+                    stopRanging()
+                    postBeaconService(available: true)
+                }
+                reply.succeed()
+            case Beacon.getBeacons:
+                reply.succeed(["beacons": beacons.records])
+            default:
+                reply.fail("not supported")
+            }
+        }
+    }
+#endif

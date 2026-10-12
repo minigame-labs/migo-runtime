@@ -86,15 +86,8 @@
       "onWheel": "wheel"
   },
   "gaps": {
-    "getBeacons": {"platforms": ["ios"], "reason": "iBeacon ranging is CoreLocation's: it comes with the location capability, not built yet"},
-    "offBeaconServiceChange": {"platforms": ["ios"], "reason": "iBeacon ranging is CoreLocation's: it comes with the location capability, not built yet"},
-    "offBeaconUpdate": {"platforms": ["ios"], "reason": "iBeacon ranging is CoreLocation's: it comes with the location capability, not built yet"},
     "onAudioInterruptionBegin": {"platforms": ["ohos"], "reason": "the OpenHarmony audio output does not report interruptions yet"},
-    "onAudioInterruptionEnd": {"platforms": ["ohos"], "reason": "the OpenHarmony audio output does not report interruptions yet"},
-    "onBeaconServiceChange": {"platforms": ["ios"], "reason": "iBeacon ranging is CoreLocation's: it comes with the location capability, not built yet"},
-    "onBeaconUpdate": {"platforms": ["ios"], "reason": "iBeacon ranging is CoreLocation's: it comes with the location capability, not built yet"},
-    "startBeaconDiscovery": {"platforms": ["ios"], "reason": "iBeacon ranging is CoreLocation's: it comes with the location capability, not built yet"},
-    "stopBeaconDiscovery": {"platforms": ["ios"], "reason": "iBeacon ranging is CoreLocation's: it comes with the location capability, not built yet"}
+    "onAudioInterruptionEnd": {"platforms": ["ohos"], "reason": "the OpenHarmony audio output does not report interruptions yet"}
   },
   "unsupported": {
     "createInferenceSession": {"platforms": "*", "reason": "on-device inference needs a model runtime per platform; not offered"},

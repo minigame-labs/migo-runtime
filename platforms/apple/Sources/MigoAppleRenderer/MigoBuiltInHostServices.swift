@@ -93,6 +93,9 @@ final class MigoComposedHostServices: MigoHostServiceProvider {
     private let app: MigoHostServiceProvider?
     private let appServices: Set<MigoHostServiceID>
     private let capabilities: [MigoSystemCapability]
+    /// The capability the Bluetooth service's beacon methods go to, if one
+    /// ranges beacons.
+    private let beaconRanging: MigoBeaconRanging?
     let builtIn: MigoBuiltInHostServices
     let services: Set<MigoHostServiceID>
 
@@ -100,13 +103,29 @@ final class MigoComposedHostServices: MigoHostServiceProvider {
         self.app = app
         self.capabilities = capabilities
         appServices = app?.services ?? []
+        beaconRanging = capabilities.lazy.compactMap { $0 as? MigoBeaconRanging }.first
         builtIn = MigoBuiltInHostServices(capabilities: capabilities, appServices: appServices)
-        services = capabilities.reduce(appServices.union(builtIn.services)) { $0.union($1.services) }
+        var services = capabilities.reduce(appServices.union(builtIn.services)) { $0.union($1.services) }
+        // Ranging is offered through the Bluetooth service even where no
+        // capability answers the rest of it.
+        if beaconRanging != nil { services.insert(.bluetooth) }
+        self.services = services
     }
+
+    /// The Bluetooth service's beacon methods.
+    private static let beaconMethods: Set<UInt32> = [
+        MigoHostServiceID.Bluetooth.startBeaconDiscovery,
+        MigoHostServiceID.Bluetooth.stopBeaconDiscovery,
+        MigoHostServiceID.Bluetooth.getBeacons,
+    ]
 
     func handle(_ request: MigoHostServiceRequest) {
         if let app, appServices.contains(request.service) {
             app.handle(request)
+        } else if let beaconRanging, request.service == .bluetooth,
+            Self.beaconMethods.contains(request.method)
+        {
+            beaconRanging.handleBeacons(request)
         } else if let capability = capabilities.first(where: { $0.services.contains(request.service) }) {
             capability.handle(request)
         } else {
