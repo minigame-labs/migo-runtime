@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Apple: `MigoAppleBluetooth`, an optional capability: a BLE central through CoreBluetooth -- the adapter and its
+  state, scanning with found devices reported at content's interval (their manufacturer segment, services, service
+  data and local name), the connected devices, connections answered once their services and characteristics are
+  known (with timeouts and the common platform's error codes), reads arriving as typed characteristic values, writes
+  with and without response, notifications, RSSI and the write MTU -- the Bluetooth grant, the Bluetooth switch (read
+  only once the app may use Bluetooth, since making a central asks the player), and `scope.bluetooth` decided by the
+  system's prompt. Capabilities can now post their services' events and BLE characteristic values. Pairing, asking
+  whether a device is paired and setting the MTU are decided unsupported on iOS and macOS (the platform documents
+  them for Android only); iBeacon APIs are unsupported on macOS, which ranges none, and a gap on iOS until the location
+  capability ranges them.
 - macOS: `createVideoDecoder` decodes with AVFoundation's asset reader in the engine -- its decoders, VideoToolbox's
   hardware where there is one, and its colour handling -- each BGRA frame becoming straight RGBA. A reader reads only
   forward, so a seek starts a new one two seconds before the position and continues from the frame shown there,

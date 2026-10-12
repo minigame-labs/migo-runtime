@@ -1,6 +1,7 @@
 import AppKit
 import CryptoKit
 import Metal
+import MigoAppleBluetooth
 import MigoAppleLocation
 import MigoApplePhotos
 import MigoMacV8
@@ -117,7 +118,7 @@ let window = NSWindow(
 let view = MigoGameView(
     configuration: .init(
         directories: directories, contentSigning: contentSigning, hostServices: HostServices(),
-        capabilities: [MigoLocation(), MigoPhotoLibrary()]))
+        capabilities: [MigoLocation(), MigoPhotoLibrary(), MigoBluetooth()]))
 window.contentView = view
 window.center()
 window.makeKeyAndOrderFront(nil)

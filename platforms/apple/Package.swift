@@ -33,6 +33,7 @@ let package = Package(
         // Each is a `MigoSystemCapability` handed to either lane's game view.
         .library(name: "MigoAppleLocation", targets: ["MigoAppleLocation"]),
         .library(name: "MigoApplePhotos", targets: ["MigoApplePhotos"]),
+        .library(name: "MigoAppleBluetooth", targets: ["MigoAppleBluetooth"]),
         // The two below are for `DeviceTestHost`, not for integrators. SwiftPM
         // test targets are tool-hosted and `xcodebuild test` refuses them on a
         // device; the only way to run these tests on a phone is an Xcode unit-test
@@ -254,6 +255,18 @@ let package = Package(
             name: "MigoApplePhotosTests",
             dependencies: ["MigoApplePhotos"],
             path: "Tests/MigoApplePhotosTests"
+        ),
+
+        // A BLE central through CoreBluetooth, for either lane.
+        .target(
+            name: "MigoAppleBluetooth",
+            dependencies: ["MigoAppleRenderer", "MigoEngine"],
+            path: "Sources/MigoAppleBluetooth"
+        ),
+        .testTarget(
+            name: "MigoAppleBluetoothTests",
+            dependencies: ["MigoAppleBluetooth"],
+            path: "Tests/MigoAppleBluetoothTests"
         ),
     ]
 )

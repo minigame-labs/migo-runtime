@@ -58,7 +58,7 @@ ANDROID_HANDLERS = "platforms/android/library/src/main/java/com/migo/runtime/cal
 APPLE_LAYER = "platforms/apple/Sources/MigoAppleRenderer"
 APPLE_MAC_VIEW = "platforms/apple/Sources/MigoMacV8"
 # The optional capability products an app links and hands its game view.
-APPLE_CAPABILITIES = ("platforms/apple/Sources/MigoAppleLocation",)
+APPLE_CAPABILITIES = ("platforms/apple/Sources/MigoAppleLocation", "platforms/apple/Sources/MigoAppleBluetooth")
 LINUX_LAYER = "platforms/linux/host-kit/src"
 OHOS_LAYER = "platforms/openharmony/entry/src/main"
 

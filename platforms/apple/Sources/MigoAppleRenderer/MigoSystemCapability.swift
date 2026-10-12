@@ -69,6 +69,22 @@ public final class MigoCapabilityReports {
         guard decidesScopes else { return }
         session?.setScopeState(scope, state)
     }
+
+    /// One of the capability's service's events -- a `MIGO_<SERVICE>_EVENT_*`
+    /// with the JSON object the header documents for it.
+    public func postEvent(_ service: MigoHostServiceID, event: UInt32, object: [String: Any]) {
+        guard let json = try? JSONSerialization.data(withJSONObject: object) else { return }
+        session?.postHostServiceEvent(service, event: event, json: json)
+    }
+
+    /// One characteristic value a connected peripheral sent, typed rather than
+    /// JSON because a peripheral may notify a hundred times a second.
+    public func postBleCharacteristicValue(
+        deviceId: String, serviceId: String, characteristicId: String, value: Data
+    ) {
+        session?.postBleCharacteristicValue(
+            deviceId: deviceId, serviceId: serviceId, characteristicId: characteristicId, value: value)
+    }
 }
 
 /// The permission service, answered for the scopes the linked capabilities
