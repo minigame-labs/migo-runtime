@@ -155,7 +155,9 @@ calendars -- so it never makes an app declare a purpose it does not have; such a
 grant reads "not determined".
 
 A Mac offers apps no public control of display brightness, no device orientation,
-no screenshot notice and no way to tell the screen is recorded, so those APIs are
+no screenshot notice, no way to tell the screen is recorded, and no motion sensors
+or magnetometer (CoreMotion's motion manager is unavailable on macOS), so those
+APIs -- the accelerometer, gyroscope, device motion and compass among them -- are
 refused there; iOS offers no public way to keep content out of a screenshot.
 
 Not offered on these lanes, and refused rather than faked:

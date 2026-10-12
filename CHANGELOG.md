@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- macOS: the accelerometer, gyroscope, device-motion and compass APIs are decided unsupported in the API x platform
+  matrix, with the reason: a Mac has no motion sensors or magnetometer an app can read -- CoreMotion's motion manager
+  is unavailable on macOS and CoreLocation reports no heading there. Content feature-detects them, as on any device
+  without the sensor.
 - Apple: the SDK reports the Wi-Fi switch (`getSystemSetting().wifiEnabled`; on a Mac CoreWLAN's power state, on iOS
   whether the network path has a Wi-Fi interface, since iOS offers no read of the switch) and the notification grants
   (`getAppAuthorizeSetting()`'s `notification*` fields), read again whenever the app comes back to the front. The
