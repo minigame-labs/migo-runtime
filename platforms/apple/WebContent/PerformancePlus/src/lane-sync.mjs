@@ -897,6 +897,22 @@ export function op_update_available() {
   return callService(SERVICE_OP.op_update_available);
 }
 
+/// What changes during a session and the host last reported -- the scopes
+/// content was granted, the app's authorization, the system's switches -- read
+/// as the embedded ops read them, so a prompt answered or a setting changed is
+/// what the next call sees.
+export function op_get_auth_setting() {
+  return callService(SERVICE_OP.op_get_auth_setting);
+}
+
+export function op_get_app_authorization_setting() {
+  return callService(SERVICE_OP.op_get_app_authorization_setting);
+}
+
+export function op_get_system_settings() {
+  return callService(SERVICE_OP.op_get_system_settings);
+}
+
 /// Whether the host app integrates ads: asked once, as the embedded op is, by
 /// content's ad layer before it creates one.
 export function op_ad_is_supported() {

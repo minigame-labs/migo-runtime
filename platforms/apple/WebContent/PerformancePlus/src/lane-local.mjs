@@ -323,10 +323,6 @@ export function op_get_device_info() {
   return described("deviceInfo", "getDeviceInfo");
 }
 
-export function op_get_system_settings() {
-  return described("systemSettings", "getSystemSetting");
-}
-
 export function op_get_menu_button_rect() {
   return described("menuButtonRect", "getMenuButtonBoundingClientRect");
 }

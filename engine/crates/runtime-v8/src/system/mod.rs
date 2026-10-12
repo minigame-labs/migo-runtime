@@ -358,42 +358,21 @@ pub fn op_ecosystem_value(state: &mut OpState, #[string] name: &str) -> Option<S
 /// Backs `migo.getSetting()`. Returns the platform-shaped map, e.g.
 /// `{"scope.camera":true,"scope.record":false}`.
 ///
-/// Only `Granted` becomes `true`. `Unknown` reports `false` because content
-/// reads this as "may I", and "nobody has been asked" is not a yes -- the
-/// difference between never-asked and refused matters for whether to prompt,
-/// which is `authorize`'s business, not this one's.
+/// A decided scope only: an undecided one is absent, not `false`
+/// ([`shared::services::auth_setting_json`], which the external session's host
+/// answers with too).
 ///
 /// The map this replaces was a JavaScript object with every scope hardcoded to
 /// `true`, so content was told it held permissions nobody had granted.
 #[op2]
 #[string]
 pub fn op_get_auth_setting(state: &mut OpState) -> String {
-    // Only scopes somebody has decided: a granted one is `true`, a refused one
-    // `false`, and one nobody has been asked about is absent. Content tells the
-    // last two apart -- the mini-game convention does not re-prompt after a
-    // refusal, so `false` sends the player to openSetting while an absent scope
-    // is one to authorize -- and reporting the undecided as `false` made every
-    // game that followed it send the player to settings for a question it had
-    // never asked.
-    let mut out = String::from("{");
-    let mut first = true;
-    for scope in Scope::ALL {
-        let granted = match crate::permission::scope_state(state, *scope) {
-            ScopeState::Granted => true,
-            ScopeState::Denied => false,
-            ScopeState::Unknown => continue,
-        };
-        if !first {
-            out.push(',');
-        }
-        first = false;
-        out.push('"');
-        out.push_str(scope.as_minigame_str());
-        out.push_str("\":");
-        out.push_str(if granted { "true" } else { "false" });
-    }
-    out.push('}');
-    out
+    let permission = state
+        .borrow::<HostOpState>()
+        .device_services
+        .as_ref()
+        .and_then(|services| services.permission());
+    shared::services::auth_setting_json(permission.as_deref())
 }
 
 /// Ask the host to decide a scope, prompting the user if it sees fit.
