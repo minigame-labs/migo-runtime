@@ -34,7 +34,10 @@ import XCTest
     /// never bypassed, and the second test is red if it were. (Content that declares
     /// a context reads in the task that drew, through a barrier that does not
     /// present; a read after the present sees what the context's
-    /// `preserveDrawingBuffer` says it should.)
+    /// `preserveDrawingBuffer` says it should -- the default clears the drawing
+    /// buffer once it is presented, as the specification has it, so the tests
+    /// below whose content draws through the engine's facade and is read back
+    /// after its frame has ended ask for the buffer to be preserved.)
     ///
     /// **The fixture is the same file, not a copy.** It lives in
     /// `MigoAppleFrameHarness`, and both this and `MigoExternalFramePixelTests`
@@ -378,7 +381,7 @@ import XCTest
                 // is the mini-game one, as it is for a game on every other platform.
                 export function start({ report }) {
                   const canvas = migo.createCanvas();
-                  const gl = canvas.getContext("webgl");
+                  const gl = canvas.getContext("webgl", { preserveDrawingBuffer: true });
                   let frames = 0;
                   const draw = () => {
                     frames += 1;
@@ -461,7 +464,7 @@ import XCTest
                 import { lastSequence } from "/__migo/engine-frames.mjs";
 
                 export function start({ report }) {
-                  const gl = migo.createCanvas().getContext("webgl");
+                  const gl = migo.createCanvas().getContext("webgl", { preserveDrawingBuffer: true });
                   const vertex = gl.createShader(gl.VERTEX_SHADER);
                   gl.shaderSource(vertex, "attribute vec2 p; varying vec2 uv; " +
                     "void main() { uv = p * 0.5 + 0.5; gl_Position = vec4(p, 0.0, 1.0); }");
@@ -570,7 +573,7 @@ import XCTest
                 import { frameStatistics, lastSequence } from "/__migo/engine-frames.mjs";
 
                 export function start({ report }) {
-                  const gl = migo.createCanvas().getContext("webgl");
+                  const gl = migo.createCanvas().getContext("webgl", { preserveDrawingBuffer: true });
                   const vertex = gl.createShader(gl.VERTEX_SHADER);
                   gl.shaderSource(vertex, "attribute vec2 p; varying vec2 uv; " +
                     "void main() { uv = p * 0.5 + 0.5; gl_Position = vec4(p, 0.0, 1.0); }");
@@ -699,7 +702,7 @@ import XCTest
             try Data(
                 """
                 export function start({ report }) {
-                  const gl = migo.createCanvas().getContext("webgl");
+                  const gl = migo.createCanvas().getContext("webgl", { preserveDrawingBuffer: true });
                   const stage = (name, run) => {
                     try { return run(); }
                     catch (error) { report({ type: "failed", stage: name, detail: `${error.name}: ${error.message}` }); throw error; }
@@ -957,7 +960,7 @@ import XCTest
         func testContentReadsTheDeviceTheHostDescribed() throws {
             let harness = try MigoFrameHarness()
             self.harness = harness
-            try Data(
+            let content = Data(
                 """
                 export function start({ report }) {
                   try {
@@ -967,13 +970,18 @@ import XCTest
                       screenWidth: window.screenWidth, screenHeight: window.screenHeight,
                       pixelRatio: window.pixelRatio, statusBarHeight: window.statusBarHeight,
                       safeTop: window.safeArea.top, safeBottom: window.safeArea.bottom,
-                      model: system.model, platform: system.platform });
+                      model: system.model, platform: system.platform, sdk: system.SDKVersion });
                   } catch (error) {
                     report({ type: "failed", stage: "device", detail: `${error.name}: ${error.message}` });
                   }
                 }
-                """.utf8
-            ).write(to: contentRoot.appendingPathComponent("game/main.mjs"))
+                """.utf8)
+            // Loaded through the C ABI, as a view loads a game: the app's and
+            // account's part of the description is the engine's composition
+            // for the loaded content, which the host copies and hands over.
+            let root = try harness.installAndLoadContent(
+                id: "device-game", entry: "game/main.mjs", files: ["game/main.mjs": content])
+            let appInfo = try harness.appInfo()
 
             var nonce = [UInt8](repeating: 0, count: 16)
             nonce[0] = MigoFrameHarness.fixtureLaunchNonce
@@ -985,10 +993,10 @@ import XCTest
                 screenWidth: 390, screenHeight: 844, windowWidth: 390, windowHeight: 844,
                 pixelRatio: 3, statusBarHeight: 47,
                 safeAreaInsets: Profile.SafeAreaInsets(left: 0, top: 47, right: 0, bottom: 34),
-                brand: "Apple", model: "iPhone14,5", system: "iOS 26.0", platform: "ios")
+                brand: "Apple", model: "iPhone14,5", system: "iOS 26.0", platform: "ios", appInfo: appInfo)
             let host = try MigoPerformancePlusHost(
                 configuration: .init(
-                    contentRoot: contentRoot, harnessEntry: "/game/main.mjs",
+                    contentRoot: root, harnessEntry: "/game/main.mjs",
                     engineSession: .init(
                         launchNonce: nonce, surfaceGeneration: MigoFrameHarness.fixtureGeneration,
                         surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels,
@@ -1021,6 +1029,11 @@ import XCTest
             XCTAssertEqual(report?["safeBottom"] as? Double, 844 - 34)
             XCTAssertEqual(report?["model"] as? String, "iPhone14,5")
             XCTAssertEqual(report?["platform"] as? String, "ios")
+            let composed = try XCTUnwrap(
+                try JSONSerialization.jsonObject(with: Data(appInfo.utf8)) as? [String: Any])
+            XCTAssertEqual(
+                report?["sdk"] as? String, composed["SDKVersion"] as? String,
+                "the app's part is the session's composition, served as it is")
         }
 
         /// The engine's storage API, answered by the host's storage service.
@@ -1368,7 +1381,7 @@ import XCTest
                 import { lastSequence } from "/__migo/engine-frames.mjs";
 
                 export function start({ report }) {
-                  const gl = migo.createCanvas().getContext("webgl");
+                  const gl = migo.createCanvas().getContext("webgl", { preserveDrawingBuffer: true });
                   const vertex = gl.createShader(gl.VERTEX_SHADER);
                   gl.shaderSource(vertex, "attribute vec2 p; varying vec2 uv; " +
                     "void main() { uv = vec2(p.x * 0.5 + 0.5, 0.5 - p.y * 0.5); gl_Position = vec4(p, 0.0, 1.0); }");
@@ -1509,7 +1522,7 @@ import XCTest
                 import { frameStatistics, lastSequence } from "/__migo/engine-frames.mjs";
 
                 export function start({ report }) {
-                  const gl = migo.createCanvas().getContext("webgl");
+                  const gl = migo.createCanvas().getContext("webgl", { preserveDrawingBuffer: true });
                   requestAnimationFrame(() => {
                     gl.clearColor(0, 0, 1, 1);
                     for (let i = 0; i < 60000; i += 1) gl.clear(gl.COLOR_BUFFER_BIT);
