@@ -59,7 +59,9 @@ pub use location::LocationService;
 pub use navigate::NavigateService;
 pub use network::NetworkService;
 pub use payment::PaymentService;
-pub use permission::{PermissionService, Scope, ScopeState};
+pub use permission::{
+    PERMISSION_CLEANUP_OPS, PERMISSION_GATED_OPS, PermissionService, Scope, ScopeState, op_scope,
+};
 pub use scan_code::ScanCodeService;
 pub use share::ShareService;
 pub use subpackage::{

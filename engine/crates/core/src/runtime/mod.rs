@@ -10,7 +10,8 @@ mod host;
 // input to the engine's host bridge: both executions deliver input.
 mod input_route;
 mod input_state;
-#[cfg(feature = "embedded-v8")]
+// A session's `/tmp`, emptied at the start and removed at the end: both
+// executions mount content, and both are handed files into it.
 mod session_temp;
 #[cfg(feature = "embedded-v8")]
 pub mod thread;
@@ -42,6 +43,8 @@ mod service_answer;
 mod service_args;
 #[cfg(feature = "external-frames")]
 mod service_audio;
+#[cfg(feature = "external-frames")]
+mod service_channel;
 #[cfg(feature = "external-frames")]
 mod service_fs;
 #[cfg(feature = "external-frames")]

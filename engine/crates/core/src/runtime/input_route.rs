@@ -1,7 +1,8 @@
 //! Where a host's input goes, whichever execution runs the content.
 //!
 //! A host sends touches, keys, the mouse, the soft keyboard, IME composition
-//! and gamepads as `HostCommand`s. Each becomes one call of a function on the
+//! and gamepads as `HostCommand`s, and what the device reports -- its motion
+//! sensors, its Bluetooth -- the same way. Each becomes one call of a function on the
 //! engine's host bridge -- `_internalEnqueueRawTouchEvent`,
 //! `_internalTriggerKeyDown`, ... -- with the same arguments in both
 //! executions: the embedded runtime calls it in this process, the external
@@ -69,6 +70,37 @@ pub(crate) trait InputSink {
         delta_mode: u32,
         timestamp_ms: f64,
     );
+    /// `_internalTriggerDeviceMotionChange(alpha, beta, gamma)`.
+    fn device_motion(&mut self, alpha: f64, beta: f64, gamma: f64);
+    /// `_internalTriggerGyroscopeChange(x, y, z)`.
+    fn gyroscope(&mut self, x: f64, y: f64, z: f64);
+    /// `_internalTriggerAccelerometerChange(x, y, z)`.
+    fn accelerometer(&mut self, x: f64, y: f64, z: f64);
+    /// `_internalTriggerCompassChange(direction, accuracy)`.
+    fn compass(&mut self, direction: f64, accuracy: &str);
+    /// `_internalTriggerDeviceOrientationChange(value)`.
+    fn device_orientation(&mut self, value: &str);
+    /// `_internalTriggerBluetoothAdapterStateChange(available, discovering)`.
+    fn bluetooth_adapter_state_change(&mut self, available: bool, discovering: bool);
+    /// `_internalTriggerBluetoothDeviceFound(devicesJson)`.
+    fn bluetooth_device_found(&mut self, devices_json: &str);
+    /// `_internalTriggerBeaconUpdate(beaconsJson)`.
+    fn beacon_update(&mut self, beacons_json: &str);
+    /// `_internalTriggerBeaconServiceChange(available, discovering)`.
+    fn beacon_service_change(&mut self, available: bool, discovering: bool);
+    /// `_internalTriggerBLEConnectionStateChange(deviceId, connected)`.
+    fn ble_connection_state_change(&mut self, device_id: &str, connected: bool);
+    /// `_internalTriggerBLECharacteristicValueChange(deviceId, serviceId,
+    /// characteristicId, value)`, the value as its ArrayBuffer.
+    fn ble_characteristic_value_change(
+        &mut self,
+        device_id: &str,
+        service_id: &str,
+        characteristic_id: &str,
+        value: &[u8],
+    );
+    /// `_internalTriggerBLEMTUChange(deviceId, mtu)`.
+    fn ble_mtu_change(&mut self, device_id: &str, mtu: u32);
 }
 
 /// Deliver `command` to `sink` if it is input, and answer with it back if it
@@ -191,6 +223,42 @@ pub(crate) fn route(
             delta_mode,
             timestamp_ms,
         } => sink.wheel(delta_x, delta_y, delta_z, delta_mode, timestamp_ms),
+        // The generation these carry was read before routing, by the caller's
+        // retired-callback check: nothing here may decide on it again.
+        HostCommand::OnDeviceMotionChange {
+            alpha, beta, gamma, ..
+        } => sink.device_motion(alpha, beta, gamma),
+        HostCommand::OnGyroscopeChange { x, y, z, .. } => sink.gyroscope(x, y, z),
+        HostCommand::OnAccelerometerChange { x, y, z, .. } => sink.accelerometer(x, y, z),
+        HostCommand::OnCompassChange {
+            direction,
+            accuracy,
+            ..
+        } => sink.compass(direction, &accuracy),
+        HostCommand::OnDeviceOrientationChange { value } => sink.device_orientation(&value),
+        HostCommand::OnBluetoothAdapterStateChange {
+            available,
+            discovering,
+        } => sink.bluetooth_adapter_state_change(available, discovering),
+        HostCommand::OnBluetoothDeviceFound { devices_json } => {
+            sink.bluetooth_device_found(&devices_json)
+        }
+        HostCommand::OnBeaconUpdate { beacons_json } => sink.beacon_update(&beacons_json),
+        HostCommand::OnBeaconServiceChange {
+            available,
+            discovering,
+        } => sink.beacon_service_change(available, discovering),
+        HostCommand::OnBLEConnectionStateChange {
+            device_id,
+            connected,
+        } => sink.ble_connection_state_change(&device_id, connected),
+        HostCommand::OnBLECharacteristicValueChange(ble) => sink.ble_characteristic_value_change(
+            ble.device_id(),
+            ble.service_id(),
+            ble.characteristic_id(),
+            ble.value(),
+        ),
+        HostCommand::OnBLEMTUChange { device_id, mtu } => sink.ble_mtu_change(&device_id, mtu),
         other => return Some(other),
     }
     None

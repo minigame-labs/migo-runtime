@@ -20,7 +20,7 @@ import {
 } from "./audio.mjs";
 import { engineHost } from "./engine-host.mjs";
 import { servicesOf } from "./lane-async.mjs";
-import { f32BitsOf, optionalBytesOf, smiU32, stringOf, toBool, toF64, toU8 } from "./op-args.mjs";
+import { f32BitsOf, optionalBytesOf, smiU32, stringOf, toBool, toF64, toI32, toU8 } from "./op-args.mjs";
 import { SERVICE_OP } from "./service-ops.mjs";
 import { postToWorkerAttempt, terminateWorkerAttempt } from "./worker-relay-channel.mjs";
 
@@ -657,6 +657,124 @@ export function op_set_preferred_fps(fps) {
   const rate = toF64(fps, "fps");
   servicesOf(engineHost()).command(SERVICE_OP.op_set_preferred_fps, (w) => w.f64(rate));
 }
+
+// ---- the host app's services ----------------------------------------------------
+//
+// What content asks of the host app -- a toast, the clipboard, a location, a
+// Bluetooth connection: the host-service channel's methods
+// (contracts/runtime/host-services.json). The embedded op checks the scope and
+// calls one device service; the host does both here, under the op's own number,
+// with what the op was given. A result reaches content through the method's hook
+// as it does embedded, and so does a refusal: a command cannot throw, so the
+// host settles the call it refuses through that hook rather than leave it
+// waiting (core/src/runtime/service_channel.rs).
+//
+// One factory per parameter the ops take, so each conversion names the Rust
+// parameter it restates.
+
+function hostCommand(op) {
+  return () => servicesOf(engineHost()).command(op);
+}
+
+function hostRequest(op) {
+  return (requestJson) => {
+    const request = stringOf(requestJson, "request_json");
+    servicesOf(engineHost()).command(op, (w) => w.str(request));
+  };
+}
+
+function hostOptions(op) {
+  return (optionsJson) => {
+    const options = stringOf(optionsJson, "options_json");
+    servicesOf(engineHost()).command(op, (w) => w.str(options));
+  };
+}
+
+function hostJson(op) {
+  return (json) => {
+    const request = stringOf(json, "json");
+    servicesOf(engineHost()).command(op, (w) => w.str(request));
+  };
+}
+
+function hostRequestId(op) {
+  return (requestId) => {
+    const id = toI32(requestId, "request_id");
+    servicesOf(engineHost()).command(op, (w) => w.i32(id));
+  };
+}
+
+export const op_apply_update = hostCommand(SERVICE_OP.op_apply_update);
+export const op_authorize = hostRequest(SERVICE_OP.op_authorize);
+export const op_check_session = hostOptions(SERVICE_OP.op_check_session);
+export const op_choose_image = hostRequest(SERVICE_OP.op_choose_image);
+export const op_choose_media = hostRequest(SERVICE_OP.op_choose_media);
+export const op_choose_message_file = hostRequest(SERVICE_OP.op_choose_message_file);
+export const op_close_ble_connection = hostRequest(SERVICE_OP.op_close_ble_connection);
+export const op_close_bluetooth_adapter = hostRequest(SERVICE_OP.op_close_bluetooth_adapter);
+export const op_create_ble_connection = hostRequest(SERVICE_OP.op_create_ble_connection);
+export const op_ecosystem_reply = hostJson(SERVICE_OP.op_ecosystem_reply);
+export const op_exit_pointer_lock = hostCommand(SERVICE_OP.op_exit_pointer_lock);
+export const op_get_beacons = hostRequest(SERVICE_OP.op_get_beacons);
+export const op_get_ble_device_characteristics = hostRequest(SERVICE_OP.op_get_ble_device_characteristics);
+export const op_get_ble_device_rssi = hostRequest(SERVICE_OP.op_get_ble_device_rssi);
+export const op_get_ble_device_services = hostRequest(SERVICE_OP.op_get_ble_device_services);
+export const op_get_ble_mtu = hostRequest(SERVICE_OP.op_get_ble_mtu);
+export const op_get_bluetooth_adapter_state = hostRequest(SERVICE_OP.op_get_bluetooth_adapter_state);
+export const op_get_bluetooth_devices = hostRequest(SERVICE_OP.op_get_bluetooth_devices);
+export const op_get_clipboard_data = hostRequest(SERVICE_OP.op_get_clipboard_data);
+export const op_get_connected_bluetooth_devices = hostRequest(SERVICE_OP.op_get_connected_bluetooth_devices);
+export const op_get_fuzzy_location = hostOptions(SERVICE_OP.op_get_fuzzy_location);
+export const op_get_location = hostOptions(SERVICE_OP.op_get_location);
+export const op_get_phone_number = hostOptions(SERVICE_OP.op_get_phone_number);
+export const op_get_screen_brightness = hostRequest(SERVICE_OP.op_get_screen_brightness);
+export const op_get_screen_recording_state = hostRequest(SERVICE_OP.op_get_screen_recording_state);
+export const op_get_user_info = hostOptions(SERVICE_OP.op_get_user_info);
+export const op_hide_loading = hostCommand(SERVICE_OP.op_hide_loading);
+export const op_hide_toast = hostCommand(SERVICE_OP.op_hide_toast);
+export const op_is_bluetooth_device_paired = hostRequest(SERVICE_OP.op_is_bluetooth_device_paired);
+export const op_login = hostOptions(SERVICE_OP.op_login);
+export const op_make_bluetooth_pair = hostRequest(SERVICE_OP.op_make_bluetooth_pair);
+export const op_navigate_back_mini_program = hostOptions(SERVICE_OP.op_navigate_back_mini_program);
+export const op_navigate_to_mini_program = hostOptions(SERVICE_OP.op_navigate_to_mini_program);
+export const op_notify_ble_characteristic_value_change = hostRequest(SERVICE_OP.op_notify_ble_characteristic_value_change);
+export const op_open_app_authorize_setting = hostRequestId(SERVICE_OP.op_open_app_authorize_setting);
+export const op_open_bluetooth_adapter = hostRequest(SERVICE_OP.op_open_bluetooth_adapter);
+export const op_open_customer_service_conversation = hostOptions(SERVICE_OP.op_open_customer_service_conversation);
+export const op_open_setting = hostOptions(SERVICE_OP.op_open_setting);
+export const op_open_system_bluetooth_setting = hostRequestId(SERVICE_OP.op_open_system_bluetooth_setting);
+export const op_read_ble_characteristic_value = hostRequest(SERVICE_OP.op_read_ble_characteristic_value);
+export const op_request_midas_payment = hostOptions(SERVICE_OP.op_request_midas_payment);
+export const op_request_midas_payment_game_item = hostOptions(SERVICE_OP.op_request_midas_payment_game_item);
+export const op_request_pointer_lock = hostCommand(SERVICE_OP.op_request_pointer_lock);
+export const op_scan_code = hostOptions(SERVICE_OP.op_scan_code);
+export const op_set_ble_mtu = hostRequest(SERVICE_OP.op_set_ble_mtu);
+export const op_set_clipboard_data = hostRequest(SERVICE_OP.op_set_clipboard_data);
+export const op_set_screen_brightness = hostRequest(SERVICE_OP.op_set_screen_brightness);
+export const op_set_visual_effect_on_capture = hostRequest(SERVICE_OP.op_set_visual_effect_on_capture);
+export const op_set_window_size = hostRequest(SERVICE_OP.op_set_window_size);
+export const op_share_set_menu = hostJson(SERVICE_OP.op_share_set_menu);
+export const op_show_action_sheet = hostJson(SERVICE_OP.op_show_action_sheet);
+export const op_show_loading = hostJson(SERVICE_OP.op_show_loading);
+export const op_show_modal = hostJson(SERVICE_OP.op_show_modal);
+export const op_show_toast = hostJson(SERVICE_OP.op_show_toast);
+export const op_start_accelerometer = hostRequest(SERVICE_OP.op_start_accelerometer);
+export const op_start_beacon_discovery = hostRequest(SERVICE_OP.op_start_beacon_discovery);
+export const op_start_bluetooth_devices_discovery = hostRequest(SERVICE_OP.op_start_bluetooth_devices_discovery);
+export const op_start_capture_screen = hostCommand(SERVICE_OP.op_start_capture_screen);
+export const op_start_compass = hostRequest(SERVICE_OP.op_start_compass);
+export const op_start_device_motion = hostRequest(SERVICE_OP.op_start_device_motion);
+export const op_start_gyroscope = hostRequest(SERVICE_OP.op_start_gyroscope);
+export const op_start_screen_recording_observer = hostCommand(SERVICE_OP.op_start_screen_recording_observer);
+export const op_stop_accelerometer = hostCommand(SERVICE_OP.op_stop_accelerometer);
+export const op_stop_beacon_discovery = hostRequest(SERVICE_OP.op_stop_beacon_discovery);
+export const op_stop_bluetooth_devices_discovery = hostRequest(SERVICE_OP.op_stop_bluetooth_devices_discovery);
+export const op_stop_capture_screen = hostCommand(SERVICE_OP.op_stop_capture_screen);
+export const op_stop_compass = hostCommand(SERVICE_OP.op_stop_compass);
+export const op_stop_device_motion = hostCommand(SERVICE_OP.op_stop_device_motion);
+export const op_stop_gyroscope = hostCommand(SERVICE_OP.op_stop_gyroscope);
+export const op_stop_screen_recording_observer = hostCommand(SERVICE_OP.op_stop_screen_recording_observer);
+export const op_write_ble_characteristic_value = hostRequest(SERVICE_OP.op_write_ble_characteristic_value);
 
 // ---- content's migo.createWorker (the fire-and-forget half) -----------------
 //

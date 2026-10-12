@@ -1,13 +1,14 @@
-// The host's input, delivered to the engine's own host bridge, as content sees
-// it.
+// The host's input and the device's reports, delivered to the engine's own host
+// bridge, as content sees them.
 //
 //   node test/host-events.test.mjs <staged resource root> <events dir>
 //
 // The events dir holds service messages the Rust host wrote
 // (external_services.rs, `the_host_s_input_as_the_producer_receives_it`): real
 // HostCommands -- a touch, a key, the mouse, a wheel, the soft keyboard, IME,
-// a gamepad, then a focus loss with all of them still held -- routed by the
-// routing both executions share and encoded by the external session's sink.
+// a gamepad, the motion sensors and Bluetooth, then a focus loss with the
+// input still held -- routed by the routing both executions share and encoded
+// by the external session's sink.
 // This boots the staged engine, takes its bridge the way the producer does,
 // registers content's listeners through `migo.*`, delivers every EVENT, and
 // checks each listener saw the values the host sent, in the order the embedded
@@ -73,6 +74,18 @@ migo.onKeyboardInput(note("keyboardinput"));
 migo.onCompositionStart(note("compositionstart"));
 migo.onCompositionEnd(note("compositionend"));
 migo.onGamepadConnected(note("gamepadconnected"));
+migo.onAccelerometerChange(note("accelerometer"));
+migo.onGyroscopeChange(note("gyroscope"));
+migo.onDeviceMotionChange(note("devicemotion"));
+migo.onCompassChange(note("compass"));
+migo.onDeviceOrientationChange(note("orientation"));
+migo.onBluetoothAdapterStateChange(note("adapterstate"));
+migo.onBluetoothDeviceFound(note("devicefound"));
+migo.onBLEConnectionStateChange(note("connection"));
+migo.onBLECharacteristicValueChange(note("characteristic"));
+migo.onBLEMTUChange(note("mtu"));
+migo.onBeaconServiceChange(note("beaconservice"));
+migo.onBeaconUpdate(note("beacons"));
 
 let delivered = 0;
 for (const name of readdirSync(eventsDir).filter((file) => file.endsWith(".bin")).sort()) {
@@ -140,6 +153,31 @@ check("a gamepad connects and its sample lands in getGamepads()", () => {
   assert.deepEqual(Array.from(pad.axes), [0.5, -0.25]);
   assert.equal(pad.buttons[0].pressed, true);
   assert.equal(pad.buttons[0].value, 1);
+});
+check("the motion sensors' readings arrive as the host read them", () => {
+  assert.deepEqual(of("accelerometer"), [{ x: 0.25, y: -0.5, z: 1 }]);
+  assert.deepEqual(of("gyroscope"), [{ x: 0.1, y: 0.2, z: 0.3 }]);
+  assert.deepEqual(of("devicemotion"), [{ alpha: 10, beta: 20, gamma: 30 }]);
+  assert.deepEqual(of("compass"), [{ direction: 90.5, accuracy: "high" }]);
+  assert.deepEqual(of("orientation"), [{ value: "landscape" }]);
+});
+check("Bluetooth's reports arrive with their fields, a characteristic's value as its bytes", () => {
+  assert.deepEqual(of("adapterstate"), [{ available: true, discovering: true }]);
+  const [found] = of("devicefound");
+  assert.equal(found.devices.length, 1);
+  assert.equal(found.devices[0].deviceId, "AA");
+  assert.equal(found.devices[0].RSSI, -40);
+  assert.deepEqual(of("connection"), [{ deviceId: "AA", connected: true }]);
+  const [value] = of("characteristic");
+  assert.deepEqual(
+    { deviceId: value.deviceId, serviceId: value.serviceId, characteristicId: value.characteristicId },
+    { deviceId: "AA", serviceId: "180D", characteristicId: "2A37" },
+  );
+  assert.ok(value.value instanceof ArrayBuffer, "the value is an ArrayBuffer, as in process");
+  assert.deepEqual(Array.from(new Uint8Array(value.value)), [0x00, 0x48, 0xff]);
+  assert.deepEqual(of("mtu"), [{ deviceId: "AA", mtu: 185 }]);
+  assert.deepEqual(of("beaconservice"), [{ available: true, discovering: false }]);
+  assert.equal(of("beacons")[0].beacons[0].major, 1);
 });
 // The host releases the touch first; content hears it last. `01_touch.js`
 // drains touches in a microtask and the other listeners run in the call, and a

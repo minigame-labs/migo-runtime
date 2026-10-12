@@ -3400,10 +3400,15 @@ fn handle_command(
             sink.host_hook("_internalTriggerNetworkStatusChange", &args);
         }
 
-        // Input was routed to the producer before this match. What is left is
-        // addressed to a capability this lane does not carry yet -- sensors,
-        // camera, Bluetooth -- and is logged rather than silently dropped: a
-        // host sending it is a host expecting something to happen.
+        // A host-service call's result, to the hook content's call waits on --
+        // the hook the embedded runtime calls with it.
+        HostCommand::InvokeHostHook { hook, args_json } => sink.host_hook(hook, &args_json),
+
+        // Input, sensor readings and Bluetooth reports were routed to the
+        // producer before this match. What is left is addressed to a
+        // capability this lane does not carry yet -- the camera, the recorder,
+        // video -- and is logged rather than silently dropped: a host sending
+        // it is a host expecting something to happen.
         other => {
             debug!("[Host {id}] {other:?} has no consumer in an external-frame session");
         }

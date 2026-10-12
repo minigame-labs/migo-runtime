@@ -159,6 +159,71 @@ pub const GATED_SERVICE_METHODS: &[(&str, Scope)] = &[
     ("get_user_info", Scope::UserInfo),
 ];
 
+/// Operations that must hold a scope before reaching a host capability, by op
+/// name: what both executions enforce. The embedded runtime's ops each guard
+/// themselves, and the coverage contract checks every guard against this table
+/// in both directions and rejects unclassified service-wide operations; the
+/// external session's host channel, which has no op functions of its own,
+/// gates each request by looking its op up here ([`op_scope`]).
+pub const PERMISSION_GATED_OPS: &[(&str, Scope)] = &[
+    ("op_camera_create", Scope::Camera),
+    ("op_camera_take_photo", Scope::Camera),
+    ("op_camera_start_record", Scope::Camera),
+    ("op_camera_set_zoom", Scope::Camera),
+    ("op_camera_listen_frame_change", Scope::Camera),
+    ("op_save_image_to_photos_album", Scope::WritePhotosAlbum),
+    ("op_recorder_start", Scope::Record),
+    ("op_recorder_pause", Scope::Record),
+    ("op_recorder_resume", Scope::Record),
+    ("op_get_location", Scope::UserLocation),
+    ("op_get_fuzzy_location", Scope::UserLocation),
+    ("op_open_bluetooth_adapter", Scope::Bluetooth),
+    ("op_get_bluetooth_adapter_state", Scope::Bluetooth),
+    ("op_start_bluetooth_devices_discovery", Scope::Bluetooth),
+    ("op_get_bluetooth_devices", Scope::Bluetooth),
+    ("op_get_connected_bluetooth_devices", Scope::Bluetooth),
+    ("op_make_bluetooth_pair", Scope::Bluetooth),
+    ("op_is_bluetooth_device_paired", Scope::Bluetooth),
+    ("op_create_ble_connection", Scope::Bluetooth),
+    ("op_get_ble_device_services", Scope::Bluetooth),
+    ("op_get_ble_device_characteristics", Scope::Bluetooth),
+    ("op_read_ble_characteristic_value", Scope::Bluetooth),
+    ("op_write_ble_characteristic_value", Scope::Bluetooth),
+    (
+        "op_notify_ble_characteristic_value_change",
+        Scope::Bluetooth,
+    ),
+    ("op_get_ble_device_rssi", Scope::Bluetooth),
+    ("op_set_ble_mtu", Scope::Bluetooth),
+    ("op_get_ble_mtu", Scope::Bluetooth),
+    ("op_start_beacon_discovery", Scope::Bluetooth),
+    ("op_get_beacons", Scope::Bluetooth),
+    ("op_get_user_info", Scope::UserInfo),
+];
+
+/// Operations that may reach an existing capability only to release it.
+///
+/// Denial must not trap a camera, microphone, scan, or connection that was
+/// acquired while permission was granted.
+pub const PERMISSION_CLEANUP_OPS: &[(&str, Scope)] = &[
+    ("op_camera_destroy", Scope::Camera),
+    ("op_camera_stop_record", Scope::Camera),
+    ("op_camera_close_frame_change", Scope::Camera),
+    ("op_recorder_stop", Scope::Record),
+    ("op_close_bluetooth_adapter", Scope::Bluetooth),
+    ("op_stop_bluetooth_devices_discovery", Scope::Bluetooth),
+    ("op_close_ble_connection", Scope::Bluetooth),
+    ("op_stop_beacon_discovery", Scope::Bluetooth),
+];
+
+/// The scope an op must hold before it reaches the host, if it is gated.
+pub fn op_scope(op: &str) -> Option<Scope> {
+    PERMISSION_GATED_OPS
+        .iter()
+        .find(|(name, _)| *name == op)
+        .map(|(_, scope)| *scope)
+}
+
 /// What the host has decided about one scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScopeState {

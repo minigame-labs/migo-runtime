@@ -889,6 +889,14 @@ export function op_get_network_type() {
   return callService(SERVICE_OP.op_get_network_type);
 }
 
+/// Whether the host app offers package updates, and so will report its check:
+/// asked once, when content first takes its UpdateManager, of the same service
+/// the embedded op asks. A host that offers none has content told "no update"
+/// at once (update/02_update_mgr.js); one that does reports through the hooks.
+export function op_update_available() {
+  return callService(SERVICE_OP.op_update_available);
+}
+
 // ---- readPixels -------------------------------------------------------------
 //
 // The one query whose answer is pixels rather than a number, and the one whose
