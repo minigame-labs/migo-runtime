@@ -136,7 +136,11 @@ import XCTest
             XCTAssertEqual(answered["windowWidth"] as? Double, 390, "the view's width, in points")
             let scale = Double(window.screen.scale)
             XCTAssertEqual(answered["pixelRatio"] as? Double, scale)
-            XCTAssertEqual(answered["width"] as? Int, Int(390 * scale), "the main canvas is the surface")
+            // In CSS pixels, as the engine sizes an onscreen canvas content has
+            // not sized on every platform (`engine_default_backing`): a
+            // DPR-naive engine sizes its viewport to what the canvas says, and
+            // the present scales the logical buffer up to the surface.
+            XCTAssertEqual(answered["width"] as? Int, 390, "the main canvas is the logical window")
 
             // The frames were paced by the view's own display clock, not by the
             // engine timing itself: the clock delivered them.
