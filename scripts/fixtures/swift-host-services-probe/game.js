@@ -75,6 +75,17 @@ async function run() {
   }
   expect(located !== null && located.errMsg === "authorize:fail auth deny", "authorize location", located);
   console.error("migo-swift-host-probe: location=" + grants.locationAuthorized + " scope=refused");
+  // The photo library the app linked: its grant reported, and its scope refused
+  // without a prompt in an app declaring no purpose for it.
+  expect(words.indexOf(grants.albumAuthorized) >= 0, "albumAuthorized", grants);
+  let album = null;
+  try {
+    await call("authorize", { scope: "scope.writePhotosAlbum" });
+  } catch (e) {
+    album = e;
+  }
+  expect(album !== null && album.errMsg === "authorize:fail auth deny", "authorize album", album);
+  console.error("migo-swift-host-probe: album=" + grants.albumAuthorized + " scope=refused");
   // The SDK's image service compresses with the system's encoder: a 64 x 32
   // PNG of the game's, scaled to 16 wide, handed back as a file of the game's.
   const canvas = migo.createCanvas();

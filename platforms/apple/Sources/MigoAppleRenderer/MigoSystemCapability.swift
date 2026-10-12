@@ -29,6 +29,15 @@ public protocol MigoSystemCapability: MigoHostServiceProvider {
     func requestScope(_ scope: MigoScope, completion: @escaping (Bool) -> Void)
 }
 
+/// A capability that saves to the system's photo library: what the SDK's image
+/// service hands `saveImageToPhotosAlbum` to, the rest of that service being
+/// the SDK's own. Main thread.
+public protocol MigoPhotoLibrarySaving: MigoSystemCapability {
+    /// Save the image at `file` -- a file content may read, lent until
+    /// `completion` -- to the library: `nil` once saved, else why not.
+    func saveImageToPhotoLibrary(_ file: URL, completion: @escaping (String?) -> Void)
+}
+
 /// What a capability reports through, for one session: the fields of the
 /// app's grants and the system switches it owns, and -- while the SDK decides
 /// content's scopes, the app answering no permission service of its own -- the

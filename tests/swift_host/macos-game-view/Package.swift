@@ -17,6 +17,7 @@ let package = Package(
                 .product(name: "MigoMacV8", package: "Migo"),
                 // An optional capability, linked the way an app links one.
                 .product(name: "MigoAppleLocation", package: "Migo"),
+                .product(name: "MigoApplePhotos", package: "Migo"),
             ],
             path: "Sources/MigoGameViewHost"
         )

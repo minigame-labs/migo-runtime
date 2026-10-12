@@ -12,8 +12,9 @@ import UniformTypeIdentifiers
 /// The image service, answered with what the system offers every app without a
 /// purpose string: compressing an image (ImageIO), the system's pickers for
 /// images, media and files, its viewer (`MigoSystemPreview`), and on a Mac
-/// saving a file where the player chooses. Saving to the photo library and the
-/// camera are an optional capability's, and are refused here.
+/// saving a file where the player chooses. Saving to the photo library is the
+/// linked capability's that does it (`MigoPhotoLibrarySaving`) and refused
+/// without one; the camera is not offered here.
 ///
 /// A file this answers with is the host's own copy, in its staging directory:
 /// the engine moves it into the session when the call completes, so a file the
@@ -21,15 +22,17 @@ import UniformTypeIdentifiers
 final class MigoSystemImages {
     private let picker: MigoFilePicker
     private let preview: MigoSystemPreview
+    private let photoLibrary: MigoPhotoLibrarySaving?
     private let staging: URL
     /// Where the slow parts -- decoding, encoding, describing a video -- run.
     private let work = DispatchQueue(label: "dev.migo.images", qos: .userInitiated, attributes: .concurrent)
 
     init(
         picker: MigoFilePicker = MigoSystemFilePicker(), preview: MigoSystemPreview? = nil,
-        staging: URL = MigoSystemImages.defaultStaging
+        photoLibrary: MigoPhotoLibrarySaving? = nil, staging: URL = MigoSystemImages.defaultStaging
     ) {
         self.picker = picker
+        self.photoLibrary = photoLibrary
         self.preview = preview ?? MigoSystemPreview(staging: staging)
         self.staging = staging
     }
@@ -45,6 +48,18 @@ final class MigoSystemImages {
         switch request.method {
         case Method.previewImage, Method.previewMedia:
             preview.handle(request)
+        case Method.saveImageToPhotosAlbum:
+            guard let photoLibrary else {
+                reply.fail("not supported")
+                return
+            }
+            guard let path = options["filePath"] as? String else {
+                reply.fail("filePath is required")
+                return
+            }
+            photoLibrary.saveImageToPhotoLibrary(URL(fileURLWithPath: path)) { failure in
+                if let failure { reply.fail(failure) } else { reply.succeed() }
+            }
         case Method.compressImage:
             work.async { self.compress(options, reply) }
         case Method.chooseImage:
