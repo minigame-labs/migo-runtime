@@ -342,6 +342,11 @@ public final class MigoEngineSession {
             relayHandle.release()
             throw Failure.call("migo_session_set_host_callbacks", installed)
         }
+        // The SDK's own services post their events through this session.
+        composed.builtIn.post = { [weak self] service, event, object in
+            guard let json = try? JSONSerialization.data(withJSONObject: object) else { return }
+            self?.postHostServiceEvent(service, event: event, json: json)
+        }
     }
 
     deinit {

@@ -20,6 +20,7 @@ final class MigoBuiltInHostServices: MigoHostServiceProvider {
         var builtIn: Set<MigoHostServiceID> = []
         builtIn.insert(.clipboard)
         builtIn.insert(.interaction)
+        builtIn.insert(.screen)
         return builtIn
     }()
 
@@ -27,6 +28,13 @@ final class MigoBuiltInHostServices: MigoHostServiceProvider {
 
     /// Kept for the session: which indicator is up is state.
     private lazy var interaction = MigoSystemInteraction(presenter: MigoSystemInteractionPresenter())
+    /// Kept for the session: what content listens for is state.
+    private lazy var screen = MigoSystemScreen(post: { [weak self] event, object in
+        self?.post?(.screen, event, object)
+    })
+
+    /// Where a service's events go: the session's channel, once it is open.
+    var post: ((MigoHostServiceID, UInt32, [String: Any]) -> Void)?
 
     func handle(_ request: MigoHostServiceRequest) {
         switch request.service {
@@ -34,6 +42,8 @@ final class MigoBuiltInHostServices: MigoHostServiceProvider {
             MigoSystemClipboard.handle(request)
         case .interaction:
             interaction.handle(request)
+        case .screen:
+            screen.handle(request)
         default:
             request.reply?.fail("not supported")
         }
@@ -44,7 +54,7 @@ final class MigoBuiltInHostServices: MigoHostServiceProvider {
 /// app names is the app's; any other the SDK answers if it can.
 final class MigoComposedHostServices: MigoHostServiceProvider {
     private let app: MigoHostServiceProvider?
-    private let builtIn = MigoBuiltInHostServices()
+    let builtIn = MigoBuiltInHostServices()
     private let appServices: Set<MigoHostServiceID>
     let services: Set<MigoHostServiceID>
 

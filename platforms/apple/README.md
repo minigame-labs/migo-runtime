@@ -126,7 +126,10 @@ one the app does not name: the pasteboard (`setClipboardData` /
 `getClipboardData`), and the system's dialogs and indicators (`showToast`,
 `showLoading`, `showModal` -- an editable one too -- and `showActionSheet`, as an
 alert sheet on a Mac and an alert controller on iOS; the system's dialogs take no
-button colours). Name a service to answer it your way, or to refuse it.
+button colours), and the screen -- on iOS its brightness, screenshots, screen
+recording and the device turning; on a Mac `setVisualEffectOnCapture` keeping the
+game's window out of screenshots and recordings. Name a service to answer it your
+way, or to refuse it.
 
 A call is answered once, now or later (`reply.succeed(...)`, or `reply.fail("cancel")`
 for a player who dismissed it); a reply the app drops unanswered fails the call
@@ -135,6 +138,10 @@ progress, an update's steps -- go to the game with
 `gameView.postHostServiceEvent(_:event:json:)`. A service the app does not name
 is answered "not supported". On iOS the channel reaches Performance+ content
 once its producer forwards these calls (P1).
+
+A Mac offers apps no public control of display brightness, no device orientation,
+no screenshot notice and no way to tell the screen is recorded, so those APIs are
+refused there; iOS offers no public way to keep content out of a screenshot.
 
 Not offered on these lanes, and refused rather than faked:
 `setDeviceOrientation` (the size is fixed at start), `setEnableDebug` (there is
