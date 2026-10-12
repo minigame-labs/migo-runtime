@@ -101,6 +101,8 @@ red "the Swift SDK that stops answering a service itself" platforms/apple/Source
     'text.replace("builtIn.insert(.clipboard)", "// builtIn.insert(.clipboard)", 1)'
 red "the macOS game view that stops answering the window service" platforms/apple/Sources/MigoMacV8/MigoWindowService.swift \
     'text.replace("builtIn.insert(.window)", "// builtIn.insert(.window)", 1)'
+red "the Swift SDK that stops reporting the system's switches" platforms/apple/Sources/MigoAppleRenderer/MigoEngineSession.swift \
+    'text.replace("migo_session_set_system_settings(session", "migo_session_set_system_settings_gone(session", 1)'
 red "a host layer that stops feeding touch" platforms/linux/host-kit/src/qt6/x11_surface_view.cpp \
     'text.replace("migo_session_send_touch(", "migo_session_send_touch_removed(")'
 red "an unsupported decision with no reason" contracts/runtime/api-platform-decisions.json \

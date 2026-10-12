@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Apple: the SDK reports the Wi-Fi switch (`getSystemSetting().wifiEnabled`; on a Mac CoreWLAN's power state, on iOS
+  whether the network path has a Wi-Fi interface, since iOS offers no read of the switch) and the notification grants
+  (`getAppAuthorizeSetting()`'s `notification*` fields), read again whenever the app comes back to the front. The
+  core SDK does not read grants behind a purpose string -- location, camera, microphone, photo library, Bluetooth,
+  calendars -- so it never makes an app declare a purpose it does not have; they read "not determined".
 - macOS: the game view answers the window service when the app does not name it. `setWindowSize` sizes the window
   so the game's view gets the size asked for (pixels), its title bar kept in place; `setCursor` maps the CSS keywords
   to the system's cursors (macOS 15's resize and zoom cursors where present; the arrow where macOS has none) or takes
@@ -432,6 +437,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- The API x platform matrix counted `getAppAuthorizeSetting` and `getSystemSetting` as answered by the engine alone;
+  they read what the host reports (`migo_session_set_app_authorize_setting`, `migo_session_set_system_settings`), and a
+  host that reports nothing gets every grant "not determined" and every switch off. They are now host-fed in the
+  matrix: default where the platform's SDK reports, host on Linux and Windows, missing elsewhere.
 - The API x platform matrix counted the touch events missing on every platform: its input table named a C entry point
   that does not exist (`migo_session_send_touch_event`) and missed the Android SDK's touch path, which hands
   `NativeMethods::onTouchRaw` over as a method reference. The generator now refuses an input table naming an entry

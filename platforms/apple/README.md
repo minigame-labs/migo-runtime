@@ -146,6 +146,14 @@ progress, an update's steps -- go to the game with
 is answered "not supported". On iOS the channel reaches Performance+ content
 once its producer forwards these calls (P1).
 
+The SDK also reports to the game what the system says about the app: the Wi-Fi
+switch (`getSystemSetting`; on iOS, which offers no read of the switch, whether
+the network has a Wi-Fi interface) and the notification grants
+(`getAppAuthorizeSetting`). The core SDK does not read a grant behind a purpose
+string -- location, the camera, the microphone, the photo library, Bluetooth,
+calendars -- so it never makes an app declare a purpose it does not have; such a
+grant reads "not determined".
+
 A Mac offers apps no public control of display brightness, no device orientation,
 no screenshot notice and no way to tell the screen is recorded, so those APIs are
 refused there; iOS offers no public way to keep content out of a screenshot.

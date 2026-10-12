@@ -1,16 +1,22 @@
 import Foundation
 import MigoEngine
 import Network
+import UserNotifications
 
 #if os(iOS)
     import UIKit
+#elseif os(macOS)
+    import AppKit
+    import CoreWLAN
 #endif
 
-/// Tells one engine session what the device's network and battery are, and what
+/// Tells one engine session what the device's network and battery are, what
 /// the app says about itself (`getAppBaseInfo`: its bundle identifier, the
-/// language its interface is in, its text scale), now and at every change, and
-/// passes on the system's memory warnings (`onMemoryWarning`), for as long as
-/// the session runs.
+/// language its interface is in, its text scale), the Wi-Fi switch
+/// (`getSystemSetting`) and what the system has granted the app
+/// (`getAppAuthorizeSetting`), now and at every change, and passes on the
+/// system's memory warnings (`onMemoryWarning`), for as long as the session
+/// runs.
 ///
 /// The engine answers content's `getNetworkType` and `getBatteryInfo` from the
 /// last report and forwards a network change while content listens, so the host
@@ -21,6 +27,14 @@ import Network
 /// read through IOKit, and a desktop has none; content there hears "not
 /// supported", which is the API's answer for a device without a battery.
 ///
+/// Of the system's grants it reports what it reads without the app declaring a
+/// purpose for it: notifications. Location, the camera, the microphone, the
+/// photo library, Bluetooth and calendars are not read here -- App Store
+/// review asks for a purpose string for every such API a binary references,
+/// used or not -- and read as "not determined". Grants are read again whenever
+/// the app comes back to the front, which is where a player who changed one in
+/// Settings returns.
+///
 /// Main thread only, like the session it reports to.
 public final class MigoDeviceStatusReporter {
     private weak var session: MigoEngineSession?
@@ -29,10 +43,14 @@ public final class MigoDeviceStatusReporter {
     /// thread (see `start()`), which a main-queue handler could never deliver.
     private let monitorQueue = DispatchQueue(label: "dev.migo.device-status")
     private var observers: [NSObjectProtocol] = []
+    /// The Wi-Fi switch, as last reported.
+    private var wifiOn: Bool?
     #if os(macOS)
         /// The system's memory-pressure notifications, which a Mac has instead
         /// of an app memory warning.
         private var memoryPressure: DispatchSourceMemoryPressure?
+        /// The Wi-Fi interface's power, which CoreWLAN reads exactly.
+        private var wifi: WiFiPower?
     #endif
     #if os(iOS)
         /// The app's own setting, put back on `stop()`: battery monitoring is
@@ -93,7 +111,21 @@ public final class MigoDeviceStatusReporter {
         }
         if let path { report(path) }
         reportHostApp()
+        reportAuthorizations()
+        let activation: Notification.Name
+        #if os(iOS)
+            activation = UIApplication.didBecomeActiveNotification
+        #else
+            activation = NSApplication.didBecomeActiveNotification
+        #endif
+        observers.append(
+            NotificationCenter.default.addObserver(forName: activation, object: nil, queue: .main) {
+                [weak self] _ in self?.reportAuthorizations()
+            })
         #if os(macOS)
+            let wifi = WiFiPower { [weak self] in self?.reportWiFi() }
+            self.wifi = wifi
+            reportWiFi()
             let pressure = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .main)
             pressure.setEventHandler { [weak self, weak pressure] in
                 guard let self, self.running, let event = pressure?.data else { return }
@@ -139,7 +171,9 @@ public final class MigoDeviceStatusReporter {
         #if os(macOS)
             memoryPressure?.cancel()
             memoryPressure = nil
+            wifi = nil
         #endif
+        wifiOn = nil
         monitor.cancel()
         observers.forEach(NotificationCenter.default.removeObserver)
         observers = []
@@ -163,6 +197,104 @@ public final class MigoDeviceStatusReporter {
         guard running else { return }
         let (type, connected) = Self.networkType(of: path)
         session?.setNetworkStatus(type, connected: connected)
+        #if os(iOS)
+            // iOS offers apps no read of the Wi-Fi switch. A path with a Wi-Fi
+            // interface has it on; a switch that is on with no network joined
+            // reads as off.
+            report(wifiOn: path.availableInterfaces.contains { $0.type == .wifi })
+        #endif
+    }
+
+    #if os(macOS)
+        private func reportWiFi() {
+            guard let wifi else { return }
+            report(wifiOn: wifi.isOn)
+        }
+
+        /// CoreWLAN's Wi-Fi interface: its power, and each change of it. Its own
+        /// client, so an app's use of the shared one is left alone.
+        private final class WiFiPower: NSObject, CWEventDelegate {
+            private let client = CWWiFiClient()
+            private let changed: () -> Void
+
+            init(changed: @escaping () -> Void) {
+                self.changed = changed
+                super.init()
+                client.delegate = self
+                do {
+                    try client.startMonitoringEvent(with: .powerDidChange)
+                } catch {
+                    NSLog("MigoDeviceStatusReporter: CoreWLAN will not report Wi-Fi power changes: \(error)")
+                }
+            }
+
+            deinit {
+                try? client.stopMonitoringAllEvents()
+            }
+
+            /// Off on a Mac with no Wi-Fi interface.
+            var isOn: Bool { client.interface()?.powerOn() ?? false }
+
+            func powerStateDidChangeForWiFiInterface(withName interfaceName: String) {
+                DispatchQueue.main.async { [weak self] in self?.changed() }
+            }
+        }
+    #endif
+
+    /// The system switches the SDK reads itself: Wi-Fi. Location services and
+    /// Bluetooth are the optional products' to read.
+    private func report(wifiOn on: Bool) {
+        guard running, on != wifiOn else { return }
+        wifiOn = on
+        let flags = on ? MIGO_SYSTEM_SETTING_FLAG_WIFI_ENABLED : MIGO_SYSTEM_SETTING_FLAG_NONE
+        session?.setSystemSettings(MigoSystemSettingFlags(flags))
+    }
+
+    /// The notification grants, read from the system -- asynchronously, so a
+    /// game that asks before the answer arrives reads "not determined", which
+    /// is what the engine answers until the first report.
+    private func reportAuthorizations() {
+        guard running else { return }
+        // UserNotifications answers for an application bundle only, and raises
+        // in any other process -- a command-line host, a test runner -- which
+        // has no notification setting to read.
+        guard Bundle.main.bundleIdentifier != nil, Bundle.main.bundleURL.pathExtension == "app" else { return }
+        UNUserNotificationCenter.current().getNotificationSettings { [weak self] settings in
+            let setting = Self.authorizations(
+                notification: settings.authorizationStatus, alert: settings.alertSetting,
+                badge: settings.badgeSetting, sound: settings.soundSetting)
+            DispatchQueue.main.async {
+                guard let self, self.running else { return }
+                self.session?.setAppAuthorizeSetting(setting)
+            }
+        }
+    }
+
+    /// The grants as the engine words them, everything not given "not
+    /// determined".
+    static func authorizations(
+        notification: UNAuthorizationStatus, alert: UNNotificationSetting, badge: UNNotificationSetting,
+        sound: UNNotificationSetting
+    ) -> MigoAppAuthorizeSetting {
+        var setting = MigoAppAuthorizeSetting()
+        switch notification {
+        case .notDetermined: setting.notification = UInt8(MIGO_AUTHORIZATION_NOT_DETERMINED)
+        case .denied: setting.notification = UInt8(MIGO_AUTHORIZATION_DENIED)
+        // Authorized, provisionally (quietly delivered) or for an App Clip's
+        // while: notifications reach the player.
+        default: setting.notification = UInt8(MIGO_AUTHORIZATION_AUTHORIZED)
+        }
+        func word(_ value: UNNotificationSetting) -> UInt8 {
+            switch value {
+            case .enabled: return UInt8(MIGO_AUTHORIZATION_AUTHORIZED)
+            case .disabled: return UInt8(MIGO_AUTHORIZATION_DENIED)
+            default: return UInt8(MIGO_AUTHORIZATION_NOT_DETERMINED)
+            }
+        }
+        setting.notification_alert = word(alert)
+        setting.notification_badge = word(badge)
+        setting.notification_sound = word(sound)
+        return setting
     }
 
     /// The app's id, the locale its interface runs in -- `Locale.current`
