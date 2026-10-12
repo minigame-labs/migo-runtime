@@ -183,6 +183,11 @@ for required_op in ("op_ad_is_supported", "op_ad_show", "op_ad_create"):
 # ---------------------------------------------------------------------------
 # 4. The Java sink and the JS reader must agree on the wire format.
 #
+# Two producers write it: an ad object's handler (NativeExports), and the app
+# itself for what no content call creates -- the cover advert's status,
+# GameSession.reportSplashAdStatus, added 2026-10-12 and missed by this check,
+# which turned master red on keys that were in fact sent.
+#
 # The ad event channel is JSON crossing Java -> JNI -> JS with nothing checking
 # it: rename a key on one side and every callback still fires, the payload just
 # arrives with the field missing. For `isEnded` that reads as "advert not
@@ -194,6 +199,10 @@ for required_op in ("op_ad_is_supported", "op_ad_show", "op_ad_create"):
 sink_java = root / (
     "platforms/android/library/src/main/java/com/migo/runtime/internal/NativeExports.java"
 )
+# The ad events the app itself raises rather than an ad object's handler: the
+# cover advert's status, which no content call creates (reportSplashAdStatus),
+# written as a JSON literal straight to the event channel.
+session_java = root / "platforms/android/library/src/main/java/com/migo/runtime/GameSession.java"
 
 if not sink_java.exists():
     failures.append(
@@ -214,9 +223,36 @@ else:
     java_keys = set(re.findall(r'extra\.put\(\s*"([A-Za-z]+)"', sink_source))
     java_keys |= set(re.findall(r'payload\.put\(\s*"([A-Za-z]+)"', sink_source))
 
+    # The app's own events: each `onAdEvent(sessionId, "<JSON literal>" ...)`,
+    # its event name and every key it writes. No adId: they belong to no ad
+    # object, which is how the runtime tells them apart.
+    app_events: set[str] = set()
+    if not session_java.exists():
+        failures.append(
+            f"{session_java} not found; the app's own ad events cannot be checked"
+        )
+    else:
+        session_source = strip_comments(session_java.read_text(encoding="utf-8"))
+        for call in re.finditer(r"onAdEvent\(\s*sessionId\s*,(?P<args>.*?)\);", session_source, re.DOTALL):
+            literal = "".join(re.findall(r'"((?:\\.|[^"\\])*)"', call.group("args")))
+            app_events |= set(re.findall(r'\\"event\\":\\"([A-Za-z]+)\\"', literal))
+            java_keys |= set(re.findall(r'\\"([A-Za-z]+)\\":', literal)) - {"event"}
+        if not app_events:
+            failures.append(
+                f"{session_java.relative_to(root)}: raises no ad event of the app's "
+                "own; the cover advert's status is gone (or this check stopped matching it)"
+            )
+
     # JS side: the event names it routes, and the payload fields it reads.
     handled_events = set(re.findall(r'case\s+"([A-Za-z]+)":', ad_js_source))
+    handled_app_events = set(re.findall(r'event\.event\s*===\s*"([A-Za-z]+)"', ad_js_source))
     js_fields = set(re.findall(r"\bevent\.([A-Za-z][A-Za-z0-9_]*)", ad_js_source))
+
+    for name in sorted(app_events - handled_app_events):
+        failures.append(
+            f"the app raises ad event `{name}` but the runtime handles no such "
+            f"event ({ad_js.relative_to(root)}); it would be dropped in silence"
+        )
 
     if not emitted_events:
         failures.append(
@@ -241,8 +277,9 @@ else:
     for name in sorted(js_fields - ROUTING_FIELDS - java_keys):
         failures.append(
             f"{ad_js.relative_to(root)}: reads `event.{name}` from ad payloads, "
-            f"but {sink_java.relative_to(root)} never puts that key; the field "
-            "would always arrive undefined"
+            f"but neither {sink_java.relative_to(root)} nor the app's own events in "
+            f"{session_java.relative_to(root)} put that key; the field would always "
+            "arrive undefined"
         )
 
     for name in sorted(ROUTING_FIELDS - java_keys):
