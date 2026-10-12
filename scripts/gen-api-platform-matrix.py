@@ -56,6 +56,7 @@ ANDROID_SERVICES = "engine/crates/platform/src/android/services/mod.rs"
 ANDROID_JAVA = "platforms/android/library/src/main/java"
 ANDROID_HANDLERS = "platforms/android/library/src/main/java/com/migo/runtime/callback"
 APPLE_LAYER = "platforms/apple/Sources/MigoAppleRenderer"
+APPLE_MAC_VIEW = "platforms/apple/Sources/MigoMacV8"
 LINUX_LAYER = "platforms/linux/host-kit/src"
 OHOS_LAYER = "platforms/openharmony/entry/src/main"
 
@@ -255,12 +256,16 @@ def lane_facts(root: pathlib.Path) -> dict[str, dict[str, set[str]]]:
                     if re.search(r"\bhost_services\s*=", line):
                         facts[platform]["services"].add("*")
                     # A service the host layer answers itself when the app does not
-                    # (the Swift SDK's MigoBuiltInHostServices): `builtIn.insert(.name)`.
+                    # (the Swift SDK's MigoBuiltInHostServices, the macOS game view's
+                    # MigoGameViewHostServices): `builtIn.insert(.name)`.
                     for name in re.findall(r"\bbuiltIn\.insert\(\.(\w+)\)", line.split("//", 1)[0]):
                         facts[platform]["builtin"].add(re.sub(r"(?<!^)([A-Z])", r"_\1", name).lower())
 
     apple = found("Apple host layer sources", sorted((root / APPLE_LAYER).glob("*.swift")))
     scan(["ios", "macos"], apple)
+    # The macOS game view answers what only its window can (MigoGameViewHostServices).
+    mac_view = found("macOS game view sources", sorted((root / APPLE_MAC_VIEW).glob("*.swift")))
+    scan(["macos"], mac_view)
     linux = found("Linux host kit sources", sorted(p for p in (root / LINUX_LAYER).rglob("*") if p.suffix in (".cpp", ".hpp", ".h")))
     scan(["linux"], linux)
     ohos = found("OpenHarmony host sources", sorted(p for p in (root / OHOS_LAYER).rglob("*") if p.suffix in (".cpp", ".h", ".ets")))

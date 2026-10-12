@@ -128,8 +128,15 @@ one the app does not name: the pasteboard (`setClipboardData` /
 alert sheet on a Mac and an alert controller on iOS; the system's dialogs take no
 button colours), and the screen -- on iOS its brightness, screenshots, screen
 recording and the device turning; on a Mac `setVisualEffectOnCapture` keeping the
-game's window out of screenshots and recordings. Name a service to answer it your
-way, or to refuse it.
+game's window out of screenshots and recordings. On a Mac the game view also
+answers the window it is shown in: `setWindowSize` (the window grows or shrinks
+by what the game's view must), `setCursor` (CSS keywords as the system's
+cursors -- the arrow where macOS has none -- or an image file with its hotspot),
+`onWindowStateChange` (minimized, zoomed or full screen, normal), and pointer
+lock: the cursor stands still and hidden while the mouse's raw motion moves the
+game's pointer, taken only with the window key and the cursor over the game, and
+released by Esc or the window losing key. Name a service to answer it your way,
+or to refuse it.
 
 A call is answered once, now or later (`reply.succeed(...)`, or `reply.fail("cancel")`
 for a player who dismissed it); a reply the app drops unanswered fails the call
