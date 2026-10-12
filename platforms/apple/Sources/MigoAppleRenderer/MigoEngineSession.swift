@@ -230,6 +230,8 @@ public final class MigoEngineSession {
     /// app's grants. Each reporter -- the device status reporter, a capability
     /// -- owns some of the fields and changes only those.
     private var systemSettings = MigoSystemSettingFlags(MIGO_SYSTEM_SETTING_FLAG_NONE)
+    /// The system's game controllers, announced once there is a surface.
+    private(set) lazy var gamepads = MigoGamepads(session: self)
     private var appAuthorization = MigoAppAuthorizeSetting()
 
     /// Create the engine and the session and install the host callbacks.
@@ -344,6 +346,8 @@ public final class MigoEngineSession {
         #endif
         callbacks.on_keep_screen_on = migoOnKeepScreenOn
         callbacks.on_game_log = migoOnGameLog
+        // A pad with motors is announced only with this installed.
+        callbacks.on_gamepad_rumble = migoOnGamepadRumble
         // The channel, with the services the app and the SDK answer.
         let supplied = composed.services.reduce(UInt64(0)) { $0 | $1.bit }
         if supplied != 0 {
@@ -425,6 +429,8 @@ public final class MigoEngineSession {
         surfaceGeneration = generation
         surfaceSize = size
         metricsGeneration = 0
+        // Pads are announced to a surface: there is one now.
+        gamepads.start()
     }
 
     /// Tell the renderer the attached surface changed size or scale.
@@ -600,6 +606,38 @@ public final class MigoEngineSession {
 
     // MARK: - input
 
+    /// Announce a game controller, or withdraw it. Main thread.
+    func setGamepad(_ info: MigoGamepadInfo, connected: Bool) {
+        guard !isClosed else { return }
+        var info = info
+        let result = migo_session_set_gamepad_connected(session, &info, connected ? 1 : 0)
+        if result != MIGO_OK, result != MIGO_ERROR_WOULD_BLOCK {
+            NSLog("MigoEngineSession: migo_session_set_gamepad_connected returned \(result)")
+        }
+    }
+
+    /// One sample of a connected controller, in the standard layout. A sample
+    /// not taken is replaced by the next one. Main thread.
+    func sendGamepadState(
+        index: UInt32, axes: [Float], buttons: [MigoGamepadButton], timestampMilliseconds: Double
+    ) {
+        guard !isClosed else { return }
+        axes.withUnsafeBufferPointer { axes in
+            buttons.withUnsafeBufferPointer { buttons in
+                var event = MigoGamepadStateEvent()
+                event.struct_size = UInt32(MemoryLayout<MigoGamepadStateEvent>.size)
+                event.abi_version = MIGO_ABI_VERSION_CURRENT
+                event.index = index
+                event.axis_count = UInt32(axes.count)
+                event.button_count = UInt32(buttons.count)
+                event.axes = axes.baseAddress
+                event.buttons = buttons.baseAddress
+                event.timestamp_ms = timestampMilliseconds
+                _ = migo_session_send_gamepad_state(session, &event)
+            }
+        }
+    }
+
     /// One touch event, points in CSS pixels. Returns the engine's answer;
     /// `MIGO_ERROR_WOULD_BLOCK` is backpressure, not a fault.
     @discardableResult
@@ -730,6 +768,7 @@ public final class MigoEngineSession {
         onEvent = nil
         capabilityReports = nil
         for capability in capabilities { capability.report(to: nil) }
+        gamepads.stop()
         guard let live = attachment else {
             finish(released: true, completion: completion)
             return
@@ -926,6 +965,11 @@ private let migoOnUpdateKeyboard: MigoOnUpdateKeyboardFn = { userData, _, value,
 
 private let migoOnKeepScreenOn: MigoOnKeepScreenOnFn = { userData, _, keepOn in
     relay(userData)?.owner?.deliver(.keepScreenOn(keepOn != 0))
+}
+
+private let migoOnGamepadRumble: MigoOnGamepadRumbleFn = { userData, _, rumble in
+    guard let rumble else { return }
+    relay(userData)?.owner?.gamepads.rumble(rumble.pointee)
 }
 
 private let migoOnGameLog: MigoOnGameLogFn = { userData, _, entry, length in
