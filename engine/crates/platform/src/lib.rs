@@ -16,6 +16,11 @@ mod host_owners;
 
 #[cfg(any(target_os = "android", test))]
 mod jni_method_id;
+
+// Decoded video's YUV as RGBA: the Android decoder's today, and compiled under
+// `test` so the conversion runs on every host's gate.
+#[cfg(any(target_os = "android", test))]
+pub(crate) mod yuv;
 // Compiled on every host, not only Android: the profile contract's own tests
 // are what keep the JNI surface and the profile features in step, and they have
 // to run somewhere with a CI runner. The external-frame product is the
