@@ -94,6 +94,11 @@ async function run() {
   });
   expect(size === "16x8", "compressed size", size);
   console.error("migo-swift-host-probe: compressed=" + size);
+  // The system's viewer shows the game's image, and the call is answered once
+  // it does.
+  const previewed = await call("previewImage", { urls: [compressed.tempFilePath] });
+  expect(previewed.errMsg === "previewImage:ok", "previewImage", previewed);
+  console.error("migo-swift-host-probe: previewed");
   console.error("migo-swift-host-probe: clipboard=" + got.data);
 }
 

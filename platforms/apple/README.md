@@ -137,8 +137,10 @@ JPEG), `chooseImage` / `chooseMedia` from the photo library through PHPicker on
 iOS (no library access, no purpose string) and the open panel on a Mac,
 `chooseMessageFile` through the document picker or the open panel, and on a Mac
 `saveFileToDisk` through the save panel. What the player picks is copied first,
-and an image content cannot draw (HEIC, TIFF) arrives as a JPEG; the camera, the
-photo library's saving and the viewers are not part of this yet. On a Mac the
+and an image content cannot draw (HEIC, TIFF) arrives as a JPEG -- and
+`previewImage` / `previewMedia` in QuickLook (full screen on iOS, a window on a
+Mac), each item copied or downloaded first, answered once it shows; the camera
+and saving to the photo library are not part of this yet. On a Mac the
 game view also answers the window it is shown in: `setWindowSize` (the window grows or shrinks
 by what the game's view must), `setCursor` (CSS keywords as the system's
 cursors -- the arrow where macOS has none -- or an image file with its hotspot),
