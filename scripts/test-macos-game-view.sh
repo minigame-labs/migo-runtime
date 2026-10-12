@@ -196,6 +196,15 @@ RUN_TAG=
 ((status == 0)) || { tail -40 "$LAST_LOG"; fail "the game did not reach the app's host services (exit $status)"; }
 grep -q 'migo-swift-host-probe: clipboard=migo-swift-host' "$LAST_LOG" \
   || fail "the game did not report the clipboard the app answered"
+# The Wi-Fi switch the game read is the Mac's own (off on a Mac with no Wi-Fi),
+# and a grant the SDK does not read -- the camera's -- is not made up.
+wifi_device="$(networksetup -listallhardwareports | awk '/^Hardware Port: Wi-Fi/{getline; print $2}')"
+expected_wifi=false
+if [[ -n "$wifi_device" ]] && networksetup -getairportpower "$wifi_device" | grep -q ': On$'; then
+  expected_wifi=true
+fi
+grep -q "migo-swift-host-probe: wifi=$expected_wifi camera=not determined" "$LAST_LOG" \
+  || fail "the game did not read the Mac's Wi-Fi switch ($expected_wifi) and an undetermined camera: $(grep -o 'migo-swift-host-probe: wifi=.*' "$LAST_LOG")"
 
 echo "[5/5] hardened runtime WITHOUT allow-jit: the view refuses, and says why"
 sign without-jit

@@ -504,6 +504,28 @@ public final class MigoEngineSession {
         if result != MIGO_OK { NSLog("MigoEngineSession: migo_session_set_battery_status returned \(result)") }
     }
 
+    /// The system switches -- Bluetooth, location services, Wi-Fi -- reported
+    /// now and at each change (`getSystemSetting`); one not reported reads as
+    /// off. See `MigoDeviceStatusReporter`.
+    public func setSystemSettings(_ flags: MigoSystemSettingFlags) {
+        guard !isClosed else { return }
+        let result = migo_session_set_system_settings(session, flags)
+        if result != MIGO_OK { NSLog("MigoEngineSession: migo_session_set_system_settings returned \(result)") }
+    }
+
+    /// What the system has granted this app, reported now and at each change
+    /// (`getAppAuthorizeSetting`): each field a `MIGO_AUTHORIZATION_*`, and one
+    /// the app cannot read left "not determined". See
+    /// `MigoDeviceStatusReporter`.
+    public func setAppAuthorizeSetting(_ setting: MigoAppAuthorizeSetting) {
+        guard !isClosed else { return }
+        var setting = setting
+        setting.struct_size = UInt32(MemoryLayout<MigoAppAuthorizeSetting>.size)
+        setting.abi_version = MIGO_ABI_VERSION_CURRENT
+        let result = migo_session_set_app_authorize_setting(session, &setting)
+        if result != MIGO_OK { NSLog("MigoEngineSession: migo_session_set_app_authorize_setting returned \(result)") }
+    }
+
     /// What this app says about itself -- its id, its interface language, its
     /// text scale -- reported now and at each change (`getAppBaseInfo`). See
     /// `MigoDeviceStatusReporter`. `fontScale` 0 is "not reported".

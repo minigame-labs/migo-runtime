@@ -10,8 +10,8 @@
       "  because an API that reaches nothing may instead be one the probe could not get past its own validation.",
       "via: needs what another API needs -- a setter whose value travels with that API's request, a status that",
       "  API's events keep current, a precondition that API meets.",
-      "input: is fed by the host's input or lifecycle rather than called through to it; the kind names the host",
-      "  entry point that feeds it (see INPUT in the generator).",
+      "input: is fed by the host's input, lifecycle or reported state rather than called through to it; the kind names",
+      "  the host entry point that feeds it (see INPUT in the generator).",
       "gaps: the engine answers, but the answer is invented or a stub, or the host has no way to supply the real",
       "  one. Missing on the platforms named until fixed; each is a work item.",
       "unsupported: deliberately not offered on the platforms named, for the reason given; content feature-detects.",
@@ -53,7 +53,9 @@
       "setMessageToFriendQuery": "shareMessageToFriend"
   },
   "input": {
+      "getAppAuthorizeSetting": "app_authorize",
       "getGamepads": "gamepad",
+      "getSystemSetting": "system_settings",
       "offHide": "visibility",
       "offKeyDown": "key",
       "offKeyUp": "key",

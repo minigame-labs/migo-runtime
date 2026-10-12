@@ -54,6 +54,14 @@ async function run() {
   expect(sized.errMsg === "setWindowSize:ok", "setWindowSize", sized);
   await resized;
   expect(migo.setCursor("pointer") === true, "setCursor", false);
+  // What the SDK reports of the system: the Wi-Fi switch, which the script
+  // compares with the Mac's own, and the notification grant, in the API's words.
+  const system = migo.getSystemSetting();
+  const grants = migo.getAppAuthorizeSetting();
+  expect(typeof system.wifiEnabled === "boolean", "getSystemSetting", system);
+  const words = ["authorized", "denied", "not determined"];
+  expect(words.indexOf(grants.notificationAuthorized) >= 0, "getAppAuthorizeSetting", grants);
+  console.error("migo-swift-host-probe: wifi=" + system.wifiEnabled + " camera=" + grants.cameraAuthorized);
   console.error("migo-swift-host-probe: clipboard=" + got.data);
 }
 

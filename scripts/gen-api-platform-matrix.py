@@ -60,8 +60,10 @@ APPLE_MAC_VIEW = "platforms/apple/Sources/MigoMacV8"
 LINUX_LAYER = "platforms/linux/host-kit/src"
 OHOS_LAYER = "platforms/openharmony/entry/src/main"
 
-# Host input and lifecycle, by kind: the C ABI entry point a host feeds it
-# through, and the Java SDK's native for the same.
+# Host input, lifecycle and reported state, by kind: the C ABI entry point a host
+# feeds it through, and the Java SDK's native for the same -- None where the
+# Android SDK reads the state from the platform itself, through the engine
+# service its accessor names.
 INPUT = {
     "touch": ("migo_session_send_touch", "onTouchRaw"),
     "pointer": ("migo_session_send_pointer_event", "onPointerEvent"),
@@ -70,6 +72,8 @@ INPUT = {
     "gamepad": ("migo_session_set_gamepad_connected", "onGamepadConnection"),
     "visibility": ("migo_session_set_visibility", "onShow"),
     "memory": ("migo_session_post_memory_warning", "onMemoryWarning"),
+    "app_authorize": ("migo_session_set_app_authorize_setting", None),
+    "system_settings": ("migo_session_set_system_settings", None),
 }
 
 # A service the Java SDK leaves to the host app: its handler interface. Every
@@ -416,7 +420,7 @@ def need_status(need: str, platform: str, lanes, entries, android) -> str:
     kind, _, detail = need.partition(":")
     implemented, handlers, natives = android
     if platform == "android":
-        if kind == "input":
+        if kind == "input" and INPUT[detail][1] is not None:
             return "default" if INPUT[detail][1] in natives else "missing"
         return None  # decided by the accessor, below
     lane = lanes.get(platform)
@@ -493,7 +497,7 @@ def generate(root: pathlib.Path) -> str:
     for kind, (entry, native) in INPUT.items():
         if entry is not None and entry not in entries:
             raise Fail(f"input {kind}: {entry} is not a C ABI entry point")
-        if not re.search(rf"\bstatic\b[^;{{]*\b{native}\s*\(", bridge):
+        if native is not None and not re.search(rf"\bstatic\b[^;{{]*\b{native}\s*\(", bridge):
             raise Fail(f"input {kind}: {native} is not a method of the Android SDK's native bridge")
     p_lanes = {}
     for extension in boundary["extensions"].values():
@@ -541,8 +545,9 @@ def generate(root: pathlib.Path) -> str:
                     else:
                         parts.append("default")
                 for need in needs:
-                    if need.startswith("input:"):
-                        parts.append(need_status(need, platform, lanes, entries, android))
+                    status = need_status(need, platform, lanes, entries, android) if need.startswith("input:") else None
+                    if status is not None:
+                        parts.append(status)
                 status = worst(parts)
             else:
                 status = worst(need_status(need, platform, lanes, entries, android) for need in needs)
@@ -550,10 +555,11 @@ def generate(root: pathlib.Path) -> str:
                     lanes_of_ops = [p_lanes.get(op) for op in ops_of(name, reach, reference, decisions)]
                     # iOS runs content on the Performance+ producer: an op it does
                     # not offer reaches nothing, and one it answers itself
-                    # (`local`) never reaches the host's channel, whatever the
-                    # host supplies.
+                    # (`local`) never reaches the host's channel or what the host
+                    # reports, whatever the host supplies.
                     if "unsupported" in lanes_of_ops or (
-                        "local" in lanes_of_ops and any(need.startswith("channel:") for need in needs)
+                        "local" in lanes_of_ops
+                        and any(need.startswith(("channel:", "input:", "report:")) for need in needs)
                     ):
                         status = "missing"
             statuses[platform] = status
