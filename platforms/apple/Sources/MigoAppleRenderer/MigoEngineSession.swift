@@ -224,6 +224,8 @@ public final class MigoEngineSession {
     /// The optional parts of the system the app linked, reporting to this
     /// session while it is open.
     private let capabilities: [MigoSystemCapability]
+    /// What they report through, while the session is open.
+    private var capabilityReports: MigoCapabilityReports?
     /// What the session last reported of the system's switches and of the
     /// app's grants. Each reporter -- the device status reporter, a capability
     /// -- owns some of the fields and changes only those.
@@ -365,7 +367,13 @@ public final class MigoEngineSession {
         // service itself.
         let reports = MigoCapabilityReports(
             session: self, decidesScopes: !(hostServices?.services.contains(.permission) ?? false))
+        capabilityReports = reports
         for capability in capabilities { capability.report(to: reports) }
+        // A player back from the system's settings may have changed a grant.
+        composed.builtIn.refreshCapabilities = { [weak self] in
+            guard let self, let reports = self.capabilityReports else { return }
+            for capability in self.capabilities { capability.report(to: reports) }
+        }
     }
 
     deinit {
@@ -720,6 +728,7 @@ public final class MigoEngineSession {
         isClosed = true
         clock.stop()
         onEvent = nil
+        capabilityReports = nil
         for capability in capabilities { capability.report(to: nil) }
         guard let live = attachment else {
             finish(released: true, completion: completion)

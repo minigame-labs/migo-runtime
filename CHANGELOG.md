@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Apple: the settings pages, answered by the system when the app does not name the setting service:
+  `openAppAuthorizeSetting` opens this app's page in the system's settings (Settings on iOS, Privacy & Security on a
+  Mac), as does `openSetting` while the SDK decides content's scopes through a linked capability. Each is answered
+  when the player comes back, after the capabilities report what the player changed, so the `authSetting` content
+  reads is the one left. `openSystemBluetoothSetting` is decided unsupported on iOS and macOS: the platform documents
+  it for Android only, and iOS offers apps no link to its Bluetooth settings.
 - Apple: optional capabilities, one product per privacy-sensitive part of the system, so an app links -- and declares
   a purpose string for -- only what it uses (`MigoSystemCapability`, handed to either game view's
   `Configuration.capabilities`). The first is `MigoAppleLocation`: `getLocation` / `getFuzzyLocation` from
