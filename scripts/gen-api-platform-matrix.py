@@ -57,6 +57,7 @@ ANDROID_JAVA = "platforms/android/library/src/main/java"
 ANDROID_HANDLERS = "platforms/android/library/src/main/java/com/migo/runtime/callback"
 APPLE_LAYER = "platforms/apple/Sources/MigoAppleRenderer"
 APPLE_MAC_VIEW = "platforms/apple/Sources/MigoMacV8"
+APPLE_IOS_VIEW = "platforms/apple/Sources/MigoApplePerformancePlus"
 # The optional capability products an app links and hands its game view.
 APPLE_CAPABILITIES = ("platforms/apple/Sources/MigoAppleLocation", "platforms/apple/Sources/MigoAppleBluetooth")
 LINUX_LAYER = "platforms/linux/host-kit/src"
@@ -297,6 +298,38 @@ def lane_facts(root: pathlib.Path) -> dict[str, dict[str, set[str]]]:
     scan(["ohos"], ohos)
     for platform in ("ios", "macos", "linux", "ohos"):
         found(f"{platform} callbacks", facts[platform]["callbacks"])
+
+    # The Swift session wraps every input entry point (MigoEngineSession.sendKey,
+    # .sendPointer, ...), and both Apple platforms compile it, so its calls alone
+    # say nothing about which platform feeds the input: an input is the platform's
+    # only where code compiled for it calls the wrapper -- the platform's game view,
+    # or the SDK's own drivers (gamepads, the device's reports). Without this the
+    # iPhone and iPad were credited with the hardware keyboard and the mouse that
+    # only the Mac's view delivers.
+    input_entries = {entry for entry, _ in INPUT.values() if entry is not None}
+    wrappers: dict[str, set[str]] = {}  # wrapper function -> input entry points it calls
+    for path in apple:
+        text = path.read_text(encoding="utf-8")
+        for match in re.finditer(r"\bfunc\s+(\w+)\s*[(<]", text):
+            body = braced(text, match.end())
+            called = input_entries & set(re.findall(r"\b(migo_session_\w+)\s*\(", body))
+            if called:
+                wrappers.setdefault(match.group(1), set()).update(called)
+    platform_sources = {
+        "ios": apple + [p for c in APPLE_CAPABILITIES for p in sorted((root / c).glob("*.swift"))]
+        + found("iOS game view sources", sorted((root / APPLE_IOS_VIEW).glob("*.swift"))),
+        "macos": apple + mac_view + [p for c in APPLE_CAPABILITIES for p in sorted((root / c).glob("*.swift"))],
+    }
+    for platform, sources in platform_sources.items():
+        fed: set[str] = set()
+        for path in sources:
+            text = path.read_text(encoding="utf-8")
+            compiled = "\n".join(line.split("//", 1)[0] for line, only in swift_conditions(text) if platform in only)
+            for name, entries in wrappers.items():
+                # A call, not the wrapper's own definition.
+                if re.search(rf"(?<!func )\b{name}\s*\(", compiled):
+                    fed |= entries
+        facts[platform]["entries"] -= input_entries - fed
     return facts
 
 
