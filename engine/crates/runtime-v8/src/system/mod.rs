@@ -425,9 +425,21 @@ pub fn op_get_auth_setting(state: &mut OpState) -> String {
 ///
 /// Fails when no host permission service is installed rather than reporting
 /// success. `migo.authorize()` exists to obtain consent; returning success with
-/// nobody asked is the defect this replaces.
+/// nobody asked is the defect this replaces. A scope the platform does not
+/// define is refused here, so no host is asked about a name it cannot decide.
 #[op2(fast)]
 pub fn op_authorize(state: &mut OpState, #[string] request_json: String) -> Result<(), JsErrorBox> {
+    let scope = deno_core::serde_json::from_str::<deno_core::serde_json::Value>(&request_json)
+        .ok()
+        .and_then(|request| {
+            request
+                .get("scope")?
+                .as_str()
+                .and_then(Scope::from_minigame_str)
+        });
+    if scope.is_none() {
+        return Err(JsErrorBox::generic("authorize:fail invalid scope"));
+    }
     let host = state.borrow::<HostOpState>();
     if let Some(ref services) = host.device_services {
         if let Some(permission) = services.permission() {

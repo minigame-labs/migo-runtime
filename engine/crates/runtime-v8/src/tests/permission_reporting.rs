@@ -232,4 +232,25 @@ mod permission_reporting_tests {
              let __msg = 'authorize reported success with no host to ask'",
         );
     }
+
+    /// A scope the platform does not define is refused before any host is
+    /// asked about a name it cannot decide.
+    #[tokio::test(start_paused = true)]
+    async fn authorize_refuses_a_scope_the_platform_does_not_define() {
+        let mut rt = boot(Some(Arc::new(Bundle)));
+        rt.execute_script(
+            "<test:authorize-unknown>",
+            FastString::from_static(
+                "globalThis.__fail = null; \
+                 migo.authorize({ scope: 'scope.everything', \
+                                fail: (e) => { globalThis.__fail = e.errMsg; } });",
+            ),
+        )
+        .expect("authorize");
+        assert_js(
+            &mut rt,
+            "let __ok = globalThis.__fail === 'authorize:fail invalid scope'; \
+             let __msg = 'an undefined scope got: ' + globalThis.__fail",
+        );
+    }
 }
