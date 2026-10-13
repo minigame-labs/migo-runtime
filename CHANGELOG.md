@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Apple: `setEcosystemValue(_:json:)` on `MigoEngineSession` and both game views reports the value a synchronous
+  ecosystem getter answers with (`getExtConfigSync`, `isChatTool`, ...), which the C ABI took and the Swift SDK never
+  passed on, so those getters answered as for a host with none. A view keeps what was reported and gives it to each
+  game it runs, before the game's first line; `nil` withdraws a value.
+- iOS: on Performance+, whether the host app answers ecosystem calls and the values it reported for the synchronous
+  getters are read from the host synchronously, as the embedded ops read them, rather than answered "no ecosystem" by
+  the producer: getExtConfig(Sync), isChatTool, getExptInfoSync, the privacy APIs, createPageManager, createStoreGift
+  and the rest of the ecosystem reach the app on iOS.
 - iOS: a hardware keyboard, an iPad's mouse and trackpad, and the window service. The game view takes the keys when
   the game starts and when touched, and sends each with its DOM `key` and `code` (UIKit's HID usages mapped by
   position; a key pressed again before it came up is a repeat). The pointer's hover, presses, drag and release are the

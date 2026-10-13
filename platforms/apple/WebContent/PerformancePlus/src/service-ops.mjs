@@ -284,4 +284,6 @@ export const SERVICE_OP = Object.freeze({
   op_get_auth_setting: 274,
   op_get_system_settings: 275,
   op_set_cursor: 276,
+  op_ecosystem_available: 277,
+  op_ecosystem_value: 278,
 });

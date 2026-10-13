@@ -355,16 +355,6 @@ export function op_crypto_random_values(out) {
   }
 }
 
-// ---- the host's ecosystem -------------------------------------------------------
-//
-// This profile carries no ecosystem channel, so there is no ecosystem: the
-// APIs with a true answer for a host without one give it, and the requests
-// themselves are unsupported (20_ecosystem.js).
-
-export function op_ecosystem_available() {
-  return false;
-}
-
 // ---- video decoding --------------------------------------------------------------
 //
 // No decoder is integrated on this profile: createVideoDecoder's start() fails
@@ -372,11 +362,6 @@ export function op_ecosystem_available() {
 
 export function op_video_decoder_available() {
   return false;
-}
-
-export function op_ecosystem_value(name) {
-  stringOf(name, "name");
-  return null;
 }
 
 // ---- counters and hints -------------------------------------------------------

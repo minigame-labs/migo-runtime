@@ -927,6 +927,19 @@ export function op_set_cursor(path, x, y) {
   });
 }
 
+/// Whether the host app answers ecosystem calls at all, and the JSON it last
+/// reported for a synchronous getter (`getExtConfigSync`, `isChatTool`, ...) or
+/// `null`: the host's, as the embedded ops read them -- this producer has no
+/// host of its own to ask.
+export function op_ecosystem_available() {
+  return callService(SERVICE_OP.op_ecosystem_available);
+}
+
+export function op_ecosystem_value(name) {
+  const n = stringOf(name, "name");
+  return callService(SERVICE_OP.op_ecosystem_value, (w) => w.str(n));
+}
+
 /// Whether the host app integrates ads: asked once, as the embedded op is, by
 /// content's ad layer before it creates one.
 export function op_ad_is_supported() {
