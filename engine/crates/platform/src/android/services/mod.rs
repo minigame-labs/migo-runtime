@@ -684,10 +684,6 @@ impl NetworkService for AndroidNetwork {
     fn get_network_type_json(&self) -> Result<String, ServiceError> {
         Ok(jni::get_network_type_json(self.host_id)?)
     }
-
-    fn get_local_ip_json(&self) -> Result<String, ServiceError> {
-        Ok(jni::get_local_ip_address_json()?)
-    }
 }
 
 // ==================== Audio Platform ====================

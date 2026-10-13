@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `getLocalIPAddress` answers on every platform: the engine reads the device's address on its local network and its
+  netmask from the system (`shared::device::local_address`) -- the active network's, as the routing table picks it,
+  so not a VPN tunnel, a container bridge or an idle cellular link that happens to be listed first; IPv4 where that
+  network has an IPv4 address, even when its only default route is IPv6 -- rather than asking a host. C ABI hosts (macOS, iOS, Linux, Windows, OpenHarmony) had no way to report it and every call failed as
+  not supported; Android's own lookup took the first IPv4 address of the first interface that was up, and answered an
+  empty success when there was none. A device on no network now fails the call. On Performance+ the host's process
+  reads it, synchronously.
 - Apple: `setEcosystemValue(_:json:)` on `MigoEngineSession` and both game views reports the value a synchronous
   ecosystem getter answers with (`getExtConfigSync`, `isChatTool`, ...), which the C ABI took and the Swift SDK never
   passed on, so those getters answered as for a host with none. A view keeps what was reported and gives it to each

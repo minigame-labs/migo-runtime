@@ -234,7 +234,6 @@ const JAVA_SENSORS: &[JniMethod] = methods![
     ("startNetworkMonitoring", "(I)V"),
     ("stopNetworkMonitoring", "(I)V"),
     ("getNetworkTypeJson", "(I)Ljava/lang/String;"),
-    ("getLocalIPAddressJson", "()Ljava/lang/String;"),
     ("setClipboardData", "(ILjava/lang/String;)I"),
     ("getClipboardData", "(I)Ljava/lang/String;"),
     ("getLocation", "(ILjava/lang/String;)V"),
@@ -515,7 +514,7 @@ mod tests {
         // Java, System (`updateAvailable`, `applyUpdate`). Returning to the
         // mini program that opened this one adds +1 Java, Connectivity
         // (`navigateBackMiniProgram`).
-        assert_eq!(java.len(), 148, "full NativeExports surface changed");
+        assert_eq!(java.len(), 147, "full NativeExports surface changed");
         assert_unique(&native);
         assert_unique(&java);
     }

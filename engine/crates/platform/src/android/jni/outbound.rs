@@ -728,22 +728,6 @@ pub fn get_network_type_json(host_id: i32) -> Result<String, String> {
     )
 }
 
-pub fn get_local_ip_address_json() -> Result<String, String> {
-    call_static_method(
-        "getLocalIPAddressJson",
-        ReturnType::Object,
-        |env, result| {
-            let jstring = result.l().map_err(|_| "Null string from Java")?;
-            let json_str = env
-                .get_string(&jni::objects::JString::from(jstring))
-                .map_err(|e| format!("Failed to convert local IP JSON string: {}", e))?
-                .into();
-            Ok(json_str)
-        },
-        &[],
-    )
-}
-
 // ==================== Audio Platform ====================
 
 /// Set inner audio options: mixWithOther, obeyMuteSwitch, speakerOn.

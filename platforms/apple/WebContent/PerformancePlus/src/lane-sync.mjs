@@ -940,6 +940,13 @@ export function op_ecosystem_value(name) {
   return callService(SERVICE_OP.op_ecosystem_value, (w) => w.str(n));
 }
 
+/// The device's address on its local network and its netmask: read from the
+/// system by the engine in the host's process, as the embedded op reads it --
+/// WebContent has no view of the device's interfaces.
+export function op_get_local_ip_address() {
+  return callService(SERVICE_OP.op_get_local_ip_address);
+}
+
 /// Whether the host app integrates ads: asked once, as the embedded op is, by
 /// content's ad layer before it creates one.
 export function op_ad_is_supported() {

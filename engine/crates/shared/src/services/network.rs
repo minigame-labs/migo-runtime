@@ -22,11 +22,4 @@ pub trait NetworkService: Send + Sync {
             "getNetworkType:fail not supported",
         ))
     }
-
-    /// Get local IP JSON: `{"localip": "192.168.1.1", "netmask": "255.255.255.0"}`
-    fn get_local_ip_json(&self) -> Result<String, ServiceError> {
-        Err(ServiceError::not_supported(
-            "getLocalIPAddress:fail not supported",
-        ))
-    }
 }

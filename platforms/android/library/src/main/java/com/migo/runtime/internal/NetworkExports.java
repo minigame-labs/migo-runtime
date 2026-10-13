@@ -85,30 +85,6 @@ public final class NetworkExports {
         }
     }
 
-    public static String getLocalIPAddressJson() {
-        NetworkMonitor.LocalIPInfo info = NetworkMonitor.getLocalIPAddress();
-        if (info.error != null) {
-            try {
-                JSONObject err = new JSONObject();
-                JSONObject inner = new JSONObject();
-                inner.put("errMsg", info.error);
-                err.put("_error", inner);
-                return err.toString();
-            } catch (JSONException e) {
-                return "{}";
-            }
-        }
-
-        try {
-            JSONObject json = new JSONObject();
-            json.put("localip", info.localip);
-            json.put("netmask", info.netmask);
-            return json.toString();
-        } catch (JSONException e) {
-            return "{}";
-        }
-    }
-
     public static void destroyNetworkMonitor(int sessionId) {
         ResourceCleanup.destroyMatching(
                 sNetworkMonitors,
