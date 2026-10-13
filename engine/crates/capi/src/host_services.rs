@@ -66,17 +66,18 @@ use migo_capi_abi::{
         MIGO_SCREEN_EVENT_DEVICE_ORIENTATION_CHANGE, MIGO_SCREEN_EVENT_RECORDING_STATE_CHANGE,
         MIGO_SCREEN_EVENT_USER_CAPTURE_SCREEN, MIGO_SCREEN_GET_BRIGHTNESS,
         MIGO_SCREEN_GET_RECORDING_STATE, MIGO_SCREEN_SET_BRIGHTNESS,
-        MIGO_SCREEN_SET_DEVICE_ORIENTATION, MIGO_SCREEN_SET_VISUAL_EFFECT_ON_CAPTURE,
-        MIGO_SCREEN_START_CAPTURE_OBSERVER, MIGO_SCREEN_START_RECORDING_OBSERVER,
-        MIGO_SCREEN_STOP_CAPTURE_OBSERVER, MIGO_SCREEN_STOP_RECORDING_OBSERVER,
-        MIGO_SETTING_OPEN_APP_AUTHORIZE_SETTING, MIGO_SETTING_OPEN_SETTING,
-        MIGO_SETTING_OPEN_SYSTEM_BLUETOOTH_SETTING, MIGO_SHARE_EVENT_MENU_SHARE,
-        MIGO_SHARE_MENU_SHARE_REPLY, MIGO_SHARE_SET_SHARE_MENU, MIGO_SHARE_SHARE_APP_MESSAGE,
-        MIGO_SHARE_SHARE_MESSAGE_TO_FRIEND, MIGO_SHARE_SHOW_SHARE_IMAGE_MENU,
-        MIGO_SUBPACKAGE_DOWNLOAD, MIGO_UPDATE_APPLY_UPDATE, MIGO_UPDATE_EVENT_STATE,
-        MIGO_WINDOW_EVENT_POINTER_LOCK_CHANGE, MIGO_WINDOW_EVENT_WINDOW_STATE_CHANGE,
-        MIGO_WINDOW_EXIT_POINTER_LOCK, MIGO_WINDOW_REQUEST_POINTER_LOCK, MIGO_WINDOW_SET_CURSOR,
-        MIGO_WINDOW_SET_WINDOW_SIZE, MigoHostServiceResult, copy_bounded,
+        MIGO_SCREEN_SET_DEVICE_ORIENTATION, MIGO_SCREEN_SET_ENABLE_DEBUG,
+        MIGO_SCREEN_SET_VISUAL_EFFECT_ON_CAPTURE, MIGO_SCREEN_START_CAPTURE_OBSERVER,
+        MIGO_SCREEN_START_RECORDING_OBSERVER, MIGO_SCREEN_STOP_CAPTURE_OBSERVER,
+        MIGO_SCREEN_STOP_RECORDING_OBSERVER, MIGO_SETTING_OPEN_APP_AUTHORIZE_SETTING,
+        MIGO_SETTING_OPEN_SETTING, MIGO_SETTING_OPEN_SYSTEM_BLUETOOTH_SETTING,
+        MIGO_SHARE_EVENT_MENU_SHARE, MIGO_SHARE_MENU_SHARE_REPLY, MIGO_SHARE_SET_SHARE_MENU,
+        MIGO_SHARE_SHARE_APP_MESSAGE, MIGO_SHARE_SHARE_MESSAGE_TO_FRIEND,
+        MIGO_SHARE_SHOW_SHARE_IMAGE_MENU, MIGO_SUBPACKAGE_DOWNLOAD, MIGO_UPDATE_APPLY_UPDATE,
+        MIGO_UPDATE_EVENT_STATE, MIGO_WINDOW_EVENT_POINTER_LOCK_CHANGE,
+        MIGO_WINDOW_EVENT_WINDOW_STATE_CHANGE, MIGO_WINDOW_EXIT_POINTER_LOCK,
+        MIGO_WINDOW_REQUEST_POINTER_LOCK, MIGO_WINDOW_SET_CURSOR, MIGO_WINDOW_SET_WINDOW_SIZE,
+        MigoHostServiceResult, copy_bounded,
     },
 };
 use migo_core::services::{
@@ -619,6 +620,7 @@ const COMMANDS: &[(u32, u32)] = &[
         MIGO_HOST_SERVICE_SCREEN,
         MIGO_SCREEN_STOP_RECORDING_OBSERVER,
     ),
+    (MIGO_HOST_SERVICE_SCREEN, MIGO_SCREEN_SET_ENABLE_DEBUG),
     (MIGO_HOST_SERVICE_WINDOW, MIGO_WINDOW_SET_CURSOR),
     (MIGO_HOST_SERVICE_WINDOW, MIGO_WINDOW_REQUEST_POINTER_LOCK),
     (MIGO_HOST_SERVICE_WINDOW, MIGO_WINDOW_EXIT_POINTER_LOCK),
@@ -1022,6 +1024,18 @@ impl DeviceMotionService for CapiHostServices {
 // Keeping the screen on is the typed callback, not this channel
 // (`host_kit::CapiScreen` joins the two).
 impl ScreenService for CapiHostServices {
+    /// The host shows or hides its debugging aids. Content is told the new
+    /// state at once, as the host's report, which the host's next report
+    /// carries on: a read that raced the host's own would answer the old one.
+    fn set_enable_debug(&self, enabled: bool) -> Result<(), ServiceError> {
+        self.command(
+            MIGO_HOST_SERVICE_SCREEN,
+            MIGO_SCREEN_SET_ENABLE_DEBUG,
+            &serde_json::json!({ "enableDebug": enabled }).to_string(),
+        )?;
+        self.reports.set_debug(enabled);
+        Ok(())
+    }
     fn get_brightness(&self, request_json: &str) -> Result<(), ServiceError> {
         self.call(&GET_SCREEN_BRIGHTNESS, request_json)
     }
@@ -1908,6 +1922,37 @@ mod tests {
                     MIGO_HOST_SERVICE_NAVIGATE,
                     MIGO_NAVIGATE_NAVIGATE_BACK_MINI_PROGRAM,
                     r#"{"extraData":{}}"#.to_owned()
+                ),
+            ]
+        );
+    }
+
+    /// Content's `setEnableDebug` reaches the host as the screen's command,
+    /// and the engine reads the new state at once -- before the host has
+    /// reported again -- until the host's next report says otherwise.
+    #[test]
+    fn turning_the_debugging_aids_is_a_command_and_read_at_once() {
+        let heard = Heard::default();
+        let (session, services) = services_with(&heard, inline_dispatch);
+        assert!(!session.host_reports.host_app_info().debug);
+        ScreenService::set_enable_debug(&*services, true).unwrap();
+        assert!(session.host_reports.host_app_info().debug, "read at once");
+        ScreenService::set_enable_debug(&*services, false).unwrap();
+        assert!(!session.host_reports.host_app_info().debug);
+        assert_eq!(
+            *heard.0.lock().unwrap(),
+            vec![
+                (
+                    0,
+                    MIGO_HOST_SERVICE_SCREEN,
+                    MIGO_SCREEN_SET_ENABLE_DEBUG,
+                    r#"{"enableDebug":true}"#.to_owned()
+                ),
+                (
+                    0,
+                    MIGO_HOST_SERVICE_SCREEN,
+                    MIGO_SCREEN_SET_ENABLE_DEBUG,
+                    r#"{"enableDebug":false}"#.to_owned()
                 ),
             ]
         );

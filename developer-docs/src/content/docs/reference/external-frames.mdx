@@ -836,29 +836,6 @@ MigoResult migo_session_copy_content_root(
 
 ---
 
-## migo_session_copy_app_info
-
-```c
-/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
-MigoResult migo_session_copy_app_info(
-    MigoSession  *session,
-    char         *buffer,
-    size_t        capacity,
-    size_t       *out_length);
-```
-
-`getAppBaseInfo`、`getAccountInfoSync`、`getDeviceBenchmarkInfo` 的答案，即引擎的 `op_get_app_info` 交给其 JavaScript
-的那个 JSON 对象，以 NUL 结尾的 UTF-8 写出：引擎对自身所知、宿主 `migo_session_set_host_app_info` 的报告与已加载内容的描述符
-三者的组合。生产端不跨进程地用它作答，所以宿主在启动时、以及每次新报告之后提供它。
-
-返回：
-
-- `MIGO_OK`：已写入；`*out_length` 为不含 NUL 的长度。
-- `MIGO_ERROR_INVALID_ARGUMENT`：`out_length` 为空、`buffer` 为空而 `capacity` 非 0，或 `capacity` 装不下 JSON 加 NUL。容量不足时 `*out_length` 仍被写入，调用方可按它重试。
-- `MIGO_ERROR_INVALID_STATE`：尚未加载内容（内容 id 是答案的一部分）。
-
-线程模型：任意线程。
-
 ---
 
 ## migo_session_read_content_module

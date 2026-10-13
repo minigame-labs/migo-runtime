@@ -287,4 +287,6 @@ export const SERVICE_OP = Object.freeze({
   op_ecosystem_available: 277,
   op_ecosystem_value: 278,
   op_get_local_ip_address: 279,
+  op_set_enable_debug: 280,
+  op_get_app_info: 281,
 });

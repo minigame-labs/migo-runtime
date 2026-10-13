@@ -183,17 +183,22 @@ pub fn op_set_visual_effect_on_capture(
 
 // ==================== Debug Ops ====================
 
+/// `setEnableDebug`: the host turns its debugging aids on or off -- the panel
+/// that shows the session's console -- and the session's console records
+/// while they are on, so the panel has what content wrote from then.
 #[op2(fast)]
 pub fn op_set_enable_debug(state: &mut OpState, enabled: bool) -> Result<(), JsErrorBox> {
     let host = state.borrow::<HostOpState>();
-    if let Some(ref services) = host.device_services {
-        if let Some(screen) = services.screen() {
-            return screen
-                .set_enable_debug(enabled)
-                .map_err(JsErrorBox::generic);
-        }
-    }
-    Err(JsErrorBox::generic("setEnableDebug:fail not supported"))
+    let screen = host
+        .device_services
+        .as_ref()
+        .and_then(|services| services.screen())
+        .ok_or_else(|| JsErrorBox::generic("setEnableDebug:fail not supported"))?;
+    screen
+        .set_enable_debug(enabled)
+        .map_err(JsErrorBox::generic)?;
+    shared::console_log::set_console_recording(host.id, enabled);
+    Ok(())
 }
 
 // ==================== Screen Capture Ops ====================

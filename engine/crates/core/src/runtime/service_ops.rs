@@ -300,6 +300,8 @@ service_ops! {
     op_ecosystem_available = 277,
     op_ecosystem_value = 278,
     op_get_local_ip_address = 279,
+    op_set_enable_debug = 280,
+    op_get_app_info = 281,
 }
 
 /// The op's name, for a refusal a person will read.

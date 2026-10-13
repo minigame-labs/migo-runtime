@@ -679,6 +679,32 @@ Returns:
 - `MIGO_ERROR_INVALID_ARGUMENT` — The level is not one of the three this header defines.
 - `MIGO_ERROR_INVALID_STATE` — The Session was destroyed.
 
+## migo_session_copy_console_logs
+
+```c
+/* Derived example: no tests/c_host coverage yet; the header is authoritative */
+MIGO_API MigoResult MIGO_CALL migo_session_copy_console_logs(MigoSession *session,
+                                                             uint64_t since_cursor,
+                                                             char *buffer,
+                                                             size_t capacity,
+                                                             size_t *out_length);
+```
+
+What content wrote to its console, for the host's debugging panel (the platform's vConsole). Only output
+written while the debugging aids are on is kept: content calls `setEnableDebug`, and the host turns its
+panel on when it receives the `MIGO_SCREEN_SET_ENABLE_DEBUG` command. Written as NUL-terminated UTF-8 JSON
+`{"logs": [{"l": level, "t": Unix milliseconds, "m": text}], "cursor": next}` -- level 0 debug, 1 log and
+info, 2 warn, 3 error -- oldest first. Pass 0 the first time and the returned cursor after; the session
+keeps its latest 500 lines, so a reader that fell further behind gets those.
+
+Returns:
+
+- `MIGO_OK` -- written; `*out_length` is the length without the NUL
+- `MIGO_ERROR_INVALID_ARGUMENT` -- `out_length` is null, `buffer` is null with a non-zero `capacity`, or the capacity cannot hold the JSON and its NUL (`*out_length` is still set, so the caller can retry with it)
+- `MIGO_ERROR_INVALID_STATE` -- no content is running
+
+Threading: any thread.
+
 ## migo_session_set_network_status
 
 ```c

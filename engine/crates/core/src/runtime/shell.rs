@@ -337,11 +337,11 @@ impl SessionShell {
         let backgrounded = Arc::new(AtomicBool::new(false));
         let timer_backgrounded = Arc::new(AtomicBool::new(false));
 
-        // ---- Console log buffer (debug only) ----
-        if init_options.debug_enabled() {
-            shared::console_log::register_console_log(id);
-            startup_guard.mark_console_registered();
-        }
+        // ---- Console log, for the debugging aids: every session has one, so
+        // they can be turned on while a game runs (`setEnableDebug`); it
+        // records from the start only when they start on. ----
+        shared::console_log::register_console_log(id, init_options.debug_enabled());
+        startup_guard.mark_console_registered();
 
         info!(
             "[Host {}] session shell: {:.1}ms (render launched, frame clock wired)",

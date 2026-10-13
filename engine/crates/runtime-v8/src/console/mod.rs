@@ -1,13 +1,13 @@
 use std::cell::RefCell;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use deno_core::{Extension, extension, op2, v8};
-use shared::console_log::ConsoleLogBuffer;
+use shared::console_log::ConsoleLog;
 use tracing::{debug, error, info, warn};
 
 thread_local! {
-    /// This isolate's devtools console buffer, or `None` when the session runs
-    /// without debug enabled.
+    /// This isolate's console for its debugging aids, or `None` when the
+    /// session registered none; it records only while the aids are on.
     ///
     /// Resolved **once**, at bring-up, and never again. Finding it means reading
     /// a registry shared with every other Session, whose writers are their
@@ -15,7 +15,7 @@ thread_local! {
     /// lock on a path the content drives -- the cross-session contention trap, and the
     /// reason the text texture cache and the image alias table are wired the same
     /// way.
-    static CONSOLE_SINK: RefCell<Option<Arc<Mutex<ConsoleLogBuffer>>>> =
+    static CONSOLE_SINK: RefCell<Option<Arc<ConsoleLog>>> =
         const { RefCell::new(None) };
 }
 
@@ -37,7 +37,7 @@ pub fn bind_thread_console(id: i32) {
 /// one of them may touch the registry: resolving is bring-up work, installing is
 /// not. It is also what lets the contention gate resolve before the registry is
 /// locked, the way an isolate does.
-fn set_thread_console_sink(sink: Option<Arc<Mutex<ConsoleLogBuffer>>>) {
+fn set_thread_console_sink(sink: Option<Arc<ConsoleLog>>) {
     CONSOLE_SINK.replace(sink);
 }
 
@@ -47,10 +47,8 @@ fn set_thread_console_sink(sink: Option<Arc<Mutex<ConsoleLogBuffer>>>) {
 /// scope, and what the gate is about is which lock this path takes.
 fn record_for_devtools(level: u8, message: String) {
     CONSOLE_SINK.with_borrow(|sink| {
-        if let Some(buffer) = sink {
-            if let Ok(mut buffer) = buffer.lock() {
-                buffer.push(level, message);
-            }
+        if let Some(log) = sink {
+            log.record(level, message);
         }
     });
 }
@@ -73,8 +71,8 @@ pub fn op_console<'s>(
         _ => debug!("{}", msg),
     }
 
-    // Write to the per-session ring buffer (no-op if the session has no buffer,
-    // i.e. debug mode is disabled).
+    // Write to the session's ring buffer, which keeps it only while the
+    // debugging aids are on.
     record_for_devtools(level, msg);
 }
 extension!(host_v8_console,
@@ -115,7 +113,7 @@ mod cross_session_contention {
     #[test]
     fn writing_a_console_entry_does_not_queue_behind_the_console_registry() {
         let host_id = 9_400;
-        let buffer = shared::console_log::register_console_log(host_id);
+        let buffer = shared::console_log::register_console_log(host_id, true);
         struct Unregister(i32);
         impl Drop for Unregister {
             fn drop(&mut self) {
@@ -145,7 +143,7 @@ mod cross_session_contention {
             },
         );
 
-        let entries = buffer.lock().expect("buffer lock").read_since(0).0.len();
+        let entries = buffer.read_since(0).0.len();
         assert_eq!(
             entries, 1,
             "the fixture must actually write the entry, or a completion proves \

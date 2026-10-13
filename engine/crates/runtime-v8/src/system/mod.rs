@@ -10,8 +10,8 @@ use std::rc::Rc;
 use deno_core::{Extension, OpState, op2};
 use deno_error::JsErrorBox;
 use shared::op_state::HostOpState;
+use shared::services::Scope;
 use shared::services::app_info::AppInfo;
-use shared::services::{Scope, ScopeState};
 
 use crate::file::host_paths::export_paths;
 

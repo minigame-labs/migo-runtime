@@ -184,6 +184,14 @@ Report the value a synchronous ecosystem getter answers with -- one of the contr
 `nil` withdraws it. The view keeps what was reported and gives it to each game it runs, before the
 game's first line. Needs the ecosystem service in `hostServices`. Main thread.
 
+### Debugging panel
+
+When content calls `setEnableDebug({enableDebug: true})` the view shows a debugging panel over the game -- the
+platform's vConsole: frames a second and the latest 200 lines content writes to its console from then on, coloured by
+level. It takes no touches or clicks, so the game stays playable; `enableDebug: false` takes it away, and
+`getAppBaseInfo().enableDebug` follows. An app that answers the screen service itself shows its own aids and tells
+the session with `MigoEngineSession.setDebugAids(_:)`.
+
 ### prefersPointerLocked (iOS)
 
 ```swift

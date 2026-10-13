@@ -217,6 +217,8 @@ extension MigoHostServiceID {
         public static let stopRecordingObserver: UInt32 = 7
         /// `set_visual_effect_on_capture`: a call, answered once.
         public static let setVisualEffectOnCapture: UInt32 = 8
+        /// `set_enable_debug`: a command, unanswered.
+        public static let setEnableDebug: UInt32 = 9
 
         /// The service's events, for `postHostServiceEvent`.
         public enum Event {

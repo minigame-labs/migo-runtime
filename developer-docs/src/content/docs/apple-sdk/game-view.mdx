@@ -160,6 +160,13 @@ public func setEcosystemValue(_ name: String, json: Data?)
 返回的值，变化时再报，`nil` 撤回。view 记住已上报的值，在每个游戏的第一行代码之前交给它。需要
 `hostServices` 提供 ecosystem 服务。主线程调用。
 
+### 调试面板
+
+内容调用 `setEnableDebug({enableDebug: true})` 时，view 在游戏上方显示调试面板（平台 vConsole 的对应物）：每秒帧数和
+内容此后写到控制台的最近 200 行（按级别着色），不接收触摸/点击，游戏照常可玩；`enableDebug: false` 时收起。
+`getAppBaseInfo().enableDebug` 随之变化。app 若自己应答 screen 服务，就由它展示自己的调试辅助，并调用
+`MigoEngineSession.setDebugAids(_:)` 告知会话。
+
 ### prefersPointerLocked（iOS）
 
 ```swift

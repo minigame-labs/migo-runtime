@@ -263,6 +263,9 @@ impl ScreenService for CapiScreen {
         self.channel("setVisualEffectOnCapture")?
             .set_visual_effect_on_capture(request_json)
     }
+    fn set_enable_debug(&self, enabled: bool) -> Result<(), ServiceError> {
+        self.channel("setEnableDebug")?.set_enable_debug(enabled)
+    }
 }
 
 impl MediaServices for CapiDeviceServices {

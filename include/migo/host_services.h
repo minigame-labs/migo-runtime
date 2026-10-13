@@ -273,6 +273,11 @@ typedef uint32_t MigoHostService;
  * USER_CAPTURE_SCREEN {} when the player takes a screenshot,
  * RECORDING_STATE_CHANGE {"state"}, and DEVICE_ORIENTATION_CHANGE {"value":
  * "portrait" | "landscape" | "landscapeReverse"} whenever the device turns.
+ * SET_ENABLE_DEBUG {"enableDebug"} is content's setEnableDebug: the host shows
+ * or hides its debugging aids -- the platform's vConsole, a panel with what
+ * content wrote to its console (migo_session_copy_console_logs) -- and reports
+ * MIGO_HOST_APP_INFO_FLAG_DEBUG to match from then on; content is told the new
+ * state at once, and its console is recorded while the aids are on.
  * Keeping the screen on stays MigoHostCallbacks.on_keep_screen_on.
  */
 #define MIGO_SCREEN_GET_BRIGHTNESS 0U
@@ -284,6 +289,7 @@ typedef uint32_t MigoHostService;
 #define MIGO_SCREEN_START_RECORDING_OBSERVER 6U
 #define MIGO_SCREEN_STOP_RECORDING_OBSERVER 7U
 #define MIGO_SCREEN_SET_VISUAL_EFFECT_ON_CAPTURE 8U
+#define MIGO_SCREEN_SET_ENABLE_DEBUG 9U
 #define MIGO_SCREEN_EVENT_USER_CAPTURE_SCREEN 0U
 #define MIGO_SCREEN_EVENT_DEVICE_ORIENTATION_CHANGE 1U
 #define MIGO_SCREEN_EVENT_RECORDING_STATE_CHANGE 2U

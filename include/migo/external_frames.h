@@ -745,22 +745,6 @@ MIGO_API MigoResult MIGO_CALL migo_session_take_parked_reply(
 MIGO_API MigoResult MIGO_CALL migo_session_copy_content_root(
     MigoSession *session, char *buffer, size_t capacity, size_t *out_length);
 
-/*
- * What getAppBaseInfo(), getAccountInfoSync() and getDeviceBenchmarkInfo()
- * answer, as the JSON object the engine's op_get_app_info hands its JavaScript,
- * written as NUL-terminated UTF-8: the engine's composition of what it knows of
- * itself, the host's migo_session_set_host_app_info report and the loaded
- * content's descriptor. The producer answers the op from it without crossing,
- * so a host serves it at start and again after a new report.
- *
- * *out_length receives the length without the NUL. Returns
- * MIGO_ERROR_INVALID_ARGUMENT when capacity is too small, with *out_length set
- * so the caller can retry; MIGO_ERROR_INVALID_STATE before content is loaded,
- * since the content's id is part of the answer.
- */
-MIGO_API MigoResult MIGO_CALL migo_session_copy_app_info(
-    MigoSession *session, char *buffer, size_t capacity, size_t *out_length);
-
 /* What migo_session_read_content_module handed over. */
 #define MIGO_CONTENT_MODULE_SERVED 0U     /* the bytes are the module's source */
 #define MIGO_CONTENT_MODULE_NOT_FOUND 1U  /* the bytes are why: answer 404 */

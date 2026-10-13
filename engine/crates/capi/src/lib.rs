@@ -727,11 +727,7 @@ pub unsafe extern "C" fn migo_session_load_content(
             return MIGO_ERROR_INVALID_STATE;
         }
         // What the descriptor says about the content, kept once it is loaded.
-        let loaded = settings::LoadedContent::new(
-            content.content_id.clone(),
-            content.environment,
-            content.version.clone(),
-        );
+        let loaded = settings::LoadedContent::new(content.environment, content.version.clone());
 
         // The external execution mounts content here, synchronously: its entry
         // module is evaluated by WebKit in another process, and that process's
@@ -1047,6 +1043,75 @@ pub unsafe extern "C" fn migo_session_post_memory_warning(
     })
 }
 
+/// Write `text` and a NUL into `buffer`, setting `out_length` to its length
+/// without the NUL; `MIGO_ERROR_INVALID_ARGUMENT` when it does not fit, so the
+/// caller can retry with the length it was told.
+///
+/// # Safety
+/// `buffer` must be writable for `capacity` bytes, or null when `capacity` is
+/// zero.
+pub(crate) unsafe fn copy_text(
+    text: &str,
+    buffer: *mut std::ffi::c_char,
+    capacity: usize,
+    out_length: &mut usize,
+) -> MigoResult {
+    *out_length = text.len();
+    if capacity < text.len() + 1 {
+        return MIGO_ERROR_INVALID_ARGUMENT;
+    }
+    // SAFETY: non-null (a zero capacity returned above) and at least
+    // `text.len() + 1` bytes, checked above.
+    unsafe {
+        std::ptr::copy_nonoverlapping(text.as_ptr(), buffer.cast::<u8>(), text.len());
+        buffer.add(text.len()).write(0);
+    }
+    MIGO_OK
+}
+
+/// # Safety
+/// `session` must be a live session handle, `buffer` writable for `capacity`
+/// bytes (or null with zero), and `out_length` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn migo_session_copy_console_logs(
+    session: *mut MigoSession,
+    since_cursor: u64,
+    buffer: *mut std::ffi::c_char,
+    capacity: usize,
+    out_length: *mut usize,
+) -> MigoResult {
+    guard("migo_session_copy_console_logs", || {
+        let Some(out_length) = (unsafe { out_length.as_mut() }) else {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        };
+        *out_length = 0;
+        if buffer.is_null() && capacity != 0 {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        }
+        let session = match unsafe { pin_session(session) } {
+            Ok(session) => session,
+            Err(error) => return error,
+        };
+        let host = {
+            let Ok(state) = session.state.lock() else {
+                return MIGO_ERROR_INTERNAL;
+            };
+            state
+                .host
+                .as_ref()
+                .filter(|_| state.content_loaded)
+                .map(SessionEngine::id)
+        };
+        let Some(json) =
+            host.and_then(|host| shared::console_log::read_console_logs_json(host, since_cursor))
+        else {
+            return MIGO_ERROR_INVALID_STATE;
+        };
+        // SAFETY: forwarded from this function's contract; checked above.
+        unsafe { copy_text(&json, buffer, capacity, out_length) }
+    })
+}
+
 // ---- Development logging ----------------------------------------------------
 
 /// The level `MIGO_CAPI_LOG` asks for, if a host set it.
@@ -1305,6 +1370,48 @@ mod tests {
                     "{level}"
                 );
             }
+        });
+    }
+
+    /// The console is content's, so there is none to read before content
+    /// runs; a reader with nowhere to put the length, or a buffer of no
+    /// memory, is refused.
+    #[test]
+    fn the_console_is_read_only_while_content_runs() {
+        crate::test_support::with_session("console-logs", |session| {
+            let mut length = 7usize;
+            let mut buffer = [0 as std::ffi::c_char; 64];
+            assert_eq!(
+                unsafe {
+                    migo_session_copy_console_logs(
+                        session,
+                        0,
+                        buffer.as_mut_ptr(),
+                        buffer.len(),
+                        &mut length,
+                    )
+                },
+                MIGO_ERROR_INVALID_STATE
+            );
+            assert_eq!(length, 0);
+            assert_eq!(
+                unsafe {
+                    migo_session_copy_console_logs(
+                        session,
+                        0,
+                        buffer.as_mut_ptr(),
+                        buffer.len(),
+                        std::ptr::null_mut(),
+                    )
+                },
+                MIGO_ERROR_INVALID_ARGUMENT
+            );
+            assert_eq!(
+                unsafe {
+                    migo_session_copy_console_logs(session, 0, std::ptr::null_mut(), 8, &mut length)
+                },
+                MIGO_ERROR_INVALID_ARGUMENT
+            );
         });
     }
 

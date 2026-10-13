@@ -19,7 +19,7 @@
   "total": 382,
   "summary": {
     "android": {"engine": 61, "default": 125, "host": 180, "missing": 6, "unsupported": 10, "ready": 376},
-    "ios": {"engine": 71, "default": 104, "host": 174, "missing": 17, "unsupported": 16, "ready": 364},
+    "ios": {"engine": 71, "default": 105, "host": 174, "missing": 16, "unsupported": 16, "ready": 365},
     "macos": {"engine": 71, "default": 83, "host": 170, "missing": 11, "unsupported": 47, "ready": 370},
     "linux": {"engine": 71, "default": 20, "host": 269, "missing": 12, "unsupported": 10, "ready": 250},
     "windows": {"engine": 71, "default": 0, "host": 289, "missing": 12, "unsupported": 10, "ready": 230},
@@ -357,7 +357,7 @@
     "setClipboardData": {"category": "device/clipboard", "needs": ["channel:clipboard.set_clipboard_data"], "android": "default", "ios": "default", "macos": "default", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["linux", "windows", "ohos"]},
     "setCursor": {"category": "render/cursor", "needs": ["channel:window.set_cursor"], "android": "default", "ios": "default", "macos": "default", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["linux", "windows", "ohos"]},
     "setDeviceOrientation": {"category": "device/orientation", "needs": ["channel:screen.set_device_orientation"], "android": "default", "ios": "unsupported", "macos": "unsupported", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["linux", "windows", "ohos"]},
-    "setEnableDebug": {"category": "base/debug", "needs": ["callback:on_keep_screen_on"], "android": "default", "ios": "missing", "macos": "default", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "linux", "windows", "ohos"]},
+    "setEnableDebug": {"category": "base/debug", "needs": ["channel:screen.set_enable_debug"], "android": "default", "ios": "default", "macos": "default", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["linux", "windows", "ohos"]},
     "setHandoffQuery": {"category": "share", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "host", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ohos"]},
     "setInnerAudioOption": {"category": "media/audio", "needs": ["service:audio_platform"], "android": "default", "ios": "missing", "macos": "missing", "linux": "missing", "windows": "missing", "ohos": "missing", "not_ready": ["ios", "macos", "linux", "windows", "ohos"]},
     "setKeepScreenOn": {"category": "device/screen", "needs": ["callback:on_keep_screen_on"], "android": "default", "ios": "default", "macos": "default", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["linux", "windows", "ohos"]},

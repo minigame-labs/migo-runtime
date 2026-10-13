@@ -877,6 +877,38 @@ impl ServiceContext {
                     .and_then(|ecosystem| ecosystem.value(&name))
                     .map_or(OwnedValue::Null, OwnedValue::Str))
             }
+            // The host's debugging aids, turned as the embedded op turns them:
+            // a failure where the platform has no screen service.
+            id::op_set_enable_debug => {
+                let [enabled] = exactly(op, args)?;
+                let enabled = boolean(op, 0, enabled)?;
+                self.device("setEnableDebug", |device| device.screen())?
+                    .set_enable_debug(enabled)
+                    .map(|()| OwnedValue::Null)
+                    .map_err(device_error)
+            }
+            // What the app says about itself and the content it runs: the
+            // host's latest report composed with the content's id, as the
+            // embedded op composes it.
+            id::op_get_app_info => {
+                let [] = exactly(op, args)?;
+                let report = self
+                    .device
+                    .get()
+                    .and_then(Option::as_deref)
+                    .and_then(|device| device.system_info())
+                    .map(|system| system.host_app_info())
+                    .unwrap_or_default();
+                let app_id = self
+                    .game_paths()
+                    .map(|paths| paths.game_id().to_owned())
+                    .unwrap_or_default();
+                serde_json::to_string(&shared::services::app_info::AppInfo::compose(
+                    report, &app_id,
+                ))
+                .map(OwnedValue::Json)
+                .map_err(|error| ServiceError::generic(error.to_string()))
+            }
             // The device's local address, read from the system as the embedded
             // op reads it: the host's process sees the device's interfaces.
             id::op_get_local_ip_address => {
@@ -2111,6 +2143,90 @@ mod tests {
             read(&none, id::op_get_system_settings),
             Err("getSystemSetting:fail not supported".to_owned())
         );
+    }
+
+    /// From another process, the debugging aids are turned as in process --
+    /// a failure where the platform has no screen service -- and what the app
+    /// says about itself is the host's latest report composed with the
+    /// content's id, so a change during the session is what content reads next.
+    #[test]
+    fn the_debugging_aids_and_the_app_s_report_are_the_host_s() {
+        use shared::services::app_info::HostAppInfo;
+        use shared::services::{ScreenService, ServiceError as DeviceError, SystemInfoService};
+        #[derive(Default)]
+        struct Host {
+            aids: parking_lot::Mutex<Vec<bool>>,
+            debug: std::sync::atomic::AtomicBool,
+        }
+        impl ScreenService for Host {
+            fn set_enable_debug(&self, enabled: bool) -> Result<(), DeviceError> {
+                self.aids.lock().push(enabled);
+                self.debug
+                    .store(enabled, std::sync::atomic::Ordering::Relaxed);
+                Ok(())
+            }
+        }
+        impl SystemInfoService for Host {
+            fn host_app_info(&self) -> HostAppInfo {
+                HostAppInfo {
+                    language: Some("fr-CA".into()),
+                    debug: self.debug.load(std::sync::atomic::Ordering::Relaxed),
+                    ..HostAppInfo::default()
+                }
+            }
+        }
+        struct Platform(Arc<Host>);
+        impl shared::services::SensorServices for Platform {
+            fn screen(&self) -> Option<Arc<dyn ScreenService>> {
+                Some(Arc::clone(&self.0) as Arc<dyn ScreenService>)
+            }
+        }
+        impl shared::services::ConnectivityServices for Platform {}
+        impl shared::services::CommerceServices for Platform {}
+        impl shared::services::MediaServices for Platform {}
+        impl shared::services::SystemUtilServices for Platform {
+            fn system_info(&self) -> Option<Arc<dyn SystemInfoService>> {
+                Some(Arc::clone(&self.0) as Arc<dyn SystemInfoService>)
+            }
+        }
+
+        let root = std::env::temp_dir().join(format!("migo-external-debug-{}", std::process::id()));
+        let files = root.join("files");
+        let cache = root.join("cache");
+        let installed = shared::vfs::GamePaths::new(&files, &cache, "g", 1).unwrap();
+        std::fs::create_dir_all(installed.code_dir()).unwrap();
+        let host = Arc::new(Host::default());
+        let context = ServiceContext::new(files.clone(), cache.clone());
+        context.bind_session(1);
+        context.bind_device(Some(Arc::new(Platform(Arc::clone(&host)))));
+        context.load_content("g", "game.js").expect("mounts");
+        let app_info = |context: &ServiceContext| match context
+            .call_sync(id::op_get_app_info, Vec::new())
+        {
+            Ok(OwnedValue::Json(json)) => serde_json::from_str::<serde_json::Value>(&json).unwrap(),
+            other => panic!("JSON, not {other:?}"),
+        };
+
+        let before = app_info(&context);
+        assert_eq!(before["appId"], "g");
+        assert_eq!(before["language"], "fr_CA");
+        assert_eq!(before["enableDebug"], false);
+        assert_eq!(
+            context.call_sync(id::op_set_enable_debug, vec![OwnedValue::Bool(true)]),
+            Ok(OwnedValue::Null)
+        );
+        assert_eq!(*host.aids.lock(), [true]);
+        assert_eq!(app_info(&context)["enableDebug"], true, "read at once");
+
+        let none = ServiceContext::new(files, cache);
+        none.bind_session(2);
+        none.bind_device(None);
+        assert_eq!(
+            none.call_sync(id::op_set_enable_debug, vec![OwnedValue::Bool(true)])
+                .map_err(|error| error.message),
+            Err("setEnableDebug:fail not supported".to_owned())
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// The device's local address is the engine's to read, in the host's

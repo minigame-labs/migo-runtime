@@ -947,6 +947,20 @@ export function op_get_local_ip_address() {
   return callService(SERVICE_OP.op_get_local_ip_address);
 }
 
+/// `setEnableDebug`: the host shows or hides its debugging aids, answered as
+/// the embedded op answers -- a failure where the host has none.
+export function op_set_enable_debug(enabled) {
+  const on = toBool(enabled, "enabled");
+  return callService(SERVICE_OP.op_set_enable_debug, (w) => w.bool(on));
+}
+
+/// What the app says about itself and the content it runs, composed by the
+/// host from its latest report: it changes during a session (the debugging
+/// aids, the language, the text size).
+export function op_get_app_info() {
+  return callService(SERVICE_OP.op_get_app_info);
+}
+
 /// Whether the host app integrates ads: asked once, as the embedded op is, by
 /// content's ad layer before it creates one.
 export function op_ad_is_supported() {

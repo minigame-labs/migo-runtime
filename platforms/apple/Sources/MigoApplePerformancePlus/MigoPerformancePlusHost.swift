@@ -160,13 +160,9 @@ import os
             public var model: String
             public var system: String
             /// `"ios"` or `"macos"`; the engine passes it through to content.
+            /// What the app says about itself (`getAppBaseInfo`) is not here:
+            /// it changes during a session, and the producer asks the host.
             public var platform: String
-            /// What `getAppBaseInfo`, `getAccountInfoSync` and
-            /// `getDeviceBenchmarkInfo` answer: the JSON
-            /// `migo_session_copy_app_info` copies once content is loaded --
-            /// the engine's own composition, served as it is. `nil` leaves those
-            /// calls failing as the others here do without a profile.
-            public var appInfo: String?
 
             public struct SafeAreaInsets: Equatable, Sendable {
                 public var left: Double
@@ -186,8 +182,7 @@ import os
                 screenWidth: Double, screenHeight: Double, windowWidth: Double,
                 windowHeight: Double, pixelRatio: Double, statusBarHeight: Double = 0,
                 safeAreaInsets: SafeAreaInsets = SafeAreaInsets(), brand: String = "Apple",
-                model: String = "unknown", system: String = "", platform: String = "ios",
-                appInfo: String? = nil
+                model: String = "unknown", system: String = "", platform: String = "ios"
             ) {
                 self.screenWidth = screenWidth
                 self.screenHeight = screenHeight
@@ -200,7 +195,6 @@ import os
                 self.model = model
                 self.system = system
                 self.platform = platform
-                self.appInfo = appInfo
             }
 
             /// The JSON each op answers with, as the engine's JavaScript parses
@@ -224,19 +218,18 @@ import os
                     ],
                 ]
                 // No benchmark level: content reads the host's assessment of the
-                // device with the rest of `appInfo`, so the two cannot disagree.
+                // device with the rest of what the app says about itself, so the
+                // two cannot disagree.
                 let device: [String: Any] = [
                     "brand": brand,
                     "model": model,
                     "system": system,
                     "platform": platform,
                 ]
-                var fields: [String: Any] = [
+                return [
                     "windowInfo": Self.json(window),
                     "deviceInfo": Self.json(device),
                 ]
-                if let appInfo { fields["appInfo"] = appInfo }
-                return fields
             }
 
             private static func json(_ value: [String: Any]) -> String {

@@ -209,18 +209,6 @@ public final class MigoFrameHarness {
         return URL(fileURLWithPath: String(cString: buffer), isDirectory: true)
     }
 
-    /// What `getAppBaseInfo` and its companions answer for the loaded content:
-    /// the engine's own composition, as a host copies it to describe the
-    /// device to the producer.
-    public func appInfo() throws -> String {
-        var length = 0
-        _ = migo_session_copy_app_info(session, nil, 0, &length)
-        var buffer = [CChar](repeating: 0, count: length + 1)
-        let copied = migo_session_copy_app_info(session, &buffer, buffer.count, &length)
-        guard copied == MIGO_OK else { throw Failure.call("migo_session_copy_app_info", copied) }
-        return String(cString: buffer)
-    }
-
     /// Send one touch event the way a host's view does: through the C ABI, in
     /// CSS pixels, one point per finger.
     public func sendTouch(

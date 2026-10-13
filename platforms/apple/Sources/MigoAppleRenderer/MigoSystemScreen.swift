@@ -14,6 +14,9 @@ import Foundation
 final class MigoSystemScreen {
     /// Where the service's events go: the session's channel.
     private let post: (UInt32, [String: Any]) -> Void
+    /// Where content's `setEnableDebug` goes: the session, which turns its
+    /// debugging aids.
+    var debugAids: ((Bool) -> Void)?
     private var observers: [String: NSObjectProtocol] = [:]
     #if os(iOS)
         private var orientation: String?
@@ -70,6 +73,8 @@ final class MigoSystemScreen {
             #endif
         case Method.stopRecordingObserver:
             stopObserving("recording")
+        case Method.setEnableDebug:
+            debugAids?(request.object["enableDebug"] as? Bool == true)
         default:
             answer(request)
         }

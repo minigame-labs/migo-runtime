@@ -368,7 +368,7 @@ mod global_surface_tests {
     #[test]
     fn console_writes_an_error_as_its_message_and_stack() {
         let host_id = 9_401;
-        let buffer = shared::console_log::register_console_log(host_id);
+        let buffer = shared::console_log::register_console_log(host_id, true);
         crate::console::bind_thread_console(host_id);
         let mut rt = boot_runtime();
         rt.execute_script(
@@ -381,7 +381,7 @@ mod global_surface_tests {
             ),
         )
         .expect("console script");
-        let (entries, _) = buffer.lock().unwrap().read_since(0);
+        let (entries, _) = buffer.read_since(0);
         shared::console_log::unregister_console_log(host_id);
 
         let messages: Vec<&str> = entries.iter().map(|e| e.message.as_str()).collect();

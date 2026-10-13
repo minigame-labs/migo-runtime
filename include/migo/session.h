@@ -635,6 +635,24 @@ MIGO_API MigoResult MIGO_CALL
 migo_session_post_memory_warning(MigoSession *session, MigoMemoryWarningLevel level);
 
 /*
+ * What content wrote to its console since since_cursor while the session's
+ * debugging aids were on (content's setEnableDebug, or a session created with
+ * debugging on), for the host's debugging panel: NUL-terminated UTF-8 JSON
+ * {"logs": [{"l": level, "t": milliseconds since the Unix epoch, "m": text}],
+ * "cursor": next} -- level 0 debug, 1 log and info, 2 warn, 3 error -- oldest
+ * first. Pass 0 the first time and the returned cursor after; the session
+ * keeps its latest 500 entries, so a reader that fell further behind gets
+ * those. *out_length receives the length without the NUL. Returns
+ * MIGO_ERROR_INVALID_ARGUMENT when capacity is too small, with *out_length set
+ * so the caller can retry; MIGO_ERROR_INVALID_STATE while no content runs.
+ */
+MIGO_API MigoResult MIGO_CALL migo_session_copy_console_logs(MigoSession *session,
+                                                             uint64_t since_cursor,
+                                                             char *buffer,
+                                                             size_t capacity,
+                                                             size_t *out_length);
+
+/*
  * The device's network, as content's getNetworkType and onNetworkStatusChange
  * describe it. A host reports the network the device is on now and again each
  * time it changes; Migo keeps the last report and tells content about a change
