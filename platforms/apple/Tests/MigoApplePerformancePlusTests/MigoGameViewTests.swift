@@ -365,6 +365,10 @@ import XCTest
                       success() { say("oriented"); }, fail() { say("orientation-refused"); } });
                     migo.getLocalIPAddress({ success(res) { say("local " + res.localip + " " + res.netmask); },
                       fail(error) { say("local-fail " + error.errMsg); } });
+                    migo.setInnerAudioOption({ mixWithOther: true, obeyMuteSwitch: true, speakerOn: true,
+                      success() { say("audio-option"); }, fail(error) { say("audio-option-fail " + error.errMsg); } });
+                    migo.getAvailableAudioSources({ success(res) { say("sources " + JSON.stringify(res.audioSources)); },
+                      fail(error) { say("sources-fail " + error.errMsg); } });
                     """)
             try MigoGameInstaller.install(package: game, id: "device", into: directories)
             let view = MigoGameView(configuration: .init(directories: directories, contentSigning: .unsigned))
@@ -376,13 +380,15 @@ import XCTest
             var logged: [String] = []
             var failure: String?
             let answered = expectation(description: "content heard every answer")
-            answered.expectedFulfillmentCount = 6  // network, kept, vibrated, orientation, local address, log entry
+            // network, kept, vibrated, orientation, local address, audio option,
+            // audio sources, log entry
+            answered.expectedFulfillmentCount = 8
             let changed = expectation(description: "content heard the network change")
             // Only the game's own answers count: the engine writes console lines
             // of its own, and they are not what this waits for.
             let answers = [
                 "network ", "network-fail ", "kept", "vibrated", "vibrate-fail ", "orientation-", "oriented", "local ",
-                "local-fail ",
+                "local-fail ", "audio-option", "sources ", "sources-fail ",
             ]
             view.onEvent = { event in
                 switch event {
@@ -420,6 +426,17 @@ import XCTest
                 XCTAssertNotEqual(parts[1], "127.0.0.1", local)
                 XCTAssertEqual(parts[1].contains("."), parts[2].contains("."), "one family: \(local)")
             }
+            // The audio session is the engine's in this process: the options
+            // reach it, and its inputs come back in the API's iOS names, `auto`
+            // first.
+            XCTAssertTrue(lines.contains("audio-option"), "\(lines)")
+            let sourcesLine = try XCTUnwrap(lines.first { $0.hasPrefix("sources") }, "\(lines)")
+            let sources = try XCTUnwrap(
+                try JSONSerialization.jsonObject(with: Data(sourcesLine.dropFirst("sources ".count).utf8)) as? [String],
+                sourcesLine)
+            print("audio sources: \(sources)")
+            XCTAssertEqual(sources.first, "auto", sourcesLine)
+            XCTAssertTrue(Set(sources).isSubset(of: ["auto", "buildInMic", "headsetMic"]), sourcesLine)
             // The idle timer is an app's: a tool-hosted test process (the
             // simulator's `swift test` host) has no UIApplication to hold it,
             // so it is observed where there is one -- the device test host.

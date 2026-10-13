@@ -72,6 +72,14 @@ import { CardGrid, LinkCard } from '@astrojs/starlight/components';
 
 谁来接:Android 的 Java SDK 在自己的平台层实现这些调用(游戏日志交给下表的 `GameLogHandler`);Apple 上由 `MigoGameView` 接好(iOS:Taptic Engine、空闲计时器、`NWPathMonitor`、电量与低电量模式;macOS:电源断言与 `NWPathMonitor`,振动与电量回答不支持),见 [Apple 平台 · 设备能力](/docs/getting-started/apple/#5-设备能力);Linux、Windows、OpenHarmony 的 C ABI 宿主按上表自己接。
 
+有些设备能力不经宿主,因为答案就在引擎自己手里,C ABI 宿主无需接任何东西:
+
+- `getLocalIPAddress`:引擎读它所在系统的网卡。
+- `setInnerAudioOption` / `getAvailableAudioSources`:作用于引擎自己打开的音频输出。
+  - iOS:进程的 `AVAudioSession`。`obeyMuteSwitch` 决定类别,`mixWithOther` 决定是否与其他应用混音;输入源为 `auto`,以及按 iOS 名称列出的 `buildInMic`、`headsetMic`。
+  - macOS、Linux、Windows:系统的共享混音器。三个选项都没有可作用的对象(没有静音键、没有听筒,也没有别的应用的音频可以停),设置即成功。输入源是系统设置里的默认输入,记为 `auto`,没有则为空;只读系统设置、不碰设备,所以不会触发麦克风授权。Linux 的 ALSA 总有一个 `default`,因此总是 `auto`。
+  - OpenHarmony 暂不支持这两个调用。
+
 ## 4. Android 端 handler 合同:宿主在 Java 层接单
 
 GameSession 上 11 个 `set*Handler(...)` 外加 `setListener(GameSessionListener)` 共 12 个注册点,都是宿主侧能力,不接就走运行时级默认降级 —— 每个接口都自带「不接时内容看到什么」的文档契约:

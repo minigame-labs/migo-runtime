@@ -92,6 +92,14 @@ async function run() {
   // Already portrait: nothing to turn, and the call still succeeds.
   const again = await call("setDeviceOrientation", { value: "portrait" });
   expect(again.errMsg === "setDeviceOrientation:ok", "setDeviceOrientation again", again);
+  // The audio settings are the engine's own on a Mac: the options are
+  // accepted, and the input is the system's default one, if it names one.
+  const option = await call("setInnerAudioOption", { mixWithOther: false, obeyMuteSwitch: false, speakerOn: true });
+  expect(option.errMsg === "setInnerAudioOption:ok", "setInnerAudioOption", option);
+  const sources = await call("getAvailableAudioSources");
+  expect(sources.errMsg === "getAvailableAudioSources:ok" && Array.isArray(sources.audioSources),
+    "getAvailableAudioSources", sources);
+  console.error("migo-swift-host-probe: audioSources=" + JSON.stringify(sources.audioSources));
   expect(migo.setCursor("pointer") === true, "setCursor", false);
   // The debugging aids, which the SDK's screen service turns -- before the
   // viewer below covers the window, which pauses the game: content reads

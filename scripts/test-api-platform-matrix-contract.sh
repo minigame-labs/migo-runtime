@@ -108,6 +108,8 @@ red "a capability product that stops answering its service" platforms/apple/Sour
     'text.replace("builtIn.insert(.location)", "// builtIn.insert(.location)", 1)'
 red "an engine decoder compiled for another system" engine/crates/capi/src/host_kit.rs \
     'text.replace("#[cfg(target_os = \"macos\")]\n    fn video_decoder", "#[cfg(target_os = \"windows\")]\n    fn video_decoder", 1)'
+red "the engine's audio settings no longer built for Windows" engine/crates/capi/src/host_kit.rs \
+    'text.replace("target_os = \"windows\"))]\n    fn audio_platform", "target_os = \"linux\"))]\n    fn audio_platform", 1)'
 red "the Mac's game view that stops feeding the mouse" platforms/apple/Sources/MigoMacV8/MigoGameView.swift \
     'text.replace("engine.sendPointer(", "engine.sendPointerGone(")'
 red "the iPad's game view that stops feeding keys the shared session can still send" platforms/apple/Sources/MigoApplePerformancePlus/MigoGameView.swift \

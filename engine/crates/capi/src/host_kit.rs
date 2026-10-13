@@ -16,6 +16,8 @@ use migo_capi_abi::host_services::{
 };
 #[cfg(target_os = "macos")]
 use migo_core::services::VideoDecoderService;
+#[cfg(any(target_os = "ios", target_os = "macos", target_os = "linux", target_os = "windows"))]
+use migo_core::services::{AudioPlatformService, platform_audio_service};
 use migo_core::services::{
     AccelerometerService, AdService, AuthService, BatteryService, BluetoothService,
     ClipboardService, CommerceServices, CompassService, ConnectivityServices, DeviceMotionService,
@@ -269,6 +271,15 @@ impl ScreenService for CapiScreen {
 }
 
 impl MediaServices for CapiDeviceServices {
+    /// `setInnerAudioOption` and `getAvailableAudioSources`, which the engine
+    /// answers itself: it opens the process's audio output on these systems,
+    /// so the settings that govern it are its own (the iOS `AVAudioSession`, a
+    /// desktop's shared mixer). None on OpenHarmony yet, which is a Linux too.
+    #[cfg(any(target_os = "ios", target_os = "macos", target_os = "linux", target_os = "windows"))]
+    fn audio_platform(&self) -> Option<Arc<dyn AudioPlatformService>> {
+        platform_audio_service()
+    }
+
     fn image_api(&self) -> Option<Arc<dyn ImageApiService>> {
         self.host_service(MIGO_HOST_SERVICE_IMAGE)
             .map(|services| services as Arc<dyn ImageApiService>)
@@ -566,6 +577,34 @@ mod tests {
                 .is_none(),
             "a host that installed nothing must not be handed a keyboard"
         );
+    }
+
+    /// The audio settings are the engine's on the systems where it opens the
+    /// process's output, whatever the host installed: a C ABI host is offered
+    /// them and they answer -- the options accepted, the inputs a list the API
+    /// names.
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    #[test]
+    fn the_engine_answers_the_audio_settings_itself() {
+        let session = session();
+        let kit = CapiHostKit::new(
+            None,
+            Arc::downgrade(&session),
+            window(640, 480, 2.0),
+            Arc::clone(&session.device),
+            Arc::clone(&session.host_reports),
+        );
+        let audio = kit
+            .create_device_services(1)
+            .and_then(|services| services.audio_platform())
+            .expect("the engine's audio settings, with no host callbacks at all");
+        audio
+            .set_inner_audio_option(false, false, false)
+            .expect("the options are accepted");
+        let sources = audio
+            .get_available_audio_sources()
+            .expect("the inputs are listed");
+        assert!(sources.is_empty() || sources == ["auto"], "{sources:?}");
     }
 
     /// The whole wiring, end to end on the engine side: callbacks installed ->

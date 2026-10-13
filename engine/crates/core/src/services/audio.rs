@@ -165,19 +165,18 @@ async fn await_cleanup_ticket(ticket: AudioCleanupTicket, timeout: Duration) -> 
     }
 }
 
-/// The platform's audio service, where the engine is the platform.
-///
-/// On iOS the process's `AVAudioSession` is the engine's -- nothing else on
-/// that lane configures it (`audio::apple_session`) -- so `setInnerAudioOption`
-/// acts on it directly. Elsewhere the platform's own services answer, or
-/// nothing does.
-#[cfg(feature = "host-audio")]
-pub(crate) fn platform_audio_service() -> Option<Arc<dyn shared::services::AudioPlatformService>> {
-    #[cfg(target_os = "ios")]
+/// `setInnerAudioOption` and `getAvailableAudioSources`, where the engine is
+/// the platform's audio: it opens the process's output, so the settings that
+/// govern it are its own (`audio::platform`) -- the iOS `AVAudioSession`, a
+/// desktop's shared mixer. `None` where the platform's SDK answers them
+/// (Android), where nothing does yet (OpenHarmony), and in a build without the
+/// engine's audio.
+pub fn platform_audio_service() -> Option<std::sync::Arc<dyn shared::services::AudioPlatformService>> {
+    #[cfg(feature = "host-audio")]
     {
-        Some(audio::apple_session::platform_service())
+        audio::platform::service()
     }
-    #[cfg(not(target_os = "ios"))]
+    #[cfg(not(feature = "host-audio"))]
     {
         None
     }

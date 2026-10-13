@@ -72,6 +72,14 @@ The three callbacks are each optional and independent, and are delivered through
 
 Who provides them: the Android Java SDK implements these calls in its own platform layer (the game log goes to `GameLogHandler` in the table below); on Apple, `MigoGameView` provides them (iOS: Taptic Engine, the idle timer, `NWPathMonitor`, battery level and Low Power Mode; macOS: a power assertion and `NWPathMonitor`, answering unsupported for vibration and battery) — see [Apple platform · Device capabilities](/docs/en/getting-started/apple/#5-device-capabilities); C ABI hosts on Linux, Windows and OpenHarmony provide them from the table above.
 
+Some device capabilities do not go through the host at all, because the engine holds the answer itself; a C ABI host has nothing to provide:
+
+- `getLocalIPAddress`: the engine reads the network interfaces of the system it runs on.
+- `setInnerAudioOption` / `getAvailableAudioSources`: these act on the audio output the engine opens itself.
+  - iOS: the process's `AVAudioSession`. `obeyMuteSwitch` chooses the category and `mixWithOther` whether other apps keep playing; the inputs are `auto`, then `buildInMic` and `headsetMic` by their iOS names.
+  - macOS, Linux and Windows: the system's shared mixer. None of the three options has anything to act on (no silent switch, no receiver, no other app's audio to stop), so setting them succeeds. The input is the system's default one, listed as `auto`, or nothing when there is none. Only the system's setting is read, never the device, so no microphone permission is asked for. ALSA always names a `default`, so Linux always lists `auto`.
+  - OpenHarmony does not support these two calls yet.
+
 ## 4. Android Handler Contracts: Host Registers in the Java Layer
 
 Eleven `set*Handler(...)` methods on `GameSession` plus `setListener(GameSessionListener)` — 12 registration points in total, all host-side capabilities. An unregistered handler falls back to a runtime-level default — each interface has a documented contract for "what content sees when not registered":

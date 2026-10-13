@@ -20,10 +20,10 @@
   "total": 382,
   "summary": {
     "android": {"engine": 61, "default": 125, "host": 180, "missing": 6, "unsupported": 10, "ready": 376},
-    "ios": {"engine": 71, "default": 107, "host": 174, "missing": 15, "unsupported": 15, "ready": 366},
-    "macos": {"engine": 71, "default": 86, "host": 170, "missing": 11, "unsupported": 44, "ready": 370},
-    "linux": {"engine": 71, "default": 20, "host": 269, "missing": 12, "unsupported": 10, "ready": 250},
-    "windows": {"engine": 71, "default": 0, "host": 289, "missing": 12, "unsupported": 10, "ready": 230},
+    "ios": {"engine": 71, "default": 109, "host": 174, "missing": 13, "unsupported": 15, "ready": 368},
+    "macos": {"engine": 71, "default": 88, "host": 170, "missing": 9, "unsupported": 44, "ready": 372},
+    "linux": {"engine": 71, "default": 22, "host": 269, "missing": 10, "unsupported": 10, "ready": 252},
+    "windows": {"engine": 71, "default": 2, "host": 289, "missing": 10, "unsupported": 10, "ready": 232},
     "ohos": {"engine": 69, "default": 12, "host": 0, "missing": 292, "unsupported": 9, "ready": 90}
   },
   "apis": {
@@ -90,7 +90,7 @@
     "getAccountInfoSync": {"category": "open-api/account-info", "needs": [], "android": "default", "ios": "engine", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine"},
     "getAppAuthorizeSetting": {"category": "base/system", "needs": ["input:app_authorize"], "android": "default", "ios": "default", "macos": "default", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["linux", "windows", "ohos"]},
     "getAppBaseInfo": {"category": "base/system", "needs": [], "android": "default", "ios": "engine", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine"},
-    "getAvailableAudioSources": {"category": "media/audio", "needs": ["service:audio_platform"], "android": "default", "ios": "missing", "macos": "missing", "linux": "missing", "windows": "missing", "ohos": "missing", "not_ready": ["ios", "macos", "linux", "windows", "ohos"]},
+    "getAvailableAudioSources": {"category": "media/audio", "needs": ["native:audio_platform(ios,linux,macos,windows)"], "android": "default", "ios": "default", "macos": "default", "linux": "default", "windows": "default", "ohos": "missing", "not_ready": ["ohos"]},
     "getBLEDeviceCharacteristics": {"category": "device/bluetooth-ble", "needs": ["channel:bluetooth.get_ble_device_characteristics", "channel:permission"], "android": "host", "ios": "host", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["linux", "windows", "ohos"]},
     "getBLEDeviceRSSI": {"category": "device/bluetooth-ble", "needs": ["channel:bluetooth.get_ble_device_rssi", "channel:permission"], "android": "host", "ios": "host", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["linux", "windows", "ohos"]},
     "getBLEDeviceServices": {"category": "device/bluetooth-ble", "needs": ["channel:bluetooth.get_ble_device_services", "channel:permission"], "android": "host", "ios": "host", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["linux", "windows", "ohos"]},
@@ -360,7 +360,7 @@
     "setDeviceOrientation": {"category": "device/orientation", "needs": ["channel:screen.set_device_orientation"], "android": "default", "ios": "missing", "macos": "default", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "linux", "windows", "ohos"]},
     "setEnableDebug": {"category": "base/debug", "needs": ["channel:screen.set_enable_debug"], "android": "default", "ios": "default", "macos": "default", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["linux", "windows", "ohos"]},
     "setHandoffQuery": {"category": "share", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "host", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ohos"]},
-    "setInnerAudioOption": {"category": "media/audio", "needs": ["service:audio_platform"], "android": "default", "ios": "missing", "macos": "missing", "linux": "missing", "windows": "missing", "ohos": "missing", "not_ready": ["ios", "macos", "linux", "windows", "ohos"]},
+    "setInnerAudioOption": {"category": "media/audio", "needs": ["native:audio_platform(ios,linux,macos,windows)"], "android": "default", "ios": "default", "macos": "default", "linux": "default", "windows": "default", "ohos": "missing", "not_ready": ["ohos"]},
     "setKeepScreenOn": {"category": "device/screen", "needs": ["callback:on_keep_screen_on"], "android": "default", "ios": "default", "macos": "default", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["linux", "windows", "ohos"]},
     "setMenuStyle": {"category": "ui/menu", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "host", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ohos"]},
     "setMessageToFriendQuery": {"category": "share", "needs": ["channel:share.share_message_to_friend"], "android": "host", "ios": "host", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ohos"]},

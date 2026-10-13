@@ -709,7 +709,7 @@ impl AudioPlatformService for AndroidAudioPlatform {
 
     fn get_available_audio_sources(&self) -> Result<Vec<String>, ServiceError> {
         let csv = jni::get_available_audio_sources(self.host_id)?;
-        // Parse comma-separated list: "auto,mic,camcorder,voice_recognition,voice_communication"
+        // Parse comma-separated list: "auto,mic,camcorder,voice_communication,voice_recognition"
         let sources: Vec<String> = csv
             .split(',')
             .map(|s| s.trim().to_string())
