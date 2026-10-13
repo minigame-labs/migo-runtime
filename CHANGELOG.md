@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `setInnerAudioOption` and `getAvailableAudioSources` on iOS, macOS, Linux and Windows, answered by the engine: it
+  opens the process's audio output on those systems, so the settings that govern it are its own, and a C ABI host
+  provides nothing.
+  - iOS: the process's `AVAudioSession`, as before for the options. The inputs are `auto` plus `buildInMic` and
+    `headsetMic` as the session lists them.
+  - A desktop: one shared mixer, which none of the options can act on, so setting them succeeds. The input is the
+    system's default, as `auto`. It is read from the system's setting rather than the device, because asking a Mac's
+    input device for anything is microphone access: it waited 454 s on the privacy prompt in a process with no one to
+    answer it.
+  - Both executions take the settings from the platform's device services. The Performance+ host no longer keeps a
+    second source of its own.
 - The screen's orientation on Apple platforms. On macOS it is the game's shape: `onDeviceOrientationChange` fires when
   the game's view crosses between taller and wider (the player dragging the window, the app's layout, or
   `setDeviceOrientation`), and `setDeviceOrientation` turns the window to the shape asked for, exchanging the game's
@@ -610,6 +621,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- Android listed `buildInMic` among its audio sources, which the mini-game API names for iOS only. It now lists
+  `auto`, `mic`, `camcorder`, `voice_communication` and `voice_recognition`. `RecorderManager.start` still takes the iOS
+  names, for content written against iOS.
 - iOS reported the device's physical orientation to `onDeviceOrientationChange`, which is not the game's screen when
   the app locks its interface's orientation (as a game view's app must); it reports the interface's now.
 - The API x platform matrix decided `onDeviceOrientationChange` by what `setDeviceOrientation` needs, so a platform

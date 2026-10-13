@@ -17,7 +17,6 @@ fn binding() -> (AudioBinding, AudioCommandReceiver) {
                 AudioResourceRegistry::new(),
             ),
             runtime_generation: 1,
-            platform: None,
             // An allow list with one host, so a refusal a test asserts is the
             // policy's and not "this lane has no network".
             network_policy: shared::op_state::NetworkPolicy {
@@ -47,8 +46,9 @@ fn bits(value: f32) -> OwnedValue {
     OwnedValue::U32(value.to_bits())
 }
 
-/// Every audio op the contract sends to the host is answered here, in the
-/// shape its lane says: a synchronous op is not accepted as a command, and a
+/// Every audio op the contract sends to the host is answered here -- or, for
+/// the platform's audio settings, by the service context -- in the shape its
+/// lane says: a synchronous op is not accepted as a command, and a
 /// command is not answered as a request. An audio op with a number and no
 /// handler would reach the host and be refused as unknown -- a sound that
 /// never plays with nothing thrown.
@@ -68,7 +68,7 @@ fn every_numbered_audio_op_is_handled_in_its_contract_lane() {
         };
         let lane = lane.as_str().expect("an audio lane is a name");
         let answered = [
-            ("sync", is_sync(*number)),
+            ("sync", is_sync(*number) || is_platform(*number)),
             ("async", is_async(*number)),
             ("command", is_command(*number)),
         ];
@@ -383,20 +383,4 @@ fn a_streamed_source_goes_through_the_session_s_network_policy() {
     assert_eq!(url, "https://media.example/a.mp3");
     resp.send(Ok(())).unwrap();
     rt.block_on(answer).unwrap().unwrap();
-}
-
-#[test]
-fn without_a_platform_audio_service_set_inner_audio_option_is_refused_by_name() {
-    let (audio, _rx) = binding();
-    let error = call_sync(
-        &audio,
-        id::op_audio_set_inner_audio_option,
-        vec![
-            OwnedValue::Bool(true),
-            OwnedValue::Bool(false),
-            OwnedValue::Bool(false),
-        ],
-    )
-    .unwrap_err();
-    assert_eq!(error.message, "setInnerAudioOption:fail not supported");
 }

@@ -36,8 +36,6 @@ use super::service_ops::id;
 pub(crate) struct AudioBinding {
     pub(crate) sender: AudioSender,
     pub(crate) runtime_generation: i64,
-    /// What `setInnerAudioOption` acts on, where the platform has one.
-    pub(crate) platform: Option<std::sync::Arc<dyn shared::services::AudioPlatformService>>,
     /// What a streamed `src` is held to: this session's allow list, HTTPS
     /// enforcement and address rules -- the same policy `fetch` is held to.
     pub(crate) network_policy: shared::op_state::NetworkPolicy,
@@ -99,6 +97,17 @@ fn analyser_data(data: AnalyserData) -> OwnedValue {
     }
 }
 
+/// Whether `op` is a synchronous audio op the platform's audio settings answer
+/// rather than the audio thread: `setInnerAudioOption` and
+/// `getAvailableAudioSources`, which the service context answers from the
+/// platform's device services, as the embedded ops do.
+pub(crate) fn is_platform(op: u32) -> bool {
+    matches!(
+        op,
+        id::op_audio_set_inner_audio_option | id::op_audio_get_available_audio_sources
+    )
+}
+
 /// Whether `op` is a synchronous audio op this module answers.
 pub(crate) fn is_sync(op: u32) -> bool {
     matches!(
@@ -106,8 +115,6 @@ pub(crate) fn is_sync(op: u32) -> bool {
         id::op_audio_create_context
             | id::op_audio_reserve_buffer
             | id::op_audio_materialize_buffer
-            | id::op_audio_set_inner_audio_option
-            | id::op_audio_get_available_audio_sources
             | id::op_media_audio_player_create
             | id::op_inner_audio_create
     )
@@ -164,22 +171,6 @@ pub(crate) fn call_sync(
             let [buffer_id] = exactly(op, args)?;
             service::materialize_buffer(audio.scope(), u32_of(op, 0, buffer_id)?)
                 .map(|planar| le_bytes(&planar))
-        }
-        id::op_audio_set_inner_audio_option => {
-            let [mix_with_other, obey_mute_switch, speaker_on] = exactly(op, args)?;
-            service::set_inner_audio_option(
-                audio.platform.as_deref(),
-                boolean(op, 0, mix_with_other)?,
-                boolean(op, 1, obey_mute_switch)?,
-                boolean(op, 2, speaker_on)?,
-            )
-            .map(|()| OwnedValue::Null)
-        }
-        id::op_audio_get_available_audio_sources => {
-            let [] = exactly(op, args)?;
-            service::get_available_audio_sources(audio.platform.as_deref()).map(|sources| {
-                OwnedValue::Array(sources.into_iter().map(OwnedValue::Str).collect())
-            })
         }
         id::op_media_audio_player_create => {
             let [player_id] = exactly(op, args)?;

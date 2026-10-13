@@ -207,6 +207,8 @@ grep -q 'migo-swift-host-probe: resized twice to 320x200' "$LAST_LOG" \
   || fail "the game heard only the first resize: every resize after it must reach the engine too"
 grep -q 'migo-swift-host-probe: orientation=portrait 200x320' "$LAST_LOG" \
   || fail "setDeviceOrientation did not turn the game's window to portrait and tell the game"
+grep -Eq 'migo-swift-host-probe: audioSources=(\[\]|\["auto"\])' "$LAST_LOG" \
+  || fail "getAvailableAudioSources did not answer the Mac's default input as auto, or nothing"
 grep -q 'migo-swift-host-probe: debug=on' "$LAST_LOG" \
   || fail "the game did not turn the debugging aids on through the SDK's screen service"
 grep -q '\[game-view-host\] debugging panel showed the console=true' "$LAST_LOG" \

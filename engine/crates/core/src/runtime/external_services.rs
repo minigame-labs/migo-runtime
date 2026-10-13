@@ -419,7 +419,6 @@ impl ServiceContext {
         let _ = self.audio.set(AudioBinding {
             sender,
             runtime_generation,
-            platform: crate::services::audio::platform_audio_service(),
             network_policy,
         });
     }
@@ -524,6 +523,14 @@ impl ServiceContext {
             .and_then(Option::as_deref)
             .and_then(pick)
             .ok_or_else(|| ServiceError::generic(format!("{what}:fail not supported")))
+    }
+
+    /// The platform's audio settings, where it has them.
+    fn audio_platform(&self) -> Option<Arc<dyn shared::services::AudioPlatformService>> {
+        self.device
+            .get()
+            .and_then(Option::as_deref)
+            .and_then(|device| device.audio_platform())
     }
 
     fn keyboard(
@@ -982,6 +989,27 @@ impl ServiceContext {
                         .and_then(|config| config.workers_path.clone())
                         .unwrap_or_default(),
                 ))
+            }
+            // The platform's audio settings (`service_audio::is_platform`),
+            // from its device services as the embedded ops take them: the
+            // engine's own where it is the platform's audio
+            // (`services::platform_audio_service`).
+            id::op_audio_set_inner_audio_option => {
+                let [mix_with_other, obey_mute_switch, speaker_on] = exactly(op, args)?;
+                migo_services::audio::set_inner_audio_option(
+                    self.audio_platform().as_deref(),
+                    boolean(op, 0, mix_with_other)?,
+                    boolean(op, 1, obey_mute_switch)?,
+                    boolean(op, 2, speaker_on)?,
+                )
+                .map(|()| OwnedValue::Null)
+            }
+            id::op_audio_get_available_audio_sources => {
+                let [] = exactly(op, args)?;
+                migo_services::audio::get_available_audio_sources(self.audio_platform().as_deref())
+                    .map(|sources| {
+                        OwnedValue::Array(sources.into_iter().map(OwnedValue::Str).collect())
+                    })
             }
             file if super::service_fs::is_sync(file) => {
                 super::service_fs::call_sync(&self.fs_env()?, file, args)
@@ -2065,6 +2093,85 @@ mod tests {
         assert!(
             malformed.load_content("g", "game.js").is_err(),
             "a malformed game.json refuses the mount"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The audio settings are the platform's device services', as the
+    /// embedded ops take them: content's options reach the platform's audio
+    /// as given, and its inputs come back as content's array -- and with no
+    /// platform audio, the embedded ops' refusals.
+    #[test]
+    fn the_audio_settings_are_the_platform_s() {
+        use shared::services::{AudioPlatformService, ServiceError as DeviceError};
+        use std::sync::Mutex;
+        #[derive(Default)]
+        struct Audio(Mutex<Vec<(bool, bool, bool)>>);
+        impl AudioPlatformService for Audio {
+            fn set_inner_audio_option(
+                &self,
+                mix_with_other: bool,
+                obey_mute_switch: bool,
+                speaker_on: bool,
+            ) -> Result<(), DeviceError> {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push((mix_with_other, obey_mute_switch, speaker_on));
+                Ok(())
+            }
+            fn get_available_audio_sources(&self) -> Result<Vec<String>, DeviceError> {
+                Ok(vec!["auto".into(), "buildInMic".into()])
+            }
+        }
+        struct Platform(Arc<Audio>);
+        impl shared::services::SensorServices for Platform {}
+        impl shared::services::ConnectivityServices for Platform {}
+        impl shared::services::CommerceServices for Platform {}
+        impl shared::services::SystemUtilServices for Platform {}
+        impl shared::services::MediaServices for Platform {
+            fn audio_platform(&self) -> Option<Arc<dyn AudioPlatformService>> {
+                Some(Arc::clone(&self.0) as Arc<dyn AudioPlatformService>)
+            }
+        }
+        let root = std::env::temp_dir().join(format!("migo-audio-platform-{}", std::process::id()));
+        let options = || {
+            vec![
+                OwnedValue::Bool(false),
+                OwnedValue::Bool(true),
+                OwnedValue::Bool(false),
+            ]
+        };
+
+        let audio = Arc::new(Audio::default());
+        let context = ServiceContext::new(root.join("files"), root.join("cache"));
+        context.bind_device(Some(Arc::new(Platform(Arc::clone(&audio)))));
+        assert!(matches!(
+            context.call_sync(id::op_audio_set_inner_audio_option, options()),
+            Ok(OwnedValue::Null)
+        ));
+        assert_eq!(*audio.0.lock().unwrap(), [(false, true, false)]);
+        match context.call_sync(id::op_audio_get_available_audio_sources, Vec::new()) {
+            Ok(OwnedValue::Array(sources)) => assert!(matches!(
+                sources.as_slice(),
+                [OwnedValue::Str(auto), OwnedValue::Str(mic)] if auto == "auto" && mic == "buildInMic"
+            )),
+            other => panic!("the inputs as an array, not {other:?}"),
+        }
+
+        let none = ServiceContext::new(root.join("files"), root.join("cache"));
+        none.bind_device(None);
+        assert_eq!(
+            none.call_sync(id::op_audio_set_inner_audio_option, options())
+                .unwrap_err()
+                .message,
+            "setInnerAudioOption:fail not supported"
+        );
+        assert_eq!(
+            none.call_sync(id::op_audio_get_available_audio_sources, Vec::new())
+                .unwrap_err()
+                .message,
+            "getAvailableAudioSources:fail not supported"
         );
         let _ = std::fs::remove_dir_all(&root);
     }

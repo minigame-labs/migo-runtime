@@ -1604,35 +1604,18 @@ public final class NativeExports {
     }
 
     /**
-     * Get available audio input sources.
-     * Returns a comma-separated string of supported audio source identifiers
-     * matching RecorderManager.start() audioSource param values.
+     * Get available audio input sources: the identifiers RecorderManager.start()
+     * takes on Android, as the mini-game API lists them -- "auto" (the
+     * MediaRecorder DEFAULT source) on every platform, then Android's four.
+     * "buildInMic" and "headsetMic" are the API's iOS names and are not listed
+     * here, though start() still maps them to the microphone for content written
+     * against iOS.
      *
      * @param sessionId The session ID
-     * @return Comma-separated audio source identifiers (e.g., "auto,buildInMic,mic,camcorder,voice_recognition,voice_communication")
+     * @return Comma-separated audio source identifiers
      */
     public static String getAvailableAudioSources(int sessionId) {
-        StringBuilder sb = new StringBuilder();
-        // "auto" is always available
-        sb.append("auto");
-
-        // Check each MediaRecorder.AudioSource constant
-        // DEFAULT (0) maps to "buildInMic"
-        sb.append(",buildInMic");
-
-        // MIC (1) - standard microphone
-        sb.append(",mic");
-
-        // CAMCORDER (5) - microphone tuned for video recording
-        sb.append(",camcorder");
-
-        // VOICE_RECOGNITION (6) - tuned for voice recognition
-        sb.append(",voice_recognition");
-
-        // VOICE_COMMUNICATION (7) - tuned for VoIP, includes echo cancellation
-        sb.append(",voice_communication");
-
-        return sb.toString();
+        return "auto,mic,camcorder,voice_communication,voice_recognition";
     }
 
     // ==================== Clipboard ====================

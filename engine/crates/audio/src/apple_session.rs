@@ -15,6 +15,9 @@
 //!   a permission this profile does not grant -- so a `false` is accepted and
 //!   not honoured, as Android's own best-effort `setSpeakerphoneOn` is.
 //!
+//! `getAvailableAudioSources` reads the session's inputs: `auto`, and the
+//! built-in and headset microphones by the names the API gives them.
+//!
 //! The session also says when the system took audio away: a phone call, Siri,
 //! another app. That arrives as `AVAudioSessionInterruptionNotification`, and
 //! this delivers it to the host as `OnAudioInterruptionBegin`/`End`, which both
@@ -59,6 +62,8 @@ unsafe extern "C" {
     static AVAudioSessionCategoryPlayback: *const Object;
     static AVAudioSessionInterruptionNotification: *const Object;
     static AVAudioSessionInterruptionTypeKey: *const Object;
+    static AVAudioSessionPortBuiltInMic: *const Object;
+    static AVAudioSessionPortHeadsetMic: *const Object;
 }
 
 /// `AVAudioSessionCategoryOptionMixWithOthers`.
@@ -383,7 +388,63 @@ pub fn ensure_configured() {
     }
 }
 
-/// `setInnerAudioOption`, as the platform audio service.
+/// The inputs the session offers now, in the mini-game API's words: `auto`
+/// first whenever there is one, then the built-in and wired-headset
+/// microphones by name (`buildInMic`, `headsetMic`, iOS's two). Any other port
+/// -- a Bluetooth headset, a USB interface -- is reached through `auto`.
+///
+/// A category that cannot record lists no ports; the session still says
+/// whether any input exists, which is then all `auto` can stand for.
+fn available_sources() -> EngineResult<Vec<String>> {
+    let session = shared_session().ok_or_else(|| {
+        EngineError::from_detail(
+            ErrorCode::Unsupported,
+            "getAvailableAudioSources:fail this process has no AVAudioSession",
+        )
+    })?;
+    let count: unsafe extern "C" fn(*const Object, Sel) -> usize =
+        unsafe { std::mem::transmute(objc_msgSend as *const ()) };
+    let object_at: unsafe extern "C" fn(*const Object, Sel, usize) -> *mut Object =
+        unsafe { std::mem::transmute(objc_msgSend as *const ()) };
+    let equal: unsafe extern "C" fn(*const Object, Sel, *const Object) -> bool =
+        unsafe { std::mem::transmute(objc_msgSend as *const ()) };
+    let flag: unsafe extern "C" fn(*const Object, Sel) -> bool =
+        unsafe { std::mem::transmute(objc_msgSend as *const ()) };
+
+    let (mut built_in, mut headset, mut any) = (false, false, false);
+    let inputs = unsafe { send(session, selector("availableInputs")) };
+    if !inputs.is_null() {
+        for index in 0..unsafe { count(inputs, selector("count")) } {
+            let port = unsafe { object_at(inputs, selector("objectAtIndex:"), index) };
+            let kind = unsafe { send(port, selector("portType")) };
+            if kind.is_null() {
+                continue;
+            }
+            any = true;
+            built_in |= unsafe { equal(kind, selector("isEqualToString:"), AVAudioSessionPortBuiltInMic) };
+            headset |= unsafe { equal(kind, selector("isEqualToString:"), AVAudioSessionPortHeadsetMic) };
+        }
+    }
+    any |= unsafe { flag(session, selector("isInputAvailable")) };
+    Ok(sources(any, built_in, headset))
+}
+
+fn sources(any: bool, built_in: bool, headset: bool) -> Vec<String> {
+    let mut sources = Vec::new();
+    if any || built_in || headset {
+        sources.push(crate::platform::AUTO.to_string());
+    }
+    if built_in {
+        sources.push("buildInMic".to_string());
+    }
+    if headset {
+        sources.push("headsetMic".to_string());
+    }
+    sources
+}
+
+/// `setInnerAudioOption` and `getAvailableAudioSources`, as the platform audio
+/// service.
 pub struct AppleAudioPlatform;
 
 impl shared::services::AudioPlatformService for AppleAudioPlatform {
@@ -403,6 +464,32 @@ impl shared::services::AudioPlatformService for AppleAudioPlatform {
                 error.detail.unwrap_or_else(|| error.msg.to_string()),
             )
         })
+    }
+
+    fn get_available_audio_sources(
+        &self,
+    ) -> Result<Vec<String>, shared::protocol::error::ServiceError> {
+        available_sources().map_err(|error| {
+            shared::protocol::error::ServiceError::system(
+                error.detail.unwrap_or_else(|| error.msg.to_string()),
+            )
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sources;
+
+    /// `auto` leads whenever there is an input; the two microphones iOS names
+    /// follow by name; a session that lists nothing and has no input offers
+    /// nothing.
+    #[test]
+    fn the_inputs_are_named_as_the_api_names_them() {
+        assert_eq!(sources(true, true, false), ["auto", "buildInMic"]);
+        assert_eq!(sources(true, true, true), ["auto", "buildInMic", "headsetMic"]);
+        assert_eq!(sources(true, false, false), ["auto"]);
+        assert!(sources(false, false, false).is_empty());
     }
 }
 
