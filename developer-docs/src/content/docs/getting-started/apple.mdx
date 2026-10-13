@@ -141,11 +141,13 @@ view 可以接着载入下一个游戏。
 | `getNetworkType` / `onNetworkStatusChange` | `NWPathMonitor`（有线记为 `wifi`，蜂窝记为 `unknown`，与 Android 一致） | 同左 |
 | `vibrateShort` / `vibrateLong` | Taptic Engine | 回答“不支持” |
 | `getBatteryInfo` | 电量与低电量模式 | 回答“不支持” |
+| `onDeviceOrientationChange` | 界面方向（横屏 Home 键一侧在右为 `landscape`，在左为 `landscapeReverse`；两个横屏互转从 iOS 16 起） | 游戏的形状在横竖之间变化 |
+| `setDeviceOrientation` | 回答“不支持”（会话尺寸在启动时固定） | 把窗口转成所要的形状；全屏时失败 |
 | `getGameLogManager().log` | 以 `onEvent(.gameLog(json))` 交给 App | 同左 |
 
-以下接口在这两条车道上**明确拒绝，不伪造结果**：`setDeviceOrientation`（尺寸在启动时
-固定）、`setEnableDebug`（没有调试面板）、iOS 上的 `getHeapStatistics`（内容运行在
-WebKit 的 JavaScriptCore 中，它不暴露堆数据），以及启用签名校验时的动态下载分包。
+以下接口**明确拒绝，不伪造结果**：iOS 上的 `setDeviceOrientation`（会话尺寸在启动时
+固定）、iOS 上的 `getHeapStatistics`（内容运行在 WebKit 的 JavaScriptCore 中，它不暴露
+堆数据），以及启用签名校验时的动态下载分包。
 
 ## 6. 验证记录
 

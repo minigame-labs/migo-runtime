@@ -50,6 +50,32 @@ final class MigoBuiltInHostServiceTests: XCTestCase {
             (try? JSONSerialization.jsonObject(with: json)) as? [String: String], ["from": "app"])
     }
 
+    /// A provider that answers one method of a service the SDK answers -- a
+    /// game view turning its window for the screen's orientation -- gets that
+    /// method and no other: the rest of the service stays the SDK's.
+    func testAProviderAnsweringOneMethodLeavesTheRestToTheSdk() {
+        final class Orientation: MigoHostServiceProvider {
+            let services: Set<MigoHostServiceID> = []
+            var handled: [UInt32] = []
+            func answers(_ request: MigoHostServiceRequest) -> Bool {
+                request.service == .screen && request.method == MigoHostServiceID.Screen.setDeviceOrientation
+            }
+            func handle(_ request: MigoHostServiceRequest) {
+                handled.append(request.method)
+                request.reply?.succeed()
+            }
+        }
+        let app = Orientation()
+        let composed = MigoComposedHostServices(app: app)
+        XCTAssertTrue(composed.services.contains(.screen), "the SDK still declares the screen")
+        let recorder = Recorder()
+        typealias Screen = MigoHostServiceID.Screen
+        composed.handle(request(.screen, Screen.setDeviceOrientation, into: recorder))
+        composed.handle(request(.screen, Screen.stopCaptureObserver, into: recorder))
+        XCTAssertEqual(app.handled, [Screen.setDeviceOrientation])
+        XCTAssertEqual(recorder.outcomes.count, 2, "each answered once: the turn by the provider, the rest by the SDK")
+    }
+
     /// A capability that ranges beacons answers the Bluetooth service's three
     /// beacon methods -- and declares the service, so they reach it -- while
     /// the rest of the service stays with whoever answers it, and a service the

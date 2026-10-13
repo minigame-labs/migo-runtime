@@ -160,12 +160,14 @@ it carries no signature; subpackages inside the package work.
 | `getNetworkType` / `onNetworkStatusChange` | `NWPathMonitor` (wired is `wifi`, cellular `unknown`, as on Android) | likewise |
 | `vibrateShort` / `vibrateLong` | the Taptic Engine | answers "not supported" |
 | `getBatteryInfo` | battery level and Low Power Mode | answers "not supported" |
+| `onDeviceOrientationChange` | the interface's orientation (in landscape, `landscape` with the Home side on the right, `landscapeReverse` on the left; the half turn between them from iOS 16) | the game's shape crossing between portrait and landscape |
+| `setDeviceOrientation` | answers "not supported" (the session's size is fixed at start) | turns the window to the shape asked for; fails in full screen |
 | `getGameLogManager().log` | delivered to the app as `onEvent(.gameLog(json))` | likewise |
 
-These are **refused rather than faked** on both lanes: `setDeviceOrientation` (the
-size is fixed at start), `setEnableDebug` (there is no debug panel),
-`getHeapStatistics` on iOS (content runs in WebKit's JavaScriptCore, which exposes no
-heap figures), and downloaded subpackages when signing is enforced.
+These are **refused rather than faked**: `setDeviceOrientation` on iOS (the session's
+size is fixed at start), `getHeapStatistics` on iOS (content runs in WebKit's
+JavaScriptCore, which exposes no heap figures), and downloaded subpackages when signing
+is enforced.
 
 ## 6. What has been verified
 

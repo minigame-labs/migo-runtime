@@ -114,6 +114,10 @@ red "the iPad's game view that stops feeding keys the shared session can still s
     'text.replace("engine.sendKey(", "engine.sendKeyGone(")'
 red "the iPad's game view that stops answering the window service" platforms/apple/Sources/MigoApplePerformancePlus/MigoWindowService.swift \
     'text.replace("builtIn.insert(.window)", "// builtIn.insert(.window)", 1)'
+red "the iPad's game view that stops reporting the screen's turn" platforms/apple/Sources/MigoApplePerformancePlus/MigoWindowService.swift \
+    'text.replace("MigoHostServiceID.Screen.Event.deviceOrientationChange", "MigoHostServiceID.Screen.Event.recordingStateChange")'
+red "a listener decided by an event no service has" contracts/runtime/api-platform-decisions.json \
+    'text.replace("\"screen.device_orientation_change\"", "\"screen.turned\"", 1)'
 red "a host layer that stops feeding touch" platforms/linux/host-kit/src/qt6/x11_surface_view.cpp \
     'text.replace("migo_session_send_touch(", "migo_session_send_touch_removed(")'
 red "an unsupported decision with no reason" contracts/runtime/api-platform-decisions.json \

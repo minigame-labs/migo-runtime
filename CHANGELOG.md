@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The screen's orientation on Apple platforms. On macOS it is the game's shape: `onDeviceOrientationChange` fires when
+  the game's view crosses between taller and wider (the player dragging the window, the app's layout, or
+  `setDeviceOrientation`), and `setDeviceOrientation` turns the window to the shape asked for, exchanging the game's
+  width and height with the title bar where it was; it fails in full screen, or when the screen cannot hold the window
+  turned, without resizing anything. On iOS `onDeviceOrientationChange` reports the interface's orientation
+  (`landscape` with the Home side on the right, `landscapeReverse` on the left); `setDeviceOrientation` still answers
+  "not supported" there, as the iOS lane cannot resize a session while content runs. A host-service provider can now
+  answer one method of a service the SDK answers (`MigoHostServiceProvider.answers(_:)`), which is how the macOS game
+  view takes `setDeviceOrientation` from the SDK's screen service.
 - `setEnableDebug` on every platform, and the debugging aids it turns. A session's console is now recorded only while
   the aids are on, and can be turned on while a game runs: every session has a console (allocated at its first line),
   where only a session started with debugging on had one -- so Android's panel, turned on at runtime, showed nothing.
@@ -601,6 +610,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- iOS reported the device's physical orientation to `onDeviceOrientationChange`, which is not the game's screen when
+  the app locks its interface's orientation (as a game view's app must); it reports the interface's now.
+- The API x platform matrix decided `onDeviceOrientationChange` by what `setDeviceOrientation` needs, so a platform
+  that could not set the orientation counted as unable to report it. Listeners fed by a host-service event are now
+  decided by that event (the `events` section of `api-platform-decisions.json`): provided where the platform's host
+  layer posts it.
+- The Apple game view and getting-started references listed `setEnableDebug` as refused, which it has not been since
+  the debugging panel.
 - A macOS game view resized once per attach: every resize after the first was refused (`MIGO_ERROR_INVALID_ARGUMENT`)
   and the game kept its old size. `MigoEngineSession.resize(to:)` counted its updates, but `migo_surface_update` takes
   the generation the surface was attached with on every update, as the other platforms' hosts send it.

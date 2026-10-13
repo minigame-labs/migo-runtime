@@ -309,9 +309,9 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
                 // held on its integrated one renders on the discrete one and
                 // shows nothing.
                 metalLayer.device = window?.screen.flatMap(Self.displayDevice)
-                let windowService = MigoWindowService(view: self) { [weak self] event, object in
+                let windowService = MigoWindowService(view: self) { [weak self] service, event, object in
                     guard let json = try? JSONSerialization.data(withJSONObject: object) else { return }
-                    self?.engine?.postHostServiceEvent(.window, event: event, json: json)
+                    self?.engine?.postHostServiceEvent(service, event: event, json: json)
                 }
                 self.windowService = windowService
                 // The app's services, then what only this view can answer;

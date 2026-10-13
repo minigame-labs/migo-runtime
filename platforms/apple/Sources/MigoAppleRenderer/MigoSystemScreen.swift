@@ -18,9 +18,6 @@ final class MigoSystemScreen {
     /// debugging aids.
     var debugAids: ((Bool) -> Void)?
     private var observers: [String: NSObjectProtocol] = [:]
-    #if os(iOS)
-        private var orientation: String?
-    #endif
 
     #if os(macOS)
         /// The game's window: the app's key window by default.
@@ -34,24 +31,16 @@ final class MigoSystemScreen {
             self.window = window
         }
     #else
+        /// The screen turning is the game view's to report: the screen's
+        /// orientation is its scene's, which a turn of the device need not
+        /// change.
         init(post: @escaping (UInt32, [String: Any]) -> Void) {
             self.post = post
-            #if os(iOS)
-                // The device turning is reported whether or not content listens:
-                // the event says where the device is now.
-                UIDevice.current.beginGeneratingDeviceOrientationNotifications()
-                observers["orientation"] = NotificationCenter.default.addObserver(
-                    forName: UIDevice.orientationDidChangeNotification, object: nil, queue: .main
-                ) { [weak self] _ in self?.reportOrientation() }
-            #endif
         }
     #endif
 
     deinit {
         observers.values.forEach(NotificationCenter.default.removeObserver)
-        #if os(iOS)
-            UIDevice.current.endGeneratingDeviceOrientationNotifications()
-        #endif
     }
 
     func handle(_ request: MigoHostServiceRequest) {
@@ -137,23 +126,6 @@ final class MigoSystemScreen {
     #if os(iOS)
         private static func recordingState() -> String {
             UIScreen.main.isCaptured ? "on" : "off"
-        }
-
-        /// The platform's words: landscape is the home side to the right --
-        /// UIKit's landscapeLeft -- and a device lying flat says nothing.
-        static func orientationName(_ orientation: UIDeviceOrientation) -> String? {
-            switch orientation {
-            case .portrait: return "portrait"
-            case .landscapeLeft: return "landscape"
-            case .landscapeRight: return "landscapeReverse"
-            default: return nil
-            }
-        }
-
-        private func reportOrientation() {
-            guard let name = Self.orientationName(UIDevice.current.orientation), name != orientation else { return }
-            orientation = name
-            post(MigoHostServiceID.Screen.Event.deviceOrientationChange, ["value": name])
         }
     #endif
 }

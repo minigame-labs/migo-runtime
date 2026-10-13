@@ -31,7 +31,7 @@ import MigoAppleRenderer
         }
 
         func handle(_ request: MigoHostServiceRequest) {
-            if let app, appServices.contains(request.service) {
+            if let app, app.answers(request) {
                 app.handle(request)
             } else if request.service == .window {
                 window.handle(request)
@@ -113,14 +113,18 @@ import MigoAppleRenderer
 
         private weak var view: UIView?
         private let system: PointerLockSystem
-        /// Where the service's events go: the session's channel.
-        private let post: (UInt32, [String: Any]) -> Void
+        /// Where the service's events go -- the window's, and the screen's
+        /// turning -- the session's channel.
+        private let post: (MigoHostServiceID, UInt32, [String: Any]) -> Void
         private var interaction: UIPointerInteraction?
         private var observers: [NSObjectProtocol] = []
         private var geometry: NSKeyValueObservation?
         /// The state last reported, or the one the game started in, which is
         /// no change.
         private var reportedState: String?
+        /// The screen's orientation last reported, or the one the game started
+        /// in.
+        private var reportedOrientation: String?
 
         /// The pointer's look over the game, as content last asked.
         private(set) var appearance: PointerAppearance = .system
@@ -139,7 +143,10 @@ import MigoAppleRenderer
         var pointerLocked: Bool { lockedPosition != nil }
 
         /// `view` is the game's, in its window.
-        init(view: UIView, system: PointerLockSystem? = nil, post: @escaping (UInt32, [String: Any]) -> Void) {
+        init(
+            view: UIView, system: PointerLockSystem? = nil,
+            post: @escaping (MigoHostServiceID, UInt32, [String: Any]) -> Void
+        ) {
             self.view = view
             self.system = system ?? .system(for: view)
             self.post = post
@@ -149,6 +156,7 @@ import MigoAppleRenderer
             self.interaction = interaction
             guard let scene = view.window?.windowScene else { return }
             reportedState = Self.state(of: scene)
+            reportedOrientation = Self.orientation(of: scene)
             let center = NotificationCenter.default
             for name in [UIScene.didEnterBackgroundNotification, UIScene.willEnterForegroundNotification] {
                 observers.append(
@@ -223,14 +231,40 @@ import MigoAppleRenderer
             return window.width >= screen.width && window.height >= screen.height ? "maximize" : "normalize"
         }
 
-        /// Report the scene's state if it changed; the view calls this on
-        /// layout too, which a resize of the scene reaches.
+        /// Report the scene's state and its screen's orientation if they
+        /// changed; the view calls this on layout too, which a resize or a turn
+        /// of the scene reaches.
         func reportState() {
             guard let scene = view?.window?.windowScene else { return }
             let state = Self.state(of: scene)
-            guard state != reportedState else { return }
-            reportedState = state
-            post(MigoHostServiceID.Window.Event.windowStateChange, ["state": state])
+            if state != reportedState {
+                reportedState = state
+                post(.window, MigoHostServiceID.Window.Event.windowStateChange, ["state": state])
+            }
+            if let orientation = Self.orientation(of: scene), orientation != reportedOrientation {
+                reportedOrientation = orientation
+                post(.screen, MigoHostServiceID.Screen.Event.deviceOrientationChange, ["value": orientation])
+            }
+        }
+
+        /// The screen's orientation in the platform's words: the interface's,
+        /// not the device's -- a game locked to landscape hears the turn
+        /// between the two landscapes and nothing when the device is stood up.
+        /// Landscape is the home side to the right.
+        static func orientation(of scene: UIWindowScene) -> String? {
+            if #available(iOS 16.0, *) {
+                return orientationName(scene.effectiveGeometry.interfaceOrientation)
+            }
+            return orientationName(scene.interfaceOrientation)
+        }
+
+        static func orientationName(_ orientation: UIInterfaceOrientation) -> String? {
+            switch orientation {
+            case .portrait, .portraitUpsideDown: return "portrait"
+            case .landscapeRight: return "landscape"
+            case .landscapeLeft: return "landscapeReverse"
+            default: return nil
+            }
         }
 
         // MARK: - cursor
@@ -326,7 +360,7 @@ import MigoAppleRenderer
         }
 
         private func report(locked: Bool) {
-            post(MigoHostServiceID.Window.Event.pointerLockChange, ["locked": locked])
+            post(.window, MigoHostServiceID.Window.Event.pointerLockChange, ["locked": locked])
             onLockChange?(locked)
         }
     }

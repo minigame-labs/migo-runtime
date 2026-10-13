@@ -63,6 +63,12 @@ APPLE_CAPABILITIES = ("platforms/apple/Sources/MigoAppleLocation", "platforms/ap
 LINUX_LAYER = "platforms/linux/host-kit/src"
 OHOS_LAYER = "platforms/openharmony/entry/src/main"
 
+# A host-service event the Android SDK reports through its own native rather
+# than the channel: event -> the Java SDK's native for it.
+ANDROID_EVENTS = {
+    "screen.device_orientation_change": "onDeviceOrientationChange",
+}
+
 # Rust's target_os for the platforms the matrix names.
 TARGET_OS = {"macos": "macos", "ios": "ios", "linux": "linux", "windows": "windows", "android": "android"}
 
@@ -107,7 +113,8 @@ COMMENT = [
     "",
     "needs: what the API takes from a host -- channel:<service>.<method> and channel:<service> (the C ABI host-service",
     "channel), callback:<field> (a typed MigoHostCallbacks field), report:<what> (state the host reports), input:<kind>",
-    "(input or lifecycle the host feeds), service:<accessor> (an engine service no C ABI host can supply yet).",
+    "(input or lifecycle the host feeds), event:<service>.<event> (a host-service event the host posts: a listener",
+    "that needs no request), service:<accessor> (an engine service no C ABI host can supply yet).",
     "not_ready: the platforms where the cell is not yet complete -- missing, or host for a need that is not the",
     "host's by nature. summary counts each status and the ready cells per platform.",
 ]
@@ -261,7 +268,10 @@ def _swift_platforms(condition: str) -> set[str]:
 def lane_facts(root: pathlib.Path) -> dict[str, dict[str, set[str]]]:
     """platform -> {"callbacks", "reports", "entries", "services"} its host layer wires."""
     facts = {
-        platform: {"callbacks": set(), "reports": set(), "entries": set(), "services": set(), "builtin": set()}
+        platform: {
+            "callbacks": set(), "reports": set(), "entries": set(), "services": set(), "builtin": set(),
+            "events": set(),
+        }
         for platform in PLATFORMS
     }
 
@@ -284,6 +294,15 @@ def lane_facts(root: pathlib.Path) -> dict[str, dict[str, set[str]]]:
                     # services): `builtIn.insert(.name)`.
                     for name in re.findall(r"\bbuiltIn\.insert\(\.(\w+)\)", line.split("//", 1)[0]):
                         facts[platform]["builtin"].add(re.sub(r"(?<!^)([A-Z])", r"_\1", name).lower())
+                    # A host-service event the host layer posts itself: Swift
+                    # names it MigoHostServiceID.<Service>.Event.<event>, C and
+                    # C++ MIGO_<SERVICE>_EVENT_<EVENT>.
+                    code = line.split("//", 1)[0]
+                    for service, event in re.findall(r"\bMigoHostServiceID\.(\w+)\.Event\.(\w+)", code):
+                        snake = lambda word: re.sub(r"(?<!^)([A-Z])", r"_\1", word).lower()
+                        facts[platform]["events"].add(f"{snake(service)}.{snake(event)}")
+                    for service, event in re.findall(r"\bMIGO_([A-Z]+(?:_[A-Z]+)*?)_EVENT_([A-Z_]+)\b", code):
+                        facts[platform]["events"].add(f"{service.lower()}.{event.lower()}")
 
     apple = found("Apple host layer sources", sorted((root / APPLE_LAYER).glob("*.swift")))
     scan(["ios", "macos"], apple)
@@ -379,6 +398,10 @@ def needs_of(name, reach, reference, decisions, channel, capi, memo, stack=()):
         needs = {f"input:{decisions['input'][name]}"}
         memo[name] = needs
         return needs
+    if name in decisions["events"]:
+        needs = {f"event:{decisions['events'][name]}"}
+        memo[name] = needs
+        return needs
     ops, services = set(entry["ops"]), set(entry["services"])
     if name.startswith(("on", "off")) and not services and name not in decisions["pure"]:
         siblings = [
@@ -425,6 +448,8 @@ def needs_of(name, reach, reference, decisions, channel, capi, memo, stack=()):
 
 def accessors_of(name, reach, reference, decisions):
     """The engine services an API asks for, following via and its kind's siblings."""
+    if name in decisions["events"]:
+        return set()
     seen = set()
     while name in decisions["via"]:
         if name in seen:
@@ -443,6 +468,8 @@ def accessors_of(name, reach, reference, decisions):
 def ops_of(name, reach, reference, decisions):
     """The ops an API dispatches, following via and its kind's siblings -- the
     same rule its needs are derived by."""
+    if name in decisions["events"]:
+        return set()
     seen = set()
     while name in decisions["via"] and name not in seen:
         seen.add(name)
@@ -480,6 +507,8 @@ def need_status(need: str, platform: str, lanes, entries, android) -> str:
     if platform == "android":
         if kind == "input" and INPUT[detail][1] is not None:
             return "default" if INPUT[detail][1] in natives else "missing"
+        if kind == "event":
+            return "default" if ANDROID_EVENTS.get(detail) in natives else "missing"
         return None  # decided by the accessor, below
     lane = lanes.get(platform)
     if kind == "service":
@@ -502,6 +531,12 @@ def need_status(need: str, platform: str, lanes, entries, android) -> str:
     if kind == "report":
         if lane is not None and detail in lane["reports"]:
             return "default"
+        return "host" if platform in ("linux", "windows") else "missing"
+    if kind == "event":
+        if lane is not None and detail in lane["events"]:
+            return "default"
+        if lane is not None and "*" in lane["services"]:
+            return "host"
         return "host" if platform in ("linux", "windows") else "missing"
     if kind == "channel":
         if lane is not None and detail.split(".")[0] in lane["builtin"]:
@@ -530,7 +565,16 @@ def generate(root: pathlib.Path) -> str:
         missing = sorted(set(reference) - set(reach))
         extra = sorted(set(reach) - set(reference))
         raise Fail(f"the reach record is not the reference's list (missing {missing[:5]}, extra {extra[:5]}); rerun the probe")
-    for section in ("pure", "via", "input", "gaps", "unsupported"):
+    decisions.setdefault("events", {})
+    host_events = {
+        f"{service}.{event}"
+        for service, entry in load(root, HOST_SERVICES)["services"].items()
+        for event in entry.get("events", {})
+    }
+    for name, event in decisions["events"].items():
+        if event not in host_events:
+            raise Fail(f"events decides {name} by {event}, which is no host-service event")
+    for section in ("pure", "via", "input", "events", "gaps", "unsupported"):
         for name in decisions[section]:
             if name not in reference:
                 raise Fail(f"{section} decides {name}, which is not in the platform's API")
@@ -607,7 +651,11 @@ def generate(root: pathlib.Path) -> str:
                     else:
                         parts.append("default")
                 for need in needs:
-                    status = need_status(need, platform, lanes, entries, android) if need.startswith("input:") else None
+                    status = (
+                        need_status(need, platform, lanes, entries, android)
+                        if need.startswith(("input:", "event:"))
+                        else None
+                    )
                     if status is not None:
                         parts.append(status)
                 status = worst(parts)

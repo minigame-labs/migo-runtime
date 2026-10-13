@@ -122,6 +122,18 @@ public protocol MigoHostServiceProvider: AnyObject {
 
     /// One request. A call is answered exactly once through `request.reply`.
     func handle(_ request: MigoHostServiceRequest)
+
+    /// Whether this provider answers `request`: by default every request of a
+    /// service it names. One that answers only some of a service's methods
+    /// says which here, and the rest go on to whoever answers the service --
+    /// the SDK's own, say.
+    func answers(_ request: MigoHostServiceRequest) -> Bool
+}
+
+extension MigoHostServiceProvider {
+    public func answers(_ request: MigoHostServiceRequest) -> Bool {
+        services.contains(request.service)
+    }
 }
 
 extension MigoEngineSession {

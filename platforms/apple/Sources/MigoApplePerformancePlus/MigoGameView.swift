@@ -379,9 +379,9 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
                 scale: Float(scale))
             metalView.configure(scale: scale)
 
-            let windowService = MigoWindowService(view: self) { [weak self] event, object in
+            let windowService = MigoWindowService(view: self) { [weak self] service, event, object in
                 guard let json = try? JSONSerialization.data(withJSONObject: object) else { return }
-                self?.engine?.postHostServiceEvent(.window, event: event, json: json)
+                self?.engine?.postHostServiceEvent(service, event: event, json: json)
             }
             windowService.onLockChange = { [weak self] locked in self?.followMice(locked) }
             self.windowService = windowService

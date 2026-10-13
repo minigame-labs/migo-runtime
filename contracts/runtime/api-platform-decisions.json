@@ -12,6 +12,8 @@
       "  API's events keep current, a precondition that API meets.",
       "input: is fed by the host's input, lifecycle or reported state rather than called through to it; the kind names",
       "  the host entry point that feeds it (see INPUT in the generator).",
+      "events: a listener fed by a host-service event the host posts (service.event in host-services.json), not by",
+      "  the APIs of its kind: the platform provides it when its host layer posts that event.",
       "gaps: the engine answers, but the answer is invented or a stub, or the host has no way to supply the real",
       "  one. Missing on the platforms named until fixed; each is a work item.",
       "unsupported: deliberately not offered on the platforms named, for the reason given; content feature-detects.",
@@ -85,7 +87,12 @@
       "onTouchStart": "touch",
       "onWheel": "wheel"
   },
+  "events": {
+    "offDeviceOrientationChange": "screen.device_orientation_change",
+    "onDeviceOrientationChange": "screen.device_orientation_change"
+  },
   "gaps": {
+    "setDeviceOrientation": {"platforms": ["ios"], "reason": "on Performance+ the game is told its size once, before its first line runs, and the session keeps it: turning between portrait and landscape needs the session resized while content runs"},
     "onAudioInterruptionBegin": {"platforms": ["ohos"], "reason": "the OpenHarmony audio output does not report interruptions yet"},
     "onAudioInterruptionEnd": {"platforms": ["ohos"], "reason": "the OpenHarmony audio output does not report interruptions yet"}
   },
@@ -107,7 +114,6 @@
     "offBeaconUpdate": {"platforms": ["macos"], "reason": "macOS ranges no iBeacons: CoreLocation's beacon ranging is iOS only"},
     "offCompassChange": {"platforms": ["macos"], "reason": "a Mac has no magnetometer an app can read: CoreLocation reports no heading on a Mac"},
     "offDeviceMotionChange": {"platforms": ["macos"], "reason": "a Mac has no motion sensors an app can read: CoreMotion's motion manager is unavailable on macOS"},
-    "offDeviceOrientationChange": {"platforms": ["macos"], "reason": "a Mac has no device orientation"},
     "offGyroscopeChange": {"platforms": ["macos"], "reason": "a Mac has no motion sensors an app can read: CoreMotion's motion manager is unavailable on macOS"},
     "offScreenRecordingStateChanged": {"platforms": ["macos"], "reason": "macOS offers apps no way to tell the screen is being recorded"},
     "offUserCaptureScreen": {"platforms": ["macos"], "reason": "macOS tells an app nothing when the player takes a screenshot"},
@@ -116,14 +122,12 @@
     "onBeaconUpdate": {"platforms": ["macos"], "reason": "macOS ranges no iBeacons: CoreLocation's beacon ranging is iOS only"},
     "onCompassChange": {"platforms": ["macos"], "reason": "a Mac has no magnetometer an app can read: CoreLocation reports no heading on a Mac"},
     "onDeviceMotionChange": {"platforms": ["macos"], "reason": "a Mac has no motion sensors an app can read: CoreMotion's motion manager is unavailable on macOS"},
-    "onDeviceOrientationChange": {"platforms": ["macos"], "reason": "a Mac has no device orientation"},
     "onGyroscopeChange": {"platforms": ["macos"], "reason": "a Mac has no motion sensors an app can read: CoreMotion's motion manager is unavailable on macOS"},
     "onScreenRecordingStateChanged": {"platforms": ["macos"], "reason": "macOS offers apps no way to tell the screen is being recorded"},
     "onUserCaptureScreen": {"platforms": ["macos"], "reason": "macOS tells an app nothing when the player takes a screenshot"},
     "openSystemBluetoothSetting": {"platforms": ["ios", "macos"], "reason": "the platform documents it for Android only, and iOS offers apps no link to its Bluetooth settings"},
     "saveFileToDisk": {"platforms": ["android", "ios", "ohos"], "reason": "the platform documents it for PC only"},
     "setBLEMTU": {"platforms": ["ios", "macos"], "reason": "the platform documents it for Android only: CoreBluetooth pairs and negotiates the MTU itself"},
-    "setDeviceOrientation": {"platforms": ["ios", "macos"], "reason": "the game's size is fixed when it starts, so the app locks its orientation on iOS; a Mac has no device orientation"},
     "setScreenBrightness": {"platforms": ["macos"], "reason": "macOS offers apps no public control of a display's brightness"},
     "setVisualEffectOnCapture": {"platforms": ["ios"], "reason": "iOS offers apps no public way to keep their content out of screenshots and recordings"},
     "setWindowSize": {"platforms": ["android", "ios"], "reason": "an app on a phone cannot size its own window"},

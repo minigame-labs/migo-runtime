@@ -108,8 +108,9 @@ final class MigoBuiltInHostServices: MigoHostServiceProvider {
 }
 
 /// The app's provider, the capabilities it linked and the SDK's own, as the
-/// session sees them: a service the app names is the app's; then the first
-/// capability that names it; any other the SDK answers if it can.
+/// session sees them: what the app answers is the app's (`answers(_:)`: a
+/// service it names, or the methods of one it says); then the first capability
+/// that names the service; any other the SDK answers if it can.
 final class MigoComposedHostServices: MigoHostServiceProvider {
     private let app: MigoHostServiceProvider?
     private let appServices: Set<MigoHostServiceID>
@@ -141,7 +142,7 @@ final class MigoComposedHostServices: MigoHostServiceProvider {
     ]
 
     func handle(_ request: MigoHostServiceRequest) {
-        if let app, appServices.contains(request.service) {
+        if let app, app.answers(request) {
             app.handle(request)
         } else if let beaconRanging, request.service == .bluetooth,
             Self.beaconMethods.contains(request.method)

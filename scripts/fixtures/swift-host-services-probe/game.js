@@ -59,6 +59,39 @@ async function run() {
   await resizeTo(400, 250);
   await resizeTo(320, 200);
   console.error("migo-swift-host-probe: resized twice to " + seen.windowWidth + "x" + seen.windowHeight);
+  // The screen's orientation on a Mac is the window's shape: turned to
+  // portrait, the game's width and height exchange, and content hears the turn
+  // and the resize.
+  let turnedTo = null;
+  const turned = new Promise(function (resolve, reject) {
+    const timer = setTimeout(function () {
+      reject(new Error("migo-swift-host-probe: turn got " + JSON.stringify([turnedTo, seen])));
+    }, 5000);
+    let heardTurn = false;
+    let heardSize = false;
+    const settle = function () {
+      if (!heardTurn || !heardSize) return;
+      clearTimeout(timer);
+      migo.offDeviceOrientationChange(onTurn);
+      migo.offWindowResize(onSize);
+      resolve();
+    };
+    const onTurn = function (res) { turnedTo = res.value; heardTurn = res.value === "portrait"; settle(); };
+    const onSize = function (size) {
+      seen = size;
+      heardSize = size.windowWidth === 200 && size.windowHeight === 320;
+      settle();
+    };
+    migo.onDeviceOrientationChange(onTurn);
+    migo.onWindowResize(onSize);
+  });
+  const oriented = await call("setDeviceOrientation", { value: "portrait" });
+  expect(oriented.errMsg === "setDeviceOrientation:ok", "setDeviceOrientation", oriented);
+  await turned;
+  console.error("migo-swift-host-probe: orientation=" + turnedTo + " " + seen.windowWidth + "x" + seen.windowHeight);
+  // Already portrait: nothing to turn, and the call still succeeds.
+  const again = await call("setDeviceOrientation", { value: "portrait" });
+  expect(again.errMsg === "setDeviceOrientation:ok", "setDeviceOrientation again", again);
   expect(migo.setCursor("pointer") === true, "setCursor", false);
   // The debugging aids, which the SDK's screen service turns -- before the
   // viewer below covers the window, which pauses the game: content reads

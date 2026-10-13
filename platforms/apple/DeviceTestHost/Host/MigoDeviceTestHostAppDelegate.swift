@@ -23,6 +23,13 @@ import UIKit
 /// on the phone inherited and no test on the simulator did.
 @main
 final class MigoDeviceTestHostAppDelegate: UIResponder, UIApplicationDelegate {
+    /// The host stays upright however the phone is held. The app offers the
+    /// landscapes too, so a test can turn the scene with a window of its own
+    /// (the screen's orientation tests); nothing else turns it.
+    private final class Upright: UIViewController {
+        override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .portrait }
+    }
+
     var window: UIWindow?
 
     func application(
@@ -30,7 +37,7 @@ final class MigoDeviceTestHostAppDelegate: UIResponder, UIApplicationDelegate {
         didFinishLaunchingWithOptions options: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
         let window = UIWindow(frame: UIScreen.main.bounds)
-        window.rootViewController = UIViewController()
+        window.rootViewController = Upright()
         window.makeKeyAndVisible()
         self.window = window
         // A locked phone suspends the host, and an off-screen WKWebView in a
