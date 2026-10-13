@@ -48,9 +48,12 @@ import XCTest
             let capture = MigoWindowService.PointerCapture(
                 isFrontmost: { _ in frontmost }, location: { _ in location },
                 engage: { recorder.engaged += 1 }, release: { recorder.released += 1 })
-            return MigoWindowService(view: view, capture: capture) { event, object in
+            return MigoWindowService(view: view, capture: capture) { service, event, object in
                 let json = try! JSONSerialization.data(withJSONObject: object, options: .sortedKeys)
-                recorder.events.append("\(event) \(String(decoding: json, as: UTF8.self))")
+                // The window's own events by number; another service's by its
+                // number too.
+                let name = service == .window ? "\(event)" : "\(service.rawValue)/\(event)"
+                recorder.events.append("\(name) \(String(decoding: json, as: UTF8.self))")
             }
         }
 
@@ -77,6 +80,54 @@ import XCTest
             // grows by the difference, its title bar where it was.
             XCTAssertEqual(window.contentRect(forFrameRect: window.frame).size, NSSize(width: 320, height: 170))
             XCTAssertEqual(window.frame.maxY, top)
+        }
+
+        /// `setDeviceOrientation` on a Mac turns the game's window to the shape
+        /// asked for -- the game's width and height exchanged -- answers, and
+        /// tells content as a turn; a shape it already has is no resize, and a
+        /// value that is no shape fails.
+        func testTheWindowTurnsToTheShapeAsked() {
+            // The game's view fills the window, as an app shows it, and turns
+            // with it.
+            view.removeFromSuperview()
+            view.frame = window.contentView!.bounds
+            view.autoresizingMask = [.width, .height]
+            window.contentView!.addSubview(view)
+            let service = service()
+            let top = window.frame.maxY
+            service.setOrientation(request(MigoHostServiceID.Screen.setDeviceOrientation, ["value": "portrait"]))
+            // The game was 200 x 100: it is 100 x 200 now.
+            XCTAssertEqual(window.contentRect(forFrameRect: window.frame).size, NSSize(width: 100, height: 200))
+            XCTAssertEqual(view.bounds.size, NSSize(width: 100, height: 200))
+            XCTAssertEqual(window.frame.maxY, top, "the title bar where it was")
+            service.setOrientation(request(MigoHostServiceID.Screen.setDeviceOrientation, ["value": "portrait"]))
+            XCTAssertEqual(window.contentRect(forFrameRect: window.frame).size, NSSize(width: 100, height: 200))
+            service.setOrientation(request(MigoHostServiceID.Screen.setDeviceOrientation, ["value": "sideways"]))
+            XCTAssertEqual(
+                recorder.outcomes,
+                [
+                    .success(json: Data("{}".utf8)), .success(json: Data("{}".utf8)),
+                    .failure(message: "value must be portrait or landscape", code: nil),
+                ])
+            // Heard once: asked again, the game was already portrait.
+            func turned(_ value: String) -> String {
+                "\(MigoHostServiceID.screen.rawValue)/\(MigoHostServiceID.Screen.Event.deviceOrientationChange) "
+                    + "{\"value\":\"\(value)\"}"
+            }
+            XCTAssertEqual(recorder.events, [turned("portrait")])
+
+            // The player drags the window wider: the game turns, and content
+            // hears it; a resize that keeps the shape is no turn.
+            window.setContentSize(NSSize(width: 300, height: 120))
+            window.setContentSize(NSSize(width: 320, height: 140))
+            XCTAssertEqual(recorder.events, [turned("portrait"), turned("landscape")])
+        }
+
+        /// A square game is landscape, as a phone's screen is never square.
+        func testTheGamesShapeIsItsOrientation() {
+            XCTAssertEqual(MigoWindowService.orientation(of: NSSize(width: 100, height: 101)), "portrait")
+            XCTAssertEqual(MigoWindowService.orientation(of: NSSize(width: 100, height: 100)), "landscape")
+            XCTAssertEqual(MigoWindowService.orientation(of: NSSize(width: 101, height: 100)), "landscape")
         }
 
         func testASizeThatIsNoSizeOrNoWindowFails() {

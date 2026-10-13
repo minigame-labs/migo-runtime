@@ -130,7 +130,7 @@ import XCTest
                     // A controller that does not ask the view prefers no lock.
                     return forwards || !prefersLocked
                 })
-            return MigoWindowService(view: view, system: system) { event, object in
+            return MigoWindowService(view: view, system: system) { _, event, object in
                 let json = try! JSONSerialization.data(withJSONObject: object, options: .sortedKeys)
                 recorder.events.append("\(event) \(String(decoding: json, as: UTF8.self))")
             }
@@ -257,6 +257,59 @@ import XCTest
             XCTAssertFalse(service.prefersLocked)
             XCTAssertNil(service.lockedPosition)
             XCTAssertEqual(recorder.updates, [true, false])
+        }
+
+        /// The screen's orientation is the interface's, in the platform's
+        /// words: landscape is the home side to the right.
+        func testTheScreensOrientationIsTheInterfaces() {
+            XCTAssertEqual(MigoWindowService.orientationName(.landscapeRight), "landscape")
+            XCTAssertEqual(MigoWindowService.orientationName(.landscapeLeft), "landscapeReverse")
+            XCTAssertEqual(MigoWindowService.orientationName(.portrait), "portrait")
+            XCTAssertEqual(MigoWindowService.orientationName(.portraitUpsideDown), "portrait")
+            XCTAssertNil(MigoWindowService.orientationName(.unknown))
+        }
+
+        /// The interface turned between its two landscapes -- the same size,
+        /// so no layout -- is heard through the scene's geometry, and content
+        /// is told which way. Only where the tests are hosted in an app
+        /// (DeviceTestHost): a tool-hosted run has no scene to turn.
+        func testTheInterfaceTurningIsHeard() throws {
+            guard #available(iOS 16.0, *) else { throw XCTSkip("the scene's geometry is observable from iOS 16") }
+            guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first else {
+                throw XCTSkip("tool-hosted: there is no scene to turn")
+            }
+            final class Landscape: UIViewController {
+                override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .landscape }
+            }
+            let host = scene.windows.first { $0.isKeyWindow }
+            let window = UIWindow(windowScene: scene)
+            let controller = Landscape()
+            window.rootViewController = controller
+            controller.view.addSubview(view)
+            window.makeKeyAndVisible()
+            defer {
+                window.isHidden = true
+                host?.makeKeyAndVisible()
+                scene.requestGeometryUpdate(.iOS(interfaceOrientations: .portrait))
+            }
+            var heard: [String] = []
+            var waiting: (value: String, expectation: XCTestExpectation)?
+            let service = MigoWindowService(view: view) { service, _, object in
+                guard service == .screen, let value = object["value"] as? String else { return }
+                heard.append(value)
+                if let wait = waiting, wait.value == value { wait.expectation.fulfill() }
+            }
+            defer { service.close() }
+            // Home on the left, then a half turn to home on the right.
+            for (mask, value) in [(UIInterfaceOrientationMask.landscapeLeft, "landscapeReverse"), (.landscapeRight, "landscape")] {
+                let turned = expectation(description: value)
+                waiting = (value, turned)
+                scene.requestGeometryUpdate(.iOS(interfaceOrientations: mask)) { error in
+                    XCTFail("the scene did not turn: \(error)")
+                }
+                wait(for: [turned], timeout: 10)
+            }
+            XCTAssertEqual(heard.suffix(2), ["landscapeReverse", "landscape"])
         }
 
         /// The scene's size is the system's to give.

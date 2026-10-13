@@ -271,8 +271,11 @@ typedef uint32_t MigoHostService;
  * hidden keeping the game out of screenshots and recordings. The observer
  * commands run while content listens, and report through the events:
  * USER_CAPTURE_SCREEN {} when the player takes a screenshot,
- * RECORDING_STATE_CHANGE {"state"}, and DEVICE_ORIENTATION_CHANGE {"value":
- * "portrait" | "landscape" | "landscapeReverse"} whenever the device turns.
+ * RECORDING_STATE_CHANGE {"state"}. DEVICE_ORIENTATION_CHANGE {"value":
+ * "portrait" | "landscape" | "landscapeReverse"} is posted whenever the screen
+ * the game is shown on turns, whether content asked or not -- on a desktop,
+ * the game's window crossing between taller and wider -- and needs no
+ * observer.
  * SET_ENABLE_DEBUG {"enableDebug"} is content's setEnableDebug: the host shows
  * or hides its debugging aids -- the platform's vConsole, a panel with what
  * content wrote to its console (migo_session_copy_console_logs) -- and reports

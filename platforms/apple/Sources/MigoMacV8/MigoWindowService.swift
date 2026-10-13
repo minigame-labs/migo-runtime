@@ -5,9 +5,11 @@ import MigoAppleRenderer
     import AppKit
 
     /// The game view's own part of the host-service channel: what only the
-    /// window the game is shown in can answer -- the window service. It sits
-    /// behind the app's provider, so a service the app names is the app's, and
-    /// in front of the SDK's built-in services.
+    /// window the game is shown in can answer -- the window service, and the
+    /// screen's orientation, which on a Mac is the window's shape. It sits
+    /// behind the app's provider, so what the app answers is the app's, and in
+    /// front of the SDK's built-in services, which answer the rest of the
+    /// screen.
     ///
     /// `scripts/gen-api-platform-matrix.py` reads `services` below to count
     /// these APIs as provided on macOS: one service per line.
@@ -30,14 +32,25 @@ import MigoAppleRenderer
             services = appServices.union(Self.services)
         }
 
+        func answers(_ request: MigoHostServiceRequest) -> Bool {
+            if let app, app.answers(request) { return true }
+            return request.service == .window || Self.isOrientation(request)
+        }
+
         func handle(_ request: MigoHostServiceRequest) {
-            if let app, appServices.contains(request.service) {
+            if let app, app.answers(request) {
                 app.handle(request)
             } else if request.service == .window {
                 window.handle(request)
+            } else if Self.isOrientation(request) {
+                window.setOrientation(request)
             } else {
                 request.reply?.fail("not supported")
             }
+        }
+
+        private static func isOrientation(_ request: MigoHostServiceRequest) -> Bool {
+            request.service == .screen && request.method == MigoHostServiceID.Screen.setDeviceOrientation
         }
     }
 
@@ -79,12 +92,16 @@ import MigoAppleRenderer
 
         private weak var view: NSView?
         private let capture: PointerCapture
-        /// Where the service's events go: the session's channel.
-        private let post: (UInt32, [String: Any]) -> Void
+        /// Where the service's events go -- the window's, and the screen's
+        /// orientation -- the session's channel.
+        private let post: (MigoHostServiceID, UInt32, [String: Any]) -> Void
         private var observers: [NSObjectProtocol] = []
         /// The state last reported, or the one the game started in, which is
         /// no change.
         private var reportedState: String?
+        /// The screen's orientation last reported -- the game's shape -- or the
+        /// one the game started in.
+        private var reportedOrientation: String
 
         /// The cursor content asked for over the game.
         private(set) var cursor: NSCursor = .arrow
@@ -95,13 +112,25 @@ import MigoAppleRenderer
         var pointerLocked: Bool { lockedPosition != nil }
 
         /// `view` is the game's, in its window.
-        init(view: NSView, capture: PointerCapture = .system, post: @escaping (UInt32, [String: Any]) -> Void) {
+        init(
+            view: NSView, capture: PointerCapture = .system,
+            post: @escaping (MigoHostServiceID, UInt32, [String: Any]) -> Void
+        ) {
             self.view = view
             self.capture = capture
             self.post = post
+            reportedOrientation = Self.orientation(of: view.bounds.size)
+            let center = NotificationCenter.default
+            // The game turns when its view does, whatever turned it: the
+            // window dragged to the other shape, the app's layout, or
+            // `setDeviceOrientation`.
+            view.postsFrameChangedNotifications = true
+            observers.append(
+                center.addObserver(forName: NSView.frameDidChangeNotification, object: view, queue: .main) {
+                    [weak self] _ in self?.reportOrientation()
+                })
             guard let window = view.window else { return }
             reportedState = Self.state(of: window)
-            let center = NotificationCenter.default
             let changes: [Notification.Name] = [
                 NSWindow.didMiniaturizeNotification, NSWindow.didDeminiaturizeNotification,
                 NSWindow.didResizeNotification, NSWindow.didEnterFullScreenNotification,
@@ -179,14 +208,77 @@ import MigoAppleRenderer
                 return
             }
             let scale = window.backingScaleFactor
-            let game = view.convert(view.bounds, to: nil).size
+            let fitted = Self.frame(
+                of: window, around: view, forGame: NSSize(width: CGFloat(width) / scale, height: CGFloat(height) / scale))
+            window.setFrame(fitted.frame, display: true)
+            reply.succeed()
+        }
+
+        /// The window's frame grown or shrunk by what the game's view must to
+        /// be `game` points, its title bar where it is and on screen; and the
+        /// game's size in it, which the screen may have cut.
+        private static func frame(of window: NSWindow, around view: NSView, forGame game: NSSize)
+            -> (frame: NSRect, game: NSSize)
+        {
+            let current = view.convert(view.bounds, to: nil).size
             let content = window.contentRect(forFrameRect: window.frame)
-            let size = NSSize(
-                width: max(1, content.width + CGFloat(width) / scale - game.width),
-                height: max(1, content.height + CGFloat(height) / scale - game.height))
+            let around = NSSize(width: content.width - current.width, height: content.height - current.height)
+            let size = NSSize(width: max(1, around.width + game.width), height: max(1, around.height + game.height))
             var frame = window.frameRect(forContentRect: NSRect(origin: content.origin, size: size))
             frame.origin.y = window.frame.maxY - frame.height
-            window.setFrame(window.constrainFrameRect(frame, to: window.screen), display: true)
+            frame = window.constrainFrameRect(frame, to: window.screen)
+            let fitted = window.contentRect(forFrameRect: frame).size
+            return (frame, NSSize(width: fitted.width - around.width, height: fitted.height - around.height))
+        }
+
+        // MARK: - orientation
+
+        /// The screen's orientation on a Mac: the game's shape. Square is
+        /// landscape, as a phone's screen is never square.
+        static func orientation(of game: NSSize) -> String {
+            game.height > game.width ? "portrait" : "landscape"
+        }
+
+        /// Content hears the game turn when its view crosses from one shape to
+        /// the other, as a turn is heard on a phone -- not on every resize.
+        private func reportOrientation() {
+            guard let view else { return }
+            let orientation = Self.orientation(of: view.bounds.size)
+            guard orientation != reportedOrientation else { return }
+            reportedOrientation = orientation
+            post(.screen, MigoHostServiceID.Screen.Event.deviceOrientationChange, ["value": orientation])
+        }
+
+        /// `setDeviceOrientation` on a Mac: the game's window turned to the
+        /// shape asked for -- its view's width and height exchanged when it is
+        /// the other shape. Content hears the turn as the view turns. A
+        /// full-screen window is the screen's shape and cannot turn, nor can a
+        /// window the screen is too small to hold turned.
+        func setOrientation(_ request: MigoHostServiceRequest) {
+            guard let reply = request.reply else { return }
+            guard let value = request.object["value"] as? String, value == "portrait" || value == "landscape" else {
+                reply.fail("value must be portrait or landscape")
+                return
+            }
+            guard let view, let window = view.window else {
+                reply.fail("there is no window to turn")
+                return
+            }
+            guard !window.styleMask.contains(.fullScreen) else {
+                reply.fail("the window is full screen")
+                return
+            }
+            let game = view.convert(view.bounds, to: nil).size
+            guard Self.orientation(of: game) != value else {
+                reply.succeed()
+                return
+            }
+            let turned = Self.frame(of: window, around: view, forGame: NSSize(width: game.height, height: game.width))
+            guard Self.orientation(of: turned.game) == value else {
+                reply.fail("the screen cannot hold the window turned")
+                return
+            }
+            window.setFrame(turned.frame, display: true)
             reply.succeed()
         }
 
@@ -204,7 +296,7 @@ import MigoAppleRenderer
             let state = Self.state(of: window)
             guard state != reportedState else { return }
             reportedState = state
-            post(MigoHostServiceID.Window.Event.windowStateChange, ["state": state])
+            post(.window, MigoHostServiceID.Window.Event.windowStateChange, ["state": state])
         }
 
         // MARK: - cursor
@@ -345,7 +437,7 @@ import MigoAppleRenderer
         }
 
         private func report(locked: Bool) {
-            post(MigoHostServiceID.Window.Event.pointerLockChange, ["locked": locked])
+            post(.window, MigoHostServiceID.Window.Event.pointerLockChange, ["locked": locked])
         }
     }
 #endif

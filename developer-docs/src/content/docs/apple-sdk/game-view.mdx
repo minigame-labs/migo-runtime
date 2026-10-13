@@ -125,11 +125,20 @@ tick，内容静止时占多数，不是故障）、`coalescedRequests`、`unusa
 ### 尺寸与方向
 
 游戏在第一行代码执行之前得知窗口尺寸，并按它布局自己——小游戏 API 在所有平台上都这样工作。
-所以会话在 view 第一次非空布局时开始，并**保持这个尺寸**：之后的 bounds 变化由 Core Animation
-把渲染结果缩放过去，而不是对一个已经布局完的游戏谎报尺寸。
+会话在 view 第一次非空布局时开始。
 
-- **iOS**：承载的 view controller 要在 `MigoGameView` **第一次布局之前**就锁定在游戏的方向上
-  （Info.plist 只声明游戏的方向，或由只支持该方向的 controller 呈现它）。
+- **macOS**：游戏的尺寸就是 view 的尺寸，窗口改变大小（玩家拖动、`setWindowSize`）时游戏收到
+  `onWindowResize`。屏幕方向就是游戏的形状：高大于宽为 `portrait`，否则为 `landscape`；形状在
+  横竖之间变化时——不论是玩家拖动窗口、App 的布局还是 `setDeviceOrientation`——游戏收到
+  `onDeviceOrientationChange`。`setDeviceOrientation` 把窗口转成所要的形状（交换游戏的宽高，
+  标题栏位置不变）；全屏窗口，或屏幕放不下转过来的窗口时失败。
+- **iOS**：会话**保持第一次布局的尺寸**：之后的 bounds 变化由 Core Animation 把渲染结果缩放过去，
+  而不是对一个已经布局完的游戏谎报尺寸。所以承载的 view controller 要在 `MigoGameView`
+  **第一次布局之前**就锁定在游戏的方向上（Info.plist 只声明游戏的方向，或由只支持该方向的
+  controller 呈现它）。在这个方向之内界面转动时游戏收到 `onDeviceOrientationChange`：横屏时
+  Home 键一侧在右为 `landscape`、在左为 `landscapeReverse`，竖屏为 `portrait`。两个横屏之间的
+  半圈转动尺寸不变，从 iOS 16 起才能听到（场景的几何从 iOS 16 起可观察）。
+  `setDeviceOrientation` 回答“不支持”：横竖互转要在内容运行时改变会话尺寸，iOS 车道还不能做到。
 - drawable 的尺寸由引擎决定：画布小于窗口时取画布尺寸，由 Core Animation 缩放到 layer 上。
   宿主不要设置 `CAMetalLayer.drawableSize`，`contentsGravity` 保持默认的 resize。
 
@@ -310,7 +319,7 @@ public static func isValidID(_ id: String) -> Bool
 
 ## 明确拒绝的接口
 
-以下内容调用在这两条车道上回答“不支持”，不伪造结果：`setDeviceOrientation`（尺寸在启动时固定）、
-`setEnableDebug`（没有调试面板）、iOS 上的 `getHeapStatistics`（内容运行在 WebKit 的
+以下内容调用回答“不支持”，不伪造结果：iOS 上的 `setDeviceOrientation`（会话尺寸在启动时固定，
+见[尺寸与方向](#尺寸与方向)）、iOS 上的 `getHeapStatistics`（内容运行在 WebKit 的
 JavaScriptCore 中，它不暴露堆数据），以及 macOS 上的振动与电量。设备能力的逐项行为见
 [Apple 平台快速开始 · 设备能力](/docs/getting-started/apple/#5-设备能力)。

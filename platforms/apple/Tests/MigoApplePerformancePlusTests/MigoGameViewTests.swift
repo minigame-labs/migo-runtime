@@ -1,9 +1,11 @@
 import CryptoKit
-import MigoAppleRenderer
 import MigoEngine
 import XCTest
 
 @testable import MigoApplePerformancePlus
+// Testable for its package members (the debugging panel's lines): DeviceTestHost
+// compiles these tests outside the package, where only a testable import sees them.
+@testable import MigoAppleRenderer
 
 #if os(iOS)
     import CoreMotion
