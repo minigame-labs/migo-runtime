@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `setEnableDebug` on every platform, and the debugging aids it turns. A session's console is now recorded only while
+  the aids are on, and can be turned on while a game runs: every session has a console (allocated at its first line),
+  where only a session started with debugging on had one -- so Android's panel, turned on at runtime, showed nothing.
+  C ABI: the screen service's `SET_ENABLE_DEBUG` command `{"enableDebug"}` tells the host to show or hide its aids, and
+  `migo_session_copy_console_logs` reads what content wrote since a cursor for its panel; content reads the new state
+  at once (`getAppBaseInfo().enableDebug`), as Android's does. Apple: both game views show a panel over the game --
+  frames a second and the latest console lines, taking no touches -- while the aids are on, and `MigoEngineSession`
+  gains `debugAids`, `setDebugAids(_:)`, `consoleLogs(since:)` and `Event.debugAids`. On Performance+ the call and
+  `getAppBaseInfo` cross synchronously, so what the app says about itself -- the aids, the language, the text size --
+  is the host's latest report rather than a snapshot taken at start; the snapshot and `migo_session_copy_app_info`,
+  which carried it, are gone.
 - `getLocalIPAddress` answers on every platform: the engine reads the device's address on its local network and its
   netmask from the system (`shared::device::local_address`) -- the active network's, as the routing table picks it,
   so not a VPN tunnel, a container bridge or an idle cellular link that happens to be listed first; IPv4 where that
@@ -223,8 +234,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `MigoHostAppInfo` -- the host app's id, its interface language (BCP 47), its text scale, its own score and tier for
   the device, whether its debugging aids are on -- at start and whenever it changes; `MigoContentDescriptor` names the
   content's build (`environment`, the field that was `reserved0`, `MIGO_CONTENT_ENVIRONMENT_*`, zero a release) and
-  its released `version_utf8` (appended); and `migo_session_copy_app_info` (Performance+) copies the composed answer
-  for the producer. Android: `RuntimeConfig.Builder.setContentEnvironment`, `setContentVersion` and
+  its released `version_utf8` (appended). Android: `RuntimeConfig.Builder.setContentEnvironment`, `setContentVersion` and
   `setDeviceBenchmark`, with the app's package name, locale and font scale read from its configuration. The Apple
   hosts report the bundle identifier, the app's locale and, on iOS, the text size the person chose.
 - Gamepad haptics: every pad in `getGamepads()` has the standard `vibrationActuator` -- `effects`, `playEffect`

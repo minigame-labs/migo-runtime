@@ -840,27 +840,6 @@ Threading: any thread.
 
 ---
 
-## migo_session_copy_app_info
-
-```c
-/* Derived example: no tests/c_host coverage yet; the header is authoritative */
-MigoResult migo_session_copy_app_info(
-    MigoSession  *session,
-    char         *buffer,
-    size_t        capacity,
-    size_t       *out_length);
-```
-
-What `getAppBaseInfo`, `getAccountInfoSync` and `getDeviceBenchmarkInfo` answer, as the JSON object the engine's `op_get_app_info` hands its JavaScript, written as NUL-terminated UTF-8: the engine's composition of what it knows of itself, the host's `migo_session_set_host_app_info` report and the loaded content's descriptor. The producer answers the op from it without crossing, so a host serves it at start and again after a new report.
-
-Returns:
-
-- `MIGO_OK`: written; `*out_length` is the length without the NUL.
-- `MIGO_ERROR_INVALID_ARGUMENT`: `out_length` is `NULL`, `buffer` is `NULL` with a non-zero `capacity`, or `capacity` cannot hold the JSON and its NUL. When the capacity is too small `*out_length` is still set, so the caller can retry.
-- `MIGO_ERROR_INVALID_STATE`: no content loaded yet (the content's id is part of the answer).
-
-Threading: any thread.
-
 ---
 
 ## migo_session_read_content_module

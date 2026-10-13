@@ -546,6 +546,11 @@
           "op": "op_set_visual_effect_on_capture",
           "hook": "_internalOnSetVisualEffectOnCaptureResult",
           "error_code_field": null
+        },
+        "set_enable_debug": {
+          "id": 9,
+          "kind": "command",
+          "op": "op_set_enable_debug"
         }
       },
       "events": {

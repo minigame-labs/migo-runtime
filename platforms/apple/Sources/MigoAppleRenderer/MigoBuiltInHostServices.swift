@@ -69,6 +69,11 @@ final class MigoBuiltInHostServices: MigoHostServiceProvider {
 
     /// Where a service's events go: the session's channel, once it is open.
     var post: ((MigoHostServiceID, UInt32, [String: Any]) -> Void)?
+    /// Where content's `setEnableDebug` goes; the session sets it.
+    var debugAids: ((Bool) -> Void)? {
+        get { screen.debugAids }
+        set { screen.debugAids = newValue }
+    }
     #if os(iOS)
         /// Where the motion sensors' readings go: typed, up to fifty a second.
         var postSample: MigoSystemMotion.Sample?

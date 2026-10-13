@@ -525,6 +525,80 @@ import XCTest
                 "refused before the host, in the embedded op's words: \(lines)")
         }
 
+        /// The debugging aids, from content in WebContent: `setEnableDebug`
+        /// shows the view's panel with what content writes from then, and
+        /// `getAppBaseInfo` says the aids are on at once; turning them off
+        /// takes the panel away.
+        func testContentTurnsTheDebuggingAidsOnAndOff() throws {
+            let game = try package(
+                named: "debug",
+                game: """
+                    const say = (line) => console.log(line);
+                    say("debug before " + migo.getAppBaseInfo().enableDebug);
+                    migo.setEnableDebug({ enableDebug: true, success() {
+                      say("debug on " + migo.getAppBaseInfo().enableDebug);
+                      console.warn("shown in the panel");
+                    }, fail(error) { say("debug-fail " + error.errMsg); } });
+                    // A key press turns them off, as a game's own debug key would.
+                    migo.onKeyDown(() => migo.setEnableDebug({ enableDebug: false, success() {
+                      say("debug off " + migo.getAppBaseInfo().enableDebug);
+                    } }));
+                    """)
+            try MigoGameInstaller.install(package: game, id: "debug", into: directories)
+            let view = MigoGameView(configuration: .init(directories: directories, contentSigning: .unsigned))
+            var lines: [String] = []
+            var failure: String?
+            let on = expectation(description: "content turned the aids on")
+            view.onEvent = { event in
+                switch event {
+                case .console(_, let message):
+                    lines.append(message)
+                    if message.hasPrefix("debug on") || message.hasPrefix("debug-fail") { on.fulfill() }
+                case .failed(let reason):
+                    failure = reason
+                    on.fulfill()
+                default: break
+                }
+            }
+            mount(view)
+            view.loadGame(id: "debug")
+            wait(for: [on], timeout: 240)
+            XCTAssertNil(failure)
+            XCTAssertTrue(lines.contains("debug before false"), "\(lines)")
+            XCTAssertTrue(lines.contains("debug on true"), "read at once: \(lines)")
+            let panel = try XCTUnwrap(view.debugPanel, "the panel is up")
+            XCTAssertTrue(panel.isDescendant(of: view))
+            // The warning written after the aids came on reaches the panel.
+            let deadline = Date().addingTimeInterval(10)
+            while !panel.aids.lines.contains(where: { $0.message == "shown in the panel" }), Date() < deadline {
+                RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+            }
+            let shown = try XCTUnwrap(panel.aids.lines.first { $0.message == "shown in the panel" })
+            XCTAssertEqual(shown.level, 2)
+            XCTAssertFalse(
+                panel.aids.lines.contains { $0.message.hasPrefix("debug before") }, "nothing from before the aids")
+            XCTAssertFalse(panel.isUserInteractionEnabled, "the game stays playable under it")
+
+            let off = expectation(description: "content turned the aids off")
+            view.onEvent = { event in
+                if case .console(_, let message) = event, message.hasPrefix("debug off") {
+                    lines.append(message)
+                    off.fulfill()
+                }
+            }
+            XCTAssertTrue(
+                view.key(
+                    usage: 0x07, characters: "d", charactersIgnoringModifiers: "d", modifiers: [], down: true,
+                    timestamp: 1))
+            wait(for: [off], timeout: 30)
+            XCTAssertTrue(lines.contains("debug off false"), "\(lines)")
+            let gone = Date().addingTimeInterval(5)
+            while view.debugPanel != nil, Date() < gone { RunLoop.current.run(until: Date().addingTimeInterval(0.05)) }
+            XCTAssertNil(view.debugPanel, "the panel is taken away")
+            XCTAssertFalse(panel.isDescendant(of: view))
+            view.stop()
+        }
+
         /// The app's ecosystem, from content in WebContent: the values the app
         /// reported for the synchronous getters -- before the game started, and
         /// changed while it runs -- read from the host each time, and a call the

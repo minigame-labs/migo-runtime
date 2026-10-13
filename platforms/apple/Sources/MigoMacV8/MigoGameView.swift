@@ -164,6 +164,9 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
         /// An Esc that released the pointer lock is the player's, not the
         /// game's: its key-up is held back too.
         private var escapeReleasedLock = false
+        /// The debugging panel while the debugging aids are on
+        /// (`migo.setEnableDebug`).
+        private(set) var debugPanel: MigoDebugPanel?
         /// Content's `migo.showKeyboard` on a machine with no soft keyboard: a
         /// text field along the game's bottom edge while content asks for one.
         private lazy var keyboard = KeyboardField(owner: self)
@@ -344,6 +347,7 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             windowService?.close()
             windowService = nil
             escapeReleasedLock = false
+            showDebugPanel(false)
             deviceStatus?.stop()
             deviceStatus = nil
             keepDisplayAwake(false)
@@ -405,6 +409,25 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
                 keepDisplayAwake(on)
             case .gameLog(let entry):
                 onEvent?(.gameLog(entry))
+            case .debugAids(let on):
+                showDebugPanel(on)
+            }
+        }
+
+        /// The debugging panel over the top of the game, from the moment the
+        /// aids are turned on: what content writes from then is what it shows.
+        private func showDebugPanel(_ on: Bool) {
+            if on, debugPanel == nil, let engine {
+                let panel = MigoDebugPanel(session: engine)
+                let height = (bounds.height * 0.4).rounded()
+                // Flipped: y 0 is the top.
+                panel.frame = NSRect(x: 0, y: 0, width: bounds.width, height: height)
+                panel.autoresizingMask = [.width, .height, .maxYMargin]
+                addSubview(panel)
+                debugPanel = panel
+            } else if !on, let panel = debugPanel {
+                panel.removeFromSuperview()
+                debugPanel = nil
             }
         }
 

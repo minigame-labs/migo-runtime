@@ -138,6 +138,21 @@ func gpuReport() -> String {
 
 var sawReady = false
 var frames = 0
+/// Whether the view's debugging panel, while it was up, showed the line the
+/// game wrote after turning the aids on: read the way any app reads a view's
+/// subviews, by its accessibility identifier.
+var panelShowedConsole = false
+func panelText() -> String? {
+    func find(_ root: NSView) -> NSView? {
+        if root.accessibilityIdentifier() == "MigoDebugPanel" { return root }
+        return root.subviews.lazy.compactMap(find).first
+    }
+    func text(_ root: NSView) -> String? {
+        if let field = root as? NSTextView { return field.string }
+        return root.subviews.lazy.compactMap(text).first
+    }
+    return find(view).flatMap(text)
+}
 view.onEvent = { event in
     switch event {
     case .ready:
@@ -145,6 +160,7 @@ view.onEvent = { event in
         say("ready")
     case .exitRequested:
         say(gpuReport())
+        say("debugging panel showed the console=\(panelShowedConsole)")
         say("exit requested after ready=\(sawReady), clock delivered \(frames) frames")
         exit(sawReady && frames > 0 ? 0 : 4)
     case .failed(let reason):
@@ -161,6 +177,9 @@ view.onEvent = { event in
 // exit is what is reported.
 Timer.scheduledTimer(withTimeInterval: 0.02, repeats: true) { _ in
     if let delivered = view.frameClockStatistics?.delivered { frames = delivered }
+    if panelText()?.contains("W migo-swift-host-probe: shown in the debugging panel") == true {
+        panelShowedConsole = true
+    }
 }
 say("unavailability: \(MigoGameView.unavailabilityReason ?? "none")")
 // What the window server says about the window, for a run that turns no

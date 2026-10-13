@@ -95,6 +95,24 @@ public final class MigoEngineSession {
         /// One game-log entry (`migo.getGameLogManager().log`), as the JSON
         /// object the engine merged: level, key, value, commonInfo.
         case gameLog(String)
+        /// The debugging aids were turned on or off (`migo.setEnableDebug`):
+        /// a game view shows or hides its panel. See `debugAids`.
+        case debugAids(Bool)
+    }
+
+    /// One line content wrote to its console, as `consoleLogs(since:)` reads it.
+    public struct ConsoleEntry: Equatable, Sendable {
+        /// 0 debug, 1 log and info, 2 warn, 3 error.
+        public var level: Int
+        /// When it was written.
+        public var date: Date
+        public var message: String
+
+        public init(level: Int, date: Date, message: String) {
+            self.level = level
+            self.date = date
+            self.message = message
+        }
     }
 
     /// What content asked for when it opened the keyboard.
@@ -379,6 +397,8 @@ public final class MigoEngineSession {
         capabilityReports = reports
         for capability in capabilities { capability.report(to: reports) }
         // A player back from the system's settings may have changed a grant.
+        // Content's `setEnableDebug`, answered by the SDK's screen service.
+        composed.builtIn.debugAids = { [weak self] on in self?.setDebugAids(on) }
         composed.builtIn.refreshCapabilities = { [weak self] in
             guard let self, let reports = self.capabilityReports else { return }
             for capability in self.capabilities { capability.report(to: reports) }
@@ -604,11 +624,62 @@ public final class MigoEngineSession {
         return result
     }
 
+    /// Whether the debugging aids are on: content's `setEnableDebug` turns
+    /// them, and `getAppBaseInfo().enableDebug` says so. While they are on the
+    /// session records content's console (`consoleLogs(since:)`). An app that
+    /// answers the screen service itself turns its own aids and reports them
+    /// here. Main thread.
+    public private(set) var debugAids = false
+    /// The host's last report about itself, reported again with the aids.
+    private var hostAppInfo: (appId: String?, language: String?, fontScale: Float)?
+
+    /// Turn the debugging aids on or off: content is told at once, a game
+    /// view shows or hides its panel (`Event.debugAids`). Main thread.
+    public func setDebugAids(_ on: Bool) {
+        guard !isClosed, on != debugAids else { return }
+        debugAids = on
+        if let report = hostAppInfo {
+            setHostAppInfo(appId: report.appId, language: report.language, fontScale: report.fontScale)
+        }
+        onEvent?(.debugAids(on))
+    }
+
+    /// What content wrote to its console after `cursor` while the debugging
+    /// aids were on, oldest first, and the cursor to read on from -- 0 the
+    /// first time. `nil` while no content runs. The session keeps its latest
+    /// 500 lines. Main thread.
+    public func consoleLogs(since cursor: UInt64) -> (entries: [ConsoleEntry], next: UInt64)? {
+        guard !isClosed else { return nil }
+        var length = 0
+        var result = migo_session_copy_console_logs(session, cursor, nil, 0, &length)
+        var buffer: [CChar] = []
+        // New lines can arrive between the measure and the copy: measure again.
+        for _ in 0..<4 where result == MIGO_ERROR_INVALID_ARGUMENT {
+            buffer = [CChar](repeating: 0, count: length + 1)
+            result = migo_session_copy_console_logs(session, cursor, &buffer, buffer.count, &length)
+        }
+        guard result == MIGO_OK,
+            let object = try? JSONSerialization.jsonObject(with: Data(bytes: buffer, count: length)) as? [String: Any],
+            let next = (object["cursor"] as? NSNumber)?.uint64Value,
+            let logs = object["logs"] as? [[String: Any]]
+        else { return nil }
+        let entries = logs.map { log in
+            ConsoleEntry(
+                level: (log["l"] as? NSNumber)?.intValue ?? 1,
+                date: Date(timeIntervalSince1970: ((log["t"] as? NSNumber)?.doubleValue ?? 0) / 1000),
+                message: log["m"] as? String ?? "")
+        }
+        return (entries, next)
+    }
+
     /// What this app says about itself -- its id, its interface language, its
     /// text scale -- reported now and at each change (`getAppBaseInfo`). See
-    /// `MigoDeviceStatusReporter`. `fontScale` 0 is "not reported".
+    /// `MigoDeviceStatusReporter`. `fontScale` 0 is "not reported". Whether
+    /// the debugging aids are on is the session's (`debugAids`).
     public func setHostAppInfo(appId: String?, language: String?, fontScale: Float) {
         guard !isClosed else { return }
+        hostAppInfo = (appId, language, fontScale)
+        let debug = debugAids
         let result = (appId ?? "").withCString { id in
             (language ?? "").withCString { tag -> MigoResult in
                 var info = MigoHostAppInfo()
@@ -620,6 +691,7 @@ public final class MigoEngineSession {
                 // The engine measures no device, and neither does this host.
                 info.benchmark_level = -1
                 info.model_level = UInt32(MIGO_DEVICE_MODEL_LEVEL_UNKNOWN)
+                info.flags = debug ? UInt32(MIGO_HOST_APP_INFO_FLAG_DEBUG) : 0
                 return migo_session_set_host_app_info(session, &info)
             }
         }

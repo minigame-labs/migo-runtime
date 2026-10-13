@@ -978,10 +978,9 @@ import XCTest
                 """.utf8)
             // Loaded through the C ABI, as a view loads a game: the app's and
             // account's part of the description is the engine's composition
-            // for the loaded content, which the host copies and hands over.
+            // for the loaded content, which the producer asks the host for.
             let root = try harness.installAndLoadContent(
                 id: "device-game", entry: "game/main.mjs", files: ["game/main.mjs": content])
-            let appInfo = try harness.appInfo()
 
             var nonce = [UInt8](repeating: 0, count: 16)
             nonce[0] = MigoFrameHarness.fixtureLaunchNonce
@@ -993,7 +992,7 @@ import XCTest
                 screenWidth: 390, screenHeight: 844, windowWidth: 390, windowHeight: 844,
                 pixelRatio: 3, statusBarHeight: 47,
                 safeAreaInsets: Profile.SafeAreaInsets(left: 0, top: 47, right: 0, bottom: 34),
-                brand: "Apple", model: "iPhone14,5", system: "iOS 26.0", platform: "ios", appInfo: appInfo)
+                brand: "Apple", model: "iPhone14,5", system: "iOS 26.0", platform: "ios")
             let host = try MigoPerformancePlusHost(
                 configuration: .init(
                     contentRoot: root, harnessEntry: "/game/main.mjs",
@@ -1029,11 +1028,11 @@ import XCTest
             XCTAssertEqual(report?["safeBottom"] as? Double, 844 - 34)
             XCTAssertEqual(report?["model"] as? String, "iPhone14,5")
             XCTAssertEqual(report?["platform"] as? String, "ios")
-            let composed = try XCTUnwrap(
-                try JSONSerialization.jsonObject(with: Data(appInfo.utf8)) as? [String: Any])
-            XCTAssertEqual(
-                report?["sdk"] as? String, composed["SDKVersion"] as? String,
-                "the app's part is the session's composition, served as it is")
+            // The app's part is the host's composition, asked for across: the
+            // engine's API level, which no snapshot carried.
+            let sdk = try XCTUnwrap(report?["sdk"] as? String, "\(String(describing: report))")
+            XCTAssertNotNil(
+                sdk.range(of: #"^\d+\.\d+\.\d+$"#, options: .regularExpression), "the API level, not \(sdk)")
         }
 
         /// The engine's storage API, answered by the host's storage service.

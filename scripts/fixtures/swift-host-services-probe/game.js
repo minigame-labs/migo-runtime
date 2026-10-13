@@ -54,6 +54,17 @@ async function run() {
   expect(sized.errMsg === "setWindowSize:ok", "setWindowSize", sized);
   await resized;
   expect(migo.setCursor("pointer") === true, "setCursor", false);
+  // The debugging aids, which the SDK's screen service turns -- before the
+  // viewer below covers the window, which pauses the game: content reads
+  // the new state at once, and what it writes from then on is in the view's
+  // panel, which the app reads back (the panel redraws twice a second).
+  expect(migo.getAppBaseInfo().enableDebug === false, "enableDebug before", migo.getAppBaseInfo());
+  const debugged = await call("setEnableDebug", { enableDebug: true });
+  expect(debugged.errMsg === "setEnableDebug:ok", "setEnableDebug", debugged);
+  expect(migo.getAppBaseInfo().enableDebug === true, "enableDebug after", migo.getAppBaseInfo());
+  console.warn("migo-swift-host-probe: shown in the debugging panel");
+  await new Promise(function (resolve) { setTimeout(resolve, 1500); });
+  console.error("migo-swift-host-probe: debug=on");
   // What the SDK reports of the system: the Wi-Fi switch, which the script
   // compares with the Mac's own, and the notification grant, in the API's words.
   const system = migo.getSystemSetting();

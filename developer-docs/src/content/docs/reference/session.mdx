@@ -716,6 +716,30 @@ migo_session_post_memory_warning(MigoSession *session, MigoMemoryWarningLevel le
 - `MIGO_ERROR_INVALID_ARGUMENT` — 级别不是本头文件定义的三档之一
 - `MIGO_ERROR_INVALID_STATE` — Session 已销毁
 
+## migo_session_copy_console_logs
+
+```c
+/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+MIGO_API MigoResult MIGO_CALL migo_session_copy_console_logs(MigoSession *session,
+                                                             uint64_t since_cursor,
+                                                             char *buffer,
+                                                             size_t capacity,
+                                                             size_t *out_length);
+```
+
+宿主调试面板（平台的 vConsole）读取内容写到控制台的内容：只记录调试辅助打开期间的输出——内容调用 `setEnableDebug`，
+宿主收到 `MIGO_SCREEN_SET_ENABLE_DEBUG` 命令时打开面板。写出以 NUL 结尾的 UTF-8 JSON：
+`{"logs": [{"l": 级别, "t": Unix 毫秒, "m": 文本}], "cursor": 下一游标}`，级别 0 debug、1 log/info、2 warn、3 error，
+按时间从旧到新。首次传 0，之后传上次返回的游标；会话只保留最近 500 行，落后太多的读者拿到的是这 500 行。
+
+返回：
+
+- `MIGO_OK` — 已写入；`*out_length` 为不含 NUL 的长度
+- `MIGO_ERROR_INVALID_ARGUMENT` — `out_length` 为空、`buffer` 为空而 `capacity` 非 0，或容量装不下 JSON 加 NUL（此时 `*out_length` 仍被写入，可按它重试）
+- `MIGO_ERROR_INVALID_STATE` — 没有内容在运行
+
+线程模型：任意线程。
+
 ## migo_session_set_network_status
 
 ```c

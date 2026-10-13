@@ -32,7 +32,7 @@ use migo_capi_abi::{
 };
 use migo_core::services::{Scope, ScopeState, ServiceError, SystemInfoService};
 use shared::device::{Orientation, SystemSettings};
-use shared::services::app_info::{AppInfo, ContentEnvironment, HostAppInfo, language_name};
+use shared::services::app_info::{ContentEnvironment, HostAppInfo, language_name};
 use shared::surface::{HostWindowInfo, HostWindowState};
 
 use crate::{MigoSession, host_services::CapiHostServices, panic_barrier::guard, pin_session};
@@ -59,15 +59,13 @@ pub(crate) struct HostReports {
 /// describe it.
 #[derive(Clone, Debug)]
 pub(crate) struct LoadedContent {
-    pub(crate) id: String,
     pub(crate) environment: ContentEnvironment,
     pub(crate) version: Option<String>,
 }
 
 impl LoadedContent {
-    pub(crate) fn new(id: String, environment: u32, version: Option<String>) -> Self {
+    pub(crate) fn new(environment: u32, version: Option<String>) -> Self {
         Self {
-            id,
             environment: match environment {
                 MIGO_CONTENT_ENVIRONMENT_TRIAL => ContentEnvironment::Trial,
                 MIGO_CONTENT_ENVIRONMENT_DEVELOP => ContentEnvironment::Develop,
@@ -143,13 +141,13 @@ impl HostReports {
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(content);
     }
 
-    /// The content's id, once it is loaded.
-    pub(crate) fn content_id(&self) -> Option<String> {
-        self.content
+    /// The host's debugging aids, as content turned them: what the host's
+    /// report says until the host reports again.
+    pub(crate) fn set_debug(&self, enabled: bool) {
+        self.host_app
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .as_ref()
-            .map(|content| content.id.clone())
+            .debug = enabled;
     }
 
     /// The host's report and the content's descriptor, as the engine's
@@ -181,13 +179,6 @@ impl HostReports {
                 .map_or(ContentEnvironment::Release, |content| content.environment),
             content_version: content.and_then(|content| content.version),
         }
-    }
-
-    /// What `getAppBaseInfo` and its kin answer, once content is loaded: for a
-    /// host that runs the engine's JavaScript elsewhere and serves it this.
-    pub(crate) fn app_info(&self) -> Option<AppInfo> {
-        let id = self.content_id()?;
-        Some(AppInfo::compose(self.host_app_info(), &id))
     }
 
     fn app_authorize(&self) -> Option<MigoAppAuthorizeSetting> {
@@ -530,6 +521,7 @@ mod tests {
             MigoHostServiceCall,
         },
     };
+    use shared::services::app_info::AppInfo;
     use shared::surface::{HostWindowMetrics, PixelRatio};
     use std::ffi::c_void;
 
@@ -800,8 +792,7 @@ mod tests {
     fn what_the_host_says_about_itself_is_what_the_engine_composes_from() {
         with_session("host-app-info", |session| {
             let reports = reports_of(session);
-            // Before any report or content: the engine's own answer, and no
-            // composition for a producer, since the content's id is part of it.
+            // Before any report or content: the engine's own answer.
             assert_eq!(
                 system_info(1, 1, Arc::clone(&reports)).host_app_info(),
                 HostAppInfo {
@@ -810,7 +801,6 @@ mod tests {
                     ..HostAppInfo::default()
                 }
             );
-            assert!(reports.app_info().is_none());
 
             let report = host_app_report(c"com.example.host", c"en-GB");
             assert_eq!(
@@ -818,7 +808,6 @@ mod tests {
                 MIGO_OK
             );
             reports.record_content(LoadedContent::new(
-                "demo".into(),
                 MIGO_CONTENT_ENVIRONMENT_TRIAL,
                 Some("1.4.2".into()),
             ));
@@ -834,7 +823,7 @@ mod tests {
             );
             assert_eq!(host.content_environment, ContentEnvironment::Trial);
 
-            let info = reports.app_info().expect("content is loaded");
+            let info = AppInfo::compose(host, "demo");
             assert_eq!(info.app_id, "demo");
             assert_eq!(info.language, "en_GB");
             // A trial build has no version, whatever the descriptor said.

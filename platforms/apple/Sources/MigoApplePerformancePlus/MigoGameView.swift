@@ -224,6 +224,9 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
         /// The window service for the game that runs: the pointer's look, the
         /// pointer lock, the window's state. Readable by `@testable` tests.
         private(set) var windowService: MigoWindowService?
+        /// The debugging panel while the debugging aids are on
+        /// (`migo.setEnableDebug`). Readable by `@testable` tests.
+        private(set) var debugPanel: MigoDebugPanel?
         /// The mice followed while the pointer is locked, and their arrivals.
         private var lockedMice: [FollowedMouse] = []
         private var mouseArrivals: NSObjectProtocol?
@@ -399,9 +402,6 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             try engine.attach(layer: metalView.metalLayer, size: size)
             try engine.loadContent(id: id, entry: entry)
             let root = try Self.contentRoot(of: engine.session)
-            // After the reporter's first report and the load: the answer is the
-            // host's report and the content's descriptor, composed.
-            let appInfo = try Self.appInfo(of: engine.session)
 
             let insets = window.safeAreaInsets
             let device = MigoPerformancePlusHost.DeviceProfile(
@@ -414,7 +414,7 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
                     left: Double(insets.left), top: Double(insets.top), right: Double(insets.right),
                     bottom: Double(insets.bottom)),
                 brand: "Apple", model: Self.hardwareModel(),
-                system: "iOS \(UIDevice.current.systemVersion)", platform: "ios", appInfo: appInfo)
+                system: "iOS \(UIDevice.current.systemVersion)", platform: "ios")
             let host = try MigoPerformancePlusHost(
                 configuration: .init(
                     contentRoot: root, gameEntry: "/" + entry,
@@ -425,7 +425,10 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
                 channel: MigoFrameChannel(session: engine.session))
             self.host = host
             host.onReport = { [weak self] report in self?.producerReport(report) }
-            host.onConsole = { [weak self] level, message in self?.onEvent?(.console(level: level, message: message)) }
+            host.onConsole = { [weak self] level, message in
+                self?.debugPanel?.append(level: level, message: message)
+                self?.onEvent?(.console(level: level, message: message))
+            }
 
             // Off the window's left edge and the full window's size: attached
             // (an unattached web view is killed), neither hidden nor zero-sized
@@ -464,6 +467,7 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             followMice(false)
             windowService?.close()
             windowService = nil
+            showDebugPanel(false)
             deviceStatus?.stop()
             deviceStatus = nil
             keepScreenOn(false)
@@ -535,6 +539,23 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
                 keepScreenOn(on)
             case .gameLog(let entry):
                 onEvent?(.gameLog(entry))
+            case .debugAids(let on):
+                showDebugPanel(on)
+            }
+        }
+
+        /// The debugging panel over the top of the game, from the moment the
+        /// aids are turned on: what content writes from then is what it shows.
+        private func showDebugPanel(_ on: Bool) {
+            if on, debugPanel == nil {
+                let panel = MigoDebugPanel(frames: { [weak self] in self?.engine?.frameStatistics })
+                panel.frame = CGRect(x: 0, y: 0, width: bounds.width, height: (bounds.height * 0.4).rounded())
+                panel.autoresizingMask = [.flexibleWidth, .flexibleHeight, .flexibleBottomMargin]
+                addSubview(panel)
+                debugPanel = panel
+            } else if !on, let panel = debugPanel {
+                panel.removeFromSuperview()
+                debugPanel = nil
             }
         }
 
@@ -920,17 +941,6 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
                 throw MigoEngineSession.Failure.call("migo_session_copy_content_root", copied)
             }
             return URL(fileURLWithPath: String(cString: buffer), isDirectory: true)
-        }
-
-        private static func appInfo(of session: OpaquePointer) throws -> String {
-            var length = 0
-            _ = migo_session_copy_app_info(session, nil, 0, &length)
-            var buffer = [CChar](repeating: 0, count: length + 1)
-            let copied = migo_session_copy_app_info(session, &buffer, buffer.count, &length)
-            guard copied == MIGO_OK else {
-                throw MigoEngineSession.Failure.call("migo_session_copy_app_info", copied)
-            }
-            return String(cString: buffer)
         }
 
         /// `iPhone14,2`, not `iPhone`: games key quality settings on it.

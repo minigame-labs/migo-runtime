@@ -154,7 +154,7 @@
       }
     },
     "host_v8_device": {
-      "reason": "Vibration, the display wake lock and network monitoring are host commands. The battery and the network type are the host's last report, read synchronously: the network changes during a session, so the host's one copy is the answer rather than a snapshot the producer would have to keep in step. The local address is read from the system by the engine in the host's process, synchronously, as the embedded op reads it: WebContent has no view of the device's interfaces. The clipboard, location, the screen's brightness, capture and recording state, code scanning and the motion sensors are the host app's services: each request is a command the host makes the embedded op's scope check and device-service call for (engine/crates/core/src/runtime/service_channel.rs), and its result, a refusal included, and every reading reach content through the hooks the embedded runtime calls. Orientation is fixed when the session starts (its size is), and there is no debug panel to enable.",
+      "reason": "Vibration, the display wake lock and network monitoring are host commands. The battery and the network type are the host's last report, read synchronously: the network changes during a session, so the host's one copy is the answer rather than a snapshot the producer would have to keep in step. The local address is read from the system by the engine in the host's process, synchronously, as the embedded op reads it: WebContent has no view of the device's interfaces. The clipboard, location, the screen's brightness, capture and recording state, code scanning and the motion sensors are the host app's services: each request is a command the host makes the embedded op's scope check and device-service call for (engine/crates/core/src/runtime/service_channel.rs), and its result, a refusal included, and every reading reach content through the hooks the embedded runtime calls. Orientation is fixed when the session starts (its size is). Turning the debugging aids on or off is the host's, answered synchronously as the embedded op is, so content's call fails where the host has none and the state it reads next is the new one.",
       "ops": {
         "op_get_battery_info": "sync",
         "op_get_clipboard_data": "command",
@@ -167,7 +167,7 @@
         "op_scan_code": "command",
         "op_set_clipboard_data": "command",
         "op_set_device_orientation": "unsupported",
-        "op_set_enable_debug": "unsupported",
+        "op_set_enable_debug": "sync",
         "op_set_keep_screen_on": "command",
         "op_set_screen_brightness": "command",
         "op_set_visual_effect_on_capture": "command",
@@ -354,7 +354,7 @@
       }
     },
     "host_v8_system": {
-      "reason": "Device, window and system descriptions are an environment snapshot the host injects and updates by event. Login, account, permission requests, the settings pages, Bluetooth, beacons and mini-program navigation are the host app's services: each request is a command the host makes the embedded op's scope check and device-service call for (engine/crates/core/src/runtime/service_channel.rs), and its result, a refusal included, and the host's reports reach content through the hooks the embedded runtime calls. Ecosystem calls are awaited while the files a group share names are resolved through the game's sandbox. Whether the host app answers ecosystem calls at all, and the values it reported for the synchronous getters, are the host's, read synchronously: the producer has no host of its own to ask. The scopes content was granted, the app's authorization and the system's switches are the host's last report, read synchronously as the network type is: each changes during a session -- a prompt answered, a setting changed and come back from -- so the host's one copy is the answer.",
+      "reason": "Device, window and system descriptions are an environment snapshot the host injects and updates by event. What the app says about itself (getAppBaseInfo, and the fields of getSystemInfoSync it feeds) is read from the host synchronously: it changes during a session -- the debugging aids turned on, the language or text size changed -- so the host's one copy is the answer. Login, account, permission requests, the settings pages, Bluetooth, beacons and mini-program navigation are the host app's services: each request is a command the host makes the embedded op's scope check and device-service call for (engine/crates/core/src/runtime/service_channel.rs), and its result, a refusal included, and the host's reports reach content through the hooks the embedded runtime calls. Ecosystem calls are awaited while the files a group share names are resolved through the game's sandbox. Whether the host app answers ecosystem calls at all, and the values it reported for the synchronous getters, are the host's, read synchronously: the producer has no host of its own to ask. The scopes content was granted, the app's authorization and the system's switches are the host's last report, read synchronously as the network type is: each changes during a session -- a prompt answered, a setting changed and come back from -- so the host's one copy is the answer.",
       "ops": {
         "op_authorize": "command",
         "op_check_session": "command",
@@ -374,7 +374,7 @@
         "op_get_ble_device_rssi": "command",
         "op_get_ble_device_services": "command",
         "op_get_ble_mtu": "command",
-        "op_get_app_info": "local",
+        "op_get_app_info": "sync",
         "op_get_bluetooth_adapter_state": "command",
         "op_get_bluetooth_devices": "command",
         "op_get_connected_bluetooth_devices": "command",

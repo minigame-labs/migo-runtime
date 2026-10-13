@@ -203,6 +203,10 @@ expected_wifi=false
 if [[ -n "$wifi_device" ]] && networksetup -getairportpower "$wifi_device" | grep -q ': On$'; then
   expected_wifi=true
 fi
+grep -q 'migo-swift-host-probe: debug=on' "$LAST_LOG" \
+  || fail "the game did not turn the debugging aids on through the SDK's screen service"
+grep -q '\[game-view-host\] debugging panel showed the console=true' "$LAST_LOG" \
+  || fail "the view's debugging panel did not show what the game wrote to its console"
 grep -q 'migo-swift-host-probe: compressed=16x8' "$LAST_LOG" \
   || fail "the SDK's image service did not compress the game's image"
 grep -q 'migo-swift-host-probe: previewed' "$LAST_LOG" \
