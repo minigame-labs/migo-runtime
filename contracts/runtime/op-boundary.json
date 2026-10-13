@@ -413,14 +413,14 @@
       }
     },
     "host_v8_ui": {
-      "reason": "Toasts, modals, loading indicators, action sheets and the window's pointer lock and size are the host app's, reached as commands through the host-service channel, with results through the hooks the embedded runtime calls; the menu-button rectangle is layout the environment snapshot carries. The cursor, which answers synchronously, is not carried.",
+      "reason": "Toasts, modals, loading indicators, action sheets and the window's pointer lock and size are the host app's, reached as commands through the host-service channel, with results through the hooks the embedded runtime calls; the menu-button rectangle is layout the environment snapshot carries. The cursor answers synchronously whether the host's window took it, so it crosses the synchronous barrier: the host shapes the request as the embedded op does (migo_services::cursor), an image resolved through the game's sandbox.",
       "ops": {
         "op_exit_pointer_lock": "command",
         "op_get_menu_button_rect": "local",
         "op_hide_loading": "command",
         "op_hide_toast": "command",
         "op_request_pointer_lock": "command",
-        "op_set_cursor": "unsupported",
+        "op_set_cursor": "sync",
         "op_set_window_size": "command",
         "op_show_action_sheet": "command",
         "op_show_loading": "command",

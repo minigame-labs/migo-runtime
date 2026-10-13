@@ -6,6 +6,7 @@
 
 pub mod audio;
 pub mod content;
+pub mod cursor;
 pub mod error;
 pub mod fs;
 pub mod host_paths;

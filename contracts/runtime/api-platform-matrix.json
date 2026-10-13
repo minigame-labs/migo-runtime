@@ -19,7 +19,7 @@
   "total": 382,
   "summary": {
     "android": {"engine": 60, "default": 126, "host": 180, "missing": 6, "unsupported": 10, "ready": 376},
-    "ios": {"engine": 70, "default": 86, "host": 167, "missing": 43, "unsupported": 16, "ready": 333},
+    "ios": {"engine": 70, "default": 86, "host": 168, "missing": 42, "unsupported": 16, "ready": 333},
     "macos": {"engine": 70, "default": 84, "host": 170, "missing": 11, "unsupported": 47, "ready": 370},
     "linux": {"engine": 70, "default": 20, "host": 270, "missing": 12, "unsupported": 10, "ready": 249},
     "windows": {"engine": 70, "default": 0, "host": 290, "missing": 12, "unsupported": 10, "ready": 229},
@@ -355,7 +355,7 @@
     "setBLEMTU": {"category": "device/bluetooth-ble", "needs": ["channel:bluetooth.set_ble_mtu", "channel:permission"], "android": "host", "ios": "unsupported", "macos": "unsupported", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["linux", "windows", "ohos"]},
     "setBackgroundFetchToken": {"category": "storage/background-fetch", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "host", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ohos"]},
     "setClipboardData": {"category": "device/clipboard", "needs": ["channel:clipboard.set_clipboard_data"], "android": "default", "ios": "default", "macos": "default", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["linux", "windows", "ohos"]},
-    "setCursor": {"category": "render/cursor", "needs": ["channel:window.set_cursor"], "android": "default", "ios": "missing", "macos": "default", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "linux", "windows", "ohos"]},
+    "setCursor": {"category": "render/cursor", "needs": ["channel:window.set_cursor"], "android": "default", "ios": "host", "macos": "default", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "linux", "windows", "ohos"]},
     "setDeviceOrientation": {"category": "device/orientation", "needs": ["channel:screen.set_device_orientation"], "android": "default", "ios": "unsupported", "macos": "unsupported", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["linux", "windows", "ohos"]},
     "setEnableDebug": {"category": "base/debug", "needs": ["callback:on_keep_screen_on"], "android": "default", "ios": "missing", "macos": "default", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "linux", "windows", "ohos"]},
     "setHandoffQuery": {"category": "share", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "host", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ohos"]},
