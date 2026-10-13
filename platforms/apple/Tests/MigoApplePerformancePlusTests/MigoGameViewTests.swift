@@ -510,6 +510,66 @@ import XCTest
                 "refused before the host, in the embedded op's words: \(lines)")
         }
 
+        /// The app's ecosystem, from content in WebContent: the values the app
+        /// reported for the synchronous getters -- before the game started, and
+        /// changed while it runs -- read from the host each time, and a call the
+        /// app answers.
+        func testContentReadsTheAppsEcosystemThroughTheHost() throws {
+            final class App: MigoHostServiceProvider {
+                let services: Set<MigoHostServiceID> = [.ecosystem]
+                var calls: [String] = []
+                func handle(_ request: MigoHostServiceRequest) {
+                    guard request.method == MigoHostServiceID.Ecosystem.call else { return }
+                    calls.append(request.object["api"] as? String ?? "?")
+                    request.reply?.succeed(["extConfig": ["theme": "night"]])
+                }
+            }
+            let game = try package(
+                named: "ecosystem",
+                game: """
+                    const say = (line) => console.log(line);
+                    say("sync " + JSON.stringify([migo.isChatTool(), migo.getExtConfigSync()]));
+                    migo.getExtConfig({ success(res) { say("ext " + JSON.stringify(res.extConfig)); },
+                      fail(error) { say("ext-fail " + error.errMsg); } });
+                    const changed = () => { if (!migo.isChatTool()) say("withdrawn"); else setTimeout(changed, 20); };
+                    changed();
+                    """)
+            try MigoGameInstaller.install(package: game, id: "ecosystem", into: directories)
+            let app = App()
+            let view = MigoGameView(
+                configuration: .init(directories: directories, contentSigning: .unsigned, hostServices: app))
+            view.setEcosystemValue("isChatTool", json: Data("true".utf8))
+            view.setEcosystemValue("getExtConfigSync", json: Data(#"{"level":3}"#.utf8))
+            var lines: [String] = []
+            var failure: String?
+            let started = expectation(description: "content read the getters")
+            let answered = expectation(description: "content heard the call and the change")
+            answered.expectedFulfillmentCount = 2
+            view.onEvent = { event in
+                switch event {
+                case .console(_, let message):
+                    lines.append(message)
+                    if message.hasPrefix("sync ") { started.fulfill() }
+                    if message.hasPrefix("ext") || message == "withdrawn" { answered.fulfill() }
+                case .failed(let reason):
+                    failure = reason
+                    started.fulfill()
+                default: break
+                }
+            }
+            mount(view)
+            view.loadGame(id: "ecosystem")
+            wait(for: [started], timeout: 240)
+            XCTAssertNil(failure)
+            view.setEcosystemValue("isChatTool", json: nil)
+            wait(for: [answered], timeout: 30)
+            view.stop()
+            XCTAssertTrue(lines.contains(#"sync [true,{"level":3}]"#), "\(lines)")
+            XCTAssertTrue(lines.contains(#"ext {"theme":"night"}"#), "\(lines)")
+            XCTAssertTrue(lines.contains("withdrawn"), "\(lines)")
+            XCTAssertEqual(app.calls, ["getExtConfig"])
+        }
+
         /// A request that names one of content's files reaches the host app
         /// with a real file it can open -- the package's own image, resolved
         /// through the game's sandbox -- and one whose scope is not granted

@@ -150,6 +150,16 @@ tick，内容静止时占多数，不是故障）、`coalescedRequests`、`unusa
 - **macOS**：鼠标按 [`Configuration.mouse`](#configuration) 送给内容；view 是 first responder 时
   物理按键总会送达；没有软键盘的机器上，内容请求键盘时在游戏底边显示一个文本框。
 
+### setEcosystemValue(_:json:)
+
+```swift
+public func setEcosystemValue(_ name: String, json: Data?)
+```
+
+上报生态同步取值（`getExtConfigSync`、`isChatTool` 等合同里列出的 values）的结果：`json` 就是该 API
+返回的值，变化时再报，`nil` 撤回。view 记住已上报的值，在每个游戏的第一行代码之前交给它。需要
+`hostServices` 提供 ecosystem 服务。主线程调用。
+
 ### prefersPointerLocked（iOS）
 
 ```swift

@@ -578,6 +578,32 @@ public final class MigoEngineSession {
         if result != MIGO_OK { NSLog("MigoEngineSession: migo_session_set_scope_state returned \(result)") }
     }
 
+    /// The value a synchronous ecosystem getter answers with -- `name` one of
+    /// the contract's values (`getExtConfigSync`, `isChatTool`, ...), `json`
+    /// what the API returns -- reported whenever it changes; `nil` withdraws
+    /// it, and the getter answers as for a host with none. Needs the app to
+    /// supply the ecosystem service. Main thread.
+    @discardableResult
+    public func setEcosystemValue(_ name: String, json: Data?) -> MigoResult {
+        guard !isClosed else { return MIGO_ERROR_INVALID_STATE }
+        var nameBytes = Array(name.utf8)
+        var jsonBytes = [UInt8](json ?? Data())
+        // Non-null pointers even for an empty withdrawal: zero length is the
+        // ABI's "none", which it tells from no value at all.
+        nameBytes.append(0)
+        jsonBytes.append(0)
+        let result = nameBytes.withUnsafeBufferPointer { name in
+            jsonBytes.withUnsafeBufferPointer { json in
+                migo_session_set_ecosystem_value(
+                    session, UnsafeRawPointer(name.baseAddress!).assumingMemoryBound(to: CChar.self),
+                    UInt32(name.count - 1), UnsafeRawPointer(json.baseAddress!).assumingMemoryBound(to: CChar.self),
+                    UInt32(json.count - 1))
+            }
+        }
+        if result != MIGO_OK { NSLog("MigoEngineSession: migo_session_set_ecosystem_value(\(name)) returned \(result)") }
+        return result
+    }
+
     /// What this app says about itself -- its id, its interface language, its
     /// text scale -- reported now and at each change (`getAppBaseInfo`). See
     /// `MigoDeviceStatusReporter`. `fontScale` 0 is "not reported".

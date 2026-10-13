@@ -856,6 +856,27 @@ impl ServiceContext {
                     window.set_cursor(&request).is_ok()
                 })))
             }
+            // Whether the host app answers ecosystem calls, and the values it
+            // last reported for the synchronous getters: asked of its service,
+            // as the embedded ops ask; a platform with none has no ecosystem.
+            id::op_ecosystem_available => {
+                let [] = exactly(op, args)?;
+                let device = self.device.get().and_then(Option::as_deref);
+                Ok(OwnedValue::Bool(
+                    device
+                        .and_then(|device| device.ecosystem())
+                        .is_some_and(|ecosystem| ecosystem.available()),
+                ))
+            }
+            id::op_ecosystem_value => {
+                let [name] = exactly(op, args)?;
+                let name = string(op, 0, name)?;
+                let device = self.device.get().and_then(Option::as_deref);
+                Ok(device
+                    .and_then(|device| device.ecosystem())
+                    .and_then(|ecosystem| ecosystem.value(&name))
+                    .map_or(OwnedValue::Null, OwnedValue::Str))
+            }
             id::op_update_available => {
                 let [] = exactly(op, args)?;
                 let device = self.device.get().and_then(Option::as_deref);
@@ -2082,6 +2103,73 @@ mod tests {
             read(&none, id::op_get_system_settings),
             Err("getSystemSetting:fail not supported".to_owned())
         );
+    }
+
+    /// Whether the host app answers ecosystem calls, and the values it reported
+    /// for the synchronous getters, are its service's answers, as in process:
+    /// a host with an ecosystem service that installed nothing to answer with
+    /// is no ecosystem, a getter it reported nothing for is `null`, and so is
+    /// every getter on a platform with no service.
+    #[test]
+    fn the_ecosystem_s_availability_and_values_are_the_host_s() {
+        use shared::services::EcosystemService;
+        struct Ecosystem {
+            answers: bool,
+        }
+        impl EcosystemService for Ecosystem {
+            fn available(&self) -> bool {
+                self.answers
+            }
+            fn value(&self, name: &str) -> Option<String> {
+                (name == "isChatTool").then(|| "true".to_owned())
+            }
+        }
+        struct Platform(Arc<Ecosystem>);
+        impl shared::services::SensorServices for Platform {}
+        impl shared::services::ConnectivityServices for Platform {}
+        impl shared::services::CommerceServices for Platform {}
+        impl shared::services::MediaServices for Platform {}
+        impl shared::services::SystemUtilServices for Platform {
+            fn ecosystem(&self) -> Option<Arc<dyn EcosystemService>> {
+                Some(Arc::clone(&self.0) as Arc<dyn EcosystemService>)
+            }
+        }
+        let root = std::env::temp_dir().join(format!("migo-ecosystem-{}", std::process::id()));
+        let with = |device: Option<Arc<dyn shared::services::DeviceServices>>| {
+            let context = ServiceContext::new(root.join("files"), root.join("cache"));
+            context.bind_device(device);
+            context
+        };
+        let available = |context: &ServiceContext| {
+            context
+                .call_sync(id::op_ecosystem_available, Vec::new())
+                .ok()
+        };
+        let value = |context: &ServiceContext, name: &str| {
+            context
+                .call_sync(
+                    id::op_ecosystem_value,
+                    vec![OwnedValue::Str(name.to_owned())],
+                )
+                .ok()
+        };
+
+        let host = with(Some(Arc::new(Platform(Arc::new(Ecosystem {
+            answers: true,
+        })))));
+        assert_eq!(available(&host), Some(OwnedValue::Bool(true)));
+        assert_eq!(
+            value(&host, "isChatTool"),
+            Some(OwnedValue::Str("true".into()))
+        );
+        assert_eq!(value(&host, "getExtConfigSync"), Some(OwnedValue::Null));
+        let silent = with(Some(Arc::new(Platform(Arc::new(Ecosystem {
+            answers: false,
+        })))));
+        assert_eq!(available(&silent), Some(OwnedValue::Bool(false)));
+        let none = with(None);
+        assert_eq!(available(&none), Some(OwnedValue::Bool(false)));
+        assert_eq!(value(&none, "isChatTool"), Some(OwnedValue::Null));
     }
 
     /// `setCursor` from another process is answered as in process: a keyword

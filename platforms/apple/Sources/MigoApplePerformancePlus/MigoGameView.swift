@@ -231,6 +231,9 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
         /// game draws its own field, as it does on every platform.
         private lazy var keyboard = KeyboardResponder(owner: self)
         private var observers: [NSObjectProtocol] = []
+        /// The synchronous ecosystem getters' values the app reported, given to
+        /// each game this view runs.
+        private var ecosystemValues: [String: Data] = [:]
         private var pausedByApp = false
         private var pausedByAudio = false
         /// Sessions still releasing the layer. A new session must not attach
@@ -293,6 +296,17 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
         /// thread.
         public func setScopeState(_ scope: MigoScope, _ state: MigoScopeState) {
             engine?.setScopeState(scope, state)
+        }
+
+        /// Report the value a synchronous ecosystem getter answers with --
+        /// `name` one of the contract's values (`getExtConfigSync`,
+        /// `isChatTool`, ...), `json` what the API returns -- whenever it
+        /// changes; `nil` withdraws it. The view keeps what was reported and
+        /// gives it to each game it runs, before the game's first line. Needs
+        /// the ecosystem service in `hostServices`. Main thread.
+        public func setEcosystemValue(_ name: String, json: Data?) {
+            ecosystemValues[name] = json
+            engine?.setEcosystemValue(name, json: json)
         }
 
         /// Stop the game and release everything it held. The view can load
@@ -377,6 +391,7 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
                 capabilities: configuration.capabilities)
             self.engine = engine
             engine.onEvent = { [weak self] event in self?.engineEvent(event) }
+            for (name, json) in ecosystemValues { engine.setEcosystemValue(name, json: json) }
             // Before content runs, so its first `getNetworkType` has a report.
             let deviceStatus = MigoDeviceStatusReporter(session: engine)
             self.deviceStatus = deviceStatus

@@ -153,6 +153,9 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
         private var abandonedLayers: [CAMetalLayer] = []
         private var closing = 0
         private var observers: [NSObjectProtocol] = []
+        /// The synchronous ecosystem getters' values the app reported, given to
+        /// each game this view runs.
+        private var ecosystemValues: [String: Data] = [:]
         private var mouseDown = false
         private var trackingArea: NSTrackingArea?
         /// The window service for the game that runs: the cursor content
@@ -213,6 +216,17 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
         /// thread.
         public func setScopeState(_ scope: MigoScope, _ state: MigoScopeState) {
             engine?.setScopeState(scope, state)
+        }
+
+        /// Report the value a synchronous ecosystem getter answers with --
+        /// `name` one of the contract's values (`getExtConfigSync`,
+        /// `isChatTool`, ...), `json` what the API returns -- whenever it
+        /// changes; `nil` withdraws it. The view keeps what was reported and
+        /// gives it to each game it runs, before the game's first line. Needs
+        /// the ecosystem service in `hostServices`. Main thread.
+        public func setEcosystemValue(_ name: String, json: Data?) {
+            ecosystemValues[name] = json
+            engine?.setEcosystemValue(name, json: json)
         }
 
         /// Stop the game and release everything it held.
@@ -306,6 +320,7 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
                     capabilities: configuration.capabilities)
                 self.engine = engine
                 engine.onEvent = { [weak self] event in self?.engineEvent(event) }
+                for (name, json) in ecosystemValues { engine.setEcosystemValue(name, json: json) }
                 // Before content runs, so its first `getNetworkType` has a report.
                 let deviceStatus = MigoDeviceStatusReporter(session: engine)
                 self.deviceStatus = deviceStatus

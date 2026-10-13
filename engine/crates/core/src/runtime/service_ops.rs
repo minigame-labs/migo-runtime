@@ -297,6 +297,8 @@ service_ops! {
     op_get_auth_setting = 274,
     op_get_system_settings = 275,
     op_set_cursor = 276,
+    op_ecosystem_available = 277,
+    op_ecosystem_value = 278,
 }
 
 /// The op's name, for a refusal a person will read.
