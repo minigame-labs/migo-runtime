@@ -7,6 +7,10 @@
   app's: the Performance+ tests connect a WebContent worker to a loopback
   listener, and turning App Transport Security off would test a configuration
   the shipping product cannot use.
+
+  UIApplicationSupportsIndirectInputEvents, as MigoGameView asks of every app:
+  an iPad's pointer clicks arrive as the pointer's, with their buttons, rather
+  than as fingers.
 -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -36,6 +40,8 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>UIApplicationSupportsIndirectInputEvents</key>
+	<true/>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedInterfaceOrientations</key>

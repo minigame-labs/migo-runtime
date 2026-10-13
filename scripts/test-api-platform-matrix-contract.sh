@@ -110,8 +110,10 @@ red "an engine decoder compiled for another system" engine/crates/capi/src/host_
     'text.replace("#[cfg(target_os = \"macos\")]\n    fn video_decoder", "#[cfg(target_os = \"windows\")]\n    fn video_decoder", 1)'
 red "the Mac's game view that stops feeding the mouse" platforms/apple/Sources/MigoMacV8/MigoGameView.swift \
     'text.replace("engine.sendPointer(", "engine.sendPointerGone(")'
-red "a mouse credited to the iPhone because the shared session can send one" platforms/apple/Sources/MigoApplePerformancePlus/MigoGameView.swift \
-    'text.replace("engine.sendTouch(", "engine.sendTouch(); _ = engine.sendPointer(", 1)'
+red "the iPad's game view that stops feeding keys the shared session can still send" platforms/apple/Sources/MigoApplePerformancePlus/MigoGameView.swift \
+    'text.replace("engine.sendKey(", "engine.sendKeyGone(")'
+red "the iPad's game view that stops answering the window service" platforms/apple/Sources/MigoApplePerformancePlus/MigoWindowService.swift \
+    'text.replace("builtIn.insert(.window)", "// builtIn.insert(.window)", 1)'
 red "a host layer that stops feeding touch" platforms/linux/host-kit/src/qt6/x11_surface_view.cpp \
     'text.replace("migo_session_send_touch(", "migo_session_send_touch_removed(")'
 red "an unsupported decision with no reason" contracts/runtime/api-platform-decisions.json \

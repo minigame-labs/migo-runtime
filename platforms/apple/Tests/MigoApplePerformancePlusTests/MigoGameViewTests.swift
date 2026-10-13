@@ -220,11 +220,16 @@ import XCTest
             }
             let field = try XCTUnwrap(responder, "showKeyboard made nothing first responder")
             XCTAssertEqual(field.text, "hi", "the default value")
+            // Touching the game -- its own Send button, say -- leaves the open
+            // keyboard its keys.
+            view.touchesBegan([], with: nil)
+            XCTAssertTrue(field.isFirstResponder)
             XCTAssertEqual(field.returnKeyType, .send)
             field.insertText("!")
             field.insertText("0123456789")  // past maxLength 8: truncated
             field.insertText("\n")
             wait(for: [completed], timeout: 30)
+            XCTAssertTrue(view.isFirstResponder, "the hardware keyboard's keys are the game's again")
             view.stop()
 
             XCTAssertEqual(
@@ -234,6 +239,104 @@ import XCTest
                     ["kind": "input", "value": "hi!01234"],
                     ["kind": "confirm", "value": "hi!01234"],
                     ["kind": "complete", "value": "hi!01234"],
+                ])
+        }
+
+        /// An iPad's hardware, round trip: keys as UIKit names them reach
+        /// content with their DOM key, position, Shift and repeat; the pointer's
+        /// hover, presses, drag and release as the mouse, its secondary button
+        /// as button 2; the trackpad's scroll as the wheel in the DOM's
+        /// direction. The cursor content asks for is the pointer's style --
+        /// `setCursor` reaching the view's window service from WebContent --
+        /// and a path that is not content's file is refused before it.
+        func testContentHearsTheHardwareKeyboardThePointerAndTheWheel() throws {
+            let game = try package(
+                named: "hardware",
+                game: """
+                    const say = (kind, e) => console.log("hw " + JSON.stringify(Object.assign({ kind }, e)));
+                    migo.onKeyDown((e) => say("keydown", { key: e.key, code: e.code, shift: e.shiftKey, repeat: e.repeat }));
+                    migo.onKeyUp((e) => say("keyup", { key: e.key, code: e.code }));
+                    migo.onMouseDown((e) => say("mousedown", { x: e.x, y: e.y, button: e.button }));
+                    migo.onMouseMove((e) => say("mousemove", { x: e.x, y: e.y, button: e.button }));
+                    migo.onMouseUp((e) => say("mouseup", { x: e.x, y: e.y, button: e.button }));
+                    migo.onWheel((e) => say("wheel", { deltaX: e.deltaX, deltaY: e.deltaY, deltaMode: e.deltaMode }));
+                    console.log("cursor " + JSON.stringify(
+                      [migo.setCursor("crosshair"), migo.setCursor("aim.png", 1, 2), migo.setCursor("missing.png")]));
+                    """)
+            try Data("png".utf8).write(to: game.appendingPathComponent("aim.png"))
+            try MigoGameInstaller.install(package: game, id: "hardware", into: directories)
+            let view = MigoGameView(configuration: .init(directories: directories, contentSigning: .unsigned))
+            let ready = expectation(description: "content set its cursor")
+            let heardAll = expectation(description: "content heard every event")
+            heardAll.expectedFulfillmentCount = 10
+            var cursor: String?
+            // Each event as JSON with its keys sorted, so numbers and booleans
+            // compare as content wrote them.
+            var heard: [String] = []
+            var failure: String?
+            view.onEvent = { event in
+                switch event {
+                case .console(_, let message):
+                    if message.hasPrefix("cursor ") {
+                        cursor = String(message.dropFirst(7))
+                        ready.fulfill()
+                    }
+                    if message.hasPrefix("hw "),
+                        let entry = try? JSONSerialization.jsonObject(with: Data(message.dropFirst(3).utf8)),
+                        let sorted = try? JSONSerialization.data(withJSONObject: entry, options: .sortedKeys)
+                    {
+                        heard.append(String(decoding: sorted, as: UTF8.self))
+                        heardAll.fulfill()
+                    }
+                case .failed(let reason):
+                    failure = reason
+                    ready.fulfill()
+                default: break
+                }
+            }
+            mount(view)
+            view.loadGame(id: "hardware")
+            wait(for: [ready], timeout: 240)
+            XCTAssertNil(failure)
+            XCTAssertEqual(cursor, "[true,true,false]")
+            XCTAssertEqual(view.windowService?.appearance, .crosshair, "the keyword is the pointer's style")
+            XCTAssertTrue(view.isFirstResponder, "the game takes the keys when it starts")
+
+            // Shift-A pressed, held (pressed again before it came up), released.
+            for down in [true, true, false] {
+                XCTAssertTrue(
+                    view.key(
+                        usage: 0x04, characters: "A", charactersIgnoringModifiers: "a", modifiers: .shift, down: down,
+                        timestamp: 1))
+            }
+            XCTAssertFalse(
+                view.key(
+                    usage: 0x01, characters: "", charactersIgnoringModifiers: "", modifiers: [], down: true,
+                    timestamp: 1), "no DOM code, not the game's")
+            // Hovered in, pressed, dragged, the secondary button too, released.
+            view.pointer(at: CGPoint(x: 10, y: 20), holding: nil, moved: true, timestamp: 2)
+            view.pointer(at: CGPoint(x: 10, y: 20), holding: [0], moved: false, timestamp: 2)
+            view.pointer(at: CGPoint(x: 15, y: 25), holding: [0], moved: true, timestamp: 2)
+            view.pointer(at: CGPoint(x: 15, y: 25), holding: [0, 2], moved: false, timestamp: 2)
+            view.pointer(at: CGPoint(x: 15, y: 25), holding: [], moved: false, timestamp: 2)
+            // Two fingers up the trackpad move content up: the view scrolls down.
+            view.scroll(by: CGPoint(x: 0, y: -12), timestamp: 3)
+            wait(for: [heardAll], timeout: 30)
+            view.stop()
+
+            XCTAssertEqual(
+                heard,
+                [
+                    #"{"code":"KeyA","key":"A","kind":"keydown","repeat":false,"shift":true}"#,
+                    #"{"code":"KeyA","key":"A","kind":"keydown","repeat":true,"shift":true}"#,
+                    #"{"code":"KeyA","key":"A","kind":"keyup"}"#,
+                    #"{"button":0,"kind":"mousemove","x":10,"y":20}"#,
+                    #"{"button":0,"kind":"mousedown","x":10,"y":20}"#,
+                    #"{"button":0,"kind":"mousemove","x":15,"y":25}"#,
+                    #"{"button":2,"kind":"mousedown","x":15,"y":25}"#,
+                    #"{"button":0,"kind":"mouseup","x":15,"y":25}"#,
+                    #"{"button":2,"kind":"mouseup","x":15,"y":25}"#,
+                    #"{"deltaMode":0,"deltaX":0,"deltaY":12,"kind":"wheel"}"#,
                 ])
         }
 

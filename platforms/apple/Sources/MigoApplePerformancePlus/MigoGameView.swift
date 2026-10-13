@@ -26,6 +26,7 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
 #if os(iOS)
     import AVFoundation
     import AudioToolbox
+    import GameController
     import Metal
     import QuartzCore
     import UIKit
@@ -61,6 +62,25 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
     /// are drawn here. The `WKWebView` that owns that process is attached to the
     /// window, off screen: a web view that is not in a window is killed, and one
     /// that is occluded stops running JavaScript.
+    ///
+    /// ## Keyboard, mouse and trackpad
+    ///
+    /// A hardware keyboard's keys reach content (`onKeyDown`/`onKeyUp`) while
+    /// the view is first responder, which it becomes when the game starts and
+    /// when it is touched. On an iPad, the pointer -- a mouse or a trackpad --
+    /// reaches it as the mouse (`onMouseMove`/`onMouseDown`/`onMouseUp`) and
+    /// the wheel (`onWheel`), beside the touches iPadOS makes of its primary
+    /// clicks, as on every platform where a mouse drives a touch screen. Set
+    /// `UIApplicationSupportsIndirectInputEvents` in the app's Info.plist: without
+    /// it iPadOS reports a click as a finger, and content hears no button.
+    ///
+    /// Content's cursor (`setCursor`) is drawn in the pointer's own styles --
+    /// iPadOS shows no image as the pointer. Content's pointer lock
+    /// (`requestPointerLock`) is the view controller's to grant: the one
+    /// showing this view returns `prefersPointerLocked` below from its own
+    /// (or names a child that does from `childViewControllerForPointerLock`),
+    /// and iPadOS locks only a scene that fills the screen. While locked, the
+    /// mouse's raw motion moves content's pointer; Esc releases it.
     public final class MigoGameView: UIView {
 
         /// What the view needs beyond the game.
@@ -145,6 +165,12 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
         /// Called on the main queue.
         public var onEvent: ((Event) -> Void)?
 
+        /// Whether the game holds the pointer locked or has asked to. Return it
+        /// from `prefersPointerLocked` of the view controller showing this
+        /// view: iPadOS asks a controller, not a view, and the view has that
+        /// controller read it again whenever it changes.
+        public var prefersPointerLocked: Bool { windowService?.prefersLocked ?? false }
+
         /// Whether a game is loaded and not stopped.
         public private(set) var isRunning = false
 
@@ -185,6 +211,22 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
         private var idleTimerBeforeGame: Bool?
         private var recovery: MigoWebContentRecovery
         private var touches = TouchIdentities()
+        /// The pointer's touches that began with its primary button: the ones
+        /// iPadOS makes touches of. One begun with another button is the
+        /// mouse's alone, as a right click is on the Mac and on Android.
+        private var primaryClicks: Set<ObjectIdentifier> = []
+        private var pointerButtons = MigoPointerButtons()
+        /// Physical keys down, by DOM code: a second press of one is a repeat.
+        private var keysDown: Set<String> = []
+        /// An Esc that released the pointer lock is the player's, not the
+        /// game's: its release is held back too.
+        private var escapeReleasedLock = false
+        /// The window service for the game that runs: the pointer's look, the
+        /// pointer lock, the window's state. Readable by `@testable` tests.
+        private(set) var windowService: MigoWindowService?
+        /// The mice followed while the pointer is locked, and their arrivals.
+        private var lockedMice: [FollowedMouse] = []
+        private var mouseArrivals: NSObjectProtocol?
         /// The system keyboard's responder: zero-sized and never drawn -- the
         /// game draws its own field, as it does on every platform.
         private lazy var keyboard = KeyboardResponder(owner: self)
@@ -206,6 +248,17 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             metalView.frame = bounds
             metalView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
             addSubview(metalView)
+            // The pointer hovering, which UIKit reports to no touch method.
+            let hover = UIHoverGestureRecognizer(target: self, action: #selector(hovered(_:)))
+            hover.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
+            addGestureRecognizer(hover)
+            // The wheel and the trackpad's scroll, and no finger: a pan with no
+            // touch types recognizes scrolling alone.
+            let scroll = UIPanGestureRecognizer(target: self, action: #selector(scrolled(_:)))
+            scroll.allowedScrollTypesMask = .all
+            scroll.allowedTouchTypes = []
+            scroll.cancelsTouchesInView = false
+            addGestureRecognizer(scroll)
         }
 
         @available(*, unavailable)
@@ -247,6 +300,7 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
         public func stop() {
             game = nil
             tearDown(then: nil)
+            if isFirstResponder { resignFirstResponder() }
             observers.forEach(NotificationCenter.default.removeObserver)
             observers = []
             if configuration.managesAudioSession {
@@ -271,6 +325,19 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
         public override func layoutSubviews() {
             super.layoutSubviews()
             startIfPossible()
+            // A scene resized beside another app lays this view out again.
+            windowService?.reportState()
+        }
+
+        public override var canBecomeFirstResponder: Bool { true }
+
+        /// Take the hardware keyboard's keys, when the game runs in the window
+        /// the player is at and nothing of the game's has them -- the system
+        /// keyboard content opened keeps them while it is open, so touching the
+        /// game's own Send button does not close it.
+        fileprivate func takeKeys() {
+            guard isRunning, window?.isKeyWindow == true, !isFirstResponder, !keyboard.isOpen else { return }
+            becomeFirstResponder()
         }
 
         // MARK: - start and stop
@@ -295,10 +362,19 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
                 scale: Float(scale))
             metalView.configure(scale: scale)
 
+            let windowService = MigoWindowService(view: self) { [weak self] event, object in
+                guard let json = try? JSONSerialization.data(withJSONObject: object) else { return }
+                self?.engine?.postHostServiceEvent(.window, event: event, json: json)
+            }
+            windowService.onLockChange = { [weak self] locked in self?.followMice(locked) }
+            self.windowService = windowService
+            // The app's services, then what only this view can answer; the
+            // session adds the SDK's own behind them.
             let engine = try MigoEngineSession(
                 directories: configuration.directories, contentSigning: configuration.contentSigning,
                 preferredFramesPerSecond: configuration.preferredFramesPerSecond,
-                hostServices: configuration.hostServices, capabilities: configuration.capabilities)
+                hostServices: MigoGameViewHostServices(app: configuration.hostServices, window: windowService),
+                capabilities: configuration.capabilities)
             self.engine = engine
             engine.onEvent = { [weak self] event in self?.engineEvent(event) }
             // Before content runs, so its first `getNetworkType` has a report.
@@ -356,6 +432,7 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             isRunning = true
             pausedByApp = UIApplication.shared.applicationState != .active
             applyRunning()
+            takeKeys()
         }
 
         /// Stop the producer, then close the engine. In that order: the frame
@@ -365,6 +442,13 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             isRunning = false
             keyboard.hide(reportingTo: nil)
             touches.removeAll()
+            primaryClicks.removeAll()
+            pointerButtons = MigoPointerButtons()
+            keysDown.removeAll()
+            escapeReleasedLock = false
+            followMice(false)
+            windowService?.close()
+            windowService = nil
             deviceStatus?.stop()
             deviceStatus = nil
             keepScreenOn(false)
@@ -427,6 +511,7 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
                 keyboard.show(request)
             case .hideKeyboard:
                 keyboard.hide()
+                takeKeys()
             case .updateKeyboard(let text):
                 keyboard.replaceText(text)
             case .vibrate(let vibration):
@@ -557,19 +642,27 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
         // MARK: - touches
 
         public override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+            takeKeys()
+            for touch in touches where touch.type == .indirectPointer {
+                if event?.buttonMask.contains(.primary) == true { primaryClicks.insert(ObjectIdentifier(touch)) }
+            }
             send(MIGO_TOUCH_START, changed: touches, event: event)
+            pointerTouches(touches, event: event)
         }
 
         public override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
             send(MIGO_TOUCH_MOVE, changed: touches, event: event)
+            pointerTouches(touches, event: event)
         }
 
         public override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
             send(MIGO_TOUCH_END, changed: touches, event: event)
+            pointerTouches(touches, event: event)
         }
 
         public override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
             send(MIGO_TOUCH_CANCEL, changed: touches, event: event)
+            pointerTouches(touches, event: event)
         }
 
         /// One event with every finger on the view, `changed` flagged, the
@@ -583,6 +676,8 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             var points: [MigoTouchPoint] = []
             var timestamp: TimeInterval = 0
             for touch in all {
+                // The pointer's other buttons are the mouse's alone.
+                if touch.type == .indirectPointer, !primaryClicks.contains(ObjectIdentifier(touch)) { continue }
                 let isChanged = changed.contains(touch)
                 if isChanged { timestamp = max(timestamp, touch.timestamp) }
                 // Fingers that ended in an earlier event can still be listed
@@ -599,11 +694,198 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
                         pressure: Float(min(max(force, 0), 1)), flags: flags))
                 if points.count == Int(MIGO_TOUCH_MAX_POINTS) { break }
             }
-            if lifting { changed.forEach { self.touches.forget($0) } }
+            if lifting {
+                changed.forEach {
+                    self.touches.forget($0)
+                    primaryClicks.remove(ObjectIdentifier($0))
+                }
+            }
             guard !points.isEmpty else { return }
             // UITouch timestamps are seconds of system uptime; the engine wants
             // milliseconds on one monotonic clock, which this is.
             engine.sendTouch(type, points: points, timestampMilliseconds: Int64(timestamp * 1000))
+        }
+
+        // MARK: - mouse and trackpad
+
+        /// The pointer's press, drag and release, as UIKit reports them: one
+        /// touch from the first button down to the last up, with the buttons
+        /// held in the event.
+        private func pointerTouches(_ changed: Set<UITouch>, event: UIEvent?) {
+            guard let touch = changed.first(where: { $0.type == .indirectPointer }) else { return }
+            let lifted = touch.phase == .ended || touch.phase == .cancelled
+            pointer(
+                at: touch.location(in: self),
+                holding: lifted ? [] : MigoPointerButtons.buttons(in: event?.buttonMask ?? []),
+                moved: touch.phase == .moved, timestamp: touch.timestamp)
+        }
+
+        @objc private func hovered(_ recognizer: UIHoverGestureRecognizer) {
+            switch recognizer.state {
+            case .began, .changed:
+                pointer(at: recognizer.location(in: self), holding: nil, moved: true, timestamp: CACurrentMediaTime())
+            default:
+                // Gone from the game, unless a button holds it there.
+                if pointerButtons.held.isEmpty, windowService?.pointerLocked != true {
+                    windowService?.pointerLocation = nil
+                }
+            }
+        }
+
+        /// The pointer at `location` -- points, which are CSS pixels here --
+        /// holding `held` buttons, or the ones it held when `nil`; `moved` when
+        /// it moved there. Locked, it stands where content's pointer is and
+        /// only its buttons are heard: the mouse's raw motion moves it.
+        /// `timestamp` is seconds of system uptime, as UIKit's are.
+        func pointer(at location: CGPoint, holding held: Set<UInt32>?, moved: Bool, timestamp: TimeInterval) {
+            guard let engine, isRunning else { return }
+            let milliseconds = timestamp * 1000
+            let locked = windowService?.lockedPosition
+            if locked == nil { windowService?.pointerLocation = location }
+            let at = locked ?? location
+            if moved, locked == nil {
+                engine.sendPointer(
+                    MIGO_POINTER_EVENT_MOVE, button: pointerButtons.moving, x: Float(at.x), y: Float(at.y),
+                    timestampMilliseconds: milliseconds)
+            }
+            guard let held else { return }
+            let (released, pressed) = pointerButtons.hold(held)
+            for button in released {
+                engine.sendPointer(
+                    MIGO_POINTER_EVENT_UP, button: button, x: Float(at.x), y: Float(at.y),
+                    timestampMilliseconds: milliseconds)
+            }
+            for button in pressed {
+                engine.sendPointer(
+                    MIGO_POINTER_EVENT_DOWN, button: button, x: Float(at.x), y: Float(at.y),
+                    timestampMilliseconds: milliseconds)
+            }
+        }
+
+        @objc private func scrolled(_ recognizer: UIPanGestureRecognizer) {
+            guard recognizer.state == .began || recognizer.state == .changed else { return }
+            let translation = recognizer.translation(in: self)
+            recognizer.setTranslation(.zero, in: self)
+            scroll(by: translation, timestamp: CACurrentMediaTime())
+        }
+
+        /// A scroll that moved content by `translation`, in points. UIKit's
+        /// translation is the way content moves, already in the player's
+        /// scrolling direction; the DOM's delta is the way the view scrolls.
+        func scroll(by translation: CGPoint, timestamp: TimeInterval) {
+            guard let engine, isRunning, translation != .zero else { return }
+            engine.sendWheel(
+                deltaX: -Double(translation.x), deltaY: -Double(translation.y),
+                timestampMilliseconds: timestamp * 1000)
+        }
+
+        /// While the pointer is locked it stands still, and the mice report
+        /// their own motion and buttons through GameController, on the main
+        /// queue. Their buttons and UIKit's are one set: a press is heard once
+        /// whichever reports it first.
+        private func followMice(_ locked: Bool) {
+            lockedMice.forEach { $0.restore() }
+            lockedMice = []
+            if let mouseArrivals { NotificationCenter.default.removeObserver(mouseArrivals) }
+            mouseArrivals = nil
+            guard locked else { return }
+            GCMouse.mice().forEach(follow)
+            mouseArrivals = NotificationCenter.default.addObserver(
+                forName: .GCMouseDidConnect, object: nil, queue: .main
+            ) { [weak self] note in
+                guard let mouse = note.object as? GCMouse else { return }
+                self?.follow(mouse)
+            }
+        }
+
+        private func follow(_ mouse: GCMouse) {
+            guard let followed = FollowedMouse(
+                mouse,
+                moved: { [weak self] delta in self?.lockedMouseMoved(by: delta) },
+                button: { [weak self] button, down in self?.lockedMouseButton(button, down: down) })
+            else { return }
+            lockedMice.append(followed)
+        }
+
+        /// The locked pointer moved by a mouse's raw motion.
+        func lockedMouseMoved(by delta: CGVector) {
+            guard let engine, isRunning, let at = windowService?.movePointer(by: delta) else { return }
+            engine.sendPointer(
+                MIGO_POINTER_EVENT_MOVE, button: pointerButtons.moving, x: Float(at.x), y: Float(at.y),
+                timestampMilliseconds: CACurrentMediaTime() * 1000)
+        }
+
+        /// A mouse's button while the pointer is locked.
+        func lockedMouseButton(_ button: UInt32, down: Bool) {
+            guard let engine, isRunning, let at = windowService?.lockedPosition,
+                pointerButtons.set(button, down: down)
+            else { return }
+            engine.sendPointer(
+                down ? MIGO_POINTER_EVENT_DOWN : MIGO_POINTER_EVENT_UP, button: button, x: Float(at.x),
+                y: Float(at.y), timestampMilliseconds: CACurrentMediaTime() * 1000)
+        }
+
+        // MARK: - hardware keys
+
+        public override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+            let unheard = presses.filter { !key($0, down: true) }
+            if !unheard.isEmpty { super.pressesBegan(unheard, with: event) }
+        }
+
+        public override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+            let unheard = presses.filter { !key($0, down: false) }
+            if !unheard.isEmpty { super.pressesEnded(unheard, with: event) }
+        }
+
+        public override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+            let unheard = presses.filter { !key($0, down: false) }
+            if !unheard.isEmpty { super.pressesCancelled(unheard, with: event) }
+        }
+
+        /// One hardware key down or up; whether the game heard it. A key down
+        /// again before it came up is a repeat, however iPadOS reports holding
+        /// it. A key the game did not hear go down is not the game's to hear
+        /// come up.
+        private func key(_ press: UIPress, down: Bool) -> Bool {
+            guard let key = press.key else { return false }
+            return self.key(
+                usage: key.keyCode.rawValue, characters: key.characters,
+                charactersIgnoringModifiers: key.charactersIgnoringModifiers, modifiers: key.modifierFlags,
+                down: down, timestamp: press.timestamp)
+        }
+
+        func key(
+            usage: Int, characters: String, charactersIgnoringModifiers: String, modifiers: UIKeyModifierFlags,
+            down: Bool, timestamp: TimeInterval
+        ) -> Bool {
+            guard let engine, isRunning,
+                let named = MigoKeyboardHIDCodes.key(
+                    usage: usage, characters: characters, charactersIgnoringModifiers: charactersIgnoringModifiers,
+                    modifiers: modifiers)
+            else { return false }
+            let (key, code) = named
+            if down {
+                // Esc is the player's way out of a pointer lock, as in a browser.
+                if code == "Escape", let windowService, windowService.pointerLocked {
+                    windowService.exitPointerLock()
+                    escapeReleasedLock = true
+                    return true
+                }
+                let isRepeat = !keysDown.insert(code).inserted
+                engine.sendKey(
+                    MIGO_KEY_EVENT_DOWN, key: key, code: code, modifiers: MigoKeyboardHIDCodes.modifiers(modifiers),
+                    isRepeat: isRepeat, timestampMilliseconds: timestamp * 1000)
+            } else {
+                if code == "Escape", escapeReleasedLock {
+                    escapeReleasedLock = false
+                    return true
+                }
+                guard keysDown.remove(code) != nil else { return false }
+                engine.sendKey(
+                    MIGO_KEY_EVENT_UP, key: key, code: code, modifiers: MigoKeyboardHIDCodes.modifiers(modifiers),
+                    isRepeat: false, timestampMilliseconds: timestamp * 1000)
+            }
+            return true
         }
 
         // MARK: - keyboard
@@ -699,6 +981,9 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             }
         }
 
+        /// Whether content's keyboard is open.
+        var isOpen: Bool { request != nil }
+
         func hide() { hide(reportingTo: owner) }
 
         /// Closing reports `complete` with the final text, as a player closing
@@ -736,7 +1021,10 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             }
             if confirmed {
                 owner?.keyboardInput(.confirm(text))
-                if !request.confirmHold { hide() }
+                if !request.confirmHold {
+                    hide()
+                    owner?.takeKeys()
+                }
             }
         }
 
@@ -791,6 +1079,56 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             contentScaleFactor = scale
             metalLayer.contentsScale = scale
             metalLayer.contentsGravity = .resize
+        }
+    }
+
+    /// A mouse followed while the pointer is locked. GameController gives each
+    /// of a mouse's inputs one handler, and the app may have set its own: the
+    /// app's are kept, still called, and put back when the lock ends.
+    private final class FollowedMouse {
+        private let mouse: GCMouse
+        private let queue: DispatchQueue
+        private let moved: GCMouseMoved?
+        private let buttons: [(GCControllerButtonInput, GCControllerButtonValueChangedHandler?)]
+
+        /// `moved` hears the motion as content's y runs, downwards; `button`
+        /// a DOM button number and whether it is down. `nil` for a mouse with
+        /// no input to follow.
+        init?(
+            _ mouse: GCMouse, moved onMove: @escaping (CGVector) -> Void,
+            button onButton: @escaping (UInt32, Bool) -> Void
+        ) {
+            guard let input = mouse.mouseInput else { return nil }
+            self.mouse = mouse
+            queue = mouse.handlerQueue
+            moved = input.mouseMovedHandler
+            var numbered: [(GCControllerButtonInput, UInt32)] = [(input.leftButton, 0)]
+            if let middle = input.middleButton { numbered.append((middle, 1)) }
+            if let right = input.rightButton { numbered.append((right, 2)) }
+            for (index, auxiliary) in (input.auxiliaryButtons ?? []).prefix(2).enumerated() {
+                numbered.append((auxiliary, UInt32(3 + index)))
+            }
+            buttons = numbered.map { ($0.0, $0.0.pressedChangedHandler) }
+            mouse.handlerQueue = .main
+            let appMoved = moved
+            input.mouseMovedHandler = { input, deltaX, deltaY in
+                appMoved?(input, deltaX, deltaY)
+                // GameController's y grows upwards.
+                onMove(CGVector(dx: CGFloat(deltaX), dy: -CGFloat(deltaY)))
+            }
+            for ((button, number), (_, appHandler)) in zip(numbered, buttons) {
+                button.pressedChangedHandler = { button, value, pressed in
+                    appHandler?(button, value, pressed)
+                    onButton(number, pressed)
+                }
+            }
+        }
+
+        /// The app's handlers and queue, as they were.
+        func restore() {
+            mouse.mouseInput?.mouseMovedHandler = moved
+            for (button, handler) in buttons { button.pressedChangedHandler = handler }
+            mouse.handlerQueue = queue
         }
     }
 

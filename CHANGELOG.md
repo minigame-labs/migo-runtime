@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- iOS: a hardware keyboard, an iPad's mouse and trackpad, and the window service. The game view takes the keys when
+  the game starts and when touched, and sends each with its DOM `key` and `code` (UIKit's HID usages mapped by
+  position; a key pressed again before it came up is a repeat). The pointer's hover, presses, drag and release are the
+  mouse, in DOM button numbers, beside the touches iPadOS makes of primary clicks; scrolling is the wheel. The view
+  answers the window service itself: `setCursor` keywords are iPadOS pointer styles (an image, which iPadOS cannot
+  show, leaves the pointer as it was), the pointer lock is asked of the view controller showing the view -- it returns
+  the view's new `prefersPointerLocked` -- and taken when the scene reports it, the mouse's raw motion moving
+  content's pointer through GameController while it is held (the app's own mouse handlers kept and still called),
+  released by Esc or by the system; and the scene's state is reported (`maximize` filling the screen, `normalize`
+  beside another app, `minimize` in the background). Apps set `UIApplicationSupportsIndirectInputEvents`.
+- Apple: the DOM `key` of a key that types nothing, and of one that does, is one table both game views use
+  (`MigoKeyNames`). On the Mac a Control combination now reports the key's character rather than the control
+  character it typed (Control-A is "a"), the keypad's Clear key is "Clear", and the volume keys are named.
 - iOS: on Performance+, `setCursor` reaches the host's window service and answers whether it took the cursor, rather
   than being refused by the producer. It crosses synchronously, as the embedded op answers, and the host shapes the
   request as the embedded op does -- a CSS keyword by name, or one of content's images resolved through the game's
