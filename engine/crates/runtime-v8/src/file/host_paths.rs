@@ -17,11 +17,15 @@ pub(crate) use migo_services::host_paths::Remote;
 use crate::io_state::IoSchedulerState;
 
 fn sandbox(state: &Rc<RefCell<OpState>>) -> Sandbox {
-    let st = state.borrow();
-    let host = st.borrow::<HostOpState>();
+    sandbox_of(&state.borrow())
+}
+
+/// The game's sandbox as this runtime holds it, for a synchronous op.
+pub(crate) fn sandbox_of(state: &OpState) -> Sandbox {
+    let host = state.borrow::<HostOpState>();
     Sandbox {
         host_id: host.id,
-        scheduler: st.borrow::<IoSchedulerState>().0.clone(),
+        scheduler: state.borrow::<IoSchedulerState>().0.clone(),
         vfs: host.vfs.clone(),
         mount_table: host.mount_table.clone(),
     }

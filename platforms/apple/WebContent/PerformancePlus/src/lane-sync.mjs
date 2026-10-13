@@ -913,6 +913,20 @@ export function op_get_system_settings() {
   return callService(SERVICE_OP.op_get_system_settings);
 }
 
+/// `setCursor(path, x, y)`: whether the host's window took the cursor. The host
+/// shapes the request as the embedded op does -- a keyword by name, an image
+/// resolved through the game's sandbox -- so only what content wrote crosses.
+export function op_set_cursor(path, x, y) {
+  const p = stringOf(path, "path");
+  const hotX = toF64(x, "x");
+  const hotY = toF64(y, "y");
+  return callService(SERVICE_OP.op_set_cursor, (w) => {
+    w.str(p);
+    w.f64(hotX);
+    w.f64(hotY);
+  });
+}
+
 /// Whether the host app integrates ads: asked once, as the embedded op is, by
 /// content's ad layer before it creates one.
 export function op_ad_is_supported() {

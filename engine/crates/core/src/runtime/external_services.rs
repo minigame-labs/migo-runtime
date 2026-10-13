@@ -316,6 +316,9 @@ pub(crate) struct ServiceContext {
     /// the session's options when it starts. Unbound is unverified -- which is
     /// what a session started with signing off binds anyway.
     signing: OnceLock<migo_services::content::ContentSigning>,
+    /// The package entries copied out as cursors, one copy per entry for the
+    /// session, as the embedded op keeps them.
+    cursors: migo_services::cursor::CursorCopies,
 }
 
 /// A device service's refusal in the words the embedded op shows: its
@@ -340,6 +343,7 @@ impl ServiceContext {
             device: OnceLock::new(),
             gpu: OnceLock::new(),
             signing: OnceLock::new(),
+            cursors: migo_services::cursor::CursorCopies::default(),
         }
     }
 
@@ -830,6 +834,27 @@ impl ServiceContext {
                         r#"{"data":{"allow_pay":false}}"#.to_owned(),
                     )),
                 }
+            }
+            // Whether the host's window took the cursor, the request shaped as
+            // the embedded op shapes it: a keyword, or an image the game can
+            // read, made into a real file.
+            id::op_set_cursor => {
+                let [path, x, y] = exactly(op, args)?;
+                let path = string(op, 0, path)?;
+                let (x, y) = (f64_of(op, 1, x)?, f64_of(op, 2, y)?);
+                let Some(window) = self
+                    .device
+                    .get()
+                    .and_then(Option::as_deref)
+                    .and_then(|device| device.window())
+                else {
+                    return Ok(OwnedValue::Bool(false));
+                };
+                let request =
+                    migo_services::cursor::request(&self.sandbox()?, &self.cursors, &path, x, y);
+                Ok(OwnedValue::Bool(request.is_some_and(|request| {
+                    window.set_cursor(&request).is_ok()
+                })))
             }
             id::op_update_available => {
                 let [] = exactly(op, args)?;
@@ -2057,6 +2082,79 @@ mod tests {
             read(&none, id::op_get_system_settings),
             Err("getSystemSetting:fail not supported".to_owned())
         );
+    }
+
+    /// `setCursor` from another process is answered as in process: a keyword
+    /// reaches the host's window by name, one of content's images as a real
+    /// file in the mounted game's sandbox with a finite hotspot, and a path
+    /// that is not content's file -- or a platform with no window -- is `false`
+    /// with nothing asked of anyone.
+    #[test]
+    fn set_cursor_reaches_the_host_s_window_as_the_embedded_op_shapes_it() {
+        use shared::services::{ServiceError as DeviceError, WindowService};
+        #[derive(Default)]
+        struct Window(parking_lot::Mutex<Vec<String>>);
+        impl WindowService for Window {
+            fn set_cursor(&self, json: &str) -> Result<(), DeviceError> {
+                self.0.lock().push(json.to_owned());
+                Ok(())
+            }
+        }
+        struct Platform(Arc<Window>);
+        impl shared::services::SensorServices for Platform {}
+        impl shared::services::ConnectivityServices for Platform {}
+        impl shared::services::CommerceServices for Platform {}
+        impl shared::services::MediaServices for Platform {}
+        impl shared::services::SystemUtilServices for Platform {
+            fn window(&self) -> Option<Arc<dyn WindowService>> {
+                Some(Arc::clone(&self.0) as Arc<dyn WindowService>)
+            }
+        }
+
+        let root =
+            std::env::temp_dir().join(format!("migo-external-cursor-{}", std::process::id()));
+        let files = root.join("files");
+        let cache = root.join("cache");
+        let installed = shared::vfs::GamePaths::new(&files, &cache, "g", 1).unwrap();
+        std::fs::create_dir_all(installed.code_dir()).unwrap();
+        std::fs::write(installed.code_dir().join("aim.png"), b"png").unwrap();
+        let window = Arc::new(Window::default());
+        let context = ServiceContext::new(files.clone(), cache.clone());
+        context.bind_session(1);
+        context.bind_device(Some(Arc::new(Platform(Arc::clone(&window)))));
+        context.load_content("g", "game.js").expect("mounts");
+        let set = |context: &ServiceContext, path: &str, x: f64, y: f64| {
+            let args = vec![
+                OwnedValue::Str(path.to_owned()),
+                OwnedValue::F64(x),
+                OwnedValue::F64(y),
+            ];
+            match context.call_sync(id::op_set_cursor, args) {
+                Ok(OwnedValue::Bool(taken)) => taken,
+                other => panic!("a boolean, not {other:?}"),
+            }
+        };
+
+        assert!(set(&context, "pointer", 0.0, 0.0));
+        assert!(set(&context, "aim.png", 3.0, f64::NAN));
+        assert!(!set(&context, "missing.png", 0.0, 0.0));
+        assert!(!set(&context, "/etc/hosts", 0.0, 0.0));
+        let real = installed.code_dir().join("aim.png");
+        assert_eq!(
+            *window.0.lock(),
+            [
+                r#"{"keyword":"pointer"}"#.to_owned(),
+                serde_json::json!({ "path": real.to_str().unwrap(), "x": 3.0, "y": 0.0 })
+                    .to_string(),
+            ],
+            "only the keyword and the game's own image reach the window"
+        );
+
+        let none = ServiceContext::new(files, cache);
+        none.bind_session(2);
+        none.bind_device(None);
+        assert!(!set(&none, "pointer", 0.0, 0.0));
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// A request of the host app's that names content's files reaches it with

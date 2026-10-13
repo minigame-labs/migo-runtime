@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- iOS: on Performance+, `setCursor` reaches the host's window service and answers whether it took the cursor, rather
+  than being refused by the producer. It crosses synchronously, as the embedded op answers, and the host shapes the
+  request as the embedded op does -- a CSS keyword by name, or one of content's images resolved through the game's
+  sandbox, a package entry copied out once for the session (`migo_services::cursor`, which both executions call).
 - iOS: the motion sensors -- `startAccelerometer`, `startGyroscope`, `startDeviceMotionListening` and `startCompass`
   with their listeners -- read by CoreMotion as the SDK's own service (raw motion needs no purpose string), each at
   content's interval, as typed sensor samples. The accelerometer reads the device's reaction to gravity in g (face up,
