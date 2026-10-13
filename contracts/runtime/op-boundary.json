@@ -154,12 +154,12 @@
       }
     },
     "host_v8_device": {
-      "reason": "Vibration, the display wake lock and network monitoring are host commands. The battery and the network type are the host's last report, read synchronously: the network changes during a session, so the host's one copy is the answer rather than a snapshot the producer would have to keep in step. The clipboard, location, the screen's brightness, capture and recording state, code scanning and the motion sensors are the host app's services: each request is a command the host makes the embedded op's scope check and device-service call for (engine/crates/core/src/runtime/service_channel.rs), and its result, a refusal included, and every reading reach content through the hooks the embedded runtime calls. Orientation is fixed when the session starts (its size is), and there is no debug panel to enable.",
+      "reason": "Vibration, the display wake lock and network monitoring are host commands. The battery and the network type are the host's last report, read synchronously: the network changes during a session, so the host's one copy is the answer rather than a snapshot the producer would have to keep in step. The local address is read from the system by the engine in the host's process, synchronously, as the embedded op reads it: WebContent has no view of the device's interfaces. The clipboard, location, the screen's brightness, capture and recording state, code scanning and the motion sensors are the host app's services: each request is a command the host makes the embedded op's scope check and device-service call for (engine/crates/core/src/runtime/service_channel.rs), and its result, a refusal included, and every reading reach content through the hooks the embedded runtime calls. Orientation is fixed when the session starts (its size is), and there is no debug panel to enable.",
       "ops": {
         "op_get_battery_info": "sync",
         "op_get_clipboard_data": "command",
         "op_get_fuzzy_location": "command",
-        "op_get_local_ip_address": "unsupported",
+        "op_get_local_ip_address": "sync",
         "op_get_location": "command",
         "op_get_network_type": "sync",
         "op_get_screen_brightness": "command",

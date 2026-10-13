@@ -13,13 +13,6 @@ import android.text.TextUtils;
 
 import com.migo.runtime.internal.NativeMethods;
 
-import java.net.Inet4Address;
-import java.net.InetAddress;
-import java.net.InterfaceAddress;
-import java.net.NetworkInterface;
-import java.util.Enumeration;
-import java.util.List;
-
 /**
  * Network status monitoring utility.
  * <p>
@@ -206,55 +199,6 @@ public final class NetworkMonitor {
     }
 
     /**
-     * Get local IP address and netmask.
-     *
-     * @return LocalIPInfo with localip and netmask
-     */
-    public static LocalIPInfo getLocalIPAddress() {
-        try {
-            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
-            while (interfaces.hasMoreElements()) {
-                NetworkInterface networkInterface = interfaces.nextElement();
-                if (networkInterface.isLoopback() || !networkInterface.isUp()) {
-                    continue;
-                }
-
-                List<InterfaceAddress> ifAddresses = networkInterface.getInterfaceAddresses();
-                for (InterfaceAddress ifAddr : ifAddresses) {
-                    InetAddress address = ifAddr.getAddress();
-                    if (address instanceof Inet4Address && !address.isLoopbackAddress()) {
-                        String localip = address.getHostAddress();
-                        // Get netmask from the same InterfaceAddress that matched
-                        short prefixLength = ifAddr.getNetworkPrefixLength();
-                        String netmask = prefixToNetmask(prefixLength);
-                        return new LocalIPInfo(localip, netmask, null);
-                    }
-                }
-            }
-        } catch (SecurityException e) {
-            return new LocalIPInfo("", "", "getLocalIPAddress:fail:no permission (INTERNET)");
-        } catch (Exception e) {
-            return new LocalIPInfo("", "", "getLocalIPAddress:fail:" + e.getMessage());
-        }
-        return new LocalIPInfo("", "", null);
-    }
-
-    /**
-     * Convert prefix length to netmask string.
-     */
-    private static String prefixToNetmask(short prefixLength) {
-        // Java shift counts are taken mod 32, so `0xFFFFFFFF << 32` is a
-        // no-op (a /0 prefix would wrongly yield 255.255.255.255 instead
-        // of 0.0.0.0); special-case the zero prefix.
-        int mask = prefixLength <= 0 ? 0 : (0xFFFFFFFF << (32 - prefixLength));
-        return String.format("%d.%d.%d.%d",
-                (mask >> 24) & 0xFF,
-                (mask >> 16) & 0xFF,
-                (mask >> 8) & 0xFF,
-                mask & 0xFF);
-    }
-
-    /**
      * Clean up resources.
      */
     public void destroy() {
@@ -284,21 +228,6 @@ public final class NetworkMonitor {
         // Keep old constructor for compatibility if needed or update callers
         public NetworkStatus(boolean isConnected, String networkType, String error) {
             this(isConnected, networkType, 0, false, false, error);
-        }
-    }
-
-    /**
-     * Local IP info data class.
-     */
-    public static class LocalIPInfo {
-        public final String localip;
-        public final String netmask;
-        public final String error;
-
-        public LocalIPInfo(String localip, String netmask, String error) {
-            this.localip = localip;
-            this.netmask = netmask;
-            this.error = error;
         }
     }
 }

@@ -361,6 +361,8 @@ import XCTest
                       success() { say("vibrated"); }, fail(error) { say("vibrate-fail " + error.errMsg); } });
                     migo.setDeviceOrientation({ value: "landscape",
                       success() { say("oriented"); }, fail() { say("orientation-refused"); } });
+                    migo.getLocalIPAddress({ success(res) { say("local " + res.localip + " " + res.netmask); },
+                      fail(error) { say("local-fail " + error.errMsg); } });
                     """)
             try MigoGameInstaller.install(package: game, id: "device", into: directories)
             let view = MigoGameView(configuration: .init(directories: directories, contentSigning: .unsigned))
@@ -372,11 +374,14 @@ import XCTest
             var logged: [String] = []
             var failure: String?
             let answered = expectation(description: "content heard every answer")
-            answered.expectedFulfillmentCount = 5  // network, kept, vibrated, orientation, the log entry
+            answered.expectedFulfillmentCount = 6  // network, kept, vibrated, orientation, local address, log entry
             let changed = expectation(description: "content heard the network change")
             // Only the game's own answers count: the engine writes console lines
             // of its own, and they are not what this waits for.
-            let answers = ["network ", "network-fail ", "kept", "vibrated", "vibrate-fail ", "orientation-", "oriented"]
+            let answers = [
+                "network ", "network-fail ", "kept", "vibrated", "vibrate-fail ", "orientation-", "oriented", "local ",
+                "local-fail ",
+            ]
             view.onEvent = { event in
                 switch event {
                 case .console(_, let message):
@@ -403,6 +408,16 @@ import XCTest
             XCTAssertTrue(lines.contains("orientation-refused"), "\(lines)")
             let network = try XCTUnwrap(lines.first { $0.hasPrefix("network") }, "\(lines)")
             XCTAssertTrue(network.hasPrefix("network ") && network.hasSuffix(" true"), "a connected lab: \(network)")
+            // The device's own address, read by the engine in this process: on
+            // a connected lab, an address and its netmask in one family.
+            let local = try XCTUnwrap(lines.first { $0.hasPrefix("local") }, "\(lines)")
+            let parts = local.split(separator: " ").map(String.init)
+            XCTAssertEqual(parts.count, 3, local)
+            XCTAssertEqual(parts.first, "local", local)
+            if parts.count == 3 {
+                XCTAssertNotEqual(parts[1], "127.0.0.1", local)
+                XCTAssertEqual(parts[1].contains("."), parts[2].contains("."), "one family: \(local)")
+            }
             // The idle timer is an app's: a tool-hosted test process (the
             // simulator's `swift test` host) has no UIApplication to hold it,
             // so it is observed where there is one -- the device test host.

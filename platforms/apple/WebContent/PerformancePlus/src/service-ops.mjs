@@ -286,4 +286,5 @@ export const SERVICE_OP = Object.freeze({
   op_set_cursor: 276,
   op_ecosystem_available: 277,
   op_ecosystem_value: 278,
+  op_get_local_ip_address: 279,
 });

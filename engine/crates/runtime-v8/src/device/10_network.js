@@ -106,15 +106,10 @@ function getNetworkType(options) {
     }, options);
 }
 
+// {localip, netmask}: the engine reads them from the system on every platform.
 function getLocalIPAddress(options) {
     return wrapAsync('getLocalIPAddress', function () {
-        const res = JSON.parse(op_get_local_ip_address());
-        if (res && res._error) {
-            let msg = res._error.errMsg || 'unknown error';
-            msg = msg.replace(/^getLocalIPAddress:fail:?/, '').trim();
-            throw new Error(msg);
-        }
-        return res;
+        return JSON.parse(op_get_local_ip_address());
     }, options);
 }
 

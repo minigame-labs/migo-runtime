@@ -110,7 +110,7 @@
     "getGroupMembersInfo": {"ops":["op_ecosystem_call"],"services":["ecosystem"]},
     "getInferenceEnvInfo": null,
     "getLaunchOptionsSync": {"ops":[],"services":[]},
-    "getLocalIPAddress": {"ops":["op_get_local_ip_address"],"services":["network"]},
+    "getLocalIPAddress": {"ops":["op_get_local_ip_address"],"services":[]},
     "getLocation": {"ops":["op_get_location"],"services":["location","permission"]},
     "getLogManager": {"ops":[],"services":[]},
     "getMenuButtonBoundingClientRect": {"ops":["op_get_menu_button_rect"],"services":["system_info"]},

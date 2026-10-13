@@ -1554,15 +1554,6 @@ public final class NativeExports {
     }
 
     /**
-     * Get local IP address as JSON string.
-     *
-     * @return JSON string with localip and netmask
-     */
-    public static String getLocalIPAddressJson() {
-        return NetworkExports.getLocalIPAddressJson();
-    }
-
-    /**
      * Clean up network monitor resources for a session. Call on session shutdown.
      *
      * @param sessionId The session ID

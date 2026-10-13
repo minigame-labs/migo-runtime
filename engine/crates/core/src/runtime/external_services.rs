@@ -877,6 +877,14 @@ impl ServiceContext {
                     .and_then(|ecosystem| ecosystem.value(&name))
                     .map_or(OwnedValue::Null, OwnedValue::Str))
             }
+            // The device's local address, read from the system as the embedded
+            // op reads it: the host's process sees the device's interfaces.
+            id::op_get_local_ip_address => {
+                let [] = exactly(op, args)?;
+                shared::device::local_address::query()
+                    .map(|local| OwnedValue::Str(local.to_json()))
+                    .map_err(ServiceError::generic)
+            }
             id::op_update_available => {
                 let [] = exactly(op, args)?;
                 let device = self.device.get().and_then(Option::as_deref);
@@ -2103,6 +2111,24 @@ mod tests {
             read(&none, id::op_get_system_settings),
             Err("getSystemSetting:fail not supported".to_owned())
         );
+    }
+
+    /// The device's local address is the engine's to read, in the host's
+    /// process, with or without any platform services: the same answer the
+    /// embedded op gives.
+    #[test]
+    fn the_local_address_is_read_from_the_system_as_in_process() {
+        let root = std::env::temp_dir().join(format!("migo-local-address-{}", std::process::id()));
+        let context = ServiceContext::new(root.join("files"), root.join("cache"));
+        context.bind_device(None);
+        let expected = shared::device::local_address::query();
+        match context.call_sync(id::op_get_local_ip_address, Vec::new()) {
+            Ok(OwnedValue::Str(json)) => {
+                assert_eq!(Ok(json), expected.map(|local| local.to_json()))
+            }
+            Ok(other) => panic!("a JSON string, not {other:?}"),
+            Err(error) => assert_eq!(Err(error.message), expected.map(|local| local.to_json())),
+        }
     }
 
     /// Whether the host app answers ecosystem calls, and the values it reported

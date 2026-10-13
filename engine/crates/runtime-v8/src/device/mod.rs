@@ -374,16 +374,15 @@ pub fn op_get_network_type(state: &mut OpState) -> Result<String, JsErrorBox> {
     Err(JsErrorBox::generic("getNetworkType:fail not supported"))
 }
 
+/// `getLocalIPAddress`: the device's address on its local network and its
+/// netmask, which the engine reads from the system on every platform
+/// (`shared::device::local_address`) -- no host reports it.
 #[op2]
 #[string]
-pub fn op_get_local_ip_address(state: &mut OpState) -> Result<String, JsErrorBox> {
-    let host = state.borrow::<HostOpState>();
-    if let Some(ref services) = host.device_services {
-        if let Some(network) = services.network() {
-            return network.get_local_ip_json().map_err(JsErrorBox::generic);
-        }
-    }
-    Err(JsErrorBox::generic("getLocalIPAddress:fail not supported"))
+pub fn op_get_local_ip_address() -> Result<String, JsErrorBox> {
+    shared::device::local_address::query()
+        .map(|local| local.to_json())
+        .map_err(JsErrorBox::generic)
 }
 
 // ==================== Location Ops ====================

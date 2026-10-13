@@ -92,7 +92,7 @@ mod api_failure_tests {
     fn an_unsupported_api_names_itself_once_in_its_failure() {
         run(
             r#"
-            for (const name of ["getClipboardData", "vibrateShort", "showToast", "getLocalIPAddress"]) {
+            for (const name of ["getClipboardData", "vibrateShort", "showToast", "getNetworkType"]) {
                 migo[name]({ fail: (err) => log.push({ name, errMsg: err.errMsg }) });
             }
         "#,

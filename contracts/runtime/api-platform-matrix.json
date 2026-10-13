@@ -18,12 +18,12 @@
   "platforms": ["android", "ios", "macos", "linux", "windows", "ohos"],
   "total": 382,
   "summary": {
-    "android": {"engine": 60, "default": 126, "host": 180, "missing": 6, "unsupported": 10, "ready": 376},
-    "ios": {"engine": 70, "default": 104, "host": 174, "missing": 18, "unsupported": 16, "ready": 363},
-    "macos": {"engine": 70, "default": 84, "host": 170, "missing": 11, "unsupported": 47, "ready": 370},
-    "linux": {"engine": 70, "default": 20, "host": 270, "missing": 12, "unsupported": 10, "ready": 249},
-    "windows": {"engine": 70, "default": 0, "host": 290, "missing": 12, "unsupported": 10, "ready": 229},
-    "ohos": {"engine": 68, "default": 12, "host": 0, "missing": 293, "unsupported": 9, "ready": 89}
+    "android": {"engine": 61, "default": 125, "host": 180, "missing": 6, "unsupported": 10, "ready": 376},
+    "ios": {"engine": 71, "default": 104, "host": 174, "missing": 17, "unsupported": 16, "ready": 364},
+    "macos": {"engine": 71, "default": 83, "host": 170, "missing": 11, "unsupported": 47, "ready": 370},
+    "linux": {"engine": 71, "default": 20, "host": 269, "missing": 12, "unsupported": 10, "ready": 250},
+    "windows": {"engine": 71, "default": 0, "host": 289, "missing": 12, "unsupported": 10, "ready": 230},
+    "ohos": {"engine": 69, "default": 12, "host": 0, "missing": 292, "unsupported": 9, "ready": 90}
   },
   "apis": {
     "addCard": {"category": "open-api/card", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "host", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ohos"]},
@@ -130,7 +130,7 @@
     "getGroupMembersInfo": {"category": "open-api/data", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "host", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ohos"]},
     "getInferenceEnvInfo": {"category": "ai/inference", "needs": ["unpublished"], "android": "unsupported", "ios": "unsupported", "macos": "unsupported", "linux": "unsupported", "windows": "unsupported", "ohos": "unsupported"},
     "getLaunchOptionsSync": {"category": "base/app/life-cycle", "needs": [], "android": "engine", "ios": "engine", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine"},
-    "getLocalIPAddress": {"category": "device/network", "needs": ["report:network"], "android": "default", "ios": "missing", "macos": "default", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "linux", "windows", "ohos"]},
+    "getLocalIPAddress": {"category": "device/network", "needs": [], "android": "engine", "ios": "engine", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine"},
     "getLocation": {"category": "location", "needs": ["channel:location.get_location", "channel:permission"], "android": "host", "ios": "host", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["linux", "windows", "ohos"]},
     "getLogManager": {"category": "base/debug", "needs": [], "android": "engine", "ios": "engine", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine"},
     "getMenuButtonBoundingClientRect": {"category": "ui/menu", "needs": [], "android": "default", "ios": "engine", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine"},
