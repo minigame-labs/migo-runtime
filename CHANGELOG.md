@@ -601,6 +601,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- A macOS game view resized once per attach: every resize after the first was refused (`MIGO_ERROR_INVALID_ARGUMENT`)
+  and the game kept its old size. `MigoEngineSession.resize(to:)` counted its updates, but `migo_surface_update` takes
+  the generation the surface was attached with on every update, as the other platforms' hosts send it.
+  `include/migo/surface.h` and the reference said the generation was a count of updates; they now say what the engine
+  checks. The macOS game view gate resizes twice.
 - The API x platform matrix counted `getAppAuthorizeSetting` and `getSystemSetting` as answered by the engine alone;
   they read what the host reports (`migo_session_set_app_authorize_setting`, `migo_session_set_system_settings`), and a
   host that reports nothing gets every grant "not determined" and every switch off. They are now host-fed in the

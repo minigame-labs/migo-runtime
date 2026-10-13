@@ -237,7 +237,6 @@ public final class MigoEngineSession {
     private let clock: MigoSessionFrameClock
     private var attachment: OpaquePointer?
     private var layer: CAMetalLayer?
-    private var metricsGeneration: UInt64 = 0
     private(set) var isClosed = false
     /// The optional parts of the system the app linked, reporting to this
     /// session while it is open.
@@ -453,7 +452,6 @@ public final class MigoEngineSession {
         self.layer = layer
         surfaceGeneration = generation
         surfaceSize = size
-        metricsGeneration = 0
         // Pads are announced to a surface: there is one now.
         gamepads.start()
     }
@@ -461,16 +459,16 @@ public final class MigoEngineSession {
     /// Tell the renderer the attached surface changed size or scale.
     ///
     /// A no-op when nothing changed, so a host can call it from every layout
-    /// pass. `migo_surface_update` numbers updates per attachment; the counter
-    /// restarts with each attach.
+    /// pass. Every update names the attachment it is for by the generation it
+    /// was attached with -- not a count of updates, which the engine refuses
+    /// from the second resize on.
     public func resize(to size: SurfaceSize) throws {
         guard !isClosed else { throw Failure.closed }
         guard let attachment, size != surfaceSize else { return }
-        metricsGeneration += 1
         var metrics = MigoSurfaceMetrics()
         metrics.struct_size = UInt32(MemoryLayout<MigoSurfaceMetrics>.size)
         metrics.abi_version = MIGO_ABI_VERSION_CURRENT
-        metrics.generation = metricsGeneration
+        metrics.generation = surfaceGeneration
         metrics.width_pixels = size.widthPixels
         metrics.height_pixels = size.heightPixels
         metrics.scale_factor = size.scale
