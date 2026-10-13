@@ -137,8 +137,36 @@ tick，内容静止时占多数，不是故障）、`coalescedRequests`、`unusa
 
 - **iOS**：多点触摸（`isMultipleTouchEnabled = true`）；内容调用 `migo.showKeyboard` 时弹出系统
   键盘，游戏自己绘制输入框，与其他平台一致。
+- **iOS 硬件键盘**：游戏开始时与被触摸时 view 成为 first responder，硬件键盘的按键以 DOM 的
+  `key`/`code` 送给内容（`onKeyDown`/`onKeyUp`）；按住未松开时再次按下算作 `repeat`。
+- **iPad 鼠标与触控板**：指针的悬停、按下、拖动、松开送为鼠标事件（`onMouseMove`/`onMouseDown`/
+  `onMouseUp`，按键为 DOM 编号：0 主键、1 中键、2 副键），滚动送为 `onWheel`（像素）；主键点击
+  同时照常成为 iPadOS 生成的触摸，与鼠标驱动触屏的其他平台一致。app 的 Info.plist 需设置
+  `UIApplicationSupportsIndirectInputEvents = YES`，否则 iPadOS 把点击报成手指，内容听不到按键。
+- **iPad 光标与指针锁定**：`setCursor` 的关键字映射到 iPadOS 的指针样式（`none` 隐藏、`text`/
+  `vertical-text` 文本光标、`crosshair` 十字，其余为系统指针）；iPadOS 不支持图片指针，图片光标
+  保持原样。`requestPointerLock` 由承载 view 的 controller 授予：见下方
+  [`prefersPointerLocked`](#preferspointerlockedios)；锁定期间鼠标的原始位移移动内容的指针，Esc 释放。
 - **macOS**：鼠标按 [`Configuration.mouse`](#configuration) 送给内容；view 是 first responder 时
   物理按键总会送达；没有软键盘的机器上，内容请求键盘时在游戏底边显示一个文本框。
+
+### prefersPointerLocked（iOS）
+
+```swift
+public var prefersPointerLocked: Bool { get }
+```
+
+游戏持有或请求的指针锁定。iPadOS 只向 view controller 询问指针锁定，所以承载 `MigoGameView` 的
+controller 要把它原样返回（容器 controller 用 `childViewControllerForPointerLock` 指向它）；
+view 在它变化时会让该 controller 重新读取。iPadOS 只为占满屏幕的 scene 锁定指针；controller 没有
+转交时，内容的请求会立即得到“未锁定”。
+
+```swift
+final class GameController: UIViewController {
+    let gameView = MigoGameView(configuration: configuration)
+    override var prefersPointerLocked: Bool { gameView.prefersPointerLocked }
+}
+```
 
 ## Configuration
 

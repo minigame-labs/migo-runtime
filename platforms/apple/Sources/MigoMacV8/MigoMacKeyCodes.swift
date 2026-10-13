@@ -1,8 +1,9 @@
 #if os(macOS)
     import AppKit
+    import MigoAppleRenderer
 
-    /// macOS virtual key codes to DOM `KeyboardEvent.code`, and the DOM `key`
-    /// for keys that produce no text.
+    /// macOS virtual key codes to DOM `KeyboardEvent.code`; the DOM `key` for
+    /// keys that produce no text is `MigoKeyNames`', shared with the iPad.
     ///
     /// The ABI takes DOM values because a portable runtime that accepted
     /// platform codes would carry a table per platform; the table is the host's,
@@ -14,24 +15,11 @@
 
         static func code(forKeyCode keyCode: UInt16) -> String? { codes[keyCode] }
 
-        /// DOM `key` for a non-text key, or `nil` when the key produces text and
-        /// the event's characters are the answer.
+        /// DOM `key` for a key that produces no text, or `nil` when the event's
+        /// characters are the answer. A Mac keypad's key where others have Num
+        /// Lock is its Clear key, as browsers on the Mac name it.
         static func namedKey(forCode code: String) -> String? {
-            if let named = namedKeys[code] { return named }
-            if code.hasPrefix("F"), Int(code.dropFirst()) != nil { return code }
-            return nil
-        }
-
-        /// The DOM `key` for a modifier that `flagsChanged` reported.
-        static func modifierKey(forCode code: String) -> String? {
-            switch code {
-            case "ShiftLeft", "ShiftRight": return "Shift"
-            case "ControlLeft", "ControlRight": return "Control"
-            case "AltLeft", "AltRight": return "Alt"
-            case "MetaLeft", "MetaRight": return "Meta"
-            case "CapsLock": return "CapsLock"
-            default: return nil
-            }
+            code == "NumLock" ? "Clear" : MigoKeyNames.namedKey(forCode: code)
         }
 
         /// Whether the modifier `code` names is down in `flags`.
@@ -45,14 +33,6 @@
             default: return false
             }
         }
-
-        private static let namedKeys: [String: String] = [
-            "Enter": "Enter", "NumpadEnter": "Enter", "Tab": "Tab", "Backspace": "Backspace",
-            "Escape": "Escape", "Delete": "Delete", "Home": "Home", "End": "End",
-            "PageUp": "PageUp", "PageDown": "PageDown", "ArrowLeft": "ArrowLeft",
-            "ArrowRight": "ArrowRight", "ArrowUp": "ArrowUp", "ArrowDown": "ArrowDown",
-            "Help": "Help", "ContextMenu": "ContextMenu",
-        ]
 
         private static let codes: [UInt16: String] = [
             0x00: "KeyA", 0x01: "KeyS", 0x02: "KeyD", 0x03: "KeyF", 0x04: "KeyH", 0x05: "KeyG",

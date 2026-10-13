@@ -591,7 +591,7 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
 
         public override func flagsChanged(with event: NSEvent) {
             guard let code = MigoMacKeyCodes.code(forKeyCode: event.keyCode),
-                let name = MigoMacKeyCodes.modifierKey(forCode: code)
+                let name = MigoKeyNames.modifierKey(forCode: code)
             else { return }
             let down = MigoMacKeyCodes.modifierIsDown(code: code, flags: event.modifierFlags)
             send(key: name, code: code, down: down, isRepeat: false, event)
@@ -599,7 +599,11 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
 
         private func key(_ type: MigoKeyEventType, _ event: NSEvent) {
             guard let code = MigoMacKeyCodes.code(forKeyCode: event.keyCode) else { return }
-            let key = MigoMacKeyCodes.namedKey(forCode: code) ?? event.characters ?? ""
+            let key =
+                MigoMacKeyCodes.namedKey(forCode: code)
+                ?? MigoKeyNames.textKey(
+                    characters: event.characters ?? "", ignoringModifiers: event.charactersIgnoringModifiers ?? "",
+                    shift: event.modifierFlags.contains(.shift))
             send(key: key, code: code, down: type == MIGO_KEY_EVENT_DOWN, isRepeat: event.isARepeat, event)
         }
 

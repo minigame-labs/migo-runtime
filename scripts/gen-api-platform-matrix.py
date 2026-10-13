@@ -287,9 +287,12 @@ def lane_facts(root: pathlib.Path) -> dict[str, dict[str, set[str]]]:
 
     apple = found("Apple host layer sources", sorted((root / APPLE_LAYER).glob("*.swift")))
     scan(["ios", "macos"], apple)
-    # The macOS game view answers what only its window can (MigoGameViewHostServices).
+    # Each game view answers what only its window can (MigoGameViewHostServices):
+    # the Mac's window, the iPad's scene.
     mac_view = found("macOS game view sources", sorted((root / APPLE_MAC_VIEW).glob("*.swift")))
     scan(["macos"], mac_view)
+    ios_view = found("iOS game view sources", sorted((root / APPLE_IOS_VIEW).glob("*.swift")))
+    scan(["ios"], ios_view)
     for capability in APPLE_CAPABILITIES:
         scan(["ios", "macos"], found(f"{capability} sources", sorted((root / capability).glob("*.swift"))))
     linux = found("Linux host kit sources", sorted(p for p in (root / LINUX_LAYER).rglob("*") if p.suffix in (".cpp", ".hpp", ".h")))
@@ -316,8 +319,7 @@ def lane_facts(root: pathlib.Path) -> dict[str, dict[str, set[str]]]:
             if called:
                 wrappers.setdefault(match.group(1), set()).update(called)
     platform_sources = {
-        "ios": apple + [p for c in APPLE_CAPABILITIES for p in sorted((root / c).glob("*.swift"))]
-        + found("iOS game view sources", sorted((root / APPLE_IOS_VIEW).glob("*.swift"))),
+        "ios": apple + [p for c in APPLE_CAPABILITIES for p in sorted((root / c).glob("*.swift"))] + ios_view,
         "macos": apple + mac_view + [p for c in APPLE_CAPABILITIES for p in sorted((root / c).glob("*.swift"))],
     }
     for platform, sources in platform_sources.items():

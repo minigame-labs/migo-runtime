@@ -154,9 +154,43 @@ to the new bounds, rather than by lying to a game that has already laid itself o
 
 - **iOS**: multi-touch (`isMultipleTouchEnabled = true`); when content calls `migo.showKeyboard` the
   system keyboard comes up and the game draws its own text field, as on every platform.
+- **iOS hardware keyboard**: the view becomes first responder when the game starts and when it is
+  touched; a hardware keyboard's keys reach content with their DOM `key` and `code`
+  (`onKeyDown`/`onKeyUp`), and a key pressed again before it came up is a `repeat`.
+- **iPad mouse and trackpad**: the pointer's hover, press, drag and release reach content as the mouse
+  (`onMouseMove`/`onMouseDown`/`onMouseUp`, buttons in DOM numbers: 0 primary, 1 middle, 2
+  secondary), and scrolling as `onWheel` (pixels); a primary click is still the touch iPadOS makes of
+  it, as on every platform where a mouse drives a touch screen. Set
+  `UIApplicationSupportsIndirectInputEvents = YES` in the app's Info.plist: without it iPadOS reports a
+  click as a finger, and content hears no button.
+- **iPad cursor and pointer lock**: `setCursor` keywords become iPadOS pointer styles (`none` hides it,
+  `text`/`vertical-text` the text beams, `crosshair` a cross, everything else the system pointer);
+  iPadOS shows no image as the pointer, so an image cursor leaves it as it was. `requestPointerLock`
+  is granted by the view controller showing the view: see
+  [`prefersPointerLocked`](#preferspointerlocked-ios) below. While locked, the mouse's raw motion moves
+  content's pointer; Esc releases it.
 - **macOS**: the mouse is sent to content as [`Configuration.mouse`](#configuration) says; physical
   keys are always sent while the view is first responder; on a machine with no soft keyboard, a text
   field appears along the game's bottom edge while content asks for a keyboard.
+
+### prefersPointerLocked (iOS)
+
+```swift
+public var prefersPointerLocked: Bool { get }
+```
+
+Whether the game holds the pointer locked or has asked to. iPadOS asks a view controller, not a view,
+for a pointer lock, so the controller showing `MigoGameView` returns this from its own (a container
+names it from `childViewControllerForPointerLock`); the view has that controller read it again
+whenever it changes. iPadOS locks only a scene that fills the screen; where the controller does not
+pass it on, content's request is answered "not locked" at once.
+
+```swift
+final class GameController: UIViewController {
+    let gameView = MigoGameView(configuration: configuration)
+    override var prefersPointerLocked: Bool { gameView.prefersPointerLocked }
+}
+```
 
 ## Configuration
 
