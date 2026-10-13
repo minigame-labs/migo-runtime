@@ -35,24 +35,30 @@ async function run() {
   const hidden = await call("hideToast");
   expect(hidden.errMsg === "hideToast:ok", "hideToast", hidden);
   // The game view's own window service: the window grows so the game gets the
-  // size it asked for, in pixels, and the game hears it as a resize.
+  // size it asked for, in pixels, and the game hears it as a resize -- each
+  // time it asks, not only the first.
   let seen = null;
-  const resized = new Promise(function (resolve, reject) {
-    const timer = setTimeout(function () {
-      reject(new Error("migo-swift-host-probe: resize got " + JSON.stringify(seen)));
-    }, 5000);
-    migo.onWindowResize(function listener(size) {
-      seen = size;
-      if (size.windowWidth !== 320 || size.windowHeight !== 200) return;
-      clearTimeout(timer);
-      migo.offWindowResize(listener);
-      resolve(size);
-    });
-  });
   const ratio = migo.getWindowInfo().pixelRatio;
-  const sized = await call("setWindowSize", { width: 320 * ratio, height: 200 * ratio });
-  expect(sized.errMsg === "setWindowSize:ok", "setWindowSize", sized);
-  await resized;
+  const resizeTo = async function (width, height) {
+    const resized = new Promise(function (resolve, reject) {
+      const timer = setTimeout(function () {
+        reject(new Error("migo-swift-host-probe: resize to " + width + "x" + height + " got " + JSON.stringify(seen)));
+      }, 5000);
+      migo.onWindowResize(function listener(size) {
+        seen = size;
+        if (size.windowWidth !== width || size.windowHeight !== height) return;
+        clearTimeout(timer);
+        migo.offWindowResize(listener);
+        resolve(size);
+      });
+    });
+    const sized = await call("setWindowSize", { width: width * ratio, height: height * ratio });
+    expect(sized.errMsg === "setWindowSize:ok", "setWindowSize", sized);
+    await resized;
+  };
+  await resizeTo(400, 250);
+  await resizeTo(320, 200);
+  console.error("migo-swift-host-probe: resized twice to " + seen.windowWidth + "x" + seen.windowHeight);
   expect(migo.setCursor("pointer") === true, "setCursor", false);
   // The debugging aids, which the SDK's screen service turns -- before the
   // viewer below covers the window, which pauses the game: content reads

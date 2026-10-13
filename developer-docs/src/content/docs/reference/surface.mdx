@@ -309,7 +309,7 @@ MIGO_API MigoResult MIGO_CALL migo_surface_update(
     const MigoSurfaceMetrics *metrics);
 ```
 
-向已绑定的 surface 报告一次 resize 或呈现参数变更。此调用是同步的：返回时，新的 metrics 已提交并将 resize 命令入队，或什么都没有发生（不存在部分提交）。`metrics.generation` 应使用单调递增序号，以允许引擎检测并丢弃被更新版本超越的 resize 事件。
+向已绑定的 surface 报告一次 resize 或呈现参数变更。此调用是同步的：返回时，新的 metrics 已提交并将 resize 命令入队，或什么都没有发生（不存在部分提交）。`metrics.generation` 是这次更新所属 attachment 的 generation，在下一次 attach 之前每次更新都相同，不是更新次数的计数；在自己线程上合并 resize 事件的 host 可能还留着一条属于已被替换窗口的更新，它携带旧 attachment 的 generation，会作为过期更新被拒绝，而不会去改新窗口的尺寸。
 
 参数：
 
@@ -321,10 +321,10 @@ MIGO_API MigoResult MIGO_CALL migo_surface_update(
 返回：
 
 - `MIGO_OK` — 更新已同步提交
-- `MIGO_ERROR_INVALID_ARGUMENT` — attachment 或 metrics 为 NULL；`struct_size` 过小；width 或 height 为零；scale_factor 非有限值；generation 为零，或比该 attachment 历史见过的最大值更新
+- `MIGO_ERROR_INVALID_ARGUMENT` — attachment 或 metrics 为 NULL；`struct_size` 过小；width 或 height 为零；scale_factor 非有限值；generation 为零，或大于该 attachment 的 generation
 - `MIGO_ERROR_UNSUPPORTED_ABI` — `metrics.abi_version` 不匹配，或 `struct_size` 超出本构建所知大小
 - `MIGO_ERROR_INVALID_STATE` — 同一 Session 上另一 surface 转换（attach / update / detach）正在进行，或 Session 没有活跃 host
-- `MIGO_ERROR_STALE_SURFACE` — attachment 不是 Session 当前活跃 attachment、已 lost，或 `metrics.generation` 旧于已应用的最新 update
+- `MIGO_ERROR_STALE_SURFACE` — attachment 不是 Session 当前活跃 attachment、已 lost，或 `metrics.generation` 小于该 attachment 的 generation
 - `MIGO_ERROR_INTERNAL` — host 端 lease/dispatch 失败（罕见，发生时记录日志）
 
 线程模型：
