@@ -198,13 +198,19 @@ def capi_services(root: pathlib.Path) -> dict[str, tuple[str, str | None]]:
         body = braced(kit, block.start())
         for found_fn in re.finditer(r"fn (\w+)\(&self\) -> Option<Arc<dyn \w+>> \{(.*?)\n    \}", body, re.S):
             name, accessor = found_fn.group(1), found_fn.group(2)
-            # The attribute on the line before the function, if any.
-            before = body[: found_fn.start()].rstrip().rsplit("\n", 1)[-1].strip()
-            only = re.fullmatch(r"#\[cfg\((.*)\)\]", before)
+            # The `#[cfg(...)]` attribute right before the function, if any --
+            # whole, however rustfmt wrapped it: an attribute too long for one
+            # line spans several, and reading only the last would miss it.
+            only = re.search(r"#\[cfg\(((?:[^()]|\([^()]*\))*)\)\]\s*(?:///[^\n]*\n\s*)*$", body[: found_fn.start()])
             if only:
-                systems = re.findall(r'target_os = "(\w+)"', only.group(1))
-                if not systems or not re.fullmatch(r'(any\()?target_os = "\w+"(, target_os = "\w+")*\)?', only.group(1)):
-                    raise Fail(f"C ABI accessor {name}: cfg({only.group(1)}) is not a list of operating systems")
+                # One line, as it would be written by hand: whitespace collapsed,
+                # none inside the parentheses, no trailing comma.
+                condition = re.sub(r"\s+", " ", only.group(1)).strip()
+                condition = re.sub(r"\(\s+", "(", condition)
+                condition = re.sub(r",?\s*\)", ")", condition).rstrip(", ")
+                systems = re.findall(r'target_os = "(\w+)"', condition)
+                if not systems or not re.fullmatch(r'(any\()?target_os = "\w+"(, target_os = "\w+")*\)?', condition):
+                    raise Fail(f"C ABI accessor {name}: cfg({condition}) is not a list of operating systems")
                 kinds[name] = ("native", ",".join(sorted(TARGET_OS[system] for system in systems)))
                 continue
             channel = re.search(r"MIGO_HOST_SERVICE_(\w+)", accessor)

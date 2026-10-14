@@ -6,6 +6,7 @@ scripts assemble copies and metadata; these tests make no Mach-O/link claims.
 from __future__ import annotations
 
 import json
+import re
 import importlib.util
 import os
 from pathlib import Path
@@ -104,6 +105,21 @@ class SDKPackaging(unittest.TestCase):
         shutil.copy2(ROOT/"scripts/gen-performance-plus-engine.py", self.root/"scripts/gen-performance-plus-engine.py")
         shutil.copytree(ROOT/"contracts/runtime", self.root/"contracts/runtime")
         shutil.copytree(ROOT/"engine/crates/runtime-v8/src", self.root/"engine/crates/runtime-v8/src")
+        # And every other input the generator declares (its module-level
+        # `pathlib.Path("...")` constants), so a generator that comes to read one
+        # more file reads it here too. A hand-kept list went stale the day the
+        # generator began checking the host-service channel's rows
+        # (service_channel.rs), and every assembly in this suite failed on it.
+        generator = (ROOT/"scripts/gen-performance-plus-engine.py").read_text(encoding="utf-8")
+        for declared in re.findall(r'^[A-Z_]+ = pathlib\.Path\("([^"]+)"\)', generator, re.M):
+            source, target = ROOT/declared, self.root/declared
+            if target.exists() or not source.exists():
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if source.is_dir():
+                shutil.copytree(source, target)
+            else:
+                shutil.copy2(source, target)
         shutil.copy2(ROOT/"platforms/apple/Package.swift", self.root/"platforms/apple/Package.swift")
         (self.root/"contracts/artifact-manifest").mkdir()
         shutil.copy2(ROOT/"contracts/artifact-manifest/apple-angle.lock.json", self.root/"contracts/artifact-manifest/apple-angle.lock.json")
