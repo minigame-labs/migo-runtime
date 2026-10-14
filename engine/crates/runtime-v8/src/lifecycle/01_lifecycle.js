@@ -27,11 +27,16 @@ function notifyVisibility(visible) {
     }
 }
 
+// How the game was opened, in the reference's words (2.20.0): "default" unless the
+// host says it is one of the others.
+const API_CATEGORIES = ["default", "nativeFunctionalized", "browseOnly", "embedded", "chatTool"];
+
 function createDefaultLaunchOptions() {
     return {
         scene: 1001,
         query: {},
         shareTicket: "",
+        apiCategory: "default",
         referrerInfo: {
             appId: "",
             extraData: {},
@@ -125,6 +130,10 @@ class AppLifecycleManager {
 
         if (typeof raw.shareTicket === "string") {
             normalized.shareTicket = raw.shareTicket;
+        }
+
+        if (API_CATEGORIES.includes(raw.apiCategory)) {
+            normalized.apiCategory = raw.apiCategory;
         }
 
         if (typeof raw.query === "string") {

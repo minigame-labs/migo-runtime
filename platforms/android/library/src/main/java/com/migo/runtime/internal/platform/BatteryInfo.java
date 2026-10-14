@@ -22,23 +22,23 @@ public final class BatteryInfo {
      * Get battery level as a percentage (1-100).
      *
      * @param context The context
-     * @return Battery level percentage, or "0" if unavailable
+     * @return Battery level percentage, or -1 when no battery can be read
      */
-    public static String getLevel(Context context) {
-        if (context == null) return "0";
+    public static int getLevel(Context context) {
+        if (context == null) return -1;
         try {
             IntentFilter filter = new IntentFilter(Intent.ACTION_BATTERY_CHANGED);
             Intent batteryStatus = context.registerReceiver(null, filter);
-            if (batteryStatus == null) return "0";
+            if (batteryStatus == null) return -1;
 
             int level = batteryStatus.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
             int scale = batteryStatus.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
-            if (level < 0 || scale <= 0) return "0";
+            if (level < 0 || scale <= 0) return -1;
 
             int pct = (int) (level * 100f / scale);
-            return String.valueOf(Math.max(1, Math.min(pct, 100)));
+            return Math.max(1, Math.min(pct, 100));
         } catch (Exception e) {
-            return "0";
+            return -1;
         }
     }
 
@@ -82,18 +82,21 @@ public final class BatteryInfo {
     /**
      * Get battery info as JSON string.
      * <p>
-     * Format: {@code {"level":"85","isCharging":true,"isLowPowerModeEnabled":false}}
+     * Format: {@code {"level":85,"isCharging":true,"isLowPowerModeEnabled":false}} -- the level a
+     * number, as the reference documents it -- or null when no battery can be read, which the
+     * engine answers as "not supported" rather than a level nobody measured.
      *
      * @param context The context
-     * @return JSON string with battery info
+     * @return JSON string with battery info, or null
      */
     public static String toJson(Context context) {
-        String level = getLevel(context);
+        int level = getLevel(context);
+        if (level < 0) return null;
         boolean charging = isCharging(context);
         boolean lowPower = isLowPowerModeEnabled(context);
 
-        return "{\"level\":\"" + level
-                + "\",\"isCharging\":" + charging
+        return "{\"level\":" + level
+                + ",\"isCharging\":" + charging
                 + ",\"isLowPowerModeEnabled\":" + lowPower + "}";
     }
 }

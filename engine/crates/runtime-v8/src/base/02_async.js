@@ -69,10 +69,13 @@ function errorMessage(err) {
 // (`getClipboardData:fail not supported`), and putting the prefix on it again gave content
 // `getClipboardData:fail getClipboardData:fail not supported`: wrong to match against, and the first thing a
 // developer reading the log would take for a bug in the game's own call.
+// `<api>:fail <why>`. The reason is the failure's; the name is the caller's: a reason
+// raised under another API's name -- a sync variant's op failing under its async
+// sibling's -- is told under this one.
 function failMessage(apiName, e) {
     var why = errorMessage(e);
-    var prefix = apiName + ':fail ';
-    return prefix + (why.indexOf(prefix) === 0 ? why.slice(prefix.length) : why);
+    var named = /^[A-Za-z_$][\w$]*:fail /.exec(why);
+    return apiName + ':fail ' + (named ? why.slice(named[0].length) : why);
 }
 
 function invokeCallback(apiName, kind, cb, res) {
@@ -167,9 +170,13 @@ function wrapAsync(apiName, fn, options) {
                         console.warn('[MigoPerf][Async] ' + apiName + ': ' + totalElapsed.toFixed(0) + 'ms');
                     }
                 }
+                // errMsg first, as every answer reads, and this API's own: a
+                // value that carries another's (a sync result reused) does not
+                // speak for it.
                 const res = (typeof value === 'object' && value !== null)
                     ? { errMsg: apiName + ':ok', ...value }
                     : { errMsg: apiName + ':ok' };
+                res.errMsg = apiName + ':ok';
                 invokeCallback(apiName, 'success', success, res);
                 invokeCallback(apiName, 'complete', complete, res);
                 return res;

@@ -637,6 +637,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- Divergences from the platform's reference that the API spec bundle (migo-conformance `api-spec`) found on every
+  platform:
+  - `getSystemInfoAsync` succeeded with `getSystemInfo:ok`. A success's `errMsg` is now always the called API's
+    own name, whatever the result object carried; `getSystemInfoSync`'s result no longer carries an `errMsg`, which
+    the reference does not give a sync result.
+  - `getBatteryInfo` / `getBatteryInfoSync` answered `level` as a string, where the reference's is a number. A
+    device with no battery the host can read (a Mac, a C ABI host that reports none) answered success with a
+    made-up level `"0"`; it now fails `not supported`, and the sync call throws with its own name.
+  - `getLaunchOptionsSync` / `getEnterOptionsSync` never reported `apiCategory` (2.20.0). It is now `"default"`
+    unless the host says it is one of the reference's other categories.
+  - On Android, `getDeviceInfo().memorySize` was a number; the reference's is a string of megabytes.
+  - A failure raised under another API's name (a sync variant's op failing under its async sibling's) is told
+    under the called API's name, not prefixed twice.
 - Android listed `buildInMic` among its audio sources, which the mini-game API names for iOS only. It now lists
   `auto`, `mic`, `camcorder`, `voice_communication` and `voice_recognition`. `RecorderManager.start` still takes the iOS
   names, for content written against iOS.

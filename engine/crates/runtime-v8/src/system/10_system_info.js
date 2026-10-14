@@ -40,8 +40,7 @@ function getSystemInfoSync() {
         wifiEnabled: false,
         safeArea: { left: 0, right: 0, top: 0, bottom: 0, width: 0, height: 0 },
         locationReducedAccuracy: false,
-        deviceOrientation: 'portrait',
-        errMsg: 'getSystemInfo:ok'
+        deviceOrientation: 'portrait'
     };
 
     // The same facts getAppBaseInfo and getDeviceBenchmarkInfo answer with, from

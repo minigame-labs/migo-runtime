@@ -3309,7 +3309,7 @@ mod tests {
         }
         impl BatteryService for Recorded {
             fn get_info_json(&self) -> Result<String, ServiceError> {
-                Ok(r#"{"level":"80"}"#.into())
+                Ok(r#"{"level":80}"#.into())
             }
         }
         impl shared::services::UpdateService for Recorded {
@@ -3385,7 +3385,7 @@ mod tests {
         };
         assert_eq!(
             answer(&context, id::op_get_battery_info).as_deref(),
-            Ok(r#"{"level":"80"}"#)
+            Ok(r#"{"level":80}"#)
         );
         assert_eq!(
             answer(&context, id::op_get_network_type).as_deref(),
