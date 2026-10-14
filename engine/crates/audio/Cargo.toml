@@ -29,8 +29,10 @@ ringbuf = "0.5"
 # Async
 tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread", "time", "macros"] }
 
-# HTTP client for streaming download
-reqwest = { workspace = true }
+# The engine's HTTP client, for streaming a remote `src`: the same client, address
+# policy and redirect gate every other outbound request uses.
+migo-services = { path = "../services", default-features = false }
+url = "2.5"
 futures-util = "0.3"
 
 # Shared

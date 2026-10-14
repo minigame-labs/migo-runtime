@@ -5,7 +5,7 @@
 //! This closes the gap the report flagged: previously `fetch()` had
 //! full preflight (IP-literal block, domain whitelist, HTTPS enforce)
 //! but `Image.src = http(s)://...` and `new WebSocket(...)` were
-//! routed directly to the shared reqwest/tungstenite client pool
+//! routed directly to the engine's HTTP client (network::http) and the tungstenite socket pool
 //! without the preflight, which made the domain whitelist bypassable.
 //!
 //! # Design
@@ -53,7 +53,7 @@ static EMPTY_WHITELIST_WARNED: Once = Once::new();
 pub enum GateKind {
     /// Top-level `fetch()` (HTTP/HTTPS). Full preflight.
     Fetch,
-    /// HTTP redirect hop targeted by reqwest's redirect policy.
+    /// HTTP redirect hop the HTTP client follows.
     /// Same rule set as `Fetch`: a 302 into a blocked host is just
     /// as dangerous as the initial request.
     FetchRedirect,
@@ -99,7 +99,7 @@ pub enum GateReject {
     /// WebSocket kinds).
     HttpsRequired,
     /// URL has no host component at all, so no rule can be applied.
-    /// Happens for malformed input that reqwest would also reject.
+    /// Happens for malformed input no client could send.
     MissingHost,
 }
 
@@ -215,7 +215,7 @@ pub fn evaluate_policy(
         });
     }
 
-    // 2. Host must exist (reqwest would reject later, but fail fast).
+    // 2. Host must exist (the client would refuse it later; fail fast).
     let host = url.host_str().ok_or(GateReject::MissingHost)?;
 
     // 3. IP-literal block. hyper-util routes IP literals around the

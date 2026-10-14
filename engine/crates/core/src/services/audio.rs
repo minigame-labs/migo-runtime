@@ -40,7 +40,7 @@ use tracing::info;
 /// ## Implementation
 ///
 /// 1. `AudioService::new()` creates the channel, wakeup, and a policy-capturing
-///    HTTP factory closure. It does not build a reqwest client/pool or thread.
+///    HTTP factory closure. It does not build an HTTP client, pool or thread.
 /// 2. `sender()` returns an [`AudioSender`] backed by the channel.
 /// 3. A successful pre-start command notifies the Host event loop, which calls
 ///    `check_and_start()`. It drains queued commands and, upon the first *real*
@@ -74,7 +74,7 @@ pub(crate) struct AudioService {
     /// `AudioSender` cloned into an isolate points at this same registry.
     resources: AudioResourceRegistry,
     /// Per-host factory. The audio thread invokes it only on the first remote
-    /// cache miss, then keeps the resulting reqwest pool for its lifetime.
+    /// cache miss, then keeps the resulting connection pool for its lifetime.
     http_client_factory: audio::streaming::StreamingHttpClientFactory,
 }
 

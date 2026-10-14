@@ -13,8 +13,8 @@ use deno_core::error::AnyError;
 use deno_core::op2;
 use deno_error::JsErrorBox;
 use migo_services::network as service_net;
+use migo_services::network::client::PolicyHttpClient as Client;
 use migo_services::network::resources::ResourceTable;
-use reqwest::Client;
 use serde::Deserialize;
 use serde::Serialize;
 
@@ -51,7 +51,7 @@ struct Http2Client(Client);
 pub fn get_or_create_client_from_state(
     state: &mut OpState,
     enable_http2: bool,
-) -> Result<reqwest::Client, AnyError> {
+) -> Result<Client, AnyError> {
     if enable_http2 {
         if let Some(client) = state.try_borrow::<Http2Client>() {
             Ok(client.0.clone())

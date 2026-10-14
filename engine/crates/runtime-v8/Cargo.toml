@@ -73,7 +73,6 @@ migo-io = { path = "../io", default-features = false, features = ["zip-extract"]
 # The work behind the ops that have been moved out of them; see its manifest.
 migo-services = { path = "../services", default-features = false }
 serde.workspace = true
-reqwest.workspace = true
 base64 = "0.22"
 # The OS's cryptographically secure random source, for
 # UserCryptoManager.getRandomValues. Already in the graph through tungstenite.

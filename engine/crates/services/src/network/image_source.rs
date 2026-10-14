@@ -7,18 +7,16 @@
 
 use std::time::Duration;
 
-use reqwest::Client;
 use shared::error::{EngineError, EngineResult, ErrorCode};
 use shared::op_state::NetworkPolicy;
 use url::Url;
 
 use super::gate::{self, GateKind};
+use super::http::HttpClient as Client;
 use crate::image::inline::MAX_HTTP_IMAGE_BYTES;
 
-/// TCP connect timeout for HTTP image fetches.
-const HTTP_IMAGE_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// Total request timeout for HTTP image fetches (connect + body).
+/// Total request timeout for HTTP image fetches (connect + body). Connecting has
+/// its own, shorter bound: the client's connect timeout (5 s).
 const HTTP_IMAGE_TOTAL_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Fetch an `http(s)://` image and answer its body bytes.
@@ -72,20 +70,20 @@ pub async fn fetch_http_image(
     // response in one `Vec<u8>`. We rely on `Content-Length` when the
     // server provides it; for chunked responses, the streaming loop
     // below enforces the same bound byte-by-byte.
-    if let Some(len) = resp.content_length() {
-        if len > MAX_HTTP_IMAGE_BYTES {
-            return Err(EngineError::new(ErrorCode::IoError)
-                .with_msg("image body exceeds limit")
-                .with_detail(format!(
-                    "advertised {} bytes > limit {}",
-                    len, MAX_HTTP_IMAGE_BYTES
-                )));
-        }
+    if let Some(len) = resp.content_length()
+        && len > MAX_HTTP_IMAGE_BYTES
+    {
+        return Err(EngineError::new(ErrorCode::IoError)
+            .with_msg("image body exceeds limit")
+            .with_detail(format!(
+                "advertised {} bytes > limit {}",
+                len, MAX_HTTP_IMAGE_BYTES
+            )));
     }
 
     // Stream into a pre-reserved buffer so peak allocation is the
     // known Content-Length (or MAX_HTTP_IMAGE_BYTES at worst), not the
-    // unbounded concat-on-demand inside `reqwest::Response::bytes`.
+    // unbounded concatenation of reading the whole body at once.
     let hint = resp
         .content_length()
         .map(|l| l.min(MAX_HTTP_IMAGE_BYTES) as usize)
@@ -117,9 +115,5 @@ pub async fn fetch_http_image(
             None => break,
         }
     }
-    // `HTTP_IMAGE_CONNECT_TIMEOUT` documents the connect budget that
-    // `client::policy_client_builder` applies (5s); adjust that builder
-    // to change it.
-    let _ = HTTP_IMAGE_CONNECT_TIMEOUT;
     Ok(buf)
 }
