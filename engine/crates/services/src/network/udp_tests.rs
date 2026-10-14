@@ -106,13 +106,15 @@ async fn a_destination_the_policy_refuses_is_never_sent_to() {
     );
 }
 
-/// Broadcast has no legitimate target once the address filter is on, so the
-/// flag is refused rather than honoured.
+/// A broadcast is the reference's way to find peers on a LAN: setBroadcast
+/// turns SO_BROADCAST on and the datagram goes to the kernel. Whether the
+/// kernel can deliver it is the machine's network's to say (a host with no
+/// broadcast route answers so); the engine does not refuse it.
 #[tokio::test]
-async fn broadcast_is_refused_outright() {
+async fn a_broadcast_is_handed_to_the_kernel() {
     let resources = ResourceTable::new();
     let bound = bind(&resources, 0, "udp4").unwrap();
-    let error = send(
+    let sent = send(
         &NetworkPolicy::default(),
         &resources,
         bound.rid,
@@ -124,9 +126,15 @@ async fn broadcast_is_refused_outright() {
         0,
         true,
     )
-    .await
-    .expect_err("broadcast is not permitted");
-    assert!(error.message.contains("broadcast"), "{}", error.message);
+    .await;
+    if let Err(error) = &sent {
+        assert!(
+            !error.message.contains("not allowed") && !error.message.contains("policy"),
+            "the engine refused it: {}",
+            error.message
+        );
+    }
+    assert!(resources.udp(bound.rid).unwrap().socket.broadcast().unwrap());
 }
 
 /// A handle of another kind is refused by name for every call that takes a

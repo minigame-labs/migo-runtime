@@ -54,6 +54,7 @@ mod share;
 mod snapshot_fingerprint;
 mod storage_isolation;
 mod support;
+mod tcp_socket_rules;
 mod timers;
 mod two_session_identity;
 // `getUpdateManager` ships with host_v8_update, which api-system gates.

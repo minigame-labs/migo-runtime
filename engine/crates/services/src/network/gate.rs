@@ -33,7 +33,7 @@ use std::sync::Once;
 use tracing::warn;
 use url::Url;
 
-use super::address_filter::{is_blocked_address, is_private};
+use super::address_filter::{is_blocked_address, is_blocked_datagram_address, is_private};
 use shared::op_state::NetworkPolicy;
 
 /// One-shot flag: warn exactly once if the host app shipped with an
@@ -208,7 +208,12 @@ pub fn evaluate_policy(
     policy: &NetworkPolicy,
     kind: GateKind,
 ) -> Result<(), GateReject> {
-    evaluate(url, policy, kind, &is_blocked_address)
+    // A datagram may also be broadcast or multicast; a stream or a request may not.
+    let blocked: &dyn Fn(&std::net::SocketAddr) -> bool = match kind {
+        GateKind::UdpSocket => &is_blocked_datagram_address,
+        _ => &is_blocked_address,
+    };
+    evaluate(url, policy, kind, blocked)
 }
 
 /// [`evaluate_policy`] with `blocked` deciding which addresses may not be reached: the device's real networks in

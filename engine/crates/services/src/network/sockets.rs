@@ -38,10 +38,14 @@ pub fn join_host_port(host: &str, port: u16) -> String {
 
 /// Resolve a host:port string to the first SocketAddr.
 ///
-/// Rejects addresses in private/loopback/link-local ranges to prevent SSRF.
-/// Checks ALL resolved addresses — if any points to a blocked range the
-/// entire resolution is rejected (prevents mixed public/private DNS responses).
-pub async fn resolve_first(addr: &str) -> Result<SocketAddr, std::io::Error> {
+/// Rejects any address `blocked` refuses -- the stream rule or the datagram
+/// rule of `address_filter` -- to prevent SSRF. Checks ALL resolved addresses:
+/// if any is refused the entire resolution is rejected (prevents mixed
+/// public/private DNS responses).
+pub async fn resolve_first(
+    addr: &str,
+    blocked: fn(&SocketAddr) -> bool,
+) -> Result<SocketAddr, std::io::Error> {
     let addrs: Vec<SocketAddr> = tokio::net::lookup_host(addr).await?.collect();
     let first = *addrs.first().ok_or_else(|| {
         std::io::Error::new(
@@ -50,7 +54,7 @@ pub async fn resolve_first(addr: &str) -> Result<SocketAddr, std::io::Error> {
         )
     })?;
     for resolved in &addrs {
-        if super::address_filter::is_blocked_address(resolved) {
+        if blocked(resolved) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
                 format!(

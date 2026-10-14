@@ -20,6 +20,8 @@ class TCPSocket {
         // A connect result may arrive after a newer attempt. The generation
         // keeps stale results from publishing a rid or terminating the winner.
         this._connectGen = 0;
+        // Made past the reference's creation quota: its connect fails.
+        this._overQuota = false;
 
         // Per-instance event listeners
         this._connectListeners = createListenerGroup('TCPSocket onConnect');
@@ -33,6 +35,10 @@ class TCPSocket {
 
     connect(options = {}) {
         if (this._connected || this._closed) return;
+        if (this._overQuota) {
+            this._fireError(`connect:fail more than ${TCP_SOCKET_QUOTA} TCPSockets were created in 5 minutes`);
+            return;
+        }
 
         const {
             address,
@@ -245,9 +251,27 @@ class TCPSocket {
 
 // -- Factory function --
 
+// The reference allows at most 20 TCPSockets created in any 5 minutes. One past that is still made -- a factory that
+// throws would stop a game that does not expect it -- and its connect fails through onError, where a socket says why.
+// Measured on the monotonic clock, over the creations that counted.
+const TCP_SOCKET_QUOTA = 20;
+const TCP_SOCKET_WINDOW_MS = 5 * 60 * 1000;
+const tcpSocketsCreated = [];
+
+function overTcpSocketQuota(now) {
+    while (tcpSocketsCreated.length > 0 && now - tcpSocketsCreated[0] >= TCP_SOCKET_WINDOW_MS) {
+        tcpSocketsCreated.shift();
+    }
+    if (tcpSocketsCreated.length >= TCP_SOCKET_QUOTA) return true;
+    tcpSocketsCreated.push(now);
+    return false;
+}
+
 function createTCPSocket(options = {}) {
     const type = options.type || 'ipv4';
-    return new TCPSocket(type);
+    const socket = new TCPSocket(type);
+    socket._overQuota = overTcpSocketQuota(performance.now());
+    return socket;
 }
 
 export { createTCPSocket };

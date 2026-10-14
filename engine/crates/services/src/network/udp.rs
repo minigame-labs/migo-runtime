@@ -146,7 +146,7 @@ pub async fn connect(
 
     let target = join_host_port(address, port);
     debug!("UDP connect: rid={rid}, target={target}");
-    let resolved = resolve_first(&target)
+    let resolved = resolve_first(&target, super::address_filter::is_blocked_datagram_address)
         .await
         .map_err(|error| generic(format!("connect:fail {error}")))?;
     socket
@@ -173,22 +173,17 @@ pub async fn send(
     set_broadcast: bool,
 ) -> Result<(), ServiceError> {
     let port = checked_port(port)?;
-    if set_broadcast {
-        return Err(generic(
-            "send:fail broadcast is not permitted by the runtime policy",
-        ));
-    }
     gate::enforce_host(address, port, policy, GateKind::UdpSocket)
         .map_err(ServiceError::generic)?;
     let socket = resources.udp(rid)?;
 
     let target = join_host_port(address, port);
     debug!("UDP send: rid={rid}, target={target}");
-    // Every DNS answer goes through the address filter, which covers multicast,
-    // documentation, benchmarking and reserved ranges as well as the private,
-    // link-local and loopback set. So a multicast destination -- named or
-    // literal -- is refused here, before any `send_to` reaches the kernel.
-    let resolved = resolve_first(&target)
+    // Every DNS answer goes through the address filter's datagram rule: the
+    // stream rule (documentation, benchmarking, reserved, link-local, loopback,
+    // private off the local network refused) with the broadcast address and
+    // multicast groups allowed, as the reference allows them.
+    let resolved = resolve_first(&target, super::address_filter::is_blocked_datagram_address)
         .await
         .map_err(|error| generic(format!("send:fail resolve error: {error}")))?;
 
@@ -202,6 +197,17 @@ pub async fn send(
         (None, None) => return Err(type_error("send:fail no data provided")),
     };
 
+    // SO_BROADCAST: asked for (setBroadcast), or implied by the limited
+    // broadcast address, which the reference sends to without it. A directed
+    // broadcast (a LAN's x.y.z.255) without setBroadcast is refused by the
+    // kernel, as the reference refuses it.
+    let limited_broadcast = matches!(resolved.ip(), std::net::IpAddr::V4(ip) if ip.is_broadcast());
+    if set_broadcast || limited_broadcast {
+        socket
+            .socket
+            .set_broadcast(true)
+            .map_err(|error| generic(format!("send:fail broadcast: {error}")))?;
+    }
     debug!("UDP send: {} bytes to {resolved}", payload.len());
     socket
         .socket
