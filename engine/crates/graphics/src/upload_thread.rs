@@ -145,36 +145,21 @@ impl UploadThreadHandle {
     /// * `display` — current EGL display
     /// * `config` — EGL config used by the render context
     /// * `share_ctx` — the render thread's EGL context to share with
-    pub fn try_spawn(
+    pub(crate) fn try_spawn(
         egl_provider: Arc<dyn EglProvider>,
         egl: &khronos_egl::DynamicInstance<khronos_egl::EGL1_4>,
         display: khronos_egl::Display,
         config: khronos_egl::Config,
         share_ctx: khronos_egl::Context,
         gles_major: u32,
-        has_robust_context: bool,
+        features: crate::context_features::ContextFeatures,
         surfaceless: bool,
     ) -> Option<Self> {
         with_background_context(egl_provider.as_ref(), || ())?;
 
-        // Create shared context matching the render context's GLES
-        // version.  Mirror the render context's robustness
-        // setting so the shared context also reports reset via
-        // `glGetGraphicsResetStatus` if the driver supports it.
-        let mut ctx_attribs: Vec<khronos_egl::Int> = vec![
-            khronos_egl::CONTEXT_CLIENT_VERSION as khronos_egl::Int,
-            gles_major as khronos_egl::Int,
-        ];
-        if has_robust_context {
-            // Same attribute pair as `egl_ops::build_ctx_attribs`;
-            // replicated here to keep `upload_thread` free of a
-            // manager-module dependency.
-            const EGL_CONTEXT_OPENGL_RESET_NOTIFICATION_STRATEGY_EXT: khronos_egl::Int = 0x3138;
-            const EGL_LOSE_CONTEXT_ON_RESET_EXT: khronos_egl::Int = 0x31BF;
-            ctx_attribs.push(EGL_CONTEXT_OPENGL_RESET_NOTIFICATION_STRATEGY_EXT);
-            ctx_attribs.push(EGL_LOSE_CONTEXT_ON_RESET_EXT);
-        }
-        ctx_attribs.push(khronos_egl::NONE as khronos_egl::Int);
+        // The shared context asks for what the render context asked for -- it is in the same share group, which
+        // EGL and ANGLE require to agree -- so it also reports a reset, and initializes what it defines alike.
+        let ctx_attribs = features.context_attribs(gles_major);
 
         let shared_ctx = egl
             .create_context(display, config, Some(share_ctx), &ctx_attribs)

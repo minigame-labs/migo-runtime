@@ -70,6 +70,7 @@ mod canvas;
 mod canvas2d_dispatcher;
 pub(crate) mod canvas_keyed;
 pub mod compressed_upload;
+pub(crate) mod context_features;
 pub(crate) mod damage_effect;
 pub mod device_caps;
 pub mod device_profile;
