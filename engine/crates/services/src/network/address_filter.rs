@@ -31,20 +31,22 @@ use shared::device::local_address::{self, LocalNetwork};
 /// the reference platform allows "the non-local IPs on the local network" (局域网内的非本机 IP) -- which is how games
 /// play on a LAN -- and nothing else private. Everything else this module lists is refused wherever it is.
 pub fn is_blocked_address(addr: &SocketAddr) -> bool {
-    match class_of(addr.ip()) {
-        Class::Public => false,
-        Class::Reserved => true,
-        // Asked only for a private address: listing the interfaces is a system call, and most addresses are public.
-        Class::Private => !on_local_network(addr.ip(), &local_address::networks()),
-    }
+    // The interfaces are listed only for a private address: a system call, and most addresses are public.
+    is_blocked_given(addr, local_address::networks)
 }
 
 /// [`is_blocked_address`] on a device whose networks are `networks`.
+#[cfg(test)]
 pub(crate) fn is_blocked_on(addr: &SocketAddr, networks: &[LocalNetwork]) -> bool {
+    is_blocked_given(addr, || networks.to_vec())
+}
+
+/// The rule, with the device's networks asked for only when an address's class needs them.
+fn is_blocked_given(addr: &SocketAddr, networks: impl FnOnce() -> Vec<LocalNetwork>) -> bool {
     match class_of(addr.ip()) {
         Class::Public => false,
         Class::Reserved => true,
-        Class::Private => !on_local_network(addr.ip(), networks),
+        Class::Private => !on_local_network(addr.ip(), &networks()),
     }
 }
 
