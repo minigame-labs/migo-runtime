@@ -550,6 +550,12 @@ export function op_fetch_send(rid) {
     .then(fetchResponse);
 }
 
+/// The profile of the request whose response `rid` names, once content has read its body: what `res.profile` is.
+export function op_fetch_profile(rid) {
+  const response = smiU32(rid, "rid");
+  return servicesOf(engineHost()).request(SERVICE_OP.op_fetch_profile, (w) => w.u32(response));
+}
+
 /// Connect, and answer the handle the facade drives the socket with.
 ///
 /// `protocols` and `headers` are `#[serde]`, which the conversion gate exempts;

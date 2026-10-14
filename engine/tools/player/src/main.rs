@@ -53,6 +53,8 @@ use win32_window::Win32Window;
 use x11_window::X11Window;
 
 const GAME_ID: &str = "player-demo";
+/// The player's own id, as a mobile host's package name is its own: content reads it as `host.appId`.
+const PLAYER_APP_ID: &str = "com.migo.player";
 const ENTRY: &str = "game.js";
 
 /// Copy a directory tree, creating destination directories as needed.
@@ -292,8 +294,14 @@ fn run(
         surface_h,
         PixelRatio::new(1.0).expect("1.0 is a valid pixel ratio"),
     )));
-    let host_kit: Arc<dyn PlatformServices> =
-        Arc::new(HostPlatform::new().with_window(Arc::clone(&window_state)));
+    let host_kit: Arc<dyn PlatformServices> = Arc::new(
+        HostPlatform::new()
+            .with_window(Arc::clone(&window_state))
+            .with_host_app(shared::services::app_info::HostAppInfo {
+                host_app_id: Some(PLAYER_APP_ID.to_string()),
+                ..Default::default()
+            }),
+    );
     tracing::info!("spawning host thread ({surface_w}x{surface_h} {mode})");
     // The player always has its window before it starts, so this is never the
     // warm start `spawn_host_thread` also accepts.

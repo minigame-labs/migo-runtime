@@ -95,6 +95,8 @@ pub struct FetchAnswer {
 pub struct PendingRequest {
     send: RequestSend,
     cancel: Arc<CancelFlag>,
+    /// When content asked for it: the profile's `invokeStart`.
+    invoked: std::time::Instant,
 }
 
 enum RequestSend {
@@ -113,6 +115,7 @@ pub struct ResponseBody {
     reader: Mutex<BodyReader>,
     cancel: CancelFlag,
     size: Option<u64>,
+    invoked: std::time::Instant,
     _byte_ticket: Option<ByteTicket>,
 }
 
@@ -124,7 +127,12 @@ struct BodyReader {
 }
 
 impl ResponseBody {
-    fn new(response: Response, size: Option<u64>, byte_ticket: Option<ByteTicket>) -> Self {
+    fn new(
+        response: Response,
+        size: Option<u64>,
+        byte_ticket: Option<ByteTicket>,
+        invoked: std::time::Instant,
+    ) -> Self {
         Self {
             reader: Mutex::new(BodyReader {
                 response,
@@ -132,8 +140,16 @@ impl ResponseBody {
             }),
             cancel: CancelFlag::default(),
             size,
+            invoked,
             _byte_ticket: byte_ticket,
         }
+    }
+
+    /// The request's profile as it stands: complete once the body has been read to its end.
+    pub async fn profile(&self) -> serde_json::Value {
+        let reader = self.reader.lock().await;
+        let estimate = super::quality::estimator().lock().estimate();
+        super::profile::profile(self.invoked, reader.response.timing(), estimate)
     }
 
     /// What the body says its length is, where it said.
@@ -200,6 +216,8 @@ pub fn fetch(
     timeout_ms: u32,
     enable_cache: bool,
 ) -> Result<FetchHandles, ServiceError> {
+    // Content called the API now: the request is built in the same call.
+    let invoked = std::time::Instant::now();
     let method = Method::from_bytes(method).map_err(|_| type_error("Invalid HTTP method"))?;
     let url = Url::parse(url).map_err(|_| type_error("Invalid URL"))?;
 
@@ -232,6 +250,7 @@ pub fn fetch(
             let request_rid = env.resources.add_request(PendingRequest {
                 send: RequestSend::Http(request),
                 cancel: Arc::clone(&cancel),
+                invoked,
             });
             let cancel_handle_rid = env.resources.add_cancel(cancel);
             Ok(FetchHandles {
@@ -253,6 +272,7 @@ pub fn fetch(
             let request_rid = env.resources.add_request(PendingRequest {
                 send: RequestSend::Data(url, response),
                 cancel: Arc::new(CancelFlag::default()),
+                invoked,
             });
             Ok(FetchHandles {
                 request_rid,
@@ -308,7 +328,11 @@ pub async fn fetch_send(
     pools: &IoPools,
     request_rid: ResourceId,
 ) -> Result<FetchAnswer, ServiceError> {
-    let PendingRequest { send, cancel } = resources.take_request(request_rid)?;
+    let PendingRequest {
+        send,
+        cancel,
+        invoked,
+    } = resources.take_request(request_rid)?;
     let started_at = std::time::Instant::now();
     let response = match send {
         RequestSend::Data(url, response) => Response::local(url, response),
@@ -352,6 +376,7 @@ pub async fn fetch_send(
         response,
         content_length,
         Some(byte_ticket),
+        invoked,
     )));
 
     let elapsed_ms = started_at.elapsed().as_millis() as u64;
@@ -375,6 +400,15 @@ pub async fn fetch_send(
         remote_addr_port: remote_addr.map(|addr| addr.port()),
         error: None,
     })
+}
+
+/// The profile of the request whose response `response_rid` names: complete once its body has been read to the end,
+/// which is when content asks for it -- before it closes the response.
+pub async fn profile(
+    resources: &ResourceTable,
+    response_rid: ResourceId,
+) -> Result<serde_json::Value, ServiceError> {
+    Ok(resources.response(response_rid)?.profile().await)
 }
 
 /// The message a failed send shows: what failed, and every cause beneath it.

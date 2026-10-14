@@ -3,6 +3,7 @@ use migo_core::services::{
     SensorServices, SystemInfoService, SystemUtilServices,
 };
 use migo_core::{DeviceServiceProvider, FrameClock, HostNotifier};
+use shared::services::app_info::HostAppInfo;
 use shared::surface::{HostWindowInfo, HostWindowState};
 use std::sync::Arc;
 
@@ -20,6 +21,8 @@ pub struct LinuxPlatform {
     /// stacks everything at the origin. Nothing in the rendering path is wrong
     /// when that happens, which is why no rendering test catches it.
     window: Option<Arc<HostWindowState>>,
+    /// What the host says about itself.
+    host_app: HostAppInfo,
 }
 
 impl LinuxPlatform {
@@ -27,6 +30,7 @@ impl LinuxPlatform {
         Self {
             host_keyboard: None,
             window: None,
+            host_app: HostAppInfo::default(),
         }
     }
 
@@ -39,6 +43,7 @@ impl LinuxPlatform {
         Self {
             host_keyboard,
             window: None,
+            host_app: HostAppInfo::default(),
         }
     }
 
@@ -52,6 +57,12 @@ impl LinuxPlatform {
     /// exact defect this exists to fix.
     pub fn with_window(mut self, window: Arc<HostWindowState>) -> Self {
         self.window = Some(window);
+        self
+    }
+
+    /// What the host says about itself -- its id (`host.appId`) above all, which the platform has no way to know.
+    pub fn with_host_app(mut self, app: HostAppInfo) -> Self {
+        self.host_app = app;
         self
     }
 }
@@ -70,6 +81,7 @@ impl Default for LinuxPlatform {
 struct LinuxDeviceServices {
     host_keyboard: Option<Arc<dyn KeyboardService>>,
     window: Option<Arc<HostWindowState>>,
+    host_app: HostAppInfo,
 }
 
 impl SensorServices for LinuxDeviceServices {}
@@ -82,9 +94,9 @@ impl SystemUtilServices for LinuxDeviceServices {
     }
 
     fn system_info(&self) -> Option<Arc<dyn SystemInfoService>> {
-        Some(Arc::new(HostWindowInfo::new(Arc::clone(
-            self.window.as_ref()?,
-        ))))
+        Some(Arc::new(
+            HostWindowInfo::new(Arc::clone(self.window.as_ref()?)).with_app(self.host_app.clone()),
+        ))
     }
 }
 
@@ -99,6 +111,7 @@ impl DeviceServiceProvider for LinuxPlatform {
         Some(Arc::new(LinuxDeviceServices {
             host_keyboard: self.host_keyboard.clone(),
             window: self.window.clone(),
+            host_app: self.host_app.clone(),
         }))
     }
 }
@@ -164,6 +177,24 @@ mod tests {
         let info: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
         assert_eq!(info["window_width"], 720.0);
         assert_eq!(info["window_height"], 1280.0);
+    }
+
+    /// Who the host is reaches content (`host.appId`): a Linux app has no
+    /// identifier the system hands out, so only the host can say.
+    #[test]
+    fn the_host_s_own_id_is_reported_to_content() {
+        let info = LinuxPlatform::new()
+            .with_window(window(720, 1280))
+            .with_host_app(HostAppInfo {
+                host_app_id: Some("com.example.game-host".to_string()),
+                ..HostAppInfo::default()
+            })
+            .create_device_services(1)
+            .expect("bundle")
+            .system_info()
+            .expect("system info")
+            .host_app_info();
+        assert_eq!(info.host_app_id.as_deref(), Some("com.example.game-host"));
     }
 
     /// A window and a keyboard are independent: supplying one must not withdraw

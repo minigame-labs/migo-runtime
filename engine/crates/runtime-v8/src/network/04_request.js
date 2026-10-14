@@ -7,7 +7,7 @@ import {
     abortedNetworkError, Response, ErrorResponse,
     nullBodyStatus, Exception,
 } from "ext:host_v8_network/02_response.js";
-import { op_fetch, op_fetch_send } from "ext:core/ops";
+import { op_fetch, op_fetch_profile, op_fetch_send } from "ext:core/ops";
 
 const {
     TypeError, JSONParse, TypedArrayPrototypeGetBuffer,
@@ -180,6 +180,7 @@ function request(options) {
         enableHttp2 = false,
         enableCache = false,
         enableChunked = false,
+        enableProfile = true,
     } = opts;
     const settler = createSettler('request', opts);
 
@@ -262,9 +263,20 @@ function request(options) {
             requestTask._triggerHeadersReceived(respHeader);
 
             const cbResp = new Response(respHeader);
+            // The profile is a report on the request, not part of its answer: a request whose profile could not be
+            // taken still succeeded.
+            const takeProfile = async (rid) => {
+                if (enableProfile === false) return;
+                try {
+                    cbResp.profile = await op_fetch_profile(rid);
+                } catch (_) {
+                    cbResp.profile = undefined;
+                }
+            };
 
             if (nullBodyStatus(resp.status)
                 || methodNormalized === "HEAD" || methodNormalized === "CONNECT") {
+                await takeProfile(resp.responseRid);
                 core.close(resp.responseRid);
                 cbResp.data = fromBodyBuffer(EMPTY_BODY, dataType, responseType);
             } else {
@@ -280,7 +292,7 @@ function request(options) {
                             if (chunk === undefined) return;
                             const chunkCopy = new Uint8Array(chunk);
                             requestTask._triggerChunkReceived({ data: chunkCopy.buffer });
-                        });
+                        }, takeProfile);
                     } else {
                         // Pull bounded chunks so a chunked response cannot
                         // make readAll allocate an unbounded body. A callback
@@ -296,7 +308,7 @@ function request(options) {
                                 throw new Error("response body exceeds buffered response limit");
                             }
                             chunks.push(new Uint8Array(chunk));
-                        });
+                        }, takeProfile);
                         let bodyBytes = EMPTY_BODY;
                         if (chunks.length === 1) {
                             // Most bodies (JSON, a small config) fit one chunk, which is already

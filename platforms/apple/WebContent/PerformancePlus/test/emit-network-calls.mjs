@@ -105,6 +105,8 @@ function canned(op, w) {
     w.null();
     w.null();
     w.null();
+  } else if (name === "op_fetch_profile") {
+    w.json("{}");
   } else if (name === "core_read") {
     w.bytes(new Uint8Array(0));
   } else {
@@ -239,6 +241,18 @@ async function script() {
       [4, 4, 3, 0, 0],
     );
   });
+  // The profile, taken as content takes it: after the body has ended, before the response is closed. A data: URL
+  // needed no connection, so every phase is its fetch start, there is no peer, and what arrived is counted.
+  const profile = await asyncLane.op_fetch_profile(response.responseRid);
+  check("the profile is the request's: every phase at its fetch start, no peer", () => {
+    assert.equal(profile.protocol, "unknown");
+    assert.equal(profile.peerIP, "");
+    assert.equal(profile.socketReused, false);
+    assert.equal(profile.requestStart, profile.fetchStart);
+    assert.equal(profile.responseEnd, profile.fetchStart);
+    assert.ok(profile.invokeStart <= profile.fetchStart);
+    assert.ok(profile.receivedBytedCount >= BODY.length);
+  });
   coreStream.close(response.responseRid);
 
   // A prefetch is a command: nothing answers it, and a host the policy refuses
@@ -257,7 +271,15 @@ if (mode === "write") {
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "calls.json"), JSON.stringify(calls, null, 1));
   const ops = new Set(calls.map((call) => call.op));
-  const expected = ["op_fetch", "op_fetch_send", "op_prefetch_dns", "core_read", "core_close", "core_try_close"];
+  const expected = [
+    "op_fetch",
+    "op_fetch_send",
+    "op_fetch_profile",
+    "op_prefetch_dns",
+    "core_read",
+    "core_close",
+    "core_try_close",
+  ];
   assert.deepEqual(
     expected.filter((name) => !ops.has(name)),
     [],

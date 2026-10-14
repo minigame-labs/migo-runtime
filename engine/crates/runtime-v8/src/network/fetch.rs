@@ -261,6 +261,27 @@ pub struct FetchResponse {
     pub error: Option<String>,
 }
 
+/// The profile of the request whose response `rid` names, as `res.profile` reports it: complete once content has read
+/// the body to its end, which is when it asks -- before it closes the response.
+#[op2(async(lazy), fast)]
+#[serde]
+pub async fn op_fetch_profile(
+    state: Rc<RefCell<OpState>>,
+    #[smi] rid: ResourceId,
+) -> Result<deno_core::serde_json::Value, JsErrorBox> {
+    let (resources, response_id) = {
+        let state = state.borrow();
+        let handle = state
+            .resource_table
+            .get::<ServiceHandle>(rid)
+            .map_err(|_| JsErrorBox::generic("Failed to find fetch response resource"))?;
+        (std::sync::Arc::clone(&handle.resources), handle.id)
+    };
+    service_net::fetch::profile(&resources, response_id)
+        .await
+        .map_err(service_error)
+}
+
 #[op2(async(lazy), fast)]
 #[serde]
 pub async fn op_fetch_send(
@@ -354,6 +375,7 @@ pub struct FetchUploadResult {
     pub headers: Vec<(ByteString, ByteString)>,
     pub total_bytes_sent: u64,
     pub error: Option<String>,
+    pub profile: Option<deno_core::serde_json::Value>,
 }
 
 impl From<service_net::upload::UploadAnswer> for FetchUploadResult {
@@ -368,6 +390,7 @@ impl From<service_net::upload::UploadAnswer> for FetchUploadResult {
                 .collect(),
             total_bytes_sent: answer.total_bytes_sent,
             error: answer.error,
+            profile: answer.profile,
         }
     }
 }

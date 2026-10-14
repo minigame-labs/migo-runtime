@@ -21,7 +21,7 @@ use std::sync::{
 
 use crate::{
     protocol::error::ServiceError,
-    services::SystemInfoService,
+    services::{SystemInfoService, app_info::HostAppInfo},
     surface::{PixelRatio, SafeArea, WindowInfo},
 };
 
@@ -139,7 +139,8 @@ impl HostWindowState {
     }
 }
 
-/// Reports the window the host described, and nothing else.
+/// Reports the window the host described, and what the host says about
+/// itself (its id, as `host.appId`), and nothing else.
 ///
 /// Every other `SystemInfoService` method keeps its default: a host-driven
 /// platform has no device model, benchmark level or system settings to report
@@ -147,15 +148,29 @@ impl HostWindowState {
 #[derive(Debug)]
 pub struct HostWindowInfo {
     window: Arc<HostWindowState>,
+    app: HostAppInfo,
 }
 
 impl HostWindowInfo {
     pub fn new(window: Arc<HostWindowState>) -> Self {
-        Self { window }
+        Self {
+            window,
+            app: HostAppInfo::default(),
+        }
+    }
+
+    /// What the host says about itself.
+    pub fn with_app(mut self, app: HostAppInfo) -> Self {
+        self.app = app;
+        self
     }
 }
 
 impl SystemInfoService for HostWindowInfo {
+    fn host_app_info(&self) -> HostAppInfo {
+        self.app.clone()
+    }
+
     fn get_window_info_json(&self) -> Result<String, ServiceError> {
         let metrics = self.window.snapshot();
         let physical_width = metrics.width_pixels as f32;

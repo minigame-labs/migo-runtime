@@ -611,9 +611,15 @@ async fn a_request_carries_its_method() {
 #[ignore = "needs the internet"]
 async fn a_public_https_server_answers() {
     for http2 in [true, false] {
-        let client = HttpClientBuilder::new("migo-test", http2, &policy(), GateKind::FetchRedirect, "fetch")
-            .build()
-            .unwrap();
+        let client = HttpClientBuilder::new(
+            "migo-test",
+            http2,
+            &policy(),
+            GateKind::FetchRedirect,
+            "fetch",
+        )
+        .build()
+        .unwrap();
         let response = client
             .get(Url::parse("https://example.com/").unwrap())
             .timeout(Duration::from_secs(20))
@@ -623,7 +629,11 @@ async fn a_public_https_server_answers() {
         assert_eq!(response.status(), StatusCode::OK);
         let trace = response.timing().connection.clone().unwrap();
         assert!(trace.tls.is_some());
-        let expected = if http2 { Version::HTTP_2 } else { Version::HTTP_11 };
+        let expected = if http2 {
+            Version::HTTP_2
+        } else {
+            Version::HTTP_11
+        };
         assert_eq!(response.version(), expected);
         eprintln!(
             "http2={http2} peer={} proxied={} dns={:?} connect={:?} tls={:?} rtt={:?}",

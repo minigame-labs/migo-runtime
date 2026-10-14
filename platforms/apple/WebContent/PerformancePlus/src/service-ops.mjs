@@ -290,4 +290,5 @@ export const SERVICE_OP = Object.freeze({
   op_set_enable_debug: 280,
   op_get_app_info: 281,
   op_set_device_orientation: 282,
+  op_fetch_profile: 283,
 });

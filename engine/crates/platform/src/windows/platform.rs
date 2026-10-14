@@ -3,6 +3,7 @@ use migo_core::services::{
     SensorServices, SystemInfoService, SystemUtilServices,
 };
 use migo_core::{DeviceServiceProvider, FrameClock, HostNotifier};
+use shared::services::app_info::HostAppInfo;
 use shared::surface::{HostWindowInfo, HostWindowState};
 use std::sync::Arc;
 
@@ -19,6 +20,8 @@ pub struct WindowsPlatform {
     /// See `LinuxPlatform` — same gap, same fix, and the player drives both
     /// through the same code.
     window: Option<Arc<HostWindowState>>,
+    /// What the host says about itself.
+    host_app: HostAppInfo,
 }
 
 impl WindowsPlatform {
@@ -26,6 +29,7 @@ impl WindowsPlatform {
         Self {
             host_keyboard: None,
             window: None,
+            host_app: HostAppInfo::default(),
         }
     }
 
@@ -38,6 +42,7 @@ impl WindowsPlatform {
         Self {
             host_keyboard,
             window: None,
+            host_app: HostAppInfo::default(),
         }
     }
 
@@ -51,6 +56,12 @@ impl WindowsPlatform {
     /// the exact defect this exists to fix.
     pub fn with_window(mut self, window: Arc<HostWindowState>) -> Self {
         self.window = Some(window);
+        self
+    }
+
+    /// What the host says about itself -- its id (`host.appId`) above all, which the platform has no way to know.
+    pub fn with_host_app(mut self, app: HostAppInfo) -> Self {
+        self.host_app = app;
         self
     }
 }
@@ -69,6 +80,7 @@ impl Default for WindowsPlatform {
 struct WindowsDeviceServices {
     host_keyboard: Option<Arc<dyn KeyboardService>>,
     window: Option<Arc<HostWindowState>>,
+    host_app: HostAppInfo,
 }
 
 impl SensorServices for WindowsDeviceServices {}
@@ -81,9 +93,9 @@ impl SystemUtilServices for WindowsDeviceServices {
     }
 
     fn system_info(&self) -> Option<Arc<dyn SystemInfoService>> {
-        Some(Arc::new(HostWindowInfo::new(Arc::clone(
-            self.window.as_ref()?,
-        ))))
+        Some(Arc::new(
+            HostWindowInfo::new(Arc::clone(self.window.as_ref()?)).with_app(self.host_app.clone()),
+        ))
     }
 }
 
@@ -97,6 +109,7 @@ impl DeviceServiceProvider for WindowsPlatform {
         Some(Arc::new(WindowsDeviceServices {
             host_keyboard: self.host_keyboard.clone(),
             window: self.window.clone(),
+            host_app: self.host_app.clone(),
         }))
     }
 }

@@ -150,6 +150,7 @@ pub(crate) fn is_async(op: u32) -> bool {
     matches!(
         op,
         id::op_fetch_send
+            | id::op_fetch_profile
             | id::core_read
             | id::op_ws_create
             | id::op_ws_next_event
@@ -301,6 +302,15 @@ pub(crate) fn call_async(
                 fetch_service::fetch_send(&resources, &pools, rid)
                     .await
                     .map(fetch_response)
+            })
+        }
+        id::op_fetch_profile => {
+            let [rid] = exactly(op, args)?;
+            let rid: ResourceId = u32_of(op, 0, rid)?;
+            Box::pin(async move {
+                fetch_service::profile(&resources, rid)
+                    .await
+                    .map(|profile| OwnedValue::Json(profile.to_string()))
             })
         }
         id::core_read => {
@@ -624,7 +634,7 @@ fn ws_event(event: WsEvent) -> OwnedValue {
 }
 
 /// `FetchUploadResult`, in its field order: data, statusCode, headers,
-/// totalBytesSent, error.
+/// totalBytesSent, error, profile.
 fn upload_answer(answer: upload::UploadAnswer) -> OwnedValue {
     OwnedValue::Array(vec![
         OwnedValue::Str(answer.data),
@@ -641,6 +651,10 @@ fn upload_answer(answer: upload::UploadAnswer) -> OwnedValue {
         serde_u64(answer.total_bytes_sent),
         match answer.error {
             Some(error) => OwnedValue::Str(error),
+            None => OwnedValue::Null,
+        },
+        match answer.profile {
+            Some(profile) => OwnedValue::Json(profile.to_string()),
             None => OwnedValue::Null,
         },
     ])
