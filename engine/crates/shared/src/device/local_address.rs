@@ -46,6 +46,49 @@ struct InterfaceAddress {
     prefix: u8,
 }
 
+/// One network the device is on: an address one of its interfaces has, and
+/// the length of that interface's prefix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocalNetwork {
+    pub address: IpAddr,
+    pub prefix: u8,
+}
+
+impl LocalNetwork {
+    /// Whether `ip` is on this network: the same family, and the same first
+    /// `prefix` bits.
+    pub fn contains(&self, ip: IpAddr) -> bool {
+        match (self.address, ip) {
+            (IpAddr::V4(own), IpAddr::V4(other)) => {
+                let mask = u32::MAX
+                    .checked_shl(32 - u32::from(self.prefix.min(32)))
+                    .unwrap_or(0);
+                u32::from(own) & mask == u32::from(other) & mask
+            }
+            (IpAddr::V6(own), IpAddr::V6(other)) => {
+                let mask = u128::MAX
+                    .checked_shl(128 - u32::from(self.prefix.min(128)))
+                    .unwrap_or(0);
+                u128::from(own) & mask == u128::from(other) & mask
+            }
+            _ => false,
+        }
+    }
+}
+
+/// Every network the device is on, from every address of every interface --
+/// what decides whether an address is on its local network. Empty where the
+/// system does not say.
+pub fn networks() -> Vec<LocalNetwork> {
+    os::addresses()
+        .into_iter()
+        .map(|entry| LocalNetwork {
+            address: entry.address,
+            prefix: entry.prefix,
+        })
+        .collect()
+}
+
 /// The device's local address, or why it has none.
 pub fn query() -> Result<LocalAddress, String> {
     let v4 = routed(
@@ -341,6 +384,39 @@ mod os {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A network contains the addresses that share its prefix, in its own family, and nothing at a longer distance.
+    #[test]
+    fn a_network_contains_the_addresses_its_prefix_covers() {
+        let lan = LocalNetwork {
+            address: "10.0.2.15".parse().unwrap(),
+            prefix: 24,
+        };
+        assert!(lan.contains("10.0.2.2".parse().unwrap()));
+        assert!(lan.contains("10.0.2.255".parse().unwrap()));
+        assert!(!lan.contains("10.0.3.2".parse().unwrap()));
+        assert!(
+            !lan.contains("::ffff:10.0.2.2".parse().unwrap()),
+            "another family"
+        );
+        let ula = LocalNetwork {
+            address: "fd00::15".parse().unwrap(),
+            prefix: 64,
+        };
+        assert!(ula.contains("fd00::2".parse().unwrap()));
+        assert!(!ula.contains("fd00:0:0:1::2".parse().unwrap()));
+    }
+
+    /// The system's networks include the loopback's, which every system has.
+    #[cfg(unix)]
+    #[test]
+    fn the_system_lists_its_networks() {
+        assert!(
+            networks()
+                .iter()
+                .any(|network| network.address.is_loopback())
+        );
+    }
 
     fn at(interface: &str, address: &str, prefix: u8) -> InterfaceAddress {
         InterfaceAddress {
