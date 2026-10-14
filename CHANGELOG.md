@@ -611,6 +611,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a relink, is INVALID_OPERATION and null, as are a deleted program and one that did not link.
 
 ### Changed
+- The API x platform matrix counts a cell ready only where the API was verified on that platform, not where it is
+  merely wired. `contracts/runtime/api-conformance-<platform>.json` records what migo-conformance's `api-spec` bundle
+  measured there (`scripts/import-api-conformance.py`): per API verified, failing (with the failing checks), present
+  (exists, not yet exercised) or absent, with the date and the commits it ran against. A cell is now ready when it is
+  wired and verified, or deliberately unsupported, or the host app's to answer; the summary keeps the wired count
+  beside it. Recorded for Android (emulator), iOS (simulator, Performance+), macOS (the view) and Linux (the C ABI
+  host); Windows and OpenHarmony have no runner yet, so nothing is verified there.
 - C ABI: a permission request carries the scope's `MIGO_SCOPE_*` number as `scopeId` beside its name, the number the
   host reports the decision with (`migo_session_set_scope_state`), so a C host keeps no table of scope names.
   `authorize` with a scope the platform does not define fails `authorize:fail invalid scope` before any host is asked.
