@@ -8,6 +8,16 @@
 #
 # Usage:
 #   scripts/dev-run-c-host.sh [GAME_BUNDLE_DIR] [SECONDS]
+#   scripts/dev-run-c-host.sh --build-only
+#
+# `--build-only` compiles the host and exits, for the reason dev-run-player.sh
+# gives for its own: the environment below is a cargo fingerprint input, so a
+# caller that wants the host built ahead of a timed run (the conformance
+# suite's C ABI runner) builds it through this script, not with a `cargo build`
+# of its own.
+#
+# The whole bundle directory is deployed -- the files a game loads beside its
+# game.js (fonts, images) are content too.
 #
 # Env overrides:
 #   MIGO_HOST_V8_DIR     gn_out dir holding obj/librusty_v8.a + src_binding.rs
@@ -22,6 +32,12 @@ ENGINE_DIR="$REPO_ROOT/engine"
 
 c_info() { echo -e "\033[0;36m[c-host] $*\033[0m"; }
 c_err()  { echo -e "\033[0;31m[c-host] $*\033[0m" >&2; }
+
+BUILD_ONLY=0
+if [[ "${1:-}" == "--build-only" ]]; then
+    BUILD_ONLY=1
+    shift
+fi
 
 GAME_DIR="${1:-$REPO_ROOT/../migo-bench/shells/migo-shell/app/src/main/assets/game}"
 SECS="${2:-10}"
@@ -47,12 +63,15 @@ unset ANDROID_NDK ANDROID_NDK_HOME || true
 
 # ---- deploy the game bundle where the ABI expects installed content ----
 CODE_DIR="$RUN_ROOT/files/migo/games/$CONTENT_ID/code"
-mkdir -p "$CODE_DIR"
-for name in game.json game.js; do
-    [[ -f "$GAME_DIR/$name" ]] || { c_err "missing $GAME_DIR/$name"; exit 1; }
-    cp "$GAME_DIR/$name" "$CODE_DIR/$name"
-done
-c_info "deployed '$CONTENT_ID' to $CODE_DIR"
+if (( BUILD_ONLY == 0 )); then
+    for name in game.json game.js; do
+        [[ -f "$GAME_DIR/$name" ]] || { c_err "missing $GAME_DIR/$name"; exit 1; }
+    done
+    rm -rf "$CODE_DIR"
+    mkdir -p "$CODE_DIR"
+    cp -R "$GAME_DIR"/. "$CODE_DIR"/
+    c_info "deployed '$CONTENT_ID' to $CODE_DIR"
+fi
 
 # ---- build the C host ----
 #
@@ -69,6 +88,10 @@ cargo build -p migo-c-host-example --offline
 
 BIN="$ENGINE_DIR/target/debug/migo-c-host"
 [[ -x "$BIN" ]] || { c_err "C host binary not produced: $BIN"; exit 1; }
+if (( BUILD_ONLY == 1 )); then
+    c_info "built $BIN"
+    exit 0
+fi
 
 c_info "running: $BIN $RUN_ROOT/files $CONTENT_ID $SECS"
 exec "$BIN" "$RUN_ROOT/files" "$CONTENT_ID" "$SECS"
