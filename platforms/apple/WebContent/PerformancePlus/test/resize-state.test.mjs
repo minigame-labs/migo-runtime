@@ -25,7 +25,7 @@ import {
   readEngineSessionConfig,
 } from "../src/engine-host.mjs";
 import { FrameSession } from "../src/frame-session.mjs";
-import { op_get_canvas_info, op_get_window_info, recordCanvasSize } from "../src/lane-local.mjs";
+import { op_get_canvas_info, op_get_menu_button_rect, op_get_window_info, recordCanvasSize } from "../src/lane-local.mjs";
 
 const window = (width, height) =>
   JSON.stringify({ window_width: width, window_height: height, screen_width: width, screen_height: height, pixel_ratio: 2 });
@@ -82,6 +82,34 @@ test("a device that changed alone is answered next, and is no resize", () => {
   applyResize({ surfaceWidth: 400, surfaceHeight: 800, device: { windowInfo: insets } });
   assert.deepEqual(take(), []);
   assert.deepEqual(JSON.parse(op_get_window_info()).safe_area, { left: 0, top: 47, right: 0, bottom: 34 });
+});
+
+// A host that draws no menu button describes none. The lane answers what the
+// native system-info service answers such a host -- an empty rect at the top
+// right of the safe area -- and follows the window when it turns; a host that
+// draws one is answered where it says.
+test("with no menu button described, the rect is empty at the safe area's top right", () => {
+  const described = (width, height, safe) => JSON.stringify({ ...JSON.parse(window(width, height)), safe_area: safe });
+  const portrait = described(402, 874, { left: 0, top: 62, right: 0, bottom: 34 });
+  applyResize({ surfaceWidth: 400, surfaceHeight: 800, device: { windowInfo: portrait } });
+  assert.deepEqual(JSON.parse(op_get_menu_button_rect()), { width: 0, height: 0, top: 62, bottom: 62, left: 402, right: 402 });
+
+  applyResize({
+    surfaceWidth: 800,
+    surfaceHeight: 400,
+    device: { windowInfo: described(874, 402, { left: 62, top: 0, right: 62, bottom: 21 }) },
+  });
+  assert.deepEqual(JSON.parse(op_get_menu_button_rect()), { width: 0, height: 0, top: 0, bottom: 0, left: 812, right: 812 });
+
+  const drawn = JSON.stringify({ width: 87, height: 32, top: 66, bottom: 98, left: 308, right: 395 });
+  applyResize({ surfaceWidth: 400, surfaceHeight: 800, device: { windowInfo: portrait, menuButtonRect: drawn } });
+  assert.equal(op_get_menu_button_rect(), drawn);
+
+  // A window that does not say its safe area: the native service fails the call
+  // then, and so does this lane.
+  applyResize({ surfaceWidth: 400, surfaceHeight: 800, device: { windowInfo: window(200, 400) } });
+  assert.throws(() => op_get_menu_button_rect(), /getMenuButtonBoundingClientRect:fail not supported/);
+  take();
 });
 
 test("a device the host no longer describes is no device", () => {

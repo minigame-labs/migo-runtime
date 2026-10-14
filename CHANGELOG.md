@@ -675,6 +675,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- On iOS (Performance+), `getMenuButtonBoundingClientRect` answered an empty rect at the window's top left corner
+  when the host draws no menu button, where every other platform answers one at the top right of the safe area (the
+  host's notch and status bar included). The producer now derives that answer from the window the host describes,
+  as the native system-info service does, once per description; a host that does draw a menu button and describes
+  it is answered where it says.
 - On Linux, the CSS generic font keywords (`serif`, `sans-serif`, `monospace`, `cursive`, `fantasy`, `system-ui`)
   were not resolved: Skia's fontconfig font manager matches installed faces by name and answers none of the keywords,
   so every one of them fell through to the bundled Noto Sans -- `serif` measured the same as `sans-serif`, and a
