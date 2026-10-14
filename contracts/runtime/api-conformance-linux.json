@@ -12,7 +12,7 @@
     "host app's to answer)."
   ],
   "platform": "linux",
-  "measured": {"date": "2026-10-14", "runner": "linux-capi", "bundles": ["api-spec", "audio-spec", "network-spec", "worker-spec"], "runtime": "1b52b3c4807b1ad9d732067d98e05852e639b123", "conformance": "fad4c089b934eb6d47363ea352f508002583ffd4"},
+  "measured": {"date": "2026-10-14", "runner": "linux-capi", "bundles": ["api-spec", "audio-spec", "lan-spec", "network-spec", "worker-spec"], "runtime": "86f618552e6f22655a427b8794d48d8c8b8a7685", "conformance": "c3c0c0b9ad8352ab4c9ba42f32d481c7f63cf67e"},
   "apis": {
     "addCard": {"status": "present"},
     "authPrivateMessage": {"status": "present"},
@@ -29,9 +29,9 @@
     "clearStorageSync": {"status": "verified"},
     "closeBLEConnection": {"status": "present"},
     "closeBluetoothAdapter": {"status": "present"},
-    "closeSocket": {"status": "present"},
+    "closeSocket": {"status": "verified"},
     "compressImage": {"status": "present"},
-    "connectSocket": {"status": "present"},
+    "connectSocket": {"status": "verified"},
     "createAdSkipCard": {"status": "present"},
     "createBLEConnection": {"status": "present"},
     "createBLEPeripheralServer": {"status": "absent"},
@@ -339,7 +339,7 @@
     "scanCode": {"status": "present"},
     "selectGroupMembers": {"status": "present"},
     "sendGiftToFriend": {"status": "present"},
-    "sendSocketMessage": {"status": "present"},
+    "sendSocketMessage": {"status": "verified"},
     "setBLEMTU": {"status": "present"},
     "setBackgroundFetchToken": {"status": "present"},
     "setClipboardData": {"status": "present"},
@@ -392,7 +392,7 @@
     "updateKeyboard": {"status": "present"},
     "updateShareMenu": {"status": "present"},
     "updateVoIPChatMuteConfig": {"status": "present"},
-    "uploadFile": {"status": "present"},
+    "uploadFile": {"status": "verified"},
     "vibrateLong": {"status": "present"},
     "vibrateShort": {"status": "present"},
     "writeBLECharacteristicValue": {"status": "present"}
