@@ -1,6 +1,7 @@
 package com.migo.runtime.internal.platform;
 
 import android.app.Activity;
+import android.provider.Settings;
 import android.view.Window;
 import android.view.WindowManager;
 
@@ -16,25 +17,29 @@ public final class ScreenBrightness {
 
     private ScreenBrightness() {}
 
+    /** The largest value of {@link Settings.System#SCREEN_BRIGHTNESS}, the system's brightness setting. */
+    private static final float SYSTEM_BRIGHTNESS_MAX = 255f;
+
     /**
-     * Get current screen brightness.
-     * <p>
-     * Returns the window-level brightness if set, otherwise returns -1 (system default).
-     * Note: If auto-brightness is enabled, this returns the manual setting, not the
-     * current adaptive value.
+     * The screen's brightness, 0.0-1.0: the game window's own where it set one, the system's setting where the window
+     * follows the system (its override is {@code BRIGHTNESS_OVERRIDE_NONE}, -1 -- which is not a brightness). With
+     * auto-brightness on, the setting is the last manual value, not the adaptive one of the moment, as the reference
+     * documents for this call.
      *
      * @param activity The activity
-     * @return Brightness value 0.0-1.0, or -1 if following system
+     * @return Brightness 0.0-1.0, or {@link Float#NaN} when there is no window to ask
      */
     public static float getBrightness(Activity activity) {
-        if (activity == null) return -1f;
+        if (activity == null) return Float.NaN;
         try {
             Window window = activity.getWindow();
-            if (window == null) return -1f;
-            WindowManager.LayoutParams params = window.getAttributes();
-            return params.screenBrightness;
+            if (window == null) return Float.NaN;
+            float own = window.getAttributes().screenBrightness;
+            if (own >= 0f) return Math.min(own, 1f);
+            int system = Settings.System.getInt(activity.getContentResolver(), Settings.System.SCREEN_BRIGHTNESS);
+            return Math.max(0f, Math.min(system / SYSTEM_BRIGHTNESS_MAX, 1f));
         } catch (Exception e) {
-            return -1f;
+            return Float.NaN;
         }
     }
 

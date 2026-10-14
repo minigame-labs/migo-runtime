@@ -675,6 +675,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- Android: `getScreenBrightness` failed with `no activity` whenever the game had not set a brightness of its own. The
+  window's override then reads -1 (`BRIGHTNESS_OVERRIDE_NONE`, "follow the system"), which was taken for the
+  no-activity sentinel. It now answers the window's own brightness where it set one, and the system's brightness
+  setting, scaled to 0..1, where the window follows the system -- the last manual value when auto-brightness is on, as
+  the reference documents. Not having a window to ask is a distinct answer (NaN), still reported as a failure.
 - WebGL `texImage2D` / `texSubImage2D` / `texImage3D` / `texSubImage3D` of a canvas no context was taken from did
   nothing -- a full call left the texture without an image, a sub call left the old pixels and raised an error. Such
   a canvas has drawn nothing, and its bitmap is transparent black at its size, which is now what the upload uploads.
