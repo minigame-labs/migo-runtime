@@ -675,6 +675,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- `onWindowResize` called a listener the moment it was added, with the window's current size, and the engine's first
+  surface report after start reached every listener even when the size had not changed. The reference calls the
+  listener when the size changes, with the size after the change; a listener now hears only the changes after it was
+  added -- the size at that moment counts as seen, so a report of it is no change.
 - Android: turning the device crashed the game with a `StackOverflowError` on Android 13 and later.
   `MigoGameActivity` registered itself for component callbacks, and an activity dispatches its configuration changes
   to the callbacks registered with it, so `onConfigurationChanged` called itself without end. An activity is

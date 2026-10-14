@@ -40,6 +40,7 @@ mod native_buttons;
 mod op_args_agreement;
 #[cfg(feature = "api-connectivity")]
 mod permission_reporting;
+mod window_resize;
 // Camera and recorder scopes come from `api-media`, bluetooth from
 // `api-connectivity`; all four tests need both.
 #[cfg(all(feature = "api-media", feature = "api-connectivity"))]
