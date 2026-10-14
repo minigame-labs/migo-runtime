@@ -33,7 +33,6 @@ DisposableStack
 DynamicsCompressorNode
 Error
 EvalError
-FileManager
 FinalizationRegistry
 Float16Array
 Float32Array
@@ -542,7 +541,6 @@ ChannelSplitterNode
 ConstantSourceNode
 DelayNode
 DynamicsCompressorNode
-FileManager
 Float16Array
 GainNode
 IIRFilterNode

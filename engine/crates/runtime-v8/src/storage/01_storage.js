@@ -97,7 +97,14 @@ function getStorageInfoSync() {
 // ==================== Async APIs ====================
 
 const setStorage = promisify("setStorage", (opts) => op_storage_set_async(opts.key, serialize(opts.data)));
-const getStorage = promisify("getStorage", async (opts) => ({ data: deserialize(await op_storage_get_async(opts.key)) }));
+// A key that is not there fails, as the reference says -- the sync read answers
+// it with an empty string instead. A stored empty string is a tagged value, never
+// an empty record, so an empty record is only ever a missing key.
+const getStorage = promisify("getStorage", async (opts) => {
+    const raw = await op_storage_get_async(opts.key);
+    if (!raw) throw new Error("data not found");
+    return { data: deserialize(raw) };
+});
 const removeStorage = promisify("removeStorage", (opts) => op_storage_remove_async(opts.key));
 const clearStorage = promisify("clearStorage", () => op_storage_clear_async());
 const getStorageInfo = promisify("getStorageInfo", async () => JSON.parse(await op_storage_info_async()));
