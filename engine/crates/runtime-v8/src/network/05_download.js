@@ -6,7 +6,7 @@ import {
     DownloadResponse, DownloadErrorResponse, Exception, abortedNetworkError,
 } from "ext:host_v8_network/02_response.js";
 import {
-    op_fetch, op_fetch_send,
+    op_fetch, op_fetch_profile, op_fetch_send,
     op_open_file, op_write_file, op_close_file,
     op_rename, op_unlink,
 } from "ext:core/ops";
@@ -77,6 +77,7 @@ function downloadFile(options) {
     const {
         url, filePath, header, timeout = 60000,
         enableHttp2 = false,
+        enableProfile = true,
     } = opts;
     const settler = createSettler('downloadFile', opts);
 
@@ -166,6 +167,16 @@ function downloadFile(options) {
                 }
             }
 
+            // Taken while the response is still open; a report on the download, so one that could not be taken fails
+            // nothing.
+            let profile;
+            if (enableProfile !== false) {
+                try {
+                    profile = await op_fetch_profile(resp.responseRid);
+                } catch (_) {
+                    profile = undefined;
+                }
+            }
             core.tryClose(resp.responseRid);
             cancellation.responseRid = null;
             await op_close_file(fd);
@@ -182,6 +193,7 @@ function downloadFile(options) {
                 filePath || undefined,
                 statusCode
             );
+            result.profile = profile;
             settler.succeed(result);
         } catch (err) {
             if (fd !== null) {

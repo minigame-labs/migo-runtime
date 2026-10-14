@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use futures::{Stream, StreamExt};
+use futures::Stream;
 use http::HeaderMap;
 use http::header::{CONTENT_LENGTH, CONTENT_TYPE, HOST, HeaderName, HeaderValue};
 use tracing::debug;
@@ -50,6 +50,8 @@ pub struct UploadAnswer {
     pub headers: Vec<(Vec<u8>, Vec<u8>)>,
     pub total_bytes_sent: u64,
     pub error: Option<String>,
+    /// What the request measured on its way (`res.profile`), once its answer has been read.
+    pub profile: Option<serde_json::Value>,
 }
 
 impl UploadAnswer {
@@ -115,6 +117,8 @@ pub async fn upload(
     env: UploadEnv<'_>,
     request: UploadRequest,
 ) -> Result<UploadAnswer, ServiceError> {
+    // Content called the API now: the profile's `invokeStart`.
+    let invoked = std::time::Instant::now();
     let UploadRequest {
         cancel_rid,
         url,
@@ -213,17 +217,15 @@ pub async fn upload(
     // The send and the read of the answer are one cancellable unit: an abort
     // mid-body stops both.
     let exchange = async move {
-        let response = request.send().await.map_err(|error| error.to_string())?;
+        let mut response = request.send().await.map_err(|error| error.to_string())?;
         let status = response.status().as_u16();
         let headers: Vec<(Vec<u8>, Vec<u8>)> = response
             .headers()
             .iter()
             .map(|(name, value)| (name.as_str().as_bytes().to_vec(), value.as_bytes().to_vec()))
             .collect();
-        let mut stream = response.bytes_stream();
         let mut body = Vec::new();
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|error| error.to_string())?;
+        while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
             if body.len().saturating_add(chunk.len()) > MAX_BUFFERED_RESPONSE_BYTES {
                 return Ok::<UploadAnswer, String>(UploadAnswer {
                     status_code: status,
@@ -235,12 +237,18 @@ pub async fn upload(
             }
             body.extend_from_slice(&chunk);
         }
+        let estimate = super::quality::estimator().lock().estimate();
         Ok(UploadAnswer {
             data: String::from_utf8_lossy(&body).into_owned(),
             status_code: status,
             headers,
             total_bytes_sent: file_size,
             error: None,
+            profile: Some(super::profile::profile(
+                invoked,
+                response.timing(),
+                estimate,
+            )),
         })
     };
 

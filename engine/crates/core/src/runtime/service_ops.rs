@@ -303,6 +303,7 @@ service_ops! {
     op_set_enable_debug = 280,
     op_get_app_info = 281,
     op_set_device_orientation = 282,
+    op_fetch_profile = 283,
 }
 
 /// The op's name, for a refusal a person will read.

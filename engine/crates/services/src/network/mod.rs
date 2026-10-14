@@ -15,6 +15,8 @@ pub mod gate;
 pub mod http;
 pub mod image_source;
 pub mod prefetch;
+pub mod profile;
+pub mod quality;
 pub mod resources;
 pub mod sockets;
 pub mod tcp;

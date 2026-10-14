@@ -483,6 +483,19 @@ int main(int argc, char **argv) {
     result = migo_session_set_host_callbacks(session, &host_callbacks);
     if (result != MIGO_OK) return fail("migo_session_set_host_callbacks", result);
 
+    /* ---- Say who the host is: content reads it as getAppBaseInfo().host.appId. A
+     *      Linux app has no identifier the system hands out, so the host names
+     *      itself, as its desktop file or D-Bus name does. Everything else is
+     *      left to the engine: the system's language, no benchmark score. ---- */
+    MigoHostAppInfo app_info;
+    memset(&app_info, 0, sizeof(app_info));
+    app_info.struct_size = (uint32_t)sizeof(app_info);
+    app_info.abi_version = MIGO_ABI_VERSION_CURRENT;
+    app_info.app_id_utf8 = "com.migo.example.linux";
+    app_info.benchmark_level = -1;
+    result = migo_session_set_host_app_info(session, &app_info);
+    if (result != MIGO_OK) return fail("migo_session_set_host_app_info", result);
+
     /* ---- Hand the window over as a strongly typed platform descriptor. ---- */
     MigoX11WindowDescriptor x11;
     memset(&x11, 0, sizeof(x11));

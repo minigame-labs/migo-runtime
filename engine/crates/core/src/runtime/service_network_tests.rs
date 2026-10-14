@@ -194,17 +194,24 @@ fn the_64_bit_fields_of_the_answers_are_numbers_content_can_divide_by() {
         "unknown stays null"
     );
 
-    let sent = |total_bytes_sent| {
+    let sent = |total_bytes_sent, profile| {
         upload_answer(upload::UploadAnswer {
             data: String::new(),
             status_code: 200,
             headers: Vec::new(),
             total_bytes_sent,
             error: None,
+            profile,
         })
     };
-    assert_eq!(array(&sent(4096))[3], OwnedValue::F64(4096.0));
-    assert_eq!(array(&sent(0))[3], OwnedValue::F64(0.0));
+    assert_eq!(array(&sent(4096, None))[3], OwnedValue::F64(4096.0));
+    assert_eq!(array(&sent(0, None))[3], OwnedValue::F64(0.0));
+    // The profile travels as JSON, which the producer parses into the object content reads; none is null.
+    assert_eq!(array(&sent(0, None))[5], OwnedValue::Null);
+    assert_eq!(
+        array(&sent(0, Some(serde_json::json!({ "rtt": 12 }))))[5],
+        OwnedValue::Json(r#"{"rtt":12}"#.to_string())
+    );
 }
 
 /// The policy refuses before anything is built, and the producer's `fetch`
@@ -345,9 +352,9 @@ fn every_claimed_op_is_answered_in_exactly_one_shape() {
         .collect();
     assert_eq!(
         claimed.len(),
-        23,
-        "fetch's three, the upload's two, both prefetches, the three core members, \
-         the socket's four and the ten raw-socket ops"
+        24,
+        "fetch's four (with its profile), the upload's two, both prefetches, the three core \
+         members, the socket's four and the ten raw-socket ops"
     );
     for op in claimed {
         let shapes = u8::from(is_sync(op)) + u8::from(is_async(op)) + u8::from(is_command(op));

@@ -3521,7 +3521,11 @@ mod tests {
         let names_a_handle = |name: &str| {
             matches!(
                 name,
-                "op_fetch_send" | "core_read" | "core_close" | "core_try_close"
+                "op_fetch_send"
+                    | "op_fetch_profile"
+                    | "core_read"
+                    | "core_close"
+                    | "core_try_close"
             )
         };
 

@@ -29,7 +29,9 @@ class ReadableStream {
     return undefined;
   }
 
-  async pull(buffer, onChunked) {
+  // `beforeClose`, when given, runs once the body has ended and before the resource is closed: what is asked of a
+  // finished resource (a request's profile) is asked while it is still there.
+  async pull(buffer, onChunked, beforeClose) {
     if (this._pulling || this._closed) return;
     this._pulling = true;
 
@@ -41,6 +43,7 @@ class ReadableStream {
       await onChunked(buffer.subarray(0, bytesRead));
       bytesRead = await core.read(this._rid, buffer);
     }
+    if (beforeClose !== undefined) await beforeClose(this._rid);
     this.tryClose();
     await onChunked(undefined);
   }

@@ -64,6 +64,7 @@ function uploadFile(options) {
         url, filePath, name, header, formData,
         timeout = 60000,
         enableHttp2 = false,
+        enableProfile = true,
     } = opts;
     const settler = createSettler('uploadFile', opts);
 
@@ -113,7 +114,7 @@ function uploadFile(options) {
         try {
             // We deliberately skip the old `op_read_file` + full-buffer
             // roundtrip. The Rust op opens the VFS-resolved file and
-            // streams it directly into reqwest's multipart encoder,
+            // streams it directly into the multipart encoder,
             // so a 50 MiB upload no longer pins the whole file in
             // JS heap + Rust Vec at the same time.
             uploadTask._triggerProgress(0, 0, 0);
@@ -148,7 +149,9 @@ function uploadFile(options) {
             const sent = result.totalBytesSent || 0;
             uploadTask._triggerProgress(100, sent, sent);
 
-            settler.succeed(new UploadResponse(result.data, result.statusCode));
+            const response = new UploadResponse(result.data, result.statusCode);
+            if (enableProfile !== false && result.profile) response.profile = result.profile;
+            settler.succeed(response);
 
         } catch (err) {
             if (cancellation.aborted || err === "aborted") {

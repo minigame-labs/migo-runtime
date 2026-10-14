@@ -44,6 +44,16 @@ class ResponseBase {
         this._useHttpDNS = useHttpDNS;
         this._errMsg = errMsg;
         this._exception = exception;
+        this._profile = undefined;
+    }
+
+    // What the request measured on its way (`enableProfile`, on by default): set once the body has been read.
+    set profile(value) {
+        this._profile = value;
+    }
+
+    get profile() {
+        return this._profile;
     }
 
     get useHttpDNS() {
@@ -63,11 +73,13 @@ class ResponseBase {
     }
 
     toJSON() {
-        return {
+        const json = {
             useHttpDNS: this._useHttpDNS,
             errMsg: this._errMsg,
             exception: this._exception?.toJSON()
         };
+        if (this._profile !== undefined) json.profile = this._profile;
+        return json;
     }
 }
 

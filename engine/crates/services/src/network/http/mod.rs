@@ -607,6 +607,8 @@ impl Response {
                 None => {
                     if self.timing.response_end.is_none() {
                         self.timing.response_end = Some(Instant::now());
+                        // A whole response is a sample of the network, whoever asked for it.
+                        super::quality::estimator().lock().record(&self.timing);
                     }
                     return Ok(None);
                 }

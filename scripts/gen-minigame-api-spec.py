@@ -129,6 +129,7 @@ CONDITIONS = (
     (r"第三方\s*[Aa]pp", "host-app"),  # only when the game runs inside a third-party app
     (r'"darkmode":\s*true', "darkmode"),  # only with the darkmode configuration, which mini-games lack
     (r"仅当\s*([A-Za-z]+)\s*传\s*true", r"option:\1"),  # only when that option is true
+    (r"仅当开启\s*httpDNS", "option:enableHttpDNS"),  # only with HttpDNS on
     (r"没传入\s*([A-Za-z]+)", r"without:\1"),  # only when that option was not passed
     (r"传入\s*([A-Za-z]+)\s*时", r"option:\1"),  # only when that option was passed
     (r"withSubscriptions", "option:withSubscriptions"),  # only when that option is true
@@ -214,7 +215,14 @@ def structured(lines: list[str], start: int, stop: int) -> list[list]:
             if table is None:
                 break
             sub_header, sub_rows, index = table_at(lines, table)
-            target = by_name.get(match.group(1))
+            # The table details the field its heading names by path from the argument: `res.profile`,
+            # `res.exception.reasons`, or a bare `profile`.
+            path = match.group(1).split(".")
+            if len(path) > 1 and path[0] in ("res", "object", "result"):
+                path = path[1:]
+            target = by_name.get(path[0])
+            for step in path[1:]:
+                target = {field[0]: field for field in details(target).get("fields", [])}.get(step) if target else None
             if target is not None and "属性" in "".join(sub_header):
                 details(target)["fields"] = fields_of(sub_header, sub_rows)
             continue

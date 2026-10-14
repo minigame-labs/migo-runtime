@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `request`, `downloadFile` and `uploadFile` answer `res.profile` (`enableProfile`, on by default): the phases of the
+  request in epoch milliseconds (invoke, queue, redirect, fetch, DNS, connect, TLS, request, response), the peer, whether
+  the connection was reused, the bytes each way, the protocol (`http1.1`, `h2`), the connection's RTT from the kernel
+  (`TCP_INFO` / `TCP_CONNECTION_INFO`), the transfer's throughput, and network estimates -- HTTP and transport RTT,
+  downstream throughput and the effective connection type -- kept by one estimator per process from every response it
+  completes. Each field keeps the reference's definition: a reused connection's DNS, connect and TLS phases are the fetch
+  start, a plain connection's TLS phase is 0, only same-host redirects are timed, an estimate with no sample is -1.
 - `contracts/runtime/minigame-api-spec.json`: every API of the common mini-game platform as its reference documents
   it. For each API it records how it is called (options with callbacks, a listener, a value returned, an object made),
   Promise support, the options it takes, the fields of its success result, return value or listener argument (with
@@ -652,6 +659,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- On the Linux player and the minimal C ABI host, `getSystemInfo` / `getAppBaseInfo` answered `host: {}`: a Linux app
+  has no identifier the system hands out, and neither host said who it was. `LinuxPlatform` / `WindowsPlatform` take the
+  host's own report (`with_host_app`), the player reports `com.migo.player`, and the example host reports its id through
+  `migo_session_set_host_app_info`, as an embedding host should.
 - With no audio output device -- a headless machine, a VM, a desktop with its output unplugged -- the audio thread did
   not start, so `createWebAudioContext` and `createMediaAudioPlayer` failed with `AudioError`. The mix now plays into silence at a device's rate: a context's time advances and its sources end as
   they would, only not heard. While there is something to hear, the audio thread looks for a device (after 1 s, then

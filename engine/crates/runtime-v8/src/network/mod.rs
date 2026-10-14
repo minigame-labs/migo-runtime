@@ -1,7 +1,7 @@
 use deno_core::extension;
 
 use crate::network::fetch::{
-    op_fetch, op_fetch_send, op_fetch_upload, op_fetch_upload_cancel_handle,
+    op_fetch, op_fetch_profile, op_fetch_send, op_fetch_upload, op_fetch_upload_cancel_handle,
 };
 use crate::network::prefetch::{op_prefetch_assets, op_prefetch_dns};
 use crate::network::tcp_socket::{op_tcp_close, op_tcp_connect, op_tcp_next_event, op_tcp_write};
@@ -33,7 +33,7 @@ impl Default for Options {
 extension!(host_v8_network,
   deps = [host_v8_console, host_v8_web, host_v8_base],
   ops = [
-    op_fetch, op_fetch_send, op_fetch_upload, op_fetch_upload_cancel_handle,
+    op_fetch, op_fetch_send, op_fetch_profile, op_fetch_upload, op_fetch_upload_cancel_handle,
     op_prefetch_dns, op_prefetch_assets,
     op_ws_create, op_ws_next_event, op_ws_send, op_ws_close,
     op_tcp_connect, op_tcp_next_event, op_tcp_write, op_tcp_close,

@@ -324,7 +324,12 @@ fn a_declared_body_is_admitted_before_its_reader_exists() {
             .body(b"body".to_vec())
             .unwrap(),
     );
-    let body = ResponseBody::new(response, Some(4096), Some(ticket));
+    let body = ResponseBody::new(
+        response,
+        Some(4096),
+        Some(ticket),
+        std::time::Instant::now(),
+    );
     assert_eq!(body.size(), Some(4096));
     drop(body);
     reserve_response_bytes(&pools, Some(4096))
@@ -491,5 +496,114 @@ fn an_ip_literal_on_the_loopback_is_refused_when_the_request_is_built() {
         .expect_err("a loopback literal is refused");
     assert!(error.message.contains("not allowed"), "{}", error.message);
     assert!(server.request_within(Duration::from_millis(600)).is_none());
+    server.finish();
+}
+
+/// Read a response to its end, then take its profile, as content does before it closes the response.
+async fn profile_after_reading(session: &Session, url: &str) -> serde_json::Value {
+    let handles = session.fetch("GET", url).unwrap();
+    let answer = fetch_send(&session.resources, &session.pools, handles.request_rid)
+        .await
+        .expect("an answer");
+    while !read(&session.resources, answer.response_rid, 64 * 1024)
+        .await
+        .unwrap()
+        .is_empty()
+    {}
+    profile(&session.resources, answer.response_rid)
+        .await
+        .unwrap()
+}
+
+/// An answer that needed no connection: every phase at the fetch start, after the call; no peer and no round trip;
+/// what was received counted.
+#[test]
+fn a_data_url_profile_has_every_phase_at_its_fetch_start() {
+    let session = Session::new(policy(&[], false));
+    let profile = block_on(profile_after_reading(&session, "data:text/plain,hello"));
+    let fetch_start = profile["fetchStart"].as_u64().unwrap();
+    assert!(profile["invokeStart"].as_u64().unwrap() <= fetch_start);
+    for phase in [
+        "queueStart",
+        "queueEnd",
+        "domainLookUpStart",
+        "domainLookUpEnd",
+        "connectStart",
+        "connectEnd",
+        "requestStart",
+        "requestEnd",
+        "responseStart",
+        "responseEnd",
+    ] {
+        assert_eq!(
+            profile[phase].as_u64(),
+            Some(fetch_start),
+            "{phase}: {profile}"
+        );
+    }
+    for zero in [
+        "SSLconnectionStart",
+        "SSLconnectionEnd",
+        "redirectStart",
+        "redirectEnd",
+        "sendBytesCount",
+        "port",
+    ] {
+        assert_eq!(profile[zero].as_u64(), Some(0), "{zero}: {profile}");
+    }
+    assert_eq!(profile["rtt"].as_f64(), Some(0.0));
+    assert_eq!(profile["peerIP"], "");
+    assert_eq!(profile["protocol"], "unknown");
+    assert_eq!(profile["socketReused"], false);
+    assert_eq!(profile["usingHighPerformanceMode"], false);
+    assert!(profile["receivedBytedCount"].as_u64().unwrap() >= 5);
+}
+
+/// Through a connection: the phases in the reference's order, the peer, the protocol, the bytes, and estimates the
+/// response itself has fed.
+#[test]
+fn a_profile_through_a_connection_orders_its_phases() {
+    let server = loopback_server(OK_REPLY);
+    let proxy = hyper_util::client::proxy::matcher::Matcher::builder()
+        .http(format!("http://127.0.0.1:{}", server.port))
+        .build();
+    let session = Session::configured(policy(&[], false), |builder| builder.proxies(proxy));
+    let profile = block_on(profile_after_reading(&session, "http://public.example/a"));
+    let at = |name: &str| {
+        profile[name]
+            .as_u64()
+            .unwrap_or_else(|| panic!("{name}: {profile}"))
+    };
+    let order = [
+        "invokeStart",
+        "fetchStart",
+        "connectStart",
+        "connectEnd",
+        "requestStart",
+        "responseStart",
+        "responseEnd",
+    ];
+    for pair in order.windows(2) {
+        assert!(
+            at(pair[0]) <= at(pair[1]),
+            "{} after {}: {profile}",
+            pair[0],
+            pair[1]
+        );
+    }
+    // Through a proxy nothing was looked up: the lookup is the fetch start.
+    assert_eq!(at("domainLookUpStart"), at("fetchStart"));
+    assert_eq!(at("SSLconnectionStart"), 0);
+    assert_eq!(profile["peerIP"], "127.0.0.1");
+    assert_eq!(at("port"), u64::from(server.port));
+    assert_eq!(profile["protocol"], "http1.1");
+    assert_eq!(profile["socketReused"], false);
+    assert!(at("sendBytesCount") > 0 && at("receivedBytedCount") > 2);
+    assert_ne!(
+        profile["httpRttEstimate"].as_f64(),
+        Some(-1.0),
+        "the response is a sample: {profile}"
+    );
+    assert!((2..=5).contains(&at("estimate_nettype")));
     server.finish();
 }

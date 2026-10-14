@@ -243,12 +243,13 @@ export function uploadOpts(opts) {
 }
 
 /** `FetchUploadResult`, in its field order. */
-export function uploadAnswer([data, statusCode, headers, totalBytesSent, error]) {
+export function uploadAnswer([data, statusCode, headers, totalBytesSent, error, profile]) {
   return {
     data,
     statusCode,
     headers: headers.map(([name, value]) => [latin1(name), latin1(value)]),
     totalBytesSent,
     error,
+    profile,
   };
 }
