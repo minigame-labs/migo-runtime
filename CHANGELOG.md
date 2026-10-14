@@ -675,6 +675,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- WebGL `texImage2D` / `texSubImage2D` / `texImage3D` / `texSubImage3D` of a canvas no context was taken from did
+  nothing -- a full call left the texture without an image, a sub call left the old pixels and raised an error. Such
+  a canvas has drawn nothing, and its bitmap is transparent black at its size, which is now what the upload uploads.
 - On ANGLE (macOS, iOS), a WebGL texture image defined without data was uploaded as a buffer of real zeros, one per
   image, so that it reads as transparent black; Phaser 3.60's render-target pool took 600 ms longer to boot on macOS,
   long enough that a tap in the first second missed its game objects. The engine's contexts now ask ANGLE for robust
