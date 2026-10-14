@@ -779,6 +779,14 @@ jobs:
       - name: API x platform matrix contract
         run: bash scripts/test-api-platform-matrix-contract.sh
 
+      # The platform's API as its reference documents it -- how each call is
+      # made, Promise support, the fields of its result -- which the
+      # verification lane checks implementations against. Regenerated from the
+      # reference's local mirror where it exists; here, where it does not, the
+      # spec must still cover the platform's API list exactly.
+      - name: API spec contract
+        run: bash scripts/test-minigame-api-spec-contract.sh
+
       # `isEnabled` is answered on the producer side, from a ten-bit shadow of
       # the capabilities content has enabled. A capability missing from the
       # JavaScript half of that table is silent: the query answers `false`
