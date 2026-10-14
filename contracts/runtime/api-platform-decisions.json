@@ -92,7 +92,6 @@
     "onDeviceOrientationChange": "screen.device_orientation_change"
   },
   "gaps": {
-    "setDeviceOrientation": {"platforms": ["ios"], "reason": "on Performance+ the game is told its size once, before its first line runs, and the session keeps it: turning between portrait and landscape needs the session resized while content runs"},
     "onAudioInterruptionBegin": {"platforms": ["ohos"], "reason": "the OpenHarmony audio output does not report interruptions yet"},
     "onAudioInterruptionEnd": {"platforms": ["ohos"], "reason": "the OpenHarmony audio output does not report interruptions yet"}
   },

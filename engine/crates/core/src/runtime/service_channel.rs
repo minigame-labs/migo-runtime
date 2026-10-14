@@ -212,6 +212,8 @@ channel! {
     op_get_location(json) => location.get_location, "_internalOnLocationResult";
     op_get_phone_number(json) => auth.get_phone_number, "_internalOnGetPhoneNumberResult";
     op_get_screen_brightness(json) => screen.get_brightness, "_internalOnGetScreenBrightnessResult";
+    op_set_device_orientation(json) => screen.set_orientation,
+        "_internalOnSetDeviceOrientationResult";
     op_get_screen_recording_state(json) => screen.get_screen_recording_state,
         "_internalOnGetScreenRecordingStateResult";
     op_get_user_info(json) => auth.get_user_info, "_internalOnGetUserInfoResult";

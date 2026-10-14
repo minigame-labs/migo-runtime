@@ -734,6 +734,7 @@ export const op_get_fuzzy_location = hostOptions(SERVICE_OP.op_get_fuzzy_locatio
 export const op_get_location = hostOptions(SERVICE_OP.op_get_location);
 export const op_get_phone_number = hostOptions(SERVICE_OP.op_get_phone_number);
 export const op_get_screen_brightness = hostRequest(SERVICE_OP.op_get_screen_brightness);
+export const op_set_device_orientation = hostRequest(SERVICE_OP.op_set_device_orientation);
 export const op_get_screen_recording_state = hostRequest(SERVICE_OP.op_get_screen_recording_state);
 export const op_get_user_info = hostOptions(SERVICE_OP.op_get_user_info);
 export const op_hide_loading = hostCommand(SERVICE_OP.op_hide_loading);

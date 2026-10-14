@@ -149,17 +149,20 @@ the mini-game API works on every platform. The session starts at the view's firs
   `setDeviceOrientation` turns the window to the shape asked for (the game's width and height
   exchanged, the title bar where it was); it fails for a full-screen window, or when the screen cannot
   hold the window turned.
-- **iOS**: the session **keeps its first layout's size**: a later bounds change is handled by Core
-  Animation scaling the rendered frame to the new bounds, rather than by lying to a game that has
-  already laid itself out. So the hosting view controller must be locked to the game's orientation
-  **before `MigoGameView`'s first layout** (an Info.plist that declares only the game's orientation,
-  or a controller that supports only that orientation presenting the view). Within that orientation
-  the game hears the interface turn through `onDeviceOrientationChange`: in landscape, `landscape`
-  with the Home side on the right and `landscapeReverse` with it on the left; `portrait` upright.
-  A half turn between the two landscapes keeps the size and is heard from iOS 16 on (the scene's
-  geometry is observable from iOS 16).
-  `setDeviceOrientation` answers "not supported": turning between portrait and landscape needs the
-  session resized while content runs, which the iOS lane cannot do yet.
+- **iOS**: the game's size is the view's. When the view is laid out at another size afterwards
+  (the interface turned, a scene resized in Split View), the session's surface follows: the game
+  hears `onWindowResize`, `getWindowInfo()` answers the new window, screen and safe area, and a main
+  canvas content never sized follows too. A game that supports one orientation wants the hosting
+  view controller locked to it **before `MigoGameView`'s first layout** (an Info.plist that declares
+  only the game's orientation, or a controller that supports only that orientation presenting the
+  view); otherwise the game starts in the wrong shape and is turned at once. The game hears the
+  interface turn through `onDeviceOrientationChange`: in landscape, `landscape` with the Home side
+  on the right and `landscapeReverse` with it on the left; `portrait` upright. A half turn between
+  the two landscapes keeps the size and is heard from iOS 16 on (the scene's geometry is observable
+  from iOS 16). `setDeviceOrientation` (iOS 16 and later) asks the scene to turn to the shape asked
+  for, landscape being whichever side the device is held; it succeeds once the interface has turned,
+  fails when the hosting view controller does not support that orientation, and answers "not
+  supported" on iOS 15.
 - The drawable's size is the engine's: when the canvas is smaller than the window the drawable takes
   the canvas's size and Core Animation scales it to the layer. Do not set
   `CAMetalLayer.drawableSize`, and keep `contentsGravity` at its default, resize.
@@ -362,8 +365,7 @@ and reported as `.failed`. With signing enabled the engine refuses dynamically d
 
 ## Calls that are refused
 
-These content calls answer "unsupported" rather than inventing a result: `setDeviceOrientation` on
-iOS (the session's size is fixed at start; see [Size and orientation](#size-and-orientation)),
-`getHeapStatistics` on iOS (content runs in WebKit's JavaScriptCore, which exposes no heap data), and
-vibration and battery on macOS. Per-call device behavior is in
+These content calls answer "unsupported" rather than inventing a result: `getHeapStatistics` on iOS
+(content runs in WebKit's JavaScriptCore, which exposes no heap data), `setDeviceOrientation` on
+iOS 15 (see [Size and orientation](#size-and-orientation)), and vibration and battery on macOS. Per-call device behavior is in
 [Apple getting started · Device capabilities](/docs/en/getting-started/apple/#5-device-capabilities).

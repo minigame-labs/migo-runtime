@@ -166,7 +166,7 @@
         "op_get_screen_recording_state": "command",
         "op_scan_code": "command",
         "op_set_clipboard_data": "command",
-        "op_set_device_orientation": "unsupported",
+        "op_set_device_orientation": "command",
         "op_set_enable_debug": "sync",
         "op_set_keep_screen_on": "command",
         "op_set_screen_brightness": "command",

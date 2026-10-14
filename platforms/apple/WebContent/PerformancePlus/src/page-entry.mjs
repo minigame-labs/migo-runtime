@@ -58,6 +58,10 @@ if (!config || typeof config.frameChannelUrl !== "string") {
     // any later is a port handed to nobody.
     const workerRelay = new MessageChannel();
     bindWorkerRelay(workerRelay.port1);
-    worker.postMessage({ type: "start", config }, [workerRelay.port2]);
+    // The host's updates, on a port of their own for the same reason. The host calls this function
+    // (`MigoPerformancePlusHost.resize`); only the engine's page can, as content runs in the worker.
+    const hostUpdates = new MessageChannel();
+    globalThis.__migoPerformancePlusResize = (update) => hostUpdates.port1.postMessage(update);
+    worker.postMessage({ type: "start", config }, [workerRelay.port2, hostUpdates.port2]);
   }
 }

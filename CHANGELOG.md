@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The iOS game view follows its size while a game runs. Laid out at another size (the interface turned, a scene
+  resized in Split View), it resizes the session's surface and hands the producer the new size and device. Content then
+  hears `onWindowResize` with what `getWindowInfo()` answers, and a main canvas content never sized follows, as on every
+  platform; the session used to keep its first layout's size. The producer receives the host's updates on a port of
+  their own (`MigoPerformancePlusHost.resize`) and adopts them before the engine's surface-change ingress runs.
+- `setDeviceOrientation` on iOS 16 and later: the scene is asked to turn to the shape content asks for, and the call
+  succeeds when the interface has turned. It fails when the view controller showing the game does not support that
+  orientation, and answers "not supported" on iOS 15. On Performance+ it travels the host-service channel like the
+  screen's other calls (service op 282); it was refused in the producer.
 - `setInnerAudioOption` and `getAvailableAudioSources` on iOS, macOS, Linux and Windows, answered by the engine: it
   opens the process's audio output on those systems, so the settings that govern it are its own, and a C ABI host
   provides nothing.

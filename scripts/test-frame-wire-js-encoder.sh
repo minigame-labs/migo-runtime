@@ -407,6 +407,15 @@ CONTEXT_STATE_TEST="$TEST_DIR/context-state.test.mjs"
 node "$CONTEXT_STATE_TEST"
 RAN_TESTS+=("$CONTEXT_STATE_TEST")
 
+# The view resized or turned, as the producer applies it: the size and the
+# device the host now describes adopted before the engine's surface-change
+# ingress runs (content's listeners read them), a canvas content sized left
+# alone, one that arrived before the engine was bound kept, and a malformed one
+# refused without changing anything.
+RESIZE_STATE_TEST="$TEST_DIR/resize-state.test.mjs"
+node "$RESIZE_STATE_TEST"
+RAN_TESTS+=("$RESIZE_STATE_TEST")
+
 # The credit accounting and the frame clock, on bytes this repository's own
 # encoder produced -- so a failure here is about what the producer DOES with a
 # message rather than about what a message is.

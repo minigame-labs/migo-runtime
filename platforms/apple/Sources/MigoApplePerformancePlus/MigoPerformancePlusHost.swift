@@ -133,10 +133,10 @@ import os
         /// makes before its first frame.
         ///
         /// `migo.getWindowInfo()` and `getSystemInfoSync()` are synchronous and
-        /// a game reads them to lay itself out. None of it changes during a
-        /// session, so it is handed to the producer at startup and answered
-        /// there without crossing -- which is what the op boundary calls the
-        /// `local` lane.
+        /// a game reads them to lay itself out, so this is handed to the
+        /// producer at startup -- and again by `resize` when the view changes
+        /// size or turns -- and answered there without crossing, which is what
+        /// the op boundary calls the `local` lane.
         ///
         /// Absent, those calls fail with the message the engine raises on a
         /// platform with no device services. That is deliberate: a screen size
@@ -483,6 +483,29 @@ import os
             }
             build(endpoint: endpoint)
             return endpoint
+        }
+
+        /// The view the game is shown in changed size or turned: the producer
+        /// adopts the surface's new size and the device as the host now
+        /// describes it -- the window, the safe area, the screen as it is
+        /// turned -- and calls the engine's surface-change ingress, so the main
+        /// canvas follows the surface unless content sized it and content
+        /// hears `onWindowResize` with what `getWindowInfo()` now answers.
+        ///
+        /// Resize the engine session's surface to the same pixels first
+        /// (`MigoEngineSession.resize(to:)`): the frames content draws for the
+        /// new size then meet a surface of that size. Before the page has
+        /// loaded there is nothing to tell; the configuration it is loaded with
+        /// already carries the session as it started.
+        public func resize(surfaceWidthPixels: Int, surfaceHeightPixels: Int, device: DeviceProfile?) {
+            guard let webView else { return }
+            var update: [String: Any] = ["surfaceWidth": surfaceWidthPixels, "surfaceHeight": surfaceHeightPixels]
+            if let device { update["device"] = device.injected }
+            // The page's function, which only the engine's page defines; content
+            // runs in the worker behind it and cannot.
+            webView.callAsyncJavaScript(
+                "globalThis.__migoPerformancePlusResize?.(update)", arguments: ["update": update], in: nil,
+                in: .page, completionHandler: nil)
         }
 
         public func stop() {
