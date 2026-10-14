@@ -675,6 +675,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- WebGL storage was refused past a fixed 128 MiB per context (512 MiB per process) on every device, below what the
+  device could hold. Phaser 3.60+ keeps a pool of render targets from 32 pixels up to the canvas's shorter side --
+  171 MiB on a 720 x 1280 canvas, more on one sized in device pixels -- so its framebuffers were incomplete and the
+  game never started. The ceiling is now a quarter of the device's physical memory, never below 512 MiB, for each
+  context and for the process together; past it, allocations still fail with `OUT_OF_MEMORY` as WebGL specifies.
 - On iOS (Performance+), `getMenuButtonBoundingClientRect` answered an empty rect at the window's top left corner
   when the host draws no menu button, where every other platform answers one at the top right of the safe area (the
   host's notch and status bar included). The producer now derives that answer from the window the host describes,
