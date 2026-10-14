@@ -22,7 +22,7 @@
   "platforms": ["android", "ios", "macos", "linux", "windows", "ohos"],
   "total": 382,
   "summary": {
-    "android": {"engine": 61, "default": 125, "host": 180, "missing": 6, "unsupported": 10, "wired": 376, "verified": 192, "ready": 326},
+    "android": {"engine": 61, "default": 125, "host": 180, "missing": 6, "unsupported": 10, "wired": 376, "verified": 191, "ready": 325},
     "ios": {"engine": 71, "default": 110, "host": 174, "missing": 12, "unsupported": 15, "wired": 369, "verified": 189, "ready": 321},
     "macos": {"engine": 71, "default": 88, "host": 170, "missing": 9, "unsupported": 44, "wired": 372, "verified": 185, "ready": 330},
     "linux": {"engine": 71, "default": 22, "host": 269, "missing": 10, "unsupported": 10, "wired": 252, "verified": 182, "ready": 245},
@@ -337,7 +337,7 @@
     "reportPerformance": {"category": "base/performance", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "host", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "verified": ["android", "ios", "macos", "linux"], "not_ready": ["ohos"]},
     "reportScene": {"category": "data-analysis", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "host", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ohos"]},
     "reportUserBehaviorBranchAnalytics": {"category": "data-analysis", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "host", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "verified": ["android", "ios", "macos", "linux"], "not_ready": ["ohos"]},
-    "request": {"category": "network/request", "needs": [], "android": "engine", "ios": "engine", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine", "verified": ["android", "macos", "linux"], "not_ready": ["ios", "windows", "ohos"]},
+    "request": {"category": "network/request", "needs": [], "android": "engine", "ios": "engine", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine", "verified": ["macos", "linux"], "not_ready": ["android", "ios", "windows", "ohos"]},
     "requestFacialRecognition": {"category": "open-api/account-info", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "host", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ohos"]},
     "requestFacialVerify": {"category": "open-api/face", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "host", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ohos"]},
     "requestMidasFriendPayment": {"category": "midas-payment", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "host", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ohos"]},

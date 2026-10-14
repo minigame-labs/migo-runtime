@@ -12,7 +12,7 @@
     "host app's to answer)."
   ],
   "platform": "android",
-  "measured": {"date": "2026-10-14", "runner": "android", "bundles": ["api-spec", "network-spec", "worker-spec"], "runtime": "7124a7eb64e83757be0d9358f277bbd9b1945020", "conformance": "dfe9123dd99ec32a325862315b862753a8d7e7ac"},
+  "measured": {"date": "2026-10-14", "runner": "android", "bundles": ["api-spec", "network-spec", "worker-spec"], "runtime": "6d7058d8b1b041a2d6333ff62cab0099e2d6f466", "conformance": "6bd89a09ec40583d84fe9cab5d518e8594f358f8"},
   "apis": {
     "addCard": {"status": "present"},
     "authPrivateMessage": {"status": "present"},
@@ -321,7 +321,7 @@
     "reportPerformance": {"status": "verified"},
     "reportScene": {"status": "present"},
     "reportUserBehaviorBranchAnalytics": {"status": "verified"},
-    "request": {"status": "verified"},
+    "request": {"status": "failing", "failing": ["api-spec/request/success/profile"]},
     "requestFacialRecognition": {"status": "present"},
     "requestFacialVerify": {"status": "present"},
     "requestMidasFriendPayment": {"status": "present"},
