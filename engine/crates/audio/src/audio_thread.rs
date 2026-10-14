@@ -4,9 +4,7 @@ use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use shared::audio_channel::{
-    AUDIO_COMMANDS_PER_DRAIN, AudioCommandReceiver, AudioCommandSender, channel as audio_channel,
-};
+use shared::audio_channel::{AUDIO_COMMANDS_PER_DRAIN, AudioCommandReceiver, AudioCommandSender};
 use shared::audio_resources::AudioSnapshot;
 use shared::channel::ThreadWakeup;
 use shared::error::{EngineError, EngineResult, ErrorCode};
@@ -974,19 +972,6 @@ fn start_buffer_scoped(
         && context.start_source(node_id, when, offset, duration)
 }
 
-/// Give up a queue no audio thread will run.
-///
-/// Everything already queued is waiting for a thread that will not run it.
-/// Discarding it drops each command's response sender, which fails the awaited
-/// ops with a closed channel; dropping the receiver disconnects the queue, so
-/// every later call fails at once with the audio thread's own error. Without
-/// this a game that decodes a sound on a device that cannot open simply stops:
-/// the promise never settles, and nothing says why.
-fn abandon_queue(rx: AudioCommandReceiver) {
-    rx.discard_prestart_commands();
-    drop(rx);
-}
-
 /// Answer one completed WebAudio decode, only while its originating runtime
 /// still owns the response receiver. A closed receiver identifies stale work
 /// from a dropped/restarted runtime; its decoded PCM is dropped immediately,
@@ -1045,12 +1030,6 @@ fn decoded_pcm(decoded: DecodedAudio) -> EngineResult<DecodedPcm> {
     })
 }
 
-/// Result of thread initialization
-enum InitResult {
-    Ok(thread::ThreadId),
-    Err(String),
-}
-
 pub struct AudioThread {
     tx: AudioCommandSender,
     wakeup: ThreadWakeup,
@@ -1059,92 +1038,6 @@ pub struct AudioThread {
 }
 
 impl AudioThread {
-    pub fn spawn(
-        host_tx: HostTx,
-        http_client_factory: StreamingHttpClientFactory,
-    ) -> EngineResult<Self> {
-        let (tx, rx) = audio_channel();
-        let (init_tx, init_rx) = std::sync::mpsc::sync_channel::<InitResult>(1);
-
-        // Create the shared wakeup handle. A clone lives in the AudioThread
-        // (and is handed to AudioSender via `sender()`), another clone goes
-        // into `run_audio_thread`.
-        let wakeup = ThreadWakeup::new();
-        let wakeup_for_thread = wakeup.clone();
-
-        let handle = thread::Builder::new()
-            .name("Migo-AudioThread".into())
-            .spawn(move || {
-                // Audio thread uses Oboe's SCHED_FIFO for the callback thread;
-                // the management thread itself gets Background priority.
-                shared::thread_priority::set_current_thread_priority(
-                    shared::thread_priority::Priority::Background,
-                );
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    // Initialize audio output
-                    let output = match AudioOutput::new() {
-                        Ok(out) => {
-                            let _ = init_tx.send(InitResult::Ok(thread::current().id()));
-                            out
-                        }
-                        Err(e) => {
-                            error!("Failed to initialize audio output: {}", e);
-                            let _ = init_tx.send(InitResult::Err(e.to_string()));
-                            return;
-                        }
-                    };
-
-                    info!("AudioThread started");
-
-                    // Run the audio thread loop with power management
-                    run_audio_thread(
-                        rx,
-                        Vec::new(),
-                        output,
-                        host_tx,
-                        wakeup_for_thread,
-                        http_client_factory,
-                    );
-
-                    info!("AudioThread stopped");
-                })); // end catch_unwind
-                if let Err(panic_info) = result {
-                    let msg = if let Some(s) = panic_info.downcast_ref::<String>() {
-                        s.clone()
-                    } else if let Some(s) = panic_info.downcast_ref::<&str>() {
-                        s.to_string()
-                    } else {
-                        "Unknown panic".to_string()
-                    };
-                    error!("[AudioThread] PANIC: {}", msg);
-                }
-            })
-            .map_err(|e| {
-                EngineError::from_detail(
-                    ErrorCode::IoError,
-                    format!("Failed to spawn audio thread: {}", e),
-                )
-            })?;
-
-        // Wait for initialization result
-        match init_rx.recv() {
-            Ok(InitResult::Ok(thread_id)) => Ok(Self {
-                tx,
-                wakeup,
-                handle: Some(handle),
-                thread_id,
-            }),
-            Ok(InitResult::Err(e)) => Err(EngineError::from_detail(
-                ErrorCode::Internal,
-                format!("Audio thread initialization failed: {}", e),
-            )),
-            Err(_) => Err(EngineError::from_detail(
-                ErrorCode::Internal,
-                "Audio thread terminated before initialization",
-            )),
-        }
-    }
-
     /// Return an [`AudioSender`](shared::op_state::AudioSender) that wraps
     /// the command channel + wakeup handle. Every `.send()` on the returned
     /// sender also signals the audio thread to wake up immediately.
@@ -1159,10 +1052,9 @@ impl AudioThread {
     /// created early (so ops can start sending commands immediately), but the
     /// thread is only spawned when the first real audio command arrives.
     ///
-    /// Unlike [`spawn`], this does **not** block the caller waiting for
-    /// `AudioOutput::new()` to complete. The thread initialises audio output
-    /// asynchronously; commands queued before init finishes are buffered in the
-    /// channel and processed once the output is ready.
+    /// It does **not** block the caller waiting for the output to open. The
+    /// thread opens it asynchronously; commands queued before then are
+    /// buffered in the channel and processed once the output is ready.
     pub fn spawn_with_channel(
         tx: AudioCommandSender,
         rx: AudioCommandReceiver,
@@ -1185,17 +1077,9 @@ impl AudioThread {
                     shared::thread_priority::Priority::Background,
                 );
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let output = match AudioOutput::new() {
-                        Ok(out) => out,
-                        Err(e) => {
-                            error!(
-                                "AudioThread (lazy): failed to initialise audio output: {}",
-                                e
-                            );
-                            abandon_queue(rx);
-                            return;
-                        }
-                    };
+                    // A device, or silence until one appears: never no output, so a
+                    // game's audio runs on a machine that cannot play it.
+                    let output = AudioOutput::new();
 
                     info!("AudioThread (lazy) started");
                     run_audio_thread(
@@ -1390,6 +1274,35 @@ fn soft_limit(buffer: &mut [f32]) {
     }
 }
 
+/// When to look for an output device while the mix plays into silence: soon
+/// after it starts, then less and less often, so a machine that has none is not
+/// asked on every pass.
+struct DeviceSearch {
+    next: Instant,
+    interval: Duration,
+}
+
+impl DeviceSearch {
+    const FIRST: Duration = Duration::from_secs(1);
+    const LONGEST: Duration = Duration::from_secs(30);
+
+    fn new(now: Instant) -> Self {
+        Self {
+            next: now + Self::FIRST,
+            interval: Self::FIRST,
+        }
+    }
+
+    fn is_due(&self, now: Instant) -> bool {
+        now >= self.next
+    }
+
+    fn missed(&mut self, now: Instant) {
+        self.interval = (self.interval * 2).min(Self::LONGEST);
+        self.next = now + self.interval;
+    }
+}
+
 /// Audio thread main loop — 3-level power management.
 ///
 /// # Power States
@@ -1463,9 +1376,8 @@ fn run_audio_thread(
     let mut output_power = AudioPowerManager::new(power_config);
     let mut stream_gate = AudioStreamGate::new_running();
 
-    // Exponential backoff for audio output recovery
-    let mut recovery_delay = Duration::from_secs(1);
-    const MAX_RECOVERY_DELAY: Duration = Duration::from_secs(30);
+    // While the mix plays into silence, when to look for a device next.
+    let mut device_search = DeviceSearch::new(Instant::now());
 
     loop {
         // -----------------------------------------------------------------
@@ -2788,48 +2700,56 @@ fn run_audio_thread(
         let output_power_state = output_power.update(output_is_active);
 
         // -----------------------------------------------------------------
-        // 6. Recover dead output only when there is audible work. A newly
-        //    created AudioOutput starts in play state.
+        // 6. Replace the output only when there is audible work. A dead device
+        //    is reopened -- or replaced by silence, which cannot fail -- and
+        //    while the mix plays into silence a device is looked for, less
+        //    often the longer none appears. A new output starts in play state.
         // -----------------------------------------------------------------
         if !output.is_alive() {
             stream_gate.mark_stopped();
-            if output_is_active {
-                match AudioOutput::new() {
-                    Ok(new_output) => {
-                        let recovered_rate = new_output.sample_rate();
-                        let recovered_channels = new_output.channels();
-                        let route_changed =
-                            recovered_rate != sample_rate || recovered_channels != channels;
-                        sync = new_output.sync().clone();
-                        output = new_output;
-                        if route_changed {
-                            sample_rate = recovered_rate;
-                            channels = recovered_channels;
-                            process_frames = calculate_process_frames(sample_rate);
-                            buffer_size = process_frames * channels as usize;
-                            process_buffer.resize(buffer_size, 0.0);
-                            for ctx in contexts.values_mut() {
-                                ctx.renegotiate_device(sample_rate, channels);
-                            }
-                            // Jobs submitted after recovery use the new route
-                            // rate; already-running workers finish their
-                            // bounded in-flight jobs with their original target.
-                            decode_pool.sample_rate = sample_rate;
-                        }
-                        stream_gate.mark_running();
-                        recovery_delay = Duration::from_secs(1);
-                        info!("AudioThread: audio output recovered after stream error");
-                    }
+        }
+        if output_is_active {
+            let now = Instant::now();
+            let replacement = if !output.is_alive() {
+                Some(AudioOutput::new())
+            } else if output.is_silent() && device_search.is_due(now) {
+                match AudioOutput::open_device() {
+                    Ok(device) => Some(device),
                     Err(e) => {
-                        error!(
-                            "AudioThread: failed to recover audio output (retry in {:?}): {}",
-                            recovery_delay, e
-                        );
-                        wakeup.wait_timeout(recovery_delay);
-                        recovery_delay = (recovery_delay * 2).min(MAX_RECOVERY_DELAY);
-                        continue;
+                        tracing::debug!("AudioThread: still no audio output device: {}", e);
+                        device_search.missed(now);
+                        None
                     }
                 }
+            } else {
+                None
+            };
+            if let Some(new_output) = replacement {
+                if new_output.is_silent() {
+                    device_search = DeviceSearch::new(now);
+                } else {
+                    info!("AudioThread: audio output device opened");
+                }
+                let new_rate = new_output.sample_rate();
+                let new_channels = new_output.channels();
+                let route_changed = new_rate != sample_rate || new_channels != channels;
+                sync = new_output.sync().clone();
+                output = new_output;
+                if route_changed {
+                    sample_rate = new_rate;
+                    channels = new_channels;
+                    process_frames = calculate_process_frames(sample_rate);
+                    buffer_size = process_frames * channels as usize;
+                    process_buffer.resize(buffer_size, 0.0);
+                    for ctx in contexts.values_mut() {
+                        ctx.renegotiate_device(sample_rate, channels);
+                    }
+                    // Jobs submitted after the change use the new route rate;
+                    // already-running workers finish their bounded in-flight
+                    // jobs with their original target.
+                    decode_pool.sample_rate = sample_rate;
+                }
+                stream_gate.mark_running();
             }
         }
 
@@ -2847,6 +2767,10 @@ fn run_audio_thread(
             info!("AudioThread entered idle sleep (stream paused)");
         }
         let resume_after_refill = stream_action == Some(AudioStreamAction::Resume);
+
+        // Silence consumes the time since the last pass, as a device's callback
+        // would have; a device consumes on its own.
+        output.pump();
 
         // -----------------------------------------------------------------
         // 7. Audio processing (only with audible work). A resume forces one
@@ -3716,6 +3640,114 @@ mod tests {
         assert_eq!(contexts.get(&13).unwrap().buffer_channels(1), None);
     }
 
+    /// Looked for soon after silence starts, then half as often each time none
+    /// appears, to at most every thirty seconds.
+    #[test]
+    fn a_device_is_looked_for_less_often_the_longer_none_appears() {
+        let start = Instant::now();
+        let mut search = DeviceSearch::new(start);
+        assert!(!search.is_due(start));
+        assert!(search.is_due(start + Duration::from_secs(1)));
+
+        let mut now = start + Duration::from_secs(1);
+        let mut intervals = Vec::new();
+        for _ in 0..7 {
+            search.missed(now);
+            let next = search.next;
+            intervals.push((next - now).as_secs());
+            now = next;
+        }
+        assert_eq!(intervals, [2, 4, 8, 16, 30, 30, 30]);
+    }
+
+    /// With no device the game's audio still runs, on time: an oscillator stopped
+    /// at 0.2 s of its context's time ends then -- not at once, which a mix
+    /// consumed faster than time passes would do, and not never, which is what a
+    /// machine with no output device did when the audio thread refused to start
+    /// and every audio object a game asked for failed.
+    #[test]
+    fn with_no_device_the_mix_plays_into_silence_on_time() {
+        let (tx, rx) = shared::audio_channel::channel();
+        let (host_tx, _critical, mut host_rx) = shared::host_channel::channel(64);
+        let wakeup = ThreadWakeup::new();
+        let factory: StreamingHttpClientFactory = Arc::new(|| {
+            Err(EngineError::from_detail(
+                ErrorCode::Unsupported,
+                "nothing streams in this test",
+            ))
+        });
+        let mut silence = crate::output::SilentOutput::new();
+        silence.resume_stream();
+        let thread_wakeup = wakeup.clone();
+        let audio = std::thread::spawn(move || {
+            run_audio_thread(
+                rx,
+                Vec::new(),
+                AudioOutput::Silent(silence),
+                host_tx,
+                thread_wakeup,
+                factory,
+            )
+        });
+        let send = |command: AudioCmd| {
+            tx.try_send(command).expect("the queue has room");
+            wakeup.notify();
+        };
+        let (connected, _answer) = tokio::sync::oneshot::channel();
+
+        send(AudioCmd::CreateContext {
+            ctx_id: 1,
+            sample_rate: None,
+        });
+        send(AudioCmd::CreateOscillator {
+            ctx_id: 1,
+            node_id: 7,
+        });
+        send(AudioCmd::Connect {
+            src: 7,
+            src_output: 0,
+            dst: crate::context::DESTINATION_NODE_ID,
+            dst_input: 0,
+            resp: connected,
+        });
+        send(AudioCmd::WatchSourceEnded {
+            node_id: 7,
+            enabled: true,
+        });
+        let started = Instant::now();
+        send(AudioCmd::StartOscillator {
+            node_id: 7,
+            when: 0.0,
+        });
+        send(AudioCmd::StopOscillator {
+            node_id: 7,
+            when: 0.2,
+        });
+
+        let ended = loop {
+            match host_rx.try_recv() {
+                Ok(HostCommand::AudioSourceEnded { node_id: 7 }) => break started.elapsed(),
+                Ok(_) => {}
+                Err(_) => {
+                    assert!(
+                        started.elapsed() < Duration::from_secs(5),
+                        "the oscillator never ended: nothing consumed the mix"
+                    );
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+        };
+        // The thread renders up to its high watermark (~85 ms) ahead of what is
+        // consumed, so the stop is reached that much before 0.2 s of wall time.
+        assert!(
+            ended >= Duration::from_millis(100),
+            "ended after {ended:?}: the mix was consumed faster than time passed"
+        );
+
+        send(AudioCmd::Shutdown);
+        audio.join().expect("the audio thread stops on Shutdown");
+    }
+
     #[test]
     fn a_decode_whose_context_closed_meanwhile_is_refused() {
         let contexts = HashMap::new();
@@ -3730,37 +3762,6 @@ mod tests {
 
         let error = receiver.try_recv().unwrap().expect_err("closed context");
         assert_eq!(error.code, ErrorCode::NotFound);
-    }
-
-    #[test]
-    fn a_queue_no_thread_will_run_fails_its_callers_instead_of_holding_them() {
-        let (tx, rx) = shared::audio_channel::channel();
-        let (resp, mut answer) = tokio::sync::oneshot::channel();
-        tx.try_send(AudioCmd::CloseContext { ctx_id: 1, resp })
-            .expect("the fixture queues one awaited command");
-
-        abandon_queue(rx);
-
-        assert!(
-            matches!(
-                answer.try_recv(),
-                Err(tokio::sync::oneshot::error::TryRecvError::Closed)
-            ),
-            "an awaited command must fail rather than wait for a thread that will not run"
-        );
-        let (later, _) = tokio::sync::oneshot::channel();
-        assert!(
-            matches!(
-                tx.try_send(AudioCmd::CloseContext {
-                    ctx_id: 2,
-                    resp: later
-                }),
-                Err(shared::audio_channel::AudioCommandSendError::Disconnected(
-                    _
-                ))
-            ),
-            "a call made afterwards fails at once"
-        );
     }
 
     #[test]
