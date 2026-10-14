@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `contracts/runtime/minigame-api-spec.json`: every API of the common mini-game platform as its reference documents
+  it. For each API it records how it is called (options with callbacks, a listener, a value returned, an object made),
+  Promise support, the options it takes, the fields of its success result, return value or listener argument (with
+  their types), the scope it needs, and which of the reference's clients support it. It is generated from a local
+  mirror of the reference (`scripts/gen-minigame-api-spec.py`). `scripts/test-minigame-api-spec-contract.sh` checks
+  that it covers the platform's API list exactly, and that it is current where the mirror exists. It is what the
+  verification lane checks implementations against.
 - The iOS game view follows its size while a game runs. Laid out at another size (the interface turned, a scene
   resized in Split View), it resizes the session's surface and hands the producer the new size and device. Content then
   hears `onWindowResize` with what `getWindowInfo()` answers, and a main canvas content never sized follows, as on every
