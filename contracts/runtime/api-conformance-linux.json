@@ -12,7 +12,7 @@
     "host app's to answer)."
   ],
   "platform": "linux",
-  "measured": {"date": "2026-10-14", "runner": "linux-capi", "bundles": ["api-spec", "network-spec", "worker-spec"], "runtime": "7124a7eb64e83757be0d9358f277bbd9b1945020", "conformance": "dfe9123dd99ec32a325862315b862753a8d7e7ac"},
+  "measured": {"date": "2026-10-14", "runner": "linux-capi", "bundles": ["api-spec", "audio-spec", "network-spec", "worker-spec"], "runtime": "866960576decaa6b5efed609a5ff636fe4c02e07", "conformance": "e5b8beb1b0d0d05f431e7a1e4c71c3c719a4d218"},
   "apis": {
     "addCard": {"status": "present"},
     "authPrivateMessage": {"status": "present"},
@@ -49,7 +49,7 @@
     "createInferenceSession": {"status": "absent"},
     "createInnerAudioContext": {"status": "verified"},
     "createInterstitialAd": {"status": "present"},
-    "createMediaAudioPlayer": {"status": "failing", "failing": ["api-spec/createMediaAudioPlayer/makes"]},
+    "createMediaAudioPlayer": {"status": "verified"},
     "createOpenSettingButton": {"status": "present"},
     "createPageManager": {"status": "present"},
     "createPath2D": {"status": "verified"},
@@ -61,7 +61,7 @@
     "createVKSession": {"status": "absent"},
     "createVideo": {"status": "present"},
     "createVideoDecoder": {"status": "present"},
-    "createWebAudioContext": {"status": "failing", "failing": ["api-spec/createWebAudioContext/makes"]},
+    "createWebAudioContext": {"status": "verified"},
     "createWorker": {"status": "verified"},
     "decode": {"status": "verified"},
     "downloadFile": {"status": "verified"},
