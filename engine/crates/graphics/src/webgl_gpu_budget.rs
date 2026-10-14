@@ -34,8 +34,21 @@ const GL_TEXTURE_2D_ARRAY: u32 = 0x8C1A;
 const GL_RENDERBUFFER: u32 = 0x8D41;
 const WEBGL_TEXTURE_UNIT_COUNT: u32 = 32;
 
-const MAX_CONTEXT_BYTES: u64 = 128 * 1024 * 1024;
-const MAX_PROCESS_BYTES: u64 = 512 * 1024 * 1024;
+/// The storage the process's WebGL contexts may keep resident: a quarter of the device's physical memory, and never
+/// less than the 512 MiB every device was allowed before the ceiling followed the device.
+///
+/// A fixed ceiling refused real games. Phaser 3.60 keeps a pool of render targets from 32 pixels up to the canvas's
+/// shorter side, each a colour texture and a depth-stencil buffer: 171 MiB on a 720 x 1280 canvas, more on one sized
+/// in device pixels. Under the old 128 MiB per context its renderer could not complete its framebuffers and the game
+/// never started. A browser sets no such ceiling below what the device can hold, and the reference platform runs
+/// these games. A quarter of the memory leaves the rest to the game's JavaScript, its audio and images, and the
+/// system -- on iOS, inside the share the system lets one app keep.
+///
+/// One ceiling for each context and for all of them: a game has one WebGL context as a rule, and a per-context
+/// ceiling below the process's refused that one context storage the device had room for. Contexts still share the
+/// process's ceiling.
+const MIN_PROCESS_BYTES: u64 = 512 * 1024 * 1024;
+const PHYSICAL_MEMORY_SHARE_DIVISOR: u64 = 4;
 const MAX_2D_DIMENSION: u32 = 16_384;
 const MAX_3D_DIMENSION: u32 = 2_048;
 const MAX_ARRAY_LAYERS: u32 = 2_048;
@@ -52,14 +65,24 @@ pub(crate) struct GpuBudgetLimits {
 }
 
 impl GpuBudgetLimits {
-    const PRODUCTION: Self = Self {
-        max_context_bytes: MAX_CONTEXT_BYTES,
-        max_process_bytes: MAX_PROCESS_BYTES,
-        max_2d_dimension: MAX_2D_DIMENSION,
-        max_3d_dimension: MAX_3D_DIMENSION,
-        max_array_layers: MAX_ARRAY_LAYERS,
-        max_samples: MAX_SAMPLES,
-    };
+    /// The limits on a device with `physical_memory` bytes, or on one that does not say (the floor).
+    fn for_device(physical_memory: Option<u64>) -> Self {
+        let resident = physical_memory.map_or(MIN_PROCESS_BYTES, |bytes| {
+            (bytes / PHYSICAL_MEMORY_SHARE_DIVISOR).max(MIN_PROCESS_BYTES)
+        });
+        Self {
+            max_context_bytes: resident,
+            max_process_bytes: resident,
+            max_2d_dimension: MAX_2D_DIMENSION,
+            max_3d_dimension: MAX_3D_DIMENSION,
+            max_array_layers: MAX_ARRAY_LAYERS,
+            max_samples: MAX_SAMPLES,
+        }
+    }
+
+    fn production() -> Self {
+        Self::for_device(shared::device::memory::physical_memory_bytes())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -364,7 +387,7 @@ impl Default for WebGlGpuBudget {
 impl WebGlGpuBudget {
     pub(crate) fn new() -> Self {
         static PROCESS: OnceLock<Arc<ProcessUsage>> = OnceLock::new();
-        let limits = GpuBudgetLimits::PRODUCTION;
+        let limits = GpuBudgetLimits::production();
         let process = Arc::clone(
             PROCESS.get_or_init(|| Arc::new(ProcessUsage::new(limits.max_process_bytes))),
         );
@@ -1563,6 +1586,51 @@ mod tests {
             max_array_layers: 2_048,
             max_samples: 16,
         }
+    }
+
+    /// The ceiling follows the device: a quarter of its memory, never below the 512 MiB every device had, and one
+    /// number for a context and for the process.
+    #[test]
+    fn the_ceiling_is_a_quarter_of_the_device_s_memory_with_a_floor() {
+        const GIB: u64 = 1 << 30;
+        let ceiling = |physical| {
+            let limits = GpuBudgetLimits::for_device(physical);
+            assert_eq!(limits.max_context_bytes, limits.max_process_bytes);
+            limits.max_process_bytes
+        };
+        assert_eq!(ceiling(Some(8 * GIB)), 2 * GIB);
+        assert_eq!(ceiling(Some(4 * GIB)), GIB);
+        assert_eq!(ceiling(Some(2 * GIB)), 512 << 20);
+        assert_eq!(ceiling(Some(GIB)), 512 << 20);
+        assert_eq!(ceiling(None), 512 << 20);
+    }
+
+    /// What the ceiling is for: a game's one context keeping the storage its engine needs. Phaser 3.60's render
+    /// target pool is 171 MiB on a 720 x 1280 canvas; under the old 128 MiB per context the second of these two
+    /// 100 MiB textures was refused and Phaser's framebuffers never completed. A 4 GiB device holds both.
+    #[test]
+    fn one_context_keeps_what_a_game_engine_needs_on_an_ordinary_device() {
+        let scope = GpuBudgetTestScope::new(GpuBudgetLimits::for_device(Some(4 << 30)));
+        let mut budget = scope.registry();
+        for texture in [21, 22] {
+            budget.create_texture(1, texture).unwrap();
+            budget.bind_texture(1, TEXTURE_2D, Some(texture));
+            let allocation = budget
+                .prepare_tex_image_2d(
+                    1,
+                    TEXTURE_2D,
+                    0,
+                    RGBA8 as i32,
+                    5120,
+                    5120,
+                    0,
+                    RGBA,
+                    UNSIGNED_BYTE,
+                )
+                .unwrap();
+            budget.commit(allocation);
+        }
+        assert_eq!(scope.process_usage(), 2 * 5120 * 5120 * 4);
     }
 
     #[test]
