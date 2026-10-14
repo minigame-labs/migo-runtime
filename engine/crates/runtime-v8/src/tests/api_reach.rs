@@ -230,6 +230,18 @@ const PLUMBING: &[&str] = &[
     "op_timer_queue",
 ];
 
+/// Async ops that wait for a listener's next event, for as long as the listener lives: not work a call does.
+const LISTENING: &[&str] = &[
+    "op_await_next_frame",
+    "op_tcp_next_event",
+    "op_udp_next_event",
+    "op_ws_next_event",
+];
+
+/// How long one slice of the event loop runs, and how long a call may take to finish what it started.
+const SETTLE_SLICE: Duration = Duration::from_millis(20);
+const SETTLE_BOUND: Duration = Duration::from_secs(2);
+
 /// Calls that get past content-side validation to the host, where `{}` would be
 /// refused before reaching it: each is the smallest valid call, as a script.
 /// `__probeCall(name, args)` also calls through the object a factory returns.
@@ -524,6 +536,12 @@ fn api_reach_matches_the_committed_record() {
 
     let log: Log = Arc::default();
     let metrics_log = Arc::clone(&log);
+    // What tells one call's work from the next call's: the async ops still in flight, and how many ops have been
+    // dispatched at all. A call is done when nothing it started is in flight and a slice of the event loop dispatched
+    // nothing more -- the close a finished socket makes lands in its own call, not in whichever comes next.
+    let in_flight = Rc::new(std::cell::Cell::new(0i64));
+    let dispatched = Rc::new(std::cell::Cell::new(0u64));
+    let (counted_in_flight, counted_dispatched) = (Rc::clone(&in_flight), Rc::clone(&dispatched));
     // A real sandbox, so a call naming a file gets as far as resolving it.
     let sandbox = super::support::Sandbox::new("api-reach");
     let temp = sandbox.paths.temp_dir();
@@ -539,9 +557,23 @@ fn api_reach_matches_the_committed_record() {
         op_metrics_factory_fn: Some(Box::new(move |_, _, decl| {
             let log = Arc::clone(&metrics_log);
             let name = decl.name;
+            // The engine's own plumbing runs whether or not a call is (timers, the frame clock), and a listener's
+            // wait for its next event lasts as long as the listener: neither is work a call is doing.
+            let counted = !PLUMBING.contains(&name);
+            let waited_for = counted && decl.is_async && !LISTENING.contains(&name);
+            let in_flight = Rc::clone(&counted_in_flight);
+            let dispatched = Rc::clone(&counted_dispatched);
             Some(Rc::new(move |_, event, _| {
                 if event == deno_core::OpMetricsEvent::Dispatched {
                     log.lock().unwrap().push(format!("op:{name}"));
+                    if counted {
+                        dispatched.set(dispatched.get() + 1);
+                    }
+                    if waited_for {
+                        in_flight.set(in_flight.get() + 1);
+                    }
+                } else if waited_for {
+                    in_flight.set((in_flight.get() - 1).max(0));
                 }
             }))
         })),
@@ -554,6 +586,7 @@ fn api_reach_matches_the_committed_record() {
     let calls: BTreeMap<&str, &str> = CALLS.iter().copied().collect();
 
     let mut apis = serde_json::Map::new();
+    let mut unsettled = Vec::new();
     for name in &names {
         let kind = eval_string(&mut runtime, format!("typeof migo[{name:?}]"));
         if kind == "undefined" {
@@ -570,13 +603,25 @@ fn api_reach_matches_the_committed_record() {
                 None => format!("__probeCall({name:?}, [{{}}])"),
             };
             eval_string(&mut runtime, format!("try {{ {call} }} catch (_) {{}}; ''"));
-            reactor.block_on(async {
-                let _ = tokio::time::timeout(
-                    Duration::from_millis(20),
-                    runtime.run_event_loop(PollEventLoopOptions::default()),
-                )
-                .await;
-            });
+            let deadline = std::time::Instant::now() + SETTLE_BOUND;
+            loop {
+                let before = dispatched.get();
+                reactor.block_on(async {
+                    let _ = tokio::time::timeout(
+                        SETTLE_SLICE,
+                        runtime.run_event_loop(PollEventLoopOptions::default()),
+                    )
+                    .await;
+                });
+                if in_flight.get() == 0 && dispatched.get() == before {
+                    break;
+                }
+                if std::time::Instant::now() >= deadline {
+                    unsettled.push(name.clone());
+                    in_flight.set(0);
+                    break;
+                }
+            }
         }
         let mut ops = BTreeSet::new();
         let mut services = BTreeSet::new();
@@ -592,6 +637,13 @@ fn api_reach_matches_the_committed_record() {
         apis.insert(name.clone(), json!({ "ops": ops, "services": services }));
     }
 
+    // A call that never finishes what it started would leave its ops to land in later calls, which is the drift this
+    // probe exists to rule out: name it rather than record whatever happened to land.
+    assert!(
+        unsettled.is_empty(),
+        "these calls still had work in flight after {SETTLE_BOUND:?}: {unsettled:?} -- if one starts an op that waits \
+         for events for as long as it lives, list that op in LISTENING"
+    );
     let rendered = render(&apis);
     let path = contract("minigame-api-reach.json");
     if std::env::var("MIGO_UPDATE_API_REACH").is_ok() {
