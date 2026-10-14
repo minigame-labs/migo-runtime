@@ -618,6 +618,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a relink, is INVALID_OPERATION and null, as are a deleted program and one that did not link.
 
 ### Changed
+- At most ten requests run at once -- `request`, `downloadFile` and `uploadFile` together, as the reference allows --
+  and the rest wait their turn (an abort while waiting ends the request); the wait is the profile's
+  `queueStart`/`queueEnd`, which were the fetch start when the engine had no limit. At most five WebSocket connections
+  exist at once, one still opening included: a sixth `connectSocket` fails before it connects, saying why.
 - Raw sockets follow the reference's connection limits. A TCPSocket may not connect to a port below 1024 or to the
   well-known service ports the reference lists (1099, 1433, 3306, 3389, 6379, 8000-8100, 8443, 27017, ...): its connect
   fails `connect:fail port N is not allowed`. At most 20 TCPSockets are created in any 5 minutes: the one past that is

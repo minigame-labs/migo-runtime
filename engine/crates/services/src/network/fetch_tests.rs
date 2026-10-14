@@ -324,12 +324,12 @@ fn a_declared_body_is_admitted_before_its_reader_exists() {
             .body(b"body".to_vec())
             .unwrap(),
     );
-    let body = ResponseBody::new(
-        response,
-        Some(4096),
-        Some(ticket),
-        std::time::Instant::now(),
-    );
+    let now = std::time::Instant::now();
+    let queue = super::super::http::Span {
+        start: now,
+        end: now,
+    };
+    let body = ResponseBody::new(response, Some(4096), Some(ticket), now, queue, None);
     assert_eq!(body.size(), Some(4096));
     drop(body);
     reserve_response_bytes(&pools, Some(4096))
@@ -606,4 +606,49 @@ fn a_profile_through_a_connection_orders_its_phases() {
     );
     assert!((2..=5).contains(&at("estimate_nettype")));
     server.finish();
+}
+
+/// Ten requests run at once, as the reference allows; the eleventh waits its turn, starts when one of the ten is
+/// closed, and reports the wait as its queue.
+#[test]
+fn the_eleventh_request_waits_for_one_of_ten_to_end() {
+    let session = Session::new(policy(&[], false));
+    block_on(async {
+        let mut open = Vec::new();
+        for _ in 0..super::super::resources::MAX_CONCURRENT_REQUESTS {
+            let handles = session.fetch("GET", "data:text/plain,a").unwrap();
+            let answer = fetch_send(&session.resources, &session.pools, handles.request_rid)
+                .await
+                .unwrap();
+            open.push(answer.response_rid);
+        }
+        let eleventh = session.fetch("GET", "data:text/plain,b").unwrap();
+        let waiting = fetch_send(&session.resources, &session.pools, eleventh.request_rid);
+        tokio::pin!(waiting);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut waiting)
+                .await
+                .is_err(),
+            "an eleventh request ran while ten were open"
+        );
+        session.resources.close(open[0]);
+        let answer = tokio::time::timeout(Duration::from_secs(5), waiting)
+            .await
+            .expect("it runs once one of the ten is closed")
+            .unwrap();
+        while !read(&session.resources, answer.response_rid, 1024)
+            .await
+            .unwrap()
+            .is_empty()
+        {}
+        let profile = profile(&session.resources, answer.response_rid)
+            .await
+            .unwrap();
+        let (start, end) = (
+            profile["queueStart"].as_u64().unwrap(),
+            profile["queueEnd"].as_u64().unwrap(),
+        );
+        assert!(end >= start + 100, "it waited at least 100 ms: {profile}");
+        assert!(end <= profile["fetchStart"].as_u64().unwrap());
+    });
 }

@@ -94,11 +94,19 @@ impl CancelFlag {
 }
 
 /// One session's resources.
-#[derive(Default)]
 pub struct ResourceTable {
     next: AtomicU32,
     entries: Mutex<HashMap<ResourceId, Entry>>,
+    /// The reference's limits on what a game has open at once: ten requests (request, downloadFile and uploadFile
+    /// together; more wait their turn) and five WebSocket connections (a sixth fails).
+    request_slots: Arc<tokio::sync::Semaphore>,
+    web_socket_slots: Arc<tokio::sync::Semaphore>,
 }
+
+/// Requests in flight at once, by the reference's limit.
+pub const MAX_CONCURRENT_REQUESTS: usize = 10;
+/// WebSocket connections open at once, by the reference's limit.
+pub const MAX_WEB_SOCKETS: usize = 5;
 
 enum Entry {
     FetchRequest(Box<super::fetch::PendingRequest>),
@@ -122,12 +130,35 @@ impl Entry {
     }
 }
 
+impl Default for ResourceTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ResourceTable {
     pub fn new() -> Self {
         Self {
             next: AtomicU32::new(1),
             entries: Mutex::new(HashMap::new()),
+            request_slots: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_REQUESTS)),
+            web_socket_slots: Arc::new(tokio::sync::Semaphore::new(MAX_WEB_SOCKETS)),
         }
+    }
+
+    /// A request's turn: at once while fewer than ten are in flight, otherwise when one ends. Held for as long as the
+    /// request is -- through its response, until that is closed.
+    pub(crate) async fn request_slot(&self) -> tokio::sync::OwnedSemaphorePermit {
+        Arc::clone(&self.request_slots)
+            .acquire_owned()
+            .await
+            .expect("the request slots are never closed")
+    }
+
+    /// A WebSocket's place among the five, or `None` when five are open. Held from before the handshake, so connections
+    /// still opening count, until the connection is gone.
+    pub(crate) fn web_socket_slot(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        Arc::clone(&self.web_socket_slots).try_acquire_owned().ok()
     }
 
     fn add(&self, entry: Entry) -> ResourceId {

@@ -91,6 +91,8 @@ pub struct WebSocketConn {
     tx: Mutex<SplitSink<WsStream, Message>>,
     rx: Mutex<SplitStream<WsStream>>,
     cancel: Arc<CancelFlag>,
+    /// The connection's place among the five that may be open at once, given back when it is gone.
+    _slot: tokio::sync::OwnedSemaphorePermit,
 }
 
 impl WebSocketConn {
@@ -146,6 +148,14 @@ pub async fn create(
     let parsed = url::Url::parse(url)
         .map_err(|error| type_error(format!("Invalid WebSocket URL: {error}")))?;
     gate::enforce(&parsed, policy, GateKind::WebSocket).map_err(ServiceError::generic)?;
+    // The reference lets five WebSocket connections exist at once; one still
+    // opening is one of them.
+    let slot = resources.web_socket_slot().ok_or_else(|| {
+        generic(format!(
+            "at most {} WebSocket connections may be open at once",
+            super::resources::MAX_WEB_SOCKETS
+        ))
+    })?;
 
     // Post-gate: `into_client_request` re-validates the URL's shape, not the
     // policy.
@@ -213,6 +223,7 @@ pub async fn create(
         tx: Mutex::new(tx),
         rx: Mutex::new(rx),
         cancel: Arc::new(CancelFlag::default()),
+        _slot: slot,
     }));
 
     shared::stats::io_metrics_global()

@@ -6,8 +6,8 @@
 //!   those phases are the fetch start;
 //! - a plain connection had no TLS handshake: its TLS phase is 0;
 //! - redirects are timed only when they stayed on the request's host, and are 0 otherwise;
-//! - the engine does not queue requests (it has no concurrency cap), so a request's queue starts and ends at its fetch
-//!   start;
+//! - a request waits its turn among the ten the reference lets run at once: its queue is that wait, which starts and
+//!   ends together when it did not have to wait;
 //! - an answer that needed no connection (a `data:` URL) has every phase at its fetch start, no peer, and no round trip.
 //!
 //! The RTT is the kernel's for the connection's socket, absent where the platform reports none.
@@ -16,16 +16,17 @@ use std::time::Instant;
 
 use serde_json::{Value, json};
 
-use super::http::RequestTiming;
 use super::http::trace::epoch_ms;
+use super::http::{RequestTiming, Span};
 use super::quality::Estimate;
 
 fn ms(at: Instant) -> u64 {
     epoch_ms(at).round().max(0.0) as u64
 }
 
-/// The profile of a request content called at `invoked`, whose exchange `timing` measured.
-pub fn profile(invoked: Instant, timing: &RequestTiming, estimate: Estimate) -> Value {
+/// The profile of a request content called at `invoked`, that waited for its turn over `queue`, and whose exchange
+/// `timing` measured.
+pub fn profile(invoked: Instant, queue: Span, timing: &RequestTiming, estimate: Estimate) -> Value {
     let fetch_start = ms(timing.fetch_start);
     let fresh = timing.connection.as_ref().filter(|_| !timing.socket_reused);
     let (lookup_start, lookup_end) = fresh
@@ -65,8 +66,8 @@ pub fn profile(invoked: Instant, timing: &RequestTiming, estimate: Estimate) -> 
 
     let mut profile = json!({
         "invokeStart": ms(invoked),
-        "queueStart": fetch_start,
-        "queueEnd": fetch_start,
+        "queueStart": ms(queue.start),
+        "queueEnd": ms(queue.end),
         "redirectStart": redirect_start,
         "redirectEnd": redirect_end,
         "fetchStart": fetch_start,

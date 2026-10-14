@@ -116,7 +116,11 @@ pub struct ResponseBody {
     cancel: CancelFlag,
     size: Option<u64>,
     invoked: std::time::Instant,
+    /// The wait for the request's turn among the ten that may run at once.
+    queue: super::http::Span,
     _byte_ticket: Option<ByteTicket>,
+    /// The request's turn, given back when the response is closed.
+    _slot: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
 /// The response, and what is left of the chunk it last gave: a read takes at
@@ -132,6 +136,8 @@ impl ResponseBody {
         size: Option<u64>,
         byte_ticket: Option<ByteTicket>,
         invoked: std::time::Instant,
+        queue: super::http::Span,
+        slot: Option<tokio::sync::OwnedSemaphorePermit>,
     ) -> Self {
         Self {
             reader: Mutex::new(BodyReader {
@@ -141,7 +147,9 @@ impl ResponseBody {
             cancel: CancelFlag::default(),
             size,
             invoked,
+            queue,
             _byte_ticket: byte_ticket,
+            _slot: slot,
         }
     }
 
@@ -149,7 +157,7 @@ impl ResponseBody {
     pub async fn profile(&self) -> serde_json::Value {
         let reader = self.reader.lock().await;
         let estimate = super::quality::estimator().lock().estimate();
-        super::profile::profile(self.invoked, reader.response.timing(), estimate)
+        super::profile::profile(self.invoked, self.queue, reader.response.timing(), estimate)
     }
 
     /// What the body says its length is, where it said.
@@ -333,6 +341,16 @@ pub async fn fetch_send(
         cancel,
         invoked,
     } = resources.take_request(request_rid)?;
+    // Its turn among the ten requests that may run at once: at once, or when one of them ends. A request aborted while
+    // it waits never runs.
+    let queued_at = std::time::Instant::now();
+    let Some(slot) = cancel.until_cancelled(resources.request_slot()).await else {
+        return Err(ServiceError::generic("request was cancelled"));
+    };
+    let queue = super::http::Span {
+        start: queued_at,
+        end: std::time::Instant::now(),
+    };
     let started_at = std::time::Instant::now();
     let response = match send {
         RequestSend::Data(url, response) => Response::local(url, response),
@@ -377,6 +395,8 @@ pub async fn fetch_send(
         content_length,
         Some(byte_ticket),
         invoked,
+        queue,
+        Some(slot),
     )));
 
     let elapsed_ms = started_at.elapsed().as_millis() as u64;

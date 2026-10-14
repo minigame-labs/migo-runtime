@@ -134,7 +134,14 @@ async fn a_broadcast_is_handed_to_the_kernel() {
             error.message
         );
     }
-    assert!(resources.udp(bound.rid).unwrap().socket.broadcast().unwrap());
+    assert!(
+        resources
+            .udp(bound.rid)
+            .unwrap()
+            .socket
+            .broadcast()
+            .unwrap()
+    );
 }
 
 /// A handle of another kind is refused by name for every call that takes a
