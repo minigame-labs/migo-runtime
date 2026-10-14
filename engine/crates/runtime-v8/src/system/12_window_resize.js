@@ -27,14 +27,25 @@ function _readWindowSize() {
     };
 }
 
+// A listener hears the window's size change after it was added, with the size it changed to -- not the size it has
+// now, which content reads with getWindowInfo (the reference calls the listener on a change only). The size now is
+// what it was added at, so a later report of that same size is no change for it.
 function onWindowResize(listener) {
     if (typeof listener === "function") {
+        _rememberSizeSeen();
         _resize.on(listener);
-        try {
-            listener(_readWindowSize());
-        } catch (e) {
-            console.error("onWindowResize listener error:", e);
-        }
+    }
+}
+
+// The size content could last have seen, where nothing has been reported yet: a report of it is not a change.
+function _rememberSizeSeen() {
+    if (_lastWidth !== -1) return;
+    try {
+        const data = _readWindowSize();
+        _lastWidth = data.windowWidth;
+        _lastHeight = data.windowHeight;
+    } catch (_) {
+        // No window to read: the first report is then the first size anyone hears.
     }
 }
 
