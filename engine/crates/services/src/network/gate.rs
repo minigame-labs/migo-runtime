@@ -33,7 +33,7 @@ use std::sync::Once;
 use tracing::warn;
 use url::Url;
 
-use super::address_filter::is_blocked_address;
+use super::address_filter::{is_blocked_address, is_private};
 use shared::op_state::NetworkPolicy;
 
 /// One-shot flag: warn exactly once if the host app shipped with an
@@ -195,10 +195,11 @@ pub fn is_host_whitelisted(host: &str, policy: &NetworkPolicy) -> bool {
     })
 }
 
-/// Pure, side-effect-free policy evaluator.
+/// Side-effect-free policy evaluator.
 ///
 /// Returns `Ok(())` iff every rule applicable to `kind` passes.
-/// Never performs DNS, never touches the filesystem, never logs.
+/// Never performs DNS, never touches the filesystem, never logs; for a
+/// private IP literal it asks the system which networks the device is on.
 ///
 /// Ordering is deliberate: cheapest / most-specific checks first so
 /// we reject obviously bad URLs before looking up the whitelist.
@@ -206,6 +207,17 @@ pub fn evaluate_policy(
     url: &Url,
     policy: &NetworkPolicy,
     kind: GateKind,
+) -> Result<(), GateReject> {
+    evaluate(url, policy, kind, &is_blocked_address)
+}
+
+/// [`evaluate_policy`] with `blocked` deciding which addresses may not be reached: the device's real networks in
+/// production, given ones in a test.
+fn evaluate(
+    url: &Url,
+    policy: &NetworkPolicy,
+    kind: GateKind,
+    blocked: &dyn Fn(&std::net::SocketAddr) -> bool,
 ) -> Result<(), GateReject> {
     // 1. Scheme whitelist.
     let scheme = url.scheme();
@@ -226,18 +238,22 @@ pub fn evaluate_policy(
         "https" | "wss" => 443,
         _ => 80,
     });
+    let mut lan_peer = false;
     if let Ok(sock_addr) = format!("{host}:{port}").parse::<std::net::SocketAddr>() {
-        if is_blocked_address(&sock_addr) {
+        if blocked(&sock_addr) {
             return Err(GateReject::BlockedAddress {
                 display: sock_addr.ip().to_string(),
             });
         }
+        // A private address the filter allowed is another device on the local network, which the reference lets
+        // content reach without its being a configured domain ("局域网 IP 除外").
+        lan_peer = is_private(sock_addr.ip());
     }
 
     // 4. Domain whitelist. Empty whitelist means "allow all" (dev /
     //    first-boot behaviour — `enforce` emits the warning before
-    //        evaluation).
-    if !is_host_whitelisted(host, policy) {
+    //        evaluation). A device on the local network is not a domain.
+    if !lan_peer && !is_host_whitelisted(host, policy) {
         return Err(GateReject::NotWhitelisted {
             host: host.to_string(),
         });
@@ -550,6 +566,33 @@ mod tests {
             GateKind::Fetch,
         );
         assert!(matches!(r, Err(GateReject::BlockedAddress { .. })));
+    }
+
+    #[test]
+    fn a_device_on_the_local_network_is_not_held_to_the_domain_list() {
+        let lan = [shared::device::local_address::LocalNetwork {
+            address: "10.0.2.15".parse().unwrap(),
+            prefix: 24,
+        }];
+        let on_lan =
+            |addr: &std::net::SocketAddr| super::super::address_filter::is_blocked_on(addr, &lan);
+        let listed = policy(&["allowed.example"], false);
+        let check =
+            |url: &str| evaluate(&Url::parse(url).unwrap(), &listed, GateKind::Fetch, &on_lan);
+        assert_eq!(check("http://10.0.2.2:8080/a"), Ok(()));
+        assert_eq!(
+            check("http://10.0.3.2:8080/a"),
+            Err(GateReject::BlockedAddress {
+                display: "10.0.3.2".to_string()
+            })
+        );
+        // A public address is a server like any other, held to the list.
+        assert_eq!(
+            check("http://8.8.8.8/a"),
+            Err(GateReject::NotWhitelisted {
+                host: "8.8.8.8".to_string()
+            })
+        );
     }
 
     #[test]

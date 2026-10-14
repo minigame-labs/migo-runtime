@@ -618,6 +618,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a relink, is INVALID_OPERATION and null, as are a deleted program and one that did not link.
 
 ### Changed
+- Content may reach the other devices on its local network: a private address (RFC 1918, IPv6 unique-local) is
+  allowed when it is on one of the device's networks and is not the device itself -- what the reference allows ("the
+  non-local IPs on the local network") so games can play on a LAN -- and such an address is not held to the domain
+  allow list, as the reference does not hold it. A private address anywhere else, the device itself, loopback,
+  link-local (cloud metadata included), multicast and the reserved ranges stay refused for `request`, `downloadFile`,
+  `uploadFile`, WebSocket, TCP and UDP alike.
 - Every outbound HTTP request -- `request`, `downloadFile`, `uploadFile`, a streamed `InnerAudioContext.src`, an
   `http(s)` image source, `prefetchAssets` -- is made by the engine's own client (hyper, with rustls and the same
   Mozilla roots) instead of reqwest, so a request's connection is the engine's to measure: DNS, TCP and TLS each timed,
