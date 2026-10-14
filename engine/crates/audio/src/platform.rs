@@ -33,7 +33,11 @@ pub fn service() -> Option<Arc<dyn AudioPlatformService>> {
 ))]
 pub fn service() -> Option<Arc<dyn AudioPlatformService>> {
     static SERVICE: std::sync::OnceLock<Arc<desktop::DesktopAudio>> = std::sync::OnceLock::new();
-    Some(SERVICE.get_or_init(|| Arc::new(desktop::DesktopAudio)).clone())
+    Some(
+        SERVICE
+            .get_or_init(|| Arc::new(desktop::DesktopAudio))
+            .clone(),
+    )
 }
 
 /// The engine's audio settings on this system, or `None` where the platform's

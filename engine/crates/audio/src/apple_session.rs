@@ -421,8 +421,20 @@ fn available_sources() -> EngineResult<Vec<String>> {
                 continue;
             }
             any = true;
-            built_in |= unsafe { equal(kind, selector("isEqualToString:"), AVAudioSessionPortBuiltInMic) };
-            headset |= unsafe { equal(kind, selector("isEqualToString:"), AVAudioSessionPortHeadsetMic) };
+            built_in |= unsafe {
+                equal(
+                    kind,
+                    selector("isEqualToString:"),
+                    AVAudioSessionPortBuiltInMic,
+                )
+            };
+            headset |= unsafe {
+                equal(
+                    kind,
+                    selector("isEqualToString:"),
+                    AVAudioSessionPortHeadsetMic,
+                )
+            };
         }
     }
     any |= unsafe { flag(session, selector("isInputAvailable")) };
@@ -487,7 +499,10 @@ mod tests {
     #[test]
     fn the_inputs_are_named_as_the_api_names_them() {
         assert_eq!(sources(true, true, false), ["auto", "buildInMic"]);
-        assert_eq!(sources(true, true, true), ["auto", "buildInMic", "headsetMic"]);
+        assert_eq!(
+            sources(true, true, true),
+            ["auto", "buildInMic", "headsetMic"]
+        );
         assert_eq!(sources(true, false, false), ["auto"]);
         assert!(sources(false, false, false).is_empty());
     }
