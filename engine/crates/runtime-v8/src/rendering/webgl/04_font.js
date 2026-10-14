@@ -2,6 +2,7 @@
 // `Deno` is deno_core's bootstrap object, deleted before content runs and absent
 // on a runtime that is not deno_core.
 import { core } from "ext:core/mod.js";
+import { failMessage, invokeCallback, isCallbackStyle } from "ext:host_v8_base/02_async.js";
 
 const { ops } = core;
 
@@ -39,16 +40,16 @@ const _LINE_HEIGHT_CACHE_MAX = 256;
  *
  * @param {string} path - Path to the font file (relative to game code directory).
  * @param {string} [family] - Optional CSS family alias to register explicitly.
- * @returns {string} Font family name, or empty string on failure.
+ * @returns {string|null} Font family name, or null when the font was not loaded (as the reference answers).
  */
 const loadFont = (path, family) => {
     if (typeof path !== 'string' || path.length === 0) {
         console.error('loadFont: path must be a non-empty string');
-        return '';
+        return null;
     }
     if (family !== undefined && typeof family !== 'string') {
         console.error('loadFont: family must be a string when provided');
-        return '';
+        return null;
     }
     console.info('migo.loadFont called: path=' + path + (family ? ', family=' + family : ''));
     const name = ops.op_load_font(path, family);
@@ -65,7 +66,7 @@ const loadFont = (path, family) => {
     // font has to run after `loadFont` returns to JS, the
     // happens-before is preserved by the microtask boundary.
     globalThis.__migoFontEpoch = (globalThis.__migoFontEpoch | 0) + 1;
-    return name;
+    return name || null;
 };
 
 /**
@@ -79,10 +80,29 @@ const loadFont = (path, family) => {
  * @param {number} [object.fontSize=16] - Font size in pixels.
  * @param {string} [object.fontFamily='sans-serif'] - Font family name.
  * @param {string} [object.text=''] - Not used for measurement, kept for API compat.
+ * @param {function} [object.success] / [object.fail] / [object.complete] - How the call went, as for any call that
+ *     takes them; the reference documents no field of their argument but errMsg. They run after the call returns.
  * @returns {number} Line height in pixels.
  */
 const getTextLineHeight = (object) => {
-    const obj = object || {};
+    if (!isCallbackStyle(object)) return lineHeight(object || {});
+    let height;
+    let res;
+    try {
+        height = lineHeight(object);
+        res = { errMsg: 'getTextLineHeight:ok' };
+    } catch (e) {
+        res = { errMsg: failMessage('getTextLineHeight', e) };
+    }
+    const kind = height === undefined ? 'fail' : 'success';
+    queueMicrotask(() => {
+        invokeCallback('getTextLineHeight', kind, object[kind], res);
+        invokeCallback('getTextLineHeight', 'complete', object.complete, res);
+    });
+    return height;
+};
+
+const lineHeight = (obj) => {
     const fontStyle = obj.fontStyle || 'normal';
     const fontWeight = obj.fontWeight || 'normal';
     const fontSize = typeof obj.fontSize === 'number' ? obj.fontSize : 16;

@@ -2,10 +2,27 @@ function nullBodyStatus(status) {
     return status === 101 || status === 204 || status === 205 || status === 304;
 }
 
+// `res.exception`: how many times the request was retried underneath, and why each attempt failed. Content reads
+// `retryCount` and `reasons` off the object a callback receives, so they are its own properties, not only toJSON's.
 class Exception {
     constructor(errno, errMsg, retryCount = 0) {
         this._retryCount = retryCount;
         this._reasons = [{ errMsg, errno }];
+    }
+
+    // A request that went through untroubled: the reference answers success with an exception too, an empty one.
+    static none() {
+        const exception = new Exception(0, "", 0);
+        exception._reasons = [];
+        return exception;
+    }
+
+    get retryCount() {
+        return this._retryCount;
+    }
+
+    get reasons() {
+        return this._reasons;
     }
 
     appendReason(errno, errMsg) {
@@ -61,7 +78,7 @@ const requestFailMsg = "request:fail";
 
 class Response extends ResponseBase {
     constructor(header, useHttpDNS = false) {
-        super(useHttpDNS, requestOkMsg, null);
+        super(useHttpDNS, requestOkMsg, Exception.none());
         this._header = header;
         this._data = null;
     }

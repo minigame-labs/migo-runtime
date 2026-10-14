@@ -5,8 +5,8 @@ use encoding_rs::GBK;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Encoding {
     Utf8,
+    // `ucs2` / `ucs-2` too: the reference reads them little-endian, as `utf16le`.
     Utf16Le,
-    Ucs2,
     Ascii,
     Latin1,
     Base64,
@@ -21,9 +21,11 @@ fn normalize_encoding(input: &str) -> Encoding {
     let s = input.trim();
     if s.eq_ignore_ascii_case("utf8") || s.eq_ignore_ascii_case("utf-8") {
         Encoding::Utf8
-    } else if s.eq_ignore_ascii_case("ucs2") || s.eq_ignore_ascii_case("ucs-2") {
-        Encoding::Ucs2
-    } else if s.eq_ignore_ascii_case("utf16le") || s.eq_ignore_ascii_case("utf-16le") {
+    } else if s.eq_ignore_ascii_case("utf16le")
+        || s.eq_ignore_ascii_case("utf-16le")
+        || s.eq_ignore_ascii_case("ucs2")
+        || s.eq_ignore_ascii_case("ucs-2")
+    {
         Encoding::Utf16Le
     } else if s.eq_ignore_ascii_case("ascii") {
         Encoding::Ascii
@@ -92,16 +94,6 @@ pub fn encode_string(data: &str, encoding: &str) -> Result<Vec<u8>, String> {
             Ok(buf)
         }
 
-        Encoding::Ucs2 => {
-            // UTF-16 Big Endian with BOM
-            let mut buf = Vec::with_capacity(2 + data.len() * 2);
-            buf.extend_from_slice(&[0xFE, 0xFF]); // BOM
-            for c in data.encode_utf16() {
-                buf.extend_from_slice(&c.to_be_bytes());
-            }
-            Ok(buf)
-        }
-
         #[cfg(feature = "codec-gbk")]
         Encoding::Gbk => {
             let (bytes, _, had_errors) = GBK.encode(data);
@@ -143,23 +135,6 @@ pub fn decode_bytes(data: &[u8], encoding: &str) -> Result<String, String> {
                 .map(|c| u16::from_le_bytes([c[0], c[1]]))
                 .collect();
             String::from_utf16(&utf16).map_err(|_| "UTF-16LE decode error".to_string())
-        }
-
-        Encoding::Ucs2 => {
-            // UTF-16 Big Endian, strip BOM if present
-            let d = if data.len() >= 2 && data[0] == 0xFE && data[1] == 0xFF {
-                &data[2..]
-            } else {
-                data
-            };
-            if d.len() % 2 != 0 {
-                return Err("UCS-2 decode error: odd number of bytes".to_string());
-            }
-            let utf16: Vec<u16> = d
-                .chunks_exact(2)
-                .map(|c| u16::from_be_bytes([c[0], c[1]]))
-                .collect();
-            String::from_utf16(&utf16).map_err(|_| "UCS-2 decode error".to_string())
         }
 
         #[cfg(feature = "codec-gbk")]
