@@ -171,7 +171,8 @@ async fn await_cleanup_ticket(ticket: AudioCleanupTicket, timeout: Duration) -> 
 /// desktop's shared mixer. `None` where the platform's SDK answers them
 /// (Android), where nothing does yet (OpenHarmony), and in a build without the
 /// engine's audio.
-pub fn platform_audio_service() -> Option<std::sync::Arc<dyn shared::services::AudioPlatformService>> {
+pub fn platform_audio_service() -> Option<std::sync::Arc<dyn shared::services::AudioPlatformService>>
+{
     #[cfg(feature = "host-audio")]
     {
         audio::platform::service()

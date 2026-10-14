@@ -16,8 +16,6 @@ use migo_capi_abi::host_services::{
 };
 #[cfg(target_os = "macos")]
 use migo_core::services::VideoDecoderService;
-#[cfg(any(target_os = "ios", target_os = "macos", target_os = "linux", target_os = "windows"))]
-use migo_core::services::{AudioPlatformService, platform_audio_service};
 use migo_core::services::{
     AccelerometerService, AdService, AuthService, BatteryService, BluetoothService,
     ClipboardService, CommerceServices, CompassService, ConnectivityServices, DeviceMotionService,
@@ -27,6 +25,13 @@ use migo_core::services::{
     SensorServices, ShareService, SubpackageService, SystemInfoService, SystemUtilServices,
     UpdateService, VibrationService, WindowService,
 };
+#[cfg(any(
+    target_os = "ios",
+    target_os = "macos",
+    target_os = "linux",
+    target_os = "windows"
+))]
+use migo_core::services::{AudioPlatformService, platform_audio_service};
 use migo_core::{DeviceServiceProvider, FrameClock, HostNotifier};
 use shared::protocol::error::ServiceError;
 use shared::surface::HostWindowState;
@@ -275,7 +280,12 @@ impl MediaServices for CapiDeviceServices {
     /// answers itself: it opens the process's audio output on these systems,
     /// so the settings that govern it are its own (the iOS `AVAudioSession`, a
     /// desktop's shared mixer). None on OpenHarmony yet, which is a Linux too.
-    #[cfg(any(target_os = "ios", target_os = "macos", target_os = "linux", target_os = "windows"))]
+    #[cfg(any(
+        target_os = "ios",
+        target_os = "macos",
+        target_os = "linux",
+        target_os = "windows"
+    ))]
     fn audio_platform(&self) -> Option<Arc<dyn AudioPlatformService>> {
         platform_audio_service()
     }

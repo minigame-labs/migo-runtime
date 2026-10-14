@@ -730,6 +730,16 @@ jobs:
       - name: Host-service channel contract
         run: bash scripts/test-host-services-contract.sh
 
+      # Every API of the common mini-game platform x every platform Migo ships,
+      # generated from its sources; a stale cell is red. The same as PR CI's.
+      - name: API x platform matrix contract
+        run: bash scripts/test-api-platform-matrix-contract.sh
+
+      # The platform's API as its reference documents it, which the
+      # verification lane checks implementations against.
+      - name: API spec contract
+        run: bash scripts/test-minigame-api-spec-contract.sh
+
       # `isEnabled` is answered on the producer side, from a ten-bit shadow of
       # the capabilities content has enabled. A capability missing from the
       # JavaScript half of that table is silent: the query answers `false`
