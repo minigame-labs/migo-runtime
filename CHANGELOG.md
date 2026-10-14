@@ -644,6 +644,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- With no audio output device -- a headless machine, a VM, a desktop with its output unplugged -- the audio thread did
+  not start, so `createWebAudioContext` and `createMediaAudioPlayer` failed with `AudioError`. The mix now plays into silence at a device's rate: a context's time advances and its sources end as
+  they would, only not heard. While there is something to hear, the audio thread looks for a device (after 1 s, then
+  less often, up to every 30 s) and moves the mix to it when one appears. A device lost mid-game falls back to silence
+  the same way instead of stalling the audio thread while it retries.
 - `preDownloadSubpackage` failed with `download service not available` for a subpackage that shipped with the game,
   which has nothing to download; it now answers success, as it does for one already installed in the package store.
 - `encode` / `decode` with `ucs2` or `ucs-2` wrote and read UTF-16 big-endian with a byte order mark; the reference

@@ -21,8 +21,124 @@ mod backend;
 #[cfg(not(all(target_os = "linux", target_env = "ohos")))]
 #[path = "output_cpal.rs"]
 mod backend;
+#[path = "output_silent.rs"]
+mod silent;
 
-pub use backend::AudioOutput;
+use backend::AudioOutput as DeviceOutput;
+pub use silent::SilentOutput;
+
+/// Where the mix goes: the platform's output device, or -- with none to open -- [`SilentOutput`], which consumes it
+/// at a device's rate and plays nothing.
+///
+/// So an output always exists. A machine with no device still runs the game's audio as the reference platform
+/// does -- its time advances, its sources end, it is only not heard -- and the audio thread, while there is something
+/// to hear, keeps looking for a device and moves the mix to one when it appears.
+pub enum AudioOutput {
+    Device(DeviceOutput),
+    Silent(SilentOutput),
+}
+
+macro_rules! each_output {
+    ($self:expr, $output:ident => $body:expr) => {
+        match $self {
+            AudioOutput::Device($output) => $body,
+            AudioOutput::Silent($output) => $body,
+        }
+    };
+}
+
+impl AudioOutput {
+    /// The default device, or silence when none opens.
+    pub fn new() -> Self {
+        match Self::open_device() {
+            Ok(output) => output,
+            Err(error) => {
+                tracing::warn!(
+                    "no audio output device ({error}); the mix plays into silence until one appears"
+                );
+                // Running from the start, as a device's stream is once opened.
+                let mut silent = SilentOutput::new();
+                silent.resume_stream();
+                Self::Silent(silent)
+            }
+        }
+    }
+
+    /// The default device, and nothing else: what the audio thread tries while it plays into silence.
+    pub fn open_device() -> shared::error::EngineResult<Self> {
+        DeviceOutput::new().map(Self::Device)
+    }
+
+    #[inline]
+    pub fn is_silent(&self) -> bool {
+        matches!(self, Self::Silent(_))
+    }
+
+    /// Once per pass of the audio thread: silence consumes the time that passed; a device consumes on its own.
+    #[inline]
+    pub fn pump(&mut self) {
+        if let Self::Silent(silent) = self {
+            silent.pump();
+        }
+    }
+
+    #[inline]
+    pub fn sample_rate(&self) -> u32 {
+        each_output!(self, output => output.sample_rate())
+    }
+
+    #[inline]
+    pub fn channels(&self) -> u32 {
+        each_output!(self, output => output.channels())
+    }
+
+    #[inline]
+    pub fn write(&mut self, samples: &[f32]) -> usize {
+        each_output!(self, output => output.write(samples))
+    }
+
+    #[inline]
+    pub fn available(&self) -> usize {
+        each_output!(self, output => output.available())
+    }
+
+    #[inline]
+    pub fn buffered(&self) -> usize {
+        each_output!(self, output => output.buffered())
+    }
+
+    #[inline]
+    pub fn high_watermark(&self) -> usize {
+        each_output!(self, output => output.high_watermark())
+    }
+
+    #[inline]
+    pub fn needs_data(&self) -> bool {
+        each_output!(self, output => output.needs_data())
+    }
+
+    #[inline]
+    pub fn sync(&self) -> &AudioSync {
+        each_output!(self, output => output.sync())
+    }
+
+    /// Silence never fails; a device can.
+    #[inline]
+    pub fn is_alive(&self) -> bool {
+        match self {
+            Self::Device(device) => device.is_alive(),
+            Self::Silent(_) => true,
+        }
+    }
+
+    pub fn pause_stream(&mut self) -> bool {
+        each_output!(self, output => output.pause_stream())
+    }
+
+    pub fn resume_stream(&mut self) -> bool {
+        each_output!(self, output => output.resume_stream())
+    }
+}
 
 /// Ring buffer size in sample frames (per channel)
 /// 8192 frames at 48kHz = ~170ms buffer
