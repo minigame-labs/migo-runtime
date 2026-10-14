@@ -1167,11 +1167,12 @@ public final class NativeExports {
      * Get current screen brightness.
      *
      * @param sessionId The session ID
-     * @return Brightness value 0.0-1.0, or -1 if following system
+     * @return Brightness 0.0-1.0 -- the window's own, or the system's setting where the window follows it -- or
+     *     {@link Float#NaN} when there is no window to ask
      */
     public static float getScreenBrightness(int sessionId) {
         RuntimeContext context = RuntimeRegistry.get(sessionId);
-        if (context == null) return -1f;
+        if (context == null) return Float.NaN;
         Activity activity = context.getActivity();
         return ScreenBrightness.getBrightness(activity);
     }

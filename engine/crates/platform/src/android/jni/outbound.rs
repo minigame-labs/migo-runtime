@@ -546,7 +546,7 @@ pub fn get_screen_brightness(host_id: i32) -> Result<f32, String> {
     call_static_method(
         "getScreenBrightness",
         ReturnType::Primitive(Primitive::Float),
-        |_env, val| Ok(val.f().unwrap_or(-1.0)),
+        |_env, val| Ok(val.f().unwrap_or(f32::NAN)),
         &[jvalue { i: host_id }],
     )
 }

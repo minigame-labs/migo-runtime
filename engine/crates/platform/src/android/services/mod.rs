@@ -437,8 +437,10 @@ struct AndroidScreen {
 impl ScreenService for AndroidScreen {
     fn get_brightness(&self, request_json: &str) -> Result<(), ServiceError> {
         let request = HostRequest::parse("getScreenBrightness", request_json)?;
+        // The host answers 0..1 -- the window's own brightness, or the system's setting where the window follows it --
+        // or NaN when it has no window to ask.
         let outcome = jni::get_screen_brightness(self.host_id).and_then(|value| {
-            if value < 0.0 {
+            if !(0.0..=1.0).contains(&value) {
                 return Err("no activity".to_string());
             }
             let mut fields = serde_json::Map::new();
