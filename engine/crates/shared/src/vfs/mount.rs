@@ -613,6 +613,16 @@ impl MountTable {
         }
     }
 
+    /// Whether the base package itself has this path, as a file or a directory,
+    /// whatever overlay is mounted over it: what shipped with the game.
+    pub fn in_base(&self, relative_path: &str) -> bool {
+        let Some(normalized) = normalize_relative_path(relative_path) else {
+            return false;
+        };
+        let inner = self.inner.read();
+        inner.base.backend.exists(&normalized) || inner.base.backend.is_dir(&normalized)
+    }
+
     pub fn has_overlay_for(&self, relative_path: &str) -> bool {
         let Some(normalized) = normalize_relative_path(relative_path) else {
             return false;
@@ -1711,6 +1721,38 @@ mod tests {
         assert_eq!(res.mount_generation, 1);
 
         let _ = fs::remove_dir_all(&base);
+    }
+
+    /// What shipped with the game is the base package's, whatever is mounted
+    /// over it; a path only an overlay has is not.
+    #[test]
+    fn in_base_is_the_base_package_under_any_overlay() {
+        let base = make_test_dir("in_base");
+        let overlay_dir = make_test_dir("in_base_pkg");
+        fs::create_dir_all(base.join("sub")).unwrap();
+        fs::write(base.join("sub/a.js"), "// shipped").unwrap();
+        fs::write(overlay_dir.join("a.js"), "// mounted").unwrap();
+
+        let mt = MountTable::new(base.clone());
+        mt.mount_overlay(
+            "subpackage:sub".into(),
+            "sub".into(),
+            Arc::new(DirSource::new(overlay_dir.clone())),
+        );
+        mt.mount_overlay(
+            "subpackage:late".into(),
+            "late".into(),
+            Arc::new(DirSource::new(overlay_dir.clone())),
+        );
+
+        assert!(mt.in_base("sub"));
+        assert!(mt.in_base("sub/a.js"));
+        assert!(mt.exists("late/a.js"));
+        assert!(!mt.in_base("late"));
+        assert!(!mt.in_base("../escape"));
+
+        let _ = fs::remove_dir_all(&base);
+        let _ = fs::remove_dir_all(&overlay_dir);
     }
 
     #[test]

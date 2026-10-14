@@ -531,19 +531,19 @@ fn op_get_subpackage_identity(state: &mut OpState, #[string] root: &str) -> Stri
     migo_services::subpackage::identity(state.borrow::<HostOpState>().mount_table.as_deref(), root)
 }
 
-/// Check if a subpackage is durably installed in the per-game package store.
-///
-/// Checks manifest.json for an entry where BOTH the package key matches
-/// the name AND the prefix matches the root, AND the .mpkg file exists.
-/// This prevents false positives from stale or mismatched manifest entries.
+/// Check if a subpackage will still be there after a restart: shipped with the
+/// game (its root is in the base package), or durably installed in the per-game
+/// package store -- see `migo_services::subpackage::is_persisted`.
 #[op2(fast)]
 fn op_is_subpackage_persisted(
     state: &mut OpState,
     #[string] name: &str,
     #[string] root: &str,
 ) -> bool {
+    let host = state.borrow::<HostOpState>();
     migo_services::subpackage::is_persisted(
-        state.borrow::<HostOpState>().game_paths.as_deref(),
+        host.mount_table.as_deref(),
+        host.game_paths.as_deref(),
         name,
         root,
     )

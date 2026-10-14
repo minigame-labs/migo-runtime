@@ -974,6 +974,7 @@ impl ServiceContext {
             id::op_is_subpackage_persisted => {
                 let [name, root] = exactly(op, args)?;
                 Ok(OwnedValue::Bool(migo_services::subpackage::is_persisted(
+                    self.mount_table().as_deref(),
                     self.game_paths().as_deref(),
                     &string(op, 0, name)?,
                     &string(op, 1, root)?,

@@ -644,6 +644,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- `preDownloadSubpackage` failed with `download service not available` for a subpackage that shipped with the game,
+  which has nothing to download; it now answers success, as it does for one already installed in the package store.
 - `encode` / `decode` with `ucs2` or `ucs-2` wrote and read UTF-16 big-endian with a byte order mark; the reference
   reads them little-endian, as `utf16le`, and they now are that. Reading a zip entry as `ucs2` changes the same way.
 - `createImageData(width, height, data)` made a blank image and ignored `data`; it now holds a copy of it. The data-first

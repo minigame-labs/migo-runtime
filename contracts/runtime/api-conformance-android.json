@@ -12,7 +12,7 @@
     "host app's to answer)."
   ],
   "platform": "android",
-  "measured": {"date": "2026-10-14", "runner": "android", "bundles": ["api-spec", "network-spec", "worker-spec"], "runtime": "783bb0209cc8054939cc3d3c0079c4d546d135a6", "conformance": "72d240ae8905b4c26de13bd29efff3a86fdb490a"},
+  "measured": {"date": "2026-10-14", "runner": "android", "bundles": ["api-spec", "network-spec", "worker-spec"], "runtime": "7124a7eb64e83757be0d9358f277bbd9b1945020", "conformance": "dfe9123dd99ec32a325862315b862753a8d7e7ac"},
   "apis": {
     "addCard": {"status": "present"},
     "authPrivateMessage": {"status": "present"},
@@ -169,7 +169,7 @@
     "isVKSupport": {"status": "absent"},
     "joinVoIPChat": {"status": "present"},
     "loadFont": {"status": "verified"},
-    "loadSubpackage": {"status": "present"},
+    "loadSubpackage": {"status": "verified"},
     "login": {"status": "present"},
     "makeBluetoothPair": {"status": "present"},
     "modifyFriendInteractiveStorage": {"status": "present"},
@@ -309,7 +309,7 @@
     "openSetting": {"status": "present"},
     "openSystemBluetoothSetting": {"status": "present"},
     "operateGameRecorderVideo": {"status": "absent"},
-    "preDownloadSubpackage": {"status": "present"},
+    "preDownloadSubpackage": {"status": "verified"},
     "previewImage": {"status": "present"},
     "previewMedia": {"status": "present"},
     "readBLECharacteristicValue": {"status": "present"},
