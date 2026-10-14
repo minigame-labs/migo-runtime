@@ -7,8 +7,9 @@
 # expected to differ, with the message the producer must give.
 # A line starting with `#` is a comment and an empty line is skipped.
 #
-# The cases are where two implementations of one table drift: `ucs2` is
-# big-endian with a BOM in this API, `ascii` masks rather than refuses, `latin1`
+# The cases are where two implementations of one table drift: `ucs2` and `ucs-2`
+# are `utf16le` (little-endian, no BOM, as the reference reads them; they were
+# once big-endian with a BOM here), `ascii` masks rather than refuses, `latin1`
 # refuses rather than masks, `decode(base64)` encodes, an odd byte count is a
 # refusal, an unpaired surrogate is a refusal, and an encoding nobody knows is
 # named in the error.
@@ -48,7 +49,7 @@ dec	hex	00ff10
 dec	utf16le	68006900
 dec	utf16le	680069
 dec	utf16le	00d8
-dec	ucs2	feff00680069
+dec	ucs-2	68006900
 dec	ucs2	00680069
 dec	ucs2	0068006
 dec	gbk	d6d0cec4

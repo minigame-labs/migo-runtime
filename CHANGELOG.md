@@ -644,6 +644,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- `encode` / `decode` with `ucs2` or `ucs-2` wrote and read UTF-16 big-endian with a byte order mark; the reference
+  reads them little-endian, as `utf16le`, and they now are that. Reading a zip entry as `ucs2` changes the same way.
+- `createImageData(width, height, data)` made a blank image and ignored `data`; it now holds a copy of it. The data-first
+  form of the reference's example, `createImageData(data, width, height)`, is taken the same way.
+- `getTextLineHeight` returned the height but never ran `success` / `fail` / `complete`; they now run after it returns.
+- `loadFont` answered `""` for a font it could not load; it answers `null`, as the reference does.
+- A successful `request` answered `exception: null`; it answers `{ retryCount: 0, reasons: [] }`. A failed one's
+  `exception.retryCount` and `exception.reasons` were not readable on the object the callback received; they are.
 - `getFileSystemManager()` answered the file system manager's class rather than an object of it (`typeof` said
   `"function"`; its methods were static). It now answers one `FileSystemManager` object whose methods are its
   prototype's. The class was also published as a `FileManager` global, which no reference API names; it is removed.

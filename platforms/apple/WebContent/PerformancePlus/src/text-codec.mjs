@@ -9,10 +9,10 @@
 // and `scripts/test-text-codec-agreement.sh` puts a corpus through both and
 // requires the same bytes and the same refusals. The encodings where two
 // implementations drift are the ones this file is careful about: `ucs2` is
-// UTF-16 **big**-endian with a BOM in this API (not the UCS-2 anyone would
-// guess), `ascii` masks rather than refuses, `latin1` refuses rather than
-// masks, and `decode(base64)` ENCODES to base64 -- the op's own asymmetry,
-// which content depends on.
+// `utf16le` (the reference reads it little-endian, with no BOM), `ascii` masks
+// rather than refuses, `latin1` refuses rather than masks, and
+// `decode(base64)` ENCODES to base64 -- the op's own asymmetry, which content
+// depends on.
 //
 // GBK is the one this side cannot do. WebKit decodes it (`TextDecoder("gbk")`)
 // and encodes nothing but UTF-8, because the encoding standard removed the
@@ -29,8 +29,7 @@ function normalize(encoding) {
   if (text.length === 0) return "utf8";
   const lower = text.toLowerCase();
   if (lower === "utf8" || lower === "utf-8") return "utf8";
-  if (lower === "ucs2" || lower === "ucs-2") return "ucs2";
-  if (lower === "utf16le" || lower === "utf-16le") return "utf16le";
+  if (lower === "utf16le" || lower === "utf-16le" || lower === "ucs2" || lower === "ucs-2") return "utf16le";
   if (lower === "ascii") return "ascii";
   if (lower === "latin1" || lower === "binary") return "latin1";
   if (lower === "base64") return "base64";
@@ -136,16 +135,6 @@ export function encodeString(text, encoding) {
       units.forEach((unit, index) => view.setUint16(index * 2, unit, true));
       return out;
     }
-    case "ucs2": {
-      // Big-endian with a BOM, which is this API's `ucs2` and nobody else's.
-      const units = codeUnits(text);
-      const out = new Uint8Array(2 + units.length * 2);
-      out[0] = 0xfe;
-      out[1] = 0xff;
-      const view = new DataView(out.buffer);
-      units.forEach((unit, index) => view.setUint16(2 + index * 2, unit, false));
-      return out;
-    }
     case "gbk":
       // The encoding standard removed every encoder but UTF-8, so WebKit has
       // no GBK encoder to ask. Refused rather than approximated: mojibake in a
@@ -192,15 +181,6 @@ export function decodeBytes(bytes, encoding) {
       let out = "";
       for (let at = 0; at < bytes.byteLength; at += 2) out += String.fromCharCode(view.getUint16(at, true));
       return checkedUtf16(out, "UTF-16LE decode error");
-    }
-    case "ucs2": {
-      const hasBom = bytes.byteLength >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff;
-      const start = hasBom ? 2 : 0;
-      if ((bytes.byteLength - start) % 2 !== 0) throw new Error("UCS-2 decode error: odd number of bytes");
-      const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-      let out = "";
-      for (let at = start; at < bytes.byteLength; at += 2) out += String.fromCharCode(view.getUint16(at, false));
-      return checkedUtf16(out, "UCS-2 decode error");
     }
     case "gbk": {
       try {

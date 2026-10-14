@@ -27,12 +27,13 @@ function checkedDimensions(rawWidth, rawHeight) {
     return { width, height, bytes };
 }
 
-function createImageData(a, b) {
-    // two overloads:
-    // createImageData(width, height)
-    // createImageData(imageData)
+// The reference's two uses: createImageData(width, height), a blank one, and createImageData(width, height, data),
+// one holding a copy of `data` (RGBA, width * height * 4 bytes). Its example passes the data first --
+// createImageData(data, width, height) -- which is taken the same way, as is an ImageData-like object to copy.
+function createImageData(a, b, c) {
     const isNumber = (v) => typeof v === "number" && Number.isFinite(v);
     if (isNumber(a)) {
+        if (c !== undefined && c !== null) return fromPixels(c, a, b);
         const dimensions = checkedDimensions(a, b);
         const { width, height } = dimensions;
         if (typeof ImageData !== "undefined") {
@@ -41,31 +42,34 @@ function createImageData(a, b) {
         const data = new Uint8ClampedArray(dimensions.bytes);
         return { data, width, height };
     }
-
-    // assume image-like object (has width, height, data)
-    if (a && typeof a === "object" && "width" in a && "height" in a && "data" in a) {
-        const dimensions = checkedDimensions(a.width, a.height);
-        const { width, height } = dimensions;
-        const srcData = a.data;
-        const sourceLength = srcData instanceof ArrayBuffer
-            ? srcData.byteLength
-            : srcData && typeof srcData.length === "number"
-            ? Number(srcData.length)
-            : -1;
-        if (!Number.isSafeInteger(sourceLength) || sourceLength !== dimensions.bytes) {
-            throw new TypeError("createImageData: source data length does not match dimensions");
-        }
-        // Only bounded array-like inputs are accepted. Avoid Array.from on an
-        // arbitrary iterable: it can materialize unbounded content before a
-        // dimension check has any chance to reject it.
-        const cloned = new Uint8ClampedArray(srcData);
-        if (typeof ImageData !== "undefined") {
-            return new ImageData(cloned, width, height);
-        }
-        return { data: cloned, width, height };
+    if ((ArrayBuffer.isView(a) || a instanceof ArrayBuffer || Array.isArray(a)) && isNumber(b)) {
+        return fromPixels(a, b, c);
     }
-
+    if (a && typeof a === "object" && "width" in a && "height" in a && "data" in a) {
+        return fromPixels(a.data, a.width, a.height);
+    }
     throw new TypeError("createImageData: invalid arguments");
+}
+
+function fromPixels(srcData, rawWidth, rawHeight) {
+    const dimensions = checkedDimensions(rawWidth, rawHeight);
+    const { width, height } = dimensions;
+    const sourceLength = srcData instanceof ArrayBuffer
+        ? srcData.byteLength
+        : srcData && typeof srcData.length === "number"
+        ? Number(srcData.length)
+        : -1;
+    if (!Number.isSafeInteger(sourceLength) || sourceLength !== dimensions.bytes) {
+        throw new TypeError("createImageData: source data length does not match dimensions");
+    }
+    // Only bounded array-like inputs are accepted. Avoid Array.from on an
+    // arbitrary iterable: it can materialize unbounded content before a
+    // dimension check has any chance to reject it.
+    const cloned = new Uint8ClampedArray(srcData);
+    if (typeof ImageData !== "undefined") {
+        return new ImageData(cloned, width, height);
+    }
+    return { data: cloned, width, height };
 }
 
 export { createImageData }

@@ -50,9 +50,9 @@ COMMENT = [
     "callbacks. success / result / listener: the fields of the success callback's argument, of the returned object,",
     "of the listener's argument. A field is [name, type] or [name, type, since], then an object with what else the page",
     "says of it: \"fields\", the fields of an Object it details; \"when\", that it is there only sometimes -- plugin,",
-    "host-app (the game runs inside a third-party app), darkmode, option:<name>, chat (opened from a chat), or",
-    "only:<ios|android|pc>. methods: the methods the reference documents for the class the API returns. deprecated,",
-    "since: from the reference's index.",
+    "host-app (the game runs inside a third-party app), darkmode, option:<name> (that option was passed),",
+    "without:<name> (it was not), chat (opened from a chat), or only:<ios|android|pc|mobile>. methods: the methods",
+    "the reference documents for the class the API returns. deprecated, since: from the reference's index.",
 ]
 
 CLIENTS = {"Windows": "windows", "Mac": "mac", "鸿蒙 OS": "harmony"}
@@ -128,18 +128,23 @@ CONDITIONS = (
     (r"在插件中调用时", "plugin"),  # only when called inside a plugin
     (r"第三方\s*[Aa]pp", "host-app"),  # only when the game runs inside a third-party app
     (r'"darkmode":\s*true', "darkmode"),  # only with the darkmode configuration, which mini-games lack
+    (r"仅当\s*([A-Za-z]+)\s*传\s*true", r"option:\1"),  # only when that option is true
+    (r"没传入\s*([A-Za-z]+)", r"without:\1"),  # only when that option was not passed
+    (r"传入\s*([A-Za-z]+)\s*时", r"option:\1"),  # only when that option was passed
     (r"withSubscriptions", "option:withSubscriptions"),  # only when that option is true
     (r"群聊/单聊打开", "chat"),  # only when opened from a chat
     (r"仅在\s*PC\s*端|仅\s*PC", "only:pc"),
     (r"仅\s*iOS", "only:ios"),
     (r"仅\s*Android", "only:android"),
+    (r"iOS\s*和\s*Android\s*端支持", "only:mobile"),
 )
 
 
 def condition_of(description: str) -> str | None:
     for pattern, condition in CONDITIONS:
-        if re.search(pattern, description):
-            return condition
+        found = re.search(pattern, description)
+        if found:
+            return found.expand(condition)
     return None
 
 
