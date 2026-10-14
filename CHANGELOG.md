@@ -675,6 +675,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- On Linux, the CSS generic font keywords (`serif`, `sans-serif`, `monospace`, `cursive`, `fantasy`, `system-ui`)
+  were not resolved: Skia's fontconfig font manager matches installed faces by name and answers none of the keywords,
+  so every one of them fell through to the bundled Noto Sans -- `serif` measured the same as `sans-serif`, and a
+  `monospace` label was proportional. Each keyword now resolves to the face the system's fontconfig gives it (its
+  configured substitutions, then the best match), as a browser on Linux does. The answer is resolved once per process,
+  when the text context is built.
 - On the Linux player and the minimal C ABI host, `getSystemInfo` / `getAppBaseInfo` answered `host: {}`: a Linux app
   has no identifier the system hands out, and neither host said who it was. `LinuxPlatform` / `WindowsPlatform` take the
   host's own report (`with_host_app`), the player reports `com.migo.player`, and the example host reports its id through
