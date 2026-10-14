@@ -730,11 +730,9 @@ pub(crate) struct CanvasManager {
     /// Used when creating shared contexts (offscreen canvas, upload thread).
     gles_major: u32,
 
-    /// Whether the EGL implementation supports
-    /// `EGL_EXT_create_context_robustness`.  When true, every context
-    /// the manager creates asks for `LOSE_CONTEXT_ON_RESET_EXT` so the
-    /// GL driver reports resets synchronously.
-    has_robust_context: bool,
+    /// What every context the manager creates asks for -- reset notification, resource initialization -- from the
+    /// display's extensions (`crate::context_features`).
+    context_features: crate::context_features::ContextFeatures,
 
     /// Resolved `glGetGraphicsResetStatusKHR` entry point.
     /// `None` on drivers without `GL_KHR_robustness` — the render
@@ -960,7 +958,7 @@ impl CanvasManager {
         let config = init.config;
         let surfaceless = init.surfaceless;
         let gles_major = init.gles_major;
-        let has_robust_context = init.has_robust_context;
+        let context_features = init.features;
 
         // Create resource context + pbuffer.
         let (resource_ctx, resource_surf) = egl_ops::create_pbuffer_context(
@@ -971,7 +969,7 @@ impl CanvasManager {
             16,
             16,
             gles_major,
-            has_robust_context,
+            context_features,
             surfaceless,
         )?;
         // From this point onward EglRuntime owns the share-group root. Any
@@ -1077,7 +1075,7 @@ impl CanvasManager {
                 config,
                 resource.ctx,
                 gles_major,
-                has_robust_context,
+                context_features,
                 surfaceless,
             )
         } else {
@@ -1178,7 +1176,7 @@ impl CanvasManager {
         // pointer to poll context health at frame boundaries instead
         // of waiting for `eglSwapBuffers` to fail.
         let gl_get_graphics_reset_status_fn: Option<unsafe extern "C" fn() -> u32> =
-            if has_robust_context {
+            if context_features.robust_context {
                 let gl_exts = unsafe {
                     let ptr = gl.get_parameter_string(glow::EXTENSIONS);
                     ptr
@@ -1269,7 +1267,7 @@ impl CanvasManager {
             deferred_upload_bytes: 0,
             gpu_caps,
             gles_major,
-            has_robust_context,
+            context_features,
             gl_get_graphics_reset_status_fn,
             preserved_ctx: None,
             preserved_drawing_buffer: None,
@@ -1426,7 +1424,7 @@ impl CanvasManager {
             w,
             h,
             self.gles_major,
-            self.has_robust_context,
+            self.context_features,
             self.surfaceless,
         )?;
 
@@ -1501,7 +1499,7 @@ impl CanvasManager {
                 1,
                 1,
                 self.gles_major,
-                self.has_robust_context,
+                self.context_features,
                 self.surfaceless,
             )?;
             self.egl
@@ -1942,11 +1940,11 @@ impl CanvasManager {
         // them so the onscreen context signals resets via
         // `glGetGraphicsResetStatus` instead of waiting for the
         // swap-buffers detection path.
-        let ctx_attribs = egl_ops::build_ctx_attribs(self.gles_major, self.has_robust_context);
+        let ctx_attribs = self.context_features.context_attribs(self.gles_major);
         let (ctx, preserved_drawing_buffer) = if let Some(preserved) = self.preserved_ctx.take() {
             tracing::info!(
                 canvas_id = %id,
-                has_robust = self.has_robust_context,
+                features = ?self.context_features,
                 "Reusing preserved EGL context for onscreen canvas"
             );
             // Context and DrawingBuffer are one recovery unit. Stage both
@@ -1960,7 +1958,7 @@ impl CanvasManager {
             );
             tracing::info!(
                 canvas_id = %id,
-                has_robust = self.has_robust_context,
+                features = ?self.context_features,
                 gles_major = self.gles_major,
                 "Creating fresh EGL context for onscreen canvas"
             );
@@ -3022,7 +3020,7 @@ impl CanvasManager {
             16,
             16,
             self.gles_major,
-            self.has_robust_context,
+            self.context_features,
             self.surfaceless,
         )?;
         self.egl.track_resource(resource_ctx, resource_surf);
@@ -3041,7 +3039,7 @@ impl CanvasManager {
                 self.config,
                 self.resource.ctx,
                 self.gles_major,
-                self.has_robust_context,
+                self.context_features,
                 self.surfaceless,
             );
             if self.upload_thread.is_some() {
@@ -5446,6 +5444,12 @@ impl CanvasManager {
             skip_rows: shadow.value(glow::UNPACK_SKIP_ROWS),
             skip_pixels: shadow.value(glow::UNPACK_SKIP_PIXELS),
         })
+    }
+
+    /// Whether the contexts read whatever they define without data as zeros on their own: ANGLE's robust resource
+    /// initialization, which clears on the GPU at first use. Where it is off, the renderer supplies the zeros.
+    pub(crate) fn robust_resource_initialization(&self) -> bool {
+        self.context_features.robust_resource_initialization
     }
 
     /// The pixel-store state an upload by `canvas_id`'s context reads its bytes with. A 2D upload

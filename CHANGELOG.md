@@ -675,6 +675,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- On ANGLE (macOS, iOS), a WebGL texture image defined without data was uploaded as a buffer of real zeros, one per
+  image, so that it reads as transparent black; Phaser 3.60's render-target pool took 600 ms longer to boot on macOS,
+  long enough that a tap in the first second missed its game objects. The engine's contexts now ask ANGLE for robust
+  resource initialization where the display offers it, and ANGLE keeps everything defined without data -- textures,
+  renderbuffers, buffers -- reading as zeros by clearing it on the GPU at first use; no data is passed through.
+  Elsewhere the renderer still writes the zeros itself.
 - WebGL storage was refused past a fixed 128 MiB per context (512 MiB per process) on every device, below what the
   device could hold. Phaser 3.60+ keeps a pool of render targets from 32 pixels up to the canvas's shorter side --
   171 MiB on a 720 x 1280 canvas, more on one sized in device pixels -- so its framebuffers were incomplete and the

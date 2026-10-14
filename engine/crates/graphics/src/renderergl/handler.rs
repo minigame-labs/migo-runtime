@@ -1969,12 +1969,17 @@ impl RendererGL {
                         (driver.internalformat, driver.format, driver.type_)
                     });
                 let swizzle = mapped.and_then(|driver| driver.swizzle);
-                // No data defines (or redefines) the image to transparent black (ES 3.0 3.7.2, WebGL 1.0/2.0): a
-                // driver that reuses this texture object's storage at a level it previously held at a smaller size
-                // is not trusted to clear the bytes outside the old image's footprint, so an explicit zero buffer
-                // is uploaded instead of a null pointer.
+                // No data defines (or redefines) the image to transparent black (ES 3.0 3.7.2, WebGL 1.0/2.0). Where
+                // the contexts initialize resources themselves (ANGLE's robust resource initialization, a GPU clear at
+                // first use) no data is passed through. Elsewhere a driver that reuses the texture object's storage
+                // at a level it previously held at a smaller size is not trusted to clear the bytes outside the old
+                // image's footprint, so an explicit zero buffer is uploaded instead. On ANGLE that zero buffer was a
+                // real upload per image: Phaser 3.60's render-target pool took 600 ms longer to boot on macOS.
                 let zero_pixels;
                 let pixels = match &data {
+                    None if cm.robust_resource_initialization() => {
+                        glow::PixelUnpackData::Slice(None)
+                    }
                     None => {
                         let len = unpack_convert::upload_bytes(
                             width,
@@ -4384,10 +4389,14 @@ impl RendererGL {
                 data,
             } => {
                 cm.make_current_needed(canvas_id)?;
-                // Same guarantee as `TexImage2D`'s null path: no data defines the image to transparent black, and
-                // the driver is not trusted to clear a reused texture object's storage at a different size.
+                // Same guarantee as `TexImage2D`'s null path: no data defines the image to transparent black, which
+                // ANGLE's robust resource initialization keeps itself, and which elsewhere the renderer supplies
+                // because the driver is not trusted to clear a reused texture object's storage at a different size.
                 let zero_pixels;
                 let pixels = match &data {
+                    None if cm.robust_resource_initialization() => {
+                        glow::PixelUnpackData::Slice(None)
+                    }
                     None => {
                         let len = unpack_convert::upload_bytes(
                             width,

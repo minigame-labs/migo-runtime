@@ -271,20 +271,6 @@ impl Drop for ContextCleanupGuard<'_> {
     }
 }
 
-// ---- EGL_EXT_create_context_robustness ----
-//
-// Lets Migo request a GL ES context that the driver observes
-// periodically for resets.  Paired with `GL_KHR_robustness` it
-// turns a slow "invisible corruption → caught only at next
-// eglSwapBuffers" failure into "every GL call starts returning
-// GL_CONTEXT_LOST and glGetGraphicsResetStatus reports the
-// reason" — giving the render thread a chance to tear down and
-// rebuild before the user sees a black frame.  See wgpu-hal's
-// GLES backend for the same pattern
-// (`wgpu-hal/src/gles/egl.rs:511-567`).
-const EGL_CONTEXT_OPENGL_RESET_NOTIFICATION_STRATEGY_EXT: egl::Int = 0x3138;
-const EGL_LOSE_CONTEXT_ON_RESET_EXT: egl::Int = 0x31BF;
-
 /// EGL initialization result
 pub(super) struct EglInitResult {
     pub egl: EglRuntime,
@@ -300,12 +286,10 @@ pub(super) struct EglInitResult {
     pub surfaceless: bool,
     /// The GLES version actually negotiated (3 = ES 3.0+, 2 = ES 2.0 fallback).
     pub gles_major: u32,
-    /// Whether the driver supports `EGL_EXT_create_context_robustness` so
-    /// subsequent `create_context` calls can add the reset-notification
-    /// strategy attribute.  Cached here rather than re-queried
-    /// per context to avoid the extra `eglQueryString` on every canvas
+    /// What every context is created with (robustness, resource initialization), from the display's extensions.
+    /// Decided once here rather than re-queried per context, which would cost an `eglQueryString` on every canvas
     /// create.
-    pub has_robust_context: bool,
+    pub features: crate::context_features::ContextFeatures,
 }
 
 /// Initialize EGL exclusively through the platform-selected provider.
@@ -491,12 +475,12 @@ pub(super) fn init_egl(provider: &dyn EglProvider) -> EngineResult<EglInitResult
         .query_string(Some(display), egl::EXTENSIONS)
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let has_robust_context = extensions.contains("EGL_EXT_create_context_robustness");
-    if has_robust_context {
-        tracing::info!(
-            "EGL_EXT_create_context_robustness available; GL reset notifications enabled"
-        );
-    }
+    let features = crate::context_features::ContextFeatures::from_display_extensions(&extensions);
+    tracing::info!(
+        robust_context = features.robust_context,
+        robust_resource_initialization = features.robust_resource_initialization,
+        "EGL context features"
+    );
 
     initialized_display.disarm();
     drop(initialized_display);
@@ -507,13 +491,10 @@ pub(super) fn init_egl(provider: &dyn EglProvider) -> EngineResult<EglInitResult
         config,
         surfaceless,
         gles_major,
-        has_robust_context,
+        features,
     })
 }
 
-/// Build the `eglCreateContext` attribute list for a GLES
-/// context, optionally appending the robustness / reset
-/// notification attributes when the driver supports them.
 /// `EGL_FIXED_SIZE_ANGLE`, from `EGL_ANGLE_window_fixed_size`.
 const EGL_FIXED_SIZE_ANGLE: egl::Int = 0x3201;
 
@@ -541,28 +522,6 @@ pub(super) fn fixed_window_size(
     (width > 0 && height > 0).then_some((width as u32, height as u32))
 }
 
-pub(super) fn build_ctx_attribs(gles_major: u32, has_robust_context: bool) -> Vec<egl::Int> {
-    let mut attribs: Vec<egl::Int> = vec![
-        egl::CONTEXT_CLIENT_VERSION as egl::Int,
-        gles_major as egl::Int,
-    ];
-    if has_robust_context {
-        // Asking for LoseContextOnReset means the driver will
-        // transition the context to LOST status on a reset, and
-        // `glGetGraphicsResetStatus` returns a non-zero reason
-        // that the render loop can act on.  An implementation
-        // that doesn't support robustness at all would have
-        // failed the `has_robust_context` probe; drivers that
-        // advertise it but don't honour the strategy simply
-        // ignore the attribute, which is the desired fallback
-        // behaviour.
-        attribs.push(EGL_CONTEXT_OPENGL_RESET_NOTIFICATION_STRATEGY_EXT);
-        attribs.push(EGL_LOSE_CONTEXT_ON_RESET_EXT);
-    }
-    attribs.push(egl::NONE as egl::Int);
-    attribs
-}
-
 /// Create a pbuffer context with optional share context.
 ///
 /// `gles_major` should match the version negotiated by `init_egl` so all
@@ -588,10 +547,10 @@ pub(super) fn create_pbuffer_context(
     width: u32,
     height: u32,
     gles_major: u32,
-    has_robust_context: bool,
+    features: crate::context_features::ContextFeatures,
     surfaceless: bool,
 ) -> EngineResult<(egl::Context, Option<egl::Surface>)> {
-    let ctx_attribs = build_ctx_attribs(gles_major, has_robust_context);
+    let ctx_attribs = features.context_attribs(gles_major);
 
     egl.bind_api(egl::OPENGL_ES_API).map_err(|e| {
         ee(
