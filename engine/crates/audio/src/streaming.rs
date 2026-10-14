@@ -30,16 +30,19 @@ const RESPONSE_HEADER_TIMEOUT: Duration = Duration::from_secs(30);
 /// Per-chunk inactivity bound. This deliberately does not cap track duration.
 const BODY_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Per-host factory captured by `AudioService`. Building remains lazy so local
-/// audio and hosts that never stream do not allocate a reqwest connection pool.
-pub type StreamingHttpClientFactory =
-    Arc<dyn Fn() -> EngineResult<reqwest::Client> + Send + Sync + 'static>;
+/// The engine's HTTP client, as streaming holds it.
+pub type HttpClient = migo_services::network::http::HttpClient;
 
-/// One lazily-built reqwest client for one host audio thread. `Client::clone`
-/// shares reqwest's internal pool and is the only value moved into each task.
+/// Per-host factory captured by `AudioService`. Building remains lazy so local
+/// audio and hosts that never stream do not allocate a connection pool.
+pub type StreamingHttpClientFactory =
+    Arc<dyn Fn() -> EngineResult<HttpClient> + Send + Sync + 'static>;
+
+/// One lazily-built client for one host audio thread. Cloning it shares its
+/// connection pool, and the clone is the only value moved into each task.
 pub(crate) struct LazyStreamingClient {
     factory: StreamingHttpClientFactory,
-    client: Option<reqwest::Client>,
+    client: Option<HttpClient>,
 }
 
 impl LazyStreamingClient {
@@ -50,7 +53,7 @@ impl LazyStreamingClient {
         }
     }
 
-    pub(crate) fn get(&mut self) -> EngineResult<reqwest::Client> {
+    pub(crate) fn get(&mut self) -> EngineResult<HttpClient> {
         if let Some(client) = &self.client {
             return Ok(client.clone());
         }
@@ -79,7 +82,7 @@ pub enum StreamMsg {
 /// Samples a recycled PCM buffer starts out able to hold.
 ///
 /// Roughly a third of a second of 48 kHz stereo, which covers the network chunk
-/// sizes reqwest actually delivers. A larger chunk grows the buffer once and the
+/// sizes a connection actually delivers. A larger chunk grows the buffer once and the
 /// recycled buffer keeps the larger capacity, so growth is paid at most once per
 /// stream rather than once per chunk.
 const PCM_CHUNK_SAMPLES: usize = 32 * 1024;
@@ -259,7 +262,7 @@ fn get_stream_runtime() -> &'static tokio::runtime::Runtime {
 /// Start streaming download and decode
 /// Returns a receiver for decoded audio chunks
 pub fn start_streaming_download(
-    client: reqwest::Client,
+    client: HttpClient,
     url: String,
     state: Arc<StreamingState>,
     target_sample_rate: u32,
@@ -323,7 +326,7 @@ async fn publish_stream_chunk(
 }
 
 async fn streaming_download_task(
-    client: reqwest::Client,
+    client: HttpClient,
     url: String,
     tx: mpsc::Sender<StreamMsg>,
     state: Arc<StreamingState>,
@@ -335,8 +338,14 @@ async fn streaming_download_task(
         return Ok(());
     }
 
+    let parsed = url::Url::parse(&url).map_err(|error| {
+        EngineError::from_detail(
+            ErrorCode::InvalidArgument,
+            format!("invalid audio URL {url}: {error}"),
+        )
+    })?;
     let response =
-        match wait_for_network(&state, RESPONSE_HEADER_TIMEOUT, client.get(&url).send()).await {
+        match wait_for_network(&state, RESPONSE_HEADER_TIMEOUT, client.get(parsed).send()).await {
             NetworkWait::Cancelled => return Ok(()),
             NetworkWait::TimedOut => {
                 return Err(EngineError::from_detail(
@@ -951,12 +960,13 @@ mod tests {
     fn counting_factory(calls: Arc<AtomicUsize>) -> StreamingHttpClientFactory {
         Arc::new(move || {
             calls.fetch_add(1, AtomicOrdering::Relaxed);
-            reqwest::Client::builder().build().map_err(|error| {
-                EngineError::from_detail(
-                    ErrorCode::IoError,
-                    format!("test client build failed: {error}"),
-                )
-            })
+            migo_services::network::client::create_policy_http_client(
+                "migo-test",
+                false,
+                &shared::op_state::NetworkPolicy::default(),
+                migo_services::network::gate::GateKind::AudioStreamRedirect,
+                "audio",
+            )
         })
     }
 
@@ -1159,7 +1169,7 @@ mod tests {
             .split("#[cfg(test)]")
             .next()
             .unwrap();
-        assert!(!production.contains("reqwest::Client::new()"));
-        assert!(!production.contains("let client = reqwest::Client::new()"));
+        assert!(!production.contains("create_policy_http_client("));
+        assert!(!production.contains("HttpClientBuilder::new("));
     }
 }

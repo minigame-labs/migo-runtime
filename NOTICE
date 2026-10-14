@@ -25,7 +25,8 @@ The following components are licensed under the MIT License:
 - skia-safe, skia-bindings (https://github.com/rust-skia/rust-skia) - MIT
 - tracing (https://github.com/tokio-rs/tracing) - MIT
 - crossbeam (https://github.com/crossbeam-rs/crossbeam) - MIT OR Apache-2.0
-- reqwest (https://github.com/seanmonstar/reqwest) - MIT OR Apache-2.0
+- hyper-util (https://github.com/hyperium/hyper-util) - MIT
+- tokio-rustls (https://github.com/rustls/tokio-rustls) - MIT OR Apache-2.0
 - futures (https://github.com/rust-lang/futures-rs) - MIT OR Apache-2.0
 - bytes (https://github.com/tokio-rs/bytes) - MIT
 - parking_lot (https://github.com/Amanieu/parking_lot) - MIT OR Apache-2.0

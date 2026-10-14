@@ -611,6 +611,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a relink, is INVALID_OPERATION and null, as are a deleted program and one that did not link.
 
 ### Changed
+- Every outbound HTTP request -- `request`, `downloadFile`, `uploadFile`, a streamed `InnerAudioContext.src`, an
+  `http(s)` image source, `prefetchAssets` -- is made by the engine's own client (hyper, with rustls and the same
+  Mozilla roots) instead of reqwest, so a request's connection is the engine's to measure: DNS, TCP and TLS each timed,
+  the connection a response came on, its RTT. The address policy, the redirect gate, the environment's proxies,
+  timeouts and pooling behave as before. Visible differences: a `data:` URL's response reports that URL (it reported
+  `http://no.url.provided.local/`); `uploadFile` writes a non-ASCII field or file name as UTF-8 with only `"`, CR and
+  LF escaped, as browsers do (it percent-encoded every non-ASCII byte); and a failed request's message carries its
+  causes, e.g. which address the resolver refused.
 - The API x platform matrix counts a cell ready only where the API was verified on that platform, not where it is
   merely wired. `contracts/runtime/api-conformance-<platform>.json` records what migo-conformance's `api-spec` bundle
   measured there (`scripts/import-api-conformance.py`): per API verified, failing (with the failing checks), present

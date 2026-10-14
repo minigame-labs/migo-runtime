@@ -11,7 +11,6 @@
 
 use std::time::Duration;
 
-use reqwest::Client;
 use tracing::debug;
 use url::Url;
 
@@ -20,6 +19,7 @@ use shared::op_state::NetworkPolicy;
 use crate::ServiceError;
 
 use super::gate::{self, GateKind};
+use super::http::HttpClient as Client;
 
 /// The most prefetch requests in flight at once.
 const MAX_CONCURRENT_PREFETCH: usize = 6;

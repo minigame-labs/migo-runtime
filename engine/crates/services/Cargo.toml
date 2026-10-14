@@ -30,10 +30,23 @@ tokio = { workspace = true, features = ["rt", "sync", "time", "fs", "io-util", "
 # `join_all` for the DNS warm-up, which resolves a capped batch at a time
 # rather than spawning one task per host.
 futures.workspace = true
-# The HTTP client every outbound request is made with (see network::client):
-# one builder, so the resolver and the redirect gate cannot be forgotten by a
-# second one.
-reqwest.workspace = true
+# The HTTP client every outbound request is made with (network::http, built by
+# network::client so the resolver and the redirect gate cannot be forgotten by a
+# second constructor): hyper carries the protocol and
+# the connection pool; the engine makes the connections -- the address policy on
+# every lookup, each phase timed for a request's profile -- and follows the
+# redirects. Same versions, TLS backend (rustls on ring) and Mozilla roots the
+# engine has shipped with.
+hyper = { version = "1.8", default-features = false, features = ["client", "http1", "http2"] }
+hyper-util = { version = "0.1.19", default-features = false, features = ["client-legacy", "client-proxy", "http1", "http2", "tokio"] }
+http-body = "1"
+http-body-util = "0.1"
+tower-service = "0.3"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+webpki-roots = "1"
+# A socket's RTT (TCP_INFO / TCP_CONNECTION_INFO), for a request's profile.
+libc = "0.2"
 http.workspace = true
 # A response body arrives as `Bytes`, and a chunk handed to content is a
 # window into the one the connection produced rather than a copy of it.
@@ -67,6 +80,11 @@ hex = "0.4"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "sync", "macros", "time", "test-util"] }
+# Servers the HTTP client's tests run in-process (HTTP/1.1 and HTTP/2, over TCP and TLS), and the certificate
+# authority their TLS is signed by.
+hyper = { version = "1.8", default-features = false, features = ["server", "http1", "http2"] }
+hyper-util = { version = "0.1.19", default-features = false, features = ["server", "server-auto", "tokio", "http1", "http2"] }
+rcgen = { version = "0.13", default-features = false, features = ["crypto", "ring"] }
 # The cross-session contention gate, for the image alias registry.
 migo-contention-probe = { path = "../../testing/contention-probe", default-features = false }
 # The same dependency, with the fixture signer the signed-mount tests use.

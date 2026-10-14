@@ -19,7 +19,6 @@ use bytes::Bytes;
 use futures::{Stream, StreamExt};
 use http::HeaderMap;
 use http::header::{CONTENT_LENGTH, CONTENT_TYPE, HOST, HeaderName, HeaderValue};
-use reqwest::{Body, Client};
 use tracing::debug;
 use url::Url;
 
@@ -28,6 +27,7 @@ use shared::op_state::NetworkPolicy;
 use crate::ServiceError;
 
 use super::gate::{self, GateKind};
+use super::http::{Form, HttpClient as Client, Part};
 use super::resources::{CancelFlag, ResourceId, ResourceTable};
 
 /// How much of an upload's answer is held for content to read.
@@ -162,25 +162,21 @@ pub async fn upload(
     // engine's internal path, which leaked the sandbox's layout to the server
     // for every file whose metadata reported no length.
     let part = if file_size == 0 {
-        // No length to declare, so the part is chunked; reqwest picks that for
-        // a part with no declared length.
+        // No length to declare, so the form is sent chunked.
         match run(until(&cancel), tokio::fs::File::open(&real_path)).await {
             Cancellable::Cancelled => return Ok(UploadAnswer::aborted()),
             Cancellable::Done(Err(error)) => {
                 return Err(generic(format!("uploadFile:fail reopen: {error}")));
             }
-            Cancellable::Done(Ok(reopened)) => {
-                reqwest::multipart::Part::stream(Body::wrap_stream(chunks(reopened)))
-            }
+            Cancellable::Done(Ok(reopened)) => Part::stream(chunks(reopened), None),
         }
     } else {
-        reqwest::multipart::Part::stream_with_length(Body::wrap_stream(chunks(file)), file_size)
+        Part::stream(chunks(file), Some(file_size))
     }
     .file_name(filename.clone())
-    .mime_str(mime_of(&filename))
-    .map_err(|error| generic(error.to_string()))?;
+    .mime(mime_of(&filename));
 
-    let mut form = reqwest::multipart::Form::new().part(name, part);
+    let mut form = Form::new().part(name, part);
     for (key, value) in form_data {
         form = form.text(key, value);
     }

@@ -1,0 +1,399 @@
+//! How the engine makes a connection: the name looked up through the address policy, the TCP connection, the TLS
+//! handshake -- each timed -- and, through a proxy, the tunnel.
+//!
+//! It is the engine's own rather than an HTTP library's because what a connection is made of is what a request's
+//! profile reports: the boundary between TCP and TLS, the connection a response actually came on, the socket to ask for
+//! its RTT. A library's connector keeps those to itself.
+//!
+//! Pooling, HTTP/1.1 and HTTP/2 are hyper's (`hyper_util`'s legacy client, which reqwest was built on). The connection
+//! hands hyper a [`ConnectionTrace`] as its extra, and hyper gives that to every response the connection carries.
+
+use std::future::Future;
+use std::io;
+use std::net::{IpAddr, SocketAddr};
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll};
+use std::time::{Duration, Instant};
+
+use http::{Uri, Version};
+use hyper_util::client::legacy::connect::dns::Name;
+use hyper_util::client::legacy::connect::proxy::Tunnel;
+use hyper_util::client::legacy::connect::{Connected, Connection, HttpConnector};
+use hyper_util::client::proxy::matcher::{Intercept, Matcher};
+use hyper_util::rt::TokioIo;
+use rustls::pki_types::ServerName;
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::net::TcpStream;
+use tokio_rustls::TlsConnector;
+
+use super::tcp_info::{self, SocketGuard};
+use super::trace::{ConnectionTrace, Established, Span};
+
+pub(crate) type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+/// TCP + TLS establishment bound: mobile networks stall at connect time behind captive portals, so this is capped on
+/// its own rather than left to the operating system's SYN retry window. The request's own timeout still bounds the
+/// whole exchange.
+pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// What the resolver may answer.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum AddressRule {
+    /// Only publicly reachable unicast addresses ([`crate::network::address_filter`]); `operation` names the caller in
+    /// the refusal.
+    Public { operation: &'static str },
+    /// Anything, the loopback included: for tests that serve on it, never in a build that ships.
+    #[cfg(test)]
+    Any,
+}
+
+impl AddressRule {
+    /// Why `address` may not be connected to, if it may not.
+    fn refusal(self, address: &SocketAddr) -> Option<String> {
+        match self {
+            Self::Public { operation } => {
+                crate::network::address_filter::is_blocked_address(address).then(|| {
+                    format!(
+                        "{operation}: connection to {} is not allowed (private/loopback address)",
+                        address.ip()
+                    )
+                })
+            }
+            #[cfg(test)]
+            Self::Any => None,
+        }
+    }
+}
+
+pub(crate) struct ConnectorConfig {
+    pub(crate) rule: AddressRule,
+    pub(crate) tls: Arc<rustls::ClientConfig>,
+    pub(crate) proxies: Arc<Matcher>,
+}
+
+#[derive(Clone)]
+pub(crate) struct Connector {
+    inner: Arc<ConnectorConfig>,
+}
+
+impl Connector {
+    pub(crate) fn new(config: ConnectorConfig) -> Self {
+        Self {
+            inner: Arc::new(config),
+        }
+    }
+}
+
+impl tower_service::Service<Uri> for Connector {
+    type Response = Conn;
+    type Error = BoxError;
+    type Future = Pin<Box<dyn Future<Output = Result<Conn, BoxError>> + Send>>;
+
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), BoxError>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, dst: Uri) -> Self::Future {
+        let config = Arc::clone(&self.inner);
+        Box::pin(async move { connect(&config, dst).await })
+    }
+}
+
+async fn connect(config: &ConnectorConfig, dst: Uri) -> Result<Conn, BoxError> {
+    let https = match dst.scheme_str() {
+        Some("https") => true,
+        Some("http") => false,
+        other => return Err(format!("unsupported scheme {other:?}").into()),
+    };
+    let host = dst.host().ok_or("URL has no host")?.to_string();
+    let bare_host = host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_string();
+    let port = dst.port_u16().unwrap_or(if https { 443 } else { 80 });
+
+    let (tcp, dns, connect_span, proxied) = match config.proxies.intercept(&dst) {
+        Some(proxy) => {
+            let (tcp, span) = through_proxy(&proxy, &dst, https).await?;
+            (tcp, None, span, true)
+        }
+        None => {
+            let (addresses, dns) = resolve(config.rule, &bare_host, port).await?;
+            let started = Instant::now();
+            let tcp = tcp_connector(StaticAddresses(Arc::new(addresses)))
+                .call_async_uri(dst.clone())
+                .await?;
+            (tcp, dns, Span::since(started), false)
+        }
+    };
+
+    let peer = tcp.peer_addr()?;
+    let local = tcp.local_addr()?;
+    let (probe, guard) = tcp_info::watch(&tcp);
+
+    if !https {
+        let made = Established {
+            dns,
+            connect: connect_span,
+            tls: None,
+            peer,
+            local,
+            proxied,
+            protocol: Version::HTTP_11,
+        };
+        let trace = ConnectionTrace::new(made, probe);
+        return Ok(Conn::new(guard, Box::new(tcp), trace, proxied));
+    }
+
+    let started = Instant::now();
+    let server_name = ServerName::try_from(bare_host)
+        .map_err(|error| format!("invalid TLS server name: {error}"))?;
+    let tls = tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        TlsConnector::from(Arc::clone(&config.tls)).connect(server_name, tcp),
+    )
+    .await
+    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "TLS handshake timed out"))??;
+    let tls_span = Span::since(started);
+    let protocol = match tls.get_ref().1.alpn_protocol() {
+        Some(b"h2") => Version::HTTP_2,
+        _ => Version::HTTP_11,
+    };
+    let made = Established {
+        dns,
+        connect: connect_span,
+        tls: Some(tls_span),
+        peer,
+        local,
+        proxied,
+        protocol,
+    };
+    let trace = ConnectionTrace::new(made, probe);
+    // Through a proxy, an HTTPS request travels a tunnel the server's TLS ends at, so it is written in origin form
+    // like a direct one; only plain HTTP through a proxy is written in absolute form.
+    Ok(Conn::new(guard, Box::new(tls), trace, false))
+}
+
+/// The addresses `host` resolves to, each one allowed by `rule`, and how long the lookup took -- `None` for an IP
+/// literal, which is not looked up. An IP literal is the gate's to refuse, before a request is built.
+async fn resolve(
+    rule: AddressRule,
+    host: &str,
+    port: u16,
+) -> Result<(Vec<SocketAddr>, Option<Span>), BoxError> {
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        return Ok((vec![SocketAddr::new(ip, port)], None));
+    }
+    let started = Instant::now();
+    let addresses: Vec<SocketAddr> = tokio::net::lookup_host((host, port)).await?.collect();
+    let span = Span::since(started);
+    // Every address, not the first: a name that answers one public and one private address must not be connected
+    // to at all, or happy eyeballs could pick the private one.
+    if let Some(refusal) = addresses.iter().find_map(|address| rule.refusal(address)) {
+        return Err(Box::new(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            refusal,
+        )));
+    }
+    if addresses.is_empty() {
+        return Err(format!("{host} resolved to no address").into());
+    }
+    Ok((addresses, Some(span)))
+}
+
+/// The TCP connector every connection is made with: happy eyeballs across the resolved addresses, TCP_NODELAY, keep
+/// alive probing, the connect timeout.
+fn tcp_connector<R>(resolver: R) -> HttpConnector<R> {
+    let mut tcp = HttpConnector::new_with_resolver(resolver);
+    tcp.enforce_http(false);
+    tcp.set_nodelay(true);
+    tcp.set_connect_timeout(Some(CONNECT_TIMEOUT));
+    tcp.set_keepalive(Some(Duration::from_secs(15)));
+    tcp.set_keepalive_interval(Some(Duration::from_secs(15)));
+    tcp.set_keepalive_retries(Some(3));
+    #[cfg(any(target_os = "android", target_os = "linux"))]
+    tcp.set_tcp_user_timeout(Some(Duration::from_secs(30)));
+    tcp
+}
+
+trait CallUri {
+    fn call_async_uri(
+        self,
+        dst: Uri,
+    ) -> Pin<Box<dyn Future<Output = Result<TcpStream, BoxError>> + Send>>;
+}
+
+impl<R> CallUri for HttpConnector<R>
+where
+    HttpConnector<R>: tower_service::Service<Uri, Response = TokioIo<TcpStream>> + Send + 'static,
+    <HttpConnector<R> as tower_service::Service<Uri>>::Future: Send,
+    <HttpConnector<R> as tower_service::Service<Uri>>::Error: Into<BoxError>,
+{
+    fn call_async_uri(
+        mut self,
+        dst: Uri,
+    ) -> Pin<Box<dyn Future<Output = Result<TcpStream, BoxError>> + Send>> {
+        Box::pin(async move {
+            let io = tower_service::Service::call(&mut self, dst)
+                .await
+                .map_err(Into::into)?;
+            Ok(io.into_inner())
+        })
+    }
+}
+
+/// A resolver that answers addresses already looked up and vetted.
+#[derive(Clone)]
+struct StaticAddresses(Arc<Vec<SocketAddr>>);
+
+impl tower_service::Service<Name> for StaticAddresses {
+    type Response = std::vec::IntoIter<SocketAddr>;
+    type Error = io::Error;
+    type Future = std::future::Ready<Result<Self::Response, io::Error>>;
+
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, _name: Name) -> Self::Future {
+        std::future::ready(Ok(self.0.as_ref().clone().into_iter()))
+    }
+}
+
+/// The connection to `dst` through `proxy`, and how long establishing it took.
+///
+/// A proxy is the machine owner's egress, not something content names, so the engine resolves and connects to it
+/// without the address policy -- a proxy on the loopback is the common case -- and never resolves `dst` itself.
+/// HTTPS is tunnelled with CONNECT; plain HTTP is written to the proxy in absolute form.
+async fn through_proxy(
+    proxy: &Intercept,
+    dst: &Uri,
+    https: bool,
+) -> Result<(TcpStream, Span), BoxError> {
+    let proxy_uri = proxy.uri().clone();
+    if proxy_uri.scheme_str() != Some("http") {
+        return Err(format!("unsupported proxy scheme {:?}", proxy_uri.scheme_str()).into());
+    }
+    let started = Instant::now();
+    let direct = tcp_connector(hyper_util::client::legacy::connect::dns::GaiResolver::new());
+    let tcp = if https {
+        let mut tunnel = Tunnel::new(proxy_uri, direct);
+        if let Some(auth) = proxy.basic_auth() {
+            tunnel = tunnel.with_auth(auth.clone());
+        }
+        let io = tower_service::Service::call(&mut tunnel, dst.clone()).await?;
+        io.into_inner()
+    } else {
+        direct.call_async_uri(proxy_uri).await?
+    };
+    Ok((tcp, Span::since(started)))
+}
+
+/// A byte stream hyper can drive.
+pub(crate) trait Io: AsyncRead + AsyncWrite + Send + Unpin {}
+impl<T: AsyncRead + AsyncWrite + Send + Unpin> Io for T {}
+
+/// One connection: its stream, and its trace.
+pub(crate) struct Conn {
+    // Declared before the stream: fields drop in order, and the probe's slot must be emptied before the socket closes.
+    _guard: SocketGuard,
+    io: TokioIo<Box<dyn Io>>,
+    trace: Arc<ConnectionTrace>,
+    absolute_form: bool,
+}
+
+impl Conn {
+    fn new(
+        guard: SocketGuard,
+        io: Box<dyn Io>,
+        trace: ConnectionTrace,
+        absolute_form: bool,
+    ) -> Self {
+        Self {
+            _guard: guard,
+            io: TokioIo::new(io),
+            trace: Arc::new(trace),
+            absolute_form,
+        }
+    }
+}
+
+impl Connection for Conn {
+    fn connected(&self) -> Connected {
+        let connected = Connected::new()
+            .proxy(self.absolute_form)
+            .extra(Arc::clone(&self.trace));
+        if self.trace.protocol == Version::HTTP_2 {
+            connected.negotiated_h2()
+        } else {
+            connected
+        }
+    }
+}
+
+impl hyper::rt::Read for Conn {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: hyper::rt::ReadBufCursor<'_>,
+    ) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.io).poll_read(cx, buf)
+    }
+}
+
+impl hyper::rt::Write for Conn {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.io).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.io).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.io).poll_shutdown(cx)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.io.is_write_vectored()
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[io::IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.io).poll_write_vectored(cx, bufs)
+    }
+}
+
+/// The TLS configuration every HTTPS connection uses: the Mozilla root set (webpki-roots, as the engine has always
+/// shipped), ring for the cryptography, and ALPN for HTTP/2 where the client allows it.
+pub(crate) fn tls_config(
+    enable_http2: bool,
+    extra_roots: &[rustls::pki_types::CertificateDer<'static>],
+) -> Result<Arc<rustls::ClientConfig>, BoxError> {
+    let mut roots = rustls::RootCertStore {
+        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+    };
+    for root in extra_roots {
+        roots.add(root.clone())?;
+    }
+    let mut config = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()?
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    config.alpn_protocols = if enable_http2 {
+        vec![b"h2".to_vec(), b"http/1.1".to_vec()]
+    } else {
+        vec![b"http/1.1".to_vec()]
+    };
+    Ok(Arc::new(config))
+}

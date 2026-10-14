@@ -70,8 +70,8 @@ tokio = { version = "1.46.1", default-features = false }
 futures = "0.3.31"
 serde = { version = "1.0.219", features = ["rc"] }
 serde_json = "1.0.148"
-reqwest = { version = "=0.12.28", default-features = false, features = ["rustls-tls", "stream", "http2", "multipart"] }
-# Note: reqwest "rustls-tls" already bundles webpki-roots (~100KB Mozilla root cert list).
+# HTTP is the engine's own client (crates/services/src/network/http), on hyper with
+# rustls and the webpki root set (~100KB Mozilla root cert list).
 # On Android, native root-store discovery may fail in some environments, causing
 # WebSocket TLS handshake errors such as "no native root CA certificates found".
 # Use webpki roots for tokio-tungstenite as well for deterministic behavior.

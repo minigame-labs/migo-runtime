@@ -33,7 +33,9 @@ impl Session {
     /// to be proxied, says which.
     fn configured(
         policy: NetworkPolicy,
-        configure: impl FnOnce(reqwest::ClientBuilder) -> reqwest::ClientBuilder,
+        configure: impl FnOnce(
+            super::super::http::HttpClientBuilder,
+        ) -> super::super::http::HttpClientBuilder,
     ) -> Self {
         let builder = super::super::client::policy_client_builder(
             "migo",
@@ -315,10 +317,11 @@ fn a_declared_body_is_admitted_before_its_reader_exists() {
 
     let pools = IoPools::new(9502);
     let ticket = reserve_response_bytes(&pools, Some(4096)).unwrap();
-    let response = Response::from(
+    let response = Response::local(
+        Url::parse("data:text/plain,body").unwrap(),
         http::Response::builder()
             .status(http::StatusCode::OK)
-            .body(reqwest::Body::from("body"))
+            .body(b"body".to_vec())
             .unwrap(),
     );
     let body = ResponseBody::new(response, Some(4096), Some(ticket));
@@ -419,8 +422,10 @@ fn block_on<T>(future: impl std::future::Future<Output = T>) -> T {
 #[test]
 fn a_response_delivered_by_a_proxy_on_the_loopback_is_delivered() {
     let server = loopback_server(OK_REPLY);
-    let proxy = reqwest::Proxy::http(format!("http://127.0.0.1:{}", server.port)).unwrap();
-    let session = Session::configured(policy(&[], false), |builder| builder.proxy(proxy));
+    let proxy = hyper_util::client::proxy::matcher::Matcher::builder()
+        .http(format!("http://127.0.0.1:{}", server.port))
+        .build();
+    let session = Session::configured(policy(&[], false), |builder| builder.proxies(proxy));
 
     let handles = session.fetch("GET", "http://public.example/a").unwrap();
     let answer = block_on(fetch_send(

@@ -25,20 +25,19 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use futures::StreamExt;
-use futures::stream::{Peekable, Stream};
 use http::HeaderMap;
 use http::HeaderName;
 use http::HeaderValue;
+use http::Method;
 use http::Uri;
 use http::header::{ACCEPT_ENCODING, CACHE_CONTROL, CONTENT_LENGTH, HOST, PRAGMA, RANGE};
 use migo_io::pools::{ByteTicket, IoPools};
-use reqwest::{Client, Method, Response};
 use shared::op_state::NetworkPolicy;
 use tokio::sync::Mutex;
 use url::Url;
 
 use super::gate::{GateKind, enforce};
+use super::http::{HttpClient as Client, HttpError, RequestBuilder, Response};
 use super::resources::{CancelFlag, ResourceId, ResourceTable};
 use crate::ServiceError;
 
@@ -100,9 +99,9 @@ pub struct PendingRequest {
 
 enum RequestSend {
     /// An HTTP(S) request, ready for the client that will carry it.
-    Http(reqwest::RequestBuilder),
+    Http(RequestBuilder),
     /// A `data:` URL, already decoded: answered without a connection.
-    Data(http::Response<Vec<u8>>),
+    Data(Url, http::Response<Vec<u8>>),
 }
 
 /// A response's body, read in chunks.
@@ -117,19 +116,20 @@ pub struct ResponseBody {
     _byte_ticket: Option<ByteTicket>,
 }
 
-type BytesStream = std::pin::Pin<Box<dyn Stream<Item = Result<Bytes, std::io::Error>> + Send>>;
-
-enum BodyReader {
-    /// Before the first read: the response head, whose body has not started.
-    Start(Box<Response>),
-    Reading(Peekable<BytesStream>),
-    Done,
+/// The response, and what is left of the chunk it last gave: a read takes at
+/// most what content asked for, and the rest waits here for the next read.
+struct BodyReader {
+    response: Response,
+    pending: Bytes,
 }
 
 impl ResponseBody {
     fn new(response: Response, size: Option<u64>, byte_ticket: Option<ByteTicket>) -> Self {
         Self {
-            reader: Mutex::new(BodyReader::Start(Box::new(response))),
+            reader: Mutex::new(BodyReader {
+                response,
+                pending: Bytes::new(),
+            }),
             cancel: CancelFlag::default(),
             size,
             _byte_ticket: byte_ticket,
@@ -151,45 +151,14 @@ impl ResponseBody {
         let read = async {
             let mut reader = self.reader.lock().await;
             loop {
-                match &mut *reader {
-                    BodyReader::Done => return Ok(Bytes::new()),
-                    BodyReader::Reading(stream) => {
-                        let mut stream = std::pin::Pin::new(stream);
-                        loop {
-                            match stream.as_mut().peek_mut().await {
-                                Some(Ok(chunk)) if !chunk.is_empty() => {
-                                    let take = limit.min(chunk.len());
-                                    return Ok(chunk.split_to(take));
-                                }
-                                // An empty chunk is not the end: take it and
-                                // keep going, as the embedded reader does.
-                                Some(Ok(_)) => {
-                                    let _ = stream.as_mut().next().await;
-                                }
-                                Some(Err(_)) => {
-                                    let error = match stream.as_mut().next().await {
-                                        Some(Err(error)) => error.to_string(),
-                                        _ => "the response body ended in an error".to_string(),
-                                    };
-                                    return Err(ServiceError::generic(error));
-                                }
-                                None => return Ok(Bytes::new()),
-                            }
-                        }
-                    }
-                    BodyReader::Start(_) => {
-                        let BodyReader::Start(response) =
-                            std::mem::replace(&mut *reader, BodyReader::Done)
-                        else {
-                            unreachable!("the arm above matched Start");
-                        };
-                        let stream: BytesStream = Box::pin(
-                            response
-                                .bytes_stream()
-                                .map(|chunk| chunk.map_err(std::io::Error::other)),
-                        );
-                        *reader = BodyReader::Reading(stream.peekable());
-                    }
+                if !reader.pending.is_empty() {
+                    let take = limit.min(reader.pending.len());
+                    return Ok(reader.pending.split_to(take));
+                }
+                match reader.response.chunk().await {
+                    Ok(Some(chunk)) => reader.pending = chunk,
+                    Ok(None) => return Ok(Bytes::new()),
+                    Err(error) => return Err(ServiceError::generic(error.to_string())),
                 }
             }
         };
@@ -236,8 +205,8 @@ pub fn fetch(
 
     match url.scheme() {
         "http" | "https" => {
-            // reqwest's `RequestBuilder::send` uses `expect_uri` internally,
-            // which panics rather than answering, so the URI is checked here.
+            // A URL `http::Uri` cannot carry is refused here, when content
+            // builds the request, rather than when it is sent.
             if url.as_str().parse::<Uri>().is_err() {
                 return Err(type_error("Invalid URL"));
             }
@@ -282,7 +251,7 @@ pub fn fetch(
                 .body(body)
                 .map_err(|error| ServiceError::generic(error.to_string()))?;
             let request_rid = env.resources.add_request(PendingRequest {
-                send: RequestSend::Data(response),
+                send: RequestSend::Data(url, response),
                 cancel: Arc::new(CancelFlag::default()),
             });
             Ok(FetchHandles {
@@ -342,10 +311,7 @@ pub async fn fetch_send(
     let PendingRequest { send, cancel } = resources.take_request(request_rid)?;
     let started_at = std::time::Instant::now();
     let response = match send {
-        RequestSend::Data(response) => {
-            let (parts, body) = response.into_parts();
-            Response::from(http::Response::from_parts(parts, reqwest::Body::from(body)))
-        }
+        RequestSend::Data(url, response) => Response::local(url, response),
         RequestSend::Http(request) => {
             let sent = cancel.until_cancelled(request.send()).await;
             match sent {
@@ -375,8 +341,8 @@ pub async fn fetch_send(
     //
     // What it guarded is guarded earlier and completely: IP-literal URLs by the
     // gate before the send (and on every redirect hop), and domain names by the
-    // client's `SsrfCheckingResolver`, which vets every address reqwest may
-    // connect to, so the connection is made to a vetted address or not at all.
+    // client's resolver, which vets every address the client may connect to,
+    // so the connection is made to a vetted address or not at all.
     // A response can only have come from an unvetted address through a proxy,
     // which the machine's owner chose, not content.
     // Admit the declared body before the resource exists, so a refused body
@@ -411,20 +377,8 @@ pub async fn fetch_send(
     })
 }
 
-/// The message a failed send shows: the innermost cause a body error carries,
-/// as the embedded op has always reported it, and the error itself otherwise.
-fn send_failure(error: &reqwest::Error) -> ServiceError {
-    let mut source: &dyn std::error::Error = error;
-    while let Some(next) = std::error::Error::source(source) {
-        if let Some(request_error) = next.downcast_ref::<reqwest::Error>() {
-            if request_error.is_body() {
-                if let Some(cause) = std::error::Error::source(request_error) {
-                    return type_error(cause.to_string());
-                }
-            }
-        }
-        source = next;
-    }
+/// The message a failed send shows: what failed, and every cause beneath it.
+fn send_failure(error: &HttpError) -> ServiceError {
     type_error(error.to_string())
 }
 

@@ -12,6 +12,7 @@ pub mod client;
 pub mod dns_cache;
 pub mod fetch;
 pub mod gate;
+pub mod http;
 pub mod image_source;
 pub mod prefetch;
 pub mod resources;
