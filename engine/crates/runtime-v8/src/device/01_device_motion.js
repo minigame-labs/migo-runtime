@@ -6,8 +6,16 @@ const _grp = createListenerGroup('onDeviceMotionChange');
 function onDeviceMotionChange(listener) { _grp.on(listener); }
 function offDeviceMotionChange(listener) { _grp.off(listener); }
 
+// Every host reports the W3C DeviceOrientation angles in degrees -- alpha [0, 360), beta [-180, 180), gamma [-90, 90)
+// -- and content hears them as the reference documents them, in radians: alpha [0, 2*PI), beta [-PI, PI), gamma
+// [-PI/2, PI/2). Converted here, once, so no host has to know the reference's unit.
+const RADIANS_PER_DEGREE = Math.PI / 180;
 function _internalTriggerDeviceMotionChange(alpha, beta, gamma) {
-    _grp.trigger({ alpha, beta, gamma });
+    _grp.trigger({
+        alpha: alpha * RADIANS_PER_DEGREE,
+        beta: beta * RADIANS_PER_DEGREE,
+        gamma: gamma * RADIANS_PER_DEGREE,
+    });
 }
 
 // `game` (20 ms), `ui` (60 ms) or `normal` (200 ms); anything else is `normal`.

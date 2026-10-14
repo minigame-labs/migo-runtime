@@ -675,6 +675,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- `onDeviceMotionChange` reported its angles in degrees, where the reference documents radians -- alpha [0, 2*PI),
+  beta [-PI, PI), gamma [-PI/2, PI/2). Hosts keep reporting the W3C DeviceOrientation angles in degrees and the engine
+  converts them, in one place, before content hears them. On Android the angles were also decomposed from the
+  rotation matrix through `getOrientation`, whose pitch and roll have each other's ranges, so a device lying face
+  down reported a gamma of -147 degrees; they are now decomposed as the W3C specification does (as the Apple hosts
+  already did).
 - `onWindowResize` called a listener the moment it was added, with the window's current size, and the engine's first
   surface report after start reached every listener even when the size had not changed. The reference calls the
   listener when the size changes, with the size after the change; a listener now hears only the changes after it was

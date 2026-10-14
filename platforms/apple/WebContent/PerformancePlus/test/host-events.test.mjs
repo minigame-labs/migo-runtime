@@ -157,7 +157,9 @@ check("a gamepad connects and its sample lands in getGamepads()", () => {
 check("the motion sensors' readings arrive as the host read them", () => {
   assert.deepEqual(of("accelerometer"), [{ x: 0.25, y: -0.5, z: 1 }]);
   assert.deepEqual(of("gyroscope"), [{ x: 0.1, y: 0.2, z: 0.3 }]);
-  assert.deepEqual(of("devicemotion"), [{ alpha: 10, beta: 20, gamma: 30 }]);
+  // The host reports degrees, as every host does; content hears the reference's radians.
+  const radians = (degrees) => degrees * (Math.PI / 180);
+  assert.deepEqual(of("devicemotion"), [{ alpha: radians(10), beta: radians(20), gamma: radians(30) }]);
   assert.deepEqual(of("compass"), [{ direction: 90.5, accuracy: "high" }]);
   assert.deepEqual(of("orientation"), [{ value: "landscape" }]);
 });
