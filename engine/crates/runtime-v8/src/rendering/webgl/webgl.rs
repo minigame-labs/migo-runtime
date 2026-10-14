@@ -3993,8 +3993,11 @@ pub(super) mod tests {
                 gl.pixelStorei(0x0cf4, 0); gl.pixelStorei(0x0cf3, 0);
                 gl.texImage2D(T2D, 0, RGBA, RGBA, UBYTE, image); err(0, "the whole source");                // sent
                 gl.texSubImage2D(T2D, 0, 0, 0, RGB, UBYTE, image); err(OPERATION, "RGB into RGBA");
-                const canvas = { _rid: 77, width: 4, height: 4, getContext() { return null; } };
+                // A canvas content drew into is its pixels on the GPU; one no context was taken from is transparent black.
+                const canvas = { _rid: 77, width: 4, height: 4, _context: {}, getContext() { return this._context; } };
                 gl.texSubImage2D(T2D, 0, 0, 0, RGBA, UBYTE, canvas); err(0, "a canvas into it");          // sent
+                const blank = { _rid: 78, width: 4, height: 4, getContext() { return null; } };
+                gl.texSubImage2D(T2D, 0, 0, 0, RGBA, UBYTE, blank); err(0, "a canvas nothing drew into"); // sent
                 const snapshot = { width: 4, height: 4 };
                 Object.defineProperty(snapshot, "__migo_snapshot_id__", { value: 9, writable: true });
                 Object.defineProperty(snapshot, "__migo_snapshot_spent__", { value: false, writable: true });
@@ -4073,6 +4076,22 @@ pub(super) mod tests {
                     0x1401,
                     0x8058,
                     Source::Canvas { canvas_2d_id: 77 }
+                ),
+                (
+                    Call::SubImage2D {
+                        xoffset: 0,
+                        yoffset: 0
+                    },
+                    4,
+                    4,
+                    0x1908,
+                    0x1401,
+                    0x8058,
+                    Source::Pixels {
+                        bytes: std::sync::Arc::new(vec![0; 4 * 4 * 4]),
+                        width: 4,
+                        height: 4
+                    }
                 ),
                 (
                     Call::SubImage2D {
