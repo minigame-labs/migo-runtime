@@ -1,7 +1,6 @@
 package com.migo.runtime;
 
 import android.app.Activity;
-import android.content.ComponentCallbacks2;
 import android.content.Context;
 import android.content.Intent;
 import android.content.res.Configuration;
@@ -59,8 +58,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * }</pre>
  *
  */
-public class MigoGameActivity extends Activity
-        implements SurfaceHolder.Callback, ComponentCallbacks2 {
+public class MigoGameActivity extends Activity implements SurfaceHolder.Callback {
 
     private static final String TAG = "MigoGameActivity";
 
@@ -227,9 +225,6 @@ public class MigoGameActivity extends Activity
             return false;
         });
 
-        // Register for memory warnings
-        registerComponentCallbacks(this);
-
         if (onWarmStartEngine()) {
             MigoRuntime.Result<GameSession> warm =
                     runtime.createSessionWarmSafe(this, config, gameId);
@@ -379,7 +374,6 @@ public class MigoGameActivity extends Activity
     protected void onDestroy() {
         cancelPendingInit();
         orientationHelper.cancel();
-        unregisterComponentCallbacks(this);
         if (session != null) {
             session.close();
             session = null;
@@ -388,6 +382,12 @@ public class MigoGameActivity extends Activity
     }
 
     // ==================== ComponentCallbacks2 ====================
+    //
+    // An Activity is a ComponentCallbacks2 already: the framework calls these on it directly. It must not also register
+    // itself (registerComponentCallbacks(this)). On Android 13 and later the activity dispatches its configuration
+    // changes to the callbacks registered with it, so super.onConfigurationChanged called this method again, without
+    // end: every rotation was a StackOverflowError. Before that the registration went to the application, which
+    // delivered every configuration change and memory warning a second time.
 
     @Override
     public void onTrimMemory(int level) {

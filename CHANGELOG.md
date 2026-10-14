@@ -675,6 +675,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- Android: turning the device crashed the game with a `StackOverflowError` on Android 13 and later.
+  `MigoGameActivity` registered itself for component callbacks, and an activity dispatches its configuration changes
+  to the callbacks registered with it, so `onConfigurationChanged` called itself without end. An activity is
+  already a `ComponentCallbacks2` that the framework calls directly, so it no longer registers itself; on earlier
+  Android the registration went to the application instead, which delivered every configuration change and memory
+  warning to the activity twice.
 - Android: `getScreenBrightness` failed with `no activity` whenever the game had not set a brightness of its own. The
   window's override then reads -1 (`BRIGHTNESS_OVERRIDE_NONE`, "follow the system"), which was taken for the
   no-activity sentinel. It now answers the window's own brightness where it set one, and the system's brightness
