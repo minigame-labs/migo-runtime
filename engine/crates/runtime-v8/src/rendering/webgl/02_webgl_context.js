@@ -2510,6 +2510,11 @@ function drawsIntoFloat32(ctx, fb) {
 // UNPACK_SKIP_IMAGES), in the order UNPACK_FLIP_Y_WEBGL asks, with the alpha UNPACK_PREMULTIPLY_ALPHA_WEBGL asks, packed
 // as the call's format and type. UNPACK_ALIGNMENT and UNPACK_ROW_LENGTH do not apply (WebGL 2.0 5.35).
 
+// A canvas no context was ever taken from has drawn nothing: its bitmap is transparent black at its size (HTML, the
+// canvas element's output bitmap), and an upload of it uploads that. The renderer has no 2D surface for it, so it is
+// not sent as a canvas but as what it is (`texImageFromSourceOf`). This facade's own kind, never sent.
+const TEX_SOURCE_BLANK = -1;
+
 // The TexImageSource `value` is, as the upload carries it, or null for a value that is none -- a TypeError, as WebIDL
 // converts the union. A snapshot `ImageData` whose bytes were not read is its snapshot, still on the GPU; a canvas this
 // runtime made is its 2D pixels (a WebGL canvas's, those of the 2D canvas showing them); a decoded image or ImageBitmap
@@ -2521,7 +2526,9 @@ function texImageSourceOf(value) {
         return { kind: TEX_SOURCE_SNAPSHOT, id: snapshotId, width: value.width | 0, height: value.height | 0, pixels: null, value };
     }
     if (_migoIsHTMLCanvas(value)) {
-        return { kind: TEX_SOURCE_CANVAS, id: _migoSourceRid(value), width: value.width | 0, height: value.height | 0, pixels: null, value };
+        const kind = value._context ? TEX_SOURCE_CANVAS : TEX_SOURCE_BLANK;
+        const id = kind === TEX_SOURCE_CANVAS ? _migoSourceRid(value) : 0;
+        return { kind, id, width: value.width | 0, height: value.height | 0, pixels: null, value };
     }
     if (value.__migo_text_cache_key__) {
         // A text-cache hit's `ImageData`: its rows exist once `.data` is read, which paints the text. A whole
@@ -2562,6 +2569,22 @@ function texImageFromSourceOf(
             _rawTexImage2D(ctx._canvasId, target, level, internalformat, width, height, 0, format, type, null, -1);
         } else {
             _rawTexImage3D(ctx._canvasId, target, level, internalformat, width, height, depth, 0, format, type, null, -1);
+        }
+        return;
+    }
+    if (source.kind === TEX_SOURCE_BLANK) {
+        // A full call defines the image with no pixels, which WebGL fills with zeros; a sub call writes the pixels it
+        // selects, zeros whatever the format converts them to.
+        if (call === TEX_SOURCE_CALL_IMAGE_2D) {
+            _rawTexImage2D(ctx._canvasId, target, level, internalformat, width, height, 0, format, type, null, -1);
+        } else if (call === TEX_SOURCE_CALL_IMAGE_3D) {
+            _rawTexImage3D(ctx._canvasId, target, level, internalformat, width, height, depth, 0, format, type, null, -1);
+        } else {
+            uploadTexImageSource(
+                ctx._canvasId, call, Number(target) >>> 0, level, Number(internalformat) >>> 0, xoffset, yoffset, zoffset,
+                width, height, depth, Number(format) >>> 0, Number(type) >>> 0, destination,
+                TEX_SOURCE_PIXELS, 0, source.width, source.height, new Uint8Array(source.width * source.height * 4),
+            );
         }
         return;
     }
