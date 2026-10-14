@@ -134,9 +134,10 @@ CONDITIONS = (
     (r"withSubscriptions", "option:withSubscriptions"),  # only when that option is true
     (r"群聊/单聊打开", "chat"),  # only when opened from a chat
     (r"仅在\s*PC\s*端|仅\s*PC", "only:pc"),
+    # Before the one-platform rules: "仅 iOS 和 Android 端支持" names both, and "仅 iOS" would read it as one.
+    (r"iOS\s*和\s*Android\s*端", "only:mobile"),
     (r"仅\s*iOS", "only:ios"),
     (r"仅\s*Android", "only:android"),
-    (r"iOS\s*和\s*Android\s*端支持", "only:mobile"),
 )
 
 
