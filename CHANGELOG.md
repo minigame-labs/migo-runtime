@@ -644,6 +644,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- `getFileSystemManager()` answered the file system manager's class rather than an object of it (`typeof` said
+  `"function"`; its methods were static). It now answers one `FileSystemManager` object whose methods are its
+  prototype's. The class was also published as a `FileManager` global, which no reference API names; it is removed.
+- `getStorage` succeeded with `data: ""` for a key that is not there; it now fails `getStorage:fail data not found`, as
+  the reference does. `getStorageSync` still answers `""`.
 - Divergences from the platform's reference that the API spec bundle (migo-conformance `api-spec`) found on every
   platform:
   - `getSystemInfoAsync` succeeded with `getSystemInfo:ok`. A success's `errMsg` is now always the called API's
