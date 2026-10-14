@@ -192,9 +192,9 @@ impl BatteryService for CapiDevice {
                 "getBatteryInfo:fail not supported",
             ));
         };
-        // The level is a string in the API's answer, as the Android SDK sends it.
+        // A number, as the reference documents it.
         Ok(format!(
-            r#"{{"level":"{}","isCharging":{},"isLowPowerModeEnabled":{}}}"#,
+            r#"{{"level":{},"isCharging":{},"isLowPowerModeEnabled":{}}}"#,
             battery.level_percent,
             battery.flags & MIGO_BATTERY_FLAG_CHARGING != 0,
             battery.flags & MIGO_BATTERY_FLAG_LOW_POWER_MODE != 0,
@@ -531,7 +531,7 @@ mod tests {
             );
             assert_eq!(
                 battery.get_info_json().unwrap(),
-                r#"{"level":"85","isCharging":true,"isLowPowerModeEnabled":true}"#
+                r#"{"level":85,"isCharging":true,"isLowPowerModeEnabled":true}"#
             );
             assert_eq!(
                 unsafe { migo_session_set_battery_status(raw, 7, 0) },
@@ -539,7 +539,7 @@ mod tests {
             );
             assert_eq!(
                 battery.get_info_json().unwrap(),
-                r#"{"level":"7","isCharging":false,"isLowPowerModeEnabled":false}"#
+                r#"{"level":7,"isCharging":false,"isLowPowerModeEnabled":false}"#
             );
 
             // No Surface is attached: the report is kept, and nothing is sent.

@@ -238,7 +238,8 @@ public final class DeviceInfo {
         sb.append("\"deviceAbi\":\"").append(abi).append("\",");
         sb.append("\"cpuType\":\"").append(escapeJson(getCpuType())).append("\"");
         if (context != null) {
-            sb.append(",\"memorySize\":").append(getTotalMemoryMB(context));
+            // A string of megabytes, as the reference documents it.
+            sb.append(",\"memorySize\":\"").append(getTotalMemoryMB(context)).append("\"");
         }
         // No benchmark level: content reads the app's own assessment of the
         // device with what it says about itself (HostAppInfo). The engine

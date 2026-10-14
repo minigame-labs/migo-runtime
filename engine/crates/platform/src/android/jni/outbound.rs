@@ -475,6 +475,11 @@ pub fn get_battery_info_json() -> Result<String, String> {
         ReturnType::Object,
         |env, result| {
             let jstring = result.l().map_err(|_| "Null string from Java")?;
+            // The SDK reads no battery: the device has none it can read, which
+            // is the platform's "not supported", not a level.
+            if jstring.is_null() {
+                return Err("getBatteryInfo:fail not supported".to_string());
+            }
             let json_str = env
                 .get_string(&jni::objects::JString::from(jstring))
                 .map_err(|e| format!("Failed to convert battery info JSON string: {}", e))?
