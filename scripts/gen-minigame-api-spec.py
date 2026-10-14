@@ -48,8 +48,10 @@ COMMENT = [
     "needs, by the engine's name for it. clients: what the page says of the reference's Windows, Mac and HarmonyOS",
     "clients -- true, false, or {\"from\": version} -- absent when it says nothing. options: the options object's fields other than the",
     "callbacks. success / result / listener: the fields of the success callback's argument, of the returned object,",
-    "of the listener's argument. A field is [name, type] or [name, type, since]; an Object field the page details",
-    "ends with {\"fields\": [...]}. deprecated, since: from the reference's index.",
+    "of the listener's argument. A field is [name, type] or [name, type, since], then an object with what else the page",
+    "says of it: \"fields\", the fields of an Object it details; \"when\", that it is there only sometimes -- plugin,",
+    "host-app (the game runs inside a third-party app), darkmode, option:<name>, chat (opened from a chat), or",
+    "only:<ios|android|pc>. deprecated, since: from the reference's index.",
 ]
 
 CLIENTS = {"Windows": "windows", "Mac": "mac", "鸿蒙 OS": "harmony"}
@@ -119,12 +121,35 @@ def first_table(lines: list[str], start: int, stop: int) -> int | None:
     return None
 
 
+# When the reference says a field is there only sometimes: the phrasings it uses, and what each means. A field
+# whose description matches none of these is always there.
+CONDITIONS = (
+    (r"在插件中调用时", "plugin"),  # only when called inside a plugin
+    (r"第三方\s*[Aa]pp", "host-app"),  # only when the game runs inside a third-party app
+    (r'"darkmode":\s*true', "darkmode"),  # only with the darkmode configuration, which mini-games lack
+    (r"withSubscriptions", "option:withSubscriptions"),  # only when that option is true
+    (r"群聊/单聊打开", "chat"),  # only when opened from a chat
+    (r"仅在\s*PC\s*端|仅\s*PC", "only:pc"),
+    (r"仅\s*iOS", "only:ios"),
+    (r"仅\s*Android", "only:android"),
+)
+
+
+def condition_of(description: str) -> str | None:
+    for pattern, condition in CONDITIONS:
+        if re.search(pattern, description):
+            return condition
+    return None
+
+
 def fields_of(header: list[str], rows: list[list[str]]) -> list[list]:
-    """[name, type] or [name, type, since] per row of a property table."""
+    """[name, type] or [name, type, since] per row of a property table, then {"when": condition} where the reference
+    says the field is there only sometimes."""
     columns = {name: index for index, name in enumerate(header)}
     name_at = columns.get("属性", columns.get("结构属性", 0))
     type_at = columns.get("类型", 1)
     since_at = columns.get("最低版本")
+    note_at = columns.get("说明")
     fields: list[list] = []
     for row in rows:
         if len(row) <= max(name_at, type_at):
@@ -135,8 +160,18 @@ def fields_of(header: list[str], rows: list[list[str]]) -> list[list]:
         field: list = [name, kind]
         if since_at is not None and since_at < len(row) and plain(row[since_at]):
             field.append(plain(row[since_at]))
+        condition = condition_of(row[note_at]) if note_at is not None and note_at < len(row) else None
+        if condition:
+            field.append({"when": condition})
         fields.append(field)
     return fields
+
+
+def details(field: list) -> dict:
+    """The field's trailing object, made when it has none."""
+    if not (field and isinstance(field[-1], dict)):
+        field.append({})
+    return field[-1]
 
 
 def headings(lines: list[str]) -> list[tuple[int, int, str]]:
@@ -174,7 +209,7 @@ def structured(lines: list[str], start: int, stop: int) -> list[list]:
             sub_header, sub_rows, index = table_at(lines, table)
             target = by_name.get(match.group(1))
             if target is not None and "属性" in "".join(sub_header):
-                target.append({"fields": fields_of(sub_header, sub_rows)})
+                details(target)["fields"] = fields_of(sub_header, sub_rows)
             continue
         if lines[index].startswith("#"):
             break
