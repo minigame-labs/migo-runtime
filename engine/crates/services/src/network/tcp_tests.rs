@@ -9,7 +9,7 @@ async fn a_host_the_policy_refuses_is_never_connected_to() {
         enforce_https: false,
     };
     let resources = ResourceTable::new();
-    let error = connect(&policy, &resources, "blocked.example", 443, 1)
+    let error = connect(&policy, &resources, "blocked.example", 9443, 1)
         .await
         .expect_err("the allow list refuses it");
     assert!(
@@ -179,4 +179,17 @@ async fn closing_reclaims_the_writer_from_a_stalled_peer() {
     closed.await.unwrap();
     assert_eq!(error.message, "TCPSocket closed");
     connection.tx.lock().await;
+}
+
+/// The reference's list, at its edges.
+#[test]
+fn the_reference_s_ports_are_refused() {
+    for port in [
+        1, 80, 443, 1023, 1099, 3306, 6379, 8000, 8080, 8100, 8443, 27019,
+    ] {
+        assert!(forbidden_port(port), "{port}");
+    }
+    for port in [1024, 3000, 7777, 8101, 9000, 27020, 65535] {
+        assert!(!forbidden_port(port), "{port}");
+    }
 }

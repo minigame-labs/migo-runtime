@@ -618,6 +618,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a relink, is INVALID_OPERATION and null, as are a deleted program and one that did not link.
 
 ### Changed
+- Raw sockets follow the reference's connection limits. A TCPSocket may not connect to a port below 1024 or to the
+  well-known service ports the reference lists (1099, 1433, 3306, 3389, 6379, 8000-8100, 8443, 27017, ...): its connect
+  fails `connect:fail port N is not allowed`. At most 20 TCPSockets are created in any 5 minutes: the one past that is
+  still made, and its connect fails saying why. A UDPSocket may send to the limited broadcast address and to multicast
+  groups (it may not reach the loopback, or a private address off the local network, any more than a stream may);
+  `setBroadcast` turns broadcast on for the socket instead of failing the send, and `255.255.255.255` needs no flag.
 - Content may reach the other devices on its local network: a private address (RFC 1918, IPv6 unique-local) is
   allowed when it is on one of the device's networks and is not the device itself -- what the reference allows ("the
   non-local IPs on the local network") so games can play on a LAN -- and such an address is not held to the domain

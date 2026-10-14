@@ -451,7 +451,8 @@ fn a_tcp_connect_is_held_to_the_policy() {
             id::op_tcp_connect,
             vec![
                 OwnedValue::Str("blocked.example".to_string()),
-                OwnedValue::U32(443),
+                // Not a port the reference forbids, so the refusal is the allow list's.
+                OwnedValue::U32(9443),
                 OwnedValue::U32(1),
             ],
         )

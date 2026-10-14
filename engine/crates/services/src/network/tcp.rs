@@ -126,6 +126,40 @@ pub enum TcpEvent {
     Close,
 }
 
+/// Ports the reference refuses a TCPSocket: the privileged range, and the
+/// well-known ports of services a game has no business reaching -- RMI,
+/// databases, Docker, remote desktop, VPN, NFS, SIP, proxies, caches, search
+/// engines, message brokers -- wherever the host is.
+fn forbidden_port(port: u16) -> bool {
+    port < 1024
+        || matches!(
+            port,
+            1099 | 1433
+                | 1521
+                | 1719
+                | 1720
+                | 1723
+                | 2049
+                | 2375
+                | 3128
+                | 3306
+                | 3389
+                | 3659
+                | 4045
+                | 5060
+                | 5061
+                | 5432
+                | 5984
+                | 6379
+                | 6000
+                | 6566
+                | 7001
+                | 7002
+                | 8000
+                ..=8100 | 8443 | 8888 | 9200 | 9300 | 10051 | 10080 | 11211 | 27017 | 27018 | 27019
+        )
+}
+
 /// Connect, and answer the handle content drives the socket with.
 ///
 /// The policy is enforced before the name is resolved, and the resolver refuses
@@ -138,6 +172,9 @@ pub async fn connect(
     timeout_secs: u32,
 ) -> Result<TcpConnected, ServiceError> {
     let port = checked_port(port)?;
+    if forbidden_port(port) {
+        return Err(generic(format!("connect:fail port {port} is not allowed")));
+    }
     let seconds = if timeout_secs == 0 {
         DEFAULT_CONNECT_SECONDS
     } else {
@@ -150,10 +187,13 @@ pub async fn connect(
 
     let deadline = Duration::from_secs(u64::from(seconds));
     let target = join_host_port(address, port);
-    let resolved = tokio::time::timeout(deadline, resolve_first(&target))
-        .await
-        .map_err(|_| generic(format!("connect:fail timeout after {seconds}s")))?
-        .map_err(|error| generic(format!("connect:fail resolve error: {error}")))?;
+    let resolved = tokio::time::timeout(
+        deadline,
+        resolve_first(&target, super::address_filter::is_blocked_address),
+    )
+    .await
+    .map_err(|_| generic(format!("connect:fail timeout after {seconds}s")))?
+    .map_err(|error| generic(format!("connect:fail resolve error: {error}")))?;
 
     let stream = tokio::time::timeout(deadline, TcpStream::connect(resolved))
         .await

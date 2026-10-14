@@ -35,6 +35,17 @@ pub fn is_blocked_address(addr: &SocketAddr) -> bool {
     is_blocked_given(addr, local_address::networks)
 }
 
+/// [`is_blocked_address`] for a datagram. A UDP socket may also send to the limited broadcast address and to a
+/// multicast group -- the reference lets `UDPSocket.send` reach "any IP", broadcast included, which is how a game finds
+/// its peers on a LAN -- where a stream cannot connect at all.
+pub fn is_blocked_datagram_address(addr: &SocketAddr) -> bool {
+    match canonical(addr.ip()) {
+        IpAddr::V4(ip) if ip.is_broadcast() || is_multicast_v4(&ip) => false,
+        IpAddr::V6(ip) if is_multicast_v6(&ip) => false,
+        _ => is_blocked_address(addr),
+    }
+}
+
 /// [`is_blocked_address`] on a device whose networks are `networks`.
 #[cfg(test)]
 pub(crate) fn is_blocked_on(addr: &SocketAddr, networks: &[LocalNetwork]) -> bool {
@@ -249,6 +260,22 @@ mod tests {
             is_blocked_on(&sa6([0, 0, 0, 0, 0, 0xffff, 0x7f00, 0x0001], 80), &lan),
             "::ffff:127.0.0.1"
         );
+    }
+
+    /// A datagram may go to the limited broadcast address and to multicast groups; a stream may not, and neither may
+    /// reach the loopback.
+    #[test]
+    fn a_datagram_may_be_broadcast_or_multicast() {
+        for allowed in [
+            sa4(255, 255, 255, 255, 9),
+            sa4(224, 0, 0, 251, 5353),
+            sa6([0xff02, 0, 0, 0, 0, 0, 0, 0xfb], 5353),
+        ] {
+            assert!(!is_blocked_datagram_address(&allowed), "{allowed}");
+            assert!(super::is_blocked_address(&allowed), "a stream to {allowed}");
+        }
+        assert!(is_blocked_datagram_address(&sa4(127, 0, 0, 1, 9)));
+        assert!(!is_blocked_datagram_address(&sa4(8, 8, 8, 8, 53)));
     }
 
     /// A network of prefix 0 is not a local network: it would make every address local.
