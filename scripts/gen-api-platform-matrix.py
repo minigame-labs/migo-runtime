@@ -42,6 +42,10 @@ RANK = ("missing", "host", "default", "engine")
 REFERENCE = "contracts/runtime/minigame-api.json"
 REACH = "contracts/runtime/minigame-api-reach.json"
 DECISIONS = "contracts/runtime/api-platform-decisions.json"
+# What migo-conformance's api-spec bundle measured on each platform (scripts/import-api-conformance.py); absent for a
+# platform no runner has measured.
+CONFORMANCE = "contracts/runtime/api-conformance-{platform}.json"
+CONFORMANCE_STATUSES = ("verified", "failing", "present", "absent")
 HOST_SERVICES = "contracts/runtime/host-services.json"
 OP_BOUNDARY = "contracts/runtime/op-boundary.json"
 MATRIX = "contracts/runtime/api-platform-matrix.json"
@@ -115,8 +119,11 @@ COMMENT = [
     "channel), callback:<field> (a typed MigoHostCallbacks field), report:<what> (state the host reports), input:<kind>",
     "(input or lifecycle the host feeds), event:<service>.<event> (a host-service event the host posts: a listener",
     "that needs no request), service:<accessor> (an engine service no C ABI host can supply yet).",
-    "not_ready: the platforms where the cell is not yet complete -- missing, or host for a need that is not the",
-    "host's by nature. summary counts each status and the ready cells per platform.",
+    "wired: the cell has a working path -- engine, default, unsupported, or host for needs that are the host's by",
+    "nature. verified: migo-conformance's api-spec bundle exercised it on the platform and every check passed",
+    "(api-conformance-<platform>.json). ready: wired, and verified -- or deliberately unsupported, or the host app's to",
+    "answer. not_ready: the platforms where the cell is not ready. summary counts each status and the wired, verified",
+    "and ready cells per platform.",
 ]
 
 
@@ -619,12 +626,14 @@ def generate(root: pathlib.Path) -> str:
     def covers(decision, platform):
         return decision["platforms"] == "*" or platform in decision["platforms"]
 
+    measured = conformance(root, reference)
     memo: dict = {}
     rows = {}
     summary = {platform: collections.Counter() for platform in PLATFORMS}
     for name in sorted(reference):
         row = {"category": reference[name]}
         statuses = {}
+        verified = []
         not_ready = []
         decided = [
             decision for decision in (decisions["gaps"].get(name), decisions["unsupported"].get(name))
@@ -679,7 +688,7 @@ def generate(root: pathlib.Path) -> str:
                     ):
                         status = "missing"
             statuses[platform] = status
-            ready = status in ("engine", "default", "unsupported") or (
+            wired = status in ("engine", "default", "unsupported") or (
                 status == "host"
                 and all(
                     owned(need, host_owned) or need_status(need, platform, lanes, entries, android) != "host"
@@ -693,23 +702,60 @@ def generate(root: pathlib.Path) -> str:
                     )
                 )
             )
+            # Wired is not ready: a cell is ready where its API was verified on
+            # the platform -- or is deliberately not offered, or is the host
+            # app's to answer, which no platform verifies for it.
+            is_verified = measured.get(platform, {}).get(name) == "verified"
+            if is_verified:
+                verified.append(platform)
+                summary[platform]["verified"] += 1
+            ready = wired and (is_verified or status in ("unsupported", "host"))
             summary[platform][status] += 1
+            if wired:
+                summary[platform]["wired"] += 1
             if ready:
                 summary[platform]["ready"] += 1
             else:
                 not_ready.append(platform)
         row.update(statuses)
+        if verified:
+            row["verified"] = verified
         if not_ready:
             row["not_ready"] = not_ready
         rows[name] = row
     return render(rows, summary, len(reference))
 
 
+def conformance(root: pathlib.Path, reference: dict) -> dict[str, dict[str, str]]:
+    """platform -> API -> its measured status, for each platform a record exists for."""
+    measured = {}
+    for platform in PLATFORMS:
+        path = root / CONFORMANCE.format(platform=platform)
+        if not path.exists():
+            continue
+        record = json.loads(path.read_text(encoding="utf-8"))
+        if record.get("platform") != platform:
+            raise Fail(f"{path.name} is a record of {record.get('platform')!r}, not {platform}")
+        apis = record["apis"]
+        if set(apis) != set(reference):
+            missing = sorted(set(reference) - set(apis))
+            extra = sorted(set(apis) - set(reference))
+            raise Fail(f"{path.name} does not measure the platform's API list (missing {missing[:5]}, extra {extra[:5]})")
+        for name, entry in apis.items():
+            if entry.get("status") not in CONFORMANCE_STATUSES:
+                raise Fail(f"{path.name}: {name} is {entry.get('status')!r}, not one of {CONFORMANCE_STATUSES}")
+        measured[platform] = {name: entry["status"] for name, entry in apis.items()}
+    return measured
+
+
 def render(rows, summary, total) -> str:
     out = ['{', '  "schema_version": 1,', '  "$comment": ' + json.dumps(COMMENT, indent=4).replace("\n", "\n  ") + ",",
            f'  "platforms": {json.dumps(list(PLATFORMS))},', f'  "total": {total},', '  "summary": {']
     for index, platform in enumerate(PLATFORMS):
-        counts = {key: summary[platform][key] for key in ("engine", "default", "host", "missing", "unsupported", "ready")}
+        counts = {
+            key: summary[platform][key]
+            for key in ("engine", "default", "host", "missing", "unsupported", "wired", "verified", "ready")
+        }
         out.append(f'    "{platform}": {json.dumps(counts)}' + ("," if index + 1 < len(PLATFORMS) else ""))
     out.append("  },")
     out.append('  "apis": {')
@@ -738,7 +784,10 @@ def main(argv: list[str]) -> int:
     data = json.loads(text)
     for platform in PLATFORMS:
         counts = data["summary"][platform]
-        print(f"{platform:8} ready {counts['ready']:3}/{data['total']}  " + "  ".join(f"{k} {counts[k]}" for k in ("engine", "default", "host", "missing", "unsupported")))
+        print(
+            f"{platform:8} ready {counts['ready']:3}/{data['total']}  "
+            + "  ".join(f"{k} {counts[k]}" for k in ("wired", "verified", "engine", "default", "host", "missing", "unsupported"))
+        )
     return 0
 
 

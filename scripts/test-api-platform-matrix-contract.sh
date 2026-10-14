@@ -45,6 +45,10 @@ inputs=(
     engine/crates/capi/src/callbacks.rs
     engine/crates/platform/src/android/services/mod.rs
 )
+# What each platform's run of the API spec bundle measured, where one was imported.
+for record in "$ROOT"/contracts/runtime/api-conformance-*.json; do
+    [[ -e "$record" ]] && inputs+=("contracts/runtime/$(basename "$record")")
+done
 while IFS= read -r path; do inputs+=("$path"); done < <(
     cd "$ROOT" && git ls-files include/migo platforms/apple/Sources/MigoAppleRenderer \
         platforms/apple/Sources/MigoMacV8 platforms/apple/Sources/MigoApplePerformancePlus \
@@ -98,6 +102,16 @@ red "a host layer that stops installing a callback" platforms/apple/Sources/Migo
     'text.replace("callbacks.on_keep_screen_on = ", "// ", 1)'
 red "a channel method moving to another op" contracts/runtime/host-services.json \
     'text.replace("\"op\": \"op_set_clipboard_data\"", "\"op\": \"op_set_clipboard_data_moved\"", 1)'
+# Ready is verified, not wired: a measured API that regresses is no longer ready, and a record that does not measure
+# the platform's API list, or says what no run can, is refused.
+if [[ -e "$ROOT/contracts/runtime/api-conformance-macos.json" ]]; then
+    red "a verified API that a later run finds failing" contracts/runtime/api-conformance-macos.json \
+        'text.replace("\"getWindowInfo\": {\"status\": \"verified\"}", "\"getWindowInfo\": {\"status\": \"failing\", \"failing\": [\"api-spec/getWindowInfo/returns\"]}", 1)'
+    red "a run record that does not measure an API" contracts/runtime/api-conformance-macos.json \
+        'text.replace("    \"getWindowInfo\": ", "    \"getWindowInfoGone\": ", 1)'
+    red "a run record that claims a status no run produces" contracts/runtime/api-conformance-macos.json \
+        'text.replace("\"getWindowInfo\": {\"status\": \"verified\"}", "\"getWindowInfo\": {\"status\": \"probably\"}", 1)'
+fi
 red "the Swift SDK that stops answering a service itself" platforms/apple/Sources/MigoAppleRenderer/MigoBuiltInHostServices.swift \
     'text.replace("builtIn.insert(.clipboard)", "// builtIn.insert(.clipboard)", 1)'
 red "the macOS game view that stops answering the window service" platforms/apple/Sources/MigoMacV8/MigoWindowService.swift \
