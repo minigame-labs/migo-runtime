@@ -50,12 +50,24 @@ pub fn is_installed(mount_table: Option<&MountTable>, root: &str) -> bool {
     !mount_table.list_dir(root).is_empty()
 }
 
-/// Whether the subpackage is durably installed in this game's package store.
+/// Whether the subpackage will still be there after a restart: it shipped with
+/// the game (its root is in the base package), or it is durably installed in
+/// this game's package store. What `preDownloadSubpackage` answers success for
+/// without downloading. An overlay mounted for this session only is neither.
 ///
-/// Both halves must match -- the key derived from the name and the prefix the
-/// entry claims -- and the package file must be there, so a stale or mismatched
-/// manifest entry does not report a subpackage that cannot be mounted.
-pub fn is_persisted(game_paths: Option<&GamePaths>, name: &str, root: &str) -> bool {
+/// For the store, both halves must match -- the key derived from the name and
+/// the prefix the entry claims -- and the package file must be there, so a
+/// stale or mismatched manifest entry does not report a subpackage that cannot
+/// be mounted.
+pub fn is_persisted(
+    mount_table: Option<&MountTable>,
+    game_paths: Option<&GamePaths>,
+    name: &str,
+    root: &str,
+) -> bool {
+    if !root.is_empty() && mount_table.is_some_and(|table| table.in_base(root)) {
+        return true;
+    }
     let Some(game_paths) = game_paths else {
         return false;
     };
@@ -150,12 +162,45 @@ mod tests {
         assert!(package_key(&"x".repeat(256)).is_ok());
     }
 
+    /// A subpackage that shipped with the game is there after a restart, so a
+    /// pre-download of it has nothing to fetch; one mounted for this session
+    /// only, with nothing in the store, is not.
+    #[test]
+    fn a_subpackage_shipped_with_the_game_is_persisted() {
+        let base = std::env::temp_dir().join("migo_subpackage_shipped");
+        let session = std::env::temp_dir().join("migo_subpackage_session");
+        for dir in [&base, &session] {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+        std::fs::create_dir_all(base.join("sub/stage1")).unwrap();
+        std::fs::write(base.join("sub/stage1/game.js"), "// stage 1").unwrap();
+        std::fs::create_dir_all(&session).unwrap();
+        std::fs::write(session.join("game.js"), "// late").unwrap();
+        let table = MountTable::new(base.clone());
+        table.mount_overlay(
+            "subpackage:late".into(),
+            "sub/late".into(),
+            std::sync::Arc::new(shared::vfs::DirSource::new(session.clone())),
+        );
+
+        assert!(is_persisted(Some(&table), None, "stage1", "sub/stage1"));
+        assert!(!is_persisted(Some(&table), None, "never", "sub/never"));
+        assert!(is_installed(Some(&table), "sub/late"));
+        assert!(!is_persisted(Some(&table), None, "late", "sub/late"));
+        // The whole package is not a subpackage of itself.
+        assert!(!is_persisted(Some(&table), None, "", ""));
+
+        for dir in [&base, &session] {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
     /// With nothing mounted, every question answers no rather than failing:
     /// content asks these before it has loaded anything.
     #[test]
     fn nothing_mounted_answers_nothing_installed() {
         assert!(!is_installed(None, "sub/stage1"));
-        assert!(!is_persisted(None, "stage1", "sub/stage1"));
+        assert!(!is_persisted(None, None, "stage1", "sub/stage1"));
         assert_eq!(identity(None, "sub/stage1"), "");
         assert_eq!(mount_generation(None), 0);
     }

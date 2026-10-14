@@ -306,9 +306,10 @@ function _startDownload(apiName, options, pkg, executeAfter) {
             return task;
         }
     } else {
-        // preDownloadSubpackage: check if DURABLY installed (survives restart).
-        // Must not use mount-only check -- a session-mounted but non-persisted
-        // package would give a false "predownload success".
+        // preDownloadSubpackage: check if DURABLY present (survives restart):
+        // shipped with the game, or installed in the package store. Must not use
+        // the mount-only check -- a session-mounted but non-persisted package
+        // would give a false "predownload success".
         // Pass both name and root for precise manifest key matching.
         try {
             if (pkg.name && pkg.root && op_is_subpackage_persisted(pkg.name, pkg.root)) {
