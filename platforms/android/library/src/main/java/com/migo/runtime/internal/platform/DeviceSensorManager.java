@@ -122,7 +122,7 @@ public final class DeviceSensorManager implements RuntimeScoped {
 
         motionListener = new SensorEventListener() {
             private final float[] rotationMatrix = new float[9];
-            private final float[] orientation = new float[3];
+            private final double[] angles = new double[3];
 
             @Override
             public void onSensorChanged(SensorEvent event) {
@@ -134,19 +134,9 @@ public final class DeviceSensorManager implements RuntimeScoped {
                     // alpha/beta/gamma regardless of screen orientation
                     float[] remapped = remapForDisplay(rotationMatrix);
 
-                    SensorManager.getOrientation(remapped, orientation);
-
-                    // Convert from radians to degrees
-                    // orientation[0] = azimuth (rotation around Z), -PI..PI -> alpha 0..360
-                    // orientation[1] = pitch (rotation around X), -PI..PI -> beta -180..180
-                    // orientation[2] = roll (rotation around Y), -PI/2..PI/2 -> gamma -90..90
-                    double alpha = Math.toDegrees(orientation[0]);
-                    if (alpha < 0) alpha += 360.0;
-                    double beta = Math.toDegrees(orientation[1]);
-                    double gamma = Math.toDegrees(orientation[2]);
-
+                    deviceOrientationAngles(remapped, angles);
                     NativeMethods.onDeviceMotionChange(
-                            sessionId, token.generation(), alpha, beta, gamma);
+                            sessionId, token.generation(), angles[0], angles[1], angles[2]);
                 }
             }
 
@@ -160,6 +150,47 @@ public final class DeviceSensorManager implements RuntimeScoped {
             return false;
         }
         return true;
+    }
+
+    /**
+     * The W3C DeviceOrientation angles of rotation matrix {@code r} (row-major 3x3), in degrees: alpha [0, 360),
+     * beta [-180, 180), gamma [-90, 90) -- R = Rz(alpha) Rx(beta) Ry(gamma), decomposed as the specification does
+     * and as the host on every other platform reports them. Android's {@code getOrientation} answers the Tait-Bryan
+     * angles of another convention, pitch in [-90, 90] and roll in [-180, 180]; read as beta and gamma they swapped
+     * the two ranges, so a device lying face down reported a gamma of -147.
+     */
+    static void deviceOrientationAngles(float[] r, double[] out) {
+        double alpha;
+        double beta;
+        double gamma;
+        if (r[8] > 0) {
+            alpha = Math.atan2(-r[1], r[4]);
+            beta = Math.asin(r[7]);
+            gamma = Math.atan2(-r[6], r[8]);
+        } else if (r[8] < 0) {
+            alpha = Math.atan2(r[1], -r[4]);
+            beta = -Math.asin(r[7]);
+            beta += beta >= 0 ? -Math.PI : Math.PI;
+            gamma = Math.atan2(r[6], -r[8]);
+        } else if (r[6] > 0) {
+            alpha = Math.atan2(-r[1], r[4]);
+            beta = Math.asin(r[7]);
+            gamma = -Math.PI / 2;
+        } else if (r[6] < 0) {
+            alpha = Math.atan2(r[1], -r[4]);
+            beta = -Math.asin(r[7]);
+            beta += beta >= 0 ? -Math.PI : Math.PI;
+            gamma = -Math.PI / 2;
+        } else {
+            // Gimbal lock: alpha and gamma turn about one axis; the whole turn is alpha.
+            alpha = Math.atan2(r[3], r[0]);
+            beta = r[7] > 0 ? Math.PI / 2 : -Math.PI / 2;
+            gamma = 0;
+        }
+        if (alpha < 0) alpha += 2 * Math.PI;
+        out[0] = Math.toDegrees(alpha) % 360.0;
+        out[1] = Math.toDegrees(beta);
+        out[2] = Math.toDegrees(gamma);
     }
 
     /**
