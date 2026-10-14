@@ -78,7 +78,8 @@ export function allocateCanvas(width, height) {
 /// described (`MigoPerformancePlusHost.swift`, the JSON the engine's own `getWindowInfo` parses); a host that described none has no ratio to divide by, and the surface is the answer, as in the renderer
 /// when the ratio is 1. The arithmetic is single precision, as the renderer's is.
 function defaultBackingSize(host) {
-  const { state, device: profile } = host;
+  const { state } = host;
+  const profile = state.device;
   let ratio = 1;
   if (profile !== null && typeof profile.windowInfo === "string") {
     try {
@@ -297,16 +298,17 @@ export function op_text_cache_peek_pin(
 //
 // A game reads these before its first frame -- `migo.getWindowInfo()` to lay
 // itself out, `getSystemInfoSync()` for the model and the safe area -- and each
-// is synchronous. None of it changes during a session, so the host hands the
-// JSON over at startup (see `engine-host.mjs`) and these answer from it without
-// crossing. That is what the contract means by the `local` lane for them.
+// is synchronous. The host hands the JSON over at startup and again when the
+// view resizes or turns (see `engine-host.mjs`, `applyResize`), and these
+// answer from the latest without crossing. That is what the contract means by
+// the `local` lane for them.
 //
 // When the host described nothing, they fail the way they do on a platform with
 // no device services: the op's own message. A plausible screen size nobody
 // measured would be worse than a failure -- a game would lay itself out to it.
 
 function described(key, call) {
-  const profile = engineHost().device;
+  const profile = engineHost().state.device;
   const json = profile === null ? undefined : profile[key];
   if (json === undefined) {
     // The message the Rust op raises, so content sees one failure, not two.

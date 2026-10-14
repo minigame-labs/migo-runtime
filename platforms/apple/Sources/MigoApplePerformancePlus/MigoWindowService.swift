@@ -5,9 +5,10 @@ import MigoAppleRenderer
     import UIKit
 
     /// The game view's own part of the host-service channel: what only the
-    /// scene the game is shown in can answer -- the window service. It sits
-    /// behind the app's provider, so a service the app names is the app's, and
-    /// in front of the SDK's built-in services.
+    /// scene the game is shown in can answer -- the window service, and the
+    /// screen's orientation, which is the scene's to turn. It sits behind the
+    /// app's provider, so what the app answers is the app's, and in front of
+    /// the SDK's built-in services, which answer the rest of the screen.
     ///
     /// `scripts/gen-api-platform-matrix.py` reads `services` below to count
     /// these APIs as provided on iOS: one service per line.
@@ -30,14 +31,25 @@ import MigoAppleRenderer
             services = appServices.union(Self.services)
         }
 
+        func answers(_ request: MigoHostServiceRequest) -> Bool {
+            if let app, app.answers(request) { return true }
+            return request.service == .window || Self.isOrientation(request)
+        }
+
         func handle(_ request: MigoHostServiceRequest) {
             if let app, app.answers(request) {
                 app.handle(request)
             } else if request.service == .window {
                 window.handle(request)
+            } else if Self.isOrientation(request) {
+                window.setOrientation(request)
             } else {
                 request.reply?.fail("not supported")
             }
+        }
+
+        private static func isOrientation(_ request: MigoHostServiceRequest) -> Bool {
+            request.service == .screen && request.method == MigoHostServiceID.Screen.setDeviceOrientation
         }
     }
 
@@ -125,6 +137,14 @@ import MigoAppleRenderer
         /// The screen's orientation last reported, or the one the game started
         /// in.
         private var reportedOrientation: String?
+        /// A turn content asked for that the scene has not made yet, and its
+        /// number: a refusal UIKit sends late names the request it was for.
+        private var pendingTurn: (number: Int, shape: String, reply: MigoHostServiceReply, deadline: DispatchWorkItem)?
+        private var turns = 0
+        /// How long the scene has to turn: its rotation takes a fraction of a
+        /// second, and a request UIKit neither makes nor refuses must still be
+        /// answered.
+        static let turnBudget: TimeInterval = 3
 
         /// The pointer's look over the game, as content last asked.
         private(set) var appearance: PointerAppearance = .system
@@ -191,6 +211,7 @@ import MigoAppleRenderer
             observers.forEach(NotificationCenter.default.removeObserver)
             observers = []
             geometry = nil
+            settleTurn(failing: "the game ended")
             if prefersLocked {
                 prefersLocked = false
                 _ = system.update(false)
@@ -245,6 +266,67 @@ import MigoAppleRenderer
                 reportedOrientation = orientation
                 post(.screen, MigoHostServiceID.Screen.Event.deviceOrientationChange, ["value": orientation])
             }
+            if let turn = pendingTurn, Self.shape(of: reportedOrientation) == turn.shape {
+                turn.deadline.cancel()
+                pendingTurn = nil
+                turn.reply.succeed()
+            }
+        }
+
+        /// `"portrait"` or `"landscape"`: the shape an orientation is.
+        static func shape(of orientation: String?) -> String? {
+            switch orientation {
+            case "portrait": return "portrait"
+            case "landscape", "landscapeReverse": return "landscape"
+            default: return nil
+            }
+        }
+
+        /// `setDeviceOrientation`: the scene asked to turn to the shape content
+        /// wants -- either landscape, as the device is held -- answered when
+        /// the interface has turned (`reportState`), or with UIKit's refusal: the
+        /// view controller showing the game does not support that orientation.
+        /// Already that shape, it succeeds at once. Before iOS 16 a scene cannot
+        /// be asked.
+        func setOrientation(_ request: MigoHostServiceRequest) {
+            guard let reply = request.reply else { return }
+            guard let value = request.object["value"] as? String, value == "portrait" || value == "landscape" else {
+                reply.fail("value must be portrait or landscape")
+                return
+            }
+            guard let scene = view?.window?.windowScene else {
+                reply.fail("there is no window to turn")
+                return
+            }
+            guard #available(iOS 16.0, *) else {
+                reply.fail("turning the screen needs iOS 16")
+                return
+            }
+            if Self.shape(of: Self.orientation(of: scene)) == value {
+                reply.succeed()
+                return
+            }
+            settleTurn(failing: "another turn was asked for")
+            turns += 1
+            let number = turns
+            let deadline = DispatchWorkItem { [weak self] in
+                self?.settleTurn(failing: "the screen did not turn", only: number)
+            }
+            pendingTurn = (number, value, reply, deadline)
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.turnBudget, execute: deadline)
+            let mask: UIInterfaceOrientationMask = value == "portrait" ? .portrait : .landscape
+            scene.requestGeometryUpdate(.iOS(interfaceOrientations: mask)) { [weak self] error in
+                let message = error.localizedDescription
+                DispatchQueue.main.async { self?.settleTurn(failing: message, only: number) }
+            }
+        }
+
+        /// Fail the pending turn -- `only` the one numbered, when given.
+        private func settleTurn(failing message: String, only number: Int? = nil) {
+            guard let turn = pendingTurn, number == nil || turn.number == number else { return }
+            turn.deadline.cancel()
+            pendingTurn = nil
+            turn.reply.fail(message)
         }
 
         /// The screen's orientation in the platform's words: the interface's,

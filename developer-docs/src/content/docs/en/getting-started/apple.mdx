@@ -109,12 +109,14 @@ it carries no signature; subpackages inside the package work.
 
 ### iOS
 
-- The game's size is fixed when it starts (a mini-game lays itself out once), so lock
-  the hosting view controller to the game's orientation -- and have it locked **before
-  `MigoGameView`'s first layout**: an app whose Info.plist declares only the game's
-  orientation, or a view controller that supports only that orientation presenting it. A
-  root view controller that picks its orientation after launch lays out in the launch
-  orientation first, and the game starts in a window of the wrong shape.
+- The game's size follows `MigoGameView`: when the interface turns, the game hears
+  `onWindowResize`. A game that supports one orientation wants the hosting view controller
+  locked to it -- and locked **before `MigoGameView`'s first layout**: an app whose
+  Info.plist declares only the game's orientation, or a view controller that supports only
+  that orientation presenting it. A root view controller that picks its orientation after
+  launch lays out in the launch orientation first, and the game starts in the wrong shape and
+  is turned at once. A game that turns needs the view controller to support the orientation
+  its `setDeviceOrientation` asks for.
 - `MigoGameView.unavailabilityReason` says whether the device can run the lane (for
   example below iOS 15.2); check it before offering the game.
 - When the canvas is smaller than the screen -- common for games that size
@@ -161,13 +163,12 @@ it carries no signature; subpackages inside the package work.
 | `vibrateShort` / `vibrateLong` | the Taptic Engine | answers "not supported" |
 | `getBatteryInfo` | battery level and Low Power Mode | answers "not supported" |
 | `onDeviceOrientationChange` | the interface's orientation (in landscape, `landscape` with the Home side on the right, `landscapeReverse` on the left; the half turn between them from iOS 16) | the game's shape crossing between portrait and landscape |
-| `setDeviceOrientation` | answers "not supported" (the session's size is fixed at start) | turns the window to the shape asked for; fails in full screen |
+| `setDeviceOrientation` | asks the scene to turn to the shape asked for (iOS 16 and later); fails where the view controller does not support it | turns the window to the shape asked for; fails in full screen |
 | `getGameLogManager().log` | delivered to the app as `onEvent(.gameLog(json))` | likewise |
 
-These are **refused rather than faked**: `setDeviceOrientation` on iOS (the session's
-size is fixed at start), `getHeapStatistics` on iOS (content runs in WebKit's
-JavaScriptCore, which exposes no heap figures), and downloaded subpackages when signing
-is enforced.
+These are **refused rather than faked**: `getHeapStatistics` on iOS (content runs in
+WebKit's JavaScriptCore, which exposes no heap figures), and downloaded subpackages when
+signing is enforced.
 
 ## 6. What has been verified
 

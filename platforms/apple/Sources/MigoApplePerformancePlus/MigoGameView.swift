@@ -41,19 +41,23 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
     /// session and recovery from a WebContent crash. The Android SDK's
     /// `MigoGameView.loadGame(gameId, entryPoint)` is the same call, on purpose.
     ///
-    /// ## The size is fixed per session
+    /// ## The size follows the view
     ///
-    /// The game is told its window size once, before its first line runs, and
-    /// lays itself out to it -- that is how the mini-game API works on every
-    /// platform. So the session starts at the view's first non-empty layout and
-    /// keeps that size: a later bounds change scales the rendered frame to the
-    /// new bounds rather than lying to a game that has already laid itself out.
-    /// Lock the hosting controller's orientation to the game's, and have it
-    /// locked before this view's first layout: an app whose Info.plist allows
-    /// the game's orientation only, or a controller that supports only that
-    /// orientation and presents this view. A root controller that picks its
-    /// orientation after launch lays out in the launch orientation first, and
-    /// the game starts in a window of the wrong shape.
+    /// The game is told its window size before its first line runs and lays
+    /// itself out to it -- that is how the mini-game API works on every
+    /// platform -- so the session starts at the view's first non-empty layout.
+    /// When the view is laid out at another size afterwards -- the interface
+    /// turned, a scene resized beside another app -- the session's surface
+    /// follows, and content hears `onWindowResize` with what `getWindowInfo()`
+    /// now answers, as it does on every platform. A game that supports one
+    /// orientation wants the hosting controller locked to it before this view's
+    /// first layout, or it starts in a window of the wrong shape and is told
+    /// to turn at once.
+    ///
+    /// Content's `setDeviceOrientation` asks the scene to turn (iOS 16 and
+    /// later): it succeeds when the interface has turned, and fails when the
+    /// view controller showing this view does not support the orientation
+    /// asked for.
     ///
     /// ## The web view is not a view you see
     ///
@@ -204,6 +208,13 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
         // Readable by `@testable` tests, which report device changes through it.
         private(set) var engine: MigoEngineSession?
         private var host: MigoPerformancePlusHost?
+        /// What the session was last told the view is: its surface and device.
+        private var laidOut: Layout?
+
+        private struct Layout: Equatable {
+            var size: MigoEngineSession.SurfaceSize
+            var device: MigoPerformancePlusHost.DeviceProfile
+        }
         private var deviceStatus: MigoDeviceStatusReporter?
         /// The app's own idle-timer setting while the game holds the display
         /// awake, `nil` while it does not; put back when the game lets go or
@@ -342,8 +353,57 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
         public override func layoutSubviews() {
             super.layoutSubviews()
             startIfPossible()
+            followLayout()
             // A scene resized beside another app lays this view out again.
             windowService?.reportState()
+        }
+
+        /// The surface and the device as this view and its window are now: the
+        /// view's size in pixels, and the window, screen and safe area as they
+        /// are turned.
+        private func layout(in window: UIWindow) -> Layout {
+            let scale = window.screen.scale
+            let points = bounds.size
+            let size = MigoEngineSession.SurfaceSize(
+                widthPixels: UInt32((points.width * scale).rounded()),
+                heightPixels: UInt32((points.height * scale).rounded()),
+                scale: Float(scale))
+            let insets = window.safeAreaInsets
+            let device = MigoPerformancePlusHost.DeviceProfile(
+                screenWidth: Double(window.screen.bounds.width),
+                screenHeight: Double(window.screen.bounds.height),
+                windowWidth: Double(points.width), windowHeight: Double(points.height),
+                pixelRatio: Double(scale),
+                statusBarHeight: Double(window.windowScene?.statusBarManager?.statusBarFrame.height ?? 0),
+                safeAreaInsets: .init(
+                    left: Double(insets.left), top: Double(insets.top), right: Double(insets.right),
+                    bottom: Double(insets.bottom)),
+                brand: "Apple", model: Self.hardwareModel(),
+                system: "iOS \(UIDevice.current.systemVersion)", platform: "ios")
+            return Layout(size: size, device: device)
+        }
+
+        /// The view resized or turned while the game runs: the engine's surface
+        /// first, then the producer, which tells content -- so the frames it
+        /// draws for the new size meet a surface of that size. A change of the
+        /// safe area alone reaches content's next `getWindowInfo()` and no
+        /// resize, as the engine reports a resize only for a new size.
+        private func followLayout() {
+            guard isRunning, let engine, let host, let window, bounds.width >= 1, bounds.height >= 1 else { return }
+            let now = layout(in: window)
+            guard now != laidOut else { return }
+            do {
+                try engine.resize(to: now.size)
+            } catch {
+                onEvent?(.error(code: MIGO_ERROR_INTERNAL, message: String(describing: error), recoverable: true))
+                return
+            }
+            laidOut = now
+            // The web view keeps the window's size, off its left edge (see `start`).
+            host.view.frame = window.bounds.offsetBy(dx: -window.bounds.width - 1, dy: 0)
+            host.resize(
+                surfaceWidthPixels: Int(now.size.widthPixels), surfaceHeightPixels: Int(now.size.heightPixels),
+                device: now.device)
         }
 
         public override var canBecomeFirstResponder: Bool { true }
@@ -371,13 +431,9 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
         }
 
         private func start(id: String, entry: String, in window: UIWindow) throws {
-            let scale = window.screen.scale
-            let points = bounds.size
-            let size = MigoEngineSession.SurfaceSize(
-                widthPixels: UInt32((points.width * scale).rounded()),
-                heightPixels: UInt32((points.height * scale).rounded()),
-                scale: Float(scale))
-            metalView.configure(scale: scale)
+            let started = layout(in: window)
+            let size = started.size
+            metalView.configure(scale: window.screen.scale)
 
             let windowService = MigoWindowService(view: self) { [weak self] service, event, object in
                 guard let json = try? JSONSerialization.data(withJSONObject: object) else { return }
@@ -403,18 +459,8 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             try engine.loadContent(id: id, entry: entry)
             let root = try Self.contentRoot(of: engine.session)
 
-            let insets = window.safeAreaInsets
-            let device = MigoPerformancePlusHost.DeviceProfile(
-                screenWidth: Double(window.screen.bounds.width),
-                screenHeight: Double(window.screen.bounds.height),
-                windowWidth: Double(points.width), windowHeight: Double(points.height),
-                pixelRatio: Double(scale),
-                statusBarHeight: Double(window.windowScene?.statusBarManager?.statusBarFrame.height ?? 0),
-                safeAreaInsets: .init(
-                    left: Double(insets.left), top: Double(insets.top), right: Double(insets.right),
-                    bottom: Double(insets.bottom)),
-                brand: "Apple", model: Self.hardwareModel(),
-                system: "iOS \(UIDevice.current.systemVersion)", platform: "ios")
+            let device = started.device
+            laidOut = started
             let host = try MigoPerformancePlusHost(
                 configuration: .init(
                     contentRoot: root, gameEntry: "/" + entry,
@@ -476,6 +522,7 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
                 host.view.removeFromSuperview()
             }
             host = nil
+            laidOut = nil
             guard let engine else {
                 next?()
                 return

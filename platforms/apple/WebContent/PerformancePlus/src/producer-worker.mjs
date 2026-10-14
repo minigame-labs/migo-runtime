@@ -13,7 +13,14 @@
 // engine release could not be swapped under a game that already shipped.
 
 import { constructOpError } from "./engine-core.mjs";
-import { applyContextState, bindContextEvents, bindEngineHost, readEngineSessionConfig } from "./engine-host.mjs";
+import {
+  applyContextState,
+  applyResize,
+  bindContextEvents,
+  bindEngineHost,
+  bindResizeEvents,
+  readEngineSessionConfig,
+} from "./engine-host.mjs";
 import { retireUnpublishedGlobals } from "./global-scope.mjs";
 import { bindHostEvents, dispatchHostEvent } from "./host-events.mjs";
 import { platform } from "./platform.mjs";
@@ -48,12 +55,25 @@ self.onmessage = async (event) => {
   // lifetime of its own and content can use it for as long as this worker runs. `event.ports` is empty for an
   // older host that does not transfer one; `bindEngineHost` takes `undefined` the same way it takes no `sync`.
   const workerRelayPort = event.ports[0];
+  // The host's own updates -- the view resized or turned -- on a port for the same reason: this is the one message
+  // the worker receives. Listened to from now, so a resize that arrives before the engine has loaded is kept
+  // (`applyResize` holds it until the engine host is bound).
+  const hostPort = event.ports[1];
 
   // The engine session, read before connecting: the service stream is stamped
   // with its generation and shares the socket the connection opens.
   let identity;
   let services;
   if (config.engineSession !== undefined) {
+    if (hostPort !== undefined) {
+      hostPort.onmessage = (update) => {
+        try {
+          applyResize(update.data);
+        } catch (error) {
+          report({ type: "failed", stage: "resize", detail: String(error) });
+        }
+      };
+    }
     try {
       identity = readEngineSessionConfig(config.engineSession);
       if (typeof config.serviceUrl === "string") {
@@ -145,6 +165,7 @@ self.onmessage = async (event) => {
       const bridgeName = Symbol.for("Migo.hostBridge");
       bindHostEvents(globalThis[bridgeName]);
       bindContextEvents(globalThis[bridgeName]);
+      bindResizeEvents(globalThis[bridgeName]);
       delete globalThis[bridgeName];
     } catch (error) {
       report({ type: "failed", stage: "engine", detail: String(error && (error.stack || error)) });

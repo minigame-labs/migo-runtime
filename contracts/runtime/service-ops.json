@@ -302,6 +302,7 @@
     "op_ecosystem_value": 278,
     "op_get_local_ip_address": 279,
     "op_set_enable_debug": 280,
-    "op_get_app_info": 281
+    "op_get_app_info": 281,
+    "op_set_device_orientation": 282
   }
 }

@@ -244,6 +244,182 @@ import XCTest
                 ])
         }
 
+        /// The view laid out at another size while the game runs -- the
+        /// interface turned, a scene resized: the session's surface follows,
+        /// content hears `onWindowResize` with what `getWindowInfo()` now
+        /// answers, the main canvas content never sized is the new window, and
+        /// its frames keep coming at the new size.
+        func testTheGameFollowsTheViewWhenItResizes() throws {
+            let game = try package(
+                named: "resizing",
+                game: """
+                    const canvas = migo.createCanvas();
+                    const gl = canvas.getContext("webgl");
+                    let frames = 0;
+                    const draw = () => {
+                      frames += 1;
+                      gl.clearColor(0, 0, 1, 1);
+                      gl.clear(gl.COLOR_BUFFER_BIT);
+                      requestAnimationFrame(draw);
+                    };
+                    requestAnimationFrame(draw);
+                    migo.onWindowResize((res) => {
+                      const info = migo.getWindowInfo();
+                      console.log("resized " + JSON.stringify({ heard: [res.windowWidth, res.windowHeight],
+                        window: [info.windowWidth, info.windowHeight], canvas: [canvas.width, canvas.height] }));
+                      const at = frames;
+                      const wait = () => frames >= at + 5 ? console.log("drew " + canvas.width)
+                        : requestAnimationFrame(wait);
+                      requestAnimationFrame(wait);
+                    });
+                    """)
+            try MigoGameInstaller.install(package: game, id: "resizing", into: directories)
+            let view = MigoGameView(configuration: .init(directories: directories, contentSigning: .unsigned))
+            var resized: [[String: [Double]]] = []
+            var drew: [String] = []
+            var failure: String?
+            let started = expectation(description: "content heard its first size and drew")
+            let followed = expectation(description: "content heard the new size and drew")
+            view.onEvent = { event in
+                switch event {
+                case .console(_, let message):
+                    if message.hasPrefix("resized "),
+                        let heard = try? JSONSerialization.jsonObject(with: Data(message.dropFirst(8).utf8))
+                            as? [String: [Double]]
+                    {
+                        resized.append(heard)
+                    }
+                    if message.hasPrefix("drew ") {
+                        drew.append(String(message.dropFirst(5)))
+                        (drew.count == 1 ? started : followed).fulfill()
+                    }
+                case .failed(let reason):
+                    failure = reason
+                    started.fulfill()
+                default: break
+                }
+            }
+            mount(view)
+            view.loadGame(id: "resizing")
+            wait(for: [started], timeout: 240)
+            XCTAssertNil(failure)
+
+            // Turned: the window's width and height exchanged.
+            view.autoresizingMask = []
+            view.frame = CGRect(x: 0, y: 0, width: 844, height: 390)
+            view.layoutIfNeeded()
+            wait(for: [followed], timeout: 30)
+            XCTAssertEqual(resized.first?["heard"], [390, 844], "content's listener hears the size it starts at")
+            XCTAssertEqual(resized.last?["heard"], [844, 390], "\(resized)")
+            XCTAssertEqual(resized.last?["window"], [844, 390], "getWindowInfo() answers the new size")
+            XCTAssertEqual(resized.last?["canvas"], [844, 390], "the canvas content never sized follows")
+            XCTAssertEqual(drew.last, "844", "frames keep coming at the new size")
+            view.stop()
+        }
+
+        /// `setDeviceOrientation`: the scene turns to the shape content asks
+        /// for, and content hears its success, the turn and the new size --
+        /// where the view controller showing the game supports both shapes.
+        /// Only where the tests are hosted in an app (DeviceTestHost): a
+        /// tool-hosted run has no scene to turn.
+        func testContentTurnsTheScreen() throws {
+            guard #available(iOS 16.0, *) else { throw XCTSkip("a scene can be asked to turn from iOS 16") }
+            guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first else {
+                throw XCTSkip("tool-hosted: there is no scene to turn")
+            }
+            let game = try package(
+                named: "turning",
+                game: """
+                    const say = (line) => console.log(line);
+                    migo.onDeviceOrientationChange((res) => say("turned " + res.value));
+                    migo.onWindowResize((res) => say("resized " + (res.windowWidth > res.windowHeight ? "wide" : "tall")
+                      + " " + res.windowWidth + "x" + res.windowHeight));
+                    const turn = (value, next) => migo.setDeviceOrientation({ value,
+                      success() { say(value + "-ok"); next(); },
+                      fail(error) { say(value + "-fail " + error.errMsg); } });
+                    turn("landscape", () => turn("portrait", () => say("done")));
+                    """)
+            try MigoGameInstaller.install(package: game, id: "turning", into: directories)
+            final class EitherWay: UIViewController {
+                override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .allButUpsideDown }
+            }
+            let host = scene.windows.first { $0.isKeyWindow }
+            let window = UIWindow(windowScene: scene)
+            let controller = EitherWay()
+            window.rootViewController = controller
+            let view = MigoGameView(configuration: .init(directories: directories, contentSigning: .unsigned))
+            view.frame = controller.view.bounds
+            view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            controller.view.addSubview(view)
+            window.makeKeyAndVisible()
+            defer {
+                view.stop()
+                window.isHidden = true
+                host?.makeKeyAndVisible()
+                scene.requestGeometryUpdate(.iOS(interfaceOrientations: .portrait))
+                // Upright again before the next test: the turn back is
+                // asynchronous, and a test after this one lays out in it.
+                let upright = Date().addingTimeInterval(5)
+                while scene.effectiveGeometry.interfaceOrientation != .portrait, Date() < upright {
+                    RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+                }
+            }
+            var lines: [String] = []
+            var settled = false
+            let finished = expectation(description: "content turned the screen both ways")
+            view.onEvent = { event in
+                switch event {
+                case .console(_, let message):
+                    guard ["turned ", "resized ", "landscape-", "portrait-", "done"].contains(where: message.hasPrefix)
+                    else { return }
+                    lines.append(message)
+                    // Done, and the size it turned back to heard: the resize
+                    // comes on its own path and may follow the last success.
+                    let done = lines.contains("done") && Self.shapes(of: lines) == ["tall", "wide", "tall"]
+                    if !settled, done || message.contains("-fail") {
+                        settled = true
+                        finished.fulfill()
+                    }
+                case .failed(let reason):
+                    lines.append("failed " + reason)
+                    if !settled {
+                        settled = true
+                        finished.fulfill()
+                    }
+                default: break
+                }
+            }
+            view.loadGame(id: "turning")
+            wait(for: [finished], timeout: 240)
+            print("turning: \(lines)")
+            XCTAssertTrue(lines.contains("done"), "\(lines)")
+            // Each call succeeds once the scene has turned. The new size reaches
+            // content on its own path (the producer's), so it is the resizes
+            // that are ordered, not a resize against a success.
+            XCTAssertLessThan(
+                try XCTUnwrap(lines.firstIndex(of: "landscape-ok"), "\(lines)"),
+                try XCTUnwrap(lines.firstIndex(of: "portrait-ok"), "\(lines)"))
+            // The size it starts at, turned, and turned back -- and any other
+            // size the app's layout gave the view on the way, which content is
+            // right to hear.
+            XCTAssertEqual(Self.shapes(of: lines), ["tall", "wide", "tall"], "\(lines)")
+            let turns = lines.filter { $0.hasPrefix("turned ") }
+            XCTAssertEqual(turns.count, 2, "\(lines)")
+            XCTAssertTrue(["turned landscape", "turned landscapeReverse"].contains(turns.first ?? ""), "\(lines)")
+            XCTAssertEqual(turns.last, "turned portrait", "\(lines)")
+        }
+
+        /// The shapes content heard the window resized to, a run of one shape
+        /// counted once.
+        private static func shapes(of lines: [String]) -> [String] {
+            var shapes: [String] = []
+            for line in lines where line.hasPrefix("resized ") {
+                let shape = String(line.split(separator: " ")[1])
+                if shapes.last != shape { shapes.append(shape) }
+            }
+            return shapes
+        }
+
         /// An iPad's hardware, round trip: keys as UIKit names them reach
         /// content with their DOM key, position, Shift and repeat; the pointer's
         /// hover, presses, drag and release as the mouse, its secondary button
@@ -316,9 +492,22 @@ import XCTest
                     usage: 0x01, characters: "", charactersIgnoringModifiers: "", modifiers: [], down: true,
                     timestamp: 1), "no DOM code, not the game's")
             // Hovered in, pressed, dragged, the secondary button too, released.
+            // Each move is heard before the next press or release is sent, as
+            // a hand's moves are apart in time: a release supersedes a move
+            // still queued behind it (the input stream coalesces motion), so
+            // moves sent in the same instant as the release may rightly never
+            // reach content.
+            func heardMoves(_ count: Int) {
+                let deadline = Date().addingTimeInterval(30)
+                while heard.filter({ $0.contains("\"mousemove\"") }).count < count, Date() < deadline {
+                    RunLoop.current.run(until: Date().addingTimeInterval(0.01))
+                }
+            }
             view.pointer(at: CGPoint(x: 10, y: 20), holding: nil, moved: true, timestamp: 2)
+            heardMoves(1)
             view.pointer(at: CGPoint(x: 10, y: 20), holding: [0], moved: false, timestamp: 2)
             view.pointer(at: CGPoint(x: 15, y: 25), holding: [0], moved: true, timestamp: 2)
+            heardMoves(2)
             view.pointer(at: CGPoint(x: 15, y: 25), holding: [0, 2], moved: false, timestamp: 2)
             view.pointer(at: CGPoint(x: 15, y: 25), holding: [], moved: false, timestamp: 2)
             // Two fingers up the trackpad move content up: the view scrolls down.

@@ -291,6 +291,12 @@ import XCTest
                 window.isHidden = true
                 host?.makeKeyAndVisible()
                 scene.requestGeometryUpdate(.iOS(interfaceOrientations: .portrait))
+                // Upright again before the next test: the turn back is
+                // asynchronous, and a test after this one lays out in it.
+                let upright = Date().addingTimeInterval(5)
+                while scene.effectiveGeometry.interfaceOrientation != .portrait, Date() < upright {
+                    RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+                }
             }
             var heard: [String] = []
             var waiting: (value: String, expectation: XCTestExpectation)?

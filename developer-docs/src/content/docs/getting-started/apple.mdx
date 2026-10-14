@@ -97,10 +97,11 @@ view 可以接着载入下一个游戏。
 
 ### iOS
 
-- 游戏尺寸在启动时确定（小游戏只布局一次），请把承载的 view controller 锁定在游戏的
-  方向上，而且要在 `MigoGameView` **第一次布局之前**就已是这个方向：App 的 Info.plist
-  只声明游戏的方向，或者由一个只支持该方向的 view controller 来呈现它。启动后才决定方向的
-  root view controller 会先按启动时的方向布局，游戏就在形状不对的窗口里开始。
+- 游戏的尺寸跟随 `MigoGameView`：界面转动时游戏收到 `onWindowResize`。只支持一个方向的游戏，
+  请把承载的 view controller 锁定在这个方向上，而且要在 `MigoGameView` **第一次布局之前**就已是
+  这个方向：App 的 Info.plist 只声明游戏的方向，或者由一个只支持该方向的 view controller 来
+  呈现它。启动后才决定方向的 root view controller 会先按启动时的方向布局，游戏就以错误的形状
+  开始、随即被转过来。允许转向的游戏，其 `setDeviceOrientation` 需要 view controller 支持所请求的方向。
 - `MigoGameView.unavailabilityReason` 说明当前设备能否运行这条车道（例如系统低于
   15.2），在展示入口前检查。
 - 画布小于屏幕时（按逻辑像素设置 `canvas.width` 的游戏很常见），drawable 取画布的
@@ -142,12 +143,11 @@ view 可以接着载入下一个游戏。
 | `vibrateShort` / `vibrateLong` | Taptic Engine | 回答“不支持” |
 | `getBatteryInfo` | 电量与低电量模式 | 回答“不支持” |
 | `onDeviceOrientationChange` | 界面方向（横屏 Home 键一侧在右为 `landscape`，在左为 `landscapeReverse`；两个横屏互转从 iOS 16 起） | 游戏的形状在横竖之间变化 |
-| `setDeviceOrientation` | 回答“不支持”（会话尺寸在启动时固定） | 把窗口转成所要的形状；全屏时失败 |
+| `setDeviceOrientation` | 请场景转到所要的形状（iOS 16 起）；view controller 不支持时失败 | 把窗口转成所要的形状；全屏时失败 |
 | `getGameLogManager().log` | 以 `onEvent(.gameLog(json))` 交给 App | 同左 |
 
-以下接口**明确拒绝，不伪造结果**：iOS 上的 `setDeviceOrientation`（会话尺寸在启动时
-固定）、iOS 上的 `getHeapStatistics`（内容运行在 WebKit 的 JavaScriptCore 中，它不暴露
-堆数据），以及启用签名校验时的动态下载分包。
+以下接口**明确拒绝，不伪造结果**：iOS 上的 `getHeapStatistics`（内容运行在 WebKit 的
+JavaScriptCore 中，它不暴露堆数据），以及启用签名校验时的动态下载分包。
 
 ## 6. 验证记录
 

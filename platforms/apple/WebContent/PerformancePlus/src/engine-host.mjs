@@ -52,10 +52,11 @@ export function readEngineSessionConfig(config) {
  * What the host knows about the device, for the `migo.*` calls a game makes
  * before its first frame: the screen, the pixel ratio, the safe area, the model.
  *
- * Injected rather than asked for, because none of it changes during a session
- * and every one of these calls is synchronous: a game reads `getWindowInfo()`
- * to lay itself out, and a round trip per call would be a blocked Worker for an
- * answer the host could have handed over at startup.
+ * Handed over rather than asked for, because every one of these calls is
+ * synchronous: a game reads `getWindowInfo()` to lay itself out, and a round
+ * trip per call would be a blocked Worker for an answer the host already has.
+ * The host hands it over at startup and again whenever the view the game is
+ * shown in changes size or turns (`applyResize`).
  *
  * Absent when the host described none, and then the calls answer the way they do
  * on a platform with no device services: a failure that says so, rather than a
@@ -112,10 +113,10 @@ export function bindEngineHost({ session, identity, socketCeilingBytes, sync, se
     socketCeilingBytes,
     launchNonce: identity.launchNonce,
     runtimeGeneration: identity.runtimeGeneration,
-    device: identity.device,
     // Mutable state the host changes by event: kept in one object so every
     // reader sees the same current values.
     state: {
+      device: identity.device,
       surfaceGeneration: identity.surfaceGeneration,
       resourceEpoch: identity.resourceEpoch,
       surfaceWidth: identity.surfaceWidth,
@@ -132,7 +133,62 @@ export function bindEngineHost({ session, identity, socketCeilingBytes, sync, se
   // the host expects.
   if (earlyContextState !== null) applyContextState(earlyContextState);
   earlyContextState = null;
+  // Likewise a resize: the view was laid out again before the engine loaded.
+  if (earlyResize !== null) applyResize(earlyResize);
+  earlyResize = null;
   return bound;
+}
+
+/** The newest resize that arrived before the engine host was bound. */
+let earlyResize = null;
+/** The engine's surface-change ingress, from the host bridge. */
+let resizeHook = null;
+
+/**
+ * Take the engine's surface-change ingress from the host bridge
+ * (`_internalTriggerWindowResize`, which the embedded host calls when its
+ * surface changes size). Call where the host events are bound.
+ */
+export function bindResizeEvents(bridge) {
+  const hook = bridge?._internalTriggerWindowResize;
+  resizeHook = typeof hook === "function" ? hook : null;
+}
+
+/**
+ * Apply the host's resize: the view the game is shown in changed size or
+ * turned. The engine's surface has already been resized to the same pixels
+ * (`MigoEngineSession.resize(to:)`); this adopts that size and the device the
+ * host now describes, then calls the engine's surface-change ingress, as the
+ * embedded host does -- the main canvas follows the surface unless content
+ * sized it, and content hears `onWindowResize` with what `getWindowInfo()` now
+ * answers. State first, because the listeners read it.
+ *
+ * The ingress runs for a new surface size only, as the embedded host calls it
+ * only when its surface changes: a device that changed alone -- the safe area,
+ * the status bar -- is what `getWindowInfo()` answers next, and no resize.
+ */
+export function applyResize(update) {
+  if (update === null || typeof update !== "object") {
+    throw new TypeError("a resize is an object");
+  }
+  const surfaceWidth = sizeField(update, "surfaceWidth");
+  const surfaceHeight = sizeField(update, "surfaceHeight");
+  const device = deviceProfile(update.device);
+  if (bound === null) {
+    earlyResize = update;
+    return;
+  }
+  const { state } = bound;
+  const resized = surfaceWidth !== state.surfaceWidth || surfaceHeight !== state.surfaceHeight;
+  state.surfaceWidth = surfaceWidth;
+  state.surfaceHeight = surfaceHeight;
+  state.device = device;
+  if (!resized) return;
+  try {
+    resizeHook?.();
+  } catch {
+    // Discarded, as the embedded binding discards a hook's exception.
+  }
 }
 
 /** The newest context state that arrived before the engine host was bound. */
