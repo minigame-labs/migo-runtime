@@ -79,7 +79,37 @@ function deviceProfile(described) {
     }
     profile[key] = value;
   }
+  // A host that draws no menu button describes none, and gets the answer the
+  // engine gives every such host (the default of the native system-info service):
+  // an empty rect at the top right of the safe area, so a layout that keeps clear
+  // of the button keeps clear of nothing, at the corner it would have been in.
+  // Derived once per description, from the window the host described.
+  if (profile.menuButtonRect === undefined && profile.windowInfo !== undefined) {
+    const rect = emptyMenuButtonRect(profile.windowInfo);
+    if (rect !== null) profile.menuButtonRect = rect;
+  }
   return Object.freeze(profile);
+}
+
+/**
+ * The empty menu button rect for the window `windowInfo` describes, as JSON: at
+ * its safe area's top right edge (`safe_area` holds insets from the window's
+ * edges). `null` when the window does not say its width and those insets -- the
+ * native service fails the same call then, and so does this lane.
+ */
+function emptyMenuButtonRect(windowInfo) {
+  let window;
+  try {
+    window = JSON.parse(windowInfo);
+  } catch {
+    return null;
+  }
+  const safe = window?.safe_area;
+  if (!Number.isFinite(window?.window_width) || !Number.isFinite(safe?.top) || !Number.isFinite(safe?.right)) {
+    return null;
+  }
+  const right = window.window_width - safe.right;
+  return JSON.stringify({ width: 0, height: 0, top: safe.top, bottom: safe.top, left: right, right });
 }
 
 /**
