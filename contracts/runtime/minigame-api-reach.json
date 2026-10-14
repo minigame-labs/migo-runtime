@@ -93,7 +93,7 @@
     "getExptInfoSync": {"ops":["op_ecosystem_value"],"services":["ecosystem"]},
     "getExtConfig": {"ops":["op_ecosystem_available","op_ecosystem_call"],"services":["ecosystem"]},
     "getExtConfigSync": {"ops":["op_ecosystem_value"],"services":["ecosystem"]},
-    "getFileSystemManager": {"ops":[],"services":[]},
+    "getFileSystemManager": {"ops":["op_access","op_access_sync","op_copy_file","op_copy_file_sync","op_get_file_info","op_list_saved_files","op_mkdir","op_mkdir_sync","op_open_file","op_open_file_sync","op_read_file","op_read_file_sync","op_read_zip_entry","op_readdir","op_readdir_sync","op_rename","op_rename_sync","op_rmdir","op_rmdir_sync","op_stat","op_stat_sync","op_unlink","op_unlink_sync","op_unzip"],"services":[]},
     "getFriendCloudStorage": {"ops":["op_ecosystem_call"],"services":["ecosystem"]},
     "getFriendSendGiftStatus": {"ops":["op_ecosystem_call"],"services":["ecosystem"]},
     "getFuzzyLocation": {"ops":["op_get_fuzzy_location"],"services":["location","permission"]},

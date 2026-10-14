@@ -51,7 +51,8 @@ COMMENT = [
     "of the listener's argument. A field is [name, type] or [name, type, since], then an object with what else the page",
     "says of it: \"fields\", the fields of an Object it details; \"when\", that it is there only sometimes -- plugin,",
     "host-app (the game runs inside a third-party app), darkmode, option:<name>, chat (opened from a chat), or",
-    "only:<ios|android|pc>. deprecated, since: from the reference's index.",
+    "only:<ios|android|pc>. methods: the methods the reference documents for the class the API returns. deprecated,",
+    "since: from the reference's index.",
 ]
 
 CLIENTS = {"Windows": "windows", "Mac": "mac", "鸿蒙 OS": "harmony"}
@@ -311,6 +312,12 @@ def generate(root: pathlib.Path) -> str:
         title = entry["title"]
         if entry["kind"] == "function" and title.startswith(namespace + "."):
             pages.setdefault(title[len(namespace) + 1 :], entry)
+    # The methods the reference documents for each class an API returns.
+    methods: dict[str, set[str]] = collections.defaultdict(set)
+    for entry in index:
+        owner = entry.get("parent_class")
+        if entry["kind"] == "method" and owner and entry["title"].startswith(owner + "."):
+            methods[owner].add(entry["title"][len(owner) + 1 :])
     specs = {}
     for name in sorted(apis):
         if name == "env":
@@ -332,6 +339,8 @@ def generate(root: pathlib.Path) -> str:
             raise Fail(f"the mirror has no page for {name}")
         page_name = entry["title"][len(namespace) + 1 :]
         spec = spec_of((mirror / entry["md_file"]).read_text(), namespace, page_name, scopes)
+        if spec.get("returns") in methods:
+            spec["methods"] = sorted(methods[spec["returns"]])
         if entry.get("deprecated"):
             spec["deprecated"] = True
         if entry.get("min_base_library"):

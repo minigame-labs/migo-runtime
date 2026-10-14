@@ -9,7 +9,6 @@ import * as upload from "ext:host_v8_network/06_upload.js";
 import * as websocket from "ext:host_v8_network/07_websocket.js";
 import * as prefetchApi from "ext:host_v8_network/10_prefetch.js";
 import * as save from "ext:host_v8_file/01_save.js";
-import * as fileManager from "ext:host_v8_file/02_file_manager.js";
 import * as codec from "ext:host_v8_utility/01_codec.js";
 import * as image from "ext:host_v8_image/01_image.js";
 import * as imageData from "ext:host_v8_image/01_image_data.js";
@@ -63,7 +62,6 @@ const windowOrWorkerGlobalScope = {
     saveFile: core.propNonEnumerable(save.saveFile),
     saveFileSync: core.propNonEnumerable(save.saveFileSync),
     getFileSystemManager: core.propNonEnumerable(save.getFileSystemManager),
-    FileManager: core.propNonEnumerable(fileManager.BaseFileManager),
 
     // Utility
     encode: core.propNonEnumerable(codec.encode),

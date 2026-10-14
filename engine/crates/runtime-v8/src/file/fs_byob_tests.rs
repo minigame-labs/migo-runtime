@@ -44,8 +44,8 @@ impl FileFixture {
             esm_entry_point = "ext:file_byob_bridge/bridge.js",
             esm = ["ext:file_byob_bridge/bridge.js" = {
                 source = r#"
-                    import { BaseFileManager } from "ext:host_v8_file/02_file_manager.js";
-                    globalThis.fs = BaseFileManager;
+                    import { getFileSystemManager } from "ext:host_v8_file/02_file_manager.js";
+                    globalThis.fs = getFileSystemManager();
                 "#
             },],
         );

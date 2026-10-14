@@ -227,11 +227,15 @@ async function untrackSavedFilePath(path) {
   });
 }
 
-class BaseFileManager {
+// The file system manager content gets from `getFileSystemManager()`: one object,
+// as the reference's FileSystemManager is, whose methods are its prototype's.
+// What its methods share -- the write path, the durable-write rule, decoding --
+// are the class's private statics.
+class FileSystemManager {
   //
   // access
   //
-  static access(options) {
+  access(options) {
     return wrapAsync('access', () => {
       return op_access(options.path).then((ok) => {
         if (!ok) throw new IOError("No such file or directory");
@@ -239,7 +243,7 @@ class BaseFileManager {
     }, options);
   }
 
-  static accessSync(path_or_obj) {
+  accessSync(path_or_obj) {
     const path = typeof path_or_obj === "object" && path_or_obj !== null ? path_or_obj.path : path_or_obj;
     wrapSync(() => {
       if (!op_access_sync(path)) {
@@ -251,15 +255,15 @@ class BaseFileManager {
   //
   // writeFile / appendFile (path)
   //
-  static writeFile(options) {
-    return BaseFileManager.#writeFileCommon(options, false);
+  writeFile(options) {
+    return FileSystemManager.#writeFileCommon(options, false);
   }
 
-  static appendFile(options) {
-    return BaseFileManager.#writeFileCommon(options, true);
+  appendFile(options) {
+    return FileSystemManager.#writeFileCommon(options, true);
   }
 
-  static writeFileSync(filePath_or_obj, data_arg, encoding_arg) {
+  writeFileSync(filePath_or_obj, data_arg, encoding_arg) {
     let filePath, data, encoding, durable = true;
     if (typeof filePath_or_obj === "object" && filePath_or_obj !== null && !ArrayBuffer.isView(filePath_or_obj) && !(filePath_or_obj instanceof ArrayBuffer)) {
       ({ filePath, data, encoding = "utf8" } = filePath_or_obj);
@@ -271,7 +275,7 @@ class BaseFileManager {
       encoding = encoding_arg || "utf8";
     }
     const { data_buf, data_str } = toUint8Array(data);
-    const eff = BaseFileManager.#effectiveDurable(filePath, durable);
+    const eff = FileSystemManager.#effectiveDurable(filePath, durable);
     wrapSync(() => {
       const ok = op_write_or_append_file_sync(filePath, data_buf, data_str, encoding, false, eff);
       if (!ok) throw new IOError("unknown error");
@@ -279,7 +283,7 @@ class BaseFileManager {
     }, "writeFileSync");
   }
 
-  static appendFileSync(filePath_or_obj, data_arg, encoding_arg) {
+  appendFileSync(filePath_or_obj, data_arg, encoding_arg) {
     let filePath, data, encoding, durable = true;
     if (typeof filePath_or_obj === "object" && filePath_or_obj !== null && !ArrayBuffer.isView(filePath_or_obj) && !(filePath_or_obj instanceof ArrayBuffer)) {
       ({ filePath, data, encoding = "utf8" } = filePath_or_obj);
@@ -290,7 +294,7 @@ class BaseFileManager {
       encoding = encoding_arg || "utf8";
     }
     const { data_buf, data_str } = toUint8Array(data);
-    const eff = BaseFileManager.#effectiveDurable(filePath, durable);
+    const eff = FileSystemManager.#effectiveDurable(filePath, durable);
     wrapSync(() => {
       const ok = op_write_or_append_file_sync(filePath, data_buf, data_str, encoding, true, eff);
       if (!ok) throw new IOError("unknown error");
@@ -303,7 +307,7 @@ class BaseFileManager {
     // durable defaults to true (crash-safe); { durable: false } opts into the
     // faster non-fsync write, but is only honored for disposable /cache//tmp
     // data (see #effectiveDurable) -- /user saves stay durable.
-    const eff = BaseFileManager.#effectiveDurable(options.filePath, options.durable);
+    const eff = FileSystemManager.#effectiveDurable(options.filePath, options.durable);
     return wrapAsync(prefix, () => {
       const { data_buf, data_str } = toUint8Array(options.data);
       const encoding = options.encoding || "utf8";
@@ -317,33 +321,33 @@ class BaseFileManager {
   //
   // open / close
   //
-  static open(options) {
+  open(options) {
     const flag = options.flag || "r";
     return wrapAsync('open', () => {
       return op_open_file(options.filePath, flag).then((fd) => ({ fd: String(fd) }));
     }, options);
   }
 
-  static openSync({ filePath, flag = "r" }) {
+  openSync({ filePath, flag = "r" }) {
     return wrapSync(() => String(op_open_file_sync(filePath, flag)), "openSync");
   }
 
-  static close(options) {
+  close(options) {
     return wrapAsync('close', () => op_close_file(ensureFd(options.fd)), options);
   }
 
-  static closeSync({ fd }) {
+  closeSync({ fd }) {
     wrapSync(() => op_close_file_sync(ensureFd(fd)), "closeSync");
   }
 
   //
   // copy / rename
   //
-  static copyFile(options) {
+  copyFile(options) {
     return wrapAsync('copyFile', () => op_copy_file(options.srcPath, options.destPath), options);
   }
 
-  static copyFileSync(srcPath_or_obj, destPath_arg) {
+  copyFileSync(srcPath_or_obj, destPath_arg) {
     let srcPath, destPath;
     if (typeof srcPath_or_obj === "object" && srcPath_or_obj !== null) {
       ({ srcPath, destPath } = srcPath_or_obj);
@@ -354,11 +358,11 @@ class BaseFileManager {
     wrapSync(() => op_copy_file_sync(srcPath, destPath), "copyFileSync");
   }
 
-  static rename(options) {
+  rename(options) {
     return wrapAsync('rename', () => op_rename(options.oldPath, options.newPath), options);
   }
 
-  static renameSync(oldPath_or_obj, newPath_arg) {
+  renameSync(oldPath_or_obj, newPath_arg) {
     let oldPath, newPath;
     if (typeof oldPath_or_obj === "object" && oldPath_or_obj !== null) {
       ({ oldPath, newPath } = oldPath_or_obj);
@@ -372,22 +376,22 @@ class BaseFileManager {
   //
   // fstat / ftruncate
   //
-  static fstat(options) {
+  fstat(options) {
     return wrapAsync('fstat', () => {
       return op_fstat(ensureFd(options.fd)).then((stat) => ({ stats: new Stats(stat) }));
     }, options);
   }
 
-  static fstatSync({ fd }) {
+  fstatSync({ fd }) {
     return wrapSync(() => new Stats(op_fstat_sync(ensureFd(fd))), "fstatSync");
   }
 
-  static ftruncate(options) {
+  ftruncate(options) {
     const len = Number(options.length) || 0;
     return wrapAsync('ftruncate', () => op_ftruncate(ensureFd(options.fd), len), options);
   }
 
-  static ftruncateSync({ fd, length = 0 }) {
+  ftruncateSync({ fd, length = 0 }) {
     const len = Number(length) || 0;
     wrapSync(() => op_ftruncate_sync(ensureFd(fd), len), "ftruncateSync");
   }
@@ -395,11 +399,11 @@ class BaseFileManager {
   //
   // mkdir / readdir
   //
-  static mkdir(options) {
+  mkdir(options) {
     return wrapAsync('mkdir', () => op_mkdir(options.dirPath, !!options.recursive), options);
   }
 
-  static mkdirSync(dirPath_or_obj, recursive_arg) {
+  mkdirSync(dirPath_or_obj, recursive_arg) {
     let dirPath, recursive;
     if (typeof dirPath_or_obj === "object" && dirPath_or_obj !== null) {
       ({ dirPath, recursive = false } = dirPath_or_obj);
@@ -410,13 +414,13 @@ class BaseFileManager {
     wrapSync(() => op_mkdir_sync(dirPath, !!recursive), "mkdirSync");
   }
 
-  static readdir(options) {
+  readdir(options) {
     return wrapAsync('readdir', () => {
       return op_readdir(options.dirPath).then((files) => ({ files }));
     }, options);
   }
 
-  static readdirSync(dirPath_or_obj) {
+  readdirSync(dirPath_or_obj) {
     const dirPath = typeof dirPath_or_obj === "object" && dirPath_or_obj !== null ? dirPath_or_obj.dirPath : dirPath_or_obj;
     return wrapSync(() => op_readdir_sync(dirPath), "readdirSync");
   }
@@ -424,7 +428,7 @@ class BaseFileManager {
   //
   // unlink / removeSavedFile / rmdir
   //
-  static removeSavedFile(options) {
+  removeSavedFile(options) {
     return wrapAsync('removeSavedFile', () => {
       return op_unlink(options.filePath).then(async () => {
         try {
@@ -436,20 +440,20 @@ class BaseFileManager {
     }, options);
   }
 
-  static unlink(options) {
+  unlink(options) {
     return wrapAsync('unlink', () => op_unlink(options.filePath), options);
   }
 
-  static unlinkSync(filePath_or_obj) {
+  unlinkSync(filePath_or_obj) {
     const filePath = typeof filePath_or_obj === "object" && filePath_or_obj !== null ? filePath_or_obj.filePath : filePath_or_obj;
     return wrapSync(() => op_unlink_sync(filePath), "unlinkSync");
   }
 
-  static rmdir(options) {
+  rmdir(options) {
     return wrapAsync('rmdir', () => op_rmdir(options.dirPath, !!options.recursive), options);
   }
 
-  static rmdirSync(dirPath_or_obj, recursive_arg) {
+  rmdirSync(dirPath_or_obj, recursive_arg) {
     let dirPath, recursive;
     if (typeof dirPath_or_obj === "object" && dirPath_or_obj !== null) {
       ({ dirPath, recursive = false } = dirPath_or_obj);
@@ -463,7 +467,7 @@ class BaseFileManager {
   //
   // stat
   //
-  static stat(options) {
+  stat(options) {
     const recursive = !!options.recursive;
     return wrapAsync('stat', () => {
       return op_stat(options.path, recursive).then((stat) => {
@@ -476,7 +480,7 @@ class BaseFileManager {
     }, options);
   }
 
-  static statSync(path_or_obj, recursive_arg) {
+  statSync(path_or_obj, recursive_arg) {
     let path, recursive;
     if (typeof path_or_obj === "object" && path_or_obj !== null) {
       ({ path, recursive = false } = path_or_obj);
@@ -496,7 +500,7 @@ class BaseFileManager {
   //
   // truncate (path) - ensure close always
   //
-  static truncate(options) {
+  truncate(options) {
     const len = Number(options.length) || 0;
     return wrapAsync('truncate', () => {
       return op_open_file(options.filePath, "r+").then(async (fd) => {
@@ -509,7 +513,7 @@ class BaseFileManager {
     }, options);
   }
 
-  static truncateSync({ filePath, length = 0 }) {
+  truncateSync({ filePath, length = 0 }) {
     const len = Number(length) || 0;
     return wrapSync(() => {
       let fd;
@@ -528,7 +532,7 @@ class BaseFileManager {
   //
   // write(fd)
   //
-  static write(options) {
+  write(options) {
     return wrapAsync('write', () => {
       const { data_buf, data_str } = toUint8Array(options.data, options.offset || 0, options.length);
       const encoding = options.encoding || "utf8";
@@ -539,7 +543,7 @@ class BaseFileManager {
     }, options);
   }
 
-  static writeSync({ fd, data, offset = 0, length, encoding = "utf8", position }) {
+  writeSync({ fd, data, offset = 0, length, encoding = "utf8", position }) {
     const { data_buf, data_str } = toUint8Array(data, offset, length);
 
     let pos = position;
@@ -556,7 +560,7 @@ class BaseFileManager {
   //
   // readFile (path)
   //
-  static readFile(options) {
+  readFile(options) {
     const encoding = options.encoding;
     const pos = typeof options.position === "number" && Number.isFinite(options.position) && options.position >= 0
       ? BigInt(Math.trunc(options.position))
@@ -567,12 +571,12 @@ class BaseFileManager {
 
     return wrapAsync('readFile', () => {
       return op_read_file(options.filePath, pos, len).then((data) => {
-        return BaseFileManager.#decodeReadData(data, encoding);
+        return FileSystemManager.#decodeReadData(data, encoding);
       });
     }, options);
   }
 
-  static readFileSync(filePath_or_obj, encoding_arg, position_arg, length_arg) {
+  readFileSync(filePath_or_obj, encoding_arg, position_arg, length_arg) {
     let filePath, encoding, position, length;
     if (typeof filePath_or_obj === "object" && filePath_or_obj !== null) {
       ({ filePath, encoding, position, length } = filePath_or_obj);
@@ -591,15 +595,15 @@ class BaseFileManager {
 
     return wrapSync(() => {
       const raw = op_read_file_sync(filePath, pos, len);
-      return BaseFileManager.#decodeReadResult(raw, encoding);
+      return FileSystemManager.#decodeReadResult(raw, encoding);
     }, "readFileSync");
   }
 
   static #decodeReadResult(bytes, encoding) {
     if (encoding === undefined || encoding === null || encoding === "") {
-      return BaseFileManager.#exactBuffer(bytes);
+      return FileSystemManager.#exactBuffer(bytes);
     }
-    return BaseFileManager.#decodeBytes(bytes, encoding);
+    return FileSystemManager.#decodeBytes(bytes, encoding);
   }
 
   // Resolve the effective write durability. Correctness-first: a fast
@@ -632,7 +636,7 @@ class BaseFileManager {
   }
 
   static #decodeReadData(bytes, encoding) {
-    return { data: BaseFileManager.#decodeReadResult(bytes, encoding) };
+    return { data: FileSystemManager.#decodeReadResult(bytes, encoding) };
   }
 
   static #decodeBytes(bytes, encoding) {
@@ -652,10 +656,10 @@ class BaseFileManager {
 
       case "latin1":
       case "binary":
-        return BaseFileManager.#bytesToStringChunked(bytes, len, false);
+        return FileSystemManager.#bytesToStringChunked(bytes, len, false);
 
       case "ascii":
-        return BaseFileManager.#bytesToStringChunked(bytes, len, true);
+        return FileSystemManager.#bytesToStringChunked(bytes, len, true);
 
       case "hex": {
         const parts = new Array(len);
@@ -679,7 +683,7 @@ class BaseFileManager {
     const CHUNK = 8192;
     if (len <= CHUNK) {
       return ascii
-        ? String.fromCharCode.apply(null, BaseFileManager.#maskAscii(bytes, 0, len))
+        ? String.fromCharCode.apply(null, FileSystemManager.#maskAscii(bytes, 0, len))
         : String.fromCharCode.apply(null, bytes);
     }
     const parts = [];
@@ -688,7 +692,7 @@ class BaseFileManager {
       const slice = bytes.subarray(i, end);
       parts.push(
         ascii
-          ? String.fromCharCode.apply(null, BaseFileManager.#maskAscii(slice, 0, slice.length))
+          ? String.fromCharCode.apply(null, FileSystemManager.#maskAscii(slice, 0, slice.length))
           : String.fromCharCode.apply(null, slice)
       );
     }
@@ -704,14 +708,14 @@ class BaseFileManager {
   //
   // unzip
   //
-  static unzip(options) {
+  unzip(options) {
     return wrapAsync('unzip', () => op_unzip(options.zipFilePath, options.targetPath), options);
   }
 
   //
   // read(fd)
   //
-  static read(options) {
+  read(options) {
     return wrapAsync('read', () => {
       const numFd = ensureFd(options.fd);
       const arrayBuffer = options.arrayBuffer;
@@ -744,7 +748,7 @@ class BaseFileManager {
     }, options);
   }
 
-  static readSync({ fd, arrayBuffer, offset = 0, length = 0, position }) {
+  readSync({ fd, arrayBuffer, offset = 0, length = 0, position }) {
     const numFd = ensureFd(fd);
     if (!arrayBuffer || !(arrayBuffer instanceof ArrayBuffer)) {
       throw new IOError("arrayBuffer must be an ArrayBuffer instance");
@@ -775,7 +779,7 @@ class BaseFileManager {
   //
   // readCompressedFile
   //
-  static readCompressedFile(options) {
+  readCompressedFile(options) {
     return wrapAsync('readCompressedFile', () => {
       if (options.compressionAlgorithm !== "br") {
         throw new IOError("unsupported compressionAlgorithm");
@@ -783,12 +787,12 @@ class BaseFileManager {
       return op_read_compressed_file(options.filePath).then((data) => {
         // Preserve the op result's own window (#exactBuffer handles both a
         // typed-array view and a raw ArrayBuffer).
-        return { data: BaseFileManager.#exactBuffer(data) };
+        return { data: FileSystemManager.#exactBuffer(data) };
       });
     }, options);
   }
 
-  static readCompressedFileSync(obj) {
+  readCompressedFileSync(obj) {
     const filePath = obj.filePath;
     const compressionAlgorithm = obj.compressionAlgorithm;
     if (compressionAlgorithm !== "br") {
@@ -796,14 +800,14 @@ class BaseFileManager {
     }
     return wrapSync(() => {
       const data = op_read_compressed_file_sync(filePath);
-      return BaseFileManager.#exactBuffer(data);
+      return FileSystemManager.#exactBuffer(data);
     }, "readCompressedFileSync");
   }
 
   //
   // readZipEntry
   //
-  static readZipEntry(options) {
+  readZipEntry(options) {
     const encoding = options.encoding;
     const entries = options.entries;
     const entriesJson = JSON.stringify({ encoding, entries });
@@ -820,7 +824,7 @@ class BaseFileManager {
   //
   // saveFile
   //
-  static saveFile(options) {
+  saveFile(options) {
     return wrapAsync('saveFile', () => {
       const tempFilePath = options.tempFilePath;
       if (typeof tempFilePath !== "string" || tempFilePath.length === 0) {
@@ -840,7 +844,7 @@ class BaseFileManager {
     }, options);
   }
 
-  static saveFileSync(tempFilePath_or_obj, filePath_arg) {
+  saveFileSync(tempFilePath_or_obj, filePath_arg) {
     let tempFilePath, filePath;
     if (typeof tempFilePath_or_obj === "object" && tempFilePath_or_obj !== null) {
       ({ tempFilePath, filePath } = tempFilePath_or_obj);
@@ -872,7 +876,7 @@ class BaseFileManager {
   //
   // getFileInfo
   //
-  static getFileInfo(options) {
+  getFileInfo(options) {
     return wrapAsync('getFileInfo', () => {
       return op_get_file_info(options.filePath, options.digestAlgorithm || "md5")
         .then(([size, digest]) => ({ size, digest }));
@@ -882,7 +886,7 @@ class BaseFileManager {
   //
   // getSavedFileList
   //
-  static getSavedFileList(options) {
+  getSavedFileList(options) {
     return wrapAsync('getSavedFileList', () => {
       return op_list_saved_files(SAVE_FILE_DIR, "saved_")
         .then(async (fileList) => {
@@ -908,10 +912,10 @@ class BaseFileManager {
   }
 }
 
-const fileSystemManager = BaseFileManager;
+const fileSystemManager = new FileSystemManager();
 
 function getFileSystemManager() {
   return fileSystemManager;
 }
 
-export { BaseFileManager, getFileSystemManager, zipEntriesFromOpResult };
+export { getFileSystemManager, zipEntriesFromOpResult };
