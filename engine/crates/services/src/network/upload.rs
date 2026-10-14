@@ -214,9 +214,23 @@ pub async fn upload(
         .multipart(form)
         .headers(map);
 
+    // Its turn among the ten requests that may run at once, which an abort can
+    // end while it waits.
+    let queued_at = std::time::Instant::now();
+    let slot = match run(until(&cancel), env.resources.request_slot()).await {
+        Cancellable::Cancelled => return Ok(UploadAnswer::aborted()),
+        Cancellable::Done(slot) => slot,
+    };
+    let queue = super::http::Span {
+        start: queued_at,
+        end: std::time::Instant::now(),
+    };
+
     // The send and the read of the answer are one cancellable unit: an abort
     // mid-body stops both.
     let exchange = async move {
+        // The turn is the upload's until its answer has been read.
+        let _slot = slot;
         let mut response = request.send().await.map_err(|error| error.to_string())?;
         let status = response.status().as_u16();
         let headers: Vec<(Vec<u8>, Vec<u8>)> = response
@@ -246,6 +260,7 @@ pub async fn upload(
             error: None,
             profile: Some(super::profile::profile(
                 invoked,
+                queue,
                 response.timing(),
                 estimate,
             )),

@@ -192,3 +192,30 @@ fn a_shared_or_sliced_message_copies_and_stays_exact() {
         "a slice yields its exact contents"
     );
 }
+
+/// Five WebSocket connections may exist at once; a sixth fails before it connects, saying why, and a place frees
+/// when one goes.
+#[tokio::test]
+async fn a_sixth_web_socket_fails_and_a_closed_one_frees_its_place() {
+    let resources = ResourceTable::new();
+    let held: Vec<_> = (0..super::super::resources::MAX_WEB_SOCKETS)
+        .map(|_| resources.web_socket_slot().expect("a place"))
+        .collect();
+    let error = create(
+        &NetworkPolicy::default(),
+        &resources,
+        "wss://example.com/",
+        &[],
+        &[],
+        Some(1000),
+    )
+    .await
+    .expect_err("a sixth connection");
+    assert!(
+        error.message.contains("at most 5 WebSocket connections"),
+        "{}",
+        error.message
+    );
+    drop(held);
+    assert!(resources.web_socket_slot().is_some());
+}
