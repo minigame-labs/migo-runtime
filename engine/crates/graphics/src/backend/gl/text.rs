@@ -371,9 +371,13 @@ impl TextContext {
         // Skia requires *some* font manager to shape runs.  We attach the
         // provider as the *asset* manager (treated like a custom bundle)
         // plus a best-effort `FontMgr::new()` as the default for system
-        // fallback.  On Android the default resolves to SkFontMgr_Android;
-        // on the headless Linux CI host it resolves to an empty manager
-        // and tests rely on the registered asset font alone.
+        // fallback.  On Android the default resolves to SkFontMgr_Android
+        // and on Linux to the fontconfig manager, which knows the installed
+        // faces by name but not the CSS generic keywords (see
+        // `generic_family_candidates`); a system with no fonts at all
+        // leaves the registered asset font alone.
+        #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+        super::fontconfig::resolve();
         //
         // Clone the provider into the collection — both retain shared
         // ownership via SkRefCnt.
@@ -1496,24 +1500,26 @@ fn push_family_with_candidates<'a, const N: usize>(
 }
 
 /// The concrete font families a CSS generic keyword names on this platform,
-/// best first; empty for anything that is not such a keyword.
+/// best first; none for anything that is not such a keyword.
 ///
-/// Only where the system font manager does not answer the keyword itself. Skia's
-/// CoreText manager resolves `Helvetica` and `Times New Roman` but returns
-/// nothing for `sans-serif`, `serif`, `monospace`, `system-ui` or `cursive`
-/// (measured on macOS 26), so without this every one of them fell through to the
+/// Only where the system font manager does not answer the keyword itself.
+/// Android's (fonts.xml) does. Skia's CoreText manager resolves `Helvetica` and
+/// `Times New Roman` but returns nothing for `sans-serif`, `serif`, `monospace`,
+/// `system-ui` or `cursive` (measured on macOS 26), and its fontconfig manager
+/// on Linux knows every installed face by name and none of the keywords
+/// (measured on Ubuntu 24.04). Without this every keyword fell through to the
 /// bundled Noto Sans: a `serif` or `monospace` label came out in a sans face
 /// with Noto's metrics, and text that named no installed family at all was drawn
-/// in a face no Apple browser would pick. The names are the ones Safari and
-/// Chrome use on these systems. Android (fonts.xml) and Linux (fontconfig)
-/// resolve the keywords natively and keep doing so.
+/// in a face no browser on that system would pick.
 ///
-/// A name the device does not have is skipped by the font manager and the next
-/// one is tried, which is why several are listed where they differ between
-/// macOS and iOS. The keyword itself stays in the chain after these, so a
-/// manager that does resolve it is still asked.
+/// On Apple the names are the ones Safari and Chrome use; on Linux they are what
+/// the system's fontconfig gives each keyword, which is what a browser there
+/// asks (`fontconfig.rs`). A name the device does not have is skipped by the
+/// font manager and the next one is tried, which is why several are listed
+/// where they differ between macOS and iOS. The keyword itself stays in the
+/// chain after these, so a manager that does resolve it is still asked.
 #[cfg(target_vendor = "apple")]
-fn generic_family_candidates(keyword: &str) -> &'static [&'static str] {
+fn generic_family_candidates(keyword: &str) -> impl Iterator<Item = &'static str> {
     const TABLE: &[(&str, &[&str])] = &[
         ("sans-serif", &["Helvetica"]),
         ("serif", &["Times New Roman", "Times"]),
@@ -1533,12 +1539,22 @@ fn generic_family_candidates(keyword: &str) -> &'static [&'static str] {
     TABLE
         .iter()
         .find(|(name, _)| name.eq_ignore_ascii_case(keyword))
-        .map_or(&[], |(_, faces)| *faces)
+        .map_or(&[][..], |(_, faces)| *faces)
+        .iter()
+        .copied()
 }
 
-#[cfg(not(target_vendor = "apple"))]
-fn generic_family_candidates(_keyword: &str) -> &'static [&'static str] {
-    &[]
+#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+fn generic_family_candidates(keyword: &str) -> impl Iterator<Item = &'static str> {
+    super::fontconfig::generic_face(keyword).into_iter()
+}
+
+#[cfg(not(any(
+    target_vendor = "apple",
+    all(target_os = "linux", not(target_env = "ohos"))
+)))]
+fn generic_family_candidates(_keyword: &str) -> impl Iterator<Item = &'static str> {
+    std::iter::empty()
 }
 
 fn normalize_registered_family(candidate: &str) -> Option<String> {
@@ -1715,7 +1731,10 @@ mod tests {
     /// The chain's contents, since the burst above only proves it is cheap.
     /// Both fallbacks appended, in order, and neither duplicated when the
     /// author already named it.
-    #[cfg(not(target_vendor = "apple"))]
+    #[cfg(not(any(
+        target_vendor = "apple",
+        all(target_os = "linux", not(target_env = "ohos"))
+    )))]
     #[test]
     fn the_family_chain_appends_each_fallback_exactly_once() {
         let ctx = TextContext::new();
@@ -1822,6 +1841,95 @@ mod tests {
             (width("serif", sample) - width("sans-serif", sample)).abs() > 0.5,
             "`serif` and `sans-serif` are the same face"
         );
+    }
+
+    /// The same chain on Linux, where each keyword is preceded by the face the
+    /// system's fontconfig gives it. That face is whatever the machine running
+    /// the test has, so the expectation asks fontconfig too.
+    #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+    #[test]
+    fn the_family_chain_puts_the_fontconfig_face_before_each_keyword() {
+        use crate::backend::gl::fontconfig::generic_face;
+        let ctx = TextContext::new();
+        let mut attrs = test_attrs(16.0);
+        let no_repeats = |chain: &[&str]| {
+            for (i, family) in chain.iter().enumerate() {
+                assert!(
+                    !chain[..i].iter().any(|f| f.eq_ignore_ascii_case(family)),
+                    "{family} appears twice in {chain:?}"
+                );
+            }
+        };
+
+        attrs.families = std::sync::Arc::new(vec!["Arial".to_string()]);
+        let chain: Vec<&str> = ctx.effective_families(&attrs).to_vec();
+        let mut expected = vec!["Arial"];
+        expected.extend(generic_face("sans-serif"));
+        expected.extend(["sans-serif", "migo-default-sans"]);
+        assert_eq!(chain, expected);
+
+        // A keyword the author named is preceded by its face; the fallbacks
+        // still follow once each, and nothing is repeated.
+        attrs.families = std::sync::Arc::new(vec!["monospace".to_string()]);
+        let chain: Vec<&str> = ctx.effective_families(&attrs).to_vec();
+        let at = chain
+            .iter()
+            .position(|f| *f == "monospace")
+            .expect("the keyword stays");
+        if let Some(face) = generic_face("monospace") {
+            assert_eq!(chain[..at], [face], "{chain:?}");
+        }
+        assert_eq!(
+            chain[chain.len() - 2..],
+            ["sans-serif", "migo-default-sans"]
+        );
+        no_repeats(&chain);
+
+        // The ui-* keywords name Apple's own faces and are left to fall through.
+        assert_eq!(generic_face("ui-monospace"), None);
+        assert_eq!(generic_face("Arial"), None);
+    }
+
+    /// What the fontconfig answer is for, measured: Skia's fontconfig manager
+    /// answers none of the keywords, so each fell through to the bundled Noto
+    /// Sans -- `serif` measured as `sans-serif`, and `monospace` was
+    /// proportional. Each keyword must now measure as the face fontconfig gives
+    /// it, whatever the machine has, and where it gives `serif` and
+    /// `sans-serif` different faces they must measure differently.
+    #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+    #[test]
+    fn css_generic_families_reach_the_faces_fontconfig_gives_on_linux() {
+        use crate::backend::gl::fontconfig::generic_face;
+        let ctx = TextContext::new();
+        let sample = "Hamburgefonstiv";
+        let width = |family: &str| {
+            let mut attrs = test_attrs(32.0);
+            attrs.families = std::sync::Arc::new(vec![family.to_string()]);
+            ctx.measure_text(sample, &attrs).width
+        };
+        for keyword in [
+            "serif",
+            "sans-serif",
+            "monospace",
+            "cursive",
+            "fantasy",
+            "system-ui",
+        ] {
+            if let Some(face) = generic_face(keyword) {
+                assert!(
+                    (width(keyword) - width(face)).abs() < 0.01,
+                    "`{keyword}` does not measure as {face}, the face fontconfig gives it"
+                );
+            }
+        }
+        if let (Some(serif), Some(sans)) = (generic_face("serif"), generic_face("sans-serif"))
+            && serif != sans
+        {
+            assert!(
+                (width("serif") - width("sans-serif")).abs() > 0.5,
+                "`serif` ({serif}) and `sans-serif` ({sans}) measure as one face"
+            );
+        }
     }
 
     /// The obligation a hashed key takes on: two different strings that landed

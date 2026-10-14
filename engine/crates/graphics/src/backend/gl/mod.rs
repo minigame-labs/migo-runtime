@@ -19,6 +19,10 @@ pub mod blend_mode;
 pub mod canvas;
 pub mod color;
 pub mod effect_cache;
+// What fontconfig makes of the CSS generic family keywords; Skia's fontconfig manager does not say (fontconfig.rs).
+// OHOS is a Linux target without fontconfig: Skia is built without it there.
+#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+pub(crate) mod fontconfig;
 pub mod image_store;
 pub mod paint;
 pub mod path;
