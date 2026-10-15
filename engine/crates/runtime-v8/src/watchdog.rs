@@ -481,7 +481,39 @@ pub struct DeadlineWatchdog {
     pause_depth: Cell<u32>,
     extensions: RefCell<Vec<(u64, Duration)>>,
     next_extension_id: Cell<u64>,
+    /// When the current task began (encoded): its ceiling is counted from here.
+    task_started: Cell<u64>,
+    /// Blocking waits on the host in progress, and the script's budget left when the outermost began.
+    wait_depth: Cell<u32>,
+    budget_at_wait: Cell<u64>,
     _owner_thread: PhantomData<Rc<()>>,
+}
+
+/// How much longer than its script budget one task may take, blocking waits on the host included. The budget is the
+/// script's own time -- a wait does not spend it -- but a task that keeps waiting is ended all the same: a runaway loop
+/// whose every turn makes a synchronous call would otherwise spend its budget a few microseconds at a time.
+const TASK_CEILING_BUDGETS: u32 = 6;
+
+thread_local! {
+    /// The watchdog of the isolate this thread runs, which a blocking wait on the host suspends
+    /// ([`DeadlineWatchdog::bind_blocking_waits`]).
+    static WAITING_OWNER: RefCell<std::rc::Weak<DeadlineWatchdog>> = const { RefCell::new(std::rc::Weak::new()) };
+}
+
+fn begin_owner_wait() {
+    WAITING_OWNER.with(|owner| {
+        if let Some(watchdog) = owner.borrow().upgrade() {
+            watchdog.begin_wait();
+        }
+    });
+}
+
+fn end_owner_wait() {
+    WAITING_OWNER.with(|owner| {
+        if let Some(watchdog) = owner.borrow().upgrade() {
+            watchdog.end_wait();
+        }
+    });
 }
 
 impl DeadlineWatchdog {
@@ -530,6 +562,9 @@ impl DeadlineWatchdog {
             pause_depth: Cell::new(0),
             extensions: RefCell::new(Vec::new()),
             next_extension_id: Cell::new(0),
+            task_started: Cell::new(0),
+            wait_depth: Cell::new(0),
+            budget_at_wait: Cell::new(0),
             _owner_thread: PhantomData,
         }
     }
@@ -575,10 +610,78 @@ impl DeadlineWatchdog {
     pub fn enter(&self) -> ExecutionScope<'_> {
         let prev = self.execution_depth.get();
         self.execution_depth.set(prev + 1);
-        if prev == 0 && self.pause_depth.get() == 0 {
-            self.arm_now();
+        if prev == 0 {
+            self.task_started.set(self.scheduler.now_encoded());
+            if self.pause_depth.get() == 0 {
+                self.arm_now();
+            }
         }
         ExecutionScope { watchdog: self }
+    }
+
+    /// Make this the watchdog a blocking wait on the host suspends, on this thread: the script's budget is not spent
+    /// while it waits for the renderer's answer to a synchronous call ([`shared::protocol::send::BlockingWait`]).
+    pub fn bind_blocking_waits(self: &Rc<Self>) {
+        WAITING_OWNER.with(|owner| *owner.borrow_mut() = Rc::downgrade(self));
+        shared::protocol::send::set_blocking_wait_hooks(
+            shared::protocol::send::BlockingWaitHooks {
+                begin: begin_owner_wait,
+                end: end_owner_wait,
+            },
+        );
+    }
+
+    /// The latest the current task may run, waits included.
+    fn task_ceiling(&self) -> u64 {
+        let budget = self
+            .effective_timeout()
+            .saturating_mul(TASK_CEILING_BUDGETS);
+        self.task_started
+            .get()
+            .saturating_add(budget.as_millis() as u64)
+            .max(2)
+    }
+
+    /// A blocking wait on the host begins: what is left of the script's budget is kept, and only the task's ceiling
+    /// stays armed while the script waits.
+    fn begin_wait(&self) {
+        let prev = self.wait_depth.get();
+        self.wait_depth.set(prev + 1);
+        if prev != 0 || !self.should_be_armed() {
+            return;
+        }
+        let deadline = self.target.execution_state.load(Ordering::Acquire);
+        if deadline == DISARMED || deadline == TERMINATED {
+            return;
+        }
+        self.budget_at_wait
+            .set(deadline.saturating_sub(self.scheduler.now_encoded()));
+        let ceiling = self.task_ceiling();
+        if self.target.arm_at(ceiling) {
+            self.scheduler.on_armed(&self.target, ceiling);
+        }
+    }
+
+    /// The wait ends: the script's budget runs on from what it had left, never past the task's ceiling.
+    fn end_wait(&self) {
+        let prev = self.wait_depth.get();
+        self.wait_depth.set(prev.saturating_sub(1));
+        if prev != 1 || !self.should_be_armed() {
+            return;
+        }
+        let state = self.target.execution_state.load(Ordering::Acquire);
+        if state == DISARMED || state == TERMINATED {
+            return;
+        }
+        let deadline = self
+            .scheduler
+            .now_encoded()
+            .saturating_add(self.budget_at_wait.get())
+            .min(self.task_ceiling())
+            .max(2);
+        if self.target.arm_at(deadline) {
+            self.scheduler.on_armed(&self.target, deadline);
+        }
     }
 
     /// Suspend the deadline for an explicitly trusted synchronous section.
@@ -1218,5 +1321,104 @@ mod scheduler_tests {
             1,
             "a terminal target fires exactly once and stays terminal"
         );
+    }
+
+    // ---- Blocking waits on the host ----------------------------------------------------------------------------
+
+    /// A slow GPU makes a synchronous call take seconds while the script does nothing; the wait does not spend the
+    /// script's budget. On the Android emulator a three.js scene's synchronous calls took the watchdog's ten seconds
+    /// between them, and the game was killed.
+    #[test]
+    fn a_blocking_wait_does_not_spend_the_script_budget() {
+        let sched = Scheduler::new_test();
+        let (wd, fired) = counting_wd(sched, Duration::from_millis(100));
+        let _scope = wd.enter();
+        wd.begin_wait();
+        std::thread::sleep(Duration::from_millis(400));
+        assert_eq!(
+            fired.load(Ordering::Acquire),
+            0,
+            "four budgets of waiting spent none of it"
+        );
+        wd.end_wait();
+        assert!(
+            wait_until(
+                || fired.load(Ordering::Acquire) == 1,
+                Duration::from_secs(3)
+            ),
+            "the script's own budget still runs out"
+        );
+    }
+
+    /// The budget the script spent before a wait stays spent: the wait suspends it, it does not restart it.
+    #[test]
+    fn a_wait_keeps_what_the_script_spent_before_it() {
+        let sched = Scheduler::new_test();
+        let (wd, fired) = counting_wd(sched, Duration::from_millis(400));
+        let _scope = wd.enter();
+        std::thread::sleep(Duration::from_millis(350));
+        wd.begin_wait();
+        std::thread::sleep(Duration::from_millis(200));
+        assert_eq!(fired.load(Ordering::Acquire), 0);
+        wd.end_wait();
+        let resumed = Instant::now();
+        assert!(wait_until(
+            || fired.load(Ordering::Acquire) == 1,
+            Duration::from_secs(3)
+        ));
+        assert!(
+            resumed.elapsed() < Duration::from_millis(300),
+            "fired {:?} after the wait: the budget was restarted, not resumed",
+            resumed.elapsed()
+        );
+    }
+
+    /// A task that keeps waiting -- a runaway loop whose every turn is a synchronous call -- is ended at its ceiling,
+    /// waits included.
+    #[test]
+    fn a_task_that_keeps_waiting_is_ended_at_its_ceiling() {
+        let sched = Scheduler::new_test();
+        let (wd, fired) = counting_wd(sched, Duration::from_millis(50));
+        let _scope = wd.enter();
+        let began = Instant::now();
+        wd.begin_wait();
+        assert!(
+            wait_until(
+                || fired.load(Ordering::Acquire) == 1,
+                Duration::from_secs(3)
+            ),
+            "a wait past the task's ceiling ends it"
+        );
+        assert!(
+            began.elapsed() >= Duration::from_millis(250),
+            "ended after {:?}, before the ceiling of {} budgets",
+            began.elapsed(),
+            TASK_CEILING_BUDGETS
+        );
+        wd.end_wait();
+    }
+
+    /// The renderer's synchronous answer is waited for through `shared`'s hooks, which reach the watchdog this thread's
+    /// isolate bound.
+    #[test]
+    fn a_synchronous_render_wait_reaches_the_bound_watchdog() {
+        let sched = Scheduler::new_test();
+        let (wd, fired) = counting_wd(sched, Duration::from_millis(100));
+        let wd = Rc::new(wd);
+        wd.bind_blocking_waits();
+        let _scope = wd.enter();
+        {
+            let _wait = shared::protocol::send::BlockingWait::begin();
+            std::thread::sleep(Duration::from_millis(300));
+            assert_eq!(
+                fired.load(Ordering::Acquire),
+                0,
+                "the wait suspended the budget"
+            );
+        }
+        assert!(wait_until(
+            || fired.load(Ordering::Acquire) == 1,
+            Duration::from_secs(3)
+        ));
     }
 }

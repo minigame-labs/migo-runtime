@@ -675,6 +675,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- The JS watchdog no longer kills a game for the time it spends waiting on the renderer. It ends a task whose script
+  runs past its budget (ten seconds); a task blocked in a synchronous call is waiting, not running, and a slow GPU --
+  a software renderer, a low-end phone compiling shaders -- made a three.js scene's calls add up past the budget. The
+  wait no longer spends the budget (what is left carries across it), and a task that does nothing but wait is still
+  ended at six budgets.
 - An `InnerAudioContext` source that will not load is reported with the reference's `errCode` for why: 10003 for a
   file that cannot be found, permitted or read, 10002 for a URL that is malformed, refused or unreachable, 10004 for
   bytes no decoder reads, 10001 otherwise. Every such failure used to be 10002.

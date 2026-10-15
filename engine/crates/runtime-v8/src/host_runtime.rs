@@ -61,8 +61,9 @@ pub struct HostJsRuntime {
     /// order disarms + unregisters it before the V8 `JsRuntime`/isolate is
     /// dropped. Present only when `v8-limits` is enabled; installed by the host
     /// after trusted bootstrap and before any game prelude/module runs.
+    /// Shared with this thread's blocking-wait hooks (`DeadlineWatchdog::bind_blocking_waits`), which hold it weakly.
     #[cfg(feature = "v8-limits")]
-    watchdog: Option<DeadlineWatchdog>,
+    watchdog: Option<std::rc::Rc<DeadlineWatchdog>>,
     host_id: i32,
     rt: JsRuntime,
     bindings: JsBindings,
@@ -418,7 +419,10 @@ impl HostJsRuntime {
     #[cfg(feature = "v8-limits")]
     pub fn install_watchdog(&mut self, config: DeadlineWatchdogConfig) -> EngineResult<()> {
         let handle = self.rt.v8_isolate().thread_safe_handle();
-        self.watchdog = Some(DeadlineWatchdog::register_isolate(handle, config)?);
+        let watchdog = std::rc::Rc::new(DeadlineWatchdog::register_isolate(handle, config)?);
+        // A synchronous call blocked on the renderer is not the script running.
+        watchdog.bind_blocking_waits();
+        self.watchdog = Some(watchdog);
         Ok(())
     }
 
@@ -427,7 +431,7 @@ impl HostJsRuntime {
     #[cfg(feature = "v8-limits")]
     pub fn watchdog_timed_out(&self) -> bool {
         self.watchdog
-            .as_ref()
+            .as_deref()
             .is_some_and(DeadlineWatchdog::timed_out)
     }
 
@@ -439,7 +443,7 @@ impl HostJsRuntime {
     #[cfg(feature = "v8-limits")]
     #[inline]
     fn with_v8<R>(&mut self, f: impl FnOnce(&mut JsRuntime, &mut JsBindings) -> R) -> R {
-        let _scope = self.watchdog.as_ref().map(DeadlineWatchdog::enter);
+        let _scope = self.watchdog.as_deref().map(DeadlineWatchdog::enter);
         f(&mut self.rt, &mut self.bindings)
     }
 
@@ -1036,7 +1040,7 @@ impl HostJsRuntime {
         // `self.watchdog` field so both borrows coexist.
         let module_id = {
             #[cfg(feature = "v8-limits")]
-            let wd = self.watchdog.as_ref();
+            let wd = self.watchdog.as_deref();
             #[cfg(not(feature = "v8-limits"))]
             let wd: Option<&crate::watchdog::DeadlineWatchdog> = None;
             let mut load = std::pin::pin!(self.rt.load_main_es_module(&resolved));
@@ -1066,7 +1070,7 @@ impl HostJsRuntime {
         // top-level `while (true) {}` must be covered here, not only in later polls.
         let evaluation_fut = {
             #[cfg(feature = "v8-limits")]
-            let _scope = self.watchdog.as_ref().map(DeadlineWatchdog::enter);
+            let _scope = self.watchdog.as_deref().map(DeadlineWatchdog::enter);
             self.rt.mod_evaluate(module_id)
         };
         let mut evaluation = std::pin::pin!(evaluation_fut);
@@ -1075,7 +1079,7 @@ impl HostJsRuntime {
         // and disarming when the combined poll returns. Never hold a guard across
         // the pending await.
         #[cfg(feature = "v8-limits")]
-        let wd = self.watchdog.as_ref();
+        let wd = self.watchdog.as_deref();
         #[cfg(not(feature = "v8-limits"))]
         let wd: Option<&crate::watchdog::DeadlineWatchdog> = None;
         let rt = &mut self.rt;
@@ -1127,7 +1131,7 @@ impl HostJsRuntime {
     /// charge async wait time as JS execution.
     pub async fn run_event_loop(&mut self, opt: PollEventLoopOptions) -> EngineResult<()> {
         #[cfg(feature = "v8-limits")]
-        let wd = self.watchdog.as_ref();
+        let wd = self.watchdog.as_deref();
         #[cfg(not(feature = "v8-limits"))]
         let wd: Option<&crate::watchdog::DeadlineWatchdog> = None;
         let rt = &mut self.rt;

@@ -11,6 +11,7 @@
 //! The classification and timeout policy stays in the parent module. It answers
 //! questions about op names and needs no host state, and both sides use it.
 
+use std::cell::Cell;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -23,6 +24,48 @@ use crate::op_state::CanvasOpState;
 use crate::protocol::render_cmd::{GLCmd, RenderCmdResp, RenderCommand};
 
 use super::{COMMAND_TIMEOUT_MS, MEASURE_TIMEOUT_MS, SyncOpClass, class_for_op};
+
+/// What the thread does around a blocking wait for the renderer's answer.
+///
+/// A JavaScript thread's runtime installs these so the deadline it keeps for runaway script spends nothing while the
+/// script waits on the renderer: a slow GPU -- a software renderer, a low-end phone compiling a game's shaders --
+/// makes a synchronous call take seconds without the script running at all. The wait is bounded by its own timeout.
+#[derive(Clone, Copy, Debug)]
+pub struct BlockingWaitHooks {
+    pub begin: fn(),
+    pub end: fn(),
+}
+
+thread_local! {
+    static BLOCKING_WAIT_HOOKS: Cell<Option<BlockingWaitHooks>> = const { Cell::new(None) };
+}
+
+/// Install this thread's [`BlockingWaitHooks`].
+pub fn set_blocking_wait_hooks(hooks: BlockingWaitHooks) {
+    BLOCKING_WAIT_HOOKS.with(|h| h.set(Some(hooks)));
+}
+
+/// One blocking wait: `begin` now, `end` when dropped.
+#[must_use = "the wait ends when this is dropped"]
+pub struct BlockingWait(Option<BlockingWaitHooks>);
+
+impl BlockingWait {
+    pub fn begin() -> Self {
+        let hooks = BLOCKING_WAIT_HOOKS.with(Cell::get);
+        if let Some(hooks) = hooks {
+            (hooks.begin)();
+        }
+        Self(hooks)
+    }
+}
+
+impl Drop for BlockingWait {
+    fn drop(&mut self) {
+        if let Some(hooks) = self.0 {
+            (hooks.end)();
+        }
+    }
+}
 
 /// The op name every synchronous GL command travels under.
 ///
@@ -131,6 +174,7 @@ pub fn send_render_with_resp_sync<T>(
     build: impl FnOnce(RenderCmdResp<T>) -> RenderCommand,
 ) -> Result<T, EngineError> {
     let (resp_tx, resp_rx) = bounded(1);
+    let wait = BlockingWait::begin();
 
     if let Err(e) = ctx
         .tx
@@ -141,6 +185,7 @@ pub fn send_render_with_resp_sync<T>(
 
     let started_at = std::time::Instant::now();
     let result = recv_timeout(&resp_rx, op);
+    drop(wait);
     let elapsed_ms = started_at.elapsed().as_millis() as u64;
     if elapsed_ms >= 5 {
         // Sync GL ops block V8; if the wait crosses 5 ms it is
