@@ -15,6 +15,8 @@
 #include <migo/migo.h>
 #include <migo/platform/x11.h>
 
+#include "services.h"
+
 #include <X11/Xlib.h>
 
 #include <stdatomic.h>
@@ -479,6 +481,11 @@ int main(int argc, char **argv) {
     host_callbacks.on_show_keyboard = on_show_keyboard;
     host_callbacks.on_hide_keyboard = on_hide_keyboard;
     host_callbacks.on_update_keyboard = on_update_keyboard;
+    /* The device's own services -- permission, location, the motion sensors --
+     * answered from this loop (services.h), the device scripted by a feed. */
+    services_init();
+    host_callbacks.on_host_service_call = services_on_call;
+    host_callbacks.host_services = C_HOST_SERVICES;
 
     result = migo_session_set_host_callbacks(session, &host_callbacks);
     if (result != MIGO_OK) return fail("migo_session_set_host_callbacks", result);
@@ -631,6 +638,7 @@ int main(int argc, char **argv) {
             printf("[c-host] gamepad disconnect: %d\n", (int)r);
             fflush(stdout);
         }
+        services_pump(session);
         sleep_ms(16);
     }
 
@@ -638,6 +646,7 @@ int main(int argc, char **argv) {
     if (detach_and_await_release(attachment) != 0) return 1;
     result = migo_session_destroy(session);
     if (result != MIGO_OK) return fail("migo_session_destroy", result);
+    services_shutdown();
     result = migo_engine_destroy(engine);
     if (result != MIGO_OK) return fail("migo_engine_destroy", result);
 

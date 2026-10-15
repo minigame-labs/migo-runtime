@@ -12,10 +12,14 @@ fn main() {
         .canonicalize()
         .expect("repo root");
     let source = repo_root.join("tests/c_host/linux/main.c");
+    let services_source = repo_root.join("tests/c_host/linux/services.c");
+    let services_header = repo_root.join("tests/c_host/linux/services.h");
     let wayland_source = repo_root.join("tests/c_host/linux/wayland_host.c");
     let include = repo_root.join("include");
 
     println!("cargo:rerun-if-changed={}", source.display());
+    println!("cargo:rerun-if-changed={}", services_source.display());
+    println!("cargo:rerun-if-changed={}", services_header.display());
     println!("cargo:rerun-if-changed={}", wayland_source.display());
     println!("cargo:rerun-if-changed={}", include.display());
 
@@ -39,6 +43,7 @@ fn main() {
     let mut build = cc::Build::new();
     build
         .file(&source)
+        .file(&services_source)
         .include(&include)
         .std("c11")
         .warnings(true);
