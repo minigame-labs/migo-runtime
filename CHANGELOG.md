@@ -675,6 +675,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- A WebGL shader's variables without an initializer read as zero, as WebGL requires (the conformance suite's
+  `uninitialized-local-global-variables`) and content relies on: the renderer used to hand the driver the shader as
+  content wrote it, and Mesa -- Linux's driver for Intel and AMD GPUs, and llvmpipe -- took the undefined value at its
+  word and folded the computation away; PlayCanvas's standard material came out black. The source the driver compiles
+  now has zero written in where a value is missing, on the line it belongs to, so compile messages keep their line
+  numbers; `getShaderSource` still answers what content set. The program binary cache keys on the source the driver
+  compiled, so a binary cached before cannot stand in for the amended shader.
 - `onDeviceMotionChange` reported its angles in degrees, where the reference documents radians -- alpha [0, 2*PI),
   beta [-PI, PI), gamma [-PI/2, PI/2). Hosts keep reporting the W3C DeviceOrientation angles in degrees and the engine
   converts them, in one place, before content hears them. On Android the angles were also decomposed from the

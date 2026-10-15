@@ -1398,8 +1398,18 @@ impl RendererGL {
 
                 if let Some(sh) = meta.gl_handle {
                     meta.source_len = source.len();
-                    meta.source = Some(source.clone());
-                    unsafe { gl.shader_source(sh, &source) };
+                    // The driver compiles the source with what WebGL requires and the driver need not do -- zero for
+                    // every variable left without a value -- written in; content reads back what it set.
+                    let env = crate::backend::gl::glsl::Environment {
+                        fragment: meta.gl_shader_type == glow::FRAGMENT_SHADER,
+                        extensions: gl.supported_extensions(),
+                    };
+                    let driver_source =
+                        crate::backend::gl::glsl::for_driver(&source, &env).unwrap_or(source);
+                    unsafe { gl.shader_source(sh, &driver_source) };
+                    // The program binary cache keys on what the driver compiled: a binary of the source as content
+                    // wrote it is not this shader's.
+                    meta.source = Some(driver_source);
                     if let Some(r) = resp {
                         r.send(Ok(()));
                     }
