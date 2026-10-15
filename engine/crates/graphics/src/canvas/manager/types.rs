@@ -1610,7 +1610,8 @@ pub(crate) struct ShaderMeta {
     pub gl_shader_type: u32, // glow::VERTEX_SHADER / glow::FRAGMENT_SHADER
     pub deleted: bool,
     pub source_len: usize, // cached for SHADER_SOURCE_LENGTH
-    /// Shader source cached for shader binary cache key.
+    /// The source the driver compiled -- content's, with what WebGL requires written in (`backend::gl::glsl`): the
+    /// program binary cache's key. `getShaderSource` answers content's own, which the facade keeps.
     pub source: Option<String>,
 }
 

@@ -23,6 +23,7 @@ pub mod effect_cache;
 // OHOS is a Linux target without fontconfig: Skia is built without it there.
 #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 pub(crate) mod fontconfig;
+pub(crate) mod glsl;
 pub mod image_store;
 pub mod paint;
 pub mod path;
