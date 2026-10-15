@@ -84,8 +84,9 @@ fn copy_tree(src: &std::path::Path, dst: &std::path::Path) -> Result<(), String>
 }
 const SURFACE_W: u32 = 720;
 const SURFACE_H: u32 = 1280;
-/// How long the player waits for the first presented frame before it gives up:
-/// the engine's GPU readiness budget (ten seconds) plus room to load the game.
+/// How long the player waits for the first presented frame before it starts the
+/// run without one: the engine's GPU readiness budget (ten seconds) plus room to
+/// load the game.
 const FIRST_PRESENT_CEILING: Duration = Duration::from_secs(30);
 /// How often the window mode drains X events while the game renders.
 const EVENT_POLL: Duration = Duration::from_millis(16);
@@ -334,13 +335,20 @@ fn run(
     // is not bounded by the run (the engine gives the GPU up to ten seconds), and
     // a window that included it measured start-up whenever start-up was slow --
     // a cold software renderer on a loaded runner took four seconds to come up,
-    // and a presentation probe with the engine working painted nothing. The
-    // ceiling is for an engine that never presents, which is then said outright.
+    // and a presentation probe with the engine working painted nothing.
+    //
+    // Content that has presented nothing by the ceiling still runs: a game may
+    // work offscreen for a long time before its first frame, and some content
+    // never presents at all (a conformance bundle that draws only offscreen
+    // canvases). Ending the run here cut such content off mid-work, on a slow
+    // software renderer, while the same content ran to completion through the C
+    // ABI host. Its run is timed from the ceiling instead, and an engine that
+    // never presents is said outright when the run ends without a frame.
     if !graphics::frame_capture::wait_for_present(FIRST_PRESENT_CEILING) {
-        return Err(format!(
-            "nothing was presented within {}s of loading the game",
+        tracing::warn!(
+            "nothing presented within {}s of loading the game; running on without a frame",
             FIRST_PRESENT_CEILING.as_secs()
-        ));
+        );
     }
     // Let the game render for the window; the render thread keeps overwriting
     // the capture slot with the latest present, so early blank warmup frames
@@ -404,7 +412,7 @@ fn run(
                     .to_string(),
             );
         }
-        None => tracing::warn!("frame capture: no frame was presented during the window"),
+        None => return Err("nothing was presented during the run".to_string()),
     }
 
     report_draw_batching(host_id);
