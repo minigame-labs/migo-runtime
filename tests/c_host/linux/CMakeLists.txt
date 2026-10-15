@@ -18,8 +18,8 @@ find_package(migo REQUIRED)
 # The example owns its window, so it -- not the engine -- links Xlib.
 find_package(X11 REQUIRED)
 
-add_executable(c-host-cmake main.c)
-target_link_libraries(c-host-cmake PRIVATE migo::migo ${X11_LIBRARIES})
+add_executable(c-host-cmake main.c services.c)
+target_link_libraries(c-host-cmake PRIVATE migo::migo ${X11_LIBRARIES} m)
 target_compile_options(c-host-cmake PRIVATE -Wall -Wextra)
 
 # X11 only -- see build-with-pkgconfig.sh for why the Wayland host is not part of

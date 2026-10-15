@@ -47,11 +47,11 @@ echo "[c-host] libs:   $MIGO_LIBS"
 # consumable with nothing but cc and pkg-config. The define is the same switch
 # cargo's build.rs sets when it cannot build the Wayland half, so
 # MIGO_C_HOST_BACKEND=wayland reports that clearly instead of failing to link.
-"${CC:-cc}" -std=c11 -Wall -Wextra -o "$OUT" "$SCRIPT_DIR/main.c" \
+"${CC:-cc}" -std=c11 -Wall -Wextra -o "$OUT" "$SCRIPT_DIR/main.c" "$SCRIPT_DIR/services.c" \
     -DMIGO_C_HOST_NO_WAYLAND \
     $(pkg-config --cflags migo) \
     $MIGO_LIBS \
     -Wl,-rpath,"$PREFIX/lib" \
-    -lX11
+    -lX11 -lm
 
 echo "[c-host] built $OUT"
