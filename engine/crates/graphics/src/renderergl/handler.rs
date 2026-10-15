@@ -1942,7 +1942,7 @@ impl RendererGL {
 
             GLCmd::ActiveTexture { canvas_id, unit } => {
                 cm.make_current_needed(canvas_id)?;
-                if !crate::webgl_gpu_budget::is_valid_texture_unit(unit) {
+                if !cm.webgl_gpu_budget.is_texture_unit(unit) {
                     // Preserve GL's INVALID_ENUM behavior without poisoning
                     // either state mirror with a unit the driver rejected.
                     unsafe { gl.active_texture(unit) };

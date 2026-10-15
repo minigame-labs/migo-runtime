@@ -32,7 +32,9 @@ const GL_TEXTURE_CUBE_MAP_POSITIVE_X: u32 = 0x8515;
 const GL_TEXTURE_CUBE_MAP_NEGATIVE_Z: u32 = 0x851A;
 const GL_TEXTURE_2D_ARRAY: u32 = 0x8C1A;
 const GL_RENDERBUFFER: u32 = 0x8D41;
-const WEBGL_TEXTURE_UNIT_COUNT: u32 = 32;
+/// The texture image units every OpenGL ES 3.0 implementation has: what a budget assumes until it is told the
+/// driver's own count.
+const GLES3_TEXTURE_UNITS: u32 = 32;
 
 /// The storage the process's WebGL contexts may keep resident: a quarter of the device's physical memory, and never
 /// less than the 512 MiB every device was allowed before the ceiling followed the device.
@@ -220,60 +222,50 @@ const BINDING_TARGETS: [u32; 4] = [
 
 /// Which texture is bound to each `(unit, target)` pair of one context.
 ///
-/// **The key space here is completely dense and completely bounded**, and was
-/// nonetheless a `HashMap<(u32, u32), Option<TextureId>>`: `unit` is validated
-/// into `GL_TEXTURE0 .. GL_TEXTURE0 + WEBGL_TEXTURE_UNIT_COUNT` by
-/// [`is_valid_texture_unit`] and `target` into one of exactly four values by
-/// [`normalize_binding_target`], both *before* reaching this ledger. So every
-/// `bindTexture` hashed a pair of `u32`s to address one of 128 slots that could
-/// have been indexed directly — and unlike the dedup shadows this is a ledger,
-/// so the write happens on every call and cannot be skipped.
+/// A flat array indexed directly, not a map: `unit` has been validated against the context's texture image units
+/// ([`WebGlGpuBudget::is_texture_unit`]) and `target` into one of exactly four values by
+/// [`normalize_binding_target`] before reaching this ledger, and the write happens on every `bindTexture` -- it is a
+/// ledger, not a dedup shadow, so it cannot be skipped. An absent slot and a slot holding `None` are the same to its
+/// one reader, [`WebGlGpuBudget::bound_texture`], which lets `None` cover both "never bound" and "explicitly unbound".
 ///
-/// A flat array is also exactly equivalent, not merely close: the one reader,
-/// [`WebGlGpuBudget::bound_texture`], finishes with `.copied().flatten()`, so an
-/// absent key and a key holding `None` were already indistinguishable to it.
-/// That is what lets `None` cover both "never bound" and "explicitly unbound"
-/// with no tri-state.
-///
-/// 1 KiB per context, against 1-4 contexts.
-#[derive(Debug)]
+/// It reaches as far as the highest unit content has bound a texture to, not further: a driver may have 192 units
+/// and content use the first eight -- or bind on its last one to upload, as three.js does.
+#[derive(Debug, Default)]
 struct TextureUnitLedger {
     /// `slots[unit_index * BINDING_TARGETS.len() + target_index]`.
-    slots: [Option<TextureId>; (WEBGL_TEXTURE_UNIT_COUNT as usize) * BINDING_TARGETS.len()],
-}
-
-impl Default for TextureUnitLedger {
-    fn default() -> Self {
-        Self {
-            slots: [None; (WEBGL_TEXTURE_UNIT_COUNT as usize) * BINDING_TARGETS.len()],
-        }
-    }
+    slots: Vec<Option<TextureId>>,
 }
 
 impl TextureUnitLedger {
-    /// Slot for a `(unit, target)` pair that has already passed validation.
-    /// `None` for anything else, which forwards the caller to its existing
-    /// "not a valid binding" path rather than inventing a slot.
+    /// Slot for a `(unit, target)` pair that has already passed validation; `None` for a target the ledger does not
+    /// keep, which forwards the caller to its "not a valid binding" path rather than inventing a slot.
     #[inline]
     fn slot(unit: u32, target: u32) -> Option<usize> {
         let unit_index = unit.wrapping_sub(GL_TEXTURE0) as usize;
-        if unit_index >= WEBGL_TEXTURE_UNIT_COUNT as usize {
-            return None;
-        }
         let target_index = BINDING_TARGETS.iter().position(|t| *t == target)?;
         Some(unit_index * BINDING_TARGETS.len() + target_index)
     }
 
     #[inline]
     fn set(&mut self, unit: u32, target: u32, texture: Option<TextureId>) {
-        if let Some(i) = Self::slot(unit, target) {
-            self.slots[i] = texture;
+        let Some(i) = Self::slot(unit, target) else {
+            return;
+        };
+        if i >= self.slots.len() {
+            if texture.is_none() {
+                return;
+            }
+            self.slots.resize(
+                (i / BINDING_TARGETS.len() + 1) * BINDING_TARGETS.len(),
+                None,
+            );
         }
+        self.slots[i] = texture;
     }
 
     #[inline]
     fn get(&self, unit: u32, target: u32) -> Option<TextureId> {
-        Self::slot(unit, target).and_then(|i| self.slots[i])
+        Self::slot(unit, target).and_then(|i| self.slots.get(i).copied().flatten())
     }
 
     /// Drop every binding that names `texture`.
@@ -359,6 +351,9 @@ impl PreparedGpuAllocation {
 pub(crate) struct WebGlGpuBudget {
     limits: GpuBudgetLimits,
     process: Arc<ProcessUsage>,
+    /// The driver's `MAX_COMBINED_TEXTURE_IMAGE_UNITS`: the units the facade lets content name, so every one of them
+    /// is tracked -- a unit outside this ledger would leave it naming the wrong unit active.
+    texture_units: u32,
     contexts: HashMap<CanvasId, u64>,
     /// See [`crate::canvas_keyed`]: reached on every `bindTexture` /
     /// `activeTexture`, one entry per live context.
@@ -380,23 +375,25 @@ pub(crate) struct GpuDomainStats {
 
 impl Default for WebGlGpuBudget {
     fn default() -> Self {
-        Self::new()
+        Self::new(GLES3_TEXTURE_UNITS)
     }
 }
 
 impl WebGlGpuBudget {
-    pub(crate) fn new() -> Self {
+    /// `texture_units`: the driver's `MAX_COMBINED_TEXTURE_IMAGE_UNITS`.
+    pub(crate) fn new(texture_units: u32) -> Self {
         static PROCESS: OnceLock<Arc<ProcessUsage>> = OnceLock::new();
         let limits = GpuBudgetLimits::production();
         let process = Arc::clone(
             PROCESS.get_or_init(|| Arc::new(ProcessUsage::new(limits.max_process_bytes))),
         );
-        Self::with_parts(limits, process)
+        Self::with_parts(limits, process, texture_units)
     }
-    fn with_parts(limits: GpuBudgetLimits, process: Arc<ProcessUsage>) -> Self {
+    fn with_parts(limits: GpuBudgetLimits, process: Arc<ProcessUsage>, texture_units: u32) -> Self {
         Self {
             limits,
             process,
+            texture_units,
             contexts: HashMap::new(),
             bindings: crate::canvas_keyed::CanvasKeyed::default(),
             textures: HashMap::new(),
@@ -489,8 +486,14 @@ impl WebGlGpuBudget {
         Ok(())
     }
 
+    /// `unit` names one of the context's texture image units: `TEXTURE0` up to the driver's count.
+    pub(crate) fn is_texture_unit(&self, unit: u32) -> bool {
+        unit.checked_sub(GL_TEXTURE0)
+            .is_some_and(|index| index < self.texture_units)
+    }
+
     pub(crate) fn active_texture(&mut self, canvas_id: CanvasId, unit: u32) {
-        if !is_valid_texture_unit(unit) {
+        if !self.is_texture_unit(unit) {
             return;
         }
         self.bindings.entry(canvas_id).or_default().active_texture = unit;
@@ -1191,10 +1194,6 @@ fn normalize_binding_target(target: u32) -> Option<u32> {
     }
 }
 
-pub(crate) fn is_valid_texture_unit(unit: u32) -> bool {
-    (GL_TEXTURE0..GL_TEXTURE0 + WEBGL_TEXTURE_UNIT_COUNT).contains(&unit)
-}
-
 fn normalize_image_binding_target(target: u32) -> Option<u32> {
     match target {
         GL_TEXTURE_CUBE_MAP_POSITIVE_X..=GL_TEXTURE_CUBE_MAP_NEGATIVE_Z => {
@@ -1532,7 +1531,11 @@ impl GpuBudgetTestScope {
     }
 
     fn registry(&self) -> WebGlGpuBudget {
-        WebGlGpuBudget::with_parts(self.limits, Arc::clone(&self.process))
+        self.registry_with_units(GLES3_TEXTURE_UNITS)
+    }
+
+    fn registry_with_units(&self, texture_units: u32) -> WebGlGpuBudget {
+        WebGlGpuBudget::with_parts(self.limits, Arc::clone(&self.process), texture_units)
     }
 
     fn process_usage(&self) -> u64 {
@@ -2000,8 +2003,8 @@ mod tests {
         budget.create_texture(1, 12).unwrap();
         budget.bind_texture(1, TEXTURE_2D, Some(11));
 
-        // GLES 3 exposes TEXTURE0..TEXTURE31. GL rejects TEXTURE32 and keeps
-        // the prior unit active, so the accounting mirror must do the same.
+        // A driver with the 32 units GLES 3 guarantees rejects TEXTURE32 and
+        // keeps the prior unit active, so the accounting mirror must do the same.
         budget.active_texture(1, TEXTURE0 + 32);
         budget.bind_texture(1, TEXTURE_2D, Some(12));
         budget.active_texture(1, TEXTURE0);
@@ -2013,6 +2016,43 @@ mod tests {
         assert_eq!(budget.delete_texture(11), 0);
         assert_eq!(budget.context_usage(1), 64);
         assert_eq!(budget.delete_texture(12), 64);
+        assert_eq!(scope.process_usage(), 0);
+    }
+
+    /// Every unit the driver has is tracked, not the 32 every driver has: three.js uploads on the last of
+    /// `MAX_COMBINED_TEXTURE_IMAGE_UNITS` -- unit 191 on Mesa -- and then binds on unit 0. A budget that stopped at 32
+    /// charged the upload to unit 0's texture, and the renderer, keeping the old unit as the active one, dropped the
+    /// switch back to unit 0 as a repeat: the driver stayed on unit 191, and a shadow map content bound on unit 0 was
+    /// never there to sample.
+    #[test]
+    fn a_unit_past_32_the_driver_has_is_tracked_like_any_other() {
+        let scope = GpuBudgetTestScope::new(limits(4_096, 8_192));
+        let mut budget = scope.registry_with_units(192);
+        assert!(budget.is_texture_unit(TEXTURE0 + 191));
+        assert!(!budget.is_texture_unit(TEXTURE0 + 192));
+        budget.create_texture(1, 31).unwrap();
+        budget.create_texture(1, 32).unwrap();
+
+        budget.active_texture(1, TEXTURE0);
+        budget.bind_texture(1, TEXTURE_2D, Some(31));
+        budget.active_texture(1, TEXTURE0 + 191);
+        budget.bind_texture(1, TEXTURE_2D, Some(32));
+        let upload = budget
+            .prepare_tex_image_2d(1, TEXTURE_2D, 0, RGBA as i32, 4, 4, 0, RGBA, UNSIGNED_BYTE)
+            .unwrap();
+        budget.commit(upload);
+        budget.active_texture(1, TEXTURE0);
+        let back = budget
+            .prepare_tex_image_2d(1, TEXTURE_2D, 0, RGBA as i32, 2, 2, 0, RGBA, UNSIGNED_BYTE)
+            .unwrap();
+        budget.commit(back);
+
+        assert_eq!(
+            budget.delete_texture(32),
+            64,
+            "the upload on unit 191 is its texture's"
+        );
+        assert_eq!(budget.delete_texture(31), 16, "unit 0 is its own again");
         assert_eq!(scope.process_usage(), 0);
     }
 

@@ -675,6 +675,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- WebGL texture units past the 32th -- up to the driver's `MAX_COMBINED_TEXTURE_IMAGE_UNITS`, which content may name
+  and three.js uploads on -- are tracked like the first 32. The renderer used to call the driver for such a unit
+  without moving its own record of the active unit, so the next switch back to a low unit was dropped as a repeat and
+  textures went to the wrong unit: three.js's shadow maps sampled a placeholder and shadowed everything (on Mesa,
+  SwiftShader and any driver with more than 32 combined units), and the GPU budget charged uploads to the wrong
+  texture.
 - A WebGL shader's variables without an initializer read as zero, as WebGL requires (the conformance suite's
   `uninitialized-local-global-variables`) and content relies on: the renderer used to hand the driver the shader as
   content wrote it, and Mesa -- Linux's driver for Intel and AMD GPUs, and llvmpipe -- took the undefined value at its
