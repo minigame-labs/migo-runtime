@@ -20,11 +20,16 @@ const DIRECTORY_OPEN_FLAGS: libc::c_int =
 const FILE_OPEN_FLAGS: libc::c_int =
     libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK;
 
-// Linux UAPI `openat2.h` values. libc exposes them for glibc targets but not
-// for every Android API level, while the syscall ABI is identical.
-#[cfg(any(target_os = "linux", target_os = "android"))]
+// openat2 resolves the whole path beneath the root in one call, on desktop Linux only. Android's and OpenHarmony's
+// app sandboxes filter system calls with seccomp, and a call outside the filter's list is not refused with ENOSYS --
+// the process is killed (SIGSYS): Android 14 kills an app that tries openat2. So nothing there may probe for it, and
+// those platforms take the descriptor walk below, which is as tight -- every component opened beneath the last with
+// O_NOFOLLOW -- at a few more calls.
+//
+// Linux UAPI `openat2.h` values.
+#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 const RESOLVE_NO_SYMLINKS: u64 = 0x04;
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 const RESOLVE_BENEATH: u64 = 0x08;
 
 /// Open a regular file below `base` without ever re-resolving an already
@@ -32,15 +37,15 @@ const RESOLVE_BENEATH: u64 = 0x08;
 pub(super) fn open_regular_for_read(root: &File, relative: &Path) -> Result<File, VfsOpenError> {
     let components = relative_components(relative)?;
 
-    // OpenHarmony targets report `target_os = "linux"` and
-    // `target_env = "ohos"`, so the Linux branch covers them too.
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    // Desktop Linux only; see RESOLVE_BENEATH.
+    #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
     {
         match openat2_regular(root.as_raw_fd(), relative) {
             Ok(file) => return ensure_regular(file),
-            // Older kernels (or libc/seccomp environments without openat2)
-            // use the descriptor walk below. Other errors came from a fully
-            // constrained resolution and must be returned as VFS errors.
+            // A kernel older than 5.6, or a container whose seccomp profile
+            // answers ENOSYS, uses the descriptor walk below. Other errors
+            // came from a fully constrained resolution and must be returned
+            // as VFS errors.
             Err(Openat2Error::Unavailable) => {}
             Err(Openat2Error::Open(error)) => return Err(map_open_error(error)),
         }
@@ -156,13 +161,13 @@ fn map_open_error(error: std::io::Error) -> VfsOpenError {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 enum Openat2Error {
     Unavailable,
     Open(std::io::Error),
 }
 
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 fn openat2_regular(parent_fd: libc::c_int, relative: &Path) -> Result<File, Openat2Error> {
     #[repr(C)]
     struct OpenHow {

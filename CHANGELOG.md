@@ -675,6 +675,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- On Android, an `InnerAudioContext` playing a file from the game's package no longer kills the app. The sandboxed
+  file open tried the `openat2` system call first and fell back when the kernel refused it, but Android's app sandbox
+  does not refuse a call outside its seccomp list -- it kills the process (SIGSYS), as the Android 14 emulator did. Only
+  desktop Linux tries `openat2` now; Android and OpenHarmony open the path one component at a time, as tightly.
 - WebGL texture units past the 32th -- up to the driver's `MAX_COMBINED_TEXTURE_IMAGE_UNITS`, which content may name
   and three.js uploads on -- are tracked like the first 32. The renderer used to call the driver for such a unit
   without moving its own record of the active unit, so the next switch back to a low unit was dropped as a repeat and
