@@ -486,8 +486,19 @@ class InnerAudioContext {
       // Duration will be updated as streaming progresses
       // Autoplay is also handled by native
     } catch (e) {
-      this.#fireListeners("error", { errCode: 10002, errMsg: errorMessage(e) });
+      this.#fireListeners("error", { errCode: loadErrorCode(e), errMsg: errorMessage(e) });
     }
+  }
+}
+
+// The reference's errCode for a source that would not load: 10002 a network error, 10003 a file error, 10004 a format
+// error, 10001 the system's own.
+function loadErrorCode(error) {
+  switch (error && error.name) {
+    case "AudioNetworkError": return 10002;
+    case "AudioFileError": return 10003;
+    case "EncodingError": return 10004;
+    default: return 10001;
   }
 }
 

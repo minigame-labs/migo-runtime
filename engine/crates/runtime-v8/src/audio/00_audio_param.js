@@ -32,6 +32,23 @@ class AudioEncodingError extends _PrimError {
 }
 core.registerErrorClass("EncodingError", AudioEncodingError);
 
+// What an InnerAudioContext source that could not be read or fetched is thrown as by the op; the context turns each
+// into the reference's errCode (02_inner_audio_context.js).
+class AudioFileError extends _PrimError {
+  constructor(msg) {
+    super(msg);
+    this.name = "AudioFileError";
+  }
+}
+core.registerErrorClass("AudioFileError", AudioFileError);
+class AudioNetworkError extends _PrimError {
+  constructor(msg) {
+    super(msg);
+    this.name = "AudioNetworkError";
+  }
+}
+core.registerErrorClass("AudioNetworkError", AudioNetworkError);
+
 
 class AudioParam {
   #value;

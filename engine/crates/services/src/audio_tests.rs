@@ -611,7 +611,7 @@ fn remote_audio_url_classification_is_case_insensitive_and_exact() {
 fn a_remote_source_is_admitted_before_it_reaches_the_queue() {
     let source = include_str!("audio.rs");
     let body = section(source, "pub async fn inner_audio_load_url", "\n}\n");
-    let admit = body.find("(sources.admit_remote)(&url)?").unwrap();
+    let admit = body.find("(sources.admit_remote)(&url)").unwrap();
     let enqueue = body.find("AudioCmd::InnerAudioLoadUrl").unwrap();
     assert!(admit < enqueue);
 
@@ -626,8 +626,25 @@ fn a_remote_source_is_admitted_before_it_reaches_the_queue() {
         1,
         "https://media.example/a.mp3".to_owned(),
     ));
-    assert_eq!(refused.unwrap_err().message, "not on the allow list");
+    let refused = refused.unwrap_err();
+    assert_eq!(refused.message, "not on the allow list");
+    assert_eq!(
+        refused.class, CLASS_AUDIO_NETWORK_ERROR,
+        "a refused URL is the source's network error"
+    );
     assert!(rx.try_recv().is_err());
+    // As is a URL that is not one.
+    let malformed = runtime().block_on(inner_audio_load_url(
+        hosted().0,
+        InnerAudioSources {
+            code_dir: None,
+            vfs: None,
+            admit_remote: |_: &url::Url| -> Result<(), ServiceError> { unreachable!() },
+        },
+        1,
+        "https://".to_owned(),
+    ));
+    assert_eq!(malformed.unwrap_err().class, CLASS_AUDIO_NETWORK_ERROR);
 }
 
 #[test]
@@ -683,6 +700,50 @@ fn a_packaged_sound_is_read_through_the_sandbox_and_loaded() {
     .unwrap();
     rt.block_on(load).unwrap().unwrap();
     let _ = fs::remove_dir_all(base);
+}
+
+/// Bytes the decoder refuses are the source's format error (10004 to content); any other failure of the load is the
+/// system's (10001).
+#[test]
+fn a_packaged_sound_the_decoder_refuses_is_a_format_error() {
+    for (code, class) in [
+        (ErrorCode::InvalidArgument, CLASS_ENCODING_ERROR),
+        (ErrorCode::Internal, CLASS_AUDIO_ERROR),
+    ] {
+        let (base, code_dir, vfs) = sandbox("migo_audio_load_refused");
+        fs::write(code_dir.join("clip.mp3"), b"not audio").unwrap();
+        let (tx, rx) = hosted();
+        let rt = runtime();
+        let load = rt.spawn(inner_audio_load_url(
+            tx,
+            InnerAudioSources {
+                code_dir: Some(code_dir.to_string_lossy().into_owned()),
+                vfs: Some(vfs),
+                admit_remote: |_: &url::Url| -> Result<(), ServiceError> { unreachable!() },
+            },
+            4,
+            "clip.mp3".to_owned(),
+        ));
+        let command = rt.block_on(async {
+            loop {
+                if let Ok(command) = rx.try_recv() {
+                    return command;
+                }
+                tokio::task::yield_now().await;
+            }
+        });
+        let AudioCmd::InnerAudioLoad { resp, .. } = command else {
+            panic!("a load of the file's bytes");
+        };
+        resp.send(Err(EngineError::from_detail(code, "refused")))
+            .unwrap();
+        assert_eq!(
+            rt.block_on(load).unwrap().unwrap_err().class,
+            class,
+            "{code:?}"
+        );
+        let _ = fs::remove_dir_all(base);
+    }
 }
 
 #[test]
@@ -811,6 +872,10 @@ fn resolve_local_src_rejects_absolute_path_outside_sandbox() {
     // must NOT resolve to a real filesystem path -- that would escape the sandbox.
     let error = resolve_local_src(code.to_str(), Some(&vfs), "/etc/passwd").unwrap_err();
     assert_eq!(error.message, "Local audio path is not permitted");
+    assert_eq!(
+        error.class, CLASS_AUDIO_FILE_ERROR,
+        "content hears a file error"
+    );
     assert!(!error.message.contains(&base.to_string_lossy()[..]));
     let _ = fs::remove_dir_all(base);
 }
@@ -846,6 +911,10 @@ fn vendor_specific_local_uri_schemes_are_rejected_without_echoing_them() {
         .block_on(open_local_audio_source(Some(vfs), source))
         .unwrap_err();
     assert_eq!(error.message, "Failed to open local audio file");
+    assert_eq!(
+        error.class, CLASS_AUDIO_FILE_ERROR,
+        "a file that is not there is a file error"
+    );
     assert!(!error.message.contains(original));
     let _ = fs::remove_dir_all(base);
 }

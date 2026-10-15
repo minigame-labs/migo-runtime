@@ -675,6 +675,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- An `InnerAudioContext` source that will not load is reported with the reference's `errCode` for why: 10003 for a
+  file that cannot be found, permitted or read, 10002 for a URL that is malformed, refused or unreachable, 10004 for
+  bytes no decoder reads, 10001 otherwise. Every such failure used to be 10002.
 - On Android, an `InnerAudioContext` playing a file from the game's package no longer kills the app. The sandboxed
   file open tried the `openat2` system call first and fell back when the kernel refused it, but Android's app sandbox
   does not refuse a call outside its seccomp list -- it kills the process (SIGSYS), as the Android 14 emulator did. Only
