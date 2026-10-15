@@ -33,6 +33,7 @@ mod global_surface;
 mod host_bridge_dispatch;
 mod host_events_contract;
 mod inner_audio_canplay;
+mod inner_audio_error_codes;
 mod input_clock;
 mod install_receipt;
 mod intl;

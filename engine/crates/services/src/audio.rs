@@ -57,8 +57,17 @@ pub use url::Url;
 pub const CLASS_AUDIO_ERROR: &str = "AudioError";
 
 /// The class of a `decodeAudioData` whose bytes could not be decoded. The specification rejects that
-/// with an `EncodingError`, which content tells apart from the other ways a decode can fail.
+/// with an `EncodingError`, which content tells apart from the other ways a decode can fail. An
+/// InnerAudioContext source that could not be decoded is one too: its format error (10004).
 pub const CLASS_ENCODING_ERROR: &str = "EncodingError";
+
+/// The class of an InnerAudioContext source file the load could not reach or read -- not there, not
+/// permitted, unreadable: content reports it as the reference's file error (10003).
+pub const CLASS_AUDIO_FILE_ERROR: &str = "AudioFileError";
+
+/// The class of an InnerAudioContext source URL the load could not fetch -- malformed, refused by the
+/// network gate, unreachable: the reference's network error (10002).
+pub const CLASS_AUDIO_NETWORK_ERROR: &str = "AudioNetworkError";
 
 /// Maximum compressed/encoded bytes one decode or load takes.
 pub const MAX_ENCODED_AUDIO_BYTES: usize = 16 * 1024 * 1024;
@@ -79,6 +88,17 @@ const LOCAL_AUDIO_READ_CHUNK_BYTES: usize = 8 * 1024;
 /// A failure with a sentence of its own.
 pub fn audio_error(message: impl Into<String>) -> ServiceError {
     ServiceError::classed(CLASS_AUDIO_ERROR, message)
+}
+
+/// A source file the load could not reach or read.
+fn file_error(message: impl Into<String>) -> ServiceError {
+    ServiceError::classed(CLASS_AUDIO_FILE_ERROR, message)
+}
+
+/// `error` as a failure to fetch a remote source: whatever stopped it, content hears a network error.
+fn as_network_error(mut error: ServiceError) -> ServiceError {
+    error.class = CLASS_AUDIO_NETWORK_ERROR;
+    error
 }
 
 /// An engine error, in the form the audio ops have always shown it.
@@ -1350,15 +1370,16 @@ pub async fn inner_audio_load_url<G>(
 where
     G: FnOnce(&url::Url) -> Result<(), ServiceError>,
 {
-    if let Some(url) = parse_remote_audio_url(&src)? {
-        (sources.admit_remote)(&url)?;
+    if let Some(url) = parse_remote_audio_url(&src).map_err(as_network_error)? {
+        (sources.admit_remote)(&url).map_err(as_network_error)?;
         return request(&tx, |resp| AudioCmd::InnerAudioLoadUrl {
             id,
             url: src,
             resp,
         })?
         .answer()
-        .await;
+        .await
+        .map_err(as_network_error);
     }
 
     let source = resolve_local_src(sources.code_dir.as_deref(), sources.vfs.as_deref(), &src)?;
@@ -1380,8 +1401,9 @@ where
     permit.shrink_to(data.capacity());
     let (resp, answer) = oneshot::channel();
     send_reserved(&tx, AudioCmd::InnerAudioLoad { id, data, resp }, permit)?;
-    // Waited for, but what the load learned is not this op's answer.
-    Pending(answer).answer().await.map(|_| ())
+    // Waited for, but what the load learned is not this op's answer -- except that bytes the decoder
+    // refused are the source's format error.
+    Pending(answer).answer_decode().await.map(|_| ())
 }
 
 /// A remote audio URL, without reclassifying ordinary local or VFS paths. URL
@@ -1462,7 +1484,7 @@ fn resolve_local_src(
 
         // Never include the rejected input or a host path in a JS-visible
         // error. The caller only needs to know that policy denied it.
-        return Err(audio_error("Local audio path is not permitted"));
+        return Err(file_error("Local audio path is not permitted"));
     }
 
     // No VFS (headless / tooling): fall back to code_dir-relative resolution.
@@ -1477,17 +1499,17 @@ async fn open_local_audio_source(
 ) -> Result<tokio::fs::File, ServiceError> {
     match source {
         LocalAudioSource::Sandboxed { virtual_path } => {
-            let vfs = vfs.ok_or_else(|| audio_error("Failed to open local audio file"))?;
+            let vfs = vfs.ok_or_else(|| file_error("Failed to open local audio file"))?;
             let file =
                 tokio::task::spawn_blocking(move || vfs.open_regular_for_read(&virtual_path))
                     .await
-                    .map_err(|_| audio_error("Failed to open local audio file"))?
-                    .map_err(|_| audio_error("Failed to open local audio file"))?;
+                    .map_err(|_| file_error("Failed to open local audio file"))?
+                    .map_err(|_| file_error("Failed to open local audio file"))?;
             Ok(tokio::fs::File::from_std(file))
         }
         LocalAudioSource::Unconfined { path } => tokio::fs::File::open(path)
             .await
-            .map_err(|_| audio_error("Failed to open local audio file")),
+            .map_err(|_| file_error("Failed to open local audio file")),
     }
 }
 
@@ -1530,7 +1552,7 @@ async fn read_capped_local_audio(file: tokio::fs::File) -> Result<Vec<u8>, Servi
     let file_len = usize::try_from(
         file.metadata()
             .await
-            .map_err(|_| audio_error("Failed to read local audio file"))?
+            .map_err(|_| file_error("Failed to read local audio file"))?
             .len(),
     )
     .unwrap_or(usize::MAX);
@@ -1557,7 +1579,7 @@ async fn read_capped_local_audio_with_capacity_hint(
         let count = file
             .read(&mut chunk)
             .await
-            .map_err(|_| audio_error("Failed to read local audio file"))?;
+            .map_err(|_| file_error("Failed to read local audio file"))?;
         if count == 0 {
             return Ok(data);
         }

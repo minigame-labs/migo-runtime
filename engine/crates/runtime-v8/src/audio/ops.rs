@@ -30,10 +30,19 @@ pub enum AudioError {
     #[error("{0}")]
     Message(String),
     /// Bytes `decodeAudioData` could not decode. Its own class so the JavaScript side can
-    /// turn it into the `EncodingError` the specification names.
+    /// turn it into the `EncodingError` the specification names -- and an InnerAudioContext's
+    /// format error.
     #[class("EncodingError")]
     #[error("{0}")]
     Encoding(String),
+    /// An InnerAudioContext source file that could not be reached or read: its file error.
+    #[class("AudioFileError")]
+    #[error("{0}")]
+    File(String),
+    /// An InnerAudioContext source URL that could not be fetched: its network error.
+    #[class("AudioNetworkError")]
+    #[error("{0}")]
+    Network(String),
 }
 
 impl From<&str> for AudioError {
@@ -62,11 +71,15 @@ impl From<migo_services::ServiceError> for AudioError {
     /// this type's, and the message is carried as it is.
     #[inline]
     fn from(e: migo_services::ServiceError) -> Self {
-        if e.class == service::CLASS_ENCODING_ERROR {
-            return AudioError::Encoding(e.message);
+        match e.class {
+            service::CLASS_ENCODING_ERROR => AudioError::Encoding(e.message),
+            service::CLASS_AUDIO_FILE_ERROR => AudioError::File(e.message),
+            service::CLASS_AUDIO_NETWORK_ERROR => AudioError::Network(e.message),
+            class => {
+                debug_assert_eq!(class, service::CLASS_AUDIO_ERROR);
+                AudioError::Message(e.message)
+            }
         }
-        debug_assert_eq!(e.class, service::CLASS_AUDIO_ERROR);
-        AudioError::Message(e.message)
     }
 }
 
