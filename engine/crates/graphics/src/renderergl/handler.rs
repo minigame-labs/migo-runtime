@@ -1404,9 +1404,11 @@ impl RendererGL {
                         fragment: meta.gl_shader_type == glow::FRAGMENT_SHADER,
                         extensions: gl.supported_extensions(),
                     };
-                    let amended = crate::backend::gl::glsl::for_driver(&source, &env);
-                    unsafe { gl.shader_source(sh, amended.as_deref().unwrap_or(&source)) };
-                    meta.source = Some(source.clone());
+                    let driver_source = crate::backend::gl::glsl::for_driver(&source, &env).unwrap_or(source);
+                    unsafe { gl.shader_source(sh, &driver_source) };
+                    // The program binary cache keys on what the driver compiled: a binary of the source as content
+                    // wrote it is not this shader's.
+                    meta.source = Some(driver_source);
                     if let Some(r) = resp {
                         r.send(Ok(()));
                     }
