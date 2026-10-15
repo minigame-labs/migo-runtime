@@ -1398,8 +1398,15 @@ impl RendererGL {
 
                 if let Some(sh) = meta.gl_handle {
                     meta.source_len = source.len();
+                    // The driver compiles the source with what WebGL requires and the driver need not do -- zero for
+                    // every variable left without a value -- written in; content reads back what it set.
+                    let env = crate::backend::gl::glsl::Environment {
+                        fragment: meta.gl_shader_type == glow::FRAGMENT_SHADER,
+                        extensions: gl.supported_extensions(),
+                    };
+                    let amended = crate::backend::gl::glsl::for_driver(&source, &env);
+                    unsafe { gl.shader_source(sh, amended.as_deref().unwrap_or(&source)) };
                     meta.source = Some(source.clone());
-                    unsafe { gl.shader_source(sh, &source) };
                     if let Some(r) = resp {
                         r.send(Ok(()));
                     }
