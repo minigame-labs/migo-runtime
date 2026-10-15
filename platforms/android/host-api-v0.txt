@@ -454,7 +454,7 @@ class com.migo.runtime.MigoGameView$EmptyActivityLifecycleCallbacks implements a
 public class com.migo.runtime.ConsoleLogView {
 public class com.migo.runtime.DebugOverlayView extends android.widget.LinearLayout {
 public class com.migo.runtime.MigoException extends java.lang.RuntimeException {
-public class com.migo.runtime.MigoGameActivity extends android.app.Activity implements android.view.SurfaceHolder$Callback,android.content.ComponentCallbacks2 {
+public class com.migo.runtime.MigoGameActivity extends android.app.Activity implements android.view.SurfaceHolder$Callback {
 public class com.migo.runtime.MigoGameView extends android.widget.FrameLayout implements android.view.SurfaceHolder$Callback {
 public final class com.migo.runtime.BuildConfig {
 public final class com.migo.runtime.BuildInfo {
