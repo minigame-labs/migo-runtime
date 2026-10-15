@@ -1003,6 +1003,9 @@ impl CanvasManager {
             .unwrap_or_default();
         let mut device_caps =
             crate::device_caps::DeviceCapabilities::detect(&gl, &egl_extensions, gles_major);
+        // The units content may name -- the facade asks the driver the same -- and so the units the budget tracks.
+        let texture_units =
+            unsafe { gl.get_parameter_i32(glow::MAX_COMBINED_TEXTURE_IMAGE_UNITS) }.max(0) as u32;
 
         // Resolve the AHardwareBuffer → EGLImage → GL texture import
         // function pointers exactly once, while the resource EGL context is
@@ -1256,7 +1259,7 @@ impl CanvasManager {
             framebuffers: HashMap::with_capacity(8),
             renderbuffers: HashMap::with_capacity(8),
             gl_state: CanvasStateTable::default(),
-            webgl_gpu_budget: crate::webgl_gpu_budget::WebGlGpuBudget::new(),
+            webgl_gpu_budget: crate::webgl_gpu_budget::WebGlGpuBudget::new(texture_units),
             vaos: HashMap::with_capacity(16),
             samplers: HashMap::with_capacity(8),
             syncs: HashMap::with_capacity(4),
