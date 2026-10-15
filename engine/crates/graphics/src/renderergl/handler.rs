@@ -1404,7 +1404,8 @@ impl RendererGL {
                         fragment: meta.gl_shader_type == glow::FRAGMENT_SHADER,
                         extensions: gl.supported_extensions(),
                     };
-                    let driver_source = crate::backend::gl::glsl::for_driver(&source, &env).unwrap_or(source);
+                    let driver_source =
+                        crate::backend::gl::glsl::for_driver(&source, &env).unwrap_or(source);
                     unsafe { gl.shader_source(sh, &driver_source) };
                     // The program binary cache keys on what the driver compiled: a binary of the source as content
                     // wrote it is not this shader's.

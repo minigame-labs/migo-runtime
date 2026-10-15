@@ -46,8 +46,8 @@ impl Line<'_> {
 }
 
 const PUNCTUATORS: [&str; 22] = [
-    "<<=", ">>=", "++", "--", "<<", ">>", "<=", ">=", "==", "!=", "&&", "||", "^^", "+=", "-=", "*=", "/=", "%=",
-    "&=", "^=", "|=", "##",
+    "<<=", ">>=", "++", "--", "<<", ">>", "<=", ">=", "==", "!=", "&&", "||", "^^", "+=", "-=",
+    "*=", "/=", "%=", "&=", "^=", "|=", "##",
 ];
 
 /// The source's logical lines, empty ones left out.
@@ -62,10 +62,14 @@ pub(super) fn lines(source: &str) -> Vec<Line<'_>> {
         match c {
             b'\n' | b'\r' => {
                 // \r\n, \n\r, \r and \n each end one line.
-                let pair = i + 1 < bytes.len() && (bytes[i + 1] == b'\n' || bytes[i + 1] == b'\r') && bytes[i + 1] != c;
+                let pair = i + 1 < bytes.len()
+                    && (bytes[i + 1] == b'\n' || bytes[i + 1] == b'\r')
+                    && bytes[i + 1] != c;
                 i += if pair { 2 } else { 1 };
                 if !current.is_empty() {
-                    lines.push(Line { tokens: std::mem::take(&mut current) });
+                    lines.push(Line {
+                        tokens: std::mem::take(&mut current),
+                    });
                 }
                 spaced = false;
             }
@@ -97,22 +101,25 @@ pub(super) fn lines(source: &str) -> Vec<Line<'_>> {
             _ => {
                 let start = i;
                 let kind = if c == b'_' || c.is_ascii_alphabetic() {
-                    while i < bytes.len() && (bytes[i] == b'_' || bytes[i].is_ascii_alphanumeric()) {
+                    while i < bytes.len() && (bytes[i] == b'_' || bytes[i].is_ascii_alphanumeric())
+                    {
                         i += 1;
                     }
                     Kind::Ident
-                } else if c.is_ascii_digit() || (c == b'.' && bytes.get(i + 1).is_some_and(u8::is_ascii_digit)) {
+                } else if c.is_ascii_digit()
+                    || (c == b'.' && bytes.get(i + 1).is_some_and(u8::is_ascii_digit))
+                {
                     i += 1;
                     while i < bytes.len() {
                         let d = bytes[i];
-                        if (d == b'+' || d == b'-') && matches!(bytes[i - 1], b'e' | b'E') && !is_hex(&source[start..i])
-                        {
-                            i += 1;
-                        } else if d == b'_' || d == b'.' || d.is_ascii_alphanumeric() {
-                            i += 1;
-                        } else {
+                        // An exponent's sign belongs to the number; a hexadecimal one has no exponent.
+                        let sign = (d == b'+' || d == b'-')
+                            && matches!(bytes[i - 1], b'e' | b'E')
+                            && !is_hex(&source[start..i]);
+                        if !(sign || d == b'_' || d == b'.' || d.is_ascii_alphanumeric()) {
                             break;
                         }
+                        i += 1;
                     }
                     Kind::Number
                 } else if let Some(p) = PUNCTUATORS.iter().find(|p| source[i..].starts_with(*p)) {
@@ -162,7 +169,9 @@ mod tests {
         assert_eq!(
             texts("vec3 a = vec3(1.5e-3, 0x1F, .5);\n#define X(y) y<<=2\n"),
             vec![
-                vec!["vec3", "a", "=", "vec3", "(", "1.5e-3", ",", "0x1F", ",", ".5", ")", ";"],
+                vec![
+                    "vec3", "a", "=", "vec3", "(", "1.5e-3", ",", "0x1F", ",", ".5", ")", ";"
+                ],
                 vec!["#", "define", "X", "(", "y", ")", "y", "<<=", "2"],
             ]
         );
@@ -172,7 +181,10 @@ mod tests {
     fn comments_are_whitespace_and_a_block_comment_does_not_end_its_line() {
         let all = lines("a /* one\ntwo */ b // c\nd");
         assert_eq!(all.len(), 2);
-        assert_eq!(all[0].tokens.iter().map(|t| t.text).collect::<Vec<_>>(), ["a", "b"]);
+        assert_eq!(
+            all[0].tokens.iter().map(|t| t.text).collect::<Vec<_>>(),
+            ["a", "b"]
+        );
         assert!(all[0].tokens[1].spaced);
         assert_eq!(all[1].tokens[0].text, "d");
     }
@@ -181,7 +193,10 @@ mod tests {
     fn a_backslash_newline_joins_lines() {
         let all = lines("#define A 1 \\\n + 2\nB");
         assert_eq!(all.len(), 2);
-        assert_eq!(all[0].tokens.iter().map(|t| t.text).collect::<Vec<_>>(), ["#", "define", "A", "1", "+", "2"]);
+        assert_eq!(
+            all[0].tokens.iter().map(|t| t.text).collect::<Vec<_>>(),
+            ["#", "define", "A", "1", "+", "2"]
+        );
         assert_eq!(all[1].tokens[0].text, "B");
     }
 

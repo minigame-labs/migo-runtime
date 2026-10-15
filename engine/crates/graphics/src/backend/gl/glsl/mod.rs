@@ -19,7 +19,8 @@ pub(crate) fn for_driver(source: &str, env: &Environment) -> Option<String> {
     if edits.is_empty() {
         return None;
     }
-    let mut out = String::with_capacity(source.len() + edits.iter().map(|e| e.text.len()).sum::<usize>());
+    let mut out =
+        String::with_capacity(source.len() + edits.iter().map(|e| e.text.len()).sum::<usize>());
     let mut at = 0;
     for edit in &edits {
         out.push_str(&source[at..edit.start]);
@@ -57,14 +58,25 @@ mod tests {
     fn a_local_is_initialized_where_it_is_declared() {
         let source = "precision mediump float;\nvoid main() {\n    vec2 uninit; // uninitialized\n    gl_FragColor = uninit.xyyy;\n}\n";
         let out = amended(source);
-        assert!(out.contains("vec2 uninit = vec2(0.0); // uninitialized"), "{out}");
-        assert_eq!(lines(&out), lines(source), "the driver's line numbers are the source's");
+        assert!(
+            out.contains("vec2 uninit = vec2(0.0); // uninitialized"),
+            "{out}"
+        );
+        assert_eq!(
+            lines(&out),
+            lines(source),
+            "the driver's line numbers are the source's"
+        );
     }
 
     #[test]
     fn a_global_is_initialized_where_it_is_declared() {
-        assert!(amended("precision mediump float;\nvec4 uninit;\nvoid main() { gl_FragColor = uninit; }")
-            .contains("vec4 uninit = vec4(0.0);"));
+        assert!(
+            amended(
+                "precision mediump float;\nvec4 uninit;\nvoid main() { gl_FragColor = uninit; }"
+            )
+            .contains("vec4 uninit = vec4(0.0);")
+        );
         assert!(amended("float uninit;\nvoid main() {}").contains("float uninit = 0.0;"));
         assert!(amended("int uninit;\nvoid main() {}").contains("int uninit = 0;"));
     }
@@ -78,7 +90,10 @@ mod tests {
     #[test]
     fn a_declarator_another_reads_is_zero_before_it_is_read() {
         let out = amended("void main() {\n    vec2 uninit, uninit2 = uninit;\n}");
-        assert!(out.contains("vec2 uninit = vec2(0.0), uninit2 = uninit;"), "{out}");
+        assert!(
+            out.contains("vec2 uninit = vec2(0.0), uninit2 = uninit;"),
+            "{out}"
+        );
     }
 
     #[test]
@@ -94,13 +109,28 @@ mod tests {
 
     #[test]
     fn structures_named_and_nameless() {
-        assert!(amended("struct S { vec4 v; };\nvoid main() { S uninit; }").contains("S uninit = S(vec4(0.0));"));
-        assert!(amended("struct S { vec4 v; };\nS uninit;\nvoid main() {}").contains("S uninit = S(vec4(0.0));"));
+        assert!(
+            amended("struct S { vec4 v; };\nvoid main() { S uninit; }")
+                .contains("S uninit = S(vec4(0.0));")
+        );
+        assert!(
+            amended("struct S { vec4 v; };\nS uninit;\nvoid main() {}")
+                .contains("S uninit = S(vec4(0.0));")
+        );
         // A structure without a name has no constructor: its members are set.
-        let local = amended("void main() {\n    struct { vec4 v; } uninit;\n    gl_FragColor = uninit.v;\n}");
-        assert!(local.contains("struct { vec4 v; } uninit; uninit.v = vec4(0.0);"), "{local}");
-        let global = amended("struct { vec4 v; } uninit;\nvoid main() {\n    gl_FragColor = uninit.v;\n}");
-        assert!(global.contains("void main() { uninit.v = vec4(0.0);"), "{global}");
+        let local = amended(
+            "void main() {\n    struct { vec4 v; } uninit;\n    gl_FragColor = uninit.v;\n}",
+        );
+        assert!(
+            local.contains("struct { vec4 v; } uninit; uninit.v = vec4(0.0);"),
+            "{local}"
+        );
+        let global =
+            amended("struct { vec4 v; } uninit;\nvoid main() {\n    gl_FragColor = uninit.v;\n}");
+        assert!(
+            global.contains("void main() { uninit.v = vec4(0.0);"),
+            "{global}"
+        );
     }
 
     #[test]
@@ -128,8 +158,14 @@ mod tests {
         let source = "#version 300 es\nprecision highp float;\nuniform vec3 light_globalAmbient;\nvec3 dDiffuseLight;\nlayout(location = 0) out highp vec4 pcFragColor0;\n#define gl_FragColor pcFragColor0\nvoid addAmbient() { dDiffuseLight += light_globalAmbient; }\nvoid main(void) { addAmbient(); gl_FragColor.rgb = dDiffuseLight; }\n";
         let out = amended(source);
         assert!(out.contains("vec3 dDiffuseLight = vec3(0.0);"), "{out}");
-        assert!(out.contains("uniform vec3 light_globalAmbient;\n"), "a uniform is the application's: {out}");
-        assert!(out.contains("out highp vec4 pcFragColor0;\n"), "an output is written, not read: {out}");
+        assert!(
+            out.contains("uniform vec3 light_globalAmbient;\n"),
+            "a uniform is the application's: {out}"
+        );
+        assert!(
+            out.contains("out highp vec4 pcFragColor0;\n"),
+            "an output is written, not read: {out}"
+        );
     }
 
     #[test]
@@ -145,7 +181,10 @@ mod tests {
         let source = "#ifdef GL_ES\nfloat a;\n#else\nfloat b;\n#endif\n#if defined(NOPE) || __VERSION__ >= 300\nfloat c;\n#endif\nvoid main() {}";
         let out = amended(source);
         assert!(out.contains("float a = 0.0;"));
-        assert!(out.contains("float b;\n") && out.contains("float c;\n"), "{out}");
+        assert!(
+            out.contains("float b;\n") && out.contains("float c;\n"),
+            "{out}"
+        );
     }
 
     #[test]
@@ -171,8 +210,13 @@ mod tests {
     #[test]
     fn a_declaration_that_is_a_whole_body_takes_only_an_initializer() {
         // No statement can follow it in its scope: an array there is left as it is.
-        let out = amended("void main() { if (true) float x; for (int i; i < 2; ++i) {} if (true) float y[2]; }");
-        assert!(out.contains("float x = 0.0;") && out.contains("int i = 0;"), "{out}");
+        let out = amended(
+            "void main() { if (true) float x; for (int i; i < 2; ++i) {} if (true) float y[2]; }",
+        );
+        assert!(
+            out.contains("float x = 0.0;") && out.contains("int i = 0;"),
+            "{out}"
+        );
         assert!(out.contains("float y[2]; }"), "{out}");
     }
 
@@ -180,7 +224,12 @@ mod tests {
     fn statements_of_every_kind_are_read() {
         let source = "void main() {\n  int n = 2;\n  switch (n) { case 1: float a; break; default: vec2 b; }\n  do { mat3 m; } while (false);\n  while (n > 0) { n--; uvec2 u; }\n}";
         let es3 = amended(&format!("#version 300 es\n{source}"));
-        for expected in ["float a = 0.0;", "vec2 b = vec2(0.0);", "mat3 m = mat3(0.0);", "uvec2 u = uvec2(0u);"] {
+        for expected in [
+            "float a = 0.0;",
+            "vec2 b = vec2(0.0);",
+            "mat3 m = mat3(0.0);",
+            "uvec2 u = uvec2(0u);",
+        ] {
             assert!(es3.contains(expected), "{expected}: {es3}");
         }
     }
@@ -210,4 +259,3 @@ mod tests {
         assert!(for_driver(source, &env).is_some_and(|out| out.contains("float a = 0.0;")));
     }
 }
-

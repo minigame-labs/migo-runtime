@@ -10,7 +10,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 
-use super::lexer::{lines, Kind, Token};
+use super::lexer::{Kind, Token, lines};
 
 /// What the driver predefines for a shader.
 pub(crate) struct Environment<'e> {
@@ -65,7 +65,10 @@ struct Conditional {
     seen_else: bool,
 }
 
-pub(super) fn preprocess<'a>(source: &'a str, env: &Environment) -> Result<Preprocessed<'a>, Unreadable> {
+pub(super) fn preprocess<'a>(
+    source: &'a str,
+    env: &Environment,
+) -> Result<Preprocessed<'a>, Unreadable> {
     let mut pp = Preprocessor {
         macros: HashMap::new(),
         version: 100,
@@ -91,7 +94,11 @@ pub(super) fn preprocess<'a>(source: &'a str, env: &Environment) -> Result<Prepr
         let Some(name) = words.first() else { continue };
         match name.text {
             "if" | "ifdef" | "ifndef" => {
-                let value = if active { pp.condition(name.text, &words[1..])? } else { false };
+                let value = if active {
+                    pp.condition(name.text, &words[1..])?
+                } else {
+                    false
+                };
                 conditionals.push(Conditional {
                     active: active && value,
                     taken: value,
@@ -131,7 +138,10 @@ pub(super) fn preprocess<'a>(source: &'a str, env: &Environment) -> Result<Prepr
                 if index != 0 {
                     return Err(Unreadable);
                 }
-                pp.version = words.get(1).and_then(|n| n.text.parse().ok()).ok_or(Unreadable)?;
+                pp.version = words
+                    .get(1)
+                    .and_then(|n| n.text.parse().ok())
+                    .ok_or(Unreadable)?;
             }
             // Line numbers mean nothing to what is read here.
             "line" | "extension" | "pragma" => {}
@@ -172,7 +182,10 @@ impl<'a> Preprocessor<'a, '_> {
     }
 
     fn define(&mut self, words: &[Token<'a>]) -> Result<(), Unreadable> {
-        let name = words.first().filter(|n| n.kind == Kind::Ident).ok_or(Unreadable)?;
+        let name = words
+            .first()
+            .filter(|n| n.kind == Kind::Ident)
+            .ok_or(Unreadable)?;
         // A parenthesis right after the name, with no space, makes a function-like macro.
         if words.get(1).is_some_and(|p| p.is("(") && !p.spaced) {
             let mut params = Vec::new();
@@ -213,7 +226,10 @@ impl<'a> Preprocessor<'a, '_> {
     fn condition(&self, directive: &str, words: &[Token<'a>]) -> Result<bool, Unreadable> {
         match directive {
             "ifdef" | "ifndef" => {
-                let name = words.first().filter(|n| n.kind == Kind::Ident).ok_or(Unreadable)?;
+                let name = words
+                    .first()
+                    .filter(|n| n.kind == Kind::Ident)
+                    .ok_or(Unreadable)?;
                 Ok(self.is_defined(name.text) == (directive == "ifdef"))
             }
             _ => {
@@ -270,7 +286,9 @@ impl<'a> Preprocessor<'a, '_> {
             "__FILE__" | "__LINE__" => Some(Cow::Borrowed("0")),
             "__VERSION__" => Some(Cow::Owned(self.version.to_string())),
             // ESSL 3.00 defines it in both stages; ESSL 1.00 where a fragment shader has high precision.
-            "GL_FRAGMENT_PRECISION_HIGH" if self.env.fragment || self.version >= 300 => Some(Cow::Borrowed("1")),
+            "GL_FRAGMENT_PRECISION_HIGH" if self.env.fragment || self.version >= 300 => {
+                Some(Cow::Borrowed("1"))
+            }
             _ if name.starts_with("GL_") && self.env.extensions.contains(name) => {
                 Some(Cow::Borrowed("1"))
             }
@@ -337,11 +355,16 @@ impl<'a> Preprocessor<'a, '_> {
                     if args.len() != params.len() {
                         return Err(Unreadable);
                     }
-                    let expanded: Vec<Vec<PpToken<'a>>> =
-                        args.into_iter().map(|a| self.expand(a)).collect::<Result<_, _>>()?;
+                    let expanded: Vec<Vec<PpToken<'a>>> = args
+                        .into_iter()
+                        .map(|a| self.expand(a))
+                        .collect::<Result<_, _>>()?;
                     let mut replacement = Vec::new();
                     for t in &definition.body {
-                        match params.iter().position(|p| t.kind == Kind::Ident && *p == t.text) {
+                        match params
+                            .iter()
+                            .position(|p| t.kind == Kind::Ident && *p == t.text)
+                        {
                             Some(n) => replacement.extend(expanded[n].iter().map(|a| PpToken {
                                 span: None,
                                 hide: hide.clone(),
@@ -364,12 +387,12 @@ impl<'a> Preprocessor<'a, '_> {
         }
         // What is left of the driver's own macros.
         for t in &mut out {
-            if t.kind == Kind::Ident {
-                if let Some(value) = self.predefined(&t.text) {
-                    t.kind = Kind::Number;
-                    t.text = Cow::Owned(value.into_owned());
-                    t.span = None;
-                }
+            if t.kind == Kind::Ident
+                && let Some(value) = self.predefined(&t.text)
+            {
+                t.kind = Kind::Number;
+                t.text = Cow::Owned(value.into_owned());
+                t.span = None;
             }
         }
         Ok(out)
@@ -404,7 +427,11 @@ impl Expression<'_, '_> {
             return self.unary();
         }
         let mut left = self.binary(level + 1)?;
-        while let Some(op) = self.peek().filter(|op| LEVELS[level].contains(op)).map(str::to_owned) {
+        while let Some(op) = self
+            .peek()
+            .filter(|op| LEVELS[level].contains(op))
+            .map(str::to_owned)
+        {
             self.at += 1;
             let right = self.binary(level + 1)?;
             left = match op.as_str() {
@@ -419,8 +446,12 @@ impl Expression<'_, '_> {
                 ">" => i64::from(left > right),
                 "<=" => i64::from(left <= right),
                 ">=" => i64::from(left >= right),
-                "<<" => left.checked_shl(u32::try_from(right).map_err(|_| Unreadable)?).ok_or(Unreadable)?,
-                ">>" => left.checked_shr(u32::try_from(right).map_err(|_| Unreadable)?).ok_or(Unreadable)?,
+                "<<" => left
+                    .checked_shl(u32::try_from(right).map_err(|_| Unreadable)?)
+                    .ok_or(Unreadable)?,
+                ">>" => left
+                    .checked_shr(u32::try_from(right).map_err(|_| Unreadable)?)
+                    .ok_or(Unreadable)?,
                 "+" => left.wrapping_add(right),
                 "-" => left.wrapping_sub(right),
                 "*" => left.wrapping_mul(right),
@@ -462,7 +493,10 @@ impl Expression<'_, '_> {
 /// A GLSL ES integer literal's value: decimal, octal or hexadecimal, with an optional `u`.
 fn integer(text: &str) -> Option<i64> {
     let digits = text.strip_suffix(['u', 'U']).unwrap_or(text);
-    if let Some(hex) = digits.strip_prefix("0x").or_else(|| digits.strip_prefix("0X")) {
+    if let Some(hex) = digits
+        .strip_prefix("0x")
+        .or_else(|| digits.strip_prefix("0X"))
+    {
         i64::from_str_radix(hex, 16).ok()
     } else if digits.len() > 1 && digits.starts_with('0') {
         i64::from_str_radix(&digits[1..], 8).ok()

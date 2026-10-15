@@ -67,7 +67,10 @@ fn builtin(name: &str) -> Option<Type> {
         "uint" => Type::Scalar(Scalar::Uint),
         "bool" => Type::Scalar(Scalar::Bool),
         "void" => Type::Opaque,
-        _ if name.starts_with("sampler") || name.starts_with("isampler") || name.starts_with("usampler") => {
+        _ if name.starts_with("sampler")
+            || name.starts_with("isampler")
+            || name.starts_with("usampler") =>
+        {
             Type::Opaque
         }
         _ => {
@@ -111,10 +114,30 @@ struct Structure {
     fields: Vec<Field>,
 }
 
-const STORAGE: [&str; 9] = ["const", "uniform", "in", "out", "inout", "attribute", "varying", "buffer", "shared"];
+const STORAGE: [&str; 9] = [
+    "const",
+    "uniform",
+    "in",
+    "out",
+    "inout",
+    "attribute",
+    "varying",
+    "buffer",
+    "shared",
+];
 const OTHER_QUALIFIERS: [&str; 12] = [
-    "centroid", "flat", "smooth", "noperspective", "invariant", "precise", "patch", "sample", "highp", "mediump",
-    "lowp", "coherent",
+    "centroid",
+    "flat",
+    "smooth",
+    "noperspective",
+    "invariant",
+    "precise",
+    "patch",
+    "sample",
+    "highp",
+    "mediump",
+    "lowp",
+    "coherent",
 ];
 
 /// One declarator of a declaration.
@@ -172,17 +195,18 @@ pub(super) fn edits(tokens: &[PpToken<'_>], version: u32) -> Result<Vec<Edit>, U
     };
     for declaration in globals.iter().filter(|d| d.ordinary) {
         for declarator in declaration.declarators.iter().filter(|d| !d.initialized) {
-            if declarator.dims.is_empty() {
-                if let Some(zero) = w.zero(declaration.ty) {
-                    w.insert_after(&mut edits, declarator.end, format!(" = {zero}"));
-                    continue;
-                }
+            if declarator.dims.is_empty()
+                && let Some(zero) = w.zero(declaration.ty)
+            {
+                w.insert_after(&mut edits, declarator.end, format!(" = {zero}"));
+                continue;
             }
             // Visible in main only when declared before it.
-            if main.is_some_and(|(first, _)| declaration.first < first) {
-                if let Some(statements) = w.assign(&declarator.name, declaration.ty, &declarator.dims, 0) {
-                    prologue.push(statements);
-                }
+            if main.is_some_and(|(first, _)| declaration.first < first)
+                && let Some(statements) =
+                    w.assign(&declarator.name, declaration.ty, &declarator.dims, 0)
+            {
+                prologue.push(statements);
             }
         }
     }
@@ -225,7 +249,13 @@ impl Writer<'_, '_, '_> {
                 let fields = structure
                     .fields
                     .iter()
-                    .map(|f| if f.dims.is_empty() { self.zero(f.ty) } else { None })
+                    .map(|f| {
+                        if f.dims.is_empty() {
+                            self.zero(f.ty)
+                        } else {
+                            None
+                        }
+                    })
                     .collect::<Option<Vec<_>>>()?;
                 format!("{name}({})", fields.join(", "))
             }
@@ -237,12 +267,18 @@ impl Writer<'_, '_, '_> {
     fn assign(&self, lhs: &str, ty: Type, dims: &[Dim], depth: usize) -> Option<String> {
         if let Some((outer, inner)) = dims.split_first() {
             let index = format!("_webgl_zi{depth}");
-            let size = if self.es3 { format!("{lhs}.length()") } else { outer.0.clone() };
+            let size = if self.es3 {
+                format!("{lhs}.length()")
+            } else {
+                outer.0.clone()
+            };
             if size.is_empty() {
                 return None;
             }
             let body = self.assign(&format!("{lhs}[{index}]"), ty, inner, depth + 1)?;
-            return Some(format!("for (int {index} = 0; {index} < {size}; ++{index}) {{ {body} }}"));
+            return Some(format!(
+                "for (int {index} = 0; {index} < {size}; ++{index}) {{ {body} }}"
+            ));
         }
         if let Some(zero) = self.zero(ty) {
             return Some(format!("{lhs} = {zero};"));
@@ -258,7 +294,11 @@ impl Writer<'_, '_, '_> {
 
     fn insert_after(&self, edits: &mut Vec<Edit>, token: usize, text: String) {
         if let Some((_, end)) = self.t[token].span {
-            edits.push(Edit { start: end, end, text });
+            edits.push(Edit {
+                start: end,
+                end,
+                text,
+            });
         }
     }
 }
@@ -334,7 +374,11 @@ impl Reader<'_, '_> {
 
     fn type_name(&self, at: usize) -> Option<Type> {
         let token = self.t.get(at).filter(|t| t.is_ident())?;
-        builtin(&token.text).or_else(|| self.names.get(token.text.as_ref()).map(|&s| Type::Struct(s)))
+        builtin(&token.text).or_else(|| {
+            self.names
+                .get(token.text.as_ref())
+                .map(|&s| Type::Struct(s))
+        })
     }
 
     /// Qualifiers at the cursor: whether none of them stores the variable anywhere but where it is declared.
@@ -413,7 +457,10 @@ impl Reader<'_, '_> {
         while self.here() == "[" {
             let open = self.i;
             self.skip_balanced()?;
-            let size: Vec<&str> = self.t[open + 1..self.i - 1].iter().map(|t| t.text.as_ref()).collect();
+            let size: Vec<&str> = self.t[open + 1..self.i - 1]
+                .iter()
+                .map(|t| t.text.as_ref())
+                .collect();
             dims.push(Dim(size.join(" ")));
         }
         Ok(dims)
@@ -686,25 +733,38 @@ impl Reader<'_, '_> {
             es3: self.es3,
         };
         let last = declaration.declarators.len() - 1;
-        for (n, declarator) in declaration.declarators.iter().enumerate().filter(|(_, d)| !d.initialized) {
-            if declarator.dims.is_empty() {
-                if let Some(zero) = writer.zero(declaration.ty) {
-                    writer.insert_after(&mut self.edits, declarator.end, format!(" = {zero}"));
-                    continue;
-                }
+        for (n, declarator) in declaration
+            .declarators
+            .iter()
+            .enumerate()
+            .filter(|(_, d)| !d.initialized)
+        {
+            if declarator.dims.is_empty()
+                && let Some(zero) = writer.zero(declaration.ty)
+            {
+                writer.insert_after(&mut self.edits, declarator.end, format!(" = {zero}"));
+                continue;
             }
             if alone {
                 continue;
             }
-            let Some(statements) = writer.assign(&declarator.name, declaration.ty, &declarator.dims, 0) else {
+            let Some(statements) =
+                writer.assign(&declarator.name, declaration.ty, &declarator.dims, 0)
+            else {
                 continue;
             };
             if n == last {
-                writer.insert_after(&mut self.edits, declaration.semicolon, format!(" {statements}"));
+                writer.insert_after(
+                    &mut self.edits,
+                    declaration.semicolon,
+                    format!(" {statements}"),
+                );
                 continue;
             }
             // A declarator after this one may read it: the declaration is split here, and the rest declared again.
-            let Some(comma) = declarator.comma.and_then(|c| self.t[c].span) else { continue };
+            let Some(comma) = declarator.comma.and_then(|c| self.t[c].span) else {
+                continue;
+            };
             let again = match (&declaration.defines, anonymous) {
                 (_, true) => continue,
                 (Some(name), _) => name.clone(),
@@ -714,7 +774,11 @@ impl Reader<'_, '_> {
                     if words.iter().any(|t| t.span.is_none()) {
                         continue;
                     }
-                    words.iter().map(|t| t.text.as_ref()).collect::<Vec<_>>().join(" ")
+                    words
+                        .iter()
+                        .map(|t| t.text.as_ref())
+                        .collect::<Vec<_>>()
+                        .join(" ")
                 }
             };
             self.edits.push(Edit {
