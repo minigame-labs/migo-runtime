@@ -248,12 +248,17 @@ impl TextureUnitLedger {
 
     #[inline]
     fn set(&mut self, unit: u32, target: u32, texture: Option<TextureId>) {
-        let Some(i) = Self::slot(unit, target) else { return };
+        let Some(i) = Self::slot(unit, target) else {
+            return;
+        };
         if i >= self.slots.len() {
             if texture.is_none() {
                 return;
             }
-            self.slots.resize((i / BINDING_TARGETS.len() + 1) * BINDING_TARGETS.len(), None);
+            self.slots.resize(
+                (i / BINDING_TARGETS.len() + 1) * BINDING_TARGETS.len(),
+                None,
+            );
         }
         self.slots[i] = texture;
     }
@@ -483,7 +488,8 @@ impl WebGlGpuBudget {
 
     /// `unit` names one of the context's texture image units: `TEXTURE0` up to the driver's count.
     pub(crate) fn is_texture_unit(&self, unit: u32) -> bool {
-        unit.checked_sub(GL_TEXTURE0).is_some_and(|index| index < self.texture_units)
+        unit.checked_sub(GL_TEXTURE0)
+            .is_some_and(|index| index < self.texture_units)
     }
 
     pub(crate) fn active_texture(&mut self, canvas_id: CanvasId, unit: u32) {
@@ -2041,7 +2047,11 @@ mod tests {
             .unwrap();
         budget.commit(back);
 
-        assert_eq!(budget.delete_texture(32), 64, "the upload on unit 191 is its texture's");
+        assert_eq!(
+            budget.delete_texture(32),
+            64,
+            "the upload on unit 191 is its texture's"
+        );
         assert_eq!(budget.delete_texture(31), 16, "unit 0 is its own again");
         assert_eq!(scope.process_usage(), 0);
     }
