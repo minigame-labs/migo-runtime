@@ -269,6 +269,11 @@ impl tower_service::Service<Name> for StaticAddresses {
 /// A proxy is the machine owner's egress, not something content names, so the engine resolves and connects to it
 /// without the address policy -- a proxy on the loopback is the common case -- and never resolves `dst` itself.
 /// HTTPS is tunnelled with CONNECT; plain HTTP is written to the proxy in absolute form.
+///
+/// So the address rule does not reach past a proxy: an allowed domain that resolves to a private address is
+/// connected to if the proxy connects to it. Resolving `dst` here first would break the networks a proxy exists
+/// for, where the client cannot resolve outside names at all, and would still not bind what the proxy resolves.
+/// DATA-HANDLING.md states the exception.
 async fn through_proxy(
     proxy: &Intercept,
     dst: &Uri,

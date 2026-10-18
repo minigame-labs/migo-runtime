@@ -82,6 +82,7 @@ NetworkPolicy policy = new NetworkPolicy.Builder()
 - `setAllowPlainHttp(true)` 才允许 `http://` 与 `ws://`。
 - `setAllowLocalNetwork(true)` 让 SOCKET、TCP、UDP 能访问本机所在局域网的其他设备(联机对战);REQUEST、DOWNLOAD、UPLOAD 无论如何都到不了局域网和回环地址。
 - UDP 套接字只收得到它能发往的对端发来的数据报:给 UDP 授权了域名时是公网对端,`setAllowLocalNetwork(true)` 时是局域网,本机永远不行。一个对谁都发不出去的游戏绑定不了 UDP 端口。
+- 如果机器给 HTTP 配了代理(`HTTP_PROXY` 之类),域名由代理去解析:允许的域名最终连到哪里,由代理决定。
 - 重定向按发起请求的通道检查:一次被 302 到别的域名的下载,仍然要过 DOWNLOAD 的白名单。
 
 被拒的请求会收到写明 API、通道和域名的错误,例如 `fetch: domain 'x.example.com' is not in the request allowlist`。
