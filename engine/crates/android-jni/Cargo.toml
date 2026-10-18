@@ -9,9 +9,14 @@ edition = "2024"
 # boundary. `platform` stays an rlib so its policy and presenters can be reused
 # by host tests, native C packages, and standalone tools without imposing
 # Android's artifact shape on any other target.
+#
+# `test = false` because it has no tests and its JNI half compiles only for Android,
+# so a host test binary of it could only ever report zero. Cargo then builds none,
+# and the host test audit asks no step to run one.
 [lib]
 name = "migo"
 crate-type = ["cdylib"]
+test = false
 
 # Mirrored verbatim from `platform` so the build scripts can keep passing
 # `--no-default-features --features profile-<slim|full>` unchanged.

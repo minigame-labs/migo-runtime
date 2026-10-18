@@ -386,19 +386,28 @@ def resolve_crate(crate_directory: pathlib.Path):
     # engine/crates/<name> -> repository root.
     root = crate_directory.parents[2]
     source_root = crate_directory / "src"
-    entry = source_root / "lib.rs"
+    # Both default crate roots, because a package may have a lib and a bin side by
+    # side: walking only `lib.rs` reported a sibling `main.rs` and its whole module
+    # tree as unreached. Any other bin layout is still reported unreached, which
+    # stops the run rather than guessing at its conditions.
+    entries = [
+        entry
+        for entry in (source_root / "lib.rs", source_root / "main.rs")
+        if entry.is_file()
+    ]
 
     def relative(path: pathlib.Path) -> str:
         return path.relative_to(root).as_posix()
 
     inherited: dict[pathlib.Path, set[str]] = collections.defaultdict(set)
-    if not entry.is_file():
+    if not entries:
         return {}, {
             relative(path) for path in sorted(source_root.rglob("*.rs"))
         }
 
-    queue = [(entry, frozenset())]
-    inherited[entry] = set()
+    queue = [(entry.resolve(), frozenset()) for entry in entries]
+    for entry, _ in queue:
+        inherited[entry] = set()
     while queue:
         module_file, conditions = queue.pop()
         text = module_file.read_text(encoding="utf-8", errors="replace")

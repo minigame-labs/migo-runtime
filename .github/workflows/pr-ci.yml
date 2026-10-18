@@ -895,7 +895,7 @@ jobs:
       # lints gate again, and the style backlog still just warns.
       - name: Run clippy lints (host-buildable crates)
         working-directory: engine
-        run: cargo clippy -p migo-shared -p migo-io -p migo-icu-data -p migo-runtime-v8 -p migo-capi-abi -p migo-frame-wire -p migo-frame-decode -p migo-alloc-probe -p migo-contention-probe -p migo-executor-probe --all-targets
+        run: cargo clippy -p migo-shared -p migo-io -p migo-icu-data -p migo-runtime-v8 -p migo-services -p migo-capi-abi -p migo-frame-wire -p migo-frame-decode -p migo-alloc-probe -p migo-contention-probe -p migo-executor-probe --all-targets
 
       # Blocking gate for the crates that need no extra system packages (shared +
       # io + runtime-v8). All their lib tests must pass. Previously-masked failures
@@ -943,6 +943,11 @@ jobs:
           # Its cases are `#[ignore]`d and belong to the ASTC gate, but a
           # binary nothing builds is one that stops building unnoticed.
           cargo test -p migo-io --tests
+          # The network gate and every socket and HTTP client: 272 tests in the
+          # lib, which no job ran because the test-binary audit counted only
+          # `tests/`. `code-signing` adds the signed-mount test and removes none,
+          # since every cfg in the crate is positive.
+          cargo test -p migo-services --lib --features code-signing
           cargo test -p migo-capi-abi --all-targets
           cargo test -p migo-frame-wire --all-targets
           cargo test -p migo-frame-decode --all-targets
@@ -1031,12 +1036,7 @@ jobs:
             timeout 300 sudo apt-get install -y \
               cmake ninja-build g++ ripgrep xvfb xauth \
               qt6-base-dev qt6-base-dev-tools qt6-qpa-plugins \
-              libx11-dev libxkbcommon-x11-dev libxcb-cursor0 \
-              libasound2-dev || return 1
-            # libasound2-dev is for the player, not for Qt: the player pulls
-            # cpal, which pulls alsa-sys, whose build script needs the ALSA
-            # headers. Without it `cargo check -p migo-player` fails in a way
-            # that reads like a code error and is not one.
+              libx11-dev libxkbcommon-x11-dev libxcb-cursor0 || return 1
           }
           install_pkgs || {
             echo "Qt/X11 package install failed; retrying once" >&2
@@ -1049,17 +1049,6 @@ jobs:
       # interposing malloc, so the combination breaks silently if nobody runs it.
       - name: Linux Qt Host Kit contract
         run: bash scripts/test-linux-qt-host-kit.sh --sanitize
-
-      # The Linux player is the conformance suite's *reference* runner: every
-      # other platform must produce the same verdict lines from the same
-      # bundles, so if it does not build, the cross-platform claim has no
-      # referee. It is a workspace member but not a default member (it links
-      # X11/GL, which headless jobs do not have), so `cargo build` never reaches
-      # it -- and a signature change in `migo-core` broke it while pr-ci stayed
-      # green on every job. This is the one Linux job that installs the desktop
-      # stack, so it is where the player can be type-checked at all.
-      - name: Linux player type-checks
-        run: cd engine && cargo check -p migo-player --locked
 
   # ── Job 4: Android AAR build — the real "does the whole project compile,
   # link, and embed the profile/ABI snapshot" gate (cross-compiles graphics/audio
@@ -1233,7 +1222,7 @@ jobs:
             reports/*.json
           if-no-files-found: warn
 
-  # ── Job 5: host engine tests — graphics, core, capi, platform ────────
+  # ── Job 5: host engine tests — graphics, core, capi, platform, audio, player ─
   # These four crates' 240 lib tests ran in no job. The reason given for excluding
   # them was that the Android AAR build is "their real gate", which is true for
   # compilation and false for tests: build-aar.sh cross-compiles them and runs
@@ -1446,9 +1435,9 @@ jobs:
 
       - name: Run clippy lints (crates needing host system packages)
         working-directory: engine
-        run: cargo clippy -p migo-graphics -p migo-core -p migo-capi -p migo-platform -p migo-audio --all-targets
+        run: cargo clippy -p migo-graphics -p migo-core -p migo-capi -p migo-platform -p migo-audio -p migo-player --all-targets
 
-      - name: Run Rust tests (graphics, core, capi, platform, audio)
+      - name: Run Rust tests (graphics, core, capi, platform, audio, player)
         working-directory: engine
         run: |
           # `--tests`: the five golden-image and decode binaries under
@@ -1462,5 +1451,14 @@ jobs:
           # Here rather than in the no-extra-packages job: cpal links ALSA, which
           # only this job installs.
           cargo test -p migo-audio --lib
+          # The conformance suite's reference runner: every other platform must
+          # produce its verdict lines from the same bundles, so if it does not
+          # build the cross-platform claim has no referee. It is not a default
+          # member, so no `cargo build` reaches it, and a signature change in
+          # `migo-core` once broke it while every job stayed green. Here because
+          # it links what core and platform link and nothing more -- `x11-dl`
+          # opens libX11 at run time -- and this job has already built all of it.
+          # A type-check elsewhere covered its build and none of its tests.
+          cargo test -p migo-player --bins
         env:
           RUST_BACKTRACE: 1

@@ -99,6 +99,14 @@ HOST_CARGO_STEPS=(
     # emitter that stopped compiling would otherwise be found by
     # `test-astc-encoder.sh` in CI rather than here.
     "test -p migo-io --tests"
+    # The network gate, the socket and HTTP clients, fetch and content mounting:
+    # 272 tests, all in the lib, which ran in no step and no job from the day the
+    # crate was split out, because the test-binary audit only counted `tests/`.
+    # `--features code-signing` because every cfg on it in this crate is positive,
+    # so this build runs every test the default one does plus the signed-mount test
+    # the external-frame product depends on; the default build is compiled by the
+    # workspace step above.
+    "test -p migo-services --lib --features code-signing"
     # `--tests` rather than `--lib` for the two crates that own integration
     # binaries: `snapshot_roundtrip` and `worker_snapshot_roundtrip` for the
     # runtime, and the five golden-image and decode binaries for graphics. Every
@@ -113,6 +121,10 @@ HOST_CARGO_STEPS=(
     "test -p migo-core --lib"
     "test -p migo-capi --lib"
     "test -p migo-platform --lib"
+    # The conformance suite's reference runner. Its tests pin teardown order -- the
+    # Host thread is joined before any native resource it may still touch is
+    # dropped, including when that thread panicked -- and lived in a bin nothing ran.
+    "test -p migo-player --bins"
     # The Slim product profile, which nothing ran until 2026-08-08. Every crate
     # above declares `default = ["profile-full"]`, so a plain `cargo test` compiles
     # `api-media`, `api-commerce`, `api-connectivity`, `api-sensors` and

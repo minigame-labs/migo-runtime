@@ -111,11 +111,21 @@ add_stub_crate() {
     if [[ "$name" == "io" ]]; then
         dependency='shared = { path = "../shared", package = "migo-shared" }'
     fi
+    # `demo` is the crate no host step names, so it carries no tests and says so the
+    # way the real tree's test-less targets do. A lib cargo builds a test binary
+    # from is one the audit requires a step for, and every fixture would otherwise
+    # fail there rather than on the property it exists to check.
+    local lib_section=""
+    if [[ "$name" == "demo" ]]; then
+        lib_section=$'[lib]\ntest = false'
+    fi
     cat > "$repo/engine/$group/$name/Cargo.toml" <<EOF
 [package]
 name = "migo-$name"
 version = "0.0.0"
 edition = "2021"
+
+$lib_section
 
 [dependencies]
 $dependency
@@ -128,20 +138,20 @@ default = ["profile-full"]
 profile-full = []
 profile-slim = []
 EOF
-    cat > "$repo/engine/$group/$name/src/lib.rs" <<'EOF'
-pub fn present() -> bool {
-    true
+    printf 'pub fn present() -> bool {\n    true\n}\n' > "$repo/engine/$group/$name/src/lib.rs"
+    if [[ "$name" != "demo" ]]; then
+        printf '%s\n' "$STUB_UNIT_TEST" >> "$repo/engine/$group/$name/src/lib.rs"
+    fi
 }
 
+STUB_UNIT_TEST='
 #[cfg(test)]
 mod tests {
     #[test]
     fn present() {
         assert!(super::present());
     }
-}
-EOF
-}
+}'
 
 new_fixture() {
     local name="$1"
@@ -279,6 +289,50 @@ status=0
 output="$(run_verify "$repo" --plan-only)" || status=$?
 assert_status "$status" 1 "a test binary no host step runs fails the run"
 assert_contains "$output" "migo-demo::orphan" "the unrun test binary is named"
+
+# ------------------------------------------------------------
+# Unit tests in a lib or a bin are test binaries too.
+#
+# Cargo builds a test binary from every lib, bin and integration-test target whose
+# `test` flag is set, and the audit counted only the last kind. That is how
+# `migo-services` -- 272 tests, all in its lib -- and the tests in `migo-player`'s
+# bin were named by no local step and no job while the audit reported nothing
+# missing.
+# ------------------------------------------------------------
+repo="$(new_fixture unrun_unit_tests)"
+sed -i '/^test = false$/d' "$repo/engine/crates/demo/Cargo.toml"
+printf '%s\n' "$STUB_UNIT_TEST" >> "$repo/engine/crates/demo/src/lib.rs"
+printf 'fn main() {}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn runs() {}\n}\n' \
+    > "$repo/engine/crates/demo/src/main.rs"
+mkdir -p "$repo/engine/crates/demo/tests"
+printf '#[test]\nfn runs() {}\n' > "$repo/engine/crates/demo/tests/it.rs"
+status=0
+output="$(run_verify "$repo" --plan-only)" || status=$?
+assert_status "$status" 1 "unit tests no host step runs fail the run"
+assert_contains "$output" "migo-demo::migo_demo (lib)" "the lib whose tests nothing runs is named"
+assert_contains "$output" "migo-demo::migo-demo (bin)" "the bin whose tests nothing runs is named"
+
+# Each selection flag reaches its own kind and no other. `--lib` standing for every
+# target is the original defect -- it hid thirteen integration-test binaries -- and
+# no real host step happens to depend on it, so it is pinned here rather than left
+# to the real tree to notice.
+#
+# An audit that cannot answer prints nothing, which every `assert_absent` below would
+# read as coverage -- so its refusal is a failure here, not an empty string. Checked
+# at each call, because `fail` inside the substitution would count in a subshell.
+audit_demo() {
+    printf '%s\n' "$1" | python3 "$ROOT/scripts/lib/host_test_coverage.py" --root "$repo"
+}
+unanswered="the audit could not describe the fixture"
+covered="$(audit_demo 'test -p migo-demo --lib')" || fail "$unanswered"
+assert_absent "$covered" "migo-demo::migo_demo (lib)" "--lib runs the lib's tests"
+assert_contains "$covered" "migo-demo::migo-demo (bin)" "--lib does not run a bin's tests"
+assert_contains "$covered" "migo-demo::it (test)" "--lib does not run an integration test"
+covered="$(audit_demo 'test -p migo-demo --bins')" || fail "$unanswered"
+assert_absent "$covered" "migo-demo::migo-demo (bin)" "--bins runs the bins' tests"
+assert_contains "$covered" "migo-demo::migo_demo (lib)" "--bins does not run the lib's tests"
+covered="$(audit_demo 'test -p migo-demo --tests')" || fail "$unanswered"
+assert_absent "$covered" "migo-demo::" "--tests runs every test binary, the lib's and the bin's included"
 
 # And a compile is not coverage. `build --workspace --all-targets` builds every test
 # binary and runs none, so an audit that accepted it would report the whole class as

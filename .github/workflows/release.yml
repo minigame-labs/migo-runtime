@@ -831,7 +831,7 @@ jobs:
       # the pre-existing backlog. Mirrors pr-ci.yml so the tag gate matches PR CI.
       - name: Run clippy lints (host-buildable crates)
         working-directory: engine
-        run: cargo clippy -p migo-shared -p migo-io -p migo-icu-data -p migo-runtime-v8 -p migo-capi-abi -p migo-frame-wire -p migo-frame-decode -p migo-alloc-probe -p migo-contention-probe -p migo-executor-probe --all-targets
+        run: cargo clippy -p migo-shared -p migo-io -p migo-icu-data -p migo-runtime-v8 -p migo-services -p migo-capi-abi -p migo-frame-wire -p migo-frame-decode -p migo-alloc-probe -p migo-contention-probe -p migo-executor-probe --all-targets
 
       # `--tests` mirrors pr-ci.yml: `--lib` skipped the frame-boundary allocation
       # gate (shared/tests/frame_cycle_allocation.rs) and both snapshot round-trips,
@@ -845,6 +845,11 @@ jobs:
           # Its cases are `#[ignore]`d and belong to the ASTC gate, but a
           # binary nothing builds is one that stops building unnoticed.
           cargo test -p migo-io --tests
+          # The network gate and every socket and HTTP client: 272 tests in the
+          # lib, which no job ran because the test-binary audit counted only
+          # `tests/`. `code-signing` adds the signed-mount test and removes none,
+          # since every cfg in the crate is positive.
+          cargo test -p migo-services --lib --features code-signing
           cargo test -p migo-capi-abi --all-targets
           cargo test -p migo-frame-wire --all-targets
           cargo test -p migo-frame-decode --all-targets
@@ -944,8 +949,7 @@ jobs:
             timeout 300 sudo apt-get install -y \
               cmake ninja-build g++ ripgrep xvfb xauth \
               qt6-base-dev qt6-base-dev-tools qt6-qpa-plugins \
-              libx11-dev libxkbcommon-x11-dev libxcb-cursor0 \
-              libasound2-dev || return 1
+              libx11-dev libxkbcommon-x11-dev libxcb-cursor0 || return 1
           }
           install_pkgs || {
             echo "Qt/X11 package install failed; retrying once" >&2
@@ -959,19 +963,8 @@ jobs:
       - name: Linux Qt Host Kit contract
         run: bash scripts/test-linux-qt-host-kit.sh --sanitize
 
-      # The Linux player is the conformance suite's *reference* runner: every
-      # other platform must produce the same verdict lines from the same
-      # bundles, so if it does not build, the cross-platform claim has no
-      # referee. It is a workspace member but not a default member (it links
-      # X11/GL, which headless jobs do not have), so `cargo build` never reaches
-      # it -- and a signature change in `migo-core` broke it while pr-ci stayed
-      # green on every job. This is the one Linux job that installs the desktop
-      # stack, so it is where the player can be type-checked at all.
-      - name: Linux player type-checks
-        run: cd engine && cargo check -p migo-player --locked
-
-  # ── Job 4: Host engine tests — graphics, core, capi, platform, audio ─
-  # These five crates' test suites ran in no release job: the AAR build cross-
+  # ── Job 4: Host engine tests — graphics, core, capi, platform, audio, player ─
+  # These crates' test suites ran in no release job: the AAR build cross-
   # compiles them and runs nothing. Mirrors pr-ci.yml's host-engine-tests job
   # exactly (same packages, same system deps, same flags) so the tag gate is
   # not narrower than the PR gate on the crates that need a graphics stack.
@@ -1048,9 +1041,11 @@ jobs:
 
       - name: Run clippy lints (crates needing host system packages)
         working-directory: engine
-        run: cargo clippy -p migo-graphics -p migo-core -p migo-capi -p migo-platform -p migo-audio --all-targets
+        run: cargo clippy -p migo-graphics -p migo-core -p migo-capi -p migo-platform -p migo-audio -p migo-player --all-targets
 
-      - name: Run Rust tests (graphics, core, capi, platform, audio)
+      # The player is the conformance suite's reference runner; pr-ci.yml's copy
+      # of this step says why it is tested here.
+      - name: Run Rust tests (graphics, core, capi, platform, audio, player)
         working-directory: engine
         run: |
           cargo test -p migo-graphics --tests
@@ -1058,6 +1053,7 @@ jobs:
           cargo test -p migo-capi --lib
           cargo test -p migo-platform --lib
           cargo test -p migo-audio --lib
+          cargo test -p migo-player --bins
         env:
           RUST_BACKTRACE: 1
 

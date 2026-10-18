@@ -16,7 +16,7 @@ use std::{
 use migo_io::{
     domain::DomainError,
     scheduler::{IoScheduler, RouteDecision},
-    task::{BackendKind, IoRequest, PoolKind, PriorityClass, RequestKind},
+    task::{BackendKind, IoRequest, PoolKind, RequestKind},
 };
 use shared::{
     error::{EngineError, ErrorCode},
