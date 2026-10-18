@@ -79,6 +79,7 @@ mod debug_aids;
 mod deferred_api;
 mod entry_evaluation;
 mod namespace_members;
+mod console_namespace;
 #[cfg(feature = "api-connectivity")]
 mod ecosystem;
 #[cfg(feature = "api-system")]

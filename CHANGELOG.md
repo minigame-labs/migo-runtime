@@ -723,6 +723,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   namespace copied the attributes of the globals it mirrors, most of which are not enumerable, so 422 of its 452 names
   were missing from the list -- and the platform's own namespace is a plain object whose every API is listed. Cocos
   Creator 3 builds its environment from `Object.keys(wx)`: its `minigame.onHide` was undefined and its start-up threw.
+- `console` has every member of the Console Standard's namespace: `assert`, `clear`, `count`, `countReset`, `dir`,
+  `dirxml`, `groupCollapsed`, `table`, `time`, `timeLog`, `timeEnd` and `trace` joined the seven it had. A missing
+  member was a TypeError -- Cocos Creator 3 calls `console.time` while it starts its physics.
 - A game whose entry module throws -- on its first line, or after a top-level `await` -- fails to launch with
   `ModuleLoadError` "module evaluation failed" and the exception, and the host is told through its error callback. It
   used to be logged "module evaluated" and reported ready: deno_core settles a rejected evaluation as done and rethrows
