@@ -3,15 +3,16 @@
 You do not have to send anyone your games to find out. This is the tool we would
 run, and it runs on your machine.
 
-Two scripts answer two different halves of the question, and neither answers the
-other's:
+Three scripts answer three different parts of the question, and none answers
+another's:
 
 | | question | needs |
 |---|---|---|
 | `scripts/prescreen-game.sh` | which APIs does this bundle reference, and does this build publish them? | a checkout; the first run builds a host player |
 | `scripts/prescreen-run.sh` | does it actually put a frame on screen, and does anything fail? | an Android device over `adb` |
+| `scripts/compat-report.sh` | what does it reach for while it runs, and what does this build say of each? | a checkout; builds a host player |
 
-Both write Markdown. Read them, then decide whether you want to talk to us.
+All three write Markdown. Read them, then decide whether you want to talk to us.
 
 ---
 
@@ -152,13 +153,39 @@ launch. It is not a certification, and it says nothing about level two.
 
 ---
 
+## 3. What it reaches for while it runs
+
+```sh
+bash scripts/compat-report.sh /path/to/your/bundle \
+    --adapter /path/to/migo-wx-adapter.bundle.js --secs 20 \
+    --out reach.md --json reach.json
+```
+
+The scan in section 1 reads names off the source; this runs the bundle with a recorder injected behind
+the adapter and writes down what it actually did: each API it called (once, the first time), each name it
+looked for and did not find, the names it installed itself, the WebGL extensions it asked for and the GL
+errors it saw, the time to the end of its entry and to its first frame, and the errors the engine logged.
+Each API is then judged by this build's contracts for Android: whether the engine answers it, whether
+your host app does (its ads, payments, accounts), whether the conformance suite verified it, and whether it
+is deliberately not offered. `reach.json` is the same, for a machine.
+
+**It runs on the Linux player, and the report says so.** Linux has no device services, so a game that
+fails to log in here takes a path it would not take on a phone, and calls what that path calls. Treat it as
+a first look; the device run in section 2 is the authority on whether the game runs. A call the run did
+not reach is not in the report: it is one run, not every path through the game.
+
+The recorder is not part of any shipped host. Off means not injected, so a host that does not inject it
+carries none of it.
+
+---
+
 ## About your content
 
 The point of shipping you the tool is that this section is short.
 
-- **Your bundle never leaves your machine.** The scan is local; the run copies
-  into your own phone's app sandbox over your own `adb`.
-- **Nothing is uploaded.** Neither script has a network path for your content.
+- **Your bundle never leaves your machine.** The scan and the Linux run are local; the
+  device run copies into your own phone's app sandbox over your own `adb`.
+- **Nothing is uploaded.** None of the three scripts has a network path for your content.
 - **We never see it** unless you decide to send us the *report*, which contains
   API names, counts and your own screenshots — not your code.
 

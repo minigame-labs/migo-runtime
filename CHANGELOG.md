@@ -12,13 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scope before the game's entry, in the order given -- as an Android or Apple host injects an adapter. Content written
   against `wx` or the browser could not run there at all: `migo-examples`' `wx-adapter-demo` stopped on
   `ReferenceError: wx is not defined` and presented nothing; with the wx adapter bundle as a prelude it runs.
-- `tools/compat-recorder/recorder.js`, a prelude that writes what a game reaches for into the log as marker lines: the
-  first call of each `migo` and `wx` API, each name the game looks for that a surface lacks, each name it puts on a
-  surface itself, the WebGL extensions it asks for (with the context version and the answer) and the GL errors it sees,
-  and milliseconds to the end of its entry and to its first animation frame. It is injected after the adapter -- the
-  headless player's `--prelude`, as a host injects one -- and off is not injected. The game keeps the receivers,
-  arguments, identities, `new.target`, own properties, descriptors and absent names it has without it. Errors are left
-  to the engine's log, which has both kinds: listening for rejections would stop a game's `onError` from hearing them.
+- A compatibility report for one game: `scripts/compat-report.sh BUNDLE [--adapter FILE]...` runs it on the Linux
+  player with `tools/compat-recorder/recorder.js` injected behind the adapter, and writes Markdown and JSON saying
+  which `migo` and `wx` APIs it called, the names it looked for and did not find, the names it installed itself, the
+  WebGL extensions it asked for and the GL errors it saw, the time to the end of its entry and to its first frame, and
+  the errors the engine logged -- each API judged by this build's contracts for Android: who answers it (the engine,
+  the platform's host layer, or the host app's own integration), whether the conformance suite verified it, whether it
+  is deliberately not offered. The report says it is a partial view: Linux has no device services, and the device run
+  is the authority. The recorder is a prelude a host injects, never part of a shipped one; the game keeps the
+  arguments, identities, `new.target`, own properties, descriptors and absent names it has without it, and its
+  surface methods are called on the surface itself.
 - Android: `MigoGameActivity.onCreateRuntimeConfig()` can refuse a launch by throwing `LaunchRefusedException`
   (an error code and a message), which reaches `onLaunchFailed` and starts nothing. It is documented as the place to
   make sure the game's files are in place, and had no way to say they were not: returning null ran the game on a

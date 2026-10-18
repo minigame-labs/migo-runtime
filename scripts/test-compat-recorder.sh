@@ -16,11 +16,19 @@
 # namespace that mirrors every engine global. Neither shows in a report; both change
 # the game under it.
 #
+# A second pass found three more. A surface's methods got the proxy as their receiver,
+# so a surface whose methods or getters read private fields threw a brand error. Content
+# that patched an intrinsic after boot -- Object.prototype.toJSON, JSON.stringify,
+# WeakMap.prototype.get, an Object.prototype.get that turns every descriptor the
+# recorder handled into an invalid one -- made the recorder throw into the game's next
+# call. And its own "ready" timer ran before an entry whose dependency awaited, and took
+# one of the game's timers; the engine's log has the right moment, and the report reads it.
+#
 # So each check asserts both halves: the line the recorder writes, and that the
 # game's view -- receivers, arguments, identity, new.target, own properties, absent
-# names, descriptors, global names -- is what it would be without it. The checks run
-# in a Node realm shaped like the engine's; scripts/test-compat-recorder-player.sh
-# runs the recorder on the engine itself.
+# names, descriptors, global names, intrinsics it patched -- is what it would be
+# without it. The checks run in a Node realm shaped like the engine's;
+# scripts/test-compat-recorder-player.sh runs the recorder on the engine itself.
 #
 # Host-only: node, no device.
 set -euo pipefail

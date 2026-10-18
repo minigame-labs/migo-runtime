@@ -8,22 +8,22 @@
 #     the real WebGL facade, proxied and still working. The fixture draws, and the
 #     player fails a run that presents nothing, so a recorder that broke the game
 #     fails this gate rather than reporting on a game that never ran.
-#   * When "ready" is. The recorder reads it as a timer set before the entry runs,
-#     which is only right if the host does not turn the event loop until the entry's
-#     synchronous evaluation is over. That is the host's ordering, not the recorder's
-#     (runtime-v8 keeps polling the event loop while a module settles), so it is read
-#     off the engine: "ready" must follow the entry's last line and its 150 ms of work.
-#     The obvious alternative is wrong, measured: a microtask queued in the prelude
-#     runs before the entry does, and reported "ready" at 4.8 ms into 150 ms of work.
+#   * When "ready" is. The report takes it from the engine's own line, which is written when
+#     the entry -- top-level awaits included -- has been evaluated: it must follow the
+#     entry's last line and its 150 ms of work. The recorder once measured it itself, with a
+#     timer set before the entry; that ran before an entry whose dependency awaited, and
+#     took one of the game's timers. A microtask was worse, measured: it ran before the
+#     entry at all, 4.8 ms into 150 ms of work.
 #   * That off is nothing. The same fixture without the prelude writes no marker line:
 #     the recorder exists only where a driver injects it.
+#   * That the report reads a real log. The recorded run is scripts/compat-report.sh's, so
+#     the CLI a developer runs is the one this runs, and its JSON must say what the log did.
 #
 # Host-only: builds and runs the Linux player headless (EGL), no device.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FIXTURE="$ROOT/tools/compat-recorder/fixture"
-RECORDER="$ROOT/tools/compat-recorder/recorder.js"
 PLAYER="$ROOT/engine/target/debug/migo-player"
 SECS="${1:-3}"
 
@@ -46,14 +46,24 @@ run() {
 }
 
 recorded=/tmp/migo-compat-recorded.log
+report=/tmp/migo-compat-report.json
 plain=/tmp/migo-compat-plain.log
-run "$recorded" --prelude "$RECORDER"
+rm -f "$report"
+if ! bash "$ROOT/scripts/compat-report.sh" "$FIXTURE" --secs "$SECS" --log "$recorded" --json "$report" \
+        --out /tmp/migo-compat-report.md >/dev/null; then
+    echo "FAIL: the fixture did not run to the end and present under scripts/compat-report.sh; the log ends:" >&2
+    tail -n 40 "$recorded" | sed 's/^/    | /' >&2
+    exit 1
+fi
 run "$plain"
 
-python3 - "$recorded" "$plain" <<'PY'
+python3 - "$recorded" "$plain" "$report" "$ROOT/scripts/lib" <<'PY'
 import json
 import re
 import sys
+
+sys.path.insert(0, sys.argv[4])
+import compat_report
 
 MARK = "__MIGO_COMPAT__"
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -71,7 +81,9 @@ for line in recorded:
         order.append(json.loads(line[line.index(MARK) + len(MARK):]))
     elif "FIXTURE entry evaluated" in line:
         order.append({"kind": "fixture-entry-end"})
-events = [e for e in order if e["kind"] != "fixture-entry-end"]
+    elif compat_report.READY.search(line):
+        order.append({"kind": "engine-ready", "ms": float(compat_report.READY.search(line).group(1))})
+events = [e for e in order if e["kind"] not in ("fixture-entry-end", "engine-ready")]
 
 problems = []
 
@@ -105,19 +117,37 @@ expect(any("FIXTURE identity true" in line for line in recorded),
 expect(any("FIXTURE getError 1280" in line for line in recorded), "getError did not hand the fixture its code")
 
 kinds = [e["kind"] for e in order]
-ready = having("ready")
-expect(len(ready) == 1, f"ready is reported {len(ready)} times")
+ready = [e for e in order if e["kind"] == "engine-ready"]
+expect(len(ready) == 1, f"the engine reports the entry evaluated {len(ready)} times")
 if ready and "fixture-entry-end" in kinds:
-    expect(kinds.index("fixture-entry-end") < kinds.index("ready"),
-           "ready came before the entry's last line, so it does not mark the end of the entry's evaluation")
+    expect(kinds.index("fixture-entry-end") < kinds.index("engine-ready"),
+           "the engine's ready came before the entry's last line")
     expect(ready[0]["ms"] >= 150, f"ready at {ready[0]['ms']} ms, inside the entry's 150 ms of work")
 else:
-    expect(False, "the entry's last line or ready is missing")
+    expect(False, "the entry's last line or the engine's ready is missing")
 first = having("first-frame")
 expect(len(first) == 1, f"first-frame is reported {len(first)} times")
 if ready and first:
-    expect(kinds.index("ready") < kinds.index("first-frame") and first[0]["ms"] >= ready[0]["ms"],
-           "the first frame came before ready")
+    expect(kinds.index("engine-ready") < kinds.index("first-frame"), "the first frame came before the entry was evaluated")
+expect(not having("ready"), "the recorder reports a ready of its own")
+
+report = json.load(open(sys.argv[3]))
+expect(report["recorded"], "the report says the run was not recorded")
+called = {(c["surface"], c["api"]): c for c in report["calls"]}
+expect(set(called) == {(e["surface"], e["api"]) for e in having("call")}, "the report's calls are not the log's")
+expect(all(c["verdict"] in compat_report.VERDICTS for c in report["calls"]), "a call has no verdict")
+expect(called.get(("migo", "requestAnimationFrame"), {}).get("verdict") == "outside",
+       "requestAnimationFrame, an engine global, is judged as a platform API")
+expect(any(a["api"] == "createVKSession" and a["platform_api"] for a in report["absent"]),
+       "createVKSession is not reported as an absent platform API")
+expect({"surface": "migo", "api": "shim"} in report["installed"], "the report lost the installed shim")
+expect({"context": "webgl", "code": 1280, "name": "INVALID_ENUM"} in report["webgl"]["errors"],
+       "the report does not name the GL error")
+expect(report["timing"] == {"ready_ms": ready[0]["ms"] if ready else None,
+                            "first_frame_ms": first[0]["ms"] if first else None},
+       "the report's timing is not the log's")
+expect(report["unrecorded"] == [], f"a surface went unrecorded: {report['unrecorded']}")
+expect(report["errors"] == [], f"the report finds content errors in a clean run: {report['errors']}")
 
 expect(not [line for line in plain if MARK in line], "the run without the recorder wrote marker lines")
 expect(any("FIXTURE entry evaluated" in line for line in plain), "the run without the recorder did not run the fixture")
@@ -128,5 +158,5 @@ for problem in problems:
     print("FAIL:", problem)
 if problems:
     sys.exit(1)
-print("PASS: the recorder reported the fixture's reach on the engine, and the fixture ran and presented")
+print("PASS: the recorder reported the fixture's reach on the engine, the report read it, and the fixture ran and presented")
 PY

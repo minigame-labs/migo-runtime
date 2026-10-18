@@ -66,14 +66,15 @@ const ADAPTER = `"use strict";
     Object.defineProperty(wx, names[key] || key, Object.getOwnPropertyDescriptor(migo, key));
   }
   Object.defineProperty(globalThis, "wx", { value: wx, writable: true, enumerable: true, configurable: true });
+  __host.rawWx = wx;
 }`;
 
-function boot({ adapter = true } = {}) {
+function boot({ adapter = ADAPTER } = {}) {
   const host = { lines: [], timers: [], frames: [], listeners: [], now: 1000, glError: 0 };
   const context = vm.createContext({ __host: host });
   vm.runInContext(ENGINE, context);
   if (adapter) {
-    vm.runInContext(ADAPTER, context);
+    vm.runInContext(adapter, context);
   }
   const before = vm.runInContext("Object.getOwnPropertyNames(globalThis)", context);
   vm.runInContext(RECORDER, context, { filename: "recorder.js" });
@@ -161,9 +162,10 @@ check("a function is the same on every read, on both surfaces, and through its d
   assertEqual(run.of("call"), [{ kind: "call", surface: "wx", api: "request" }], "a call through a copied descriptor");
 });
 
-check("a call gets exactly the receiver and the arguments the game gave", () => {
+check("a call through a surface reaches the surface itself, and any other receiver as given", () => {
   const run = boot();
-  assertTrue(run.game("var o = {}; var r = wx.request(o); r.options === o && r.receiver === wx"), "a method call");
+  assertTrue(run.game("var o = {}; var r = wx.request(o); r.options === o && r.receiver === __host.rawWx"),
+    "a method call is made on the object the adapter built, as without the recorder");
   assertTrue(run.game("var r = migo.request.call(42, 'x'); r.receiver === 42 && r.options === 'x'"), "an explicit receiver");
   assertTrue(run.game("var r = (0, wx.request)(); r.receiver === undefined"), "no receiver");
 });
@@ -245,14 +247,6 @@ check("requestAnimationFrame keeps its name and returns the engine's handle", ()
     "the global");
 });
 
-check("ready is reported when the entry module's synchronous evaluation is over", () => {
-  const run = boot();
-  run.host.now = 1250;
-  assertEqual(run.of("ready"), [], "nothing while the entry runs");
-  run.host.timers.splice(0).forEach((fn) => fn());
-  assertEqual(run.of("ready"), [{ kind: "ready", ms: 250 }], "after it");
-});
-
 check("each WebGL extension asked for is reported once, with the context version and the answer", () => {
   const run = boot();
   run.game(`
@@ -294,7 +288,7 @@ check("the recorder adds no global name and keeps each surface's attributes", ()
 });
 
 check("without an adapter there is no wx, and migo is still recorded", () => {
-  const run = boot({ adapter: false });
+  const run = boot({ adapter: null });
   assertTrue(run.game("!('wx' in globalThis)"), "wx");
   run.game("migo.request({});");
   assertEqual(run.of("call"), [{ kind: "call", surface: "migo", api: "request" }], "the call");
@@ -306,6 +300,114 @@ check("every line is one marker and one JSON object", () => {
   const marked = run.host.lines.filter((l) => l.includes(MARK));
   assertTrue(marked.every((l) => l.startsWith(MARK) && !l.includes("\n")), "one line each");
   assertEqual(run.of("absent"), [{ kind: "absent", surface: "wx", api: "line\nbreak" }], "the name survives");
+});
+
+check("a surface whose methods and getters check their receiver's brand still works", () => {
+  const run = boot({ adapter: `"use strict";
+{
+  class Surface {
+    #secret = 7;
+    secret() { return this.#secret; }
+    get version() { return this.#secret; }
+  }
+  Object.defineProperty(globalThis, "wx", { value: new Surface(), writable: true, enumerable: true, configurable: true });
+}` });
+  assertTrue(run.game("wx.secret() === 7 && wx.version === 7"), "private fields reached through the surface");
+  assertEqual(run.of("call"), [{ kind: "call", surface: "wx", api: "secret" }], "the call");
+});
+
+check("content that patches the intrinsics after boot cannot make the recorder throw or misreport", () => {
+  const run = boot();
+  const result = run.game(`
+    var thrower = function () { throw new Error("patched"); };
+    var saved = { toJSON: Object.prototype.toJSON, stringify: JSON.stringify, weakGet: WeakMap.prototype.get,
+                  weakSet: WeakMap.prototype.set, apply: Reflect.apply, defineProperty: Reflect.defineProperty,
+                  getOwn: Reflect.getOwnPropertyDescriptor, has: Object.prototype.hasOwnProperty,
+                  isProto: Object.prototype.isPrototypeOf, round: Math.round, create: Object.create };
+    Object.prototype.toJSON = thrower;
+    Object.defineProperty(Object.prototype, "get", { value: function () { return 1; }, writable: true, configurable: true });
+    Object.defineProperty(Array.prototype, "6", { set: thrower, configurable: true });
+    JSON.stringify = thrower; WeakMap.prototype.get = thrower; WeakMap.prototype.set = thrower;
+    Reflect.apply = thrower; Reflect.defineProperty = thrower; Reflect.getOwnPropertyDescriptor = thrower;
+    Object.prototype.hasOwnProperty = thrower; Object.prototype.isPrototypeOf = thrower; Math.round = thrower;
+    Object.create = thrower;
+    WebGL2RenderingContext.prototype.isPrototypeOf = null;
+    var out = [];
+    try {
+      wx.request({});
+      wx.updatePlatformApp();
+      wx.shim = function () {};
+      out.push(Object.getOwnPropertyDescriptor(wx, "request").value === wx.request);
+      out.push(wx.nothingHere === undefined);
+      __host.glError = 1282;
+      out.push(new WebGL2RenderingContext().getError() === 1282);
+      requestAnimationFrame(function () {});
+      out.push("ok");
+    } catch (error) {
+      out.push("threw: " + error.message);
+    }
+    delete Object.prototype.toJSON; delete Object.prototype.get; delete Array.prototype["6"];
+    JSON.stringify = saved.stringify; WeakMap.prototype.get = saved.weakGet; WeakMap.prototype.set = saved.weakSet;
+    Reflect.apply = saved.apply; Reflect.defineProperty = saved.defineProperty; Reflect.getOwnPropertyDescriptor = saved.getOwn;
+    Object.prototype.hasOwnProperty = saved.has; Object.prototype.isPrototypeOf = saved.isProto; Math.round = saved.round;
+    Object.create = saved.create;
+    delete WebGL2RenderingContext.prototype.isPrototypeOf;
+    out.join(",");
+  `);
+  assertEqual(result, "true,true,true,ok", "the game's calls");
+  run.host.frames.splice(0).forEach((callback) => callback(16));
+  assertEqual(run.events().map((e) => e.kind + ":" + (e.api || e.context || "")),
+    ["start:", "call:request", "call:updatePlatformApp", "installed:shim", "absent:nothingHere", "gl-error:webgl2",
+     "first-frame:"], "what was recorded");
+});
+
+check("a holder whose requestAnimationFrame cannot be written keeps the engine's, and boot goes on", () => {
+  const run = boot({ adapter: ADAPTER + `
+    Object.defineProperty(wx, "requestAnimationFrame", { writable: false });` });
+  assertTrue(run.game("Object.getOwnPropertyDescriptor(__host.rawWx, 'requestAnimationFrame').value === __host.raw.raf"),
+    "the holder still holds the engine's function");
+  assertEqual(run.game("wx.requestAnimationFrame(function () {})"), 1, "which still answers through the surface");
+  run.game("requestAnimationFrame(function () {});");
+  run.host.frames.splice(0).forEach((callback) => callback(16));
+  assertEqual(run.of("first-frame").length, 1, "the global's frame is still seen");
+});
+
+check("a global surface that is an accessor, or frozen, is left alone and said to be", () => {
+  const accessor = boot({ adapter: `"use strict";
+{
+  const wx = { request: function request() { return 1; } };
+  Object.defineProperty(globalThis, "wx", { get: function () { __host.reads = (__host.reads || 0) + 1; return wx; },
+    enumerable: true, configurable: true });
+}` });
+  assertTrue(accessor.game("wx.request() === 1 && typeof Object.getOwnPropertyDescriptor(globalThis, 'wx').get === 'function'"),
+    "the accessor is still an accessor");
+  assertTrue(accessor.host.reads >= 1, "and its getter still runs");
+  assertEqual(accessor.of("unrecorded"), [{ kind: "unrecorded", surface: "wx", reason: "accessor" }], "the accessor");
+  const frozen = boot({ adapter: `"use strict";
+  Object.defineProperty(globalThis, "wx", { value: { request: function () {} }, writable: false, enumerable: true, configurable: false });` });
+  assertEqual(frozen.of("unrecorded"), [{ kind: "unrecorded", surface: "wx", reason: "frozen" }], "the frozen global");
+  frozen.game("migo.request({});");
+  assertEqual(frozen.of("call"), [{ kind: "call", surface: "migo", api: "request" }], "migo is recorded still");
+});
+
+check("an extension asked for by something other than a string is converted once, by the context alone", () => {
+  const run = boot();
+  assertEqual(run.game(`var conversions = 0;
+    new WebGLRenderingContext().getExtension({ toString: function () { conversions += 1; return "X"; } });
+    conversions`), 0, "the recorder converted the name");
+  assertEqual(run.of("gl-extension"), [{ kind: "gl-extension", context: "webgl", name: "(object)", supported: false }],
+    "the extension");
+});
+
+check("a definition that changes attributes alone leaves the engine's function recorded", () => {
+  const run = boot();
+  assertTrue(run.game(`var before = migo.request;
+    Object.defineProperty(migo, "request", { enumerable: false });
+    Object.seal(migo);
+    migo.request === before`), "the same function after");
+  run.game("migo.request({});");
+  assertEqual(run.of("installed"), [], "nothing installed");
+  assertEqual(run.of("call"), [{ kind: "call", surface: "migo", api: "request" }], "the call");
 });
 
 check("the recorder is ASCII, so any host can inject it as it stands", () => {
