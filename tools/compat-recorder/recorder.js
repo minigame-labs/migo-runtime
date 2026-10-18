@@ -85,10 +85,10 @@
 
   // One proxy per original function, whichever surface and name it was read as: the wx
   // adapter publishes migo's own functions, and identity between the two must survive.
-  // The proxy remembers the name each surface knows it by (wx.updateWeChatApp is
-  // migo.updateHostApp), so a call made through a surface is reported under that
-  // surface's name; a call made on a function held apart from its surface is reported
-  // under the name it was last read as.
+  // The proxy remembers the name each surface knows it by (an adapter publishes
+  // migo.updateHostApp under its platform's own name for the host app), so a call made
+  // through a surface is reported under that surface's name; a call made on a function
+  // held apart from its surface is reported under the name it was last read as.
   var surfaceOf = new WeakMap();
   var entries = new WeakMap();
 

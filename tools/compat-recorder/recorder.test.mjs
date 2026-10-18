@@ -57,9 +57,10 @@ const ENGINE = `"use strict";
   Object.defineProperty(globalThis, "migo", { value: migo, writable: true, enumerable: true, configurable: true });
 }`;
 
+// The wx adapter's shape: migo's descriptors as they are, a host-app API under the platform's name for it.
 const ADAPTER = `"use strict";
 {
-  const names = { updateHostApp: "updateWeChatApp" };
+  const names = { updateHostApp: "updatePlatformApp" };
   const wx = {};
   for (const key of Object.getOwnPropertyNames(migo)) {
     Object.defineProperty(wx, names[key] || key, Object.getOwnPropertyDescriptor(migo, key));
@@ -128,11 +129,11 @@ check("a call is reported once, under the surface it was made through", () => {
 
 check("a function both surfaces share is reported under each surface's own name for it", () => {
   const run = boot();
-  assertTrue(run.game("wx.updateWeChatApp === migo.updateHostApp"), "one function, two names");
-  run.game("migo.updateHostApp(); wx.updateWeChatApp();");
+  assertTrue(run.game("wx.updatePlatformApp === migo.updateHostApp"), "one function, two names");
+  run.game("migo.updateHostApp(); wx.updatePlatformApp();");
   assertEqual(run.of("call"), [
     { kind: "call", surface: "migo", api: "updateHostApp" },
-    { kind: "call", surface: "wx", api: "updateWeChatApp" },
+    { kind: "call", surface: "wx", api: "updatePlatformApp" },
   ], "the calls");
 });
 
@@ -140,13 +141,13 @@ check("a call through a surface is that surface's even when another read came be
   // The function is read, then its arguments are evaluated -- reading it again, through
   // wx -- and only then called, on migo.
   const run = boot();
-  run.game("migo.updateHostApp(wx.updateWeChatApp);");
+  run.game("migo.updateHostApp(wx.updatePlatformApp);");
   assertEqual(run.of("call"), [{ kind: "call", surface: "migo", api: "updateHostApp" }], "the call");
 });
 
 check("a function held apart from its surface is reported under the name it was last read as", () => {
   const run = boot();
-  run.game("var held = migo.request; wx.updateWeChatApp; held({});");
+  run.game("var held = migo.request; wx.updatePlatformApp; held({});");
   assertEqual(run.of("call"), [{ kind: "call", surface: "migo", api: "request" }], "the detached call");
 });
 
