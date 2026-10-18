@@ -28,6 +28,7 @@ pub(crate) fn sandbox_of(state: &OpState) -> Sandbox {
         scheduler: state.borrow::<IoSchedulerState>().0.clone(),
         vfs: host.vfs.clone(),
         mount_table: host.mount_table.clone(),
+        policy: host.network_policy.clone(),
     }
 }
 

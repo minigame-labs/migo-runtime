@@ -25,7 +25,7 @@ use shared::network_policy::{NetworkChannel, NetworkPolicy};
 
 use crate::ServiceError;
 
-use super::gate::{self, GateKind};
+use super::gate::{self, Transport};
 use super::resources::{CancelFlag, ResourceId, ResourceTable};
 use super::sockets::{
     AddrMeta, BACKGROUND_THROTTLE, ReceiveScratch, checked_port, join_host_port, resolve_first,
@@ -182,7 +182,7 @@ pub async fn connect(
     };
     debug!("TCP connect: {address}:{port} (timeout={seconds}s)");
 
-    let address = gate::enforce_host(address, port, policy, GateKind::TcpSocket)
+    let address = gate::enforce_host(address, port, policy, Transport::Tcp)
         .map_err(ServiceError::generic)?;
 
     let deadline = Duration::from_secs(u64::from(seconds));

@@ -324,3 +324,17 @@ async fn resolving_a_destination_is_what_makes_its_replies_heard() {
         .expect_err("the datagram rule still refuses the loopback");
     assert!(!socket.inbound.admits(&at(127, 0, 0, 1)));
 }
+
+/// The kernel loops multicast back to the sending host unless told not to, and
+/// the device itself is never content's to reach.
+#[tokio::test]
+async fn a_socket_does_not_loop_its_multicast_back_to_the_device() {
+    let policy = NetworkPolicy {
+        lan: true,
+        ..NetworkPolicy::default()
+    };
+    let resources = ResourceTable::new();
+    let bound = bind(&policy, &resources, 0, "udp4").unwrap();
+    let socket = resources.udp(bound.rid).unwrap();
+    assert!(!socket.socket.multicast_loop_v4().unwrap());
+}

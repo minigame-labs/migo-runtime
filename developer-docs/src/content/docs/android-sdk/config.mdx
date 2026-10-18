@@ -65,7 +65,7 @@ new RuntimeConfig.Builder(cacheDir, filesDir, density)      // 完全自供,脱�
 | 通道 `NetworkPolicy.Channel` | 覆盖的 API |
 | --- | --- |
 | `REQUEST` | `request` / `fetch` |
-| `DOWNLOAD` | `downloadFile`、远程图片、音频流、`prefetchAssets` |
+| `DOWNLOAD` | `downloadFile`、远程图片、音频流、`prefetchAssets`,以及交给 `previewImage`、`previewMedia`、分享、视频解码器的 URL |
 | `UPLOAD` | `uploadFile` |
 | `SOCKET` | WebSocket |
 | `TCP` / `UDP` | 原始套接字 |

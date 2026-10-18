@@ -644,6 +644,11 @@ impl ServiceContext {
             mount_table: content
                 .as_ref()
                 .map(|content| Arc::clone(&content.mount_table)),
+            // A session whose network is not bound has been granted none.
+            policy: self
+                .network()
+                .map(|network| network.policy().clone())
+                .unwrap_or_default(),
         })
     }
 
@@ -2539,6 +2544,13 @@ mod tests {
             .enable_all()
             .build()
             .unwrap();
+        // A URL standing in for a file is a download the viewer makes for content.
+        context.bind_network(
+            shared::network_policy::NetworkPolicy::from_json(r#"{"download":["cdn.example"]}"#)
+                .unwrap(),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            runtime.handle().clone(),
+        );
         let (sender, _commands) = shared::render_command_sender::CommandSender::new();
         let render = RenderHandles {
             canvas: shared::op_state::CanvasOpState::for_host(sender, 1),
@@ -2558,6 +2570,21 @@ mod tests {
             r#"{"requestId":7,"urls":["pic.png","https://cdn.example/a.png"],"current":"pic.png"}"#,
         )
         .expect("the viewer is asked");
+        let refused = ask(
+            &context,
+            id::op_preview_image,
+            r#"{"requestId":10,"urls":["https://elsewhere.example/a.png"]}"#,
+        )
+        .expect_err("a URL the download allowlist does not name");
+        assert!(
+            refused.contains("not in the download allowlist"),
+            "{refused}"
+        );
+        assert_eq!(
+            viewer.0.lock().len(),
+            1,
+            "the refused URL never reached the viewer"
+        );
         let asked: serde_json::Value =
             serde_json::from_str(&viewer.0.lock()[0]).expect("the request, as JSON");
         let real = installed.code_dir().join("pic.png");

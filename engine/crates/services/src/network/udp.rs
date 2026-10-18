@@ -9,9 +9,10 @@
 //! rule: content hears only those it could send to, and a public one only once
 //! the socket has sent or connected to it.
 //!
-//! Broadcast is refused outright: the filter already blocks 255.255.255.255 and
-//! every multicast range, so the flag has no legitimate target and would only
-//! serve to escape those checks. Fan-out goes through a server.
+//! Broadcast and multicast reach the local network only when the local network
+//! is granted, as other private addresses do. A multicast datagram is not looped
+//! back to the device's own listeners; a broadcast is, by the kernel, for every
+//! listener on the port.
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -26,7 +27,7 @@ use shared::network_policy::{NetworkChannel, NetworkPolicy};
 use crate::ServiceError;
 
 use super::address_filter::{LanAccess, is_blocked_datagram_address, is_public};
-use super::gate::{self, GateKind};
+use super::gate::{self, Transport};
 use super::resources::{CancelFlag, ResourceId, ResourceTable};
 use super::sockets::{
     AddrMeta, BACKGROUND_THROTTLE, ReceiveScratch, addr_family, checked_port, join_host_port,
@@ -213,6 +214,13 @@ fn bind_hearing(
     socket
         .set_nonblocking(true)
         .map_err(|error| generic(format!("bind:fail set_nonblocking: {error}")))?;
+    // Multicast loops back to this host by default, and the device itself is
+    // never content's to reach.
+    let unlooped = match address {
+        SocketAddr::V4(_) => socket.set_multicast_loop_v4(false),
+        SocketAddr::V6(_) => socket.set_multicast_loop_v6(false),
+    };
+    unlooped.map_err(|error| generic(format!("bind:fail multicast loop: {error}")))?;
     let socket = UdpSocket::from_std(socket)
         .map_err(|error| generic(format!("bind:fail from_std: {error}")))?;
     let local_addr = socket
@@ -246,8 +254,8 @@ pub async fn connect(
     port: u32,
 ) -> Result<(), ServiceError> {
     let port = checked_port(port)?;
-    let address = gate::enforce_host(address, port, policy, GateKind::UdpSocket)
-        .map_err(ServiceError::generic)?;
+    let address =
+        gate::enforce_host(address, port, policy, Transport::Udp).map_err(ServiceError::generic)?;
     let socket = resources.udp(rid)?;
 
     let target = join_host_port(&address, port);
@@ -281,8 +289,8 @@ pub async fn send(
     set_broadcast: bool,
 ) -> Result<(), ServiceError> {
     let port = checked_port(port)?;
-    let address = gate::enforce_host(address, port, policy, GateKind::UdpSocket)
-        .map_err(ServiceError::generic)?;
+    let address =
+        gate::enforce_host(address, port, policy, Transport::Udp).map_err(ServiceError::generic)?;
     let socket = resources.udp(rid)?;
 
     let target = join_host_port(&address, port);

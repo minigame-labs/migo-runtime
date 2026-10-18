@@ -157,9 +157,10 @@ pub async fn create(
         ))
     })?;
 
-    // Post-gate: `into_client_request` re-validates the URL's shape, not the
-    // policy.
-    let mut request = url
+    // Built from the URL the gate read, not content's string: two parsers given
+    // the same text are two chances to disagree about its host.
+    let mut request = parsed
+        .as_str()
         .into_client_request()
         .map_err(|error| generic(format!("Invalid WebSocket URL: {error}")))?;
     let scheme = request.uri().scheme_str().unwrap_or("").to_string();

@@ -118,6 +118,12 @@ impl NetworkBinding {
         Ok((self.policy.clone(), self.client(false)?))
     }
 
+    /// The session's policy, for what is checked here and fetched elsewhere: a
+    /// URL content hands the host to show.
+    pub(crate) fn policy(&self) -> &NetworkPolicy {
+        &self.policy
+    }
+
     /// The table content's ids name. Public for the session's teardown, which
     /// is the only other thing that touches it.
     pub(crate) fn resources(&self) -> &Arc<ResourceTable> {

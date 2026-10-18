@@ -4,6 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use deno_core::serde_json::{self, Value};
 use shared::{
+    network_policy::NetworkPolicy,
     protocol::error::ServiceError,
     services::{
         CommerceServices, ConnectivityServices, DeviceServices, MediaServices, SensorServices,
@@ -11,7 +12,7 @@ use shared::{
     },
 };
 
-use super::support::{SETTLE, Sandbox, boot_with_services, run_to_idle};
+use super::support::{SETTLE, Sandbox, boot, boot_with_services, run_to_idle, test_host_state};
 
 #[derive(Default)]
 struct FakeShare {
@@ -70,10 +71,12 @@ fn a_share_carries_what_content_set_and_its_image_through_the_sandbox() {
     let image = sandbox.paths.user_data_dir().join("card.png");
     std::fs::write(&image, b"png").unwrap();
     let host = Arc::new(FakeShare::default());
-    let mut runtime = boot_with_services(
-        Some(Arc::new(Host(host.clone())) as Arc<dyn DeviceServices>),
-        Some(sandbox.vfs()),
-    );
+    let mut state = test_host_state();
+    state.device_services = Some(Arc::new(Host(host.clone())) as Arc<dyn DeviceServices>);
+    state.vfs = Some(sandbox.vfs());
+    // A network image is one the host downloads for content.
+    state.network_policy = NetworkPolicy::from_json(r#"{"download":["example.com"]}"#).unwrap();
+    let mut runtime = boot(state);
     runtime
         .execute_script(
             "<test:share-setup>",
@@ -86,6 +89,7 @@ fn a_share_carries_what_content_set_and_its_image_through_the_sandbox() {
         migo.onShareAppMessage(function () { return { title: 'from the menu listener' }; });
         __settle('shareAppMessage', { title: 'mine', imageUrl: '/user/card.png', toCurrentGroup: false });
         migo.shareAppMessage({ imageUrl: 'https://example.com/a.png' });
+        migo.shareAppMessage({ imageUrl: 'https://elsewhere.example/a.png' });
         __settle('showShareImageMenu', { path: '/user/card.png' });
         __settle('shareMessageToFriend', { openId: 'friend', imageUrl: 'https://example.com/a.png' });
         __settle('showShareImageMenu', { path: '/etc/hosts' });
@@ -241,10 +245,11 @@ fn a_menu_share_is_answered_by_the_game_with_its_images_through_the_sandbox() {
     let image = sandbox.paths.user_data_dir().join("card.png");
     std::fs::write(&image, b"png").unwrap();
     let host = Arc::new(FakeShare::default());
-    let mut runtime = boot_with_services(
-        Some(Arc::new(Host(host.clone())) as Arc<dyn DeviceServices>),
-        Some(sandbox.vfs()),
-    );
+    let mut state = test_host_state();
+    state.device_services = Some(Arc::new(Host(host.clone())) as Arc<dyn DeviceServices>);
+    state.vfs = Some(sandbox.vfs());
+    state.network_policy = NetworkPolicy::from_json(r#"{"download":["example.com"]}"#).unwrap();
+    let mut runtime = boot(state);
     run_to_idle(
         &mut runtime,
         r#"

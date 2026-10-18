@@ -16,16 +16,21 @@ use std::sync::Arc;
 
 use migo_io::scheduler::IoScheduler;
 use serde_json::Value;
+use shared::network_policy::NetworkPolicy;
 use shared::services::host_files::{self, Step};
 use shared::vfs::{FileOp, MountTable, VirtualFS};
+use url::Url;
 
 use crate::error::ServiceError;
 use crate::fs;
+use crate::network::gate::{self, GateKind};
 
 /// Whether a request may name a remote resource where it names a file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Remote {
-    /// A viewer can show an http(s) URL itself.
+    /// A viewer can show an http(s) URL itself -- one the session's policy lets
+    /// content download, since the host or the system then fetches it for
+    /// content.
     Allowed,
     Refused,
 }
@@ -123,6 +128,8 @@ pub struct Sandbox {
     pub scheduler: Arc<IoScheduler>,
     pub vfs: Option<Arc<VirtualFS>>,
     pub mount_table: Option<Arc<MountTable>>,
+    /// What a URL standing in for a file is held to.
+    pub policy: NetworkPolicy,
 }
 
 /// `request_json` with every path `fields` names replaced by a real path the
@@ -210,7 +217,12 @@ async fn export_fields(
         if remote == Remote::Allowed
             && (path.starts_with("https://") || path.starts_with("http://"))
         {
-            real.insert(path.clone(), path);
+            // The host is handed the URL the gate read, not content's spelling of it.
+            let url = Url::parse(&path)
+                .map_err(|e| ServiceError::generic(format!("invalid URL '{path}': {e}")))?;
+            gate::enforce(&url, &sandbox.policy, GateKind::HostMedia)
+                .map_err(ServiceError::generic)?;
+            real.insert(path, url.into());
             continue;
         }
         let resolved = fs::resolve_path_vfs(

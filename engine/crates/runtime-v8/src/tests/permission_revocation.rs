@@ -453,13 +453,19 @@ fn album_write_and_shared_user_info_op_require_their_scopes() {
 /// A path content names reaches the host as the real file behind it -- and only a
 /// file the game can itself read. The host used to be handed content's string
 /// verbatim, so any path the host process could read went into the album.
+///
+/// A URL standing in for a file is a download the host makes for content, so it
+/// is held to the download allowlist: an image viewer fetched any URL content
+/// named, under a policy that granted nothing at all.
 #[test]
 fn a_content_path_reaches_the_host_as_the_sandbox_file_and_nothing_else_does() {
     let sandbox = Sandbox::new("paths");
     let image = sandbox.paths.user_data_dir().join("shot.png");
     std::fs::write(&image, b"png").unwrap();
     let bundle = Bundle::new(true);
-    let mut runtime = boot_with(host_state_in(bundle.clone(), Some(sandbox.vfs())));
+    let mut state = host_state_in(bundle.clone(), Some(sandbox.vfs()));
+    state.network_policy = NetworkPolicy::from_json(r#"{"download":["example.com"]}"#).unwrap();
+    let mut runtime = boot_with(state);
 
     run(
         &mut runtime,
@@ -467,7 +473,10 @@ fn a_content_path_reaches_the_host_as_the_sandbox_file_and_nothing_else_does() {
          migo.saveImageToPhotosAlbum({ filePath: '/etc/hosts', fail() {} }); \
          migo.saveImageToPhotosAlbum({ filePath: '/user/../../outside.png', fail() {} }); \
          migo.saveImageToPhotosAlbum({ filePath: 'https://example.com/a.png', fail() {} }); \
-         migo.previewImage({ urls: ['https://example.com/a.png', '/user/shot.png'], \
+         migo.previewImage({ urls: ['https://elsewhere.example/a.png'], fail() {} }); \
+         migo.previewImage({ urls: ['http://example.com/a.png'], fail() {} }); \
+         migo.previewImage({ urls: ['https://169.254.169.254/a.png'], fail() {} }); \
+         migo.previewImage({ urls: ['https://Example.COM/a.png', '/user/shot.png'], \
                              current: '/user/shot.png', fail() {} });",
     );
 
@@ -475,7 +484,7 @@ fn a_content_path_reaches_the_host_as_the_sandbox_file_and_nothing_else_does() {
     assert_eq!(
         requests.len(),
         2,
-        "only the sandbox file and the preview leave: {requests:?}"
+        "only the sandbox file and the granted preview leave: {requests:?}"
     );
     let saved: deno_core::serde_json::Value =
         deno_core::serde_json::from_str(&requests[0]).unwrap();
@@ -488,7 +497,7 @@ fn a_content_path_reaches_the_host_as_the_sandbox_file_and_nothing_else_does() {
         deno_core::serde_json::from_str(&requests[1]).unwrap();
     assert_eq!(
         previewed["urls"][0], "https://example.com/a.png",
-        "a viewer takes a URL"
+        "a viewer takes the URL the gate read"
     );
     assert_eq!(previewed["urls"][1], previewed["current"]);
     assert_eq!(

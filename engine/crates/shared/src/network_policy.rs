@@ -261,9 +261,11 @@ impl NetworkPolicy {
                 "allowPlainHttp" => &mut policy.allow_plain_http,
                 "lan" => &mut policy.lan,
                 _ => {
+                    let channels: Vec<&str> =
+                        NetworkChannel::ALL.iter().map(|c| c.name()).collect();
                     return Err(NetworkPolicyError(format!(
-                        "unknown key '{key}'; the keys are request, download, upload, socket, tcp, udp, \
-                         allowPlainHttp and lan"
+                        "unknown key '{key}'; the keys are {}, allowPlainHttp and lan",
+                        channels.join(", ")
                     )));
                 }
             };

@@ -62,6 +62,10 @@ pub enum GateKind {
     /// `Image.src = "http(s)://..."`. `data:` is parsed separately
     /// before the gate runs, so only http/https reach here.
     ImageInlineSrc,
+    /// An `http(s)` image or video content hands the host or the system media
+    /// stack to fetch: `previewImage`, `previewMedia`, a share's image, a video
+    /// decoder's source. Checked here, fetched there.
+    HostMedia,
     /// `new WebSocket(url)`. Scheme must be `ws`/`wss`; `ws://` also needs
     /// `allow_plain_http`.
     WebSocket,
@@ -81,7 +85,8 @@ impl GateKind {
             GateKind::Download
             | GateKind::AudioStream
             | GateKind::Prefetch
-            | GateKind::ImageInlineSrc => NetworkChannel::Download,
+            | GateKind::ImageInlineSrc
+            | GateKind::HostMedia => NetworkChannel::Download,
             GateKind::FetchUpload => NetworkChannel::Upload,
             GateKind::WebSocket => NetworkChannel::Socket,
             GateKind::TcpSocket => NetworkChannel::Tcp,
@@ -98,9 +103,35 @@ impl GateKind {
             GateKind::FetchUpload => "uploadFile",
             GateKind::Prefetch => "prefetch",
             GateKind::ImageInlineSrc => "Image.src",
+            GateKind::HostMedia => "media URL",
             GateKind::WebSocket => "WebSocket",
             GateKind::TcpSocket => "TCPSocket",
             GateKind::UdpSocket => "UDPSocket",
+        }
+    }
+}
+
+/// The two transports content reaches by host and port rather than by URL: the
+/// only kinds [`enforce_host`] can be asked about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transport {
+    Tcp,
+    Udp,
+}
+
+impl Transport {
+    pub const fn kind(self) -> GateKind {
+        match self {
+            Transport::Tcp => GateKind::TcpSocket,
+            Transport::Udp => GateKind::UdpSocket,
+        }
+    }
+
+    /// The synthetic scheme its host is checked under.
+    const fn scheme(self) -> &'static str {
+        match self {
+            Transport::Tcp => "tcp",
+            Transport::Udp => "udp",
         }
     }
 }
@@ -181,7 +212,8 @@ fn scheme_allowed(kind: GateKind, scheme: &str) -> bool {
         | GateKind::AudioStream
         | GateKind::FetchUpload
         | GateKind::Prefetch
-        | GateKind::ImageInlineSrc => matches!(scheme, "http" | "https"),
+        | GateKind::ImageInlineSrc
+        | GateKind::HostMedia => matches!(scheme, "http" | "https"),
         GateKind::WebSocket => matches!(scheme, "ws" | "wss"),
         // Raw TCP/UDP use the synthetic `tcp://` / `udp://` scheme
         // produced by [`enforce_host`]; no other kind is
@@ -204,7 +236,15 @@ pub fn evaluate_policy(
     // A datagram may also be broadcast or multicast; a stream or a request may not.
     let blocked: &dyn Fn(&std::net::SocketAddr, LanAccess) -> bool = match kind {
         GateKind::UdpSocket => &is_blocked_datagram_address,
-        _ => &is_blocked_address,
+        GateKind::Fetch
+        | GateKind::Download
+        | GateKind::AudioStream
+        | GateKind::FetchUpload
+        | GateKind::Prefetch
+        | GateKind::ImageInlineSrc
+        | GateKind::HostMedia
+        | GateKind::WebSocket
+        | GateKind::TcpSocket => &is_blocked_address,
     };
     evaluate(url, policy, kind, blocked)
 }
@@ -267,7 +307,8 @@ fn evaluate(
         | GateKind::AudioStream
         | GateKind::FetchUpload
         | GateKind::Prefetch
-        | GateKind::ImageInlineSrc => scheme == "http",
+        | GateKind::ImageInlineSrc
+        | GateKind::HostMedia => scheme == "http",
         GateKind::WebSocket => scheme == "ws",
         GateKind::TcpSocket | GateKind::UdpSocket => false,
     };
@@ -291,13 +332,9 @@ pub fn enforce_host(
     host: &str,
     port: u16,
     policy: &NetworkPolicy,
-    kind: GateKind,
+    transport: Transport,
 ) -> Result<String, String> {
-    let scheme = match kind {
-        GateKind::TcpSocket => "tcp",
-        GateKind::UdpSocket => "udp",
-        _ => return Err("enforce_host called with a non-raw-socket kind".to_string()),
-    };
+    let (kind, scheme) = (transport.kind(), transport.scheme());
     let bracketed = if host.contains(':') && !host.starts_with('[') {
         format!("[{host}]")
     } else {
@@ -340,12 +377,14 @@ pub fn enforce(url: &Url, policy: &NetworkPolicy, kind: GateKind) -> Result<(), 
                 // Fetch/download/upload/prefetch rejects already surface
                 // through their error paths; keep them out of the binary
                 // telemetry tail to avoid double counting with the existing
-                // HTTP error metrics.
+                // HTTP error metrics. A media URL's refusal fails the call that
+                // named it the same way.
                 GateKind::Fetch
                 | GateKind::Download
                 | GateKind::FetchUpload
                 | GateKind::Prefetch
-                | GateKind::AudioStream => {}
+                | GateKind::AudioStream
+                | GateKind::HostMedia => {}
                 GateKind::TcpSocket | GateKind::UdpSocket => {
                     // Fold into the ws bucket for now: both are raw transport
                     // rejects and the binary snapshot protocol has no
@@ -365,13 +404,14 @@ mod tests {
     use shared::device::local_address::LocalNetwork;
     use shared::network_policy::{DomainPattern, DomainPolicy};
 
-    const ALL_KINDS: [GateKind; 9] = [
+    const ALL_KINDS: [GateKind; 10] = [
         GateKind::Fetch,
         GateKind::Download,
         GateKind::AudioStream,
         GateKind::FetchUpload,
         GateKind::Prefetch,
         GateKind::ImageInlineSrc,
+        GateKind::HostMedia,
         GateKind::WebSocket,
         GateKind::TcpSocket,
         GateKind::UdpSocket,
@@ -510,6 +550,7 @@ mod tests {
             (GateKind::AudioStream, Download),
             (GateKind::Prefetch, Download),
             (GateKind::ImageInlineSrc, Download),
+            (GateKind::HostMedia, Download),
             (GateKind::FetchUpload, Upload),
             (GateKind::WebSocket, Socket),
             (GateKind::TcpSocket, Tcp),
@@ -739,10 +780,10 @@ mod tests {
         // `tcp://` is not a special scheme, so its host would keep the case content wrote.
         let policy = only(NetworkChannel::Tcp, &["game.example.com"]);
         assert_eq!(
-            enforce_host("GAME.Example.com", 9000, &policy, GateKind::TcpSocket),
+            enforce_host("GAME.Example.com", 9000, &policy, Transport::Tcp),
             Ok("game.example.com".to_string())
         );
-        assert!(enforce_host("other.example.com", 9000, &policy, GateKind::TcpSocket).is_err());
+        assert!(enforce_host("other.example.com", 9000, &policy, Transport::Tcp).is_err());
     }
 
     /// getaddrinfo reads a decimal, hex or octal IPv4 the way inet_aton does, and
@@ -751,16 +792,16 @@ mod tests {
     #[test]
     fn a_numeric_ipv4_spelling_is_an_ip_literal_on_a_raw_socket() {
         let open = NetworkPolicy::unrestricted();
-        for kind in [GateKind::TcpSocket, GateKind::UdpSocket] {
+        for transport in [Transport::Tcp, Transport::Udp] {
             for spelling in ["134744072", "0x08080808", "010.010.010.010", "8.8.2056"] {
-                let refusal = enforce_host(spelling, 9000, &open, kind).unwrap_err();
+                let refusal = enforce_host(spelling, 9000, &open, transport).unwrap_err();
                 assert!(
                     refusal.contains("8.8.8.8"),
-                    "{spelling} as {kind:?}: {refusal}"
+                    "{spelling} as {transport:?}: {refusal}"
                 );
             }
-            let loopback = enforce_host("2130706433", 9000, &open, kind).unwrap_err();
-            assert!(loopback.contains("127.0.0.1"), "{kind:?}: {loopback}");
+            let loopback = enforce_host("2130706433", 9000, &open, transport).unwrap_err();
+            assert!(loopback.contains("127.0.0.1"), "{transport:?}: {loopback}");
         }
     }
 
@@ -789,7 +830,6 @@ mod tests {
                 "{url} as {kind:?}"
             );
         }
-        assert!(enforce_host("example.com", 1, &open, GateKind::Fetch).is_err());
     }
 
     // ---- messages ----
