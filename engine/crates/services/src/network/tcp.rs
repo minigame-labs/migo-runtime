@@ -182,8 +182,8 @@ pub async fn connect(
     };
     debug!("TCP connect: {address}:{port} (timeout={seconds}s)");
 
-    let address = gate::enforce_host(address, port, policy, Transport::Tcp)
-        .map_err(ServiceError::generic)?;
+    let address =
+        gate::enforce_host(address, port, policy, Transport::Tcp).map_err(ServiceError::generic)?;
 
     let deadline = Duration::from_secs(u64::from(seconds));
     let target = join_host_port(&address, port);
