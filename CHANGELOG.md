@@ -705,6 +705,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one, so such a size copied part of a pointer and zeroed the rest, and the engine used an address nobody wrote. A
   size a compiler produces for any release is unaffected.
 - An Android app that shrinks its code with R8 can start a session. The engine reads `RuntimeConfig`'s private fields
+- An Android app using the Full SDK requests `READ_EXTERNAL_STORAGE` only up to API 28, as it does
+  `WRITE_EXTERNAL_STORAGE`. The AAR never declared it; the app's manifest merger inferred it from
+  `WRITE_EXTERNAL_STORAGE` in a library manifest with no `targetSdkVersion`, and added it with no bound, so every host
+  asked for storage on every Android version. The gates read the library's own merged manifest, where it never appears;
+  `scripts/test-maven-consumer.sh` now holds the permissions of an app built from the staged repository to the policy.
   by name, and the rules the AAR ships for its consumers kept only public members, so R8 renamed them (`cacheDir` to
   `a`, `filesDir` to `b`) and every session failed to initialise. Those fields are now kept.
 - The JS watchdog no longer kills a game for the time it spends waiting on the renderer. It ends a task whose script

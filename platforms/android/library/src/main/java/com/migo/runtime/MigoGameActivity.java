@@ -190,7 +190,12 @@ public class MigoGameActivity extends Activity implements SurfaceHolder.Callback
             return;
         }
         if (config == null) {
-            config = onCreateRuntimeConfig();
+            try {
+                config = onCreateRuntimeConfig();
+            } catch (LaunchRefusedException refused) {
+                onLaunchFailed(refused.getErrorCode(), refused.getMessage());
+                return;
+            }
             if (config == null) {
                 config = new RuntimeConfig.Builder(this).build();
             }
@@ -446,11 +451,13 @@ public class MigoGameActivity extends Activity implements SurfaceHolder.Callback
      *
      * <p>Called from {@code onCreate}, before the surface exists, so it is also
      * the place to make sure the game's files are where the runtime will look
-     * for them.
+     * for them -- and to refuse the launch when they are not.
      *
      * @return the configuration to use, or {@code null} for the default
+     * @throws LaunchRefusedException to start nothing; it reaches
+     *         {@link #onLaunchFailed} with its code and message
      */
-    protected RuntimeConfig onCreateRuntimeConfig() {
+    protected RuntimeConfig onCreateRuntimeConfig() throws LaunchRefusedException {
         return null;
     }
 

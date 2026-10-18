@@ -1,6 +1,6 @@
   protected boolean onWarmStartEngine();
   protected com.migo.runtime.GameSession getGameSession();
-  protected com.migo.runtime.RuntimeConfig onCreateRuntimeConfig();
+  protected com.migo.runtime.RuntimeConfig onCreateRuntimeConfig() throws com.migo.runtime.LaunchRefusedException;
   protected com.migo.runtime.callback.GameSessionListener onCreateGameListener();
   protected static android.content.Intent buildLaunchIntent(android.content.Context, java.lang.Class<? extends com.migo.runtime.MigoGameActivity>, java.lang.String, java.lang.String, com.migo.runtime.RuntimeConfig);
   protected void onAttachedToWindow();
@@ -96,6 +96,7 @@
   public com.migo.runtime.GameSession createSession(android.content.Context, android.view.Surface, com.migo.runtime.RuntimeConfig, java.lang.String);
   public com.migo.runtime.GameSession createSessionWarm(android.app.Activity, com.migo.runtime.RuntimeConfig, java.lang.String);
   public com.migo.runtime.GameSession getSession();
+  public com.migo.runtime.LaunchRefusedException(int, java.lang.String);
   public com.migo.runtime.MigoException(int, java.lang.String);
   public com.migo.runtime.MigoException(int, java.lang.String, java.lang.Throwable);
   public com.migo.runtime.MigoException(int, java.lang.String, java.lang.Throwable, boolean);
@@ -242,6 +243,7 @@
   public int gender;
   public int getActiveSessionCount();
   public int getBenchmarkLevel();
+  public int getErrorCode();
   public int getErrorCode();
   public int getErrorCode();
   public int getMinSdkVersion();
@@ -479,6 +481,7 @@ public final class com.migo.runtime.ErrorCode {
 public final class com.migo.runtime.GamePaths {
 public final class com.migo.runtime.GameSession implements java.io.Closeable {
 public final class com.migo.runtime.GameSession$SplashAdStatus extends java.lang.Enum<com.migo.runtime.GameSession$SplashAdStatus> {
+public final class com.migo.runtime.LaunchRefusedException extends java.lang.Exception {
 public final class com.migo.runtime.MigoNativeLoader {
 public final class com.migo.runtime.MigoNativeLoader$RequiredArtifact {
 public final class com.migo.runtime.MigoNativeLoader$State extends java.lang.Enum<com.migo.runtime.MigoNativeLoader$State> {
@@ -536,6 +539,7 @@ public interface com.migo.runtime.callback.ShareSink {
 public interface com.migo.runtime.callback.SubpackageHandler {
 public interface com.migo.runtime.callback.SubpackageHandler$DownloadCallback {
 public interface com.migo.runtime.callback.UpdateHandler {
+}
 }
 }
 }
