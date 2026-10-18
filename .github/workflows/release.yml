@@ -688,6 +688,12 @@ jobs:
       - name: Producer-local text codec agrees with the engine's
         run: bash scripts/test-text-codec-agreement.sh
 
+      # The compatibility recorder is injected ahead of content nobody here wrote, and
+      # a recorder that changes the game reports on a run that would not have happened.
+      # Each check holds both halves: the line it writes, and the game's unchanged view.
+      - name: Compatibility recorder reports without changing the game
+        run: bash scripts/test-compat-recorder.sh
+
       # The engine's own JavaScript API layer, staged for the Performance+
       # producer and run: content draws through migo.createCanvas() and the
       # engine's WebGL facade, and the host's ingress admits the frames. A module

@@ -726,6 +726,12 @@ jobs:
       - name: Producer-local text codec agrees with the engine's
         run: bash scripts/test-text-codec-agreement.sh
 
+      # The compatibility recorder is injected ahead of content nobody here wrote, and
+      # a recorder that changes the game reports on a run that would not have happened.
+      # Each check holds both halves: the line it writes, and the game's unchanged view.
+      - name: Compatibility recorder reports without changing the game
+        run: bash scripts/test-compat-recorder.sh
+
       # The engine's own JavaScript API layer, staged for the Performance+
       # producer and run: content draws through migo.createCanvas() and the
       # engine's WebGL facade, and the host's ingress admits the frames. A module
@@ -1322,6 +1328,12 @@ jobs:
 
       - name: Presented frames reach the window on every presentation path
         run: bash scripts/verify-bypass-present.sh 3
+
+      # The same recorder on the engine, where the player it builds is already built:
+      # the real migo and WebGL facade proxied, a game that still presents, and the
+      # host's ordering that makes the recorder's "ready" mean the end of the entry.
+      - name: Compatibility recorder on the engine
+        run: bash scripts/test-compat-recorder-player.sh 3
 
   # The Windows arms of the sandbox filesystem and the atomic writer, run where
   # they compile. Until this job existed they were built for every release and
