@@ -15,6 +15,14 @@
 #   deferred  migo-android-nojni: no libmigo.so at all, the engine being delivered at
 #             runtime
 #
+# And both request exactly the permissions scripts/lib/android_permission_policy.py
+# names for Full, maxSdkVersion included. The library's own merged manifest is not what a
+# host ships: the host's merger adds what it infers from the AAR. A library manifest
+# carries no targetSdkVersion, and for such a library the merger reads
+# WRITE_EXTERNAL_STORAGE as implying READ_EXTERNAL_STORAGE -- unbounded, where WRITE
+# stops at API 28 -- so every host was asking for storage on every Android version, and
+# no gate that read the library's manifest could see it.
+#
 # Usage: test-maven-consumer.sh [REPOSITORY]   (default: dist/maven, where
 # scripts/test-maven-publication-contract.sh --aar ... stages the real AARs)
 set -euo pipefail
@@ -74,5 +82,39 @@ for failure in failures:
 if failures:
     sys.exit(1)
 print("[ok] the bundled APK packages arm64's engine alone; the deferred one none; both dex the SDK")
+PY
+AAPT2="$(ls -d "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"/build-tools/*/aapt2 2>/dev/null | sort -V | tail -1)"
+[[ -x "$AAPT2" ]] || { echo "error: no aapt2 under \$ANDROID_HOME/build-tools" >&2; exit 1; }
+python3 - "$ROOT" "$AAPT2" "$OUT/bundled/debug/maven-consumer-bundled-debug.apk" \
+    "$OUT/deferred/debug/maven-consumer-deferred-debug.apk" <<'PY'
+import re
+import subprocess
+import sys
+root, aapt2, *apks = sys.argv[1:]
+sys.path.insert(0, root + "/scripts/lib")
+from android_permission_policy import BASE_PERMISSIONS, FULL_PERMISSION_POLICY
+expected = {**BASE_PERMISSIONS, **FULL_PERMISSION_POLICY}
+line = re.compile(r"uses-permission(?:-sdk-23)?: name='([^']+)'(?: maxSdkVersion='(\d+)')?$")
+failures = []
+for apk in apks:
+    dump = subprocess.run([aapt2, "dump", "permissions", apk], check=True, capture_output=True, text=True).stdout
+    found = {}
+    for text in dump.splitlines():
+        match = line.match(text.strip())
+        if match:
+            found[match.group(1)] = match.group(2)
+    label = apk.rsplit("/", 1)[-1]
+    for name in sorted(set(found) - set(expected)):
+        failures.append(f"{label} requests {name} (maxSdkVersion={found[name]}), which the policy does not name")
+    for name in sorted(set(expected) - set(found)):
+        failures.append(f"{label} does not request {name}, which the policy names")
+    for name in sorted(set(found) & set(expected)):
+        if found[name] != expected[name]:
+            failures.append(f"{label} requests {name} up to maxSdkVersion={found[name]}, not {expected[name]}")
+for failure in failures:
+    print(f"[FAIL] {failure}", file=sys.stderr)
+if failures:
+    sys.exit(1)
+print(f"[ok] both APKs request exactly the policy's {len(expected)} permissions, bounds included")
 PY
 echo "Maven consumer: PASS"
