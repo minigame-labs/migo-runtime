@@ -411,3 +411,94 @@ fn a_short_pre_keyboard_callback_prefix_is_zero_extended() {
     assert!(validated.drives_frames());
     assert!(!validated.supplies_keyboard());
 }
+
+/// The bytes from just past `start` to the end of a pointer that begins there: every size that
+/// ends inside it.
+fn inside_a_pointer(start: usize) -> std::ops::Range<usize> {
+    start + 1..start + size_of::<*const c_char>()
+}
+
+/// A size that ends inside a pointer would copy part of an address and zero the rest, and the
+/// record would hand on an address nobody wrote. A record whose shorter releases end before a
+/// pointer refuses such a size, and still takes the sizes that end between fields. The pointers are
+/// null, so a size wrongly accepted is seen as `Ok`, not as a read.
+#[test]
+fn a_session_config_size_inside_the_policy_pointer_is_refused() {
+    let mut session = MigoSessionConfig {
+        header: header::<MigoSessionConfig>(),
+        flags: 0,
+        launch_nonce: [0; 16],
+        network_policy_json_utf8: std::ptr::null(),
+    };
+    let policy = std::mem::offset_of!(MigoSessionConfig, network_policy_json_utf8);
+    for size in inside_a_pointer(policy) {
+        session.header.struct_size = size as u32;
+        // SAFETY: `session` is readable for its full size.
+        let parsed = unsafe { MigoSessionConfig::parse(&session) };
+        assert_eq!(
+            parsed.err(),
+            Some(MIGO_ERROR_INVALID_ARGUMENT),
+            "{size} bytes"
+        );
+    }
+    for size in [policy, size_of::<MigoSessionConfig>()] {
+        session.header.struct_size = size as u32;
+        // SAFETY: as above.
+        assert!(
+            unsafe { MigoSessionConfig::parse(&session) }.is_ok(),
+            "{size} bytes"
+        );
+    }
+}
+
+#[test]
+fn a_content_descriptor_size_inside_the_version_pointer_is_refused() {
+    let content_id = CString::new("demo").unwrap();
+    let entry = CString::new("game.js").unwrap();
+    let mut content = MigoContentDescriptor {
+        header: header::<MigoContentDescriptor>(),
+        flags: 0,
+        environment: MIGO_CONTENT_ENVIRONMENT_RELEASE,
+        content_id_utf8: content_id.as_ptr(),
+        entry_utf8: entry.as_ptr(),
+        version_utf8: std::ptr::null(),
+    };
+    let version = std::mem::offset_of!(MigoContentDescriptor, version_utf8);
+    for size in inside_a_pointer(version) {
+        content.header.struct_size = size as u32;
+        // SAFETY: `content` is readable for its full size; its strings outlive the call.
+        let parsed = unsafe { MigoContentDescriptor::parse(&content) };
+        assert_eq!(
+            parsed.err(),
+            Some(MIGO_ERROR_INVALID_ARGUMENT),
+            "{size} bytes"
+        );
+    }
+    for size in [version, size_of::<MigoContentDescriptor>()] {
+        content.header.struct_size = size as u32;
+        // SAFETY: as above.
+        assert!(
+            unsafe { MigoContentDescriptor::parse(&content) }.is_ok(),
+            "{size} bytes"
+        );
+    }
+}
+
+#[test]
+fn a_callback_record_size_inside_an_appended_callback_is_refused() {
+    let mut callbacks = MigoHostCallbacks::empty();
+    let first = std::mem::offset_of!(MigoHostCallbacks, on_ready);
+    let last = std::mem::offset_of!(MigoHostCallbacks, on_gamepad_rumble);
+    for size in inside_a_pointer(first).chain(inside_a_pointer(last)) {
+        callbacks.header.struct_size = size as u32;
+        assert_eq!(
+            callbacks.validate().err(),
+            Some(MIGO_ERROR_INVALID_ARGUMENT),
+            "{size} bytes"
+        );
+    }
+    for size in [first, last, size_of::<MigoHostCallbacks>()] {
+        callbacks.header.struct_size = size as u32;
+        assert!(callbacks.validate().is_ok(), "{size} bytes");
+    }
+}

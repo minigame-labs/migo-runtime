@@ -1,4 +1,10 @@
-use std::{cmp::min, ffi::CStr, mem::size_of, os::raw::c_char, ptr};
+use std::{
+    cmp::min,
+    ffi::CStr,
+    mem::{align_of, size_of},
+    os::raw::c_char,
+    ptr,
+};
 
 use crate::{
     MIGO_ABI_VERSION_CURRENT, MIGO_ERROR_INVALID_ARGUMENT, MIGO_ERROR_UNSUPPORTED_ABI, MIGO_OK,
@@ -55,6 +61,15 @@ pub unsafe fn copy_versioned<T: AbiStruct>(
         return Err(MIGO_ERROR_UNSUPPORTED_ABI);
     }
     if caller_size < T::MINIMUM_SIZE {
+        return Err(MIGO_ERROR_INVALID_ARGUMENT);
+    }
+    // A shorter record is an older release, and every release's size is a
+    // `sizeof`, which never ends inside a field. A size that does would copy
+    // part of a pointer and zero the rest, and the record would hand on an
+    // address nobody wrote. Pointers are aligned to their own size, so no
+    // multiple of this granule can fall inside one.
+    let granule = min(align_of::<T>(), align_of::<*const u8>());
+    if caller_size < size_of::<T>() && !caller_size.is_multiple_of(granule) {
         return Err(MIGO_ERROR_INVALID_ARGUMENT);
     }
 
