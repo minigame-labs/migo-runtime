@@ -177,6 +177,27 @@ static int fail(const char *what, MigoResult result) {
     return 1;
 }
 
+/* The network policy, read whole from the file MIGO_C_HOST_NETWORK_POLICY names,
+ * or NULL -- no network at all -- when it names none. A file that cannot be read
+ * stops the host: running it under no policy instead would fail every network
+ * check for a reason no check names. */
+static char *read_network_policy(void) {
+    const char *path = getenv("MIGO_C_HOST_NETWORK_POLICY");
+    if (path == NULL || path[0] == '\0') return NULL;
+    FILE *file = fopen(path, "rb");
+    long size = -1;
+    if (file != NULL && fseek(file, 0, SEEK_END) == 0) size = ftell(file);
+    char *json = (size >= 0) ? malloc((size_t)size + 1) : NULL;
+    if (json == NULL || fseek(file, 0, SEEK_SET) != 0
+        || fread(json, 1, (size_t)size, file) != (size_t)size) {
+        fprintf(stderr, "[c-host] cannot read the network policy %s\n", path);
+        exit(2);
+    }
+    fclose(file);
+    json[size] = '\0';
+    return json;
+}
+
 /* A driver holding the window past detach is normal; holding it this long is
  * not, and blocking forever would turn a stall into a hang with no diagnosis. */
 #define RELEASE_TIMEOUT_MS 2000
@@ -463,9 +484,13 @@ int main(int argc, char **argv) {
     session_config.struct_size = (uint32_t)sizeof(session_config);
     session_config.abi_version = MIGO_ABI_VERSION_CURRENT;
     session_config.flags = MIGO_SESSION_FLAG_NONE;
+    /* Borrowed for the create only, so it is freed straight after. */
+    char *network_policy = read_network_policy();
+    session_config.network_policy_json_utf8 = network_policy;
 
     MigoSession *session = NULL;
     result = migo_session_create(engine, &session_config, &session);
+    free(network_policy);
     if (result != MIGO_OK) return fail("migo_session_create", result);
 
     /* ---- Callbacks install once, before the first attach. ---- */
