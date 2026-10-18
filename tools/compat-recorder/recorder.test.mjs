@@ -130,11 +130,12 @@ check("a call is reported once, under the surface it was made through", () => {
 check("a function both surfaces share is reported under each surface's own name for it", () => {
   const run = boot();
   assertTrue(run.game("wx.updatePlatformApp === migo.updateHostApp"), "one function, two names");
-  run.game("migo.updateHostApp(); wx.updatePlatformApp();");
+  run.game("migo.updateHostApp(); wx.updatePlatformApp(); wx.request({});");
   assertEqual(run.of("call"), [
     { kind: "call", surface: "migo", api: "updateHostApp" },
-    { kind: "call", surface: "wx", api: "updatePlatformApp" },
-  ], "the calls");
+    { kind: "call", surface: "wx", api: "updatePlatformApp", migo: "updateHostApp" },
+    { kind: "call", surface: "wx", api: "request" },
+  ], "the calls, each wx one naming migo's API where migo's name differs");
 });
 
 check("a call through a surface is that surface's even when another read came between", () => {

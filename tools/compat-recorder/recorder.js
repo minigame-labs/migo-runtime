@@ -6,7 +6,8 @@
 //
 // It reports, as single marker-prefixed console lines a driver extracts from the log:
 //   start      the recorder ran; a log without it was not recorded
-//   call       the first call of each API, on `migo` or `wx`
+//   call       the first call of each API, on `migo` or `wx`; a `wx` name for a function
+//              migo publishes under another name carries migo's name too
 //   absent     the first read or `in` test of each name a surface does not have
 //              (feature detection, or a call about to throw)
 //   installed  a name the content put on a surface itself -- its own shim, not ours
@@ -92,10 +93,23 @@
   var surfaceOf = new WeakMap();
   var entries = new WeakMap();
 
+  // migo's own name for each of its functions, taken before the game runs: an adapter
+  // that publishes one under another name is reporting migo's API, and the report looks
+  // it up by migo's name -- the one the API's spec and conformance use.
+  var migoNames = new Map();
+  if (typeof globalThis.migo === "object" && globalThis.migo !== null) {
+    Object.getOwnPropertyNames(globalThis.migo).forEach(function (key) {
+      var own = Object.getOwnPropertyDescriptor(globalThis.migo, key);
+      if ("value" in own && typeof own.value === "function" && !migoNames.has(own.value)) {
+        migoNames.set(own.value, key);
+      }
+    });
+  }
+
   function recorded(original, surface, key) {
     var entry = entries.get(original);
     if (entry === undefined) {
-      entry = { names: new Map(), last: null, proxy: null };
+      entry = { original: original, names: new Map(), last: null, proxy: null };
       entry.proxy = new Proxy(original, {
         apply: function (t, thisArg, args) {
           called(entry, surfaceOf.get(thisArg));
@@ -117,7 +131,12 @@
   function called(entry, via) {
     var surface = via !== undefined && entry.names.has(via) ? via : entry.last;
     var api = entry.names.get(surface);
-    once("call:" + surface + "." + api, { kind: "call", surface: surface, api: api });
+    var event = { kind: "call", surface: surface, api: api };
+    var own = migoNames.get(entry.original);
+    if (surface !== "migo" && own !== undefined && own !== api) {
+      event.migo = own;
+    }
+    once("call:" + surface + "." + api, event);
   }
 
   function record(surface) {
