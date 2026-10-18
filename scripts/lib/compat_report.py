@@ -97,6 +97,24 @@ def ready_ms(lines) -> float | None:
     return None
 
 
+# The engine's answer to a call it does not support where it runs (`<api>:fail not supported`). On the Linux
+# player that is every call needing a device service, so each is judged for the platform the report is for:
+# what Linux refused, Android may answer.
+REFUSED = re.compile(r"\b([A-Za-z_$][\w$]*):fail not supported\b")
+# A global the content used and no layer defined: not a name on `wx` or `migo` (the recorder sees those), so
+# only the engine's error says it.
+UNDEFINED = re.compile(r"ReferenceError: ([A-Za-z_$][\w$]*) is not defined")
+
+
+def _first_matches(pattern, lines) -> list[str]:
+    found = []
+    for raw in lines:
+        for match in pattern.finditer(ANSI.sub("", raw)):
+            if MARK not in raw and match.group(1) not in found:
+                found.append(match.group(1))
+    return found
+
+
 def content_errors(lines) -> list[dict]:
     """Each distinct line the engine logged about content failing, labelled by the first pattern it matches."""
     found, seen = [], set()
@@ -156,10 +174,10 @@ def judge(name: str, platform: str, contracts: dict) -> dict:
     return judged
 
 
-def assess(recorded: list[dict], errors: list[dict], platform: str, contracts: dict,
-           ready: float | None = None) -> dict:
+def assess(lines, platform: str, contracts: dict) -> dict:
+    """One run's report, from its log."""
     kinds = {}
-    for event in recorded:
+    for event in events(lines):
         kinds.setdefault(event["kind"], []).append(event)
     calls = []
     for event in kinds.get("call", []):
@@ -178,15 +196,25 @@ def assess(recorded: list[dict], errors: list[dict], platform: str, contracts: d
         if cell is not None:
             entry["answered_by"] = cell.get(platform)
         absent.append(entry)
+    refused = [dict({"api": name}, **judge(name, platform, contracts)) for name in _first_matches(REFUSED, lines)]
+    undefined = [{"name": name, "platform_api": name in contracts["matrix"]} for name in _first_matches(UNDEFINED, lines)]
+    errors = content_errors(lines)
     first = kinds.get("first-frame", [])
-    summary = {verdict: sum(1 for c in calls if c["verdict"] == verdict) for verdict in VERDICTS}
+    recorded = bool(kinds.get("start"))
+    blocking = [c for c in calls if c["verdict"] in BLOCKING] + [e for e in errors if e["fatal"]]
+    if recorded and not first:
+        # A game that never asked for a frame, or whose frames never ran, did not start for its player
+        # whatever else the log says.
+        blocking.append({"label": "no animation frame ran in this run: the game never drew", "fatal": True, "line": ""})
     return {
         "schema": SCHEMA,
         "platform": platform,
         "conformance_measured": contracts["conformance"].get("measured"),
-        "recorded": bool(kinds.get("start")),
+        "recorded": recorded,
         "calls": calls,
         "absent": absent,
+        "refused": refused,
+        "undefined": undefined,
         "installed": [{"surface": e["surface"], "api": e["api"]} for e in kinds.get("installed", [])],
         "webgl": {
             "extensions": [{k: e.get(k) for k in ("context", "name", "supported")}
@@ -194,11 +222,11 @@ def assess(recorded: list[dict], errors: list[dict], platform: str, contracts: d
             "errors": [{"context": e.get("context"), "code": e.get("code"),
                         "name": GL_ERRORS.get(e.get("code"), "unknown")} for e in kinds.get("gl-error", [])],
         },
-        "timing": {"ready_ms": ready, "first_frame_ms": first[0]["ms"] if first else None},
+        "timing": {"ready_ms": ready_ms(lines), "first_frame_ms": first[0]["ms"] if first else None},
         "unrecorded": [{"surface": e["surface"], "reason": e.get("reason")} for e in kinds.get("unrecorded", [])],
         "errors": errors,
-        "summary": summary,
-        "blocking": [c for c in calls if c["verdict"] in BLOCKING] + [e for e in errors if e["fatal"]],
+        "summary": {verdict: sum(1 for c in calls if c["verdict"] == verdict) for verdict in VERDICTS},
+        "blocking": blocking,
     }
 
 
@@ -225,7 +253,7 @@ def markdown(report: dict, notes: tuple[str, ...] | list[str] = ()) -> list[str]
             out.append(f"- `{item['surface']}.{item['api']}` -- {VERDICTS[item['verdict']]}"
                        + (f": {item['reason']}" if item.get("reason") else ""))
         else:
-            out.append(f"- {item['label']}: `{item['line']}`")
+            out.append(f"- {item['label']}" + (f": `{item['line']}`" if item["line"] else ""))
     out += ["", "## APIs called", "", "| verdict | count |", "|---|---|"]
     out += [f"| {VERDICTS[v]} | {n} |" for v, n in report["summary"].items() if n]
     out += [""]
@@ -245,6 +273,18 @@ def markdown(report: dict, notes: tuple[str, ...] | list[str] = ()) -> list[str]
             out.append(f"- `{entry['surface']}.{entry['api']}` -- {kind}")
     else:
         out.append("None.")
+    out += ["", "## Calls answered \"not supported\"", ""]
+    if report["refused"]:
+        out += ["The host this ran on refused these. The verdict is the platform's the report is for: a call the Linux "
+                "player refuses for want of a device service may be answered there.", ""]
+        out += [f"- `{r['api']}` -- {r['verdict']}" + (f" ({r.get('answered_by')})" if r.get("answered_by") else "")
+                for r in report["refused"]]
+    else:
+        out.append("None.")
+    out += ["", "## Globals it needed that are not defined", ""]
+    out += [f"- `{u['name']}`" + (" -- a platform API" if u["platform_api"] else
+            " -- not an API of the mini-game platform: a name only the content's original host defines")
+            for u in report["undefined"]] or ["None."]
     out += ["", "## Names it installed itself", ""]
     out += [f"- `{e['surface']}.{e['api']}`" for e in report["installed"]] or ["None."]
     out += ["", "## WebGL", ""]
@@ -273,8 +313,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--note", action="append", default=[])
     args = parser.parse_args(argv)
     lines = args.log.read_text(encoding="utf-8", errors="replace").splitlines()
-    report = assess(events(lines), content_errors(lines), args.platform, load_contracts(args.platform),
-                    ready_ms(lines))
+    report = assess(lines, args.platform, load_contracts(args.platform))
     text = "\n".join(markdown(report, args.note)) + "\n"
     if args.json:
         args.json.write_text(json.dumps(report, indent=2) + "\n")

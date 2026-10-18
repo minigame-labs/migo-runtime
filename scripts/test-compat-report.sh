@@ -124,7 +124,16 @@ engine_errors = [
     "2026-10-18T21:07:51Z ERROR runtime_v8::console: Unhandled Promise Rejection: "
     "ReferenceError: notDefinedAnywhere is not defined",
 ]
-lines = log + engine_ready + engine_errors
+# A Cocos Creator 2 mini-game build, 2026-10-19: it loads its engine through the platform's plugin service, and
+# asked for network status, which the Linux player has no service for.
+engine_refusals = [
+    "2026-10-18T22:07:09Z ERROR runtime_v8::console: Failed to start network monitoring: "
+    "Error: answeredVerified:fail not supported",
+    "2026-10-18T22:07:09Z ERROR runtime_v8::console: loadSubpackage success callback error: "
+    "ReferenceError: requirePlugin is not defined",
+    "2026-10-18T22:07:10Z ERROR runtime_v8::console: again: answeredVerified:fail not supported",
+]
+lines = log + engine_ready + engine_errors + engine_refusals
 events = cr.events(lines)
 check("every marker line with an object is an event, wherever the marker sits, and nothing else is",
       len(events) == 12, f"{len(events)} events")
@@ -136,11 +145,12 @@ check("each engine error line is labelled once, by its most specific shape", lab
     ("an exception escaped a callback, and the game stopped", True),
     ("the entry did not load", True),
     ("a prelude failed", True),
+    ("a script error", False),
 ], labels)
 
 check("ready is the engine's measure from the first launch in the log", cr.ready_ms(lines) == 191.6, cr.ready_ms(lines))
 check("and a log without it has none", cr.ready_ms(log + engine_errors) is None)
-report = cr.assess(events, errors, "android", contracts, cr.ready_ms(lines))
+report = cr.assess(lines, "android", contracts)
 calls = {(c["surface"], c["api"]): c for c in report["calls"]}
 check("a wx name for migo's API is judged by migo's name",
       calls[("wx", "updatePlatformApp")].get("platform_api") == "updateHostApp"
@@ -160,11 +170,22 @@ check("blocking is the failing call and the fatal errors",
           "the entry did not load", "a prelude failed"], report["blocking"])
 text = "\n".join(cr.markdown(report))
 check("the Markdown leads with the blocking count", "**5 blocking item(s).**" in text)
+check("a call the host refused is judged for the report's platform, once",
+      [(r["api"], r["verdict"]) for r in report["refused"]] == [("answeredVerified", "verified")], report["refused"])
+check("a global nothing defined is named, platform API or not",
+      report["undefined"] == [{"name": "notDefinedAnywhere", "platform_api": False},
+                              {"name": "requirePlugin", "platform_api": False}], report["undefined"])
+frameless = cr.assess([l for l in log if "first-frame" not in l], "android", contracts)
+check("a recorded run with no animation frame is blocked on it",
+      [b.get("label") for b in frameless["blocking"]]
+      == [None, "no animation frame ran in this run: the game never drew"], frameless["blocking"])
 
-unrecorded = cr.assess(cr.events(engine_errors), [], "android", contracts)
+unrecorded = cr.assess(engine_errors, "android", contracts)
 check("a log without the recorder's start is not recorded", unrecorded["recorded"] is False)
 check("and its report says nothing else", "**Not recorded.**" in "\n".join(cr.markdown(unrecorded))
       and "## Verdict" not in "\n".join(cr.markdown(unrecorded)))
+check("and is not blocked on a frame it was never asked about",
+      all("animation frame" not in b.get("label", "") for b in unrecorded["blocking"]))
 
 real = cr.load_contracts("android")
 verdicts = {name: cr.judge(name, "android", real)["verdict"] for name in real["matrix"]}

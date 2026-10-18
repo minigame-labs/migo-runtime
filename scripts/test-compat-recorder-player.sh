@@ -148,6 +148,7 @@ expect(report["timing"] == {"ready_ms": ready[0]["ms"] if ready else None,
        "the report's timing is not the log's")
 expect(report["unrecorded"] == [], f"a surface went unrecorded: {report['unrecorded']}")
 expect(report["errors"] == [], f"the report finds content errors in a clean run: {report['errors']}")
+expect(report["blocking"] == [], f"the report blocks a clean run: {report['blocking']}")
 
 expect(not [line for line in plain if MARK in line], "the run without the recorder wrote marker lines")
 expect(any("FIXTURE entry evaluated" in line for line in plain), "the run without the recorder did not run the fixture")

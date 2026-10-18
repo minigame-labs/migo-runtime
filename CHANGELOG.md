@@ -18,8 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   WebGL extensions it asked for and the GL errors it saw, the time to the end of its entry and to its first frame, and
   the errors the engine logged -- each API judged by this build's contracts for Android: who answers it (the engine,
   the platform's host layer, or the host app's own integration), whether the conformance suite verified it, whether it
-  is deliberately not offered. The report says it is a partial view: Linux has no device services, and the device run
-  is the authority. The recorder is a prelude a host injects, never part of a shipped one; the game keeps the
+  is deliberately not offered -- and the calls the host answered "not supported", judged for Android, the globals the
+  game needed that nothing defines, and a run in which no animation frame ran. The report says it is a partial view:
+  Linux has no device services, and the device run is the authority. The recorder is a prelude a host injects, never part of a shipped one; the game keeps the
   arguments, identities, `new.target`, own properties, descriptors and absent names it has without it, and its
   surface methods are called on the surface itself.
 - Android: `MigoGameActivity.onCreateRuntimeConfig()` can refuse a launch by throwing `LaunchRefusedException`
