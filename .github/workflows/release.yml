@@ -841,6 +841,10 @@ jobs:
         working-directory: engine
         run: |
           cargo test -p migo-shared -p migo-icu-data -p migo-runtime-v8 --tests
+          # The Slim product profile, which no job tested: every crate defaults
+          # to Full, so none of its `cfg(not(feature = ...))` arms were built
+          # here, and master gathered 42 Slim failures that only a local run saw.
+          cargo test -p migo-runtime-v8 --tests --no-default-features --features profile-slim
           # `--tests` so the ASTC fixture emitter in `tests/` is compiled here.
           # Its cases are `#[ignore]`d and belong to the ASTC gate, but a
           # binary nothing builds is one that stops building unnoticed.
@@ -1054,6 +1058,9 @@ jobs:
           cargo test -p migo-platform --lib
           cargo test -p migo-audio --lib
           cargo test -p migo-player --bins
+          cargo test -p migo-core --lib --no-default-features --features profile-slim
+          cargo test -p migo-capi --lib --no-default-features --features profile-slim
+          cargo test -p migo-platform --lib --no-default-features --features profile-slim
         env:
           RUST_BACKTRACE: 1
 

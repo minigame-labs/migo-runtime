@@ -24,6 +24,13 @@ named by any step, local or CI, and this audit reported nothing missing.
 Reads the steps on stdin, one per line, and prints `package::target (kind)` for
 every test binary no step runs.
 
+`--configurations` answers a second question about the same steps: which builds
+of each package they test, as `package features` lines. A binary is one target
+but every feature set is another build of it, so two lists that run the same
+binaries can still test different code -- the four Slim steps ran locally and in
+no CI job, which a comparison by crate name could not see, and master gathered 42
+Slim failures in that gap.
+
 Exit codes:
     0  coverage determined; uncovered targets, if any, are on stdout
     1  cargo could not describe the workspace, so coverage is unknown
@@ -124,6 +131,41 @@ def step_coverage(step: str) -> tuple[list[str], object | set[tuple[str, str]]] 
     return packages, selected
 
 
+def step_configurations(step: str) -> list[str]:
+    """`package features` for every package a `cargo test` step names.
+
+    The features are `default`, `none` (`--no-default-features`) or `all`, then
+    `+` and the `--features` the step adds, sorted, so one build has one
+    spelling however the step wrote it.
+    """
+    words = shlex.split(step)
+    if not words or words[0] != "test":
+        return []
+    packages: list[str] = []
+    added: set[str] = set()
+    base = "default"
+    index = 1
+    while index < len(words):
+        word, value = words[index], words[index + 1] if index + 1 < len(words) else ""
+        if word in ("-p", "--package"):
+            packages.append(value)
+            index += 2
+            continue
+        if word in ("-F", "--features"):
+            added.update(name for name in value.replace(",", " ").split() if name)
+            index += 2
+            continue
+        if word.startswith("--features="):
+            added.update(name for name in word.split("=", 1)[1].replace(",", " ").split() if name)
+        elif word == "--no-default-features" and base != "all":
+            base = "none"
+        elif word == "--all-features":
+            base = "all"
+        index += 1
+    features = base + ("+" + ",".join(sorted(added)) if added and base != "all" else "")
+    return [f"{package} {features}" for package in packages]
+
+
 def coverage_by_package(steps) -> dict[str, object | set[tuple[str, str]]]:
     merged: dict[str, object | set[tuple[str, str]]] = {}
     for step in steps:
@@ -180,8 +222,22 @@ def is_covered(reach, kind: str, name: str) -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--root", required=True, help="repository root")
+    parser.add_argument("--root", help="repository root")
+    parser.add_argument("--configurations", action="store_true",
+                        help="print the package builds the steps test instead")
     args = parser.parse_args()
+
+    if args.configurations:
+        configurations = {
+            configuration
+            for line in sys.stdin
+            for configuration in step_configurations(line.strip())
+        }
+        for configuration in sorted(configurations):
+            print(configuration)
+        return 0
+    if args.root is None:
+        parser.error("--root is required to audit test binaries")
 
     engine = pathlib.Path(args.root) / "engine"
     if not (engine / "Cargo.toml").is_file():

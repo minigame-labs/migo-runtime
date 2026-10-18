@@ -510,10 +510,14 @@ else
 fi
 
 # ------------------------------------------------------------
-# CI runs every host suite this entry point runs.
+# CI tests every build of every package this entry point tests, and no other.
 #
 # The gap this closes is the one that made the entry point necessary: two lists of
 # crates in two files, one of them missing four crates, and nothing comparing them.
+# It is compared per build -- a package and the features it is tested with -- not
+# per crate name, because a name cannot tell two builds of one crate apart: the four
+# Slim steps ran here and in no CI job while every assertion in this file passed,
+# and master collected 42 Slim failures in that gap.
 # ------------------------------------------------------------
 #
 # The local half asks the script rather than grepping it. It used to grep for
@@ -521,12 +525,9 @@ fi
 # host steps stopped carrying the word `cargo` themselves, the grep matched
 # nothing -- and with no `|| true` under `set -euo pipefail`, this file died at
 # that assignment, *before* reaching the `fail` below that exists to report
-# exactly that case. It failed with no message at all, which is the vacuous
-# failure the block underneath already warned about in its own comment and did
-# not apply here. Both extractions are now non-fatal so the empty case is
-# reportable, and the local one has one authority instead of a regular
-# expression guessing at one.
-local_crates="$(bash "$ROOT/scripts/verify-change.sh" --list-host-crates 2>/dev/null || true)"
+# exactly that case. Both extractions are non-fatal so the empty case is
+# reportable, and both sides are read by the one parser the binary audit uses.
+#
 # Comments stripped before the extraction, not after: this workflow explains its own
 # `--lib`/`--all-targets` choices in prose next to the commands, and a comment parsed
 # as a command is a list that agrees with itself about the wrong thing.
@@ -534,14 +535,24 @@ ci_test_lines="$(sed 's/#.*//' "$ROOT/.github/workflows/pr-ci.yml" \
     | grep -E 'cargo test ' || true)"
 ci_crates="$(printf '%s\n' "$ci_test_lines" \
     | grep -oE '\-p migo-[a-z0-9-]+' | grep -oE 'migo-[a-z0-9-]+' | sort -u || true)"
-if [[ -z "$ci_crates" ]]; then
-    fail "cannot find the crates pr-ci.yml tests"
-elif [[ -z "$local_crates" ]]; then
-    fail "scripts/verify-change.sh --list-host-crates reported nothing"
+local_builds="$(bash "$ROOT/scripts/verify-change.sh" --list-host-steps 2>/dev/null \
+    | python3 "$ROOT/scripts/lib/host_test_coverage.py" --configurations || true)"
+ci_builds="$(printf '%s\n' "$ci_test_lines" | grep -oE 'cargo test .*' | sed 's/^cargo //' \
+    | python3 "$ROOT/scripts/lib/host_test_coverage.py" --configurations || true)"
+# Whole lines: `migo-services default` is a prefix of `migo-services default+code-signing`.
+has_build() { grep -qxF -- "$2" <<< "$1"; }
+if [[ -z "$ci_builds" ]]; then
+    fail "cannot find the builds pr-ci.yml tests"
+elif [[ -z "$local_builds" ]]; then
+    fail "scripts/verify-change.sh --list-host-steps reported no tested build"
 else
-    while read -r crate; do
-        assert_contains "$ci_crates" "$crate" "pr-ci.yml runs $crate's tests too"
-    done <<< "$local_crates"
+    while read -r build; do
+        if has_build "$ci_builds" "$build"; then
+            pass "pr-ci.yml tests $build too"
+        else
+            fail "pr-ci.yml tests $build too -- no pr-ci.yml cargo test builds it"
+        fi
+    done <<< "$local_builds"
 
     # ------------------------------------------------------------
     # And the other direction, which is the one that was missing.
@@ -554,10 +565,32 @@ else
     # versioned-header tests, run by CI, run by no local step, and every assertion
     # in this file passed.
     # ------------------------------------------------------------
-    while read -r crate; do
-        assert_contains "$local_crates" "$crate" \
-            "scripts/verify-change.sh runs $crate's tests too"
-    done <<< "$ci_crates"
+    while read -r build; do
+        if has_build "$local_builds" "$build"; then
+            pass "scripts/verify-change.sh tests $build too"
+        else
+            fail "scripts/verify-change.sh tests $build too -- no host step builds it"
+        fi
+    done <<< "$ci_builds"
+fi
+
+# The comparison is only as fine as the parser: one that dropped features would read
+# Full and Slim as the same build on both sides and agree. So a feature set is pinned
+# as a build of its own, and two spellings of one set as one build.
+builds_of() {
+    printf '%s\n' "$@" | python3 "$ROOT/scripts/lib/host_test_coverage.py" --configurations \
+        | grep -c . || true
+}
+if [[ "$(builds_of 'test -p migo-core --lib' \
+    'test -p migo-core --lib --no-default-features --features profile-slim')" -eq 2 ]]; then
+    pass "a feature set is a build of its own"
+else
+    fail "the parser reads Full and Slim as one build, so neither list can be short of one"
+fi
+if [[ "$(builds_of 'test -p migo-io --features a,b' 'test -p migo-io --features "b a"')" -eq 1 ]]; then
+    pass "two spellings of one feature set are one build"
+else
+    fail "the parser reads one feature set as two builds, so equal lists would disagree"
 fi
 
 # ------------------------------------------------------------

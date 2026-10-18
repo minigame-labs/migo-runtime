@@ -56,7 +56,7 @@ print_error()   { printf '\033[0;31m[verify] %s\033[0m\n' "$*" >&2; }
 # ------------------------------------------------------------
 # The host suites, declared before anything runs so the script can report them.
 #
-# `--list-host-crates` exists because the contract needs this list and used to
+# `--list-host-steps` exists because the contract needs this list and used to
 # recover it by grepping this file for `cargo test -p migo-...`. That coupled a
 # check to a spelling: the day the steps stopped carrying the word `cargo`
 # themselves, the grep matched nothing and -- under `set -e`, with no `|| true`
@@ -154,17 +154,11 @@ HOST_CARGO_STEPS=(
     "fmt --all --check"
 )
 
-if [[ "${1:-}" == "--list-host-crates" ]]; then
-    for step in "${HOST_CARGO_STEPS[@]}"; do
-        [[ "$step" =~ -p\ (migo-[a-z0-9-]+) ]] && printf '%s\n' "${BASH_REMATCH[1]}"
-    done | sort -u
-    exit 0
-fi
-
 # The steps verbatim, because the crate names are not enough to say what runs.
 # Two lists naming the same crates still run different binaries when one of them
 # says `--lib`, and that one word is what hid nine `migo-capi-abi` test binaries
-# from every local run. Scope belongs to whoever checks coverage, so it is
+# from every local run; and they test different builds when one of them says
+# `--features profile-slim`. Scope belongs to whoever checks coverage, so it is
 # published rather than re-derived by a grep with a different idea of the syntax.
 if [[ "${1:-}" == "--list-host-steps" ]]; then
     printf '%s\n' "${HOST_CARGO_STEPS[@]}"
@@ -179,7 +173,6 @@ while [[ $# -gt 0 ]]; do
         --plan-only) PLAN_ONLY=true ;;
         --abi)       shift; [[ $# -gt 0 ]] || { print_error "--abi requires a value"; exit 2; }; ABI="$1" ;;
         --abi=*)     ABI="${1#*=}" ;;
-        --list-host-crates) ;;  # handled above, before any work
         --list-host-steps)  ;;  # handled above, before any work
         --help|-h)   sed -n '2,40p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *)           print_error "unknown argument: $1"; exit 2 ;;
