@@ -650,7 +650,13 @@ impl Mp3StreamDecoder {
                 Some(consumed) if consumed > 0 => {
                     self.buffer.drain(..consumed);
                 }
-                _ => break,
+                // A whole frame that gave nothing -- its main data in a reservoir
+                // this stream never had -- is that frame lost, as in a whole-file
+                // decode. Stopping here left it to the in-place pass, which
+                // decoded it again over a reservoir now holding its own bytes.
+                _ => {
+                    self.buffer.drain(..length);
+                }
             }
         }
     }
@@ -920,6 +926,42 @@ mod tests {
                     frames,
                     "a {frames}-frame stream with {label} must decode every frame"
                 );
+            }
+        }
+    }
+
+    /// A tag whose bytes look like a frame header, and a first frame that points into a reservoir
+    /// nobody filled: neither may cost the frames after it, whether the stream is short enough to
+    /// meet only the flush or long enough to decode in place.
+    #[test]
+    fn a_false_frame_costs_nothing_and_a_frame_without_its_reservoir_costs_only_itself() {
+        let tag = |side_info: u8| {
+            let mut body = vec![0u8; 16];
+            body.extend_from_slice(&[0xFF, 0xFB, 0x90, 0x00]);
+            body.extend_from_slice(&[side_info; 32]);
+            body.resize(600, 0);
+            let n = body.len();
+            let mut tag = b"ID3\x03\x00\x00".to_vec();
+            tag.extend([(n >> 21) as u8 & 0x7F, (n >> 14) as u8 & 0x7F, (n >> 7) as u8 & 0x7F, n as u8 & 0x7F]);
+            tag.extend_from_slice(&body);
+            tag
+        };
+
+        for frames in [3usize, 6, 40] {
+            let stream = mp3_fixture::stream(frames);
+            for (label, source, expected) in [
+                ("behind a tag holding a false frame that decodes to nothing", [tag(0xFF), stream.clone()].concat(), frames),
+                ("behind a tag holding a false frame that decodes to silence", [tag(0x00), stream.clone()].concat(), frames),
+                ("whose first frame has no reservoir", stream[mp3_fixture::FRAME_BYTES..].to_vec(), frames - 2),
+            ] {
+                let mut decoder = Mp3StreamDecoder::new(mp3_fixture::SAMPLE_RATE);
+                let mut out = Vec::new();
+                for chunk in source.chunks(137) {
+                    decoder.push_data(chunk);
+                    decoder.decode_into(&mut out);
+                }
+                decoder.flush_into(&mut out);
+                assert_eq!(out.len() / mp3_fixture::SAMPLES_PER_FRAME, expected, "{frames} frames {label}");
             }
         }
     }

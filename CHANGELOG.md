@@ -726,6 +726,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `console` has every member of the Console Standard's namespace: `assert`, `clear`, `count`, `countReset`, `dir`,
   `dirxml`, `groupCollapsed`, `table`, `time`, `timeLog`, `timeEnd` and `trace` joined the seven it had. A missing
   member was a TypeError -- Cocos Creator 3 calls `console.time` while it starts its physics.
+- An MP3 whose ID3v2 tag holds bytes that look like a frame header decodes. The decoder found audio by sync words, and a
+  sync-like pair inside the tag measured as a frame that decoded to nothing, which ended the decode: a Cocos Creator
+  game's 22.05 kHz sound effect failed to load, and the game waited for it on its splash screen. A tag is now skipped by
+  the length it declares, and a frame that decodes to nothing costs that frame rather than the rest of the file -- in a
+  whole-file decode and at the end of a stream, where the frame used to be decoded again over its own bytes.
 - A game whose entry module throws -- on its first line, or after a top-level `await` -- fails to launch with
   `ModuleLoadError` "module evaluation failed" and the exception, and the host is told through its error callback. It
   used to be logged "module evaluated" and reported ready: deno_core settles a rejected evaluation as done and rethrows

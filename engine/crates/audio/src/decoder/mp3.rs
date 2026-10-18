@@ -227,6 +227,25 @@ fn next_sync_candidate(buffer: &[u8], from: usize) -> Option<usize> {
         .find(|&index| buffer[index] == 0xFF && (buffer[index + 1] & 0xE0) == 0xE0)
 }
 
+/// The length of an ID3v2 tag at the front of `buffer`, header and footer included, when one is
+/// there whole.
+///
+/// The tag says how long it is, in a header no frame can be taken for: "ID3", a version below 0xFF,
+/// and a size in four 7-bit bytes. Going past it by that length, rather than by searching for sync
+/// words, is what keeps a tag's own bytes -- text, a cover image whose JPEG is full of `FF Ex`
+/// markers -- from being measured as a frame: minimp3 accepts a lone frame with nothing after it to
+/// confirm it.
+fn id3v2_tag_length(buffer: &[u8]) -> Option<usize> {
+    let header = buffer.get(..10)?;
+    if &header[..3] != b"ID3" || header[3] == 0xFF || header[4] == 0xFF || header[6..].iter().any(|&b| b & 0x80 != 0) {
+        return None;
+    }
+    let size = header[6..].iter().fold(0usize, |size, &b| (size << 7) | usize::from(b));
+    let footer = if header[5] & 0x10 != 0 { 10 } else { 0 };
+    let total = 10 + size + footer;
+    (total <= buffer.len()).then_some(total)
+}
+
 /// Where the next whole frame starts in `buffer`, and how long it is.
 ///
 /// Returns `(bytes before the frame, frame length)`. The caller must get past the
@@ -242,7 +261,7 @@ pub(crate) fn first_frame_at_front(
     buffer: &[u8],
     hint: Option<usize>,
 ) -> Option<(usize, usize)> {
-    let mut offset = 0usize;
+    let mut offset = id3v2_tag_length(buffer).unwrap_or(0);
     for _ in 0..=MAX_SYNC_CANDIDATES {
         if let Some(length) = first_frame_length(probe, &buffer[offset..], hint) {
             return Some((offset, length));
@@ -326,7 +345,7 @@ pub fn decode(data: &[u8]) -> EngineResult<DecodedAudio> {
     while pos < data.len() {
         let remaining = &data[pos..];
         let probe = probe.get_or_insert_with(Mp3FrameDecoder::new);
-        let take = match first_frame_at_front(probe, remaining, previous_length) {
+        let (take, measured) = match first_frame_at_front(probe, remaining, previous_length) {
             // Get past whatever sits in front of the frame first: the rule that
             // lets a lone frame through wants it at offset zero.
             Some((skip, _)) if skip > 0 => {
@@ -335,14 +354,18 @@ pub fn decode(data: &[u8]) -> EngineResult<DecodedAudio> {
             }
             Some((_, length)) => {
                 previous_length = Some(length);
-                length
+                (length, true)
             }
             // No whole frame ahead. Offering everything is the last thing to try
             // before giving up on the remainder.
-            None => remaining.len(),
+            None => (remaining.len(), false),
         };
 
         match frames.decode(&remaining[..take]) {
+            // A whole frame that gave nothing -- its main data in a reservoir this
+            // decode never had -- is that frame lost. The frames after it carry
+            // their own, and stopping here dropped every one of them.
+            Mp3Step::NeedMoreData if measured => pos += take,
             Mp3Step::NeedMoreData => break,
             Mp3Step::Skipped(skipped) => pos += skipped,
             Mp3Step::Frame {
@@ -434,6 +457,63 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A real ID3v2 tag: its header, then `body`, sized as the header says.
+    fn id3v2(body: &[u8]) -> Vec<u8> {
+        let n = body.len();
+        let mut tag = b"ID3\x03\x00\x00".to_vec();
+        tag.extend([(n >> 21) as u8 & 0x7F, (n >> 14) as u8 & 0x7F, (n >> 7) as u8 & 0x7F, n as u8 & 0x7F]);
+        tag.extend_from_slice(body);
+        tag
+    }
+
+    /// A tag holds bytes that look like a frame header -- text, a cover image, whose JPEG is full
+    /// of `FF Ex` markers -- and it says how long it is.
+    ///
+    /// The frame search went by sync words alone, and minimp3 accepts a lone frame with nothing
+    /// after it to confirm it, so a sync-like pair inside a tag measured as a frame. Its main data
+    /// pointed into a reservoir nobody had, it decoded to nothing, and the decode stopped there: a
+    /// Cocos Creator game's sound -- MPEG-2, 22.05 kHz, 2,746 frames behind a 67-byte tag with such
+    /// a pair at offset 21 -- failed to load, and the game waited for it on its splash screen.
+    #[test]
+    fn a_tag_that_holds_a_frame_header_is_skipped_by_the_length_it_declares() {
+        // An MPEG-1 Layer III header inside the tag, then side info: one whose main_data_begin
+        // is not zero decodes to nothing, one that is all zero decodes to a frame of silence --
+        // which is not audio either, and must not be counted as some.
+        for (label, side_info) in [("pointing into a reservoir", 0xFFu8), ("silent", 0x00u8)] {
+            let mut body = vec![0u8; 16];
+            body.extend_from_slice(&[0xFF, 0xFB, 0x90, 0x00]);
+            body.extend_from_slice(&[side_info; 32]);
+            body.resize(600, 0);
+            let mut data = id3v2(&body);
+            data.extend_from_slice(&mp3_fixture::stream(6));
+
+            let decoded = decode(&data).unwrap_or_else(|e| panic!("the audio behind a {label} false frame: {e}"));
+            assert_eq!(decoded.samples.len(), 6 * mp3_fixture::SAMPLES_PER_FRAME,
+                "every frame behind a tag holding a {label} false frame, and nothing else");
+        }
+    }
+
+    /// A tag header that claims more than the file holds is no tag to go past: the search for
+    /// audio goes on from where it would without one, and finds what follows.
+    #[test]
+    fn a_tag_that_claims_more_than_the_file_holds_is_not_trusted() {
+        let mut data = b"ID3\x03\x00\x00\x7F\x7F\x7F\x7F".to_vec();
+        data.extend_from_slice(&mp3_fixture::stream(3));
+        let decoded = decode(&data).expect("the frames after a header that lies about its length");
+        assert_eq!(decoded.samples.len(), 3 * mp3_fixture::SAMPLES_PER_FRAME);
+    }
+
+    /// A frame that decodes to nothing -- its main data in a reservoir this decode never had -- is
+    /// one frame lost, not the end of the file: the frames after it carry their own.
+    #[test]
+    fn a_frame_that_decodes_to_nothing_does_not_end_the_file() {
+        // The fixture without its first frame: what is first now points into a reservoir that
+        // was never filled.
+        let stream = mp3_fixture::stream(6);
+        let decoded = decode(&stream[mp3_fixture::FRAME_BYTES..]).expect("the frames after it decode");
+        assert_eq!(decoded.samples.len(), 4 * mp3_fixture::SAMPLES_PER_FRAME, "all but the frame that had nothing");
     }
 
     /// The fixture has to be a real MP3 before anything built on it means
