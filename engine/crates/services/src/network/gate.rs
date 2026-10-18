@@ -37,9 +37,7 @@
 
 use url::Url;
 
-use super::address_filter::{
-    LanAccess, is_blocked_address, is_blocked_datagram_address, is_public,
-};
+use super::address_filter::{LanAccess, Reach, datagram_reach, stream_reach};
 use shared::network_policy::{NetworkChannel, NetworkPolicy};
 
 /// Classifies which network entry point is being guarded.
@@ -226,16 +224,16 @@ fn scheme_allowed(kind: GateKind, scheme: &str) -> bool {
 /// Side-effect-free policy evaluator.
 ///
 /// Returns `Ok(())` iff every rule applicable to `kind` passes.
-/// Never performs DNS, never touches the filesystem, never logs; for a
-/// private IP literal it asks the system which networks the device is on.
+/// Never performs DNS, never touches the filesystem, never logs; for an IP
+/// literal it asks the system which networks the device is on.
 pub fn evaluate_policy(
     url: &Url,
     policy: &NetworkPolicy,
     kind: GateKind,
 ) -> Result<(), GateReject> {
     // A datagram may also be broadcast or multicast; a stream or a request may not.
-    let blocked: &dyn Fn(&std::net::SocketAddr, LanAccess) -> bool = match kind {
-        GateKind::UdpSocket => &is_blocked_datagram_address,
+    let reach: &dyn Fn(std::net::IpAddr) -> Reach = match kind {
+        GateKind::UdpSocket => &datagram_reach,
         GateKind::Fetch
         | GateKind::Download
         | GateKind::AudioStream
@@ -244,18 +242,18 @@ pub fn evaluate_policy(
         | GateKind::ImageInlineSrc
         | GateKind::HostMedia
         | GateKind::WebSocket
-        | GateKind::TcpSocket => &is_blocked_address,
+        | GateKind::TcpSocket => &stream_reach,
     };
-    evaluate(url, policy, kind, blocked)
+    evaluate(url, policy, kind, reach)
 }
 
-/// [`evaluate_policy`] with `blocked` deciding which addresses may not be reached: the device's real networks in
-/// production, given ones in a test.
+/// [`evaluate_policy`] with `reach` saying where an address is: from the device's real networks in production,
+/// given ones in a test.
 fn evaluate(
     url: &Url,
     policy: &NetworkPolicy,
     kind: GateKind,
-    blocked: &dyn Fn(&std::net::SocketAddr, LanAccess) -> bool,
+    reach: &dyn Fn(std::net::IpAddr) -> Reach,
 ) -> Result<(), GateReject> {
     let channel = kind.channel();
 
@@ -280,18 +278,16 @@ fn evaluate(
         _ => 80,
     });
     if let Ok(sock_addr) = format!("{host}:{port}").parse::<std::net::SocketAddr>() {
-        let lan = lan_access(policy, channel);
-        if blocked(&sock_addr, lan) {
-            return Err(GateReject::BlockedAddress {
-                display: sock_addr.ip().to_string(),
-            });
+        let display = sock_addr.ip().to_string();
+        match reach(sock_addr.ip()) {
+            Reach::Internet => return Err(GateReject::IpLiteral { display }),
+            Reach::LocalNetwork if lan_access(policy, channel) == LanAccess::LocalNetwork => {
+                // A local-network peer: there is no domain to hold to the allowlist.
+            }
+            Reach::LocalNetwork | Reach::Never => {
+                return Err(GateReject::BlockedAddress { display });
+            }
         }
-        if is_public(sock_addr.ip()) {
-            return Err(GateReject::IpLiteral {
-                display: sock_addr.ip().to_string(),
-            });
-        }
-        // A local-network peer the address rule let through: there is no domain to hold to the allowlist.
     } else if !policy.channel(channel).permits(host) {
         // 4. The channel's allowlist.
         return Err(GateReject::NotAllowed {
@@ -463,10 +459,42 @@ mod tests {
             address: "10.0.2.15".parse().unwrap(),
             prefix: 24,
         }];
-        let blocked = |addr: &std::net::SocketAddr, access: LanAccess| {
-            super::super::address_filter::is_blocked_on(addr, &lan, access)
+        let datagram = kind == GateKind::UdpSocket;
+        let reach = |ip| super::super::address_filter::reach_on(ip, datagram, &lan);
+        evaluate(url, policy, kind, &reach)
+    }
+
+    /// A literal is judged by where it is from the device: the device itself is refused, another device on its
+    /// network passes only with the local network granted, and a server on the internet is named by domain -- an
+    /// IPv6 neighbour's global address included.
+    #[test]
+    fn a_literal_is_refused_or_passed_by_where_it_is_from_the_device() {
+        let networks = [LocalNetwork {
+            address: "2001:470:1:2::15".parse().unwrap(),
+            prefix: 64,
+        }];
+        let reach = |ip| super::super::address_filter::reach_on(ip, false, &networks);
+        let mut lan = NetworkPolicy::unrestricted();
+        lan.lan = true;
+        let check = |url: &str, policy: &NetworkPolicy| {
+            evaluate(&u(url), policy, GateKind::TcpSocket, &reach)
         };
-        evaluate(url, policy, kind, &blocked)
+        assert_eq!(check("tcp://[2001:470:1:2::99]:9000/", &lan), Ok(()));
+        assert!(matches!(
+            check(
+                "tcp://[2001:470:1:2::99]:9000/",
+                &NetworkPolicy::unrestricted()
+            ),
+            Err(GateReject::BlockedAddress { .. })
+        ));
+        assert!(matches!(
+            check("tcp://[2001:470:1:2::15]:9000/", &lan),
+            Err(GateReject::BlockedAddress { .. })
+        ));
+        assert!(matches!(
+            check("tcp://[2001:470:1:3::1]:9000/", &lan),
+            Err(GateReject::IpLiteral { .. })
+        ));
     }
 
     // ---- the default refuses ----

@@ -645,12 +645,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still made, and its connect fails saying why. A UDPSocket may send to the limited broadcast address and to multicast
   groups (it may not reach the loopback, or a private address off the local network, any more than a stream may);
   `setBroadcast` turns broadcast on for the socket instead of failing the send, and `255.255.255.255` needs no flag.
-- Content may reach the other devices on its local network: a private address (RFC 1918, IPv6 unique-local) is
-  allowed when it is on one of the device's networks and is not the device itself -- what the reference allows ("the
-  non-local IPs on the local network") so games can play on a LAN -- and such an address is not held to the domain
-  allow list, as the reference does not hold it. A private address anywhere else, the device itself, loopback,
-  link-local (cloud metadata included), multicast and the reserved ranges stay refused for `request`, `downloadFile`,
-  `uploadFile`, WebSocket, TCP and UDP alike.
+- With the local network granted (`lan`), a WebSocket, a TCPSocket and a UDPSocket may reach the other devices on
+  the device's own networks -- what the reference allows ("the non-local IPs on the local network") so games can play
+  on a LAN -- and such an address is not held to the domain allowlist, as the reference does not hold it. Which
+  devices those are is read from the device's networks rather than from the address range: on IPv6 a neighbour's
+  address is as often global as unique-local, and a device given a public IPv4 has neighbours with public addresses
+  too. The device itself, by any of its addresses, stays out of reach either way, so a domain pointed at the phone's
+  own address reaches nothing. A private address on none of the device's networks, loopback, link-local (cloud
+  metadata included), multicast and the special-purpose ranges no internet host has stay refused for every API; an
+  IPv6 address that embeds an IPv4 one (mapped, NAT64's well-known prefix, 6to4) is judged as that IPv4 address, and
+  local-use NAT64 and Teredo are refused.
 - Every outbound HTTP request -- `request`, `downloadFile`, `uploadFile`, a streamed `InnerAudioContext.src`, an
   `http(s)` image source, `prefetchAssets` -- is made by the engine's own client (hyper, with rustls and the same
   Mozilla roots) instead of reqwest, so a request's connection is the engine's to measure: DNS, TCP and TLS each timed,

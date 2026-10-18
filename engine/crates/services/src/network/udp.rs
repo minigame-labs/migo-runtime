@@ -26,7 +26,7 @@ use shared::network_policy::{NetworkChannel, NetworkPolicy};
 
 use crate::ServiceError;
 
-use super::address_filter::{LanAccess, is_blocked_datagram_address, is_public};
+use super::address_filter::{LanAccess, Reach, datagram_reach, is_blocked_datagram_address};
 use super::gate::{self, Transport};
 use super::resources::{CancelFlag, ResourceId, ResourceTable};
 use super::sockets::{
@@ -103,13 +103,10 @@ impl Inbound {
 
     fn admits(&self, peer: &SocketAddr) -> bool {
         match self {
-            Self::Policy { lan, addressed } => {
-                if is_public(peer.ip()) {
-                    addressed.lock().contains(&peer.ip().to_canonical())
-                } else {
-                    !is_blocked_datagram_address(peer, *lan)
-                }
-            }
+            Self::Policy { lan, addressed } => match datagram_reach(peer.ip()) {
+                Reach::Internet => addressed.lock().contains(&peer.ip().to_canonical()),
+                reach => !reach.blocked(*lan),
+            },
             #[cfg(test)]
             Self::Any => true,
         }
@@ -120,7 +117,7 @@ impl Inbound {
     fn addressed(&self, peer: SocketAddr) {
         match self {
             Self::Policy { addressed, .. } => {
-                if !is_public(peer.ip()) {
+                if datagram_reach(peer.ip()) != Reach::Internet {
                     return;
                 }
                 let ip = peer.ip().to_canonical();

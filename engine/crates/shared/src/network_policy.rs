@@ -191,7 +191,7 @@ pub struct NetworkPolicy {
     pub udp: DomainPolicy,
     /// `http://` and `ws://`. Off by default; raw TCP and UDP have no TLS analogue and are not affected.
     pub allow_plain_http: bool,
-    /// Other devices on the device's own local network (RFC 1918 and unique-local addresses), for the socket, TCP
+    /// The other devices on the device's own networks, whatever their addresses' range, for the socket, TCP
     /// and UDP channels only -- a request, download or upload never reaches one. Off by default.
     pub lan: bool,
 }
