@@ -263,7 +263,7 @@ pub(crate) fn call_sync(
             let port = u32_of(op, 0, port)?;
             let socket_type = string(op, 1, socket_type)?;
             // `UdpBindResult`, in its field order: rid, port, address, family.
-            udp::bind(&network.resources, port, &socket_type).map(|bound| {
+            udp::bind(&network.policy, &network.resources, port, &socket_type).map(|bound| {
                 OwnedValue::Array(vec![
                     OwnedValue::U32(bound.rid),
                     OwnedValue::U32(u32::from(bound.local.port)),

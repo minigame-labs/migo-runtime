@@ -81,6 +81,7 @@ NetworkPolicy policy = new NetworkPolicy.Builder()
 - `allowUnrestricted(channel)` grants every domain on that channel. Use it only in developer tools or for content you have already vetted; IP addresses stay refused.
 - `setAllowPlainHttp(true)` is what permits `http://` and `ws://`.
 - `setAllowLocalNetwork(true)` lets SOCKET, TCP and UDP reach other devices on the device's own local network (LAN play). REQUEST, DOWNLOAD and UPLOAD never reach the local network or the loopback.
+- A UDP socket hears only the senders it could send to: public ones when UDP is granted a domain, the local network when `setAllowLocalNetwork(true)`, never the device itself. A game that can send to no one cannot bind one.
 - A redirect is checked on the channel of the request that followed it: a download redirected to another domain is still held to the DOWNLOAD allowlist.
 
 A refused request gets an error naming the API, the channel and the domain, e.g. `fetch: domain 'x.example.com' is not in the request allowlist`.

@@ -70,7 +70,7 @@ fn udp_peer_cache_reuses_same_peer_and_rebuilds_on_change() {
 async fn a_destination_the_policy_refuses_is_never_sent_to() {
     let policy = NetworkPolicy::from_json(r#"{"udp":["allowed.example"]}"#).unwrap();
     let resources = ResourceTable::new();
-    let bound = bind(&resources, 0, "udp4").expect("a system-assigned port");
+    let bound = bind(&policy, &resources, 0, "udp4").expect("a system-assigned port");
     assert_ne!(bound.local.port, 0, "the system assigned a port");
 
     let error = connect(&policy, &resources, bound.rid, "blocked.example", 9000)
@@ -109,13 +109,14 @@ async fn a_destination_the_policy_refuses_is_never_sent_to() {
 /// say (a host with no broadcast route answers so); the engine does not refuse it.
 #[tokio::test]
 async fn a_broadcast_is_handed_to_the_kernel() {
+    let policy = NetworkPolicy {
+        lan: true,
+        ..NetworkPolicy::default()
+    };
     let resources = ResourceTable::new();
-    let bound = bind(&resources, 0, "udp4").unwrap();
+    let bound = bind(&policy, &resources, 0, "udp4").unwrap();
     let sent = send(
-        &NetworkPolicy {
-            lan: true,
-            ..NetworkPolicy::default()
-        },
+        &policy,
         &resources,
         bound.rid,
         "255.255.255.255",
@@ -167,7 +168,7 @@ async fn a_handle_that_is_not_a_socket_is_refused_by_name() {
 #[tokio::test]
 async fn a_datagram_arrives_whole_with_the_peer_that_sent_it() {
     let resources = ResourceTable::new();
-    let receiver = bind(&resources, 0, "udp4").unwrap();
+    let receiver = bind_hearing(&resources, 0, "udp4", Inbound::Any).unwrap();
     let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     let to = format!("127.0.0.1:{}", receiver.local.port);
     sender.send_to(b"ping", &to).unwrap();
@@ -200,4 +201,80 @@ async fn a_datagram_arrives_whole_with_the_peer_that_sent_it() {
         .await
         .expect_err("a closed socket is not read from");
     assert!(error.message.contains("is not open"), "{}", error.message);
+}
+
+/// A socket hears whoever can reach its port, so a policy under which content
+/// could send to no one -- the default -- gets no socket at all.
+#[tokio::test]
+async fn a_policy_under_which_content_could_send_to_no_one_gets_no_socket() {
+    let resources = ResourceTable::new();
+    let error = bind(&NetworkPolicy::default(), &resources, 0, "udp4").unwrap_err();
+    assert!(
+        error.message.contains("grants the udp channel nothing"),
+        "{}",
+        error.message
+    );
+
+    let lan_only = NetworkPolicy {
+        lan: true,
+        ..NetworkPolicy::default()
+    };
+    assert!(
+        bind(&lan_only, &resources, 0, "udp4").is_ok(),
+        "the local network is someone"
+    );
+    let a_domain = NetworkPolicy::from_json(r#"{"udp":["game.example"]}"#).unwrap();
+    assert!(
+        bind(&a_domain, &resources, 0, "udp4").is_ok(),
+        "a domain is someone"
+    );
+}
+
+/// The device itself is a sender content may never send to, so what it sends
+/// to content's port is dropped rather than heard.
+#[tokio::test]
+async fn a_sender_content_could_not_send_to_is_not_heard() {
+    let policy = NetworkPolicy::from_json(r#"{"udp":"unrestricted"}"#).unwrap();
+    let resources = ResourceTable::new();
+    let receiver = bind(&policy, &resources, 0, "udp4").unwrap();
+    let sender = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    sender
+        .send_to(b"ping", format!("127.0.0.1:{}", receiver.local.port))
+        .unwrap();
+
+    let quiet = std::sync::atomic::AtomicBool::new(false);
+    let heard = tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        next_event(&resources, receiver.rid, &quiet),
+    )
+    .await;
+    assert!(
+        heard.is_err(),
+        "a datagram from the loopback reached content: {heard:?}"
+    );
+}
+
+#[test]
+fn inbound_admits_exactly_the_senders_content_could_send_to() {
+    let at = |a: u8, b: u8, c: u8, d: u8| SocketAddr::from(([a, b, c, d], 9000));
+    let domains_only = Inbound::Policy {
+        lan: LanAccess::Refused,
+        public: true,
+    };
+    assert!(domains_only.admits(&at(8, 8, 8, 8)));
+    assert!(!domains_only.admits(&at(127, 0, 0, 1)));
+    assert!(!domains_only.admits(&at(192, 168, 1, 1)));
+
+    let lan_only = Inbound::Policy {
+        lan: LanAccess::LocalNetwork,
+        public: false,
+    };
+    assert!(
+        !lan_only.admits(&at(8, 8, 8, 8)),
+        "no domain, so no public sender"
+    );
+    assert!(
+        !lan_only.admits(&at(127, 0, 0, 1)),
+        "never the device itself"
+    );
 }

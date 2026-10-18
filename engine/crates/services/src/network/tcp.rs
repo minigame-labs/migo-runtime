@@ -182,11 +182,11 @@ pub async fn connect(
     };
     debug!("TCP connect: {address}:{port} (timeout={seconds}s)");
 
-    gate::enforce_host(address, port, policy, GateKind::TcpSocket)
+    let address = gate::enforce_host(address, port, policy, GateKind::TcpSocket)
         .map_err(ServiceError::generic)?;
 
     let deadline = Duration::from_secs(u64::from(seconds));
-    let target = join_host_port(address, port);
+    let target = join_host_port(&address, port);
     let lan = gate::lan_access(policy, NetworkChannel::Tcp);
     let resolved = tokio::time::timeout(
         deadline,

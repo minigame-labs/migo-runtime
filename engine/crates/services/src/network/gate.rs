@@ -280,7 +280,9 @@ fn evaluate(
     Ok(())
 }
 
-/// Enforce the policy for a raw socket's host and port.
+/// Enforce the policy for a raw socket's host and port, and answer the host as
+/// the gate read it. The socket must resolve that one, not what content wrote:
+/// what was checked is then what is connected to.
 ///
 /// A socket has no URL, so one is synthesized (`tcp://host:port/`) and the
 /// URL rules run unchanged: scheme whitelist, IP-literal rules, the channel's
@@ -290,23 +292,30 @@ pub fn enforce_host(
     port: u16,
     policy: &NetworkPolicy,
     kind: GateKind,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let scheme = match kind {
         GateKind::TcpSocket => "tcp",
         GateKind::UdpSocket => "udp",
         _ => return Err("enforce_host called with a non-raw-socket kind".to_string()),
     };
-    // `Url::parse` needs a bracketed IPv6 literal; fall back to a
-    // pre-bracketed form when the caller passed a literal IPv6.
-    let host_for_url = if host.contains(':') && !host.starts_with('[') {
+    let bracketed = if host.contains(':') && !host.starts_with('[') {
         format!("[{host}]")
     } else {
         host.to_string()
     };
-    let synthetic = format!("{scheme}://{host_for_url}:{port}/");
+    // Read as an `http://` host would be, not as the opaque host `tcp://` gets.
+    // getaddrinfo connects `134744072`, `0x08080808` and `010.010.010.010` to
+    // 8.8.8.8, and this parser reads them the same way, so a numeric spelling
+    // meets the IP-literal rule the dotted one does. It also lowercases and
+    // IDNA-encodes a name, as every `http://` host already is.
+    let canonical = url::Host::parse(&bracketed)
+        .map_err(|e| format!("{}:fail invalid host '{}': {}", kind.label(), host, e))?
+        .to_string();
+    let synthetic = format!("{scheme}://{canonical}:{port}/");
     let url = Url::parse(&synthetic)
         .map_err(|e| format!("{}:fail invalid host '{}': {}", kind.label(), host, e))?;
-    enforce(&url, policy, kind)
+    enforce(&url, policy, kind)?;
+    Ok(canonical)
 }
 
 /// Evaluate the policy, count the refusal, and answer the message content is
@@ -727,13 +736,32 @@ mod tests {
 
     #[test]
     fn a_raw_socket_host_matches_regardless_of_case() {
-        // `tcp://` is not a special scheme, so its host keeps the case content wrote.
+        // `tcp://` is not a special scheme, so its host would keep the case content wrote.
         let policy = only(NetworkChannel::Tcp, &["game.example.com"]);
         assert_eq!(
             enforce_host("GAME.Example.com", 9000, &policy, GateKind::TcpSocket),
-            Ok(())
+            Ok("game.example.com".to_string())
         );
         assert!(enforce_host("other.example.com", 9000, &policy, GateKind::TcpSocket).is_err());
+    }
+
+    /// getaddrinfo reads a decimal, hex or octal IPv4 the way inet_aton does, and
+    /// `tcp://` keeps such a host opaque, so these reached the allowlist as names
+    /// and an unrestricted channel let them through to 8.8.8.8.
+    #[test]
+    fn a_numeric_ipv4_spelling_is_an_ip_literal_on_a_raw_socket() {
+        let open = NetworkPolicy::unrestricted();
+        for kind in [GateKind::TcpSocket, GateKind::UdpSocket] {
+            for spelling in ["134744072", "0x08080808", "010.010.010.010", "8.8.2056"] {
+                let refusal = enforce_host(spelling, 9000, &open, kind).unwrap_err();
+                assert!(
+                    refusal.contains("8.8.8.8"),
+                    "{spelling} as {kind:?}: {refusal}"
+                );
+            }
+            let loopback = enforce_host("2130706433", 9000, &open, kind).unwrap_err();
+            assert!(loopback.contains("127.0.0.1"), "{kind:?}: {loopback}");
+        }
     }
 
     // ---- schemes ----

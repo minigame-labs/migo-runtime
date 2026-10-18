@@ -119,7 +119,12 @@ pub fn op_udp_bind(
     #[string] socket_type: String,
 ) -> Result<UdpBindResult, JsErrorBox> {
     let resources = std::sync::Arc::clone(&state.borrow().borrow::<NetworkResources>().0);
-    let bound = service_udp::bind(&resources, port, &socket_type).map_err(service_error)?;
+    let bound = {
+        let state = state.borrow();
+        let policy = &state.borrow::<HostOpState>().network_policy;
+        service_udp::bind(policy, &resources, port, &socket_type)
+    }
+    .map_err(service_error)?;
     let rid = state.borrow_mut().resource_table.add(ServiceHandle::new(
         resources,
         bound.rid,

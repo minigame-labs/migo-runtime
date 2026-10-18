@@ -167,6 +167,11 @@ impl Default for DomainPolicy {
 }
 
 impl DomainPolicy {
+    /// No domain at all: the default, and what a channel left out of the JSON gets.
+    pub fn grants_nothing(&self) -> bool {
+        matches!(self, Self::Allowlist(patterns) if patterns.is_empty())
+    }
+
     pub fn permits(&self, host: &str) -> bool {
         match self {
             Self::Unrestricted => true,

@@ -11,21 +11,9 @@ use deno_core::url::Url;
 use deno_error::JsErrorBox;
 
 // Re-exported so this runtime's call sites name one gate: the rules and their
-// vocabulary are the service's, and only the two adaptors below are here.
+// vocabulary are the service's, and only the adaptor below is here.
 pub(crate) use migo_services::network::gate::GateKind;
 use shared::op_state::HostOpState;
-
-/// Enforce the policy for a raw socket's host and port.
-pub(crate) fn enforce_host_from_state(
-    host: &str,
-    port: u16,
-    state: &OpState,
-    kind: GateKind,
-) -> Result<(), JsErrorBox> {
-    let policy = &state.borrow::<HostOpState>().network_policy;
-    migo_services::network::gate::enforce_host(host, port, policy, kind)
-        .map_err(JsErrorBox::generic)
-}
 
 /// Enforce the policy using the runtime's `HostOpState`.
 pub(crate) fn enforce_from_state(
