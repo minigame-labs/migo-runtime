@@ -657,7 +657,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   own address reaches nothing. A private address on none of the device's networks, loopback, link-local (cloud
   metadata included), multicast and the special-purpose ranges no internet host has stay refused for every API; an
   IPv6 address that embeds an IPv4 one (mapped, NAT64's well-known prefix, 6to4) is judged as that IPv4 address, and
-  local-use NAT64 and Teredo are refused.
+  local-use NAT64 and Teredo are refused: where it embeds an IPv4 address depends on a prefix length the address does
+  not carry, so on a network whose NAT64 uses a local-use prefix an IPv4-only server is out of reach.
 - Every outbound HTTP request -- `request`, `downloadFile`, `uploadFile`, a streamed `InnerAudioContext.src`, an
   `http(s)` image source, `prefetchAssets` -- is made by the engine's own client (hyper, with rustls and the same
   Mozilla roots) instead of reqwest, so a request's connection is the engine's to measure: DNS, TCP and TLS each timed,

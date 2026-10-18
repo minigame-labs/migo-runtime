@@ -80,7 +80,10 @@ impl LocalNetwork {
 
 /// How old the list [`networks`] answers may be. A datagram path asks for every
 /// datagram and listing interfaces is a system call, while a device moves
-/// between networks seconds apart at the quickest.
+/// between networks seconds apart at the quickest. The cost of the bound is that
+/// an address the device takes within it reads as not yet the device's: reaching
+/// the device through it needs a domain pointed at an address the device has held
+/// for under a second.
 const NETWORKS_MAX_AGE: Duration = Duration::from_secs(1);
 
 /// Every network the device is on, from every address of every interface --

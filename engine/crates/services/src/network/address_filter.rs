@@ -106,28 +106,46 @@ fn reach_given(
     datagram: bool,
     networks: impl FnOnce() -> Arc<[LocalNetwork]>,
 ) -> Reach {
-    let ip = canonical(ip);
-    if datagram && is_group(ip) {
+    let host = host(ip);
+    if datagram && is_group(host) {
         return Reach::LocalNetwork;
     }
-    let class = match ip {
+    let (judged, translated) = match host {
+        IpAddr::V6(v6) => match (nat64_target(&v6), six_to_four_router(&v6)) {
+            (Some(v4), _) => (IpAddr::V4(v4), true),
+            (None, Some(v4)) => (IpAddr::V4(v4), false),
+            (None, None) => (host, false),
+        },
+        v4 => (v4, false),
+    };
+    let class = match judged {
         IpAddr::V4(ip) => class_v4(&ip),
         IpAddr::V6(ip) => class_v6(&ip),
     };
     if class == Class::Reserved {
         return Reach::Never;
     }
+    // Which host the address is: itself, and for NAT64 also the IPv4 host a translator delivers it to. A 6to4
+    // address's IPv4 is its site's router, which every host in the site shares, so it says nothing about which one.
+    let identities = [host, judged];
+    let identities = if translated {
+        &identities[..]
+    } else {
+        &identities[..1]
+    };
     let networks = networks();
     if networks
         .iter()
-        .any(|network| canonical(network.address) == ip)
+        .any(|network| identities.contains(&self::host(network.address)))
     {
         return Reach::Never;
     }
-    if networks
-        .iter()
-        .any(|network| network.prefix > 0 && network.contains(ip))
-    {
+    if networks.iter().any(|network| {
+        network.prefix > 0
+            && identities
+                .iter()
+                .any(|&identity| network.contains(identity))
+    }) {
         return Reach::LocalNetwork;
     }
     match class {
@@ -147,31 +165,40 @@ enum Class {
     Reserved,
 }
 
-/// The IPv4 address an IPv6 address embeds, if it is one of the forms that do -- so `::ffff:127.0.0.1` is judged as
-/// `127.0.0.1`, and `64:ff9b::a00:1` as the `10.0.0.1` a NAT64 gateway would deliver it to.
-fn canonical(ip: IpAddr) -> IpAddr {
+/// The host an address names: an IPv4-mapped or -compatible IPv6 address is the IPv4 host it carries, so
+/// `::ffff:127.0.0.1` is `127.0.0.1`; every other address is itself.
+fn host(ip: IpAddr) -> IpAddr {
     let IpAddr::V6(v6) = ip else {
         return ip;
     };
-    let segments = v6.segments();
-    let low = Ipv4Addr::from(u32::from(segments[6]) << 16 | u32::from(segments[7]));
     if let Some(v4) = v6.to_ipv4_mapped() {
         IpAddr::V4(v4)
-    } else if segments[..6] == [0; 6] && !v6.is_loopback() && !v6.is_unspecified() {
+    } else if v6.segments()[..6] == [0; 6] && !v6.is_loopback() && !v6.is_unspecified() {
         // The deprecated compatible form `::a.b.c.d`, which `::1` and `::` are not: they are IPv6's own loopback and
         // unspecified addresses, judged as themselves.
-        IpAddr::V4(low)
-    } else if segments[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
-        // NAT64's well-known prefix, 64:ff9b::/96 (RFC 6052).
-        IpAddr::V4(low)
-    } else if segments[0] == 0x2002 {
-        // 6to4, 2002::/16 (RFC 3056): the IPv4 address follows the prefix.
-        IpAddr::V4(Ipv4Addr::from(
-            u32::from(segments[1]) << 16 | u32::from(segments[2]),
-        ))
+        IpAddr::V4(low_v4(&v6))
     } else {
         ip
     }
+}
+
+/// The IPv4 host a NAT64 translator delivers an address under its well-known prefix, 64:ff9b::/96 (RFC 6052), to:
+/// `64:ff9b::a00:1` is `10.0.0.1`.
+fn nat64_target(v6: &Ipv6Addr) -> Option<Ipv4Addr> {
+    (v6.segments()[..6] == [0x64, 0xff9b, 0, 0, 0, 0]).then(|| low_v4(v6))
+}
+
+/// The IPv4 router a 6to4 address, 2002::/16 (RFC 3056), reaches its site through: the address that follows the
+/// prefix.
+fn six_to_four_router(v6: &Ipv6Addr) -> Option<Ipv4Addr> {
+    let segments = v6.segments();
+    (segments[0] == 0x2002)
+        .then(|| Ipv4Addr::from(u32::from(segments[1]) << 16 | u32::from(segments[2])))
+}
+
+fn low_v4(v6: &Ipv6Addr) -> Ipv4Addr {
+    let segments = v6.segments();
+    Ipv4Addr::from(u32::from(segments[6]) << 16 | u32::from(segments[7]))
 }
 
 /// A broadcast or multicast group.
@@ -371,6 +398,27 @@ mod tests {
         }
         assert!(Reach::LocalNetwork.blocked(NO_LAN));
         assert!(!Reach::LocalNetwork.blocked(LAN));
+    }
+
+    /// A 6to4 address names a host in a site, and its IPv4 the site's router, which every host there shares: the
+    /// device's neighbours in its own 6to4 site are neighbours, not the device. A NAT64 address is delivered to the
+    /// IPv4 host it carries, so one carrying the device's own IPv4 is the device.
+    #[test]
+    fn a_translated_address_is_the_host_it_reaches() {
+        let networks = [
+            network(ip("2002:5102:450f:1::15"), 64),
+            network(ip("81.2.69.15"), 24),
+        ];
+        for (address, reach) in [
+            ("2002:5102:450f:1::15", Reach::Never),
+            ("2002:5102:450f:1::99", Reach::LocalNetwork),
+            ("2002:5102:450f:2::1", Reach::Internet),
+            ("64:ff9b::5102:450f", Reach::Never),
+            ("64:ff9b::5102:4514", Reach::LocalNetwork),
+            ("64:ff9b::808:808", Reach::Internet),
+        ] {
+            assert_eq!(reach_on(ip(address), false, &networks), reach, "{address}");
+        }
     }
 
     /// An IPv6 address that carries an IPv4 one is the IPv4 address it carries: a NAT64 gateway or a 6to4 relay
