@@ -716,6 +716,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- A game whose entry module throws -- on its first line, or after a top-level `await` -- fails to launch with
+  `ModuleLoadError` "module evaluation failed" and the exception, and the host is told through its error callback. It
+  used to be logged "module evaluated" and reported ready: deno_core settles a rejected evaluation as done and rethrows
+  the exception as an unhandled rejection, and the engine's rejection handler hands every unhandled rejection to the
+  game's listeners and calls it handled, so the only trace was a console line over a blank surface. A Worker script that
+  throws is refused the same way instead of running its message pump for a script that never set `onmessage`.
+- An entry module with three or more static imports loads. Each module read was charged the 100 MiB a read may be at
+  most against the IO scheduler's pending-byte budget, and deno_core reads a module's imports concurrently, so whenever
+  a third read overlapped the first two the launch failed with `ByteLimitExceeded` -- one launch in three on the Linux
+  player for an entry importing four modules. A module read is now charged its size, as the file system API's reads are.
 - An Android app using the Full SDK requests `READ_EXTERNAL_STORAGE` only up to API 28, as it does
   `WRITE_EXTERNAL_STORAGE`. The AAR never declared it; the app's manifest merger inferred it from
   `WRITE_EXTERNAL_STORAGE` in a library manifest with no `targetSdkVersion`, and added it with no bound, so every host

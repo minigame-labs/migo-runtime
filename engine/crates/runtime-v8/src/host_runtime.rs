@@ -1106,6 +1106,14 @@ impl HostJsRuntime {
             }
         })
         .await?;
+        // deno_core settles a rejected evaluation with Ok and rethrows the exception for the
+        // event loop to report, and the engine's rejection handler hands it to the game's
+        // listeners and calls it handled. The module's own status is what still says it threw.
+        self.rt.get_module_namespace(module_id).map_err(|e| {
+            EngineError::new(ErrorCode::ModuleLoadError)
+                .with_msg("module evaluation failed")
+                .with_detail(e.to_string())
+        })?;
         tracing::info!(
             "[Host {}] module evaluated: {:.1}ms (total evaluate_module={:.1}ms)",
             self.host_id,

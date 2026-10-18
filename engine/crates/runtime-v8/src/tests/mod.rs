@@ -77,6 +77,7 @@ mod app_info;
 #[cfg(feature = "api-sensors")]
 mod debug_aids;
 mod deferred_api;
+mod entry_evaluation;
 #[cfg(feature = "api-connectivity")]
 mod ecosystem;
 #[cfg(feature = "api-system")]
