@@ -625,9 +625,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `MigoSessionConfig.network_policy_json_utf8` through the C ABI, `networkPolicyJSON` on either `MigoGameView`
   configuration, and `--network-policy FILE` on the Linux player. Entries are domains, never IP addresses. `http://`,
   `ws://` and the local network are off unless the policy turns them on, and a request, download or upload never
-  reaches the local network or the loopback. Every redirect hop is held to the channel the request was made on, so a
-  redirected download still answers to the download allowlist. No platform could set a policy before, and the one
-  every session got permitted every domain, over plain HTTP too. A refusal names the channel and the domain.
+  reaches the local network or the loopback -- except through an HTTP proxy the machine is configured with, which
+  resolves the domain itself. Every redirect hop is held to the channel the request was made on, so a redirected
+  download still answers to the download allowlist. A UDP socket is made only when content could send to someone, and
+  hears only the senders it could send to. No platform could set a policy before, and the one every session got
+  permitted every domain, over plain HTTP too. A refusal names the channel and the domain.
 - At most ten requests run at once -- `request`, `downloadFile` and `uploadFile` together, as the reference allows --
   and the rest wait their turn (an abort while waiting ends the request); the wait is the profile's
   `queueStart`/`queueEnd`, which were the fetch start when the engine had no limit. At most five WebSocket connections
@@ -685,6 +687,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- A C ABI record whose `struct_size` ends inside one of its pointers is refused with `MIGO_ERROR_INVALID_ARGUMENT`.
+  `MigoContentDescriptor` and `MigoHostCallbacks` accepted any size between their oldest release and their current
+  one, so such a size copied part of a pointer and zeroed the rest, and the engine used an address nobody wrote. A
+  size a compiler produces for any release is unaffected.
 - An Android app that shrinks its code with R8 can start a session. The engine reads `RuntimeConfig`'s private fields
   by name, and the rules the AAR ships for its consumers kept only public members, so R8 renamed them (`cacheDir` to
   `a`, `filesDir` to `b`) and every session failed to initialise. Those fields are now kept.
