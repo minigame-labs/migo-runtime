@@ -719,6 +719,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- `Object.keys(migo)` and `for...in` list every API `migo` publishes, and so the `wx` an adapter mirrors from it. The
+  namespace copied the attributes of the globals it mirrors, most of which are not enumerable, so 422 of its 452 names
+  were missing from the list -- and the platform's own namespace is a plain object whose every API is listed. Cocos
+  Creator 3 builds its environment from `Object.keys(wx)`: its `minigame.onHide` was undefined and its start-up threw.
 - A game whose entry module throws -- on its first line, or after a top-level `await` -- fails to launch with
   `ModuleLoadError` "module evaluation failed" and the exception, and the host is told through its error callback. It
   used to be logged "module evaluated" and reported ready: deno_core settles a rejected evaluation as done and rethrows

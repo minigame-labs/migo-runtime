@@ -117,12 +117,22 @@ function _copyApiNamespace(excluded) {
     for (let i = 0; i < keys.length; i++) {
         const key = keys[i];
         if (!_shouldMirrorApi(key) || excluded.has(key)) continue;
-        // Mirror the descriptor as-is so getters/setters and writability are
+        // Mirror the descriptor so getters/setters and writability are
         // preserved. The namespace object holds the same function references
         // as globalThis -- equality holds, identity holds.
+        //
+        // All but enumerability: most globals are defined as a browser defines
+        // its window's, hidden from enumeration, and the platform's namespace
+        // is a plain object whose every API is listed. Content enumerates it --
+        // Cocos Creator 3 builds its environment from Object.keys(wx), which an
+        // adapter mirrors from here -- and with the globals' attribute 422 of
+        // 452 names were missing from that list, onHide among them.
         try {
             const desc = Object.getOwnPropertyDescriptor(globalThis, key);
-            if (desc) ObjectDefineProperty(namespace, key, desc);
+            if (desc) {
+                desc.enumerable = true;
+                ObjectDefineProperty(namespace, key, desc);
+            }
         } catch (_) {
             // ignore property that cannot be mirrored
         }
