@@ -1470,5 +1470,11 @@ jobs:
           cargo test -p migo-core --lib --no-default-features --features profile-slim
           cargo test -p migo-capi --lib --no-default-features --features profile-slim
           cargo test -p migo-platform --lib --no-default-features --features profile-slim
+          # The external-frame product the iOS package ships. `external-frames`
+          # excludes `embedded-v8`, so no default build compiles any of it; the
+          # quality gate builds its archive and links no test of it.
+          cargo test -p migo-core --lib --no-default-features --features external-frames
+          cargo test -p migo-capi --lib --no-default-features --features external-frames
+          cargo test -p migo-platform --lib --no-default-features --features external-frames
         env:
           RUST_BACKTRACE: 1

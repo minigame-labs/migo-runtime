@@ -28,6 +28,15 @@ fn policy(allowed: &[&str], https_only: bool) -> NetworkPolicy {
     policy
 }
 
+/// `allowed` on the request, tcp and udp channels: a socket is made only when
+/// content could send to someone.
+fn raw_sockets_granted(allowed: &[&str]) -> NetworkPolicy {
+    let mut policy = policy(allowed, false);
+    policy.tcp = policy.request.clone();
+    policy.udp = policy.request.clone();
+    policy
+}
+
 struct Session {
     network: NetworkBinding,
     scheduler: IoScheduler,
@@ -428,7 +437,7 @@ fn prefetch_dns_refuses_a_list_that_is_not_json() {
 /// is closed -- the three shapes that need no peer.
 #[test]
 fn a_udp_socket_binds_and_is_held_to_the_policy() {
-    let session = Session::new(policy(&["allowed.example"], false));
+    let session = Session::new(raw_sockets_granted(&["allowed.example"]));
     let bound = call_sync(
         &session.network,
         &session.scheduler,
@@ -488,7 +497,7 @@ fn a_udp_socket_binds_and_is_held_to_the_policy() {
 /// is refused by name rather than misread.
 #[test]
 fn a_tcp_connect_is_held_to_the_policy() {
-    let session = Session::new(policy(&["allowed.example"], false));
+    let session = Session::new(raw_sockets_granted(&["allowed.example"]));
     let error = session
         .call_async(
             id::op_tcp_connect,

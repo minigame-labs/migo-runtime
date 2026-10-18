@@ -1061,6 +1061,9 @@ jobs:
           cargo test -p migo-core --lib --no-default-features --features profile-slim
           cargo test -p migo-capi --lib --no-default-features --features profile-slim
           cargo test -p migo-platform --lib --no-default-features --features profile-slim
+          cargo test -p migo-core --lib --no-default-features --features external-frames
+          cargo test -p migo-capi --lib --no-default-features --features external-frames
+          cargo test -p migo-platform --lib --no-default-features --features external-frames
         env:
           RUST_BACKTRACE: 1
 

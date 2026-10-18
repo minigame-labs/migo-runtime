@@ -151,6 +151,14 @@ HOST_CARGO_STEPS=(
     "test -p migo-core --lib --no-default-features --features profile-slim"
     "test -p migo-capi --lib --no-default-features --features profile-slim"
     "test -p migo-platform --lib --no-default-features --features profile-slim"
+    # The external-frame product the iOS package ships: no script engine, content
+    # in WebContent, every service answered over the channel. `external-frames`
+    # excludes `embedded-v8`, so no default build compiles its code paths, and no
+    # step or job ran this build's tests -- two of core's had failed since the
+    # network policy became deny-by-default, and nothing said so.
+    "test -p migo-core --lib --no-default-features --features external-frames"
+    "test -p migo-capi --lib --no-default-features --features external-frames"
+    "test -p migo-platform --lib --no-default-features --features external-frames"
     "fmt --all --check"
 )
 
