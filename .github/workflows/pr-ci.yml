@@ -966,6 +966,13 @@ jobs:
         env:
           RUST_BACKTRACE: 1
 
+      # The Maven repository a host resolves the SDK from holds the release's AARs,
+      # signed, and nothing else. Run here over fixture AARs, which proves the
+      # checker catches each way a staged repository can be wrong; the build job
+      # runs it again over the AARs it built.
+      - name: Maven publication contract
+        run: bash scripts/test-maven-publication-contract.sh
+
       - name: Shell script syntax check
         run: bash -n scripts/*.sh scripts/ci/*.sh platforms/*/spike/*.sh
 
@@ -1208,6 +1215,17 @@ jobs:
       # AARs from the step above.
       - name: Android shipped natives are reachable
         run: bash scripts/test-android-native-deps-contract.sh
+
+      # The SDK as a host's Gradle takes it. The AARs the step above built are staged
+      # as a Maven repository and held to the publication contract, then an app that
+      # depends on com.minigame-labs:migo-android by its coordinates -- and one on
+      # the engine-less AAR -- resolves, compiles, dexes and packages against it.
+      - name: Maven repository from the built AARs, and a host app built from it
+        run: |
+          bash scripts/test-maven-publication-contract.sh \
+            --aar platforms/android/dist/migo-full-debug.aar \
+            --nojni-aar platforms/android/dist/migo-full-debug-nojni.aar
+          bash scripts/test-maven-consumer.sh
 
 
       - name: Analyze AAR size report

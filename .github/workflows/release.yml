@@ -868,6 +868,13 @@ jobs:
         env:
           RUST_BACKTRACE: 1
 
+      # The Maven repository a host resolves the SDK from holds the release's AARs,
+      # signed, and nothing else. Run here over fixture AARs, which proves the
+      # checker catches each way a staged repository can be wrong; the build job
+      # runs it again over the AARs it built.
+      - name: Maven publication contract
+        run: bash scripts/test-maven-publication-contract.sh
+
       - name: Shell script syntax check
         run: bash -n scripts/*.sh scripts/ci/*.sh platforms/*/spike/*.sh
 
@@ -1161,10 +1168,11 @@ jobs:
           # it apart from the real thing.
           rm -rf platforms/android/dist
           bash scripts/build-aar.sh --product-profile full release
-          # arm64-only variants. The Rust artefacts are already built, so these
-          # only re-run Gradle with abiFilters -- a host shipping arm64 alone
-          # should not have to carry the x86_64 payload, and quoting the
-          # multi-ABI size at an integrator overstates it by roughly double.
+          # One AAR for both ABIs, and no per-ABI variant: a host shipping arm64
+          # alone sets `abiFilters` in its own app, which drops the other ABI from
+          # its APK -- tests/maven_consumer/android does exactly that and
+          # scripts/test-maven-consumer.sh checks the APK. Quote an integrator the
+          # per-ABI engine size, not this file's.
 
       # No release may ship a libmigo.so that cannot dlopen on the API 26 floor
       # Migo claims to support. Checks every strong import against the NDK's

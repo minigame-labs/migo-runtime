@@ -3,6 +3,11 @@
    <configuration>
       <verify-metadata>true</verify-metadata>
       <verify-signatures>false</verify-signatures>
+      <!-- Migo's own artifacts, staged from this tree: their hashes change with every build,
+           and scripts/test-maven-publication-contract.sh holds them to the release instead. -->
+      <trusted-artifacts>
+         <trust group="com.minigame-labs"/>
+      </trusted-artifacts>
    </configuration>
    <components>
       <component group="androidx.databinding" name="databinding-common" version="8.1.2">

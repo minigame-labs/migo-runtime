@@ -1,0 +1,48 @@
+// A host app as a host writes it: Migo comes from a Maven repository by its
+// coordinates, not from this tree. scripts/test-maven-consumer.sh builds it
+// against the repository scripts/test-maven-publication-contract.sh staged, so
+// what it proves is that the published artifacts resolve, merge and package --
+// the step a host takes that nothing else here takes.
+plugins { id 'com.android.application' }
+
+// Derived, not restated: release/VERSION is the one version source.
+def migoVersion = rootProject.file('../../release/VERSION').text.trim()
+
+android {
+    namespace 'com.migo.mavenconsumer'
+    compileSdk 36
+
+    defaultConfig {
+        applicationId 'com.migo.mavenconsumer'
+        minSdk 26
+        targetSdk 36
+        versionCode 1
+        versionName '1.0'
+        // How a host ships arm64 alone: its own filter drops the other ABIs
+        // from the APK, so the SDK publishes one AAR rather than one per ABI.
+        ndk { abiFilters 'arm64-v8a' }
+    }
+
+    flavorDimensions 'engine'
+    productFlavors {
+        // The default integration: the engine ships in the APK.
+        bundled { dimension 'engine' }
+        // The engine is delivered at runtime; the APK carries none.
+        deferred { dimension 'engine' }
+    }
+
+    buildTypes {
+        debug { debuggable true }
+    }
+}
+
+// Migo itself is not locked: its version is release/VERSION and its bytes are
+// held to the release by the publication contract. Everything else stays STRICT.
+dependencyLocking {
+    ignoredDependencies.add('com.minigame-labs:*')
+}
+
+dependencies {
+    bundledImplementation "com.minigame-labs:migo-android:${migoVersion}"
+    deferredImplementation "com.minigame-labs:migo-android-nojni:${migoVersion}"
+}

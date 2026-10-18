@@ -20,27 +20,46 @@ Android 是 Migo 的主要快速集成路径。本文假设宿主 App 已有一�
 
 - Android API 26 或更高版本。
 - 与项目兼容的 Android Gradle Plugin（AGP）。
-- 按照项目构建配置安装的 Android NDK。
 - 一个待运行的 Canvas/WebGL 小游戏 bundle。
+
+SDK 自带预编译好的原生引擎，宿主不需要 NDK。
 
 Migo 是 Canvas/WebGL 小游戏运行容器，不是通用 WebView 替代品；内容不应依赖 DOM 或 CSS。
 
-## 2. 添加 AAR 依赖
+## 2. 添加依赖
 
-从项目发布页获取与宿主 ABI 匹配的 AAR，并加入应用的 `libs/` 目录或私有 Maven 仓库。
-文件名格式为：
+一个 AAR 就带齐了 Migo 支持的所有 ABI（`arm64-v8a`、`x86_64`）的引擎。只想打包 arm64，就在 App 里过滤，
+不必找按 ABI 拆分的 AAR：App 自己的过滤会把其他 ABI 从 APK 里去掉；走商店拆分的 App Bundle，本来就只把设备
+对应的那一份下发给它。
 
-```text
-migo-<version>-android.aar
+```kotlin
+android {
+    defaultConfig {
+        ndk { abiFilters += "arm64-v8a" }
+    }
+}
 ```
 
-不要在构建脚本或文档示例中写死某个版本号。依赖声明示例：
+**从 Maven 仓库引入。** 坐标是 `com.minigame-labs:migo-android`；不把引擎打进 APK、改为运行时下发的 App，
+用 `com.minigame-labs:migo-android-nojni`。Migo 目前还没有上架公开的 Maven 仓库，在此之前请按下文从发布页获取
+AAR。上架之后，依赖只需一行，版本即发布版本：
+
+```kotlin
+dependencies {
+    implementation("com.minigame-labs:migo-android:<version>")
+}
+```
+
+**从发布页获取。** 下载 `migo-<version>-android.aar`，用它的 `.attestation.json` 校验（见
+[下载校验](/docs/release/download-verification/)），然后放进 App 的 `libs/` 目录：
 
 ```kotlin
 dependencies {
     implementation(files("libs/migo-<version>-android.aar"))
 }
 ```
+
+不要在构建脚本或文档示例中写死某个版本号。
 
 ## 3. 创建 RuntimeConfig
 
