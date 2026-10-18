@@ -311,13 +311,9 @@ pub async fn next_event(
         loop {
             match socket.socket.recv_from(rx.scratch.as_mut_slice()).await {
                 Ok((count, peer)) => {
-                    // The cached peer was admitted when it was cached, so a socket
-                    // talking to one peer lists the device's networks once.
-                    let known = rx
-                        .last_peer
-                        .as_ref()
-                        .is_some_and(|(cached, _)| *cached == peer);
-                    if !known && !socket.inbound.admits(&peer) {
+                    // Every datagram, as every send is: whether a peer is on the
+                    // device's network is a question about the networks it is on now.
+                    if !socket.inbound.admits(&peer) {
                         debug!("UDP: dropped a datagram from {peer}, which content may not reach");
                         continue;
                     }
