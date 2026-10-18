@@ -29,7 +29,8 @@ use shared::{
     config::InitOptions,
     error::EngineResult,
     host_channel::CriticalHostCommandSender,
-    op_state::{HostTx, NetworkPolicy, RafRx},
+    network_policy::NetworkPolicy,
+    op_state::{HostTx, RafRx},
     protocol::host_cmd::HostCommand,
     raf_signal::RafDemandRef,
     render_event::RenderEventReceiver,
@@ -206,22 +207,7 @@ impl SessionShell {
 
         // Immutable per-host policy. Audio captures this in a lazy client
         // factory; JS network ops keep the same snapshot across restarts.
-        let network_policy = {
-            use shared::op_state::NetworkPolicy;
-            let mut policy = NetworkPolicy::default();
-            if let Some(wl) = init_options.extras().get("domain_whitelist") {
-                if let Some(arr) = wl.as_array() {
-                    policy.domain_whitelist = arr
-                        .iter()
-                        .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                        .collect();
-                }
-            }
-            if let Some(v) = init_options.extras().get("enforce_https") {
-                policy.enforce_https = v.as_bool().unwrap_or(false);
-            }
-            policy
-        };
+        let network_policy = init_options.network_policy().clone();
 
         // ---- Services ----
         // AudioService is lazy — no thread spawned until the first

@@ -44,6 +44,7 @@ pub(crate) fn callback_session_pin() -> Arc<MigoSession> {
         input_saturation_reported: AtomicBool::new(false),
         device: Default::default(),
         host_reports: Default::default(),
+        network_policy: Default::default(),
     })
 }
 
@@ -84,6 +85,7 @@ pub(crate) fn session_config() -> MigoSessionConfig {
         flags: 0,
         // No external producer in these tests, so no identity to pair with one.
         launch_nonce: [0u8; 16],
+        network_policy_json_utf8: std::ptr::null(),
     }
 }
 

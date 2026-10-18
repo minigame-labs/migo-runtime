@@ -51,7 +51,6 @@ fn client() -> Client {
         "migo",
         false,
         &NetworkPolicy::default(),
-        GateKind::FetchRedirect,
         "fetch",
     )
     .expect("a client")
@@ -112,10 +111,7 @@ async fn a_url_that_is_not_one_is_a_type_error() {
 #[tokio::test]
 async fn a_host_the_policy_refuses_is_never_uploaded_to() {
     let resources = ResourceTable::new();
-    let policy = NetworkPolicy {
-        domain_whitelist: vec!["allowed.example".to_string()],
-        enforce_https: true,
-    };
+    let policy = NetworkPolicy::from_json(r#"{"upload":["allowed.example"]}"#).unwrap();
     let client = client();
     let (base, vfs) = sandbox("blocked");
     let error = upload(

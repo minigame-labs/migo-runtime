@@ -13,7 +13,7 @@ use http_body_util::{BodyExt, Full, StreamBody};
 use hyper::body::{Frame, Incoming};
 use hyper_util::client::proxy::matcher::Matcher;
 use hyper_util::rt::{TokioExecutor, TokioIo};
-use shared::op_state::NetworkPolicy;
+use shared::network_policy::NetworkPolicy;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use url::Url;
@@ -164,25 +164,20 @@ fn tls_pair(
     (Arc::new(config), cert)
 }
 
+/// Any domain over plain HTTP: these tests are about the client, and the client gates only the redirects it follows.
 fn policy() -> NetworkPolicy {
     NetworkPolicy {
-        domain_whitelist: Vec::new(),
-        enforce_https: false,
+        allow_plain_http: true,
+        ..NetworkPolicy::unrestricted()
     }
 }
 
 fn client(http2: bool) -> HttpClient {
-    HttpClientBuilder::new(
-        "migo-test",
-        http2,
-        &policy(),
-        GateKind::FetchRedirect,
-        "fetch",
-    )
-    .no_proxy()
-    .any_address()
-    .build()
-    .unwrap()
+    HttpClientBuilder::new("migo-test", http2, &policy(), "fetch")
+        .no_proxy()
+        .any_address()
+        .build()
+        .unwrap()
 }
 
 fn url(address: SocketAddr, path: &str) -> Url {
@@ -204,7 +199,11 @@ async fn a_request_measures_its_phases_and_a_second_reuses_the_connection() {
     let server = serve(None).await;
     let client = client(false);
 
-    let response = client.get(url(server, "/hello")).send().await.unwrap();
+    let response = client
+        .get(GateKind::Fetch, url(server, "/hello"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.version(), Version::HTTP_11);
     assert_eq!(
@@ -229,7 +228,11 @@ async fn a_request_measures_its_phases_and_a_second_reuses_the_connection() {
     );
     assert!(timing.bytes_sent > 0);
 
-    let again = client.get(url(server, "/hello")).send().await.unwrap();
+    let again = client
+        .get(GateKind::Fetch, url(server, "/hello"))
+        .send()
+        .await
+        .unwrap();
     let (_, again) = body_of(again).await;
     assert!(again.timing().socket_reused);
     assert!(Arc::ptr_eq(
@@ -242,17 +245,15 @@ async fn a_request_measures_its_phases_and_a_second_reuses_the_connection() {
 #[tokio::test]
 async fn the_policy_resolver_refuses_the_loopback_before_connecting() {
     let server = serve(None).await;
-    let client = HttpClientBuilder::new(
-        "migo-test",
-        false,
-        &policy(),
-        GateKind::FetchRedirect,
-        "fetch",
-    )
-    .no_proxy()
-    .build()
-    .unwrap();
-    let error = client.get(url(server, "/hello")).send().await.unwrap_err();
+    let client = HttpClientBuilder::new("migo-test", false, &policy(), "fetch")
+        .no_proxy()
+        .build()
+        .unwrap();
+    let error = client
+        .get(GateKind::Fetch, url(server, "/hello"))
+        .send()
+        .await
+        .unwrap_err();
     let message = error.to_string();
     assert!(
         message.starts_with("error sending request for url"),
@@ -270,7 +271,7 @@ async fn the_policy_resolver_refuses_the_loopback_before_connecting() {
 async fn same_host_redirects_are_followed_and_timed() {
     let server = serve(None).await;
     let response = client(false)
-        .get(url(server, "/twice"))
+        .get(GateKind::Fetch, url(server, "/twice"))
         .send()
         .await
         .unwrap();
@@ -288,7 +289,10 @@ async fn a_cross_origin_redirect_drops_credentials() {
     let server = serve(None).await;
     let other = serve(None).await;
     let response = client(false)
-        .get(url(server, &format!("/other-port?to={}", other.port())))
+        .get(
+            GateKind::Fetch,
+            url(server, &format!("/other-port?to={}", other.port())),
+        )
         .header(
             http::header::AUTHORIZATION,
             HeaderValue::from_static("Bearer secret"),
@@ -315,14 +319,14 @@ async fn redirects_rewrite_the_method_as_the_status_says() {
     let server = serve(None).await;
     let client = client(false);
     let found = client
-        .post(url(server, "/post-302"))
+        .post(GateKind::Fetch, url(server, "/post-302"))
         .body(b"payload".to_vec())
         .send()
         .await
         .unwrap();
     assert_eq!(body_of(found).await.0, "GET ");
     let temporary = client
-        .post(url(server, "/post-307"))
+        .post(GateKind::Fetch, url(server, "/post-307"))
         .body(b"payload".to_vec())
         .send()
         .await
@@ -334,33 +338,61 @@ async fn redirects_rewrite_the_method_as_the_status_says() {
 #[tokio::test]
 async fn a_redirect_the_policy_refuses_is_an_error() {
     let server = serve(None).await;
-    let allowed_only = NetworkPolicy {
-        domain_whitelist: vec!["localhost".to_string()],
-        enforce_https: false,
-    };
-    let client = HttpClientBuilder::new(
-        "migo-test",
-        false,
-        &allowed_only,
-        GateKind::FetchRedirect,
-        "fetch",
-    )
-    .no_proxy()
-    .any_address()
-    .build()
-    .unwrap();
+    let allowed_only =
+        NetworkPolicy::from_json(r#"{"request":["allowed.example"],"allowPlainHttp":true}"#)
+            .unwrap();
+    let client = HttpClientBuilder::new("migo-test", false, &allowed_only, "fetch")
+        .no_proxy()
+        .any_address()
+        .build()
+        .unwrap();
     let error = client
-        .get(url(server, "/to-blocked"))
+        .get(GateKind::Fetch, url(server, "/to-blocked"))
         .send()
         .await
         .unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Redirect);
     assert!(
         error.to_string().contains(
-            "fetch: redirect rejected: 'blocked.example' is not in the allowed domain list"
+            "fetch: redirect rejected: domain 'blocked.example' is not in the request allowlist"
         ),
         "{error}"
     );
+}
+
+/// One client, two requests to the same redirect: each hop is gated on the channel its request was made on, so a
+/// download is held to the download allowlist even through the client a `fetch` also uses.
+#[tokio::test]
+async fn a_redirect_stays_on_the_channel_its_request_was_made_on() {
+    let server = serve(None).await;
+    let request_only =
+        NetworkPolicy::from_json(r#"{"request":["blocked.example"],"allowPlainHttp":true}"#)
+            .unwrap();
+    let client = HttpClientBuilder::new("migo-test", false, &request_only, "fetch")
+        .no_proxy()
+        .any_address()
+        .build()
+        .unwrap();
+    let download = client
+        .get(GateKind::Download, url(server, "/to-blocked"))
+        .send()
+        .await
+        .unwrap_err();
+    assert_eq!(download.kind(), ErrorKind::Redirect, "{download}");
+    assert!(
+        download.to_string().contains(
+            "downloadFile: redirect rejected: domain 'blocked.example' is not in the download allowlist"
+        ),
+        "{download}"
+    );
+    // The request channel grants the hop, so the same redirect is followed -- and fails only at the network.
+    let fetch = client
+        .get(GateKind::Fetch, url(server, "/to-blocked"))
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await
+        .unwrap_err();
+    assert_ne!(fetch.kind(), ErrorKind::Redirect, "{fetch}");
 }
 
 /// The timeout bounds the whole exchange: a head that does not come in time, and a body that stops coming.
@@ -369,7 +401,7 @@ async fn the_timeout_bounds_the_head_and_the_body() {
     let server = serve(None).await;
     let client = client(false);
     let error = client
-        .get(url(server, "/slow-head"))
+        .get(GateKind::Fetch, url(server, "/slow-head"))
         .timeout(Duration::from_millis(200))
         .send()
         .await
@@ -377,7 +409,7 @@ async fn the_timeout_bounds_the_head_and_the_body() {
     assert!(error.is_timeout(), "{error}");
 
     let mut response = client
-        .get(url(server, "/slow-body"))
+        .get(GateKind::Fetch, url(server, "/slow-body"))
         .timeout(Duration::from_millis(300))
         .send()
         .await
@@ -397,19 +429,17 @@ async fn tls_is_timed_and_alpn_chooses_the_protocol() {
     let server = serve(Some(server_tls)).await;
     let https = Url::parse(&format!("https://localhost:{}/hello", server.port())).unwrap();
     for (http2, expected) in [(true, Version::HTTP_2), (false, Version::HTTP_11)] {
-        let client = HttpClientBuilder::new(
-            "migo-test",
-            http2,
-            &policy(),
-            GateKind::FetchRedirect,
-            "fetch",
-        )
-        .no_proxy()
-        .any_address()
-        .add_root(root.clone())
-        .build()
-        .unwrap();
-        let response = client.get(https.clone()).send().await.unwrap();
+        let client = HttpClientBuilder::new("migo-test", http2, &policy(), "fetch")
+            .no_proxy()
+            .any_address()
+            .add_root(root.clone())
+            .build()
+            .unwrap();
+        let response = client
+            .get(GateKind::Fetch, https.clone())
+            .send()
+            .await
+            .unwrap();
         assert_eq!(response.version(), expected);
         let trace = response.timing().connection.clone().unwrap();
         let tls = trace.tls.expect("a TLS connection has a handshake");
@@ -425,7 +455,11 @@ async fn an_untrusted_certificate_is_refused() {
     let (server_tls, _) = tls_pair(false);
     let server = serve(Some(server_tls)).await;
     let https = Url::parse(&format!("https://localhost:{}/hello", server.port())).unwrap();
-    let error = client(false).get(https).send().await.unwrap_err();
+    let error = client(false)
+        .get(GateKind::Fetch, https)
+        .send()
+        .await
+        .unwrap_err();
     assert!(
         error.to_string().to_lowercase().contains("certificate"),
         "{error}"
@@ -479,18 +513,15 @@ async fn plain_http_is_written_to_the_proxy_in_absolute_form() {
     let matcher = Matcher::builder()
         .all(format!("http://user:pass@127.0.0.1:{}", proxy.port()))
         .build();
-    let client = HttpClientBuilder::new(
-        "migo-test",
-        false,
-        &policy(),
-        GateKind::FetchRedirect,
-        "fetch",
-    )
-    .proxies(matcher)
-    .build()
-    .unwrap();
+    let client = HttpClientBuilder::new("migo-test", false, &policy(), "fetch")
+        .proxies(matcher)
+        .build()
+        .unwrap();
     let response = client
-        .get(Url::parse("http://public.example/a").unwrap())
+        .get(
+            GateKind::Fetch,
+            Url::parse("http://public.example/a").unwrap(),
+        )
         .send()
         .await
         .unwrap();
@@ -519,19 +550,16 @@ async fn https_is_tunnelled_through_the_proxy() {
     let matcher = Matcher::builder()
         .all(format!("http://127.0.0.1:{}", proxy.port()))
         .build();
-    let client = HttpClientBuilder::new(
-        "migo-test",
-        false,
-        &policy(),
-        GateKind::FetchRedirect,
-        "fetch",
-    )
-    .proxies(matcher)
-    .add_root(root)
-    .build()
-    .unwrap();
+    let client = HttpClientBuilder::new("migo-test", false, &policy(), "fetch")
+        .proxies(matcher)
+        .add_root(root)
+        .build()
+        .unwrap();
     let response = client
-        .get(Url::parse(&format!("https://localhost:{}/hello", server.port())).unwrap())
+        .get(
+            GateKind::Fetch,
+            Url::parse(&format!("https://localhost:{}/hello", server.port())).unwrap(),
+        )
         .send()
         .await
         .unwrap();
@@ -558,7 +586,7 @@ async fn a_multipart_form_is_sent_with_its_boundary() {
         )
         .text("k", "v");
     let response = client(false)
-        .post(url(server, "/upload"))
+        .post(GateKind::Fetch, url(server, "/upload"))
         .multipart(form)
         .send()
         .await
@@ -597,7 +625,11 @@ async fn a_local_answer_has_no_connection() {
 async fn a_request_carries_its_method() {
     let server = serve(None).await;
     let response = client(false)
-        .request(Method::from_bytes(b"PURGE").unwrap(), url(server, "/echo"))
+        .request(
+            GateKind::Fetch,
+            Method::from_bytes(b"PURGE").unwrap(),
+            url(server, "/echo"),
+        )
         .send()
         .await
         .unwrap();
@@ -611,17 +643,11 @@ async fn a_request_carries_its_method() {
 #[ignore = "needs the internet"]
 async fn a_public_https_server_answers() {
     for http2 in [true, false] {
-        let client = HttpClientBuilder::new(
-            "migo-test",
-            http2,
-            &policy(),
-            GateKind::FetchRedirect,
-            "fetch",
-        )
-        .build()
-        .unwrap();
+        let client = HttpClientBuilder::new("migo-test", http2, &policy(), "fetch")
+            .build()
+            .unwrap();
         let response = client
-            .get(Url::parse("https://example.com/").unwrap())
+            .get(GateKind::Fetch, Url::parse("https://example.com/").unwrap())
             .timeout(Duration::from_secs(20))
             .send()
             .await

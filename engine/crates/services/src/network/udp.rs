@@ -19,7 +19,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 use tracing::debug;
 
-use shared::op_state::NetworkPolicy;
+use shared::network_policy::{NetworkChannel, NetworkPolicy};
 
 use crate::ServiceError;
 
@@ -146,9 +146,12 @@ pub async fn connect(
 
     let target = join_host_port(address, port);
     debug!("UDP connect: rid={rid}, target={target}");
-    let resolved = resolve_first(&target, super::address_filter::is_blocked_datagram_address)
-        .await
-        .map_err(|error| generic(format!("connect:fail {error}")))?;
+    let lan = gate::lan_access(policy, NetworkChannel::Udp);
+    let resolved = resolve_first(&target, |resolved| {
+        super::address_filter::is_blocked_datagram_address(resolved, lan)
+    })
+    .await
+    .map_err(|error| generic(format!("connect:fail {error}")))?;
     socket
         .socket
         .connect(resolved)
@@ -181,11 +184,15 @@ pub async fn send(
     debug!("UDP send: rid={rid}, target={target}");
     // Every DNS answer goes through the address filter's datagram rule: the
     // stream rule (documentation, benchmarking, reserved, link-local, loopback,
-    // private off the local network refused) with the broadcast address and
-    // multicast groups allowed, as the reference allows them.
-    let resolved = resolve_first(&target, super::address_filter::is_blocked_datagram_address)
-        .await
-        .map_err(|error| generic(format!("send:fail resolve error: {error}")))?;
+    // private refused unless the local network is granted) with the broadcast
+    // address and multicast groups allowed on a granted local network, as the
+    // reference allows them.
+    let lan = gate::lan_access(policy, NetworkChannel::Udp);
+    let resolved = resolve_first(&target, |resolved| {
+        super::address_filter::is_blocked_datagram_address(resolved, lan)
+    })
+    .await
+    .map_err(|error| generic(format!("send:fail resolve error: {error}")))?;
 
     let payload = match (text, bytes) {
         (Some(text), _) => text.into_bytes(),

@@ -14,6 +14,10 @@
 //!
 //! `--window` (or `MIGO_PLAYER_WINDOW=1`) exercises the onscreen X11 presenter.
 //! Headless stays the default so CI and the PNG capture path are unaffected.
+//!
+//! `--network-policy FILE` gives the game the network a host would: FILE is the
+//! JSON a C-ABI host writes into `MigoSessionConfig.network_policy_json_utf8`.
+//! Without it the game reaches no network at all, as under a host that set none.
 
 // X11 is the Linux windowed path. The offscreen path below is portable, which is
 // what the PNG capture and CI use; Windows gets its window through an HWND the
@@ -100,6 +104,7 @@ fn main() {
     let mut positional = Vec::new();
     let mut windowed = std::env::var_os("MIGO_PLAYER_WINDOW").is_some_and(|v| v != "0");
     let mut resize = None;
+    let mut network_policy = shared::network_policy::NetworkPolicy::default();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -116,6 +121,25 @@ fn main() {
                     std::process::exit(2);
                 }
             },
+            "--network-policy" => {
+                let read = args
+                    .next()
+                    .ok_or_else(|| "--network-policy takes a JSON file".to_string())
+                    .and_then(|file| {
+                        std::fs::read_to_string(&file).map_err(|error| format!("{file}: {error}"))
+                    })
+                    .and_then(|json| {
+                        shared::network_policy::NetworkPolicy::from_json(&json)
+                            .map_err(|error| error.to_string())
+                    });
+                match read {
+                    Ok(policy) => network_policy = policy,
+                    Err(message) => {
+                        tracing::error!("--network-policy: {message}");
+                        std::process::exit(2);
+                    }
+                }
+            }
             _ => positional.push(arg),
         }
     }
@@ -129,14 +153,16 @@ fn main() {
     };
     let secs: u64 = positional.get(1).and_then(|s| s.parse().ok()).unwrap_or(8);
 
-    if let Err(err) = run(&bundle_dir, secs, windowed, resize) {
+    if let Err(err) = run(&bundle_dir, secs, windowed, resize, network_policy) {
         tracing::error!("player failed: {err}");
         std::process::exit(1);
     }
 }
 
 fn print_usage() {
-    eprintln!("usage: migo-player GAME_BUNDLE_DIR [SECONDS] [--window|--offscreen]");
+    eprintln!(
+        "usage: migo-player GAME_BUNDLE_DIR [SECONDS] [--window|--offscreen] [--network-policy FILE]"
+    );
 }
 
 fn resolve_bundle_dir(positional: &[String]) -> Result<PathBuf, &'static str> {
@@ -160,6 +186,7 @@ fn run(
     secs: u64,
     windowed: bool,
     resize: Option<(u32, u32)>,
+    network_policy: shared::network_policy::NetworkPolicy,
 ) -> Result<(), String> {
     // ---- Scratch dirs (files / cache / code cache) ----
     let root = std::env::temp_dir().join(format!("migo-player-{}", std::process::id()));
@@ -202,7 +229,8 @@ fn run(
         .with_code_cache_dir(code_cache_dir)
         .with_pixel_ratio(1.0)
         .with_debug_enabled(true)
-        .with_code_signing_enabled(false);
+        .with_code_signing_enabled(false)
+        .with_network_policy(network_policy);
 
     // ---- Render target: a real X11 window, or an offscreen pbuffer ----
     // The window (when present) must outlive the engine session: the render

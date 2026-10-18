@@ -70,7 +70,8 @@ pub(super) mod tests {
         FrameOp,
         channel::ThreadWakeup,
         device::gpu_caps::GpuCaps,
-        op_state::{AudioSender, HostOpState, NetworkPolicy},
+        network_policy::NetworkPolicy,
+        op_state::{AudioSender, HostOpState},
         protocol::render_cmd::{GLCmd, PixelUnpackSource, RenderCommand},
         render_command_sender::CommandSender,
     };

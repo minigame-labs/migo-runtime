@@ -264,9 +264,13 @@ public final class MigoEngineSession {
     /// `capabilities` are the optional parts of the system the app linked --
     /// location, say -- which answer their services when the app does not, and
     /// report to this session while it is open.
+    /// `networkPolicyJSON` is what network the content may reach, in the form
+    /// `MigoSessionConfig.network_policy_json_utf8` documents; `nil` is none at
+    /// all, and one that does not parse fails `migo_session_create`.
     public init(
         directories: Directories, contentSigning: ContentSigning, preferredFramesPerSecond: Int? = nil,
-        hostServices: MigoHostServiceProvider? = nil, capabilities: [MigoSystemCapability] = []
+        hostServices: MigoHostServiceProvider? = nil, capabilities: [MigoSystemCapability] = [],
+        networkPolicyJSON: String? = nil
     ) throws {
         self.capabilities = capabilities
         var signingKey = [UInt8](repeating: 0, count: 32)
@@ -319,7 +323,16 @@ public final class MigoEngineSession {
         sessionConfig.abi_version = MIGO_ABI_VERSION_CURRENT
         withUnsafeMutableBytes(of: &sessionConfig.launch_nonce) { $0.copyBytes(from: nonce) }
         var startedSession: OpaquePointer?
-        let sessionResult = migo_session_create(engine, &sessionConfig, &startedSession)
+        let sessionResult: MigoResult
+        if let networkPolicyJSON = networkPolicyJSON {
+            // Borrowed for the call only: the library copies it.
+            sessionResult = networkPolicyJSON.withCString { policy in
+                sessionConfig.network_policy_json_utf8 = policy
+                return migo_session_create(engine, &sessionConfig, &startedSession)
+            }
+        } else {
+            sessionResult = migo_session_create(engine, &sessionConfig, &startedSession)
+        }
         guard sessionResult == MIGO_OK, let session = startedSession else {
             _ = migo_engine_destroy(engine)
             throw Failure.call("migo_session_create", sessionResult == MIGO_OK ? MIGO_ERROR_INTERNAL : sessionResult)

@@ -17,70 +17,107 @@
 //!   counts the refusal, and answers the message content is shown. The
 //!   embedded runtime wraps it in a `JsErrorBox`; the external session's
 //!   service dispatcher answers with it directly.
-//! * [`GateKind`] selects which rule subset applies — a `fetch()`
-//!   and a `connectSocket(tcp)` have different scheme whitelists.
+//! * [`GateKind`] names the entry point; [`GateKind::channel`] says which of
+//!   the policy's six allowlists decides it.
 //!
 //! # Why a single enum for kinds?
 //!
 //! An open-coded bool matrix (`check_https: bool`, `check_wl: bool`,
 //! …) invites drift: a new op forgets a flag and the whitelist goes
 //! silently unenforced again. With a single `GateKind` every new
-//! call site must pick a kind, and `evaluate_policy` centrally maps
-//! the kind → rule set. Adding a new rule is one match arm.
+//! call site must pick a kind, and every mapping from a kind -- its
+//! channel, its schemes, its name -- is an exhaustive `match`, so a new
+//! kind does not compile until each one places it.
+//!
+//! # Redirects
+//!
+//! A redirect hop is gated as the request that followed it: the HTTP client
+//! carries the kind the request was made as and evaluates each hop under it,
+//! so a download that is redirected is still held to the download allowlist.
 
-use std::sync::Once;
-
-use tracing::warn;
 use url::Url;
 
-use super::address_filter::{is_blocked_address, is_blocked_datagram_address, is_private};
-use shared::op_state::NetworkPolicy;
-
-/// One-shot flag: warn exactly once if the host app shipped with an
-/// empty `domain_whitelist` (which is "allow all"). Matches the
-/// previous per-op warn, now centralised here so it fires no matter
-/// which entry point (`fetch`, `WebSocket`, `Image.src`, …) triggers
-/// the first request.
-static EMPTY_WHITELIST_WARNED: Once = Once::new();
+use super::address_filter::{
+    LanAccess, is_blocked_address, is_blocked_datagram_address, is_public,
+};
+use shared::network_policy::{NetworkChannel, NetworkPolicy};
 
 /// Classifies which network entry point is being guarded.
 ///
-/// Every outbound-capable op must map itself to exactly one variant.
-/// New entry points must be added here (and handled in
-/// [`evaluate_policy`]) — a missing variant is a compile error, not
-/// a silent bypass.
+/// Every outbound-capable op must map itself to exactly one variant, and every
+/// variant to exactly one [`NetworkChannel`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GateKind {
-    /// Top-level `fetch()` (HTTP/HTTPS). Full preflight.
+    /// `request` / `fetch()` (HTTP/HTTPS).
     Fetch,
-    /// HTTP redirect hop the HTTP client follows.
-    /// Same rule set as `Fetch`: a 302 into a blocked host is just
-    /// as dangerous as the initial request.
-    FetchRedirect,
-    /// `InnerAudioContext.src` HTTP streaming request. Uses the same HTTP
-    /// security rules as fetch, but keeps diagnostics attributable to audio.
+    /// `downloadFile`.
+    Download,
+    /// `InnerAudioContext.src` HTTP streaming request.
     AudioStream,
-    /// Redirect hop followed by an audio streaming request.
-    AudioStreamRedirect,
-    /// Body upload via `fetch` / `uploadFile`. Same as `Fetch`.
+    /// `uploadFile`.
     FetchUpload,
-    /// DNS prefetch / asset warmup. `data:` is not applicable; the
-    /// rule set is the same as `Fetch`.
+    /// `prefetchAssets`: a GET that warms the connection a later download,
+    /// image or audio stream of the same asset reuses.
     Prefetch,
     /// `Image.src = "http(s)://..."`. `data:` is parsed separately
     /// before the gate runs, so only http/https reach here.
     ImageInlineSrc,
-    /// `new WebSocket(url)`. Scheme must be `ws`/`wss`. HTTPS
-    /// enforcement downgrades to "wss required" when
-    /// `enforce_https == true`.
+    /// `new WebSocket(url)`. Scheme must be `ws`/`wss`; `ws://` also needs
+    /// `allow_plain_http`.
     WebSocket,
     /// `createTCPSocket().connect(host, port)`. Raw TCP has no URL;
-    /// enforcement runs the shared domain whitelist and
-    /// IP-literal address filter against the host argument.
+    /// enforcement runs the tcp allowlist and the IP-literal rules against
+    /// the host argument.
     TcpSocket,
     /// `createUDPSocket().send(host, port, …)` and `.connect(...)`.
-    /// Same rule set as `TcpSocket`.
     UdpSocket,
+}
+
+impl GateKind {
+    /// The allowlist that decides this kind.
+    pub const fn channel(self) -> NetworkChannel {
+        match self {
+            GateKind::Fetch => NetworkChannel::Request,
+            GateKind::Download
+            | GateKind::AudioStream
+            | GateKind::Prefetch
+            | GateKind::ImageInlineSrc => NetworkChannel::Download,
+            GateKind::FetchUpload => NetworkChannel::Upload,
+            GateKind::WebSocket => NetworkChannel::Socket,
+            GateKind::TcpSocket => NetworkChannel::Tcp,
+            GateKind::UdpSocket => NetworkChannel::Udp,
+        }
+    }
+
+    /// The API a refusal names, so an incident is attributed to the call content made.
+    pub const fn label(self) -> &'static str {
+        match self {
+            GateKind::Fetch => "fetch",
+            GateKind::Download => "downloadFile",
+            GateKind::AudioStream => "audio",
+            GateKind::FetchUpload => "uploadFile",
+            GateKind::Prefetch => "prefetch",
+            GateKind::ImageInlineSrc => "Image.src",
+            GateKind::WebSocket => "WebSocket",
+            GateKind::TcpSocket => "TCPSocket",
+            GateKind::UdpSocket => "UDPSocket",
+        }
+    }
+}
+
+/// Whether `channel` may reach other devices on the local network under `policy`. A request, download or upload
+/// never may, whatever the policy says: the HTTP client's resolver therefore refuses every private address without
+/// asking.
+pub fn lan_access(policy: &NetworkPolicy, channel: NetworkChannel) -> LanAccess {
+    match channel {
+        NetworkChannel::Request | NetworkChannel::Download | NetworkChannel::Upload => {
+            LanAccess::Refused
+        }
+        NetworkChannel::Socket | NetworkChannel::Tcp | NetworkChannel::Udp if policy.lan => {
+            LanAccess::LocalNetwork
+        }
+        NetworkChannel::Socket | NetworkChannel::Tcp | NetworkChannel::Udp => LanAccess::Refused,
+    }
 }
 
 /// Ways a gate check can fail. Kept narrow so call sites can decide
@@ -89,110 +126,69 @@ pub enum GateKind {
 pub enum GateReject {
     /// URL scheme is not permitted for this [`GateKind`].
     UnsupportedScheme { scheme: String },
-    /// URL host resolved to (or was already) a blocked IP range.
-    /// The resolver also catches DNS names; this variant is the
-    /// fallback for IP literals that bypass the resolver.
+    /// The address is one content may not reach: loopback, link-local and the
+    /// other reserved ranges always; a private address unless the local network
+    /// is granted to this channel and the address is on it.
     BlockedAddress { display: String },
-    /// Host was not in the configured domain whitelist.
-    NotWhitelisted { host: String },
-    /// HTTPS was required but the URL used HTTP (or `ws://` for
-    /// WebSocket kinds).
-    HttpsRequired,
+    /// A public IP address. Allowlists name domains, so no address is ever on one.
+    IpLiteral { display: String },
+    /// Host was not on the allowlist of the channel the request was made on.
+    NotAllowed {
+        host: String,
+        channel: NetworkChannel,
+    },
+    /// `http://` or `ws://` while `allow_plain_http` is off.
+    PlainTextNotAllowed { scheme: String },
     /// URL has no host component at all, so no rule can be applied.
     /// Happens for malformed input no client could send.
     MissingHost,
 }
 
 impl GateReject {
-    fn to_message(&self, kind: GateKind) -> String {
-        let prefix = kind_prefix(kind);
+    /// Why, without saying which API asked.
+    pub fn detail(&self) -> String {
         match self {
             GateReject::UnsupportedScheme { scheme } => {
-                format!("{prefix}: scheme '{scheme}' is not allowed")
+                format!("scheme '{scheme}' is not allowed")
             }
             GateReject::BlockedAddress { display } => {
-                format!(
-                    "{prefix}: connection to {display} is not allowed (private/loopback address)"
-                )
+                format!("connection to {display} is not allowed (private/loopback address)")
             }
-            GateReject::NotWhitelisted { host } => {
-                format!("{prefix}: domain '{host}' is not in the allowed list")
+            GateReject::IpLiteral { display } => {
+                format!("{display} is an IP address; content reaches servers by domain name")
             }
-            GateReject::HttpsRequired => {
-                format!("{prefix}: HTTPS is required (enforce_https=true)")
+            GateReject::NotAllowed { host, channel } => {
+                format!("domain '{host}' is not in the {} allowlist", channel.name())
             }
-            GateReject::MissingHost => format!("{prefix}: URL has no host"),
+            GateReject::PlainTextNotAllowed { scheme } => {
+                format!("plain-text {scheme}:// is not allowed (allowPlainHttp is off)")
+            }
+            GateReject::MissingHost => "URL has no host".to_string(),
         }
     }
-}
 
-#[inline]
-fn kind_prefix(kind: GateKind) -> &'static str {
-    match kind {
-        GateKind::Fetch => "fetch",
-        GateKind::FetchRedirect => "fetch:redirect",
-        GateKind::AudioStream => "audio",
-        GateKind::AudioStreamRedirect => "audio:redirect",
-        GateKind::FetchUpload => "uploadFile",
-        GateKind::Prefetch => "prefetch",
-        GateKind::ImageInlineSrc => "Image.src",
-        GateKind::WebSocket => "WebSocket",
-        GateKind::TcpSocket => "TCPSocket",
-        GateKind::UdpSocket => "UDPSocket",
+    fn to_message(&self, kind: GateKind) -> String {
+        format!("{}: {}", kind.label(), self.detail())
     }
 }
 
-/// Scheme policy matrix.
-///
-/// The explicit table makes it a 1-line diff to add new schemes or
-/// kinds. `true` means the scheme is permitted **for that kind** —
-/// additional runtime rules (whitelist, HTTPS enforcement) still
-/// apply on top.
+/// Scheme policy matrix: which schemes reach each kind at all. The
+/// allowlist and the plain-text rule apply on top.
 fn scheme_allowed(kind: GateKind, scheme: &str) -> bool {
-    match (kind, scheme) {
-        // HTTP entry points accept both; `check_https_required`
-        // below rejects `http://` when `enforce_https` is set.
-        (
-            GateKind::Fetch
-            | GateKind::FetchRedirect
-            | GateKind::AudioStream
-            | GateKind::AudioStreamRedirect
-            | GateKind::FetchUpload
-            | GateKind::Prefetch
-            | GateKind::ImageInlineSrc,
-            "http" | "https",
-        ) => true,
-        (GateKind::WebSocket, "ws" | "wss") => true,
+    match kind {
+        GateKind::Fetch
+        | GateKind::Download
+        | GateKind::AudioStream
+        | GateKind::FetchUpload
+        | GateKind::Prefetch
+        | GateKind::ImageInlineSrc => matches!(scheme, "http" | "https"),
+        GateKind::WebSocket => matches!(scheme, "ws" | "wss"),
         // Raw TCP/UDP use the synthetic `tcp://` / `udp://` scheme
         // produced by [`enforce_host`]; no other kind is
         // allowed to feed those schemes in.
-        (GateKind::TcpSocket, "tcp") => true,
-        (GateKind::UdpSocket, "udp") => true,
-        _ => false,
+        GateKind::TcpSocket => scheme == "tcp",
+        GateKind::UdpSocket => scheme == "udp",
     }
-}
-
-/// True if `host` is permitted by the domain whitelist. An empty
-/// whitelist means "allow all" (dev / first-boot behaviour). A non-empty
-/// list matches an exact host or any subdomain of a listed domain
-/// (`cdn.mygame.com` is allowed by `mygame.com`, but `evilmygame.com`
-/// is not). Shared by [`evaluate_policy`] and the DNS-prefetch op so
-/// prefetch can't warm the resolver for off-whitelist hosts.
-pub fn is_host_whitelisted(host: &str, policy: &NetworkPolicy) -> bool {
-    if policy.domain_whitelist.is_empty() {
-        return true;
-    }
-    policy.domain_whitelist.iter().any(|allowed| {
-        // Suffix-strip rather than build `format!(".{allowed}")`: this runs once
-        // per whitelist entry per request, per redirect hop and per audio stream
-        // URL, and the allocation existed only to hold a leading dot. Requiring
-        // the remainder to end in `.` is what keeps `evilmygame.com` out of
-        // `mygame.com` -- the same rule, without the heap.
-        host == allowed.as_str()
-            || host
-                .strip_suffix(allowed.as_str())
-                .is_some_and(|prefix| prefix.ends_with('.'))
-    })
 }
 
 /// Side-effect-free policy evaluator.
@@ -200,16 +196,13 @@ pub fn is_host_whitelisted(host: &str, policy: &NetworkPolicy) -> bool {
 /// Returns `Ok(())` iff every rule applicable to `kind` passes.
 /// Never performs DNS, never touches the filesystem, never logs; for a
 /// private IP literal it asks the system which networks the device is on.
-///
-/// Ordering is deliberate: cheapest / most-specific checks first so
-/// we reject obviously bad URLs before looking up the whitelist.
 pub fn evaluate_policy(
     url: &Url,
     policy: &NetworkPolicy,
     kind: GateKind,
 ) -> Result<(), GateReject> {
     // A datagram may also be broadcast or multicast; a stream or a request may not.
-    let blocked: &dyn Fn(&std::net::SocketAddr) -> bool = match kind {
+    let blocked: &dyn Fn(&std::net::SocketAddr, LanAccess) -> bool = match kind {
         GateKind::UdpSocket => &is_blocked_datagram_address,
         _ => &is_blocked_address,
     };
@@ -222,8 +215,10 @@ fn evaluate(
     url: &Url,
     policy: &NetworkPolicy,
     kind: GateKind,
-    blocked: &dyn Fn(&std::net::SocketAddr) -> bool,
+    blocked: &dyn Fn(&std::net::SocketAddr, LanAccess) -> bool,
 ) -> Result<(), GateReject> {
+    let channel = kind.channel();
+
     // 1. Scheme whitelist.
     let scheme = url.scheme();
     if !scheme_allowed(kind, scheme) {
@@ -235,57 +230,51 @@ fn evaluate(
     // 2. Host must exist (the client would refuse it later; fail fast).
     let host = url.host_str().ok_or(GateReject::MissingHost)?;
 
-    // 3. IP-literal block. hyper-util routes IP literals around the
-    //    custom DNS resolver, so the resolver's
-    //    `is_blocked_address` gate never fires for `http://127.0.0.1`.
-    //    We have to catch it before the connect happens.
+    // 3. An address rather than a name. hyper-util routes IP literals around
+    //    the custom DNS resolver, so the resolver's address rule never sees
+    //    `http://127.0.0.1` -- it is decided here. No allowlist can name an
+    //    address, so the only literal that passes is another device on the local
+    //    network, on a channel the local network is granted to.
     let port = url.port_or_known_default().unwrap_or(match scheme {
         "https" | "wss" => 443,
         _ => 80,
     });
-    let mut lan_peer = false;
     if let Ok(sock_addr) = format!("{host}:{port}").parse::<std::net::SocketAddr>() {
-        if blocked(&sock_addr) {
+        let lan = lan_access(policy, channel);
+        if blocked(&sock_addr, lan) {
             return Err(GateReject::BlockedAddress {
                 display: sock_addr.ip().to_string(),
             });
         }
-        // A private address the filter allowed is another device on the local network, which the reference lets
-        // content reach without its being a configured domain ("局域网 IP 除外").
-        lan_peer = is_private(sock_addr.ip());
-    }
-
-    // 4. Domain whitelist. Empty whitelist means "allow all" (dev /
-    //    first-boot behaviour — `enforce` emits the warning before
-    //        evaluation). A device on the local network is not a domain.
-    if !lan_peer && !is_host_whitelisted(host, policy) {
-        return Err(GateReject::NotWhitelisted {
+        if is_public(sock_addr.ip()) {
+            return Err(GateReject::IpLiteral {
+                display: sock_addr.ip().to_string(),
+            });
+        }
+        // A local-network peer the address rule let through: there is no domain to hold to the allowlist.
+    } else if !policy.channel(channel).permits(host) {
+        // 4. The channel's allowlist.
+        return Err(GateReject::NotAllowed {
             host: host.to_string(),
+            channel,
         });
     }
 
-    // 5. HTTPS enforcement. For HTTP kinds, reject `http://`.
-    //    For WebSocket, reject `ws://` (the TLS-free form) when
-    //    `enforce_https` is on — same security meaning. Raw TCP/UDP
-    //    are unaffected: the "enforce_https" knob is about transport
-    //    security for HTTP-flavoured traffic, and raw sockets have
-    //    no native TLS analogue.
-    if policy.enforce_https {
-        let http_like = matches!(
-            kind,
-            GateKind::Fetch
-                | GateKind::FetchRedirect
-                | GateKind::AudioStream
-                | GateKind::AudioStreamRedirect
-                | GateKind::FetchUpload
-                | GateKind::Prefetch
-                | GateKind::ImageInlineSrc
-        );
-        let is_http = scheme == "http";
-        let is_ws_plain = matches!(kind, GateKind::WebSocket) && scheme == "ws";
-        if (http_like && is_http) || is_ws_plain {
-            return Err(GateReject::HttpsRequired);
-        }
+    // 5. Plain-text transport. Raw TCP/UDP have no TLS analogue and are unaffected.
+    let plain = match kind {
+        GateKind::Fetch
+        | GateKind::Download
+        | GateKind::AudioStream
+        | GateKind::FetchUpload
+        | GateKind::Prefetch
+        | GateKind::ImageInlineSrc => scheme == "http",
+        GateKind::WebSocket => scheme == "ws",
+        GateKind::TcpSocket | GateKind::UdpSocket => false,
+    };
+    if plain && !policy.allow_plain_http {
+        return Err(GateReject::PlainTextNotAllowed {
+            scheme: scheme.to_string(),
+        });
     }
 
     Ok(())
@@ -294,10 +283,8 @@ fn evaluate(
 /// Enforce the policy for a raw socket's host and port.
 ///
 /// A socket has no URL, so one is synthesized (`tcp://host:port/`) and the
-/// URL rules run unchanged: scheme whitelist, IP-literal block, domain
-/// whitelist. Raw sockets therefore share exactly the allow/deny set `fetch`
-/// and `WebSocket` have, closing the bypass where
-/// `createTCPSocket().connect("evil.example")` ignored the domain whitelist.
+/// URL rules run unchanged: scheme whitelist, IP-literal rules, the channel's
+/// allowlist.
 pub fn enforce_host(
     host: &str,
     port: u16,
@@ -318,22 +305,13 @@ pub fn enforce_host(
     };
     let synthetic = format!("{scheme}://{host_for_url}:{port}/");
     let url = Url::parse(&synthetic)
-        .map_err(|e| format!("{}:fail invalid host '{}': {}", kind_prefix(kind), host, e))?;
+        .map_err(|e| format!("{}:fail invalid host '{}': {}", kind.label(), host, e))?;
     enforce(&url, policy, kind)
 }
 
 /// Evaluate the policy, count the refusal, and answer the message content is
 /// shown. The one entry point both executions call.
 pub fn enforce(url: &Url, policy: &NetworkPolicy, kind: GateKind) -> Result<(), String> {
-    if policy.domain_whitelist.is_empty() {
-        EMPTY_WHITELIST_WARNED.call_once(|| {
-            warn!(
-                "network_policy.domain_whitelist is empty -- all domains are permitted. \
-                 Populate the whitelist with allowed server domains to restrict \
-                 outbound access."
-            );
-        });
-    }
     match evaluate_policy(url, policy, kind) {
         Ok(()) => Ok(()),
         Err(reject) => {
@@ -350,15 +328,15 @@ pub fn enforce(url: &Url, policy: &NetworkPolicy, kind: GateKind) -> Result<(), 
                 GateKind::WebSocket => {
                     metrics.ws_policy_rejects.fetch_add(1, Ordering::Relaxed);
                 }
-                // Fetch/upload/prefetch/redirect rejects already surface
-                // through fetch error paths; keep them out of the binary
+                // Fetch/download/upload/prefetch rejects already surface
+                // through their error paths; keep them out of the binary
                 // telemetry tail to avoid double counting with the existing
                 // HTTP error metrics.
                 GateKind::Fetch
-                | GateKind::FetchRedirect
+                | GateKind::Download
                 | GateKind::FetchUpload
-                | GateKind::Prefetch => {}
-                GateKind::AudioStream | GateKind::AudioStreamRedirect => {}
+                | GateKind::Prefetch
+                | GateKind::AudioStream => {}
                 GateKind::TcpSocket | GateKind::UdpSocket => {
                     // Fold into the ws bucket for now: both are raw transport
                     // rejects and the binary snapshot protocol has no
@@ -375,366 +353,440 @@ pub fn enforce(url: &Url, policy: &NetworkPolicy, kind: GateKind) -> Result<(), 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shared::device::local_address::LocalNetwork;
+    use shared::network_policy::{DomainPattern, DomainPolicy};
 
-    fn policy(whitelist: &[&str], enforce_https: bool) -> NetworkPolicy {
-        NetworkPolicy {
-            domain_whitelist: whitelist.iter().map(|s| s.to_string()).collect(),
-            enforce_https,
-        }
-    }
-
-    #[test]
-    fn audio_stream_accepts_http_and_https_schemes() {
-        let policy = policy(&[], false);
-        assert!(
-            evaluate_policy(
-                &u("http://media.example/track.mp3"),
-                &policy,
-                GateKind::AudioStream,
-            )
-            .is_ok()
-        );
-        assert!(
-            evaluate_policy(
-                &u("https://media.example/track.mp3"),
-                &policy,
-                GateKind::AudioStream,
-            )
-            .is_ok()
-        );
-        assert!(matches!(
-            evaluate_policy(
-                &u("ws://media.example/track.mp3"),
-                &policy,
-                GateKind::AudioStream,
-            ),
-            Err(GateReject::UnsupportedScheme { .. })
-        ));
-    }
-
-    #[test]
-    fn audio_stream_enforces_allowlist_https_and_ip_literal_rules() {
-        let strict_policy = policy(&["media.example"], true);
-        assert!(
-            evaluate_policy(
-                &u("https://cdn.media.example/track.mp3"),
-                &strict_policy,
-                GateKind::AudioStream,
-            )
-            .is_ok()
-        );
-        assert!(matches!(
-            evaluate_policy(
-                &u("https://other.example/track.mp3"),
-                &strict_policy,
-                GateKind::AudioStream,
-            ),
-            Err(GateReject::NotWhitelisted { .. })
-        ));
-        assert!(matches!(
-            evaluate_policy(
-                &u("http://media.example/track.mp3"),
-                &strict_policy,
-                GateKind::AudioStream,
-            ),
-            Err(GateReject::HttpsRequired)
-        ));
-        assert!(matches!(
-            evaluate_policy(
-                &u("https://127.0.0.1/track.mp3"),
-                &policy(&[], false),
-                GateKind::AudioStream,
-            ),
-            Err(GateReject::BlockedAddress { .. })
-        ));
-    }
-
-    #[test]
-    fn audio_redirect_uses_the_same_policy_as_initial_audio_url() {
-        let policy = policy(&["media.example"], true);
-        for kind in [GateKind::AudioStream, GateKind::AudioStreamRedirect] {
-            assert!(matches!(
-                evaluate_policy(&u("https://blocked.example/next.mp3"), &policy, kind,),
-                Err(GateReject::NotWhitelisted { .. })
-            ));
-            assert!(matches!(
-                evaluate_policy(&u("http://media.example/next.mp3"), &policy, kind),
-                Err(GateReject::HttpsRequired)
-            ));
-        }
-    }
+    const ALL_KINDS: [GateKind; 9] = [
+        GateKind::Fetch,
+        GateKind::Download,
+        GateKind::AudioStream,
+        GateKind::FetchUpload,
+        GateKind::Prefetch,
+        GateKind::ImageInlineSrc,
+        GateKind::WebSocket,
+        GateKind::TcpSocket,
+        GateKind::UdpSocket,
+    ];
 
     fn u(s: &str) -> Url {
         Url::parse(s).expect("test url parse")
     }
 
-    // ---- scheme whitelist ----
-
-    #[test]
-    fn fetch_rejects_ws_scheme() {
-        let r = evaluate_policy(
-            &u("ws://example.com/"),
-            &policy(&[], false),
-            GateKind::Fetch,
-        );
-        assert!(matches!(r, Err(GateReject::UnsupportedScheme { .. })));
+    fn allow(patterns: &[&str]) -> DomainPolicy {
+        DomainPolicy::Allowlist(
+            patterns
+                .iter()
+                .map(|p| DomainPattern::parse(p).unwrap())
+                .collect(),
+        )
     }
 
-    #[test]
-    fn websocket_rejects_http_scheme() {
-        let r = evaluate_policy(
-            &u("https://example.com/"),
-            &policy(&[], false),
-            GateKind::WebSocket,
-        );
-        assert!(matches!(r, Err(GateReject::UnsupportedScheme { .. })));
+    /// One channel granted `patterns`, the rest refused.
+    fn only(channel: NetworkChannel, patterns: &[&str]) -> NetworkPolicy {
+        let mut policy = NetworkPolicy::default();
+        let slot = match channel {
+            NetworkChannel::Request => &mut policy.request,
+            NetworkChannel::Download => &mut policy.download,
+            NetworkChannel::Upload => &mut policy.upload,
+            NetworkChannel::Socket => &mut policy.socket,
+            NetworkChannel::Tcp => &mut policy.tcp,
+            NetworkChannel::Udp => &mut policy.udp,
+        };
+        *slot = allow(patterns);
+        policy
     }
 
-    #[test]
-    fn image_inline_src_rejects_file_scheme() {
-        let r = evaluate_policy(
-            &u("file:///etc/passwd"),
-            &policy(&[], false),
-            GateKind::ImageInlineSrc,
-        );
-        assert!(matches!(r, Err(GateReject::UnsupportedScheme { .. })));
+    /// A URL `kind` accepts the scheme of, at `host`.
+    fn url_for(kind: GateKind, host: &str) -> Url {
+        let scheme = match kind {
+            GateKind::WebSocket => "wss",
+            GateKind::TcpSocket => "tcp",
+            GateKind::UdpSocket => "udp",
+            _ => "https",
+        };
+        u(&format!("{scheme}://{host}:443/"))
     }
 
-    #[test]
-    fn fetch_accepts_http_and_https() {
-        assert!(
-            evaluate_policy(
-                &u("http://example.com/"),
-                &policy(&[], false),
-                GateKind::Fetch
-            )
-            .is_ok()
-        );
-        assert!(
-            evaluate_policy(
-                &u("https://example.com/"),
-                &policy(&[], false),
-                GateKind::Fetch
-            )
-            .is_ok()
-        );
-    }
-
-    #[test]
-    fn websocket_accepts_ws_and_wss() {
-        assert!(
-            evaluate_policy(
-                &u("ws://example.com/"),
-                &policy(&[], false),
-                GateKind::WebSocket
-            )
-            .is_ok()
-        );
-        assert!(
-            evaluate_policy(
-                &u("wss://example.com/"),
-                &policy(&[], false),
-                GateKind::WebSocket
-            )
-            .is_ok()
-        );
-    }
-
-    // ---- IP-literal block ----
-
-    #[test]
-    fn blocks_http_to_loopback_ipv4_literal() {
-        let r = evaluate_policy(
-            &u("http://127.0.0.1/secret"),
-            &policy(&[], false),
-            GateKind::ImageInlineSrc,
-        );
-        assert!(matches!(r, Err(GateReject::BlockedAddress { .. })));
-    }
-
-    #[test]
-    fn blocks_wss_to_ipv6_loopback_literal() {
-        let r = evaluate_policy(
-            &u("wss://[::1]:8443/"),
-            &policy(&[], false),
-            GateKind::WebSocket,
-        );
-        assert!(matches!(r, Err(GateReject::BlockedAddress { .. })));
-    }
-
-    #[test]
-    fn blocks_cloud_metadata_endpoint() {
-        // 169.254.169.254 is the AWS/GCP metadata service — classic SSRF target.
-        let r = evaluate_policy(
-            &u("http://169.254.169.254/latest/meta-data/"),
-            &policy(&[], false),
-            GateKind::Fetch,
-        );
-        assert!(matches!(r, Err(GateReject::BlockedAddress { .. })));
-    }
-
-    #[test]
-    fn a_device_on_the_local_network_is_not_held_to_the_domain_list() {
-        let lan = [shared::device::local_address::LocalNetwork {
+    /// The device as if it were on 10.0.2.15/24, so what LAN assertions say does not depend on the network the
+    /// machine running them is on.
+    fn on_lan(url: &Url, policy: &NetworkPolicy, kind: GateKind) -> Result<(), GateReject> {
+        let lan = [LocalNetwork {
             address: "10.0.2.15".parse().unwrap(),
             prefix: 24,
         }];
-        let on_lan =
-            |addr: &std::net::SocketAddr| super::super::address_filter::is_blocked_on(addr, &lan);
-        let listed = policy(&["allowed.example"], false);
-        let check =
-            |url: &str| evaluate(&Url::parse(url).unwrap(), &listed, GateKind::Fetch, &on_lan);
-        assert_eq!(check("http://10.0.2.2:8080/a"), Ok(()));
-        assert_eq!(
-            check("http://10.0.3.2:8080/a"),
-            Err(GateReject::BlockedAddress {
-                display: "10.0.3.2".to_string()
-            })
-        );
-        // A public address is a server like any other, held to the list.
-        assert_eq!(
-            check("http://8.8.8.8/a"),
-            Err(GateReject::NotWhitelisted {
-                host: "8.8.8.8".to_string()
-            })
-        );
+        let blocked = |addr: &std::net::SocketAddr, access: LanAccess| {
+            super::super::address_filter::is_blocked_on(addr, &lan, access)
+        };
+        evaluate(url, policy, kind, &blocked)
+    }
+
+    // ---- the default refuses ----
+
+    #[test]
+    fn with_no_policy_set_every_kind_is_refused_and_the_message_names_channel_and_domain() {
+        let policy = NetworkPolicy::default();
+        for kind in ALL_KINDS {
+            let url = url_for(kind, "api.example.com");
+            let reject = evaluate_policy(&url, &policy, kind).unwrap_err();
+            assert_eq!(
+                reject,
+                GateReject::NotAllowed {
+                    host: "api.example.com".to_string(),
+                    channel: kind.channel()
+                },
+                "{kind:?}"
+            );
+            let message = enforce(&url, &policy, kind).unwrap_err();
+            assert!(
+                message.contains(kind.channel().name()) && message.contains("api.example.com"),
+                "{message}"
+            );
+        }
+    }
+
+    // ---- channels ----
+
+    #[test]
+    fn each_kind_is_decided_by_its_own_channel_and_no_other() {
+        for kind in ALL_KINDS {
+            for channel in NetworkChannel::ALL {
+                let granted = evaluate_policy(
+                    &url_for(kind, "api.example.com"),
+                    &only(channel, &["api.example.com"]),
+                    kind,
+                );
+                assert_eq!(
+                    granted.is_ok(),
+                    channel == kind.channel(),
+                    "{kind:?} under {channel:?}: {granted:?}"
+                );
+            }
+        }
     }
 
     #[test]
-    fn allows_public_ip_literal() {
-        // 93.184.215.14 is example.com's published IP; not in any
-        // blocked range. The rule is about *private* blocks, not
-        // about blanket-rejecting IP literals.
-        let r = evaluate_policy(
-            &u("https://93.184.215.14/"),
-            &policy(&[], false),
-            GateKind::Fetch,
-        );
-        assert_eq!(r, Ok(()));
-    }
-
-    // ---- domain whitelist ----
-
-    #[test]
-    fn empty_whitelist_allows_any_public_domain() {
+    fn a_download_grant_does_not_open_fetch_and_a_request_grant_does_not_open_websocket() {
+        let cdn = only(NetworkChannel::Download, &["cdn.example.com"]);
         assert!(
             evaluate_policy(
-                &u("https://random-host.example.org/"),
-                &policy(&[], false),
-                GateKind::Fetch
+                &u("https://cdn.example.com/a.png"),
+                &cdn,
+                GateKind::Download
             )
             .is_ok()
         );
+        assert!(matches!(
+            evaluate_policy(&u("https://cdn.example.com/a.png"), &cdn, GateKind::Fetch),
+            Err(GateReject::NotAllowed {
+                channel: NetworkChannel::Request,
+                ..
+            })
+        ));
+        let api = only(NetworkChannel::Request, &["api.example.com"]);
+        assert!(matches!(
+            evaluate_policy(&u("wss://api.example.com/"), &api, GateKind::WebSocket),
+            Err(GateReject::NotAllowed {
+                channel: NetworkChannel::Socket,
+                ..
+            })
+        ));
     }
 
     #[test]
-    fn whitelist_rejects_off_list_host() {
-        let r = evaluate_policy(
-            &u("https://attacker.example/"),
-            &policy(&["mygame.com"], false),
-            GateKind::Fetch,
+    fn the_channel_mapping_is_the_documented_table() {
+        use NetworkChannel::*;
+        let table = [
+            (GateKind::Fetch, Request),
+            (GateKind::Download, Download),
+            (GateKind::AudioStream, Download),
+            (GateKind::Prefetch, Download),
+            (GateKind::ImageInlineSrc, Download),
+            (GateKind::FetchUpload, Upload),
+            (GateKind::WebSocket, Socket),
+            (GateKind::TcpSocket, Tcp),
+            (GateKind::UdpSocket, Udp),
+        ];
+        assert_eq!(table.len(), ALL_KINDS.len());
+        for (kind, channel) in table {
+            assert_eq!(kind.channel(), channel, "{kind:?}");
+        }
+    }
+
+    // ---- unrestricted ----
+
+    #[test]
+    fn unrestricted_is_any_domain_and_still_no_address_and_no_plain_text() {
+        let open = NetworkPolicy::unrestricted();
+        for kind in ALL_KINDS {
+            assert_eq!(
+                evaluate_policy(&url_for(kind, "anything.example.org"), &open, kind),
+                Ok(()),
+                "{kind:?}"
+            );
+            assert!(
+                matches!(
+                    evaluate_policy(&url_for(kind, "93.184.215.14"), &open, kind),
+                    Err(GateReject::IpLiteral { .. })
+                ),
+                "{kind:?}"
+            );
+        }
+        assert_eq!(
+            evaluate_policy(&u("http://a.example.org/"), &open, GateKind::Fetch),
+            Err(GateReject::PlainTextNotAllowed {
+                scheme: "http".to_string()
+            })
         );
-        assert!(matches!(r, Err(GateReject::NotWhitelisted { .. })));
     }
 
-    #[test]
-    fn whitelist_matches_exact_and_subdomain() {
-        let p = policy(&["mygame.com"], false);
-        assert!(evaluate_policy(&u("https://mygame.com/"), &p, GateKind::Fetch).is_ok());
-        assert!(evaluate_policy(&u("https://cdn.mygame.com/a"), &p, GateKind::Fetch).is_ok());
-        // Suffix-match must not accept "othermygame.com".
-        let r = evaluate_policy(&u("https://evilmygame.com/"), &p, GateKind::Fetch);
-        assert!(matches!(r, Err(GateReject::NotWhitelisted { .. })));
-    }
+    // ---- plain text ----
 
     #[test]
-    fn whitelist_applies_to_websocket_kind() {
-        let r = evaluate_policy(
-            &u("wss://attacker.example/"),
-            &policy(&["mygame.com"], false),
-            GateKind::WebSocket,
+    fn plain_http_and_ws_are_refused_until_allowed() {
+        let mut policy = NetworkPolicy::unrestricted();
+        for (url, kind) in [
+            ("http://a.example.com/", GateKind::Fetch),
+            ("http://a.example.com/", GateKind::Download),
+            ("http://a.example.com/", GateKind::FetchUpload),
+            ("http://a.example.com/", GateKind::AudioStream),
+            ("http://a.example.com/", GateKind::ImageInlineSrc),
+            ("http://a.example.com/", GateKind::Prefetch),
+            ("ws://a.example.com/", GateKind::WebSocket),
+        ] {
+            assert!(
+                matches!(
+                    evaluate_policy(&u(url), &policy, kind),
+                    Err(GateReject::PlainTextNotAllowed { .. })
+                ),
+                "{kind:?}"
+            );
+        }
+        policy.allow_plain_http = true;
+        assert_eq!(
+            evaluate_policy(&u("http://a.example.com/"), &policy, GateKind::Fetch),
+            Ok(())
         );
-        assert!(matches!(r, Err(GateReject::NotWhitelisted { .. })));
-    }
-
-    #[test]
-    fn whitelist_applies_to_image_inline_src() {
-        // Was the actual pre-gate bypass: this used to succeed.
-        let r = evaluate_policy(
-            &u("http://attacker.example/1x1.png"),
-            &policy(&["mygame.com"], false),
-            GateKind::ImageInlineSrc,
+        assert_eq!(
+            evaluate_policy(&u("ws://a.example.com/"), &policy, GateKind::WebSocket),
+            Ok(())
         );
-        assert!(matches!(r, Err(GateReject::NotWhitelisted { .. })));
     }
 
-    // ---- HTTPS enforcement ----
-
     #[test]
-    fn enforce_https_rejects_plain_http() {
-        let r = evaluate_policy(
-            &u("http://mygame.com/"),
-            &policy(&["mygame.com"], true),
-            GateKind::Fetch,
+    fn plain_ws_needs_both_the_domain_and_the_flag() {
+        let mut policy = only(NetworkChannel::Socket, &["game.example.com"]);
+        policy.allow_plain_http = true;
+        assert!(matches!(
+            evaluate_policy(&u("ws://other.example.com/"), &policy, GateKind::WebSocket),
+            Err(GateReject::NotAllowed { .. })
+        ));
+        assert_eq!(
+            evaluate_policy(&u("ws://game.example.com/"), &policy, GateKind::WebSocket),
+            Ok(())
         );
-        assert_eq!(r, Err(GateReject::HttpsRequired));
+        policy.allow_plain_http = false;
+        assert!(matches!(
+            evaluate_policy(&u("ws://game.example.com/"), &policy, GateKind::WebSocket),
+            Err(GateReject::PlainTextNotAllowed { .. })
+        ));
+    }
+
+    // ---- addresses ----
+
+    #[test]
+    fn a_public_ip_literal_is_refused_on_every_channel() {
+        let open = NetworkPolicy::unrestricted();
+        for kind in ALL_KINDS {
+            assert_eq!(
+                evaluate_policy(&url_for(kind, "8.8.8.8"), &open, kind),
+                Err(GateReject::IpLiteral {
+                    display: "8.8.8.8".to_string()
+                }),
+                "{kind:?}"
+            );
+        }
+        assert!(matches!(
+            evaluate_policy(&u("https://[2606:4700::1111]/"), &open, GateKind::Fetch),
+            Err(GateReject::IpLiteral { .. })
+        ));
     }
 
     #[test]
-    fn enforce_https_rejects_plain_ws() {
-        let r = evaluate_policy(
-            &u("ws://mygame.com/"),
-            &policy(&["mygame.com"], true),
-            GateKind::WebSocket,
+    fn the_local_network_is_refused_by_default_and_never_reaches_http() {
+        let mut policy = NetworkPolicy::unrestricted();
+        for kind in ALL_KINDS {
+            assert!(
+                matches!(
+                    on_lan(&url_for(kind, "10.0.2.2"), &policy, kind),
+                    Err(GateReject::BlockedAddress { .. })
+                ),
+                "{kind:?} with lan off"
+            );
+        }
+        policy.lan = true;
+        for kind in ALL_KINDS {
+            let verdict = on_lan(&url_for(kind, "10.0.2.2"), &policy, kind);
+            let lan_channel = matches!(
+                kind.channel(),
+                NetworkChannel::Socket | NetworkChannel::Tcp | NetworkChannel::Udp
+            );
+            if lan_channel {
+                assert_eq!(verdict, Ok(()), "{kind:?} with lan on");
+            } else {
+                assert!(
+                    matches!(verdict, Err(GateReject::BlockedAddress { .. })),
+                    "{kind:?} with lan on: {verdict:?}"
+                );
+            }
+        }
+        // Another network's private address, and the device itself, stay out of reach.
+        assert!(on_lan(&u("tcp://10.0.3.2:80/"), &policy, GateKind::TcpSocket).is_err());
+        assert!(on_lan(&u("tcp://10.0.2.15:80/"), &policy, GateKind::TcpSocket).is_err());
+    }
+
+    #[test]
+    fn a_lan_peer_needs_no_allowlist_entry_but_a_lan_grant_opens_no_domain() {
+        let mut policy = NetworkPolicy::default();
+        policy.lan = true;
+        assert_eq!(
+            on_lan(&u("tcp://10.0.2.2:9000/"), &policy, GateKind::TcpSocket),
+            Ok(())
         );
-        assert_eq!(r, Err(GateReject::HttpsRequired));
+        assert!(matches!(
+            on_lan(
+                &u("tcp://peer.example.com:9000/"),
+                &policy,
+                GateKind::TcpSocket
+            ),
+            Err(GateReject::NotAllowed { .. })
+        ));
     }
 
     #[test]
-    fn enforce_https_allows_wss_and_https() {
-        let p = policy(&["mygame.com"], true);
-        assert!(evaluate_policy(&u("https://mygame.com/"), &p, GateKind::Fetch).is_ok());
-        assert!(evaluate_policy(&u("wss://mygame.com/"), &p, GateKind::WebSocket).is_ok());
+    fn reserved_addresses_are_refused_whatever_the_policy() {
+        let mut policy = NetworkPolicy::unrestricted();
+        policy.lan = true;
+        policy.allow_plain_http = true;
+        for url in [
+            "http://127.0.0.1/secret",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://[::1]:8080/",
+        ] {
+            assert!(
+                matches!(
+                    evaluate_policy(&u(url), &policy, GateKind::Fetch),
+                    Err(GateReject::BlockedAddress { .. })
+                ),
+                "{url}"
+            );
+        }
+        assert!(matches!(
+            evaluate_policy(&u("wss://[::1]:8443/"), &policy, GateKind::WebSocket),
+            Err(GateReject::BlockedAddress { .. })
+        ));
     }
 
-    // ---- ordering / precedence ----
-
     #[test]
-    fn ip_literal_block_precedes_whitelist() {
-        // If an attacker somehow registers "example.com" and points
-        // it at 127.0.0.1, they still can't punch the loopback hole.
-        let r = evaluate_policy(
-            &u("http://127.0.0.1/"),
-            &policy(&["127.0.0.1"], false),
-            GateKind::Fetch,
+    fn a_datagram_may_broadcast_only_with_the_local_network() {
+        let mut policy = NetworkPolicy::default();
+        let broadcast = u("udp://255.255.255.255:9/");
+        assert!(matches!(
+            evaluate_policy(&broadcast, &policy, GateKind::UdpSocket),
+            Err(GateReject::BlockedAddress { .. })
+        ));
+        policy.lan = true;
+        assert_eq!(
+            evaluate_policy(&broadcast, &policy, GateKind::UdpSocket),
+            Ok(())
         );
-        assert!(matches!(r, Err(GateReject::BlockedAddress { .. })));
+        assert!(matches!(
+            evaluate_policy(&u("tcp://255.255.255.255:9/"), &policy, GateKind::TcpSocket),
+            Err(GateReject::BlockedAddress { .. })
+        ));
     }
 
-    // ---- error-message formatting ----
+    // ---- patterns ----
 
     #[test]
-    fn reject_messages_include_kind_prefix() {
-        let r = evaluate_policy(
-            &u("http://attacker.example/"),
-            &policy(&["mygame.com"], false),
+    fn exact_and_wildcard_patterns_hold_on_the_gate() {
+        let policy = only(NetworkChannel::Request, &["mygame.com", "*.cdn.mygame.com"]);
+        let check = |url: &str| evaluate_policy(&u(url), &policy, GateKind::Fetch);
+        assert_eq!(check("https://mygame.com/"), Ok(()));
+        assert_eq!(check("https://a.cdn.mygame.com/"), Ok(()));
+        for refused in [
+            "https://www.mygame.com/",
+            "https://cdn.mygame.com/",
+            "https://evilmygame.com/",
+        ] {
+            assert!(
+                matches!(check(refused), Err(GateReject::NotAllowed { .. })),
+                "{refused}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_raw_socket_host_matches_regardless_of_case() {
+        // `tcp://` is not a special scheme, so its host keeps the case content wrote.
+        let policy = only(NetworkChannel::Tcp, &["game.example.com"]);
+        assert_eq!(
+            enforce_host("GAME.Example.com", 9000, &policy, GateKind::TcpSocket),
+            Ok(())
+        );
+        assert!(enforce_host("other.example.com", 9000, &policy, GateKind::TcpSocket).is_err());
+    }
+
+    // ---- schemes ----
+
+    #[test]
+    fn each_kind_accepts_only_its_schemes() {
+        let open = {
+            let mut policy = NetworkPolicy::unrestricted();
+            policy.allow_plain_http = true;
+            policy
+        };
+        let rejects = [
+            ("ws://example.com/", GateKind::Fetch),
+            ("https://example.com/", GateKind::WebSocket),
+            ("file:///etc/passwd", GateKind::ImageInlineSrc),
+            ("ftp://example.com/", GateKind::Download),
+            ("udp://example.com:1/", GateKind::TcpSocket),
+        ];
+        for (url, kind) in rejects {
+            assert!(
+                matches!(
+                    evaluate_policy(&u(url), &open, kind),
+                    Err(GateReject::UnsupportedScheme { .. })
+                ),
+                "{url} as {kind:?}"
+            );
+        }
+        assert!(enforce_host("example.com", 1, &open, GateKind::Fetch).is_err());
+    }
+
+    // ---- messages ----
+
+    #[test]
+    fn a_refusal_names_the_api_the_channel_and_the_domain() {
+        let message = enforce(
+            &u("https://attacker.example/1x1.png"),
+            &only(NetworkChannel::Download, &["mygame.com"]),
             GateKind::ImageInlineSrc,
         )
         .unwrap_err();
-        let msg = r.to_message(GateKind::ImageInlineSrc);
-        assert!(msg.starts_with("Image.src:"), "msg={msg}");
-        assert!(msg.contains("attacker.example"), "msg={msg}");
-    }
-
-    #[test]
-    fn websocket_reject_message_uses_ws_prefix() {
-        let r = evaluate_policy(
+        assert_eq!(
+            message,
+            "Image.src: domain 'attacker.example' is not in the download allowlist"
+        );
+        let message = enforce(
             &u("ws://mygame.com/"),
-            &policy(&["mygame.com"], true),
+            &only(NetworkChannel::Socket, &["mygame.com"]),
             GateKind::WebSocket,
         )
         .unwrap_err();
-        let msg = r.to_message(GateKind::WebSocket);
-        assert!(msg.starts_with("WebSocket:"), "msg={msg}");
+        assert_eq!(
+            message,
+            "WebSocket: plain-text ws:// is not allowed (allowPlainHttp is off)"
+        );
     }
 }

@@ -116,7 +116,7 @@ pub(crate) struct Host {
 
     platform: Arc<dyn PlatformServices>,
     init_options: InitOptions,
-    network_policy: shared::op_state::NetworkPolicy,
+    network_policy: shared::network_policy::NetworkPolicy,
 
     /// The Host's one callback-id space. Cloned into every `HostOpState`,
     /// including each Worker's, and never rebuilt on restart.

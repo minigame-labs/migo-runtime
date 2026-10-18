@@ -2329,10 +2329,8 @@ mod timer_lifecycle_tests {
     use deno_core::{FastString, PollEventLoopOptions, RuntimeOptions};
     use futures::future::poll_fn;
     use shared::{
-        channel::ThreadWakeup,
-        device::gpu_caps::GpuCaps,
-        op_state::{AudioSender, NetworkPolicy},
-        render_command_sender::CommandSender,
+        channel::ThreadWakeup, device::gpu_caps::GpuCaps, network_policy::NetworkPolicy,
+        op_state::AudioSender, render_command_sender::CommandSender,
     };
     #[test]
     fn worker_and_parent_share_host_callback_id_space() {
@@ -2855,7 +2853,8 @@ mod watchdog_worker_tests {
     use shared::{
         channel::ThreadWakeup,
         device::gpu_caps::GpuCaps,
-        op_state::{AudioSender, HostOpState, NetworkPolicy},
+        network_policy::NetworkPolicy,
+        op_state::{AudioSender, HostOpState},
         render_command_sender::CommandSender,
     };
 

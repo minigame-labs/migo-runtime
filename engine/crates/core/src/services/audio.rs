@@ -85,14 +85,13 @@ pub(crate) struct AudioService {
 /// a session that never streams audio should not pay for a TLS client.
 #[cfg(feature = "host-audio")]
 pub(crate) fn streaming_http_client_factory(
-    network_policy: shared::op_state::NetworkPolicy,
+    network_policy: shared::network_policy::NetworkPolicy,
 ) -> audio::streaming::StreamingHttpClientFactory {
     Arc::new(move || {
         migo_services::network::client::create_policy_http_client(
             "migo",
             true,
             &network_policy,
-            migo_services::network::gate::GateKind::AudioStreamRedirect,
             "audio",
         )
         .map_err(|error| {
@@ -401,7 +400,7 @@ pub(crate) struct AudioService {
 impl AudioService {
     pub(crate) fn new(
         _host_tx: shared::op_state::HostTx,
-        _network_policy: shared::op_state::NetworkPolicy,
+        _network_policy: shared::network_policy::NetworkPolicy,
     ) -> Self {
         #[cfg(feature = "embedded-v8")]
         let tx = shared::audio_channel::disconnected();
@@ -596,7 +595,7 @@ mod tests {
         let (host_tx, _critical_host_tx, _host_rx) = shared::host_channel::channel(1);
         AudioService::new(
             host_tx,
-            streaming_http_client_factory(shared::op_state::NetworkPolicy::default()),
+            streaming_http_client_factory(shared::network_policy::NetworkPolicy::default()),
         )
     }
 

@@ -14,63 +14,82 @@
 //! - RFC 2544 benchmarking (198.18.0.0/15)
 //! - RFC 1112 reserved future 240.0.0.0/4
 //!
-//! Blocks unless it is another device on the device's local network:
+//! Blocks unless the policy grants the local network and it is another device on it:
 //! - RFC 1918 private and IPv6 unique-local addresses
 //!
 //! The local network is what the reference platform opens -- "the non-local
-//! IPs on the local network" -- so a game can play on a LAN; a private address
-//! anywhere else, and the device itself, stay out of reach.
+//! IPs on the local network" -- so a game can play on a LAN. Here it is opened
+//! only when the host grants it ([`LanAccess::LocalNetwork`]), and only for the
+//! socket, TCP and UDP channels; a private address anywhere else, and the device
+//! itself, stay out of reach either way.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use shared::device::local_address::{self, LocalNetwork};
 
-/// Returns `true` if the address may not be reached from game JS code.
-///
-/// A private address is allowed only on the device's own local network and only when it is not the device itself:
-/// the reference platform allows "the non-local IPs on the local network" (局域网内的非本机 IP) -- which is how games
-/// play on a LAN -- and nothing else private. Everything else this module lists is refused wherever it is.
-pub fn is_blocked_address(addr: &SocketAddr) -> bool {
-    // The interfaces are listed only for a private address: a system call, and most addresses are public.
-    is_blocked_given(addr, local_address::networks)
+/// Whether other devices on the device's own local network may be reached.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LanAccess {
+    /// No private address at all. What a request, download or upload always gets, and every channel by default.
+    Refused,
+    /// A private address on one of the device's networks that is not the device itself; for a datagram, also the
+    /// limited broadcast address and multicast groups.
+    LocalNetwork,
 }
 
-/// [`is_blocked_address`] for a datagram. A UDP socket may also send to the limited broadcast address and to a
-/// multicast group -- the reference lets `UDPSocket.send` reach "any IP", broadcast included, which is how a game finds
-/// its peers on a LAN -- where a stream cannot connect at all.
-pub fn is_blocked_datagram_address(addr: &SocketAddr) -> bool {
+/// Returns `true` if the address may not be reached from game JS code.
+///
+/// A private address is allowed only under [`LanAccess::LocalNetwork`], only on the device's own local network and
+/// only when it is not the device itself -- the reference platform's "the non-local IPs on the local network"
+/// (局域网内的非本机 IP), which is how games play on a LAN. Everything else this module lists is refused wherever it
+/// is.
+pub fn is_blocked_address(addr: &SocketAddr, lan: LanAccess) -> bool {
+    // The interfaces are listed only for a private address: a system call, and most addresses are public.
+    is_blocked_given(addr, lan, local_address::networks)
+}
+
+/// [`is_blocked_address`] for a datagram. Under [`LanAccess::LocalNetwork`] a UDP socket may also send to the limited
+/// broadcast address and to a multicast group -- the reference lets `UDPSocket.send` reach "any IP", broadcast
+/// included, which is how a game finds its peers on a LAN -- where a stream cannot connect at all.
+pub fn is_blocked_datagram_address(addr: &SocketAddr, lan: LanAccess) -> bool {
     match canonical(addr.ip()) {
-        IpAddr::V4(ip) if ip.is_broadcast() || is_multicast_v4(&ip) => false,
-        IpAddr::V6(ip) if is_multicast_v6(&ip) => false,
-        _ => is_blocked_address(addr),
+        IpAddr::V4(ip) if ip.is_broadcast() || is_multicast_v4(&ip) => lan == LanAccess::Refused,
+        IpAddr::V6(ip) if is_multicast_v6(&ip) => lan == LanAccess::Refused,
+        _ => is_blocked_address(addr, lan),
     }
 }
 
 /// [`is_blocked_address`] on a device whose networks are `networks`.
 #[cfg(test)]
-pub(crate) fn is_blocked_on(addr: &SocketAddr, networks: &[LocalNetwork]) -> bool {
-    is_blocked_given(addr, || networks.to_vec())
+pub(crate) fn is_blocked_on(addr: &SocketAddr, networks: &[LocalNetwork], lan: LanAccess) -> bool {
+    is_blocked_given(addr, lan, || networks.to_vec())
 }
 
 /// The rule, with the device's networks asked for only when an address's class needs them.
-fn is_blocked_given(addr: &SocketAddr, networks: impl FnOnce() -> Vec<LocalNetwork>) -> bool {
+fn is_blocked_given(
+    addr: &SocketAddr,
+    lan: LanAccess,
+    networks: impl FnOnce() -> Vec<LocalNetwork>,
+) -> bool {
     match class_of(addr.ip()) {
         Class::Public => false,
         Class::Reserved => true,
-        Class::Private => !on_local_network(addr.ip(), &networks()),
+        Class::Private => match lan {
+            LanAccess::Refused => true,
+            LanAccess::LocalNetwork => !on_local_network(addr.ip(), &networks()),
+        },
     }
 }
 
-/// Whether `ip` is in a private range -- which [`is_blocked_address`] allows only on the device's local network. An
-/// allowed private address is therefore another device on that network.
-pub(crate) fn is_private(ip: IpAddr) -> bool {
-    matches!(class_of(ip), Class::Private)
+/// Whether `ip` is publicly reachable unicast: a server like any other, which content reaches by name.
+pub(crate) fn is_public(ip: IpAddr) -> bool {
+    matches!(class_of(ip), Class::Public)
 }
 
 enum Class {
     /// Publicly reachable unicast.
     Public,
-    /// A private range: allowed on the device's local network.
+    /// A private range: allowed on the device's local network, when the local network is granted.
     Private,
     /// Never: loopback, link-local, broadcast, multicast, and the ranges reserved for documentation and testing.
     Reserved,
@@ -204,10 +223,13 @@ fn is_documentation_v6(ip: &Ipv6Addr) -> bool {
 mod tests {
     use super::*;
 
+    const LAN: LanAccess = LanAccess::LocalNetwork;
+    const NO_LAN: LanAccess = LanAccess::Refused;
+
     /// The rule on a device on no local network, so what these assertions say does not depend on the network the
     /// machine running them is on. (It shadows the glob-imported function on purpose.)
     fn is_blocked_address(addr: &SocketAddr) -> bool {
-        is_blocked_on(addr, &[])
+        is_blocked_on(addr, &[], LAN)
     }
 
     fn network(address: IpAddr, prefix: u8) -> LocalNetwork {
@@ -219,19 +241,44 @@ mod tests {
     #[test]
     fn a_private_address_on_the_local_network_is_allowed_unless_it_is_the_device() {
         let lan = [network(IpAddr::V4(Ipv4Addr::new(10, 0, 2, 15)), 24)];
-        assert!(!is_blocked_on(&sa4(10, 0, 2, 2, 8080), &lan));
+        assert!(!is_blocked_on(&sa4(10, 0, 2, 2, 8080), &lan, LAN));
         assert!(
-            is_blocked_on(&sa4(10, 0, 2, 15, 8080), &lan),
+            is_blocked_on(&sa4(10, 0, 2, 15, 8080), &lan, LAN),
             "the device itself"
         );
         assert!(
-            is_blocked_on(&sa4(10, 0, 3, 1, 8080), &lan),
+            is_blocked_on(&sa4(10, 0, 3, 1, 8080), &lan, LAN),
             "another network"
         );
-        assert!(is_blocked_on(&sa4(192, 168, 1, 1, 80), &lan));
+        assert!(is_blocked_on(&sa4(192, 168, 1, 1, 80), &lan, LAN));
         // The rest stays refused on any network.
-        assert!(is_blocked_on(&sa4(127, 0, 0, 1, 80), &lan));
-        assert!(is_blocked_on(&sa4(169, 254, 169, 254, 80), &lan));
+        assert!(is_blocked_on(&sa4(127, 0, 0, 1, 80), &lan, LAN));
+        assert!(is_blocked_on(&sa4(169, 254, 169, 254, 80), &lan, LAN));
+    }
+
+    /// Without the local network granted, the same peer -- and every other private address, of either family -- is
+    /// refused, and a datagram may not be broadcast or multicast.
+    #[test]
+    fn without_the_local_network_no_private_address_is_reachable() {
+        let lan = [
+            network(IpAddr::V4(Ipv4Addr::new(10, 0, 2, 15)), 24),
+            network(
+                IpAddr::V6(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 0x15)),
+                64,
+            ),
+        ];
+        for peer in [
+            sa4(10, 0, 2, 2, 8080),
+            sa6([0xfd00, 0, 0, 0, 0, 0, 0, 2], 80),
+            sa6([0, 0, 0, 0, 0, 0xffff, 0x0a00, 0x0202], 80),
+        ] {
+            assert!(!is_blocked_on(&peer, &lan, LAN), "{peer} granted");
+            assert!(is_blocked_on(&peer, &lan, NO_LAN), "{peer} refused");
+        }
+        assert!(!is_blocked_on(&sa4(8, 8, 8, 8, 443), &lan, NO_LAN));
+        for group in [sa4(255, 255, 255, 255, 9), sa4(224, 0, 0, 251, 5353)] {
+            assert!(is_blocked_datagram_address(&group, NO_LAN), "{group}");
+        }
     }
 
     /// The same for IPv6's unique local addresses, and for an IPv4 LAN address written in its mapped IPv6 form.
@@ -246,24 +293,25 @@ mod tests {
         ];
         assert!(!is_blocked_on(
             &sa6([0xfd00, 0, 0, 0, 0, 0, 0, 2], 80),
-            &lan
+            &lan,
+            LAN
         ));
         assert!(
-            is_blocked_on(&sa6([0xfd00, 0, 0, 1, 0, 0, 0, 2], 80), &lan),
+            is_blocked_on(&sa6([0xfd00, 0, 0, 1, 0, 0, 0, 2], 80), &lan, LAN),
             "another /64"
         );
         assert!(
-            !is_blocked_on(&sa6([0, 0, 0, 0, 0, 0xffff, 0xc0a8, 0x0502], 80), &lan),
+            !is_blocked_on(&sa6([0, 0, 0, 0, 0, 0xffff, 0xc0a8, 0x0502], 80), &lan, LAN),
             "::ffff:192.168.5.2"
         );
         assert!(
-            is_blocked_on(&sa6([0, 0, 0, 0, 0, 0xffff, 0x7f00, 0x0001], 80), &lan),
+            is_blocked_on(&sa6([0, 0, 0, 0, 0, 0xffff, 0x7f00, 0x0001], 80), &lan, LAN),
             "::ffff:127.0.0.1"
         );
     }
 
-    /// A datagram may go to the limited broadcast address and to multicast groups; a stream may not, and neither may
-    /// reach the loopback.
+    /// A datagram may go to the limited broadcast address and to multicast groups when the local network is granted;
+    /// a stream may not, and neither may reach the loopback.
     #[test]
     fn a_datagram_may_be_broadcast_or_multicast() {
         for allowed in [
@@ -271,25 +319,30 @@ mod tests {
             sa4(224, 0, 0, 251, 5353),
             sa6([0xff02, 0, 0, 0, 0, 0, 0, 0xfb], 5353),
         ] {
-            assert!(!is_blocked_datagram_address(&allowed), "{allowed}");
-            assert!(super::is_blocked_address(&allowed), "a stream to {allowed}");
+            assert!(!is_blocked_datagram_address(&allowed, LAN), "{allowed}");
+            assert!(
+                super::is_blocked_address(&allowed, LAN),
+                "a stream to {allowed}"
+            );
         }
-        assert!(is_blocked_datagram_address(&sa4(127, 0, 0, 1, 9)));
-        assert!(!is_blocked_datagram_address(&sa4(8, 8, 8, 8, 53)));
+        assert!(is_blocked_datagram_address(&sa4(127, 0, 0, 1, 9), LAN));
+        assert!(!is_blocked_datagram_address(&sa4(8, 8, 8, 8, 53), LAN));
     }
 
     /// A network of prefix 0 is not a local network: it would make every address local.
     #[test]
     fn a_zero_length_prefix_makes_nothing_local() {
         let everything = [network(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 0)];
-        assert!(is_blocked_on(&sa4(192, 168, 1, 1, 80), &everything));
+        assert!(is_blocked_on(&sa4(192, 168, 1, 1, 80), &everything, LAN));
     }
 
     /// Through the device's real interfaces: what does not depend on them.
     #[test]
     fn the_real_rule_refuses_the_loopback_and_allows_the_public() {
-        assert!(super::is_blocked_address(&sa4(127, 0, 0, 1, 80)));
-        assert!(!super::is_blocked_address(&sa4(8, 8, 8, 8, 443)));
+        for lan in [NO_LAN, LAN] {
+            assert!(super::is_blocked_address(&sa4(127, 0, 0, 1, 80), lan));
+            assert!(!super::is_blocked_address(&sa4(8, 8, 8, 8, 443), lan));
+        }
     }
 
     fn sa4(a: u8, b: u8, c: u8, d: u8, port: u16) -> SocketAddr {

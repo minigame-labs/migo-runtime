@@ -21,7 +21,7 @@ use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tracing::debug;
 
-use shared::op_state::NetworkPolicy;
+use shared::network_policy::{NetworkChannel, NetworkPolicy};
 
 use crate::ServiceError;
 
@@ -187,9 +187,12 @@ pub async fn connect(
 
     let deadline = Duration::from_secs(u64::from(seconds));
     let target = join_host_port(address, port);
+    let lan = gate::lan_access(policy, NetworkChannel::Tcp);
     let resolved = tokio::time::timeout(
         deadline,
-        resolve_first(&target, super::address_filter::is_blocked_address),
+        resolve_first(&target, |resolved| {
+            super::address_filter::is_blocked_address(resolved, lan)
+        }),
     )
     .await
     .map_err(|_| generic(format!("connect:fail timeout after {seconds}s")))?

@@ -414,7 +414,7 @@ impl ServiceContext {
         &self,
         sender: shared::op_state::AudioSender,
         runtime_generation: i64,
-        network_policy: shared::op_state::NetworkPolicy,
+        network_policy: shared::network_policy::NetworkPolicy,
     ) {
         let _ = self.audio.set(AudioBinding {
             sender,
@@ -428,7 +428,7 @@ impl ServiceContext {
     /// from. Once, before the first service work is dispatched.
     pub(crate) fn bind_network(
         &self,
-        policy: shared::op_state::NetworkPolicy,
+        policy: shared::network_policy::NetworkPolicy,
         backgrounded: Arc<AtomicBool>,
         runtime: tokio::runtime::Handle,
     ) {
@@ -443,7 +443,7 @@ impl ServiceContext {
         &self,
     ) -> Result<
         (
-            shared::op_state::NetworkPolicy,
+            shared::network_policy::NetworkPolicy,
             migo_services::network::client::PolicyHttpClient,
         ),
         EngineError,
@@ -3476,10 +3476,8 @@ mod tests {
             .build()
             .unwrap();
         context.bind_network(
-            shared::op_state::NetworkPolicy {
-                domain_whitelist: vec!["allowed.example".to_string()],
-                enforce_https: true,
-            },
+            shared::network_policy::NetworkPolicy::from_json(r#"{"request":["allowed.example"]}"#)
+                .unwrap(),
             Arc::new(AtomicBool::new(false)),
             runtime.handle().clone(),
         );

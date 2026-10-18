@@ -12,8 +12,11 @@ mod binary_helper_tests {
     use deno_core::{FastString, JsRuntime, RuntimeOptions};
     use shared::channel::ThreadWakeup;
     use shared::device::gpu_caps::GpuCaps;
-    use shared::op_state::{AudioSender, HostOpState, NetworkPolicy};
     use shared::render_command_sender::CommandSender;
+    use shared::{
+        network_policy::NetworkPolicy,
+        op_state::{AudioSender, HostOpState},
+    };
 
     // Test-only bridge: expose the real `toExactArrayBuffer` export on
     // globalThis so synchronous `execute_script` assertions can exercise it in

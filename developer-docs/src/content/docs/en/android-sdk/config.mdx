@@ -58,6 +58,33 @@ Do not disable the watchdog in production builds — it is the only mechanism at
 
 A common mistake is assuming signature verification defaults to off in production builds — it is the opposite: it defaults to on, and without a pubkey the verification rejects content outright. Production configuration = set both fields. To skip verification during debugging = explicitly call `setCodeSigningEnabled(false)`, and treat it as a temporary measure only.
 
+## Network policy
+
+**A game given none reaches no network at all.** Without `setNetworkPolicy`, `request`, `downloadFile`, `uploadFile`, WebSocket, TCP and UDP are all refused. Each channel is granted on its own:
+
+| Channel `NetworkPolicy.Channel` | APIs it covers |
+| --- | --- |
+| `REQUEST` | `request` / `fetch` |
+| `DOWNLOAD` | `downloadFile`, remote images, audio streaming, `prefetchAssets` |
+| `UPLOAD` | `uploadFile` |
+| `SOCKET` | WebSocket |
+| `TCP` / `UDP` | Raw sockets |
+
+```java
+NetworkPolicy policy = new NetworkPolicy.Builder()
+    .allow(NetworkPolicy.Channel.REQUEST, "api.example.com")
+    .allow(NetworkPolicy.Channel.DOWNLOAD, "*.cdn.example.com")
+    .build();
+```
+
+- An entry is a domain: `api.example.com` matches that host only; `*.example.com` matches its subdomains and not `example.com` itself. **IP addresses cannot be listed**; a malformed entry throws `IllegalArgumentException` at the `allow` call.
+- `allowUnrestricted(channel)` grants every domain on that channel. Use it only in developer tools or for content you have already vetted; IP addresses stay refused.
+- `setAllowPlainHttp(true)` is what permits `http://` and `ws://`.
+- `setAllowLocalNetwork(true)` lets SOCKET, TCP and UDP reach other devices on the device's own local network (LAN play). REQUEST, DOWNLOAD and UPLOAD never reach the local network or the loopback.
+- A redirect is checked on the channel of the request that followed it: a download redirected to another domain is still held to the DOWNLOAD allowlist.
+
+A refused request gets an error naming the API, the channel and the domain, e.g. `fetch: domain 'x.example.com' is not in the request allowlist`.
+
 ## Content-side injection
 
 One list field that exists only on the Builder, passed to native over JNI as JSON:
@@ -80,5 +107,6 @@ RuntimeConfig config = new RuntimeConfig.Builder(context)
     .setWatchdogTimeoutSecs(10)
     .setCodeSigningEnabled(true)
     .setCodeSigningPubkey(pubkeyHex)
+    .setNetworkPolicy(policy)
     .build();
 ```

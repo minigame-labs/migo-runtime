@@ -29,7 +29,6 @@ use migo_io::scheduler::IoScheduler;
 use migo_services::ServiceError;
 use migo_services::network::client::{PolicyHttpClient, create_policy_http_client};
 use migo_services::network::fetch::{self as fetch_service, FetchEnv, RequestBody};
-use migo_services::network::gate::GateKind;
 use migo_services::network::resources::{ResourceId, ResourceTable};
 use migo_services::network::sockets::AddrMeta;
 use migo_services::network::tcp::{self as tcp, TcpEvent};
@@ -37,7 +36,7 @@ use migo_services::network::udp::{self as udp, UdpEvent};
 use migo_services::network::upload::{self as upload, UploadEnv, UploadRequest};
 use migo_services::network::websocket::{self as websocket, WsEvent};
 use parking_lot::Mutex;
-use shared::op_state::NetworkPolicy;
+use shared::network_policy::NetworkPolicy;
 
 use super::service_answer::{serde_optional_u64, serde_u64};
 use super::service_args::{
@@ -103,14 +102,10 @@ impl NetworkBinding {
         if let Some(client) = slot.as_ref() {
             return Ok(client.clone());
         }
-        let client = create_policy_http_client(
-            USER_AGENT,
-            enable_http2,
-            &self.policy,
-            GateKind::FetchRedirect,
-            "fetch",
-        )
-        .map_err(|error| ServiceError::generic(format!("Failed to create HTTP client: {error}")))?;
+        let client = create_policy_http_client(USER_AGENT, enable_http2, &self.policy, "fetch")
+            .map_err(|error| {
+                ServiceError::generic(format!("Failed to create HTTP client: {error}"))
+            })?;
         *slot = Some(client.clone());
         Ok(client)
     }
@@ -191,6 +186,7 @@ pub(crate) fn call_sync(
     match op {
         id::op_fetch => {
             let [
+                kind,
                 method,
                 url,
                 headers,
@@ -216,18 +212,19 @@ pub(crate) fn call_sync(
                     "op_fetch takes no body resource on this lane",
                 ));
             }
+            let kind = fetch_service::FetchKind::parse(&string(op, 0, kind)?)?;
             let method = match method {
                 OwnedValue::Bytes(bytes) => bytes,
                 OwnedValue::Str(text) => text.into_bytes(),
-                other => return Err(wrong_type(op, 0, "byte string", &other)),
+                other => return Err(wrong_type(op, 1, "byte string", &other)),
             };
-            let url = string(op, 1, url)?;
-            let headers = header_pairs(op, 2, headers)?;
-            let has_body = boolean(op, 4, has_body)?;
-            let data = optional_bytes(op, 5, data)?;
-            let timeout = u32_of(op, 7, timeout)?;
-            let enable_http2 = boolean(op, 8, enable_http2)?;
-            let enable_cache = boolean(op, 9, enable_cache)?;
+            let url = string(op, 2, url)?;
+            let headers = header_pairs(op, 3, headers)?;
+            let has_body = boolean(op, 5, has_body)?;
+            let data = optional_bytes(op, 6, data)?;
+            let timeout = u32_of(op, 8, timeout)?;
+            let enable_http2 = boolean(op, 9, enable_http2)?;
+            let enable_cache = boolean(op, 10, enable_cache)?;
 
             let client = network.client(enable_http2)?;
             let body = match (has_body, data.as_deref()) {
@@ -244,6 +241,7 @@ pub(crate) fn call_sync(
                     // carries the permission to set its own `Host`.
                     allow_host: false,
                 },
+                kind,
                 &method,
                 &url,
                 &headers,

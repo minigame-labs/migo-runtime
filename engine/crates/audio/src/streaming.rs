@@ -344,24 +344,31 @@ async fn streaming_download_task(
             format!("invalid audio URL {url}: {error}"),
         )
     })?;
-    let response =
-        match wait_for_network(&state, RESPONSE_HEADER_TIMEOUT, client.get(parsed).send()).await {
-            NetworkWait::Cancelled => return Ok(()),
-            NetworkWait::TimedOut => {
-                return Err(EngineError::from_detail(
-                    ErrorCode::Timeout,
-                    "audio response header timeout",
-                ));
-            }
-            NetworkWait::Ready(Ok(response)) => response,
-            NetworkWait::Ready(Err(error)) => {
-                tracing::error!("HTTP request failed for {}: {}", url, error);
-                return Err(EngineError::from_detail(
-                    ErrorCode::IoError,
-                    format!("HTTP request failed: {error}"),
-                ));
-            }
-        };
+    let response = match wait_for_network(
+        &state,
+        RESPONSE_HEADER_TIMEOUT,
+        client
+            .get(migo_services::network::gate::GateKind::AudioStream, parsed)
+            .send(),
+    )
+    .await
+    {
+        NetworkWait::Cancelled => return Ok(()),
+        NetworkWait::TimedOut => {
+            return Err(EngineError::from_detail(
+                ErrorCode::Timeout,
+                "audio response header timeout",
+            ));
+        }
+        NetworkWait::Ready(Ok(response)) => response,
+        NetworkWait::Ready(Err(error)) => {
+            tracing::error!("HTTP request failed for {}: {}", url, error);
+            return Err(EngineError::from_detail(
+                ErrorCode::IoError,
+                format!("HTTP request failed: {error}"),
+            ));
+        }
+    };
 
     if !response.status().is_success() {
         tracing::error!("HTTP error for {}: {}", url, response.status());
@@ -963,8 +970,7 @@ mod tests {
             migo_services::network::client::create_policy_http_client(
                 "migo-test",
                 false,
-                &shared::op_state::NetworkPolicy::default(),
-                migo_services::network::gate::GateKind::AudioStreamRedirect,
+                &shared::network_policy::NetworkPolicy::default(),
                 "audio",
             )
         })

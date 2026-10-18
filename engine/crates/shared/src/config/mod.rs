@@ -1,3 +1,3 @@
 mod init_options;
 
-pub use init_options::{Extras, InitOptions, LogLevel};
+pub use init_options::{InitOptions, LogLevel};

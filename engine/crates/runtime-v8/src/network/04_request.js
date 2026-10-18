@@ -213,6 +213,7 @@ function request(options) {
 
         const headers = fillHeaders(header, methodNormalized, data, reqBody !== null);
         const result = op_fetch(
+            "request",
             methodNormalized,
             finalUrl,
             headers,

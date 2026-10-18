@@ -122,45 +122,72 @@ pub struct MigoSessionConfig {
     /// between the transport and the session, and the party that owns both ends
     /// is the one that must generate it; see `include/migo/external_frames.h`.
     pub launch_nonce: [u8; 16],
+    /// What network the session's content may reach, as NUL-terminated UTF-8
+    /// JSON, or null for nothing at all.
+    ///
+    /// Appended: `copy_versioned` zero-extends a caller that passes the record
+    /// without it, and null is the refusal such a caller had no way to change.
+    pub network_policy_json_utf8: *const c_char,
 }
 
-// SAFETY: the repr(C) record contains only zero-valid integer fields and the
-// complete v1 record is required.
-unsafe impl AbiStruct for MigoSessionConfig {}
+// SAFETY: the repr(C) record contains only zero-valid integer and pointer
+// fields. Everything before the appended network policy is the minimum
+// accepted prefix.
+unsafe impl AbiStruct for MigoSessionConfig {
+    const MINIMUM_SIZE: usize = offset_of!(MigoSessionConfig, network_policy_json_utf8);
+}
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedSessionConfig {
     /// `None` when the caller supplied no identity, either by passing the v1
     /// record or by leaving the field zero. An external-frame session refuses
     /// to start without one; an embedded session has no use for it.
     pub launch_nonce: Option<u128>,
+    /// The network policy's JSON, copied; `None` when the caller gave none.
+    /// Parsed by the library, which owns the grammar.
+    pub network_policy_json: Option<String>,
 }
 
 impl MigoSessionConfig {
     /// Copy and validate a caller-owned session configuration.
     ///
     /// # Safety
-    /// `config` must be null or readable for the byte count in its header.
+    /// `config` must be null or readable for the byte count in its header, and
+    /// a non-null policy pointer NUL-terminated and readable for this call.
     pub unsafe fn parse(config: *const Self) -> Result<ValidatedSessionConfig, MigoResult> {
         // SAFETY: forwarded from the public parser contract.
         let raw = unsafe { copy_versioned::<Self>(config.cast::<VersionedHeader>()) }?;
-        raw.validate_fields()
+        // SAFETY: the copied pointer retains its call-duration validity.
+        unsafe { raw.validate_fields() }
     }
 
-    pub fn validate(&self) -> Result<ValidatedSessionConfig, MigoResult> {
+    /// Validate a full local record and copy its borrowed string.
+    ///
+    /// # Safety
+    /// A non-null policy pointer must be NUL-terminated and readable for this
+    /// call.
+    pub unsafe fn validate(&self) -> Result<ValidatedSessionConfig, MigoResult> {
         // SAFETY: a reference to Self supplies the complete local allocation.
         let raw =
             unsafe { copy_versioned::<Self>((self as *const Self).cast::<VersionedHeader>()) }?;
-        raw.validate_fields()
+        // SAFETY: forwarded from this method's string-pointer contract.
+        unsafe { raw.validate_fields() }
     }
 
-    fn validate_fields(self) -> Result<ValidatedSessionConfig, MigoResult> {
+    unsafe fn validate_fields(self) -> Result<ValidatedSessionConfig, MigoResult> {
         validate_flags(self.flags, 0)?;
+        let network_policy_json = if self.network_policy_json_utf8.is_null() {
+            None
+        } else {
+            // SAFETY: the caller guarantees a readable NUL-terminated string.
+            Some(unsafe { copy_utf8(self.network_policy_json_utf8) }?)
+        };
         Ok(ValidatedSessionConfig {
             // Read through the one conversion both records share. All-zero is
             // treated as absent rather than as a value: it is what an
             // uninitialised struct holds and what a v1 caller zero-extends to.
             launch_nonce: crate::external_frames::launch_nonce_from_bytes(self.launch_nonce),
+            network_policy_json,
         })
     }
 }
@@ -268,14 +295,18 @@ const _: () = assert!(offset_of!(MigoEngineConfig, header) == 0);
 const _: () = assert!(offset_of!(MigoEngineConfig, flags) == 8);
 const _: () = assert!(offset_of!(MigoEngineConfig, reserved0) == 16);
 const _: () = assert!(offset_of!(MigoSessionConfig, header) == 0);
-const _: () = assert!(size_of::<MigoSessionConfig>() == 32);
 const _: () = assert!(offset_of!(MigoSessionConfig, flags) == 8);
 const _: () = assert!(offset_of!(MigoSessionConfig, launch_nonce) == 16);
+const _: () = assert!(<MigoSessionConfig as AbiStruct>::MINIMUM_SIZE == 32);
 const _: () = assert!(offset_of!(MigoSessionConfig, flags) == 8);
 const _: () = assert!(offset_of!(MigoContentDescriptor, header) == 0);
 const _: () = assert!(offset_of!(MigoContentDescriptor, flags) == 8);
 const _: () = assert!(offset_of!(MigoContentDescriptor, environment) == 12);
 
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(size_of::<MigoSessionConfig>() == 40);
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(offset_of!(MigoSessionConfig, network_policy_json_utf8) == 32);
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(size_of::<MigoEngineConfig>() == 80);
 #[cfg(target_pointer_width = "64")]

@@ -39,7 +39,10 @@ fn test_host_state(
 ) -> shared::op_state::HostOpState {
     use shared::channel::ThreadWakeup;
     use shared::device::gpu_caps::GpuCaps;
-    use shared::op_state::{AudioSender, HostOpState, NetworkPolicy};
+    use shared::{
+        network_policy::NetworkPolicy,
+        op_state::{AudioSender, HostOpState},
+    };
     use std::sync::atomic::AtomicBool;
 
     let (host_tx, _critical_host_tx, _host_rx) = shared::host_channel::channel(1);

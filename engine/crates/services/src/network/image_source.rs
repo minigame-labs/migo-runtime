@@ -8,7 +8,7 @@
 use std::time::Duration;
 
 use shared::error::{EngineError, EngineResult, ErrorCode};
-use shared::op_state::NetworkPolicy;
+use shared::network_policy::NetworkPolicy;
 use url::Url;
 
 use super::gate::{self, GateKind};
@@ -45,7 +45,7 @@ pub async fn fetch_http_image(
             .with_detail(e)
     })?;
     let send_fut = client
-        .get(parsed.clone())
+        .get(GateKind::ImageInlineSrc, parsed.clone())
         .timeout(HTTP_IMAGE_TOTAL_TIMEOUT)
         .send();
     let resp = tokio::time::timeout(HTTP_IMAGE_TOTAL_TIMEOUT, send_fut)

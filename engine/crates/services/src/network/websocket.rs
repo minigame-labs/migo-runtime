@@ -30,7 +30,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tracing::debug;
 
-use shared::op_state::NetworkPolicy;
+use shared::network_policy::{NetworkChannel, NetworkPolicy};
 
 use crate::ServiceError;
 
@@ -171,7 +171,13 @@ pub async fn create(
         .uri()
         .port_u16()
         .unwrap_or(if scheme == "wss" { 443 } else { 80 });
-    let addresses = resolve(&host, port, deadline).await?;
+    let addresses = resolve(
+        &host,
+        port,
+        gate::lan_access(policy, NetworkChannel::Socket),
+        deadline,
+    )
+    .await?;
 
     // The same header filter `fetch` applies, so content cannot forge a `Host`
     // (vhost and routing bypass), a forwarding header (SSRF amplification, a
@@ -243,6 +249,7 @@ pub async fn create(
 async fn resolve(
     host: &str,
     port: u16,
+    lan: super::address_filter::LanAccess,
     deadline: tokio::time::Instant,
 ) -> Result<Vec<std::net::SocketAddr>, ServiceError> {
     let target = join_host_port(host, port);
@@ -256,7 +263,7 @@ async fn resolve(
         return Err(generic("WebSocket DNS resolve returned no addresses"));
     }
     for address in &addresses {
-        if super::address_filter::is_blocked_address(address) {
+        if super::address_filter::is_blocked_address(address, lan) {
             return Err(generic(format!(
                 "WebSocket connection to {} is not allowed (private/loopback address)",
                 address.ip()

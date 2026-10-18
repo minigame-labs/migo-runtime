@@ -115,8 +115,11 @@ fn official_snapshot_preserves_file_buffer_ownership_and_completion() {
 fn test_host_state() -> shared::op_state::HostOpState {
     use shared::channel::ThreadWakeup;
     use shared::device::gpu_caps::GpuCaps;
-    use shared::op_state::{AudioSender, HostOpState, NetworkPolicy};
     use shared::render_command_sender::CommandSender;
+    use shared::{
+        network_policy::NetworkPolicy,
+        op_state::{AudioSender, HostOpState},
+    };
     use std::sync::atomic::AtomicBool;
 
     let (render_tx, _render_rx) = CommandSender::new();

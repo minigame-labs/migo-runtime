@@ -22,11 +22,14 @@ mod runtime_restart_boundary_tests {
     use shared::callback_id::CallbackIdAllocator;
     use shared::channel::ThreadWakeup;
     use shared::device::gpu_caps::GpuCaps;
-    use shared::op_state::{AudioSender, HostOpState, NetworkPolicy};
     use shared::render_command_sender::CommandSender;
     use shared::services::{
         AdService, CommerceServices, ConnectivityServices, InteractionService, MediaServices,
         SensorServices, SystemInfoService, SystemUtilServices,
+    };
+    use shared::{
+        network_policy::NetworkPolicy,
+        op_state::{AudioSender, HostOpState},
     };
 
     /// A host that only claims to do advertising, refusing every command.

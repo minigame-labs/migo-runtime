@@ -549,6 +549,9 @@ fn api_reach_matches_the_committed_record() {
     std::fs::write(temp.join("probe.ttf"), [0, 1, 0, 0]).expect("probe font");
     let mut state = super::support::test_host_state();
     state.vfs = Some(sandbox.vfs());
+    // Every channel granted, so a network call gets past the gate and reaches what it would reach in a host that
+    // allowed it: the record is the API's reach, not the default policy's refusal.
+    state.network_policy = shared::network_policy::NetworkPolicy::unrestricted();
     state.device_services = Some(Arc::new(Probe {
         log: Arc::clone(&log),
     }));

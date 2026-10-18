@@ -11,7 +11,8 @@ mod audio_aud11_tests {
     use shared::{
         channel::ThreadWakeup,
         device::gpu_caps::GpuCaps,
-        op_state::{AudioSender, HostOpState, NetworkPolicy},
+        network_policy::NetworkPolicy,
+        op_state::{AudioSender, HostOpState},
         protocol::audio_cmd::AudioCmd,
         render_command_sender::CommandSender,
     };

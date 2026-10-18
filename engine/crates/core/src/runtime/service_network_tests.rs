@@ -6,12 +6,26 @@
 //! before anything is built.
 
 use super::*;
+use shared::network_policy::{DomainPattern, DomainPolicy};
 
-fn policy(whitelist: &[&str], enforce_https: bool) -> NetworkPolicy {
-    NetworkPolicy {
-        domain_whitelist: whitelist.iter().map(|host| (*host).to_string()).collect(),
-        enforce_https,
-    }
+/// `allowed` on the request channel, or every domain on every channel when it is empty; plain HTTP only when
+/// `https_only` is false.
+fn policy(allowed: &[&str], https_only: bool) -> NetworkPolicy {
+    let mut policy = if allowed.is_empty() {
+        NetworkPolicy::unrestricted()
+    } else {
+        NetworkPolicy {
+            request: DomainPolicy::Allowlist(
+                allowed
+                    .iter()
+                    .map(|host| DomainPattern::parse(host).unwrap())
+                    .collect(),
+            ),
+            ..NetworkPolicy::default()
+        }
+    };
+    policy.allow_plain_http = !https_only;
+    policy
 }
 
 struct Session {
@@ -37,14 +51,19 @@ impl Session {
         }
     }
 
-    /// `op_fetch`'s ten arguments, as the producer writes them for a GET with
-    /// no body and no client of its own.
+    /// `op_fetch`'s eleven arguments, as the producer writes them for a GET
+    /// request with no body and no client of its own.
     fn fetch(&self, url: &str) -> Result<OwnedValue, ServiceError> {
+        self.fetch_as("request", url)
+    }
+
+    fn fetch_as(&self, kind: &str, url: &str) -> Result<OwnedValue, ServiceError> {
         call_sync(
             &self.network,
             &self.scheduler,
             id::op_fetch,
             vec![
+                OwnedValue::Str(kind.to_string()),
                 OwnedValue::Bytes(b"GET".to_vec()),
                 OwnedValue::Str(url.to_string()),
                 OwnedValue::Array(Vec::new()),
@@ -224,7 +243,7 @@ fn a_host_the_policy_refuses_is_never_built() {
         .expect_err("the allow list refuses it");
     assert_eq!(error.class, "Error");
     assert!(
-        error.message.contains("blocked.example") && error.message.contains("allowed list"),
+        error.message.contains("blocked.example") && error.message.contains("request allowlist"),
         "{}",
         error.message
     );
@@ -275,14 +294,37 @@ fn the_two_closes_differ_on_a_handle_that_names_nothing() {
     .expect("tryClose says nothing about a handle that is gone");
 }
 
+/// The kind the producer names is the channel the host holds the request to: a
+/// host only the request channel grants is refused to a download, and a kind
+/// that is neither is a TypeError.
+#[test]
+fn the_kind_the_producer_names_is_the_channel_the_request_is_held_to() {
+    let session = Session::new(policy(&["allowed.example"], true));
+    session
+        .fetch_as("request", "https://allowed.example/a")
+        .expect("the request channel grants it");
+    let error = session
+        .fetch_as("download", "https://allowed.example/a")
+        .expect_err("the download channel does not");
+    assert_eq!(
+        error.message,
+        "downloadFile: domain 'allowed.example' is not in the download allowlist"
+    );
+    let error = session
+        .fetch_as("websocket", "https://allowed.example/a")
+        .expect_err("not a fetch kind");
+    assert_eq!(error.class, "TypeError");
+}
+
 /// The two arguments the engine's JavaScript never passes: a client of its own
 /// and a body resource. Refused rather than ignored, so a producer that starts
 /// passing one is told.
 #[test]
 fn a_client_or_a_body_resource_is_refused_rather_than_ignored() {
     let session = Session::new(policy(&[], false));
-    for index in [3usize, 6] {
+    for index in [4usize, 7] {
         let mut args = vec![
+            OwnedValue::Str("request".to_string()),
             OwnedValue::Bytes(b"GET".to_vec()),
             OwnedValue::Str("https://allowed.example/a".to_string()),
             OwnedValue::Array(Vec::new()),
@@ -311,6 +353,7 @@ fn a_client_or_a_body_resource_is_refused_rather_than_ignored() {
 fn a_header_list_that_is_not_pairs_is_a_type_error() {
     let session = Session::new(policy(&[], false));
     let mut args = vec![
+        OwnedValue::Str("request".to_string()),
         OwnedValue::Bytes(b"GET".to_vec()),
         OwnedValue::Str("https://allowed.example/a".to_string()),
         OwnedValue::Array(vec![OwnedValue::Str("not-a-pair".to_string())]),
@@ -332,7 +375,7 @@ fn a_header_list_that_is_not_pairs_is_a_type_error() {
     assert_eq!(error.class, "TypeError");
     assert!(error.message.contains("op_fetch"), "{}", error.message);
 
-    args[2] = OwnedValue::Array(vec![OwnedValue::Array(vec![
+    args[3] = OwnedValue::Array(vec![OwnedValue::Array(vec![
         OwnedValue::Bytes(b"x-game".to_vec()),
         OwnedValue::Bytes(b"mine".to_vec()),
     ])]);

@@ -32,7 +32,7 @@ use http::Method;
 use http::Uri;
 use http::header::{ACCEPT_ENCODING, CACHE_CONTROL, CONTENT_LENGTH, HOST, PRAGMA, RANGE};
 use migo_io::pools::{ByteTicket, IoPools};
-use shared::op_state::NetworkPolicy;
+use shared::network_policy::NetworkPolicy;
 use tokio::sync::Mutex;
 use url::Url;
 
@@ -207,6 +207,36 @@ pub struct FetchEnv<'a> {
     pub allow_host: bool,
 }
 
+/// Which API a fetch is made for. Each is held to its own channel's allowlist,
+/// and so are the redirects it follows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FetchKind {
+    /// `request` / `fetch()`: the request channel.
+    Request,
+    /// `downloadFile`: the download channel.
+    Download,
+}
+
+impl FetchKind {
+    /// The kind the engine's JavaScript names: `"request"` or `"download"`.
+    pub fn parse(name: &str) -> Result<Self, ServiceError> {
+        match name {
+            "request" => Ok(Self::Request),
+            "download" => Ok(Self::Download),
+            other => Err(type_error(format!(
+                "fetch kind must be \"request\" or \"download\", not {other:?}"
+            ))),
+        }
+    }
+
+    pub const fn gate(self) -> GateKind {
+        match self {
+            Self::Request => GateKind::Fetch,
+            Self::Download => GateKind::Download,
+        }
+    }
+}
+
 /// A request's body, as the caller holds it.
 pub enum RequestBody<'a> {
     None,
@@ -217,6 +247,7 @@ pub enum RequestBody<'a> {
 #[allow(clippy::too_many_arguments)]
 pub fn fetch(
     env: FetchEnv<'_>,
+    kind: FetchKind,
     method: &[u8],
     url: &str,
     headers: &[(Vec<u8>, Vec<u8>)],
@@ -238,11 +269,11 @@ pub fn fetch(
             }
             // SSRF, allow list and HTTPS enforcement, before anything is
             // built: every URL-based op goes through the one gate.
-            enforce(&url, env.policy, GateKind::Fetch).map_err(ServiceError::generic)?;
+            enforce(&url, env.policy, kind.gate()).map_err(ServiceError::generic)?;
 
             let mut request = env
                 .client
-                .request(method.clone(), url)
+                .request(kind.gate(), method.clone(), url)
                 .timeout(Duration::from_millis(u64::from(timeout_ms)));
             match body {
                 RequestBody::Bytes(bytes) => request = request.body(bytes.to_vec()),

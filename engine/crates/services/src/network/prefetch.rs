@@ -14,7 +14,7 @@ use std::time::Duration;
 use tracing::debug;
 use url::Url;
 
-use shared::op_state::NetworkPolicy;
+use shared::network_policy::NetworkPolicy;
 
 use crate::ServiceError;
 
@@ -83,7 +83,7 @@ pub async fn prefetch_assets(
 async fn warm(client: Client, url: Url) {
     let shown = url.to_string();
     let Ok(mut response) = client
-        .get(url)
+        .get(GateKind::Prefetch, url)
         .timeout(Duration::from_secs(30))
         .send()
         .await

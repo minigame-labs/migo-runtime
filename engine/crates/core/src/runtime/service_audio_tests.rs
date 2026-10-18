@@ -19,10 +19,10 @@ fn binding() -> (AudioBinding, AudioCommandReceiver) {
             runtime_generation: 1,
             // An allow list with one host, so a refusal a test asserts is the
             // policy's and not "this lane has no network".
-            network_policy: shared::op_state::NetworkPolicy {
-                domain_whitelist: vec!["media.example".to_string()],
-                enforce_https: true,
-            },
+            network_policy: shared::network_policy::NetworkPolicy::from_json(
+                r#"{"download":["media.example"]}"#,
+            )
+            .unwrap(),
         },
         rx,
     )
@@ -351,7 +351,7 @@ fn a_streamed_source_goes_through_the_session_s_network_policy() {
     let error = runtime().block_on(refused).unwrap_err();
     assert_eq!(error.class, "AudioNetworkError");
     assert!(
-        error.message.contains("is not in the allowed list"),
+        error.message.contains("is not in the download allowlist"),
         "{}",
         error.message
     );

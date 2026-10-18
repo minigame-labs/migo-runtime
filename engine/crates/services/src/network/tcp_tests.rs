@@ -4,10 +4,7 @@ use super::*;
 /// content cannot reach one way it cannot reach the other.
 #[tokio::test]
 async fn a_host_the_policy_refuses_is_never_connected_to() {
-    let policy = NetworkPolicy {
-        domain_whitelist: vec!["allowed.example".to_string()],
-        enforce_https: false,
-    };
+    let policy = NetworkPolicy::from_json(r#"{"tcp":["allowed.example"]}"#).unwrap();
     let resources = ResourceTable::new();
     let error = connect(&policy, &resources, "blocked.example", 9443, 1)
         .await

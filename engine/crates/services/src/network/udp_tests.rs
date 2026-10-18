@@ -68,10 +68,7 @@ fn udp_peer_cache_reuses_same_peer_and_rebuilds_on_change() {
 /// send reaches the kernel for it.
 #[tokio::test]
 async fn a_destination_the_policy_refuses_is_never_sent_to() {
-    let policy = NetworkPolicy {
-        domain_whitelist: vec!["allowed.example".to_string()],
-        enforce_https: false,
-    };
+    let policy = NetworkPolicy::from_json(r#"{"udp":["allowed.example"]}"#).unwrap();
     let resources = ResourceTable::new();
     let bound = bind(&resources, 0, "udp4").expect("a system-assigned port");
     assert_ne!(bound.local.port, 0, "the system assigned a port");
@@ -106,16 +103,19 @@ async fn a_destination_the_policy_refuses_is_never_sent_to() {
     );
 }
 
-/// A broadcast is the reference's way to find peers on a LAN: setBroadcast
-/// turns SO_BROADCAST on and the datagram goes to the kernel. Whether the
-/// kernel can deliver it is the machine's network's to say (a host with no
-/// broadcast route answers so); the engine does not refuse it.
+/// A broadcast is the reference's way to find peers on a LAN: with the local
+/// network granted, setBroadcast turns SO_BROADCAST on and the datagram goes to
+/// the kernel. Whether the kernel can deliver it is the machine's network's to
+/// say (a host with no broadcast route answers so); the engine does not refuse it.
 #[tokio::test]
 async fn a_broadcast_is_handed_to_the_kernel() {
     let resources = ResourceTable::new();
     let bound = bind(&resources, 0, "udp4").unwrap();
     let sent = send(
-        &NetworkPolicy::default(),
+        &NetworkPolicy {
+            lan: true,
+            ..NetworkPolicy::default()
+        },
         &resources,
         bound.rid,
         "255.255.255.255",

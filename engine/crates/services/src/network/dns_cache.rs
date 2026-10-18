@@ -30,10 +30,10 @@ pub const MAX_PREFETCH_DNS_HOSTS: usize = 32;
 ///
 /// The policy is applied here rather than at the resolver because a prefetch
 /// must not leak a hostname the session would refuse to connect to: the
-/// question this answers is "may content reach it at all", and the answer is
-/// the same one `fetch` gets.
+/// question this answers is "may content reach it at all", which is whether
+/// any channel's allowlist permits it.
 pub fn prefetch_dns(
-    policy: &shared::op_state::NetworkPolicy,
+    policy: &shared::network_policy::NetworkPolicy,
     hosts_json: &str,
 ) -> Result<(), ServiceError> {
     let hosts: Vec<String> = serde_json::from_str(hosts_json).map_err(|error| {
@@ -41,7 +41,7 @@ pub fn prefetch_dns(
     })?;
     let mut allowed: Vec<String> = hosts
         .into_iter()
-        .filter(|host| super::gate::is_host_whitelisted(host, policy))
+        .filter(|host| policy.permits_on_any_channel(host))
         .collect();
     if allowed.is_empty() {
         return Ok(());
@@ -79,9 +79,12 @@ async fn resolve_one(host: String) {
     match tokio::net::lookup_host(&lookup_addr).await {
         Ok(addrs) => {
             let addrs: Vec<SocketAddr> = addrs.collect();
-            let all_safe = addrs
-                .iter()
-                .all(|a| !super::address_filter::is_blocked_address(a));
+            let all_safe = addrs.iter().all(|a| {
+                !super::address_filter::is_blocked_address(
+                    a,
+                    super::address_filter::LanAccess::Refused,
+                )
+            });
             if all_safe && !addrs.is_empty() {
                 debug!("dns_cache: pre-resolved {} -> {} addrs", host, addrs.len());
             } else {

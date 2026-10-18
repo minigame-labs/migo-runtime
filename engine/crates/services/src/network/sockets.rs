@@ -44,7 +44,7 @@ pub fn join_host_port(host: &str, port: u16) -> String {
 /// public/private DNS responses).
 pub async fn resolve_first(
     addr: &str,
-    blocked: fn(&SocketAddr) -> bool,
+    blocked: impl Fn(&SocketAddr) -> bool,
 ) -> Result<SocketAddr, std::io::Error> {
     let addrs: Vec<SocketAddr> = tokio::net::lookup_host(addr).await?.collect();
     let first = *addrs.first().ok_or_else(|| {

@@ -103,6 +103,12 @@
   public com.migo.runtime.MigoGameView(android.content.Context);
   public com.migo.runtime.MigoRuntime$Result<com.migo.runtime.GameSession> createSessionSafe(android.app.Activity, android.view.Surface, com.migo.runtime.RuntimeConfig, java.lang.String);
   public com.migo.runtime.MigoRuntime$Result<com.migo.runtime.GameSession> createSessionWarmSafe(android.app.Activity, com.migo.runtime.RuntimeConfig, java.lang.String);
+  public com.migo.runtime.NetworkPolicy build();
+  public com.migo.runtime.NetworkPolicy$Builder allow(com.migo.runtime.NetworkPolicy$Channel, java.lang.String...);
+  public com.migo.runtime.NetworkPolicy$Builder allowUnrestricted(com.migo.runtime.NetworkPolicy$Channel);
+  public com.migo.runtime.NetworkPolicy$Builder setAllowLocalNetwork(boolean);
+  public com.migo.runtime.NetworkPolicy$Builder setAllowPlainHttp(boolean);
+  public com.migo.runtime.NetworkPolicy$Builder();
   public com.migo.runtime.PerformanceSnapshot getPerformanceSnapshot();
   public com.migo.runtime.PerformanceSnapshot(float, float, int, int, int);
   public com.migo.runtime.PerformanceSnapshot(float, float, int, int, int, int, int, int);
@@ -117,6 +123,7 @@
   public com.migo.runtime.RuntimeConfig$Builder setDeviceBenchmark(int, int);
   public com.migo.runtime.RuntimeConfig$Builder setImmersiveMode(boolean);
   public com.migo.runtime.RuntimeConfig$Builder setLogLevel(com.migo.runtime.RuntimeConfig$LogLevel);
+  public com.migo.runtime.RuntimeConfig$Builder setNetworkPolicy(com.migo.runtime.NetworkPolicy);
   public com.migo.runtime.RuntimeConfig$Builder setStartupOrientation(java.lang.String);
   public com.migo.runtime.RuntimeConfig$Builder setTargetFps(int);
   public com.migo.runtime.RuntimeConfig$Builder setWatchdogEnabled(boolean);
@@ -277,6 +284,7 @@
   public java.lang.String toString();
   public java.lang.String toString();
   public java.lang.String toString();
+  public java.lang.String toString();
   public java.lang.Throwable getNativeLoadError();
   public java.util.List<java.lang.String[]> getPreludeScripts();
   public long getCacheSize();
@@ -291,6 +299,9 @@
   public static com.migo.runtime.MigoNativeLoader$State valueOf(java.lang.String);
   public static com.migo.runtime.MigoNativeLoader$State[] values();
   public static com.migo.runtime.MigoRuntime getInstance();
+  public static com.migo.runtime.NetworkPolicy denyAll();
+  public static com.migo.runtime.NetworkPolicy$Channel valueOf(java.lang.String);
+  public static com.migo.runtime.NetworkPolicy$Channel[] values();
   public static com.migo.runtime.RuntimeConfig$ContentEnvironment valueOf(java.lang.String);
   public static com.migo.runtime.RuntimeConfig$ContentEnvironment[] values();
   public static com.migo.runtime.RuntimeConfig$LogLevel valueOf(java.lang.String);
@@ -310,6 +321,12 @@
   public static final com.migo.runtime.MigoNativeLoader$State FAILED;
   public static final com.migo.runtime.MigoNativeLoader$State LOADED;
   public static final com.migo.runtime.MigoNativeLoader$State NOT_LOADED;
+  public static final com.migo.runtime.NetworkPolicy$Channel DOWNLOAD;
+  public static final com.migo.runtime.NetworkPolicy$Channel REQUEST;
+  public static final com.migo.runtime.NetworkPolicy$Channel SOCKET;
+  public static final com.migo.runtime.NetworkPolicy$Channel TCP;
+  public static final com.migo.runtime.NetworkPolicy$Channel UDP;
+  public static final com.migo.runtime.NetworkPolicy$Channel UPLOAD;
   public static final com.migo.runtime.RuntimeConfig$ContentEnvironment DEVELOP;
   public static final com.migo.runtime.RuntimeConfig$ContentEnvironment RELEASE;
   public static final com.migo.runtime.RuntimeConfig$ContentEnvironment TRIAL;
@@ -467,6 +484,9 @@ public final class com.migo.runtime.MigoNativeLoader$RequiredArtifact {
 public final class com.migo.runtime.MigoNativeLoader$State extends java.lang.Enum<com.migo.runtime.MigoNativeLoader$State> {
 public final class com.migo.runtime.MigoRuntime {
 public final class com.migo.runtime.MigoRuntime$Result<T> {
+public final class com.migo.runtime.NetworkPolicy {
+public final class com.migo.runtime.NetworkPolicy$Builder {
+public final class com.migo.runtime.NetworkPolicy$Channel extends java.lang.Enum<com.migo.runtime.NetworkPolicy$Channel> {
 public final class com.migo.runtime.PerformanceSnapshot {
 public final class com.migo.runtime.RuntimeConfig {
 public final class com.migo.runtime.RuntimeConfig$Builder {
@@ -516,6 +536,9 @@ public interface com.migo.runtime.callback.ShareSink {
 public interface com.migo.runtime.callback.SubpackageHandler {
 public interface com.migo.runtime.callback.SubpackageHandler$DownloadCallback {
 public interface com.migo.runtime.callback.UpdateHandler {
+}
+}
+}
 }
 }
 }

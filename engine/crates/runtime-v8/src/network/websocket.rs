@@ -86,7 +86,7 @@ fn session(
     state: &Rc<RefCell<OpState>>,
 ) -> (
     std::sync::Arc<migo_services::network::resources::ResourceTable>,
-    shared::op_state::NetworkPolicy,
+    shared::network_policy::NetworkPolicy,
 ) {
     let state = state.borrow();
     (

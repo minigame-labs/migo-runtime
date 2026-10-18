@@ -23,10 +23,20 @@ typedef struct MigoSessionConfig {
     uint32_t abi_version;
     MigoSessionFlags flags;
     uint8_t  launch_nonce[16];
+    const char *network_policy_json_utf8;
 } MigoSessionConfig;
 ```
 
 Creation parameters passed to `migo_session_create`. `flags` has no defined bits in the current version and must be set to `MIGO_SESSION_FLAG_NONE`. `launch_nonce` is a 128-bit key supplied by the host to authenticate external-producer packets; fill it entirely with zeros when there is no external producer (the zero value means “not provided”). The host must generate the key from a cryptographically secure random source; the engine neither generates it nor validates the quality of its randomness. `launch_nonce` was added after v1; a host passing an older, shorter struct automatically gets an all-zero value—no external producer, with behavior matching the older version.
+
+`network_policy_json_utf8` is the network the session's content may reach, as NUL-terminated UTF-8 JSON borrowed for the duration of `migo_session_create`. **NULL is no network at all.**
+
+```json
+{"request": ["api.example.com"], "download": ["*.cdn.example.com"],
+ "socket": "unrestricted", "allowPlainHttp": false, "lan": false}
+```
+
+Each of `request`, `download` (which also covers remote images, audio streaming and asset prefetch), `upload`, `socket`, `tcp` and `udp` is an array of domains or `"unrestricted"`; a channel left out is refused. `example.com` matches that host only, `*.example.com` its subdomains and not itself, and an IP address cannot be listed. `allowPlainHttp` is what permits `http://` and `ws://`; `lan` lets socket, tcp and udp reach other devices on the local network, which request, download and upload never reach. An unknown key or a malformed entry makes `migo_session_create` return `MIGO_ERROR_INVALID_ARGUMENT`. This field is appended too: a host passing the older struct gets NULL, which is no network.
 
 Initialization example:
 

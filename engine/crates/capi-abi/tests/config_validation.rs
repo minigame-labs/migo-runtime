@@ -161,11 +161,57 @@ fn session_config_has_no_v1_flags() {
         flags: 0,
         // Absent, which is what a session with no external producer supplies.
         launch_nonce: [0u8; 16],
+        network_policy_json_utf8: std::ptr::null(),
     };
-    raw.validate().expect("zero flags");
+    // SAFETY: the record carries no string.
+    unsafe { raw.validate() }.expect("zero flags");
 
     raw.flags = 1;
-    assert_eq!(raw.validate().unwrap_err(), MIGO_ERROR_INVALID_ARGUMENT);
+    // SAFETY: as above.
+    assert_eq!(
+        unsafe { raw.validate() }.unwrap_err(),
+        MIGO_ERROR_INVALID_ARGUMENT
+    );
+}
+
+/// The network policy is copied out of the caller's string; null is none, and a
+/// caller whose record ends before the field -- built before it existed -- is
+/// zero-extended to none rather than refused.
+#[test]
+fn session_config_copies_the_network_policy_and_zero_extends_to_none() {
+    let json = CString::new(r#"{"request":["api.example.com"]}"#).unwrap();
+    let mut raw = MigoSessionConfig {
+        header: header::<MigoSessionConfig>(),
+        flags: 0,
+        launch_nonce: [0u8; 16],
+        network_policy_json_utf8: json.as_ptr(),
+    };
+    // SAFETY: `json` outlives the call.
+    let validated = unsafe { raw.validate() }.expect("a policy");
+    assert_eq!(validated.network_policy_json.as_deref(), json.to_str().ok());
+
+    raw.network_policy_json_utf8 = std::ptr::null();
+    // SAFETY: no string.
+    assert_eq!(unsafe { raw.validate() }.unwrap().network_policy_json, None);
+
+    raw.network_policy_json_utf8 = json.as_ptr();
+    raw.header.struct_size =
+        std::mem::offset_of!(MigoSessionConfig, network_policy_json_utf8) as u32;
+    // SAFETY: `raw` is readable for its full size, more than the shorter count announced.
+    let older = unsafe { MigoSessionConfig::parse(&raw) }.expect("the shorter record");
+    assert_eq!(
+        older.network_policy_json, None,
+        "the pointer past the record is not read"
+    );
+
+    let invalid = [0xffu8, 0];
+    raw.header.struct_size = size_of::<MigoSessionConfig>() as u32;
+    raw.network_policy_json_utf8 = invalid.as_ptr().cast();
+    // SAFETY: NUL-terminated.
+    assert_eq!(
+        unsafe { raw.validate() }.unwrap_err(),
+        MIGO_ERROR_INVALID_ARGUMENT
+    );
 }
 
 #[test]
