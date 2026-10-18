@@ -631,12 +631,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resolves the domain itself. Every redirect hop is held to the channel the request was made on, so a redirected
   download still answers to the download allowlist. A UDP socket is made only when content could send to someone, and
   hears only the senders it could send to: one on the local network when that is granted, and a public one once the
-  socket has sent or connected to its address. A URL content hands the host app to show, share or decode --
-  `previewImage`, `previewMedia`, a share's image, a video decoder's source -- is held to the download allowlist and
-  reaches the app as the URL that was checked; the app or the system media stack fetches it, resolving the domain
-  itself. These went to the app unchecked under every policy, so a game granted nothing could still have any URL
-  fetched. No platform could set a policy before, and the one every session got permitted every domain, over plain
-  HTTP too. A refusal names the channel and the domain.
+  socket has sent or connected to its address. A URL content hands the host app to show, share, play or decode --
+  `previewImage`, `previewMedia`, a share's image, a `createVideo` source and cover, a video decoder's source -- is
+  held to the download allowlist and reaches the app as the URL that was checked; the app or the system media stack
+  fetches it, resolving the domain and following its redirects itself. These went to the app unchecked under every
+  policy, so a game granted nothing could still have any URL fetched -- and a video player was handed content's own
+  path string, so it could open any file the app could. No platform could set a policy before, and the one every
+  session got permitted every domain, over plain HTTP too. A refusal names the channel and the domain.
 - At most ten requests run at once -- `request`, `downloadFile` and `uploadFile` together, as the reference allows --
   and the rest wait their turn (an abort while waiting ends the request); the wait is the profile's
   `queueStart`/`queueEnd`, which were the fetch start when the engine had no limit. At most five WebSocket connections

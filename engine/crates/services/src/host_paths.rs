@@ -101,6 +101,12 @@ pub const VIDEO_DECODER_START: Files = Files {
     fields: &[&[Step::Key("source")]],
     remote: Remote::Allowed,
 };
+/// A video player's source and cover, as `createVideo` and a property change
+/// name them: the player reads them for as long as the video exists.
+pub const VIDEO: Files = Files {
+    fields: &[&[Step::Key("src")], &[Step::Key("poster")]],
+    remote: Remote::Allowed,
+};
 
 /// The files an ecosystem request for `api` names, if it names any.
 pub fn ecosystem_files(api: &str) -> Option<Files> {
@@ -214,15 +220,8 @@ async fn export_fields(
 
     let mut real: HashMap<String, String> = HashMap::with_capacity(named.len());
     for path in named {
-        if remote == Remote::Allowed
-            && (path.starts_with("https://") || path.starts_with("http://"))
-        {
-            // The host is handed the URL the gate read, not content's spelling of it.
-            let url = Url::parse(&path)
-                .map_err(|e| ServiceError::generic(format!("invalid URL '{path}': {e}")))?;
-            gate::enforce(&url, &sandbox.policy, GateKind::HostMedia)
-                .map_err(ServiceError::generic)?;
-            real.insert(path, url.into());
+        if let Some(url) = checked_url(sandbox, &path, remote)? {
+            real.insert(path, url);
             continue;
         }
         let resolved = fs::resolve_path_vfs(
@@ -244,13 +243,7 @@ async fn export_fields(
                     .mount_table
                     .clone()
                     .ok_or_else(|| ServiceError::generic("mount table not initialized"))?;
-                // The extension is what tells the host's decoder or viewer what
-                // the bytes are.
-                let suffix = std::path::Path::new(&virtual_path)
-                    .extension()
-                    .and_then(|ext| ext.to_str())
-                    .map(|ext| format!(".{ext}"))
-                    .unwrap_or_default();
+                let suffix = extension_of(&virtual_path);
                 let copy = fs::materialize_pack_to_temp_async(
                     Arc::clone(&sandbox.scheduler),
                     mount_table,
@@ -281,4 +274,91 @@ async fn export_fields(
         .map_err(ServiceError::generic)?;
     }
     Ok(())
+}
+
+/// `json` with every path `files` names made into one the host can open, for a
+/// call that answers before it returns: a package entry is copied out in the
+/// call, and held for the rest of the session. An empty string names nothing
+/// and is passed on as it is.
+pub fn export_json_now(
+    sandbox: &Sandbox,
+    json: &str,
+    files: Files,
+) -> Result<String, ServiceError> {
+    let mut message: Value = serde_json::from_str(json)
+        .map_err(|e| ServiceError::generic(format!("malformed request: {e}")))?;
+    for field in files.fields {
+        host_files::visit_fields(&mut message, field, &mut |value| match value {
+            Value::String(path) if path.is_empty() => Ok(()),
+            Value::String(path) => {
+                *value =
+                    Value::String(export_now(sandbox, path, files.remote).map_err(|e| e.message)?);
+                Ok(())
+            }
+            _ => Err("a file path is not a string".to_string()),
+        })
+        .map_err(ServiceError::generic)?;
+    }
+    Ok(message.to_string())
+}
+
+fn export_now(sandbox: &Sandbox, path: &str, remote: Remote) -> Result<String, ServiceError> {
+    if let Some(url) = checked_url(sandbox, path, remote)? {
+        return Ok(url);
+    }
+    let resolved = fs::resolve_path_vfs(
+        sandbox.vfs.as_deref(),
+        sandbox.mount_table.as_deref(),
+        path,
+        FileOp::Read,
+    )
+    .map_err(|e| ServiceError::generic(e.message))?;
+    match resolved {
+        fs::ResolvedPath::Filesystem(file) => {
+            if !std::fs::metadata(&file).is_ok_and(|meta| meta.is_file()) {
+                return Err(ServiceError::generic(format!("file not found: {path}")));
+            }
+            Ok(file)
+        }
+        fs::ResolvedPath::Pack { virtual_path } => {
+            let copy = fs::materialize_pack_to_temp_checked(
+                &sandbox.scheduler,
+                sandbox.mount_table.as_deref(),
+                &virtual_path,
+                &extension_of(&virtual_path),
+            )
+            .map_err(|e| ServiceError::generic(e.message))?;
+            if !host_files::hold_export(sandbox.host_id, 0, PathBuf::from(&copy)) {
+                let _ = std::fs::remove_file(&copy);
+                return Err(ServiceError::generic("the session has ended"));
+            }
+            Ok(copy)
+        }
+    }
+}
+
+/// The URL the gate read, when `path` is an http(s) URL `remote` lets stand in
+/// for a file -- not content's spelling of it -- or the refusal.
+fn checked_url(
+    sandbox: &Sandbox,
+    path: &str,
+    remote: Remote,
+) -> Result<Option<String>, ServiceError> {
+    if remote == Remote::Refused || !(path.starts_with("https://") || path.starts_with("http://")) {
+        return Ok(None);
+    }
+    let url = Url::parse(path)
+        .map_err(|e| ServiceError::generic(format!("invalid URL '{path}': {e}")))?;
+    gate::enforce(&url, &sandbox.policy, GateKind::HostMedia).map_err(ServiceError::generic)?;
+    Ok(Some(url.into()))
+}
+
+/// A package entry's extension, which is what tells the host's decoder or
+/// viewer what the bytes are.
+fn extension_of(virtual_path: &str) -> String {
+    std::path::Path::new(virtual_path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| format!(".{ext}"))
+        .unwrap_or_default()
 }

@@ -84,4 +84,6 @@ mod update_manager;
 mod v8_limits;
 #[cfg(feature = "api-media")]
 mod video_decoder;
+#[cfg(feature = "api-media")]
+mod video_paths;
 mod window_service;

@@ -35,7 +35,7 @@ public final class NetworkPolicy {
         REQUEST("request"),
         /**
          * {@code downloadFile}, remote images, streamed audio, asset prefetch, and a URL
-         * given to {@code previewImage}, {@code previewMedia}, a share or a video decoder.
+         * given to {@code previewImage}, {@code previewMedia}, a share, a video or a video decoder.
          */
         DOWNLOAD("download"),
         /** {@code uploadFile}. */
