@@ -349,7 +349,7 @@ fn a_streamed_source_goes_through_the_session_s_network_policy() {
     )
     .unwrap();
     let error = runtime().block_on(refused).unwrap_err();
-    assert_eq!(error.class, "AudioError");
+    assert_eq!(error.class, "AudioNetworkError");
     assert!(
         error.message.contains("is not in the allowed list"),
         "{}",
