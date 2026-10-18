@@ -725,7 +725,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An entry module with three or more static imports loads. Each module read was charged the 100 MiB a read may be at
   most against the IO scheduler's pending-byte budget, and deno_core reads a module's imports concurrently, so whenever
   a third read overlapped the first two the launch failed with `ByteLimitExceeded` -- one launch in three on the Linux
-  player for an entry importing four modules. A module read is now charged its size, as the file system API's reads are.
+  player for an entry importing four modules. A module read is now charged its size, as the file system API's reads are,
+  and produces no more than it was charged: a module that grew after it was sized is refused, and so is one that is not
+  a regular file, which a FIFO named like a module would otherwise have blocked the host thread on.
 - An Android app using the Full SDK requests `READ_EXTERNAL_STORAGE` only up to API 28, as it does
   `WRITE_EXTERNAL_STORAGE`. The AAR never declared it; the app's manifest merger inferred it from
   `WRITE_EXTERNAL_STORAGE` in a library manifest with no `targetSdkVersion`, and added it with no bound, so every host

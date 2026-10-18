@@ -97,10 +97,17 @@ mod entry_evaluation_tests {
             .expect("an entry that finished evaluates");
     }
 
+    // Each import is larger than the scheduler reads inline, so all four go through its
+    // pending-byte admission, where the reads overlapped. Whether they do overlap is the
+    // timing's; `loader::tests` holds the charge itself, which is what made them collide.
     #[tokio::test]
     async fn an_entry_that_imports_several_modules_evaluates() {
+        let padding = " ".repeat(20 * 1024);
         let modules = ["a", "b", "c", "d"].map(|name| {
-            (format!("{name}.js"), format!("globalThis.loaded = (globalThis.loaded || 0) + 1; export const {name} = 1;"))
+            (
+                format!("{name}.js"),
+                format!("globalThis.loaded = (globalThis.loaded || 0) + 1; export const {name} = 1;\n//{padding}\n"),
+            )
         });
         let mut package: Vec<(&str, &str)> = modules.iter().map(|(n, s)| (n.as_str(), s.as_str())).collect();
         package.push((
