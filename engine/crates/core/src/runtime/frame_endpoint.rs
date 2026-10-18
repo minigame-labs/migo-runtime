@@ -829,6 +829,8 @@ mod tests {
         service_out: Mutex<VecDeque<Vec<u8>>>,
         downlink_out: Mutex<VecDeque<Vec<u8>>>,
         drops: AtomicU32,
+        /// Drains that have run to the end: each ends by taking the drop count.
+        drains: AtomicU64,
         waker: Mutex<Option<DownlinkWaker>>,
         counters: TransportCounters,
         delivered: Mutex<Option<mpsc::Sender<()>>>,
@@ -872,6 +874,7 @@ mod tests {
             next.len()
         }
         fn take_downlink_drops(&self) -> u32 {
+            self.drains.fetch_add(1, Ordering::Relaxed);
             self.drops.swap(0, Ordering::Relaxed)
         }
         fn set_downlink_waker(&self, waker: Option<DownlinkWaker>) {
@@ -994,6 +997,11 @@ mod tests {
         // Queued before anyone connected, and no wake: the connection drains it.
         let mut producer = connect(&endpoint);
         assert_eq!(binary(&mut producer), vec![9u8; 32]);
+        // The drain sends until the queue is empty, so a record queued while it is still
+        // running goes with it; "queued now" means after that drain has ended.
+        wait_until("the connection's drain has ended", || {
+            session.drains.load(Ordering::Relaxed) >= 1
+        });
 
         // Queued now, no wake: stays queued.
         session.downlink_out.lock().push_back(vec![8u8; 16]);
