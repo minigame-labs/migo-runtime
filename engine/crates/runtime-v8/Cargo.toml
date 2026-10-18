@@ -97,7 +97,7 @@ futures.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
-zip = { version = "2.2", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false }
 # The steady-state allocation gate. A dev-dependency by construction:
 # the counting allocator must never be reachable from a shipped cdylib.
 migo-alloc-probe = { path = "../../testing/alloc-probe", default-features = false }
