@@ -25,7 +25,8 @@ Reads the steps on stdin, one per line, and prints `package::target (kind)` for
 every test binary no step runs.
 
 `--configurations` answers a second question about the same steps: which builds
-of each package they test, as `package features` lines. A binary is one target
+of each package they test, as `package features targets` lines, and
+`--uncovered-by FILE` which of them no step in FILE tests as widely. A binary is one target
 but every feature set is another build of it, so two lists that run the same
 binaries can still test different code -- the four Slim steps ran locally and in
 no CI job, which a comparison by crate name could not see, and master gathered 42
@@ -55,7 +56,7 @@ _SELECTS_ALL = {"--tests", "--all-targets"}
 _SELECTS_NONE = {"--doc", "--examples", "--benches"}
 
 # Flags that consume the following word, so it is never mistaken for a flag.
-_TAKES_VALUE = {"--example", "--bench", "--features", "--target",
+_TAKES_VALUE = {"--example", "--bench", "--features", "-F", "--target",
                 "--manifest-path", "-j", "--jobs"}
 
 _LIB_KINDS = {"lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"}
@@ -131,13 +132,25 @@ def step_coverage(step: str) -> tuple[list[str], object | set[tuple[str, str]]] 
     return packages, selected
 
 
-def step_configurations(step: str) -> list[str]:
-    """`package features` for every package a `cargo test` step names.
+def step_builds(step: str) -> list[tuple[str, str, object | frozenset[tuple[str, str]]]]:
+    """`(package, features, targets)` for every package a `cargo test` step names.
 
     The features are `default`, `none` (`--no-default-features`) or `all`, then
     `+` and the `--features` the step adds, sorted, so one build has one
-    spelling however the step wrote it.
+    spelling however the step wrote it. The targets are what `step_coverage`
+    says the step selects: a build is a feature set *and* what of it runs, and a
+    CI line narrowed from `--tests` to `--lib` keeps its features and drops
+    binaries.
     """
+    parsed = step_coverage(step)
+    if parsed is None:
+        return []
+    covered = parsed[1]
+    targets = ALL if covered is ALL else frozenset(covered)
+    return [(package, features, targets) for package, features in _package_features(step)]
+
+
+def _package_features(step: str) -> list[tuple[str, str]]:
     words = shlex.split(step)
     if not words or words[0] != "test":
         return []
@@ -163,7 +176,45 @@ def step_configurations(step: str) -> list[str]:
             base = "all"
         index += 1
     features = base + ("+" + ",".join(sorted(added)) if added and base != "all" else "")
-    return [f"{package} {features}" for package in packages]
+    return [(package, features) for package in packages]
+
+
+def describe(build) -> str:
+    package, features, targets = build
+    if targets is ALL:
+        selection = "all"
+    else:
+        names = {("lib", "*"): "lib", ("bin", "*"): "bins"}
+        selection = ",".join(sorted(names.get(t, f"{t[0]}:{t[1]}") for t in targets)) or "none"
+    return f"{package} {features} {selection}"
+
+
+def covers(wider, narrower) -> bool:
+    """Whether a build selecting `wider` runs every target `narrower` selects."""
+    if wider is ALL:
+        return True
+    if narrower is ALL:
+        return False
+    return all(
+        target in wider or (target[0] == "bin" and ("bin", "*") in wider)
+        for target in narrower
+    )
+
+
+def uncovered(steps, by_steps) -> list[str]:
+    """The builds `steps` test that no build of `by_steps` -- the same package and
+    features, selecting at least as much -- tests too."""
+    others = [build for step in by_steps for build in step_builds(step)]
+    missing = []
+    for step in steps:
+        for build in step_builds(step):
+            package, features, targets = build
+            if not any(
+                (other[0], other[1]) == (package, features) and covers(other[2], targets)
+                for other in others
+            ):
+                missing.append(describe(build))
+    return sorted(set(missing))
 
 
 def coverage_by_package(steps) -> dict[str, object | set[tuple[str, str]]]:
@@ -225,16 +276,20 @@ def main() -> int:
     parser.add_argument("--root", help="repository root")
     parser.add_argument("--configurations", action="store_true",
                         help="print the package builds the steps test instead")
+    parser.add_argument("--uncovered-by", metavar="STEPS",
+                        help="print the builds no step in the file STEPS tests as widely")
     args = parser.parse_args()
 
+    steps = [line.strip() for line in sys.stdin if line.strip()]
     if args.configurations:
-        configurations = {
-            configuration
-            for line in sys.stdin
-            for configuration in step_configurations(line.strip())
-        }
-        for configuration in sorted(configurations):
-            print(configuration)
+        for build in sorted({describe(b) for step in steps for b in step_builds(step)}):
+            print(build)
+        return 0
+    if args.uncovered_by is not None:
+        by_steps = [line.strip() for line in pathlib.Path(args.uncovered_by).read_text().splitlines()
+                    if line.strip()]
+        for build in uncovered(steps, by_steps):
+            print(build)
         return 0
     if args.root is None:
         parser.error("--root is required to audit test binaries")
@@ -249,9 +304,7 @@ def main() -> int:
         print(f"cargo could not describe the workspace: {error}", file=sys.stderr)
         return 1
 
-    covered = coverage_by_package(
-        line.strip() for line in sys.stdin if line.strip()
-    )
+    covered = coverage_by_package(steps)
 
     for package in sorted(targets):
         reach = covered.get(package)

@@ -535,24 +535,41 @@ ci_test_lines="$(sed 's/#.*//' "$ROOT/.github/workflows/pr-ci.yml" \
     | grep -E 'cargo test ' || true)"
 ci_crates="$(printf '%s\n' "$ci_test_lines" \
     | grep -oE '\-p migo-[a-z0-9-]+' | grep -oE 'migo-[a-z0-9-]+' | sort -u || true)"
-local_builds="$(bash "$ROOT/scripts/verify-change.sh" --list-host-steps 2>/dev/null \
-    | python3 "$ROOT/scripts/lib/host_test_coverage.py" --configurations || true)"
-ci_builds="$(printf '%s\n' "$ci_test_lines" | grep -oE 'cargo test .*' | sed 's/^cargo //' \
-    | python3 "$ROOT/scripts/lib/host_test_coverage.py" --configurations || true)"
-# Whole lines: `migo-services default` is a prefix of `migo-services default+code-signing`.
-has_build() { grep -qxF -- "$2" <<< "$1"; }
-if [[ -z "$ci_builds" ]]; then
+local_steps="$(bash "$ROOT/scripts/verify-change.sh" --list-host-steps 2>/dev/null || true)"
+ci_steps="$(printf '%s\n' "$ci_test_lines" | grep -oE 'cargo test .*' | sed 's/^cargo //' || true)"
+# The workflow that cuts releases runs its own copy of these jobs. Its quality gate is
+# held step for step to pr-ci.yml's by the release parity contract; its host engine
+# tests were held by nothing, so a line dropped there shipped a release a build short.
+release_steps="$(sed 's/#.*//' "$ROOT/.github/workflows/release.yml" \
+    | grep -oE 'cargo test .*' | sed 's/^cargo //' || true)"
+# A build is a package, its features and what of it runs, and one side's build is
+# matched by any of the other's that tests the same package and features at least as
+# widely -- so CI's Windows `--lib` line is covered by the host's whole suite, and a
+# Slim `--tests` narrowed to `--lib` is not.
+not_covered() {
+    python3 "$ROOT/scripts/lib/host_test_coverage.py" --uncovered-by <(printf '%s\n' "$2") \
+        <<< "$1"
+}
+compare_builds() {
+    local side="$1" steps="$2" other="$3" other_steps="$4" missing
+    if ! missing="$(not_covered "$steps" "$other_steps")"; then
+        fail "the build comparison could not run for $side against $other"
+    elif [[ -n "$missing" ]]; then
+        while read -r build; do
+            fail "$other tests $build too -- $side does and $other has no build that wide"
+        done <<< "$missing"
+    else
+        pass "$other tests every build $side tests"
+    fi
+}
+if [[ -z "$(printf '%s\n' "$ci_steps" | python3 "$ROOT/scripts/lib/host_test_coverage.py" --configurations)" ]]; then
     fail "cannot find the builds pr-ci.yml tests"
-elif [[ -z "$local_builds" ]]; then
+elif [[ -z "$(printf '%s\n' "$local_steps" | python3 "$ROOT/scripts/lib/host_test_coverage.py" --configurations)" ]]; then
     fail "scripts/verify-change.sh --list-host-steps reported no tested build"
+elif [[ -z "$(printf '%s\n' "$release_steps" | python3 "$ROOT/scripts/lib/host_test_coverage.py" --configurations)" ]]; then
+    fail "cannot find the builds release.yml tests"
 else
-    while read -r build; do
-        if has_build "$ci_builds" "$build"; then
-            pass "pr-ci.yml tests $build too"
-        else
-            fail "pr-ci.yml tests $build too -- no pr-ci.yml cargo test builds it"
-        fi
-    done <<< "$local_builds"
+    compare_builds "scripts/verify-change.sh" "$local_steps" "pr-ci.yml" "$ci_steps"
 
     # ------------------------------------------------------------
     # And the other direction, which is the one that was missing.
@@ -565,13 +582,24 @@ else
     # versioned-header tests, run by CI, run by no local step, and every assertion
     # in this file passed.
     # ------------------------------------------------------------
-    while read -r build; do
-        if has_build "$local_builds" "$build"; then
-            pass "scripts/verify-change.sh tests $build too"
-        else
-            fail "scripts/verify-change.sh tests $build too -- no host step builds it"
-        fi
-    done <<< "$ci_builds"
+    compare_builds "pr-ci.yml" "$ci_steps" "scripts/verify-change.sh" "$local_steps"
+
+    compare_builds "pr-ci.yml" "$ci_steps" "release.yml" "$release_steps"
+    compare_builds "release.yml" "$release_steps" "pr-ci.yml" "$ci_steps"
+fi
+
+# Coverage, not equality: a narrower build is short of a wider one and a wider one
+# stands in for a narrower one. A `covers` that always agreed would let the Slim
+# `--tests` narrowed to `--lib` pass, which is what this comparison exists to catch.
+if [[ "$(not_covered 'test -p migo-core --tests' 'test -p migo-core --lib')" == "migo-core default all" ]]; then
+    pass "a build narrowed from every target to the lib is a build short"
+else
+    fail "a build narrowed from every target to the lib reads as covered"
+fi
+if [[ -z "$(not_covered 'test -p migo-player --bin migo-player' 'test -p migo-player --bins')" ]]; then
+    pass "a wider build stands in for a narrower one"
+else
+    fail "a build selecting every bin does not cover one selecting a named bin"
 fi
 
 # The comparison is only as fine as the parser: one that dropped features would read
