@@ -6,13 +6,14 @@
 //! resolved address is run through the address filter -- so multicast, private
 //! and link-local targets are refused before a datagram reaches the kernel,
 //! whether content named them by host or by literal. A sender is held to the same
-//! rule: content hears only those it could send to.
+//! rule: content hears only those it could send to, and a public one only once
+//! the socket has sent or connected to it.
 //!
 //! Broadcast is refused outright: the filter already blocks 255.255.255.255 and
 //! every multicast range, so the flag has no legitimate target and would only
 //! serve to escape those checks. Fan-out goes through a server.
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -67,31 +68,68 @@ pub struct UdpSock {
 
 /// Which senders' datagrams reach content. The socket listens on every
 /// interface, so without this anything that can reach the port -- a process on
-/// the device, a host on the LAN -- would be heard where content could not
-/// send to it.
-#[derive(Clone, Copy, Debug)]
+/// the device, a host on the LAN, any host on the internet -- would be heard
+/// where content could not send to it.
+#[derive(Debug)]
 enum Inbound {
-    /// The senders this socket could send to: a public one only when the udp
-    /// channel grants a domain, one on the local network only when the local
-    /// network is granted, the device itself never.
-    Policy { lan: LanAccess, public: bool },
+    /// The senders this socket could send to: one on the local network only when
+    /// the local network is granted, the device itself never, and a public one
+    /// once the socket has sent or connected to its address.
+    Policy {
+        lan: LanAccess,
+        /// The public addresses this socket has sent or connected to, any port.
+        ///
+        /// A policy names domains and a datagram carries an address, so the only
+        /// account of which addresses content may reach is the socket's own
+        /// resolutions, each made after the gate let its destination through.
+        /// Hearing every public sender once any domain was granted let a host
+        /// content may not send to reach it anyway. Holds one or two addresses
+        /// for a game talking to its server.
+        addressed: parking_lot::Mutex<Vec<IpAddr>>,
+    },
     /// Every sender. Tests talk over the loopback, which the rule refuses.
     #[cfg(test)]
     Any,
 }
 
 impl Inbound {
-    fn admits(self, peer: &SocketAddr) -> bool {
+    fn policy(lan: LanAccess) -> Self {
+        Self::Policy {
+            lan,
+            addressed: Default::default(),
+        }
+    }
+
+    fn admits(&self, peer: &SocketAddr) -> bool {
         match self {
-            Self::Policy { lan, public } => {
+            Self::Policy { lan, addressed } => {
                 if is_public(peer.ip()) {
-                    public
+                    addressed.lock().contains(&peer.ip().to_canonical())
                 } else {
-                    !is_blocked_datagram_address(peer, lan)
+                    !is_blocked_datagram_address(peer, *lan)
                 }
             }
             #[cfg(test)]
             Self::Any => true,
+        }
+    }
+
+    /// `peer` is somewhere this socket was permitted to send, so its replies are
+    /// heard from now on.
+    fn addressed(&self, peer: SocketAddr) {
+        match self {
+            Self::Policy { addressed, .. } => {
+                if !is_public(peer.ip()) {
+                    return;
+                }
+                let ip = peer.ip().to_canonical();
+                let mut addressed = addressed.lock();
+                if !addressed.contains(&ip) {
+                    addressed.push(ip);
+                }
+            }
+            #[cfg(test)]
+            Self::Any => {}
         }
     }
 }
@@ -99,6 +137,18 @@ impl Inbound {
 impl UdpSock {
     pub(crate) fn cancel(&self) {
         self.cancel.cancel();
+    }
+
+    /// Where a send or a connect goes: resolved, every answer through the
+    /// datagram rule, and recorded as heard before anything is sent, so a reply
+    /// that beats the send's return is not dropped.
+    async fn destination(&self, target: &str, lan: LanAccess) -> std::io::Result<SocketAddr> {
+        let resolved = resolve_first(target, |resolved| {
+            is_blocked_datagram_address(resolved, lan)
+        })
+        .await?;
+        self.inbound.addressed(resolved);
+        Ok(resolved)
     }
 }
 
@@ -139,12 +189,7 @@ pub fn bind(
             "bind:fail UDPSocket: the policy grants the udp channel nothing".to_string(),
         ));
     }
-    bind_hearing(
-        resources,
-        port,
-        socket_type,
-        Inbound::Policy { lan, public },
-    )
+    bind_hearing(resources, port, socket_type, Inbound::policy(lan))
 }
 
 fn bind_hearing(
@@ -208,11 +253,10 @@ pub async fn connect(
     let target = join_host_port(&address, port);
     debug!("UDP connect: rid={rid}, target={target}");
     let lan = gate::lan_access(policy, NetworkChannel::Udp);
-    let resolved = resolve_first(&target, |resolved| {
-        super::address_filter::is_blocked_datagram_address(resolved, lan)
-    })
-    .await
-    .map_err(|error| generic(format!("connect:fail {error}")))?;
+    let resolved = socket
+        .destination(&target, lan)
+        .await
+        .map_err(|error| generic(format!("connect:fail {error}")))?;
     socket
         .socket
         .connect(resolved)
@@ -249,11 +293,10 @@ pub async fn send(
     // address and multicast groups allowed on a granted local network, as the
     // reference allows them.
     let lan = gate::lan_access(policy, NetworkChannel::Udp);
-    let resolved = resolve_first(&target, |resolved| {
-        super::address_filter::is_blocked_datagram_address(resolved, lan)
-    })
-    .await
-    .map_err(|error| generic(format!("send:fail resolve error: {error}")))?;
+    let resolved = socket
+        .destination(&target, lan)
+        .await
+        .map_err(|error| generic(format!("send:fail resolve error: {error}")))?;
 
     let payload = match (text, bytes) {
         (Some(text), _) => text.into_bytes(),

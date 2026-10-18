@@ -254,27 +254,73 @@ async fn a_sender_content_could_not_send_to_is_not_heard() {
     );
 }
 
-#[test]
-fn inbound_admits_exactly_the_senders_content_could_send_to() {
-    let at = |a: u8, b: u8, c: u8, d: u8| SocketAddr::from(([a, b, c, d], 9000));
-    let domains_only = Inbound::Policy {
-        lan: LanAccess::Refused,
-        public: true,
-    };
-    assert!(domains_only.admits(&at(8, 8, 8, 8)));
-    assert!(!domains_only.admits(&at(127, 0, 0, 1)));
-    assert!(!domains_only.admits(&at(192, 168, 1, 1)));
+fn at(a: u8, b: u8, c: u8, d: u8) -> SocketAddr {
+    SocketAddr::from(([a, b, c, d], 9000))
+}
 
-    let lan_only = Inbound::Policy {
-        lan: LanAccess::LocalNetwork,
-        public: false,
-    };
+/// A public sender is heard once the socket has addressed it, from any of its
+/// ports and in either spelling of its address -- and no other public sender is.
+#[test]
+fn a_public_sender_is_heard_once_the_socket_has_addressed_it() {
+    let inbound = Inbound::policy(LanAccess::Refused);
+    inbound.addressed(SocketAddr::from(([8, 8, 8, 8], 53)));
+    assert!(inbound.admits(&at(8, 8, 8, 8)), "a reply from another port");
+    let mapped: SocketAddr = "[::ffff:8.8.8.8]:9000".parse().unwrap();
     assert!(
-        !lan_only.admits(&at(8, 8, 8, 8)),
-        "no domain, so no public sender"
+        inbound.admits(&mapped),
+        "the same address, as a udp6 socket sees it"
     );
+    assert!(!inbound.admits(&at(1, 1, 1, 1)), "an address never sent to");
+
+    inbound.addressed(at(127, 0, 0, 1));
+    inbound.addressed(at(192, 168, 1, 1));
     assert!(
-        !lan_only.admits(&at(127, 0, 0, 1)),
+        !inbound.admits(&at(127, 0, 0, 1)),
         "never the device itself"
     );
+    assert!(
+        !inbound.admits(&at(192, 168, 1, 1)),
+        "the local network was not granted"
+    );
+}
+
+/// Granting domains, or every domain, grants content the addresses it reaches
+/// through them -- not the internet, which is what a fresh socket heard before.
+#[tokio::test]
+async fn no_policy_lets_a_fresh_socket_hear_a_public_sender() {
+    let resources = ResourceTable::new();
+    for policy in [
+        r#"{"udp":["game.example"]}"#,
+        r#"{"udp":"unrestricted"}"#,
+        r#"{"lan":true}"#,
+    ] {
+        let policy = NetworkPolicy::from_json(policy).unwrap();
+        let bound = bind(&policy, &resources, 0, "udp4").unwrap();
+        let socket = resources.udp(bound.rid).unwrap();
+        assert!(!socket.inbound.admits(&at(8, 8, 8, 8)), "{policy:?}");
+    }
+}
+
+/// A send and a connect reach their peer through `destination`, so that is where
+/// the peer becomes heard. Driven with a literal so it resolves without a lookup
+/// and nothing leaves the machine.
+#[tokio::test]
+async fn resolving_a_destination_is_what_makes_its_replies_heard() {
+    let policy = NetworkPolicy::from_json(r#"{"udp":["game.example"]}"#).unwrap();
+    let resources = ResourceTable::new();
+    let bound = bind(&policy, &resources, 0, "udp4").unwrap();
+    let socket = resources.udp(bound.rid).unwrap();
+
+    let resolved = socket
+        .destination("8.8.8.8:53", LanAccess::Refused)
+        .await
+        .unwrap();
+    assert_eq!(resolved, SocketAddr::from(([8, 8, 8, 8], 53)));
+    assert!(socket.inbound.admits(&at(8, 8, 8, 8)));
+
+    socket
+        .destination("127.0.0.1:53", LanAccess::Refused)
+        .await
+        .expect_err("the datagram rule still refuses the loopback");
+    assert!(!socket.inbound.admits(&at(127, 0, 0, 1)));
 }

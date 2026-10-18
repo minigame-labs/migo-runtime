@@ -628,7 +628,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reaches the local network or the loopback -- except through an HTTP proxy the machine is configured with, which
   resolves the domain itself. Every redirect hop is held to the channel the request was made on, so a redirected
   download still answers to the download allowlist. A UDP socket is made only when content could send to someone, and
-  hears only the senders it could send to. No platform could set a policy before, and the one every session got
+  hears only the senders it could send to: one on the local network when that is granted, and a public one once the
+  socket has sent or connected to its address. No platform could set a policy before, and the one every session got
   permitted every domain, over plain HTTP too. A refusal names the channel and the domain.
 - At most ten requests run at once -- `request`, `downloadFile` and `uploadFile` together, as the reference allows --
   and the rest wait their turn (an abort while waiting ends the request); the wait is the profile's
