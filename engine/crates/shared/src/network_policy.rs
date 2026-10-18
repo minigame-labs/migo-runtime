@@ -410,19 +410,23 @@ mod tests {
             let entry = entry.as_str().unwrap();
             assert!(DomainPattern::parse(entry).is_err(), "{entry} was accepted");
         }
-        // What the Android builder writes, read as the policy the builder was given.
+        // What the Android builder writes when its test grants every channel, alternately listed and unrestricted --
+        // read as the policy the same rule gives over this side's channels. A channel only one side has fails here
+        // or in `NetworkPolicyTest`.
         let sample = NetworkPolicy::from_json(corpus["builderSample"].as_str().unwrap()).unwrap();
-        assert_eq!(
-            sample,
-            NetworkPolicy {
-                request: DomainPolicy::Allowlist(vec![pattern("api.example.com")]),
-                download: DomainPolicy::Allowlist(vec![pattern("*.cdn.example.com")]),
-                socket: DomainPolicy::Unrestricted,
-                allow_plain_http: true,
-                lan: true,
-                ..NetworkPolicy::default()
-            }
-        );
+        let mut expected = NetworkPolicy {
+            allow_plain_http: true,
+            lan: true,
+            ..NetworkPolicy::default()
+        };
+        for (index, channel) in NetworkChannel::ALL.into_iter().enumerate() {
+            *expected.channel_mut(channel) = if index % 2 == 0 {
+                DomainPolicy::Allowlist(vec![pattern(&format!("{}.example.com", channel.name()))])
+            } else {
+                DomainPolicy::Unrestricted
+            };
+        }
+        assert_eq!(sample, expected);
     }
 
     #[test]

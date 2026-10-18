@@ -33,7 +33,10 @@ public final class NetworkPolicy {
     public enum Channel {
         /** {@code request} / {@code fetch}. */
         REQUEST("request"),
-        /** {@code downloadFile}, remote images, streamed audio, asset prefetch. */
+        /**
+         * {@code downloadFile}, remote images, streamed audio, asset prefetch, and a URL
+         * given to {@code previewImage}, {@code previewMedia}, a share or a video decoder.
+         */
         DOWNLOAD("download"),
         /** {@code uploadFile}. */
         UPLOAD("upload"),
@@ -80,7 +83,8 @@ public final class NetworkPolicy {
         private boolean localNetwork = false;
 
         /**
-         * Grant {@code channel} these domains, in addition to any granted before.
+         * Grant {@code channel} these domains, in addition to any granted before. Every
+         * entry is checked before any is granted, so a refused call grants nothing.
          *
          * @throws IllegalArgumentException if an entry is not a domain or a {@code *.} wildcard
          * @throws IllegalStateException if the channel is already unrestricted
@@ -93,20 +97,23 @@ public final class NetworkPolicy {
             if (domains == null || domains.length == 0) {
                 throw new IllegalArgumentException("allow(" + channel + ") needs at least one domain");
             }
+            List<String> granted = new ArrayList<>(domains.length);
+            for (String domain : domains) {
+                granted.add(normalize(domain));
+            }
             List<String> list = allowlists.get(channel);
             if (list == null) {
-                list = new ArrayList<>();
-                allowlists.put(channel, list);
-            }
-            for (String domain : domains) {
-                list.add(normalize(domain));
+                allowlists.put(channel, granted);
+            } else {
+                list.addAll(granted);
             }
             return this;
         }
 
         /**
          * Grant {@code channel} every domain. For developer tools, or a host that has
-         * already vetted the content it runs; IP addresses stay refused.
+         * already vetted the content it runs. An IP address is still refused, but for
+         * another device on the local network when {@link #setAllowLocalNetwork} is on.
          *
          * @throws IllegalStateException if domains were already granted to the channel
          */

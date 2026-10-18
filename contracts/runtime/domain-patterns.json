@@ -1,5 +1,5 @@
 {
-  "$comment": "The one grammar of a network-policy allowlist entry. The engine's parser (engine/crates/shared/src/network_policy.rs) and the Android builder that refuses an entry at the call site (platforms/android/library/.../NetworkPolicy.java) each read this file in a test, so the two cannot disagree about what a host may write. accepted pairs an entry with the form it is stored in; every refused entry must be refused by both. builderSample is what the Android builder writes for the policy its test builds (request api.example.com, download *.cdn.example.com, socket unrestricted, plain HTTP and the local network on); the engine's test parses it, so the keys the two use cannot drift.",
+  "$comment": "The one grammar of a network-policy allowlist entry. The engine's parser (engine/crates/shared/src/network_policy.rs) and the Android builder that refuses an entry at the call site (platforms/android/library/.../NetworkPolicy.java) each read this file in a test, so the two cannot disagree about what a host may write. accepted pairs an entry with the form it is stored in; every refused entry must be refused by both. builderSample is what the Android builder writes when its test grants every channel in declaration order, alternately `<KEY>.example.com` and unrestricted, with plain HTTP and the local network on; the engine's test parses it against the same rule over its own channel list, so a channel either side has and the other lacks fails both tests.",
   "accepted": [
     [
       "api.example.com",
@@ -69,5 +69,5 @@
     "example.com:443",
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.com"
   ],
-  "builderSample": "{\"request\":[\"api.example.com\"],\"download\":[\"*.cdn.example.com\"],\"socket\":\"unrestricted\",\"allowPlainHttp\":true,\"lan\":true}"
+  "builderSample": "{\"request\":[\"request.example.com\"],\"download\":\"unrestricted\",\"upload\":[\"upload.example.com\"],\"socket\":\"unrestricted\",\"tcp\":[\"tcp.example.com\"],\"udp\":\"unrestricted\",\"allowPlainHttp\":true,\"lan\":true}"
 }

@@ -623,7 +623,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   images, audio streaming and asset prefetch), `upload`, `socket` (WebSocket), `tcp` and `udp` -- and a channel may
   instead be `unrestricted`. It is set with `RuntimeConfig.Builder.setNetworkPolicy(NetworkPolicy)` on Android,
   `MigoSessionConfig.network_policy_json_utf8` through the C ABI, `networkPolicyJSON` on either `MigoGameView`
-  configuration, and `--network-policy FILE` on the Linux player. Entries are domains, never IP addresses. `http://`,
+  configuration, and `--network-policy FILE` on the Linux player (and through the Windows spike driver). The
+  OpenHarmony host and the Linux Qt kit's managed session take no policy yet, so content there reaches no network.
+  Entries are domains, never IP addresses. `http://`,
   `ws://` and the local network are off unless the policy turns them on, and a request, download or upload never
   reaches the local network or the loopback -- except through an HTTP proxy the machine is configured with, which
   resolves the domain itself. Every redirect hop is held to the channel the request was made on, so a redirected

@@ -334,6 +334,7 @@ Configuration builder:
 | `setDebugEnabled(boolean)` | false | Debug mode |
 | `setLogLevel(LogLevel)` | WARN | Log verbosity |
 | `setCodeCacheDir(String)` | cacheDir | Compiled code directory |
+| `setNetworkPolicy(NetworkPolicy)` | `NetworkPolicy.denyAll()` | What network the game may reach, one allowlist per channel. **Without one the game reaches no network at all.** |
 
 ## ProGuard
 

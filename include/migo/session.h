@@ -112,14 +112,16 @@ typedef struct MigoSessionConfig {
     /*
      * What network the session's content may reach, as NUL-terminated UTF-8
      * JSON; borrowed for the duration of migo_session_create. NULL grants
-     * nothing at all: every request, download, upload and socket is refused.
+     * nothing at all: every request, download and upload, and every WebSocket,
+     * TCP and UDP socket, is refused.
      *
      *   {"request": ["api.example.com"], "download": ["*.cdn.example.com"],
      *    "socket": "unrestricted", "allowPlainHttp": false, "lan": false}
      *
      * Each of request, download, upload, socket, tcp and udp is an array of
      * domains -- "example.com" is that host only, "*.example.com" its
-     * subdomains and not itself, never an IP address -- or "unrestricted".
+     * subdomains and not itself, never an IP address, in ASCII (an
+     * internationalised name in its xn-- form) -- or "unrestricted".
      * A channel left out is refused. allowPlainHttp permits http:// and ws://;
      * lan lets socket, tcp and udp reach other devices on the local network.
      * Anything else -- an unknown key, a malformed entry -- makes

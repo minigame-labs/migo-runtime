@@ -78,7 +78,7 @@ NetworkPolicy policy = new NetworkPolicy.Builder()
 ```
 
 - 条目是域名:`api.example.com` 只匹配它本身;`*.example.com` 只匹配子域,不含 `example.com`。**不能写 IP 地址**,写错的条目在 `allow` 调用处直接抛 `IllegalArgumentException`。
-- `allowUnrestricted(channel)` 放开该通道的所有域名,只给开发工具或已审核过内容的宿主用;IP 地址仍然拒绝。
+- `allowUnrestricted(channel)` 放开该通道的所有域名,只给开发工具或已审核过内容的宿主用。IP 地址仍然拒绝,`setAllowLocalNetwork(true)` 时局域网内的其他设备除外。
 - `setAllowPlainHttp(true)` 才允许 `http://` 与 `ws://`。
 - `setAllowLocalNetwork(true)` 让 SOCKET、TCP、UDP 能访问本机所在局域网的其他设备(联机对战);REQUEST、DOWNLOAD、UPLOAD 无论如何都到不了局域网和回环地址。
 - UDP 套接字只收得到它能发往的对端发来的数据报:公网对端要等这个套接字向它的地址发过数据或 connect 过,`setAllowLocalNetwork(true)` 时是局域网,本机永远不行。一个对谁都发不出去的游戏绑定不了 UDP 端口。

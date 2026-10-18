@@ -238,8 +238,12 @@ public struct Configuration {
     public var preferredFramesPerSecond: Int?
     public var managesAudioSession: Bool
     public var webContentTerminationBudget: Int
+    public var hostServices: MigoHostServiceProvider?
+    public var capabilities: [MigoSystemCapability]
+    public var networkPolicyJSON: String?
     public init(directories:contentSigning:preferredFramesPerSecond: = nil,
-                managesAudioSession: = true, webContentTerminationBudget: = 2)
+                managesAudioSession: = true, webContentTerminationBudget: = 2,
+                hostServices: = nil, capabilities: = [], networkPolicyJSON: = nil)
     public static func standard(contentSigning:) throws -> Configuration
 }
 
@@ -249,10 +253,16 @@ public struct Configuration {
     public var contentSigning: MigoContentSigning
     public var preferredFramesPerSecond: Int?
     public var mouse: MouseInput
-    public init(directories:contentSigning:preferredFramesPerSecond: = nil, mouse: = .touch)
+    public var hostServices: MigoHostServiceProvider?
+    public var capabilities: [MigoSystemCapability]
+    public var networkPolicyJSON: String?
+    public init(directories:contentSigning:preferredFramesPerSecond: = nil, mouse: = .touch,
+                hostServices: = nil, capabilities: = [], networkPolicyJSON: = nil)
     public static func standard(contentSigning:) throws -> Configuration
 }
 ```
+
+`networkPolicyJSON` is what network the game may reach, in the JSON form [the session reference](/docs/en/reference/session/) documents: one allowlist per channel. `nil`, the default, is **no network at all** -- every request, download, upload and socket is refused until the app grants it.
 
 | Field | Platform | Default | Meaning |
 | --- | --- | --- | --- |

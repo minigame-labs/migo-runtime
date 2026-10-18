@@ -13,6 +13,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Locale;
 
 /**
  * The builder refuses at the call site exactly what the engine would refuse, and writes
@@ -42,16 +43,35 @@ public final class NetworkPolicyTest {
         }
     }
 
+    /**
+     * Every channel, in declaration order alternately listed and unrestricted, and both
+     * switches. The engine's test builds its expectation by the same rule from its own
+     * channel list, so a key either side writes that the other does not read fails both.
+     */
     @Test
     public void the_builder_writes_what_the_engine_reads() throws Exception {
-        NetworkPolicy policy = new NetworkPolicy.Builder()
-                .allow(NetworkPolicy.Channel.REQUEST, "API.example.com")
-                .allow(NetworkPolicy.Channel.DOWNLOAD, "*.cdn.example.com")
-                .allowUnrestricted(NetworkPolicy.Channel.SOCKET)
-                .setAllowPlainHttp(true)
-                .setAllowLocalNetwork(true)
-                .build();
+        NetworkPolicy.Builder builder = new NetworkPolicy.Builder();
+        NetworkPolicy.Channel[] channels = NetworkPolicy.Channel.values();
+        for (int i = 0; i < channels.length; i++) {
+            if (i % 2 == 0) {
+                builder.allow(channels[i], channels[i].key.toUpperCase(Locale.ROOT) + ".example.com");
+            } else {
+                builder.allowUnrestricted(channels[i]);
+            }
+        }
+        NetworkPolicy policy = builder.setAllowPlainHttp(true).setAllowLocalNetwork(true).build();
         assertEquals(corpus().getString("builderSample"), policy.toJson());
+    }
+
+    @Test
+    public void a_refused_entry_grants_nothing_from_the_same_call() {
+        NetworkPolicy.Builder builder = new NetworkPolicy.Builder();
+        assertThrows(IllegalArgumentException.class,
+                () -> builder.allow(NetworkPolicy.Channel.TCP, "game.example.com", "1.2.3.4"));
+        assertEquals("{}", builder.build().toJson());
+        // Nothing was granted, so the channel may still be opened instead.
+        builder.allowUnrestricted(NetworkPolicy.Channel.TCP);
+        assertEquals("{\"tcp\":\"unrestricted\"}", builder.build().toJson());
     }
 
     @Test
