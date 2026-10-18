@@ -105,6 +105,7 @@ fn main() {
     let mut windowed = std::env::var_os("MIGO_PLAYER_WINDOW").is_some_and(|v| v != "0");
     let mut resize = None;
     let mut network_policy = shared::network_policy::NetworkPolicy::default();
+    let mut prelude_files = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -140,9 +141,23 @@ fn main() {
                     }
                 }
             }
+            "--prelude" => match args.next() {
+                Some(file) => prelude_files.push(PathBuf::from(file)),
+                None => {
+                    tracing::error!("--prelude takes a script file");
+                    std::process::exit(2);
+                }
+            },
             _ => positional.push(arg),
         }
     }
+    let preludes = match prelude_scripts(&prelude_files) {
+        Ok(scripts) => scripts,
+        Err(message) => {
+            tracing::error!("--prelude: {message}");
+            std::process::exit(2);
+        }
+    };
     let bundle_dir = match resolve_bundle_dir(&positional) {
         Ok(path) => path,
         Err(message) => {
@@ -153,7 +168,14 @@ fn main() {
     };
     let secs: u64 = positional.get(1).and_then(|s| s.parse().ok()).unwrap_or(8);
 
-    if let Err(err) = run(&bundle_dir, secs, windowed, resize, network_policy) {
+    if let Err(err) = run(
+        &bundle_dir,
+        secs,
+        windowed,
+        resize,
+        network_policy,
+        preludes,
+    ) {
         tracing::error!("player failed: {err}");
         std::process::exit(1);
     }
@@ -161,8 +183,27 @@ fn main() {
 
 fn print_usage() {
     eprintln!(
-        "usage: migo-player GAME_BUNDLE_DIR [SECONDS] [--window|--offscreen] [--network-policy FILE]"
+        "usage: migo-player GAME_BUNDLE_DIR [SECONDS] [--window|--offscreen] [--network-policy FILE] \
+         [--prelude SCRIPT]..."
     );
+}
+
+/// The boot preludes `--prelude` names, in the order given: each runs in the global
+/// scope before the game's entry, as a host injects an adapter. Content written
+/// against `wx` or the browser runs here only with its adapter in front of it.
+fn prelude_scripts(files: &[PathBuf]) -> Result<Vec<(String, String)>, String> {
+    files
+        .iter()
+        .map(|file| {
+            let source =
+                std::fs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))?;
+            let name = file
+                .file_name()
+                .map(|n| format!("<{}>", n.to_string_lossy()))
+                .ok_or_else(|| format!("{} names no file", file.display()))?;
+            Ok((name, source))
+        })
+        .collect()
 }
 
 fn resolve_bundle_dir(positional: &[String]) -> Result<PathBuf, &'static str> {
@@ -187,6 +228,7 @@ fn run(
     windowed: bool,
     resize: Option<(u32, u32)>,
     network_policy: shared::network_policy::NetworkPolicy,
+    preludes: Vec<(String, String)>,
 ) -> Result<(), String> {
     // ---- Scratch dirs (files / cache / code cache) ----
     let root = std::env::temp_dir().join(format!("migo-player-{}", std::process::id()));
@@ -230,7 +272,8 @@ fn run(
         .with_pixel_ratio(1.0)
         .with_debug_enabled(true)
         .with_code_signing_enabled(false)
-        .with_network_policy(network_policy);
+        .with_network_policy(network_policy)
+        .with_prelude_scripts(preludes);
 
     // ---- Render target: a real X11 window, or an offscreen pbuffer ----
     // The window (when present) must outlive the engine session: the render
@@ -771,7 +814,29 @@ mod tests {
         thread,
     };
 
-    use super::{resolve_bundle_dir, shutdown_before_drop};
+    use super::{prelude_scripts, resolve_bundle_dir, shutdown_before_drop};
+
+    #[test]
+    fn preludes_keep_their_order_and_are_named_for_their_files() {
+        let dir = std::env::temp_dir().join(format!("migo-player-preludes-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = dir.join("adapter.js");
+        let second = dir.join("recorder.js");
+        std::fs::write(&first, "globalThis.a = 1;").unwrap();
+        std::fs::write(&second, "globalThis.b = 2;").unwrap();
+        let scripts = prelude_scripts(&[second.clone(), first.clone()]).unwrap();
+        assert_eq!(
+            scripts,
+            vec![
+                ("<recorder.js>".to_string(), "globalThis.b = 2;".to_string()),
+                ("<adapter.js>".to_string(), "globalThis.a = 1;".to_string()),
+            ]
+        );
+        let missing = dir.join("missing.js");
+        let error = prelude_scripts(&[first, missing.clone()]).unwrap_err();
+        assert!(error.starts_with(&missing.display().to_string()), "{error}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn player_requires_explicit_bundle_directory() {

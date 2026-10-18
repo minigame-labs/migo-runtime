@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The headless player (`engine/tools/player`) takes `--prelude SCRIPT`, any number of times, and runs each in the global
+  scope before the game's entry, in the order given -- as an Android or Apple host injects an adapter. Content written
+  against `wx` or the browser could not run there at all: `migo-examples`' `wx-adapter-demo` stopped on
+  `ReferenceError: wx is not defined` and presented nothing; with the wx adapter bundle as a prelude it runs.
 - Android: `MigoGameActivity.onCreateRuntimeConfig()` can refuse a launch by throwing `LaunchRefusedException`
   (an error code and a message), which reaches `onLaunchFailed` and starts nothing. It is documented as the place to
   make sure the game's files are in place, and had no way to say they were not: returning null ran the game on a
