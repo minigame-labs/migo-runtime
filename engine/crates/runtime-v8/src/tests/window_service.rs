@@ -86,6 +86,8 @@ fn eval_bool(runtime: &mut JsRuntime, source: &'static str) -> bool {
     local.is_true()
 }
 
+// The cursor and pointer lock are `ui`, which ships with `api-system`.
+#[cfg(feature = "api-system")]
 #[test]
 fn set_cursor_hands_the_host_a_keyword_or_the_sandbox_file_and_nothing_else() {
     let sandbox = Sandbox::new();
@@ -125,6 +127,7 @@ fn set_cursor_hands_the_host_a_keyword_or_the_sandbox_file_and_nothing_else() {
     );
 }
 
+#[cfg(feature = "api-system")]
 #[test]
 fn without_a_window_the_cursor_is_refused_and_pointer_lock_is_never_taken() {
     let mut runtime = boot(None, None);
@@ -135,6 +138,7 @@ fn without_a_window_the_cursor_is_refused_and_pointer_lock_is_never_taken() {
     ));
 }
 
+#[cfg(feature = "api-system")]
 #[test]
 fn the_pointer_is_locked_exactly_while_the_host_says_so() {
     let mut runtime = boot(Some(Arc::new(Desktop(Arc::default()))), None);
