@@ -618,6 +618,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a relink, is INVALID_OPERATION and null, as are a deleted program and one that did not link.
 
 ### Changed
+- **Content reaches no network until the host grants it.** This changes every host: one that sets nothing now gets no
+  network at all. A policy is one domain allowlist per channel -- `request`, `download` (which also covers remote
+  images, audio streaming and asset prefetch), `upload`, `socket` (WebSocket), `tcp` and `udp` -- and a channel may
+  instead be `unrestricted`. It is set with `RuntimeConfig.Builder.setNetworkPolicy(NetworkPolicy)` on Android,
+  `MigoSessionConfig.network_policy_json_utf8` through the C ABI, `networkPolicyJSON` on either `MigoGameView`
+  configuration, and `--network-policy FILE` on the Linux player. Entries are domains, never IP addresses. `http://`,
+  `ws://` and the local network are off unless the policy turns them on, and a request, download or upload never
+  reaches the local network or the loopback. Every redirect hop is held to the channel the request was made on, so a
+  redirected download still answers to the download allowlist. No platform could set a policy before, and the one
+  every session got permitted every domain, over plain HTTP too. A refusal names the channel and the domain.
 - At most ten requests run at once -- `request`, `downloadFile` and `uploadFile` together, as the reference allows --
   and the rest wait their turn (an abort while waiting ends the request); the wait is the profile's
   `queueStart`/`queueEnd`, which were the fetch start when the engine had no limit. At most five WebSocket connections
@@ -675,6 +685,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- An Android app that shrinks its code with R8 can start a session. The engine reads `RuntimeConfig`'s private fields
+  by name, and the rules the AAR ships for its consumers kept only public members, so R8 renamed them (`cacheDir` to
+  `a`, `filesDir` to `b`) and every session failed to initialise. Those fields are now kept.
 - The JS watchdog no longer kills a game for the time it spends waiting on the renderer. It ends a task whose script
   runs past its budget (ten seconds); a task blocked in a synchronous call is waiting, not running, and a slow GPU --
   a software renderer, a low-end phone compiling shaders -- made a three.js scene's calls add up past the budget. The
