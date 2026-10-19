@@ -120,8 +120,8 @@
 export CC="${CC:-clang}"
 export CXX="${CXX:-clang++}"
 
-# The same `[env]` block also sets `SKIA_GN_ARGS`, for fontconfig and unwind
-# tables. Exporting here REPLACES that value for this build rather than adding
+# The same `[env]` block also sets `SKIA_GN_ARGS`, for unwind tables.
+# Exporting here REPLACES that value for this build rather than adding
 # to it, and on macOS that is the intended outcome: those arguments have never
 # reached a macOS Skia, because a macOS Skia has never been built from source
 # here. Keeping them would be the change, not dropping them. The `:+` form

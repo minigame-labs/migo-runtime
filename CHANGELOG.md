@@ -720,6 +720,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- Linux: a character the named fonts lack is drawn in an installed font that has it. Skia was built with fontconfig
+  turned off, which left its directory font manager: it lists `/usr/share/fonts` by name and never answers which face
+  has a character, so SkParagraph's per-character fallback found nothing -- Chinese, Japanese, Korean, Arabic and every
+  other script the bundled Latin face lacks drew as boxes, with the fonts installed. Fontconfig, Skia's own default on
+  Linux, is back, which also finds the user's fonts and resolves `Arial` to its metric-compatible face as a browser does.
+  Android, Windows, Apple and OpenHarmony builds are unchanged.
 - `Object.keys(migo)` and `for...in` list every API `migo` publishes, and so the `wx` an adapter mirrors from it. The
   namespace copied the attributes of the globals it mirrors, most of which are not enumerable, so 422 of its 452 names
   were missing from the list -- and the platform's own namespace is a plain object whose every API is listed. Cocos
