@@ -21,6 +21,10 @@ android_ndk_read_pin "$REPO_ROOT/contracts/artifact-manifest/android-v8.lock.jso
 android_ndk_resolve || { err "cannot resolve the pinned Android NDK"; exit 1; }
 NDK_BIN="$(echo "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt/*/bin)"
 export PATH="$NDK_BIN:$PATH"
+# skia-bindings reads its NDK from ANDROID_NDK, not ANDROID_NDK_HOME. CI's NDK action
+# exports both for the job; a local run that has to build Android Skia (any change to
+# its GN arguments does) panicked with "ANDROID_NDK variable not set" without this.
+export ANDROID_NDK="$ANDROID_NDK_HOME"
 
 # engine/.cargo/config.toml names aarch64-linux-android-ar without a path, and
 # the NDK ships it as llvm-ar. Provide the expected name here rather than
