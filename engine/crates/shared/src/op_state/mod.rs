@@ -10,6 +10,7 @@ use crate::audio_channel::{
 use crate::audio_resources::AudioResourceRegistry;
 use crate::channel::ThreadWakeup;
 use crate::error::{EngineError, EngineResult, ErrorCode};
+use crate::network_policy::NetworkPolicy;
 use crate::protocol::audio_cmd::AudioCmd;
 use crate::services::DeviceServices;
 use crate::vfs::{GamePaths, MountTable, VirtualFS};
@@ -262,7 +263,7 @@ pub struct HostOpState {
     pub sub_packages: Vec<(String, String)>,
     /// Workers directory path from RuntimeConfig.
     pub workers_path: Option<String>,
-    /// Network security policy (domain whitelist, HTTPS enforcement).
+    /// What network content may reach, per channel. Refuses everything unless the host granted it.
     pub network_policy: NetworkPolicy,
     /// When `true`, the app is in the background (OnHide received).
     /// Async polling loops (WebSocket, TCP, UDP) check this flag and
@@ -383,16 +384,6 @@ impl ContextLostState {
         self.packed.store((epoch + 1) << 1, Ordering::Release);
         true
     }
-}
-
-/// Network-level security policy, populated from InitOptions.extras.
-#[derive(Debug, Clone, Default)]
-pub struct NetworkPolicy {
-    /// When non-empty, only these domains (and their subdomains) may be accessed.
-    /// An empty Vec means "allow all domains" (no whitelist).
-    pub domain_whitelist: Vec<String>,
-    /// When true, only HTTPS URLs are allowed for fetch/upload (HTTP rejected).
-    pub enforce_https: bool,
 }
 
 impl fmt::Debug for HostOpState {

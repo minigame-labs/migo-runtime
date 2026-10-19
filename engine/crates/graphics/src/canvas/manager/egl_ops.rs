@@ -1,6 +1,5 @@
 extern crate khronos_egl as egl;
 
-use egl::EGL1_4;
 use shared::error::{EngineResult, ErrorCode};
 
 use crate::egl_platform::{EglInstance, EglProvider};
@@ -540,7 +539,7 @@ pub(super) fn pbuffer_extent(width: u32, height: u32) -> (i32, i32) {
 }
 
 pub(super) fn create_pbuffer_context(
-    egl: &egl::DynamicInstance<EGL1_4>,
+    egl: &EglInstance,
     display: egl::Display,
     config: egl::Config,
     share: Option<egl::Context>,

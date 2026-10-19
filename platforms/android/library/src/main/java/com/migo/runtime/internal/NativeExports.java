@@ -514,7 +514,8 @@ public final class NativeExports {
      *                  11 = InputSaturated,
      *                  203 = OutOfMemory, 204 = JsExecutionTimeout,
      *                  205 = HostPanic, 206 = ANR,
-     *                  207 = CodeSignatureInvalid, 208 = CodeIntegrityFailed
+     *                  207 = CodeSignatureInvalid, 208 = CodeIntegrityFailed,
+     *                  413 = RenderSwapBuffersError, 430 = RenderCommandFailed
      * @param message   Human-readable error message
      * @param detail    Detailed error information (stack trace, context)
      */

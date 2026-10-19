@@ -21,29 +21,49 @@ asset or downloaded artifact.
 
 - Android API 26 or higher.
 - An Android Gradle Plugin (AGP) version compatible with the project.
-- Android NDK installed according to the project's build configuration.
 - A Canvas/WebGL mini-game bundle to run.
+
+The SDK ships its native engine prebuilt, so the host needs no NDK.
 
 Migo is a Canvas/WebGL mini-game runtime container, not a general-purpose WebView replacement;
 content must not depend on the DOM or CSS.
 
-## 2. Add the AAR dependency
+## 2. Add the dependency
 
-Obtain the AAR matching the host ABI from the project release page and place it in the application's
-`libs/` directory or a private Maven repository. The filename format is:
+One AAR carries the engine for every ABI Migo supports (`arm64-v8a`, `x86_64`). To ship arm64 alone,
+filter in the app rather than look for a per-ABI AAR -- the app's own filter drops the other ABIs
+from the APK, and an app bundle split by the store already delivers each device only its own:
 
-```text
-migo-<version>-android.aar
+```kotlin
+android {
+    defaultConfig {
+        ndk { abiFilters += "arm64-v8a" }
+    }
+}
 ```
 
-Do not hard-code a specific version number in build scripts or documentation examples. A dependency
-declaration example:
+**From a Maven repository.** The coordinates are `com.minigame-labs:migo-android`, and
+`com.minigame-labs:migo-android-nojni` for an app that delivers the engine at runtime instead of in
+its APK. Migo is not yet on a public Maven repository; until it is, take the AAR from the release
+page as below. Once it is, the dependency is one line, at the version of the release:
+
+```kotlin
+dependencies {
+    implementation("com.minigame-labs:migo-android:<version>")
+}
+```
+
+**From the release page.** Download `migo-<version>-android.aar`, verify it against its
+`.attestation.json` (see [Download verification](/docs/en/release/download-verification/)), and
+place it in the app's `libs/` directory:
 
 ```kotlin
 dependencies {
     implementation(files("libs/migo-<version>-android.aar"))
 }
 ```
+
+Do not hard-code a specific version number in build scripts or documentation examples.
 
 ## 3. Create a RuntimeConfig
 

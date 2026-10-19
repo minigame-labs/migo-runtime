@@ -18,7 +18,8 @@ mod fetch_service_tests {
     use shared::{
         channel::ThreadWakeup,
         device::gpu_caps::GpuCaps,
-        op_state::{AudioSender, HostOpState, NetworkPolicy},
+        network_policy::NetworkPolicy,
+        op_state::{AudioSender, HostOpState},
         render_command_sender::CommandSender,
     };
     use std::{
@@ -51,11 +52,8 @@ mod fetch_service_tests {
             request_vsync: None,
             sub_packages: Vec::new(),
             workers_path: None,
-            // An allow list with one host: the refusal below is the policy's.
-            network_policy: NetworkPolicy {
-                domain_whitelist: vec!["allowed.example".to_string()],
-                enforce_https: true,
-            },
+            // One host, on the request channel only: the refusals below are the policy's.
+            network_policy: NetworkPolicy::from_json(r#"{"request":["allowed.example"]}"#).unwrap(),
             backgrounded: Arc::new(AtomicBool::new(false)),
             timer_backgrounded: Arc::new(AtomicBool::new(false)),
             webgl_context_created: Arc::new(AtomicBool::new(false)),
@@ -73,13 +71,17 @@ mod fetch_service_tests {
     /// `prelude.rs` gives), and the answer this test is about is built by
     /// asynchronous JavaScript.
     fn run(source: &'static str, check: &'static str) {
+        run_under(test_host_state(), source, check);
+    }
+
+    fn run_under(state: HostOpState, source: &'static str, check: &'static str) {
         let executor = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("current-thread executor");
         let _guard = executor.enter();
         let mut runtime = JsRuntime::new(RuntimeOptions {
-            extensions: crate::main_extensions(test_host_state()),
+            extensions: crate::main_extensions(state),
             ..Default::default()
         });
         runtime
@@ -108,7 +110,7 @@ mod fetch_service_tests {
             (async () => {
                 const { op_fetch, op_fetch_send } = Deno.core.ops;
                 const handles = op_fetch(
-                    "GET", "data:text/plain;base64,aGVsbG8gd29ybGQ=", [], null,
+                    "request", "GET", "data:text/plain;base64,aGVsbG8gd29ybGQ=", [], null,
                     false, null, null, 30000, false, false);
                 const response = await op_fetch_send(handles.requestRid);
                 const chunks = [];
@@ -155,7 +157,7 @@ mod fetch_service_tests {
             globalThis.result = (() => {
                 try {
                     Deno.core.ops.op_fetch(
-                        "GET", "https://blocked.example/a", [], null,
+                        "request", "GET", "https://blocked.example/a", [], null,
                         false, null, null, 30000, false, false);
                     return { thrown: null };
                 } catch (error) {
@@ -166,8 +168,82 @@ mod fetch_service_tests {
             r#"
             if (typeof r.thrown !== "string") fail("the policy allowed it");
             if (!r.thrown.includes("blocked.example")
-                || !r.thrown.includes("is not in the allowed list")) {
+                || !r.thrown.includes("is not in the request allowlist")) {
                 fail("the refusal names the host and why");
+            }
+        "#,
+        );
+    }
+
+    /// Through the facades content calls: `request` is made on the request
+    /// channel and `downloadFile` on the download channel. Each is sent to the
+    /// host only the *other* channel grants, so both must be refused -- a
+    /// facade that passed the wrong kind would be let through instead.
+    #[test]
+    fn request_and_download_file_are_each_held_to_their_own_channel() {
+        let mut state = test_host_state();
+        state.network_policy = NetworkPolicy::from_json(
+            r#"{"request":["api.example.com"],"download":["dl.example.com"]}"#,
+        )
+        .unwrap();
+        run_under(
+            state,
+            r#"
+            globalThis.result = {};
+            migo.request({
+                url: "https://dl.example.com/a",
+                success: () => { result.request = "sent"; },
+                fail: (error) => { result.request = error.errMsg + " | " + error.exception.reasons[0].errMsg; },
+            });
+            migo.downloadFile({
+                url: "https://api.example.com/a",
+                success: () => { result.download = "sent"; },
+                fail: (error) => { result.download = error.errMsg + " | " + error.exception.reasons[0].errMsg; },
+            });
+        "#,
+            r#"
+            if (!String(r.request).includes("domain 'dl.example.com' is not in the request allowlist")) {
+                fail("request is held to the request channel");
+            }
+            if (!String(r.download).includes("domain 'api.example.com' is not in the download allowlist")) {
+                fail("downloadFile is held to the download channel");
+            }
+        "#,
+        );
+    }
+
+    /// The kind the op is given is the channel the gate holds it to: the host
+    /// the request channel grants is refused to a download, and a kind that is
+    /// neither is a TypeError rather than a default.
+    #[test]
+    fn the_kind_the_op_is_given_is_the_channel_it_is_held_to() {
+        run(
+            r#"
+            globalThis.result = (() => {
+                const attempt = (kind) => {
+                    try {
+                        Deno.core.ops.op_fetch(
+                            kind, "GET", "https://allowed.example/a", [], null,
+                            false, null, null, 30000, false, false);
+                        return null;
+                    } catch (error) {
+                        return error.name + ": " + error.message;
+                    }
+                };
+                return {
+                    request: attempt("request"),
+                    download: attempt("download"),
+                    upload: attempt("upload"),
+                };
+            })();
+        "#,
+            r#"
+            if (r.request !== null) fail("the request channel grants it: " + r.request);
+            if (r.download !== "Error: downloadFile: domain 'allowed.example' is not in the download allowlist") {
+                fail("a download is held to the download channel: " + r.download);
+            }
+            if (!String(r.upload).startsWith("TypeError: fetch kind must be")) {
+                fail("an unknown kind is refused: " + r.upload);
             }
         "#,
         );
@@ -182,7 +258,7 @@ mod fetch_service_tests {
             (async () => {
                 const { op_fetch, op_fetch_send } = Deno.core.ops;
                 const handles = op_fetch(
-                    "GET", "https://allowed.example/slow", [], null,
+                    "request", "GET", "https://allowed.example/slow", [], null,
                     false, null, null, 30000, false, false);
                 Deno.core.close(handles.cancelHandleRid);
                 try {

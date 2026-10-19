@@ -58,6 +58,35 @@ new RuntimeConfig.Builder(cacheDir, filesDir, density)      // 完全自供,脱�
 
 常见错误是误以为发布包里签名验证默认关 — 恰恰相反:默认开,不开 pubkey 时签名验证直接拒收。生产配置 = 两个字段都设 · 调试想跳过 = 显式 `setCodeSigningEnabled(false)`,只当临时手段。
 
+## 网络策略
+
+**不设就什么网络都没有。** 没调用 `setNetworkPolicy` 的游戏,`request`、`downloadFile`、`uploadFile`、WebSocket、TCP、UDP 一律被拒。每个通道单独授权:
+
+| 通道 `NetworkPolicy.Channel` | 覆盖的 API |
+| --- | --- |
+| `REQUEST` | `request` / `fetch` |
+| `DOWNLOAD` | `downloadFile`、远程图片、音频流、`prefetchAssets`,以及交给 `previewImage`、`previewMedia`、分享、视频、视频解码器的 URL |
+| `UPLOAD` | `uploadFile` |
+| `SOCKET` | WebSocket |
+| `TCP` / `UDP` | 原始套接字 |
+
+```java
+NetworkPolicy policy = new NetworkPolicy.Builder()
+    .allow(NetworkPolicy.Channel.REQUEST, "api.example.com")
+    .allow(NetworkPolicy.Channel.DOWNLOAD, "*.cdn.example.com")
+    .build();
+```
+
+- 条目是域名:`api.example.com` 只匹配它本身;`*.example.com` 只匹配子域,不含 `example.com`。**不能写 IP 地址**,写错的条目在 `allow` 调用处直接抛 `IllegalArgumentException`。
+- `allowUnrestricted(channel)` 放开该通道的所有域名,只给开发工具或已审核过内容的宿主用。IP 地址仍然拒绝,`setAllowLocalNetwork(true)` 时局域网内的其他设备除外。
+- `setAllowPlainHttp(true)` 才允许 `http://` 与 `ws://`。
+- `setAllowLocalNetwork(true)` 让 SOCKET、TCP、UDP 能访问本机所在局域网的其他设备(联机对战);REQUEST、DOWNLOAD、UPLOAD 无论如何都到不了局域网和回环地址。
+- UDP 套接字只收得到它能发往的对端发来的数据报:公网对端要等这个套接字向它的地址发过数据或 connect 过,`setAllowLocalNetwork(true)` 时是局域网,本机永远不行。一个对谁都发不出去的游戏绑定不了 UDP 端口。
+- 如果机器给 HTTP 配了代理(`HTTP_PROXY` 之类),域名由代理去解析:允许的域名最终连到哪里,由代理决定。
+- 重定向按发起请求的通道检查:一次被 302 到别的域名的下载,仍然要过 DOWNLOAD 的白名单。
+
+被拒的请求会收到写明 API、通道和域名的错误,例如 `fetch: domain 'x.example.com' is not in the request allowlist`。
+
 ## 内容侧注入
 
 一个仅存于 Builder 的列表字段,以 JSON 走 JNI 传给 native:
@@ -80,5 +109,6 @@ RuntimeConfig config = new RuntimeConfig.Builder(context)
     .setWatchdogTimeoutSecs(10)
     .setCodeSigningEnabled(true)
     .setCodeSigningPubkey(pubkeyHex)
+    .setNetworkPolicy(policy)
     .build();
 ```

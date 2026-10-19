@@ -267,14 +267,22 @@ pub fn op_choose_media(
 // ==================== Video Ops ====================
 
 /// Create a video player instance. Returns JSON: `{"videoId": <id>}`.
+///
+/// The player is handed `src` and `poster` as the real file or the checked URL
+/// they name, never content's string: a player that opened it verbatim played
+/// any URL under a policy that granted nothing, and any file the host could read.
 #[op2]
 #[string]
 pub fn op_video_create(
     state: &mut OpState,
     #[string] options_json: &str,
 ) -> Result<String, JsErrorBox> {
+    let sandbox = crate::file::host_paths::sandbox_of(state);
     with_video(state, "createVideo:fail not supported", |v| {
-        v.create(options_json)
+        v.create(
+            &files::export_json_now(&sandbox, options_json, files::VIDEO)
+                .map_err(|e| ServiceError::invalid_param(e.message))?,
+        )
     })
 }
 
@@ -340,8 +348,14 @@ pub fn op_video_set_property(
     #[smi] video_id: u32,
     #[string] options_json: &str,
 ) -> Result<(), JsErrorBox> {
+    // A new `src` or `poster` is exported as `createVideo`'s are.
+    let sandbox = crate::file::host_paths::sandbox_of(state);
     with_video(state, "video.setProperty:fail not supported", |v| {
-        v.set_property(video_id, options_json)
+        v.set_property(
+            video_id,
+            &files::export_json_now(&sandbox, options_json, files::VIDEO)
+                .map_err(|e| ServiceError::invalid_param(e.message))?,
+        )
     })
 }
 

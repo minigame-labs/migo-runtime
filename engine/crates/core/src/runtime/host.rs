@@ -116,7 +116,7 @@ pub(crate) struct Host {
 
     platform: Arc<dyn PlatformServices>,
     init_options: InitOptions,
-    network_policy: shared::op_state::NetworkPolicy,
+    network_policy: shared::network_policy::NetworkPolicy,
 
     /// The Host's one callback-id space. Cloned into every `HostOpState`,
     /// including each Worker's, and never rebuilt on restart.
@@ -579,31 +579,57 @@ impl Host {
         }
     }
 
-    fn on_render_error(&mut self, kind: &'static str, code: u16, message: &str) {
+    /// A render command the content issued could not be executed. The session goes on, and the
+    /// host hears it as [`ErrorCode::RenderCommandFailed`] -- not under the command's own code,
+    /// which fatal reports share, so a host that tells the two apart by code can.
+    ///
+    /// [`ErrorCode::RenderCommandFailed`]: shared::error::ErrorCode::RenderCommandFailed
+    fn on_render_error(&mut self, kind: &'static str, message: &str) {
         warn!("[Host {}] render event ({}): {}", self.id, kind, message);
         if self.should_notify_error(kind) {
-            self.platform
-                .notify_error(self.id, code, "render command failed", message);
+            self.platform.notify_error(
+                self.id,
+                shared::error::ErrorCode::RenderCommandFailed.as_u16(),
+                "render command failed",
+                &format!("{kind}: {message}"),
+            );
         }
     }
 
     fn handle_render_event(&mut self, event: RenderEvent) {
         match event {
-            RenderEvent::Canvas2DError { code, message } => {
-                self.on_render_error("canvas2d", code.as_u16(), &message);
+            RenderEvent::Canvas2DError { message, .. } => {
+                self.on_render_error("canvas2d", &message);
             }
-            RenderEvent::GlError { code, message } => {
-                self.on_render_error("gl", code.as_u16(), &message);
+            RenderEvent::GlError { message, .. } => {
+                self.on_render_error("gl", &message);
             }
-            RenderEvent::CanvasError { code, message } => {
-                self.on_render_error("canvas", code.as_u16(), &message);
+            RenderEvent::CanvasError { message, .. } => {
+                self.on_render_error("canvas", &message);
+            }
+            RenderEvent::SurfaceRecreateFailed { code, message } => {
+                // The host's Surface, refused: the host is the one who can act on it, so the
+                // backend's own code goes with it, and nothing reports it as the content's.
+                warn!("[Host {}] surface recreation failed: {}", self.id, message);
+                if self.should_notify_error("surface_recreate") {
+                    self.platform.notify_error(
+                        self.id,
+                        code.as_u16(),
+                        "render surface recreation failed",
+                        &message,
+                    );
+                }
             }
             RenderEvent::SwapFailed { message } => {
                 warn!("[Host {}] swap failed: {}", self.id, message);
+                // The session goes on: the render loop presents again next frame, and a
+                // Surface it can no longer present to is retired and reported through
+                // `notify_surface_lost`, which tells the host what to do. Reported as
+                // `RenderBackendError` it read on Android as a session to restart or destroy.
                 if self.should_notify_error("swap") {
                     self.platform.notify_error(
                         self.id,
-                        shared::error::ErrorCode::RenderBackendError.as_u16(),
+                        shared::error::ErrorCode::RenderSwapBuffersError.as_u16(),
                         "render swap failed",
                         &message,
                     );
@@ -1016,7 +1042,7 @@ impl Host {
         };
         if let Err(error) = &outcome {
             if error.code != shared::error::ErrorCode::Cancelled {
-                self.platform.notify_error(
+                self.platform.notify_game_failed(
                     self.id,
                     error.code.as_u16(),
                     &error.msg,

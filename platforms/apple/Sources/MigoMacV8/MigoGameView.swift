@@ -92,11 +92,16 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             /// strings. Held for as long as a game runs.
             public var capabilities: [MigoSystemCapability]
 
+            /// What network the game may reach, as the JSON
+            /// `MigoSessionConfig.network_policy_json_utf8` documents -- one
+            /// allowlist per channel. `nil`, the default, is no network at all.
+            public var networkPolicyJSON: String?
+
             public init(
                 directories: MigoGameDirectories, contentSigning: MigoContentSigning,
                 preferredFramesPerSecond: Int? = nil, mouse: MouseInput = .touch,
                 hostServices: MigoHostServiceProvider? = nil,
-                capabilities: [MigoSystemCapability] = []
+                capabilities: [MigoSystemCapability] = [], networkPolicyJSON: String? = nil
             ) {
                 self.directories = directories
                 self.contentSigning = contentSigning
@@ -104,6 +109,7 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
                 self.mouse = mouse
                 self.hostServices = hostServices
                 self.capabilities = capabilities
+                self.networkPolicyJSON = networkPolicyJSON
             }
 
             public static func standard(contentSigning: MigoContentSigning) throws -> Configuration {
@@ -320,7 +326,7 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
                     directories: configuration.directories, contentSigning: configuration.contentSigning,
                     preferredFramesPerSecond: configuration.preferredFramesPerSecond,
                     hostServices: MigoGameViewHostServices(app: configuration.hostServices, window: windowService),
-                    capabilities: configuration.capabilities)
+                    capabilities: configuration.capabilities, networkPolicyJSON: configuration.networkPolicyJSON)
                 self.engine = engine
                 engine.onEvent = { [weak self] event in self?.engineEvent(event) }
                 for (name, json) in ecosystemValues { engine.setEcosystemValue(name, json: json) }

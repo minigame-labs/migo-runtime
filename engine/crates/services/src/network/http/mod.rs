@@ -30,7 +30,7 @@ use http_body_util::BodyExt;
 use hyper_util::client::legacy::Client;
 use hyper_util::client::proxy::matcher::Matcher;
 use hyper_util::rt::{TokioExecutor, TokioTimer};
-use shared::op_state::NetworkPolicy;
+use shared::network_policy::NetworkPolicy;
 use url::Url;
 
 pub use body::Body;
@@ -49,7 +49,6 @@ pub struct HttpClientBuilder {
     user_agent: String,
     enable_http2: bool,
     policy: NetworkPolicy,
-    redirect_kind: GateKind,
     operation: &'static str,
     proxies: Option<Matcher>,
     rule: AddressRule,
@@ -58,19 +57,17 @@ pub struct HttpClientBuilder {
 
 impl HttpClientBuilder {
     /// A client whose resolver refuses blocked addresses (naming `operation` in the refusal), whose redirects are
-    /// gated as `redirect_kind` under `policy`, and whose proxies are the machine's.
+    /// gated under `policy` as the request that followed them, and whose proxies are the machine's.
     pub fn new(
         user_agent: &str,
         enable_http2: bool,
         policy: &NetworkPolicy,
-        redirect_kind: GateKind,
         operation: &'static str,
     ) -> Self {
         Self {
             user_agent: user_agent.to_string(),
             enable_http2,
             policy: policy.clone(),
-            redirect_kind,
             operation,
             proxies: None,
             rule: AddressRule::Public { operation },
@@ -141,7 +138,6 @@ impl HttpClientBuilder {
                 proxies,
                 user_agent,
                 policy: self.policy,
-                redirect_kind: self.redirect_kind,
                 operation: self.operation,
             }),
         })
@@ -159,7 +155,6 @@ struct ClientInner {
     proxies: Arc<Matcher>,
     user_agent: HeaderValue,
     policy: NetworkPolicy,
-    redirect_kind: GateKind,
     operation: &'static str,
 }
 
@@ -172,9 +167,12 @@ impl fmt::Debug for HttpClient {
 }
 
 impl HttpClient {
-    pub fn request(&self, method: Method, url: Url) -> RequestBuilder {
+    /// A request made as `kind`: every redirect it follows is gated as `kind` too, so it stays on the channel it was
+    /// made on.
+    pub fn request(&self, kind: GateKind, method: Method, url: Url) -> RequestBuilder {
         RequestBuilder {
             client: self.clone(),
+            kind,
             method,
             url,
             headers: HeaderMap::new(),
@@ -184,18 +182,19 @@ impl HttpClient {
         }
     }
 
-    pub fn get(&self, url: Url) -> RequestBuilder {
-        self.request(Method::GET, url)
+    pub fn get(&self, kind: GateKind, url: Url) -> RequestBuilder {
+        self.request(kind, Method::GET, url)
     }
 
-    pub fn post(&self, url: Url) -> RequestBuilder {
-        self.request(Method::POST, url)
+    pub fn post(&self, kind: GateKind, url: Url) -> RequestBuilder {
+        self.request(kind, Method::POST, url)
     }
 }
 
 /// A request being put together.
 pub struct RequestBuilder {
     client: HttpClient,
+    kind: GateKind,
     method: Method,
     url: Url,
     headers: HeaderMap,
@@ -267,6 +266,7 @@ impl RequestBuilder {
     async fn exchange(self, deadline: Option<tokio::time::Instant>) -> Result<Response, HttpError> {
         let Self {
             client,
+            kind,
             mut method,
             mut url,
             mut headers,
@@ -328,14 +328,12 @@ impl RequestBuilder {
                     _ => false,
                 };
                 if follows {
-                    evaluate_policy(&next, &inner.policy, inner.redirect_kind).map_err(
-                        |reject| {
-                            HttpError::redirect(
-                                url.clone(),
-                                super::client::redirect_reject_message(inner.operation, &reject),
-                            )
-                        },
-                    )?;
+                    evaluate_policy(&next, &inner.policy, kind).map_err(|reject| {
+                        HttpError::redirect(
+                            url.clone(),
+                            super::client::redirect_reject_message(kind, &reject),
+                        )
+                    })?;
                     redirects += 1;
                     same_host &= next.host_str().map(str::to_owned) == original_host;
                     redirect = Some(Span {

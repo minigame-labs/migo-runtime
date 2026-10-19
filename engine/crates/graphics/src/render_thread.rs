@@ -2734,7 +2734,7 @@ impl RenderThread {
                                         debug_stats
                                             .canvas_cmd_errors
                                             .fetch_add(1, Ordering::Relaxed);
-                                        events.emit(RenderEvent::CanvasError {
+                                        events.emit(RenderEvent::SurfaceRecreateFailed {
                                             code: e.code,
                                             message: e.to_string(),
                                         });

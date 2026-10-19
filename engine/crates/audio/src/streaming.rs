@@ -344,24 +344,31 @@ async fn streaming_download_task(
             format!("invalid audio URL {url}: {error}"),
         )
     })?;
-    let response =
-        match wait_for_network(&state, RESPONSE_HEADER_TIMEOUT, client.get(parsed).send()).await {
-            NetworkWait::Cancelled => return Ok(()),
-            NetworkWait::TimedOut => {
-                return Err(EngineError::from_detail(
-                    ErrorCode::Timeout,
-                    "audio response header timeout",
-                ));
-            }
-            NetworkWait::Ready(Ok(response)) => response,
-            NetworkWait::Ready(Err(error)) => {
-                tracing::error!("HTTP request failed for {}: {}", url, error);
-                return Err(EngineError::from_detail(
-                    ErrorCode::IoError,
-                    format!("HTTP request failed: {error}"),
-                ));
-            }
-        };
+    let response = match wait_for_network(
+        &state,
+        RESPONSE_HEADER_TIMEOUT,
+        client
+            .get(migo_services::network::gate::GateKind::AudioStream, parsed)
+            .send(),
+    )
+    .await
+    {
+        NetworkWait::Cancelled => return Ok(()),
+        NetworkWait::TimedOut => {
+            return Err(EngineError::from_detail(
+                ErrorCode::Timeout,
+                "audio response header timeout",
+            ));
+        }
+        NetworkWait::Ready(Ok(response)) => response,
+        NetworkWait::Ready(Err(error)) => {
+            tracing::error!("HTTP request failed for {}: {}", url, error);
+            return Err(EngineError::from_detail(
+                ErrorCode::IoError,
+                format!("HTTP request failed: {error}"),
+            ));
+        }
+    };
 
     if !response.status().is_success() {
         tracing::error!("HTTP error for {}: {}", url, response.status());
@@ -643,7 +650,13 @@ impl Mp3StreamDecoder {
                 Some(consumed) if consumed > 0 => {
                     self.buffer.drain(..consumed);
                 }
-                _ => break,
+                // A whole frame that gave nothing -- its main data in a reservoir
+                // this stream never had -- is that frame lost, as in a whole-file
+                // decode. Stopping here left it to the in-place pass, which
+                // decoded it again over a reservoir now holding its own bytes.
+                _ => {
+                    self.buffer.drain(..length);
+                }
             }
         }
     }
@@ -917,6 +930,63 @@ mod tests {
         }
     }
 
+    /// A tag whose bytes look like a frame header, and a first frame that points into a reservoir
+    /// nobody filled: neither may cost the frames after it, whether the stream is short enough to
+    /// meet only the flush or long enough to decode in place.
+    #[test]
+    fn a_false_frame_costs_nothing_and_a_frame_without_its_reservoir_costs_only_itself() {
+        let tag = |side_info: u8| {
+            let mut body = vec![0u8; 16];
+            body.extend_from_slice(&[0xFF, 0xFB, 0x90, 0x00]);
+            body.extend_from_slice(&[side_info; 32]);
+            body.resize(600, 0);
+            let n = body.len();
+            let mut tag = b"ID3\x03\x00\x00".to_vec();
+            tag.extend([
+                (n >> 21) as u8 & 0x7F,
+                (n >> 14) as u8 & 0x7F,
+                (n >> 7) as u8 & 0x7F,
+                n as u8 & 0x7F,
+            ]);
+            tag.extend_from_slice(&body);
+            tag
+        };
+
+        for frames in [3usize, 6, 40] {
+            let stream = mp3_fixture::stream(frames);
+            for (label, source, expected) in [
+                (
+                    "behind a tag holding a false frame that decodes to nothing",
+                    [tag(0xFF), stream.clone()].concat(),
+                    frames,
+                ),
+                (
+                    "behind a tag holding a false frame that decodes to silence",
+                    [tag(0x00), stream.clone()].concat(),
+                    frames,
+                ),
+                (
+                    "whose first frame has no reservoir",
+                    stream[mp3_fixture::FRAME_BYTES..].to_vec(),
+                    frames - 2,
+                ),
+            ] {
+                let mut decoder = Mp3StreamDecoder::new(mp3_fixture::SAMPLE_RATE);
+                let mut out = Vec::new();
+                for chunk in source.chunks(137) {
+                    decoder.push_data(chunk);
+                    decoder.decode_into(&mut out);
+                }
+                decoder.flush_into(&mut out);
+                assert_eq!(
+                    out.len() / mp3_fixture::SAMPLES_PER_FRAME,
+                    expected,
+                    "{frames} frames {label}"
+                );
+            }
+        }
+    }
+
     /// The loan has to come back, and come back empty.
     ///
     /// Identity is asserted by address: a pool that quietly allocated a fresh
@@ -963,8 +1033,7 @@ mod tests {
             migo_services::network::client::create_policy_http_client(
                 "migo-test",
                 false,
-                &shared::op_state::NetworkPolicy::default(),
-                migo_services::network::gate::GateKind::AudioStreamRedirect,
+                &shared::network_policy::NetworkPolicy::default(),
                 "audio",
             )
         })

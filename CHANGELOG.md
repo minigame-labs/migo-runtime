@@ -8,6 +8,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `scripts/measure-session-churn.sh` measures what a session leaves behind when a host runs one game after another,
+  as a game centre does: the player's `--sessions N` runs the game N times in one process, shuts each session down and
+  joins it, and reports the C heap's live bytes and the resident set once glibc has handed back what it held free; the
+  script fits a line through each and fails above 3 kB and 256 kB a session, or when a session presents nothing. The
+  resident set on its own could not answer this -- glibc's arenas grew it from 160 to 467 MB over sixty sessions with
+  nothing left alive. It found the EGL library being reloaded every session; a session whose JS runtime is kept alive
+  reads 3.4 MB and 20 MB a session.
+- The headless player (`engine/tools/player`) takes `--prelude SCRIPT`, any number of times, and runs each in the global
+  scope before the game's entry, in the order given -- as an Android or Apple host injects an adapter. Content written
+  against `wx` or the browser could not run there at all: `migo-examples`' `wx-adapter-demo` stopped on
+  `ReferenceError: wx is not defined` and presented nothing; with the wx adapter bundle as a prelude it runs.
+- `scripts/prescreen-game.sh` reads `game.json` and counts the plugins it declares, which the mini-game platform serves
+  to `requirePlugin(...)` and Migo cannot. A bundle that also calls `requirePlugin` does not start as built, and no name
+  scan saw it; one that only declares a plugin is told the declaration may be unused. Cocos Creator's "Separate Engine"
+  builds deliver their engine this way, and the report says to rebuild without it.
+- A compatibility report for one game: `scripts/compat-report.sh BUNDLE [--adapter FILE]...` runs it on the Linux
+  player with `tools/compat-recorder/recorder.js` injected behind the adapter, and writes Markdown and JSON saying
+  which `migo` and `wx` APIs it called, the names it looked for and did not find, the names it installed itself, the
+  WebGL extensions it asked for and the GL errors it saw, the time to the end of its entry and to its first frame, and
+  the errors the engine logged -- each API judged by this build's contracts for Android: who answers it (the engine,
+  the platform's host layer, or the host app's own integration), whether the conformance suite verified it, whether it
+  is deliberately not offered -- and the calls the host answered "not supported", judged for Android, the globals the
+  game needed that nothing defines, and a run in which the player presented nothing. The report says it is a partial view:
+  Linux has no device services, and the device run is the authority. The recorder is a prelude a host injects, never part of a shipped one; the game keeps the
+  arguments, identities, `new.target`, own properties, descriptors and absent names it has without it, and its
+  surface methods are called on the surface itself.
+- Android: `MigoGameActivity.onCreateRuntimeConfig()` can refuse a launch by throwing `LaunchRefusedException`
+  (an error code and a message), which reaches `onLaunchFailed` and starts nothing. It is documented as the place to
+  make sure the game's files are in place, and had no way to say they were not: returning null ran the game on a
+  default config. The exception is checked, so a subclass that refuses launches does not compile against an SDK
+  without it.
 - `request`, `downloadFile` and `uploadFile` answer `res.profile` (`enableProfile`, on by default): the phases of the
   request in epoch milliseconds (invoke, queue, redirect, fetch, DNS, connect, TLS, request, response), the peer, whether
   the connection was reused, the bytes each way, the protocol (`http1.1`, `h2`), the connection's RTT from the kernel
@@ -618,6 +649,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a relink, is INVALID_OPERATION and null, as are a deleted program and one that did not link.
 
 ### Changed
+- **Content reaches no network until the host grants it.** This changes every host: one that sets nothing now gets no
+  network at all. A policy is one domain allowlist per channel -- `request`, `download` (which also covers remote
+  images, audio streaming and asset prefetch), `upload`, `socket` (WebSocket), `tcp` and `udp` -- and a channel may
+  instead be `unrestricted`. It is set with `RuntimeConfig.Builder.setNetworkPolicy(NetworkPolicy)` on Android,
+  `MigoSessionConfig.network_policy_json_utf8` through the C ABI, `networkPolicyJSON` on either `MigoGameView`
+  configuration, and `--network-policy FILE` on the Linux player (and through the Windows spike driver). The
+  OpenHarmony host and the Linux Qt kit's managed session take no policy yet, so content there reaches no network.
+  Entries are domains, never IP addresses. `http://`,
+  `ws://` and the local network are off unless the policy turns them on, and a request, download or upload never
+  reaches the local network or the loopback -- except through an HTTP proxy the machine is configured with, which
+  resolves the domain itself. Every redirect hop is held to the channel the request was made on, so a redirected
+  download still answers to the download allowlist. A UDP socket is made only when content could send to someone, and
+  hears only the senders it could send to: one on the local network when that is granted, and a public one once the
+  socket has sent or connected to its address. A URL content hands the host app to show, share, play or decode --
+  `previewImage`, `previewMedia`, a share's image, a `createVideo` source and cover, a video decoder's source -- is
+  held to the download allowlist and reaches the app as the URL that was checked; the app or the system media stack
+  fetches it, resolving the domain and following its redirects itself. These went to the app unchecked under every
+  policy, so a game granted nothing could still have any URL fetched -- and a video player was handed content's own
+  path string, so it could open any file the app could. No platform could set a policy before, and the one every
+  session got permitted every domain, over plain HTTP too. A refusal names the channel and the domain.
 - At most ten requests run at once -- `request`, `downloadFile` and `uploadFile` together, as the reference allows --
   and the rest wait their turn (an abort while waiting ends the request); the wait is the profile's
   `queueStart`/`queueEnd`, which were the fetch start when the engine had no limit. At most five WebSocket connections
@@ -628,12 +679,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still made, and its connect fails saying why. A UDPSocket may send to the limited broadcast address and to multicast
   groups (it may not reach the loopback, or a private address off the local network, any more than a stream may);
   `setBroadcast` turns broadcast on for the socket instead of failing the send, and `255.255.255.255` needs no flag.
-- Content may reach the other devices on its local network: a private address (RFC 1918, IPv6 unique-local) is
-  allowed when it is on one of the device's networks and is not the device itself -- what the reference allows ("the
-  non-local IPs on the local network") so games can play on a LAN -- and such an address is not held to the domain
-  allow list, as the reference does not hold it. A private address anywhere else, the device itself, loopback,
-  link-local (cloud metadata included), multicast and the reserved ranges stay refused for `request`, `downloadFile`,
-  `uploadFile`, WebSocket, TCP and UDP alike.
+- With the local network granted (`lan`), a WebSocket, a TCPSocket and a UDPSocket may reach the other devices on
+  the device's own networks -- what the reference allows ("the non-local IPs on the local network") so games can play
+  on a LAN -- and such an address is not held to the domain allowlist, as the reference does not hold it. Which
+  devices those are is read from the device's networks rather than from the address range: on IPv6 a neighbour's
+  address is as often global as unique-local, and a device given a public IPv4 has neighbours with public addresses
+  too. The device itself, by any of its addresses, stays out of reach either way, so a domain pointed at the phone's
+  own address reaches nothing. A private address on none of the device's networks, loopback, link-local (cloud
+  metadata included), multicast and the special-purpose ranges no internet host has stay refused for every API; an
+  IPv6 address that embeds an IPv4 one (mapped, NAT64's well-known prefix, 6to4) is judged as that IPv4 address, and
+  local-use NAT64 and Teredo are refused: where it embeds an IPv4 address depends on a prefix length the address does
+  not carry, so on a network whose NAT64 uses a local-use prefix an IPv4-only server is out of reach.
 - Every outbound HTTP request -- `request`, `downloadFile`, `uploadFile`, a streamed `InnerAudioContext.src`, an
   `http(s)` image source, `prefetchAssets` -- is made by the engine's own client (hyper, with rustls and the same
   Mozilla roots) instead of reqwest, so a request's connection is the engine's to measure: DNS, TCP and TLS each timed,
@@ -675,6 +731,114 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- Content that draws outside `requestAnimationFrame` -- at its top level, from a timer, in an input handler -- is shown.
+  The frame end that publishes a frame's commands and presents them ran only in the `requestAnimationFrame` loop, which
+  runs only while callbacks are queued: on Android a game drawing from `setInterval` stayed black for as long as it ran,
+  the Linux player reported such a game as never having drawn, and a game that drew once showed only when some unrelated
+  frame happened to follow it. The first command after a frame end -- written to the command stream, or pushed by an op
+  that reaches the renderer directly, as `fillText` does -- now has its frame ended at the next frame, as a browser
+  presents what a task drew; a game that animates through `requestAnimationFrame` is unaffected.
+- Building from source with `CARGO_TARGET_DIR` (or `CARGO_BUILD_TARGET_DIR`, or `build.target-dir`) set no longer
+  packages or runs an earlier build. The SDK, host and snapshot build scripts, the Android C host and the player gates
+  built where cargo was told to and then read `engine/target/...`, so they went on with whatever was left there: the
+  Android C host packaged a months-old staticlib, and the player gates passed against a player from before the change
+  they checked. Each now asks cargo where it wrote (`scripts/lib/cargo-target-dir.sh`), and the V8 component-manifest
+  scripts build their sealing tool into the directory they read it from.
+- Android: a game has no title bar, whatever theme the host gave its app. `MigoGameActivity` took the app's theme --
+  neither the SDK's manifest entry nor a host's subclass names one -- so under a framework theme with an action bar the
+  game drew below the host's title, in a surface shorter than the screen. Found by an integration from the
+  game-center kit's documentation alone.
+- A frame that could not be presented, other than through a lost context, reaches the host as `RenderSwapBuffersError`
+  (413), which Android reads as recoverable (`NATIVE_RENDER_SWAP_BUFFERS_ERROR`). Both lanes reported it as
+  `RenderBackendError`, a session to restart or destroy, although the session goes on: the render loop presents again
+  next frame, and a Surface it can no longer present to is retired and reported through `onSurfaceLost`, which tells
+  the host what to do.
+- A render command the game got wrong -- a 2D draw, a GL call, a canvas change the renderer could not execute -- reaches
+  the host as `RenderCommandFailed` (430), which Android's `ErrorCode.isRecoverable` reads as recoverable
+  (`NATIVE_RENDER_COMMAND_FAILED`), with the command's own error in the detail. It was reported under the command's own
+  code, one fatal reports carry too -- an invalid argument, a shader that did not compile -- so Android hosts were told
+  each such failure was non-recoverable, and a host that closes the game on those closed it over a GL error. A Surface
+  the host handed over that could not be installed is not one of these: it is reported under the backend's own code, now
+  on the external-frame lane too, which had logged it and told the host nothing. A test now holds every `NATIVE_*`
+  constant the Android SDK declares to the engine code of the same name and number.
+- The headless player stops as soon as the game fails to start, and says why: `the game did not start: module
+  evaluation failed: Error: ...`. It heard nothing from the engine -- `LinuxPlatform` and `WindowsPlatform` reported
+  their host notifications nowhere -- so a game whose entry threw waited out the 30-second present ceiling and the run
+  after it, 36 seconds, then said only that nothing was presented; a launch that failed for a reason no content line
+  names, such as a renderer that never came up, was in no report at all. Both platforms take an embedder's
+  `HostNotifier` (`with_notifier`), and the launch's failure reaches it as `notify_game_failed`, the other half of
+  `notify_game_ready` -- by default a `notify_error`, as every host heard it before. The compatibility report blocks on
+  the player's verdict. A launch that fails after a loading screen presented fails the run too: the player reads the
+  launch's outcome once the session is joined, when nothing more can be reported. `scripts/test-player-launch-outcome.sh`
+  holds both in CI.
+- Android: closing a session stops its engine even when releasing one of its other resources fails. `close()` shut the
+  engine down only once every Java-side resource had let go, so one manager that threw left the engine running the game
+  its player had closed, for the life of the process: `MigoGameActivity` drops the session once it has closed it, and
+  nothing retried. `GameSession.isEngineStopped()` says whether the engine was confirmed stopped, for a host that hands
+  the game's files to something else when the game ends.
+- The system EGL library is loaded once per process, on every platform. Each session opened its own handle and dropped
+  it at shutdown, so a host that ran one game after another unloaded and reloaded the whole GL driver between them --
+  on Linux, glvnd's `libEGL` and `libGLdispatch`, Mesa's `libEGL_mesa`, its gallium driver -- and each cycle leaked
+  what the driver's teardown does not free: about 4 kB a session on Mesa, four fifths of what a session left behind. A
+  driver that keeps a thread or an exit handler past its unload crashes there instead.
+- The headless player's frame capture no longer keeps a frame read after its request was taken: one landing between
+  `take` and the session's end stayed in the slot, a whole frame's pixels held after the session that drew it had gone.
+- WebP and GIF images load on Linux, Windows, OpenHarmony and Apple, and through the Android C ABI. The Rust decoders
+  covered JPEG, PNG and BMP, and those builds have no platform decoder to fall back to (the C ABI's `AImageDecoder` needs
+  Android 11), so every WebP or GIF asset failed with "no image decoder available" -- and mini-game packages ship WebP to
+  save size. The `image` crate's WebP and GIF decoders come with `rust-image-decode`; the Java SDK's Android build, which
+  decodes through BitmapFactory, carries neither.
+- `scripts/prescreen-run.sh` reads the device's log by the engine's own error lines, the table the Linux report uses. It
+  kept a table of its own with no pattern for the engine's fatal "event loop error" unless the exception was a TypeError
+  or a ReferenceError, so a game that painted and then died in a callback was reported as running. Rejections and calls
+  the host answered "not supported" are now listed too, and a log the compatibility recorder wrote into adds what the
+  game reached for. The reading moved to `scripts/lib/prescreen_run_report.py` and is tested on captures made without a
+  device.
+- Linux: a character the named fonts lack is drawn in an installed font that has it. Skia was built with fontconfig
+  turned off, which left its directory font manager: it lists `/usr/share/fonts` by name and never answers which face
+  has a character, so SkParagraph's per-character fallback found nothing -- Chinese, Japanese, Korean, Arabic and every
+  other script the bundled Latin face lacks drew as boxes, with the fonts installed. Fontconfig, Skia's own default on
+  Linux, is back, which also finds the user's fonts and resolves `Arial` to its metric-compatible face as a browser does.
+  Android, Windows, Apple and OpenHarmony builds are unchanged.
+- `Object.keys(migo)` and `for...in` list every API `migo` publishes, and so the `wx` an adapter mirrors from it. The
+  namespace copied the attributes of the globals it mirrors, most of which are not enumerable, so 422 of its 452 names
+  were missing from the list -- and the platform's own namespace is a plain object whose every API is listed. Cocos
+  Creator 3 builds its environment from `Object.keys(wx)`: its `minigame.onHide` was undefined and its start-up threw.
+- `console` has every member of the Console Standard's namespace: `assert`, `clear`, `count`, `countReset`, `dir`,
+  `dirxml`, `groupCollapsed`, `table`, `time`, `timeLog`, `timeEnd` and `trace` joined the seven it had. A missing
+  member was a TypeError -- Cocos Creator 3 calls `console.time` while it starts its physics. A string first argument is
+  formatted as the standard says (`%s %d %i %f %o %O %c %%`), which no member did; `clear()` empties the group stack; no
+  member needs `console` as its receiver; and a log call never throws, whatever content did to `Error` or a value's
+  `toString`.
+- An MP3 whose ID3v2 tag holds bytes that look like a frame header decodes. The decoder found audio by sync words, and a
+  sync-like pair inside the tag measured as a frame that decoded to nothing, which ended the decode: a Cocos Creator
+  game's 22.05 kHz sound effect failed to load, and the game waited for it on its splash screen. A tag is now skipped by
+  the length it declares, and a frame that decodes to nothing costs that frame rather than the rest of the file -- in a
+  whole-file decode and at the end of a stream, where the frame used to be decoded again over its own bytes.
+- A game whose entry module throws -- on its first line, or after a top-level `await` -- fails to launch with
+  `ModuleLoadError` "module evaluation failed" and the exception, and the host is told through its error callback. It
+  used to be logged "module evaluated" and reported ready: deno_core settles a rejected evaluation as done and rethrows
+  the exception as an unhandled rejection, and the engine's rejection handler hands every unhandled rejection to the
+  game's listeners and calls it handled, so the only trace was a console line over a blank surface. A Worker script that
+  throws is refused the same way instead of running its message pump for a script that never set `onmessage`.
+- An entry module with three or more static imports loads. Each module read was charged the 100 MiB a read may be at
+  most against the IO scheduler's pending-byte budget, and deno_core reads a module's imports concurrently, so whenever
+  a third read overlapped the first two the launch failed with `ByteLimitExceeded` -- one launch in three on the Linux
+  player for an entry importing four modules. A module read is now charged its size, as the file system API's reads are,
+  and produces no more than it was charged: a module that grew after it was sized is refused, and so is one that is not
+  a regular file, which a FIFO named like a module would otherwise have blocked the host thread on.
+- An Android app using the Full SDK requests `READ_EXTERNAL_STORAGE` only up to API 28, as it does
+  `WRITE_EXTERNAL_STORAGE`. The AAR never declared it; the app's manifest merger inferred it from
+  `WRITE_EXTERNAL_STORAGE` in a library manifest with no `targetSdkVersion`, and added it with no bound, so every host
+  asked for storage on every Android version. The gates read the library's own merged manifest, where it never appears;
+  `scripts/test-maven-consumer.sh` now holds the permissions of an app built from the staged repository to the policy.
+- A C ABI record whose `struct_size` ends inside one of its pointers is refused with `MIGO_ERROR_INVALID_ARGUMENT`.
+  `MigoContentDescriptor` and `MigoHostCallbacks` accepted any size between their oldest release and their current
+  one, so such a size copied part of a pointer and zeroed the rest, and the engine used an address nobody wrote. A
+  size a compiler produces for any release is unaffected.
+- An Android app that shrinks its code with R8 can start a session. The engine reads `RuntimeConfig`'s private fields
+  by name, and the rules the AAR ships for its consumers kept only public members, so R8 renamed them (`cacheDir` to
+  `a`, `filesDir` to `b`) and every session failed to initialise. Those fields are now kept.
 - The JS watchdog no longer kills a game for the time it spends waiting on the renderer. It ends a task whose script
   runs past its budget (ten seconds); a task blocked in a synchronous call is waiting, not running, and a slow GPU --
   a software renderer, a low-end phone compiling shaders -- made a three.js scene's calls add up past the budget. The

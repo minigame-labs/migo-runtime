@@ -1609,7 +1609,7 @@ async fn worker_evaluate_module(
         rt.mod_evaluate(module_id)
     };
     let mut evaluation = std::pin::pin!(evaluation);
-    std::future::poll_fn(move |cx| -> std::task::Poll<Result<(), String>> {
+    std::future::poll_fn(|cx| -> std::task::Poll<Result<(), String>> {
         let _scope = watchdog.map(DeadlineWatchdog::enter);
         if let std::task::Poll::Ready(res) = evaluation.as_mut().poll(cx) {
             return std::task::Poll::Ready(res.map_err(|e| e.to_string()));
@@ -1619,7 +1619,12 @@ async fn worker_evaluate_module(
             _ => std::task::Poll::Pending,
         }
     })
-    .await
+    .await?;
+    // A rejected evaluation settles Ok with the exception rethrown, which the engine's rejection
+    // handler calls handled: the module's own status is what still says it threw.
+    rt.get_module_namespace(module_id)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 /// Guard every poll of the Worker event loop. The Worker message pump runs here,
@@ -2329,10 +2334,8 @@ mod timer_lifecycle_tests {
     use deno_core::{FastString, PollEventLoopOptions, RuntimeOptions};
     use futures::future::poll_fn;
     use shared::{
-        channel::ThreadWakeup,
-        device::gpu_caps::GpuCaps,
-        op_state::{AudioSender, NetworkPolicy},
-        render_command_sender::CommandSender,
+        channel::ThreadWakeup, device::gpu_caps::GpuCaps, network_policy::NetworkPolicy,
+        op_state::AudioSender, render_command_sender::CommandSender,
     };
     #[test]
     fn worker_and_parent_share_host_callback_id_space() {
@@ -2841,6 +2844,44 @@ mod timer_lifecycle_tests {
 
         drop(message_tx);
     }
+    // As on the main thread: deno_core settles a rejected evaluation with Ok and rethrows, and a
+    // Worker's realm runs the engine's rejection handler too, which calls every rejection handled.
+    // A Worker script that threw was "evaluated", and its message pump ran on for a script that
+    // never installed its onmessage.
+    #[tokio::test]
+    async fn a_worker_script_that_throws_fails_evaluation() {
+        let dir = std::env::temp_dir().join(format!(
+            "migo-worker-evaluation-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("main.js"), "throw new Error('the worker threw');").unwrap();
+        let (_message_tx, message_rx) = worker_message_channel();
+        let (_lifecycle_tx, lifecycle_rx) = worker_lifecycle_channel();
+        let mut rt = JsRuntime::new(RuntimeOptions {
+            module_loader: Some(std::rc::Rc::new(deno_core::FsModuleLoader)),
+            extensions: create_worker_runtime_extensions(
+                test_worker_ctx(message_rx, lifecycle_rx),
+                test_host_state(Arc::new(AtomicBool::new(false))),
+            ),
+            ..Default::default()
+        });
+        initialize_worker_runtime(&mut rt).expect("worker runtime bootstrap");
+
+        let resolved = resolve_path("main.js", &dir).unwrap();
+        let module_id = worker_load_module(&mut rt, None, &resolved)
+            .await
+            .expect("the script compiles");
+        let error = worker_evaluate_module(&mut rt, None, module_id)
+            .await
+            .expect_err("a Worker script that threw must not evaluate");
+        assert!(
+            error.contains("the worker threw"),
+            "the error names the exception: {error}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 /// Worker runaway protection via the one process deadline watchdog.
@@ -2855,7 +2896,8 @@ mod watchdog_worker_tests {
     use shared::{
         channel::ThreadWakeup,
         device::gpu_caps::GpuCaps,
-        op_state::{AudioSender, HostOpState, NetworkPolicy},
+        network_policy::NetworkPolicy,
+        op_state::{AudioSender, HostOpState},
         render_command_sender::CommandSender,
     };
 

@@ -4,10 +4,7 @@ use super::*;
 /// content cannot reach one way it cannot reach the other.
 #[tokio::test]
 async fn a_host_the_policy_refuses_is_never_connected_to() {
-    let policy = NetworkPolicy {
-        domain_whitelist: vec!["allowed.example".to_string()],
-        enforce_https: false,
-    };
+    let policy = NetworkPolicy::from_json(r#"{"tcp":["allowed.example"]}"#).unwrap();
     let resources = ResourceTable::new();
     let error = connect(&policy, &resources, "blocked.example", 9443, 1)
         .await
@@ -145,9 +142,14 @@ async fn a_stalled_peer_loses_the_writer_at_the_deadline() {
         "{}",
         error.message
     );
-    // The writer is free again: this would hang if the deadline had left it
-    // taken.
-    connection.tx.lock().await;
+    // The writer is free again, rather than left taken by the reclaimed write.
+    writer_is_free(&connection).await;
+}
+
+/// Bounded, so a writer left taken fails the test instead of hanging it.
+async fn writer_is_free(connection: &TcpConn) {
+    let writer = tokio::time::timeout(Duration::from_secs(1), connection.tx.lock()).await;
+    drop(writer.expect("the writer was left taken"));
 }
 
 /// And closing reclaims it too, without waiting for the deadline.
@@ -178,7 +180,7 @@ async fn closing_reclaims_the_writer_from_a_stalled_peer() {
     .expect_err("a closed socket is not written to");
     closed.await.unwrap();
     assert_eq!(error.message, "TCPSocket closed");
-    connection.tx.lock().await;
+    writer_is_free(&connection).await;
 }
 
 /// The reference's list, at its edges.

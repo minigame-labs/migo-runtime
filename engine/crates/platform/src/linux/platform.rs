@@ -4,7 +4,9 @@ use migo_core::services::{
 };
 use migo_core::{DeviceServiceProvider, FrameClock, HostNotifier};
 use shared::services::app_info::HostAppInfo;
-use shared::surface::{HostWindowInfo, HostWindowState};
+use shared::surface::{
+    HostWindowInfo, HostWindowState, PublicSurfaceGeneration, SurfaceLossReason,
+};
 use std::sync::Arc;
 
 pub struct LinuxPlatform {
@@ -23,6 +25,9 @@ pub struct LinuxPlatform {
     window: Option<Arc<HostWindowState>>,
     /// What the host says about itself.
     host_app: HostAppInfo,
+    /// Told what the engine reports to its host -- the launch's outcome, errors, an exit --
+    /// when an embedder supplies one; see [`Self::with_notifier`].
+    notifier: Option<Arc<dyn HostNotifier>>,
 }
 
 impl LinuxPlatform {
@@ -31,6 +36,7 @@ impl LinuxPlatform {
             host_keyboard: None,
             window: None,
             host_app: HostAppInfo::default(),
+            notifier: None,
         }
     }
 
@@ -44,6 +50,7 @@ impl LinuxPlatform {
             host_keyboard,
             window: None,
             host_app: HostAppInfo::default(),
+            notifier: None,
         }
     }
 
@@ -63,6 +70,15 @@ impl LinuxPlatform {
     /// What the host says about itself -- its id (`host.appId`) above all, which the platform has no way to know.
     pub fn with_host_app(mut self, app: HostAppInfo) -> Self {
         self.host_app = app;
+        self
+    }
+
+    /// Tell `notifier` what the engine reports to its host: the launch's outcome, errors, the
+    /// game asking to exit. Without one the reports go nowhere, as they did before: a headless
+    /// run whose game failed to start waited out its whole present ceiling and then said only
+    /// that nothing was presented, with the reason in the log.
+    pub fn with_notifier(mut self, notifier: Arc<dyn HostNotifier>) -> Self {
+        self.notifier = Some(notifier);
         self
     }
 }
@@ -118,7 +134,48 @@ impl DeviceServiceProvider for LinuxPlatform {
 
 impl FrameClock for LinuxPlatform {}
 
-impl HostNotifier for LinuxPlatform {}
+impl HostNotifier for LinuxPlatform {
+    fn notify_game_ready(&self, host_id: i32) {
+        if let Some(notifier) = &self.notifier {
+            notifier.notify_game_ready(host_id);
+        }
+    }
+
+    fn notify_game_failed(&self, host_id: i32, error_code: u16, message: &str, detail: &str) {
+        if let Some(notifier) = &self.notifier {
+            notifier.notify_game_failed(host_id, error_code, message, detail);
+        }
+    }
+
+    fn notify_exit(&self, host_id: i32) {
+        if let Some(notifier) = &self.notifier {
+            notifier.notify_exit(host_id);
+        }
+    }
+
+    fn notify_error(&self, host_id: i32, error_code: u16, message: &str, detail: &str) {
+        if let Some(notifier) = &self.notifier {
+            notifier.notify_error(host_id, error_code, message, detail);
+        }
+    }
+
+    fn notify_surface_lost(
+        &self,
+        host_id: i32,
+        public_generation: PublicSurfaceGeneration,
+        reason: SurfaceLossReason,
+    ) {
+        if let Some(notifier) = &self.notifier {
+            notifier.notify_surface_lost(host_id, public_generation, reason);
+        }
+    }
+
+    fn notify_host_message(&self, host_id: i32, json: &str) {
+        if let Some(notifier) = &self.notifier {
+            notifier.notify_host_message(host_id, json);
+        }
+    }
+}
 
 // Nothing per-session lives outside the isolate here, so a runtime
 // replacement needs no bookkeeping on this platform.
@@ -135,6 +192,76 @@ mod tests {
             height,
             shared::surface::PixelRatio::new(1.0).expect("test ratio"),
         )))
+    }
+
+    #[derive(Default)]
+    struct Heard(std::sync::Mutex<Vec<String>>);
+
+    impl HostNotifier for Heard {
+        fn notify_game_ready(&self, host_id: i32) {
+            self.0.lock().unwrap().push(format!("ready {host_id}"));
+        }
+        fn notify_game_failed(&self, host_id: i32, code: u16, message: &str, detail: &str) {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("failed {host_id} {code} {message} {detail}"));
+        }
+        fn notify_exit(&self, host_id: i32) {
+            self.0.lock().unwrap().push(format!("exit {host_id}"));
+        }
+        fn notify_error(&self, host_id: i32, code: u16, message: &str, detail: &str) {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("error {host_id} {code} {message} {detail}"));
+        }
+        fn notify_surface_lost(
+            &self,
+            host_id: i32,
+            generation: PublicSurfaceGeneration,
+            reason: SurfaceLossReason,
+        ) {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("lost {host_id} {} {reason:?}", generation.get()));
+        }
+        fn notify_host_message(&self, host_id: i32, json: &str) {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("message {host_id} {json}"));
+        }
+    }
+
+    /// Everything the engine tells its host reaches the embedder's notifier, each as itself:
+    /// a notifier that heard only some of it would be the silence it replaces, for those.
+    #[test]
+    fn the_embedders_notifier_hears_every_report_as_itself() {
+        let heard = Arc::new(Heard::default());
+        let platform = LinuxPlatform::new().with_notifier(heard.clone());
+        platform.notify_game_ready(3);
+        platform.notify_game_failed(3, 11, "module evaluation failed", "Error: x");
+        platform.notify_exit(3);
+        platform.notify_error(3, 12, "render command failed", "GL_INVALID_OPERATION");
+        platform.notify_surface_lost(
+            3,
+            PublicSurfaceGeneration::new(5).unwrap(),
+            SurfaceLossReason::DeviceLost,
+        );
+        platform.notify_host_message(3, "{}");
+        assert_eq!(
+            *heard.0.lock().unwrap(),
+            [
+                "ready 3",
+                "failed 3 11 module evaluation failed Error: x",
+                "exit 3",
+                "error 3 12 render command failed GL_INVALID_OPERATION",
+                "lost 3 5 DeviceLost",
+                "message 3 {}",
+            ]
+        );
     }
 
     struct HostKeyboard;

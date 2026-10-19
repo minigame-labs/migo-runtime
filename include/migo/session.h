@@ -109,7 +109,38 @@ typedef struct MigoSessionConfig {
      * struct holds.
      */
     uint8_t launch_nonce[16];
+    /*
+     * What network the session's content may reach, as NUL-terminated UTF-8
+     * JSON; borrowed for the duration of migo_session_create. NULL grants
+     * nothing at all: every request, download and upload, and every WebSocket,
+     * TCP and UDP socket, is refused.
+     *
+     *   {"request": ["api.example.com"], "download": ["*.cdn.example.com"],
+     *    "socket": "unrestricted", "allowPlainHttp": false, "lan": false}
+     *
+     * Each of request, download, upload, socket, tcp and udp is an array of
+     * domains -- "example.com" is that host only, "*.example.com" its
+     * subdomains and not itself, never an IP address, in ASCII (an
+     * internationalised name in its xn-- form) -- or "unrestricted".
+     * A channel left out is refused. allowPlainHttp permits http:// and ws://;
+     * lan lets socket, tcp and udp reach other devices on the local network.
+     * Anything else -- an unknown key, a malformed entry -- makes
+     * migo_session_create fail with MIGO_ERROR_INVALID_ARGUMENT.
+     *
+     * Appended, which is why it is last: the library zero-extends a caller
+     * that passes the shorter record, and NULL is the refusal such a caller
+     * had no way to change.
+     */
+    const char *network_policy_json_utf8;
 } MigoSessionConfig;
+
+MIGO_STATIC_ASSERT(offsetof(MigoSessionConfig, struct_size) == 0,
+                   "every versioned struct must begin with struct_size");
+#if MIGO_LP64
+MIGO_STATIC_ASSERT(sizeof(MigoSessionConfig) == 40, "MigoSessionConfig LP64 size changed");
+MIGO_STATIC_ASSERT(offsetof(MigoSessionConfig, network_policy_json_utf8) == 32,
+                   "MigoSessionConfig.network_policy_json_utf8 moved");
+#endif
 
 typedef uint32_t MigoContentFlags;
 #define MIGO_CONTENT_FLAG_NONE 0U

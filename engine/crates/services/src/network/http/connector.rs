@@ -40,8 +40,9 @@ pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 /// What the resolver may answer.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum AddressRule {
-    /// Only publicly reachable unicast addresses ([`crate::network::address_filter`]); `operation` names the caller in
-    /// the refusal.
+    /// Only publicly reachable unicast addresses ([`crate::network::address_filter`]), never the local network: every
+    /// channel this client carries is one `gate::lan_access` refuses it to. `operation` names the caller in the
+    /// refusal.
     Public { operation: &'static str },
     /// Anything, the loopback included: for tests that serve on it, never in a build that ships.
     #[cfg(test)]
@@ -52,14 +53,16 @@ impl AddressRule {
     /// Why `address` may not be connected to, if it may not.
     fn refusal(self, address: &SocketAddr) -> Option<String> {
         match self {
-            Self::Public { operation } => {
-                crate::network::address_filter::is_blocked_address(address).then(|| {
-                    format!(
-                        "{operation}: connection to {} is not allowed (private/loopback address)",
-                        address.ip()
-                    )
-                })
-            }
+            Self::Public { operation } => crate::network::address_filter::is_blocked_address(
+                address,
+                crate::network::address_filter::LanAccess::Refused,
+            )
+            .then(|| {
+                format!(
+                    "{operation}: connection to {} is not allowed (private/loopback address)",
+                    address.ip()
+                )
+            }),
             #[cfg(test)]
             Self::Any => None,
         }
@@ -266,6 +269,11 @@ impl tower_service::Service<Name> for StaticAddresses {
 /// A proxy is the machine owner's egress, not something content names, so the engine resolves and connects to it
 /// without the address policy -- a proxy on the loopback is the common case -- and never resolves `dst` itself.
 /// HTTPS is tunnelled with CONNECT; plain HTTP is written to the proxy in absolute form.
+///
+/// So the address rule does not reach past a proxy: an allowed domain that resolves to a private address is
+/// connected to if the proxy connects to it. Resolving `dst` here first would break the networks a proxy exists
+/// for, where the client cannot resolve outside names at all, and would still not bind what the proxy resolves.
+/// DATA-HANDLING.md states the exception.
 async fn through_proxy(
     proxy: &Intercept,
     dst: &Uri,

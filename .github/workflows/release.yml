@@ -196,6 +196,9 @@ jobs:
       - name: Reproducible timestamp contract
         run: bash scripts/test-reproducible-timestamp-contract.sh
 
+      - name: Cargo target directory contract
+        run: bash scripts/test-cargo-target-dir-contract.sh
+
       - name: Example content namespace contract
         run: bash scripts/test-content-namespace-contract.sh
 
@@ -688,6 +691,24 @@ jobs:
       - name: Producer-local text codec agrees with the engine's
         run: bash scripts/test-text-codec-agreement.sh
 
+      # The compatibility recorder is injected ahead of content nobody here wrote, and
+      # a recorder that changes the game reports on a run that would not have happened.
+      # Each check holds both halves: the line it writes, and the game's unchanged view.
+      - name: Compatibility recorder reports without changing the game
+        run: bash scripts/test-compat-recorder.sh
+
+      # What a CP is told about its game: each API judged by the matrix's own
+      # readiness, and the engine's real error lines read back, so a pattern the
+      # engine stopped emitting goes red here rather than matching nothing.
+      - name: Compatibility report judges by the contracts
+        run: bash scripts/test-compat-report.sh
+
+      # The device run's verdicts, held to captures made here: its reading used to keep
+      # an error table of its own, which did not know the engine's fatal "event loop
+      # error", so a game that died in a timer after painting read as "Runs".
+      - name: Device prescreen report reads the capture
+        run: bash scripts/test-prescreen-run-report.sh
+
       # The engine's own JavaScript API layer, staged for the Performance+
       # producer and run: content draws through migo.createCanvas() and the
       # engine's WebGL facade, and the host's ingress admits the frames. A module
@@ -831,7 +852,7 @@ jobs:
       # the pre-existing backlog. Mirrors pr-ci.yml so the tag gate matches PR CI.
       - name: Run clippy lints (host-buildable crates)
         working-directory: engine
-        run: cargo clippy -p migo-shared -p migo-io -p migo-icu-data -p migo-runtime-v8 -p migo-capi-abi -p migo-frame-wire -p migo-frame-decode -p migo-alloc-probe -p migo-contention-probe -p migo-executor-probe --all-targets
+        run: cargo clippy -p migo-shared -p migo-io -p migo-icu-data -p migo-runtime-v8 -p migo-services -p migo-capi-abi -p migo-frame-wire -p migo-frame-decode -p migo-alloc-probe -p migo-contention-probe -p migo-executor-probe --all-targets
 
       # `--tests` mirrors pr-ci.yml: `--lib` skipped the frame-boundary allocation
       # gate (shared/tests/frame_cycle_allocation.rs) and both snapshot round-trips,
@@ -841,10 +862,19 @@ jobs:
         working-directory: engine
         run: |
           cargo test -p migo-shared -p migo-icu-data -p migo-runtime-v8 --tests
+          # The Slim product profile, which no job tested: every crate defaults
+          # to Full, so none of its `cfg(not(feature = ...))` arms were built
+          # here, and master gathered 42 Slim failures that only a local run saw.
+          cargo test -p migo-runtime-v8 --tests --no-default-features --features profile-slim
           # `--tests` so the ASTC fixture emitter in `tests/` is compiled here.
           # Its cases are `#[ignore]`d and belong to the ASTC gate, but a
           # binary nothing builds is one that stops building unnoticed.
           cargo test -p migo-io --tests
+          # The network gate and every socket and HTTP client: 272 tests in the
+          # lib, which no job ran because the test-binary audit counted only
+          # `tests/`. `code-signing` adds the signed-mount test and removes none,
+          # since every cfg in the crate is positive.
+          cargo test -p migo-services --lib --features code-signing
           cargo test -p migo-capi-abi --all-targets
           cargo test -p migo-frame-wire --all-targets
           cargo test -p migo-frame-decode --all-targets
@@ -858,6 +888,13 @@ jobs:
           cargo test -p migo-executor-probe
         env:
           RUST_BACKTRACE: 1
+
+      # The Maven repository a host resolves the SDK from holds the release's AARs,
+      # signed, and nothing else. Run here over fixture AARs, which proves the
+      # checker catches each way a staged repository can be wrong; the build job
+      # runs it again over the AARs it built.
+      - name: Maven publication contract
+        run: bash scripts/test-maven-publication-contract.sh
 
       - name: Shell script syntax check
         run: bash -n scripts/*.sh scripts/ci/*.sh platforms/*/spike/*.sh
@@ -944,8 +981,7 @@ jobs:
             timeout 300 sudo apt-get install -y \
               cmake ninja-build g++ ripgrep xvfb xauth \
               qt6-base-dev qt6-base-dev-tools qt6-qpa-plugins \
-              libx11-dev libxkbcommon-x11-dev libxcb-cursor0 \
-              libasound2-dev || return 1
+              libx11-dev libxkbcommon-x11-dev libxcb-cursor0 || return 1
           }
           install_pkgs || {
             echo "Qt/X11 package install failed; retrying once" >&2
@@ -959,19 +995,8 @@ jobs:
       - name: Linux Qt Host Kit contract
         run: bash scripts/test-linux-qt-host-kit.sh --sanitize
 
-      # The Linux player is the conformance suite's *reference* runner: every
-      # other platform must produce the same verdict lines from the same
-      # bundles, so if it does not build, the cross-platform claim has no
-      # referee. It is a workspace member but not a default member (it links
-      # X11/GL, which headless jobs do not have), so `cargo build` never reaches
-      # it -- and a signature change in `migo-core` broke it while pr-ci stayed
-      # green on every job. This is the one Linux job that installs the desktop
-      # stack, so it is where the player can be type-checked at all.
-      - name: Linux player type-checks
-        run: cd engine && cargo check -p migo-player --locked
-
-  # ── Job 4: Host engine tests — graphics, core, capi, platform, audio ─
-  # These five crates' test suites ran in no release job: the AAR build cross-
+  # ── Job 4: Host engine tests — graphics, core, capi, platform, audio, player ─
+  # These crates' test suites ran in no release job: the AAR build cross-
   # compiles them and runs nothing. Mirrors pr-ci.yml's host-engine-tests job
   # exactly (same packages, same system deps, same flags) so the tag gate is
   # not narrower than the PR gate on the crates that need a graphics stack.
@@ -1048,9 +1073,11 @@ jobs:
 
       - name: Run clippy lints (crates needing host system packages)
         working-directory: engine
-        run: cargo clippy -p migo-graphics -p migo-core -p migo-capi -p migo-platform -p migo-audio --all-targets
+        run: cargo clippy -p migo-graphics -p migo-core -p migo-capi -p migo-platform -p migo-audio -p migo-player --all-targets
 
-      - name: Run Rust tests (graphics, core, capi, platform, audio)
+      # The player is the conformance suite's reference runner; pr-ci.yml's copy
+      # of this step says why it is tested here.
+      - name: Run Rust tests (graphics, core, capi, platform, audio, player)
         working-directory: engine
         run: |
           cargo test -p migo-graphics --tests
@@ -1058,6 +1085,13 @@ jobs:
           cargo test -p migo-capi --lib
           cargo test -p migo-platform --lib
           cargo test -p migo-audio --lib
+          cargo test -p migo-player --bins
+          cargo test -p migo-core --lib --no-default-features --features profile-slim
+          cargo test -p migo-capi --lib --no-default-features --features profile-slim
+          cargo test -p migo-platform --lib --no-default-features --features profile-slim
+          cargo test -p migo-core --lib --no-default-features --features external-frames
+          cargo test -p migo-capi --lib --no-default-features --features external-frames
+          cargo test -p migo-platform --lib --no-default-features --features external-frames
         env:
           RUST_BACKTRACE: 1
 
@@ -1155,10 +1189,11 @@ jobs:
           # it apart from the real thing.
           rm -rf platforms/android/dist
           bash scripts/build-aar.sh --product-profile full release
-          # arm64-only variants. The Rust artefacts are already built, so these
-          # only re-run Gradle with abiFilters -- a host shipping arm64 alone
-          # should not have to carry the x86_64 payload, and quoting the
-          # multi-ABI size at an integrator overstates it by roughly double.
+          # One AAR for both ABIs, and no per-ABI variant: a host shipping arm64
+          # alone sets `abiFilters` in its own app, which drops the other ABI from
+          # its APK -- tests/maven_consumer/android does exactly that and
+          # scripts/test-maven-consumer.sh checks the APK. Quote an integrator the
+          # per-ABI engine size, not this file's.
 
       # No release may ship a libmigo.so that cannot dlopen on the API 26 floor
       # Migo claims to support. Checks every strong import against the NDK's

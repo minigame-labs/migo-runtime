@@ -19,6 +19,8 @@
 
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, UdpSocket};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 /// Where the device is on its local network.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,17 +78,36 @@ impl LocalNetwork {
     }
 }
 
+/// How old the list [`networks`] answers may be. A datagram path asks for every
+/// datagram and listing interfaces is a system call, while a device moves
+/// between networks seconds apart at the quickest. The cost of the bound is that
+/// an address the device takes within it reads as not yet the device's: reaching
+/// the device through it needs a domain pointed at an address the device has held
+/// for under a second.
+const NETWORKS_MAX_AGE: Duration = Duration::from_secs(1);
+
 /// Every network the device is on, from every address of every interface --
-/// what decides whether an address is on its local network. Empty where the
-/// system does not say.
-pub fn networks() -> Vec<LocalNetwork> {
-    os::addresses()
+/// what decides whether an address is on its local network or is the device
+/// itself. Empty where the system does not say. At most [`NETWORKS_MAX_AGE`] old.
+pub fn networks() -> Arc<[LocalNetwork]> {
+    static LISTED: Mutex<Option<(Instant, Arc<[LocalNetwork]>)>> = Mutex::new(None);
+    let now = Instant::now();
+    // Held across the listing, so callers arriving together list once.
+    let mut listed = LISTED.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some((at, networks)) = listed.as_ref()
+        && now.duration_since(*at) < NETWORKS_MAX_AGE
+    {
+        return Arc::clone(networks);
+    }
+    let networks: Arc<[LocalNetwork]> = os::addresses()
         .into_iter()
         .map(|entry| LocalNetwork {
             address: entry.address,
             prefix: entry.prefix,
         })
-        .collect()
+        .collect();
+    *listed = Some((now, Arc::clone(&networks)));
+    networks
 }
 
 /// The device's local address, or why it has none.
@@ -416,6 +437,14 @@ mod tests {
                 .iter()
                 .any(|network| network.address.is_loopback())
         );
+    }
+
+    /// A datagram path asks for every datagram, so a second ask within the age
+    /// is answered from the first listing rather than by the system again.
+    #[test]
+    fn networks_are_listed_once_within_their_age() {
+        let first = networks();
+        assert!(Arc::ptr_eq(&first, &networks()));
     }
 
     fn at(interface: &str, address: &str, prefix: u8) -> InterfaceAddress {

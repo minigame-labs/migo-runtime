@@ -64,16 +64,75 @@ SKIP = {
     # itself, so CI is the only place it belongs.
     "scripts/test-local-verification-contract.sh": "recursive",
 }
+# Invocations that are not a gate on their own. This one reads the staticlib its step builds just
+# before it; run alone it reads whatever an earlier build left there, which proves nothing. The
+# same script without the argument is a gate of its own, and runs.
+SKIP_COMMANDS = {
+    "bash scripts/test-apple-performance-rust-closure.sh --artifact engine/target/debug/libmigo_capi.a":
+        "builds-its-input-first",
+}
 
 # Below this, the parse has stopped matching rather than the workflow having
 # shrunk, and an empty lane is worse than no lane: it reports success.
 MINIMUM_GATES = 15
 
 _JOB_HEADER = re.compile(r"^  (?P<name>[A-Za-z0-9_-]+):\s*$")
+# A gate is a repository script run by bash, or by python3 -- the publication hygiene gate,
+# the immutable-input and Gradle supply-chain gates and the CI tests are Python, and while this
+# matched bash alone none of them was in the local lane: the hygiene gate went red on this branch
+# and the local verifier never ran it. Matched against logical lines (see `logical_lines`), so a
+# command whose arguments continue onto the next line is run with them.
 _INVOCATION = re.compile(
-    r"(?P<env>(?:[A-Z][A-Z0-9_]*=\S+\s+)*)bash\s+(?P<script>scripts/[A-Za-z0-9._/-]+\.sh)"
-    r"(?P<args>(?:\s+--?[A-Za-z0-9][^\s#]*)*)"
+    r"(?P<env>(?:[A-Z][A-Z0-9_]*=\S+\s+)*)(?:"
+    r"bash\s+(?P<script>scripts/[A-Za-z0-9._/-]+\.sh)(?P<args>(?:\s+[^\s#;&|]+)*)"
+    r"|python3\s+(?:(?P<pyscript>scripts/[A-Za-z0-9._/-]+\.py)|-m\s+(?P<module>unittest|py_compile))"
+    r"(?P<pyargs>(?:\s+[^\s#\\]+)*)\s*$"
+    r")"
 )
+
+
+def invocation(match: re.Match[str]) -> tuple[str | None, str]:
+    """The file a matched invocation runs (None for a module), and the command as CI runs it."""
+    if match.group("script") is not None:
+        script = match.group("script")
+        return script, f"{match.group('env')}bash {script}{match.group('args')}".strip()
+    target = match.group("pyscript") or f"-m {match.group('module')}"
+    command = f"{match.group('env')}python3 {target}{match.group('pyargs')}".strip()
+    return match.group("pyscript"), command
+
+
+_FOLDED_RUN = re.compile(r"^(?P<indent>\s*)(?:-\s+)?run:\s*>-?\s*$")
+
+
+def logical_lines(body: list[str]) -> list[str]:
+    """The job's lines as commands: comments dropped, a folded `run: >-` block joined into one
+    line as YAML folds it, and a line ending in a backslash joined to the next as the shell does.
+    Read line by line, a command whose arguments were on the next line was run without them -- a
+    weaker gate wearing the same name -- or not seen at all."""
+    lines: list[str] = []
+    index = 0
+    while index < len(body):
+        folded = _FOLDED_RUN.match(body[index])
+        if folded is not None:
+            indent = len(folded.group("indent"))
+            parts = []
+            index += 1
+            while index < len(body) and (
+                not body[index].strip() or len(body[index]) - len(body[index].lstrip()) > indent
+            ):
+                code = body[index].split("#", 1)[0].strip()
+                if code:
+                    parts.append(code)
+                index += 1
+            lines.append(" ".join(parts))
+            continue
+        code = body[index].split("#", 1)[0].rstrip()
+        while code.endswith("\\") and index + 1 < len(body):
+            index += 1
+            code = code[:-1].rstrip() + " " + body[index].split("#", 1)[0].strip()
+        lines.append(code)
+        index += 1
+    return lines
 
 
 def job_body(workflow_text: str, job: str) -> list[str]:
@@ -110,21 +169,19 @@ def gates(root: pathlib.Path) -> list[tuple[str, str]]:
 
     found: list[tuple[str, str]] = []
     seen: set[str] = set()
-    for line in body:
-        # A commented-out invocation is not an invocation. The gate list has to
-        # mean what CI runs, not what its comments mention.
-        code = line.split("#", 1)[0]
+    # A commented-out invocation is not an invocation. The gate list has to mean
+    # what CI runs, not what its comments mention.
+    for code in logical_lines(body):
         for match in _INVOCATION.finditer(code):
-            script = match.group("script")
-            if not (root / script).is_file():
+            script, command = invocation(match)
+            if script is not None and not (root / script).is_file():
                 continue
-            command = (
-                f"{match.group('env')}bash {script}{match.group('args')}".strip()
-            )
             if command in seen:
                 continue
             seen.add(command)
-            if script in SKIP:
+            if command in SKIP_COMMANDS:
+                found.append((f"skip:{SKIP_COMMANDS[command]}", command))
+            elif script in SKIP:
                 found.append((f"skip:{SKIP[script]}", command))
             elif script in NEEDS:
                 found.append((f"needs:{NEEDS[script]}", command))
@@ -156,17 +213,15 @@ def audit(root: pathlib.Path) -> list[str]:
     body = job_body(workflow.read_text(encoding="utf-8"), JOB)
     emitted = {command for _, command in gates(root)}
     unaccounted = []
-    for line in body:
-        code = line.split("#", 1)[0]
+    for code in logical_lines(body):
         for match in _INVOCATION.finditer(code):
-            script = match.group("script")
-            command = (
-                f"{match.group('env')}bash {script}{match.group('args')}".strip()
-            )
+            script, command = invocation(match)
             if command in emitted:
                 continue
             reason = (
-                "no such file" if not (root / script).is_file() else "not emitted"
+                "no such file"
+                if script is not None and not (root / script).is_file()
+                else "not emitted"
             )
             unaccounted.append(f"{command} ({reason})")
     return unaccounted

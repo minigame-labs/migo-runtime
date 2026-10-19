@@ -29,6 +29,9 @@ FULL_PERMISSION_POLICY: dict[str, str | None] = {
     "android.permission.ACCESS_COARSE_LOCATION": None,
     "android.permission.ACCESS_FINE_LOCATION": None,
     "android.permission.WRITE_EXTERNAL_STORAGE": "28",
+    # Bounded by its own declaration: left undeclared, a host's merger infers it from
+    # WRITE_EXTERNAL_STORAGE with no bound (scripts/test-maven-consumer.sh).
+    "android.permission.READ_EXTERNAL_STORAGE": "28",
     # Install-time ("normal"): the window's screen-recording state, Android 15+.
     "android.permission.DETECT_SCREEN_RECORDING": None,
     # Install-time ("normal"): screenshots of the game's Activity, Android 14+.

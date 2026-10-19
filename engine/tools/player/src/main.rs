@@ -14,6 +14,10 @@
 //!
 //! `--window` (or `MIGO_PLAYER_WINDOW=1`) exercises the onscreen X11 presenter.
 //! Headless stays the default so CI and the PNG capture path are unaffected.
+//!
+//! `--network-policy FILE` gives the game the network a host would: FILE is the
+//! JSON a C-ABI host writes into `MigoSessionConfig.network_policy_json_utf8`.
+//! Without it the game reaches no network at all, as under a host that set none.
 
 // X11 is the Linux windowed path. The offscreen path below is portable, which is
 // what the PNG capture and CI use; Windows gets its window through an HWND the
@@ -23,11 +27,16 @@ mod win32_window;
 #[cfg(target_os = "linux")]
 mod x11_window;
 
-use std::{path::PathBuf, sync::Arc, thread, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    thread,
+    time::{Duration, Instant},
+};
 
 #[cfg(target_os = "windows")]
 use migo_core::{HostId, host_ingress};
-use migo_core::{PlatformServices, send_command_to_host, spawn_host_thread};
+use migo_core::{HostNotifier, PlatformServices, send_command_to_host, spawn_host_thread};
 #[cfg(target_os = "linux")]
 use platform::linux::platform::LinuxPlatform as HostPlatform;
 #[cfg(target_os = "linux")]
@@ -90,6 +99,57 @@ const SURFACE_H: u32 = 1280;
 const FIRST_PRESENT_CEILING: Duration = Duration::from_secs(30);
 /// How often the window mode drains X events while the game renders.
 const EVENT_POLL: Duration = Duration::from_millis(16);
+/// How often the wait for the first frame looks at whether the launch has failed.
+const START_POLL: Duration = Duration::from_millis(50);
+
+/// What the engine tells the player about the launch: whether the game failed to start.
+///
+/// The player heard nothing from the engine, so a game whose entry threw ran out the whole
+/// present ceiling and the run after it, then said only that nothing was presented -- the reason
+/// was in the engine's log, and a launch the content table does not cover (a renderer that never
+/// came up) was not in the report at all.
+#[derive(Default)]
+struct Launch {
+    failure: Mutex<Option<String>>,
+}
+
+impl HostNotifier for Launch {
+    fn notify_game_failed(&self, _host_id: i32, error_code: u16, message: &str, detail: &str) {
+        let reason = if detail.is_empty() {
+            format!("{message} (engine code {error_code})")
+        } else {
+            format!("{message}: {detail} (engine code {error_code})")
+        };
+        *self.failure.lock().expect("launch outcome") = Some(reason);
+    }
+}
+
+impl Launch {
+    /// The launch's failure, as the run's error.
+    fn failed(&self) -> Result<(), String> {
+        match self.failure.lock().expect("launch outcome").as_ref() {
+            Some(reason) => Err(format!("the game did not start: {reason}")),
+            None => Ok(()),
+        }
+    }
+
+    /// Wait for the first presented frame, at most `ceiling`, and end the wait when the launch
+    /// fails: a game that did not start presents nothing, however long it is given. Whether a
+    /// frame was presented.
+    fn wait_for_start(&self, ceiling: Duration) -> Result<bool, String> {
+        let deadline = Instant::now() + ceiling;
+        loop {
+            self.failed()?;
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Ok(false);
+            }
+            if graphics::frame_capture::wait_for_present(left.min(START_POLL)) {
+                return Ok(true);
+            }
+        }
+    }
+}
 
 fn main() {
     tracing_subscriber::fmt()
@@ -100,6 +160,9 @@ fn main() {
     let mut positional = Vec::new();
     let mut windowed = std::env::var_os("MIGO_PLAYER_WINDOW").is_some_and(|v| v != "0");
     let mut resize = None;
+    let mut network_policy = shared::network_policy::NetworkPolicy::default();
+    let mut prelude_files = Vec::new();
+    let mut sessions: u32 = 1;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -116,9 +179,53 @@ fn main() {
                     std::process::exit(2);
                 }
             },
+            "--network-policy" => {
+                let read = args
+                    .next()
+                    .ok_or_else(|| "--network-policy takes a JSON file".to_string())
+                    .and_then(|file| {
+                        std::fs::read_to_string(&file).map_err(|error| format!("{file}: {error}"))
+                    })
+                    .and_then(|json| {
+                        shared::network_policy::NetworkPolicy::from_json(&json)
+                            .map_err(|error| error.to_string())
+                    });
+                match read {
+                    Ok(policy) => network_policy = policy,
+                    Err(message) => {
+                        tracing::error!("--network-policy: {message}");
+                        std::process::exit(2);
+                    }
+                }
+            }
+            "--sessions" => match args
+                .next()
+                .and_then(|n| n.parse::<u32>().ok())
+                .filter(|n| *n > 0)
+            {
+                Some(n) => sessions = n,
+                None => {
+                    tracing::error!("--sessions takes a count of at least 1");
+                    std::process::exit(2);
+                }
+            },
+            "--prelude" => match args.next() {
+                Some(file) => prelude_files.push(PathBuf::from(file)),
+                None => {
+                    tracing::error!("--prelude takes a script file");
+                    std::process::exit(2);
+                }
+            },
             _ => positional.push(arg),
         }
     }
+    let preludes = match prelude_scripts(&prelude_files) {
+        Ok(scripts) => scripts,
+        Err(message) => {
+            tracing::error!("--prelude: {message}");
+            std::process::exit(2);
+        }
+    };
     let bundle_dir = match resolve_bundle_dir(&positional) {
         Ok(path) => path,
         Err(message) => {
@@ -129,14 +236,56 @@ fn main() {
     };
     let secs: u64 = positional.get(1).and_then(|s| s.parse().ok()).unwrap_or(8);
 
-    if let Err(err) = run(&bundle_dir, secs, windowed, resize) {
+    if sessions > 1 {
+        if windowed || resize.is_some() {
+            tracing::error!(
+                "--sessions runs offscreen, without --resize: what it measures is the sessions"
+            );
+            std::process::exit(2);
+        }
+        if let Err(err) = run_sessions(&bundle_dir, secs, sessions, network_policy, preludes) {
+            tracing::error!("player failed: {err}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    if let Err(err) = run(
+        &bundle_dir,
+        secs,
+        windowed,
+        resize,
+        network_policy,
+        preludes,
+    ) {
         tracing::error!("player failed: {err}");
         std::process::exit(1);
     }
 }
 
 fn print_usage() {
-    eprintln!("usage: migo-player GAME_BUNDLE_DIR [SECONDS] [--window|--offscreen]");
+    eprintln!(
+        "usage: migo-player GAME_BUNDLE_DIR [SECONDS] [--window|--offscreen] [--network-policy FILE] \
+         [--prelude SCRIPT]... [--sessions N]"
+    );
+}
+
+/// The boot preludes `--prelude` names, in the order given: each runs in the global
+/// scope before the game's entry, as a host injects an adapter. Content written
+/// against a platform's namespace or the browser runs here only with its adapter in front of it.
+fn prelude_scripts(files: &[PathBuf]) -> Result<Vec<(String, String)>, String> {
+    files
+        .iter()
+        .map(|file| {
+            let source =
+                std::fs::read_to_string(file).map_err(|e| format!("{}: {e}", file.display()))?;
+            let name = file
+                .file_name()
+                .map(|n| format!("<{}>", n.to_string_lossy()))
+                .ok_or_else(|| format!("{} names no file", file.display()))?;
+            Ok((name, source))
+        })
+        .collect()
 }
 
 fn resolve_bundle_dir(positional: &[String]) -> Result<PathBuf, &'static str> {
@@ -155,12 +304,14 @@ fn parse_extent(text: &str) -> Option<(u32, u32)> {
     (width > 0 && height > 0).then_some((width, height))
 }
 
-fn run(
+/// Deploy the bundle into a scratch app directory and build the options a session starts
+/// from. Every session of a run starts from these, so what one leaves in the app's files or
+/// caches the next finds, as it would in an app.
+fn prepare(
     bundle_dir: &PathBuf,
-    secs: u64,
-    windowed: bool,
-    resize: Option<(u32, u32)>,
-) -> Result<(), String> {
+    network_policy: shared::network_policy::NetworkPolicy,
+    preludes: Vec<(String, String)>,
+) -> Result<(PathBuf, InitOptions), String> {
     // ---- Scratch dirs (files / cache / code cache) ----
     let root = std::env::temp_dir().join(format!("migo-player-{}", std::process::id()));
     let files_dir = root.join("files");
@@ -202,7 +353,22 @@ fn run(
         .with_code_cache_dir(code_cache_dir)
         .with_pixel_ratio(1.0)
         .with_debug_enabled(true)
-        .with_code_signing_enabled(false);
+        .with_code_signing_enabled(false)
+        .with_network_policy(network_policy)
+        .with_prelude_scripts(preludes);
+
+    Ok((root, opt))
+}
+
+fn run(
+    bundle_dir: &PathBuf,
+    secs: u64,
+    windowed: bool,
+    resize: Option<(u32, u32)>,
+    network_policy: shared::network_policy::NetworkPolicy,
+    preludes: Vec<(String, String)>,
+) -> Result<(), String> {
+    let (root, opt) = prepare(bundle_dir, network_policy, preludes)?;
 
     // ---- Render target: a real X11 window, or an offscreen pbuffer ----
     // The window (when present) must outlive the engine session: the render
@@ -295,13 +461,15 @@ fn run(
         surface_h,
         PixelRatio::new(1.0).expect("1.0 is a valid pixel ratio"),
     )));
+    let launch = Arc::new(Launch::default());
     let host_kit: Arc<dyn PlatformServices> = Arc::new(
         HostPlatform::new()
             .with_window(Arc::clone(&window_state))
             .with_host_app(shared::services::app_info::HostAppInfo {
                 host_app_id: Some(PLAYER_APP_ID.to_string()),
                 ..Default::default()
-            }),
+            })
+            .with_notifier(launch.clone()),
     );
     tracing::info!("spawning host thread ({surface_w}x{surface_h} {mode})");
     // The player always has its window before it starts, so this is never the
@@ -343,8 +511,9 @@ fn run(
     // canvases). Ending the run here cut such content off mid-work, on a slow
     // software renderer, while the same content ran to completion through the C
     // ABI host. Its run is timed from the ceiling instead, and an engine that
-    // never presents is said outright when the run ends without a frame.
-    if !graphics::frame_capture::wait_for_present(FIRST_PRESENT_CEILING) {
+    // never presents is said outright when the run ends without a frame. A game
+    // that did not start is not one of those, and ends the run when it says so.
+    if !launch.wait_for_start(FIRST_PRESENT_CEILING)? {
         tracing::warn!(
             "nothing presented within {}s of loading the game; running on without a frame",
             FIRST_PRESENT_CEILING.as_secs()
@@ -383,7 +552,22 @@ fn run(
             run_for(total);
         }
     }
-    match graphics::frame_capture::take() {
+    let frame = graphics::frame_capture::take();
+    if frame.is_some() {
+        report_draw_batching(host_id);
+    }
+
+    tracing::info!("shutting down host {host_id}");
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    shutdown_before_drop(host, window)?;
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    shutdown_before_drop(host, ())?;
+
+    // Read once the session is joined, when nothing more can be reported: a launch can fail
+    // after its loading screen presented, and asked any earlier, a rejection landing while the
+    // frame was written read as a game that ran.
+    launch.failed()?;
+    match frame {
         Some(frame) => {
             // With `--resize` the capture is the acceptance evidence, so the
             // frame has to be one the *resized* surface presented. Writing a
@@ -414,16 +598,136 @@ fn run(
         }
         None => return Err("nothing was presented during the run".to_string()),
     }
-
-    report_draw_batching(host_id);
-
-    tracing::info!("shutting down host {host_id}");
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
-    shutdown_before_drop(host, window)?;
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
-    shutdown_before_drop(host, ())?;
     tracing::info!("player done");
     Ok(())
+}
+
+/// Run the game `sessions` times in one process, each in a session of its own, and report what
+/// the process holds after each session is shut down and joined (see [`left_behind`]).
+///
+/// What a game centre does many times a day: open a game, play, close it, open the next. A
+/// session that leaves anything behind -- a canvas, an isolate, a thread, a texture -- grows the
+/// process by that much each time, which one long session never shows. Each session must present
+/// a frame, or the run fails: sessions that never started would also leave nothing behind.
+fn run_sessions(
+    bundle_dir: &PathBuf,
+    secs: u64,
+    sessions: u32,
+    network_policy: shared::network_policy::NetworkPolicy,
+    preludes: Vec<(String, String)>,
+) -> Result<(), String> {
+    let (root, opt) = prepare(bundle_dir, network_policy, preludes)?;
+    let png_path = std::env::var_os("MIGO_PLAYER_PNG")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join("migo-player-frame.png"));
+    for index in 1..=sessions {
+        let surface: SurfaceRef = Arc::new(OffscreenSurface::new(SURFACE_W, SURFACE_H));
+        let graphics_platform =
+            offscreen_graphics_platform().map_err(|e| format!("graphics platform: {e:?}"))?;
+        let (surface_w, surface_h) = surface.size();
+        let window_state = Arc::new(HostWindowState::new(HostWindowMetrics::new(
+            surface_w,
+            surface_h,
+            PixelRatio::new(1.0).expect("1.0 is a valid pixel ratio"),
+        )));
+        let launch = Arc::new(Launch::default());
+        let host_kit: Arc<dyn PlatformServices> = Arc::new(
+            HostPlatform::new()
+                .with_window(Arc::clone(&window_state))
+                .with_host_app(shared::services::app_info::HostAppInfo {
+                    host_app_id: Some(PLAYER_APP_ID.to_string()),
+                    ..Default::default()
+                })
+                .with_notifier(launch.clone()),
+        );
+        let host = spawn_host_thread(Some(surface), graphics_platform, host_kit, opt.clone())
+            .map_err(|e| format!("session {index}: spawn_host_thread: {e:?}"))?;
+        let host_id = host.id();
+        graphics::frame_capture::request();
+        let started = send_command_to_host(
+            host_id,
+            HostCommand::EvaluateModule {
+                game_id: GAME_ID.to_string(),
+                entry: ENTRY.to_string(),
+            },
+        )
+        .map_err(|e| format!("session {index}: EvaluateModule: {e}"))
+        .and_then(|()| {
+            launch
+                .wait_for_start(FIRST_PRESENT_CEILING)
+                .map_err(|e| format!("session {index}: {e}"))
+        });
+        if started == Ok(true) {
+            thread::sleep(Duration::from_secs(secs.max(1)));
+        }
+        let frame = graphics::frame_capture::take();
+        shutdown_before_drop(host, ())?;
+        started?;
+        launch
+            .failed()
+            .map_err(|e| format!("session {index}: {e}"))?;
+        let frame = frame.ok_or_else(|| format!("session {index} presented nothing"))?;
+        if index == sessions {
+            write_png(&png_path, &frame)?;
+        }
+        drop(frame);
+        let (heap, resident) = left_behind()?;
+        tracing::info!(
+            "session {index}/{sessions}: heap {heap} kB in use, resident {resident} kB, after shutdown"
+        );
+    }
+    Ok(())
+}
+
+/// What a shut-down session left in the process: the C heap's live bytes, and the resident set
+/// once the heap has handed back what it holds free.
+///
+/// The resident set as it stands says little. glibc keeps what a session freed in the arenas its
+/// threads used, so sixty sessions grew it from 160 to 467 MB with nothing left alive, and the
+/// next sixty levelled off at 340. Trimmed first, it stays where the first session put it unless
+/// something is still held: a V8 heap, a thread's stack, a driver's mapping. The heap's live
+/// bytes see what the resident set is too coarse for -- the GL driver reloaded every session
+/// left 4 kB each, a thousandth of it.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn left_behind() -> Result<(u64, u64), String> {
+    /// glibc's `struct mallinfo2` (glibc 2.33), summed over every arena. All of it is glibc's
+    /// layout; two fields are read.
+    #[repr(C)]
+    #[allow(dead_code)]
+    struct MallInfo2 {
+        arena: usize,
+        ordblks: usize,
+        smblks: usize,
+        hblks: usize,
+        hblkhd: usize,
+        usmblks: usize,
+        fsmblks: usize,
+        uordblks: usize,
+        fordblks: usize,
+        keepcost: usize,
+    }
+    unsafe extern "C" {
+        fn mallinfo2() -> MallInfo2;
+        fn malloc_trim(pad: usize) -> i32;
+    }
+    // SAFETY: neither takes a pointer, and glibc locks each arena while it reads or trims it.
+    let info = unsafe { mallinfo2() };
+    // SAFETY: as above.
+    unsafe { malloc_trim(0) };
+    let heap = (info.uordblks + info.hblkhd) as u64 / 1024;
+    let status = std::fs::read_to_string("/proc/self/status")
+        .map_err(|e| format!("/proc/self/status: {e}"))?;
+    let resident = status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmRSS:"))
+        .and_then(|value| value.trim().trim_end_matches("kB").trim().parse().ok())
+        .ok_or_else(|| "no VmRSS in /proc/self/status".to_string())?;
+    Ok((heap, resident))
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn left_behind() -> Result<(u64, u64), String> {
+    Err("--sessions reads glibc's heap and /proc, which only a Linux glibc build has".to_string())
 }
 
 /// Print the draw-call batching headroom for the run that just finished.
@@ -743,7 +1047,29 @@ mod tests {
         thread,
     };
 
-    use super::{resolve_bundle_dir, shutdown_before_drop};
+    use super::{prelude_scripts, resolve_bundle_dir, shutdown_before_drop};
+
+    #[test]
+    fn preludes_keep_their_order_and_are_named_for_their_files() {
+        let dir = std::env::temp_dir().join(format!("migo-player-preludes-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = dir.join("adapter.js");
+        let second = dir.join("recorder.js");
+        std::fs::write(&first, "globalThis.a = 1;").unwrap();
+        std::fs::write(&second, "globalThis.b = 2;").unwrap();
+        let scripts = prelude_scripts(&[second.clone(), first.clone()]).unwrap();
+        assert_eq!(
+            scripts,
+            vec![
+                ("<recorder.js>".to_string(), "globalThis.b = 2;".to_string()),
+                ("<adapter.js>".to_string(), "globalThis.a = 1;".to_string()),
+            ]
+        );
+        let missing = dir.join("missing.js");
+        let error = prelude_scripts(&[first, missing.clone()]).unwrap_err();
+        assert!(error.starts_with(&missing.display().to_string()), "{error}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn player_requires_explicit_bundle_directory() {

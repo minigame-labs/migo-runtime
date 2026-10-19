@@ -19,7 +19,6 @@ Date
 DisposableStack
 Error
 EvalError
-FileManager
 FinalizationRegistry
 Float16Array
 Float32Array
@@ -211,7 +210,6 @@ uploadFile
 CanvasGradient
 CanvasPattern
 CanvasRenderingContext2D
-FileManager
 Float16Array
 ImageBitmap
 ImageData

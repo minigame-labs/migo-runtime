@@ -25,8 +25,11 @@ mod callback_isolation_tests {
     use shared::callback_id::CallbackIdAllocator;
     use shared::channel::ThreadWakeup;
     use shared::device::gpu_caps::GpuCaps;
-    use shared::op_state::{AudioSender, HostOpState, NetworkPolicy};
     use shared::render_command_sender::CommandSender;
+    use shared::{
+        network_policy::NetworkPolicy,
+        op_state::{AudioSender, HostOpState},
+    };
 
     deno_core::extension!(
         callback_isolation_bridge,

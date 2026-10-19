@@ -1480,8 +1480,11 @@ fn read_zip_entries_from_reader<R: Read + std::io::Seek>(
             if entry.is_dir() {
                 continue;
             }
+            let name = match entry.name() {
+                Ok(name) => name.into_owned(),
+                Err(_) => continue,
+            };
             reserve_zip_result_slot(&mut returned_entries)?;
-            let name = entry.name().to_string();
             let entry_size = entry.size();
             match read_zip_entry_limited(&mut entry, entry_size, None, None) {
                 Ok(buf) => {

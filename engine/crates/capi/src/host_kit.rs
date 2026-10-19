@@ -594,6 +594,8 @@ mod tests {
     /// them and they answer -- the options accepted, the inputs a list the API
     /// names.
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
+    // The engine's audio is migo-core's `host-audio`, which these two turn on and Slim does not.
+    #[cfg(any(feature = "profile-full", feature = "external-frames"))]
     #[test]
     fn the_engine_answers_the_audio_settings_itself() {
         let session = session();

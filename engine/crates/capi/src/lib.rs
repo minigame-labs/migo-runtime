@@ -329,9 +329,22 @@ pub struct MigoSession {
     /// The host's standing permission decisions and settings reports, which
     /// content reads synchronously. The Session's, for the battery's reason.
     pub(crate) host_reports: Arc<settings::HostReports>,
+    /// What network the session's content may reach, from
+    /// `MigoSessionConfig.network_policy_json_utf8`; nothing when the host gave
+    /// none. Immutable for the session's life, so every Host it starts -- the
+    /// first attach and every reattach -- is held to the one the host chose.
+    pub(crate) network_policy: shared::network_policy::NetworkPolicy,
 }
 
 impl MigoSession {
+    /// The options a Host of this session starts from: the Engine's, and this
+    /// session's network policy.
+    pub(crate) fn init_options(&self, pixel_ratio: f32) -> InitOptions {
+        self.engine
+            .session_init_options(pixel_ratio)
+            .with_network_policy(self.network_policy.clone())
+    }
+
     #[inline]
     pub(crate) fn is_open(&self) -> bool {
         self.callback_gate.is_open()
@@ -597,6 +610,18 @@ pub unsafe extern "C" fn migo_session_create(
             Ok(validated) => validated,
             Err(error) => return error,
         };
+        // A policy that does not parse is refused rather than run as some other
+        // policy: the host wrote it to say what content may reach.
+        let network_policy = match validated.network_policy_json.as_deref() {
+            None => shared::network_policy::NetworkPolicy::default(),
+            Some(json) => match shared::network_policy::NetworkPolicy::from_json(json) {
+                Ok(policy) => policy,
+                Err(error) => {
+                    tracing::error!("migo_session_create: {error}");
+                    return MIGO_ERROR_INVALID_ARGUMENT;
+                }
+            },
+        };
 
         match engine.inner.live_sessions.lock() {
             Ok(mut live) => *live += 1,
@@ -614,6 +639,7 @@ pub unsafe extern "C" fn migo_session_create(
             input_saturation_reported: AtomicBool::new(false),
             device: Default::default(),
             host_reports: Default::default(),
+            network_policy,
         });
         *out_session = Arc::into_raw(session).cast_mut();
         MIGO_OK
@@ -1316,6 +1342,55 @@ mod tests {
         assert_eq!(unsafe { migo_engine_create(&config, &mut engine) }, MIGO_OK);
         assert!(unsafe { &*engine }.inner.allow_unsigned_content);
         assert_eq!(unsafe { migo_engine_destroy(engine) }, MIGO_OK);
+    }
+
+    /// The policy a host writes into its session config is the one every Host of
+    /// that session starts with; none is nothing; one that does not parse makes no
+    /// session at all.
+    #[test]
+    fn a_session_s_network_policy_reaches_its_hosts_and_a_malformed_one_is_refused() {
+        with_engine("network-policy", |engine| {
+            let json = CString::new(r#"{"download":["cdn.example.com"],"lan":true}"#).unwrap();
+            let mut config = session_config();
+            config.network_policy_json_utf8 = json.as_ptr();
+            let mut session: *mut MigoSession = std::ptr::null_mut();
+            assert_eq!(
+                unsafe { migo_session_create(engine, &config, &mut session) },
+                MIGO_OK
+            );
+            assert_eq!(
+                unsafe { &*session }.init_options(1.0).network_policy(),
+                &shared::network_policy::NetworkPolicy::from_json(json.to_str().unwrap()).unwrap()
+            );
+            assert_eq!(unsafe { migo_session_destroy(session) }, MIGO_OK);
+
+            let mut session: *mut MigoSession = std::ptr::null_mut();
+            assert_eq!(
+                unsafe { migo_session_create(engine, &session_config(), &mut session) },
+                MIGO_OK
+            );
+            assert_eq!(
+                unsafe { &*session }.init_options(1.0).network_policy(),
+                &shared::network_policy::NetworkPolicy::default()
+            );
+            assert_eq!(unsafe { migo_session_destroy(session) }, MIGO_OK);
+
+            for malformed in [
+                r#"{"requests":["a.example.com"]}"#,
+                r#"{"tcp":["10.0.0.1"]}"#,
+                "{",
+            ] {
+                let malformed = CString::new(malformed).unwrap();
+                config.network_policy_json_utf8 = malformed.as_ptr();
+                let mut session: *mut MigoSession = std::ptr::null_mut();
+                assert_eq!(
+                    unsafe { migo_session_create(engine, &config, &mut session) },
+                    MIGO_ERROR_INVALID_ARGUMENT,
+                    "{malformed:?}"
+                );
+                assert!(session.is_null());
+            }
+        });
     }
 
     #[test]

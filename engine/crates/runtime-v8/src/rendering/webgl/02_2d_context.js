@@ -7,6 +7,7 @@
 
 import {
     flushRenderCommandStream,
+    noteFrameEnded,
     uploadTexImageSource,
     TEX_SOURCE_CALL_IMAGE_2D,
     TEX_SOURCE_SNAPSHOT,
@@ -3353,6 +3354,7 @@ frameEndHooks.push(() => {
     // same FramePacket as the Canvas2D work (design S8 ordering invariant).
     flushRenderCommandStream();
     op_frame_end_unified();
+    noteFrameEnded();
 });
 // Reset the per-frame snapshot budget AFTER op_frame_end_unified
 // has flushed the FramePacket (so the capture ops we counted

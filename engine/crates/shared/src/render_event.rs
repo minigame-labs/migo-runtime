@@ -49,9 +49,14 @@ pub enum RenderEvent {
     Canvas2DError { code: ErrorCode, message: String },
     /// A `GL` / `GLBatch` command failed.
     GlError { code: ErrorCode, message: String },
-    /// A `CanvasCmd` (create / destroy / resize / recreate)
-    /// failed.  Usually downstream of an EGL / surface issue.
+    /// A `CanvasCmd` the content issued (create / destroy / resize)
+    /// failed.
     CanvasError { code: ErrorCode, message: String },
+    /// Recreating the onscreen surface from the host's Surface failed. Not a command the
+    /// content issued: the host's Surface, or the driver, refused it, and the error keeps its
+    /// backend code. It shared [`Self::CanvasError`] once, and was reported to hosts as a
+    /// render command the game got wrong.
+    SurfaceRecreateFailed { code: ErrorCode, message: String },
     /// `eglSwapBuffers` returned an error that is **not**
     /// `EGL_CONTEXT_LOST`.  Recoverable by the render loop on
     /// its own; included in the channel so overlays / tests can
@@ -78,6 +83,7 @@ impl RenderEvent {
             RenderEvent::Canvas2DError { .. } => "canvas2d_error",
             RenderEvent::GlError { .. } => "gl_error",
             RenderEvent::CanvasError { .. } => "canvas_error",
+            RenderEvent::SurfaceRecreateFailed { .. } => "surface_recreate_failed",
             RenderEvent::SwapFailed { .. } => "swap_failed",
             RenderEvent::ContextLost => "context_lost",
             RenderEvent::ContextRecovered { .. } => "context_recovered",
@@ -212,6 +218,10 @@ mod tests {
             },
             RenderEvent::CanvasError {
                 code: ErrorCode::RenderBackendError,
+                message: "x".into(),
+            },
+            RenderEvent::SurfaceRecreateFailed {
+                code: ErrorCode::RenderCreateSurfaceError,
                 message: "x".into(),
             },
             RenderEvent::SwapFailed {

@@ -3523,13 +3523,26 @@ fn drain_render_events(
                 });
                 if due {
                     *last_swap_report = Some(now);
+                    // Survivable, as on the host lane: the Surface is retired and reported
+                    // through `notify_surface_lost` when it is gone for good.
                     platform.notify_error(
                         id,
-                        ErrorCode::RenderBackendError.as_u16(),
+                        ErrorCode::RenderSwapBuffersError.as_u16(),
                         "render swap failed",
                         &message,
                     );
                 }
+            }
+            RenderEvent::SurfaceRecreateFailed { code, message } => {
+                warn!("[Host {id}] surface recreation failed: {message}");
+                // The host's own Surface refused, as with a failed swap: the host is the one
+                // who can act on it. Not spaced: it follows one attach, not one frame.
+                platform.notify_error(
+                    id,
+                    code.as_u16(),
+                    "render surface recreation failed",
+                    &message,
+                );
             }
             // Deliberately not reported to the host: a failed drawing command is the
             // producer's, not the embedder's. In this lane the producer is a separate

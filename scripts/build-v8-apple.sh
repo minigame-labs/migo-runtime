@@ -330,7 +330,9 @@ BUILD_SECONDS=$(($(date +%s) - BUILD_START))
 echo "build_seconds=$BUILD_SECONDS"
 ok "built in ${BUILD_SECONDS}s"
 
-GN_OUT="$SRC_DIR/target/$TRIPLE/release/gn_out"
+# shellcheck source=scripts/lib/cargo-target-dir.sh
+source "$SCRIPT_DIR/lib/cargo-target-dir.sh"
+GN_OUT="$(cargo_target_dir "$SRC_DIR")/$TRIPLE/release/gn_out"
 ARCHIVE="$GN_OUT/obj/librusty_v8.a"
 BINDING="$GN_OUT/src_binding.rs"
 ARGS_GN="$GN_OUT/args.gn"

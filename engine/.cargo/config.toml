@@ -275,9 +275,16 @@ rustflags = [
 # CARGO_PROFILE_RELEASE_OPT_LEVEL = "z"
 
 # ---- Skia GN build arguments ----------------------------------------------
-# Disable fontconfig on Linux (we ship SkFontMgr_Android on device and a
-# TypefaceFontProvider with bundled fonts for headless tests). This avoids
-# the system libfontconfig-dev dependency.
+# Fontconfig is Skia's own default on Linux and is left on: Linux ships, and
+# its font manager is fontconfig's. These args once turned it off ("we ship
+# SkFontMgr_Android on device and bundled fonts for headless tests"), which
+# left Skia's directory manager -- it lists /usr/share/fonts by name and never
+# answers which face has a character, so SkParagraph's per-character fallback
+# found nothing and every script the bundled Latin face lacks drew as boxes.
+# Nothing else changes: Skia leaves fontconfig off for Android, Windows and
+# Apple by default, and skia-bindings turns it off for OpenHarmony. The
+# libfontconfig it needs is already a link dependency (graphics' fontconfig.rs,
+# and the Chromium sysroot carries it for the Linux SDK's cross builds).
 #
 # extra_cflags_cc adds C++-only flags WITHOUT overriding skia-bindings'
 # own extra_cflags (-Oz / -D__ANDROID_API__). We drop unwind tables:
@@ -285,7 +292,7 @@ rustflags = [
 # so the .eh_frame / .eh_frame_hdr unwind data (~part of 3 MB) is dead
 # weight in the final .so. -fno-asynchronous-unwind-tables removes the
 # per-function CFI; -fno-unwind-tables drops the rest.
-SKIA_GN_ARGS = "skia_use_fontconfig=false skia_enable_fontmgr_fontconfig=false extra_cflags_cc=[\"-fno-asynchronous-unwind-tables\",\"-fno-unwind-tables\"]"
+SKIA_GN_ARGS = "extra_cflags_cc=[\"-fno-asynchronous-unwind-tables\",\"-fno-unwind-tables\"]"
 
 # On WSL / Ubuntu hosts, Skia's C++20 consteval usage in src/base/SkTime.cpp
 # does not compile with clang-12 against the GCC-13 libstdc++ shipped by

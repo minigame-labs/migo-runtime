@@ -13,3 +13,6 @@ W.createInnerAudioContext();
 W.reportMonitor();                   // wx has it
 // migo-only
 migo.getGamepads();
+
+// The engine, as a "Separate Engine" build loads it.
+requirePlugin("cocos");

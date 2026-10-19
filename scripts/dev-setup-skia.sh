@@ -10,7 +10,10 @@
 #   2) Fetches the Khronos EGL / GL / GLES headers into ~/.local/skia-headers.
 #      These are required to compile Skia's EGL / Ganesh GL interface but are
 #      not shipped in minimal Ubuntu / WSL installations.
-#   3) Prints the `export` lines to append to the current shell so that
+#   3) Checks that fontconfig's headers are installed: Skia's Linux font manager
+#      compiles against them, and only the distro's -dev package can supply
+#      headers that match the installed library.
+#   4) Prints the `export` lines to append to the current shell so that
 #      `cargo check -p migo-graphics` can pick them up.  Intended to be `source`-d:
 #
 #        source scripts/dev-setup-skia.sh
@@ -98,6 +101,18 @@ for h in GL/glext.h GLES2/gl2.h GLES2/gl2ext.h GLES2/gl2platform.h \
          GLES3/gl3.h GLES3/gl3platform.h; do
   fetch_header "$h" "https://registry.khronos.org/OpenGL/api"
 done
+
+# ---- fontconfig headers ------------------------------------------------
+# Skia's fontconfig font manager -- Linux's, the one that finds a face for a
+# character the named fonts lack -- compiles against <fontconfig/fontconfig.h>.
+# Those headers must match the libfontconfig they link against, so they are not
+# fetched like the Khronos ones above: they come with the distro's -dev package,
+# and without it Skia's build fails much later, on a missing include.
+if [ ! -s /usr/include/fontconfig/fontconfig.h ] && ! pkg-config --exists fontconfig 2>/dev/null; then
+  echo "[dev-setup-skia] fontconfig's headers are missing: install libfontconfig1-dev" \
+       "(Debian/Ubuntu) or fontconfig-devel (Fedora); they cannot be fetched on their own." >&2
+  if (return 0 2>/dev/null); then return 1; else exit 1; fi
+fi
 
 # ---- export lines -------------------------------------------------------
 cat <<EOF

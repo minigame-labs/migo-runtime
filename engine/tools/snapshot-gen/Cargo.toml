@@ -14,9 +14,12 @@ edition = "2024"
 # Output:
 #   engine/crates/runtime-v8/snapshots/SNAPSHOT-<profile>-<arch>.bin
 
+# `test = false`: it has no tests -- runtime-v8's `snapshot_roundtrip` mirrors its
+# create-then-restore path -- so a test binary of it would report zero.
 [[bin]]
 name = "migo-snapshot-gen"
 path = "src/main.rs"
+test = false
 
 [features]
 default = ["profile-full"]

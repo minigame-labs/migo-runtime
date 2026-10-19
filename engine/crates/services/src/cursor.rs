@@ -194,6 +194,7 @@ mod tests {
             scheduler: Arc::new(IoScheduler::new(host_id)),
             vfs: None,
             mount_table: Some(mount_table),
+            policy: Default::default(),
         };
         let cursors = CursorCopies::default();
 

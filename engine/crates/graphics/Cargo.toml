@@ -39,6 +39,7 @@ experimental_atlas = []
 [dependencies]
 glow = { workspace = true }
 khronos-egl = { workspace = true }
+libloading = "^0.8"
 tokio = { workspace = true }
 skia-safe = { workspace = true }
 crossbeam-channel = { workspace = true }

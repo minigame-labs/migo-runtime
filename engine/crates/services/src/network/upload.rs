@@ -22,7 +22,7 @@ use http::header::{CONTENT_LENGTH, CONTENT_TYPE, HOST, HeaderName, HeaderValue};
 use tracing::debug;
 use url::Url;
 
-use shared::op_state::NetworkPolicy;
+use shared::network_policy::NetworkPolicy;
 
 use crate::ServiceError;
 
@@ -209,7 +209,7 @@ pub async fn upload(
 
     let request = env
         .client
-        .post(parsed)
+        .post(GateKind::FetchUpload, parsed)
         .timeout(Duration::from_millis(u64::from(timeout_ms)))
         .multipart(form)
         .headers(map);

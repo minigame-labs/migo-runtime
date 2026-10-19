@@ -193,9 +193,32 @@ function packHeader(opcode, wordCount) {
 // room.
 
 function ensureFit(wordCount) {
+    if (!_contentSinceFrameEnd) _noteFirstContent();
     if (cursor + wordCount > BUFFER_WORDS) {
         _submitAndSwap();
     }
+}
+
+// --- The first record after a frame end ---
+// Every record is written through ensureFit, so it is where a frame's first command is seen. A
+// record waits here until the stream is submitted, at the frame end or a question that needs the
+// renderer, so nothing past this module knows content drew: the frame scheduler is told here, and
+// ends a frame for content drawing outside requestAnimationFrame (see 03_raf.js). Cleared when the
+// frame ends, not when the buffer is submitted ahead of it.
+let _contentSinceFrameEnd = false;
+let _firstContentListener = null;
+
+function _noteFirstContent() {
+    _contentSinceFrameEnd = true;
+    if (_firstContentListener !== null) _firstContentListener();
+}
+
+function setFirstContentListener(listener) {
+    _firstContentListener = listener;
+}
+
+function noteFrameEnded() {
+    _contentSinceFrameEnd = false;
 }
 
 // --- Internal submit and swap ---
@@ -2071,4 +2094,6 @@ export {
     // Lifecycle
     flushRenderCommandStream,
     discardRenderCommandStream,
+    setFirstContentListener,
+    noteFrameEnded,
 };

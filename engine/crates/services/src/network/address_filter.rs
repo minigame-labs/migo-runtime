@@ -1,108 +1,228 @@
 //! Network address filtering for SSRF prevention.
 //!
-//! Shared by `fetch`, `WebSocket`, raw TCP and raw UDP so the runtime
-//! has a **single** notion of which addresses content may reach: publicly
-//! reachable unicast, and the other devices on the device's own local network.
+//! Shared by `fetch`, `WebSocket`, raw TCP and raw UDP so the runtime has a
+//! **single** notion of which addresses content may reach: [`Reach`], where an
+//! address is from the device. Every rule here is read off it.
 //!
-//! Blocks wherever it is:
-//! - Loopback / link-local / unspecified / broadcast
-//! - Carrier-Grade NAT
-//! - IPv6 link-local
-//! - IPv4-mapped IPv6 pointing at any of the above
-//! - IPv4 multicast 224.0.0.0/4 and IPv6 multicast ff00::/8
-//! - RFC 5737 / 3849 documentation ranges
-//! - RFC 2544 benchmarking (198.18.0.0/15)
-//! - RFC 1112 reserved future 240.0.0.0/4
+//! Never, wherever it is:
+//! - the device itself, by any of its addresses
+//! - loopback, link-local, "this network" 0.0.0.0/8, broadcast and multicast
+//!   (a datagram on a granted local network excepted)
+//! - Carrier-Grade NAT 100.64.0.0/10
+//! - the IETF's special-purpose ranges no host on the internet has: protocol
+//!   assignments 192.0.0.0/24, the 6to4 relay anycast 192.88.99.0/24,
+//!   documentation (RFC 5737, RFC 3849), benchmarking (RFC 2544, 2001:2::/48),
+//!   240.0.0.0/4, discard-only 100::/64, ORCHID, Teredo, local-use NAT64
+//!   64:ff9b:1::/48 and the deprecated site-local fec0::/10
+//! - an address that embeds an IPv4 address -- mapped, compatible, the NAT64
+//!   well-known prefix, 6to4 -- is judged as the IPv4 address it embeds
 //!
-//! Blocks unless it is another device on the device's local network:
-//! - RFC 1918 private and IPv6 unique-local addresses
+//! Only when the policy grants the local network: another device on one of the
+//! device's own networks, whatever its address's class. On IPv6 that is a global
+//! address as often as a unique-local one, so the address range alone cannot
+//! say -- the device's networks do.
 //!
 //! The local network is what the reference platform opens -- "the non-local
-//! IPs on the local network" -- so a game can play on a LAN; a private address
-//! anywhere else, and the device itself, stay out of reach.
+//! IPs on the local network" -- so a game can play on a LAN. Here it is opened
+//! only when the host grants it ([`LanAccess::LocalNetwork`]), and only for the
+//! socket, TCP and UDP channels.
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::sync::Arc;
 
 use shared::device::local_address::{self, LocalNetwork};
 
-/// Returns `true` if the address may not be reached from game JS code.
-///
-/// A private address is allowed only on the device's own local network and only when it is not the device itself:
-/// the reference platform allows "the non-local IPs on the local network" (局域网内的非本机 IP) -- which is how games
-/// play on a LAN -- and nothing else private. Everything else this module lists is refused wherever it is.
-pub fn is_blocked_address(addr: &SocketAddr) -> bool {
-    // The interfaces are listed only for a private address: a system call, and most addresses are public.
-    is_blocked_given(addr, local_address::networks)
+/// Whether other devices on the device's own local network may be reached.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LanAccess {
+    /// No other device on the local network. What a request, download or upload always gets, and every channel by
+    /// default.
+    Refused,
+    /// Another device on one of the device's networks; for a datagram, also the limited broadcast address and
+    /// multicast groups.
+    LocalNetwork,
 }
 
-/// [`is_blocked_address`] for a datagram. A UDP socket may also send to the limited broadcast address and to a
-/// multicast group -- the reference lets `UDPSocket.send` reach "any IP", broadcast included, which is how a game finds
-/// its peers on a LAN -- where a stream cannot connect at all.
-pub fn is_blocked_datagram_address(addr: &SocketAddr) -> bool {
-    match canonical(addr.ip()) {
-        IpAddr::V4(ip) if ip.is_broadcast() || is_multicast_v4(&ip) => false,
-        IpAddr::V6(ip) if is_multicast_v6(&ip) => false,
-        _ => is_blocked_address(addr),
+/// Where an address is, from the device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Reach {
+    /// Never content's to reach: the device itself, the reserved ranges, and a private address on none of the
+    /// device's networks.
+    Never,
+    /// Another device on one of the device's own networks -- or, for a datagram, a broadcast or multicast group.
+    LocalNetwork,
+    /// A server on the internet, which content reaches by name.
+    Internet,
+}
+
+impl Reach {
+    /// Whether an address this far away may not be reached under `lan`.
+    pub(crate) fn blocked(self, lan: LanAccess) -> bool {
+        match self {
+            Reach::Never => true,
+            Reach::LocalNetwork => lan == LanAccess::Refused,
+            Reach::Internet => false,
+        }
     }
+}
+
+/// Where `ip` is for a stream or a request: never a broadcast or multicast group.
+pub(crate) fn stream_reach(ip: IpAddr) -> Reach {
+    reach_given(ip, false, local_address::networks)
+}
+
+/// Where `ip` is for a datagram, which may also be sent to the local network's broadcast address and multicast
+/// groups -- the reference lets `UDPSocket.send` reach "any IP", broadcast included, which is how a game finds its
+/// peers on a LAN.
+pub(crate) fn datagram_reach(ip: IpAddr) -> Reach {
+    reach_given(ip, true, local_address::networks)
+}
+
+/// Returns `true` if a stream or request may not reach `addr` under `lan`.
+pub fn is_blocked_address(addr: &SocketAddr, lan: LanAccess) -> bool {
+    stream_reach(addr.ip()).blocked(lan)
+}
+
+/// [`is_blocked_address`] for a datagram.
+pub fn is_blocked_datagram_address(addr: &SocketAddr, lan: LanAccess) -> bool {
+    datagram_reach(addr.ip()).blocked(lan)
+}
+
+/// [`stream_reach`] or [`datagram_reach`] on a device whose networks are `networks`.
+#[cfg(test)]
+pub(crate) fn reach_on(ip: IpAddr, datagram: bool, networks: &[LocalNetwork]) -> Reach {
+    reach_given(ip, datagram, || Arc::from(networks))
 }
 
 /// [`is_blocked_address`] on a device whose networks are `networks`.
 #[cfg(test)]
-pub(crate) fn is_blocked_on(addr: &SocketAddr, networks: &[LocalNetwork]) -> bool {
-    is_blocked_given(addr, || networks.to_vec())
+pub(crate) fn is_blocked_on(addr: &SocketAddr, networks: &[LocalNetwork], lan: LanAccess) -> bool {
+    reach_on(addr.ip(), false, networks).blocked(lan)
 }
 
-/// The rule, with the device's networks asked for only when an address's class needs them.
-fn is_blocked_given(addr: &SocketAddr, networks: impl FnOnce() -> Vec<LocalNetwork>) -> bool {
-    match class_of(addr.ip()) {
-        Class::Public => false,
-        Class::Reserved => true,
-        Class::Private => !on_local_network(addr.ip(), &networks()),
+/// The rule, with the device's networks asked for only when an address's class leaves the question open.
+fn reach_given(
+    ip: IpAddr,
+    datagram: bool,
+    networks: impl FnOnce() -> Arc<[LocalNetwork]>,
+) -> Reach {
+    let host = host(ip);
+    if datagram && is_group(host) {
+        return Reach::LocalNetwork;
+    }
+    let (judged, translated) = match host {
+        IpAddr::V6(v6) => match (nat64_target(&v6), six_to_four_router(&v6)) {
+            (Some(v4), _) => (IpAddr::V4(v4), true),
+            (None, Some(v4)) => (IpAddr::V4(v4), false),
+            (None, None) => (host, false),
+        },
+        v4 => (v4, false),
+    };
+    let class = match judged {
+        IpAddr::V4(ip) => class_v4(&ip),
+        IpAddr::V6(ip) => class_v6(&ip),
+    };
+    if class == Class::Reserved {
+        return Reach::Never;
+    }
+    // Which host the address is: itself, and for NAT64 also the IPv4 host a translator delivers it to. A 6to4
+    // address's IPv4 is its site's router, which every host in the site shares, so it says nothing about which one.
+    let identities = [host, judged];
+    let identities = if translated {
+        &identities[..]
+    } else {
+        &identities[..1]
+    };
+    let networks = networks();
+    if networks
+        .iter()
+        .any(|network| identities.contains(&self::host(network.address)))
+    {
+        return Reach::Never;
+    }
+    if networks.iter().any(|network| {
+        network.prefix > 0
+            && identities
+                .iter()
+                .any(|&identity| network.contains(identity))
+    }) {
+        return Reach::LocalNetwork;
+    }
+    match class {
+        Class::Public => Reach::Internet,
+        Class::Private | Class::Reserved => Reach::Never,
     }
 }
 
-/// Whether `ip` is in a private range -- which [`is_blocked_address`] allows only on the device's local network. An
-/// allowed private address is therefore another device on that network.
-pub(crate) fn is_private(ip: IpAddr) -> bool {
-    matches!(class_of(ip), Class::Private)
-}
-
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Class {
     /// Publicly reachable unicast.
     Public,
-    /// A private range: allowed on the device's local network.
+    /// A private range: another device on the local network, when the local network is granted and it is on one of
+    /// the device's networks; never otherwise.
     Private,
-    /// Never: loopback, link-local, broadcast, multicast, and the ranges reserved for documentation and testing.
+    /// Never: loopback, link-local, broadcast, multicast, and the special-purpose ranges.
     Reserved,
 }
 
-fn class_of(ip: IpAddr) -> Class {
-    match canonical(ip) {
-        IpAddr::V4(ip) => class_v4(&ip),
-        IpAddr::V6(ip) => class_v6(&ip),
+/// The host an address names: an IPv4-mapped or -compatible IPv6 address is the IPv4 host it carries, so
+/// `::ffff:127.0.0.1` is `127.0.0.1`; every other address is itself.
+fn host(ip: IpAddr) -> IpAddr {
+    let IpAddr::V6(v6) = ip else {
+        return ip;
+    };
+    if let Some(v4) = v6.to_ipv4_mapped() {
+        IpAddr::V4(v4)
+    } else if v6.segments()[..6] == [0; 6] && !v6.is_loopback() && !v6.is_unspecified() {
+        // The deprecated compatible form `::a.b.c.d`, which `::1` and `::` are not: they are IPv6's own loopback and
+        // unspecified addresses, judged as themselves.
+        IpAddr::V4(low_v4(&v6))
+    } else {
+        ip
     }
 }
 
-/// An IPv4-mapped IPv6 address (`::ffff:a.b.c.d`) as the IPv4 address it embeds, so `::ffff:127.0.0.1` is judged as
-/// `127.0.0.1` and a mapped LAN address as the LAN address it is.
-fn canonical(ip: IpAddr) -> IpAddr {
+/// The IPv4 host a NAT64 translator delivers an address under its well-known prefix, 64:ff9b::/96 (RFC 6052), to:
+/// `64:ff9b::a00:1` is `10.0.0.1`.
+fn nat64_target(v6: &Ipv6Addr) -> Option<Ipv4Addr> {
+    (v6.segments()[..6] == [0x64, 0xff9b, 0, 0, 0, 0]).then(|| low_v4(v6))
+}
+
+/// The IPv4 router a 6to4 address, 2002::/16 (RFC 3056), reaches its site through: the address that follows the
+/// prefix.
+fn six_to_four_router(v6: &Ipv6Addr) -> Option<Ipv4Addr> {
+    let segments = v6.segments();
+    (segments[0] == 0x2002)
+        .then(|| Ipv4Addr::from(u32::from(segments[1]) << 16 | u32::from(segments[2])))
+}
+
+fn low_v4(v6: &Ipv6Addr) -> Ipv4Addr {
+    let segments = v6.segments();
+    Ipv4Addr::from(u32::from(segments[6]) << 16 | u32::from(segments[7]))
+}
+
+/// A broadcast or multicast group.
+fn is_group(ip: IpAddr) -> bool {
     match ip {
-        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4),
-        v4 => v4,
+        IpAddr::V4(ip) => ip.is_broadcast() || ip.is_multicast(),
+        IpAddr::V6(ip) => ip.is_multicast(),
     }
 }
 
 fn class_v4(ip: &Ipv4Addr) -> Class {
-    if ip.is_loopback()            // 127.0.0.0/8
-        || ip.is_link_local()      // 169.254.0.0/16 (includes cloud metadata 169.254.169.254)
-        || ip.is_broadcast()       // 255.255.255.255
-        || ip.is_unspecified()     // 0.0.0.0
-        || is_cgn(ip)              // 100.64.0.0/10 (Carrier-Grade NAT)
-        || is_multicast_v4(ip)     // 224.0.0.0/4 (RFC 5771) — unicast-only policy
-        || is_documentation_v4(ip) // TEST-NET-1/2/3 (RFC 5737)
-        || is_benchmark_v4(ip)     // 198.18.0.0/15 (RFC 2544)
-        || is_reserved_future_v4(ip)
-    // 240.0.0.0/4 (RFC 1112)
+    let o = ip.octets();
+    if o[0] == 0                            // 0.0.0.0/8, "this network" (RFC 791)
+        || ip.is_loopback()                 // 127.0.0.0/8
+        || ip.is_link_local()               // 169.254.0.0/16, cloud metadata included
+        || ip.is_broadcast()                // 255.255.255.255
+        || ip.is_multicast()                // 224.0.0.0/4
+        || (o[0] == 100 && (o[1] & 0xC0) == 64) // 100.64.0.0/10, Carrier-Grade NAT (RFC 6598)
+        || (o[0] == 192 && o[1] == 0 && o[2] == 0) // 192.0.0.0/24, IETF protocol assignments (RFC 6890)
+        || ip.is_documentation()            // 192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24 (RFC 5737)
+        || (o[0] == 192 && o[1] == 88 && o[2] == 99) // 192.88.99.0/24, 6to4 relay anycast (RFC 7526)
+        || (o[0] == 198 && (o[1] & 0xFE) == 18) // 198.18.0.0/15, benchmarking (RFC 2544)
+        || (o[0] & 0xF0) == 0xF0
+    // 240.0.0.0/4, reserved (RFC 1112)
     {
         Class::Reserved
     } else if ip.is_private() {
@@ -114,100 +234,40 @@ fn class_v4(ip: &Ipv4Addr) -> Class {
 }
 
 fn class_v6(ip: &Ipv6Addr) -> Class {
-    if ip.is_loopback()            // ::1
-        || ip.is_unspecified()     // ::
-        || is_ipv6_link_local(ip)  // fe80::/10
-        || is_multicast_v6(ip)     // ff00::/8 — unicast-only policy
-        || is_documentation_v6(ip)
-    // 2001:db8::/32 (RFC 3849)
+    let s = ip.segments();
+    if ip.is_loopback()                     // ::1
+        || ip.is_unspecified()              // ::
+        || (s[0] & 0xFFC0) == 0xFE80        // fe80::/10, link-local
+        || (s[0] & 0xFFC0) == 0xFEC0        // fec0::/10, site-local (deprecated, RFC 3879)
+        || ip.is_multicast()                // ff00::/8
+        || (s[0] == 0x2001 && s[1] == 0x0DB8) // 2001:db8::/32, documentation (RFC 3849)
+        || (s[0] == 0x2001 && s[1] == 0)    // 2001::/32, Teredo (RFC 4380)
+        || (s[0] == 0x2001 && s[1] == 2 && s[2] == 0) // 2001:2::/48, benchmarking (RFC 5180)
+        || (s[0] == 0x2001 && matches!(s[1] & 0xFFF0, 0x0010 | 0x0020)) // ORCHID, 2001:10::/28 and 2001:20::/28
+        || s[..4] == [0x0100, 0, 0, 0]      // 100::/64, discard-only (RFC 6666)
+        || s[..3] == [0x64, 0xff9b, 1]
+    // 64:ff9b:1::/48, local-use NAT64 (RFC 8215)
     {
         Class::Reserved
-    } else if is_unique_local(ip) {
-        // fc00::/7
+    } else if (s[0] & 0xFE00) == 0xFC00 {
+        // fc00::/7, unique-local
         Class::Private
     } else {
         Class::Public
     }
 }
 
-/// Whether a private `ip` is on one of the device's networks and is not the device itself.
-fn on_local_network(ip: IpAddr, networks: &[LocalNetwork]) -> bool {
-    let ip = canonical(ip);
-    !networks.iter().any(|network| network.address == ip)
-        && networks
-            .iter()
-            .any(|network| network.prefix > 0 && network.contains(ip))
-}
-
-/// Carrier-Grade NAT: 100.64.0.0/10
-fn is_cgn(ip: &Ipv4Addr) -> bool {
-    let octets = ip.octets();
-    octets[0] == 100 && (octets[1] & 0xC0) == 64
-}
-
-/// IPv6 Unique Local Address: fc00::/7
-fn is_unique_local(ip: &Ipv6Addr) -> bool {
-    (ip.segments()[0] & 0xFE00) == 0xFC00
-}
-
-/// IPv6 Link-Local: fe80::/10
-fn is_ipv6_link_local(ip: &Ipv6Addr) -> bool {
-    (ip.segments()[0] & 0xFFC0) == 0xFE80
-}
-
-/// IPv4 multicast: 224.0.0.0/4 (RFC 5771).
-///
-/// A small-game runtime that allows outbound multicast would let JS
-/// reach LAN discovery services, SSDP/mDNS neighbours, and routing
-/// daemons — none of which are legitimate targets.
-fn is_multicast_v4(ip: &Ipv4Addr) -> bool {
-    let o = ip.octets();
-    (o[0] & 0xF0) == 0xE0
-}
-
-/// IPv4 documentation ranges (RFC 5737): 192.0.2.0/24, 198.51.100.0/24,
-/// 203.0.113.0/24. These must never appear on the public internet, so
-/// a resolution into one of these ranges is either a misconfigured DNS
-/// response or an exfiltration trick.
-fn is_documentation_v4(ip: &Ipv4Addr) -> bool {
-    let o = ip.octets();
-    (o[0] == 192 && o[1] == 0 && o[2] == 2)
-        || (o[0] == 198 && o[1] == 51 && o[2] == 100)
-        || (o[0] == 203 && o[1] == 0 && o[2] == 113)
-}
-
-/// IPv4 benchmarking: 198.18.0.0/15 (RFC 2544).
-fn is_benchmark_v4(ip: &Ipv4Addr) -> bool {
-    let o = ip.octets();
-    o[0] == 198 && (o[1] & 0xFE) == 18
-}
-
-/// IPv4 reserved future use: 240.0.0.0/4 (RFC 1112, excluding
-/// 255.255.255.255 which `is_broadcast` already covers).
-fn is_reserved_future_v4(ip: &Ipv4Addr) -> bool {
-    let o = ip.octets();
-    (o[0] & 0xF0) == 0xF0 && !ip.is_broadcast()
-}
-
-/// IPv6 multicast: ff00::/8 (RFC 4291).
-fn is_multicast_v6(ip: &Ipv6Addr) -> bool {
-    (ip.segments()[0] & 0xFF00) == 0xFF00
-}
-
-/// IPv6 documentation: 2001:db8::/32 (RFC 3849).
-fn is_documentation_v6(ip: &Ipv6Addr) -> bool {
-    let seg = ip.segments();
-    seg[0] == 0x2001 && seg[1] == 0x0DB8
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const LAN: LanAccess = LanAccess::LocalNetwork;
+    const NO_LAN: LanAccess = LanAccess::Refused;
+
     /// The rule on a device on no local network, so what these assertions say does not depend on the network the
     /// machine running them is on. (It shadows the glob-imported function on purpose.)
     fn is_blocked_address(addr: &SocketAddr) -> bool {
-        is_blocked_on(addr, &[])
+        is_blocked_on(addr, &[], LAN)
     }
 
     fn network(address: IpAddr, prefix: u8) -> LocalNetwork {
@@ -219,19 +279,44 @@ mod tests {
     #[test]
     fn a_private_address_on_the_local_network_is_allowed_unless_it_is_the_device() {
         let lan = [network(IpAddr::V4(Ipv4Addr::new(10, 0, 2, 15)), 24)];
-        assert!(!is_blocked_on(&sa4(10, 0, 2, 2, 8080), &lan));
+        assert!(!is_blocked_on(&sa4(10, 0, 2, 2, 8080), &lan, LAN));
         assert!(
-            is_blocked_on(&sa4(10, 0, 2, 15, 8080), &lan),
+            is_blocked_on(&sa4(10, 0, 2, 15, 8080), &lan, LAN),
             "the device itself"
         );
         assert!(
-            is_blocked_on(&sa4(10, 0, 3, 1, 8080), &lan),
+            is_blocked_on(&sa4(10, 0, 3, 1, 8080), &lan, LAN),
             "another network"
         );
-        assert!(is_blocked_on(&sa4(192, 168, 1, 1, 80), &lan));
+        assert!(is_blocked_on(&sa4(192, 168, 1, 1, 80), &lan, LAN));
         // The rest stays refused on any network.
-        assert!(is_blocked_on(&sa4(127, 0, 0, 1, 80), &lan));
-        assert!(is_blocked_on(&sa4(169, 254, 169, 254, 80), &lan));
+        assert!(is_blocked_on(&sa4(127, 0, 0, 1, 80), &lan, LAN));
+        assert!(is_blocked_on(&sa4(169, 254, 169, 254, 80), &lan, LAN));
+    }
+
+    /// Without the local network granted, the same peer -- and every other private address, of either family -- is
+    /// refused, and a datagram may not be broadcast or multicast.
+    #[test]
+    fn without_the_local_network_no_private_address_is_reachable() {
+        let lan = [
+            network(IpAddr::V4(Ipv4Addr::new(10, 0, 2, 15)), 24),
+            network(
+                IpAddr::V6(Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 0x15)),
+                64,
+            ),
+        ];
+        for peer in [
+            sa4(10, 0, 2, 2, 8080),
+            sa6([0xfd00, 0, 0, 0, 0, 0, 0, 2], 80),
+            sa6([0, 0, 0, 0, 0, 0xffff, 0x0a00, 0x0202], 80),
+        ] {
+            assert!(!is_blocked_on(&peer, &lan, LAN), "{peer} granted");
+            assert!(is_blocked_on(&peer, &lan, NO_LAN), "{peer} refused");
+        }
+        assert!(!is_blocked_on(&sa4(8, 8, 8, 8, 443), &lan, NO_LAN));
+        for group in [sa4(255, 255, 255, 255, 9), sa4(224, 0, 0, 251, 5353)] {
+            assert!(is_blocked_datagram_address(&group, NO_LAN), "{group}");
+        }
     }
 
     /// The same for IPv6's unique local addresses, and for an IPv4 LAN address written in its mapped IPv6 form.
@@ -246,24 +331,25 @@ mod tests {
         ];
         assert!(!is_blocked_on(
             &sa6([0xfd00, 0, 0, 0, 0, 0, 0, 2], 80),
-            &lan
+            &lan,
+            LAN
         ));
         assert!(
-            is_blocked_on(&sa6([0xfd00, 0, 0, 1, 0, 0, 0, 2], 80), &lan),
+            is_blocked_on(&sa6([0xfd00, 0, 0, 1, 0, 0, 0, 2], 80), &lan, LAN),
             "another /64"
         );
         assert!(
-            !is_blocked_on(&sa6([0, 0, 0, 0, 0, 0xffff, 0xc0a8, 0x0502], 80), &lan),
+            !is_blocked_on(&sa6([0, 0, 0, 0, 0, 0xffff, 0xc0a8, 0x0502], 80), &lan, LAN),
             "::ffff:192.168.5.2"
         );
         assert!(
-            is_blocked_on(&sa6([0, 0, 0, 0, 0, 0xffff, 0x7f00, 0x0001], 80), &lan),
+            is_blocked_on(&sa6([0, 0, 0, 0, 0, 0xffff, 0x7f00, 0x0001], 80), &lan, LAN),
             "::ffff:127.0.0.1"
         );
     }
 
-    /// A datagram may go to the limited broadcast address and to multicast groups; a stream may not, and neither may
-    /// reach the loopback.
+    /// A datagram may go to the limited broadcast address and to multicast groups when the local network is granted;
+    /// a stream may not, and neither may reach the loopback.
     #[test]
     fn a_datagram_may_be_broadcast_or_multicast() {
         for allowed in [
@@ -271,25 +357,138 @@ mod tests {
             sa4(224, 0, 0, 251, 5353),
             sa6([0xff02, 0, 0, 0, 0, 0, 0, 0xfb], 5353),
         ] {
-            assert!(!is_blocked_datagram_address(&allowed), "{allowed}");
-            assert!(super::is_blocked_address(&allowed), "a stream to {allowed}");
+            assert!(!is_blocked_datagram_address(&allowed, LAN), "{allowed}");
+            assert!(
+                super::is_blocked_address(&allowed, LAN),
+                "a stream to {allowed}"
+            );
         }
-        assert!(is_blocked_datagram_address(&sa4(127, 0, 0, 1, 9)));
-        assert!(!is_blocked_datagram_address(&sa4(8, 8, 8, 8, 53)));
+        assert!(is_blocked_datagram_address(&sa4(127, 0, 0, 1, 9), LAN));
+        assert!(!is_blocked_datagram_address(&sa4(8, 8, 8, 8, 53), LAN));
+    }
+
+    fn ip(text: &str) -> IpAddr {
+        text.parse().unwrap()
+    }
+
+    /// The device and its neighbours are told by the device's networks, not by the address range. On IPv6 the
+    /// device and every device beside it on Wi-Fi have global addresses, and so does a device given a public IPv4:
+    /// read by range, an allowed domain pointed at the phone's own address reached its services.
+    #[test]
+    fn the_device_and_its_neighbours_are_known_by_its_networks_whatever_the_range() {
+        let networks = [
+            network(ip("2001:470:1:2::15"), 64),
+            network(ip("81.2.69.15"), 24),
+        ];
+        for (address, reach) in [
+            ("2001:470:1:2::15", Reach::Never),
+            ("2001:470:1:2::99", Reach::LocalNetwork),
+            ("2001:470:1:3::1", Reach::Internet),
+            ("81.2.69.15", Reach::Never),
+            ("81.2.69.20", Reach::LocalNetwork),
+            ("81.2.70.1", Reach::Internet),
+            ("::ffff:81.2.69.15", Reach::Never),
+        ] {
+            assert_eq!(reach_on(ip(address), false, &networks), reach, "{address}");
+            assert_eq!(
+                reach_on(ip(address), true, &networks),
+                reach,
+                "{address} by datagram"
+            );
+        }
+        assert!(Reach::LocalNetwork.blocked(NO_LAN));
+        assert!(!Reach::LocalNetwork.blocked(LAN));
+    }
+
+    /// A 6to4 address names a host in a site, and its IPv4 the site's router, which every host there shares: the
+    /// device's neighbours in its own 6to4 site are neighbours, not the device. A NAT64 address is delivered to the
+    /// IPv4 host it carries, so one carrying the device's own IPv4 is the device.
+    #[test]
+    fn a_translated_address_is_the_host_it_reaches() {
+        let networks = [
+            network(ip("2002:5102:450f:1::15"), 64),
+            network(ip("81.2.69.15"), 24),
+        ];
+        for (address, reach) in [
+            ("2002:5102:450f:1::15", Reach::Never),
+            ("2002:5102:450f:1::99", Reach::LocalNetwork),
+            ("2002:5102:450f:2::1", Reach::Internet),
+            ("64:ff9b::5102:450f", Reach::Never),
+            ("64:ff9b::5102:4514", Reach::LocalNetwork),
+            ("64:ff9b::808:808", Reach::Internet),
+        ] {
+            assert_eq!(reach_on(ip(address), false, &networks), reach, "{address}");
+        }
+    }
+
+    /// An IPv6 address that carries an IPv4 one is the IPv4 address it carries: a NAT64 gateway or a 6to4 relay
+    /// delivers it there. The forms that cannot be read that way are refused outright.
+    #[test]
+    fn an_address_that_embeds_an_ipv4_one_is_judged_as_it() {
+        for (address, reach) in [
+            ("64:ff9b::a00:1", Reach::Never),
+            ("64:ff9b::c0a8:101", Reach::Never),
+            ("64:ff9b::808:808", Reach::Internet),
+            ("2002:c0a8:101::1", Reach::Never),
+            ("2002:a9fe:a9fe::1", Reach::Never),
+            ("2002:808:808::1", Reach::Internet),
+            ("::7f00:1", Reach::Never),
+            ("::ffff:a9fe:a9fe", Reach::Never),
+            ("64:ff9b:1::808:808", Reach::Never),
+            ("2001:0:4136:e378:8000:63bf:3fff:fdd2", Reach::Never),
+        ] {
+            assert_eq!(reach_on(ip(address), false, &[]), reach, "{address}");
+        }
+    }
+
+    /// The special-purpose ranges no internet host has, at their edges.
+    #[test]
+    fn special_purpose_ranges_are_never_reached_and_their_neighbours_are() {
+        for never in [
+            "0.1.2.3",
+            "192.0.0.8",
+            "192.0.0.255",
+            "192.88.99.1",
+            "fec0::1",
+            "100::1",
+            "2001:2::1",
+            "2001:10::1",
+            "2001:2f:ffff::1",
+            "2001:1f::1",
+        ] {
+            assert_eq!(reach_on(ip(never), false, &[]), Reach::Never, "{never}");
+        }
+        for internet in [
+            "1.0.0.1",
+            "192.0.1.1",
+            "192.88.98.1",
+            "100:0:0:1::1",
+            "2001:3::1",
+            "2001:30::1",
+            "2001:4860:4860::8888",
+        ] {
+            assert_eq!(
+                reach_on(ip(internet), false, &[]),
+                Reach::Internet,
+                "{internet}"
+            );
+        }
     }
 
     /// A network of prefix 0 is not a local network: it would make every address local.
     #[test]
     fn a_zero_length_prefix_makes_nothing_local() {
         let everything = [network(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 0)];
-        assert!(is_blocked_on(&sa4(192, 168, 1, 1, 80), &everything));
+        assert!(is_blocked_on(&sa4(192, 168, 1, 1, 80), &everything, LAN));
     }
 
     /// Through the device's real interfaces: what does not depend on them.
     #[test]
     fn the_real_rule_refuses_the_loopback_and_allows_the_public() {
-        assert!(super::is_blocked_address(&sa4(127, 0, 0, 1, 80)));
-        assert!(!super::is_blocked_address(&sa4(8, 8, 8, 8, 443)));
+        for lan in [NO_LAN, LAN] {
+            assert!(super::is_blocked_address(&sa4(127, 0, 0, 1, 80), lan));
+            assert!(!super::is_blocked_address(&sa4(8, 8, 8, 8, 443), lan));
+        }
     }
 
     fn sa4(a: u8, b: u8, c: u8, d: u8, port: u16) -> SocketAddr {

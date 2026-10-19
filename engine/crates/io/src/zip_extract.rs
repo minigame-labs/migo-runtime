@@ -459,7 +459,7 @@ pub fn extract_zip_with_budget(
         if advertised > budget.max_entry_uncompressed {
             return Err(ZipError::BudgetExceeded(format!(
                 "entry '{}' advertises {} bytes, exceeds per-entry limit {}",
-                entry.name(),
+                String::from_utf8_lossy(entry.name_raw()),
                 advertised,
                 budget.max_entry_uncompressed
             )));
@@ -481,7 +481,7 @@ pub fn extract_zip_with_budget(
 
     for i in 0..total_files {
         let mut file = archive.by_index(i)?;
-        let file_name = file.name().to_string();
+        let file_name = file.name()?.into_owned();
 
         trace!("extract_zip: processing [{}] {}", i, file_name);
 

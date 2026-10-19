@@ -11,7 +11,8 @@ use deno_core::{FastString, JsRuntime, PollEventLoopOptions, RuntimeOptions};
 use shared::{
     channel::ThreadWakeup,
     device::gpu_caps::GpuCaps,
-    op_state::{AudioSender, HostOpState, NetworkPolicy},
+    network_policy::NetworkPolicy,
+    op_state::{AudioSender, HostOpState},
     render_command_sender::CommandSender,
     services::DeviceServices,
     vfs::{GamePaths, VirtualFS},
@@ -99,6 +100,11 @@ pub(super) fn boot_with_services(
     let mut state = test_host_state();
     state.device_services = services;
     state.vfs = vfs;
+    boot(state)
+}
+
+/// A hardened runtime over `state`.
+pub(super) fn boot(state: HostOpState) -> JsRuntime {
     let mut runtime = JsRuntime::new(RuntimeOptions {
         extensions: crate::main_extensions(state),
         ..Default::default()

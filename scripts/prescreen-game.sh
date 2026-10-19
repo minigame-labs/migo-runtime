@@ -310,6 +310,24 @@ for path, text in texts.items():
             line = text.count("\n", 0, match.start()) + 1
             opaque.append((str(rel), line, reason))
 
+# What game.json asks the platform for that is not an API. A plugin is served by the platform, from its own
+# servers, to `requirePlugin(...)`; this build has neither the service nor the function, so a bundle that declares
+# one does not start -- and no name scan sees it, because `requirePlugin` is a global, not a `wx.*` name. Cocos
+# Creator delivers its engine this way when its "Separate Engine" option is on for the platform's mini-games.
+plugins: dict = {}
+manifest_path = bundle / "game.json"
+if manifest_path.is_file():
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        manifest = None
+    if isinstance(manifest, dict) and isinstance(manifest.get("plugins"), dict):
+        plugins = manifest["plugins"]
+# Declaring a plugin is not loading one: a bundle may list a plugin it never asks for. Read with comments
+# and strings blanked, so only a call in code counts.
+plugin_callers = sorted(str(path.relative_to(bundle)) for path, text in texts.items()
+                        if re.search(r"\brequirePlugin\s*\(", text))
+
 # A name the bundle both installs and calls is its own polyfill, not a gap.
 wx_used = referenced["wx"] - installed["wx"]
 migo_used = referenced["migo"] - installed["migo"]
@@ -359,7 +377,34 @@ stub_hits = sorted((wx_used | migo_used) & stubbed)
 out.append(f"| **referenced, published, but a stub** | **{len(stub_hits)}** |")
 out.append(f"| `migo.*` names not published | {len(migo_missing)} |")
 out.append(f"| **sites this scanner cannot resolve** | **{len(opaque)}** |")
+out.append(f"| **plugins `game.json` asks the platform to serve** | **{len(plugins)}** |")
 out.append("")
+
+if plugins:
+    out.append("## Plugins the platform would serve")
+    out.append("")
+    if plugin_callers:
+        out.append(
+            f"`game.json` declares **{len(plugins)} plugin(s)**, which the mini-game platform serves from its own "
+            "servers to `requirePlugin(...)`, and the bundle calls `requirePlugin` in "
+            + ", ".join(f"`{name}`" for name in plugin_callers)
+            + ". This build has no plugin service and no `requirePlugin`, so the bundle does not start as built. "
+            "Cocos Creator delivers its engine this way when \"Separate Engine\" is on: rebuild with it off, so the "
+            "engine ships inside the game."
+        )
+    else:
+        out.append(
+            f"`game.json` declares **{len(plugins)} plugin(s)**, which the mini-game platform serves from its own "
+            "servers to `requirePlugin(...)`, and **no file scanned calls `requirePlugin`**: the declaration may be "
+            "unused. A call this scan cannot see (computed, or through `eval`) would fail, because this build has no "
+            "plugin service."
+        )
+    out.append("")
+    for name in sorted(plugins):
+        entry = plugins[name] if isinstance(plugins[name], dict) else {}
+        details = ", ".join(f"{key} `{entry[key]}`" for key in ("provider", "version") if key in entry)
+        out.append(f"- `{name}`" + (f" -- {details}" if details else ""))
+    out.append("")
 
 if wx_used and not wx_dumped:
     out.append("## `wx.*` could not be answered — no adapter was loaded")

@@ -77,6 +77,39 @@ const statistics = { packets: 0, barriers: 0, windowWaits: 0 };
 let drainWaiters = [];
 let draining = false;
 
+// The first record after a frame end, for the engine's frame-content wait
+// (op_await_frame_content): content drawn outside requestAnimationFrame has its
+// frame ended from there, and nothing else would end it. As the embedded
+// runtime's collector does, a record that arrives while nobody waits is kept for
+// the next wait, and the answer is read when the wait is over -- a frame drawn
+// inside a callback has ended by then, and its wait answers that nothing is left.
+let contentSinceFrameEnd = false;
+let contentPending = false;
+let contentWaiter = null;
+
+function noteContent() {
+  if (contentSinceFrameEnd) return;
+  contentSinceFrameEnd = true;
+  if (contentWaiter === null) {
+    contentPending = true;
+    return;
+  }
+  const resolve = contentWaiter;
+  contentWaiter = null;
+  resolve();
+}
+
+/** The next first record after a frame end; settles with whether that frame is still open. */
+export function awaitFrameContent() {
+  const content = contentPending
+    ? Promise.resolve()
+    : new Promise((resolve) => {
+        contentWaiter = resolve;
+      });
+  contentPending = false;
+  return content.then(() => contentSinceFrameEnd);
+}
+
 // A run of `drawImage` calls on one canvas, not yet written.
 //
 // Games draw sprites one `drawImage` at a time, and adjacent draws on one
@@ -124,6 +157,7 @@ export function appendStream(words, usedWords) {
   // An empty buffer is the facade's barrier before a draw, and changes nothing:
   // it must not end an image run.
   if (usedWords === 2) return;
+  noteContent();
   writeImageRun();
   const frame = currentWriter();
   // A new buffer starts with no canvas selected, whatever the last one chose.
@@ -281,6 +315,7 @@ function fitRecord(record) {
 }
 
 function writeRecord(record, headerWords, payload) {
+  noteContent();
   const frame = currentWriter();
   frame.appendWords(record, 0, headerWords);
   if (payload instanceof Uint8Array) {
@@ -323,6 +358,7 @@ export function appendDrawImage(canvasId, entry) {
   imageRun.set(entry, at);
   imageRunCanvas = canvasId;
   imageRunEntries += 1;
+  noteContent();
   return true;
 }
 
@@ -351,6 +387,7 @@ function writeImageRun() {
  */
 export function endFrame() {
   writeImageRun();
+  contentSinceFrameEnd = false;
   const frame = currentWriter();
   if (frame.wordCount === 0 && !barrierInFrame) return;
   barrierInFrame = false;

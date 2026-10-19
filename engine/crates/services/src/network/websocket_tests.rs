@@ -50,10 +50,7 @@ fn a_connection_is_bounded_well_below_the_library_s_defaults() {
 /// refusal leaves no resource behind.
 #[tokio::test]
 async fn a_host_the_policy_refuses_is_never_connected_to() {
-    let policy = NetworkPolicy {
-        domain_whitelist: vec!["allowed.example".to_string()],
-        enforce_https: true,
-    };
+    let policy = NetworkPolicy::from_json(r#"{"socket":["allowed.example"]}"#).unwrap();
     let resources = ResourceTable::new();
     let error = create(
         &policy,
@@ -72,7 +69,7 @@ async fn a_host_the_policy_refuses_is_never_connected_to() {
     );
     assert!(resources.is_empty());
 
-    // And `ws://` where the policy enforces HTTPS.
+    // And `ws://` where plain text is not allowed.
     let error = create(
         &policy,
         &resources,
@@ -82,9 +79,9 @@ async fn a_host_the_policy_refuses_is_never_connected_to() {
         None,
     )
     .await
-    .expect_err("the policy enforces TLS");
+    .expect_err("the policy refuses plain text");
     assert!(
-        error.message.contains("HTTPS is required"),
+        error.message.contains("plain-text ws:// is not allowed"),
         "{}",
         error.message
     );
@@ -202,7 +199,7 @@ async fn a_sixth_web_socket_fails_and_a_closed_one_frees_its_place() {
         .map(|_| resources.web_socket_slot().expect("a place"))
         .collect();
     let error = create(
-        &NetworkPolicy::default(),
+        &NetworkPolicy::unrestricted(),
         &resources,
         "wss://example.com/",
         &[],

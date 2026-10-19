@@ -103,6 +103,8 @@ fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENGINE="$ROOT/engine"
+# shellcheck source=scripts/lib/cargo-target-dir.sh
+source "$ROOT/scripts/lib/cargo-target-dir.sh"
 OUT_DIR="$ENGINE/crates/runtime-v8/snapshots"
 mkdir -p "$OUT_DIR"
 # shellcheck source=scripts/lib/snapshot-fingerprint.sh
@@ -151,7 +153,7 @@ if [[ "$OS" == "linux" ]]; then
     cargo build -p migo-snapshot-gen \
       --no-default-features --features "profile-$PRODUCT_PROFILE" --locked )
 
-  BIN="$ENGINE/target/debug/migo-snapshot-gen"
+  BIN="$(cargo_target_dir "$ENGINE")/debug/migo-snapshot-gen"
   [[ -f "$BIN" ]] || die "build produced no binary at $BIN"
 
   c_info "generating snapshot natively ..."
@@ -235,7 +237,7 @@ c_info "cross-compiling migo-snapshot-gen for $TRIPLE ..."
   cargo ndk -t "$NDK_TARGET" --platform 26 build -p migo-snapshot-gen \
     --no-default-features --features "profile-$PRODUCT_PROFILE" --locked )
 
-BIN="$ENGINE/target/$TRIPLE/debug/migo-snapshot-gen"
+BIN="$(cargo_target_dir "$ENGINE")/$TRIPLE/debug/migo-snapshot-gen"
 [[ -f "$BIN" ]] || die "build produced no binary at $BIN"
 
 # ---- 2. run on device -------------------------------------------------------

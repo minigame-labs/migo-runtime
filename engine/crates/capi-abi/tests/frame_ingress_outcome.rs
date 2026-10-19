@@ -486,8 +486,10 @@ fn the_session_config_and_the_descriptor_read_a_nonce_identically() {
         },
         flags: 0,
         launch_nonce: bytes,
+        network_policy_json_utf8: std::ptr::null(),
     };
-    let validated = config.validate().expect("a well-formed config");
+    // SAFETY: the record carries no string.
+    let validated = unsafe { config.validate() }.expect("a well-formed config");
     assert_eq!(
         validated.launch_nonce, expected,
         "the config and the descriptor must agree byte for byte"
@@ -499,7 +501,13 @@ fn the_session_config_and_the_descriptor_read_a_nonce_identically() {
         launch_nonce: [0u8; 16],
         ..config
     };
-    assert_eq!(zeroed.validate().expect("still valid").launch_nonce, None);
+    // SAFETY: the record carries no string.
+    assert_eq!(
+        unsafe { zeroed.validate() }
+            .expect("still valid")
+            .launch_nonce,
+        None
+    );
 }
 
 /// The service stream's bounds and kinds, header against the format. A

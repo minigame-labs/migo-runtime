@@ -191,14 +191,14 @@ async function rejection(promise) {
   return null;
 }
 
-/** `op_fetch`'s ten arguments for a GET with no body and no client. */
+/** `op_fetch`'s arguments after the kind and the method, for a GET with no body and no client. */
 const get = (url) => [url, [], null, false, null, null, 30000, false, false];
 
 async function script() {
   // A request built and then aborted. The abort is a close of the cancel
   // handle -- what `RequestTask.abort()` does -- and the send after it is
   // refused rather than connecting, so no connection is ever made.
-  const aborted = syncLane.op_fetch("GET", ...get("https://allowed.example/slow"));
+  const aborted = syncLane.op_fetch("request", "GET", ...get("https://allowed.example/slow"));
   check("a request has a handle and one that aborts it", () => {
     assert.equal(typeof aborted.requestRid, "number");
     assert.equal(typeof aborted.cancelHandleRid, "number");
@@ -210,7 +210,7 @@ async function script() {
   });
 
   // A `data:` URL, the whole way.
-  const inline = syncLane.op_fetch("GET", ...get(`data:text/plain;base64,${Buffer.from(BODY).toString("base64")}`));
+  const inline = syncLane.op_fetch("request", "GET", ...get(`data:text/plain;base64,${Buffer.from(BODY).toString("base64")}`));
   check("a data: URL has nothing to abort", () => {
     assert.equal(inline.cancelHandleRid, null);
   });

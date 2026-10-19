@@ -111,11 +111,21 @@ add_stub_crate() {
     if [[ "$name" == "io" ]]; then
         dependency='shared = { path = "../shared", package = "migo-shared" }'
     fi
+    # `demo` is the crate no host step names, so it carries no tests and says so the
+    # way the real tree's test-less targets do. A lib cargo builds a test binary
+    # from is one the audit requires a step for, and every fixture would otherwise
+    # fail there rather than on the property it exists to check.
+    local lib_section=""
+    if [[ "$name" == "demo" ]]; then
+        lib_section=$'[lib]\ntest = false'
+    fi
     cat > "$repo/engine/$group/$name/Cargo.toml" <<EOF
 [package]
 name = "migo-$name"
 version = "0.0.0"
 edition = "2021"
+
+$lib_section
 
 [dependencies]
 $dependency
@@ -128,20 +138,20 @@ default = ["profile-full"]
 profile-full = []
 profile-slim = []
 EOF
-    cat > "$repo/engine/$group/$name/src/lib.rs" <<'EOF'
-pub fn present() -> bool {
-    true
+    printf 'pub fn present() -> bool {\n    true\n}\n' > "$repo/engine/$group/$name/src/lib.rs"
+    if [[ "$name" != "demo" ]]; then
+        printf '%s\n' "$STUB_UNIT_TEST" >> "$repo/engine/$group/$name/src/lib.rs"
+    fi
 }
 
+STUB_UNIT_TEST='
 #[cfg(test)]
 mod tests {
     #[test]
     fn present() {
         assert!(super::present());
     }
-}
-EOF
-}
+}'
 
 new_fixture() {
     local name="$1"
@@ -279,6 +289,50 @@ status=0
 output="$(run_verify "$repo" --plan-only)" || status=$?
 assert_status "$status" 1 "a test binary no host step runs fails the run"
 assert_contains "$output" "migo-demo::orphan" "the unrun test binary is named"
+
+# ------------------------------------------------------------
+# Unit tests in a lib or a bin are test binaries too.
+#
+# Cargo builds a test binary from every lib, bin and integration-test target whose
+# `test` flag is set, and the audit counted only the last kind. That is how
+# `migo-services` -- 272 tests, all in its lib -- and the tests in `migo-player`'s
+# bin were named by no local step and no job while the audit reported nothing
+# missing.
+# ------------------------------------------------------------
+repo="$(new_fixture unrun_unit_tests)"
+sed -i '/^test = false$/d' "$repo/engine/crates/demo/Cargo.toml"
+printf '%s\n' "$STUB_UNIT_TEST" >> "$repo/engine/crates/demo/src/lib.rs"
+printf 'fn main() {}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn runs() {}\n}\n' \
+    > "$repo/engine/crates/demo/src/main.rs"
+mkdir -p "$repo/engine/crates/demo/tests"
+printf '#[test]\nfn runs() {}\n' > "$repo/engine/crates/demo/tests/it.rs"
+status=0
+output="$(run_verify "$repo" --plan-only)" || status=$?
+assert_status "$status" 1 "unit tests no host step runs fail the run"
+assert_contains "$output" "migo-demo::migo_demo (lib)" "the lib whose tests nothing runs is named"
+assert_contains "$output" "migo-demo::migo-demo (bin)" "the bin whose tests nothing runs is named"
+
+# Each selection flag reaches its own kind and no other. `--lib` standing for every
+# target is the original defect -- it hid thirteen integration-test binaries -- and
+# no real host step happens to depend on it, so it is pinned here rather than left
+# to the real tree to notice.
+#
+# An audit that cannot answer prints nothing, which every `assert_absent` below would
+# read as coverage -- so its refusal is a failure here, not an empty string. Checked
+# at each call, because `fail` inside the substitution would count in a subshell.
+audit_demo() {
+    printf '%s\n' "$1" | python3 "$ROOT/scripts/lib/host_test_coverage.py" --root "$repo"
+}
+unanswered="the audit could not describe the fixture"
+covered="$(audit_demo 'test -p migo-demo --lib')" || fail "$unanswered"
+assert_absent "$covered" "migo-demo::migo_demo (lib)" "--lib runs the lib's tests"
+assert_contains "$covered" "migo-demo::migo-demo (bin)" "--lib does not run a bin's tests"
+assert_contains "$covered" "migo-demo::it (test)" "--lib does not run an integration test"
+covered="$(audit_demo 'test -p migo-demo --bins')" || fail "$unanswered"
+assert_absent "$covered" "migo-demo::migo-demo (bin)" "--bins runs the bins' tests"
+assert_contains "$covered" "migo-demo::migo_demo (lib)" "--bins does not run the lib's tests"
+covered="$(audit_demo 'test -p migo-demo --tests')" || fail "$unanswered"
+assert_absent "$covered" "migo-demo::" "--tests runs every test binary, the lib's and the bin's included"
 
 # And a compile is not coverage. `build --workspace --all-targets` builds every test
 # binary and runs none, so an audit that accepted it would report the whole class as
@@ -456,10 +510,14 @@ else
 fi
 
 # ------------------------------------------------------------
-# CI runs every host suite this entry point runs.
+# CI tests every build of every package this entry point tests, and no other.
 #
 # The gap this closes is the one that made the entry point necessary: two lists of
 # crates in two files, one of them missing four crates, and nothing comparing them.
+# It is compared per build -- a package and the features it is tested with -- not
+# per crate name, because a name cannot tell two builds of one crate apart: the four
+# Slim steps ran here and in no CI job while every assertion in this file passed,
+# and master collected 42 Slim failures in that gap.
 # ------------------------------------------------------------
 #
 # The local half asks the script rather than grepping it. It used to grep for
@@ -467,12 +525,9 @@ fi
 # host steps stopped carrying the word `cargo` themselves, the grep matched
 # nothing -- and with no `|| true` under `set -euo pipefail`, this file died at
 # that assignment, *before* reaching the `fail` below that exists to report
-# exactly that case. It failed with no message at all, which is the vacuous
-# failure the block underneath already warned about in its own comment and did
-# not apply here. Both extractions are now non-fatal so the empty case is
-# reportable, and the local one has one authority instead of a regular
-# expression guessing at one.
-local_crates="$(bash "$ROOT/scripts/verify-change.sh" --list-host-crates 2>/dev/null || true)"
+# exactly that case. Both extractions are non-fatal so the empty case is
+# reportable, and both sides are read by the one parser the binary audit uses.
+#
 # Comments stripped before the extraction, not after: this workflow explains its own
 # `--lib`/`--all-targets` choices in prose next to the commands, and a comment parsed
 # as a command is a list that agrees with itself about the wrong thing.
@@ -480,14 +535,41 @@ ci_test_lines="$(sed 's/#.*//' "$ROOT/.github/workflows/pr-ci.yml" \
     | grep -E 'cargo test ' || true)"
 ci_crates="$(printf '%s\n' "$ci_test_lines" \
     | grep -oE '\-p migo-[a-z0-9-]+' | grep -oE 'migo-[a-z0-9-]+' | sort -u || true)"
-if [[ -z "$ci_crates" ]]; then
-    fail "cannot find the crates pr-ci.yml tests"
-elif [[ -z "$local_crates" ]]; then
-    fail "scripts/verify-change.sh --list-host-crates reported nothing"
+local_steps="$(bash "$ROOT/scripts/verify-change.sh" --list-host-steps 2>/dev/null || true)"
+ci_steps="$(printf '%s\n' "$ci_test_lines" | grep -oE 'cargo test .*' | sed 's/^cargo //' || true)"
+# The workflow that cuts releases runs its own copy of these jobs. Its quality gate is
+# held step for step to pr-ci.yml's by the release parity contract; its host engine
+# tests were held by nothing, so a line dropped there shipped a release a build short.
+release_steps="$(sed 's/#.*//' "$ROOT/.github/workflows/release.yml" \
+    | grep -oE 'cargo test .*' | sed 's/^cargo //' || true)"
+# A build is a package, its features and what of it runs, and one side's build is
+# matched by any of the other's that tests the same package and features at least as
+# widely -- so CI's Windows `--lib` line is covered by the host's whole suite, and a
+# Slim `--tests` narrowed to `--lib` is not.
+not_covered() {
+    python3 "$ROOT/scripts/lib/host_test_coverage.py" --uncovered-by <(printf '%s\n' "$2") \
+        <<< "$1"
+}
+compare_builds() {
+    local side="$1" steps="$2" other="$3" other_steps="$4" missing
+    if ! missing="$(not_covered "$steps" "$other_steps")"; then
+        fail "the build comparison could not run for $side against $other"
+    elif [[ -n "$missing" ]]; then
+        while read -r build; do
+            fail "$other tests $build too -- $side does and $other has no build that wide"
+        done <<< "$missing"
+    else
+        pass "$other tests every build $side tests"
+    fi
+}
+if [[ -z "$(printf '%s\n' "$ci_steps" | python3 "$ROOT/scripts/lib/host_test_coverage.py" --configurations)" ]]; then
+    fail "cannot find the builds pr-ci.yml tests"
+elif [[ -z "$(printf '%s\n' "$local_steps" | python3 "$ROOT/scripts/lib/host_test_coverage.py" --configurations)" ]]; then
+    fail "scripts/verify-change.sh --list-host-steps reported no tested build"
+elif [[ -z "$(printf '%s\n' "$release_steps" | python3 "$ROOT/scripts/lib/host_test_coverage.py" --configurations)" ]]; then
+    fail "cannot find the builds release.yml tests"
 else
-    while read -r crate; do
-        assert_contains "$ci_crates" "$crate" "pr-ci.yml runs $crate's tests too"
-    done <<< "$local_crates"
+    compare_builds "scripts/verify-change.sh" "$local_steps" "pr-ci.yml" "$ci_steps"
 
     # ------------------------------------------------------------
     # And the other direction, which is the one that was missing.
@@ -500,10 +582,43 @@ else
     # versioned-header tests, run by CI, run by no local step, and every assertion
     # in this file passed.
     # ------------------------------------------------------------
-    while read -r crate; do
-        assert_contains "$local_crates" "$crate" \
-            "scripts/verify-change.sh runs $crate's tests too"
-    done <<< "$ci_crates"
+    compare_builds "pr-ci.yml" "$ci_steps" "scripts/verify-change.sh" "$local_steps"
+
+    compare_builds "pr-ci.yml" "$ci_steps" "release.yml" "$release_steps"
+    compare_builds "release.yml" "$release_steps" "pr-ci.yml" "$ci_steps"
+fi
+
+# Coverage, not equality: a narrower build is short of a wider one and a wider one
+# stands in for a narrower one. A `covers` that always agreed would let the Slim
+# `--tests` narrowed to `--lib` pass, which is what this comparison exists to catch.
+if [[ "$(not_covered 'test -p migo-core --tests' 'test -p migo-core --lib')" == "migo-core default all" ]]; then
+    pass "a build narrowed from every target to the lib is a build short"
+else
+    fail "a build narrowed from every target to the lib reads as covered"
+fi
+if [[ -z "$(not_covered 'test -p migo-player --bin migo-player' 'test -p migo-player --bins')" ]]; then
+    pass "a wider build stands in for a narrower one"
+else
+    fail "a build selecting every bin does not cover one selecting a named bin"
+fi
+
+# The comparison is only as fine as the parser: one that dropped features would read
+# Full and Slim as the same build on both sides and agree. So a feature set is pinned
+# as a build of its own, and two spellings of one set as one build.
+builds_of() {
+    printf '%s\n' "$@" | python3 "$ROOT/scripts/lib/host_test_coverage.py" --configurations \
+        | grep -c . || true
+}
+if [[ "$(builds_of 'test -p migo-core --lib' \
+    'test -p migo-core --lib --no-default-features --features profile-slim')" -eq 2 ]]; then
+    pass "a feature set is a build of its own"
+else
+    fail "the parser reads Full and Slim as one build, so neither list can be short of one"
+fi
+if [[ "$(builds_of 'test -p migo-io --features a,b' 'test -p migo-io --features "b a"')" -eq 1 ]]; then
+    pass "two spellings of one feature set are one build"
+else
+    fail "the parser reads one feature set as two builds, so equal lists would disagree"
 fi
 
 # ------------------------------------------------------------
@@ -575,6 +690,18 @@ lane="$(bash "$ROOT/scripts/verify-change.sh" --base HEAD --plan-only 2>&1 || tr
 assert_contains "$lane" "CONTRACT" "the plan reports a contract lane"
 assert_contains "$lane" "scripts/test-ad-reward-integrity-contract.sh" \
     "the contract lane includes the ad reward integrity gate"
+# The Python gates, and gates whose arguments CI writes on the next line. While the parse
+# matched `bash` alone, line by line, the publication hygiene gate was absent from the lane and
+# went red on a branch the local verifier called verified; a folded or continued command was
+# derived without its arguments, or not at all.
+assert_contains "$lane" "python3 scripts/check-repository-hygiene.py --root ." \
+    "the contract lane includes the publication hygiene gate"
+assert_contains "$lane" "python3 scripts/check-supply-chain.py gradle --project-dir platforms/android --policy supply-chain.toml" \
+    "a gate folded onto two lines is derived with its arguments"
+assert_contains "$lane" "scripts/write-linux-build-metadata.py scripts/write-linux-v8-component-manifest.py" \
+    "a gate continued with backslashes is derived with its arguments"
+assert_contains "$lane" "skip:builds-its-input-first bash scripts/test-apple-performance-rust-closure.sh --artifact" \
+    "an invocation that reads what its step built first is CI-only, not run against a stale build"
 
 derived="$(python3 "$ROOT/scripts/lib/ci_contract_gates.py" "$ROOT" | grep -c . || true)"
 if [[ "$derived" -ge 15 ]]; then

@@ -761,9 +761,12 @@ export function op_inner_audio_create(id) {
 /// (`migo_services::network::fetch`), so the refusal is the same one every
 /// other platform gives.
 ///
+/// `kind` is the API the engine's wrapper made the request for -- "request" or
+/// "download" -- which the host holds the request and its redirects to.
 /// `method` and `headers` are `#[serde] ByteString`, which the conversion gate
 /// exempts; network.mjs restates serde_v8's rule for them.
 export function op_fetch(
+  kind,
   method,
   url,
   headers,
@@ -775,6 +778,7 @@ export function op_fetch(
   enableHttp2,
   enableCache,
 ) {
+  const channel = stringOf(kind, "kind");
   const verb = byteStringOf(method);
   const target = stringOf(url, "url");
   const client = optionalSmiU32(clientRid, "client_rid");
@@ -786,6 +790,7 @@ export function op_fetch(
   const cache = toBool(enableCache, "enable_cache");
   return fetchHandles(
     callService(SERVICE_OP.op_fetch, (w) => {
+      w.str(channel);
       w.bytes(verb);
       w.str(target);
       writeHeaders(w, headers);

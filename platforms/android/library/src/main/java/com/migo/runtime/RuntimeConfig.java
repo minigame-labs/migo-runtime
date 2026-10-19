@@ -105,6 +105,8 @@ public final class RuntimeConfig {
     private final List<String[]> preludeScripts;
     // Internal: serialized preludeScripts for JNI field access
     private final String preludeScriptsJson;
+    // Internal: the NetworkPolicy, in the form the engine parses, for JNI field access
+    private final String networkPolicyJson;
 
     private RuntimeConfig(Builder builder) {
         this.cacheDir = builder.cacheDir;
@@ -126,6 +128,7 @@ public final class RuntimeConfig {
         this.modelLevel = builder.modelLevel;
         this.preludeScripts = Collections.unmodifiableList(new ArrayList<>(builder.preludeScripts));
         this.preludeScriptsJson = buildPreludeScriptsJson(this.preludeScripts);
+        this.networkPolicyJson = builder.networkPolicy.toJson();
     }
 
     // ==================== Getters ====================
@@ -210,6 +213,7 @@ public final class RuntimeConfig {
                 ", watchdogEnabled=" + watchdogEnabled +
                 ", watchdogTimeoutSecs=" + watchdogTimeoutSecs +
                 ", codeSigningEnabled=" + codeSigningEnabled +
+                ", networkPolicy=" + networkPolicyJson +
                 '}';
     }
 
@@ -294,6 +298,7 @@ public final class RuntimeConfig {
         private int modelLevel = 0;
 
         private final List<String[]> preludeScripts = new ArrayList<>();
+        private NetworkPolicy networkPolicy = NetworkPolicy.denyAll();
 
         /**
          * Create a new builder with required context.
@@ -560,6 +565,23 @@ public final class RuntimeConfig {
                 throw new IllegalArgumentException("prelude script source cannot be null or empty");
             }
             this.preludeScripts.add(new String[]{name.trim(), source});
+            return this;
+        }
+
+        /**
+         * Set what network the game may reach.
+         * <p>
+         * Default: {@link NetworkPolicy#denyAll()} -- a game given no policy reaches
+         * no network at all.
+         *
+         * @throws IllegalArgumentException if {@code policy} is null
+         */
+        public Builder setNetworkPolicy(NetworkPolicy policy) {
+            if (policy == null) {
+                throw new IllegalArgumentException(
+                        "networkPolicy must not be null; use NetworkPolicy.denyAll() for none");
+            }
+            this.networkPolicy = policy;
             return this;
         }
 

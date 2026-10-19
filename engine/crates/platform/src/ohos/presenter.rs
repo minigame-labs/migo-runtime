@@ -17,6 +17,7 @@ use std::{any::Any, fmt, ptr::NonNull, sync::Arc};
 use graphics::egl_platform::{
     EglConcurrency, EglInstance, EglProvider, EglSurfaceFactory, GraphicsBackendId,
     GraphicsPlatform, PlatformIdentity, PreparedEglSurface, PreparedEglSurfaceRef,
+    process_egl_library,
 };
 use khronos_egl as egl;
 use shared::{
@@ -53,7 +54,10 @@ impl EglProvider for OhosEglProvider {
     }
 
     fn load(&self) -> EngineResult<EglInstance> {
-        let library = unsafe { libloading::Library::new(OHOS_EGL_LIBRARY) }.map_err(|error| {
+        let library = process_egl_library(OHOS_EGL_LIBRARY, || unsafe {
+            libloading::Library::new(OHOS_EGL_LIBRARY)
+        })
+        .map_err(|error| {
             EngineError::new(ErrorCode::RenderBackendError)
                 .with_msg("load OpenHarmony system EGL failed")
                 .with_detail(format!("{OHOS_EGL_LIBRARY}: {error}"))

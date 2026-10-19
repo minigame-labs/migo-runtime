@@ -207,8 +207,12 @@ public struct Configuration {
     public var preferredFramesPerSecond: Int?
     public var managesAudioSession: Bool
     public var webContentTerminationBudget: Int
+    public var hostServices: MigoHostServiceProvider?
+    public var capabilities: [MigoSystemCapability]
+    public var networkPolicyJSON: String?
     public init(directories:contentSigning:preferredFramesPerSecond: = nil,
-                managesAudioSession: = true, webContentTerminationBudget: = 2)
+                managesAudioSession: = true, webContentTerminationBudget: = 2,
+                hostServices: = nil, capabilities: = [], networkPolicyJSON: = nil)
     public static func standard(contentSigning:) throws -> Configuration
 }
 
@@ -218,10 +222,16 @@ public struct Configuration {
     public var contentSigning: MigoContentSigning
     public var preferredFramesPerSecond: Int?
     public var mouse: MouseInput
-    public init(directories:contentSigning:preferredFramesPerSecond: = nil, mouse: = .touch)
+    public var hostServices: MigoHostServiceProvider?
+    public var capabilities: [MigoSystemCapability]
+    public var networkPolicyJSON: String?
+    public init(directories:contentSigning:preferredFramesPerSecond: = nil, mouse: = .touch,
+                hostServices: = nil, capabilities: = [], networkPolicyJSON: = nil)
     public static func standard(contentSigning:) throws -> Configuration
 }
 ```
+
+`networkPolicyJSON` 是游戏能访问的网络,格式见 [会话参考](/docs/reference/session/) 里的 JSON:每个通道一个白名单。默认 `nil` 即**完全没有网络**——在 App 授权之前,所有请求、下载、上传和套接字一律被拒。
 
 | 字段 | 平台 | 默认 | 说明 |
 | --- | --- | --- | --- |

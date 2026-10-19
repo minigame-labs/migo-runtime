@@ -35,7 +35,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TARGET="${1:-x86_64-unknown-linux-ohos}"
-BUILD_DIR="$REPO_ROOT/engine/target/$TARGET"
+# shellcheck source=scripts/lib/cargo-target-dir.sh
+source "$SCRIPT_DIR/lib/cargo-target-dir.sh"
+BUILD_DIR="$(cargo_target_dir "$REPO_ROOT/engine")/$TARGET"
 
 pass() { echo -e "\033[0;32m[ohos-toolchain] PASS $*\033[0m"; }
 fail() { echo -e "\033[0;31m[ohos-toolchain] FAIL $*\033[0m" >&2; }
@@ -121,7 +123,7 @@ done
 if [[ $FOREIGN -ne 0 ]]; then
     fail "$FOREIGN invocation(s) used a compiler outside the OpenHarmony SDK"
     fail "run: source <(bash scripts/dev-setup-ohos.sh | grep '^export')"
-    fail "then remove engine/target/$TARGET and rebuild -- cargo will not"
+    fail "then remove $BUILD_DIR and rebuild -- cargo will not"
     fail "recompile C objects that are already present"
     exit 1
 fi

@@ -25,6 +25,7 @@ typedef struct MigoSessionConfig {
     uint32_t abi_version;
     MigoSessionFlags flags;
     uint8_t  launch_nonce[16];
+    const char *network_policy_json_utf8;
 } MigoSessionConfig;
 ```
 
@@ -34,6 +35,15 @@ typedef struct MigoSessionConfig {
 密码学安全的随机源生成，引擎不生成也不验证它的随机质量。`launch_nonce` 是 v1 之后
 追加的字段；传入旧版（较短）结构体的宿主自动获得全零值——即无外部生产者，行为与
 旧版一致。
+
+`network_policy_json_utf8` 是会话内容能访问的网络,NUL 结尾的 UTF-8 JSON,只在 `migo_session_create` 调用期间借用。**NULL 表示什么网络都没有。**
+
+```json
+{"request": ["api.example.com"], "download": ["*.cdn.example.com"],
+ "socket": "unrestricted", "allowPlainHttp": false, "lan": false}
+```
+
+`request`、`download`(含远程图片、音频流、资源预取)、`upload`、`socket`、`tcp`、`udp` 各自是一个域名数组或 `"unrestricted"`;没写的通道全部拒绝。`example.com` 只匹配它本身,`*.example.com` 只匹配子域,不能写 IP 地址。`allowPlainHttp` 才允许 `http://`/`ws://`;`lan` 让 socket、tcp、udp 能访问局域网的其他设备,request、download、upload 无论如何都到不了局域网。未知的键或写错的条目让 `migo_session_create` 返回 `MIGO_ERROR_INVALID_ARGUMENT`。这个字段同样是追加的:传旧版结构体的宿主得到 NULL,即没有网络。
 
 初始化示例：
 

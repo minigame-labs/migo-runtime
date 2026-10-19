@@ -132,8 +132,9 @@ skia-safe = { version = "0.93", default-features = false, features = ["gl", "tex
 image = { version = "=0.25.8", default-features = false, features = [
     "png",      # PNG format (fallback, JPEG handled by zune-image)
     # "jpeg",   # Removed: zune-image handles JPEG, avoids zune-jpeg 0.4 duplicate
-    # "gif",    # GIF format
-    # "webp",   # WebP format
+    # "gif" and "webp" are migo-io's `rust-image-decode` feature's, so the
+    # builds that decode in Rust have them and the Java SDK's Android build
+    # (BitmapFactory) does not carry them.
     # "bmp",    # BMP format
     # "ico",    # ICO format
 ] }

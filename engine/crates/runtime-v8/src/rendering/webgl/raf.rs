@@ -99,6 +99,45 @@ pub(crate) async fn op_await_next_frame(state: Rc<RefCell<OpState>>) -> Result<f
     Ok(ts)
 }
 
+/// Wait for the first render command after a frame end, and answer whether it is still waiting
+/// for one.
+///
+/// The frame end that publishes a frame's commands and presents it runs in the
+/// requestAnimationFrame loop, and the loop runs only while callbacks are queued. Content that
+/// draws outside it -- at its top level, in a timer, in an input handler -- drew and was never
+/// shown: a game drawing from `setInterval` stayed black on Android, and the Linux player said it
+/// never drew. The engine's frame-content task waits here and runs the loop once when nothing
+/// else will end the frame, as a browser presents what a task drew at its next rendering update.
+///
+/// The answer is read when the wait is over, not when the command arrived: a command drawn
+/// inside a callback wakes this too, and by then that frame has ended -- answering `true` would
+/// spend a frame on nothing. The pending wait keeps the event loop alive, as
+/// [`op_await_next_frame`] does, for as long as the session lives.
+#[op2(async(lazy), fast)]
+pub(crate) async fn op_await_frame_content(state: Rc<RefCell<OpState>>) -> bool {
+    use crate::rendering::webgl::frame_collector::UnifiedFrameCollector;
+    // Installed by the extension that registers this op.
+    let notify = state
+        .borrow()
+        .borrow::<UnifiedFrameCollector>()
+        .content_notify();
+    notify.notified().await;
+    state
+        .borrow()
+        .borrow::<UnifiedFrameCollector>()
+        .content_since_frame_end()
+}
+
+/// Whether a frame loop can run here: an async runtime drives the event loop, as it does under
+/// every host. The frame loop's waits are async ops, and an async op started where no runtime
+/// runs -- an embedder that evaluates scripts synchronously and ends its frames itself, as the
+/// engine's own unit tests do -- aborts the process instead of failing. Without one, nothing is
+/// scheduled and frames end where the embedder ends them.
+#[op2(fast)]
+pub(crate) fn op_frame_loop_available() -> bool {
+    tokio::runtime::Handle::try_current().is_ok()
+}
+
 /// How old a frame signal may be, at the moment a callback asks for one, and still be a frame time.
 /// Three display periods at 60 Hz: the free-run pre-signal is at most one period old, and a consumer
 /// a frame behind is two.

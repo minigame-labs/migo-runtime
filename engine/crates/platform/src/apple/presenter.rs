@@ -64,6 +64,7 @@ use std::{any::Any, ffi::c_void, num::NonZeroU64, ptr::NonNull, sync::Arc};
 use graphics::egl_platform::{
     EglConcurrency, EglInstance, EglProvider, EglSurfaceFactory, GraphicsBackendId,
     GraphicsPlatform, PlatformIdentity, PreparedEglSurface, PreparedEglSurfaceRef,
+    process_egl_library,
 };
 use khronos_egl as egl;
 use shared::{
@@ -173,7 +174,9 @@ impl EglProvider for AppleEglProvider {
         // a guess about a bundle layout Xcode owns.
         let this = libloading::os::unix::Library::this();
         if unsafe { this.get::<*const c_void>(b"eglGetProcAddress\0") }.is_ok() {
-            let library: libloading::Library = this.into();
+            let Ok(library) = process_egl_library("<process image>", || {
+                Ok::<_, std::convert::Infallible>(this.into())
+            });
             return unsafe { EglInstance::load_required_from(library) }.map_err(|error| {
                 EngineError::new(ErrorCode::RenderBackendError)
                     .with_msg("resolve ANGLE EGL symbols from the process failed")
@@ -181,7 +184,10 @@ impl EglProvider for AppleEglProvider {
             });
         }
 
-        let library = unsafe { libloading::Library::new(APPLE_EGL_LIBRARY) }.map_err(|error| {
+        let library = process_egl_library(APPLE_EGL_LIBRARY, || unsafe {
+            libloading::Library::new(APPLE_EGL_LIBRARY)
+        })
+        .map_err(|error| {
             EngineError::new(ErrorCode::RenderBackendError)
                 .with_msg(
                     "load ANGLE failed: not linked into the process and not on the loader path",

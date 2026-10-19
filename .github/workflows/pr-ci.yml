@@ -192,6 +192,12 @@ jobs:
       - name: Reproducible timestamp contract
         run: bash scripts/test-reproducible-timestamp-contract.sh
 
+      # Scripts built with cargo and then read engine/target/... themselves, so a CARGO_TARGET_DIR
+      # elsewhere had the player gates run a player from before the change they checked, and pass,
+      # and the Android C host package a months-old staticlib.
+      - name: Cargo target directory contract
+        run: bash scripts/test-cargo-target-dir-contract.sh
+
       # Source-only, so it belongs here rather than in the device lane -- which
       # is the point: the failure it catches (content calling a capability on
       # an undeclared namespace, which does not carry it) presents on a device as a
@@ -726,6 +732,24 @@ jobs:
       - name: Producer-local text codec agrees with the engine's
         run: bash scripts/test-text-codec-agreement.sh
 
+      # The compatibility recorder is injected ahead of content nobody here wrote, and
+      # a recorder that changes the game reports on a run that would not have happened.
+      # Each check holds both halves: the line it writes, and the game's unchanged view.
+      - name: Compatibility recorder reports without changing the game
+        run: bash scripts/test-compat-recorder.sh
+
+      # What a CP is told about its game: each API judged by the matrix's own
+      # readiness, and the engine's real error lines read back, so a pattern the
+      # engine stopped emitting goes red here rather than matching nothing.
+      - name: Compatibility report judges by the contracts
+        run: bash scripts/test-compat-report.sh
+
+      # The device run's verdicts, held to captures made here: its reading used to keep
+      # an error table of its own, which did not know the engine's fatal "event loop
+      # error", so a game that died in a timer after painting read as "Runs".
+      - name: Device prescreen report reads the capture
+        run: bash scripts/test-prescreen-run-report.sh
+
       # The engine's own JavaScript API layer, staged for the Performance+
       # producer and run: content draws through migo.createCanvas() and the
       # engine's WebGL facade, and the host's ingress admits the frames. A module
@@ -895,7 +919,7 @@ jobs:
       # lints gate again, and the style backlog still just warns.
       - name: Run clippy lints (host-buildable crates)
         working-directory: engine
-        run: cargo clippy -p migo-shared -p migo-io -p migo-icu-data -p migo-runtime-v8 -p migo-capi-abi -p migo-frame-wire -p migo-frame-decode -p migo-alloc-probe -p migo-contention-probe -p migo-executor-probe --all-targets
+        run: cargo clippy -p migo-shared -p migo-io -p migo-icu-data -p migo-runtime-v8 -p migo-services -p migo-capi-abi -p migo-frame-wire -p migo-frame-decode -p migo-alloc-probe -p migo-contention-probe -p migo-executor-probe --all-targets
 
       # Blocking gate for the crates that need no extra system packages (shared +
       # io + runtime-v8). All their lib tests must pass. Previously-masked failures
@@ -939,10 +963,19 @@ jobs:
         working-directory: engine
         run: |
           cargo test -p migo-shared -p migo-icu-data -p migo-runtime-v8 --tests
+          # The Slim product profile, which no job tested: every crate defaults
+          # to Full, so none of its `cfg(not(feature = ...))` arms were built
+          # here, and master gathered 42 Slim failures that only a local run saw.
+          cargo test -p migo-runtime-v8 --tests --no-default-features --features profile-slim
           # `--tests` so the ASTC fixture emitter in `tests/` is compiled here.
           # Its cases are `#[ignore]`d and belong to the ASTC gate, but a
           # binary nothing builds is one that stops building unnoticed.
           cargo test -p migo-io --tests
+          # The network gate and every socket and HTTP client: 272 tests in the
+          # lib, which no job ran because the test-binary audit counted only
+          # `tests/`. `code-signing` adds the signed-mount test and removes none,
+          # since every cfg in the crate is positive.
+          cargo test -p migo-services --lib --features code-signing
           cargo test -p migo-capi-abi --all-targets
           cargo test -p migo-frame-wire --all-targets
           cargo test -p migo-frame-decode --all-targets
@@ -956,6 +989,13 @@ jobs:
           cargo test -p migo-executor-probe
         env:
           RUST_BACKTRACE: 1
+
+      # The Maven repository a host resolves the SDK from holds the release's AARs,
+      # signed, and nothing else. Run here over fixture AARs, which proves the
+      # checker catches each way a staged repository can be wrong; the build job
+      # runs it again over the AARs it built.
+      - name: Maven publication contract
+        run: bash scripts/test-maven-publication-contract.sh
 
       - name: Shell script syntax check
         run: bash -n scripts/*.sh scripts/ci/*.sh platforms/*/spike/*.sh
@@ -1031,12 +1071,7 @@ jobs:
             timeout 300 sudo apt-get install -y \
               cmake ninja-build g++ ripgrep xvfb xauth \
               qt6-base-dev qt6-base-dev-tools qt6-qpa-plugins \
-              libx11-dev libxkbcommon-x11-dev libxcb-cursor0 \
-              libasound2-dev || return 1
-            # libasound2-dev is for the player, not for Qt: the player pulls
-            # cpal, which pulls alsa-sys, whose build script needs the ALSA
-            # headers. Without it `cargo check -p migo-player` fails in a way
-            # that reads like a code error and is not one.
+              libx11-dev libxkbcommon-x11-dev libxcb-cursor0 || return 1
           }
           install_pkgs || {
             echo "Qt/X11 package install failed; retrying once" >&2
@@ -1049,17 +1084,6 @@ jobs:
       # interposing malloc, so the combination breaks silently if nobody runs it.
       - name: Linux Qt Host Kit contract
         run: bash scripts/test-linux-qt-host-kit.sh --sanitize
-
-      # The Linux player is the conformance suite's *reference* runner: every
-      # other platform must produce the same verdict lines from the same
-      # bundles, so if it does not build, the cross-platform claim has no
-      # referee. It is a workspace member but not a default member (it links
-      # X11/GL, which headless jobs do not have), so `cargo build` never reaches
-      # it -- and a signature change in `migo-core` broke it while pr-ci stayed
-      # green on every job. This is the one Linux job that installs the desktop
-      # stack, so it is where the player can be type-checked at all.
-      - name: Linux player type-checks
-        run: cd engine && cargo check -p migo-player --locked
 
   # ── Job 4: Android AAR build — the real "does the whole project compile,
   # link, and embed the profile/ABI snapshot" gate (cross-compiles graphics/audio
@@ -1216,6 +1240,17 @@ jobs:
       - name: Android shipped natives are reachable
         run: bash scripts/test-android-native-deps-contract.sh
 
+      # The SDK as a host's Gradle takes it. The AARs the step above built are staged
+      # as a Maven repository and held to the publication contract, then an app that
+      # depends on com.minigame-labs:migo-android by its coordinates -- and one on
+      # the engine-less AAR -- resolves, compiles, dexes and packages against it.
+      - name: Maven repository from the built AARs, and a host app built from it
+        run: |
+          bash scripts/test-maven-publication-contract.sh \
+            --aar platforms/android/dist/migo-full-debug.aar \
+            --nojni-aar platforms/android/dist/migo-full-debug-nojni.aar
+          bash scripts/test-maven-consumer.sh
+
 
       - name: Analyze AAR size report
         run: |
@@ -1233,7 +1268,7 @@ jobs:
             reports/*.json
           if-no-files-found: warn
 
-  # ── Job 5: host engine tests — graphics, core, capi, platform ────────
+  # ── Job 5: host engine tests — graphics, core, capi, platform, audio, player ─
   # These four crates' 240 lib tests ran in no job. The reason given for excluding
   # them was that the Android AAR build is "their real gate", which is true for
   # compilation and false for tests: build-aar.sh cross-compiles them and runs
@@ -1311,6 +1346,23 @@ jobs:
 
       - name: Presented frames reach the window on every presentation path
         run: bash scripts/verify-bypass-present.sh 3
+
+      # The same recorder on the engine, where the player it builds is already built:
+      # the real migo and WebGL facade proxied, a game that still presents, and the
+      # host's ordering that makes the recorder's "ready" mean the end of the entry.
+      - name: Compatibility recorder on the engine
+        run: bash scripts/test-compat-recorder-player.sh 3
+
+      # A game that does not start ends the run with the engine's reason, within seconds and
+      # even after a loading screen presented; it once ran out the 30 s present ceiling and
+      # said only that nothing was presented.
+      - name: A game that does not start ends the player's run
+        run: bash scripts/test-player-launch-outcome.sh
+
+      # Content drawn outside requestAnimationFrame -- once at the top level, from a timer, text
+      # through its own op -- reaches the screen; it once never did, on any platform.
+      - name: Content drawn outside requestAnimationFrame is presented
+        run: bash scripts/test-player-draws-outside-raf.sh
 
   # The Windows arms of the sandbox filesystem and the atomic writer, run where
   # they compile. Until this job existed they were built for every release and
@@ -1446,9 +1498,9 @@ jobs:
 
       - name: Run clippy lints (crates needing host system packages)
         working-directory: engine
-        run: cargo clippy -p migo-graphics -p migo-core -p migo-capi -p migo-platform -p migo-audio --all-targets
+        run: cargo clippy -p migo-graphics -p migo-core -p migo-capi -p migo-platform -p migo-audio -p migo-player --all-targets
 
-      - name: Run Rust tests (graphics, core, capi, platform, audio)
+      - name: Run Rust tests (graphics, core, capi, platform, audio, player)
         working-directory: engine
         run: |
           # `--tests`: the five golden-image and decode binaries under
@@ -1462,5 +1514,26 @@ jobs:
           # Here rather than in the no-extra-packages job: cpal links ALSA, which
           # only this job installs.
           cargo test -p migo-audio --lib
+          # The conformance suite's reference runner: every other platform must
+          # produce its verdict lines from the same bundles, so if it does not
+          # build the cross-platform claim has no referee. It is not a default
+          # member, so no `cargo build` reaches it, and a signature change in
+          # `migo-core` once broke it while every job stayed green. Here because
+          # it links what core and platform link and nothing more -- `x11-dl`
+          # opens libX11 at run time -- and this job has already built all of it.
+          # A type-check elsewhere covered its build and none of its tests.
+          cargo test -p migo-player --bins
+          # Slim, for the two crates whose capability surface the profile selects
+          # and the two that re-export it to a host. `graphics` has no Slim build
+          # of its own: both profiles expand to the same features.
+          cargo test -p migo-core --lib --no-default-features --features profile-slim
+          cargo test -p migo-capi --lib --no-default-features --features profile-slim
+          cargo test -p migo-platform --lib --no-default-features --features profile-slim
+          # The external-frame product the iOS package ships. `external-frames`
+          # excludes `embedded-v8`, so no default build compiles any of it; the
+          # quality gate builds its archive and links no test of it.
+          cargo test -p migo-core --lib --no-default-features --features external-frames
+          cargo test -p migo-capi --lib --no-default-features --features external-frames
+          cargo test -p migo-platform --lib --no-default-features --features external-frames
         env:
           RUST_BACKTRACE: 1

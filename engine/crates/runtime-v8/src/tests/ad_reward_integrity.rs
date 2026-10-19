@@ -26,7 +26,8 @@ mod ad_reward_integrity_tests {
     use shared::{
         channel::ThreadWakeup,
         device::gpu_caps::GpuCaps,
-        op_state::{AudioSender, HostOpState, NetworkPolicy},
+        network_policy::NetworkPolicy,
+        op_state::{AudioSender, HostOpState},
         protocol::error::ServiceError,
         render_command_sender::CommandSender,
         services::{

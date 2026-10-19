@@ -11,6 +11,19 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        // Migo's own group resolves from the repository
+        // scripts/test-maven-publication-contract.sh stages, and from nowhere else:
+        // the consumer below must prove the staged artifacts, not whatever a public
+        // repository happens to hold under the same coordinates.
+        exclusiveContent {
+            forRepository {
+                maven {
+                    url = uri(startParameter.projectProperties.get('migoMavenRepo')
+                            ?: new File(rootDir, '../../dist/maven'))
+                }
+            }
+            filter { includeGroup 'com.minigame-labs' }
+        }
     }
 }
 
@@ -23,3 +36,6 @@ project(':c-host-example').projectDir = file('../../tests/c_host/android')
 // Its device-side multi-pointer check (scripts/verify-android-c-host-multitouch.sh).
 include ':c-host-multitouch'
 project(':c-host-multitouch').projectDir = file('../../tests/c_host/android-multitouch')
+// A host app that takes Migo by its Maven coordinates (scripts/test-maven-consumer.sh).
+include ':maven-consumer'
+project(':maven-consumer').projectDir = file('../../tests/maven_consumer/android')

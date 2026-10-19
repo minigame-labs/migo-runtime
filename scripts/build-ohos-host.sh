@@ -22,6 +22,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib/v8-materialise.sh
 source "$SCRIPT_DIR/lib/v8-materialise.sh"
+# shellcheck source=scripts/lib/cargo-target-dir.sh
+source "$SCRIPT_DIR/lib/cargo-target-dir.sh"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 HOST_DIR="$REPO_ROOT/platforms/openharmony"
 
@@ -53,7 +55,8 @@ fi
 eval "$(bash "$SCRIPT_DIR/dev-setup-ohos.sh" | grep '^export ')"
 [[ -n "${OHOS_SDK_NATIVE:-}" ]] || { err "OpenHarmony SDK not usable"; exit 1; }
 
-STATIC_LIB="$REPO_ROOT/engine/target/$TRIPLE/release/libmigo_capi.a"
+CARGO_TARGET="$(cargo_target_dir "$REPO_ROOT/engine")" || exit 1
+STATIC_LIB="$CARGO_TARGET/$TRIPLE/release/libmigo_capi.a"
 info "building migo-capi for $TRIPLE"
 (
     cd "$REPO_ROOT/engine"

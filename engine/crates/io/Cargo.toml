@@ -9,7 +9,7 @@ name = "migo_io"
 
 [features]
 default = ["zip-extract", "rust-image-decode", "compress-brotli"]
-zip-extract = ["dep:zip"]
+zip-extract = ["dep:zip", "dep:flate2"]
 # CPU-only resize of an already-decoded RGBA buffer.  Needs only the `image`
 # crate's imageops; requires no format decoder.  A build that has a platform
 # decoder (e.g. Android BitmapFactory via JNI) but still wants CPU-side resize
@@ -19,7 +19,14 @@ cpu-image-resize = ["dep:image"]
 # Implies cpu-image-resize so that every build with the full decoder can also
 # resize; removing this implication would silently disable resize for any
 # caller that switches from rust-image-decode to a platform decoder later.
-rust-image-decode = ["cpu-image-resize", "dep:zune-image", "dep:zune-core"]
+#
+# WebP and GIF are the image crate's: zune decodes JPEG, PNG and BMP only, and a
+# build with these decoders has no platform one to fall back to -- Linux, Windows,
+# OpenHarmony and Apple register none, and the Android C ABI build's AImageDecoder
+# needs API 30 against a floor of 26. Mini-game packages ship WebP to save size, and
+# every WebP or GIF asset failed to load there. The Java SDK's Android build leaves
+# this feature off and decodes both through BitmapFactory.
+rust-image-decode = ["cpu-image-resize", "dep:zune-image", "dep:zune-core", "image/webp", "image/gif"]
 compress-brotli = ["dep:brotli"]
 
 [dependencies]
@@ -57,11 +64,14 @@ hex = "0.4"
 brotli = { version = "7", optional = true }
 
 # Zip extraction — optional, disable default features to exclude bzip2/zstd/aes/lzma/xz/zopfli
-# Only enable deflate (most common) to save ~200-400KB of compression codecs.
-# NOTE: zip 2.x "deflate" feature pulls zopfli (compression encoder) even though we only
-# decompress. The "deflate-flate2" feature alone doesn't activate flate2 in zip 2.4.x
-# (upstream bug). Revisit when zip 3.x ships a decompression-only feature.
-zip = { version = "2.2", optional = true, default-features = false, features = ["deflate"] }
+# Only inflate is enabled, to save ~200-400KB of compression codecs: `deflate-flate2` is
+# decompression alone, where `deflate` adds the zopfli encoder this crate never runs.
+zip = { version = "9", optional = true, default-features = false, features = ["deflate-flate2"] }
+# zip asks for flate2 without a backend, and flate2 refuses to compile with none
+# ("You need to choose a zlib backend"). png happens to supply one today, but only
+# while `cpu-image-resize` is on, so the backend is chosen here: miniz_oxide, which
+# png already brings into the tree.
+flate2 = { version = "1.1", optional = true, default-features = false, features = ["rust_backend"] }
 
 # SQLite for KV storage. `bundled` statically links a vendored amalgamation
 # so we don't depend on the platform's libsqlite (Android version drift,

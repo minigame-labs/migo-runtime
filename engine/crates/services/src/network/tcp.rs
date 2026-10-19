@@ -21,11 +21,11 @@ use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tracing::debug;
 
-use shared::op_state::NetworkPolicy;
+use shared::network_policy::{NetworkChannel, NetworkPolicy};
 
 use crate::ServiceError;
 
-use super::gate::{self, GateKind};
+use super::gate::{self, Transport};
 use super::resources::{CancelFlag, ResourceId, ResourceTable};
 use super::sockets::{
     AddrMeta, BACKGROUND_THROTTLE, ReceiveScratch, checked_port, join_host_port, resolve_first,
@@ -182,14 +182,17 @@ pub async fn connect(
     };
     debug!("TCP connect: {address}:{port} (timeout={seconds}s)");
 
-    gate::enforce_host(address, port, policy, GateKind::TcpSocket)
-        .map_err(ServiceError::generic)?;
+    let address =
+        gate::enforce_host(address, port, policy, Transport::Tcp).map_err(ServiceError::generic)?;
 
     let deadline = Duration::from_secs(u64::from(seconds));
-    let target = join_host_port(address, port);
+    let target = join_host_port(&address, port);
+    let lan = gate::lan_access(policy, NetworkChannel::Tcp);
     let resolved = tokio::time::timeout(
         deadline,
-        resolve_first(&target, super::address_filter::is_blocked_address),
+        resolve_first(&target, |resolved| {
+            super::address_filter::is_blocked_address(resolved, lan)
+        }),
     )
     .await
     .map_err(|_| generic(format!("connect:fail timeout after {seconds}s")))?

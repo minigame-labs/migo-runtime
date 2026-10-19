@@ -86,7 +86,9 @@ cd "$ENGINE_DIR"
 c_info "building the C host (cargo drives the link) ..."
 cargo build -p migo-c-host-example --offline
 
-BIN="$ENGINE_DIR/target/debug/migo-c-host"
+source "$SCRIPT_DIR/lib/cargo-target-dir.sh"
+CARGO_TARGET="$(cargo_target_dir "$ENGINE_DIR")" || exit 1
+BIN="$CARGO_TARGET/debug/migo-c-host"
 [[ -x "$BIN" ]] || { c_err "C host binary not produced: $BIN"; exit 1; }
 if (( BUILD_ONLY == 1 )); then
     c_info "built $BIN"

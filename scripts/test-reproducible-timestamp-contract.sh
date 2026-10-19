@@ -68,6 +68,9 @@ NOT_AN_ARTIFACT = {
     # It was moved out to a log line first, and only then does this line state
     # something true -- nothing the script writes carries a clock.
     "scripts/build-v8-apple.sh": "times its own build and prints the number; the metadata it writes carries no clock",
+    # The elapsed time is the assertion: a game that did not start must end the run in
+    # seconds, not after the 30 s present ceiling. Its logs are a temporary directory's.
+    "scripts/test-player-launch-outcome.sh": "a host-only gate that times the player's run and writes nothing that is kept",
 }
 
 sources = sorted(

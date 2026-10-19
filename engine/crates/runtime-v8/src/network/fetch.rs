@@ -167,6 +167,7 @@ fn fetch_env<'a>(
 #[allow(clippy::too_many_arguments)]
 pub fn op_fetch(
     state: &mut OpState,
+    #[string] kind: String,
     #[serde] method: ByteString,
     #[string] url: String,
     #[serde] headers: Vec<(ByteString, ByteString)>,
@@ -178,6 +179,9 @@ pub fn op_fetch(
     enable_http2: bool,
     enable_cache: bool,
 ) -> Result<FetchReturn, JsErrorBox> {
+    // The engine's own wrapper names it -- `request` or `downloadFile` -- so the
+    // gate holds the request, and every redirect it follows, to that channel.
+    let kind = service_net::fetch::FetchKind::parse(&kind).map_err(service_error)?;
     let (client, allow_host) = if let Some(rid) = client_rid {
         let client = state
             .resource_table
@@ -210,6 +214,7 @@ pub fn op_fetch(
     };
     let handles = service_net::fetch::fetch(
         fetch_env(state, &client, &resources, allow_host),
+        kind,
         &method,
         &url,
         &headers,
@@ -330,13 +335,12 @@ pub async fn op_fetch_send(
 pub fn create_http_client(
     user_agent: &str,
     enable_http2: bool,
-    net_policy: &shared::op_state::NetworkPolicy,
+    net_policy: &shared::network_policy::NetworkPolicy,
 ) -> Result<Client, AnyError> {
     migo_services::network::client::create_policy_http_client(
         user_agent,
         enable_http2,
         net_policy,
-        super::gate::GateKind::FetchRedirect,
         "fetch",
     )
     .map_err(|error| AnyError::from(std::io::Error::other(error.to_string())))
@@ -347,16 +351,10 @@ pub fn create_http_client(
 /// resolver, redirect, and pool configuration used by fetch.
 #[cfg(feature = "api-media")]
 pub fn create_audio_http_client(
-    net_policy: &shared::op_state::NetworkPolicy,
+    net_policy: &shared::network_policy::NetworkPolicy,
 ) -> Result<Client, AnyError> {
-    migo_services::network::client::create_policy_http_client(
-        "migo",
-        true,
-        net_policy,
-        super::gate::GateKind::AudioStreamRedirect,
-        "audio",
-    )
-    .map_err(|error| AnyError::from(std::io::Error::other(error.to_string())))
+    migo_services::network::client::create_policy_http_client("migo", true, net_policy, "audio")
+        .map_err(|error| AnyError::from(std::io::Error::other(error.to_string())))
 }
 
 // -- Upload --

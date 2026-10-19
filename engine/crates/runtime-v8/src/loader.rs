@@ -8,7 +8,7 @@ use deno_core::{
 
 use migo_io::{
     scheduler::IoScheduler,
-    task::{BackendKind, IoRequest, PriorityClass, RequestKind},
+    task::{BackendKind, IoRequest, RequestKind},
 };
 use shared::protocol::io_cmd::MAX_READ_LENGTH;
 
@@ -132,6 +132,66 @@ impl MyModuleLoader {
     }
 }
 
+/// How a module is read from a real file: what the read is charged, and the most it may produce.
+///
+/// Charged at `MAX_READ_LENGTH` (100 MiB) whatever the module, two reads spent most of the
+/// scheduler's pending-byte budget, and deno_core reads a module's static imports concurrently:
+/// an entry importing four modules failed to load with `ByteLimitExceeded` whenever a third read
+/// overlapped the first two -- one launch in three on the Linux player. So a module is charged its
+/// size, and its read produces no more than it was charged: a module that grew after it was sized
+/// is refused rather than read past its charge. One that cannot be sized keeps the cautious
+/// estimate, as any read nobody can bound does, and its read says why it failed.
+///
+/// Only a regular file is a module. A FIFO named like one sizes at zero, which the scheduler's
+/// small-read rule runs inline, and its read would block the host thread with nothing to end it.
+struct ModuleRead {
+    request: IoRequest,
+    limit: u64,
+}
+
+fn module_read(path: &std::path::Path) -> Result<ModuleRead, String> {
+    let limit = match fs::metadata(path) {
+        Ok(meta) if !meta.is_file() => {
+            return Err(format!("{} is not a regular file", path.display()));
+        }
+        Ok(meta) => meta.len(),
+        Err(_) => MAX_READ_LENGTH,
+    };
+    Ok(ModuleRead {
+        request: migo_services::fs::read_request(
+            BackendKind::Filesystem,
+            RequestKind::Async,
+            None,
+            Some(limit),
+        ),
+        limit,
+    })
+}
+
+fn read_module(path: &std::path::Path, limit: u64) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+
+    let file = fs::File::open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{} is not a regular file", path.display()),
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.take(limit.saturating_add(1)).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "{} grew past the {limit} bytes it was sized at",
+                path.display()
+            ),
+        ));
+    }
+    Ok(bytes)
+}
+
 impl MyModuleLoader {
     fn synthetic_pack_path(
         code_dir: &std::path::Path,
@@ -228,16 +288,19 @@ impl MyModuleLoader {
         };
         let scheduler = Arc::clone(&self.io_scheduler);
         let url = module_specifier.clone();
-        let request = IoRequest::ReadFile {
-            backend: BackendKind::Filesystem,
-            request: RequestKind::Async,
-            priority: PriorityClass::ForegroundAsync,
-            estimated_bytes: MAX_READ_LENGTH as usize,
+        let read = match module_read(&path) {
+            Ok(read) => read,
+            Err(error) => {
+                return ModuleLoadResponse::Sync(Err(ModuleLoaderError::generic(format!(
+                    "failed to read module: {error}"
+                ))));
+            }
         };
         let cache = self.code_cache.clone();
         ModuleLoadResponse::Async(Box::pin(async move {
+            let limit = read.limit;
             let bytes = scheduler
-                .run_async(request, move || fs::read(path))
+                .run_async(read.request, move || read_module(&path, limit))
                 .await
                 .map_err(|error| {
                     ModuleLoaderError::generic(format!("failed to read module: {error:?}"))
@@ -397,6 +460,69 @@ mod tests {
     }
 
     #[test]
+    fn a_module_read_is_charged_what_the_module_is_and_reads_no_more() {
+        let dir = std::env::temp_dir().join(format!("migo-module-read-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let module = dir.join("a.js");
+        std::fs::write(&module, vec![b' '; 1234]).unwrap();
+
+        let read = module_read(&module).expect("a regular file is a module");
+        let IoRequest::ReadFile {
+            estimated_bytes,
+            priority,
+            ..
+        } = read.request
+        else {
+            panic!("a read request");
+        };
+        assert_eq!((estimated_bytes, read.limit), (1234, 1234));
+        assert_eq!(priority, migo_io::task::PriorityClass::ForegroundAsync);
+        assert_eq!(read_module(&module, read.limit).unwrap().len(), 1234);
+
+        // Grown after it was sized: refused, not read past the charge.
+        std::fs::write(&module, vec![b' '; 5000]).unwrap();
+        let grown = read_module(&module, read.limit).expect_err("a module larger than its charge");
+        assert_eq!(grown.kind(), std::io::ErrorKind::InvalidData);
+
+        // Not a regular file: refused before anything is read.
+        let directory = dir.join("dir.js");
+        std::fs::create_dir_all(&directory).unwrap();
+        let refused = module_read(&directory)
+            .err()
+            .expect("a directory is not a module");
+        assert!(refused.contains("not a regular file"), "{refused}");
+
+        // Unsizable: the cautious estimate, and the read says why.
+        let missing = module_read(&dir.join("missing.js")).expect("charged the maximum");
+        assert_eq!(missing.limit, MAX_READ_LENGTH);
+        assert_eq!(
+            read_module(&dir.join("missing.js"), missing.limit)
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::NotFound
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_named_like_a_module_is_refused_without_reading_it() {
+        let dir = std::env::temp_dir().join(format!("migo-module-fifo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let fifo = dir.join("dep.js");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("mkfifo");
+        assert!(made.success());
+        let refused = module_read(&fifo).err().expect("a FIFO is not a module");
+        assert!(refused.contains("not a regular file"), "{refused}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn content_loader_rejects_internal_schemes_for_all_import_kinds() {
         let root = std::env::temp_dir().join("migo-main-loader-sandbox");
         let loader = loader(Some(Arc::new(MountTable::new(root))));
@@ -429,29 +555,44 @@ mod tests {
         );
     }
 
+    // The scheduler runs a foreground read inline when it is small enough that a pool hop costs
+    // more than the read, and on its executor otherwise; a module read is held to the same rule by
+    // its size. It went to the executor whatever its size only while every module was charged the
+    // 100 MiB maximum.
     #[test]
-    fn filesystem_module_reads_are_admitted_to_io_executor() {
+    fn filesystem_module_reads_go_through_the_io_scheduler_by_their_size() {
         let root = std::env::temp_dir().join(format!("migo-main-loader-io-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("temporary module root");
-        let path = root.join("module.js");
-        std::fs::write(&path, "export const answer = 42;").expect("temporary module");
         let mount_table = Arc::new(MountTable::new(root.clone()));
         let loader = loader(Some(mount_table));
-        let url = ModuleSpecifier::from_file_path(&path).expect("module URL");
-        let response = loader.load_from_filesystem(&url);
-        let ModuleLoadResponse::Async(future) = response else {
-            panic!("filesystem module load must not execute inline");
-        };
+        let cheap = loader.io_scheduler.policy().small_read_bytes as usize;
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("test runtime");
-        let source = runtime.block_on(future).expect("module load");
-        assert!(source.code.as_bytes().starts_with(b"export const answer"));
-        assert!(
-            loader.io_scheduler.metrics().delegated_runs > 0,
-            "module read must use the bounded IO executor"
+        let load = |name: &str, padding: usize| {
+            let path = root.join(name);
+            std::fs::write(
+                &path,
+                format!("export const answer = 42;\n//{}", " ".repeat(padding)),
+            )
+            .expect("temporary module");
+            let url = ModuleSpecifier::from_file_path(&path).expect("module URL");
+            let ModuleLoadResponse::Async(future) = loader.load_from_filesystem(&url) else {
+                panic!("filesystem module load must not execute inline");
+            };
+            let source = runtime.block_on(future).expect("module load");
+            assert!(source.code.as_bytes().starts_with(b"export const answer"));
+            let metrics = loader.io_scheduler.metrics();
+            (metrics.inline_runs, metrics.delegated_runs)
+        };
+
+        assert_eq!(load("small.js", 0), (1, 0), "a small module is read inline");
+        assert_eq!(
+            load("large.js", cheap),
+            (1, 1),
+            "a large one on the bounded IO executor"
         );
         let _ = std::fs::remove_dir_all(root);
     }

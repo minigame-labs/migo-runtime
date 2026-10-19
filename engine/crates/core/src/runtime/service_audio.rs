@@ -38,7 +38,7 @@ pub(crate) struct AudioBinding {
     pub(crate) runtime_generation: i64,
     /// What a streamed `src` is held to: this session's allow list, HTTPS
     /// enforcement and address rules -- the same policy `fetch` is held to.
-    pub(crate) network_policy: shared::op_state::NetworkPolicy,
+    pub(crate) network_policy: shared::network_policy::NetworkPolicy,
 }
 
 impl AudioBinding {

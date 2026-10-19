@@ -11,6 +11,7 @@ import android.util.Log;
 import android.graphics.Rect;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
+import android.view.Window;
 import android.widget.FrameLayout;
 
 import com.migo.runtime.callback.GameSessionListener;
@@ -180,6 +181,10 @@ public class MigoGameActivity extends Activity implements SurfaceHolder.Callback
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // A game has no title bar, whatever theme the host gave its app. The activity takes the
+        // app's theme unless its manifest entry names one, so under a theme with an action bar the
+        // game drew below the host's title, in a surface shorter than the screen.
+        requestWindowFeature(Window.FEATURE_NO_TITLE);
 
         // Extract launch parameters
         config = consumePendingConfig(getIntent());
@@ -190,7 +195,12 @@ public class MigoGameActivity extends Activity implements SurfaceHolder.Callback
             return;
         }
         if (config == null) {
-            config = onCreateRuntimeConfig();
+            try {
+                config = onCreateRuntimeConfig();
+            } catch (LaunchRefusedException refused) {
+                onLaunchFailed(refused.getErrorCode(), refused.getMessage());
+                return;
+            }
             if (config == null) {
                 config = new RuntimeConfig.Builder(this).build();
             }
@@ -446,11 +456,13 @@ public class MigoGameActivity extends Activity implements SurfaceHolder.Callback
      *
      * <p>Called from {@code onCreate}, before the surface exists, so it is also
      * the place to make sure the game's files are where the runtime will look
-     * for them.
+     * for them -- and to refuse the launch when they are not.
      *
      * @return the configuration to use, or {@code null} for the default
+     * @throws LaunchRefusedException to start nothing; it reaches
+     *         {@link #onLaunchFailed} with its code and message
      */
-    protected RuntimeConfig onCreateRuntimeConfig() {
+    protected RuntimeConfig onCreateRuntimeConfig() throws LaunchRefusedException {
         return null;
     }
 

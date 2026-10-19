@@ -5,13 +5,16 @@
 //! close. Every destination is held to the policy `fetch` is held to, and every
 //! resolved address is run through the address filter -- so multicast, private
 //! and link-local targets are refused before a datagram reaches the kernel,
-//! whether content named them by host or by literal.
+//! whether content named them by host or by literal. A sender is held to the same
+//! rule: content hears only those it could send to, and a public one only once
+//! the socket has sent or connected to it.
 //!
-//! Broadcast is refused outright: the filter already blocks 255.255.255.255 and
-//! every multicast range, so the flag has no legitimate target and would only
-//! serve to escape those checks. Fan-out goes through a server.
+//! Broadcast and multicast reach the local network only when the local network
+//! is granted, as other private addresses do. A multicast datagram is not looped
+//! back to the device's own listeners; a broadcast is, by the kernel, for every
+//! listener on the port.
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -19,11 +22,12 @@ use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 use tracing::debug;
 
-use shared::op_state::NetworkPolicy;
+use shared::network_policy::{NetworkChannel, NetworkPolicy};
 
 use crate::ServiceError;
 
-use super::gate::{self, GateKind};
+use super::address_filter::{LanAccess, Reach, datagram_reach, is_blocked_datagram_address};
+use super::gate::{self, Transport};
 use super::resources::{CancelFlag, ResourceId, ResourceTable};
 use super::sockets::{
     AddrMeta, BACKGROUND_THROTTLE, ReceiveScratch, addr_family, checked_port, join_host_port,
@@ -60,11 +64,89 @@ pub struct UdpSock {
     rx: Mutex<Receive>,
     cancel: Arc<CancelFlag>,
     local: AddrMeta,
+    inbound: Inbound,
+}
+
+/// Which senders' datagrams reach content. The socket listens on every
+/// interface, so without this anything that can reach the port -- a process on
+/// the device, a host on the LAN, any host on the internet -- would be heard
+/// where content could not send to it.
+#[derive(Debug)]
+enum Inbound {
+    /// The senders this socket could send to: one on the local network only when
+    /// the local network is granted, the device itself never, and a public one
+    /// once the socket has sent or connected to its address.
+    Policy {
+        lan: LanAccess,
+        /// The public addresses this socket has sent or connected to, any port.
+        ///
+        /// A policy names domains and a datagram carries an address, so the only
+        /// account of which addresses content may reach is the socket's own
+        /// resolutions, each made after the gate let its destination through.
+        /// Hearing every public sender once any domain was granted let a host
+        /// content may not send to reach it anyway. Holds one or two addresses
+        /// for a game talking to its server.
+        addressed: parking_lot::Mutex<Vec<IpAddr>>,
+    },
+    /// Every sender. Tests talk over the loopback, which the rule refuses.
+    #[cfg(test)]
+    Any,
+}
+
+impl Inbound {
+    fn policy(lan: LanAccess) -> Self {
+        Self::Policy {
+            lan,
+            addressed: Default::default(),
+        }
+    }
+
+    fn admits(&self, peer: &SocketAddr) -> bool {
+        match self {
+            Self::Policy { lan, addressed } => match datagram_reach(peer.ip()) {
+                Reach::Internet => addressed.lock().contains(&peer.ip().to_canonical()),
+                reach => !reach.blocked(*lan),
+            },
+            #[cfg(test)]
+            Self::Any => true,
+        }
+    }
+
+    /// `peer` is somewhere this socket was permitted to send, so its replies are
+    /// heard from now on.
+    fn addressed(&self, peer: SocketAddr) {
+        match self {
+            Self::Policy { addressed, .. } => {
+                if datagram_reach(peer.ip()) != Reach::Internet {
+                    return;
+                }
+                let ip = peer.ip().to_canonical();
+                let mut addressed = addressed.lock();
+                if !addressed.contains(&ip) {
+                    addressed.push(ip);
+                }
+            }
+            #[cfg(test)]
+            Self::Any => {}
+        }
+    }
 }
 
 impl UdpSock {
     pub(crate) fn cancel(&self) {
         self.cancel.cancel();
+    }
+
+    /// Where a send or a connect goes: resolved, every answer through the
+    /// datagram rule, and recorded as heard before anything is sent, so a reply
+    /// that beats the send's return is not dropped.
+    async fn destination(&self, target: &str, lan: LanAccess) -> std::io::Result<SocketAddr> {
+        let resolved = resolve_first(target, |resolved| {
+            is_blocked_datagram_address(resolved, lan)
+        })
+        .await?;
+        self.inbound.addressed(resolved);
+        Ok(resolved)
     }
 }
 
@@ -88,10 +170,31 @@ pub enum UdpEvent {
 }
 
 /// Bind a local port. `port` of zero takes whatever the system assigns.
+///
+/// A bound socket hears whoever can reach its port, so a policy under which
+/// content could send to no one gets no socket, and the one it does get hears
+/// only the senders it could send to.
 pub fn bind(
+    policy: &NetworkPolicy,
     resources: &ResourceTable,
     port: u32,
     socket_type: &str,
+) -> Result<UdpBound, ServiceError> {
+    let lan = gate::lan_access(policy, NetworkChannel::Udp);
+    let public = !policy.channel(NetworkChannel::Udp).grants_nothing();
+    if !public && lan == LanAccess::Refused {
+        return Err(generic(
+            "bind:fail UDPSocket: the policy grants the udp channel nothing".to_string(),
+        ));
+    }
+    bind_hearing(resources, port, socket_type, Inbound::policy(lan))
+}
+
+fn bind_hearing(
+    resources: &ResourceTable,
+    port: u32,
+    socket_type: &str,
+    inbound: Inbound,
 ) -> Result<UdpBound, ServiceError> {
     let port = checked_port(port)?;
     let address: SocketAddr = if socket_type == "udp6" {
@@ -108,6 +211,13 @@ pub fn bind(
     socket
         .set_nonblocking(true)
         .map_err(|error| generic(format!("bind:fail set_nonblocking: {error}")))?;
+    // Multicast loops back to this host by default, and the device itself is
+    // never content's to reach.
+    let unlooped = match address {
+        SocketAddr::V4(_) => socket.set_multicast_loop_v4(false),
+        SocketAddr::V6(_) => socket.set_multicast_loop_v6(false),
+    };
+    unlooped.map_err(|error| generic(format!("bind:fail multicast loop: {error}")))?;
     let socket = UdpSocket::from_std(socket)
         .map_err(|error| generic(format!("bind:fail from_std: {error}")))?;
     let local_addr = socket
@@ -125,6 +235,7 @@ pub fn bind(
         }),
         cancel: Arc::new(CancelFlag::default()),
         local: local.clone(),
+        inbound,
     }));
     debug!("UDP bound, rid={rid}, local={local_addr}");
     Ok(UdpBound { rid, local })
@@ -140,13 +251,15 @@ pub async fn connect(
     port: u32,
 ) -> Result<(), ServiceError> {
     let port = checked_port(port)?;
-    gate::enforce_host(address, port, policy, GateKind::UdpSocket)
-        .map_err(ServiceError::generic)?;
+    let address =
+        gate::enforce_host(address, port, policy, Transport::Udp).map_err(ServiceError::generic)?;
     let socket = resources.udp(rid)?;
 
-    let target = join_host_port(address, port);
+    let target = join_host_port(&address, port);
     debug!("UDP connect: rid={rid}, target={target}");
-    let resolved = resolve_first(&target, super::address_filter::is_blocked_datagram_address)
+    let lan = gate::lan_access(policy, NetworkChannel::Udp);
+    let resolved = socket
+        .destination(&target, lan)
         .await
         .map_err(|error| generic(format!("connect:fail {error}")))?;
     socket
@@ -173,17 +286,20 @@ pub async fn send(
     set_broadcast: bool,
 ) -> Result<(), ServiceError> {
     let port = checked_port(port)?;
-    gate::enforce_host(address, port, policy, GateKind::UdpSocket)
-        .map_err(ServiceError::generic)?;
+    let address =
+        gate::enforce_host(address, port, policy, Transport::Udp).map_err(ServiceError::generic)?;
     let socket = resources.udp(rid)?;
 
-    let target = join_host_port(address, port);
+    let target = join_host_port(&address, port);
     debug!("UDP send: rid={rid}, target={target}");
     // Every DNS answer goes through the address filter's datagram rule: the
     // stream rule (documentation, benchmarking, reserved, link-local, loopback,
-    // private off the local network refused) with the broadcast address and
-    // multicast groups allowed, as the reference allows them.
-    let resolved = resolve_first(&target, super::address_filter::is_blocked_datagram_address)
+    // private refused unless the local network is granted) with the broadcast
+    // address and multicast groups allowed on a granted local network, as the
+    // reference allows them.
+    let lan = gate::lan_access(policy, NetworkChannel::Udp);
+    let resolved = socket
+        .destination(&target, lan)
         .await
         .map_err(|error| generic(format!("send:fail resolve error: {error}")))?;
 
@@ -240,19 +356,29 @@ pub async fn next_event(
         }
         let mut rx = socket.rx.lock().await;
         let rx = &mut *rx;
-        match socket.socket.recv_from(rx.scratch.as_mut_slice()).await {
-            Ok((count, peer)) => UdpEvent::Message {
-                // Exactly the filled prefix: datagram boundaries are kept and
-                // no bytes from a longer earlier datagram reach content.
-                data: rx.scratch.copy_filled(count),
-                remote: AddrMeta {
-                    address: peer_address(&mut rx.last_peer, peer),
-                    family: addr_family(&peer),
-                    port: peer.port(),
-                },
-                local: socket.local.clone(),
-            },
-            Err(error) => UdpEvent::Error(error.to_string()),
+        loop {
+            match socket.socket.recv_from(rx.scratch.as_mut_slice()).await {
+                Ok((count, peer)) => {
+                    // Every datagram, as every send is: whether a peer is on the
+                    // device's network is a question about the networks it is on now.
+                    if !socket.inbound.admits(&peer) {
+                        debug!("UDP: dropped a datagram from {peer}, which content may not reach");
+                        continue;
+                    }
+                    break UdpEvent::Message {
+                        // Exactly the filled prefix: datagram boundaries are kept and
+                        // no bytes from a longer earlier datagram reach content.
+                        data: rx.scratch.copy_filled(count),
+                        remote: AddrMeta {
+                            address: peer_address(&mut rx.last_peer, peer),
+                            family: addr_family(&peer),
+                            port: peer.port(),
+                        },
+                        local: socket.local.clone(),
+                    };
+                }
+                Err(error) => break UdpEvent::Error(error.to_string()),
+            }
         }
     };
     cancel

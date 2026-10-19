@@ -3,7 +3,7 @@ set -euo pipefail
 # Build, link and RUN the headless player on the Windows MSVC toolchain, and
 # bring its captured frame back for inspection.
 #
-# Usage: run-player.sh <windows-game-dir-dos> [seconds]
+# Usage: run-player.sh <windows-game-dir-dos> [seconds] [--flag ...] [--network-policy <dos-path>]
 #
 # This is the step past run-tests.sh. Passing tests prove the code executes;
 # they do not prove the graphics stack can reach a GPU. On Windows that means
@@ -29,7 +29,7 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 if [[ $# -lt 1 ]]; then
-    echo "usage: run-player.sh <windows-game-dir-dos> [seconds]" >&2
+    echo "usage: run-player.sh <windows-game-dir-dos> [seconds] [--flag ...] [--network-policy <dos-path>]" >&2
     exit 2
 fi
 GAME_DIR_DOS="$1"; shift
@@ -45,12 +45,24 @@ shift || true
 # another offscreen run that looked like a pass -- the driver has to either
 # forward them or refuse them, never ignore them.
 PLAYER_ARGS=()
-for a in "$@"; do
+args=("$@")
+for ((i = 0; i < ${#args[@]}; i++)); do
+    a="${args[i]}"
     if [[ ! "$a" =~ ^--[A-Za-z0-9-]+$ ]]; then
         echo "error: invalid player arg '$a' (expected a --flag)" >&2
         exit 2
     fi
     PLAYER_ARGS+=("$a")
+    # The one flag with a value: the policy content's network is held to, without
+    # which it reaches none. A DOS path of the same tame class as the game dir.
+    if [[ "$a" == "--network-policy" ]]; then
+        i=$((i + 1))
+        if [[ ! "${args[i]:-}" =~ ^[A-Za-z]:[A-Za-z0-9_.:\\-]+$ ]]; then
+            echo "error: --network-policy needs a plain DOS path (got '${args[i]:-}')" >&2
+            exit 2
+        fi
+        PLAYER_ARGS+=("${args[i]}")
+    fi
 done
 PLAYER_ARGS_STR="${PLAYER_ARGS[*]:-}"
 # Interpolated unquoted into a generated batch, so keep it to a tame path class

@@ -13,6 +13,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib/v8-materialise.sh
 source "$SCRIPT_DIR/lib/v8-materialise.sh"
+# shellcheck source=scripts/lib/cargo-target-dir.sh
+source "$SCRIPT_DIR/lib/cargo-target-dir.sh"
 # shellcheck source=scripts/lib/release-version.sh
 source "$SCRIPT_DIR/lib/release-version.sh"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -117,7 +119,8 @@ snapshot_require_materialized_snapshot "$SNAPSHOT_BIN"
 info "verifying the target host/full snapshot before compiling"
 bash "$SCRIPT_DIR/check-snapshot-freshness.sh" --product-profile full --os android "$ARCH"
 
-BUILD_METADATA="$ENGINE_DIR/target/$TARGET/release/migo-android-build-metadata.json"
+CARGO_TARGET="$(cargo_target_dir "$ENGINE_DIR")" || exit 1
+BUILD_METADATA="$CARGO_TARGET/$TARGET/release/migo-android-build-metadata.json"
 python3 "$SCRIPT_DIR/write-android-build-metadata.py" \
     --repo-root "$REPO_ROOT" \
     --output "$BUILD_METADATA" \
@@ -154,12 +157,12 @@ TARGET_U="${TARGET//-/_}"
         "AR_${TARGET_U}=$NDK_BIN/llvm-ar" \
         cargo build -p migo-capi --release --target "$TARGET"
 )
-STATIC_LIB="$ENGINE_DIR/target/$TARGET/release/libmigo_capi.a"
+STATIC_LIB="$CARGO_TARGET/$TARGET/release/libmigo_capi.a"
 [[ -f "$STATIC_LIB" ]] || { err "no static library produced"; exit 1; }
 info "built: $STATIC_LIB ($(stat -c %s "$STATIC_LIB") bytes)"
 
 info "capturing the link line cargo uses"
-CARGO_OUT="$ENGINE_DIR/target/$TARGET/release/migo-android-native-static-libs.txt"
+CARGO_OUT="$CARGO_TARGET/$TARGET/release/migo-android-native-static-libs.txt"
 # Same working directory and same compiler pins as the build above: this
 # reports the link line a consumer must reproduce, so it has to describe the
 # artifact that was actually built rather than a differently-configured one.

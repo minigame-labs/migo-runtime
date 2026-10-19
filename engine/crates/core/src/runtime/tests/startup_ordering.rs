@@ -150,6 +150,81 @@ fn gpu_readiness_is_joined_before_any_launch_js() {
 }
 
 #[test]
+fn a_render_command_the_content_got_wrong_reaches_the_host_as_survivable() {
+    // A host tells an error it can ride out from one that ended the game by its code alone
+    // (Android's `ErrorCode.isRecoverable`). This report used the failed command's own code --
+    // an invalid argument, a shader that did not compile, an internal error -- which fatal
+    // reports share, so a GL call the content got wrong reached Android hosts as
+    // non-recoverable, and a host that closes on those closed the game on it.
+    let report = HOST
+        .split("fn on_render_error(")
+        .nth(1)
+        .expect("the render-command report must remain present")
+        .split("\n    fn ")
+        .next()
+        .expect("the report must end before the next function");
+    assert!(
+        report.contains("ErrorCode::RenderCommandFailed.as_u16()"),
+        "a failed render command must reach the host under its own, survivable code"
+    );
+}
+
+#[test]
+fn a_surface_the_host_gave_that_was_refused_is_not_reported_as_the_contents() {
+    // Recreating the onscreen surface is the engine's own command, run when the host hands it
+    // a Surface; when the Surface is refused it may be retired, and nothing presents until the
+    // host acts. It went out as a canvas command error, so once those became survivable
+    // content errors it reached hosts as one -- a host that only acts on errors it cannot
+    // ride out would leave the screen blank.
+    let refused = RENDER_THREAD
+        .split("\"recreate onscreen: rejected Surface\"")
+        .nth(1)
+        .expect("the recreate failure must remain present");
+    let emitted = &refused[refused
+        .find("events.emit(")
+        .expect("the failure must be emitted")..];
+    assert!(
+        emitted.starts_with("events.emit(RenderEvent::SurfaceRecreateFailed"),
+        "a refused Surface must be its own event, not a canvas command the content issued"
+    );
+    for (lane, source) in [("host", HOST), ("external", EXTERNAL)] {
+        let arm = source
+            .split("RenderEvent::SurfaceRecreateFailed { code, message } =>")
+            .nth(1)
+            .unwrap_or_else(|| panic!("the {lane} lane must handle a refused Surface"))
+            .split("\n            RenderEvent::")
+            .next()
+            .expect("the arm must end");
+        assert!(
+            arm.contains("notify_error(") && arm.contains("code.as_u16()"),
+            "the {lane} lane must report a refused Surface to the host under the backend's code"
+        );
+    }
+}
+
+#[test]
+fn a_frame_that_could_not_be_presented_reaches_the_host_as_survivable() {
+    // A failed swap that is not a lost context leaves the session running: the render loop
+    // presents again next frame, and a Surface it can no longer present to is retired and
+    // reported through `notify_surface_lost`. Both lanes reported it as `RenderBackendError`,
+    // which Android reads as a session to restart or destroy.
+    for (lane, source) in [("host", HOST), ("external", EXTERNAL)] {
+        let arm = source
+            .split("RenderEvent::SwapFailed { message } =>")
+            .nth(1)
+            .unwrap_or_else(|| panic!("the {lane} lane must handle a failed swap"))
+            .split("\n            RenderEvent::")
+            .next()
+            .expect("the arm must end");
+        assert!(
+            code_only(arm).contains("ErrorCode::RenderSwapBuffersError.as_u16()")
+                && !code_only(arm).contains("RenderBackendError"),
+            "the {lane} lane must report a failed swap under its own, survivable code"
+        );
+    }
+}
+
+#[test]
 fn a_launch_that_fails_is_announced_like_one_that_succeeds() {
     // The property: the two outcomes of loading content travel the same way, from
     // the same place, for every caller.
@@ -172,8 +247,9 @@ fn a_launch_that_fails_is_announced_like_one_that_succeeds() {
         .next()
         .expect("the pairing must end before the function it wraps");
     assert!(
-        pairing.contains("self.platform.notify_error("),
-        "a launch that fails must reach the host through on_error"
+        pairing.contains("self.platform.notify_game_failed("),
+        "a launch that fails must reach the host as the launch's failure, which a host \
+         that does not tell the two halves apart hears through on_error"
     );
     assert!(
         pairing.contains("self.launch_content(game_id, entry).await"),

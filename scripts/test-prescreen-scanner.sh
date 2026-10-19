@@ -118,6 +118,38 @@ fi
 # as an alias turns every `c.getContext` into a missing `migo.getContext`.
 refute "does not alias a call result to the namespace" 'getContext'
 
+# A plugin is not an API name, so only game.json says the bundle needs one -- and without the platform's plugin
+# service it does not start. The fixture declares one; a copy that declares none must report zero and no section.
+check "counts the plugin game.json declares" '\| \*\*plugins `game\.json` asks the platform to serve\*\* \| \*\*1\*\* \|'
+check "names it, with its provider" '`cocos` -- provider `wx0000000000000000`, version `2\.4\.3`'
+check "says how to ship without it" 'Separate Engine'
+check "names the file that calls it, which is what makes it a startup failure" 'calls `requirePlugin` in `game\.js`'
+unused_bundle="$(mktemp -d)"
+cp -r "$FIXTURE/bundle/." "$unused_bundle/"
+grep -v 'requirePlugin' "$FIXTURE/bundle/game.js" > "$unused_bundle/game.js"
+unused="$(bash "$SCANNER" "$unused_bundle" --surface "$FIXTURE/surface.json" \
+    --wx-reference "$FIXTURE/wx-reference.json" 2>/dev/null)"
+rm -rf "$unused_bundle"
+if grep -q 'no file scanned calls `requirePlugin`' <<<"$unused" && ! grep -q 'does not start as built' <<<"$unused"; then
+    printf '  ok    %s\n' "a plugin declared and never asked for is not called a startup failure"
+else
+    printf '  FAIL  %s\n' "a plugin declared and never asked for is not called a startup failure" >&2
+    failures=$((failures + 1))
+fi
+plain_bundle="$(mktemp -d)"
+cp -r "$FIXTURE/bundle/." "$plain_bundle/"
+printf '{"deviceOrientation":"portrait"}\n' > "$plain_bundle/game.json"
+plain="$(bash "$SCANNER" "$plain_bundle" --surface "$FIXTURE/surface.json" \
+    --wx-reference "$FIXTURE/wx-reference.json" 2>/dev/null)"
+rm -rf "$plain_bundle"
+if grep -qE '\| \*\*plugins `game\.json` asks the platform to serve\*\* \| \*\*0\*\* \|' <<<"$plain" \
+        && ! grep -q '## Plugins the platform would serve' <<<"$plain"; then
+    printf '  ok    %s\n' "a bundle that declares no plugin counts none and says nothing more"
+else
+    printf '  FAIL  %s\n' "a bundle that declares no plugin counts none and says nothing more" >&2
+    failures=$((failures + 1))
+fi
+
 # The caveats are the difference between a report and a claim.
 check "states it is not a compatibility verdict" 'Not a compatibility verdict'
 check "states Linux cannot answer it" 'Linux player has no device services'

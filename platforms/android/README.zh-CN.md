@@ -334,7 +334,12 @@ RuntimeConfig config = new RuntimeConfig.Builder(context)
     
     // 目录
     .setCodeCacheDir(codeCacheDir) // 编译代码缓存目录
-    
+
+    // 网络:不设就什么网络都没有,每个通道单独授权
+    .setNetworkPolicy(new NetworkPolicy.Builder()
+        .allow(NetworkPolicy.Channel.REQUEST, "api.example.com")
+        .build())
+
     .build();
 ```
 

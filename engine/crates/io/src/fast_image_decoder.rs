@@ -285,6 +285,9 @@ pub fn probe_image_dimensions(data: &[u8]) -> Option<(u32, u32)> {
 /// | GIF (animated)      | No        | **First frame only**                         |
 /// | WebP (lossy/lossless) | N/A     | Full support                                 |
 /// | WebP (animated)     | No        | **First frame only**                         |
+///
+/// GIF and WebP come from the image crate where `rust-image-decode` is on, and from the
+/// platform decoder where it is not (the Java SDK's Android build, through BitmapFactory).
 /// | BMP / TIFF          | N/A       | Depends on `image` crate fallback            |
 ///
 /// Animated formats decode to a single still image. A multi-frame
@@ -1177,5 +1180,45 @@ mod resize_capability_tests {
             .expect("CPU resize feature must work without Rust decoders");
         assert_eq!(out.width, 50);
         assert_eq!(out.height, 50);
+    }
+}
+
+// Formats zune does not decode, through the image crate, with no platform decoder registered --
+// which is every build that decodes in Rust: Linux, Windows, OpenHarmony, Apple, and the Android
+// C ABI below API 30. Both used to fail there with "no image decoder available".
+#[cfg(all(test, feature = "rust-image-decode"))]
+mod format_tests {
+    use super::*;
+
+    const FIXTURES: [(&str, &[u8]); 3] = [
+        (
+            "lossy WebP",
+            include_bytes!("../tests/fixtures/images/testsrc-lossy.webp"),
+        ),
+        (
+            "lossless WebP",
+            include_bytes!("../tests/fixtures/images/testsrc-lossless.webp"),
+        ),
+        (
+            "GIF",
+            include_bytes!("../tests/fixtures/images/testsrc.gif"),
+        ),
+    ];
+
+    #[test]
+    fn webp_and_gif_decode_without_a_platform_decoder() {
+        for (name, bytes) in FIXTURES {
+            let image =
+                decode_image_fast(bytes, None).unwrap_or_else(|error| panic!("{name}: {error}"));
+            assert_eq!((image.width, image.height), (32, 16), "{name}");
+            // ffmpeg's test pattern is bars and a gradient: a decoder that produced a flat buffer
+            // of the right size would pass the line above and fail this one.
+            let colours: std::collections::HashSet<&[u8]> = image.rgba.chunks_exact(4).collect();
+            assert!(
+                colours.len() > 8,
+                "{name}: {} distinct colours",
+                colours.len()
+            );
+        }
     }
 }

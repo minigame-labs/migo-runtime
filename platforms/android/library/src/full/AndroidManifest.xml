@@ -18,6 +18,12 @@
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
+    <!-- Declared so that it is bounded. A host's manifest merger reads WRITE in a library
+         manifest without a targetSdkVersion (which an AAR's never has) as implying READ,
+         and adds READ with no maxSdkVersion: storage on every Android version. -->
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
     <!-- onScreenRecordingStateChanged / getScreenRecordingState read the window's
          recording state (Android 15+). An install-time permission: nothing is asked
          of the player. -->

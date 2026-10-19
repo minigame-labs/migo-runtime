@@ -62,7 +62,8 @@ mod tests {
     use shared::{
         channel::ThreadWakeup,
         device::gpu_caps::GpuCaps,
-        op_state::{AudioSender, NetworkPolicy},
+        network_policy::NetworkPolicy,
+        op_state::AudioSender,
         render_command_sender::CommandSender,
         services::{
             CommerceServices, ConnectivityServices, DeviceServices, MediaServices,

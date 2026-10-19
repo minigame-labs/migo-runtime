@@ -2,25 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use serde_json::{Map, Value};
-
-/// Extra options for platform-specific or experimental features.
-///
-/// Stored as a JSON object for easier serialization and cross-language bridging.
-/// This allows passing arbitrary key-value pairs from Java/Kotlin to Rust
-/// without modifying the core API.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use shared::config::Extras;
-/// use serde_json::json;
-///
-/// let mut extras = Extras::new();
-/// extras.insert("bluetooth_enabled".into(), json!(true));
-/// extras.insert("custom_api_url".into(), json!("https://api.example.com"));
-/// ```
-pub type Extras = Map<String, Value>;
+use crate::network_policy::NetworkPolicy;
 
 /// Log level for the engine.
 ///
@@ -85,8 +67,7 @@ impl From<i32> for LogLevel {
 ///
 /// let options = InitOptions::new()
 ///     .with_pixel_ratio(2.0)
-///     .with_cache_dir("/data/app/cache".into())
-///     .with_extra("feature_flag", true);
+///     .with_cache_dir("/data/app/cache".into());
 /// ```
 ///
 /// # Platform Integration
@@ -152,8 +133,8 @@ pub struct InitOptions {
     /// game's main module is loaded. They are re-applied on every
     /// `Restart`-driven re-evaluation.
     prelude_scripts: Vec<(String, String)>,
-    /// Platform-specific or experimental options.
-    extras: Extras,
+    /// What network content may reach. The default refuses everything.
+    network_policy: NetworkPolicy,
 }
 
 impl Default for InitOptions {
@@ -173,7 +154,7 @@ impl Default for InitOptions {
             code_signing_enabled: true,
             code_signing_pubkey: None,
             prelude_scripts: Vec::new(),
-            extras: Extras::new(),
+            network_policy: NetworkPolicy::default(),
         }
     }
 }
@@ -188,7 +169,7 @@ impl InitOptions {
     /// - `debug_enabled`: false
     /// - `log_level`: Warn
     /// - `max_memory_mb`: 512
-    /// - `extras`: Empty map
+    /// - `network_policy`: refuses everything
     #[inline]
     pub fn new() -> Self {
         Self::default()
@@ -319,16 +300,9 @@ impl InitOptions {
         &self.prelude_scripts
     }
 
-    /// Returns a reference to the extras map.
     #[inline]
-    pub fn extras(&self) -> &Extras {
-        &self.extras
-    }
-
-    /// Returns a mutable reference to the extras map.
-    #[inline]
-    pub fn extras_mut(&mut self) -> &mut Extras {
-        &mut self.extras
+    pub fn network_policy(&self) -> &NetworkPolicy {
+        &self.network_policy
     }
 
     /// Sets the pixel ratio (builder pattern).
@@ -515,15 +489,9 @@ impl InitOptions {
         self
     }
 
-    /// Adds a key-value pair to the extras map (builder pattern).
-    ///
-    /// # Arguments
-    ///
-    /// * `k` - Key name
-    /// * `v` - Value (any type that converts to JSON Value)
     #[must_use]
-    pub fn with_extra<V: Into<Value>>(mut self, k: impl Into<String>, v: V) -> Self {
-        self.extras.insert(k.into(), v.into());
+    pub fn with_network_policy(mut self, policy: NetworkPolicy) -> Self {
+        self.network_policy = policy;
         self
     }
 }

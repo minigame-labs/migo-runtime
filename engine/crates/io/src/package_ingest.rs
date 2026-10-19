@@ -153,7 +153,7 @@ pub fn ingest_zip_to_package_with_budget(
                 std::io::ErrorKind::InvalidData,
                 format!(
                     "zip entry '{}' advertises {} bytes, exceeds per-entry limit {}",
-                    entry.name(),
+                    String::from_utf8_lossy(entry.name_raw()),
                     sz,
                     budget.max_entry_uncompressed
                 ),
@@ -190,7 +190,15 @@ pub fn ingest_zip_to_package_with_budget(
                 continue;
             }
 
-            let name = entry.name().to_string();
+            let name = entry
+                .name()
+                .map_err(|e| {
+                    PackageError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        e.to_string(),
+                    ))
+                })?
+                .into_owned();
             if name.starts_with("__MACOSX/") || name.ends_with(".DS_Store") {
                 continue;
             }

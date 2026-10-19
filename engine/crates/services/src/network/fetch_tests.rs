@@ -1,11 +1,24 @@
 use super::*;
-use crate::network::gate::GateKind;
+use shared::network_policy::{DomainPattern, DomainPolicy};
 
-fn policy(whitelist: &[&str], enforce_https: bool) -> NetworkPolicy {
-    NetworkPolicy {
-        domain_whitelist: whitelist.iter().map(|host| (*host).to_string()).collect(),
-        enforce_https,
-    }
+/// `allowed` on the request channel, or every domain on every channel when it is empty; plain HTTP only when
+/// `https_only` is false.
+fn policy(allowed: &[&str], https_only: bool) -> NetworkPolicy {
+    let mut policy = if allowed.is_empty() {
+        NetworkPolicy::unrestricted()
+    } else {
+        NetworkPolicy {
+            request: DomainPolicy::Allowlist(
+                allowed
+                    .iter()
+                    .map(|host| DomainPattern::parse(host).unwrap())
+                    .collect(),
+            ),
+            ..NetworkPolicy::default()
+        }
+    };
+    policy.allow_plain_http = !https_only;
+    policy
 }
 
 struct Session {
@@ -17,14 +30,9 @@ struct Session {
 
 impl Session {
     fn new(policy: NetworkPolicy) -> Self {
-        let client = super::super::client::create_policy_http_client(
-            "migo",
-            false,
-            &policy,
-            GateKind::FetchRedirect,
-            "fetch",
-        )
-        .expect("a client");
+        let client =
+            super::super::client::create_policy_http_client("migo", false, &policy, "fetch")
+                .expect("a client");
         Self::with_client(policy, client)
     }
 
@@ -37,13 +45,7 @@ impl Session {
             super::super::http::HttpClientBuilder,
         ) -> super::super::http::HttpClientBuilder,
     ) -> Self {
-        let builder = super::super::client::policy_client_builder(
-            "migo",
-            false,
-            &policy,
-            GateKind::FetchRedirect,
-            "fetch",
-        );
+        let builder = super::super::client::policy_client_builder("migo", false, &policy, "fetch");
         let client = configure(builder).build().expect("a client");
         Self::with_client(policy, client)
     }
@@ -68,8 +70,18 @@ impl Session {
     }
 
     fn fetch(&self, method: &str, url: &str) -> Result<FetchHandles, ServiceError> {
+        self.fetch_as(FetchKind::Request, method, url)
+    }
+
+    fn fetch_as(
+        &self,
+        kind: FetchKind,
+        method: &str,
+        url: &str,
+    ) -> Result<FetchHandles, ServiceError> {
         fetch(
             self.env(),
+            kind,
             method.as_bytes(),
             url,
             &[],
@@ -87,7 +99,7 @@ fn a_request_the_policy_refuses_is_never_built() {
         .fetch("GET", "https://blocked.example/a")
         .expect_err("the allow list refuses it");
     assert!(
-        error.message.contains("is not in the allowed list"),
+        error.message.contains("is not in the request allowlist"),
         "{}",
         error.message
     );
@@ -98,8 +110,12 @@ fn a_request_the_policy_refuses_is_never_built() {
 
     let error = session
         .fetch("GET", "http://allowed.example/a")
-        .expect_err("HTTPS is enforced");
-    assert!(error.message.contains("HTTPS"), "{}", error.message);
+        .expect_err("plain HTTP is not allowed");
+    assert!(
+        error.message.contains("plain-text http:// is not allowed"),
+        "{}",
+        error.message
+    );
     assert!(session.resources.is_empty());
 }
 
@@ -145,6 +161,24 @@ fn a_method_or_url_content_cannot_have_meant_is_a_type_error() {
         assert_eq!(error.message, message);
     }
     assert!(session.resources.is_empty());
+}
+
+/// A download is held to the download channel: a domain granted only for requests is refused to it, and the refusal
+/// names the API and the channel. This is the service end of the kind the engine's JavaScript passes.
+#[test]
+fn a_download_is_held_to_the_download_channel_not_the_request_one() {
+    let session = Session::new(policy(&["api.example.com"], true));
+    session
+        .fetch_as(FetchKind::Request, "GET", "https://api.example.com/a")
+        .expect("the request channel grants it");
+    let error = session
+        .fetch_as(FetchKind::Download, "GET", "https://api.example.com/a")
+        .expect_err("the download channel does not");
+    assert_eq!(
+        error.message,
+        "downloadFile: domain 'api.example.com' is not in the download allowlist"
+    );
+    assert!(FetchKind::parse("upload").is_err());
 }
 
 /// A `data:` URL is answered without a connection -- and so without a cancel

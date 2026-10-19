@@ -45,6 +45,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # shellcheck source=scripts/lib/v8-materialise.sh
 source "$SCRIPT_DIR/lib/v8-materialise.sh"
+# shellcheck source=scripts/lib/cargo-target-dir.sh
+source "$SCRIPT_DIR/lib/cargo-target-dir.sh"
 
 info() { echo -e "\033[0;36m[ohos-sdk] $*\033[0m"; }
 err()  { echo -e "\033[0;31m[ohos-sdk] $*\033[0m" >&2; }
@@ -108,9 +110,10 @@ public_ohos_arch() {
     esac
 }
 
+CARGO_TARGET="$(cargo_target_dir "$REPO_ROOT/engine")" || exit 1
 for ARCH in "${ARCHES[@]}"; do
     TRIPLE="$ARCH-unknown-linux-ohos"
-    STATIC_LIB="$REPO_ROOT/engine/target/$TRIPLE/release/libmigo_capi.a"
+    STATIC_LIB="$CARGO_TARGET/$TRIPLE/release/libmigo_capi.a"
     PUBLIC_ARCH="$(public_ohos_arch "$ARCH")"
     PREFIX="$REPO_ROOT/dist/migo-ohos-$PUBLIC_ARCH"
 

@@ -508,7 +508,25 @@ pub(crate) extern "system" fn init(
             &options,
         ));
 
+        // What network content may reach. `RuntimeConfig` always writes it -- `{}`
+        // when the host granted nothing -- and `NetworkPolicy.Builder` validates
+        // every entry, so a field that is missing, null or does not parse is a
+        // Java/native mismatch: refused rather than run under a policy the host did
+        // not write. Read as optional, a renamed field became a silent deny-all.
+        let network_policy = match super::get_string_field(&mut env, "networkPolicyJson", &options)
+            .and_then(|json| {
+                shared::network_policy::NetworkPolicy::from_json(&json)
+                    .map_err(|error| error.to_string())
+            }) {
+            Ok(policy) => policy,
+            Err(error) => {
+                error!("init failed: RuntimeConfig.networkPolicy: {error}");
+                return -1;
+            }
+        };
+
         let init_options = InitOptions::new()
+            .with_network_policy(network_policy)
             .with_pixel_ratio(display_density)
             .with_cache_dir(PathBuf::from(cache_dir))
             .with_files_dir(PathBuf::from(files_dir))

@@ -121,9 +121,8 @@ const _: () = assert!(offset_of!(MigoCapabilities, abi_version_min) == 8);
 const _: () = assert!(offset_of!(MigoCapabilities, abi_version_max) == 12);
 const _: () = assert!(offset_of!(MigoCapabilities, platform_kinds) == 16);
 
-// Pointer-free structs: identical on ILP32 and LP64, so they are pinned for
+// The prefix before the appended pointer is pointer-free, so it is pinned for
 // every target rather than only the ones that ship today.
-const _: () = assert!(size_of::<MigoSessionConfig>() == 32);
 const _: () = assert!(offset_of!(MigoSessionConfig, flags) == 8);
 // Appended after v1. It is at the end because that is what makes the growth
 // backward compatible: a caller passing the 16-byte record is zero-extended and
@@ -188,6 +187,10 @@ mod lp64 {
     const _: () = assert!(offset_of!(MigoEngineConfig, cache_dir_utf8) == 32);
     const _: () = assert!(offset_of!(MigoEngineConfig, code_cache_dir_utf8) == 40);
 
+    // Appended after the nonce, for the same reason: a caller passing the
+    // 32-byte record is zero-extended to a null policy, which grants nothing.
+    const _: () = assert!(size_of::<MigoSessionConfig>() == 40);
+    const _: () = assert!(offset_of!(MigoSessionConfig, network_policy_json_utf8) == 32);
     const _: () = assert!(size_of::<MigoContentDescriptor>() == 40);
     const _: () = assert!(offset_of!(MigoContentDescriptor, flags) == 8);
     const _: () = assert!(offset_of!(MigoContentDescriptor, environment) == 12);
