@@ -184,6 +184,12 @@
          <artifact name="aapt2-8.1.2-10154469-linux.jar">
             <sha256 value="7d1215f129749f1cb8635e079fa5140ae0c4cac2a74ec5fa147987df433085a9" origin="Verified against Google Maven"/>
          </artifact>
+         <artifact name="aapt2-8.1.2-10154469-osx.jar">
+            <sha256 value="a932c0f57ea0fce4b73d512cd45bb14bb54b07f5ade9f7216ba6d4c25aa9d908" origin="Verified against Google Maven"/>
+         </artifact>
+         <artifact name="aapt2-8.1.2-10154469-windows.jar">
+            <sha256 value="247478455df5e52b7b48441d4134d3509e046d78ae1bec2c51ba5e984416a7e6" origin="Verified against Google Maven"/>
+         </artifact>
          <artifact name="aapt2-8.1.2-10154469.pom">
             <sha256 value="a295b080f2cdf1744f599fa51898f2e2d409602d14d53be6e068436b3bcbce02" origin="Verified against Google Maven"/>
          </artifact>
