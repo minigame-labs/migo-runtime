@@ -731,6 +731,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- Windows: the CSS generic font keywords reach the faces Chrome and Edge give them there -- `serif` Times New Roman,
+  `sans-serif` Arial, `monospace` Consolas (Courier New where it is missing), `cursive` Comic Sans MS, `fantasy`
+  Impact, `system-ui` Segoe UI. Skia's DirectWrite manager finds a family only by its name, so every keyword fell
+  through to the bundled Noto Sans, as it did on Apple and Linux before their tables.
 - WebGL `readPixels` is refused with `INVALID_OPERATION` in a format and type the read buffer is not read as, on every
   driver: the pair its component type fixes -- RGBA and `UNSIGNED_BYTE` for a normalized buffer (and
   `UNSIGNED_INT_2_10_10_10_REV` for RGB10_A2), RGBA and `FLOAT` for a float one, `RGBA_INTEGER` and `INT` or

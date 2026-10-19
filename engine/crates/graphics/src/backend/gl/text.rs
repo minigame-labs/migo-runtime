@@ -1503,7 +1503,8 @@ fn push_family_with_candidates<'a, const N: usize>(
 /// best first; none for anything that is not such a keyword.
 ///
 /// Only where the system font manager does not answer the keyword itself.
-/// Android's (fonts.xml) does. Skia's CoreText manager resolves `Helvetica` and
+/// Android's (fonts.xml) does. Skia's DirectWrite manager finds a family by its
+/// name only, as its CoreText manager does: that one resolves `Helvetica` and
 /// `Times New Roman` but returns nothing for `sans-serif`, `serif`, `monospace`,
 /// `system-ui` or `cursive` (measured on macOS 26), and its fontconfig manager
 /// on Linux knows every installed face by name and none of the keywords
@@ -1514,7 +1515,7 @@ fn push_family_with_candidates<'a, const N: usize>(
 ///
 /// On Apple the names are the ones Safari and Chrome use; on Linux they are what
 /// the system's fontconfig gives each keyword, which is what a browser there
-/// asks (`fontconfig.rs`). A name the device does not have is skipped by the
+/// asks (`fontconfig.rs`); on Windows, Chrome's and Edge's defaults there. A name the device does not have is skipped by the
 /// font manager and the next one is tried, which is why several are listed
 /// where they differ between macOS and iOS. The keyword itself stays in the
 /// chain after these, so a manager that does resolve it is still asked.
@@ -1549,8 +1550,37 @@ fn generic_family_candidates(keyword: &str) -> impl Iterator<Item = &'static str
     super::fontconfig::generic_face(keyword).into_iter()
 }
 
+/// On Windows, what Chrome and Edge give each keyword there: Skia's DirectWrite
+/// manager finds a family only by its name, so a keyword is a family no system
+/// has. `ui-*` are left to fall through, as those browsers leave them.
+#[cfg(target_os = "windows")]
+fn generic_family_candidates(keyword: &str) -> impl Iterator<Item = &'static str> {
+    windows_generic_faces(keyword).iter().copied()
+}
+
+/// The faces Chrome and Edge on Windows give each CSS generic keyword, best
+/// first: what their font settings default to, and Courier New after Consolas for
+/// a system without it. Every one ships with Windows. Compiled everywhere so the
+/// table is tested on every host.
+#[cfg(any(target_os = "windows", test))]
+fn windows_generic_faces(keyword: &str) -> &'static [&'static str] {
+    const TABLE: &[(&str, &[&str])] = &[
+        ("sans-serif", &["Arial"]),
+        ("serif", &["Times New Roman"]),
+        ("monospace", &["Consolas", "Courier New"]),
+        ("cursive", &["Comic Sans MS"]),
+        ("fantasy", &["Impact"]),
+        ("system-ui", &["Segoe UI"]),
+    ];
+    TABLE
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(keyword))
+        .map_or(&[], |(_, faces)| *faces)
+}
+
 #[cfg(not(any(
     target_vendor = "apple",
+    target_os = "windows",
     all(target_os = "linux", not(target_env = "ohos"))
 )))]
 fn generic_family_candidates(_keyword: &str) -> impl Iterator<Item = &'static str> {
@@ -1832,6 +1862,58 @@ mod tests {
         let sample = "Hamburgefonstiv";
         let bundled = width("migo-default-sans", sample);
         for keyword in ["sans-serif", "serif", "system-ui", "monospace", "cursive"] {
+            assert!(
+                (width(keyword, sample) - bundled).abs() > 0.5,
+                "`{keyword}` still measures as the bundled Noto Sans"
+            );
+        }
+        assert!(
+            (width("serif", sample) - width("sans-serif", sample)).abs() > 0.5,
+            "`serif` and `sans-serif` are the same face"
+        );
+    }
+
+    /// What Windows gives each keyword, checked on every host: the faces the
+    /// browsers there default to, the `ui-*` keywords and family names left
+    /// alone, the keyword matched without regard to case.
+    #[test]
+    fn windows_names_the_faces_its_browsers_give_each_keyword() {
+        assert_eq!(windows_generic_faces("serif"), ["Times New Roman"]);
+        assert_eq!(windows_generic_faces("Sans-Serif"), ["Arial"]);
+        assert_eq!(
+            windows_generic_faces("monospace"),
+            ["Consolas", "Courier New"]
+        );
+        assert_eq!(windows_generic_faces("cursive"), ["Comic Sans MS"]);
+        assert_eq!(windows_generic_faces("fantasy"), ["Impact"]);
+        assert_eq!(windows_generic_faces("system-ui"), ["Segoe UI"]);
+        assert!(windows_generic_faces("ui-monospace").is_empty());
+        assert!(windows_generic_faces("Arial").is_empty());
+    }
+
+    /// The keywords measured on Windows, as on Apple: each reaches a system face
+    /// rather than the bundled Noto Sans, `monospace` is fixed-width, and `serif`
+    /// is not `sans-serif`.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn css_generic_families_reach_system_faces_on_windows() {
+        let ctx = TextContext::new();
+        let width = |family: &str, text: &str| {
+            let mut attrs = test_attrs(32.0);
+            attrs.families = std::sync::Arc::new(vec![family.to_string()]);
+            ctx.measure_text(text, &attrs).width
+        };
+        assert!((width("monospace", "iiiiiiii") - width("monospace", "mmmmmmmm")).abs() < 0.01);
+        let sample = "Hamburgefonstiv";
+        let bundled = width("migo-default-sans", sample);
+        for keyword in [
+            "sans-serif",
+            "serif",
+            "system-ui",
+            "monospace",
+            "cursive",
+            "fantasy",
+        ] {
             assert!(
                 (width(keyword, sample) - bundled).abs() > 0.5,
                 "`{keyword}` still measures as the bundled Noto Sans"
