@@ -303,6 +303,9 @@ def main() -> int:
                     "--locked",
                     "--manifest-path",
                     str(repo / "tools/artifact-manifest/Cargo.toml"),
+                    # The directory read above, whatever CARGO_TARGET_DIR says.
+                    "--target-dir",
+                    str(repo / "tools/artifact-manifest/target"),
                 ],
                 "building migo-artifact-manifest",
             )

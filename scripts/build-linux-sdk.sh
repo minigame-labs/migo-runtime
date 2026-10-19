@@ -18,6 +18,8 @@ ENGINE_DIR="$REPO_ROOT/engine"
 
 # shellcheck source=scripts/lib/v8-materialise.sh
 source "$SCRIPT_DIR/lib/v8-materialise.sh"
+# shellcheck source=scripts/lib/cargo-target-dir.sh
+source "$SCRIPT_DIR/lib/cargo-target-dir.sh"
 
 ARCH="x86_64"
 PREFIX=""
@@ -163,7 +165,8 @@ info "building capi staticlib (release, $TARGET)"
 cargo build --manifest-path "$ENGINE_DIR/Cargo.toml" \
     -p migo-capi --release --target "$TARGET"
 
-info "built: $ENGINE_DIR/target/$TARGET/release/libmigo_capi.a"
+CARGO_TARGET="$(cargo_target_dir "$ENGINE_DIR")" || exit 1
+info "built: $CARGO_TARGET/$TARGET/release/libmigo_capi.a"
 
 # The floor is a property of linked output -- a static archive carries no symbol
 # versions of its own. This binary is built with the sysroot toolchain purely so
@@ -175,7 +178,7 @@ cargo build --manifest-path "$ENGINE_DIR/Cargo.toml" \
     -p migo-c-host-example --release --target "$TARGET"
 
 info "capturing the link line cargo uses"
-LINK_NOTE="$ENGINE_DIR/target/$TARGET/release/native-static-libs.txt"
+LINK_NOTE="$CARGO_TARGET/$TARGET/release/native-static-libs.txt"
 # CARGO_TERM_COLOR=never: this note is parsed, not read by a person. Left unset,
 # CI's toolchain setup forces CARGO_TERM_COLOR=always, which wraps the note in
 # ANSI codes -- the trailing reset glues onto the last -l token with no
@@ -251,7 +254,7 @@ VERSION="$(read_release_version "$REPO_ROOT")"
 # coincidence.
 LLD_BIN="$(migo_sysroot_lld_bin)" || exit 1
 
-BUILD_METADATA="$ENGINE_DIR/target/$TARGET/release/migo-linux-build-metadata.json"
+BUILD_METADATA="$CARGO_TARGET/$TARGET/release/migo-linux-build-metadata.json"
 python3 "$SCRIPT_DIR/write-linux-build-metadata.py" \
     --repo-root "$REPO_ROOT" \
     --output "$BUILD_METADATA" \
@@ -267,7 +270,7 @@ for entry in $ENTRY_POINTS; do
     UNDEF_ARGS+=("-Wl,-u,$entry")
 done
 NATIVE_LIBS=$(sed -n 's/.*native-static-libs: *//p' "$LINK_NOTE" | head -1)
-SO_BUILD="$ENGINE_DIR/target/$TARGET/release/libmigo.so.$VERSION"
+SO_BUILD="$CARGO_TARGET/$TARGET/release/libmigo.so.$VERSION"
 
 # --target is required here for exactly the reason linux-sysroot.sh's own
 # comment on RUSTFLAGS_SYSROOT_LINK gives: clang without one compiles for the
@@ -310,7 +313,7 @@ SYSROOT_LIB_DIR="$MIGO_SYSROOT/usr/lib/$MIGO_SYSROOT_LIB_TRIPLET"
     -Wl,--gc-sections \
     -Wl,--strip-all \
     "${UNDEF_ARGS[@]}" \
-    "$ENGINE_DIR/target/$TARGET/release/libmigo_capi.a" \
+    "$CARGO_TARGET/$TARGET/release/libmigo_capi.a" \
     $NATIVE_LIBS \
     -L "$LINK_DIR" -B "$LINK_DIR" \
     -L "$SYSROOT_LIB_DIR" -B "$SYSROOT_LIB_DIR" \
@@ -321,7 +324,7 @@ info "staging package at $PREFIX"
 rm -rf "$PREFIX"
 mkdir -p "$PREFIX/include" "$PREFIX/lib" "$PREFIX/share/migo"
 cp -r "$REPO_ROOT/include/migo" "$PREFIX/include/"
-cp "$ENGINE_DIR/target/$TARGET/release/libmigo_capi.a" "$PREFIX/lib/libmigo.a"
+cp "$CARGO_TARGET/$TARGET/release/libmigo_capi.a" "$PREFIX/lib/libmigo.a"
 cp "$SO_BUILD" "$PREFIX/lib/libmigo.so.$VERSION"
 # soname -> real file, and the unversioned name a `-lmigo` link resolves.
 ln -sf "libmigo.so.$VERSION" "$PREFIX/lib/libmigo.so.1"
@@ -334,7 +337,7 @@ python3 "$SCRIPT_DIR/gen-linux-package-metadata.py" \
     --arch "$ARCH" --cargo-output "$LINK_NOTE" --prefix "$PREFIX" --version "$VERSION" --shared
 
 info "recording the artifact manifest"
-NEEDED_FILE="$ENGINE_DIR/target/$TARGET/release/dt-needed.txt"
+NEEDED_FILE="$CARGO_TARGET/$TARGET/release/dt-needed.txt"
 # Taken from libmigo.so: the manifest describes what the shipped library needs,
 # not what one particular consumer happened to link.
 python3 "$SCRIPT_DIR/abi-floor-audit.py" needed "$SO_BUILD" > "$NEEDED_FILE"

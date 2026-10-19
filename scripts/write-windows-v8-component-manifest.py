@@ -326,7 +326,11 @@ def main() -> int:
     if tool is None:
         manifest = repo / "tools/artifact-manifest/Cargo.toml"
         subprocess.run(
-            ["cargo", "build", "--manifest-path", str(manifest), "--locked", "--release"],
+            [
+                "cargo", "build", "--manifest-path", str(manifest), "--locked", "--release",
+                # The directory read below, whatever CARGO_TARGET_DIR says.
+                "--target-dir", str(manifest.parent / "target"),
+            ],
             check=True,
         )
         tool = repo / "tools/artifact-manifest/target/release/migo-artifact-manifest"

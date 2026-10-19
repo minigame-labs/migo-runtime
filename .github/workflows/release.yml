@@ -196,6 +196,9 @@ jobs:
       - name: Reproducible timestamp contract
         run: bash scripts/test-reproducible-timestamp-contract.sh
 
+      - name: Cargo target directory contract
+        run: bash scripts/test-cargo-target-dir-contract.sh
+
       - name: Example content namespace contract
         run: bash scripts/test-content-namespace-contract.sh
 

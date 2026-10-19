@@ -192,6 +192,12 @@ jobs:
       - name: Reproducible timestamp contract
         run: bash scripts/test-reproducible-timestamp-contract.sh
 
+      # Scripts built with cargo and then read engine/target/... themselves, so a CARGO_TARGET_DIR
+      # elsewhere had the player gates run a player from before the change they checked, and pass,
+      # and the Android C host package a months-old staticlib.
+      - name: Cargo target directory contract
+        run: bash scripts/test-cargo-target-dir-contract.sh
+
       # Source-only, so it belongs here rather than in the device lane -- which
       # is the point: the failure it catches (content calling a capability on
       # an undeclared namespace, which does not carry it) presents on a device as a

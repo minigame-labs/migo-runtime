@@ -18,7 +18,9 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PLAYER="$ROOT/engine/target/debug/migo-player"
+source "$ROOT/scripts/lib/cargo-target-dir.sh"
+CARGO_TARGET="$(cargo_target_dir "$ROOT/engine")" || exit 1
+PLAYER="$CARGO_TARGET/debug/migo-player"
 bash "$ROOT/scripts/dev-test-host.sh" build -p migo-player --offline
 
 WORK="$(mktemp -d)"

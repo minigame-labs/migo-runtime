@@ -16,6 +16,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib/v8-materialise.sh
 source "$SCRIPT_DIR/lib/v8-materialise.sh"
+# shellcheck source=scripts/lib/cargo-target-dir.sh
+source "$SCRIPT_DIR/lib/cargo-target-dir.sh"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 ENGINE_DIR="$REPO_ROOT/engine"
 
@@ -107,7 +109,8 @@ TARGET_U="${TARGET//-/_}"
 
 STAGE="$REPO_ROOT/tests/c_host/android/src/main/jniLibs-static/$ABI"
 mkdir -p "$STAGE"
-cp "$ENGINE_DIR/target/$TARGET/release/libmigo_capi.a" "$STAGE/"
+CARGO_TARGET="$(cargo_target_dir "$ENGINE_DIR")" || exit 1
+cp "$CARGO_TARGET/$TARGET/release/libmigo_capi.a" "$STAGE/"
 info "staged $(stat -c %s "$STAGE/libmigo_capi.a") bytes at $STAGE/libmigo_capi.a"
 
 info "building the APK"

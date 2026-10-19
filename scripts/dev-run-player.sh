@@ -71,4 +71,6 @@ if (( BUILD_ONLY == 1 )); then
 fi
 
 c_info "running player: game=$GAME_DIR secs=$SECS"
-exec ./target/debug/migo-player "$GAME_DIR" "$SECS" ${PLAYER_ARGS[@]+"${PLAYER_ARGS[@]}"}
+source "$SCRIPT_DIR/lib/cargo-target-dir.sh"
+CARGO_TARGET="$(cargo_target_dir "$ENGINE_DIR")" || exit 1
+exec "$CARGO_TARGET/debug/migo-player" "$GAME_DIR" "$SECS" ${PLAYER_ARGS[@]+"${PLAYER_ARGS[@]}"}

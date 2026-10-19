@@ -738,6 +738,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   frame happened to follow it. The first command after a frame end -- written to the command stream, or pushed by an op
   that reaches the renderer directly, as `fillText` does -- now has its frame ended at the next frame, as a browser
   presents what a task drew; a game that animates through `requestAnimationFrame` is unaffected.
+- Building from source with `CARGO_TARGET_DIR` (or `CARGO_BUILD_TARGET_DIR`, or `build.target-dir`) set no longer
+  packages or runs an earlier build. The SDK, host and snapshot build scripts, the Android C host and the player gates
+  built where cargo was told to and then read `engine/target/...`, so they went on with whatever was left there: the
+  Android C host packaged a months-old staticlib, and the player gates passed against a player from before the change
+  they checked. Each now asks cargo where it wrote (`scripts/lib/cargo-target-dir.sh`), and the V8 component-manifest
+  scripts build their sealing tool into the directory they read it from.
 - Android: a game has no title bar, whatever theme the host gave its app. `MigoGameActivity` took the app's theme --
   neither the SDK's manifest entry nor a host's subclass names one -- so under a framework theme with an action bar the
   game drew below the host's title, in a surface shorter than the screen. Found by an integration from the

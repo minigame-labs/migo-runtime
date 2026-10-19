@@ -57,7 +57,9 @@ preludes+=(--prelude "$ROOT/tools/compat-recorder/recorder.js")
 status=0
 # No window server, as in scripts/verify-bypass-present.sh: an inherited DISPLAY makes the offscreen
 # display resolve to X11.
-env -u DISPLAY -u WAYLAND_DISPLAY "$ROOT/engine/target/debug/migo-player" "$BUNDLE" "$SECS" "${preludes[@]}" \
+source "$ROOT/scripts/lib/cargo-target-dir.sh"
+CARGO_TARGET="$(cargo_target_dir "$ROOT/engine")" || exit 1
+env -u DISPLAY -u WAYLAND_DISPLAY "$CARGO_TARGET/debug/migo-player" "$BUNDLE" "$SECS" "${preludes[@]}" \
     >"$LOG" 2>&1 || status=$?
 
 args=("$LOG" --platform "$PLATFORM"

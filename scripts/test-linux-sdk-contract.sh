@@ -54,7 +54,10 @@ skip() { echo -e "\033[0;33mSKIP\033[0m  $*"; SKIPS=$((SKIPS + 1)); }
 
 MANIFEST="$PREFIX/share/migo/linux-$ARCH-manifest.json"
 SHARED_LIB="$PREFIX/lib/libmigo.so"
-FLOOR_BINARY="$REPO_ROOT/engine/target/$TARGET/release/migo-c-host"
+# shellcheck source=scripts/lib/cargo-target-dir.sh
+source "$SCRIPT_DIR/lib/cargo-target-dir.sh"
+CARGO_TARGET="$(cargo_target_dir "$REPO_ROOT/engine")" || exit 1
+FLOOR_BINARY="$CARGO_TARGET/$TARGET/release/migo-c-host"
 
 # --- 1. Loader floor -------------------------------------------------------
 # Measured on the sysroot-built reference consumer: symbol versions bind at link

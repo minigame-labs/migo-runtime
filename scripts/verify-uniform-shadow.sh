@@ -56,7 +56,9 @@ c_info() { echo -e "\033[0;36m[uniform-shadow] $*\033[0m"; }
 c_ok() { echo -e "\033[0;32m[uniform-shadow] $*\033[0m"; }
 c_err() { echo -e "\033[0;31m[uniform-shadow] $*\033[0m" >&2; }
 
-PLAYER="$ENGINE_DIR/target/release/migo-player"
+source "$SCRIPT_DIR/lib/cargo-target-dir.sh"
+CARGO_TARGET="$(cargo_target_dir "$ENGINE_DIR")" || exit 1
+PLAYER="$CARGO_TARGET/release/migo-player"
 
 # Always build, never "build if missing": a mutation run leaves a binary
 # compiled from the mutant sitting next to a restored tree, and WSL2 preserves

@@ -56,7 +56,9 @@ LOG=/tmp/migo-churn-player.log
 c_info() { echo -e "\033[0;36m[churn] $*\033[0m"; }
 c_err() { echo -e "\033[0;31m[churn] $*\033[0m" >&2; }
 
-PLAYER="$ENGINE_DIR/target/debug/migo-player"
+source "$SCRIPT_DIR/lib/cargo-target-dir.sh"
+CARGO_TARGET="$(cargo_target_dir "$ENGINE_DIR")" || exit 1
+PLAYER="$CARGO_TARGET/debug/migo-player"
 [[ -x "$PLAYER" ]] || {
   c_err "player not built: $PLAYER (run scripts/dev-run-player.sh once)"
   exit 1

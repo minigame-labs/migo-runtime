@@ -41,7 +41,9 @@ c_info() { printf '\033[0;36m[scissor-dedup] %s\033[0m\n' "$*"; }
 c_err() { printf '\033[0;31m%s\033[0m\n' "$*" >&2; }
 c_ok() { printf '\033[0;32m[scissor-dedup] %s\033[0m\n' "$*"; }
 
-PLAYER="$ENGINE_DIR/target/release/migo-player"
+source "$SCRIPT_DIR/lib/cargo-target-dir.sh"
+CARGO_TARGET="$(cargo_target_dir "$ENGINE_DIR")" || exit 1
+PLAYER="$CARGO_TARGET/release/migo-player"
 if [[ ! -x "$PLAYER" ]]; then
   c_info "building migo-player"
   bash "$SCRIPT_DIR/dev-test-host.sh" build --release -p migo-player || exit 1
