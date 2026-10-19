@@ -6,6 +6,13 @@
   of its own. android:hasCode="false" is what makes that claim checkable.
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!--
+      The network the host grants its content (files/network-policy, see main.c)
+      is reachable only by an app Android lets open sockets: without this every
+      socket the engine opens is refused before any policy is asked, and a UDP
+      bind answers -1. A host that grants no network can leave it out.
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
     <application
         android:label="Migo C Host"
         android:hasCode="false">

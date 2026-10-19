@@ -12,6 +12,7 @@
  * are marked: the dispatcher runs on the glue's looper, touch carries every
  * pointer, and the lifecycle comes from real Android commands.
  */
+#include <jni.h>
 #include <android/choreographer.h>
 #include <android/log.h>
 #include <android/native_window.h>
@@ -499,6 +500,64 @@ static int32_t on_input(struct android_app *app, AInputEvent *event) {
 
 /* ---- Engine and session ------------------------------------------------ */
 
+/* This app's package name, into out; 0 when it cannot be had. It is what Android
+ * names the app, and content reads it as getAppBaseInfo().host.appId. The host
+ * has no Java of its own, but the framework's classes are there to call: the
+ * activity is asked through JNI, from a thread attached for the call when it is
+ * not already. */
+static int package_name(ANativeActivity *activity, char *out, size_t cap) {
+    JavaVM *vm = activity->vm;
+    JNIEnv *env = NULL;
+    int attached = 0;
+    if ((*vm)->GetEnv(vm, (void **)&env, JNI_VERSION_1_6) == JNI_EDETACHED) {
+        if ((*vm)->AttachCurrentThread(vm, &env, NULL) != JNI_OK) return 0;
+        attached = 1;
+    }
+    int found = 0;
+    jclass cls = (*env)->GetObjectClass(env, activity->clazz);
+    jmethodID method = (*env)->GetMethodID(env, cls, "getPackageName", "()Ljava/lang/String;");
+    jstring name = method != NULL ? (jstring)(*env)->CallObjectMethod(env, activity->clazz, method) : NULL;
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+    } else if (name != NULL) {
+        const char *utf = (*env)->GetStringUTFChars(env, name, NULL);
+        if (utf != NULL) {
+            snprintf(out, cap, "%s", utf);
+            found = out[0] != '\0';
+            (*env)->ReleaseStringUTFChars(env, name, utf);
+        }
+    }
+    if (name != NULL) (*env)->DeleteLocalRef(env, name);
+    (*env)->DeleteLocalRef(env, cls);
+    if (attached) (*vm)->DetachCurrentThread(vm);
+    return found;
+}
+
+/* The network this host grants its content: <files>/network-policy, the JSON
+ * migo_session_create takes, read whole -- or NULL, no network at all, when there
+ * is none. A real embedder decides its game's network itself; this example is
+ * pointed at different bundles during validation, so the runner writes the policy
+ * beside content-id, among the host's own settings, where the content cannot.
+ * A file that cannot be read stops the host: running under no policy instead
+ * would fail every network check for a reason none of them names. */
+static char *read_network_policy(const char *files_dir) {
+    char path[512];
+    snprintf(path, sizeof path, "%s/network-policy", files_dir);
+    FILE *file = fopen(path, "rb");
+    if (file == NULL) return NULL;
+    long size = -1;
+    if (fseek(file, 0, SEEK_END) == 0) size = ftell(file);
+    char *json = (size >= 0) ? malloc((size_t)size + 1) : NULL;
+    if (json == NULL || fseek(file, 0, SEEK_SET) != 0
+        || fread(json, 1, (size_t)size, file) != (size_t)size) {
+        LOGE("cannot read the network policy %s", path);
+        abort();
+    }
+    fclose(file);
+    json[size] = '\0';
+    return json;
+}
+
 /*
  * A note on diagnosing this example, because the usual channel is missing here.
  *
@@ -574,8 +633,11 @@ static int create_engine(struct host *h, const char *files_dir) {
     session_config.struct_size = (uint32_t)sizeof session_config;
     session_config.abi_version = MIGO_ABI_VERSION_CURRENT;
     session_config.flags = MIGO_SESSION_FLAG_NONE;
+    char *network_policy = read_network_policy(files_dir);
+    session_config.network_policy_json_utf8 = network_policy;
 
     result = migo_session_create(h->engine, &session_config, &h->session);
+    free(network_policy);
     if (result != MIGO_OK) {
         LOGE("migo_session_create failed: %d", (int)result);
         return 0;
@@ -605,6 +667,24 @@ static int create_engine(struct host *h, const char *files_dir) {
     if (result != MIGO_OK) {
         LOGE("migo_session_set_host_callbacks failed: %d", (int)result);
         return 0;
+    }
+
+    /* Say who the host is: content reads it as getAppBaseInfo().host.appId, and
+     * on Android that is the package name. Everything else is left to the engine:
+     * the system's language, no benchmark score. */
+    char app_id[256] = {0};
+    if (h->activity != NULL && package_name(h->activity, app_id, sizeof app_id)) {
+        MigoHostAppInfo app_info;
+        memset(&app_info, 0, sizeof app_info);
+        app_info.struct_size = (uint32_t)sizeof app_info;
+        app_info.abi_version = MIGO_ABI_VERSION_CURRENT;
+        app_info.app_id_utf8 = app_id;
+        app_info.benchmark_level = -1;
+        result = migo_session_set_host_app_info(h->session, &app_info);
+        if (result != MIGO_OK) {
+            LOGE("migo_session_set_host_app_info failed: %d", (int)result);
+            return 0;
+        }
     }
     return 1;
 }
