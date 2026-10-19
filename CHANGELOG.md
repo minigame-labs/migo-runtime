@@ -723,6 +723,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- `scripts/prescreen-run.sh` reads the device's log by the engine's own error lines, the table the Linux report uses. It
+  kept a table of its own with no pattern for the engine's fatal "event loop error" unless the exception was a TypeError
+  or a ReferenceError, so a game that painted and then died in a callback was reported as running. Rejections and calls
+  the host answered "not supported" are now listed too, and a log the compatibility recorder wrote into adds what the
+  game reached for. The reading moved to `scripts/lib/prescreen_run_report.py` and is tested on captures made without a
+  device.
 - Linux: a character the named fonts lack is drawn in an installed font that has it. Skia was built with fontconfig
   turned off, which left its directory font manager: it lists `/usr/share/fonts` by name and never answers which face
   has a character, so SkParagraph's per-character fallback found nothing -- Chinese, Japanese, Korean, Arabic and every

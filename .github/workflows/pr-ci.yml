@@ -738,6 +738,12 @@ jobs:
       - name: Compatibility report judges by the contracts
         run: bash scripts/test-compat-report.sh
 
+      # The device run's verdicts, held to captures made here: its reading used to keep
+      # an error table of its own, which did not know the engine's fatal "event loop
+      # error", so a game that died in a timer after painting read as "Runs".
+      - name: Device prescreen report reads the capture
+        run: bash scripts/test-prescreen-run-report.sh
+
       # The engine's own JavaScript API layer, staged for the Performance+
       # producer and run: content draws through migo.createCanvas() and the
       # engine's WebGL facade, and the host's ingress admits the frames. A module

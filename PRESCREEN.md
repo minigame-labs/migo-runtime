@@ -143,6 +143,14 @@ before it ever gets a surface, and a report written from that would say "no
 engine session ran" about content that is fine. The script wakes the screen and
 refuses to produce a verdict if it cannot.
 
+### If your host injects the compatibility recorder
+
+A host you build can also inject `tools/compat-recorder/recorder.js` as a boot prelude, after
+the adapter, and log at `RuntimeConfig.LogLevel.INFO` or lower (a release engine logs at WARN,
+and the recorder writes at INFO). The run report then adds a fourth section: what the game
+reached for on the device, judged the way section 3 below judges it -- and on a device, unlike
+the Linux player, a call the host answers "not supported" is the host's real answer.
+
 ### What it will and will not claim
 
 It will not say "runs" unless all of these hold: your host held the foreground,

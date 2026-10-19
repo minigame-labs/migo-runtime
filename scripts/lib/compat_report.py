@@ -115,6 +115,11 @@ def _first_matches(pattern, lines) -> list[str]:
     return found
 
 
+def refused_calls(lines) -> list[str]:
+    """Each API the host answered `<api>:fail not supported`, once, in the order the log holds them."""
+    return _first_matches(REFUSED, lines)
+
+
 def content_errors(lines) -> list[dict]:
     """Each distinct line the engine logged about content failing, labelled by the first pattern it matches."""
     found, seen = [], set()
@@ -196,7 +201,7 @@ def assess(lines, platform: str, contracts: dict) -> dict:
         if cell is not None:
             entry["answered_by"] = cell.get(platform)
         absent.append(entry)
-    refused = [dict({"api": name}, **judge(name, platform, contracts)) for name in _first_matches(REFUSED, lines)]
+    refused = [dict({"api": name}, **judge(name, platform, contracts)) for name in refused_calls(lines)]
     undefined = [{"name": name, "platform_api": name in contracts["matrix"]} for name in _first_matches(UNDEFINED, lines)]
     errors = content_errors(lines)
     first = kinds.get("first-frame", [])
