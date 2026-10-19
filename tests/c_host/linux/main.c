@@ -62,11 +62,17 @@ static void MIGO_CALL on_error(void *user_data, MigoSession *session,
     fflush(stderr);
 }
 
+/* Content asked to exit (exitMiniProgram), and a host closes the game: the loop
+ * below ends at its next turn and tears the session down. The line is the one
+ * every conformance host prints for it. */
+static atomic_int g_exit_requested;
+
 static void MIGO_CALL on_exit_requested(void *user_data, MigoSession *session) {
     (void)user_data;
     (void)session;
-    printf("[c-host] callback: content asked to exit\n");
+    printf("[host] exit requested\n");
     fflush(stdout);
+    atomic_store(&g_exit_requested, 1);
 }
 
 /*
@@ -582,7 +588,8 @@ int main(int argc, char **argv) {
     const uint64_t surface_generation = surface.generation;
     int last_width = WINDOW_WIDTH;
     int last_height = WINDOW_HEIGHT;
-    for (int elapsed = 0; elapsed < seconds * 1000; elapsed += 16) {
+    for (int elapsed = 0; elapsed < seconds * 1000 && !atomic_load(&g_exit_requested);
+         elapsed += 16) {
         while (XPending(display) > 0) {
             XEvent event;
             XNextEvent(display, &event);

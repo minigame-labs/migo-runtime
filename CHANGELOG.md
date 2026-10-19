@@ -731,6 +731,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- A game that calls `exitMiniProgram` is closed. The engine told a host the game exited whenever its session ended
+  on a shutdown, the host's own included, so a host could not tell its own shutdown from content's exit; it now says so
+  only when content asked. `MigoGameActivity` finishes when its game exits unless a listener of the subclass's takes
+  the exit; before, with none, the activity stayed open on a session that had stopped. The headless player ends its run
+  at the exit, and the C example hosts close: the Linux one ends its loop, the NativeActivity one finishes its activity.
 - `restartMiniProgram` relaunches the game as a launch does: it is shown again, and launched with the options it was
   last shown with, its query the one `path` names after its `?` (the reference's "the part after ? becomes the
   query"). The restarted runtime used to get no show at all -- `getLaunchOptionsSync()` answered the defaults, scene

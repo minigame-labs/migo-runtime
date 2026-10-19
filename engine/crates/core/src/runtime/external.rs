@@ -2846,6 +2846,9 @@ fn run_external_session(
         restart_boundary,
         ready_tx,
     } = ctx;
+    // Raised by the host's own shutdown, before anything else it does: what tells
+    // the session's end the host asked for from the one content asked for.
+    let host_shutdown = Arc::clone(&surface_control);
 
     let shell = match SessionShell::build(
         id,
@@ -3156,9 +3159,10 @@ fn run_external_session(
         info!("[Host {id}] external-frame session exited");
         // Told last, as the embedded host thread tells it (`runtime/thread.rs`):
         // when content called `exitMiniProgram` this is the only way the host
-        // learns the game ended, and a host that asked for the shutdown itself
-        // ignores it. Without it an iOS game that exits simply stops drawing.
-        if shut_down {
+        // learns the game ended. Without it an iOS game that exits simply stops
+        // drawing. Only then: a host that shut the session down itself is not
+        // told its own shutdown was the game exiting.
+        if shut_down && !host_shutdown.is_shutting_down() {
             platform_for_error.notify_exit(id);
         }
     });

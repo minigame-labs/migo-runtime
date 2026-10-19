@@ -166,11 +166,10 @@ fn run_embedded_session(ctx: SessionThreadContext) {
                     let render_notify = host.render_notify();
                     let audio_signal = host.audio.start_signal();
 
-                    // Track whether to notify Java on exit.
-                    // Error paths set this to false (they already call notify_error).
-                    // Normal Shutdown keeps it true so Java learns the host exited
-                    // (needed when JS calls exitMiniProgram — Java didn't initiate
-                    // the shutdown and must finish the Activity).
+                    // Whether to tell the host the game exited. Error paths set
+                    // this to false (they already call notify_error); a Shutdown
+                    // keeps it, and the end of the loop tells the host when the
+                    // Shutdown was content's `exitMiniProgram`.
                     let mut notify_exit = true;
 
                     'outer: loop {
@@ -300,11 +299,13 @@ fn run_embedded_session(ctx: SessionThreadContext) {
                         }
                     }
 
-                    // Notify Java that the host is exiting.  When JS calls
-                    // exitMiniProgram, this is the only way Java learns about it
-                    // so it can finish() the Activity.  When Java itself called
-                    // shutdown_host(), it can simply ignore this notification.
-                    if notify_exit {
+                    // When content called exitMiniProgram, this is the only way
+                    // the host learns the game ended, so that it can close it
+                    // (finish the Activity). Not when the host shut the session
+                    // down itself: `shutdown_host` raises the flag before it sends
+                    // the Shutdown, and a host told its own shutdown was the game
+                    // exiting could not tell the two apart.
+                    if notify_exit && !surface_control.is_shutting_down() {
                         platform_ref.notify_exit(id);
                     }
                 });
