@@ -728,8 +728,24 @@ impl Host {
                 // Mark foreground so network polling ops resume normal rate.
                 self.backgrounded.store(false, Ordering::Relaxed);
 
-                let on_show_args = self.build_on_show_args(options_json.as_deref());
-                self.last_shown_options = shown_options(options_json.as_deref());
+                // A show the host says nothing about is the game coming back as it was entered: shown with the
+                // options it was last shown with, not with defaults no host gave.
+                let sent = shown_options(options_json.as_deref());
+                if sent.is_none()
+                    && options_json
+                        .as_deref()
+                        .is_some_and(|json| !json.trim().is_empty())
+                {
+                    warn!(
+                        "[Host {}] onShow options are not a JSON object; shown with the last ones",
+                        self.id
+                    );
+                }
+                let options = sent.or_else(|| self.last_shown_options.clone());
+                let on_show_args = options
+                    .clone()
+                    .map_or(Cow::Borrowed(HOOK_ARGS_NONE), hook_args_one);
+                self.last_shown_options = options;
 
                 if self.render.has_live_surface() {
                     // The SurfaceView surface survived the hide (Android does not
@@ -1144,27 +1160,6 @@ impl Host {
     /// options had to be escaped for a syntax they no longer travel through.
     /// Nothing here is parsed as source, so that class of escaping bug is gone
     /// rather than handled.
-    fn build_on_show_args(&self, options_json: Option<&str>) -> Cow<'static, str> {
-        let Some(options_json) = options_json else {
-            return Cow::Borrowed(HOOK_ARGS_NONE);
-        };
-        let options_json = options_json.trim();
-        if options_json.is_empty() {
-            return Cow::Borrowed(HOOK_ARGS_NONE);
-        }
-        match serde_json::from_str::<Value>(options_json) {
-            Ok(value) if value.is_object() => hook_args_one(value),
-            Ok(_) => Cow::Borrowed(HOOK_ARGS_NONE),
-            Err(e) => {
-                warn!(
-                    "[Host {}] invalid onShow options JSON, fallback to default: {}",
-                    self.id, e
-                );
-                Cow::Borrowed(HOOK_ARGS_NONE)
-            }
-        }
-    }
-
     /// Resume the render/audio threads and nudge the JS RAF loop + window resize
     /// after the app returns to the foreground with a live surface. Safe to call
     /// when nothing was paused (resume is a no-op then). Does NOT fire onShow —
