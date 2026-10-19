@@ -3,6 +3,8 @@
 
 use glow::HasContext;
 
+use super::readback::CompactPixelUnpackGuard;
+
 struct ReadFramebufferScope<'a> {
     gl: &'a glow::Context,
     previous: Option<glow::NativeFramebuffer>,
@@ -39,10 +41,20 @@ impl Drop for ReadFramebufferScope<'_> {
 }
 
 pub(crate) enum TextureCopy {
+    /// `texImage2D(source)`: the level is specified as the call specifies it -- `internal_format`, `format`, `type_` --
+    /// and the source copied into the whole of it.
+    ///
+    /// Two calls, not `glCopyTexImage2D`. That one specifies and copies at once, but for an unsized internal format it
+    /// takes the level's format from the framebuffer it reads, not from the call, so the texture could come out other
+    /// than the content named -- and a later `texSubImage2D` be judged against a format the content never gave. And on
+    /// the Android emulator's GLES a sized one (`RGBA8`, which Pixi asks for under WebGL 2) left the level empty, with
+    /// no error: every Pixi sprite sampled transparent black.
     Image {
         target: u32,
         level: i32,
         internal_format: u32,
+        format: u32,
+        type_: u32,
         source_x: i32,
         source_y: i32,
         width: i32,
@@ -85,20 +97,30 @@ pub(crate) fn copy_texture(
                     target,
                     level,
                     internal_format,
+                    format,
+                    type_,
                     source_x,
                     source_y,
                     width,
                     height,
                 } => {
-                    gl.copy_tex_image_2d(
-                        target,
-                        level,
-                        internal_format,
-                        source_x,
-                        source_y,
-                        width,
-                        height,
-                        0,
+                    {
+                        // No PIXEL_UNPACK_BUFFER: the empty data below is no data, not an offset into the content's.
+                        let _unpack = CompactPixelUnpackGuard::new(gl, 4);
+                        gl.tex_image_2d(
+                            target,
+                            level,
+                            internal_format as i32,
+                            width,
+                            height,
+                            0,
+                            format,
+                            type_,
+                            glow::PixelUnpackData::Slice(None),
+                        );
+                    }
+                    gl.copy_tex_sub_image_2d(
+                        target, level, 0, 0, source_x, source_y, width, height,
                     );
                 }
                 TextureCopy::SubImage {

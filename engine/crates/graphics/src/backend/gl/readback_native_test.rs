@@ -673,6 +673,8 @@ fn framebuffer_copy_native_preserves_source_and_destination_bindings() {
                     target: glow::TEXTURE_2D,
                     level: 0,
                     internal_format: glow::RGBA,
+                    format: glow::RGBA,
+                    type_: glow::UNSIGNED_BYTE,
                     source_x: 1,
                     source_y: 0,
                     width: 2,
