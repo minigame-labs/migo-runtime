@@ -731,6 +731,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- Android C ABI: `encode` and `decode` take GBK. The Java SDK encodes it through java.nio.charset, which a host with no
+  JVM cannot reach, so a C host refused "gbk"; the C ABI package now carries `encoding_rs`'s tables there, as it carries
+  the Rust image decoders. The NativeActivity example host reports its package name as `host.appId`, takes the
+  network its runner grants it from `files/network-policy`, and declares `INTERNET`, without which every socket was
+  refused before any policy was asked.
 - A failed `request`, `downloadFile` or `uploadFile` says why in its `errMsg`, as the reference does --
   `request:fail timeout`, `downloadFile:fail abort`, `request:fail fetch: connection to 10.0.2.2 is not allowed ...`
   -- rather than a bare `request:fail` with the reason only in `exception.reasons`; an abort and a timeout are worded
