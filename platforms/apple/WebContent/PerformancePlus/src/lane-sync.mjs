@@ -1066,7 +1066,8 @@ function readPixelsElementOffset(value) {
  * null when the call was refused, with the error recorded for `getError` exactly
  * as the op records it.
  */
-export function op_read_pixels(canvasId, x, y, width, height, format, type_, pixels, dst_offset) {
+export function op_read_pixels(canvasId, x, y, width, height, format, type_, pixels, dst_offset,
+    implementation_pair) {
   const canvas = smiU32(canvasId, "canvas_id");
   const left = toI32(x, "x");
   const bottom = toI32(y, "y");
@@ -1075,6 +1076,9 @@ export function op_read_pixels(canvasId, x, y, width, height, format, type_, pix
   const glFormat = smiU32(format, "format");
   const glType = smiU32(type_, "type_");
   const offsetElements = toF64(dst_offset, "dst_offset");
+  // Converted as the op converts it, and not sent: the renderer here is ANGLE, which holds a read to ES 3.0 4.3.2's
+  // pairs itself (core/src/runtime/external.rs).
+  toBool(implementation_pair, "implementation_pair");
 
   const bytesPerPixel = readbackBytesPerPixel(glFormat, glType);
   if (bytesPerPixel === null) {
@@ -1208,7 +1212,8 @@ export function op_get_buffer_sub_data(canvasId, target, offset, destination) {
   }
 }
 
-export function op_read_pixels_to_buffer(canvasId, x, y, width, height, format, type_, offset) {
+export function op_read_pixels_to_buffer(canvasId, x, y, width, height, format, type_, offset,
+    implementation_pair) {
   const canvas = smiU32(canvasId, "canvas_id");
   const left = toI32(x, "x");
   const bottom = toI32(y, "y");
@@ -1217,6 +1222,8 @@ export function op_read_pixels_to_buffer(canvasId, x, y, width, height, format, 
   const glFormat = smiU32(format, "format");
   const glType = smiU32(type_, "type_");
   const into = toI64(offset, "offset");
+  // As for op_read_pixels: converted, and left to ANGLE.
+  toBool(implementation_pair, "implementation_pair");
 
   const bytesPerPixel = readbackBytesPerPixel(glFormat, glType);
   if (bytesPerPixel === null) {
