@@ -731,6 +731,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- WebGL `readPixels` is refused with `INVALID_OPERATION` in a format and type the read buffer is not read as, on every
+  driver: the pair its component type fixes -- RGBA and `UNSIGNED_BYTE` for a normalized buffer (and
+  `UNSIGNED_INT_2_10_10_10_REV` for RGB10_A2), RGBA and `FLOAT` for a float one, `RGBA_INTEGER` and `INT` or
+  `UNSIGNED_INT` for an integer one -- or the driver's `IMPLEMENTATION_COLOR_READ` pair (ES 3.0 4.3.2). The engine left
+  the judgement to the driver, and the Android emulator's read a half-float buffer as bytes without an error. The facade
+  judges the buffer's own pair, which costs nothing; another pair is checked against the driver's on the render thread,
+  with no extra crossing.
 - The program binary cache no longer stalls frames on a driver whose binaries are huge or that will not take them
   back. ANGLE's Vulkan back end puts the context's whole pipeline cache in every program binary -- 0.7 MB more for each
   program the context has linked, up to 60 MB on the Android emulator -- and the emulator's driver refused nearly every

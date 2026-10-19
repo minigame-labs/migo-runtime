@@ -1337,6 +1337,9 @@ impl SyncPath {
                 // holds. The footprint it checks against is the layout below,
                 // which is why that is answered rather than dropped.
                 destination_byte_length: usize::MAX,
+                // The producer's facade does not carry its judgement of the pair across the boundary, and need not:
+                // the Apple lane renders with ANGLE, which holds a read to ES 3.0 4.3.2's pairs itself.
+                implementation_pair: false,
                 resp: shared::protocol::render_cmd::RenderCmdResp::from_sync(resp_tx),
             },
         );
@@ -1559,6 +1562,8 @@ impl SyncPath {
                 format: read.format,
                 type_: read.type_,
                 offset: read.offset,
+                // As for the CPU-view read above: ANGLE holds the pair to ES 3.0 4.3.2 itself.
+                implementation_pair: false,
                 resp: shared::protocol::render_cmd::RenderCmdResp::from_sync(tx),
             },
         );

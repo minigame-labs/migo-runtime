@@ -781,6 +781,7 @@ pub(super) mod tests {
                     RenderCommand::GL(GLCmd::ReadPixels {
                         format,
                         type_,
+                        implementation_pair,
                         resp,
                         ..
                     }) => {
@@ -791,7 +792,7 @@ pub(super) mod tests {
                             )
                             .unwrap(),
                         });
-                        break (format, type_);
+                        break (format, type_, implementation_pair);
                     }
                     RenderCommand::FramePacket(_) => {}
                     other => panic!("unexpected readback command: {other:?}"),
@@ -814,8 +815,62 @@ pub(super) mod tests {
             .expect("the read should be made");
         assert_eq!(
             responder.join().unwrap(),
-            (0x1908, 0x140b),
-            "RGBA / HALF_FLOAT reaches the renderer"
+            (0x1908, 0x140b, true),
+            "RGBA / HALF_FLOAT reaches the renderer, held to the driver's pair: the buffer is RGBA8"
+        );
+    }
+
+    /// A read in the pair the read buffer's component type fixes goes to the renderer as it is; any other pair of
+    /// enums a read takes goes held to the driver's IMPLEMENTATION_COLOR_READ pair. The default framebuffer is RGBA8:
+    /// normalized.
+    #[test]
+    fn a_read_outside_the_buffers_own_pair_is_held_to_the_drivers() {
+        let (mut runtime, render_rx) = new_webgl_runtime();
+        let responder = std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            while seen.len() < 3 {
+                match render_rx.recv_timeout(Duration::from_secs(5)).unwrap() {
+                    RenderCommand::GL(GLCmd::ReadPixels {
+                        format,
+                        type_,
+                        implementation_pair,
+                        resp,
+                        ..
+                    }) => {
+                        resp.ok(shared::protocol::render_cmd::ReadPixelsData {
+                            pixels: vec![0; 16],
+                            layout: shared::protocol::pixel_pack::PixelPackLayout::new(
+                                1, 1, 16, 4, 0, 0, 0,
+                            )
+                            .unwrap(),
+                        });
+                        seen.push((format, type_, implementation_pair));
+                    }
+                    RenderCommand::FramePacket(_) => {}
+                    other => panic!("unexpected readback command: {other:?}"),
+                }
+            }
+            seen
+        });
+        runtime
+            .exec_script(
+                "read_pairs.js",
+                r#"
+                const gl = new WebGL2RenderingContext({ _rid: 273, width: 2, height: 2 }, {});
+                gl._gpuCapsCache = 32;
+                gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(16));
+                gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.FLOAT, new Float32Array(4));
+                gl.readPixels(0, 0, 1, 1, gl.RGBA_INTEGER, gl.INT, new Int32Array(4));
+                "#,
+            )
+            .expect("the reads should be sent");
+        assert_eq!(
+            responder.join().unwrap(),
+            vec![
+                (0x1908, 0x1401, false),
+                (0x1908, 0x1406, true),
+                (0x8d99, 0x1404, true),
+            ]
         );
     }
 
@@ -12700,6 +12755,7 @@ pub fn op_read_pixels(
     #[smi] type_: u32,
     pixels: v8::Local<v8::Value>,
     dst_offset: f64,
+    implementation_pair: bool,
 ) -> Option<ReadPixelsJsData> {
     let Some(byte_len) = prepare_read_pixels(state, canvas_id, width, height, format, type_) else {
         return None;
@@ -12740,6 +12796,7 @@ pub fn op_read_pixels(
             format,
             type_,
             destination_byte_length,
+            implementation_pair,
             resp,
         })
     });
@@ -12791,6 +12848,7 @@ pub fn op_read_pixels_to_buffer(
     #[smi] format: u32,
     #[smi] type_: u32,
     #[bigint] offset: i64,
+    implementation_pair: bool,
 ) {
     if prepare_read_pixels(state, canvas_id, width, height, format, type_).is_none() {
         return;
@@ -12809,6 +12867,7 @@ pub fn op_read_pixels_to_buffer(
             format,
             type_,
             offset,
+            implementation_pair,
             resp,
         })
     });

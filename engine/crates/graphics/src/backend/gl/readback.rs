@@ -238,6 +238,31 @@ pub(crate) fn invalid_readback_format_type_error(format: u32, type_: u32) -> Eng
     EngineError::new(ErrorCode::InvalidArgument).with_msg(message)
 }
 
+/// What a read refused by [`refuse_unless_implementation_pair`] says: the engine refused it, the driver was not asked.
+pub(crate) const NOT_A_READ_PAIR: &str = "readPixels in a pair that is neither the read buffer's own nor the driver's implementation pair";
+
+/// A read in a pair other than the one the read buffer's component type fixes is made only in the driver's
+/// `IMPLEMENTATION_COLOR_READ_FORMAT` and `_TYPE` for that buffer, and is INVALID_OPERATION otherwise (ES 3.0 4.3.2).
+/// The pair is asked of a complete read framebuffer only: an incomplete one is the read's own error.
+fn refuse_unless_implementation_pair(
+    gl: &glow::Context,
+    format: u32,
+    type_: u32,
+) -> EngineResult<()> {
+    unsafe {
+        if gl.check_framebuffer_status(read_framebuffer_target(gl)) != glow::FRAMEBUFFER_COMPLETE {
+            return Err(EngineError::new(ErrorCode::RenderFramebufferIncomplete));
+        }
+        let driver_format = gl.get_parameter_i32(glow::IMPLEMENTATION_COLOR_READ_FORMAT) as u32;
+        let driver_type = gl.get_parameter_i32(glow::IMPLEMENTATION_COLOR_READ_TYPE) as u32;
+        if (format, type_) == (driver_format, driver_type) {
+            Ok(())
+        } else {
+            Err(EngineError::new(ErrorCode::InvalidOperation).with_msg(NOT_A_READ_PAIR))
+        }
+    }
+}
+
 fn readback_driver_error(error: u32) -> EngineError {
     let (code, message) = match error {
         glow::INVALID_ENUM => (
@@ -266,13 +291,18 @@ fn readback_driver_error(error: u32) -> EngineError {
 /// Source selection runs once after storage is ready, only for nonempty reads.
 /// It may change framebuffer bindings, but must leave PACK state untouched.
 ///
-/// The driver gets the last word on whether a format/type pair is legal for the
-/// framebuffer it is reading, and it is allowed to reject the call outright.
-/// Until this checked it, a rejected read still returned a fully zeroed buffer
-/// with no error, so content could not tell "the framebuffer is black" from
-/// "the driver refused" -- and the zeros were written into its view either way.
-/// An incomplete framebuffer is checked before the call because GLES3 makes it
-/// `INVALID_FRAMEBUFFER_OPERATION` rather than something the layout can predict.
+/// Whether a format/type pair may be read from the framebuffer is judged before
+/// the driver is asked: the facade judges the pair the read buffer's component
+/// type fixes, and a pair it marks `implementation_pair` is read only if it is
+/// the driver's own (`refuse_unless_implementation_pair`) -- browsers enforce
+/// this themselves, and a driver may not. The driver may still reject the call
+/// outright. Until that was checked, a rejected read still returned a fully
+/// zeroed buffer with no error, so content could not tell "the framebuffer is
+/// black" from "the driver refused" -- and the zeros were written into its view
+/// either way. An incomplete framebuffer is checked before the call because
+/// GLES3 makes it `INVALID_FRAMEBUFFER_OPERATION` rather than something the
+/// layout can predict.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn read_webgl_pixels(
     gl: &glow::Context,
     x: i32,
@@ -282,12 +312,16 @@ pub(crate) fn read_webgl_pixels(
     format: u32,
     type_: u32,
     destination_byte_length: usize,
+    implementation_pair: bool,
 ) -> EngineResult<ReadPixelsData> {
     let bpp = webgl_readback_bytes_per_pixel(format, type_)
         .ok_or_else(|| invalid_readback_format_type_error(format, type_))?;
     let pack = PixelPackState::capture(gl);
     if pack.buffer.is_some() {
         return Err(EngineError::new(ErrorCode::InvalidOperation));
+    }
+    if implementation_pair {
+        refuse_unless_implementation_pair(gl, format, type_)?;
     }
     let [alignment, row_length, skip_rows, skip_pixels] = pack.values;
     let layout = PixelPackLayout::new(
@@ -349,6 +383,7 @@ pub(crate) fn read_webgl_pixels(
 /// framebuffer incompleteness. Post-call: the driver's own error is surfaced so
 /// a source mismatch (wrong format/type for the framebuffer attachment) returns
 /// an error rather than silently succeeding.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn read_webgl_pixels_to_buffer(
     gl: &glow::Context,
     x: i32,
@@ -358,6 +393,7 @@ pub(crate) fn read_webgl_pixels_to_buffer(
     format: u32,
     type_: u32,
     offset: i64,
+    implementation_pair: bool,
 ) -> EngineResult<()> {
     let bpp = webgl_readback_bytes_per_pixel(format, type_)
         .ok_or_else(|| invalid_readback_format_type_error(format, type_))?;
@@ -365,6 +401,9 @@ pub(crate) fn read_webgl_pixels_to_buffer(
     // A CPU-view read is the other overload; this one requires a destination.
     if pack.buffer.is_none() {
         return Err(EngineError::new(ErrorCode::InvalidOperation));
+    }
+    if implementation_pair {
+        refuse_unless_implementation_pair(gl, format, type_)?;
     }
     let [alignment, row_length, skip_rows, skip_pixels] = pack.values;
     let layout = PixelPackLayout::new(
@@ -531,8 +570,17 @@ mod tests {
                 pack_buffer: pbo,
                 ..Default::default()
             });
-            let result =
-                read_webgl_pixels(&gl, 0, 0, width, 2, glow::RGBA, glow::UNSIGNED_BYTE, length);
+            let result = read_webgl_pixels(
+                &gl,
+                0,
+                0,
+                width,
+                2,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                length,
+                false,
+            );
             assert_eq!(result.is_ok(), width == 0);
         }
         assert!(test_gl::reads().is_empty());
@@ -549,7 +597,8 @@ mod tests {
             ..Default::default()
         });
         let result =
-            read_webgl_pixels(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 144).unwrap();
+            read_webgl_pixels(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 144, false)
+                .unwrap();
         assert_eq!(result.pixels.len(), 24);
         assert_eq!(result.layout.required_bytes, 144);
         let reads = test_gl::reads();
@@ -652,7 +701,8 @@ mod tests {
         };
         test_gl::set_bindings(original);
         let result =
-            read_webgl_pixels(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 144).unwrap();
+            read_webgl_pixels(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 144, false)
+                .unwrap();
         assert_eq!(result.pixels.len(), 24);
         assert_eq!(result.layout.first_byte, 92);
         assert_eq!(result.layout.row_stride, 40);
@@ -676,7 +726,8 @@ mod tests {
             };
             test_gl::set_bindings(original);
             let result =
-                read_webgl_pixels(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 144).unwrap();
+                read_webgl_pixels(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 144, false)
+                    .unwrap();
             assert_eq!(result.pixels.len(), 24);
             assert_eq!(
                 result.layout.required_bytes,
@@ -696,7 +747,17 @@ mod tests {
     }
 
     fn read_to_buffer(gl: &glow::Context, offset: i64) -> EngineResult<()> {
-        read_webgl_pixels_to_buffer(gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, offset)
+        read_webgl_pixels_to_buffer(
+            gl,
+            0,
+            0,
+            3,
+            2,
+            glow::RGBA,
+            glow::UNSIGNED_BYTE,
+            offset,
+            false,
+        )
     }
 
     /// The driver does the packing for a GPU destination, so this path must
@@ -811,11 +872,11 @@ mod tests {
                 glow::RGBA
             };
             for offset in [0, element, element * 3] {
-                read_webgl_pixels_to_buffer(&gl, 0, 0, 3, 2, format, type_, offset).unwrap();
+                read_webgl_pixels_to_buffer(&gl, 0, 0, 3, 2, format, type_, offset, false).unwrap();
             }
             if element > 1 {
                 assert_eq!(
-                    read_webgl_pixels_to_buffer(&gl, 0, 0, 3, 2, format, type_, element - 1)
+                    read_webgl_pixels_to_buffer(&gl, 0, 0, 3, 2, format, type_, element - 1, false)
                         .unwrap_err()
                         .code,
                     ErrorCode::InvalidOperation
@@ -851,11 +912,12 @@ mod tests {
             pack_buffer_size: 0,
             ..Default::default()
         });
-        read_webgl_pixels_to_buffer(&gl, 0, 0, 0, 2, glow::RGBA, glow::UNSIGNED_BYTE, 0).unwrap();
+        read_webgl_pixels_to_buffer(&gl, 0, 0, 0, 2, glow::RGBA, glow::UNSIGNED_BYTE, 0, false)
+            .unwrap();
         assert!(test_gl::reads().is_empty());
         // An unknown type has no addressable unit and no footprint to check.
         assert_eq!(
-            read_webgl_pixels_to_buffer(&gl, 0, 0, 0, 2, glow::RGBA, 0xFFFF, 0)
+            read_webgl_pixels_to_buffer(&gl, 0, 0, 0, 2, glow::RGBA, 0xFFFF, 0, false)
                 .unwrap_err()
                 .code,
             ErrorCode::InvalidArgument
@@ -930,14 +992,16 @@ mod tests {
             ..Default::default()
         });
         let result =
-            read_webgl_pixels(&gl, 0, 0, 0, 3, glow::RGBA, glow::UNSIGNED_BYTE, 0).unwrap();
+            read_webgl_pixels(&gl, 0, 0, 0, 3, glow::RGBA, glow::UNSIGNED_BYTE, 0, false).unwrap();
         assert!(result.pixels.is_empty());
         assert_eq!(result.layout.required_bytes, 0);
         test_gl::set_bindings(test_gl::Bindings {
             pack_buffer: 17,
             ..Default::default()
         });
-        assert!(read_webgl_pixels(&gl, 0, 0, 0, 3, glow::RGBA, glow::UNSIGNED_BYTE, 0).is_err());
+        assert!(
+            read_webgl_pixels(&gl, 0, 0, 0, 3, glow::RGBA, glow::UNSIGNED_BYTE, 0, false).is_err()
+        );
         assert!(test_gl::reads().is_empty());
         assert_eq!(test_gl::mutations(), 0);
     }
@@ -949,15 +1013,15 @@ mod tests {
             pack: [8, 9, 2, 3],
             ..Default::default()
         });
-        let err =
-            read_webgl_pixels(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 143).unwrap_err();
+        let err = read_webgl_pixels(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 143, false)
+            .unwrap_err();
         assert_eq!(err.code, ErrorCode::InvalidOperation);
         test_gl::set_bindings(test_gl::Bindings {
             pack_buffer: 17,
             ..Default::default()
         });
-        let err =
-            read_webgl_pixels(&gl, 0, 0, 1, 1, glow::RGBA, glow::UNSIGNED_BYTE, 4).unwrap_err();
+        let err = read_webgl_pixels(&gl, 0, 0, 1, 1, glow::RGBA, glow::UNSIGNED_BYTE, 4, false)
+            .unwrap_err();
         assert_eq!(err.code, ErrorCode::InvalidOperation);
         assert!(test_gl::reads().is_empty());
         assert_eq!(test_gl::mutations(), 0);
@@ -975,7 +1039,7 @@ mod tests {
                 ..Default::default()
             };
             test_gl::set_bindings(original);
-            let error = read_webgl_pixels(&gl, 0, 0, 1, 1, format, type_, 4).unwrap_err();
+            let error = read_webgl_pixels(&gl, 0, 0, 1, 1, format, type_, 4, false).unwrap_err();
             assert_eq!(error.code, ErrorCode::InvalidArgument);
             assert_eq!(error.msg, message);
             assert!(test_gl::reads().is_empty());
@@ -996,8 +1060,9 @@ mod tests {
         ] {
             let gl = test_gl::context();
             test_gl::set_read_error(gl_error);
-            let error = read_webgl_pixels(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 144)
-                .unwrap_err();
+            let error =
+                read_webgl_pixels(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 144, false)
+                    .unwrap_err();
             assert_eq!(error.code, expected);
             assert_eq!(test_gl::pending_errors(), 0, "queue must be drained");
         }
@@ -1010,7 +1075,8 @@ mod tests {
         // Two stale errors, then nothing for the read itself.
         test_gl::queue_error(glow::INVALID_OPERATION);
         test_gl::queue_error(glow::INVALID_ENUM);
-        let result = read_webgl_pixels(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 144);
+        let result =
+            read_webgl_pixels(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 144, false);
         assert!(result.is_ok(), "stale errors were attributed to this read");
         assert_eq!(test_gl::pending_errors(), 0);
     }
@@ -1019,8 +1085,8 @@ mod tests {
     fn webgl_readback_refuses_an_incomplete_framebuffer_before_reading() {
         let gl = test_gl::context();
         test_gl::set_framebuffer_status(glow::FRAMEBUFFER_INCOMPLETE_ATTACHMENT);
-        let error =
-            read_webgl_pixels(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 144).unwrap_err();
+        let error = read_webgl_pixels(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 144, false)
+            .unwrap_err();
         assert_eq!(error.code, ErrorCode::RenderFramebufferIncomplete);
         assert!(
             test_gl::reads().is_empty(),
@@ -1036,7 +1102,7 @@ mod tests {
         test_gl::set_framebuffer_status(glow::FRAMEBUFFER_INCOMPLETE_ATTACHMENT);
         test_gl::queue_error(glow::INVALID_OPERATION);
         let result =
-            read_webgl_pixels(&gl, 0, 0, 0, 2, glow::RGBA, glow::UNSIGNED_BYTE, 0).unwrap();
+            read_webgl_pixels(&gl, 0, 0, 0, 2, glow::RGBA, glow::UNSIGNED_BYTE, 0, false).unwrap();
         assert!(result.pixels.is_empty());
         assert!(test_gl::reads().is_empty());
     }
