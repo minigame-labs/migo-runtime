@@ -11,6 +11,20 @@ import { bytesOf, f32BitsOf, smiU32, smiU8, stringOf, toBool } from "./op-args.m
 import { platform } from "./engine-core.mjs";
 import { decodeBytes, encodeString } from "./text-codec.mjs";
 import { engineHost } from "./engine-host.mjs";
+import { awaitFrameContent } from "./engine-frames.mjs";
+
+// ---- frames -----------------------------------------------------------------
+
+/// Settles at the first record after a frame end, with whether that frame is still open: every
+/// record is written by this producer, so it is the one that knows.
+export function op_await_frame_content() {
+  return awaitFrameContent();
+}
+
+/// The producer runs in a Worker, whose event loop drives the frame loop's waits.
+export function op_frame_loop_available() {
+  return true;
+}
 
 // ---- time -------------------------------------------------------------------
 

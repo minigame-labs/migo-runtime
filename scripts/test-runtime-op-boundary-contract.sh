@@ -28,8 +28,10 @@
 #
 # AND THE SHAPE. A lane is a claim about who answers, and the op's Rust signature
 # says whether an answer exists:
-#   - an async op (or one returning a future) is awaited, so its lane is `async`
-#     or `unsupported`, and only an async op may be `async`;
+#   - an async op (or one returning a future) is awaited, so its lane is `async`,
+#     `local` -- the producer settles it from its own state, as it does when a frame
+#     receives its first record -- or `unsupported`, and only an async op may be
+#     `async`;
 #   - a `stream` or `command` op sends nothing back, so if its signature returns
 #     a value or writes into a caller's buffer the entry must say, in
 #     `local_answer`, what the producer answers with instead;
@@ -143,7 +145,7 @@ for name in sorted(set(classified) & set(imported)):
     if lane not in LANES:
         error(f"{name} has lane {lane!r}, which is not one of {list(LANES)}")
         continue
-    if op.is_async and lane not in ("async", "unsupported"):
+    if op.is_async and lane not in ("async", "local", "unsupported"):
         error(f"{name} is awaited by its callers (async in Rust) and cannot be {lane}")
     if lane == "async" and not op.is_async:
         error(f"{name} is async on the lane but returns synchronously in Rust")

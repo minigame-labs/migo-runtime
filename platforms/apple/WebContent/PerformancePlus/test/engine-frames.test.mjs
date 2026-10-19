@@ -575,6 +575,54 @@ console.log("drawImage runs");
   );
 }
 
+// The engine's frame-content wait (op_await_frame_content) ends a frame for content drawn outside
+// requestAnimationFrame, which nothing else would end. It settles at the first record after a
+// frame end, whichever path the record took into the frame, and answers whether that frame is
+// still open.
+console.log("The first record after a frame end");
+{
+  const { op_await_frame_content } = await import("../src/lane-local.mjs");
+  const { op_draw_image, op_fill_text } = await import("../src/lane-stream.mjs");
+  const settled = async (promise) => {
+    let value = "pending";
+    promise.then((answer) => {
+      value = answer;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    return value;
+  };
+  const SAVE = Uint32Array.of(header(OP2D_SAVE, 1));
+
+  endFrame();
+  op_fill_text(7, "kept", 0, 0, 100);
+  check((await settled(op_await_frame_content())) === true, "a record drawn while nothing waits settles the next wait");
+  let wait = op_await_frame_content();
+  op_fill_text(7, "second", 0, 0, 100);
+  check((await settled(wait)) === "pending", "a second record in the same frame is not a first");
+  endFrame();
+  op_fill_text(7, "next", 0, 0, 100);
+  check((await settled(wait)) === true, "the first record after the frame end is");
+
+  for (const [path, draw] of [
+    ["a flushed command buffer", () => appendStream(Uint32Array.of(MAGIC, STREAM_VERSION, header(OP2D_SAVE, 1)), 3)],
+    ["a drawImage run not yet written", () => op_draw_image(7, 0x40000009, 0, 0, 8, 8, 0, 0, 8, 8)],
+    ["a 2D record the producer writes", () => appendCanvas2DRecord(7, SAVE, 1, null)],
+  ]) {
+    endFrame();
+    wait = op_await_frame_content();
+    draw();
+    check((await settled(wait)) === true, `${path} settles it`);
+  }
+
+  endFrame();
+  wait = op_await_frame_content();
+  appendStream(Uint32Array.of(MAGIC, STREAM_VERSION), 2);
+  check((await settled(wait)) === "pending", "an empty flushed buffer -- the facade's barrier -- does not");
+  op_fill_text(7, "inside a callback", 0, 0, 100);
+  endFrame();
+  check((await settled(wait)) === false, "a frame drawn and ended in one task answers that nothing is left to end");
+}
+
 if (outputDirectory) {
   mkdirSync(join(outputDirectory, "streams"), { recursive: true });
   mkdirSync(join(outputDirectory, "split"), { recursive: true });

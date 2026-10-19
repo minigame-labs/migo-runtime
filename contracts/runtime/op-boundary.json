@@ -467,6 +467,8 @@
         "op_detach_shader": "stream",
         "op_validate_program": "stream",
         "op_await_next_frame": "async",
+        "op_await_frame_content": "local",
+        "op_frame_loop_available": "local",
         "op_begin_query": "stream",
         "op_begin_transform_feedback": "stream",
         "op_bind_attrib_location": "stream",
