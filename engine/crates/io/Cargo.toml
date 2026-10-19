@@ -19,7 +19,14 @@ cpu-image-resize = ["dep:image"]
 # Implies cpu-image-resize so that every build with the full decoder can also
 # resize; removing this implication would silently disable resize for any
 # caller that switches from rust-image-decode to a platform decoder later.
-rust-image-decode = ["cpu-image-resize", "dep:zune-image", "dep:zune-core"]
+#
+# WebP and GIF are the image crate's: zune decodes JPEG, PNG and BMP only, and a
+# build with these decoders has no platform one to fall back to -- Linux, Windows,
+# OpenHarmony and Apple register none, and the Android C ABI build's AImageDecoder
+# needs API 30 against a floor of 26. Mini-game packages ship WebP to save size, and
+# every WebP or GIF asset failed to load there. The Java SDK's Android build leaves
+# this feature off and decodes both through BitmapFactory.
+rust-image-decode = ["cpu-image-resize", "dep:zune-image", "dep:zune-core", "image/webp", "image/gif"]
 compress-brotli = ["dep:brotli"]
 
 [dependencies]

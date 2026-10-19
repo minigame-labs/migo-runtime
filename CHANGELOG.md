@@ -724,6 +724,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- WebP and GIF images load on Linux, Windows, OpenHarmony and Apple, and through the Android C ABI. The Rust decoders
+  covered JPEG, PNG and BMP, and those builds have no platform decoder to fall back to (the C ABI's `AImageDecoder` needs
+  Android 11), so every WebP or GIF asset failed with "no image decoder available" -- and mini-game packages ship WebP to
+  save size. The `image` crate's WebP and GIF decoders come with `rust-image-decode`; the Java SDK's Android build, which
+  decodes through BitmapFactory, carries neither.
 - `scripts/prescreen-run.sh` reads the device's log by the engine's own error lines, the table the Linux report uses. It
   kept a table of its own with no pattern for the engine's fatal "event loop error" unless the exception was a TypeError
   or a ReferenceError, so a game that painted and then died in a callback was reported as running. Rejections and calls
