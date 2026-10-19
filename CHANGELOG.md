@@ -13,8 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   against `wx` or the browser could not run there at all: `migo-examples`' `wx-adapter-demo` stopped on
   `ReferenceError: wx is not defined` and presented nothing; with the wx adapter bundle as a prelude it runs.
 - `scripts/prescreen-game.sh` reads `game.json` and counts the plugins it declares, which the mini-game platform serves
-  to `requirePlugin(...)` and Migo cannot: a bundle that declares one does not start as built, and no name scan sees it.
-  Cocos Creator's "Separate Engine" builds deliver their engine this way, and the report says to rebuild without it.
+  to `requirePlugin(...)` and Migo cannot. A bundle that also calls `requirePlugin` does not start as built, and no name
+  scan saw it; one that only declares a plugin is told the declaration may be unused. Cocos Creator's "Separate Engine"
+  builds deliver their engine this way, and the report says to rebuild without it.
 - A compatibility report for one game: `scripts/compat-report.sh BUNDLE [--adapter FILE]...` runs it on the Linux
   player with `tools/compat-recorder/recorder.js` injected behind the adapter, and writes Markdown and JSON saying
   which `migo` and `wx` APIs it called, the names it looked for and did not find, the names it installed itself, the

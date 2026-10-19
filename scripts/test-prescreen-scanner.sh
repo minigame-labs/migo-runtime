@@ -123,6 +123,19 @@ refute "does not alias a call result to the namespace" 'getContext'
 check "counts the plugin game.json declares" '\| \*\*plugins `game\.json` asks the platform to serve\*\* \| \*\*1\*\* \|'
 check "names it, with its provider" '`cocos` -- provider `wx0000000000000000`, version `2\.4\.3`'
 check "says how to ship without it" 'Separate Engine'
+check "names the file that calls it, which is what makes it a startup failure" 'calls `requirePlugin` in `game\.js`'
+unused_bundle="$(mktemp -d)"
+cp -r "$FIXTURE/bundle/." "$unused_bundle/"
+grep -v 'requirePlugin' "$FIXTURE/bundle/game.js" > "$unused_bundle/game.js"
+unused="$(bash "$SCANNER" "$unused_bundle" --surface "$FIXTURE/surface.json" \
+    --wx-reference "$FIXTURE/wx-reference.json" 2>/dev/null)"
+rm -rf "$unused_bundle"
+if grep -q 'no file scanned calls `requirePlugin`' <<<"$unused" && ! grep -q 'does not start as built' <<<"$unused"; then
+    printf '  ok    %s\n' "a plugin declared and never asked for is not called a startup failure"
+else
+    printf '  FAIL  %s\n' "a plugin declared and never asked for is not called a startup failure" >&2
+    failures=$((failures + 1))
+fi
 plain_bundle="$(mktemp -d)"
 cp -r "$FIXTURE/bundle/." "$plain_bundle/"
 printf '{"deviceOrientation":"portrait"}\n' > "$plain_bundle/game.json"

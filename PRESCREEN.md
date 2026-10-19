@@ -80,9 +80,10 @@ stub quietly disappear from it. If it says none, it means it checked.
 
 It also reads `game.json` for the one thing there no name scan can see: **plugins**,
 which the mini-game platform serves from its own servers to `requirePlugin(...)`.
-Migo has no plugin service, so a bundle that declares one does not start as built.
-The usual one is Cocos Creator's engine, delivered this way when "Separate Engine"
-is on; rebuild with it off and the engine ships inside the game.
+Migo has no plugin service, so a bundle that declares one and calls `requirePlugin`
+does not start as built; one that only declares it is told the declaration may be
+unused. The usual one is Cocos Creator's engine, delivered this way when "Separate
+Engine" is on; rebuild with it off and the engine ships inside the game.
 
 The report also separates two things people usually conflate: names your bundle
 **installs itself** (a polyfill or shim it carries — not a gap, we were never

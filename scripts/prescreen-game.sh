@@ -323,6 +323,10 @@ if manifest_path.is_file():
         manifest = None
     if isinstance(manifest, dict) and isinstance(manifest.get("plugins"), dict):
         plugins = manifest["plugins"]
+# Declaring a plugin is not loading one: a bundle may list a plugin it never asks for. Read with comments
+# and strings blanked, so only a call in code counts.
+plugin_callers = sorted(str(path.relative_to(bundle)) for path, text in texts.items()
+                        if re.search(r"\brequirePlugin\s*\(", text))
 
 # A name the bundle both installs and calls is its own polyfill, not a gap.
 wx_used = referenced["wx"] - installed["wx"]
@@ -379,12 +383,22 @@ out.append("")
 if plugins:
     out.append("## Plugins the platform would serve")
     out.append("")
-    out.append(
-        f"`game.json` declares **{len(plugins)} plugin(s)**, which the mini-game platform serves from its own "
-        "servers to `requirePlugin(...)`. This build has no plugin service and no `requirePlugin`, so the bundle "
-        "does not start as built. Cocos Creator delivers its engine this way when \"Separate Engine\" is on: "
-        "rebuild with it off, so the engine ships inside the game."
-    )
+    if plugin_callers:
+        out.append(
+            f"`game.json` declares **{len(plugins)} plugin(s)**, which the mini-game platform serves from its own "
+            "servers to `requirePlugin(...)`, and the bundle calls `requirePlugin` in "
+            + ", ".join(f"`{name}`" for name in plugin_callers)
+            + ". This build has no plugin service and no `requirePlugin`, so the bundle does not start as built. "
+            "Cocos Creator delivers its engine this way when \"Separate Engine\" is on: rebuild with it off, so the "
+            "engine ships inside the game."
+        )
+    else:
+        out.append(
+            f"`game.json` declares **{len(plugins)} plugin(s)**, which the mini-game platform serves from its own "
+            "servers to `requirePlugin(...)`, and **no file scanned calls `requirePlugin`**: the declaration may be "
+            "unused. A call this scan cannot see (computed, or through `eval`) would fail, because this build has no "
+            "plugin service."
+        )
     out.append("")
     for name in sorted(plugins):
         entry = plugins[name] if isinstance(plugins[name], dict) else {}
