@@ -731,6 +731,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- A texture source -- a canvas, an image -- uploaded with `texImage2D` as one of WebGL 2's sized formats (`RGBA8`, as
+  Pixi's WebGL 2 renderer uploads every texture, or `RGB8`) holds the source on the Android emulator. Where the upload
+  needs no conversion the engine copies it on the GPU, and the copy was one `glCopyTexImage2D`, which the emulator's
+  GLES answered with an empty image and no error: every Pixi sprite sampled transparent black. The level is now
+  specified as the call names it -- internal format, format and type -- and the source copied into it, so an unsized
+  format's level also takes the call's format rather than that of the framebuffer it is copied from.
 - Content that draws outside `requestAnimationFrame` -- at its top level, from a timer, in an input handler -- is shown.
   The frame end that publishes a frame's commands and presents them ran only in the `requestAnimationFrame` loop, which
   runs only while callbacks are queued: on Android a game drawing from `setInterval` stayed black for as long as it ran,
