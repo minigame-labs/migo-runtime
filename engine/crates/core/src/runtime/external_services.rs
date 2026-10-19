@@ -1218,21 +1218,24 @@ impl ServiceContext {
             // The session, as content asks about itself. The same commands the
             // embedded ops send, on the same channel: what ends or restarts a
             // session is the host's, not the renderer's.
-            id::op_exit_mini_program | id::op_restart_mini_program => {
+            id::op_exit_mini_program => {
                 let [] = exactly(op, args)?;
-                let command = if op == id::op_exit_mini_program {
-                    shared::protocol::host_cmd::HostCommand::Shutdown
-                } else {
-                    shared::protocol::host_cmd::HostCommand::Restart
-                };
-                let what = if op == id::op_exit_mini_program {
-                    "exitMiniProgram"
-                } else {
-                    "restartMiniProgram"
+                self.lifecycle()?
+                    .try_send(shared::protocol::host_cmd::HostCommand::Shutdown)
+                    .map_err(|error| ServiceError::generic(format!("exitMiniProgram:fail {error}")))
+            }
+            // The query the restarted game is launched with, or null for the one it was last shown with.
+            id::op_restart_mini_program => {
+                let [launch_query] = exactly(op, args)?;
+                let launch_query = match launch_query {
+                    OwnedValue::Null => None,
+                    other => Some(string(op, 0, other)?),
                 };
                 self.lifecycle()?
-                    .try_send(command)
-                    .map_err(|error| ServiceError::generic(format!("{what}:fail {error}")))
+                    .try_send(shared::protocol::host_cmd::HostCommand::Restart { launch_query })
+                    .map_err(|error| {
+                        ServiceError::generic(format!("restartMiniProgram:fail {error}"))
+                    })
             }
             // The soft keyboard is host UI: opened, closed and corrected by
             // command, with what the player types coming back as input events.
@@ -3022,14 +3025,26 @@ mod tests {
         };
 
         context
-            .command(id::op_restart_mini_program, Vec::new(), &render)
+            .command(id::op_restart_mini_program, vec![OwnedValue::Null], &render)
+            .expect("the channel takes it");
+        context
+            .command(
+                id::op_restart_mini_program,
+                vec![OwnedValue::Str("level=2".into())],
+                &render,
+            )
             .expect("the channel takes it");
         context
             .command(id::op_exit_mini_program, Vec::new(), &render)
             .expect("the channel takes it");
         assert!(matches!(
             host_rx.try_recv(),
-            Ok(shared::protocol::host_cmd::HostCommand::Restart)
+            Ok(shared::protocol::host_cmd::HostCommand::Restart { launch_query: None })
+        ));
+        assert!(matches!(
+            host_rx.try_recv(),
+            Ok(shared::protocol::host_cmd::HostCommand::Restart { launch_query: Some(query) })
+                if query == "level=2"
         ));
         assert!(matches!(
             host_rx.try_recv(),

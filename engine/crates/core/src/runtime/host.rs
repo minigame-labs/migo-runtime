@@ -171,6 +171,9 @@ pub(crate) struct Host {
     /// dispatch visibility callbacks only once the page can render again; doing
     /// it earlier lets game code run against a paused render/audio subsystem.
     pending_on_show_args: Option<Cow<'static, str>>,
+    /// The options the game was last shown with (`OnShow`), as the host sent them: a restart launches and shows the
+    /// game again with them (`on_restart`).
+    last_shown_options: Option<Value>,
 
     /// Accepted input state retained at the sole FIFO consumer so focus loss
     /// can retract it without sending synthetic work through a saturated queue.
@@ -474,6 +477,7 @@ impl Host {
             last_context_epoch: 0,
             render_error_throttle: HashMap::new(),
             pending_on_show_args: None,
+            last_shown_options: None,
             input_state: InputState::default(),
             gpu_caps,
             gpu_init_started,
@@ -718,13 +722,14 @@ impl Host {
                 Ok(())
             }
 
-            HostCommand::Restart => self.on_restart().await,
+            HostCommand::Restart { launch_query } => self.on_restart(launch_query).await,
 
             HostCommand::OnShow { options_json } => {
                 // Mark foreground so network polling ops resume normal rate.
                 self.backgrounded.store(false, Ordering::Relaxed);
 
                 let on_show_args = self.build_on_show_args(options_json.as_deref());
+                self.last_shown_options = shown_options(options_json.as_deref());
 
                 if self.render.has_live_surface() {
                     // The SurfaceView surface survived the hide (Android does not
@@ -1219,7 +1224,7 @@ impl Host {
         }
     }
 
-    async fn on_restart(&mut self) -> EngineResult<()> {
+    async fn on_restart(&mut self, launch_query: Option<String>) -> EngineResult<()> {
         // Native WebAudio state belongs to the Host rather than the isolate. The
         // barrier must complete before the old isolate (and its retry timers) is
         // dropped or a replacement can issue commands with reused numeric ids.
@@ -1459,8 +1464,39 @@ impl Host {
         self.last_dispatched_context_lost = false;
         self.reconcile_context_lost();
 
+        // Launched again, so shown again, as a cold launch is: the new isolate has no launch options until a show
+        // gives it some, and content that starts or resumes on onShow would wait for one that never came. Shown with
+        // the options it was last shown with, its query the one the restart named; while the game is hidden, the show
+        // waits for the surface as any other does.
+        let options = relaunch_options(self.last_shown_options.take(), launch_query);
+        let args = hook_args_one(options.clone());
+        self.last_shown_options = Some(options);
+        if self.backgrounded.load(Ordering::Relaxed) {
+            self.pending_on_show_args = Some(args);
+        } else {
+            self.js.set_timer_backgrounded(false);
+            self.js.invoke_host_hook("_internalTriggerOnShow", &args);
+        }
+
         reload_result
     }
+}
+
+/// The options a show carried, kept for a restart: the object the host sent, or none for anything else.
+fn shown_options(options_json: Option<&str>) -> Option<Value> {
+    serde_json::from_str::<Value>(options_json?.trim())
+        .ok()
+        .filter(Value::is_object)
+}
+
+/// What a restart launches the game with: the options it was last shown with -- none, if it never was -- with
+/// `launch_query` as its query when the restart names one.
+fn relaunch_options(last_shown: Option<Value>, launch_query: Option<String>) -> Value {
+    let mut options = last_shown.unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+    if let (Some(query), Some(object)) = (launch_query, options.as_object_mut()) {
+        object.insert("query".to_owned(), Value::String(query));
+    }
+    options
 }
 
 /// The embedded execution's input: each call straight into the engine's host
@@ -1641,5 +1677,36 @@ mod retired_callback_tests {
             },
             7
         ));
+    }
+}
+
+#[cfg(test)]
+mod relaunch_tests {
+    use super::{relaunch_options, shown_options};
+
+    /// A restart launches with the options the game was last shown with, its query the one the restart names; with
+    /// none named the query is kept, and a game never shown is launched with nothing but the named query.
+    #[test]
+    fn a_restart_launches_with_the_last_options_and_the_query_it_names() {
+        let last = shown_options(Some(
+            r#"{"scene":1011,"query":{"from":"share"},"shareTicket":"t"}"#,
+        ));
+        assert_eq!(
+            relaunch_options(last.clone(), Some("level=2&mode=hard".into())),
+            serde_json::json!({"scene":1011,"query":"level=2&mode=hard","shareTicket":"t"})
+        );
+        assert_eq!(
+            relaunch_options(last, None),
+            serde_json::json!({"scene":1011,"query":{"from":"share"},"shareTicket":"t"})
+        );
+        assert_eq!(
+            relaunch_options(None, Some("a=1".into())),
+            serde_json::json!({"query":"a=1"})
+        );
+        assert_eq!(relaunch_options(None, None), serde_json::json!({}));
+        // What a show carried that is not an object is kept as nothing.
+        assert_eq!(shown_options(Some("[1]")), None);
+        assert_eq!(shown_options(Some("not json")), None);
+        assert_eq!(shown_options(None), None);
     }
 }

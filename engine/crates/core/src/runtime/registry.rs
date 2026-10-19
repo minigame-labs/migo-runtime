@@ -892,12 +892,15 @@ mod tests {
         );
         let _registration = RegisteredHost(id);
 
-        send_command_to_host(id, HostCommand::Restart).unwrap();
+        send_command_to_host(id, HostCommand::Restart { launch_query: None }).unwrap();
         assert!(send_command_to_host(id, HostCommand::Shutdown).is_err());
         send_critical_command_to_host(id, HostCommand::OnHide).unwrap();
         send_critical_command_to_host(id, HostCommand::OnShow { options_json: None }).unwrap();
 
-        assert!(matches!(rx.try_recv(), Ok(HostCommand::Restart)));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(HostCommand::Restart { launch_query: None })
+        ));
         assert!(matches!(rx.try_recv(), Ok(HostCommand::OnHide)));
         assert!(matches!(
             rx.try_recv(),
@@ -924,7 +927,7 @@ mod tests {
         );
         let _registration = RegisteredHost(id);
 
-        send_command_to_host(id, HostCommand::Restart).unwrap();
+        send_command_to_host(id, HostCommand::Restart { launch_query: None }).unwrap();
         send_reliable_command_to_host(
             id,
             HostCommand::InvokeHostHook {
@@ -934,7 +937,10 @@ mod tests {
         )
         .unwrap();
 
-        assert!(matches!(rx.try_recv(), Ok(HostCommand::Restart)));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(HostCommand::Restart { launch_query: None })
+        ));
         assert!(matches!(
             rx.try_recv(),
             Ok(HostCommand::InvokeHostHook {
@@ -1023,7 +1029,9 @@ mod tests {
     #[test]
     fn reliable_input_uses_reserve_and_reports_only_actual_refusal() {
         let (ingress, _critical_tx, _rx, stats, _registered_stats) = test_ingress(1, 1);
-        ingress.try_send(HostCommand::Restart).unwrap();
+        ingress
+            .try_send(HostCommand::Restart { launch_query: None })
+            .unwrap();
 
         assert!(matches!(
             ingress.try_send_pointer(HostCommand::OnMouseDown {
@@ -1095,7 +1103,9 @@ mod tests {
             repeat: false,
         };
         let (key_ingress, _critical_tx, _rx, key_stats, _registered_stats) = test_ingress(1, 1);
-        key_ingress.try_send(HostCommand::Restart).unwrap();
+        key_ingress
+            .try_send(HostCommand::Restart { launch_query: None })
+            .unwrap();
         assert_eq!(
             key_ingress.try_send_key(key_up),
             Ok(InputSendOutcome::Reserved)
@@ -1109,7 +1119,9 @@ mod tests {
 
         let (keyboard_ingress, _critical_tx, mut keyboard_rx, keyboard_stats, _registered_stats) =
             test_ingress(1, 1);
-        keyboard_ingress.try_send(HostCommand::Restart).unwrap();
+        keyboard_ingress
+            .try_send(HostCommand::Restart { launch_query: None })
+            .unwrap();
         let stamped = keyboard_ingress.runtime_generation();
         assert_eq!(
             keyboard_ingress.try_send_keyboard(HostCommand::OnKeyboardComplete {
@@ -1129,7 +1141,10 @@ mod tests {
         // all. Rebuilding a terminal keyboard event on the way through would
         // hand it whatever generation is current at that moment -- which is the
         // one case where the drop at dispatch is guaranteed to be wrong.
-        assert!(matches!(keyboard_rx.try_recv(), Ok(HostCommand::Restart)));
+        assert!(matches!(
+            keyboard_rx.try_recv(),
+            Ok(HostCommand::Restart { launch_query: None })
+        ));
         let reserved = keyboard_rx.try_recv().expect("reserved keyboard command");
         assert!(matches!(reserved, HostCommand::OnKeyboardComplete { .. }));
         assert_eq!(reserved.callback_generation(), NonZeroI64::new(stamped));
@@ -1182,7 +1197,9 @@ mod tests {
     fn saturation_notification_is_shared_and_rearmed_by_success() {
         let (ingress, _critical_tx, mut rx, _stats, _registered_stats) = test_ingress(1, 1);
         let clone = ingress.clone();
-        ingress.try_send(HostCommand::Restart).unwrap();
+        ingress
+            .try_send(HostCommand::Restart { launch_query: None })
+            .unwrap();
         ingress
             .try_send_pointer(HostCommand::OnMouseDown {
                 x: 1.0,

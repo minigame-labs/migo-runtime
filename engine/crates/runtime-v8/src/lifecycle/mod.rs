@@ -5,11 +5,16 @@ use deno_error::JsErrorBox;
 use shared::op_state::HostOpState;
 use shared::protocol::host_cmd::HostCommand;
 
-#[op2(fast)]
-pub fn op_restart_mini_program(state: &mut OpState) -> Result<(), JsErrorBox> {
+/// `launch_query`: the query the restarted game is launched with, or `None` for the one it was last shown with
+/// (`HostCommand::Restart`).
+#[op2]
+pub fn op_restart_mini_program(
+    state: &mut OpState,
+    #[string] launch_query: Option<String>,
+) -> Result<(), JsErrorBox> {
     let host = state.borrow::<HostOpState>();
     host.host_tx
-        .try_send(HostCommand::Restart)
+        .try_send(HostCommand::Restart { launch_query })
         .map_err(|e| JsErrorBox::generic(format!("restartMiniProgram:fail {e}")))
 }
 
