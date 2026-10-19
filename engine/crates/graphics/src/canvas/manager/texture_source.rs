@@ -402,6 +402,8 @@ impl CanvasManager {
                 target: upload.target,
                 level: upload.level,
                 internal_format: internalformat as u32,
+                format: upload.format,
+                type_: upload.type_,
                 source_x,
                 source_y,
                 width: upload.width,

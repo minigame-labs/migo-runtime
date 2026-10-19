@@ -673,6 +673,8 @@ fn framebuffer_copy_native_preserves_source_and_destination_bindings() {
                     target: glow::TEXTURE_2D,
                     level: 0,
                     internal_format: glow::RGBA,
+                    format: glow::RGBA,
+                    type_: glow::UNSIGNED_BYTE,
                     source_x: 1,
                     source_y: 0,
                     width: 2,
@@ -757,6 +759,52 @@ fn framebuffer_copy_native_preserves_source_and_destination_bindings() {
             expected
         );
         gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(read_fbo));
+
+        // A sized format, under a PIXEL_UNPACK_BUFFER of the content's too short for the image: the level is specified
+        // from no data, not from an offset into that buffer, and the buffer stays bound.
+        let pbo = gl.create_buffer().unwrap();
+        gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, Some(pbo));
+        gl.buffer_data_u8_slice(glow::PIXEL_UNPACK_BUFFER, &[0xA5; 4], glow::STREAM_DRAW);
+        let sized = gl.create_texture().unwrap();
+        gl.bind_texture(glow::TEXTURE_2D, Some(sized));
+        assert_eq!(gl.get_error(), glow::NO_ERROR);
+        assert_eq!(
+            copy_texture(
+                &gl,
+                copy_fbo,
+                source,
+                TextureCopy::Image {
+                    target: glow::TEXTURE_2D,
+                    level: 0,
+                    internal_format: glow::RGBA8,
+                    format: glow::RGBA,
+                    type_: glow::UNSIGNED_BYTE,
+                    source_x: 1,
+                    source_y: 0,
+                    width: 2,
+                    height: 2,
+                }
+            ),
+            glow::FRAMEBUFFER_COMPLETE
+        );
+        assert_eq!(
+            gl.get_error(),
+            glow::NO_ERROR,
+            "the specification must not read the content's short PBO"
+        );
+        assert_eq!(
+            gl.get_parameter_buffer(glow::PIXEL_UNPACK_BUFFER_BINDING),
+            Some(pbo)
+        );
+        gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, None);
+        assert_eq!(
+            read_copy_texture(&gl, copy_fbo, sized, 2, 2),
+            [
+                0, 255, 0, 255, 0, 0, 255, 255, 0, 255, 255, 255, 255, 0, 255, 255
+            ]
+        );
+        gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(read_fbo));
+        gl.bind_texture(glow::TEXTURE_2D, Some(destination));
 
         // An unallocated source is incomplete: no copy, no retained attachment,
         // and both binding points survive the failure.
