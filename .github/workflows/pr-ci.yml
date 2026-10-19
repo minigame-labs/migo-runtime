@@ -1347,6 +1347,12 @@ jobs:
       - name: Compatibility recorder on the engine
         run: bash scripts/test-compat-recorder-player.sh 3
 
+      # A game that does not start ends the run with the engine's reason, within seconds and
+      # even after a loading screen presented; it once ran out the 30 s present ceiling and
+      # said only that nothing was presented.
+      - name: A game that does not start ends the player's run
+        run: bash scripts/test-player-launch-outcome.sh
+
   # The Windows arms of the sandbox filesystem and the atomic writer, run where
   # they compile. Until this job existed they were built for every release and
   # executed by nothing: `vfs/windows.rs` opened roots in the verbatim namespace,

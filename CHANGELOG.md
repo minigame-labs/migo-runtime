@@ -746,7 +746,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   names, such as a renderer that never came up, was in no report at all. Both platforms take an embedder's
   `HostNotifier` (`with_notifier`), and the launch's failure reaches it as `notify_game_failed`, the other half of
   `notify_game_ready` -- by default a `notify_error`, as every host heard it before. The compatibility report blocks on
-  the player's verdict.
+  the player's verdict. A launch that fails after a loading screen presented fails the run too: the player reads the
+  launch's outcome once the session is joined, when nothing more can be reported. `scripts/test-player-launch-outcome.sh`
+  holds both in CI.
 - Android: closing a session stops its engine even when releasing one of its other resources fails. `close()` shut the
   engine down only once every Java-side resource had let go, so one manager that threw left the engine running the game
   its player had closed, for the life of the process: `MigoGameActivity` drops the session once it has closed it, and

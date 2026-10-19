@@ -552,10 +552,22 @@ fn run(
             run_for(total);
         }
     }
-    // A launch can fail after its loading screen presented: the frame would read as a game
-    // that ran.
+    let frame = graphics::frame_capture::take();
+    if frame.is_some() {
+        report_draw_batching(host_id);
+    }
+
+    tracing::info!("shutting down host {host_id}");
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    shutdown_before_drop(host, window)?;
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    shutdown_before_drop(host, ())?;
+
+    // Read once the session is joined, when nothing more can be reported: a launch can fail
+    // after its loading screen presented, and asked any earlier, a rejection landing while the
+    // frame was written read as a game that ran.
     launch.failed()?;
-    match graphics::frame_capture::take() {
+    match frame {
         Some(frame) => {
             // With `--resize` the capture is the acceptance evidence, so the
             // frame has to be one the *resized* surface presented. Writing a
@@ -586,14 +598,6 @@ fn run(
         }
         None => return Err("nothing was presented during the run".to_string()),
     }
-
-    report_draw_batching(host_id);
-
-    tracing::info!("shutting down host {host_id}");
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
-    shutdown_before_drop(host, window)?;
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
-    shutdown_before_drop(host, ())?;
     tracing::info!("player done");
     Ok(())
 }
