@@ -18,7 +18,9 @@
 #
 #   * It observes the screen and the log. It does not instrument the content, so
 #     it works on a bundle that was never built with this in mind -- which is the
-#     whole point, since the bundle belongs to someone else.
+#     whole point, since the bundle belongs to someone else. A host can inject the
+#     compatibility recorder itself (tools/compat-recorder/recorder.js, logging at
+#     INFO); when the log carries its lines, the report adds what the game reached for.
 #   * "Painted" here means the surface carries a real image: many distinct
 #     colours rather than one flat fill. A game that legitimately renders a solid
 #     colour for its first seconds reads as not-painted, and the report says the
