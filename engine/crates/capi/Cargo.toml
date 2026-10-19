@@ -55,6 +55,9 @@ serde_json = { workspace = true }
 # SDK's AAR is unaffected.
 [target.'cfg(target_os = "android")'.dependencies]
 platform = { package = "migo-platform", path = "../platform", default-features = false, features = ["rust-image-decode"] }
+# GBK through `encoding_rs`, for the same reason: the Java SDK's codec service is java.nio.charset over JNI, which a C
+# host does not have, and without this `encode`/`decode` refused "gbk" there.
+shared = { package = "migo-shared", path = "../shared", default-features = false, features = ["codec-gbk"] }
 
 [dev-dependencies]
 migo-core = { path = "../core", default-features = false, features = ["test-support"] }
