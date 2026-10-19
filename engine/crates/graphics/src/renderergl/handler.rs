@@ -3679,6 +3679,7 @@ impl RendererGL {
                 format,
                 type_,
                 destination_byte_length,
+                implementation_pair,
                 resp,
             } => {
                 if width < 0 || height < 0 {
@@ -3708,6 +3709,7 @@ impl RendererGL {
                     format,
                     type_,
                     destination_byte_length,
+                    implementation_pair,
                 ));
                 Ok(DamageEffect::NoDamage)
             }
@@ -3721,6 +3723,7 @@ impl RendererGL {
                 format,
                 type_,
                 offset,
+                implementation_pair,
                 resp,
             } => {
                 if width < 0 || height < 0 || offset < 0 {
@@ -3729,7 +3732,15 @@ impl RendererGL {
                 }
                 cm.make_current_needed(canvas_id)?;
                 resp.send(crate::backend::gl::readback::read_webgl_pixels_to_buffer(
-                    gl, x, y, width, height, format, type_, offset,
+                    gl,
+                    x,
+                    y,
+                    width,
+                    height,
+                    format,
+                    type_,
+                    offset,
+                    implementation_pair,
                 ));
                 Ok(DamageEffect::NoDamage)
             }

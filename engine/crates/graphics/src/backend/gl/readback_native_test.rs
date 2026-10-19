@@ -313,7 +313,8 @@ fn internal_readback_native_pixels_and_pack_buffer_are_preserved() {
         assert_eq!(restored.buffer, Some(pbo));
         assert_eq!(read_bound_pbo(&gl), [0xA5; 64]);
         assert_eq!(gl.get_error(), glow::NO_ERROR);
-        let rejected = read_webgl_pixels(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 144);
+        let rejected =
+            read_webgl_pixels(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 144, false);
         assert!(
             rejected.is_err(),
             "a CPU view cannot be used while a PBO is bound"
@@ -321,7 +322,8 @@ fn internal_readback_native_pixels_and_pack_buffer_are_preserved() {
         assert_eq!(read_bound_pbo(&gl), [0xA5; 64]);
         gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
         let public =
-            read_webgl_pixels(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 144).unwrap();
+            read_webgl_pixels(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 144, false)
+                .unwrap();
         assert_eq!(public.pixels, pixels);
         assert_eq!(public.layout.first_byte, 92);
         assert_eq!(public.layout.row_stride, 40);
@@ -360,9 +362,18 @@ fn internal_readback_native_pixels_and_pack_buffer_are_preserved() {
         );
         gl.clear_buffer_u32_slice(glow::COLOR, 0, &[10, 20, 30, 40]);
         assert_eq!(gl.get_error(), glow::NO_ERROR);
-        let integer =
-            read_webgl_pixels(&gl, 0, 0, 3, 2, glow::RGBA_INTEGER, glow::UNSIGNED_INT, 528)
-                .unwrap();
+        let integer = read_webgl_pixels(
+            &gl,
+            0,
+            0,
+            3,
+            2,
+            glow::RGBA_INTEGER,
+            glow::UNSIGNED_INT,
+            528,
+            false,
+        )
+        .unwrap();
         assert_eq!(integer.pixels.len(), 96);
         assert_eq!(integer.layout.required_bytes, 528);
         for pixel in integer.pixels.chunks_exact(16) {
@@ -398,11 +409,22 @@ fn buffer_readback_native_packs_into_the_bound_buffer_at_its_offset() {
         }
         // 64 - 24 = 40 is the last offset that fits; 44 is one pixel too far.
         assert!(
-            read_webgl_pixels_to_buffer(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 44)
-                .is_err()
+            read_webgl_pixels_to_buffer(
+                &gl,
+                0,
+                0,
+                3,
+                2,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                44,
+                false
+            )
+            .is_err()
         );
         assert_eq!(read_bound_pbo(&gl), [0xA5; 64], "a rejected read wrote");
-        read_webgl_pixels_to_buffer(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 40).unwrap();
+        read_webgl_pixels_to_buffer(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 40, false)
+            .unwrap();
         assert_eq!(gl.get_error(), glow::NO_ERROR);
 
         let bytes = read_bound_pbo(&gl);
@@ -418,10 +440,21 @@ fn buffer_readback_native_packs_into_the_bound_buffer_at_its_offset() {
         gl.buffer_data_u8_slice(glow::PIXEL_PACK_BUFFER, &[0xA5; 64], glow::STREAM_READ);
         gl.pixel_store_i32(glow::PACK_ALIGNMENT, 8);
         assert!(
-            read_webgl_pixels_to_buffer(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 40)
-                .is_err()
+            read_webgl_pixels_to_buffer(
+                &gl,
+                0,
+                0,
+                3,
+                2,
+                glow::RGBA,
+                glow::UNSIGNED_BYTE,
+                40,
+                false
+            )
+            .is_err()
         );
-        read_webgl_pixels_to_buffer(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 32).unwrap();
+        read_webgl_pixels_to_buffer(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 32, false)
+            .unwrap();
         assert_eq!(gl.get_error(), glow::NO_ERROR);
         let padded = read_bound_pbo(&gl);
         let red: [u8; 12] = [255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255];
@@ -435,7 +468,7 @@ fn buffer_readback_native_packs_into_the_bound_buffer_at_its_offset() {
 
         gl.bind_buffer(glow::PIXEL_PACK_BUFFER, None);
         assert!(
-            read_webgl_pixels_to_buffer(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 0)
+            read_webgl_pixels_to_buffer(&gl, 0, 0, 3, 2, glow::RGBA, glow::UNSIGNED_BYTE, 0, false)
                 .is_err(),
             "a GPU destination requires a bound buffer"
         );
@@ -477,6 +510,7 @@ fn webgl_readback_native_clips_to_the_framebuffer_and_zeroes_the_rest() {
             glow::RGBA,
             glow::UNSIGNED_BYTE,
             5 * 4 * 4,
+            false,
         )
         .unwrap();
         assert_eq!(
@@ -556,6 +590,7 @@ fn webgl_readback_native_clipping_matrix_preserves_outside_bytes() {
                 glow::RGBA,
                 glow::UNSIGNED_BYTE,
                 0,
+                false,
             )
             .unwrap();
             let bytes = read_bound_pbo_bytes(&gl, byte_len);
@@ -850,6 +885,58 @@ fn framebuffer_copy_native_preserves_source_and_destination_bindings() {
             gl.delete_texture(texture);
         }
         eprintln!("renderer: {}", gl.get_parameter_string(glow::RENDERER));
+    }
+}
+
+#[test]
+#[ignore = "requires Mesa surfaceless EGL and GLES3"]
+fn a_read_in_another_pair_is_made_only_in_the_drivers_implementation_pair() {
+    let (_scope, gl) = gles3_context();
+    unsafe {
+        let texture = rgba_texture(&gl, 1, 1, &[10, 20, 30, 255]);
+        let fbo = gl.create_framebuffer().unwrap();
+        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+        gl.framebuffer_texture_2d(
+            glow::FRAMEBUFFER,
+            glow::COLOR_ATTACHMENT0,
+            glow::TEXTURE_2D,
+            Some(texture),
+            0,
+        );
+        let pair = (
+            gl.get_parameter_i32(glow::IMPLEMENTATION_COLOR_READ_FORMAT) as u32,
+            gl.get_parameter_i32(glow::IMPLEMENTATION_COLOR_READ_TYPE) as u32,
+        );
+        assert!(
+            read_webgl_pixels(&gl, 0, 0, 1, 1, pair.0, pair.1, 64, true).is_ok(),
+            "the driver's own pair {pair:x?} is read"
+        );
+        let other = if pair == (glow::RGBA, glow::FLOAT) {
+            (glow::RGBA, glow::UNSIGNED_SHORT_4_4_4_4)
+        } else {
+            (glow::RGBA, glow::FLOAT)
+        };
+        let refused = read_webgl_pixels(&gl, 0, 0, 1, 1, other.0, other.1, 64, true);
+        assert_eq!(
+            refused.map(|_| ()).map_err(|error| error.code),
+            Err(ErrorCode::InvalidOperation),
+            "a pair that is neither the buffer's own nor the driver's is refused"
+        );
+        assert_eq!(
+            gl.get_error(),
+            glow::NO_ERROR,
+            "refused before the driver is asked to read"
+        );
+        assert_eq!(
+            read_webgl_pixels(&gl, 0, 0, 1, 1, glow::RGBA, glow::UNSIGNED_BYTE, 64, false)
+                .unwrap()
+                .pixels,
+            [10, 20, 30, 255],
+            "the buffer's own pair reads as before"
+        );
+        gl.bind_framebuffer(glow::FRAMEBUFFER, None);
+        gl.delete_framebuffer(fbo);
+        gl.delete_texture(texture);
     }
 }
 

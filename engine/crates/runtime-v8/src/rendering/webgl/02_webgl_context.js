@@ -642,6 +642,12 @@ const _WEBGL1_UPLOAD_TYPES = [0x1401, 0x8363, 0x8033, 0x8034];
 // ES 3.0 table 3.2: each sized internal format, the format it is uploaded from and the types it takes.
 const _BYTE = 0x1400, _UBYTE = 0x1401, _SHORT = 0x1402, _USHORT = 0x1403, _INT = 0x1404, _UINT = 0x1405,
     _FLOAT = 0x1406, _HALF = 0x140b;
+// What a read may name (ES 3.0 4.3.2, its table 3.2 and EXT_read_format_bgra): the formats, and the types, WebGL 1's
+// HALF_FLOAT_OES among them. Anything else is INVALID_ENUM, before a read buffer is judged.
+const _READ_FORMATS = new Set([0x1906, 0x1907, 0x1908, 0x1909, 0x190a, 0x1903, 0x8227, 0x8d94, 0x8228, 0x8d98, 0x8d99,
+    0x80e1]);
+const _READ_TYPES = new Set([_BYTE, _UBYTE, _SHORT, _USHORT, _INT, _UINT, _FLOAT, _HALF, 0x8d61, 0x8363, 0x8033, 0x8034,
+    0x8368, 0x8c3b, 0x8c3e, 0x8365, 0x8366]);
 const _SIZED_UPLOADS = new Map([
     [0x8229, [0x1903, [_UBYTE]]],                       // R8: RED
     [0x8f94, [0x1903, [_BYTE]]],                        // R8_SNORM
@@ -1965,8 +1971,10 @@ function _readViewError(view, type) {
 // The native result already includes the validated destination byte offset.
 // Reuse the original view and compact payload; an offset needs no subarray or
 // additional pixel storage.
-function readPixelsIntoView(canvasId, x, y, width, height, format, type, pixels, dstOffset) {
-    const result = _rawReadPixels(canvasId, x, y, width, height, format, type, pixels, dstOffset);
+// `implementationPair`: the pair is not the one the read buffer's component type fixes, so the renderer holds it to the
+// driver's IMPLEMENTATION_COLOR_READ pair (`_readPair`).
+function readPixelsIntoView(canvasId, x, y, width, height, format, type, pixels, dstOffset, implementationPair) {
+    const result = _rawReadPixels(canvasId, x, y, width, height, format, type, pixels, dstOffset, implementationPair);
     if (!result || TypedArrayPrototypeGetByteLength(result.data) === 0) return;
     const u8 = new Uint8Array(
         TypedArrayPrototypeGetBuffer(pixels), TypedArrayPrototypeGetByteOffset(pixels),
@@ -3945,7 +3953,7 @@ class WebGLRenderingContext {
                 recordGpuPreflightError(this._canvasId, GL_INVALID_ENUM);
                 return null;
             // IMPLEMENTATION_COLOR_READ_FORMAT / _TYPE: the driver's pair for the read buffer, which must be one a read
-            // can be made from (INVALID_OPERATION otherwise, as `_refusesRead` judges it); WebGL 1 names a 16-bit float
+            // can be made from (INVALID_OPERATION otherwise, as `_readPair` judges it); WebGL 1 names a 16-bit float
             // HALF_FLOAT_OES.
             case 0x8b9a: case 0x8b9b: {
                 if (framebufferStatus(this, this._readFramebufferBinding) !== GL_FRAMEBUFFER_COMPLETE ||
@@ -6196,7 +6204,7 @@ class WebGLRenderingContext {
     // -- Phase 3B: Misc --
 
     // WebGL 1's formats and types first (`_readPixelsEnumError`), then a view that is not of the type, then the read
-    // buffer (`_refusesRead`), in a browser's order; which pairs the read buffer can be read as is the driver's to say.
+    // buffer and the pair it is read as (`_readPair`), in a browser's order.
     // HALF_FLOAT_OES is ES 3.0's HALF_FLOAT to the driver.
     readPixels(x, y, width, height, format, type, pixels) {
         checkReadPixelsDestination(pixels, true);
@@ -6206,8 +6214,9 @@ class WebGLRenderingContext {
             recordGpuPreflightError(this._canvasId, error);
             return;
         }
-        if (this._refusesRead()) return;
-        readPixelsIntoView(this._canvasId, x, y, width, height, format, t === 0x8d61 ? _HALF : type, pixels, 0);
+        const pair = this._readPair(format, t);
+        if (pair === null) return;
+        readPixelsIntoView(this._canvasId, x, y, width, height, format, t === 0x8d61 ? _HALF : type, pixels, 0, pair);
     }
     // WebGL 1's read formats ALPHA, RGB and RGBA; its types UNSIGNED_BYTE and the three packed shorts, FLOAT with
     // OES_texture_float or OES_texture_half_float and HALF_FLOAT_OES with the latter; and what a driver's
@@ -6224,13 +6233,29 @@ class WebGLRenderingContext {
             default: return GL_INVALID_ENUM;
         }
     }
-    // A read from a read framebuffer that is not complete is INVALID_FRAMEBUFFER_OPERATION, one whose read buffer is
-    // NONE or names no image INVALID_OPERATION. True when refused, the error recorded.
-    _refusesRead() {
-        if (refusesIncompleteFramebuffer(this, this._readFramebufferBinding)) return true;
-        if (readColorFormat(this) !== 0) return false;
-        recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
-        return true;
+    // How a read in `format` and `type` is made, or null when it is refused, the error recorded. A read from a read
+    // framebuffer that is not complete is INVALID_FRAMEBUFFER_OPERATION, and one whose read buffer is NONE or names no
+    // image INVALID_OPERATION. Otherwise the pair is judged against the read buffer (ES 3.0 4.3.2, which browsers
+    // enforce themselves; a driver may not -- the Android emulator's reads a half-float buffer as bytes): `false` for the
+    // pair its component type fixes -- RGBA and UNSIGNED_BYTE for a normalized buffer, and UNSIGNED_INT_2_10_10_10_REV
+    // for RGB10_A2 too; RGBA and FLOAT for a float one; RGBA_INTEGER and INT or UNSIGNED_INT for an integer one --,
+    // `true` for any other, which is read only as the driver's IMPLEMENTATION_COLOR_READ pair for that buffer: the
+    // renderer, which can ask the driver without a crossing, refuses it otherwise. Enums no read takes are left to the
+    // driver, whose INVALID_ENUM comes first.
+    _readPair(format, type) {
+        if (refusesIncompleteFramebuffer(this, this._readFramebufferBinding)) return null;
+        const buffer = readColorFormat(this);
+        if (buffer === 0) {
+            recordGpuPreflightError(this._canvasId, GL_INVALID_OPERATION);
+            return null;
+        }
+        const f = Number(format) >>> 0, t = Number(type) >>> 0;
+        if (!_READ_FORMATS.has(f) || !_READ_TYPES.has(t)) return false;
+        const info = _FORMAT_INFO.get(buffer);
+        const kind = info === undefined ? _N : info[6];
+        if (kind === _I || kind === _U) return !(f === 0x8d99 && t === (kind === _I ? _INT : _UINT));   // RGBA_INTEGER
+        if (f !== 0x1908) return true;
+        return !(kind === _F ? t === _FLOAT : t === _UBYTE || (buffer === 0x8059 && t === 0x8368));
     }
     // GENERATE_MIPMAP_HINT, and FRAGMENT_SHADER_DERIVATIVE_HINT in WebGL 2 or with OES_standard_derivatives enabled;
     // FASTEST, NICEST or DONT_CARE. Anything else is INVALID_ENUM, before anything is sent.
@@ -6348,18 +6373,20 @@ class WebGL2RenderingContext extends WebGLRenderingContext {
         // bound buffer and there is no eighth. Anything else must be a view,
         // and `dstData` is not nullable in this version.
         if (typeof pixels === "number") {
-            if (this._refusesRead()) return;
+            const pair = this._readPair(format, type);
+            if (pair === null) return;
             // GLintptr is a long long: truncate toward zero without wrapping,
             // and let the native side reject a negative offset.
             _rawReadPixelsToBuffer(this._canvasId, x, y, width, height, format, type,
-                MathTrunc(pixels));
+                MathTrunc(pixels), pair);
             return;
         }
         checkReadPixelsDestination(pixels, false);
-        if (this._refusesRead()) return;
+        const pair = this._readPair(format, type);
+        if (pair === null) return;
         // ToNumber runs once, before native view metadata is inspected. Unary
         // plus preserves WebIDL's TypeError for BigInt and Symbol inputs.
-        readPixelsIntoView(this._canvasId, x, y, width, height, format, type, pixels, +dstOffset);
+        readPixelsIntoView(this._canvasId, x, y, width, height, format, type, pixels, +dstOffset, pair);
     }
 
     // ---- Vertex Array Objects ----------------------------------

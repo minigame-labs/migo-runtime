@@ -1537,6 +1537,10 @@ pub enum GLCmd {
     },
 
     // ========== Phase 3B: Misc ==========
+    /// `readPixels` into a view. `implementation_pair`: `format` and `type_` are not the pair the read buffer's
+    /// component type fixes, so they are read only if they are the driver's `IMPLEMENTATION_COLOR_READ_FORMAT` and
+    /// `_TYPE` for that buffer, and refused as INVALID_OPERATION otherwise (ES 3.0 4.3.2). The facade knows the read
+    /// buffer's format and judges the fixed pair; the renderer asks the driver for the other without a crossing.
     ReadPixels {
         canvas_id: CanvasId,
         x: i32,
@@ -1546,6 +1550,7 @@ pub enum GLCmd {
         format: u32,
         type_: u32,
         destination_byte_length: usize,
+        implementation_pair: bool,
         resp: RenderCmdResp<ReadPixelsData>,
     },
     /// `readPixels` into the bound `PIXEL_PACK_BUFFER`. The pixels land in
@@ -1557,6 +1562,8 @@ pub enum GLCmd {
     /// errors reach `getError`. It costs a render-thread round trip, not a GPU
     /// stall, and a buffered command could not report anything: the error state
     /// lives on the isolate side.
+    ///
+    /// `implementation_pair` as for [`GLCmd::ReadPixels`].
     ReadPixelsToBuffer {
         canvas_id: CanvasId,
         x: i32,
@@ -1566,6 +1573,7 @@ pub enum GLCmd {
         format: u32,
         type_: u32,
         offset: i64,
+        implementation_pair: bool,
         resp: RenderCmdResp<()>,
     },
     /// `getBufferSubData`: `size` bytes of the buffer bound to `target`, from `offset`. The facade has checked the
