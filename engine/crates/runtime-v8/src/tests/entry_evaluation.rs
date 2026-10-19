@@ -84,10 +84,14 @@ mod entry_evaluation_tests {
 
     #[tokio::test]
     async fn an_entry_that_throws_after_an_await_fails() {
-        let failure = evaluate("await Promise.resolve();\nthrow new RangeError('after the await');\n")
-            .await
-            .expect_err("an entry that threw once resumed must not evaluate");
-        assert!(failure.contains("after the await"), "the failure names the exception: {failure}");
+        let failure =
+            evaluate("await Promise.resolve();\nthrow new RangeError('after the await');\n")
+                .await
+                .expect_err("an entry that threw once resumed must not evaluate");
+        assert!(
+            failure.contains("after the await"),
+            "the failure names the exception: {failure}"
+        );
     }
 
     #[tokio::test]
@@ -109,7 +113,10 @@ mod entry_evaluation_tests {
                 format!("globalThis.loaded = (globalThis.loaded || 0) + 1; export const {name} = 1;\n//{padding}\n"),
             )
         });
-        let mut package: Vec<(&str, &str)> = modules.iter().map(|(n, s)| (n.as_str(), s.as_str())).collect();
+        let mut package: Vec<(&str, &str)> = modules
+            .iter()
+            .map(|(n, s)| (n.as_str(), s.as_str()))
+            .collect();
         package.push((
             "game.js",
             "import './a.js'; import './b.js'; import './c.js'; import './d.js';\n\

@@ -1191,21 +1191,34 @@ mod format_tests {
     use super::*;
 
     const FIXTURES: [(&str, &[u8]); 3] = [
-        ("lossy WebP", include_bytes!("../tests/fixtures/images/testsrc-lossy.webp")),
-        ("lossless WebP", include_bytes!("../tests/fixtures/images/testsrc-lossless.webp")),
-        ("GIF", include_bytes!("../tests/fixtures/images/testsrc.gif")),
+        (
+            "lossy WebP",
+            include_bytes!("../tests/fixtures/images/testsrc-lossy.webp"),
+        ),
+        (
+            "lossless WebP",
+            include_bytes!("../tests/fixtures/images/testsrc-lossless.webp"),
+        ),
+        (
+            "GIF",
+            include_bytes!("../tests/fixtures/images/testsrc.gif"),
+        ),
     ];
 
     #[test]
     fn webp_and_gif_decode_without_a_platform_decoder() {
         for (name, bytes) in FIXTURES {
-            let image = decode_image_fast(bytes, None).unwrap_or_else(|error| panic!("{name}: {error}"));
+            let image =
+                decode_image_fast(bytes, None).unwrap_or_else(|error| panic!("{name}: {error}"));
             assert_eq!((image.width, image.height), (32, 16), "{name}");
             // ffmpeg's test pattern is bars and a gradient: a decoder that produced a flat buffer
             // of the right size would pass the line above and fail this one.
             let colours: std::collections::HashSet<&[u8]> = image.rgba.chunks_exact(4).collect();
-            assert!(colours.len() > 8, "{name}: {} distinct colours", colours.len());
+            assert!(
+                colours.len() > 8,
+                "{name}: {} distinct colours",
+                colours.len()
+            );
         }
     }
 }
-

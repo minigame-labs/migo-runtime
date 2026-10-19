@@ -93,8 +93,14 @@ mod console_namespace_tests {
         );
         assert_eq!(found.len(), 5, "{found:?}");
         assert_eq!(found[0], (2, "Timer 't' already exists".to_string()));
-        assert!(found[1].0 == 1 && found[1].1.starts_with("t: ") && found[1].1.ends_with("ms midway"), "{found:?}");
-        assert!(found[2].0 == 1 && found[2].1.starts_with("t: ") && found[2].1.ends_with("ms"), "{found:?}");
+        assert!(
+            found[1].0 == 1 && found[1].1.starts_with("t: ") && found[1].1.ends_with("ms midway"),
+            "{found:?}"
+        );
+        assert!(
+            found[2].0 == 1 && found[2].1.starts_with("t: ") && found[2].1.ends_with("ms"),
+            "{found:?}"
+        );
         assert_eq!(found[3], (2, "Timer 't' does not exist".to_string()));
         assert_eq!(found[4], (2, "Timer 'none' does not exist".to_string()));
     }
@@ -115,19 +121,25 @@ mod console_namespace_tests {
                console.time("%s"); console.timeLog("%s", "kept");"#,
         );
         let texts: Vec<&str> = found.iter().map(|(_, m)| m.as_str()).collect();
-        assert_eq!(&texts[..9], &[
-            "Ann is 42 years, 1.5%",
-            "{\"a\":1} and [1]",
-            " styled",
-            "NaN NaN",
-            "a b {\"c\":2}",
-            "100%",
-            "1 %s",
-            "<invalid value>",
-            "Assertion failed: value=3",
-        ]);
-        assert!(texts[9].starts_with("%s: ") && texts[9].ends_with("ms kept"),
-            "timeLog prints its data without formatting it: {:?}", texts[9]);
+        assert_eq!(
+            &texts[..9],
+            &[
+                "Ann is 42 years, 1.5%",
+                "{\"a\":1} and [1]",
+                " styled",
+                "NaN NaN",
+                "a b {\"c\":2}",
+                "100%",
+                "1 %s",
+                "<invalid value>",
+                "Assertion failed: value=3",
+            ]
+        );
+        assert!(
+            texts[9].starts_with("%s: ") && texts[9].ends_with("ms kept"),
+            "timeLog prints its data without formatting it: {:?}",
+            texts[9]
+        );
     }
 
     #[test]
@@ -140,18 +152,35 @@ mod console_namespace_tests {
                console.trace("still a line");
                delete Error.prepareStackTrace;"#,
         );
-        assert_eq!(found[..3].to_vec(), vec![
-            (1, "held apart".to_string()),
-            (1, "  inside".to_string()),
-            (1, "outside".to_string()),
-        ]);
-        assert_eq!(found[3], (1, "Trace: still a line".to_string()), "{found:?}");
+        assert_eq!(
+            found[..3].to_vec(),
+            vec![
+                (1, "held apart".to_string()),
+                (1, "  inside".to_string()),
+                (1, "outside".to_string()),
+            ]
+        );
+        assert_eq!(
+            found[3],
+            (1, "Trace: still a line".to_string()),
+            "{found:?}"
+        );
     }
 
     #[test]
     fn clear_empties_the_group_stack() {
-        let found = lines(9_508, r#"console.group("g"); console.log("in"); console.clear(); console.log("out");"#);
-        assert_eq!(found, vec![(1, "g".to_string()), (1, "  in".to_string()), (1, "out".to_string())]);
+        let found = lines(
+            9_508,
+            r#"console.group("g"); console.log("in"); console.clear(); console.log("out");"#,
+        );
+        assert_eq!(
+            found,
+            vec![
+                (1, "g".to_string()),
+                (1, "  in".to_string()),
+                (1, "out".to_string())
+            ]
+        );
     }
 
     #[test]
@@ -162,15 +191,22 @@ mod console_namespace_tests {
                console.groupCollapsed("g"); console.log("inside"); console.groupEnd(); console.log("outside");
                console.trace("here");"#,
         );
-        assert_eq!(found[..6].to_vec(), vec![
-            (1, "{\"a\":1}".to_string()),
-            (1, "x 2".to_string()),
-            (1, "[1,2]".to_string()),
-            (1, "g".to_string()),
-            (1, "  inside".to_string()),
-            (1, "outside".to_string()),
-        ]);
-        assert!(found[6].0 == 1 && found[6].1.starts_with("Trace: here\n") && found[6].1.contains("<test:console>"),
-            "a trace names where it was called: {found:?}");
+        assert_eq!(
+            found[..6].to_vec(),
+            vec![
+                (1, "{\"a\":1}".to_string()),
+                (1, "x 2".to_string()),
+                (1, "[1,2]".to_string()),
+                (1, "g".to_string()),
+                (1, "  inside".to_string()),
+                (1, "outside".to_string()),
+            ]
+        );
+        assert!(
+            found[6].0 == 1
+                && found[6].1.starts_with("Trace: here\n")
+                && found[6].1.contains("<test:console>"),
+            "a trace names where it was called: {found:?}"
+        );
     }
 }

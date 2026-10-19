@@ -74,14 +74,14 @@ mod two_session_identity;
 // `getUpdateManager` ships with host_v8_update, which api-system gates.
 #[cfg(feature = "api-connectivity")]
 mod app_info;
+mod console_namespace;
 #[cfg(feature = "api-sensors")]
 mod debug_aids;
 mod deferred_api;
-mod entry_evaluation;
-mod namespace_members;
-mod console_namespace;
 #[cfg(feature = "api-connectivity")]
 mod ecosystem;
+mod entry_evaluation;
+mod namespace_members;
 #[cfg(feature = "api-system")]
 mod update_manager;
 mod v8_limits;

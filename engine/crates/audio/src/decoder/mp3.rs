@@ -237,10 +237,16 @@ fn next_sync_candidate(buffer: &[u8], from: usize) -> Option<usize> {
 /// confirm it.
 fn id3v2_tag_length(buffer: &[u8]) -> Option<usize> {
     let header = buffer.get(..10)?;
-    if &header[..3] != b"ID3" || header[3] == 0xFF || header[4] == 0xFF || header[6..].iter().any(|&b| b & 0x80 != 0) {
+    if &header[..3] != b"ID3"
+        || header[3] == 0xFF
+        || header[4] == 0xFF
+        || header[6..].iter().any(|&b| b & 0x80 != 0)
+    {
         return None;
     }
-    let size = header[6..].iter().fold(0usize, |size, &b| (size << 7) | usize::from(b));
+    let size = header[6..]
+        .iter()
+        .fold(0usize, |size, &b| (size << 7) | usize::from(b));
     let footer = if header[5] & 0x10 != 0 { 10 } else { 0 };
     let total = 10 + size + footer;
     (total <= buffer.len()).then_some(total)
@@ -463,7 +469,12 @@ mod tests {
     fn id3v2(body: &[u8]) -> Vec<u8> {
         let n = body.len();
         let mut tag = b"ID3\x03\x00\x00".to_vec();
-        tag.extend([(n >> 21) as u8 & 0x7F, (n >> 14) as u8 & 0x7F, (n >> 7) as u8 & 0x7F, n as u8 & 0x7F]);
+        tag.extend([
+            (n >> 21) as u8 & 0x7F,
+            (n >> 14) as u8 & 0x7F,
+            (n >> 7) as u8 & 0x7F,
+            n as u8 & 0x7F,
+        ]);
         tag.extend_from_slice(body);
         tag
     }
@@ -489,9 +500,13 @@ mod tests {
             let mut data = id3v2(&body);
             data.extend_from_slice(&mp3_fixture::stream(6));
 
-            let decoded = decode(&data).unwrap_or_else(|e| panic!("the audio behind a {label} false frame: {e}"));
-            assert_eq!(decoded.samples.len(), 6 * mp3_fixture::SAMPLES_PER_FRAME,
-                "every frame behind a tag holding a {label} false frame, and nothing else");
+            let decoded = decode(&data)
+                .unwrap_or_else(|e| panic!("the audio behind a {label} false frame: {e}"));
+            assert_eq!(
+                decoded.samples.len(),
+                6 * mp3_fixture::SAMPLES_PER_FRAME,
+                "every frame behind a tag holding a {label} false frame, and nothing else"
+            );
         }
     }
 
@@ -512,8 +527,13 @@ mod tests {
         // The fixture without its first frame: what is first now points into a reservoir that
         // was never filled.
         let stream = mp3_fixture::stream(6);
-        let decoded = decode(&stream[mp3_fixture::FRAME_BYTES..]).expect("the frames after it decode");
-        assert_eq!(decoded.samples.len(), 4 * mp3_fixture::SAMPLES_PER_FRAME, "all but the frame that had nothing");
+        let decoded =
+            decode(&stream[mp3_fixture::FRAME_BYTES..]).expect("the frames after it decode");
+        assert_eq!(
+            decoded.samples.len(),
+            4 * mp3_fixture::SAMPLES_PER_FRAME,
+            "all but the frame that had nothing"
+        );
     }
 
     /// The fixture has to be a real MP3 before anything built on it means

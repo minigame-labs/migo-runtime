@@ -27,8 +27,8 @@ use graphics::backend::gl::paint::NullPatternResolver;
 use graphics::backend::gl::state::TextAttrs;
 use graphics::backend::gl::text::TextContext;
 use shared::protocol::color::Color as ProtoColor;
-use shared::protocol::render_cmd::CanvasFont;
 use shared::protocol::render_cmd::Canvas2DCmd::{FillText, SetFillStyle, SetFont};
+use shared::protocol::render_cmd::CanvasFont;
 
 const NOTO_SANS: &[u8] = include_bytes!("fixtures/fonts/NotoSans-Regular.ttf");
 const PROBE: &[u8] = include_bytes!("fixtures/fonts/fallback-probe.ttf");
@@ -84,18 +84,42 @@ fn a_character_the_named_fonts_lack_is_drawn_from_a_system_font_that_has_it() {
     let pixels = with_raster_surface(w, h, |surface| {
         surface.canvas().clear(skia_safe::Color::WHITE);
         let resolver = NullPatternResolver;
-        let env = DrawEnv { canvas: surface.canvas(), text: Some(&text), resolver: &resolver };
+        let env = DrawEnv {
+            canvas: surface.canvas(),
+            text: Some(&text),
+            resolver: &resolver,
+        };
         let mut ctx = Canvas2DRenderer::new();
         for cmd in [
-            SetFont { font: CanvasFont { size: SIZE, weight: 400, italic: false, families: families.clone() } },
-            SetFillStyle { color: ProtoColor::rgb(0, 0, 0) },
-            FillText { text: "\u{5F00}".into(), x: 8.0, y: 48.0, max_width: f32::INFINITY },
+            SetFont {
+                font: CanvasFont {
+                    size: SIZE,
+                    weight: 400,
+                    italic: false,
+                    families: families.clone(),
+                },
+            },
+            SetFillStyle {
+                color: ProtoColor::rgb(0, 0, 0),
+            },
+            FillText {
+                text: "\u{5F00}".into(),
+                x: 8.0,
+                y: 48.0,
+                max_width: f32::INFINITY,
+            },
         ] {
             ctx.apply_env(&env, &cmd);
         }
         read_pixels_rgba8(surface)
     });
     // The square spans x 8..48 and, at an ascent of 0.8 em, y 16..48: 1,280 px, nearly all ink.
-    let ink = pixels.chunks_exact(4).filter(|p| p[0] < 64 && p[1] < 64 && p[2] < 64).count();
-    assert!(ink > 1_100, "{ink} dark pixels: the character was not drawn from the probe's solid square");
+    let ink = pixels
+        .chunks_exact(4)
+        .filter(|p| p[0] < 64 && p[1] < 64 && p[2] < 64)
+        .count();
+    assert!(
+        ink > 1_100,
+        "{ink} dark pixels: the character was not drawn from the probe's solid square"
+    );
 }

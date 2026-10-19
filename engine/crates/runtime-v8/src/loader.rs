@@ -183,7 +183,10 @@ fn read_module(path: &std::path::Path, limit: u64) -> std::io::Result<Vec<u8>> {
     if bytes.len() as u64 > limit {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("{} grew past the {limit} bytes it was sized at", path.display()),
+            format!(
+                "{} grew past the {limit} bytes it was sized at",
+                path.display()
+            ),
         ));
     }
     Ok(bytes)
@@ -485,14 +488,18 @@ mod tests {
         // Not a regular file: refused before anything is read.
         let directory = dir.join("dir.js");
         std::fs::create_dir_all(&directory).unwrap();
-        let refused = module_read(&directory).err().expect("a directory is not a module");
+        let refused = module_read(&directory)
+            .err()
+            .expect("a directory is not a module");
         assert!(refused.contains("not a regular file"), "{refused}");
 
         // Unsizable: the cautious estimate, and the read says why.
         let missing = module_read(&dir.join("missing.js")).expect("charged the maximum");
         assert_eq!(missing.limit, MAX_READ_LENGTH);
         assert_eq!(
-            read_module(&dir.join("missing.js"), missing.limit).unwrap_err().kind(),
+            read_module(&dir.join("missing.js"), missing.limit)
+                .unwrap_err()
+                .kind(),
             std::io::ErrorKind::NotFound
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -505,7 +512,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let fifo = dir.join("dep.js");
-        let made = std::process::Command::new("mkfifo").arg(&fifo).status().expect("mkfifo");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("mkfifo");
         assert!(made.success());
         let refused = module_read(&fifo).err().expect("a FIFO is not a module");
         assert!(refused.contains("not a regular file"), "{refused}");
@@ -563,8 +573,11 @@ mod tests {
             .expect("test runtime");
         let load = |name: &str, padding: usize| {
             let path = root.join(name);
-            std::fs::write(&path, format!("export const answer = 42;\n//{}", " ".repeat(padding)))
-                .expect("temporary module");
+            std::fs::write(
+                &path,
+                format!("export const answer = 42;\n//{}", " ".repeat(padding)),
+            )
+            .expect("temporary module");
             let url = ModuleSpecifier::from_file_path(&path).expect("module URL");
             let ModuleLoadResponse::Async(future) = loader.load_from_filesystem(&url) else {
                 panic!("filesystem module load must not execute inline");
@@ -576,7 +589,11 @@ mod tests {
         };
 
         assert_eq!(load("small.js", 0), (1, 0), "a small module is read inline");
-        assert_eq!(load("large.js", cheap), (1, 1), "a large one on the bounded IO executor");
+        assert_eq!(
+            load("large.js", cheap),
+            (1, 1),
+            "a large one on the bounded IO executor"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 }

@@ -2876,7 +2876,10 @@ mod timer_lifecycle_tests {
         let error = worker_evaluate_module(&mut rt, None, module_id)
             .await
             .expect_err("a Worker script that threw must not evaluate");
-        assert!(error.contains("the worker threw"), "the error names the exception: {error}");
+        assert!(
+            error.contains("the worker threw"),
+            "the error names the exception: {error}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

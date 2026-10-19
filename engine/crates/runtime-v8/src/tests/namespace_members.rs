@@ -15,7 +15,10 @@ mod namespace_members_tests {
     fn every_name_the_namespace_publishes_is_enumerable() {
         let mut runtime = boot(test_host_state());
         assert!(
-            is_true(&mut runtime, "Object.getOwnPropertyNames(migo).length > 100"),
+            is_true(
+                &mut runtime,
+                "Object.getOwnPropertyNames(migo).length > 100"
+            ),
             "the namespace publishes its API"
         );
         assert!(

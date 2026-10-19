@@ -942,7 +942,12 @@ mod tests {
             body.resize(600, 0);
             let n = body.len();
             let mut tag = b"ID3\x03\x00\x00".to_vec();
-            tag.extend([(n >> 21) as u8 & 0x7F, (n >> 14) as u8 & 0x7F, (n >> 7) as u8 & 0x7F, n as u8 & 0x7F]);
+            tag.extend([
+                (n >> 21) as u8 & 0x7F,
+                (n >> 14) as u8 & 0x7F,
+                (n >> 7) as u8 & 0x7F,
+                n as u8 & 0x7F,
+            ]);
             tag.extend_from_slice(&body);
             tag
         };
@@ -950,9 +955,21 @@ mod tests {
         for frames in [3usize, 6, 40] {
             let stream = mp3_fixture::stream(frames);
             for (label, source, expected) in [
-                ("behind a tag holding a false frame that decodes to nothing", [tag(0xFF), stream.clone()].concat(), frames),
-                ("behind a tag holding a false frame that decodes to silence", [tag(0x00), stream.clone()].concat(), frames),
-                ("whose first frame has no reservoir", stream[mp3_fixture::FRAME_BYTES..].to_vec(), frames - 2),
+                (
+                    "behind a tag holding a false frame that decodes to nothing",
+                    [tag(0xFF), stream.clone()].concat(),
+                    frames,
+                ),
+                (
+                    "behind a tag holding a false frame that decodes to silence",
+                    [tag(0x00), stream.clone()].concat(),
+                    frames,
+                ),
+                (
+                    "whose first frame has no reservoir",
+                    stream[mp3_fixture::FRAME_BYTES..].to_vec(),
+                    frames - 2,
+                ),
             ] {
                 let mut decoder = Mp3StreamDecoder::new(mp3_fixture::SAMPLE_RATE);
                 let mut out = Vec::new();
@@ -961,7 +978,11 @@ mod tests {
                     decoder.decode_into(&mut out);
                 }
                 decoder.flush_into(&mut out);
-                assert_eq!(out.len() / mp3_fixture::SAMPLES_PER_FRAME, expected, "{frames} frames {label}");
+                assert_eq!(
+                    out.len() / mp3_fixture::SAMPLES_PER_FRAME,
+                    expected,
+                    "{frames} frames {label}"
+                );
             }
         }
     }
