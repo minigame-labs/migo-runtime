@@ -225,18 +225,22 @@ for detached_anchor in ("new Thread", ".start()", ".join("):
 
 attempt_body = body_after(terminal, "public Result attempt(")
 attempt_try = body_after(attempt_body, "try")
-resource_run = "resourceCleanup.run();"
-native_run = "nativeShutdown.run();"
+# Resources, then native shutdown, then ownership -- and the first two as independent actions.
+# They ran one after the other, so a resource whose release threw skipped the native shutdown:
+# the engine kept running the game its player had closed, for the life of the process, since
+# MigoGameActivity drops the session it has closed and nothing retries.
+resource_and_native = "ResourceCleanup.runAll(resourceCleanup, nativeShutdown);"
 ownership_run = "ResourceCleanup.runAll(ownershipRelease);"
-if any(action not in attempt_try for action in (resource_run, native_run, ownership_run)):
+if resource_and_native not in attempt_try or ownership_run not in attempt_try:
     raise SystemExit(
-        "TerminalCleanupState.attempt() must execute resource, native, and ownership phases"
+        "TerminalCleanupState.attempt() must run the resource and native phases as independent "
+        "actions, resources first, so a resource that will not let go cannot keep the engine "
+        "running, and then the ownership phase"
     )
-if not (attempt_try.index(resource_run) < attempt_try.index(native_run)
-        < attempt_try.index(ownership_run)):
+if attempt_try.index(resource_and_native) >= attempt_try.index(ownership_run):
     raise SystemExit(
-        "TerminalCleanupState.attempt() must finish resources before native shutdown and "
-        "native shutdown before ownership release"
+        "TerminalCleanupState.attempt() must release ownership only after the resource and "
+        "native phases"
     )
 
 if "runWithTimeout" in java:
