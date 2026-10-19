@@ -30,6 +30,17 @@ pub(crate) struct LinkDescriptor<'a> {
 pub(crate) type PersistJob = (PathBuf, Vec<u8>);
 pub(crate) const MAX_ENTRIES: usize = 256;
 pub(crate) const MAX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
+/// The largest binary an entry holds: a sixteenth of the cache. A compiled program is tens to hundreds of kilobytes;
+/// a binary past this carries a driver's pipeline cache with it -- ANGLE's Vulkan back end puts the context's whole
+/// cache in every program binary, 0.7 MB more for each program the context has linked, up to 60 MB on the Android
+/// emulator -- and costs the render thread more to fetch than linking from source does. It is not fetched, and a file
+/// past it is not read.
+pub(crate) const MAX_ENTRY_BYTES: u64 = MAX_CACHE_BYTES / 16;
+
+/// Whether a binary of `len` bytes is one an entry holds.
+fn entry_fits(len: u64) -> bool {
+    len > 0 && len <= MAX_ENTRY_BYTES
+}
 
 /// Manages a disk-backed shader binary cache.
 pub struct ShaderCache {
@@ -102,6 +113,11 @@ impl ShaderCache {
         }
         let key = make_cache_key(descriptor, &self.driver_key);
         let path = self.cache_dir.join(&key);
+        let len = std::fs::metadata(&path).ok()?.len();
+        if !entry_fits(len.saturating_sub(4)) {
+            std::fs::remove_file(&path).ok();
+            return None;
+        }
         let mut data = std::fs::read(&path).ok()?;
         if data.len() < 4 {
             return None;
@@ -110,6 +126,16 @@ impl ShaderCache {
         data.drain(..4);
         trace!("Shader cache hit: {key}");
         Some((format, data))
+    }
+
+    /// The driver did not link the binary `load` gave for `descriptor`: the entry is removed, so the bytes are not
+    /// read and offered again, and the link from source that follows saves a binary of its own. A driver that never
+    /// takes its binaries back -- the Android emulator's refuses nearly all of them -- would otherwise be handed every
+    /// one again at every launch.
+    pub fn refused(&self, descriptor: &LinkDescriptor<'_>) {
+        let key = make_cache_key(descriptor, &self.driver_key);
+        debug!("Shader cache: the driver refused {key}; removed");
+        std::fs::remove_file(self.cache_dir.join(&key)).ok();
     }
 
     /// Capture a binary on the render thread, then enqueue only owned bytes.
@@ -218,11 +244,12 @@ fn enforce_cache_limits(dir: &Path, max_entries: usize, max_bytes: u64) {
 }
 
 /// Get the binary representation of a linked program using glow's
-/// `get_program_binary` wrapper.
+/// `get_program_binary` wrapper; `None` for one no entry holds ([`MAX_ENTRY_BYTES`]),
+/// which is not fetched.
 fn get_program_binary(gl: &glow::Context, program: glow::NativeProgram) -> Option<(u32, Vec<u8>)> {
     unsafe {
         let length = gl.get_program_parameter_i32(program, glow::PROGRAM_BINARY_LENGTH);
-        if length <= 0 {
+        if !entry_fits(u64::try_from(length).unwrap_or(0)) {
             return None;
         }
 
@@ -515,6 +542,93 @@ mod tests {
         assert_eq!(fmt, format);
         assert_eq!(bin, payload);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_entry_past_the_entry_bound_is_not_read_and_is_removed() {
+        let dir = make_test_dir("oversize");
+        let driver = "drv||3";
+        let empty: Vec<String> = vec![];
+        let desc = LinkDescriptor {
+            vertex_src: "vs",
+            fragment_src: "fs",
+            attrib_key: "",
+            tf_varyings: &empty,
+            tf_buffer_mode: None,
+        };
+        let path = dir.join(make_cache_key(&desc, driver));
+        // The four-byte format, then one byte more binary than an entry holds.
+        std::fs::write(&path, vec![0u8; 4 + MAX_ENTRY_BYTES as usize + 1]).unwrap();
+
+        let cache = ShaderCache::new_for_test(dir.clone(), driver.into(), true);
+        assert!(cache.load(&desc).is_none());
+        assert!(
+            !path.exists(),
+            "an entry no binary of which is kept must not stay"
+        );
+
+        // One at the bound is an entry.
+        std::fs::write(&path, vec![0u8; 4 + MAX_ENTRY_BYTES as usize]).unwrap();
+        assert_eq!(
+            cache.load(&desc).map(|(_, binary)| binary.len() as u64),
+            Some(MAX_ENTRY_BYTES)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_binary_the_driver_refused_is_removed() {
+        let dir = make_test_dir("refused");
+        let driver = "drv||4";
+        let empty: Vec<String> = vec![];
+        let desc = LinkDescriptor {
+            vertex_src: "vs",
+            fragment_src: "fs",
+            attrib_key: "",
+            tf_varyings: &empty,
+            tf_buffer_mode: None,
+        };
+        let other = LinkDescriptor {
+            fragment_src: "another fs",
+            ..desc
+        };
+        for d in [&desc, &other] {
+            let mut data = 7u32.to_le_bytes().to_vec();
+            data.extend_from_slice(b"binary");
+            std::fs::write(dir.join(make_cache_key(d, driver)), data).unwrap();
+        }
+
+        let cache = ShaderCache::new_for_test(dir.clone(), driver.into(), true);
+        assert!(cache.load(&desc).is_some());
+        cache.refused(&desc);
+        assert!(
+            cache.load(&desc).is_none(),
+            "a refused binary is not offered again"
+        );
+        assert!(cache.load(&other).is_some(), "only the refused entry goes");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_binary_no_entry_holds_is_not_fetched() {
+        assert!(!entry_fits(0));
+        assert!(entry_fits(1));
+        assert!(entry_fits(MAX_ENTRY_BYTES));
+        assert!(!entry_fits(MAX_ENTRY_BYTES + 1));
+        // The length is asked first and the fetch is gated on it.
+        const SOURCE: &str = include_str!("shader_cache.rs");
+        let start = SOURCE
+            .find("fn get_program_binary(")
+            .expect("fetch helper exists");
+        let body = &SOURCE[start..];
+        let gate = body
+            .find("entry_fits(")
+            .expect("the fetch is gated on the length");
+        let fetch = body.find("gl.get_program_binary(").expect("the fetch");
+        assert!(
+            gate < fetch,
+            "the length is checked before the binary is fetched"
+        );
     }
 
     #[test]

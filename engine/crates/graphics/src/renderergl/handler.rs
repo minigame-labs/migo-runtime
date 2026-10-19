@@ -1151,7 +1151,11 @@ impl RendererGL {
                                             let prog_binary =
                                                 glow::ProgramBinary { format, buffer };
                                             unsafe { gl.program_binary(ph, &prog_binary) };
-                                            unsafe { gl.get_program_link_status(ph) }
+                                            let linked = unsafe { gl.get_program_link_status(ph) };
+                                            if !linked {
+                                                cache.refused(&descriptor);
+                                            }
+                                            linked
                                         }
                                         None => false,
                                     }
