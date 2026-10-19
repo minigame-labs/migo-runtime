@@ -731,6 +731,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- A render command the game got wrong -- a 2D draw, a GL call, a canvas change the renderer could not execute -- reaches
+  the host as `RenderCommandFailed` (430), which Android's `ErrorCode.isRecoverable` reads as recoverable
+  (`NATIVE_RENDER_COMMAND_FAILED`), with the command's own error in the detail. It was reported under the command's own
+  code, one fatal reports carry too -- an invalid argument, a shader that did not compile -- so Android hosts were told
+  each such failure was non-recoverable, and a host that closes the game on those closed it over a GL error. A test now
+  holds every `NATIVE_*` constant the Android SDK declares to the engine code of the same name and number.
 - The headless player stops as soon as the game fails to start, and says why: `the game did not start: module
   evaluation failed: Error: ...`. It heard nothing from the engine -- `LinuxPlatform` and `WindowsPlatform` reported
   their host notifications nowhere -- so a game whose entry threw waited out the 30-second present ceiling and the run

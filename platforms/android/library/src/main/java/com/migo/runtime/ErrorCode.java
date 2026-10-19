@@ -79,6 +79,12 @@ public final class ErrorCode {
     public static final int NATIVE_INPUT_SATURATED = 11;
 
     /**
+     * A render command the game issued -- a 2D draw, a GL call, a canvas change -- could not
+     * be executed; the session remains usable. The command's own error is in the message.
+     */
+    public static final int NATIVE_RENDER_COMMAND_FAILED = 430;
+
+    /**
      * Get a human-readable message for an error code.
      *
      * @param code The error code
@@ -107,6 +113,7 @@ public final class ErrorCode {
             case NATIVE_CODE_SIGNATURE_INVALID: return "Code signature invalid";
             case NATIVE_CODE_INTEGRITY_FAILED: return "Code integrity check failed";
             case NATIVE_INPUT_SATURATED: return "Input transport saturated";
+            case NATIVE_RENDER_COMMAND_FAILED: return "Render command failed";
             default: return "Unknown error (" + code + ")";
         }
     }
@@ -133,6 +140,7 @@ public final class ErrorCode {
         switch (code) {
             case NATIVE_JS_EXECUTION_TIMEOUT:  // watchdog can restart JS isolate
             case NATIVE_INPUT_SATURATED:
+            case NATIVE_RENDER_COMMAND_FAILED:
                 return true;
             default:
                 return false;

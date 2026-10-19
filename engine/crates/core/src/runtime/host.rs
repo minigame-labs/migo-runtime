@@ -579,24 +579,33 @@ impl Host {
         }
     }
 
-    fn on_render_error(&mut self, kind: &'static str, code: u16, message: &str) {
+    /// A render command the content issued could not be executed. The session goes on, and the
+    /// host hears it as [`ErrorCode::RenderCommandFailed`] -- not under the command's own code,
+    /// which fatal reports share, so a host that tells the two apart by code can.
+    ///
+    /// [`ErrorCode::RenderCommandFailed`]: shared::error::ErrorCode::RenderCommandFailed
+    fn on_render_error(&mut self, kind: &'static str, message: &str) {
         warn!("[Host {}] render event ({}): {}", self.id, kind, message);
         if self.should_notify_error(kind) {
-            self.platform
-                .notify_error(self.id, code, "render command failed", message);
+            self.platform.notify_error(
+                self.id,
+                shared::error::ErrorCode::RenderCommandFailed.as_u16(),
+                "render command failed",
+                &format!("{kind}: {message}"),
+            );
         }
     }
 
     fn handle_render_event(&mut self, event: RenderEvent) {
         match event {
-            RenderEvent::Canvas2DError { code, message } => {
-                self.on_render_error("canvas2d", code.as_u16(), &message);
+            RenderEvent::Canvas2DError { message, .. } => {
+                self.on_render_error("canvas2d", &message);
             }
-            RenderEvent::GlError { code, message } => {
-                self.on_render_error("gl", code.as_u16(), &message);
+            RenderEvent::GlError { message, .. } => {
+                self.on_render_error("gl", &message);
             }
-            RenderEvent::CanvasError { code, message } => {
-                self.on_render_error("canvas", code.as_u16(), &message);
+            RenderEvent::CanvasError { message, .. } => {
+                self.on_render_error("canvas", &message);
             }
             RenderEvent::SwapFailed { message } => {
                 warn!("[Host {}] swap failed: {}", self.id, message);

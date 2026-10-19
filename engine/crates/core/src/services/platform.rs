@@ -70,12 +70,13 @@ pub trait HostNotifier: Send + Sync {
         // Default: no-op.
     }
 
-    /// Notify the host application about a fatal engine error.
+    /// Notify the host application about an error the engine hit.
     ///
-    /// This is called when:
-    /// - The host thread panics (Rust panic in catch_unwind)
-    /// - The ANR watchdog terminates the isolate
-    /// - V8 heap limit / execution timeout is triggered
+    /// Not every one ends the game, and the code says which: a host tells them apart by code
+    /// alone (Android's `ErrorCode.isRecoverable`). A render command the content got wrong
+    /// arrives as `RenderCommandFailed` and refused input as `InputSaturated`; the session goes
+    /// on after both. The host thread panicking, the ANR watchdog terminating the isolate and
+    /// the V8 heap limit end it. A launch that failed is [`Self::notify_game_failed`].
     ///
     /// On Android, this calls `NativeExports.onError(hostId, code, msg, detail)`
     /// via JNI.  The watchdog thread also uses this to report ANR events.

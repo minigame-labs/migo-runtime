@@ -76,6 +76,17 @@ pub enum ErrorCode {
     // 2D / Canvas / Vector-graphics subsystem (generic) (420..429)
     Render2DInitError = 420,
     Render2DResourceError = 421,
+
+    // Content's render commands (430..439)
+    /// A render command the content issued -- a 2D draw, a GL call, a canvas change -- could not
+    /// be executed. The render thread and the session carry on.
+    ///
+    /// Reported to a host as itself, with the command's own error in the detail. A host tells
+    /// an error it can ride out from one that ended the game by its code, and the command's own
+    /// code is one fatal reports carry too -- an invalid argument, a shader that did not
+    /// compile, an internal error -- so a GL call the content got wrong reached Android hosts as
+    /// non-recoverable.
+    RenderCommandFailed = 430,
 }
 
 impl ErrorCode {
@@ -133,6 +144,8 @@ impl ErrorCode {
 
             ErrorCode::Render2DInitError => "render 2d init error",
             ErrorCode::Render2DResourceError => "render 2d resource error",
+
+            ErrorCode::RenderCommandFailed => "render command failed",
         }
     }
 
@@ -206,6 +219,8 @@ impl TryFrom<u16> for ErrorCode {
 
             420 => ErrorCode::Render2DInitError,
             421 => ErrorCode::Render2DResourceError,
+
+            430 => ErrorCode::RenderCommandFailed,
 
             _ => return Err(()),
         };
@@ -292,6 +307,52 @@ mod tests {
         }
     }
 
+    /// The engine's codes cross into Android as the SDK's `NATIVE_*` constants, which Java
+    /// declares again by hand; its `isRecoverable` reads them. Each one is the Rust code of the
+    /// same name and number, so neither side can renumber or rename one alone.
+    #[test]
+    fn every_native_code_the_android_sdk_declares_is_the_engines() {
+        let java = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../platforms/android/library/src/main/java/com/migo/runtime/ErrorCode.java"
+        ))
+        .expect("the Android SDK's ErrorCode.java");
+        let mut seen = 0;
+        for line in java.lines() {
+            let Some(rest) = line.trim().strip_prefix("public static final int NATIVE_") else {
+                continue;
+            };
+            let (name, value) = rest.split_once('=').expect("NATIVE_X = N;");
+            let value: u16 = value
+                .trim()
+                .trim_end_matches(';')
+                .parse()
+                .expect("a number");
+            let code = ErrorCode::try_from(value)
+                .unwrap_or_else(|()| panic!("NATIVE_{} = {value} is no engine code", name.trim()));
+            let rust: String = format!("{code:?}")
+                .chars()
+                .enumerate()
+                .flat_map(|(i, c)| {
+                    let sep = (i > 0 && c.is_ascii_uppercase()).then_some('_');
+                    sep.into_iter()
+                        .chain(std::iter::once(c.to_ascii_uppercase()))
+                })
+                .collect();
+            assert_eq!(
+                name.trim(),
+                rust,
+                "NATIVE_{} = {value} is the engine's {code:?}",
+                name.trim()
+            );
+            seen += 1;
+        }
+        assert!(
+            seen >= 8,
+            "read {seen} NATIVE_ constants; the declaration changed shape"
+        );
+    }
+
     #[test]
     fn test_error_code_default_message() {
         assert_eq!(ErrorCode::Ok.default_message(), "ok");
@@ -366,6 +427,9 @@ mod tests {
         // 2D / Canvas
         assert_eq!(ErrorCode::Render2DInitError as u16, 420);
         assert_eq!(ErrorCode::Render2DResourceError as u16, 421);
+
+        // Content's render commands
+        assert_eq!(ErrorCode::RenderCommandFailed as u16, 430);
     }
 
     #[test]

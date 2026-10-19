@@ -150,6 +150,26 @@ fn gpu_readiness_is_joined_before_any_launch_js() {
 }
 
 #[test]
+fn a_render_command_the_content_got_wrong_reaches_the_host_as_survivable() {
+    // A host tells an error it can ride out from one that ended the game by its code alone
+    // (Android's `ErrorCode.isRecoverable`). This report used the failed command's own code --
+    // an invalid argument, a shader that did not compile, an internal error -- which fatal
+    // reports share, so a GL call the content got wrong reached Android hosts as
+    // non-recoverable, and a host that closes on those closed the game on it.
+    let report = HOST
+        .split("fn on_render_error(")
+        .nth(1)
+        .expect("the render-command report must remain present")
+        .split("\n    fn ")
+        .next()
+        .expect("the report must end before the next function");
+    assert!(
+        report.contains("ErrorCode::RenderCommandFailed.as_u16()"),
+        "a failed render command must reach the host under its own, survivable code"
+    );
+}
+
+#[test]
 fn a_launch_that_fails_is_announced_like_one_that_succeeds() {
     // The property: the two outcomes of loading content travel the same way, from
     // the same place, for every caller.
