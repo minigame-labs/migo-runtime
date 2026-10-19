@@ -176,16 +176,22 @@ check("a global nothing defined is named, platform API or not",
       report["undefined"] == [{"name": "notDefinedAnywhere", "platform_api": False},
                               {"name": "requirePlugin", "platform_api": False}], report["undefined"])
 frameless = cr.assess([l for l in log if "first-frame" not in l], "android", contracts)
-check("a recorded run with no animation frame is blocked on it",
-      [b.get("label") for b in frameless["blocking"]]
-      == [None, "no animation frame ran in this run: the game never drew"], frameless["blocking"])
+check("a recorded run with no animation frame says so, and does not claim the game never drew",
+      [b.get("label") for b in frameless["blocking"]] == [None] and len(frameless["notes"]) == 1
+      and "requestAnimationFrame" in "\n".join(cr.markdown(frameless)), (frameless["blocking"], frameless["notes"]))
+dark = cr.assess([l for l in log if "first-frame" not in l]
+                 + ["2026-10-18T22:07:47Z ERROR migo_player: player failed: nothing was presented during the run"],
+                 "android", contracts)
+check("the player's own word that nothing was presented is what blocks on it",
+      [b.get("label") for b in dark["blocking"]] == [None, "nothing was presented in this run: the game never drew"]
+      and dark["notes"] == [], (dark["blocking"], dark["notes"]))
 
 unrecorded = cr.assess(engine_errors, "android", contracts)
 check("a log without the recorder's start is not recorded", unrecorded["recorded"] is False)
 check("and its report says nothing else", "**Not recorded.**" in "\n".join(cr.markdown(unrecorded))
       and "## Verdict" not in "\n".join(cr.markdown(unrecorded)))
-check("and is not blocked on a frame it was never asked about",
-      all("animation frame" not in b.get("label", "") for b in unrecorded["blocking"]))
+check("and says nothing of frames it was never asked about", unrecorded["notes"] == []
+      and all("presented" not in b.get("label", "") for b in unrecorded["blocking"]))
 
 real = cr.load_contracts("android")
 verdicts = {name: cr.judge(name, "android", real)["verdict"] for name in real["matrix"]}

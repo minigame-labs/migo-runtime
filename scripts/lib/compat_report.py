@@ -101,6 +101,9 @@ def ready_ms(lines) -> float | None:
 # player that is every call needing a device service, so each is judged for the platform the report is for:
 # what Linux refused, Android may answer.
 REFUSED = re.compile(r"\b([A-Za-z_$][\w$]*):fail not supported\b")
+# The headless player's own verdict when no frame reached its window: the evidence that a game never drew, which the
+# recorder cannot give -- it sees requestAnimationFrame callbacks, and content can draw without one.
+NOTHING_PRESENTED = re.compile(r"nothing was presented during the run")
 # A global the content used and no layer defined: not a name on `wx` or `migo` (the recorder sees those), so
 # only the engine's error says it.
 UNDEFINED = re.compile(r"ReferenceError: ([A-Za-z_$][\w$]*) is not defined")
@@ -207,10 +210,12 @@ def assess(lines, platform: str, contracts: dict) -> dict:
     first = kinds.get("first-frame", [])
     recorded = bool(kinds.get("start"))
     blocking = [c for c in calls if c["verdict"] in BLOCKING] + [e for e in errors if e["fatal"]]
-    if recorded and not first:
-        # A game that never asked for a frame, or whose frames never ran, did not start for its player
-        # whatever else the log says.
-        blocking.append({"label": "no animation frame ran in this run: the game never drew", "fatal": True, "line": ""})
+    notes = []
+    if any(NOTHING_PRESENTED.search(ANSI.sub("", line)) for line in lines):
+        blocking.append({"label": "nothing was presented in this run: the game never drew", "fatal": True, "line": ""})
+    elif recorded and not first:
+        notes.append("No animation frame ran in this run. The recorder sees requestAnimationFrame callbacks, so content "
+                     "that draws without them reads the same; whether anything reached the screen is the frame's to say.")
     return {
         "schema": SCHEMA,
         "platform": platform,
@@ -232,6 +237,7 @@ def assess(lines, platform: str, contracts: dict) -> dict:
         "errors": errors,
         "summary": {verdict: sum(1 for c in calls if c["verdict"] == verdict) for verdict in VERDICTS},
         "blocking": blocking,
+        "notes": notes,
     }
 
 
@@ -259,6 +265,8 @@ def markdown(report: dict, notes: tuple[str, ...] | list[str] = ()) -> list[str]
                        + (f": {item['reason']}" if item.get("reason") else ""))
         else:
             out.append(f"- {item['label']}" + (f": `{item['line']}`" if item["line"] else ""))
+    for note in report["notes"]:
+        out += ["", f"> {note}"]
     out += ["", "## APIs called", "", "| verdict | count |", "|---|---|"]
     out += [f"| {VERDICTS[v]} | {n} |" for v, n in report["summary"].items() if n]
     out += [""]
