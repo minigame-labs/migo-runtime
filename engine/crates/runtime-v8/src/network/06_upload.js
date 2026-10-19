@@ -155,7 +155,7 @@ function uploadFile(options) {
 
         } catch (err) {
             if (cancellation.aborted || err === "aborted") {
-                settler.fail(abortedNetworkError());
+                settler.fail(abortedNetworkError("uploadFile"));
             } else {
                 settler.fail(makeError(500, failMessage("uploadFile", err)));
             }

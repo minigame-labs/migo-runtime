@@ -1,3 +1,5 @@
+import { failMessage } from "ext:host_v8_base/02_async.js";
+
 function nullBodyStatus(status) {
     return status === 101 || status === 204 || status === 205 || status === 304;
 }
@@ -83,10 +85,16 @@ class ResponseBase {
     }
 }
 
+// The reference's errMsg says why a call failed -- `request:fail timeout`, `downloadFile:fail abort` -- and `exception`
+// lists each attempt's own reason; the first of those is the why. A failure that records none is the bare `<api>:fail`.
+function failedWith(apiName, exception) {
+    const reason = exception?.reasons?.[0]?.errMsg;
+    return typeof reason === "string" && reason.length > 0 ? failMessage(apiName, reason) : apiName + ":fail";
+}
+
 // -- request --
 
 const requestOkMsg = "request:ok";
-const requestFailMsg = "request:fail";
 
 class Response extends ResponseBase {
     constructor(header, useHttpDNS = false) {
@@ -126,7 +134,7 @@ class Response extends ResponseBase {
 
 class ErrorResponse extends ResponseBase {
     constructor(errno, exception) {
-        super(false, requestFailMsg, exception);
+        super(false, failedWith("request", exception), exception);
         this._errno = errno;
     }
 
@@ -142,18 +150,24 @@ class ErrorResponse extends ResponseBase {
     }
 }
 
-function abortedNetworkError(retryCount = 0) {
-    return new ErrorResponse(-1, new Exception(-1, "Request Aborted", retryCount));
+// A task aborted by content, answered in the reference's words (`request:fail abort`) and as the call it was: a
+// download's or an upload's abort is that API's failure, not a request's.
+function abortedNetworkError(apiName = "request", retryCount = 0) {
+    const exception = new Exception(-1, "abort", retryCount);
+    switch (apiName) {
+        case "downloadFile": return new DownloadErrorResponse(-1, exception);
+        case "uploadFile": return new UploadErrorResponse(-1, exception);
+        default: return new ErrorResponse(-1, exception);
+    }
 }
 
 function timedOutNetworkError(retryCount = 0) {
-    return new ErrorResponse(408, new Exception(408, "Request Timed Out", retryCount));
+    return new ErrorResponse(408, new Exception(408, "timeout", retryCount));
 }
 
 // -- downloadFile --
 
 const downloadOkMsg = "downloadFile:ok";
-const downloadFailMsg = "downloadFile:fail";
 
 class DownloadResponse extends ResponseBase {
     constructor(tempFilePath, filePath, statusCode) {
@@ -187,7 +201,7 @@ class DownloadResponse extends ResponseBase {
 
 class DownloadErrorResponse extends ResponseBase {
     constructor(errno, exception) {
-        super(false, downloadFailMsg, exception);
+        super(false, failedWith("downloadFile", exception), exception);
         this._errno = errno;
     }
 
@@ -206,7 +220,6 @@ class DownloadErrorResponse extends ResponseBase {
 // -- uploadFile --
 
 const uploadOkMsg = "uploadFile:ok";
-const uploadFailMsg = "uploadFile:fail";
 
 class UploadResponse extends ResponseBase {
     constructor(data, statusCode) {
@@ -234,7 +247,7 @@ class UploadResponse extends ResponseBase {
 
 class UploadErrorResponse extends ResponseBase {
     constructor(errno, exception) {
-        super(false, uploadFailMsg, exception);
+        super(false, failedWith("uploadFile", exception), exception);
         this._errno = errno;
     }
 

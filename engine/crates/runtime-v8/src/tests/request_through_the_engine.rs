@@ -50,6 +50,31 @@ mod request_tests {
             .expect("what content saw is what it should have seen");
     }
 
+    /// A task content aborts fails as the call it is, in the reference's words: `request:fail abort`,
+    /// `downloadFile:fail abort`. A download's abort used to be answered as a request's (`request:fail`), and no
+    /// failure said why at the top of its errMsg.
+    #[test]
+    fn an_aborted_task_fails_as_its_own_call_and_says_abort() {
+        run(
+            r#"
+            const answer = (api) => ({
+                success: () => log.push({ api, ok: true }),
+                fail: (err) => log.push({ api, ok: false, errMsg: err.errMsg, reason: err.exception && err.exception.reasons[0].errMsg }),
+            });
+            migo.request({ url: "data:text/plain;base64,aGVsbG8=", ...answer("request") }).abort();
+            migo.downloadFile({ url: "data:text/plain;base64,aGVsbG8=", ...answer("downloadFile") }).abort();
+        "#,
+            r#"
+            for (const api of ["request", "downloadFile"]) {
+                const got = log.find((entry) => entry.api === api);
+                if (!got || got.ok) fail(api + " is not answered as a failure");
+                if (got.errMsg !== api + ":fail abort") fail(api + "'s errMsg");
+                if (got.reason !== "abort") fail(api + "'s reason");
+            }
+        "#,
+        );
+    }
+
     /// The text of a body is the text.
     #[test]
     fn a_text_body_arrives_as_text() {
@@ -265,7 +290,7 @@ mod request_tests {
             }
             const failure = log.find((entry) => entry.label === "bad method fail");
             const complete = log.find((entry) => entry.label === "bad method complete");
-            if (!failure || failure.errMsg !== "request:fail") fail("an unsupported method is a request:fail");
+            if (!failure || !/^request:fail \S/.test(failure.errMsg)) fail("an unsupported method is a request:fail that says why: " + (failure && failure.errMsg));
             if (!complete) fail("complete runs");
         "#,
         );

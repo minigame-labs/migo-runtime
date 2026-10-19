@@ -202,7 +202,7 @@ function downloadFile(options) {
             try { await op_unlink(tmpPath); } catch (_) {}
 
             if (cancellation.aborted || err === "aborted") {
-                settler.fail(abortedNetworkError());
+                settler.fail(abortedNetworkError("downloadFile"));
             } else {
                 settler.fail(makeError(500, failMessage("downloadFile", err)));
             }

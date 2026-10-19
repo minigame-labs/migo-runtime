@@ -731,6 +731,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- A failed `request`, `downloadFile` or `uploadFile` says why in its `errMsg`, as the reference does --
+  `request:fail timeout`, `downloadFile:fail abort`, `request:fail fetch: connection to 10.0.2.2 is not allowed ...`
+  -- rather than a bare `request:fail` with the reason only in `exception.reasons`; an abort and a timeout are worded
+  as the reference words them. An aborted download or upload failed as a request (`request:fail`); it now fails as
+  itself.
 - Windows: the CSS generic font keywords reach the faces Chrome and Edge give them there -- `serif` Times New Roman,
   `sans-serif` Arial, `monospace` Consolas (Courier New where it is missing), `cursive` Comic Sans MS, `fantasy`
   Impact, `system-ui` Segoe UI. Skia's DirectWrite manager finds a family only by its name, so every keyword fell
