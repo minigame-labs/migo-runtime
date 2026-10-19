@@ -67,16 +67,30 @@ needs_artifact() {
     return 1
 }
 
-TIMEOUT="${MIGO_GATE_TIMEOUT:-180}"
+# A gate that runs out of time has not failed, and has not passed: it is reported apart, and
+# the run is not green. Counted as a failure it looked exactly like one -- on 2026-10-19 nine
+# of seventeen "failures" were gates killed while they compiled behind another build, and
+# their logs ended mid-build or on a PASS line still being printed. The longest gates take six
+# to seven minutes cold on a developer machine (the OpenHarmony toolchain, Performance+); the
+# limit bounds a hang, not a slow build.
+TIMEOUT="${MIGO_GATE_TIMEOUT:-900}"
 mapfile -t GATES < <(ls scripts/test-*.sh 2>/dev/null | sort)
+# A sweep over nothing is not a pass. Run from a copy outside the repository, this found no
+# gates, ran none, and reported "0 passed, 0 failed" with a green exit.
+((${#GATES[@]} > 0)) || { echo "no gates under $ROOT/scripts: nothing was run" >&2; exit 1; }
 
 passed=0
 expected=0
 failed=()
+unfinished=()
 for gate in "${GATES[@]}"; do
     name="$(basename "$gate")"
-    if env -u CC -u CXX timeout "$TIMEOUT" bash "$gate" > "/tmp/migo-gate-$name.log" 2>&1 < /dev/null; then
+    status=0
+    env -u CC -u CXX timeout "$TIMEOUT" bash "$gate" > "/tmp/migo-gate-$name.log" 2>&1 < /dev/null || status=$?
+    if [[ $status -eq 0 ]]; then
         passed=$((passed + 1))
+    elif [[ $status -eq 124 ]]; then
+        unfinished+=("$name")
     elif needs_artifact "$name"; then
         expected=$((expected + 1))
     else
@@ -84,11 +98,14 @@ for gate in "${GATES[@]}"; do
     fi
 done
 
-echo "contract gates: $passed passed, $expected skipped for a missing artifact, ${#failed[@]} failed"
+echo "contract gates: $passed passed, $expected skipped for a missing artifact, ${#unfinished[@]} did not finish in ${TIMEOUT}s, ${#failed[@]} failed"
+for name in "${unfinished[@]}"; do
+    echo "  --- $name did not finish in ${TIMEOUT}s: it says nothing about the tree until it does (MIGO_GATE_TIMEOUT) ---"
+done
 if ((${#failed[@]} > 0)); then
     for name in "${failed[@]}"; do
         echo "  --- $name (full log: /tmp/migo-gate-$name.log) ---"
         tail -3 "/tmp/migo-gate-$name.log" | sed 's/^/      /'
     done
-    exit 1
 fi
+((${#failed[@]} == 0 && ${#unfinished[@]} == 0)) || exit 1
