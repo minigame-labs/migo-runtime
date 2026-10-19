@@ -48,6 +48,8 @@ extension!(host_v8_webgl,
         op_clear_color,
 
         op_await_next_frame,
+        op_await_frame_content,
+        op_frame_loop_available,
         op_set_preferred_fps,
 
         op_alloc_gl_resource_id,

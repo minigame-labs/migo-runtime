@@ -283,19 +283,24 @@ fn shown_buttons_are_presented_as_the_overlay_and_hidden_ones_withdrawn() {
     // The render thread, as far as this needs one: it answers the canvas queries
     // the JavaScript half waits on and hands every frame to the assertions.
     let (frames_tx, frames) = crossbeam_channel::unbounded();
-    let renderer = std::thread::spawn(move || {
-        use shared::protocol::render_cmd::{CanvasCmd, RenderCommand};
-        while let Ok(command) = render_rx.recv_timeout(std::time::Duration::from_secs(5)) {
-            match command {
-                RenderCommand::Canvas(CanvasCmd::GetInfo { resp, .. }) => resp.ok((1, 1)),
-                RenderCommand::Canvas(CanvasCmd::DestroyCanvas { resp, .. }) => resp.ok(()),
-                frame @ RenderCommand::FramePacket(_) => {
-                    let _ = frames_tx.send(frame);
+    let frame_came = Arc::new(tokio::sync::Notify::new());
+    let renderer = {
+        let frame_came = Arc::clone(&frame_came);
+        std::thread::spawn(move || {
+            use shared::protocol::render_cmd::{CanvasCmd, RenderCommand};
+            while let Ok(command) = render_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+                match command {
+                    RenderCommand::Canvas(CanvasCmd::GetInfo { resp, .. }) => resp.ok((1, 1)),
+                    RenderCommand::Canvas(CanvasCmd::DestroyCanvas { resp, .. }) => resp.ok(()),
+                    frame @ RenderCommand::FramePacket(_) => {
+                        let _ = frames_tx.send(frame);
+                        frame_came.notify_one();
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
-        }
-    });
+        })
+    };
     let mut state = super::support::test_host_state();
     state.render_tx = render_tx;
     state.raf_rx = Some(raf_rx);
@@ -328,14 +333,19 @@ fn shown_buttons_are_presented_as_the_overlay_and_hidden_ones_withdrawn() {
         runtime
             .execute_script("<test:step>", deno_core::FastString::from_static(source))
             .expect("test step");
+        // Until the step's frame is presented, not until the event loop is idle: once a canvas
+        // has a context the engine waits for the next content for as long as the session lives.
         reactor.block_on(async {
-            tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                runtime.run_event_loop(deno_core::PollEventLoopOptions::default()),
-            )
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                tokio::select! {
+                    result = runtime.run_event_loop(deno_core::PollEventLoopOptions::default()) => {
+                        result.expect("event loop");
+                    }
+                    () = frame_came.notified() => {}
+                }
+            })
             .await
-            .expect("the frame came")
-            .expect("event loop");
+            .expect("the frame came");
         });
     };
 

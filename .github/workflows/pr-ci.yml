@@ -1353,6 +1353,11 @@ jobs:
       - name: A game that does not start ends the player's run
         run: bash scripts/test-player-launch-outcome.sh
 
+      # Content drawn outside requestAnimationFrame -- once at the top level, from a timer, text
+      # through its own op -- reaches the screen; it once never did, on any platform.
+      - name: Content drawn outside requestAnimationFrame is presented
+        run: bash scripts/test-player-draws-outside-raf.sh
+
   # The Windows arms of the sandbox filesystem and the atomic writer, run where
   # they compile. Until this job existed they were built for every release and
   # executed by nothing: `vfs/windows.rs` opened roots in the verbatim namespace,

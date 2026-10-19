@@ -217,8 +217,10 @@ impl FileService for ProbeService {
 const PLUMBING: &[&str] = &[
     "op_alloc_host_callback_id",
     "op_audio_release_buffer",
+    "op_await_frame_content",
     "op_await_next_frame",
     "op_console",
+    "op_frame_loop_available",
     "op_destroy_canvas",
     "op_destroy_image",
     "op_immediate_has_ref_count",
@@ -232,6 +234,7 @@ const PLUMBING: &[&str] = &[
 
 /// Async ops that wait for a listener's next event, for as long as the listener lives: not work a call does.
 const LISTENING: &[&str] = &[
+    "op_await_frame_content",
     "op_await_next_frame",
     "op_tcp_next_event",
     "op_udp_next_event",

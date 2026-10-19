@@ -14,7 +14,7 @@ import {
     _bumpCapabilityGeneration,
 } from "ext:host_v8_webgl/02_webgl_context.js";
 import { CanvasRenderingContext2D, _onceBeforePresent } from "ext:host_v8_webgl/02_2d_context.js";
-import { requestAnimationFrame } from "ext:host_v8_webgl/03_raf.js";
+import { requestAnimationFrame, watchFrameContent } from "ext:host_v8_webgl/03_raf.js";
 import {
     flushRenderCommandStream,
     discardRenderCommandStream,
@@ -306,6 +306,7 @@ class Canvas {
         return encodeImage(this._readAllPixels(), w, h, type, quality);
     }
     getContext(contextType, options) {
+        watchFrameContent();
         if (this._context) {
             // A canvas has one kind of context for life: asking for a different kind is answered with null, and only
             // the same kind returns the existing one.

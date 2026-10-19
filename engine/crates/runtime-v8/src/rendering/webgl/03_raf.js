@@ -1,10 +1,13 @@
 import {
     op_set_preferred_fps,
     op_await_next_frame,
+    op_await_frame_content,
+    op_frame_loop_available,
 } from "ext:core/ops";
 import { errorToString } from "ext:host_v8_base/02_async.js";
 import { core, primordials } from "ext:core/mod.js";
 import { frameEndAll } from "ext:host_v8_webgl/02_2d_context.js";
+import { setFirstContentListener } from "ext:host_v8_webgl/00_render_command_stream.js";
 
 // Registered for the reason `IOError` is (see 02_file_manager.js): the Rust side
 // names this class in `#[class("RafError")]`, and deno_core can only build the
@@ -12,7 +15,7 @@ import { frameEndAll } from "ext:host_v8_webgl/02_2d_context.js";
 // `undefined`, and the async op path then calls `ErrorCaptureStackTrace` on it
 // without the `typeof === "object"` guard `buildCustomError` has -- so V8 raises
 // `TypeError: invalid_argument` and that replaces the real error on its way out.
-const { Error: _PrimErrorR } = primordials;
+const { Error: _PrimErrorR, PromiseResolve, PromisePrototypeThen } = primordials;
 class RafError extends _PrimErrorR {
   constructor(msg) {
     super(msg);
@@ -105,4 +108,56 @@ const setPreferredFramesPerSecond = (fps) => {
     op_set_preferred_fps(fps);
 };
 
-export { requestAnimationFrame, cancelAnimationFrame, setPreferredFramesPerSecond };
+// Content that draws outside requestAnimationFrame -- at its top level, in a timer, in an input
+// handler -- is presented at the next frame, as a browser presents what a task drew at its next
+// rendering update. The frame end that publishes a frame's commands runs only in the loop above,
+// and the loop runs only while callbacks are queued, so such content drew and was never shown: a
+// game drawing from setInterval stayed black on Android, and the Linux player said it never drew.
+// The collector answers op_await_frame_content at the first command after each frame end; when
+// nothing is still waiting for a frame end, or the loop is running and will end one, there is
+// nothing to do. Started by the first context, since nothing draws without one, and not at module
+// evaluation, which the V8 snapshot captures.
+let _frameContentWatched = false;
+let _frameEndQueued = false;
+const _endFrameDrawnOutsideRaf = () => {};
+// Decided at the end of the task that drew, not inside the draw call that noticed: a fill must not
+// start the frame loop, and an async op with it, in the middle of the content's own code. A frame
+// end is coming anyway if the loop is running: its iteration ends with one.
+const _endFrameSoon = () => {
+    if (_frameEndQueued) return;
+    _frameEndQueued = true;
+    PromisePrototypeThen(PromiseResolve(), _endFrameAtTaskEnd);
+};
+function _endFrameAtTaskEnd() {
+    _frameEndQueued = false;
+    if (!__rafLoopRunning && op_frame_loop_available()) requestAnimationFrame(_endFrameDrawnOutsideRaf);
+}
+// Two ways content reaches a frame: records in the JS command stream, which say so as they are
+// written, and the ops that push to the collector directly, which say so through the wait below.
+setFirstContentListener(_endFrameSoon);
+
+function watchFrameContent() {
+    if (_frameContentWatched) return;
+    _frameContentWatched = true;
+    PromisePrototypeThen(PromiseResolve(), _startFrameContentWatch);
+}
+function _startFrameContentWatch() {
+    if (!op_frame_loop_available()) {
+        // Asked again by the next context, which may be made where one can run.
+        _frameContentWatched = false;
+        return;
+    }
+    PromisePrototypeThen(_watchFrameContent(), undefined, (e) => {
+        console.error(`frame content watch ended: ${errorToString(e)}`);
+    });
+}
+async function _watchFrameContent() {
+    while (true) {
+        // Referenced, so the event loop is never idle once a context exists. A host stops polling
+        // an idle loop until a command arrives, and the poll in which a timer's last callback
+        // draws is the one that would report it idle: an unreferenced wait left that draw unshown.
+        if (await op_await_frame_content()) _endFrameSoon();
+    }
+}
+
+export { requestAnimationFrame, cancelAnimationFrame, setPreferredFramesPerSecond, watchFrameContent };

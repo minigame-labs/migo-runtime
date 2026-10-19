@@ -731,6 +731,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- Content that draws outside `requestAnimationFrame` -- at its top level, from a timer, in an input handler -- is shown.
+  The frame end that publishes a frame's commands and presents them ran only in the `requestAnimationFrame` loop, which
+  runs only while callbacks are queued: on Android a game drawing from `setInterval` stayed black for as long as it ran,
+  the Linux player reported such a game as never having drawn, and a game that drew once showed only when some unrelated
+  frame happened to follow it. The first command after a frame end -- written to the command stream, or pushed by an op
+  that reaches the renderer directly, as `fillText` does -- now has its frame ended at the next frame, as a browser
+  presents what a task drew; a game that animates through `requestAnimationFrame` is unaffected.
 - Android: a game has no title bar, whatever theme the host gave its app. `MigoGameActivity` took the app's theme --
   neither the SDK's manifest entry nor a host's subclass names one -- so under a framework theme with an action bar the
   game drew below the host's title, in a surface shorter than the screen. Found by an integration from the

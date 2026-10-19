@@ -718,6 +718,7 @@ fn do_frame_end_unified(state: &mut OpState) {
         if let Some(collector) = state
             .try_borrow_mut::<crate::rendering::webgl::frame_collector::UnifiedFrameCollector>(
         ) {
+            collector.frame_ended();
             collector.build_frame_packet(true)
         } else {
             None

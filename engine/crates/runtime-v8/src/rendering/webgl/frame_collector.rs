@@ -303,6 +303,11 @@ pub(crate) struct UnifiedFrameCollector {
     /// barrier runs, so a frame that drew and then asked a question would
     /// otherwise never be presented.
     barrier_in_frame: bool,
+    /// Whether a command has been pushed since the last frame end. The first one wakes
+    /// `content_notify`, so a frame end follows content that draws outside
+    /// requestAnimationFrame -- see `op_await_frame_content`.
+    content_since_frame_end: bool,
+    content_notify: Arc<tokio::sync::Notify>,
 }
 
 /// The JavaScript-to-native crossing count — the number a command stream
@@ -385,7 +390,38 @@ impl UnifiedFrameCollector {
             diagnostics_stats,
             boundary: BoundaryCounts::default(),
             barrier_in_frame: false,
+            content_since_frame_end: false,
+            content_notify: Arc::new(tokio::sync::Notify::new()),
         }
+    }
+
+    /// A command reached the collector. The first one after a frame end wakes whoever waits on
+    /// `content_notify`, once.
+    #[inline]
+    fn note_content(&mut self) {
+        if !self.content_since_frame_end {
+            self.content_since_frame_end = true;
+            self.content_notify.notify_one();
+        }
+    }
+
+    /// The frame ended: what it drew has gone to the renderer with the frame's present.
+    ///
+    /// Only a frame end clears this, not a barrier: a barrier sends commands ahead without
+    /// presenting them, so content that drew and then asked a question still needs its frame
+    /// ended.
+    pub(crate) fn frame_ended(&mut self) {
+        self.content_since_frame_end = false;
+    }
+
+    /// Whether anything drawn since the last frame end is still waiting for one.
+    pub(crate) fn content_since_frame_end(&self) -> bool {
+        self.content_since_frame_end
+    }
+
+    /// Woken by the first command after each frame end.
+    pub(crate) fn content_notify(&self) -> Arc<tokio::sync::Notify> {
+        Arc::clone(&self.content_notify)
     }
 
     /// One call from JavaScript reached the collector.
@@ -517,6 +553,7 @@ impl UnifiedFrameCollector {
     }
 
     pub(crate) fn push_canvas2d(&mut self, canvas_id: u32, cmd: Canvas2DCmd) {
+        self.note_content();
         // Walk the full deep size (enum base + heap payload) so the
         // budget reflects reality.  The previous implementation
         // only added `size_of::<Canvas2DCmd>()`, missing text
@@ -574,6 +611,7 @@ impl UnifiedFrameCollector {
     }
 
     pub(crate) fn push_gl(&mut self, cmd: GLCmd) {
+        self.note_content();
         // Deep size walk - see the Canvas2D counterpart.  This is
         // especially critical for `BufferData(Vec<u8>)` /
         // `TexImage2D(Arc<Vec<u8>>)` / `ShaderSource(String)`, the
@@ -614,6 +652,7 @@ impl UnifiedFrameCollector {
     /// under-count the batch and defeat the auto-flush guard.
     #[inline]
     pub(crate) fn push_gl_fast(&mut self, cmd: GLCmd) {
+        self.note_content();
         const BASE_BYTES: usize = std::mem::size_of::<GLCmd>();
         self.gl_segment().commands.push(cmd);
         self.pending_bytes = self.pending_bytes.saturating_add(BASE_BYTES);
@@ -650,6 +689,7 @@ impl UnifiedFrameCollector {
             // itself on the way out.
             return false;
         }
+        self.note_content();
 
         if self.current == CurrentKind::GL {
             // Extend the current GL segment in place, leaving `commands` empty
@@ -1163,6 +1203,46 @@ mod tests {
             canvas_id: 1u32.into(),
             bit_field: 0x4000,
         }
+    }
+
+    /// Content drawn outside requestAnimationFrame is presented only if something ends its frame;
+    /// the collector's part is to say, once per frame, that something was drawn.
+    #[test]
+    fn the_first_command_after_a_frame_end_wakes_the_frame_scheduler_once() {
+        use futures::FutureExt;
+        let mut collector = UnifiedFrameCollector::new();
+        let wake = collector.content_notify();
+        assert!(!collector.content_since_frame_end());
+        assert!(
+            wake.notified().now_or_never().is_none(),
+            "nothing drawn, nothing to wake"
+        );
+
+        collector.push_gl(clear_command());
+        collector.append_gl_batch(vec![clear_command()].into(), 64);
+        assert!(collector.content_since_frame_end());
+        assert!(
+            wake.notified().now_or_never().is_some(),
+            "the frame's first command wakes it"
+        );
+        assert!(
+            wake.notified().now_or_never().is_none(),
+            "and the frame's later commands do not"
+        );
+
+        collector.build_frame_packet(false);
+        assert!(
+            collector.content_since_frame_end(),
+            "a barrier sends commands ahead without presenting them: the frame still needs its end"
+        );
+
+        collector.frame_ended();
+        assert!(!collector.content_since_frame_end());
+        collector.push_canvas2d(1, Canvas2DCmd::BeginPath);
+        assert!(
+            wake.notified().now_or_never().is_some(),
+            "the next frame's first command wakes it again"
+        );
     }
 
     #[test]

@@ -231,13 +231,13 @@ fn run_embedded_session(ctx: SessionThreadContext) {
                                     break 'outer;
                                 }
                                 // Event loop returned Ok — no pending ops/timers/promises.
-                                // Ordinary once the game is running, because the pending
-                                // op_await_next_frame keeps the loop alive; ordinary *before* it
-                                // is running too, which is what this used to claim was abnormal.
-                                // It fires three times on every single launch, in the window
-                                // between the host thread coming up and the game registering its
-                                // first rAF -- a warning on the guaranteed path is how a log
-                                // teaches its reader to skip warnings.
+                                // Never once content has a canvas context: the frame-content
+                                // wait (op_await_frame_content) stays pending from then on.
+                                // Ordinary *before* then, which is what this used to claim was
+                                // abnormal. It fires three times on every single launch, in the
+                                // window between the host thread coming up and the game making
+                                // its first context -- a warning on the guaranteed path is how a
+                                // log teaches its reader to skip warnings.
                                 //
                                 // Park on the command channel + render/audio signals (no polling
                                 // timer) so a ContextLost or a first audio command during an idle
