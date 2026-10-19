@@ -203,6 +203,28 @@ fn a_surface_the_host_gave_that_was_refused_is_not_reported_as_the_contents() {
 }
 
 #[test]
+fn a_frame_that_could_not_be_presented_reaches_the_host_as_survivable() {
+    // A failed swap that is not a lost context leaves the session running: the render loop
+    // presents again next frame, and a Surface it can no longer present to is retired and
+    // reported through `notify_surface_lost`. Both lanes reported it as `RenderBackendError`,
+    // which Android reads as a session to restart or destroy.
+    for (lane, source) in [("host", HOST), ("external", EXTERNAL)] {
+        let arm = source
+            .split("RenderEvent::SwapFailed { message } =>")
+            .nth(1)
+            .unwrap_or_else(|| panic!("the {lane} lane must handle a failed swap"))
+            .split("\n            RenderEvent::")
+            .next()
+            .expect("the arm must end");
+        assert!(
+            code_only(arm).contains("ErrorCode::RenderSwapBuffersError.as_u16()")
+                && !code_only(arm).contains("RenderBackendError"),
+            "the {lane} lane must report a failed swap under its own, survivable code"
+        );
+    }
+}
+
+#[test]
 fn a_launch_that_fails_is_announced_like_one_that_succeeds() {
     // The property: the two outcomes of loading content travel the same way, from
     // the same place, for every caller.

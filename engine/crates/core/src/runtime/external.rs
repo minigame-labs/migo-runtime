@@ -3523,9 +3523,11 @@ fn drain_render_events(
                 });
                 if due {
                     *last_swap_report = Some(now);
+                    // Survivable, as on the host lane: the Surface is retired and reported
+                    // through `notify_surface_lost` when it is gone for good.
                     platform.notify_error(
                         id,
-                        ErrorCode::RenderBackendError.as_u16(),
+                        ErrorCode::RenderSwapBuffersError.as_u16(),
                         "render swap failed",
                         &message,
                     );

@@ -622,10 +622,14 @@ impl Host {
             }
             RenderEvent::SwapFailed { message } => {
                 warn!("[Host {}] swap failed: {}", self.id, message);
+                // The session goes on: the render loop presents again next frame, and a
+                // Surface it can no longer present to is retired and reported through
+                // `notify_surface_lost`, which tells the host what to do. Reported as
+                // `RenderBackendError` it read on Android as a session to restart or destroy.
                 if self.should_notify_error("swap") {
                     self.platform.notify_error(
                         self.id,
-                        shared::error::ErrorCode::RenderBackendError.as_u16(),
+                        shared::error::ErrorCode::RenderSwapBuffersError.as_u16(),
                         "render swap failed",
                         &message,
                     );

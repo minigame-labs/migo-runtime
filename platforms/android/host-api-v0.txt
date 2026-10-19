@@ -364,6 +364,7 @@
   public static final int NATIVE_JS_EXECUTION_TIMEOUT;
   public static final int NATIVE_OUT_OF_MEMORY;
   public static final int NATIVE_RENDER_COMMAND_FAILED;
+  public static final int NATIVE_RENDER_SWAP_BUFFERS_ERROR;
   public static final int SPLASH_AD_CODE_FILTERED;
   public static final int SPLASH_AD_CODE_SHOWN;
   public static final int SPLASH_AD_CODE_TIMED_OUT;

@@ -74,8 +74,9 @@ pub trait HostNotifier: Send + Sync {
     ///
     /// Not every one ends the game, and the code says which: a host tells them apart by code
     /// alone (Android's `ErrorCode.isRecoverable`). A render command the content got wrong
-    /// arrives as `RenderCommandFailed` and refused input as `InputSaturated`; the session goes
-    /// on after both. The host thread panicking, the ANR watchdog terminating the isolate and
+    /// arrives as `RenderCommandFailed`, a frame that could not be presented as
+    /// `RenderSwapBuffersError` and refused input as `InputSaturated`; the session goes on
+    /// after each. The host thread panicking, the ANR watchdog terminating the isolate and
     /// the V8 heap limit end it. A launch that failed is [`Self::notify_game_failed`].
     ///
     /// On Android, this calls `NativeExports.onError(hostId, code, msg, detail)`

@@ -26,4 +26,17 @@ public final class ErrorCodeTest {
                 ErrorCode.getMessage(ErrorCode.NATIVE_RENDER_COMMAND_FAILED));
         assertTrue(ErrorCode.isRecoverable(ErrorCode.NATIVE_RENDER_COMMAND_FAILED));
     }
+
+    /**
+     * A frame that could not be presented does not end the game: the engine presents again,
+     * and a Surface that is gone is reported as lost. It reached hosts as RenderBackendError,
+     * which this class reads as a session to restart or destroy.
+     */
+    @Test
+    public void aFrameThatCouldNotBePresentedIsRecoverable() {
+        assertEquals(413, ErrorCode.NATIVE_RENDER_SWAP_BUFFERS_ERROR);
+        assertEquals("Frame presentation failed",
+                ErrorCode.getMessage(ErrorCode.NATIVE_RENDER_SWAP_BUFFERS_ERROR));
+        assertTrue(ErrorCode.isRecoverable(ErrorCode.NATIVE_RENDER_SWAP_BUFFERS_ERROR));
+    }
 }

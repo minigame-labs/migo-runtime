@@ -64,6 +64,9 @@ pub enum ErrorCode {
     RenderCreateContextError = 410,
     RenderMakeCurrentError = 411,
     RenderSwapIntervalError = 412,
+    /// Presenting a frame failed, and it was not a lost context. The session goes on: the
+    /// render loop presents again next frame, and a Surface it can no longer present to is
+    /// retired and reported as a lost Surface.
     RenderSwapBuffersError = 413,
     RenderInvalidStateError = 414,
     /// The framebuffer bound for the operation is not framebuffer complete.
