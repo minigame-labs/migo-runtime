@@ -724,6 +724,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- The system EGL library is loaded once per process, on every platform. Each session opened its own handle and dropped
+  it at shutdown, so a host that ran one game after another unloaded and reloaded the whole GL driver between them --
+  on Linux, glvnd's `libEGL` and `libGLdispatch`, Mesa's `libEGL_mesa`, its gallium driver -- and each cycle leaked
+  what the driver's teardown does not free: about 4 kB a session on Mesa, four fifths of what a session left behind. A
+  driver that keeps a thread or an exit handler past its unload crashes there instead.
+- The headless player's frame capture no longer keeps a frame read after its request was taken: one landing between
+  `take` and the session's end stayed in the slot, a whole frame's pixels held after the session that drew it had gone.
 - WebP and GIF images load on Linux, Windows, OpenHarmony and Apple, and through the Android C ABI. The Rust decoders
   covered JPEG, PNG and BMP, and those builds have no platform decoder to fall back to (the C ABI's `AImageDecoder` needs
   Android 11), so every WebP or GIF asset failed with "no image decoder available" -- and mini-game packages ship WebP to

@@ -147,7 +147,7 @@ impl UploadThreadHandle {
     /// * `share_ctx` — the render thread's EGL context to share with
     pub(crate) fn try_spawn(
         egl_provider: Arc<dyn EglProvider>,
-        egl: &khronos_egl::DynamicInstance<khronos_egl::EGL1_4>,
+        egl: &crate::egl_platform::EglInstance,
         display: khronos_egl::Display,
         config: khronos_egl::Config,
         share_ctx: khronos_egl::Context,

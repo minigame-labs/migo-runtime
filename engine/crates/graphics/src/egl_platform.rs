@@ -15,7 +15,36 @@ use shared::{
     surface::{Surface, SurfaceLease, SurfaceResourceLease},
 };
 
-pub type EglInstance = egl::DynamicInstance<egl::EGL1_4>;
+/// EGL over a library the process holds for its whole life: no session owns the driver it
+/// renders with, so none can unload it. See [`process_egl_library`].
+pub type EglInstance = egl::Instance<egl::Dynamic<&'static libloading::Library, egl::EGL1_4>>;
+
+/// The process's one handle to the EGL library `name`: opened by `open` the first time it is
+/// asked for, and never closed.
+///
+/// A GL driver is process state, and it is not built to be unloaded. Each session used to open
+/// its own handle and drop it at shutdown, so the last thread out of a session `dlclose`d the
+/// whole driver -- glvnd's libEGL and libGLdispatch, Mesa's libEGL_mesa, its gallium driver --
+/// and the next session loaded all of it again. Every cycle leaked what the driver's own teardown
+/// does not free, about 4.5 kB a session on Mesa, and a driver that keeps a thread or an exit
+/// handler past its unload crashes there instead (khronos-egl issue 14). A host opens session
+/// after session in one process; the driver is loaded once.
+///
+/// A failed open is not remembered, so the next session asks again.
+pub fn process_egl_library<E>(
+    name: &'static str,
+    open: impl FnOnce() -> Result<libloading::Library, E>,
+) -> Result<&'static libloading::Library, E> {
+    static OPENED: parking_lot::Mutex<Vec<(&'static str, &'static libloading::Library)>> =
+        parking_lot::Mutex::new(Vec::new());
+    let mut opened = OPENED.lock();
+    if let Some((_, library)) = opened.iter().find(|(known, _)| *known == name) {
+        return Ok(*library);
+    }
+    let library: &'static libloading::Library = Box::leak(Box::new(open()?));
+    opened.push((name, library));
+    Ok(library)
+}
 
 /// Whether one provider may back EGL contexts used by multiple Migo threads.
 ///
@@ -305,6 +334,50 @@ mod tests {
     use shared::surface::SurfaceGenerationGate;
 
     use super::*;
+
+    fn this_process() -> libloading::Library {
+        #[cfg(unix)]
+        return libloading::os::unix::Library::this().into();
+        #[cfg(windows)]
+        return libloading::os::windows::Library::this()
+            .expect("the process image")
+            .into();
+    }
+
+    #[test]
+    fn an_egl_library_is_opened_once_and_held_for_the_process() {
+        let opens = AtomicUsize::new(0);
+        let open = || {
+            opens.fetch_add(1, Ordering::Relaxed);
+            Ok::<_, ()>(this_process())
+        };
+        let first = process_egl_library("test-held-egl", open).unwrap();
+        let second = process_egl_library("test-held-egl", open).unwrap();
+        assert!(
+            std::ptr::eq(first, second),
+            "a second session gets the handle the first opened"
+        );
+        assert_eq!(
+            opens.load(Ordering::Relaxed),
+            1,
+            "and the library is not opened again"
+        );
+    }
+
+    #[test]
+    fn a_failed_open_is_tried_again() {
+        assert!(matches!(
+            process_egl_library("test-retried-egl", || Err("absent")),
+            Err("absent")
+        ));
+        let opens = AtomicUsize::new(0);
+        process_egl_library("test-retried-egl", || {
+            opens.fetch_add(1, Ordering::Relaxed);
+            Ok::<_, &str>(this_process())
+        })
+        .unwrap();
+        assert_eq!(opens.load(Ordering::Relaxed), 1);
+    }
 
     #[derive(Debug)]
     struct BackendA;

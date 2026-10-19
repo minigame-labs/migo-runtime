@@ -1734,6 +1734,7 @@ dependencies = [
  "glow",
  "khronos-egl",
  "libc",
+ "libloading",
  "lru",
  "migo-alloc-probe",
  "migo-frame-wire",

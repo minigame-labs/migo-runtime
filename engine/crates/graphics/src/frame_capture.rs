@@ -133,24 +133,34 @@ pub(crate) fn capture_default_fbo(gl: &glow::Context, width: u32, height: u32) {
         gl.bind_framebuffer(glow::READ_FRAMEBUFFER, restored);
         buf
     };
-    let mut slot = RESULT.lock().expect("frame_capture result mutex");
-    // A request that arrived while this frame was being read owns the slot now:
-    // this frame predates it, and is exactly the stale capture `take` refuses.
-    if slot.as_ref().is_some_and(|(stored, _)| *stored > seq) {
-        return;
-    }
-    *slot = Some((
+    store(
         seq,
         CapturedFrame {
             width,
             height,
             rgba_bottom_up: buf,
         },
-    ));
-    drop(slot);
-    PRESENTED.notify_all();
+    );
     // Intentionally do NOT clear the request here: keep the latest frame until
     // the consumer calls take(), so blank warmup frames are replaced by content.
+}
+
+/// Put a frame read for generation `seq` in the slot, unless nobody can take it any more.
+///
+/// A request that arrived while this frame was being read owns the slot now: this frame predates
+/// it, and is exactly the stale capture `take` refuses. So is a frame whose request was taken
+/// while it was being read -- and that one used to land anyway, a whole frame of pixels held in
+/// the slot after the session that drew it had ended, until the next `take` threw it away.
+fn store(seq: u64, frame: CapturedFrame) {
+    let mut slot = RESULT.lock().expect("frame_capture result mutex");
+    if TAKEN.load(Ordering::Acquire) >= seq
+        || slot.as_ref().is_some_and(|(stored, _)| *stored > seq)
+    {
+        return;
+    }
+    *slot = Some((seq, frame));
+    drop(slot);
+    PRESENTED.notify_all();
 }
 
 #[cfg(test)]
@@ -158,8 +168,36 @@ mod tests {
     use super::*;
     use crate::backend::gl::readback_test_gl as test_gl;
 
+    /// The generations and the slot are process-wide; these tests take turns with them.
+    static SERIAL: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn a_frame_read_for_a_request_already_taken_does_not_land() {
+        let _turn = SERIAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        request();
+        let seq = pending_seq().expect("a capture is pending");
+        assert!(take().is_none());
+        store(
+            seq,
+            CapturedFrame {
+                width: 1,
+                height: 1,
+                rgba_bottom_up: vec![0; 4],
+            },
+        );
+        assert!(
+            RESULT.lock().unwrap().is_none(),
+            "the slot holds no frame once its request has been taken"
+        );
+    }
+
     #[test]
     fn internal_readback_capture_uses_compact_pack_and_restores_content_state() {
+        let _turn = SERIAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let gl = test_gl::context();
         let original = test_gl::Bindings {
             pack: [8, 9, 2, 3],

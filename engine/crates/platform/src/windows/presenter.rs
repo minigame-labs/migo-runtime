@@ -23,6 +23,7 @@ use std::{any::Any, ffi::c_void, ptr::NonNull, sync::Arc};
 use graphics::egl_platform::{
     EglConcurrency, EglInstance, EglProvider, EglSurfaceFactory, GraphicsBackendId,
     GraphicsPlatform, PlatformIdentity, PreparedEglSurface, PreparedEglSurfaceRef,
+    process_egl_library,
 };
 use khronos_egl as egl;
 use shared::{
@@ -77,12 +78,14 @@ impl EglProvider for WindowsEglProvider {
     }
 
     fn load(&self) -> EngineResult<EglInstance> {
-        let library =
-            unsafe { libloading::Library::new(WINDOWS_EGL_LIBRARY) }.map_err(|error| {
-                EngineError::new(ErrorCode::RenderBackendError)
-                    .with_msg("load ANGLE libEGL.dll failed")
-                    .with_detail(format!("{WINDOWS_EGL_LIBRARY}: {error}"))
-            })?;
+        let library = process_egl_library(WINDOWS_EGL_LIBRARY, || unsafe {
+            libloading::Library::new(WINDOWS_EGL_LIBRARY)
+        })
+        .map_err(|error| {
+            EngineError::new(ErrorCode::RenderBackendError)
+                .with_msg("load ANGLE libEGL.dll failed")
+                .with_detail(format!("{WINDOWS_EGL_LIBRARY}: {error}"))
+        })?;
         unsafe { EglInstance::load_required_from(library) }.map_err(|error| {
             EngineError::new(ErrorCode::RenderBackendError)
                 .with_msg("resolve required ANGLE EGL symbols failed")

@@ -20,6 +20,7 @@ use std::{
 use graphics::egl_platform::{
     EglConcurrency, EglInstance, EglProvider, EglSurfaceFactory, GraphicsBackendId,
     GraphicsPlatform, PlatformIdentity, PreparedEglSurface, PreparedEglSurfaceRef,
+    process_egl_library,
 };
 use khronos_egl as egl;
 use shared::{
@@ -340,7 +341,10 @@ impl EglProvider for LinuxEglProvider {
     }
 
     fn load(&self) -> EngineResult<EglInstance> {
-        let library = unsafe { libloading::Library::new(LINUX_EGL_LIBRARY) }.map_err(|error| {
+        let library = process_egl_library(LINUX_EGL_LIBRARY, || unsafe {
+            libloading::Library::new(LINUX_EGL_LIBRARY)
+        })
+        .map_err(|error| {
             EngineError::new(ErrorCode::RenderBackendError)
                 .with_msg("load Linux system EGL failed")
                 .with_detail(format!("{LINUX_EGL_LIBRARY}: {error}"))
