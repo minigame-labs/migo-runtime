@@ -7,10 +7,14 @@
 //! nothing, and every script the bundled Latin face lacks came out as boxes. A Cocos Creator game's
 //! start button read as two of them, with Chinese fonts installed.
 //!
-//! The system here is one this test makes: a fontconfig configuration whose only font is
-//! `fallback-probe.ttf`, a solid em square at U+5F00 in a family no text names. Drawn from it, the
-//! character is exactly one em wide and fills its box; drawn as the bundled font's .notdef, it is
-//! narrower and hollow. Its own binary, because fontconfig reads its configuration once per process.
+//! The system here is one this test makes: a fontconfig configuration with two fonts, the bundled
+//! Latin Noto Sans -- which every generic family prefers, so `sans-serif` in the chain names a face
+//! without the character -- and `fallback-probe.ttf`, a solid em square at U+5F00 in a family no
+//! text names. The probe is reachable only by asking the system which face has the character, the
+//! mechanism under test: with the probe as the only font, fontconfig answered `sans-serif` with it,
+//! and the chain reached it by name. Drawn from it, the character is exactly one em wide and fills
+//! its box; drawn as Noto Sans's .notdef, it is narrower and hollow. Its own binary, because
+//! fontconfig reads its configuration once per process.
 #![cfg(all(target_os = "linux", not(target_env = "ohos")))]
 
 mod common;
@@ -30,19 +34,27 @@ const NOTO_SANS: &[u8] = include_bytes!("fixtures/fonts/NotoSans-Regular.ttf");
 const PROBE: &[u8] = include_bytes!("fixtures/fonts/fallback-probe.ttf");
 const SIZE: f32 = 40.0;
 
-/// Point fontconfig at a system whose only font is the probe, before anything reads it.
-fn only_the_probe_is_installed() {
+/// Point fontconfig at a system of Noto Sans and the probe, before anything reads it.
+fn the_probe_is_installed_behind_a_latin_face() {
     let root = std::env::temp_dir().join(format!("migo-text-fallback-{}", std::process::id()));
     let fonts = root.join("fonts");
     std::fs::create_dir_all(&fonts).unwrap();
     std::fs::write(fonts.join("fallback-probe.ttf"), PROBE).unwrap();
+    std::fs::write(fonts.join("NotoSans-Regular.ttf"), NOTO_SANS).unwrap();
+    let prefer_noto: String = ["sans-serif", "serif", "monospace", "system-ui", "cursive", "fantasy"]
+        .iter()
+        .map(|generic| {
+            format!("  <alias binding=\"strong\"><family>{generic}</family><prefer><family>Noto Sans</family></prefer></alias>\n")
+        })
+        .collect();
     let config = root.join("fonts.conf");
     std::fs::write(
         &config,
         format!(
-            "<?xml version=\"1.0\"?>\n<!DOCTYPE fontconfig SYSTEM \"fonts.dtd\">\n<fontconfig>\n  <dir>{}</dir>\n  <cachedir>{}</cachedir>\n</fontconfig>\n",
+            "<?xml version=\"1.0\"?>\n<!DOCTYPE fontconfig SYSTEM \"fonts.dtd\">\n<fontconfig>\n  <dir>{}</dir>\n  <cachedir>{}</cachedir>\n{}</fontconfig>\n",
             fonts.display(),
-            root.join("cache").display()
+            root.join("cache").display(),
+            prefer_noto
         ),
     )
     .unwrap();
@@ -52,7 +64,7 @@ fn only_the_probe_is_installed() {
 
 #[test]
 fn a_character_the_named_fonts_lack_is_drawn_from_a_system_font_that_has_it() {
-    only_the_probe_is_installed();
+    the_probe_is_installed_behind_a_latin_face();
     let mut text = TextContext::new();
     assert!(text.register_family("test-noto", NOTO_SANS));
     let families = Arc::new(vec!["test-noto".to_string(), "sans-serif".to_string()]);
