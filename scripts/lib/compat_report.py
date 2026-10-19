@@ -109,7 +109,8 @@ NOTHING_PRESENTED = re.compile(r"nothing was presented during the run")
 # engine's, which CONTENT_ERRORS already labels from the engine's own line when the content caused it; read as content
 # too, one failure would be listed twice.
 DID_NOT_START = re.compile(r"the game did not start: (.*)")
-# A global the content used and no layer defined: not a name on `wx` or `migo` (the recorder sees those), so
+# A global the content used and no layer defined: not a name on the adapter's namespace or `migo` (the recorder
+# sees those), so
 # only the engine's error says it.
 UNDEFINED = re.compile(r"ReferenceError: ([A-Za-z_$][\w$]*) is not defined")
 

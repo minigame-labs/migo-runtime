@@ -690,6 +690,18 @@ lane="$(bash "$ROOT/scripts/verify-change.sh" --base HEAD --plan-only 2>&1 || tr
 assert_contains "$lane" "CONTRACT" "the plan reports a contract lane"
 assert_contains "$lane" "scripts/test-ad-reward-integrity-contract.sh" \
     "the contract lane includes the ad reward integrity gate"
+# The Python gates, and gates whose arguments CI writes on the next line. While the parse
+# matched `bash` alone, line by line, the publication hygiene gate was absent from the lane and
+# went red on a branch the local verifier called verified; a folded or continued command was
+# derived without its arguments, or not at all.
+assert_contains "$lane" "python3 scripts/check-repository-hygiene.py --root ." \
+    "the contract lane includes the publication hygiene gate"
+assert_contains "$lane" "python3 scripts/check-supply-chain.py gradle --project-dir platforms/android --policy supply-chain.toml" \
+    "a gate folded onto two lines is derived with its arguments"
+assert_contains "$lane" "scripts/write-linux-build-metadata.py scripts/write-linux-v8-component-manifest.py" \
+    "a gate continued with backslashes is derived with its arguments"
+assert_contains "$lane" "skip:builds-its-input-first bash scripts/test-apple-performance-rust-closure.sh --artifact" \
+    "an invocation that reads what its step built first is CI-only, not run against a stale build"
 
 derived="$(python3 "$ROOT/scripts/lib/ci_contract_gates.py" "$ROOT" | grep -c . || true)"
 if [[ "$derived" -ge 15 ]]; then

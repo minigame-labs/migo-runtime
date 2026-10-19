@@ -272,7 +272,7 @@ fn print_usage() {
 
 /// The boot preludes `--prelude` names, in the order given: each runs in the global
 /// scope before the game's entry, as a host injects an adapter. Content written
-/// against `wx` or the browser runs here only with its adapter in front of it.
+/// against a platform's namespace or the browser runs here only with its adapter in front of it.
 fn prelude_scripts(files: &[PathBuf]) -> Result<Vec<(String, String)>, String> {
     files
         .iter()

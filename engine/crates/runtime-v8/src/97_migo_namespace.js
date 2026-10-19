@@ -124,8 +124,8 @@ function _copyApiNamespace(excluded) {
         // All but enumerability: most globals are defined as a browser defines
         // its window's, hidden from enumeration, and the platform's namespace
         // is a plain object whose every API is listed. Content enumerates it --
-        // Cocos Creator 3 builds its environment from Object.keys(wx), which an
-        // adapter mirrors from here -- and with the globals' attribute 422 of
+        // Cocos Creator 3 builds its environment from Object.keys of the
+        // adapter's namespace, which mirrors this one -- and with the globals' attribute 422 of
         // 452 names were missing from that list, onHide among them.
         try {
             const desc = Object.getOwnPropertyDescriptor(globalThis, key);

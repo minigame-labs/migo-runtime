@@ -2,10 +2,10 @@
 //!
 //! `migo` mirrors the engine's globals, and most of those are defined the way a browser defines
 //! its window's: not enumerable. Copied with that attribute, 422 of the 452 names `migo`
-//! published were invisible to `Object.keys(migo)` and `for...in` -- and to the `wx` an adapter
-//! mirrors from it. The platform's namespace is a plain object whose every API is enumerable, and
-//! content enumerates it: Cocos Creator 3 builds its own environment from `Object.keys(wx)`, so
-//! its `minigame.onHide` was undefined and its start-up threw.
+//! published were invisible to `Object.keys(migo)` and `for...in` -- and to the namespace an
+//! adapter mirrors from it. The platform's namespace is a plain object whose every API is
+//! enumerable, and content enumerates it: Cocos Creator 3 builds its own environment from
+//! `Object.keys` of that namespace, so its `minigame.onHide` was undefined and its start-up threw.
 
 #[cfg(test)]
 mod namespace_members_tests {

@@ -144,9 +144,19 @@ _LEGACY_BRAND_EXEMPT_PATHS = frozenset(
         "scripts/dump-api-surface.sh",
         "scripts/prescreen-game.sh",
         "scripts/test-prescreen-scanner.sh",
+        # The compatibility report records the calls content makes on the namespace an adapter
+        # installs, so it and its tests name that namespace as the prescreen scanner does; the
+        # CLI names the adapter repository it is used with, as README.md does.
+        "scripts/compat-report.sh",
+        "scripts/test-compat-report.sh",
+        "scripts/test-prescreen-run-report.sh",
     }
 )
-_LEGACY_BRAND_EXEMPT_PREFIXES = ("tools/api-surface/fixture/", "tools/api-surface/probe/")
+_LEGACY_BRAND_EXEMPT_PREFIXES = (
+    "tools/api-surface/fixture/",
+    "tools/api-surface/probe/",
+    "tools/compat-recorder/",
+)
 
 
 def _legacy_brand_exempt(path: str) -> bool:
