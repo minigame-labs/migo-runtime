@@ -11,6 +11,7 @@ import android.util.Log;
 import android.graphics.Rect;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
+import android.view.Window;
 import android.widget.FrameLayout;
 
 import com.migo.runtime.callback.GameSessionListener;
@@ -180,6 +181,10 @@ public class MigoGameActivity extends Activity implements SurfaceHolder.Callback
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // A game has no title bar, whatever theme the host gave its app. The activity takes the
+        // app's theme unless its manifest entry names one, so under a theme with an action bar the
+        // game drew below the host's title, in a surface shorter than the screen.
+        requestWindowFeature(Window.FEATURE_NO_TITLE);
 
         // Extract launch parameters
         config = consumePendingConfig(getIntent());

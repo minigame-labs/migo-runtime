@@ -731,6 +731,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- Android: a game has no title bar, whatever theme the host gave its app. `MigoGameActivity` took the app's theme --
+  neither the SDK's manifest entry nor a host's subclass names one -- so under a framework theme with an action bar the
+  game drew below the host's title, in a surface shorter than the screen. Found by an integration from the
+  game-center kit's documentation alone.
 - A frame that could not be presented, other than through a lost context, reaches the host as `RenderSwapBuffersError`
   (413), which Android reads as recoverable (`NATIVE_RENDER_SWAP_BUFFERS_ERROR`). Both lanes reported it as
   `RenderBackendError`, a session to restart or destroy, although the session goes on: the render loop presents again
