@@ -308,6 +308,21 @@ public final class GameSession implements Closeable {
     }
 
     /**
+     * Whether this session's engine has stopped: its thread has been joined, so nothing of the
+     * game runs any more and nothing reads the game's files.
+     * <p>
+     * {@link #close()} stops it, even when another part of the cleanup fails. A host that hands
+     * the game's files to something else once the game ends -- an installer replacing the package
+     * -- checks this first: false after a close means the engine could not be confirmed stopped,
+     * and the files are still the engine's.
+     */
+    public boolean isEngineStopped() {
+        synchronized (lock) {
+            return nativeShutdownComplete;
+        }
+    }
+
+    /**
      * Set a listener to observe lifecycle state changes.
      * Callbacks are delivered on the main thread.
      * Pass null to remove the listener.
@@ -607,8 +622,9 @@ public final class GameSession implements Closeable {
      * Destroy this session and release all resources.
      * <p>
      * After calling this method, the session cannot be used anymore.
-     * Successful cleanup is idempotent. If cleanup fails, a later explicit call
-     * retries the retained resources.
+     * Successful cleanup is idempotent. The engine is stopped and its thread joined even when
+     * releasing another resource fails; {@link #isEngineStopped()} says whether it was. A failed
+     * resource stays retained, and a later explicit call retries it.
      * <p>
      * Temporary files are automatically cleaned up.
      */

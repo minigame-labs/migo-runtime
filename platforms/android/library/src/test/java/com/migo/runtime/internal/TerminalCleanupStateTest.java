@@ -1,9 +1,11 @@
 package com.migo.runtime.internal;
 
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
@@ -41,6 +43,49 @@ public final class TerminalCleanupStateTest {
                 "a re-entrant attempt must not run the cleanup again",
                 java.util.Arrays.asList("cleanup", "shutdown"),
                 runs);
+    }
+
+    /**
+     * A resource that fails to let go does not keep the engine running.
+     *
+     * Native shutdown ran only after every resource had released, so one release that threw left
+     * the engine running the game its player had closed, and nothing retried it -- while the host,
+     * told the session was closed, handed the game's files to its installer.
+     */
+    @Test
+    public void aResourceFailureStillShutsTheEngineDown() {
+        TerminalCleanupState cleanup = new TerminalCleanupState();
+        int[] shutdowns = {0};
+        int[] ownershipReleases = {0};
+
+        TerminalCleanupState.Result result = cleanup.attempt(
+                () -> {
+                    throw new IllegalStateException("a manager would not stop");
+                },
+                () -> shutdowns[0]++,
+                () -> ownershipReleases[0]++);
+
+        assertNotNull(result.failure());
+        assertEquals("the engine is shut down anyway", 1, shutdowns[0]);
+        assertEquals("ownership stays with the session for a retry", 0, ownershipReleases[0]);
+        assertFalse(cleanup.isComplete());
+    }
+
+    @Test
+    public void aFailedResourceAndAFailedShutdownAreBothReported() {
+        IllegalStateException resource = new IllegalStateException("resource");
+        IllegalStateException shutdown = new IllegalStateException("shutdown");
+
+        TerminalCleanupState.Result result = new TerminalCleanupState().attempt(
+                () -> {
+                    throw resource;
+                },
+                () -> {
+                    throw shutdown;
+                });
+
+        assertSame(resource, result.failure());
+        assertArrayEquals(new Throwable[] {shutdown}, result.failure().getSuppressed());
     }
 
     @Test

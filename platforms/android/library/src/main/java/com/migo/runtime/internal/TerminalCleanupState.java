@@ -23,7 +23,15 @@ public final class TerminalCleanupState {
     private boolean running;
     private boolean complete;
 
-    /** Makes one caller-driven attempt. Concurrent/reentrant callers do not start another. */
+    /**
+     * Makes one caller-driven attempt. Concurrent/reentrant callers do not start another.
+     * <p>
+     * The engine is shut down whether or not the resources released cleanly. It used to wait
+     * for them, so one resource that failed to let go left the engine running the game its
+     * player had closed -- for the life of the process, since nothing retries -- and the files
+     * it reads were handed back to whoever owns them. Ownership is still released only once
+     * both have succeeded: a failed resource stays retained for an explicit retry.
+     */
     public Result attempt(
             ResourceCleanup.Action resourceCleanup,
             ResourceCleanup.Action nativeShutdown,
@@ -36,8 +44,7 @@ public final class TerminalCleanupState {
 
         RuntimeException failure = null;
         try {
-            resourceCleanup.run();
-            nativeShutdown.run();
+            ResourceCleanup.runAll(resourceCleanup, nativeShutdown);
             ResourceCleanup.runAll(ownershipRelease);
         } catch (RuntimeException error) {
             failure = error;

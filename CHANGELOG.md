@@ -731,6 +731,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- Android: closing a session stops its engine even when releasing one of its other resources fails. `close()` shut the
+  engine down only once every Java-side resource had let go, so one manager that threw left the engine running the game
+  its player had closed, for the life of the process: `MigoGameActivity` drops the session once it has closed it, and
+  nothing retried. `GameSession.isEngineStopped()` says whether the engine was confirmed stopped, for a host that hands
+  the game's files to something else when the game ends.
 - The system EGL library is loaded once per process, on every platform. Each session opened its own handle and dropped
   it at shutdown, so a host that ran one game after another unloaded and reloaded the whole GL driver between them --
   on Linux, glvnd's `libEGL` and `libGLdispatch`, Mesa's `libEGL_mesa`, its gallium driver -- and each cycle leaked

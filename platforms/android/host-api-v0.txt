@@ -71,6 +71,7 @@
   public boolean isCodeSigningEnabled();
   public boolean isDebugEnabled();
   public boolean isDeviceSupported();
+  public boolean isEngineStopped();
   public boolean isFailure();
   public boolean isGameStarted();
   public boolean isImmersiveMode();
