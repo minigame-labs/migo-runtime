@@ -1020,7 +1020,7 @@ pub(crate) extern "system" fn onHide(_env: JNIEnv, _class: JClass, host_id: jint
 
 pub(crate) extern "system" fn onRestart(_env: JNIEnv, _class: JClass, host_id: jint) {
     jni_safe!("onRestart", {
-        if let Err(e) = send_command_to_host(host_id, HostCommand::Restart) {
+        if let Err(e) = send_command_to_host(host_id, HostCommand::Restart { launch_query: None }) {
             error!("Failed to send Restart for host {host_id}: {e}");
         }
     });

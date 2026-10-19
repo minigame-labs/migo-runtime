@@ -529,7 +529,8 @@ mod tests {
     #[test]
     fn critical_bypasses_full_normal_budget_and_keeps_fifo() {
         let (tx, critical_tx, mut rx) = channel(1);
-        tx.try_send(HostCommand::Restart).unwrap();
+        tx.try_send(HostCommand::Restart { launch_query: None })
+            .unwrap();
 
         assert!(matches!(
             tx.try_send(HostCommand::Shutdown),
@@ -537,15 +538,22 @@ mod tests {
         ));
         critical_tx.send(HostCommand::OnHide).unwrap();
 
-        assert!(matches!(rx.try_recv(), Ok(HostCommand::Restart)));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(HostCommand::Restart { launch_query: None })
+        ));
         assert!(matches!(rx.try_recv(), Ok(HostCommand::OnHide)));
     }
 
     #[test]
     fn receiving_normal_command_releases_its_budget() {
         let (tx, _critical_tx, mut rx) = channel(1);
-        tx.try_send(HostCommand::Restart).unwrap();
-        assert!(matches!(rx.try_recv(), Ok(HostCommand::Restart)));
+        tx.try_send(HostCommand::Restart { launch_query: None })
+            .unwrap();
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(HostCommand::Restart { launch_query: None })
+        ));
         tx.try_send(HostCommand::Shutdown).unwrap();
         assert!(matches!(rx.try_recv(), Ok(HostCommand::Shutdown)));
     }
@@ -554,9 +562,13 @@ mod tests {
     fn critical_then_normal_preserves_fifo() {
         let (tx, critical_tx, mut rx) = channel(1);
         critical_tx.send(HostCommand::OnHide).unwrap();
-        tx.try_send(HostCommand::Restart).unwrap();
+        tx.try_send(HostCommand::Restart { launch_query: None })
+            .unwrap();
         assert!(matches!(rx.try_recv(), Ok(HostCommand::OnHide)));
-        assert!(matches!(rx.try_recv(), Ok(HostCommand::Restart)));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(HostCommand::Restart { launch_query: None })
+        ));
     }
 
     #[test]
@@ -564,8 +576,10 @@ mod tests {
         let (tx, critical_tx, rx) = channel(1);
         drop(rx);
         assert!(matches!(
-            tx.try_send(HostCommand::Restart),
-            Err(TrySendError::Closed(HostCommand::Restart))
+            tx.try_send(HostCommand::Restart { launch_query: None }),
+            Err(TrySendError::Closed(HostCommand::Restart {
+                launch_query: None
+            }))
         ));
         assert!(matches!(
             critical_tx.send(HostCommand::OnHide),
@@ -637,33 +651,42 @@ mod tests {
         let (tx, _critical_tx, mut rx) = channel_with_reserve(2, 1);
         tx.try_send_coalescible(InputStream::Pointer, mouse_move(1.0))
             .unwrap();
-        tx.try_send(HostCommand::Restart).unwrap();
+        tx.try_send(HostCommand::Restart { launch_query: None })
+            .unwrap();
 
         assert!(matches!(
             tx.try_send_terminal(Some(InputStream::Pointer), mouse_up()),
             Ok(InputSendOutcome::Enqueued)
         ));
-        assert!(matches!(rx.try_recv(), Ok(HostCommand::Restart)));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(HostCommand::Restart { launch_query: None })
+        ));
         assert!(matches!(rx.try_recv(), Ok(HostCommand::OnMouseUp { .. })));
     }
 
     #[test]
     fn reliable_transition_uses_reserve_when_normal_lane_is_full() {
         let (tx, _critical_tx, mut rx) = channel_with_reserve(1, 1);
-        tx.try_send(HostCommand::Restart).unwrap();
+        tx.try_send(HostCommand::Restart { launch_query: None })
+            .unwrap();
 
         assert!(matches!(
             tx.try_send_reliable(None, key_up("KeyA")),
             Ok(InputSendOutcome::Reserved)
         ));
-        assert!(matches!(rx.try_recv(), Ok(HostCommand::Restart)));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(HostCommand::Restart { launch_query: None })
+        ));
         assert!(matches!(rx.try_recv(), Ok(HostCommand::OnKeyUp { .. })));
     }
 
     #[test]
     fn reliable_reserve_is_bounded_and_returns_original_command() {
         let (tx, _critical_tx, _rx) = channel_with_reserve(1, 1);
-        tx.try_send(HostCommand::Restart).unwrap();
+        tx.try_send(HostCommand::Restart { launch_query: None })
+            .unwrap();
         tx.try_send_reliable(None, key_up("KeyA")).unwrap();
 
         assert!(matches!(
@@ -707,7 +730,8 @@ mod tests {
     fn async_receiver_wakes_and_drains_before_sender_close() {
         let (tx, critical_tx, mut rx) = channel(1);
         let producer = std::thread::spawn(move || {
-            tx.try_send(HostCommand::Restart).unwrap();
+            tx.try_send(HostCommand::Restart { launch_query: None })
+                .unwrap();
             drop(tx);
             drop(critical_tx);
         });
@@ -716,7 +740,10 @@ mod tests {
             .unwrap();
 
         runtime.block_on(async {
-            assert!(matches!(rx.recv().await, Some(HostCommand::Restart)));
+            assert!(matches!(
+                rx.recv().await,
+                Some(HostCommand::Restart { launch_query: None })
+            ));
             assert!(rx.recv().await.is_none());
         });
         producer.join().unwrap();

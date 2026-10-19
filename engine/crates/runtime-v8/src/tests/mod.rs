@@ -61,6 +61,7 @@ mod published_namespace_isolation;
 #[cfg(feature = "api-connectivity")]
 mod reporting;
 mod request_through_the_engine;
+mod restart_launch_query;
 mod runtime_restart_boundary;
 mod save_file_to_disk;
 #[cfg(feature = "api-commerce")]

@@ -731,6 +731,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- `restartMiniProgram` relaunches the game as a launch does: it is shown again, and launched with the options it was
+  last shown with, its query the one `path` names after its `?` (the reference's "the part after ? becomes the
+  query"). The restarted runtime used to get no show at all -- `getLaunchOptionsSync()` answered the defaults, scene
+  1001 and an empty query, and content that starts or resumes on `onShow` waited for one that never came -- and `path`
+  was ignored. `restartMiniProgramSync` takes the same options. A show the host sends without options -- the macOS
+  view's, when its window comes back -- shows the game as it was last entered, rather than with a scene and query no
+  host gave.
 - Android C ABI: `encode` and `decode` take GBK. The Java SDK encodes it through java.nio.charset, which a host with no
   JVM cannot reach, so a C host refused "gbk"; the C ABI package now carries `encoding_rs`'s tables there, as it carries
   the Rust image decoders. The NativeActivity example host reports its package name as `host.appId`, takes the

@@ -358,8 +358,13 @@ pub enum HostCommand {
     ///
     /// Re-initializes the JS runtime and re-loads the last evaluated module
     /// (or does nothing if none has been evaluated). This is analogous to
-    /// mini-program “restart” behavior.
-    Restart,
+    /// mini-program “restart” behavior: the restarted game is launched -- and
+    /// shown -- again, with the options it was last shown with.
+    ///
+    /// `launch_query` is the query it is launched with instead: what
+    /// `restartMiniProgram({ path })` has after the path's `?`. `None` keeps the
+    /// one it was last shown with.
+    Restart { launch_query: Option<String> },
 
     /// Gracefully shut down the host thread.
     ///
@@ -1036,7 +1041,7 @@ impl HostCommand {
             Self::EvaluateModule { .. }
             | Self::EvalScript { .. }
             | Self::InvokeHostHook { .. }
-            | Self::Restart
+            | Self::Restart { .. }
             | Self::Shutdown
             | Self::OnShow { .. }
             | Self::OnHide

@@ -20,7 +20,7 @@ import {
 } from "./audio.mjs";
 import { engineHost } from "./engine-host.mjs";
 import { servicesOf } from "./lane-async.mjs";
-import { f32BitsOf, optionalBytesOf, smiU32, stringOf, toBool, toF64, toI32, toU8 } from "./op-args.mjs";
+import { f32BitsOf, optionalBytesOf, optionalStringOf, smiU32, stringOf, toBool, toF64, toI32, toU8 } from "./op-args.mjs";
 import { SERVICE_OP } from "./service-ops.mjs";
 import { postToWorkerAttempt, terminateWorkerAttempt } from "./worker-relay-channel.mjs";
 
@@ -589,8 +589,14 @@ export function op_exit_mini_program() {
 /// Restart the session, which is how a game recovers from a state it cannot
 /// leave. The generation the producer stamps its packets with changes with it,
 /// which is what stops a frame built for the old one from landing in the new.
-export function op_restart_mini_program() {
-  servicesOf(engineHost()).command(SERVICE_OP.op_restart_mini_program);
+/// `launch_query` is the query the restarted game is launched with, or null for
+/// the one it was last shown with.
+export function op_restart_mini_program(launch_query) {
+  const query = optionalStringOf(launch_query, "launch_query");
+  servicesOf(engineHost()).command(SERVICE_OP.op_restart_mini_program, (w) => {
+    if (query === null) w.null();
+    else w.str(query);
+  });
 }
 
 // ---- the soft keyboard ----------------------------------------------------------
