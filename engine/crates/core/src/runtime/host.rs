@@ -607,6 +607,19 @@ impl Host {
             RenderEvent::CanvasError { message, .. } => {
                 self.on_render_error("canvas", &message);
             }
+            RenderEvent::SurfaceRecreateFailed { code, message } => {
+                // The host's Surface, refused: the host is the one who can act on it, so the
+                // backend's own code goes with it, and nothing reports it as the content's.
+                warn!("[Host {}] surface recreation failed: {}", self.id, message);
+                if self.should_notify_error("surface_recreate") {
+                    self.platform.notify_error(
+                        self.id,
+                        code.as_u16(),
+                        "render surface recreation failed",
+                        &message,
+                    );
+                }
+            }
             RenderEvent::SwapFailed { message } => {
                 warn!("[Host {}] swap failed: {}", self.id, message);
                 if self.should_notify_error("swap") {

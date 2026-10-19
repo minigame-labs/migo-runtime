@@ -170,6 +170,39 @@ fn a_render_command_the_content_got_wrong_reaches_the_host_as_survivable() {
 }
 
 #[test]
+fn a_surface_the_host_gave_that_was_refused_is_not_reported_as_the_contents() {
+    // Recreating the onscreen surface is the engine's own command, run when the host hands it
+    // a Surface; when the Surface is refused it may be retired, and nothing presents until the
+    // host acts. It went out as a canvas command error, so once those became survivable
+    // content errors it reached hosts as one -- a host that only acts on errors it cannot
+    // ride out would leave the screen blank.
+    let refused = RENDER_THREAD
+        .split("\"recreate onscreen: rejected Surface\"")
+        .nth(1)
+        .expect("the recreate failure must remain present");
+    let emitted = &refused[refused
+        .find("events.emit(")
+        .expect("the failure must be emitted")..];
+    assert!(
+        emitted.starts_with("events.emit(RenderEvent::SurfaceRecreateFailed"),
+        "a refused Surface must be its own event, not a canvas command the content issued"
+    );
+    for (lane, source) in [("host", HOST), ("external", EXTERNAL)] {
+        let arm = source
+            .split("RenderEvent::SurfaceRecreateFailed { code, message } =>")
+            .nth(1)
+            .unwrap_or_else(|| panic!("the {lane} lane must handle a refused Surface"))
+            .split("\n            RenderEvent::")
+            .next()
+            .expect("the arm must end");
+        assert!(
+            arm.contains("notify_error(") && arm.contains("code.as_u16()"),
+            "the {lane} lane must report a refused Surface to the host under the backend's code"
+        );
+    }
+}
+
+#[test]
 fn a_launch_that_fails_is_announced_like_one_that_succeeds() {
     // The property: the two outcomes of loading content travel the same way, from
     // the same place, for every caller.

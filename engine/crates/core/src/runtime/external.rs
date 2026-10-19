@@ -3531,6 +3531,17 @@ fn drain_render_events(
                     );
                 }
             }
+            RenderEvent::SurfaceRecreateFailed { code, message } => {
+                warn!("[Host {id}] surface recreation failed: {message}");
+                // The host's own Surface refused, as with a failed swap: the host is the one
+                // who can act on it. Not spaced: it follows one attach, not one frame.
+                platform.notify_error(
+                    id,
+                    code.as_u16(),
+                    "render surface recreation failed",
+                    &message,
+                );
+            }
             // Deliberately not reported to the host: a failed drawing command is the
             // producer's, not the embedder's. In this lane the producer is a separate
             // process that already learns about its own errors -- WebGL through the
