@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `scripts/measure-session-churn.sh` measures what a session leaves behind when a host runs one game after another,
+  as a game centre does: the player's `--sessions N` runs the game N times in one process, shuts each session down and
+  joins it, and reports the C heap's live bytes and the resident set once glibc has handed back what it held free; the
+  script fits a line through each and fails above 3 kB and 256 kB a session, or when a session presents nothing. The
+  resident set on its own could not answer this -- glibc's arenas grew it from 160 to 467 MB over sixty sessions with
+  nothing left alive. It found the EGL library being reloaded every session; a session whose JS runtime is kept alive
+  reads 3.4 MB and 20 MB a session.
 - The headless player (`engine/tools/player`) takes `--prelude SCRIPT`, any number of times, and runs each in the global
   scope before the game's entry, in the order given -- as an Android or Apple host injects an adapter. Content written
   against `wx` or the browser could not run there at all: `migo-examples`' `wx-adapter-demo` stopped on
