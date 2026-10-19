@@ -185,6 +185,23 @@ dark = cr.assess([l for l in log if "first-frame" not in l]
 check("the player's own word that nothing was presented is what blocks on it",
       [b.get("label") for b in dark["blocking"]] == [None, "nothing was presented in this run: the game never drew"]
       and dark["notes"] == [], (dark["blocking"], dark["notes"]))
+# The player's verdict when the engine reports the launch failed, from a real run on the Linux player (2026-10-19).
+# It ends the run there, so no "nothing was presented" follows it.
+recorded_run = [l for l in log if "first-frame" not in l]
+threw = cr.assess(recorded_run + [engine_errors[0], "2026-10-19T04:03:41Z ERROR migo_player: player failed: the game "
+                                  "did not start: module evaluation failed: Error: the level failed to load"],
+                  "android", contracts)
+check("a launch the entry broke blocks on what the entry did and on the player's word, once each",
+      [b.get("label") for b in threw["blocking"]] == [None, "the entry threw", "the game did not start"],
+      threw["blocking"])
+check("and says nothing of animation frames a game that never started could not have run", threw["notes"] == [],
+      threw["notes"])
+gpu = cr.assess(recorded_run + ["2026-10-19T04:10:00Z ERROR migo_player: player failed: the game did not start: "
+                                "render thread did not publish GPU caps within 10 s (engine code 9)"],
+                "android", contracts)
+check("a launch that failed with no content line to name it still blocks, on the engine's reason",
+      [b.get("label") for b in gpu["blocking"]] == [None, "the game did not start"]
+      and "GPU caps" in gpu["blocking"][-1]["line"] and "GPU caps" in "\n".join(cr.markdown(gpu)), gpu["blocking"])
 
 unrecorded = cr.assess(engine_errors, "android", contracts)
 check("a log without the recorder's start is not recorded", unrecorded["recorded"] is False)

@@ -104,6 +104,11 @@ REFUSED = re.compile(r"\b([A-Za-z_$][\w$]*):fail not supported\b")
 # The headless player's own verdict when no frame reached its window: the evidence that a game never drew, which the
 # recorder cannot give -- it sees requestAnimationFrame callbacks, and content can draw without one.
 NOTHING_PRESENTED = re.compile(r"nothing was presented during the run")
+# The headless player's own verdict when the engine reported that the launch failed. It ends the run there, so a game
+# that did not start says so instead of running out the present ceiling to "nothing was presented". Its reason is the
+# engine's, which CONTENT_ERRORS already labels from the engine's own line when the content caused it; read as content
+# too, one failure would be listed twice.
+DID_NOT_START = re.compile(r"the game did not start: (.*)")
 # A global the content used and no layer defined: not a name on `wx` or `migo` (the recorder sees those), so
 # only the engine's error says it.
 UNDEFINED = re.compile(r"ReferenceError: ([A-Za-z_$][\w$]*) is not defined")
@@ -128,7 +133,7 @@ def content_errors(lines) -> list[dict]:
     found, seen = [], set()
     for raw in lines:
         line = ANSI.sub("", raw.rstrip("\n"))
-        if MARK in line:
+        if MARK in line or DID_NOT_START.search(line):
             continue
         for pattern, label, fatal in CONTENT_ERRORS:
             match = re.search(pattern, line)
@@ -211,9 +216,12 @@ def assess(lines, platform: str, contracts: dict) -> dict:
     recorded = bool(kinds.get("start"))
     blocking = [c for c in calls if c["verdict"] in BLOCKING] + [e for e in errors if e["fatal"]]
     notes = []
+    not_started = _first_matches(DID_NOT_START, lines)[:1]
+    for reason in not_started:
+        blocking.append({"label": "the game did not start", "fatal": True, "line": reason[:400]})
     if any(NOTHING_PRESENTED.search(ANSI.sub("", line)) for line in lines):
         blocking.append({"label": "nothing was presented in this run: the game never drew", "fatal": True, "line": ""})
-    elif recorded and not first:
+    elif recorded and not first and not not_started:
         notes.append("No animation frame ran in this run. The recorder sees requestAnimationFrame callbacks, so content "
                      "that draws without them reads the same; whether anything reached the screen is the frame's to say.")
     return {

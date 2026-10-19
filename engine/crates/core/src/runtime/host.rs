@@ -1016,7 +1016,7 @@ impl Host {
         };
         if let Err(error) = &outcome {
             if error.code != shared::error::ErrorCode::Cancelled {
-                self.platform.notify_error(
+                self.platform.notify_game_failed(
                     self.id,
                     error.code.as_u16(),
                     &error.msg,

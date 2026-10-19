@@ -27,11 +27,16 @@ mod win32_window;
 #[cfg(target_os = "linux")]
 mod x11_window;
 
-use std::{path::PathBuf, sync::Arc, thread, time::Duration};
+use std::{
+    path::PathBuf,
+    sync::{Arc, Mutex},
+    thread,
+    time::{Duration, Instant},
+};
 
 #[cfg(target_os = "windows")]
 use migo_core::{HostId, host_ingress};
-use migo_core::{PlatformServices, send_command_to_host, spawn_host_thread};
+use migo_core::{HostNotifier, PlatformServices, send_command_to_host, spawn_host_thread};
 #[cfg(target_os = "linux")]
 use platform::linux::platform::LinuxPlatform as HostPlatform;
 #[cfg(target_os = "linux")]
@@ -94,6 +99,57 @@ const SURFACE_H: u32 = 1280;
 const FIRST_PRESENT_CEILING: Duration = Duration::from_secs(30);
 /// How often the window mode drains X events while the game renders.
 const EVENT_POLL: Duration = Duration::from_millis(16);
+/// How often the wait for the first frame looks at whether the launch has failed.
+const START_POLL: Duration = Duration::from_millis(50);
+
+/// What the engine tells the player about the launch: whether the game failed to start.
+///
+/// The player heard nothing from the engine, so a game whose entry threw ran out the whole
+/// present ceiling and the run after it, then said only that nothing was presented -- the reason
+/// was in the engine's log, and a launch the content table does not cover (a renderer that never
+/// came up) was not in the report at all.
+#[derive(Default)]
+struct Launch {
+    failure: Mutex<Option<String>>,
+}
+
+impl HostNotifier for Launch {
+    fn notify_game_failed(&self, _host_id: i32, error_code: u16, message: &str, detail: &str) {
+        let reason = if detail.is_empty() {
+            format!("{message} (engine code {error_code})")
+        } else {
+            format!("{message}: {detail} (engine code {error_code})")
+        };
+        *self.failure.lock().expect("launch outcome") = Some(reason);
+    }
+}
+
+impl Launch {
+    /// The launch's failure, as the run's error.
+    fn failed(&self) -> Result<(), String> {
+        match self.failure.lock().expect("launch outcome").as_ref() {
+            Some(reason) => Err(format!("the game did not start: {reason}")),
+            None => Ok(()),
+        }
+    }
+
+    /// Wait for the first presented frame, at most `ceiling`, and end the wait when the launch
+    /// fails: a game that did not start presents nothing, however long it is given. Whether a
+    /// frame was presented.
+    fn wait_for_start(&self, ceiling: Duration) -> Result<bool, String> {
+        let deadline = Instant::now() + ceiling;
+        loop {
+            self.failed()?;
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Ok(false);
+            }
+            if graphics::frame_capture::wait_for_present(left.min(START_POLL)) {
+                return Ok(true);
+            }
+        }
+    }
+}
 
 fn main() {
     tracing_subscriber::fmt()
@@ -405,13 +461,15 @@ fn run(
         surface_h,
         PixelRatio::new(1.0).expect("1.0 is a valid pixel ratio"),
     )));
+    let launch = Arc::new(Launch::default());
     let host_kit: Arc<dyn PlatformServices> = Arc::new(
         HostPlatform::new()
             .with_window(Arc::clone(&window_state))
             .with_host_app(shared::services::app_info::HostAppInfo {
                 host_app_id: Some(PLAYER_APP_ID.to_string()),
                 ..Default::default()
-            }),
+            })
+            .with_notifier(launch.clone()),
     );
     tracing::info!("spawning host thread ({surface_w}x{surface_h} {mode})");
     // The player always has its window before it starts, so this is never the
@@ -453,8 +511,9 @@ fn run(
     // canvases). Ending the run here cut such content off mid-work, on a slow
     // software renderer, while the same content ran to completion through the C
     // ABI host. Its run is timed from the ceiling instead, and an engine that
-    // never presents is said outright when the run ends without a frame.
-    if !graphics::frame_capture::wait_for_present(FIRST_PRESENT_CEILING) {
+    // never presents is said outright when the run ends without a frame. A game
+    // that did not start is not one of those, and ends the run when it says so.
+    if !launch.wait_for_start(FIRST_PRESENT_CEILING)? {
         tracing::warn!(
             "nothing presented within {}s of loading the game; running on without a frame",
             FIRST_PRESENT_CEILING.as_secs()
@@ -493,6 +552,9 @@ fn run(
             run_for(total);
         }
     }
+    // A launch can fail after its loading screen presented: the frame would read as a game
+    // that ran.
+    launch.failed()?;
     match graphics::frame_capture::take() {
         Some(frame) => {
             // With `--resize` the capture is the acceptance evidence, so the
@@ -564,13 +626,15 @@ fn run_sessions(
             surface_h,
             PixelRatio::new(1.0).expect("1.0 is a valid pixel ratio"),
         )));
+        let launch = Arc::new(Launch::default());
         let host_kit: Arc<dyn PlatformServices> = Arc::new(
             HostPlatform::new()
                 .with_window(Arc::clone(&window_state))
                 .with_host_app(shared::services::app_info::HostAppInfo {
                     host_app_id: Some(PLAYER_APP_ID.to_string()),
                     ..Default::default()
-                }),
+                })
+                .with_notifier(launch.clone()),
         );
         let host = spawn_host_thread(Some(surface), graphics_platform, host_kit, opt.clone())
             .map_err(|e| format!("session {index}: spawn_host_thread: {e:?}"))?;
@@ -583,15 +647,21 @@ fn run_sessions(
                 entry: ENTRY.to_string(),
             },
         )
-        .map_err(|e| format!("session {index}: EvaluateModule: {e}"));
-        let presented =
-            started.is_ok() && graphics::frame_capture::wait_for_present(FIRST_PRESENT_CEILING);
-        if presented {
+        .map_err(|e| format!("session {index}: EvaluateModule: {e}"))
+        .and_then(|()| {
+            launch
+                .wait_for_start(FIRST_PRESENT_CEILING)
+                .map_err(|e| format!("session {index}: {e}"))
+        });
+        if started == Ok(true) {
             thread::sleep(Duration::from_secs(secs.max(1)));
         }
         let frame = graphics::frame_capture::take();
         shutdown_before_drop(host, ())?;
         started?;
+        launch
+            .failed()
+            .map_err(|e| format!("session {index}: {e}"))?;
         let frame = frame.ok_or_else(|| format!("session {index} presented nothing"))?;
         if index == sessions {
             write_png(&png_path, &frame)?;

@@ -51,6 +51,18 @@ pub trait HostNotifier: Send + Sync {
         // Default: no-op.
     }
 
+    /// Notify the host application that the game module could not be started: the launch that
+    /// ends in [`notify_game_ready`](Self::notify_game_ready) when it succeeds failed instead.
+    ///
+    /// The other half of the launch's outcome. A host waiting on a launch could only hear it
+    /// as one more [`notify_error`](Self::notify_error), which also carries what goes wrong
+    /// while content runs -- a render command failing, a lost context that did not come back --
+    /// so it could not tell "the game never started" from "the game hit an error". The default
+    /// reports it as `notify_error`, which is how every host heard it before.
+    fn notify_game_failed(&self, host_id: i32, error_code: u16, message: &str, detail: &str) {
+        self.notify_error(host_id, error_code, message, detail);
+    }
+
     /// Notify the host application that the mini program is exiting.
     ///
     /// This is called when the JS side calls `exitMiniProgram`.
@@ -149,4 +161,38 @@ pub trait PlatformServices:
 impl<T> PlatformServices for T where
     T: DeviceServiceProvider + FrameClock + HostNotifier + RuntimeGenerationNotifier
 {
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use super::HostNotifier;
+
+    #[derive(Default)]
+    struct ErrorsOnly(Mutex<Vec<(i32, u16, String, String)>>);
+
+    impl HostNotifier for ErrorsOnly {
+        fn notify_error(&self, host_id: i32, error_code: u16, message: &str, detail: &str) {
+            self.0
+                .lock()
+                .unwrap()
+                .push((host_id, error_code, message.into(), detail.into()));
+        }
+    }
+
+    #[test]
+    fn a_host_that_hears_only_errors_still_hears_a_launch_that_failed() {
+        let host = ErrorsOnly::default();
+        host.notify_game_failed(7, 42, "module evaluation failed", "ReferenceError: x");
+        assert_eq!(
+            *host.0.lock().unwrap(),
+            vec![(
+                7,
+                42,
+                "module evaluation failed".to_string(),
+                "ReferenceError: x".to_string()
+            )]
+        );
+    }
 }

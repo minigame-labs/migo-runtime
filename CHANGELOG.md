@@ -731,6 +731,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- The headless player stops as soon as the game fails to start, and says why: `the game did not start: module
+  evaluation failed: Error: ...`. It heard nothing from the engine -- `LinuxPlatform` and `WindowsPlatform` reported
+  their host notifications nowhere -- so a game whose entry threw waited out the 30-second present ceiling and the run
+  after it, 36 seconds, then said only that nothing was presented; a launch that failed for a reason no content line
+  names, such as a renderer that never came up, was in no report at all. Both platforms take an embedder's
+  `HostNotifier` (`with_notifier`), and the launch's failure reaches it as `notify_game_failed`, the other half of
+  `notify_game_ready` -- by default a `notify_error`, as every host heard it before. The compatibility report blocks on
+  the player's verdict.
 - Android: closing a session stops its engine even when releasing one of its other resources fails. `close()` shut the
   engine down only once every Java-side resource had let go, so one manager that threw left the engine running the game
   its player had closed, for the life of the process: `MigoGameActivity` drops the session once it has closed it, and

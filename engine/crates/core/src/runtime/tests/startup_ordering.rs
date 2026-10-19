@@ -172,8 +172,9 @@ fn a_launch_that_fails_is_announced_like_one_that_succeeds() {
         .next()
         .expect("the pairing must end before the function it wraps");
     assert!(
-        pairing.contains("self.platform.notify_error("),
-        "a launch that fails must reach the host through on_error"
+        pairing.contains("self.platform.notify_game_failed("),
+        "a launch that fails must reach the host as the launch's failure, which a host \
+         that does not tell the two halves apart hears through on_error"
     );
     assert!(
         pairing.contains("self.launch_content(game_id, entry).await"),
