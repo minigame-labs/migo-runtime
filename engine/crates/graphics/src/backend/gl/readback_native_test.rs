@@ -916,17 +916,17 @@ fn a_read_in_another_pair_is_made_only_in_the_drivers_implementation_pair() {
         } else {
             (glow::RGBA, glow::FLOAT)
         };
+        // Refused by the engine, not by the driver: Mesa refuses this pair too, as the same INVALID_OPERATION, so only
+        // the refusal's own message tells the two apart -- and a driver that reads it would not refuse at all.
         let refused = read_webgl_pixels(&gl, 0, 0, 1, 1, other.0, other.1, 64, true);
         assert_eq!(
-            refused.map(|_| ()).map_err(|error| error.code),
-            Err(ErrorCode::InvalidOperation),
-            "a pair that is neither the buffer's own nor the driver's is refused"
+            refused
+                .map(|_| ())
+                .map_err(|error| (error.code, error.msg.into_owned())),
+            Err((ErrorCode::InvalidOperation, NOT_A_READ_PAIR.to_owned())),
+            "a pair that is neither the buffer's own nor the driver's is refused before the driver reads"
         );
-        assert_eq!(
-            gl.get_error(),
-            glow::NO_ERROR,
-            "refused before the driver is asked to read"
-        );
+        assert_eq!(gl.get_error(), glow::NO_ERROR);
         assert_eq!(
             read_webgl_pixels(&gl, 0, 0, 1, 1, glow::RGBA, glow::UNSIGNED_BYTE, 64, false)
                 .unwrap()

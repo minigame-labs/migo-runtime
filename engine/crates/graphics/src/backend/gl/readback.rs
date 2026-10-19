@@ -238,6 +238,9 @@ pub(crate) fn invalid_readback_format_type_error(format: u32, type_: u32) -> Eng
     EngineError::new(ErrorCode::InvalidArgument).with_msg(message)
 }
 
+/// What a read refused by [`refuse_unless_implementation_pair`] says: the engine refused it, the driver was not asked.
+pub(crate) const NOT_A_READ_PAIR: &str = "readPixels in a pair that is neither the read buffer's own nor the driver's implementation pair";
+
 /// A read in a pair other than the one the read buffer's component type fixes is made only in the driver's
 /// `IMPLEMENTATION_COLOR_READ_FORMAT` and `_TYPE` for that buffer, and is INVALID_OPERATION otherwise (ES 3.0 4.3.2).
 /// The pair is asked of a complete read framebuffer only: an incomplete one is the read's own error.
@@ -255,9 +258,7 @@ fn refuse_unless_implementation_pair(
         if (format, type_) == (driver_format, driver_type) {
             Ok(())
         } else {
-            Err(EngineError::new(ErrorCode::InvalidOperation).with_msg(
-                "readPixels in a pair that is neither the read buffer's own nor the driver's implementation pair",
-            ))
+            Err(EngineError::new(ErrorCode::InvalidOperation).with_msg(NOT_A_READ_PAIR))
         }
     }
 }
