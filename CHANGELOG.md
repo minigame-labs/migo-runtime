@@ -731,6 +731,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- The program binary cache no longer stalls frames on a driver whose binaries are huge or that will not take them
+  back. ANGLE's Vulkan back end puts the context's whole pipeline cache in every program binary -- 0.7 MB more for each
+  program the context has linked, up to 60 MB on the Android emulator -- and the emulator's driver refused nearly every
+  binary the cache handed back: each launch read and uploaded them all, was refused, linked from source and fetched
+  them again on the render thread, up to 1.9 GB a run, growing with every run, so that WebGL frames took 1.5 s each for
+  minutes at a time. A binary larger than a sixteenth of the cache (4 MiB) is no longer fetched, a file that large is
+  no longer read, and a binary the driver refuses is removed rather than offered again at the next launch.
 - A texture source -- a canvas, an image -- uploaded with `texImage2D` as one of WebGL 2's sized formats (`RGBA8`, as
   Pixi's WebGL 2 renderer uploads every texture, or `RGB8`) holds the source on the Android emulator. Where the upload
   needs no conversion the engine copies it on the GPU, and the copy was one `glCopyTexImage2D`, which the emulator's
