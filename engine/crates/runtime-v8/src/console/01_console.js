@@ -1,7 +1,10 @@
 import { op_console } from "ext:core/ops";
 import { primordials } from "ext:core/mod.js";
 
-const { DateNow, SafeMap, MapPrototypeGet, MapPrototypeSet, MapPrototypeHas, MapPrototypeDelete } = primordials;
+const {
+    DateNow, NumberParseFloat, NumberParseInt, SafeMap, MapPrototypeGet, MapPrototypeSet, MapPrototypeHas,
+    MapPrototypeDelete,
+} = primordials;
 
 let groupDepth = 0;
 
@@ -27,8 +30,79 @@ function formatArg(a) {
     }
 }
 
+// A conversion the formatter makes may run content's own toString; a log line never throws for it.
+function convert(fn, value) {
+    try {
+        return fn(value);
+    } catch (_) {
+        return "<invalid value>";
+    }
+}
+
+function toText(value) {
+    return typeof value === "symbol" ? convert((v) => v.toString(), value) : convert(String, value);
+}
+
+function toInteger(value) {
+    return typeof value === "symbol" ? "NaN" : String(convert((v) => NumberParseInt(v, 10), value));
+}
+
+function toFloat(value) {
+    return typeof value === "symbol" ? "NaN" : String(convert((v) => NumberParseFloat(v), value));
+}
+
+// The Console Standard's Formatter: a string first argument's %s, %d, %i, %f, %o, %O and %c each
+// take the next argument (%c's is CSS, which a log has no use for), %% is a percent sign, and what
+// is left over follows, space-separated. Scanned by hand, character by character.
+function format(args) {
+    if (args.length < 2 || typeof args[0] !== "string") {
+        return args.map(formatArg).join(" ");
+    }
+    const template = args[0];
+    let out = "";
+    let next = 1;
+    for (let i = 0; i < template.length; i++) {
+        const ch = template[i];
+        if (ch !== "%" || i + 1 >= template.length) {
+            out += ch;
+            continue;
+        }
+        const spec = template[i + 1];
+        if (spec === "%") {
+            out += "%";
+            i++;
+            continue;
+        }
+        const known = spec === "s" || spec === "d" || spec === "i" || spec === "f" || spec === "o" || spec === "O"
+            || spec === "c";
+        if (next >= args.length || !known) {
+            out += ch;
+            continue;
+        }
+        const value = args[next++];
+        i++;
+        if (spec === "s") out += toText(value);
+        else if (spec === "d" || spec === "i") out += toInteger(value);
+        else if (spec === "f") out += toFloat(value);
+        else if (spec === "o" || spec === "O") out += formatArg(value);
+        // %c: styling, consumed and dropped.
+    }
+    const rest = args.slice(next).map(formatArg);
+    return rest.length === 0 ? out : out + " " + rest.join(" ");
+}
+
 function formatArgs(args) {
+    return "  ".repeat(groupDepth) + format(args);
+}
+
+// The standard's Printer, for the members that print without formatting (timeLog's data).
+function printArgs(args) {
     return "  ".repeat(groupDepth) + args.map(formatArg).join(" ");
+}
+
+function group(label) {
+    op_console(formatArgs(label), 1);
+    groupDepth++;
 }
 
 // The console namespace of the Console Standard, all of it: content calls the
@@ -71,7 +145,9 @@ class Console {
         }
     }
     clear() {
-        // A log has no screen to clear, and its earlier lines are the record.
+        // The group stack empties, as the standard asks; a log has no screen to clear, and its
+        // earlier lines are the record.
+        groupDepth = 0;
     }
     count(label) {
         const name = labelOf(label);
@@ -97,17 +173,25 @@ class Console {
         op_console(formatArgs(properties === undefined ? [data] : [data, properties]), 1);
     }
     trace(...args) {
-        const stack = new Error().stack;
-        const frames = typeof stack === "string" ? stack.slice(stack.indexOf("\n") + 1) : "";
+        // `Error` and its prepareStackTrace are content's to replace; a trace without its frames is
+        // still a log line, and a log line never throws.
+        let frames = "";
+        try {
+            const stack = new Error().stack;
+            if (typeof stack === "string") frames = stack.slice(stack.indexOf("\n") + 1);
+        } catch (_) {
+            frames = "";
+        }
         const head = args.length === 0 ? ["Trace"] : ["Trace: " + formatArg(args[0]), ...args.slice(1)];
         op_console(formatArgs(head) + (frames ? "\n" + frames : ""), 1);
     }
+    // Neither depends on its receiver: a logger that holds `console.groupCollapsed` apart from the
+    // console calls it with none.
     group(...label) {
-        op_console(formatArgs(label), 1);
-        groupDepth++;
+        group(label);
     }
     groupCollapsed(...label) {
-        this.group(...label);
+        group(label);
     }
     groupEnd() {
         if (groupDepth > 0) groupDepth--;
@@ -126,7 +210,7 @@ class Console {
             op_console(formatArgs(["Timer '" + name + "' does not exist"]), 2);
             return;
         }
-        op_console(formatArgs([name + ": " + (DateNow() - MapPrototypeGet(timers, name)) + "ms", ...args]), 1);
+        op_console(printArgs([name + ": " + (DateNow() - MapPrototypeGet(timers, name)) + "ms", ...args]), 1);
     }
     timeEnd(label) {
         const name = labelOf(label);

@@ -741,7 +741,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Creator 3 builds its environment from `Object.keys(wx)`: its `minigame.onHide` was undefined and its start-up threw.
 - `console` has every member of the Console Standard's namespace: `assert`, `clear`, `count`, `countReset`, `dir`,
   `dirxml`, `groupCollapsed`, `table`, `time`, `timeLog`, `timeEnd` and `trace` joined the seven it had. A missing
-  member was a TypeError -- Cocos Creator 3 calls `console.time` while it starts its physics.
+  member was a TypeError -- Cocos Creator 3 calls `console.time` while it starts its physics. A string first argument is
+  formatted as the standard says (`%s %d %i %f %o %O %c %%`), which no member did; `clear()` empties the group stack; no
+  member needs `console` as its receiver; and a log call never throws, whatever content did to `Error` or a value's
+  `toString`.
 - An MP3 whose ID3v2 tag holds bytes that look like a frame header decodes. The decoder found audio by sync words, and a
   sync-like pair inside the tag measured as a frame that decoded to nothing, which ended the decode: a Cocos Creator
   game's 22.05 kHz sound effect failed to load, and the game waited for it on its splash screen. A tag is now skipped by

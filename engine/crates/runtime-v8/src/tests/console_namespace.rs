@@ -100,6 +100,61 @@ mod console_namespace_tests {
     }
 
     #[test]
+    fn a_string_first_argument_is_formatted_as_the_standard_says() {
+        let found = lines(
+            9_506,
+            r#"console.log("%s is %d years, %f%%", "Ann", "42.9", "1.5");
+               console.log("%o and %O", { a: 1 }, [1]);
+               console.log("%c styled", "color: red");
+               console.log("%d %i", "x", Symbol("s"));
+               console.log("%s", "a", "b", { c: 2 });
+               console.log("100%");
+               console.log(1, "%s");
+               console.log("%s", { toString: function () { throw new Error("no"); } });
+               console.assert(false, "value=%d", 3);
+               console.time("%s"); console.timeLog("%s", "kept");"#,
+        );
+        let texts: Vec<&str> = found.iter().map(|(_, m)| m.as_str()).collect();
+        assert_eq!(&texts[..9], &[
+            "Ann is 42 years, 1.5%",
+            "{\"a\":1} and [1]",
+            " styled",
+            "NaN NaN",
+            "a b {\"c\":2}",
+            "100%",
+            "1 %s",
+            "<invalid value>",
+            "Assertion failed: value=3",
+        ]);
+        assert!(texts[9].starts_with("%s: ") && texts[9].ends_with("ms kept"),
+            "timeLog prints its data without formatting it: {:?}", texts[9]);
+    }
+
+    #[test]
+    fn members_need_no_receiver_and_a_trace_survives_its_stack() {
+        let found = lines(
+            9_507,
+            r#"var g = console.groupCollapsed, l = console.log, e = console.groupEnd;
+               g("held apart"); l("inside"); e(); l("outside");
+               Error.prepareStackTrace = function () { throw "boom"; };
+               console.trace("still a line");
+               delete Error.prepareStackTrace;"#,
+        );
+        assert_eq!(found[..3].to_vec(), vec![
+            (1, "held apart".to_string()),
+            (1, "  inside".to_string()),
+            (1, "outside".to_string()),
+        ]);
+        assert_eq!(found[3], (1, "Trace: still a line".to_string()), "{found:?}");
+    }
+
+    #[test]
+    fn clear_empties_the_group_stack() {
+        let found = lines(9_508, r#"console.group("g"); console.log("in"); console.clear(); console.log("out");"#);
+        assert_eq!(found, vec![(1, "g".to_string()), (1, "  in".to_string()), (1, "out".to_string())]);
+    }
+
+    #[test]
     fn the_rest_write_what_they_were_given() {
         let found = lines(
             9_505,
