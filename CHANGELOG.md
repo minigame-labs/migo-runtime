@@ -731,6 +731,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- A frame that could not be presented, other than through a lost context, reaches the host as `RenderSwapBuffersError`
+  (413), which Android reads as recoverable (`NATIVE_RENDER_SWAP_BUFFERS_ERROR`). Both lanes reported it as
+  `RenderBackendError`, a session to restart or destroy, although the session goes on: the render loop presents again
+  next frame, and a Surface it can no longer present to is retired and reported through `onSurfaceLost`, which tells
+  the host what to do.
 - A render command the game got wrong -- a 2D draw, a GL call, a canvas change the renderer could not execute -- reaches
   the host as `RenderCommandFailed` (430), which Android's `ErrorCode.isRecoverable` reads as recoverable
   (`NATIVE_RENDER_COMMAND_FAILED`), with the command's own error in the detail. It was reported under the command's own
