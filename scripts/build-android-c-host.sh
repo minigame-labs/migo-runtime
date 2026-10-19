@@ -53,7 +53,7 @@ if [[ -n "$PACKAGE" ]]; then
     ./gradlew --no-daemon "-PmigoAbis=$ABI" "-PmigoPackage=$PACKAGE" :c-host-example:assembleDebug
     APK="$REPO_ROOT/tests/c_host/android/build/outputs/apk/debug/c-host-example-debug.apk"
     [[ -f "$APK" ]] || { err "no APK produced"; exit 1; }
-    info "APK: $APK ($(stat -c %s "$APK") bytes)"
+    info "APK: $APK ($(wc -c < "$APK" | tr -d " ") bytes)"
     exit 0
 fi
 
@@ -111,7 +111,7 @@ STAGE="$REPO_ROOT/tests/c_host/android/src/main/jniLibs-static/$ABI"
 mkdir -p "$STAGE"
 CARGO_TARGET="$(cargo_target_dir "$ENGINE_DIR")" || exit 1
 cp "$CARGO_TARGET/$TARGET/release/libmigo_capi.a" "$STAGE/"
-info "staged $(stat -c %s "$STAGE/libmigo_capi.a") bytes at $STAGE/libmigo_capi.a"
+info "staged $(wc -c < "$STAGE/libmigo_capi.a" | tr -d " ") bytes at $STAGE/libmigo_capi.a"
 
 info "building the APK"
 cd "$REPO_ROOT/platforms/android"
@@ -121,4 +121,4 @@ cd "$REPO_ROOT/platforms/android"
 
 APK="$(find "$REPO_ROOT/tests/c_host/android/build/outputs/apk" -name '*.apk' | head -1)"
 [[ -n "$APK" ]] || { err "no APK produced"; exit 1; }
-info "APK: $APK ($(stat -c %s "$APK") bytes)"
+info "APK: $APK ($(wc -c < "$APK" | tr -d " ") bytes)"
