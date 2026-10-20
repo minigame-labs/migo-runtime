@@ -1077,6 +1077,12 @@ impl Host {
                 self.id,
             );
         }
+        // Launched before anything of the game's runs -- the preludes included,
+        // which an adapter may read the launch from: what it was launched with,
+        // and entered with until a show says otherwise.
+        if let Some(launch) = self.show_options.launch() {
+            self.js.invoke_host_hook("_internalLaunch", &launch);
+        }
         // Run boot prelude scripts (e.g. BOM/DOM adapter for browser-style
         // games) before the main module loads. Prelude failures abort the
         // launch with the same error path as the main module — a partially
@@ -1410,6 +1416,10 @@ impl Host {
         // is the fail-closed direction, which is why it is safe to leave it
         // rather than invent an abort with no caller.
 
+        // Launched again, as a cold launch is, with the options it was last shown with, its query the one the restart
+        // named: the reload below launches the new isolate with them, and it is shown with them after.
+        let args = self.show_options.relaunch(launch_query);
+
         // If we have a last evaluated module, reload it. Even if re-evaluation
         // fails, resume render/audio below so the session doesn't stay paused.
         let reload_result = if let (Some(game_id), Some(entry)) =
@@ -1445,11 +1455,8 @@ impl Host {
         self.last_dispatched_context_lost = false;
         self.reconcile_context_lost();
 
-        // Launched again, so shown again, as a cold launch is: the new isolate has no launch options until a show
-        // gives it some, and content that starts or resumes on onShow would wait for one that never came. Shown with
-        // the options it was last shown with, its query the one the restart named; while the game is hidden, the show
-        // waits for the surface as any other does.
-        let args = self.show_options.relaunch(launch_query);
+        // Launched again, so shown again, as a cold launch is: content that starts or resumes on onShow would wait
+        // for one that never came. While the game is hidden, the show waits for the surface as any other does.
         if self.backgrounded.load(Ordering::Relaxed) {
             self.pending_on_show_args = Some(args);
         } else {

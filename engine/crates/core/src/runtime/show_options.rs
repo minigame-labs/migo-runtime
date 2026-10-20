@@ -33,6 +33,12 @@ impl ShowOptions {
         }
     }
 
+    /// The runtime is launched: its `_internalLaunch` arguments, the options it was last shown with -- or launched
+    /// with, before any show -- or `None` while there are none, when it is launched with its first show's.
+    pub(crate) fn launch(&self) -> Option<Cow<'static, str>> {
+        self.last.as_ref().map(hook_args_one)
+    }
+
     /// The host shows the game with `options_json`: its `_internalTriggerOnShow` arguments. Options that are not a
     /// JSON object are none, as an absent one is.
     pub(crate) fn show(&mut self, options_json: Option<&str>) -> Cow<'static, str> {
@@ -111,6 +117,18 @@ mod tests {
     fn a_session_launched_without_options_shows_with_none() {
         let mut shows = ShowOptions::launched_with(None);
         assert_eq!(shows.show(None), HOOK_ARGS_NONE);
+    }
+
+    /// The runtime is launched with the host's options before content runs; with none it is not, and its first show
+    /// launches it. A runtime started after a show -- a restart -- is launched with what the game was last shown with.
+    #[test]
+    fn a_runtime_is_launched_with_the_host_s_options_or_the_last_show_s() {
+        let launched = launched(json!({"scene": 1007}));
+        assert_eq!(launched.launch().map(args), Some(json!([{"scene": 1007}])));
+        let mut shows = ShowOptions::launched_with(None);
+        assert_eq!(shows.launch(), None);
+        shows.show(Some(r#"{"scene":1038}"#));
+        assert_eq!(shows.launch().map(args), Some(json!([{"scene": 1038}])));
     }
 
     /// A restart launches with the options the game was last shown with, its query the one the restart names; with

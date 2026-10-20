@@ -45,7 +45,26 @@ export function readEngineSessionConfig(config) {
     surfaceWidth: sizeField(config, "surfaceWidth"),
     surfaceHeight: sizeField(config, "surfaceHeight"),
     device: deviceProfile(config.device),
+    launchOptions: launchOptions(config.launchOptions),
   });
+}
+
+/**
+ * What the game is launched with: the JSON object the host created the engine
+ * session with, parsed -- the producer launches the engine's runtime with it
+ * before content runs, as the embedded host does -- or undefined, the engine's
+ * defaults, when the host gave none.
+ */
+function launchOptions(described) {
+  if (described === undefined || described === null) return undefined;
+  if (typeof described !== "string") {
+    throw new TypeError("the launch options are the JSON the host hands over, as a string");
+  }
+  const options = JSON.parse(described);
+  if (options === null || typeof options !== "object" || Array.isArray(options)) {
+    throw new TypeError("the launch options are a JSON object");
+  }
+  return options;
 }
 
 /**

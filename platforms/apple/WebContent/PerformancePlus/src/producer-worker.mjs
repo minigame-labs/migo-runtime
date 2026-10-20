@@ -163,6 +163,9 @@ self.onmessage = async (event) => {
       // the global registry, so content could otherwise reach every hook behind
       // it, a rewarded-video completion among them.
       const bridgeName = Symbol.for("Migo.hostBridge");
+      // Launched before content's first line, which may read what with: the
+      // host's options, when it gave any.
+      if (identity.launchOptions !== undefined) globalThis[bridgeName]._internalLaunch(identity.launchOptions);
       bindHostEvents(globalThis[bridgeName]);
       bindContextEvents(globalThis[bridgeName]);
       bindResizeEvents(globalThis[bridgeName]);

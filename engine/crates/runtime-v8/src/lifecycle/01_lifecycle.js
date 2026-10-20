@@ -111,11 +111,19 @@ class AppLifecycleManager {
         this.onShowListeners = createListenerGroup('onShow');
         this.onHideListeners = createListenerGroup('onHide');
         this.isVisible = false;
-        // Cold launch params -- set once on first onShow, never overwritten
+        // What the runtime was launched with -- the host's, before content runs (_launch), or else its first
+        // show's -- never overwritten
         this.launchOptions = null;
-        // Most recent enter params -- updated on every onShow
+        // What the game was last entered with -- the launch's, then every onShow's
         this.enterOptions = null;
-        this._firstShow = true;
+    }
+
+    // The runtime is launched: what getLaunchOptionsSync() answers for its life, and what the game is entered with
+    // until a show says otherwise. Installed by the host before content's first line, which may read either.
+    _launch(options) {
+        const normalized = this._normalizeLaunchOptions(options);
+        this.launchOptions = normalized;
+        this.enterOptions = normalized;
     }
 
     _normalizeLaunchOptions(raw) {
@@ -182,13 +190,11 @@ class AppLifecycleManager {
 
         const normalized = this._normalizeLaunchOptions(options);
 
-        // First onShow = cold launch: freeze launch options
-        if (this._firstShow) {
+        // A runtime the host launched with no options of its own is launched with its first show's -- how a host
+        // that carries them on its shows gives them.
+        if (this.launchOptions === null) {
             this.launchOptions = normalized;
-            this._firstShow = false;
         }
-
-        // Always update enter options (tracks most recent enter)
         this.enterOptions = normalized;
 
         // Pass a separate clone to listeners so they cannot mutate internal state
@@ -237,6 +243,10 @@ function getEnterOptionsSync() {
     return lifecycleManager.getEnterOptionsSync();
 }
 
+function _internalLaunch(options) {
+    lifecycleManager._launch(options);
+}
+
 function _internalTriggerOnShow(option) {
     lifecycleManager._triggerShow(option);
 }
@@ -282,6 +292,7 @@ export {
     offHide,
     getLaunchOptionsSync,
     getEnterOptionsSync,
+    _internalLaunch,
     _internalTriggerOnHide,
     _internalTriggerOnShow,
     _internalObserveVisibility,

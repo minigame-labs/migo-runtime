@@ -482,7 +482,7 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
                     engineSession: .init(
                         launchNonce: engine.launchNonce, surfaceGeneration: engine.surfaceGeneration,
                         surfaceWidthPixels: Int(size.widthPixels), surfaceHeightPixels: Int(size.heightPixels),
-                        device: device)),
+                        device: device, launchOptionsJSON: configuration.launchOptionsJSON)),
                 channel: MigoFrameChannel(session: engine.session))
             self.host = host
             host.onReport = { [weak self] report in self?.producerReport(report) }

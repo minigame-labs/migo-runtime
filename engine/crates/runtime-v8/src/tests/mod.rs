@@ -43,6 +43,7 @@ mod inner_audio_error_codes;
 mod input_clock;
 mod install_receipt;
 mod intl;
+mod lifecycle_launch;
 #[cfg(feature = "api-sensors")]
 mod location_coordinates;
 #[cfg(feature = "api-system")]
