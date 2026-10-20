@@ -6,6 +6,8 @@
 
 #include <QDBusConnection>
 #include <QElapsedTimer>
+#include <QFile>
+#include <QWindow>
 #include <QEvent>
 #include <QFontDatabase>
 #include <QGuiApplication>
@@ -191,6 +193,18 @@ public:
     /// What the system says of the battery and the network, reported to the Session as it changes.
     std::unique_ptr<BatteryReport> battery;
     std::unique_ptr<NetworkReport> network;
+    /// The system switches reported so far (getSystemSetting).
+    MigoSystemSettingFlags system_settings = MIGO_SYSTEM_SETTING_FLAG_NONE;
+    /// What content was last told of its window: it starts shown and running.
+    bool reported_running = true;
+    bool reported_visible = true;
+    /// Whether the window has been exposed yet: until it first is, being
+    /// unexposed is its coming up, not its being covered.
+    bool exposed_once = false;
+    /// The view's window, and its native window, watched for whether content
+    /// runs and shows -- from the first attach, when both are on screen.
+    QPointer<QWidget> watched_widget;
+    QPointer<QWindow> watched_window;
     bool closing = false;
     bool closed = false;
     /// Whether the view has attached: the Session has its host from then on.
@@ -242,6 +256,63 @@ public:
 
     void finishClose();
     MigoResult loadNow(const QByteArray &content_id, const QByteArray &entry);
+
+    /// Content runs while its window is shown and not minimized -- nobody can
+    /// bring it back without acting otherwise -- and is visible while it runs
+    /// and its window is exposed: a covered window keeps its game running, as
+    /// a background browser tab keeps its script running.
+    void reportWindowState() {
+        if (session == nullptr || closing || view.isNull()) return;
+        QWidget *window = view->window();
+        const bool running = window->isVisible() && !window->isMinimized();
+        const QWindow *handle = window->windowHandle();
+        const bool exposed = handle != nullptr && handle->isExposed();
+        exposed_once = exposed_once || exposed;
+        const bool visible = running && (exposed || !exposed_once);
+        if (visible != reported_visible) {
+            reported_visible = visible;
+            (void)migo_session_set_visibility(session, visible ? 1U : 0U);
+        }
+        if (running != reported_running) {
+            reported_running = running;
+            (void)migo_session_set_lifecycle(session, running ? MIGO_LIFECYCLE_RUNNING : MIGO_LIFECYCLE_PAUSED);
+        }
+    }
+
+    void watch(QWidget *window) {
+        if (window != watched_widget) {
+            if (!watched_widget.isNull()) watched_widget->removeEventFilter(this);
+            watched_widget = window;
+            window->installEventFilter(this);
+        }
+        QWindow *handle = window->windowHandle();
+        if (handle != watched_window) {
+            if (!watched_window.isNull()) watched_window->removeEventFilter(this);
+            watched_window = handle;
+            if (handle != nullptr) handle->installEventFilter(this);
+        }
+    }
+
+    void setSystemSetting(MigoSystemSettingFlags flag, bool on) {
+        const MigoSystemSettingFlags settings = on ? (system_settings | flag) : (system_settings & ~flag);
+        if (settings == system_settings || session == nullptr || closing) return;
+        system_settings = settings;
+        (void)migo_session_set_system_settings(session, settings);
+    }
+
+    bool eventFilter(QObject *watched, QEvent *event) override {
+        switch (event->type()) {
+            case QEvent::WindowStateChange:
+            case QEvent::Show:
+            case QEvent::Hide:
+            case QEvent::Expose:
+                reportWindowState();
+                break;
+            default:
+                break;
+        }
+        return QObject::eventFilter(watched, event);
+    }
 
     /// What the App says about itself: who it is, and whether its debugging aids are on.
     MigoResult reportAppInfo() {
@@ -471,7 +542,25 @@ MigoManagedSession::MigoManagedSession(MigoEngine &engine, QWidget &parent, cons
         QDBusConnection::systemBus(), [impl](const NetworkReport::State &state) {
             if (impl->session == nullptr || impl->closing) return;
             (void)migo_session_set_network_status(impl->session, state.type, state.connected ? 1U : 0U);
+            impl->setSystemSetting(MIGO_SYSTEM_SETTING_FLAG_WIFI_ENABLED, state.wifi_enabled);
         });
+
+    // What the system grants the App. An App outside a sandbox is granted all
+    // the system could gate -- its files, its devices, its notifications --
+    // for the user who runs it; inside one (Flatpak, Snap) the portals decide
+    // as content asks, which is not determined until then. Location is
+    // GeoClue's agent's to decide, which the Host Kit does not ask.
+    MigoAppAuthorizeSetting granted{};
+    granted.struct_size = static_cast<std::uint32_t>(sizeof(granted));
+    granted.abi_version = MIGO_ABI_VERSION_1;
+    if (!QFile::exists(QStringLiteral("/.flatpak-info")) && !qEnvironmentVariableIsSet("SNAP")) {
+        for (std::uint8_t *field : {&granted.album, &granted.bluetooth, &granted.camera, &granted.microphone,
+                                    &granted.notification, &granted.notification_alert, &granted.notification_badge,
+                                    &granted.notification_sound, &granted.phone_calendar}) {
+            *field = MIGO_AUTHORIZATION_AUTHORIZED;
+        }
+    }
+    (void)migo_session_set_app_authorize_setting(impl_->session, &granted);
 
     connect(impl_->built_in.get(), &MigoQtBuiltInHostServices::debugAidsRequested, this,
             [this](bool on) { (void)setDebugAids(on); });
@@ -489,6 +578,10 @@ MigoManagedSession::MigoManagedSession(MigoEngine &engine, QWidget &parent, cons
     // before then is loaded now.
     connect(impl_->view.data(), &MigoQtX11SurfaceView::surfaceAttached, this, [this](quint64) {
         impl_->attached = true;
+        // The window is on screen by now, with its native window to watch for
+        // exposure; a view reparented since its last attach has another.
+        impl_->watch(impl_->view->window());
+        impl_->reportWindowState();
         if (!impl_->content_pending || impl_->closing) return;
         impl_->content_pending = false;
         const QByteArray content_id = std::exchange(impl_->pending_content_id, QByteArray());

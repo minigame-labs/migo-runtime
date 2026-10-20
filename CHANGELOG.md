@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The Linux Host Kit reports the host's inputs a desktop already knows: `MigoManagedSession` tells the Session that
+  content runs while its window is shown and not minimized and shows while that window is also exposed
+  (`migo_session_set_lifecycle`, `migo_session_set_visibility`; only changes, as the game starts shown and running,
+  and a window not yet exposed is coming up, not covered), the Wi-Fi switch from NetworkManager
+  (`migo_session_set_system_settings`), and the App's authorisations -- outside a sandbox, all the system could gate;
+  inside Flatpak or Snap, not determined; location not determined (`migo_session_set_app_authorize_setting`).
 - The Linux Host Kit reports the battery and the network: `MigoManagedSession` reports UPower's display device (level,
   charging) with power-profiles-daemon's saver as the low-power mode (`migo_session_set_battery_status`), and
   NetworkManager's primary connection -- Wi-Fi and wired as Wi-Fi, a modem as unknown, none while disconnected --

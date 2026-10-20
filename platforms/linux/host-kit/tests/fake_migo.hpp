@@ -116,6 +116,14 @@ struct NetworkRecord {
 };
 const std::vector<BatteryRecord> &battery_reports() noexcept;
 const std::vector<NetworkRecord> &network_reports() noexcept;
+/// What the host said of content's window, in order: "hidden", "shown"
+/// (migo_session_set_visibility), "paused", "running" (migo_session_set_lifecycle).
+const std::vector<std::string> &window_reports() noexcept;
+/// The system switches last reported (MIGO_SYSTEM_SETTING_FLAG_*), and how many times.
+uint32_t reported_system_settings() noexcept;
+int system_settings_reports() noexcept;
+/// The App's authorisations last reported; struct_size 0 before any report.
+const MigoAppAuthorizeSetting &reported_app_authorization() noexcept;
 
 /// A line content writes to its console, which the host's debugging panel
 /// reads back (migo_session_copy_console_logs): level 0 debug .. 3 error.

@@ -48,6 +48,10 @@ uint32_t g_host_app_flags = 0;
 std::vector<std::string> g_console;
 std::vector<fake_migo::BatteryRecord> g_battery;
 std::vector<fake_migo::NetworkRecord> g_network;
+std::vector<std::string> g_window;
+uint32_t g_system_settings = 0;
+int g_system_settings_reports = 0;
+MigoAppAuthorizeSetting g_app_authorization{};
 std::string g_launch_options;
 std::vector<fake_migo::HostServiceAnswer> g_answers;
 std::vector<fake_migo::HostServiceEvent> g_events;
@@ -71,6 +75,10 @@ void reset() noexcept {
     g_console.clear();
     g_battery.clear();
     g_network.clear();
+    g_window.clear();
+    g_system_settings = 0;
+    g_system_settings_reports = 0;
+    g_app_authorization = {};
     g_launch_options.clear();
     g_answers.clear();
     g_events.clear();
@@ -186,6 +194,10 @@ const std::string &reported_host_app_id() noexcept { return g_host_app_id; }
 uint32_t reported_host_app_flags() noexcept { return g_host_app_flags; }
 const std::vector<BatteryRecord> &battery_reports() noexcept { return g_battery; }
 const std::vector<NetworkRecord> &network_reports() noexcept { return g_network; }
+const std::vector<std::string> &window_reports() noexcept { return g_window; }
+uint32_t reported_system_settings() noexcept { return g_system_settings; }
+int system_settings_reports() noexcept { return g_system_settings_reports; }
+const MigoAppAuthorizeSetting &reported_app_authorization() noexcept { return g_app_authorization; }
 
 void write_console(int level, const std::string &text) {
     // Plain text only: the tests write no character JSON would need escaped.
@@ -572,6 +584,40 @@ extern "C" MigoResult MIGO_CALL migo_session_set_host_app_info(MigoSession *sess
     if (info->struct_size != sizeof(*info) || info->benchmark_level < -2) return MIGO_ERROR_INVALID_ARGUMENT;
     g_host_app_id = info->app_id_utf8 != nullptr ? info->app_id_utf8 : "";
     g_host_app_flags = info->flags;
+    return MIGO_OK;
+}
+
+extern "C" MigoResult MIGO_CALL migo_session_set_visibility(MigoSession *session, uint8_t visible) {
+    if (session != fake_migo::session() || !g_session_alive || visible > 1) return MIGO_ERROR_INVALID_ARGUMENT;
+    g_window.emplace_back(visible != 0 ? "shown" : "hidden");
+    return MIGO_OK;
+}
+
+extern "C" MigoResult MIGO_CALL migo_session_set_lifecycle(MigoSession *session, MigoLifecycleState state) {
+    if (session != fake_migo::session() || !g_session_alive) return MIGO_ERROR_INVALID_ARGUMENT;
+    if (state == MIGO_LIFECYCLE_CREATED) return MIGO_ERROR_INVALID_STATE;
+    if (state != MIGO_LIFECYCLE_RUNNING && state != MIGO_LIFECYCLE_PAUSED) return MIGO_ERROR_INVALID_ARGUMENT;
+    g_window.emplace_back(state == MIGO_LIFECYCLE_RUNNING ? "running" : "paused");
+    return MIGO_OK;
+}
+
+extern "C" MigoResult MIGO_CALL migo_session_set_system_settings(MigoSession *session, MigoSystemSettingFlags flags) {
+    constexpr MigoSystemSettingFlags kKnown = MIGO_SYSTEM_SETTING_FLAG_BLUETOOTH_ENABLED |
+                                              MIGO_SYSTEM_SETTING_FLAG_LOCATION_ENABLED |
+                                              MIGO_SYSTEM_SETTING_FLAG_WIFI_ENABLED;
+    if (session != fake_migo::session() || !g_session_alive || (flags & ~kKnown) != 0) return MIGO_ERROR_INVALID_ARGUMENT;
+    g_system_settings = flags;
+    ++g_system_settings_reports;
+    return MIGO_OK;
+}
+
+extern "C" MigoResult MIGO_CALL migo_session_set_app_authorize_setting(MigoSession *session,
+                                                                     const MigoAppAuthorizeSetting *setting) {
+    if (session != fake_migo::session() || !g_session_alive || setting == nullptr ||
+        setting->struct_size != sizeof(*setting)) {
+        return MIGO_ERROR_INVALID_ARGUMENT;
+    }
+    g_app_authorization = *setting;
     return MIGO_OK;
 }
 

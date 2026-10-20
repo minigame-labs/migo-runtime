@@ -161,7 +161,11 @@ MigoSession  > SurfaceHost ──> MigoQtX11SurfaceView
 
 `MigoManagedSession` 还替内容保持屏幕常亮（`setKeepScreenOn`）：经 XDG 桌面门户的 `Inhibit`（会话空闲：熄屏、锁屏）向桌面申请，桌面没有门户时退回 freedesktop 屏保接口（`org.freedesktop.ScreenSaver.Inhibit`）；内容不再要求或游戏结束时释放。两者都没有的桌面不做任何保持，并记一条警告。
 
-它也把系统给出的电量和网络报给 Session，并在变化时再报：电量是 UPower 的显示设备（所有电池合成一个）的电量与是否充电，power-profiles-daemon 的省电档即低电量模式（`isLowPowerModeEnabled`）；没有电池的机器不报，内容的 `getBatteryInfo` 如实答"不支持"。网络是 NetworkManager 的主连接：Wi-Fi 与有线都报 `wifi`（API 里最接近的），调制解调器报 `unknown`（代数不归 NetworkManager 说），断开报 `none`；是否连通互联网看 NetworkManager 的连通性检查，检查关闭时看它的状态。没有 NetworkManager 的机器不报。
+它也把系统给出的电量和网络报给 Session，并在变化时再报：电量是 UPower 的显示设备（所有电池合成一个）的电量与是否充电，power-profiles-daemon 的省电档即低电量模式（`isLowPowerModeEnabled`）；没有电池的机器不报，内容的 `getBatteryInfo` 如实答"不支持"。网络是 NetworkManager 的主连接：Wi-Fi 与有线都报 `wifi`（API 里最接近的），调制解调器报 `unknown`（代数不归 NetworkManager 说），断开报 `none`；是否连通互联网看 NetworkManager 的连通性检查，检查关闭时看它的状态。没有 NetworkManager 的机器不报。Wi-Fi 开关（`getSystemSetting` 的 `wifiEnabled`）也取自 NetworkManager：软件开关与无线电的硬件开关都开着才算开。
+
+内容随窗口运行与显示：窗口显示且未最小化时运行（`onShow`），最小化或隐藏时暂停（`onHide`）；窗口被完全遮挡（X 不再暴露它）时内容仍在运行，只是不可见——像浏览器后台标签页仍在运行脚本。游戏一启动就是显示且运行的，变化时才报。
+
+`getAppAuthorizeSetting`：沙箱外的 Linux 应用没有系统层面的授权关卡——文件、设备、通知都是运行它的用户的——所以相册、蓝牙、摄像头、麦克风、通知、日历都报"已授权"；在沙箱里（Flatpak、Snap）由门户在内容使用时决定，报"未决定"。定位由 GeoClue 的代理决定，Host Kit 尚未询问，报"未决定"。
 
 `MigoManagedSession` 自动装上这些服务。App 自己回答的服务（广告、支付、登录……）用构造参数
 `Options::appServices` 提供一个 `MigoQtHostServiceProvider`：App 声明的服务归 App，包括内建

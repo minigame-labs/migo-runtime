@@ -141,6 +141,8 @@ void NetworkReport::update(const std::optional<QVariantMap> &manager) {
     network.connected = network.type != MIGO_NETWORK_NONE &&
                         (connectivity == kConnectivityFull ||
                          (connectivity == kConnectivityUnknown && state == kStateConnectedGlobal));
+    network.wifi_enabled = manager->value(QStringLiteral("WirelessEnabled")).toBool() &&
+                           manager->value(QStringLiteral("WirelessHardwareEnabled")).toBool();
     if (reported_ == network) return;
     reported_ = network;
     report_(network);
