@@ -48,7 +48,8 @@ sudo apt-get update
 sudo apt-get install -y \
   cmake ninja-build g++ ripgrep xvfb xauth \
   qt6-base-dev qt6-base-dev-tools qt6-qpa-plugins \
-  libx11-dev libxkbcommon-x11-dev libxcb-cursor0
+  libx11-dev libxkbcommon-x11-dev libxcb-cursor0 \
+  pkg-config libxcb-xinput-dev libxtst-dev
 ```
 
 If the host uses only the toolkit-neutral `migo::linux-surface-host` controller (Wayland), also
@@ -164,11 +165,15 @@ desktop already offers with Qt's own:
   player's input while one is up; a modal is a window-modal dialog, and when `editable` its `content`
   is what the field starts with; an action sheet is a menu popped up over the game's centre, and closing
   it fails with `cancel`. Button colours are not applied: a desktop's dialogs are the desktop's.
-- **Window** (`setWindowSize`, `setCursor`, `onWindowStateChange`): `setWindowSize` is the game's size in pixels, the
-  window growing or shrinking by what the view must (refused while full screen); each change of the window's state is
-  reported (minimize, maximize -- full screen included -- normalize); `setCursor` sets the cursor over the game, a CSS
-  keyword or an image and its hotspot. A pointer lock is refused for now, as the C ABI lets a host: holding the cursor
-  and moving content's pointer by the mouse's raw motion needs XInput 2's raw events, which this Host Kit does not read yet.
+- **Window** (`setWindowSize`, `setCursor`, `requestPointerLock`, `onWindowStateChange`): `setWindowSize` is the game's
+  size in pixels, the window growing or shrinking by what the view must (refused while full screen); each change of the
+  window's state is reported (minimize, maximize -- full screen included -- normalize); `setCursor` sets the cursor over
+  the game, a CSS keyword or an image and its hotspot. A pointer lock is granted only with the player at the game -- the
+  view holding the keyboard, the cursor over the part of it that shows -- and refused, and said to be, otherwise. While
+  it holds, the cursor is hidden and the mouse grabbed, and XInput 2's raw motion (after the pointer's acceleration)
+  moves content's pointer from where the cursor stood, past the view's edges too; a click lands where content's pointer
+  is. Esc releases it (that Esc and its release are not the game's), as do the view losing the keyboard and the game
+  ending; the cursor then stands where it stood.
 
 `MigoManagedSession` installs these services. The services the App answers itself (adverts, payments,
 sign-in, ...) come from a `MigoQtHostServiceProvider` given as `Options::appServices`: the services the

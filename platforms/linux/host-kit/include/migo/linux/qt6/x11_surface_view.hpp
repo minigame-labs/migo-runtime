@@ -6,10 +6,13 @@
 
 #include <QElapsedTimer>
 #include <QMetaObject>
+#include <QPoint>
+#include <QPointF>
 #include <QTimer>
 #include <QWidget>
 
 #include <array>
+#include <memory>
 
 class QCloseEvent;
 class QFocusEvent;
@@ -75,6 +78,24 @@ public:
     void setPointerDelivery(PointerDelivery delivery) noexcept { pointer_delivery_ = delivery; }
     [[nodiscard]] PointerDelivery pointerDelivery() const noexcept { return pointer_delivery_; }
 
+    /// Hold the pointer for the game: the C ABI's window service
+    /// (REQUEST_POINTER_LOCK). The cursor is hidden and the mouse grabbed, and
+    /// the mouse's motion -- XInput 2's raw motion, after the pointer's
+    /// acceleration -- moves content's pointer from where the cursor stood,
+    /// past the view's edges if it goes there, so movementX/movementY keep
+    /// moving while the cursor shows nothing.
+    ///
+    /// Taken only while the view is attached, its window active and the cursor
+    /// over the view: a lock taken with the cursor elsewhere would send the
+    /// player's clicks wherever it stands. Released by Esc -- the player's way
+    /// out, as in a browser; that Esc is not the game's -- by the view losing
+    /// focus, by a detach, and by `unlockPointer()`; the cursor then stands where
+    /// it stood. Returns whether a lock is held now; `pointerLockChanged` says
+    /// when that changes.
+    [[nodiscard]] bool lockPointer();
+    void unlockPointer();
+    [[nodiscard]] bool isPointerLocked() const noexcept { return pointer_lock_ != nullptr; }
+
     /// Ask the toolkit for one frame, in response to the engine asking for one.
     ///
     /// The App calls this from its own `on_request_frame` callback. The view
@@ -112,6 +133,8 @@ Q_SIGNALS:
     /// because a full queue is backpressure, not a Surface fault, and a host
     /// that treats the two alike would tear down a working Surface.
     void inputRejected(MigoResult error);
+    /// A pointer lock was taken or released.
+    void pointerLockChanged(bool locked);
 
 protected:
     [[nodiscard]] QPaintEngine *paintEngine() const override;
@@ -141,8 +164,11 @@ private:
     /// which the ABI accepts input at all.
     [[nodiscard]] bool inputIsDeliverable() const noexcept;
     void recordInputResult(MigoResult result);
-    void deliverPointer(const QMouseEvent &event, std::uint32_t kind);
-    void deliverMouseAsTouch(const QMouseEvent &event, MigoTouchType kind);
+    void deliverPointer(std::uint32_t kind, std::uint32_t button, double timestamp_ms);
+    void deliverMouseAsTouch(MigoTouchType kind, double timestamp_ms);
+    /// The mouse moved while a lock holds the pointer: `delta` in the screen's
+    /// pixels moves content's pointer.
+    void moveLockedPointer(QPointF delta, double timestamp_ms);
     void deliverKey(const QKeyEvent &event, std::uint32_t kind);
     void deliverTouch(const QTouchEvent &event);
     void deliverComposition(std::uint32_t kind, const char *data, std::uint32_t length);
@@ -190,6 +216,16 @@ private:
     bool composing_ = false;
     /// True between a frame request and the frame boundary it produced.
     bool frame_requested_ = false;
+
+    /// What a held pointer lock reads the mouse with; null while none is held.
+    class PointerLock;
+    std::unique_ptr<PointerLock> pointer_lock_;
+    /// Where content's pointer is while a lock holds it, in the view's (CSS) pixels.
+    QPointF locked_position_;
+    /// Where the cursor stood when the lock was taken, on the screen: where it stands again.
+    QPoint lock_origin_;
+    /// The Esc that released a lock: its release is not the game's either.
+    bool escape_released_lock_ = false;
 };
 
 }  // namespace migo::linux_host::qt6

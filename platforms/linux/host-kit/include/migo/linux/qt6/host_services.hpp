@@ -133,9 +133,9 @@ public:
 /// or shrinking by what the view must (refused while the window is full
 /// screen); a change of the window's state is reported (minimize, maximize --
 /// full screen included -- normalize); `setCursor` sets the cursor over the
-/// game, a CSS keyword or an image and its hotspot. A pointer lock is refused
-/// for now, as a host may: holding one needs the mouse's raw motion, which this
-/// Host Kit does not read yet.
+/// game, a CSS keyword or an image and its hotspot; a pointer lock is the
+/// view's (`MigoQtX11SurfaceView::lockPointer`), reported as it is taken and
+/// released, and refused -- and said to be -- while the player is not at the game.
 ///
 /// GUI thread only. What is on screen goes with this object.
 class MigoQtBuiltInHostServices final : public QObject, public MigoQtHostServiceProvider {

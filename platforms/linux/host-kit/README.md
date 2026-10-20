@@ -16,8 +16,9 @@ What is claimed:
   Session's channel is closed; the provider interface an App answers its own
   services through; and `MigoQtBuiltInHostServices`, which answers with Qt's own
   what a desktop already offers -- the clipboard; the game's toasts, loading
-  indicators, modals and action sheets; and the window's size, state and cursor
-  (a pointer lock is refused until the Host Kit reads XInput 2's raw motion).
+  indicators, modals and action sheets; and the window's size, state, cursor and
+  pointer lock (the cursor hidden, XInput 2's raw motion moving content's pointer,
+  Esc releasing it).
 - `migo::qt6-managed-session` is the Managed ownership shape: `MigoManagedSession`
   owns the Session, its callback table and the view, and installs the built-in
   services. Its `Options` carry the network policy, the launch options and the
@@ -172,12 +173,15 @@ sudo apt-get update
 sudo apt-get install -y \
   cmake ninja-build g++ ripgrep xvfb xauth \
   qt6-base-dev qt6-base-dev-tools qt6-qpa-plugins \
-  libx11-dev libxkbcommon-x11-dev libxcb-cursor0
+  libx11-dev libxkbcommon-x11-dev libxcb-cursor0 \
+  pkg-config libxcb-xinput-dev libxtst-dev
 ```
 
-The adapter's compile-time API uses Qt Core/Gui/Widgets and Xlib. The remaining
-packages supply the xcb platform plugin's runtime dependencies and the isolated
-Xvfb positive-path test. A native Wayland host that consumes only the
+The adapter's compile-time API uses Qt Core/Gui/Widgets, Xlib and xcb's XInput 2
+(`libxcb-xinput`, found through pkg-config), which a pointer lock reads the mouse's
+raw motion with. The remaining packages supply the xcb platform plugin's runtime
+dependencies and the isolated Xvfb positive-path test, whose mouse and keyboard
+XTest (`libxtst`) drives. A native Wayland host that consumes only the
 toolkit-neutral controller also needs its distribution's Wayland development
 package (on Ubuntu: `libwayland-dev`), but that does not turn the Qt adapter
 into a Wayland implementation. Do not install Qt private-header packages for

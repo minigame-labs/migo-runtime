@@ -994,7 +994,8 @@ jobs:
             timeout 300 sudo apt-get install -y \
               cmake ninja-build g++ ripgrep xvfb xauth \
               qt6-base-dev qt6-base-dev-tools qt6-qpa-plugins \
-              libx11-dev libxkbcommon-x11-dev libxcb-cursor0 || return 1
+              libx11-dev libxkbcommon-x11-dev libxcb-cursor0 \
+              pkg-config libxcb-xinput-dev libxtst-dev || return 1
           }
           install_pkgs || {
             echo "Qt/X11 package install failed; retrying once" >&2
