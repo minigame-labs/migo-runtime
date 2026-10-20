@@ -31,8 +31,9 @@ What is claimed:
   the battery as UPower shows it (with power-profiles-daemon's saver as the
   low-power mode), the network and the Wi-Fi switch as NetworkManager does, each
   time they change; content runs while its window is shown and not minimized,
-  and shows while it is also exposed; and the App's authorisations -- all the
-  system could gate, outside a sandbox -- are reported once. Its `Options` carry the network policy, the launch options and the
+  and shows while it is also exposed; the App's authorisations -- all the
+  system could gate, outside a sandbox -- are reported once; and the desktop's
+  warnings that memory runs low reach content, heard where GLib hears them. Its `Options` carry the network policy, the launch options and the
   App's own services; what the App names is its, the built-in services answer the
   rest. The Bound shape is the view driven by an App-owned `SurfaceHost`. They are
   separate targets, so an App that owns its own Session never links a type that

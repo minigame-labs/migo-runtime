@@ -213,6 +213,11 @@ and notifications are its user's -- so the album, Bluetooth, the camera, the mic
 are reported authorised; inside one (Flatpak, Snap) the portals decide as content asks, and they are not determined.
 Location is GeoClue's agent's to decide, which the Host Kit does not ask yet: not determined.
 
+Memory warnings (`onMemoryWarning`) are heard where GLib hears them: low-memory-monitor's `LowMemoryWarning` on the
+system bus outside a sandbox, the desktop portal's `MemoryMonitor`, which relays it, inside one. Its levels 50 (low),
+100 (medium) and 255 (critical) are Migo's moderate, low and critical; the engine lets that share of its caches go
+before content hears. A desktop that runs neither warns of nothing.
+
 `MigoManagedSession` installs these services. The services the App answers itself (adverts, payments,
 sign-in, ...) come from a `MigoQtHostServiceProvider` given as `Options::appServices`: the services the
 App names are its, including any the built-in services would answer, and the built-in services answer

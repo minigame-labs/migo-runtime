@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The Linux Host Kit passes on the desktop's memory warnings: `MigoManagedSession` hears low-memory-monitor's
+  `LowMemoryWarning` on the system bus, or inside a sandbox the desktop portal's `MemoryMonitor`, and posts each at
+  its level (50 moderate, 100 low, 255 critical) with `migo_session_post_memory_warning`. `tools/qt-host-example`
+  runs moc over the Host Kit's internal QObject headers too.
 - The Linux Host Kit reports the host's inputs a desktop already knows: `MigoManagedSession` tells the Session that
   content runs while its window is shown and not minimized and shows while that window is also exposed
   (`migo_session_set_lifecycle`, `migo_session_set_visibility`; only changes, as the game starts shown and running,

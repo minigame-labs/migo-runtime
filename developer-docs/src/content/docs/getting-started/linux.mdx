@@ -167,6 +167,8 @@ MigoSession  > SurfaceHost ──> MigoQtX11SurfaceView
 
 `getAppAuthorizeSetting`：沙箱外的 Linux 应用没有系统层面的授权关卡——文件、设备、通知都是运行它的用户的——所以相册、蓝牙、摄像头、麦克风、通知、日历都报"已授权"；在沙箱里（Flatpak、Snap）由门户在内容使用时决定，报"未决定"。定位由 GeoClue 的代理决定，Host Kit 尚未询问，报"未决定"。
 
+内存不足的警告（`onMemoryWarning`）在 GLib 听的地方听：沙箱外是系统总线上 low-memory-monitor 的 `LowMemoryWarning`，沙箱内是转发它的桌面门户的 `MemoryMonitor`。级别 50（低）、100（中）、255（危急）分别报为 Migo 的 moderate、low、critical，引擎先释放相应比例的缓存再通知内容。两者都不运行的桌面不发出任何警告。
+
 `MigoManagedSession` 自动装上这些服务。App 自己回答的服务（广告、支付、登录……）用构造参数
 `Options::appServices` 提供一个 `MigoQtHostServiceProvider`：App 声明的服务归 App，包括内建
 也能回答的；其余由内建回答。同一个 `Options` 还带网络策略（`networkPolicyJson`，不给则游戏

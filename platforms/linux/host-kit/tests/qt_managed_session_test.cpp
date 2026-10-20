@@ -1,4 +1,5 @@
 #include "fake_migo.hpp"
+#include "memory_monitor.hpp"
 #include "screen_awake.hpp"
 #include "system_reports.hpp"
 
@@ -22,6 +23,7 @@
 using migo::linux_host::SurfaceState;
 using migo::linux_host::qt6::MigoManagedSession;
 using migo::linux_host::qt6::BatteryReport;
+using migo::linux_host::qt6::MemoryMonitor;
 using migo::linux_host::qt6::NetworkReport;
 using migo::linux_host::qt6::ScreenAwake;
 
@@ -437,6 +439,41 @@ private slots:
         }
         QCOMPARE(granted.location, std::uint8_t{MIGO_AUTHORIZATION_NOT_DETERMINED});
         QCOMPARE(managed.close(), MIGO_OK);
+    }
+
+    /// A desktop's memory warnings are heard from low-memory-monitor, or inside
+    /// a sandbox from the portal that relays them, each at its level: low,
+    /// medium and critical; a level below low is no warning.
+    void the_desktops_memory_warnings_are_heard_at_their_levels() {
+        QVERIFY2(QDBusConnection::sessionBus().isConnected(),
+                 "no session bus: run this test under dbus-run-session, as scripts/test-linux-qt-host-kit.sh does");
+        struct Case {
+            MemoryMonitor::Source source;
+            const char *service;
+            const char *path;
+            const char *interface;
+        };
+        for (const Case &heard : {Case{MemoryMonitor::Source::LowMemoryMonitor, "org.freedesktop.LowMemoryMonitor",
+                                       "/org/freedesktop/LowMemoryMonitor", "org.freedesktop.LowMemoryMonitor"},
+                                  Case{MemoryMonitor::Source::Portal, "org.freedesktop.portal.Desktop",
+                                       "/org/freedesktop/portal/desktop", "org.freedesktop.portal.MemoryMonitor"}}) {
+            QObject sender;
+            OnTheBus standing(sender, QLatin1String(heard.service), QLatin1String(heard.path));
+            QVERIFY(standing.registered());
+            std::vector<MigoMemoryWarningLevel> warned;
+            MemoryMonitor monitor(QDBusConnection::sessionBus(), heard.source,
+                                  [&warned](MigoMemoryWarningLevel level) { warned.push_back(level); });
+            for (const uchar level : {uchar{20}, uchar{50}, uchar{100}, uchar{255}}) {
+                QDBusMessage signal = QDBusMessage::createSignal(QLatin1String(heard.path), QLatin1String(heard.interface),
+                                                                 QStringLiteral("LowMemoryWarning"));
+                // A byte, as the desktop sends it: a bare uchar would go as an int.
+                signal << QVariant::fromValue(level);
+                QVERIFY(QDBusConnection::sessionBus().send(signal));
+            }
+            QTRY_COMPARE(warned.size(), std::size_t{3});
+            QCOMPARE(warned, (std::vector<MigoMemoryWarningLevel>{MIGO_MEMORY_WARNING_MODERATE, MIGO_MEMORY_WARNING_LOW,
+                                                                  MIGO_MEMORY_WARNING_CRITICAL}));
+        }
     }
 
     /// A Session created but left without callbacks must not be stranded.

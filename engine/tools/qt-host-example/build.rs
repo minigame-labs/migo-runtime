@@ -11,16 +11,19 @@ use std::{
     process::Command,
 };
 
-/// The Host Kit's headers that declare QObjects, which moc reads.
-const MOC_HEADERS: [&str; 3] = [
-    "include/migo/linux/qt6/x11_surface_view.hpp",
-    "include/migo/linux/qt6/host_services.hpp",
-    "include/migo/linux/qt6/managed_session.hpp",
+/// The Host Kit's headers that declare QObjects, which moc reads, each with the
+/// name its source includes it by: a public header through the public include
+/// path, an internal one beside the sources.
+const MOC_HEADERS: [(&str, &str); 4] = [
+    ("include/migo/linux/qt6/x11_surface_view.hpp", "migo/linux/qt6/x11_surface_view.hpp"),
+    ("include/migo/linux/qt6/host_services.hpp", "migo/linux/qt6/host_services.hpp"),
+    ("include/migo/linux/qt6/managed_session.hpp", "migo/linux/qt6/managed_session.hpp"),
+    ("src/qt6/memory_monitor.hpp", "memory_monitor.hpp"),
 ];
 
 /// The Host Kit's sources this host links: the surface controller, the Qt view,
 /// the host services and the Managed shape.
-const KIT_SOURCES: [&str; 9] = [
+const KIT_SOURCES: [&str; 10] = [
     "src/surface_host.cpp",
     "src/qt6/x11_surface_view.cpp",
     "src/qt6/dom_key_names.cpp",
@@ -30,6 +33,7 @@ const KIT_SOURCES: [&str; 9] = [
     "src/qt6/managed_session.cpp",
     "src/qt6/screen_awake.cpp",
     "src/qt6/system_reports.cpp",
+    "src/qt6/memory_monitor.cpp",
 ];
 
 fn pkg_config(arguments: &[&str]) -> String {
@@ -78,6 +82,7 @@ fn main() {
         .std("c++17")
         .include(repo.join("include"))
         .include(kit.join("include"))
+        .include(kit.join("src/qt6"))
         .warnings(true);
     for directory in &includes {
         build.include(directory);
@@ -85,15 +90,14 @@ fn main() {
     for define in &defines {
         build.define(define, None);
     }
-    for header in MOC_HEADERS {
+    for (header, included) in MOC_HEADERS {
         let input = kit.join(header);
         let stem = input.file_stem().expect("a header name").to_string_lossy().into_owned();
         let output = out.join(format!("moc_{stem}.cpp"));
         let mut command = Command::new(&moc);
-        // The generated file includes its header as an App does, through the
+        // The generated file includes its header as the sources do, through the
         // include path, rather than by a path relative to OUT_DIR that a
         // symlinked target directory makes wrong.
-        let included = header.strip_prefix("include/").expect("a public header");
         command.arg(&input).arg("-o").arg(&output).arg(format!("-f{included}"));
         for directory in &includes {
             command.arg(format!("-I{directory}"));
