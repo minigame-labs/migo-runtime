@@ -54,6 +54,7 @@ MigoQtX11SurfaceView::MigoQtX11SurfaceView(SurfaceHost &surface_host, QWidget &p
     // exist yet.
     release_timer_.setParent(this);
     metrics_update_timer_.setParent(this);
+    attach_timer_.setParent(this);
     setAttribute(Qt::WA_DontCreateNativeAncestors);
     setAttribute(Qt::WA_NativeWindow);
     setAttribute(Qt::WA_PaintOnScreen);
@@ -90,6 +91,14 @@ MigoQtX11SurfaceView::MigoQtX11SurfaceView(SurfaceHost &surface_host, QWidget &p
             return;
         }
         recordError(surface_host_.update(metrics));
+    });
+
+    attach_timer_.setSingleShot(true);
+    connect(&attach_timer_, &QTimer::timeout, this, [this] {
+        if (isVisible() && !owns_surface_ && surface_host_.state() == SurfaceState::Detached &&
+            !close_pending_) {
+            (void)attachSurface();
+        }
     });
 }
 
@@ -277,9 +286,13 @@ void MigoQtX11SurfaceView::scheduleMetricsUpdate() {
 
 void MigoQtX11SurfaceView::showEvent(QShowEvent *event) {
     QWidget::showEvent(event);
-    if (!owns_surface_ && surface_host_.state() == SurfaceState::Detached &&
-        !close_pending_) {
-        (void)attachSurface();
+    // Not now: Qt sends a widget its show event before it maps the native window
+    // and applies its geometry, and the engine binds the window as the X server
+    // has it. Attached here, a view a layout had sized was bound while its window
+    // was still unmapped at the size it was created with -- a child's 100x30 --
+    // and the game drew into that. A zero timeout runs once this show is done.
+    if (!owns_surface_ && surface_host_.state() == SurfaceState::Detached && !close_pending_) {
+        attach_timer_.start(0);
     }
 }
 

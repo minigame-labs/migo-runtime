@@ -193,6 +193,29 @@ private slots:
         QCOMPARE(managed.close(), MIGO_OK);
     }
 
+    /// The App says who it is: the identifier it gives, or else its desktop
+    /// file name; with neither, the Session is told nothing.
+    void the_app_says_who_it_is() {
+        {
+            Managed fixture;
+            QCOMPARE(fake_migo::reported_host_app_id(), std::string());
+        }
+        fake_migo::reset();
+        QGuiApplication::setDesktopFileName(QStringLiteral("com.example.desktop"));
+        {
+            Managed fixture;
+            QCOMPARE(fake_migo::reported_host_app_id(), std::string("com.example.desktop"));
+        }
+        fake_migo::reset();
+        {
+            MigoManagedSession::Options options;
+            options.appId = QStringLiteral("com.example.given");
+            Managed fixture(options);
+            QCOMPARE(fake_migo::reported_host_app_id(), std::string("com.example.given"));
+        }
+        QGuiApplication::setDesktopFileName(QString());
+    }
+
     /// What the App names is the App's -- a service it adds, and one the Host
     /// Kit would otherwise answer -- and the rest is the Host Kit's.
     void the_app_answers_what_it_names() {

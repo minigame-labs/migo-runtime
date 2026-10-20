@@ -1,5 +1,6 @@
 #include <migo/linux/qt6/managed_session.hpp>
 
+#include <QGuiApplication>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMetaObject>
@@ -31,6 +32,13 @@ public:
     std::unique_ptr<MigoQtBuiltInHostServices> built_in;
     bool closing = false;
     bool closed = false;
+    /// Whether the view has attached: the Session has its host from then on.
+    bool attached = false;
+    /// Content asked for and not yet handed to the Session, which it is once the view attaches.
+    QByteArray pending_content_id;
+    QByteArray pending_entry;
+    bool content_pending = false;
+    bool content_requested = false;
     /// Read from engine threads inside the dispatcher, so it cannot be a plain
     /// bool: the dispatcher must refuse once teardown starts, and it is the
     /// engine that asks.
@@ -71,7 +79,23 @@ public:
     void emitError(MigoResult code) { Q_EMIT owner_.migoError(code); }
 
     void finishClose();
+    MigoResult loadNow(const QByteArray &content_id, const QByteArray &entry);
 };
+
+MigoResult MigoManagedSession::Impl::loadNow(const QByteArray &content_id, const QByteArray &entry) {
+    MigoContentDescriptor content{};
+    content.struct_size = static_cast<std::uint32_t>(sizeof(content));
+    content.abi_version = MIGO_ABI_VERSION_1;
+    content.content_id_utf8 = content_id.constData();
+    content.entry_utf8 = entry.constData();
+    const MigoResult result = migo_session_load_content(session, &content);
+    if (result != MIGO_OK) {
+        last_error = result;
+        // Refused, the content was not loaded: it may be asked for again.
+        content_requested = false;
+    }
+    return result;
+}
 
 MigoResult MIGO_CALL MigoManagedSession::Impl::dispatch(void *dispatcher_context, MigoTaskFn task,
                                                         void *task_context) {
@@ -220,7 +244,20 @@ MigoManagedSession::MigoManagedSession(MigoEngine &engine, QWidget &parent, cons
         callbacks.host_services = declared;
     }
 
-    const MigoResult installed = migo_session_set_host_callbacks(impl_->session, &callbacks);
+    MigoResult installed = migo_session_set_host_callbacks(impl_->session, &callbacks);
+    // Who the host is, as content reads it. A Linux App has no identifier the
+    // system hands out; it names itself, and its desktop file name is that name.
+    const QByteArray app_id =
+        (options.appId.isEmpty() ? QGuiApplication::desktopFileName() : options.appId).toUtf8();
+    if (installed == MIGO_OK && !app_id.isEmpty()) {
+        MigoHostAppInfo app_info{};
+        app_info.struct_size = static_cast<std::uint32_t>(sizeof(app_info));
+        app_info.abi_version = MIGO_ABI_VERSION_1;
+        app_info.app_id_utf8 = app_id.constData();
+        // The rest is the engine's: the system's language, no benchmark score.
+        app_info.benchmark_level = -1;
+        installed = migo_session_set_host_app_info(impl_->session, &app_info);
+    }
     if (installed != MIGO_OK) {
         impl_->last_error = installed;
         impl_->channel->close();
@@ -243,6 +280,19 @@ MigoManagedSession::MigoManagedSession(MigoEngine &engine, QWidget &parent, cons
     // wrapper waits for the view's answer instead of asking again.
     connect(impl_->view.data(), &MigoQtX11SurfaceView::surfaceReleased, this,
             [this](quint64) { impl_->finishClose(); });
+    // The Session has its host once the view first attaches; content asked for
+    // before then is loaded now.
+    connect(impl_->view.data(), &MigoQtX11SurfaceView::surfaceAttached, this, [this](quint64) {
+        impl_->attached = true;
+        if (!impl_->content_pending || impl_->closing) return;
+        impl_->content_pending = false;
+        const QByteArray content_id = std::exchange(impl_->pending_content_id, QByteArray());
+        const QByteArray entry = std::exchange(impl_->pending_entry, QByteArray());
+        const MigoResult result = impl_->loadNow(content_id, entry);
+        if (result != MIGO_OK) {
+            impl_->emitFailed(result, QStringLiteral("the content was not loaded: migo_session_load_content refused it"));
+        }
+    });
 }
 
 MigoManagedSession::~MigoManagedSession() {
@@ -265,18 +315,13 @@ bool MigoManagedSession::isClosed() const noexcept { return impl_->closed; }
 MigoResult MigoManagedSession::loadContent(const QString &content_id, const QString &entry) {
     if (QThread::currentThread() != impl_->gui_thread) return MIGO_ERROR_WRONG_THREAD;
     if (impl_->session == nullptr || impl_->closing) return MIGO_ERROR_INVALID_STATE;
-
-    const QByteArray id_utf8 = content_id.toUtf8();
-    const QByteArray entry_utf8 = entry.toUtf8();
-    MigoContentDescriptor content{};
-    content.struct_size = static_cast<std::uint32_t>(sizeof(content));
-    content.abi_version = MIGO_ABI_VERSION_1;
-    content.content_id_utf8 = id_utf8.constData();
-    content.entry_utf8 = entry_utf8.constData();
-
-    const MigoResult result = migo_session_load_content(impl_->session, &content);
-    if (result != MIGO_OK) impl_->last_error = result;
-    return result;
+    if (impl_->content_requested) return MIGO_ERROR_INVALID_STATE;
+    impl_->content_requested = true;
+    if (impl_->attached) return impl_->loadNow(content_id.toUtf8(), entry.toUtf8());
+    impl_->pending_content_id = content_id.toUtf8();
+    impl_->pending_entry = entry.toUtf8();
+    impl_->content_pending = true;
+    return MIGO_OK;
 }
 
 MigoResult MigoManagedSession::close() {

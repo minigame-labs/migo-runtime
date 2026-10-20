@@ -159,7 +159,7 @@ MigoSession  > SurfaceHost ──> MigoQtX11SurfaceView
 `MigoManagedSession` 自动装上这些服务。App 自己回答的服务（广告、支付、登录……）用构造参数
 `Options::appServices` 提供一个 `MigoQtHostServiceProvider`：App 声明的服务归 App，包括内建
 也能回答的；其余由内建回答。同一个 `Options` 还带网络策略（`networkPolicyJson`，不给则游戏
-没有任何网络）和启动参数（`launchOptionsJson`），两者都是 `MigoSessionConfig` 的同名 JSON：
+没有任何网络）和启动参数（`launchOptionsJson`），两者都是 `MigoSessionConfig` 的同名 JSON；`appId` 是内容读到的 `getAppBaseInfo().host.appId`，不填则取 `QGuiApplication::desktopFileName()`（Linux App 给自己起的名字）：
 
 ```cpp
 class AppServices final : public migo::linux_host::qt6::MigoQtHostServiceProvider {

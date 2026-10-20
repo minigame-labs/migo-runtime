@@ -1,0 +1,36 @@
+[package]
+name = "migo-qt-host-example"
+version.workspace = true
+license.workspace = true
+edition = "2024"
+
+# Builds `tests/qt_host/linux/main.cpp` -- a host built on the Linux Host Kit's
+# Managed shape, as an App would write one -- with the Host Kit itself, and
+# links them with the engine.
+#
+# Cargo drives the link for the reason tools/c-host-example gives: the host then
+# always matches the engine's real requirements without restating them. An App
+# builds the Host Kit with CMake against the packaged SDK instead
+# (platforms/linux/host-kit/README.md); this is the development build of the
+# same sources, which migo-conformance's Host Kit lane runs. It needs Qt 6
+# Widgets (qt6-base-dev), and so -- like the other desktop hosts -- it is out of
+# the workspace's default members and built only when named.
+[[bin]]
+name = "migo-qt-host"
+path = "src/main.rs"
+# `#![no_main]`: the entry point comes from the C++ side. The host is exercised
+# by scripts/dev-run-qt-host.sh, which runs it against a real game.
+test = false
+bench = false
+doctest = false
+
+[features]
+default = ["profile-full"]
+profile-full = ["capi/profile-full"]
+profile-slim = ["capi/profile-slim"]
+
+[dependencies]
+capi = { package = "migo-capi", path = "../../crates/capi", default-features = false }
+
+[build-dependencies]
+cc = "1"

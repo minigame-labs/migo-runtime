@@ -53,6 +53,12 @@ the detach and returns immediately, the view's release observer reports
 `RELEASED`, and only then is the Session destroyed. Destroying the wrapper while
 it is still running terminates, for the same reason the view does.
 
+A whole App on the Managed shape -- an engine, a window, a game with its network
+policy and launch options, closing on the game's exit or the window's -- is
+`tests/qt_host/linux/main.cpp`; `scripts/dev-run-qt-host.sh` builds and runs it
+against a game directory. It is what migo-conformance's Host Kit lane runs, so
+what that lane verifies is this shape as an App uses it.
+
 ## Input, focus and frames
 
 Translation happens in the view's own event handlers on the GUI thread. There is
