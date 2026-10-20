@@ -51,11 +51,24 @@ COMMENT = [
     "of the listener's argument. A field is [name, type] or [name, type, since], then an object with what else the page",
     "says of it: \"fields\", the fields of an Object it details; \"when\", that it is there only sometimes -- plugin,",
     "host-app (the game runs inside a third-party app), darkmode, option:<name> (that option was passed),",
-    "without:<name> (it was not), chat (opened from a chat), or only:<ios|android|pc|mobile>. methods: the methods",
-    "the reference documents for the class the API returns. deprecated, since: from the reference's index.",
+    "without:<name> (it was not), chat (opened from a chat), or only:<ios|android|pc|mobile>; \"erratum\", where the",
+    "page contradicts itself about the field: the type is the one its own words give, and this says why. methods: the",
+    "methods the reference documents for the class the API returns. deprecated, since: from the reference's index.",
 ]
 
 CLIENTS = {"Windows": "windows", "Mac": "mac", "鸿蒙 OS": "harmony"}
+
+# Where a page contradicts itself about a field, the reading its own words support: (API, section, field) -> the type
+# the page's table gives, the type it means, and why. Each is held against the page: once the page says something
+# else -- corrected, or changed -- generating fails, rather than an erratum standing over a page that no longer needs
+# it.
+ERRATA = {
+    ("getGamepads", "result", "index"): (
+        "string", "number",
+        "the page types it string, but describes an auto-incrementing integer, in an array it says follows the "
+        "browser standard, whose Gamepad.index is a number",
+    ),
+}
 # The engine's own scope names (`Scope::as_str`): a scope the reference names with its app's prefix is recorded by
 # the engine's name for it.
 SCOPES = "engine/crates/shared/src/services/permission.rs"
@@ -360,6 +373,12 @@ def generate(root: pathlib.Path) -> str:
         if entry.get("min_base_library"):
             spec["since"] = entry["min_base_library"]
         specs[name] = spec
+    for (name, section, field_name), (says, means, why) in ERRATA.items():
+        field = next((field for field in specs[name].get(section, []) if field[0] == field_name), None)
+        if field is None or field[1] != says:
+            raise Fail(f"{name} {section} {field_name}: the page no longer types it {says}; drop its erratum")
+        field[1] = means
+        details(field)["erratum"] = why
     fetched = re.search(r"\*\*Fetched:\*\* (\S+)", (mirror / "README.md").read_text())
     out = ["{", '  "schema_version": 1,', '  "$comment": [']
     out += [f"    {json.dumps(line, ensure_ascii=False)}," for line in COMMENT[:-1]]

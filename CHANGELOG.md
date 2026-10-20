@@ -673,6 +673,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a relink, is INVALID_OPERATION and null, as are a deleted program and one that did not link.
 
 ### Changed
+- `contracts/runtime/minigame-api-spec.json` records where the reference contradicts itself about a field, and reads
+  it as the page's own words support (`erratum`): `getGamepads` returns gamepads whose `index` is a number, as the
+  browser standard the page cites has it and its own description says, though its table types it string. An
+  erratum is held against the page, so once the reference is corrected, regenerating the spec says to drop it.
 - **Content reaches no network until the host grants it.** This changes every host: one that sets nothing now gets no
   network at all. A policy is one domain allowlist per channel -- `request`, `download` (which also covers remote
   images, audio streaming and asset prefetch), `upload`, `socket` (WebSocket), `tcp` and `udp` -- and a channel may
