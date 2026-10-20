@@ -83,6 +83,7 @@ export default defineConfig({
           collapsed: true,
           items: [
             { slug: 'capabilities/overview' },
+            { slug: 'capabilities/api-support' },
             { slug: 'capabilities/keyboard' },
             {
               label: '商业化',

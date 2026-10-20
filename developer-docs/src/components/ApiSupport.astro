@@ -1,0 +1,356 @@
+---
+// Every API of the common mini-game platform on every platform Migo ships, rendered at build time from
+// the contracts themselves (contracts/runtime/): the API x platform matrix, the decisions that give each
+// deliberately unsupported cell and each gap its reason, and each platform's conformance record. Nothing is
+// copied into the docs, so the page says what the commit it is built from says.
+//
+// A cell's verdict is read as scripts/lib/compat_report.py's judge() reads it, so the docs and the
+// compatibility report a CP receives use one vocabulary for one fact.
+import matrix from '../../../contracts/runtime/api-platform-matrix.json';
+import decisions from '../../../contracts/runtime/api-platform-decisions.json';
+import reference from '../../../contracts/runtime/minigame-api.json';
+
+interface Props {
+  lang: 'zh' | 'en';
+}
+
+type Answer = 'engine' | 'default' | 'host' | 'missing' | 'unsupported';
+type Verdict = 'unsupported' | 'missing' | 'failing' | 'host-no-default' | 'unverified' | 'host-owned' | 'verified';
+type Cell = { category: string; needs?: string[]; verified?: string[]; not_ready?: string[] } & Record<string, unknown>;
+type Decision = { platforms: '*' | string[]; reason: string };
+type Conformance = {
+  measured: { date: string; runner: string; runtime: string; conformance: string };
+  apis: Record<string, { status: string }>;
+};
+
+const { lang } = Astro.props;
+
+if (matrix.schema_version !== 1) {
+  throw new Error(`api-platform-matrix.json schema_version ${matrix.schema_version}: ApiSupport reads version 1`);
+}
+
+const REPOSITORY = 'https://github.com/minigame-labs/migo-runtime';
+const PLATFORMS: Record<string, { name: string; short: string }> = {
+  android: { name: 'Android', short: 'Android' },
+  ios: { name: 'iOS', short: 'iOS' },
+  macos: { name: 'macOS', short: 'macOS' },
+  linux: { name: 'Linux', short: 'Linux' },
+  windows: { name: 'Windows', short: 'Windows' },
+  ohos: { name: 'OpenHarmony', short: 'OHOS' },
+};
+const platforms: string[] = matrix.platforms;
+for (const platform of platforms) {
+  if (!(platform in PLATFORMS)) throw new Error(`api-platform-matrix.json names a platform ApiSupport has no name for: ${platform}`);
+}
+
+const records: Record<string, Conformance> = {};
+for (const [path, record] of Object.entries(
+  import.meta.glob<Conformance & { platform: string }>('../../../contracts/runtime/api-conformance-*.json', {
+    eager: true,
+    import: 'default',
+  }),
+)) {
+  if (!platforms.includes(record.platform)) throw new Error(`${path} is for a platform the matrix does not have`);
+  records[record.platform] = record;
+}
+
+const T = {
+  zh: {
+    needs: '向宿主要',
+    ready: (total: number) => `就绪(共 ${total})`,
+    verified: '已验证',
+    run: '一致性测试运行(日期、runner、被测提交):',
+    noRun: '尚无运行记录',
+    api: 'API',
+    answer: { engine: '引擎', default: '默认', host: '宿主', missing: '缺失', unsupported: '不提供' },
+    note: { failing: '检查未过', 'host-no-default': '无默认', unverified: '未验证' },
+    verifiedMark: '已验证',
+    reasons: '原因(契约原文):',
+    everywhere: '全部平台',
+    unsupportedOn: '不提供',
+    missingOn: '缺失',
+    groups: '分类',
+    summary: '各平台汇总',
+    caption: (total: number, version: string) => `${total} 个 API,覆盖到通用小游戏平台基础库 ${version}。`,
+  },
+  en: {
+    needs: 'Takes from the host',
+    ready: (total: number) => `Ready (of ${total})`,
+    verified: 'Verified',
+    run: 'Conformance runs (date, runner, the commit tested):',
+    noRun: 'no run recorded yet',
+    api: 'API',
+    answer: { engine: 'engine', default: 'default', host: 'host', missing: 'missing', unsupported: 'not offered' },
+    note: { failing: 'check fails', 'host-no-default': 'no default', unverified: 'unverified' },
+    verifiedMark: 'verified',
+    reasons: 'Reasons, as the contract states them:',
+    everywhere: 'every platform',
+    unsupportedOn: 'not offered on',
+    missingOn: 'missing on',
+    groups: 'Categories',
+    summary: 'Summary per platform',
+    caption: (total: number, version: string) => `${total} APIs, as of the common mini-game platform's base library ${version}.`,
+  },
+}[lang];
+
+const ANSWERS: Answer[] = ['engine', 'default', 'host', 'missing', 'unsupported'];
+const apis = matrix.apis as Record<string, Cell>;
+const summaries = matrix.summary as Record<string, Record<Answer | 'ready' | 'verified', number>>;
+const notes: Partial<Record<Verdict, string>> = T.note;
+const unsupported = decisions.unsupported as Record<string, Decision>;
+const gaps = decisions.gaps as Record<string, Decision>;
+
+function verdict(api: string, cell: Cell, platform: string): Verdict {
+  const answer = cell[platform] as Answer;
+  const ready = !(cell.not_ready ?? []).includes(platform);
+  if (answer === 'unsupported') return 'unsupported';
+  if (answer === 'missing') return 'missing';
+  if (records[platform]?.apis[api]?.status === 'failing') return 'failing';
+  if (answer === 'host') return ready ? 'host-owned' : 'host-no-default';
+  return ready ? 'verified' : 'unverified';
+}
+
+function where(decision: Decision): string {
+  return decision.platforms === '*'
+    ? T.everywhere
+    : decision.platforms.map((platform) => PLATFORMS[platform].name).join(', ');
+}
+
+// One table per top-level category, one row group per sub-category, in the reference's own names.
+const groups = new Map<string, Map<string, string[]>>();
+for (const api of Object.keys(apis).sort()) {
+  const [group, ...rest] = apis[api].category.split('/');
+  const sub = rest.join('/');
+  if (!groups.has(group)) groups.set(group, new Map());
+  const subs = groups.get(group)!;
+  if (!subs.has(sub)) subs.set(sub, []);
+  subs.get(sub)!.push(api);
+}
+const ordered = [...groups.keys()].sort().map((group) => ({
+  group,
+  subs: [...groups.get(group)!.entries()].sort(([a], [b]) => a.localeCompare(b)),
+}));
+const total: number = matrix.total;
+---
+
+<p>{T.caption(total, reference.library_level.version)}</p>
+
+<table class="api-support-summary" tabindex="0" aria-label={T.summary}>
+  <thead>
+    <tr>
+      <td></td>
+      {platforms.map((platform) => (
+        <th scope="col">
+          {PLATFORMS[platform].short === PLATFORMS[platform].name ? (
+            PLATFORMS[platform].name
+          ) : (
+            <abbr title={PLATFORMS[platform].name}>{PLATFORMS[platform].short}</abbr>
+          )}
+        </th>
+      ))}
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th scope="row">{T.ready(total)}</th>
+      {platforms.map((platform) => (
+        <td>{summaries[platform].ready}</td>
+      ))}
+    </tr>
+    <tr>
+      <th scope="row">{T.verified}</th>
+      {platforms.map((platform) => (
+        <td>{summaries[platform].verified}</td>
+      ))}
+    </tr>
+    {ANSWERS.map((answer) => (
+      <tr>
+        <th scope="row">{T.answer[answer]}</th>
+        {platforms.map((platform) => (
+          <td>{summaries[platform][answer]}</td>
+        ))}
+      </tr>
+    ))}
+  </tbody>
+</table>
+
+<p>{T.run}</p>
+<ul>
+  {platforms.map((platform) => {
+    const run = records[platform]?.measured;
+    return (
+      <li>
+        {PLATFORMS[platform].name}:{' '}
+        {run ? (
+          <>
+            {run.date}, <code>{run.runner}</code>, migo-runtime{' '}
+            <a href={`${REPOSITORY}/commit/${run.runtime}`}>
+              <code>{run.runtime.slice(0, 10)}</code>
+            </a>
+          </>
+        ) : (
+          T.noRun
+        )}
+      </li>
+    );
+  })}
+</ul>
+
+<nav aria-label={T.groups} class="api-support-groups">
+  {ordered.map(({ group }) => (
+    <a href={`#category-${group}`}>
+      <code>{group}</code>
+    </a>
+  ))}
+</nav>
+
+{
+  ordered.map(({ group, subs }) => {
+    const names = subs.flatMap(([, list]) => list);
+    const explained = names.filter((api) => api in unsupported || api in gaps);
+    return (
+      <>
+        <h2 id={`category-${group}`}>{group}</h2>
+        <table class="api-support" tabindex="0" aria-labelledby={`category-${group}`}>
+          <thead>
+            <tr>
+              <th scope="col">{T.api}</th>
+              {platforms.map((platform) => (
+                <th scope="col">
+                  {PLATFORMS[platform].short === PLATFORMS[platform].name ? (
+                    PLATFORMS[platform].name
+                  ) : (
+                    <abbr title={PLATFORMS[platform].name}>{PLATFORMS[platform].short}</abbr>
+                  )}
+                </th>
+              ))}
+              <th scope="col">{T.needs}</th>
+            </tr>
+          </thead>
+          {subs.map(([sub, list]) => (
+            <tbody>
+              {sub && (
+                <tr class="api-support-sub">
+                  <th scope="rowgroup" colspan={platforms.length + 2}>
+                    <code>
+                      {group}/{sub}
+                    </code>
+                  </th>
+                </tr>
+              )}
+              {list.map((api) => {
+                const cell = apis[api];
+                return (
+                  <tr id={`api-${api}`}>
+                    <th scope="row">
+                      <code>{api}</code>
+                    </th>
+                    {platforms.map((platform) => {
+                      const judged = verdict(api, cell, platform);
+                      const note = notes[judged];
+                      return (
+                        <td class={`api-support-cell is-${judged}`}>
+                          {T.answer[cell[platform] as Answer]}
+                          {(cell.verified ?? []).includes(platform) && (
+                            <>
+                              <span aria-hidden="true"> ✓</span>
+                              <span class="sr-only">{T.verifiedMark}</span>
+                            </>
+                          )}
+                          {note && <span class="api-support-note">{note}</span>}
+                        </td>
+                      );
+                    })}
+                    <td>
+                      <span class="api-support-needs">
+                        {(cell.needs ?? []).map((need) => (
+                          <code>{need}</code>
+                        ))}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          ))}
+        </table>
+        {explained.length > 0 && (
+          <>
+            <p>{T.reasons}</p>
+            <ul>
+              {explained.map((api) => (
+                <>
+                  {api in unsupported && (
+                    <li>
+                      <code>{api}</code>, {T.unsupportedOn} {where(unsupported[api])}: {unsupported[api].reason}
+                    </li>
+                  )}
+                  {api in gaps && (
+                    <li>
+                      <code>{api}</code>, {T.missingOn} {where(gaps[api])}: {gaps[api].reason}
+                    </li>
+                  )}
+                </>
+              ))}
+            </ul>
+          </>
+        )}
+      </>
+    );
+  })
+}
+
+<style is:global>
+  /* Global, so the thousands of cells carry no scoping attribute; every selector is under api-support. */
+  .api-support-summary :is(th, td),
+  .api-support :is(th, td) {
+    padding: 0.375rem 0.625rem;
+  }
+  .api-support-summary td {
+    white-space: nowrap;
+  }
+  .api-support-groups {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem 0.75rem;
+  }
+  /* The API's name stays in view while the platforms scroll past it on a narrow screen. */
+  .api-support th[scope='row'] {
+    position: sticky;
+    left: 0;
+    font-weight: normal;
+    text-align: start;
+  }
+  .api-support-sub th {
+    font-size: var(--sl-text-sm);
+  }
+  .api-support-cell {
+    white-space: nowrap;
+  }
+  .api-support-note {
+    display: block;
+    font-size: var(--sl-text-xs);
+  }
+  .api-support-cell.is-missing,
+  .api-support-cell.is-failing {
+    color: var(--sl-color-red-high);
+  }
+  .api-support-cell.is-unverified,
+  .api-support-cell.is-host-no-default {
+    color: var(--sl-color-orange-high);
+  }
+  .api-support-cell.is-unsupported {
+    color: var(--sl-color-gray-2);
+  }
+  /* As wide as its needs on one line, up to a bound past which they wrap, and never narrower than its widest
+     need: a code in a cell scrolls rather than breaks. On this box, as a table cell ignores min-width. */
+  .api-support-needs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.125rem 0.25rem;
+    width: max-content;
+    max-width: 22rem;
+    min-width: min-content;
+    font-size: var(--sl-text-xs);
+  }
+</style>

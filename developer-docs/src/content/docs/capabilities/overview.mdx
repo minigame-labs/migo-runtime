@@ -23,6 +23,7 @@ import { CardGrid, LinkCard } from '@astrojs/starlight/components';
 「能力」在 Migo 里是**内容调 `migo.*`、宿主实际实现**的那一层。引擎不伪造宿主已有的系统能力 — 没接的 capability 就返回明确的「不支持」,而不是假装成功。四类:输入事件、软键盘、设备能力、Android 端 handler。专页:
 
 <CardGrid>
+  <LinkCard title="API 平台支持" href="/docs/capabilities/api-support/" description="通用小游戏平台的每个 API 在每个平台上由谁回答、是否经一致性测试验证、宿主要接什么;构建时由契约直接渲染。" />
   <LinkCard title="商业化:广告" href="/docs/capabilities/commerce/ads/" description="SDK 已发给内容、宿主直接调用的是另一头;激励视频的 settled 降级和回调召集全在这里。" />
   <LinkCard title="商业化:支付" href="/docs/capabilities/commerce/payment/" description="Midas/Android 支付 handler 合同,默认 isMidasPaymentSupported=false 时的降级行为。" />
   <LinkCard title="平台服务" href="/docs/capabilities/services/auth/" description="登录鉴权、分享、设置、权限、发包、日志、跳转小程序 — 七个平台 handler 的合同与降级。" />

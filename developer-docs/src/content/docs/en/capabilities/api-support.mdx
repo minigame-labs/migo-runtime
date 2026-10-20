@@ -1,0 +1,72 @@
+---
+title: API platform support
+description: Who answers each API of the common mini-game platform on each platform Migo ships, whether conformance testing verified it there, and what a host provides for it -- rendered at docs build time from the repository's contracts.
+audience: content-developer
+platforms:
+  - android
+  - ios
+  - macos
+  - linux
+  - windows
+  - openharmony
+sourcePaths:
+  - contracts/runtime/api-platform-matrix.json
+  - contracts/runtime/api-platform-decisions.json
+  - contracts/runtime/minigame-api-reach.json
+  - scripts/gen-api-platform-matrix.py
+---
+
+import ApiSupport from '../../../../components/ApiSupport.astro';
+
+Every API content calls is `migo.<name>`, named as the common mini-game platform names it. This page answers, for each platform, **who answers it**, **whether it has been tested there**, and **what the host provides**. The tables are rendered from the repository's contracts when the docs are built, not copied by hand: they say what the sources of the commit the docs were built from say. How a host provides each kind of capability is in the [host capabilities overview](/docs/en/capabilities/overview/).
+
+## How to read it
+
+Each cell first says who answers:
+
+| Mark | Meaning |
+| --- | --- |
+| engine | The engine answers it alone; the host wires nothing. |
+| default | It needs the host, and the platform's host layer (the Java SDK on Android, the Swift layer on Apple platforms, the Linux host kit, the OpenHarmony host) already provides it. |
+| host | It needs the host; the platform offers the interface for the host app to provide it, with no default yet. |
+| missing | There is no way to make it work on this platform yet. |
+| not offered | Deliberately not offered; the reason is listed below its category's table. |
+
+Then the notes:
+
+| Note | Meaning |
+| --- | --- |
+| ✓ | Migo's conformance testing called it on that platform and every check passed. |
+| unverified | The platform answers it, but conformance testing has not verified it there yet. |
+| no default | The host app implements it itself (the entry points are in the "Takes from the host" column); the platform has no default. |
+| check fails | A conformance check of it fails. |
+
+A "host" cell with no note is one whose remaining part is the host app's own by nature (its ads, payments, accounts, consent); the platform wires the rest. "Ready" in the summary means wired and verified, deliberately not offered, or left to the host app by nature.
+
+The "Takes from the host" column lists what each API takes from the host:
+
+| Prefix | What the host provides |
+| --- | --- |
+| `channel:<service>.<method>` | A method of the C ABI host-service channel (`MigoHostCallbacks.host_services` and `on_host_service_call`); without a method, the whole service |
+| `callback:<field>` | A `MigoHostCallbacks` callback field |
+| `report:<what>` | State the host reports |
+| `input:<kind>` | Input or lifecycle the host feeds the engine |
+| `event:<service>.<event>` | A host-service event the host posts |
+| `service:<name>` | An engine service no C ABI host can supply yet |
+| `native:<service>(<systems>)` | Nothing: the engine carries its own implementation, compiled only for the operating systems listed |
+| `unpublished` | The engine does not publish the API; `migo.<name>` does not exist |
+
+## Check it yourself
+
+Every verdict here can be checked in the public repository:
+
+1. **The matrix is generated.** `python3 scripts/gen-api-platform-matrix.py --check` derives it again from the sources and compares it with the committed `contracts/runtime/api-platform-matrix.json`; PR CI runs the gate `scripts/test-api-platform-matrix-contract.sh`, which also proves that each kind of drift turns it red.
+2. **What each API takes is measured by calling it.** It is recorded in `contracts/runtime/minigame-api-reach.json`, which the runtime test `api_reach` keeps true.
+3. **✓ comes from each platform's imported conformance run**, `contracts/runtime/api-conformance-<platform>.json`: the date, the runner, and the migo-runtime commit that was tested (listed under the summary). The conformance suite itself is not public yet, so what you can check is the record; you cannot rerun it yourself yet.
+4. **The choices that cannot be measured are in** `contracts/runtime/api-platform-decisions.json`: engine-only APIs, APIs deliberately not offered, and known gaps, each with its reason.
+
+Windows and OpenHarmony have no conformance run recorded yet, so they have no ✓, and their engine and default cells are all "unverified".
+
+## Support tables
+
+<ApiSupport lang="en" />

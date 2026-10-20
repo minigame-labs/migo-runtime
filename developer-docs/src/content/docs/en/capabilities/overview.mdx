@@ -23,6 +23,7 @@ import { CardGrid, LinkCard } from '@astrojs/starlight/components';
 A **capability** in Migo is the layer between **content calling `migo.*`** and the host's actual implementation. The engine never fabricates system capabilities the host does not provide — an unregistered capability returns an explicit "not supported" instead of pretending to succeed. Four categories: input events, the soft keyboard, device capabilities, and Android handlers. Dedicated pages:
 
 <CardGrid>
+  <LinkCard title="API platform support" href="/docs/en/capabilities/api-support/" description="Who answers each API of the common mini-game platform on each platform, whether conformance testing verified it, and what the host provides; rendered from the contracts at build time." />
   <LinkCard title="Commerce: Ads" href="/docs/en/capabilities/commerce/ads/" description="The SDK is already delivered to content; the host calls the other end. Rewarded video settled fallback and callback dispatch are all covered here." />
   <LinkCard title="Commerce: Payment" href="/docs/en/capabilities/commerce/payment/" description="Midas/Android payment handler contract and fallback behavior when isMidasPaymentSupported defaults to false." />
   <LinkCard title="Platform Services" href="/docs/en/capabilities/services/auth/" description="Login/auth, share, settings, permissions, subpackages, logging, mini-program navigation — contracts and fallbacks for seven platform handlers." />

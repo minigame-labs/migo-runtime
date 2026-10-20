@@ -1,0 +1,72 @@
+---
+title: API 平台支持
+description: 通用小游戏平台的每个 API 在 Migo 每个平台上由谁回答、是否经一致性测试验证、宿主要接什么——文档构建时直接由仓库里的契约渲染。
+audience: content-developer
+platforms:
+  - android
+  - ios
+  - macos
+  - linux
+  - windows
+  - openharmony
+sourcePaths:
+  - contracts/runtime/api-platform-matrix.json
+  - contracts/runtime/api-platform-decisions.json
+  - contracts/runtime/minigame-api-reach.json
+  - scripts/gen-api-platform-matrix.py
+---
+
+import ApiSupport from '../../../components/ApiSupport.astro';
+
+内容调用的每个 API 都是 `migo.<名称>`,与通用小游戏平台同名。本页回答它在每个平台上**由谁回答**、**有没有被测过**、**宿主要接什么**。表格在文档构建时直接读仓库里的契约渲染,不经人工抄写:它说的就是构建所在提交的源码说的。宿主各类能力的接法见 [宿主能力总览](/docs/capabilities/overview/)。
+
+## 怎么读
+
+每格先写由谁回答:
+
+| 标记 | 含义 |
+| --- | --- |
+| 引擎 | 引擎自己回答,宿主不用接任何东西。 |
+| 默认 | 需要宿主,而该平台的宿主层(Android 的 Java SDK、Apple 的 Swift 层、Linux 的 host kit、OpenHarmony 宿主)已经提供。 |
+| 宿主 | 需要宿主;平台给了接口让宿主应用提供,还没有默认实现。 |
+| 缺失 | 这个平台上暂时没有办法让它工作。 |
+| 不提供 | 有意不提供;原因列在所在分类的表格下方。 |
+
+再看附注:
+
+| 附注 | 含义 |
+| --- | --- |
+| ✓ | Migo 的一致性测试在该平台上调用过它,每项检查都通过。 |
+| 未验证 | 该平台能回答,但一致性测试还没有在该平台上验证过它。 |
+| 无默认 | 要宿主应用自己实现(要接的入口见「向宿主要」一列),平台没有默认实现。 |
+| 检查未过 | 一致性测试里有它的检查没通过。 |
+
+「宿主」格不带附注时,剩下的部分本来就是宿主应用自己的事(它的广告、支付、账号、授权),平台已把其余部分接好。汇总表的「就绪」:接好并经验证,或有意不提供,或剩下的本来就是宿主应用的事。
+
+「向宿主要」一列是它向宿主要的东西:
+
+| 前缀 | 宿主提供什么 |
+| --- | --- |
+| `channel:<服务>.<方法>` | C ABI 宿主服务通道(`MigoHostCallbacks.host_services` 与 `on_host_service_call`)的一个方法;不带方法时是整个服务 |
+| `callback:<字段>` | `MigoHostCallbacks` 的一个回调字段 |
+| `report:<内容>` | 宿主报告的状态 |
+| `input:<种类>` | 宿主喂给引擎的输入或生命周期 |
+| `event:<服务>.<事件>` | 宿主投递的宿主服务事件 |
+| `service:<名称>` | 一项引擎服务,C ABI 宿主还无法提供 |
+| `native:<服务>(<系统>)` | 宿主无需提供:引擎自带实现,只编译进列出的操作系统 |
+| `unpublished` | 引擎没有发布这个 API,`migo.<名称>` 不存在 |
+
+## 自己验证
+
+表里的每个结论都能在公开仓库里复核:
+
+1. **矩阵是生成的。** `python3 scripts/gen-api-platform-matrix.py --check` 从源码重新推导,并与提交的 `contracts/runtime/api-platform-matrix.json` 比对;PR CI 跑门禁 `scripts/test-api-platform-matrix-contract.sh`,它还证明每类漂移都会让自己变红。
+2. **每个 API 要什么,是实际调用它测出来的。** 记录在 `contracts/runtime/minigame-api-reach.json`,由运行时测试 `api_reach` 保持为真。
+3. **✓ 来自各平台一致性测试运行的导入记录** `contracts/runtime/api-conformance-<平台>.json`:运行日期、runner、被测的 migo-runtime 提交(列在汇总表下方)。一致性测试套件本身目前不公开,所以这一步能复核的是记录,还不能自己重跑。
+4. **测不出来的取舍写在** `contracts/runtime/api-platform-decisions.json`:纯引擎 API、有意不提供的 API 与已知缺口,每条带理由。
+
+Windows 与 OpenHarmony 还没有一致性测试运行记录,所以它们没有 ✓,「引擎」与「默认」格都是「未验证」。
+
+## 支持表
+
+<ApiSupport lang="zh" />

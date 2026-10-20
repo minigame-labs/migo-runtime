@@ -7,6 +7,11 @@ on:
       - 'developer-docs/**'
       - 'include/migo/**'
       - 'release/VERSION'
+      # Rendered into the API platform support page when the docs are built.
+      - 'contracts/runtime/minigame-api.json'
+      - 'contracts/runtime/api-platform-matrix.json'
+      - 'contracts/runtime/api-platform-decisions.json'
+      - 'contracts/runtime/api-conformance-*.json'
       - 'scripts/test-developer-docs-phase1-contract.sh'
       - '.github/workflows/developer-docs-ci.yml'
   pull_request:
@@ -14,6 +19,11 @@ on:
       - 'developer-docs/**'
       - 'include/migo/**'
       - 'release/VERSION'
+      # Rendered into the API platform support page when the docs are built.
+      - 'contracts/runtime/minigame-api.json'
+      - 'contracts/runtime/api-platform-matrix.json'
+      - 'contracts/runtime/api-platform-decisions.json'
+      - 'contracts/runtime/api-conformance-*.json'
       - 'scripts/test-developer-docs-phase1-contract.sh'
       - '.github/workflows/developer-docs-ci.yml'
 

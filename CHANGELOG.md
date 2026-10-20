@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The developer docs say, for every API of the common mini-game platform and every platform Migo ships, who answers
+  it, whether conformance testing verified it there, and what a host provides for it: Host capabilities > API
+  platform support, in Chinese and English. The page is rendered when the docs are built, from
+  `contracts/runtime/api-platform-matrix.json`, the reasons in `api-platform-decisions.json` and each platform's
+  `api-conformance-<platform>.json`, so it says what the commit it was built from says and cannot fall behind it;
+  it also says how to check each verdict from the public repository.
 - `getNetworkType` answers with every field the reference names -- `signalStrength`, `hasSystemProxy`, `weakNet` with
   `networkType` and `isConnected` -- on every platform. A C ABI host reports them in one record,
   `migo_session_report_network` with `MigoNetworkReport` (flags `MIGO_NETWORK_FLAG_CONNECTED`, `_SYSTEM_PROXY`,
