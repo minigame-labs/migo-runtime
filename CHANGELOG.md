@@ -741,6 +741,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- On iOS (Performance+), `restartMiniProgram` launches the game again: the session asks its host to start the game
+  over in a new session, launched as a restart launches it -- with the options it was last shown with, its query the
+  one `path` names -- and `MigoGameView` does. It did nothing: the session, whose content runs in WebKit's process,
+  cannot replace it in place, and it had no way to ask. The C ABI carries the request as
+  `MigoHostCallbacks.on_restart_requested` (appended), which only a session whose content runs outside the engine
+  calls.
 - On iOS (Performance+), a show that carries no options shows the game as it was last entered, as the embedded
   execution has since the previous fix: it reset `getEnterOptionsSync()` and `onShow`'s options to the defaults. Both
   executions now follow one rule.

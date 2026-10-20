@@ -405,6 +405,9 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             case .exitRequested:
                 stop()
                 onEvent?(.exitRequested)
+            case .restartRequested:
+                // Content runs in process here, and the engine restarts it in place.
+                break
             case .error(let code, let message, let recoverable):
                 onEvent?(.error(code: code, message: message, recoverable: recoverable))
             case .surfaceLost:

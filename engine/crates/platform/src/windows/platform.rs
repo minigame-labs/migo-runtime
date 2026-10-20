@@ -151,6 +151,12 @@ impl HostNotifier for WindowsPlatform {
         }
     }
 
+    fn notify_restart(&self, host_id: i32, launch_options_json: &str) {
+        if let Some(notifier) = &self.notifier {
+            notifier.notify_restart(host_id, launch_options_json);
+        }
+    }
+
     fn notify_error(&self, host_id: i32, error_code: u16, message: &str, detail: &str) {
         if let Some(notifier) = &self.notifier {
             notifier.notify_error(host_id, error_code, message, detail);

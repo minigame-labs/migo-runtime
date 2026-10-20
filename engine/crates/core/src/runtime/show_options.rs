@@ -56,6 +56,17 @@ impl ShowOptions {
     /// The game is launched again: the arguments of the show that relaunch ends with -- the last options, with
     /// `launch_query` as their query when the restart names one.
     pub(crate) fn relaunch(&mut self, launch_query: Option<String>) -> Cow<'static, str> {
+        self.relaunched(launch_query);
+        self.args()
+    }
+
+    /// The game is launched again in a new session: the options it is launched with there, as the JSON object a
+    /// host creates a session with.
+    pub(crate) fn relaunch_json(&mut self, launch_query: Option<String>) -> String {
+        self.relaunched(launch_query).to_string()
+    }
+
+    fn relaunched(&mut self, launch_query: Option<String>) -> &Value {
         let mut options = self
             .last
             .take()
@@ -63,8 +74,7 @@ impl ShowOptions {
         if let (Some(query), Some(object)) = (launch_query, options.as_object_mut()) {
             object.insert("query".to_owned(), Value::String(query));
         }
-        self.last = Some(options);
-        self.args()
+        self.last.insert(options)
     }
 
     fn args(&self) -> Cow<'static, str> {
@@ -158,6 +168,22 @@ mod tests {
         assert_eq!(
             args(launched(json!({"scene": 1007})).relaunch(Some("a=1".into()))),
             json!([{"scene": 1007, "query": "a=1"}])
+        );
+    }
+
+    /// A relaunch in a new session is launched with the same options, as the object a session is created with.
+    #[test]
+    fn a_relaunch_in_a_new_session_carries_the_options_as_a_session_s() {
+        let mut shows = launched(json!({"scene": 1007, "query": {"from": "share"}}));
+        let json = shows.relaunch_json(Some("level=2".into()));
+        assert_eq!(
+            serde_json::from_str::<Value>(&json).unwrap(),
+            json!({"scene": 1007, "query": "level=2"})
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&ShowOptions::launched_with(None).relaunch_json(None))
+                .unwrap(),
+            json!({})
         );
     }
 }
