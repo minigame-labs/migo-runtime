@@ -1,5 +1,6 @@
 #include <migo/linux/qt6/host_services.hpp>
 
+#include "backlight.hpp"
 #include "overlay.hpp"
 
 #include <QAction>
@@ -13,6 +14,7 @@
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QJsonValue>
 #include <QLabel>
 #include <QLineEdit>
 #include <QList>
@@ -27,6 +29,7 @@
 #include <QWidget>
 
 #include <cmath>
+#include <optional>
 #include <utility>
 
 namespace migo::linux_host::qt6 {
@@ -590,7 +593,8 @@ MigoQtBuiltInHostServices::MigoQtBuiltInHostServices(MigoQtX11SurfaceView &view,
     : QObject(parent),
       surface_(&view),
       interaction_(std::make_unique<Interaction>(view)),
-      window_(std::make_unique<WindowService>(view, std::move(channel))) {}
+      window_(std::make_unique<WindowService>(view, std::move(channel))),
+      backlight_(std::make_unique<Backlight>(QStringLiteral("/sys/class/backlight"), QDBusConnection::systemBus())) {}
 
 MigoQtBuiltInHostServices::~MigoQtBuiltInHostServices() = default;
 
@@ -613,16 +617,7 @@ void MigoQtBuiltInHostServices::call(MigoHostService service, std::uint32_t meth
             window_->call(method, request, std::move(reply));
             return;
         case MIGO_HOST_SERVICE_SCREEN:
-            if (method == MIGO_SCREEN_SET_DEVICE_ORIENTATION) {
-                window_->setOrientation(request, std::move(reply));
-            } else if (method == MIGO_SCREEN_SET_ENABLE_DEBUG) {
-                Q_EMIT debugAidsRequested(request.value(QStringLiteral("enableDebug")).toBool());
-            } else {
-                // A screenshot, a recording, keeping the window out of them, the
-                // backlight: see the class's comment. The observers are commands,
-                // and a command's failure reaches no one.
-                (void)reply.fail(QStringLiteral("not supported"));
-            }
+            screen(method, request, std::move(reply));
             return;
         case MIGO_HOST_SERVICE_CLIPBOARD:
             if (method == MIGO_CLIPBOARD_SET_CLIPBOARD_DATA) {
@@ -635,6 +630,42 @@ void MigoQtBuiltInHostServices::call(MigoHostService service, std::uint32_t meth
             }
             return;
         default:
+            (void)reply.fail(QStringLiteral("not supported"));
+            return;
+    }
+}
+
+void MigoQtBuiltInHostServices::screen(std::uint32_t method, const QJsonObject &request,
+                                       MigoQtHostServiceReply reply) {
+    switch (method) {
+        case MIGO_SCREEN_SET_DEVICE_ORIENTATION:
+            window_->setOrientation(request, std::move(reply));
+            return;
+        case MIGO_SCREEN_SET_ENABLE_DEBUG:
+            Q_EMIT debugAidsRequested(request.value(QStringLiteral("enableDebug")).toBool());
+            return;
+        case MIGO_SCREEN_GET_BRIGHTNESS:
+            if (const std::optional<double> value = backlight_->brightness()) {
+                (void)reply.succeed({{QStringLiteral("value"), *value}});
+            } else {
+                (void)reply.fail(QStringLiteral("the screen has no backlight the system controls"));
+            }
+            return;
+        case MIGO_SCREEN_SET_BRIGHTNESS: {
+            const QJsonValue value = request.value(QStringLiteral("value"));
+            if (!value.isDouble() || !std::isfinite(value.toDouble())) {
+                (void)reply.fail(QStringLiteral("value is not a number"));
+                return;
+            }
+            backlight_->setBrightness(value.toDouble(), [reply](const QString &error) mutable {
+                (void)(error.isEmpty() ? reply.succeed() : reply.fail(error));
+            });
+            return;
+        }
+        default:
+            // A screenshot, a recording, keeping the window out of them: see the
+            // class's comment. The observers are commands, and a command's
+            // failure reaches no one.
             (void)reply.fail(QStringLiteral("not supported"));
             return;
     }

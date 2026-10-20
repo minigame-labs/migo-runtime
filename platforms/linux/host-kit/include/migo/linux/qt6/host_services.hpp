@@ -144,11 +144,14 @@ public:
 /// width and height exchanged (refused while full screen, or when the screen
 /// cannot hold the window turned). `setEnableDebug` is `debugAidsRequested`, for
 /// whoever owns the Session to turn its debugging aids (`MigoManagedSession`
-/// does). The rest of the screen is refused: no desktop tells an app of a
-/// screenshot or a recording, nor keeps a window out of one, and the backlight
-/// is not read yet.
+/// does). The brightness is the backlight's, read where the kernel shows it and
+/// set through logind -- refused on a screen with none, an external monitor's or
+/// a virtual machine's. The rest of the screen is refused: no Linux desktop
+/// tells an app of a screenshot or a recording, nor keeps a window out of one.
 ///
 /// GUI thread only. What is on screen goes with this object.
+class Backlight;
+
 class MigoQtBuiltInHostServices final : public QObject, public MigoQtHostServiceProvider {
     Q_OBJECT
 
@@ -176,11 +179,14 @@ Q_SIGNALS:
     void debugAidsRequested(bool on);
 
 private:
+    void screen(std::uint32_t method, const QJsonObject &request, MigoQtHostServiceReply reply);
+
     class Interaction;
     class WindowService;
     QPointer<QWidget> surface_;
     std::unique_ptr<Interaction> interaction_;
     std::unique_ptr<WindowService> window_;
+    std::unique_ptr<Backlight> backlight_;
 };
 
 }  // namespace migo::linux_host::qt6

@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The Linux Host Kit answers the screen's brightness from the backlight: read where the kernel shows it
+  (`/sys/class/backlight`, the firmware's over the platform's over a raw one, as systemd and GNOME pick) and set
+  through logind's `Session.SetBrightness` over Qt's D-Bus, 0 its darkest and still lit; a screen with no backlight is
+  refused. `migo::qt6-host-services` now links `Qt6::DBus`; its test answers for logind on a session bus of its own
+  (`dbus-run-session`, package `dbus`). The Linux brightness gaps in `api-platform-decisions.json` are gone.
 - The Linux Host Kit answers the screen service: the screen's orientation is the game's shape, reported each time its
   view crosses from one to the other, and `setDeviceOrientation` turns the window to it (refused while full screen, or
   when the screen cannot hold the window turned); `setEnableDebug` is `MigoQtBuiltInHostServices::debugAidsRequested`,

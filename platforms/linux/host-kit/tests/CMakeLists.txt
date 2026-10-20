@@ -33,7 +33,7 @@ if(NOT DEFINED MIGO_LINUX_HOST_KIT_ENABLE_INSTALL)
 endif()
 add_subdirectory("${HOST_KIT_ROOT}" "${CMAKE_CURRENT_BINARY_DIR}/host-kit")
 
-find_package(Qt6 6.4 REQUIRED COMPONENTS Gui Test)
+find_package(Qt6 6.4 REQUIRED COMPONENTS Gui Test DBus)
 find_package(X11 REQUIRED)
 if(NOT TARGET X11::Xtst)
     message(FATAL_ERROR "the xcb input tests drive the X server through XTest (libxtst-dev)")
@@ -71,11 +71,15 @@ target_link_libraries(migo-qt-x11-input-test PRIVATE
 
 add_executable(migo-qt-host-services-test qt_host_services_test.cpp)
 set_target_properties(migo-qt-host-services-test PROPERTIES AUTOMOC ON)
+# The backlight is internal to the services; this test reads it directly, and
+# answers for logind on the session bus the script runs it on.
+target_include_directories(migo-qt-host-services-test PRIVATE "${HOST_KIT_ROOT}/src/qt6")
 target_link_libraries(migo-qt-host-services-test PRIVATE
     migo::qt6-managed-session
     migo_host_kit_fake_capi
     migo_host_kit_x11_player
     Qt6::Test
+    Qt6::DBus
 )
 
 add_executable(migo-qt-managed-session-test qt_managed_session_test.cpp)
