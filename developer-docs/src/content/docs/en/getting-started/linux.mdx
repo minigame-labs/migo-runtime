@@ -200,7 +200,18 @@ power-profiles-daemon's saver as the low-power mode (`isLowPowerModeEnabled`); a
 and content's `getBatteryInfo` says, truly, that it is not supported. The network is NetworkManager's primary
 connection: Wi-Fi and wired both `wifi` (the nearest the API has), a modem `unknown` (its generation is not
 NetworkManager's to say), disconnected `none`; whether it reaches the internet is NetworkManager's connectivity check, or
-its state where the check is off. A machine without NetworkManager reports none.
+its state where the check is off. A machine without NetworkManager reports none. The Wi-Fi switch (`getSystemSetting`'s
+`wifiEnabled`) is NetworkManager's too: on when both its software switch and the radio's own are.
+
+Content runs and shows with its window: it runs while the window is shown and not minimized (`onShow`), and is paused
+while it is minimized or hidden (`onHide`); a window covered whole (X no longer exposes it) keeps its game running,
+unseen, as a background browser tab keeps its script running. The game starts shown and running, and is told only of
+changes.
+
+`getAppAuthorizeSetting`: a Linux App outside a sandbox meets no authorisation the system gates -- its files, devices
+and notifications are its user's -- so the album, Bluetooth, the camera, the microphone, notifications and the calendar
+are reported authorised; inside one (Flatpak, Snap) the portals decide as content asks, and they are not determined.
+Location is GeoClue's agent's to decide, which the Host Kit does not ask yet: not determined.
 
 `MigoManagedSession` installs these services. The services the App answers itself (adverts, payments,
 sign-in, ...) come from a `MigoQtHostServiceProvider` given as `Options::appServices`: the services the

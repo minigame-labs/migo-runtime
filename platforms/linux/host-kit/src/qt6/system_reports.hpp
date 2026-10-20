@@ -72,16 +72,18 @@ private:
     WatchedProperties legacy_power_profiles_;
 };
 
-/// The network as NetworkManager shows it: the primary connection's kind, and
-/// whether it reaches the internet. A machine NetworkManager does not run on
-/// has none to report.
+/// The network as NetworkManager shows it: the primary connection's kind,
+/// whether it reaches the internet, and whether Wi-Fi is switched on. A machine
+/// NetworkManager does not run on has none to report.
 class NetworkReport final : public QObject {
 public:
     struct State {
         MigoNetworkType type = MIGO_NETWORK_NONE;
         bool connected = false;
+        /// Wi-Fi is on, by its switch and its radio's (getSystemSetting's wifiEnabled).
+        bool wifi_enabled = false;
         bool operator==(const State &other) const noexcept {
-            return type == other.type && connected == other.connected;
+            return type == other.type && connected == other.connected && wifi_enabled == other.wifi_enabled;
         }
     };
 

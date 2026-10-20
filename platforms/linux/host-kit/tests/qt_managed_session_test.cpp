@@ -7,13 +7,16 @@
 #include <QApplication>
 #include <QDBusConnection>
 #include <QDBusMessage>
+#include <QDeadlineTimer>
 #include <QDBusObjectPath>
 #include <QVariantMap>
+#include <QVBoxLayout>
 #include <QSignalSpy>
 #include <QThread>
 #include <QtTest>
 
 #include <memory>
+#include <string>
 #include <vector>
 
 using migo::linux_host::SurfaceState;
@@ -105,11 +108,15 @@ class FakeNetworkManager final : public QObject {
     Q_PROPERTY(uint State MEMBER state)
     Q_PROPERTY(uint Connectivity MEMBER connectivity)
     Q_PROPERTY(QString PrimaryConnectionType MEMBER primary)
+    Q_PROPERTY(bool WirelessEnabled MEMBER wireless)
+    Q_PROPERTY(bool WirelessHardwareEnabled MEMBER radio)
 
 public:
     uint state = 70;         // connected, globally
     uint connectivity = 4;   // full
     QString primary = QStringLiteral("802-11-wireless");
+    bool wireless = true;
+    bool radio = true;
 };
 
 /// Say, as a D-Bus object does, that its properties of `interface` changed.
@@ -140,6 +147,21 @@ private:
     QString service_;
     QString path_;
     bool registered_ = false;
+};
+
+/// Retires an attached Managed session on the way out, however the test left:
+/// destroyed with its view attached, it would terminate the test run.
+struct ReleasedOnExit {
+    MigoManagedSession &managed;
+    ~ReleasedOnExit() {
+        if (managed.isClosed()) return;
+        (void)managed.close();
+        if (managed.view() != nullptr) {
+            fake_migo::set_release_status(managed.view()->generation(), MIGO_SURFACE_RELEASE_RELEASED);
+        }
+        QDeadlineTimer deadline(5000);
+        while (!managed.isClosed() && !deadline.hasExpired()) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    }
 };
 
 bool require_xcb(const char *why, const char *file, int line) {
@@ -353,12 +375,15 @@ private slots:
         QTRY_COMPARE(reports.size(), std::size_t{1});
         QCOMPARE(last().type, MigoNetworkType{MIGO_NETWORK_WIFI});
         QVERIFY(last().connected);
+        QVERIFY(last().wifi_enabled);
         manager.primary = QStringLiteral("802-3-ethernet");
+        manager.radio = false;  // the radio's own switch: Wi-Fi is off
         manager.connectivity = 3;  // limited: no internet
         announce(path, interface);
         QTRY_COMPARE(reports.size(), std::size_t{2});
         QCOMPARE(last().type, MigoNetworkType{MIGO_NETWORK_WIFI});
         QVERIFY(!last().connected);
+        QVERIFY(!last().wifi_enabled);
         manager.connectivity = 0;  // not checked: the state says
         announce(path, interface);
         QTRY_COMPARE(reports.size(), std::size_t{3});
@@ -373,6 +398,45 @@ private slots:
         QTRY_COMPARE(reports.size(), std::size_t{5});
         QCOMPARE(last().type, MigoNetworkType{MIGO_NETWORK_NONE});
         QVERIFY(!last().connected);
+    }
+
+    /// Content runs while its window is shown and not minimized, and is told
+    /// so when that changes: it starts shown and running, so nothing is said
+    /// until then.
+    void content_runs_and_shows_with_its_window() {
+        if (!require_xcb("xcb-only: the view attaches only on X11", __FILE__, __LINE__)) return;
+        QWidget container;
+        MigoManagedSession managed(*fake_migo::engine(), container);
+        const ReleasedOnExit released{managed};
+        auto *layout = new QVBoxLayout(&container);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->addWidget(managed.view());
+        container.resize(320, 200);
+        container.show();
+        QTRY_COMPARE(fake_migo::calls().attach, 1);
+        QTest::qWait(100);
+        using Said = std::vector<std::string>;
+        QCOMPARE(fake_migo::window_reports(), Said{});
+
+        container.showMinimized();
+        QTRY_COMPARE(fake_migo::window_reports(), (Said{"hidden", "paused"}));
+        container.showNormal();
+        QTRY_COMPARE(fake_migo::window_reports(), (Said{"hidden", "paused", "shown", "running"}));
+    }
+
+    /// An App outside a sandbox is granted what the system could gate, and the
+    /// Session is told so; location is GeoClue's agent's, and not determined.
+    void the_app_is_granted_what_the_system_could_gate() {
+        QWidget container;
+        MigoManagedSession managed(*fake_migo::engine(), container);
+        const MigoAppAuthorizeSetting &granted = fake_migo::reported_app_authorization();
+        QCOMPARE(granted.struct_size, std::uint32_t{sizeof(MigoAppAuthorizeSetting)});
+        for (const std::uint8_t field : {granted.album, granted.bluetooth, granted.camera, granted.microphone,
+                                         granted.notification, granted.phone_calendar}) {
+            QCOMPARE(field, std::uint8_t{MIGO_AUTHORIZATION_AUTHORIZED});
+        }
+        QCOMPARE(granted.location, std::uint8_t{MIGO_AUTHORIZATION_NOT_DETERMINED});
+        QCOMPARE(managed.close(), MIGO_OK);
     }
 
     /// A Session created but left without callbacks must not be stranded.
