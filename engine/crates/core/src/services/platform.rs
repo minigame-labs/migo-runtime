@@ -65,7 +65,9 @@ pub trait HostNotifier: Send + Sync {
 
     /// Notify the host application that the mini program is exiting.
     ///
-    /// This is called when the JS side calls `exitMiniProgram`.
+    /// This is called when the JS side calls `exitMiniProgram`, once the session has
+    /// ended, and only then: a session the host shut down itself (`shutdown_host`) is
+    /// not reported.
     fn notify_exit(&self, _host_id: i32) {
         // Default: no-op.
     }

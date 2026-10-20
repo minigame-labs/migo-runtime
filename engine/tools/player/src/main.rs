@@ -29,7 +29,7 @@ mod x11_window;
 
 use std::{
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{Arc, Condvar, Mutex},
     thread,
     time::{Duration, Instant},
 };
@@ -108,9 +108,14 @@ const START_POLL: Duration = Duration::from_millis(50);
 /// present ceiling and the run after it, then said only that nothing was presented -- the reason
 /// was in the engine's log, and a launch the content table does not cover (a renderer that never
 /// came up) was not in the report at all.
+///
+/// And whether the game exited. A game that calls `exitMiniProgram` is closed by the host that
+/// runs it, so the run ends there instead of running out its time on a session that has stopped.
 #[derive(Default)]
 struct Launch {
     failure: Mutex<Option<String>>,
+    exited: Mutex<bool>,
+    exit: Condvar,
 }
 
 impl HostNotifier for Launch {
@@ -121,6 +126,14 @@ impl HostNotifier for Launch {
             format!("{message}: {detail} (engine code {error_code})")
         };
         *self.failure.lock().expect("launch outcome") = Some(reason);
+    }
+
+    fn notify_exit(&self, _host_id: i32) {
+        // The line every conformance host prints when content's exit reaches it, which is how a
+        // runner tells that it did.
+        tracing::info!("[host] exit requested");
+        *self.exited.lock().expect("launch exit") = true;
+        self.exit.notify_all();
     }
 }
 
@@ -148,6 +161,20 @@ impl Launch {
                 return Ok(true);
             }
         }
+    }
+
+    /// Wait at most `total` for the game to exit.
+    fn wait_for_exit(&self, total: Duration) {
+        let exited = self.exited.lock().expect("launch exit");
+        let _ = self
+            .exit
+            .wait_timeout_while(exited, total, |exited| !*exited)
+            .expect("launch exit");
+    }
+
+    /// Whether the game has exited.
+    fn exited(&self) -> bool {
+        *self.exited.lock().expect("launch exit")
     }
 }
 
@@ -545,11 +572,11 @@ fn run(
         }
         None => {
             #[cfg(target_os = "linux")]
-            run_for(&mut window, total);
+            run_for(&mut window, total, &launch);
             #[cfg(target_os = "windows")]
-            run_for(&mut window, total, host_id);
+            run_for(&mut window, total, host_id, &launch);
             #[cfg(not(any(target_os = "linux", target_os = "windows")))]
-            run_for(total);
+            run_for(total, &launch);
         }
     }
     let frame = graphics::frame_capture::take();
@@ -658,7 +685,7 @@ fn run_sessions(
                 .map_err(|e| format!("session {index}: {e}"))
         });
         if started == Ok(true) {
-            thread::sleep(Duration::from_secs(secs.max(1)));
+            launch.wait_for_exit(Duration::from_secs(secs.max(1)));
         }
         let frame = graphics::frame_capture::take();
         shutdown_before_drop(host, ())?;
@@ -832,15 +859,16 @@ fn shutdown_before_drop<T>(
 /// Wait for `total`, servicing window events when running windowed.
 ///
 /// Returns early if the window manager asks the window to close, so the caller
-/// still runs its capture + shutdown path instead of being killed mid-frame.
+/// still runs its capture + shutdown path instead of being killed mid-frame, and
+/// when the game exits.
 #[cfg(target_os = "linux")]
-fn run_for(window: &mut Option<X11Window>, total: Duration) {
+fn run_for(window: &mut Option<X11Window>, total: Duration, launch: &Launch) {
     let Some(window) = window.as_mut() else {
-        thread::sleep(total);
+        launch.wait_for_exit(total);
         return;
     };
     let deadline = std::time::Instant::now() + total;
-    while std::time::Instant::now() < deadline {
+    while std::time::Instant::now() < deadline && !launch.exited() {
         if !window.pump() {
             tracing::info!("window close requested; stopping early");
             return;
@@ -851,9 +879,9 @@ fn run_for(window: &mut Option<X11Window>, total: Duration) {
 
 /// Same contract as the Linux one, over the Win32 message queue.
 #[cfg(target_os = "windows")]
-fn run_for(window: &mut Option<Win32Window>, total: Duration, host_id: HostId) {
+fn run_for(window: &mut Option<Win32Window>, total: Duration, host_id: HostId, launch: &Launch) {
     let Some(window) = window.as_mut() else {
-        thread::sleep(total);
+        launch.wait_for_exit(total);
         return;
     };
     // Acquired once, not per event. `send_command_to_host` takes a read lock on
@@ -873,7 +901,7 @@ fn run_for(window: &mut Option<Win32Window>, total: Duration, host_id: HostId) {
         }
     };
     let deadline = std::time::Instant::now() + total;
-    while std::time::Instant::now() < deadline {
+    while std::time::Instant::now() < deadline && !launch.exited() {
         if !window.pump() {
             tracing::info!("window close requested; stopping early");
             return;
@@ -1000,10 +1028,11 @@ impl PointerState {
     }
 }
 
-/// Offscreen has no event source to service, so waiting is the whole job.
+/// Offscreen has no event source to service, so waiting -- for the time, or for the game to exit
+/// -- is the whole job.
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
-fn run_for(total: Duration) {
-    thread::sleep(total);
+fn run_for(total: Duration, launch: &Launch) {
+    launch.wait_for_exit(total);
 }
 
 /// Flip GL bottom-up rows to top-down and encode an RGBA8 PNG.

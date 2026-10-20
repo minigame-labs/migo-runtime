@@ -233,10 +233,14 @@ static void on_ready(void *user_data, MigoSession *session) {
     LOGI("callback: content is ready");
 }
 
+/* Content asked to exit (exitMiniProgram), and a host closes the game: finishing
+ * the activity is what brings the glue's destroy, which tears the session down.
+ * The line is the one every conformance host prints for it. */
 static void on_exit_requested(void *user_data, MigoSession *session) {
-    (void)user_data;
     (void)session;
-    LOGI("callback: content requested exit");
+    struct host *h = (struct host *)user_data;
+    LOGI("[host] exit requested");
+    ANativeActivity_finish(h->activity);
 }
 
 /* ---- Soft keyboard ------------------------------------------------------

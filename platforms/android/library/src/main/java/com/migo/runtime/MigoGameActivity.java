@@ -295,10 +295,7 @@ public class MigoGameActivity extends Activity implements SurfaceHolder.Callback
             onLaunchFailed(ErrorCode.ERR_INIT_FAILED, "onSessionCreated threw: " + t.getMessage());
             return false;
         }
-        GameSessionListener listener = onCreateGameListener();
-        if (listener != null) {
-            session.setListener(listener);
-        }
+        session.setListener(sessionListener());
         // The pointer's icon and capture on a desktop-form device are this view's.
         session.setInputView(surfaceView);
         return true;
@@ -469,12 +466,35 @@ public class MigoGameActivity extends Activity implements SurfaceHolder.Callback
     /**
      * Override to provide a custom game session listener.
      * <p>
-     * Called during game initialization. Return null for no listener.
+     * Called during game initialization. A listener of your own takes the game's exit too: call
+     * {@code finish()} from its {@code onGameExit} to close the game as the default does. Return null
+     * for the default, which finishes this activity when the game exits and handles nothing else.
      *
      * @return A GameSessionListener, or null
      */
     protected GameSessionListener onCreateGameListener() {
         return null;
+    }
+
+    /**
+     * The session's listener: the subclass's, or one that closes the game when it exits
+     * ({@code exitMiniProgram}), as any host does. Without it nothing finished the activity, which
+     * stayed open on a session that had stopped.
+     */
+    GameSessionListener sessionListener() {
+        GameSessionListener listener = onCreateGameListener();
+        if (listener != null) {
+            return listener;
+        }
+        return new GameSessionListener() {
+            @Override public void onGameReady() {}
+
+            @Override public void onGameExit(int exitCode) {
+                finish();
+            }
+
+            @Override public void onError(MigoException exception) {}
+        };
     }
 
     /**
