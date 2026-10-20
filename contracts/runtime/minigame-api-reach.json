@@ -100,7 +100,7 @@
     "getGPU": null,
     "getGameClubData": {"ops":["op_ecosystem_call"],"services":["ecosystem"]},
     "getGameExptInfo": {"ops":["op_ecosystem_call"],"services":["ecosystem"]},
-    "getGameLogManager": {"ops":["op_game_log_report"],"services":["game_log"]},
+    "getGameLogManager": {"ops":["op_encode","op_game_log_report"],"services":["game_log"]},
     "getGameRecorder": null,
     "getGameServerManager": {"ops":["op_ecosystem_call"],"services":["ecosystem"]},
     "getGamepads": {"ops":[],"services":[]},
