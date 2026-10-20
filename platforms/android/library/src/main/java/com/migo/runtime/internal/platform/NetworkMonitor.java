@@ -183,8 +183,8 @@ public final class NetworkMonitor {
     /**
      * Whether the system routes the network through a proxy -- one set by hand or a
      * configuration script -- as getNetworkType's hasSystemProxy says. The JVM's
-     * {@code http.proxyHost}, read before, is this process's own setting, not the
-     * device's.
+     * {@code http.proxyHost}, read before, is the framework's copy of a hand-set proxy,
+     * which a configuration script never sets.
      */
     private boolean checkSystemProxy() {
         android.net.ProxyInfo proxy = connectivityManager.getDefaultProxy();

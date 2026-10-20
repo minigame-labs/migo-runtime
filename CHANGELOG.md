@@ -749,9 +749,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
-- Android: `getNetworkType().hasSystemProxy` is the device's proxy setting (`ConnectivityManager.getDefaultProxy`); it
-  read the JVM's own `http.proxyHost`, which no system proxy sets. The cell's `signalStrength` is the dBm the platform
-  reports, or 0, rather than its 0-4 level mapped to a made-up dBm.
+- Android: `getNetworkType().hasSystemProxy` is the platform's own default proxy (`ConnectivityManager.getDefaultProxy`),
+  a configuration script included; it read the JVM's `http.proxyHost`, which the framework copies a hand-set proxy
+  into and a configuration script never sets. The cell's `signalStrength` is the dBm the platform reports, or 0,
+  rather than its 0-4 level mapped to a made-up dBm.
 - `getDeviceInfo().memorySize` is the device's memory in MB, as on Android, on every platform: it was empty on macOS,
   Linux, Windows and OpenHarmony, and absent on iOS (Performance+), though the engine reads the memory for its own
   budgets.
