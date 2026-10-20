@@ -30,7 +30,8 @@ The three currently declared CMake targets are:
   using a native child `QWidget` and handling surface lifecycle, input, focus, IME composition, and
   frame requests.
 - `migo::qt6-host-services` — the host-service channel for Qt, and the built-in services Qt's own
-  facilities answer (the clipboard; toasts, loading indicators, modals and action sheets).
+  facilities answer (the clipboard; toasts, loading indicators, modals and action sheets; the window's
+  size, state and cursor).
 - `migo::qt6-managed-session` — the Managed ownership form: `MigoManagedSession` owns the Session,
   callback table, and view, and installs the built-in services.
 
@@ -163,6 +164,11 @@ desktop already offers with Qt's own:
   player's input while one is up; a modal is a window-modal dialog, and when `editable` its `content`
   is what the field starts with; an action sheet is a menu popped up over the game's centre, and closing
   it fails with `cancel`. Button colours are not applied: a desktop's dialogs are the desktop's.
+- **Window** (`setWindowSize`, `setCursor`, `onWindowStateChange`): `setWindowSize` is the game's size in pixels, the
+  window growing or shrinking by what the view must (refused while full screen); each change of the window's state is
+  reported (minimize, maximize -- full screen included -- normalize); `setCursor` sets the cursor over the game, a CSS
+  keyword or an image and its hotspot. A pointer lock is refused for now, as the C ABI lets a host: holding the cursor
+  and moving content's pointer by the mouse's raw motion needs XInput 2's raw events, which this Host Kit does not read yet.
 
 `MigoManagedSession` installs these services. The services the App answers itself (adverts, payments,
 sign-in, ...) come from a `MigoQtHostServiceProvider` given as `Options::appServices`: the services the

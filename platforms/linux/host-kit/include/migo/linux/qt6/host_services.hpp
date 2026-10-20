@@ -1,6 +1,7 @@
 #ifndef MIGO_LINUX_QT6_HOST_SERVICES_HPP_
 #define MIGO_LINUX_QT6_HOST_SERVICES_HPP_
 
+#include <migo/linux/qt6/x11_surface_view.hpp>
 #include <migo/migo.h>
 
 #include <QJsonObject>
@@ -113,8 +114,9 @@ public:
 };
 
 /// The services Qt already offers an App, answered with Qt's own: the
-/// clipboard, and the game's toasts, loading indicator, modals and action
-/// sheets.
+/// clipboard; the game's toasts, loading indicator, modals and action sheets;
+/// and the window the game is shown in -- its size, its state, the cursor over
+/// the game.
 ///
 /// An App that names one of these services answers it instead; one that wants
 /// a service refused names it and refuses. `scripts/gen-api-platform-matrix.py`
@@ -127,14 +129,25 @@ public:
 /// keeps the game's input from it while shown. Button colours are not applied:
 /// a desktop's dialogs are the desktop's.
 ///
+/// The window: `setWindowSize` is the game's size in pixels, the window growing
+/// or shrinking by what the view must (refused while the window is full
+/// screen); a change of the window's state is reported (minimize, maximize --
+/// full screen included -- normalize); `setCursor` sets the cursor over the
+/// game, a CSS keyword or an image and its hotspot. A pointer lock is refused
+/// for now, as a host may: holding one needs the mouse's raw motion, which this
+/// Host Kit does not read yet.
+///
 /// GUI thread only. What is on screen goes with this object.
 class MigoQtBuiltInHostServices final : public QObject, public MigoQtHostServiceProvider {
     Q_OBJECT
 
 public:
-    /// `surface` is the widget the game is drawn in: dialogs are its window's,
-    /// indicators stand over it, and a mask keeps its input from the game.
-    explicit MigoQtBuiltInHostServices(QWidget &surface, QObject *parent = nullptr);
+    /// `view` is the game's: dialogs are its window's, indicators stand over it,
+    /// a mask keeps its input from the game, and the window service is its
+    /// window's. `channel` is the Session's, which the window's events are
+    /// reported through.
+    MigoQtBuiltInHostServices(MigoQtX11SurfaceView &view, std::shared_ptr<MigoQtHostServiceChannel> channel,
+                              QObject *parent = nullptr);
     ~MigoQtBuiltInHostServices() override;
 
     [[nodiscard]] std::uint64_t services() const noexcept override;
@@ -147,8 +160,10 @@ public:
 
 private:
     class Interaction;
+    class WindowService;
     QPointer<QWidget> surface_;
     std::unique_ptr<Interaction> interaction_;
+    std::unique_ptr<WindowService> window_;
 };
 
 }  // namespace migo::linux_host::qt6

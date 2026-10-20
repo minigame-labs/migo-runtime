@@ -100,6 +100,7 @@ if(MIGO_LINUX_HOST_KIT_BUILD_QT6_X11)
     )
     target_link_libraries(migo_qt6_host_services
         PUBLIC
+            migo::qt6-x11-surface-view
             migo::migo
             Qt6::Widgets
     )

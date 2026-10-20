@@ -27,7 +27,7 @@ Linux UI；它不创建应用、顶层窗口或事件循环——这些始终归
 - `migo::qt6-x11-surface-view` — 基于 `xcb` 平台插件的 Qt 6.4+ Widgets 适配器，使用
   原生子 `QWidget`，负责 surface 生命周期、输入、焦点、IME 合成和帧请求。
 - `migo::qt6-host-services` — 宿主服务通道的 Qt 实现，以及 Qt 自带能力回答的内建服务
-  （剪贴板、toast/loading/modal/action sheet）。
+  （剪贴板、toast/loading/modal/action sheet、窗口的尺寸/状态/光标）。
 - `migo::qt6-managed-session` — Managed 所有权形态：`MigoManagedSession` 拥有 Session、
   回调表和 view，并装上内建服务。
 
@@ -155,6 +155,7 @@ MigoSession  > SurfaceHost ──> MigoQtX11SurfaceView
   `hideLoading` 只收 loading，带 `mask` 时游戏收不到玩家输入；modal 是窗口模态对话框，
   `editable` 时 `content` 是输入框的初始文字；action sheet 是游戏中央弹出的菜单，关闭菜单即以
   `cancel` 失败。按钮颜色不应用：桌面的对话框是桌面的。
+- **窗口**（`setWindowSize`、`setCursor`、`onWindowStateChange`）：`setWindowSize` 是游戏的像素尺寸，窗口按视图需要的差额伸缩（全屏时拒绝）；窗口状态变化（最小化、最大化——全屏也算——、复原）逐次上报；`setCursor` 设置游戏上方的光标，CSS 关键字或图片加热点。指针锁暂时拒绝（C ABI 允许宿主拒绝）：要按住光标并按鼠标的原始位移移动内容的指针，需要读取 XInput 2 原始事件，这个 Host Kit 还没有做。
 
 `MigoManagedSession` 自动装上这些服务。App 自己回答的服务（广告、支付、登录……）用构造参数
 `Options::appServices` 提供一个 `MigoQtHostServiceProvider`：App 声明的服务归 App，包括内建

@@ -235,7 +235,7 @@ MigoManagedSession::MigoManagedSession(MigoEngine &engine, QWidget &parent, cons
     impl_->surface_host = std::make_unique<SurfaceHost>(impl_->session);
     impl_->view = new MigoQtX11SurfaceView(*impl_->surface_host, parent);
     impl_->channel = MigoQtHostServiceChannel::open(impl_->session);
-    impl_->built_in = std::make_unique<MigoQtBuiltInHostServices>(*impl_->view);
+    impl_->built_in = std::make_unique<MigoQtBuiltInHostServices>(*impl_->view, impl_->channel);
     impl_->app_services = options.appServices;
     impl_->app_mask = options.appServices != nullptr ? options.appServices->services() : 0;
     const std::uint64_t declared = impl_->app_mask | impl_->built_in->services();

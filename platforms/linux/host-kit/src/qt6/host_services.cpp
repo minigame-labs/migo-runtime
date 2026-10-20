@@ -2,10 +2,12 @@
 
 #include <QAction>
 #include <QClipboard>
+#include <QCursor>
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QEvent>
 #include <QGuiApplication>
+#include <QHash>
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -13,6 +15,7 @@
 #include <QLineEdit>
 #include <QList>
 #include <QMenu>
+#include <QPixmap>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QStyle>
@@ -20,6 +23,7 @@
 #include <QVBoxLayout>
 #include <QWidget>
 
+#include <cmath>
 #include <utility>
 
 namespace migo::linux_host::qt6 {
@@ -350,10 +354,164 @@ private:
     QList<QPointer<QWidget>> open_;
 };
 
+// ---- the window service -----------------------------------------------------------------------
+
+namespace {
+
+/// A window's state in the platform's words: full screen is maximized too.
+QString stateOf(const QWidget &window) {
+    if (window.isMinimized()) return QStringLiteral("minimize");
+    if (window.isMaximized() || window.isFullScreen()) return QStringLiteral("maximize");
+    return QStringLiteral("normalize");
+}
+
+/// A CSS cursor keyword as Qt's cursor, or none for the system's own. What Qt
+/// has no cursor for -- context-menu, cell, the zooms -- is the arrow.
+std::optional<Qt::CursorShape> cursorShape(const QString &keyword) {
+    static const QHash<QString, Qt::CursorShape> shapes = {
+        {QStringLiteral("none"), Qt::BlankCursor},
+        {QStringLiteral("pointer"), Qt::PointingHandCursor},
+        {QStringLiteral("text"), Qt::IBeamCursor},
+        {QStringLiteral("vertical-text"), Qt::IBeamCursor},
+        {QStringLiteral("crosshair"), Qt::CrossCursor},
+        {QStringLiteral("wait"), Qt::WaitCursor},
+        {QStringLiteral("progress"), Qt::BusyCursor},
+        {QStringLiteral("help"), Qt::WhatsThisCursor},
+        {QStringLiteral("move"), Qt::SizeAllCursor},
+        {QStringLiteral("all-scroll"), Qt::SizeAllCursor},
+        {QStringLiteral("not-allowed"), Qt::ForbiddenCursor},
+        {QStringLiteral("no-drop"), Qt::ForbiddenCursor},
+        {QStringLiteral("grab"), Qt::OpenHandCursor},
+        {QStringLiteral("grabbing"), Qt::ClosedHandCursor},
+        {QStringLiteral("copy"), Qt::DragCopyCursor},
+        {QStringLiteral("alias"), Qt::DragLinkCursor},
+        {QStringLiteral("n-resize"), Qt::SizeVerCursor},
+        {QStringLiteral("s-resize"), Qt::SizeVerCursor},
+        {QStringLiteral("ns-resize"), Qt::SizeVerCursor},
+        {QStringLiteral("e-resize"), Qt::SizeHorCursor},
+        {QStringLiteral("w-resize"), Qt::SizeHorCursor},
+        {QStringLiteral("ew-resize"), Qt::SizeHorCursor},
+        {QStringLiteral("row-resize"), Qt::SplitVCursor},
+        {QStringLiteral("col-resize"), Qt::SplitHCursor},
+        {QStringLiteral("ne-resize"), Qt::SizeBDiagCursor},
+        {QStringLiteral("sw-resize"), Qt::SizeBDiagCursor},
+        {QStringLiteral("nesw-resize"), Qt::SizeBDiagCursor},
+        {QStringLiteral("nw-resize"), Qt::SizeFDiagCursor},
+        {QStringLiteral("se-resize"), Qt::SizeFDiagCursor},
+        {QStringLiteral("nwse-resize"), Qt::SizeFDiagCursor},
+    };
+    if (keyword == QLatin1String("default") || keyword == QLatin1String("auto")) return std::nullopt;
+    return shapes.value(keyword, Qt::ArrowCursor);
+}
+
+}  // namespace
+
+class MigoQtBuiltInHostServices::WindowService final : public QObject {
+public:
+    WindowService(MigoQtX11SurfaceView &view, std::shared_ptr<MigoQtHostServiceChannel> channel)
+        : view_(&view), channel_(std::move(channel)), reported_(stateOf(*view.window())) {
+        view.window()->installEventFilter(this);
+    }
+
+    void call(std::uint32_t method, const QJsonObject &request, MigoQtHostServiceReply reply) {
+        switch (method) {
+            case MIGO_WINDOW_SET_WINDOW_SIZE:
+                setWindowSize(request, std::move(reply));
+                return;
+            case MIGO_WINDOW_SET_CURSOR:
+                setCursor(request);
+                return;
+            case MIGO_WINDOW_REQUEST_POINTER_LOCK:
+                // Refused, as a host may: a lock holds the cursor still and moves
+                // content's pointer by the mouse's raw motion, which this Host Kit
+                // does not read yet.
+                (void)channel_->post(MIGO_HOST_SERVICE_WINDOW, MIGO_WINDOW_EVENT_POINTER_LOCK_CHANGE,
+                                     {{QStringLiteral("locked"), false}});
+                return;
+            case MIGO_WINDOW_EXIT_POINTER_LOCK:
+                // None is held.
+                return;
+            default:
+                (void)reply.fail(QStringLiteral("not supported"));
+                return;
+        }
+    }
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override {
+        if (event->type() == QEvent::WindowStateChange && !view_.isNull() && watched == view_->window()) {
+            const QString state = stateOf(*view_->window());
+            if (state != reported_) {
+                reported_ = state;
+                (void)channel_->post(MIGO_HOST_SERVICE_WINDOW, MIGO_WINDOW_EVENT_WINDOW_STATE_CHANGE,
+                                     {{QStringLiteral("state"), state}});
+            }
+        }
+        return QObject::eventFilter(watched, event);
+    }
+
+private:
+    /// The size asked for is the game's, in pixels: the window grows or shrinks
+    /// by what the game's view must.
+    void setWindowSize(const QJsonObject &request, MigoQtHostServiceReply reply) {
+        const double width = request.value(QStringLiteral("width")).toDouble(-1);
+        const double height = request.value(QStringLiteral("height")).toDouble(-1);
+        if (!std::isfinite(width) || !std::isfinite(height) || width <= 0 || height <= 0) {
+            (void)reply.fail(QStringLiteral("width and height must be positive numbers"));
+            return;
+        }
+        if (view_.isNull()) {
+            (void)reply.fail(QStringLiteral("there is no window to size"));
+            return;
+        }
+        QWidget *window = view_->window();
+        if (window->isFullScreen()) {
+            (void)reply.fail(QStringLiteral("the window is full screen"));
+            return;
+        }
+        const qreal ratio = view_->devicePixelRatioF();
+        const QSize game(qMax(1, qRound(width / ratio)), qMax(1, qRound(height / ratio)));
+        window->resize(window->size() - view_->size() + game);
+        (void)reply.succeed();
+    }
+
+    void setCursor(const QJsonObject &request) {
+        if (view_.isNull()) return;
+        if (request.contains(QStringLiteral("keyword"))) {
+            const std::optional<Qt::CursorShape> shape = cursorShape(request.value(QStringLiteral("keyword")).toString());
+            if (shape.has_value()) {
+                view_->setCursor(*shape);
+            } else {
+                view_->unsetCursor();
+            }
+            return;
+        }
+        const QString path = request.value(QStringLiteral("path")).toString();
+        const QPixmap image(path);
+        if (image.isNull()) {
+            qWarning("migo host kit: setCursor: %s is not an image Qt reads; the cursor is unchanged", qPrintable(path));
+            return;
+        }
+        // The hotspot is in the image's pixels, clamped into it.
+        const int x = qBound(0, request.value(QStringLiteral("x")).toInt(0), image.width() - 1);
+        const int y = qBound(0, request.value(QStringLiteral("y")).toInt(0), image.height() - 1);
+        view_->setCursor(QCursor(image, x, y));
+    }
+
+    QPointer<MigoQtX11SurfaceView> view_;
+    std::shared_ptr<MigoQtHostServiceChannel> channel_;
+    QString reported_;
+};
+
 // ---- the built-in services --------------------------------------------------------------------
 
-MigoQtBuiltInHostServices::MigoQtBuiltInHostServices(QWidget &surface, QObject *parent)
-    : QObject(parent), surface_(&surface), interaction_(std::make_unique<Interaction>(surface)) {}
+MigoQtBuiltInHostServices::MigoQtBuiltInHostServices(MigoQtX11SurfaceView &view,
+                                                     std::shared_ptr<MigoQtHostServiceChannel> channel,
+                                                     QObject *parent)
+    : QObject(parent),
+      surface_(&view),
+      interaction_(std::make_unique<Interaction>(view)),
+      window_(std::make_unique<WindowService>(view, std::move(channel))) {}
 
 MigoQtBuiltInHostServices::~MigoQtBuiltInHostServices() = default;
 
@@ -361,6 +519,7 @@ std::uint64_t MigoQtBuiltInHostServices::services() const noexcept {
     std::uint64_t builtIn = 0;
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_CLIPBOARD);
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_INTERACTION);
+    builtIn |= hostServiceBit(MIGO_HOST_SERVICE_WINDOW);
     return builtIn;
 }
 
@@ -369,6 +528,9 @@ void MigoQtBuiltInHostServices::call(MigoHostService service, std::uint32_t meth
     switch (service) {
         case MIGO_HOST_SERVICE_INTERACTION:
             interaction_->call(method, request, std::move(reply));
+            return;
+        case MIGO_HOST_SERVICE_WINDOW:
+            window_->call(method, request, std::move(reply));
             return;
         case MIGO_HOST_SERVICE_CLIPBOARD:
             if (method == MIGO_CLIPBOARD_SET_CLIPBOARD_DATA) {

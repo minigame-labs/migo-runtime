@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The Linux Host Kit answers the window service with Qt's own: `setWindowSize` (the game's size in pixels; the window
+  grows or shrinks by what the view must, and is not sized while full screen), `setCursor` (a CSS keyword as Qt's
+  cursor, or an image and its hotspot) and `onWindowStateChange` (minimize, maximize -- full screen included --
+  normalize, each change once). A pointer lock is refused, as a host may, until the Host Kit reads the mouse's raw
+  motion; `api-platform-decisions.json` records that gap. `MigoQtBuiltInHostServices` now takes the view and the
+  Session's host-service channel, which the window's events are reported through.
 - `MigoManagedSession::Options::appId`: who the App is, as content reads it (`getAppBaseInfo().host.appId`);
   without it, the App's `QGuiApplication::desktopFileName()`.
 - `tests/qt_host/linux`: a whole App on the Linux Host Kit's Managed shape -- an engine, a window, a game with its
