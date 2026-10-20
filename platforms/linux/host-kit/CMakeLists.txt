@@ -126,6 +126,9 @@ if(MIGO_LINUX_HOST_KIT_BUILD_QT6_X11)
     add_library(migo_qt6_managed_session STATIC
         include/migo/linux/qt6/managed_session.hpp
         src/qt6/managed_session.cpp
+        # Internal, not installed: content's setKeepScreenOn, over Qt's D-Bus.
+        src/qt6/screen_awake.hpp
+        src/qt6/screen_awake.cpp
     )
     add_library(migo::qt6-managed-session ALIAS migo_qt6_managed_session)
     set_target_properties(migo_qt6_managed_session PROPERTIES
@@ -144,6 +147,8 @@ if(MIGO_LINUX_HOST_KIT_BUILD_QT6_X11)
             migo::qt6-x11-surface-view
             migo::qt6-host-services
             Qt6::Widgets
+        PRIVATE
+            Qt6::DBus
     )
     list(APPEND _migo_linux_host_kit_targets migo_qt6_managed_session)
 endif()

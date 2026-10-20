@@ -159,6 +159,8 @@ MigoSession  > SurfaceHost ──> MigoQtX11SurfaceView
 - **窗口**（`setWindowSize`、`setCursor`、`requestPointerLock`、`onWindowStateChange`）：`setWindowSize` 是游戏的像素尺寸，窗口按视图需要的差额伸缩（全屏时拒绝）；窗口状态变化（最小化、最大化——全屏也算——、复原）逐次上报；`setCursor` 设置游戏上方的光标，CSS 关键字或图片加热点。指针锁只在玩家在游戏上时授予——视图持有键盘焦点、光标在视图可见部分之上，否则拒绝并上报：锁定期间光标隐藏、鼠标被抓取，XInput 2 的原始位移（经过指针加速）从光标原处移动内容的指针，可越过视图边缘，点击落在内容的指针处；Esc 释放（这次 Esc 及其抬起不交给游戏），视图失去焦点、游戏结束也释放，释放后光标回到原处。
 - **屏幕**（`setDeviceOrientation`、`onDeviceOrientationChange`、`setEnableDebug`）：桌面的屏幕不会转，转的是窗口，所以屏幕方向就是游戏的形状——视图高大于宽为 portrait，否则 landscape，视图每次从一种形状跨到另一种时上报一次；`setDeviceOrientation` 把窗口转成所要的形状（视图宽高互换；全屏时、屏幕放不下转后的窗口时拒绝）。`setEnableDebug` 打开或关闭调试辅助：`MigoManagedSession` 在游戏上方 40% 处显示一个面板——每秒帧数和此后内容写到控制台的内容——不接收任何输入，游戏照常可玩，并把 `MIGO_HOST_APP_INFO_FLAG_DEBUG` 报给 Session（`getAppBaseInfo().enableDebug`）；自己回答屏幕服务的 App 用 `setDebugAids()` 开关。屏幕亮度（`getScreenBrightness`、`setScreenBrightness`）是背光的：从内核在 `/sys/class/backlight` 给出的背光读取（固件的优先于平台的、再优先于 raw，与 systemd、GNOME 的选法一致），经 logind 的 `Session.SetBrightness` 设置（活动会话的用户无需特权），0 是最暗而不是熄灭；没有背光的屏幕（外接显示器、虚拟机）拒绝。截屏、录屏通知与 `setVisualEffectOnCapture` 不提供：Linux 桌面不告诉应用有人截屏或录屏，也无法把窗口排除在截屏之外（X11 上任何客户端都能读任何窗口）。
 
+`MigoManagedSession` 还替内容保持屏幕常亮（`setKeepScreenOn`）：经 XDG 桌面门户的 `Inhibit`（会话空闲：熄屏、锁屏）向桌面申请，桌面没有门户时退回 freedesktop 屏保接口（`org.freedesktop.ScreenSaver.Inhibit`）；内容不再要求或游戏结束时释放。两者都没有的桌面不做任何保持，并记一条警告。
+
 `MigoManagedSession` 自动装上这些服务。App 自己回答的服务（广告、支付、登录……）用构造参数
 `Options::appServices` 提供一个 `MigoQtHostServiceProvider`：App 声明的服务归 App，包括内建
 也能回答的；其余由内建回答。同一个 `Options` 还带网络策略（`networkPolicyJson`，不给则游戏

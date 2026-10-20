@@ -84,10 +84,15 @@ target_link_libraries(migo-qt-host-services-test PRIVATE
 
 add_executable(migo-qt-managed-session-test qt_managed_session_test.cpp)
 set_target_properties(migo-qt-managed-session-test PROPERTIES AUTOMOC ON)
+# What keeps the display awake is internal to the Managed session; this test
+# reads it directly, and answers for the desktop on the session bus the script
+# runs it on.
+target_include_directories(migo-qt-managed-session-test PRIVATE "${HOST_KIT_ROOT}/src/qt6")
 target_link_libraries(migo-qt-managed-session-test PRIVATE
     migo::qt6-managed-session
     migo_host_kit_fake_capi
     Qt6::Test
+    Qt6::DBus
 )
 
 add_library(migo-gnu-extension-consumer-test STATIC

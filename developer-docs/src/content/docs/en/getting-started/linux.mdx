@@ -189,6 +189,11 @@ desktop already offers with Qt's own:
   and `setVisualEffectOnCapture` are not offered: a Linux desktop tells an app of neither, nor keeps a window out of a
   screenshot (on X11 any client may read any window).
 
+`MigoManagedSession` also keeps the display awake for content (`setKeepScreenOn`): it asks the desktop through the XDG
+desktop portal's `Inhibit` (the session's idle: blanking, locking), or through the freedesktop screen saver
+(`org.freedesktop.ScreenSaver.Inhibit`) where no portal answers, and lets go when content stops asking or the game
+ends. A desktop with neither holds nothing, and the host logs a warning.
+
 `MigoManagedSession` installs these services. The services the App answers itself (adverts, payments,
 sign-in, ...) come from a `MigoQtHostServiceProvider` given as `Options::appServices`: the services the
 App names are its, including any the built-in services would answer, and the built-in services answer

@@ -141,6 +141,7 @@ void deliver_host_service_call_from_engine_thread(MigoHostService service, uint3
 void deliver_ready_from_engine_thread() noexcept;
 void deliver_error_from_engine_thread(MigoResult code, const char *message) noexcept;
 void deliver_frame_request_from_engine_thread() noexcept;
+void deliver_keep_screen_on_from_engine_thread(bool keep_on) noexcept;
 
 void reset() noexcept;
 
