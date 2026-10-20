@@ -147,6 +147,7 @@ typedef struct MigoHostCallbacks {
     MigoOnHostServiceCallFn on_host_service_call;  /* 可选：宿主服务通道，与下一项同装 */
     uint64_t                host_services;         /* 宿主提供的服务，每个 MIGO_HOST_SERVICE_* 一位 */
     MigoOnGamepadRumbleFn   on_gamepad_rumble;     /* 手柄马达；声明了 haptics 的手柄必须有它 */
+    MigoOnRestartRequestedFn on_restart_requested; /* 可选：外部帧会话的重启 */
 } MigoHostCallbacks;
 ```
 
@@ -177,6 +178,7 @@ detach 或 destroy 调用。回调只能成功安装一次，且须在首次 sur
 | `on_game_log` | `MigoOnGameLogFn` | — | 内容游戏日志的一条，交给宿主保存或上传 |
 | `on_host_service_call` | `MigoOnHostServiceCallFn` | 与 `host_services` 同装或同不装 | 内容对宿主服务（广告、支付、登录、分享、跳转）的请求，见[宿主服务通道](#宿主服务通道) |
 | `on_gamepad_rumble` | `MigoOnGamepadRumbleFn` | 有手柄以 haptics 上线时必装 | 为 `vibrationActuator` 设定手柄马达，见[手柄马达](#手柄马达) |
+| `on_restart_requested` | `MigoOnRestartRequestedFn` | — | 内容在引擎外运行的会话里调用 `restartMiniProgram`：以它带来的启动参数在新会话里重新启动游戏 |
 | `host_services` | `uint64_t` | 同上 | 宿主提供的服务集合，每个 `MIGO_HOST_SERVICE_*` 一位；含本头文件未定义的位返回 `MIGO_ERROR_INVALID_ARGUMENT` |
 
 ### MigoDispatchFn
@@ -325,6 +327,10 @@ typedef void (MIGO_CALL *MigoOnGameLogFn)(void *user_data, MigoSession *session,
   无论最后一次调用是什么都要释放。
 - `on_game_log`：内容游戏日志的一条，JSON 对象（`level`、`key`、`value`、`commonInfo`），
   按长度界定的 UTF-8，仅在调用期间借用。保留 JSON 是因为 `value` 是内容记录的任意值。
+- `on_restart_requested`：内容在引擎外运行的会话（外部帧会话）里调用了 `restartMiniProgram`，这种会话无法原地
+  替换内容。宿主新建一个会话重新启动游戏，把它带来的 JSON 作为 `MigoSessionConfig.launch_options_json_utf8`：
+  游戏上次展示时的参数，query 换成重启的 `path` 指定的那个。按长度界定的 UTF-8，仅在调用期间借用。内容在引擎内
+  运行的会话原地重启，从不调用它；没装时这类内容的重启什么也不做。
 
 ### 手柄马达
 
