@@ -7,7 +7,9 @@
 // whose pixels are the buffer the platform decoded into -- RGBA, top row first.
 //
 // Where no decoder is integrated, start() fails as not supported rather than
-// leaving content waiting for frames that will never come.
+// leaving content waiting for frames that will never come, and the rest answers
+// as a decoder that is not decoding -- without the decoding ops, which a profile
+// with no decoder need not offer.
 
 import {
     op_video_decoder_available,
@@ -35,6 +37,9 @@ class VideoDecoder {
     #id = _nextId++;
     #listeners = {};
     #removed = false;
+    // Whether the platform was ever asked to decode for this one: until then
+    // there is nothing of it outside this object to ask or tell.
+    #native = false;
     // The settlement start(), seek() and stop() wait for.
     #starting = null;
     #seeking = [];
@@ -55,6 +60,7 @@ class VideoDecoder {
         if (!op_video_decoder_available()) return _fail('start', 'not supported');
         if (this.#starting !== null) this.#starting.reject({ errMsg: 'start:fail restarted' });
         const self = this;
+        this.#native = true;
         _decoding.set(this.#id, function (event) { self.#event(event); });
         return new Promise(function (resolve, reject) {
             self.#starting = { resolve: resolve, reject: reject };
@@ -70,6 +76,7 @@ class VideoDecoder {
     }
 
     getFrameData() {
+        if (!this.#native) return null;
         const data = op_video_decoder_take_frame(this.#id, _meta);
         if (data.byteLength === 0) return null;
         return {
@@ -85,7 +92,9 @@ class VideoDecoder {
         if (typeof position !== 'number' || !(position >= 0)) {
             return _fail('seek', 'position must be a non-negative number of milliseconds');
         }
-        if (!op_video_decoder_seek(this.#id, position)) return _fail('seek', 'the decoder is not decoding');
+        if (!this.#native || !op_video_decoder_seek(this.#id, position)) {
+            return _fail('seek', 'the decoder is not decoding');
+        }
         const self = this;
         return new Promise(function (resolve, reject) {
             self.#seeking.push({ resolve: resolve, reject: reject });
@@ -93,7 +102,7 @@ class VideoDecoder {
     }
 
     stop() {
-        if (!op_video_decoder_stop(this.#id)) return Promise.resolve({ errMsg: 'stop:ok' });
+        if (!this.#native || !op_video_decoder_stop(this.#id)) return Promise.resolve({ errMsg: 'stop:ok' });
         const self = this;
         return new Promise(function (resolve, reject) {
             self.#stopping.push({ resolve: resolve, reject: reject });
@@ -103,7 +112,7 @@ class VideoDecoder {
     remove() {
         if (!this.#removed) {
             this.#removed = true;
-            op_video_decoder_remove(this.#id);
+            if (this.#native) op_video_decoder_remove(this.#id);
             _decoding.delete(this.#id);
             this.#settleAll('remove', 'reject', { errMsg: 'the decoder is removed' });
             for (let i = 0; i < EVENTS.length; i++) this.#listeners[EVENTS[i]].off();

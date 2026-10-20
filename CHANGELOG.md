@@ -759,6 +759,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- A video decoder where the platform has none (iOS, today) answers every call as a decoder that is not decoding:
+  `getFrameData()` is null, `seek()` fails, `stop()` and `remove()` succeed. Only `start()` said "not supported";
+  everything else threw, so a game tidying up after a failed start -- `remove()` -- threw out of its own cleanup.
 - Android: `getNetworkType().hasSystemProxy` is the platform's own default proxy (`ConnectivityManager.getDefaultProxy`),
   a configuration script included; it read the JVM's `http.proxyHost`, which the framework copies a hand-set proxy
   into and a configuration script never sets. The cell's `signalStrength` is the dBm the platform reports, or 0,
