@@ -1,5 +1,6 @@
 #include <migo/linux/qt6/managed_session.hpp>
 
+#include "memory_monitor.hpp"
 #include "overlay.hpp"
 #include "screen_awake.hpp"
 #include "system_reports.hpp"
@@ -31,6 +32,12 @@
 namespace migo::linux_host::qt6 {
 
 namespace {
+
+/// Whether the App runs inside a sandbox (Flatpak, Snap), where the desktop's
+/// portals stand between it and the system.
+bool insideSandbox() {
+    return QFile::exists(QStringLiteral("/.flatpak-info")) || qEnvironmentVariableIsSet("SNAP");
+}
 
 /// The debugging panel, shown while the debugging aids are on: the frames a
 /// second the view delivered and the latest lines content wrote to its console,
@@ -193,6 +200,8 @@ public:
     /// What the system says of the battery and the network, reported to the Session as it changes.
     std::unique_ptr<BatteryReport> battery;
     std::unique_ptr<NetworkReport> network;
+    /// The desktop's warnings that memory runs low, passed on to the Session.
+    std::unique_ptr<MemoryMonitor> memory;
     /// The system switches reported so far (getSystemSetting).
     MigoSystemSettingFlags system_settings = MIGO_SYSTEM_SETTING_FLAG_NONE;
     /// What content was last told of its window: it starts shown and running.
@@ -440,6 +449,7 @@ void MigoManagedSession::Impl::finishClose() {
     screen_awake.reset();
     battery.reset();
     network.reset();
+    memory.reset();
     if (session != nullptr) {
         // Refuses while an attachment is live, a transition is running, or any
         // release is pending, so reaching here means all three are settled.
@@ -553,7 +563,8 @@ MigoManagedSession::MigoManagedSession(MigoEngine &engine, QWidget &parent, cons
     MigoAppAuthorizeSetting granted{};
     granted.struct_size = static_cast<std::uint32_t>(sizeof(granted));
     granted.abi_version = MIGO_ABI_VERSION_1;
-    if (!QFile::exists(QStringLiteral("/.flatpak-info")) && !qEnvironmentVariableIsSet("SNAP")) {
+    const bool sandboxed = insideSandbox();
+    if (!sandboxed) {
         for (std::uint8_t *field : {&granted.album, &granted.bluetooth, &granted.camera, &granted.microphone,
                                     &granted.notification, &granted.notification_alert, &granted.notification_badge,
                                     &granted.notification_sound, &granted.phone_calendar}) {
@@ -561,6 +572,16 @@ MigoManagedSession::MigoManagedSession(MigoEngine &engine, QWidget &parent, cons
         }
     }
     (void)migo_session_set_app_authorize_setting(impl_->session, &granted);
+
+    // Memory warnings where GLib's memory monitor hears them: inside a sandbox
+    // the portal relays them, outside it low-memory-monitor sends them itself.
+    impl_->memory = std::make_unique<MemoryMonitor>(
+        sandboxed ? QDBusConnection::sessionBus() : QDBusConnection::systemBus(),
+        sandboxed ? MemoryMonitor::Source::Portal : MemoryMonitor::Source::LowMemoryMonitor,
+        [impl](MigoMemoryWarningLevel level) {
+            if (impl->session == nullptr || impl->closing) return;
+            (void)migo_session_post_memory_warning(impl->session, level);
+        });
 
     connect(impl_->built_in.get(), &MigoQtBuiltInHostServices::debugAidsRequested, this,
             [this](bool on) { (void)setDebugAids(on); });

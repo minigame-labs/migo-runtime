@@ -52,6 +52,7 @@ std::vector<std::string> g_window;
 uint32_t g_system_settings = 0;
 int g_system_settings_reports = 0;
 MigoAppAuthorizeSetting g_app_authorization{};
+std::vector<MigoMemoryWarningLevel> g_memory_warnings;
 std::string g_launch_options;
 std::vector<fake_migo::HostServiceAnswer> g_answers;
 std::vector<fake_migo::HostServiceEvent> g_events;
@@ -79,6 +80,7 @@ void reset() noexcept {
     g_system_settings = 0;
     g_system_settings_reports = 0;
     g_app_authorization = {};
+    g_memory_warnings.clear();
     g_launch_options.clear();
     g_answers.clear();
     g_events.clear();
@@ -198,6 +200,7 @@ const std::vector<std::string> &window_reports() noexcept { return g_window; }
 uint32_t reported_system_settings() noexcept { return g_system_settings; }
 int system_settings_reports() noexcept { return g_system_settings_reports; }
 const MigoAppAuthorizeSetting &reported_app_authorization() noexcept { return g_app_authorization; }
+const std::vector<MigoMemoryWarningLevel> &memory_warnings() noexcept { return g_memory_warnings; }
 
 void write_console(int level, const std::string &text) {
     // Plain text only: the tests write no character JSON would need escaped.
@@ -618,6 +621,16 @@ extern "C" MigoResult MIGO_CALL migo_session_set_app_authorize_setting(MigoSessi
         return MIGO_ERROR_INVALID_ARGUMENT;
     }
     g_app_authorization = *setting;
+    return MIGO_OK;
+}
+
+extern "C" MigoResult MIGO_CALL migo_session_post_memory_warning(MigoSession *session, MigoMemoryWarningLevel level) {
+    if (session != fake_migo::session() || !g_session_alive) return MIGO_ERROR_INVALID_ARGUMENT;
+    if (level != MIGO_MEMORY_WARNING_MODERATE && level != MIGO_MEMORY_WARNING_LOW &&
+        level != MIGO_MEMORY_WARNING_CRITICAL) {
+        return MIGO_ERROR_INVALID_ARGUMENT;
+    }
+    g_memory_warnings.push_back(level);
     return MIGO_OK;
 }
 

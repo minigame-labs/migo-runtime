@@ -124,6 +124,8 @@ uint32_t reported_system_settings() noexcept;
 int system_settings_reports() noexcept;
 /// The App's authorisations last reported; struct_size 0 before any report.
 const MigoAppAuthorizeSetting &reported_app_authorization() noexcept;
+/// The memory warnings the host passed on, in order.
+const std::vector<MigoMemoryWarningLevel> &memory_warnings() noexcept;
 
 /// A line content writes to its console, which the host's debugging panel
 /// reads back (migo_session_copy_console_logs): level 0 debug .. 3 error.
