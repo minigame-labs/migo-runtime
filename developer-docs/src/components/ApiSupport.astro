@@ -19,7 +19,8 @@ type Verdict = 'unsupported' | 'missing' | 'failing' | 'host-no-default' | 'unve
 type Cell = { category: string; needs?: string[]; verified?: string[]; not_ready?: string[] } & Record<string, unknown>;
 type Decision = { platforms: '*' | string[]; reason: string };
 type Conformance = {
-  measured: { date: string; runner: string; runtime: string; conformance: string };
+  // One per run the record merges: a platform may be measured on more than one host.
+  measured: { date: string; runner: string; runtime: string; conformance: string }[];
   apis: Record<string, { status: string }>;
 };
 
@@ -177,20 +178,21 @@ const total: number = matrix.total;
 <p>{T.run}</p>
 <ul>
   {platforms.map((platform) => {
-    const run = records[platform]?.measured;
+    const runs = records[platform]?.measured ?? [];
     return (
       <li>
         {PLATFORMS[platform].name}:{' '}
-        {run ? (
-          <>
-            {run.date}, <code>{run.runner}</code>, migo-runtime{' '}
-            <a href={`${REPOSITORY}/commit/${run.runtime}`}>
-              <code>{run.runtime.slice(0, 10)}</code>
-            </a>
-          </>
-        ) : (
-          T.noRun
-        )}
+        {runs.length > 0
+          ? runs.map((run, index) => (
+              <>
+                {index > 0 && '; '}
+                {run.date}, <code>{run.runner}</code>, migo-runtime{' '}
+                <a href={`${REPOSITORY}/commit/${run.runtime}`}>
+                  <code>{run.runtime.slice(0, 10)}</code>
+                </a>
+              </>
+            ))
+          : T.noRun}
       </li>
     );
   })}

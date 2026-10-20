@@ -257,9 +257,11 @@ def markdown(report: dict, notes: tuple[str, ...] | list[str] = ()) -> list[str]
     if not report["recorded"]:
         return out + ["**Not recorded.** The log holds no line from the compatibility recorder, so it was not "
                       "injected or the game never started. Nothing below would mean anything.", ""]
-    measured = report.get("conformance_measured") or {}
+    # One entry per run the platform's record merges (a host each).
+    runs = report.get("conformance_measured") or []
+    measured_by = ", ".join(f"{run.get('runner')} on {run.get('date')}" for run in runs) or "no run"
     out += [f"Statuses are this build's contracts for {report['platform']}: who answers each API there, and the "
-            f"conformance run of {measured.get('date', 'an unknown date')}. A call is recorded once, the first time; "
+            f"conformance runs it records ({measured_by}). A call is recorded once, the first time; "
             "what a run did not reach is not here -- this is one run, not every path through the game.", ""]
     for gap in report["unrecorded"]:
         out += [f"> The `{gap['surface']}` surface was not recorded: the global is {'frozen' if gap['reason'] == 'frozen' else 'an accessor'}, "
