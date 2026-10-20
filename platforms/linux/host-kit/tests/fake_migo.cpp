@@ -37,6 +37,8 @@ std::string g_content_id;
 MigoResult g_session_create_result = MIGO_OK;
 MigoResult g_set_callbacks_result = MIGO_OK;
 MigoResult g_load_content_result = MIGO_OK;
+/// Whether the Session has its host: the library makes it on the first attach, and content needs it.
+bool g_has_host = false;
 MigoResult g_session_destroy_result = MIGO_OK;
 std::string g_network_policy;
 std::string g_launch_options;
@@ -93,6 +95,7 @@ void reset() noexcept {
     g_session_create_result = MIGO_OK;
     g_set_callbacks_result = MIGO_OK;
     g_load_content_result = MIGO_OK;
+    g_has_host = false;
     g_session_destroy_result = MIGO_OK;
     // Reserved, not merely cleared: the allocation test measures the delivery
     // path by differencing a delivered burst against an undelivered one, and a
@@ -294,6 +297,7 @@ migo_session_attach_surface(MigoSession *session, const MigoSurfaceDescriptor *d
             g_surface.platform_descriptor = &g_wayland;
         }
     }
+    if (g_attach_result == MIGO_OK && !g_attach_returns_null) g_has_host = true;
     if ((g_attach_result == MIGO_OK && !g_attach_returns_null) ||
         (g_attach_result != MIGO_OK && g_attach_writes_handle_on_error)) {
         *out_attachment = fake_migo::attachment();
@@ -478,6 +482,8 @@ extern "C" MigoResult MIGO_CALL migo_session_load_content(MigoSession *session,
     if (content->content_id_utf8 == nullptr || content->entry_utf8 == nullptr) {
         return MIGO_ERROR_INVALID_ARGUMENT;
     }
+    // As the library: content needs a render target, and there is none before the first attach.
+    if (!g_has_host) return MIGO_ERROR_INVALID_STATE;
     if (g_load_content_result != MIGO_OK) return g_load_content_result;
     g_content_id = content->content_id_utf8;
     return MIGO_OK;

@@ -91,11 +91,15 @@ public:
 
     /// Start evaluating the named content.
     ///
-    /// Argument and state problems are reported synchronously through the
-    /// return value; a failure raised once the content is running arrives later
-    /// through `contentFailed`, because by then this call's stack is gone. The
-    /// two are deliberately not merged into one signal: a caller can act on the
-    /// first and can only report the second.
+    /// Content needs the view's Surface: the Session has nothing to run it on
+    /// until the view first attaches, which happens once Qt has put its window
+    /// on screen. Called before that, the content is loaded then, and this
+    /// returns MIGO_OK; called after, it is loaded now. Argument and state
+    /// problems found now are reported through the return value; a load the
+    /// library refuses when the view attaches, and a failure raised once the
+    /// content is running, arrive through `contentFailed`, because by then this
+    /// call's stack is gone. A Session loads content once: a second call while
+    /// one is waiting or loaded returns MIGO_ERROR_INVALID_STATE.
     [[nodiscard]] MigoResult loadContent(const QString &content_id, const QString &entry);
 
     /// Begin the asynchronous teardown. Safe to call more than once.
