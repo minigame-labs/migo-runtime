@@ -75,7 +75,7 @@ function login(options = {}) {
     // had finished. Settlement is folded into the stored callbacks, which
     // is `getUserProfile`'s shape here and leaves the settle functions
     // untouched.
-    const settlement = createSettlement(opts);
+    const settlement = createSettlement('login', opts);
     const resolve = settlement.resolve;
     const reject = settlement.reject;
     (function () {
@@ -113,7 +113,7 @@ function checkSession(options = {}) {
     const fail = typeof opts.fail === "function" ? opts.fail : noop;
     const complete = typeof opts.complete === "function" ? opts.complete : noop;
 
-    const settlement = createSettlement(opts);
+    const settlement = createSettlement('checkSession', opts);
     const resolve = settlement.resolve;
     const reject = settlement.reject;
     (function () {
@@ -157,7 +157,7 @@ function getUserInfo(options = {}) {
     // had finished. Settlement is folded into the stored callbacks, which
     // is `getUserProfile`'s shape here and leaves the settle functions
     // untouched.
-    const settlement = createSettlement(opts);
+    const settlement = createSettlement('getUserInfo', opts);
     const resolve = settlement.resolve;
     const reject = settlement.reject;
     (function () {
@@ -205,7 +205,7 @@ function getPhoneNumber(options = {}) {
     // had finished. Settlement is folded into the stored callbacks, which
     // is `getUserProfile`'s shape here and leaves the settle functions
     // untouched.
-    const settlement = createSettlement(opts);
+    const settlement = createSettlement('getPhoneNumber', opts);
     const resolve = settlement.resolve;
     const reject = settlement.reject;
     (function () {
@@ -410,7 +410,7 @@ function getUserProfile(options = {}) {
     const lang = _normalizeLang(opts.lang);
     const desc = typeof opts.desc === "string" ? opts.desc : "";
 
-    const settlement = createSettlement(opts);
+    const settlement = createSettlement('getUserProfile', opts);
     const resolve = settlement.resolve;
     const reject = settlement.reject;
     (function () {

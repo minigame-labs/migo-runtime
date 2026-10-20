@@ -94,7 +94,7 @@ fn the_host_is_handed_the_real_file_and_its_answer_settles_the_call() {
     let checked = run(
         &mut runtime,
         &answer(&request, "{}"),
-        "JSON.stringify([__results.saveFileToDisk, __returned === undefined, \
+        "JSON.stringify([__results.saveFileToDisk, typeof __returned.then === 'function', \
           __results.remote.errMsg.indexOf('saveFileToDisk:fail') === 0, \
           __results.outside.errMsg.indexOf('saveFileToDisk:fail') === 0, __results.none])",
     );

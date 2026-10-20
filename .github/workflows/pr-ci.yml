@@ -818,6 +818,12 @@ jobs:
       - name: API spec contract
         run: bash scripts/test-minigame-api-spec-contract.sh
 
+      # The APIs the engine treats as having no Promise style -- whose Promise's
+      # rejection it does not report as unhandled, since content written for
+      # the reference ignores what they return -- are the spec's, by name.
+      - name: Promise style contract
+        run: bash scripts/test-promise-style-contract.sh
+
       # `isEnabled` is answered on the producer side, from a ten-bit shadow of
       # the capabilities content has enabled. A capability missing from the
       # JavaScript half of that table is silent: the query answers `false`

@@ -106,11 +106,49 @@ function isCallbackStyle(options) {
 
 function noop() {}
 
-// The answer to one asynchronous call: `promise` is what the call returns --
-// undefined for callback-style options -- and `resolve` / `reject` settle it.
-// Calling them for a callback-style call does nothing; the callbacks carry the
-// answer there.
-function createSettlement(options) {
+// The APIs the reference gives no Promise style ("not supported" for calling
+// in the Promise style, on its page; `promise: false` in
+// contracts/runtime/minigame-api-spec.json, which
+// scripts/test-promise-style-contract.sh holds this list to). Called without
+// callbacks they return a Promise here as every asynchronous API does, but
+// content written for the reference does not look at what they return, so a
+// failure it never asked to hear of must not reach it as an unhandled
+// rejection -- which, with no rejection listener, is reported to the game's
+// onError as an error the platform never raises.
+var WITHOUT_PROMISE_STYLE = new Set([
+    "authPrivateMessage", "checkHandoffEnabled", "checkIsAddedToMyMiniProgram", "checkIsSupportFacialRecognition",
+    "checkIsSupportMidasPayment", "connectSocket", "createCamera", "downloadFile",
+    "enableOfflineModeDebug", "enterChatToolMode", "exitChatTool", "faceDetect",
+    "getChannelsLiveInfo", "getChannelsLiveNoticeInfo", "getDeviceBenchmarkInfo", "getFriendCloudStorage",
+    "getFriendSendGiftStatus", "getFuzzyLocation", "getGameClubData", "getGameExptInfo",
+    "getGroupCloudStorage", "getGroupEnterInfo", "getGroupInfo", "getGroupMembersInfo",
+    "getInferenceEnvInfo", "getLocalIPAddress", "getMiniReportManager", "getPhoneNumber",
+    "getPotentialFriendList", "getPrivacySetting", "getRelationFriendList", "getScenePerformanceManager",
+    "getScreenRecordingState", "getShareInfo", "getShowSplashAdStatus", "getSystemInfoAsync",
+    "getTextLineHeight", "getUserCloudStorage", "getUserCloudStorageKeys", "getUserInfo",
+    "getWeRunData", "initFaceDetect", "login", "modifyFriendInteractiveStorage",
+    "openChannelsActivity", "openChannelsEvent", "openChannelsLive", "openChannelsUserProfile",
+    "openCustomerServiceChat", "openPhotoTopicView", "openPrivacyContract", "operateGameRecorderVideo",
+    "reportScene", "request", "requestFacialRecognition", "requestFacialVerify",
+    "requestMidasFriendPayment", "requestMidasPaymentGameItem", "requirePrivacyAuthorize", "reserveChannelsLive",
+    "restartMiniProgram", "saveFileToDisk", "sendGiftToFriend", "setDeviceOrientation",
+    "setVisualEffectOnCapture", "setWindowSize", "shareMessageToFriend", "shareTextToGroup",
+    "startHandoff", "stopFaceDetect", "uploadFile",
+]);
+
+// `promise`, as the call to `apiName` returns it: for an API without a Promise
+// style, a rejection nobody waits for is not an unhandled one. Whoever does
+// wait for it still has it.
+function answeredBy(apiName, promise) {
+    if (WITHOUT_PROMISE_STYLE.has(apiName)) promise.catch(noop);
+    return promise;
+}
+
+// The answer to one asynchronous call to `apiName`: `promise` is what the call
+// returns -- undefined for callback-style options -- and `resolve` / `reject`
+// settle it. Calling them for a callback-style call does nothing; the
+// callbacks carry the answer there.
+function createSettlement(apiName, options) {
     if (isCallbackStyle(options)) {
         return { promise: undefined, resolve: noop, reject: noop };
     }
@@ -119,7 +157,7 @@ function createSettlement(options) {
         resolve = res;
         reject = rej;
     });
-    return { promise: promise, resolve: resolve, reject: reject };
+    return { promise: answeredBy(apiName, promise), resolve: resolve, reject: reject };
 }
 
 // `options` without content's callbacks: for a call whose promise is made
@@ -137,7 +175,7 @@ function withoutCallbacks(options) {
 // work of its own to do with the outcome first. Content that passed callbacks
 // and never looks at the promise leaves no rejection unhandled.
 function withCallbacks(apiName, promise, options) {
-    if (!isCallbackStyle(options)) return promise;
+    if (!isCallbackStyle(options)) return answeredBy(apiName, promise);
     promise.then(function (res) {
         invokeCallback(apiName, 'success', options.success, res);
         invokeCallback(apiName, 'complete', options.complete, res);
@@ -196,12 +234,12 @@ function wrapAsync(apiName, fn, options) {
                 throw res;
             }
         );
-        return callbackStyle ? undefined : answered;
+        return callbackStyle ? undefined : answeredBy(apiName, answered);
     } catch (e) {
         const res = { errMsg: failMessage(apiName, e) };
         queueMicrotask(function () { invokeCallback(apiName, 'fail', fail, res); });
         queueMicrotask(function () { invokeCallback(apiName, 'complete', complete, res); });
-        return callbackStyle ? undefined : Promise.reject(res);
+        return callbackStyle ? undefined : answeredBy(apiName, Promise.reject(res));
     }
 }
 
@@ -315,7 +353,7 @@ function createDeferredApi(apiName, defaultTimeoutMs) {
         var success = typeof opts.success === 'function' ? opts.success : null;
         var fail = typeof opts.fail === 'function' ? opts.fail : null;
         var complete = typeof opts.complete === 'function' ? opts.complete : null;
-        var settlement = createSettlement(opts);
+        var settlement = createSettlement(apiName, opts);
         var resolve = settlement.resolve;
         var reject = settlement.reject;
 
