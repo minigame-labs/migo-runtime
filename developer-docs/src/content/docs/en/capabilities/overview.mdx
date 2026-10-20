@@ -65,7 +65,7 @@ Vibration, keeping the screen on, the game log, the network and the battery — 
 | Content asks the host to act | `MigoHostCallbacks.on_vibrate` | `vibrateShort` / `vibrateLong` | not supported |
 | Content asks the host to act | `MigoHostCallbacks.on_keep_screen_on` | `setKeepScreenOn` | not supported |
 | Content asks the host to act | `MigoHostCallbacks.on_game_log` | `getGameLogManager().log` | not supported |
-| The host reports the current state | `migo_session_set_network_status` | `getNetworkType` / `onNetworkStatusChange` | not supported until the first report |
+| The host reports the current state | `migo_session_report_network` (or `migo_session_set_network_status`) | `getNetworkType` / `onNetworkStatusChange` | not supported until the first report |
 | The host reports the current state | `migo_session_set_battery_status` | `getBatteryInfo` | not supported until the first report (the right answer on a device with no battery) |
 
 The three callbacks are each optional and independent, and are delivered through `dispatch` like every other callback; for the two status entry points the engine keeps the last report and forwards a change only while content is listening. Details are in [Session · Device capability callbacks](/docs/en/reference/session/#device-capability-callbacks).

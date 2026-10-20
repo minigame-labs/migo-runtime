@@ -555,13 +555,30 @@ public final class MigoEngineSession {
         _ = migo_session_set_focus(session, focused ? 1 : 0)
     }
 
-    /// The network the device is on, reported now and at each change; content
-    /// reads the last report (`getNetworkType`) and hears changes while it
-    /// listens (`onNetworkStatusChange`). See `MigoDeviceStatusReporter`.
-    public func setNetworkStatus(_ type: MigoNetworkType, connected: Bool) {
+    /// The network the device is on, reported now and at each change of anything
+    /// in it; content reads the last report (`getNetworkType`) and hears changes
+    /// while it listens (`onNetworkStatusChange`, `onNetworkWeakChange`). See
+    /// `MigoDeviceStatusReporter`. `signalStrengthDBm` is 0 when unknown.
+    public func reportNetwork(
+        _ type: MigoNetworkType, connected: Bool, systemProxy: Bool, weak: Bool = false,
+        signalStrengthDBm: Int32 = 0
+    ) {
         guard !isClosed else { return }
-        let result = migo_session_set_network_status(session, type, connected ? 1 : 0)
-        if result != MIGO_OK { NSLog("MigoEngineSession: migo_session_set_network_status returned \(result)") }
+        var report = MigoNetworkReport()
+        report.struct_size = UInt32(MemoryLayout<MigoNetworkReport>.size)
+        report.abi_version = MIGO_ABI_VERSION_CURRENT
+        report.type = type
+        report.flags = (connected ? MIGO_NETWORK_FLAG_CONNECTED : 0)
+            | (systemProxy ? MIGO_NETWORK_FLAG_SYSTEM_PROXY : 0) | (weak ? MIGO_NETWORK_FLAG_WEAK : 0)
+        report.signal_strength_dbm = signalStrengthDBm
+        let result = migo_session_report_network(session, &report)
+        if result != MIGO_OK { NSLog("MigoEngineSession: migo_session_report_network returned \(result)") }
+    }
+
+    /// The network with only its type and connection known: `reportNetwork`
+    /// with no proxy, no signal, not weak.
+    public func setNetworkStatus(_ type: MigoNetworkType, connected: Bool) {
+        reportNetwork(type, connected: connected, systemProxy: false)
     }
 
     /// The battery, reported now and at each change (`getBatteryInfo`).

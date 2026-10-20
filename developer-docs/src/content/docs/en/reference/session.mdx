@@ -725,6 +725,47 @@ Returns:
 
 Threading: any thread.
 
+## migo_session_report_network
+
+```c
+/* Derived example: no tests/c_host coverage yet; the header is authoritative */
+typedef struct MigoNetworkReport {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    MigoNetworkType type;
+    MigoNetworkFlags flags;      /* MIGO_NETWORK_FLAG_CONNECTED, _SYSTEM_PROXY, _WEAK */
+    int32_t signal_strength_dbm; /* 0 when unknown */
+    uint32_t reserved0;          /* zero */
+} MigoNetworkReport;
+
+MIGO_API MigoResult MIGO_CALL migo_session_report_network(MigoSession *session,
+                                                          const MigoNetworkReport *report);
+```
+
+The network, whole: what `getNetworkType` answers. Report it now and again each
+time anything in it changes. Content hears a change of the connection or its
+type through `onNetworkStatusChange`, and a change of the host's judgement
+through `onNetworkWeakChange`.
+
+- `MIGO_NETWORK_FLAG_CONNECTED`: the network reaches the internet.
+- `MIGO_NETWORK_FLAG_SYSTEM_PROXY` (`hasSystemProxy`): the system routes the
+  network through a proxy, as the platform's own setting says. Games read it
+  to refuse running under a capture proxy, so it is the device's setting, not
+  a guess.
+- `MIGO_NETWORK_FLAG_WEAK` (`weakNet`): the host judges the network weak.
+- `signal_strength_dbm` (`signalStrength`): the received signal in dBm,
+  Wi-Fi's RSSI or a cell's signal, and `0` when the host cannot read it, as on
+  iOS.
+
+Returns:
+
+- `MIGO_OK` — kept (and forwarded, when content listens and anything changed)
+- `MIGO_ERROR_INVALID_ARGUMENT` — `session` or `report` is NULL; `type` is
+  above `MIGO_NETWORK_5G`; a flag the header does not define;
+  `MIGO_NETWORK_NONE` reported as connected or weak; a positive signal; a
+  non-zero `reserved0`
+- `MIGO_ERROR_INVALID_STATE` — the Session has been destroyed
+
 ## migo_session_set_network_status
 
 ```c
@@ -734,8 +775,9 @@ MIGO_API MigoResult MIGO_CALL migo_session_set_network_status(MigoSession *sessi
                                                               uint8_t connected);
 ```
 
-The device's network, as content's `getNetworkType` and `onNetworkStatusChange`
-describe it. The host reports the network the device is on now and again each
+The report with only the type and whether it is connected known: no proxy, no
+signal, not weak. The device's network, as content's `getNetworkType` and
+`onNetworkStatusChange` describe it. The host reports the network the device is on now and again each
 time it changes; Migo keeps the last report and tells content about a change
 only while content is listening. Before the first report, content's network
 calls fail with "not supported". May be called before a Surface is attached;

@@ -55,6 +55,7 @@ mod permission_reporting;
 mod window_resize;
 // Camera and recorder scopes come from `api-media`, bluetooth from
 // `api-connectivity`; all four tests need both.
+mod network_events;
 #[cfg(all(feature = "api-media", feature = "api-connectivity"))]
 mod permission_revocation;
 mod prelude;

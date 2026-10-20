@@ -26,6 +26,7 @@ use migo_capi_abi::{
         MIGO_VIBRATION_LONG, MIGO_VIBRATION_SHORT_HEAVY, MIGO_VIBRATION_SHORT_LIGHT,
         MIGO_VIBRATION_SHORT_MEDIUM,
     },
+    device::{MigoNetworkReport, ValidatedNetworkReport},
 };
 use migo_core::services::{
     BatteryService, GameLogService, GamepadRumble, GamepadService, NetworkService, ScreenService,
@@ -40,17 +41,26 @@ use crate::{
 
 /// `MIGO_NETWORK_*` from `include/migo/session.h`, in the API's own words.
 const NETWORK_TYPES: [&str; 7] = ["none", "wifi", "unknown", "2g", "3g", "4g", "5g"];
-const MIGO_NETWORK_NONE: u32 = 0;
 
 /// `MIGO_BATTERY_FLAG_*`.
 const MIGO_BATTERY_FLAG_CHARGING: u32 = 1 << 0;
 const MIGO_BATTERY_FLAG_LOW_POWER_MODE: u32 = 1 << 1;
 const MIGO_BATTERY_FLAGS_KNOWN: u32 = MIGO_BATTERY_FLAG_CHARGING | MIGO_BATTERY_FLAG_LOW_POWER_MODE;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Network {
-    type_index: usize,
-    connected: bool,
+/// The network as the host last reported it.
+type Network = ValidatedNetworkReport;
+
+/// `getNetworkType`'s answer for `network`: every field the reference names, the
+/// signal 0 where the host could not read it, as Android answers.
+fn network_type_json(network: &Network) -> String {
+    format!(
+        r#"{{"networkType":"{}","isConnected":{},"signalStrength":{},"hasSystemProxy":{},"weakNet":{}}}"#,
+        NETWORK_TYPES[network.network_type as usize],
+        network.connected,
+        network.signal_strength_dbm,
+        network.system_proxy,
+        network.weak,
+    )
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -224,10 +234,7 @@ impl NetworkService for CapiDevice {
                 "getNetworkType:fail not supported",
             ));
         };
-        Ok(format!(
-            r#"{{"networkType":"{}","isConnected":{}}}"#,
-            NETWORK_TYPES[network.type_index], network.connected
-        ))
+        Ok(network_type_json(&network))
     }
 }
 
@@ -240,64 +247,89 @@ pub unsafe extern "C" fn migo_session_set_network_status(
     connected: u8,
 ) -> MigoResult {
     guard("migo_session_set_network_status", || {
-        let session = match unsafe { pin_session(session) } {
-            Ok(session) => session,
-            Err(error) => return error,
-        };
         let connected = match migo_capi_abi::validate::validate_bool(connected) {
             Ok(connected) => connected,
             Err(error) => return error,
         };
-        let type_index = network_type as usize;
-        if type_index >= NETWORK_TYPES.len() || (network_type == MIGO_NETWORK_NONE && connected) {
-            return MIGO_ERROR_INVALID_ARGUMENT;
+        match ValidatedNetworkReport::status(network_type, connected) {
+            // SAFETY: forwarded from this function's contract.
+            Ok(reported) => unsafe { report_network(session, reported) },
+            Err(error) => error,
         }
-        let reported = Network {
-            type_index,
-            connected,
-        };
-
-        // SessionControl first, then the report: a Host attaching concurrently
-        // either sees this report when content asks, or is the Host this sends
-        // the change to -- never neither.
-        let Ok(state) = session.state.lock() else {
-            return MIGO_ERROR_INTERNAL;
-        };
-        let device = &session.device;
-        let previous = {
-            let mut network = device
-                .network
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            network.replace(reported)
-        };
-        if previous == Some(reported) || !device.network_monitored.load(Ordering::Acquire) {
-            return MIGO_OK;
-        }
-        let deliverable = state.active_attachment.is_some()
-            && state.surface_transition != SurfaceTransition::Detaching;
-        let Some(host) = state
-            .host
-            .as_ref()
-            .filter(|_| deliverable)
-            .map(crate::SessionEngine::id)
-        else {
-            return MIGO_OK;
-        };
-        drop(state);
-        // The report is kept whether or not the Host takes the event: content
-        // reading the type afterwards gets it either way.
-        if let Err(error) = migo_core::send_reliable_command_to_host(
-            host,
-            HostCommand::OnNetworkStatusChange {
-                is_connected: connected,
-                network_type: std::borrow::Cow::Borrowed(NETWORK_TYPES[type_index]),
-            },
-        ) {
-            tracing::warn!("migo_session_set_network_status: change not delivered: {error}");
-        }
-        MIGO_OK
     })
+}
+
+/// # Safety
+/// `session` must be a live session handle, and `report` null or readable for
+/// its announced size.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn migo_session_report_network(
+    session: *mut MigoSession,
+    report: *const MigoNetworkReport,
+) -> MigoResult {
+    guard("migo_session_report_network", || {
+        // SAFETY: forwarded from this function's contract.
+        match unsafe { MigoNetworkReport::parse(report) } {
+            // SAFETY: as above.
+            Ok(reported) => unsafe { report_network(session, reported) },
+            Err(error) => error,
+        }
+    })
+}
+
+/// Keep `reported` as the device's network, and tell content when anything in it
+/// changed -- content's listeners decide which of their events that is: a status
+/// change for the connection or its type, a weak-network change for the host's
+/// judgement.
+///
+/// # Safety
+/// `session` must be a live session handle.
+unsafe fn report_network(session: *mut MigoSession, reported: Network) -> MigoResult {
+    let session = match unsafe { pin_session(session) } {
+        Ok(session) => session,
+        Err(error) => return error,
+    };
+
+    // SessionControl first, then the report: a Host attaching concurrently
+    // either sees this report when content asks, or is the Host this sends
+    // the change to -- never neither.
+    let Ok(state) = session.state.lock() else {
+        return MIGO_ERROR_INTERNAL;
+    };
+    let device = &session.device;
+    let previous = {
+        let mut network = device
+            .network
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        network.replace(reported)
+    };
+    if previous == Some(reported) || !device.network_monitored.load(Ordering::Acquire) {
+        return MIGO_OK;
+    }
+    let deliverable = state.active_attachment.is_some()
+        && state.surface_transition != SurfaceTransition::Detaching;
+    let Some(host) = state
+        .host
+        .as_ref()
+        .filter(|_| deliverable)
+        .map(crate::SessionEngine::id)
+    else {
+        return MIGO_OK;
+    };
+    drop(state);
+    // The report is kept whether or not the Host takes the event: content
+    // reading the type afterwards gets it either way.
+    if let Err(error) = migo_core::send_reliable_command_to_host(
+        host,
+        HostCommand::OnNetworkStatusChange {
+            is_connected: reported.connected,
+            network_type: std::borrow::Cow::Borrowed(NETWORK_TYPES[reported.network_type as usize]),
+        },
+    ) {
+        tracing::warn!("the network change was not delivered: {error}");
+    }
+    MIGO_OK
 }
 
 /// # Safety
@@ -549,7 +581,7 @@ mod tests {
             );
             assert_eq!(
                 network.get_network_type_json().unwrap(),
-                r#"{"networkType":"wifi","isConnected":true}"#
+                r#"{"networkType":"wifi","isConnected":true,"signalStrength":0,"hasSystemProxy":false,"weakNet":false}"#
             );
             network.start_monitoring().expect("a report exists");
             assert_eq!(
@@ -558,7 +590,7 @@ mod tests {
             );
             assert_eq!(
                 network.get_network_type_json().unwrap(),
-                r#"{"networkType":"none","isConnected":false}"#
+                r#"{"networkType":"none","isConnected":false,"signalStrength":0,"hasSystemProxy":false,"weakNet":false}"#
             );
             assert_eq!(
                 unsafe { migo_session_set_network_status(raw, 6, 1) },
@@ -566,7 +598,33 @@ mod tests {
             );
             assert_eq!(
                 network.get_network_type_json().unwrap(),
-                r#"{"networkType":"5g","isConnected":true}"#
+                r#"{"networkType":"5g","isConnected":true,"signalStrength":0,"hasSystemProxy":false,"weakNet":false}"#
+            );
+
+            // The whole record: the proxy, the signal and the host's judgement.
+            let report = MigoNetworkReport {
+                header: migo_capi_abi::VersionedHeader {
+                    struct_size: std::mem::size_of::<MigoNetworkReport>() as u32,
+                    abi_version: migo_capi_abi::MIGO_ABI_VERSION_CURRENT,
+                },
+                network_type: 1,
+                flags: migo_capi_abi::device::MIGO_NETWORK_FLAG_CONNECTED
+                    | migo_capi_abi::device::MIGO_NETWORK_FLAG_SYSTEM_PROXY
+                    | migo_capi_abi::device::MIGO_NETWORK_FLAG_WEAK,
+                signal_strength_dbm: -88,
+                reserved0: 0,
+            };
+            assert_eq!(
+                unsafe { migo_session_report_network(raw, &report) },
+                MIGO_OK
+            );
+            assert_eq!(
+                network.get_network_type_json().unwrap(),
+                r#"{"networkType":"wifi","isConnected":true,"signalStrength":-88,"hasSystemProxy":true,"weakNet":true}"#
+            );
+            assert_eq!(
+                unsafe { migo_session_report_network(raw, std::ptr::null()) },
+                MIGO_ERROR_INVALID_ARGUMENT
             );
         });
     }
