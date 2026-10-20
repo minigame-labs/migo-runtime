@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `tests/qt_host/linux`: a whole App on the Linux Host Kit's Managed shape -- an engine, a window, a game with its
+  network policy and launch options -- built and run by `scripts/dev-run-qt-host.sh` (cargo drives the link, as for
+  the C host; `tools/qt-host-example` runs moc over the Host Kit's QObject headers). It is the host of
+  migo-conformance's Host Kit lane, the first to verify what the Linux platform's own host layer answers: the
+  clipboard, toasts, loading indicators, modals and action sheets pass there.
 - The Linux Host Kit answers the host services a desktop already offers: `migo::qt6-host-services`'s
   `MigoQtBuiltInHostServices` answers the clipboard (`QClipboard`) and the game's toasts, loading indicators,
   modals and action sheets (one indicator at a time, a mask that keeps the player's input from the game, a
