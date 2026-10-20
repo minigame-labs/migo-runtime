@@ -12,10 +12,12 @@ jobs:
   # ── Job 1: Quality gate (same as PR CI, ensures tag is clean) ───────
   quality-gate:
     runs-on: ubuntu-latest
-    # Warm, the gate took 24 minutes on 2026-09-18; cold -- which every release
-    # bump makes it, the version being in Cargo.lock -- it passed 30 inside its
-    # Performance+ builds. The ceiling bounds a hang, not the gate's real work.
-    timeout-minutes: 60
+    # Cold, which it now always is (no Rust cache; see the note where one was):
+    # the first cold run went past an hour (2026-10-20, #570), cancelled in its
+    # last Rust tests with the Performance+ contract behind it. The ceiling is
+    # host-engine-tests', the other job that builds without a cache and already
+    # sets the run's wall clock; it bounds a hang, not the gate's real work.
+    timeout-minutes: 90
 
     steps:
       - name: Checkout
@@ -61,13 +63,19 @@ jobs:
           # target as a failure, not a skip, so this is load-bearing.
           targets: aarch64-apple-ios
 
-      - name: Rust cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        # No cache-on-failure: a run that failed half way saved its half-built
-        # target under the full key, and a full match is never saved again.
-        with:
-          workspaces: engine -> target
-
+      # NO Rust cache, for the reason scripts/lib/v8-materialise.sh's header
+      # states: this job links V8 -- the runtime's tests, the Performance+ engine
+      # contract -- and Swatinem/rust-cache keeps the v8 build script's
+      # fingerprint while pruning the archive that script left under
+      # `target/<profile>/gn_out/obj`. A run whose restore makes the v8 rlib
+      # rebuild then links against nothing: "could not find native static
+      # library `rusty_v8`". From #567, whose Cargo.toml change keyed a new cache
+      # and restored an older one, every run of this job failed that way on
+      # master, and a failed run saves nothing, so none could repair it.
+      #
+      # The cache saved about six minutes of a thirty-minute job (its header);
+      # a gate that fails on master for a reason unrelated to the change under
+      # it is not worth them.
       - name: Check Rust formatting
         working-directory: engine
         run: cargo fmt --all -- --check
@@ -75,12 +83,11 @@ jobs:
       # Several contract gates run cargo with `--locked --offline`: `--locked`
       # proves they cannot rewrite the lockfile, `--offline` proves they cannot
       # reach for a dependency that is not already pinned. Both are worth
-      # keeping, but `--offline` needs a populated registry, and the rust-cache
-      # key includes Cargo.lock -- so the first PR that changes the lockfile
-      # (a crate rename, a dependency bump) gets a cache miss and every one of
-      # those gates fails with "config.json not found in registry", which reads
-      # like a registry outage rather than a cold cache. Fetching once here
-      # populates it without giving the gates network access.
+      # keeping, but `--offline` needs a populated registry, and a fresh runner
+      # has none -- every one of those gates would fail with "config.json not
+      # found in registry", which reads like a registry outage rather than an
+      # empty one. Fetching once here populates it without giving the gates
+      # network access.
       - name: Populate the cargo registry for the offline gates
         working-directory: engine
         run: cargo fetch --locked
