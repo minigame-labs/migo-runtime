@@ -287,5 +287,30 @@ if (packetDir) {
   check(!probeGl.isContextLost() && events.join() === "webglcontextlost,webglcontextrestored", "restoreContext() restored it");
 }
 
+// A video decoder where no decoder is integrated, as on this profile: start() fails as not supported, and the rest
+// answers as a decoder that is not decoding -- no frame, a seek refused, nothing to stop, removed -- without reaching
+// for decoding ops the profile does not offer. A game tidying up after a failed start threw out of remove() on an
+// iPhone.
+{
+  const decoder = migo.createVideoDecoder();
+  const said = (promise) => promise.then((res) => res.errMsg, (err) => err.errMsg);
+  const answers = [];
+  let threw = null;
+  try {
+    answers.push(await said(decoder.start({ source: "movie.mp4" })));
+    answers.push(String(decoder.getFrameData()));
+    answers.push(await said(decoder.seek(100)));
+    answers.push(await said(decoder.stop()));
+    answers.push(await said(decoder.remove()));
+  } catch (error) {
+    threw = error;
+  }
+  check(
+    threw === null &&
+      answers.join() === "start:fail not supported,null,seek:fail the decoder is not decoding,stop:ok,remove:ok",
+    `a decoder with none to decode answers every call (${threw ? threw.message : answers.join()})`,
+  );
+}
+
 log(failures === 0 ? "PASS" : `FAIL: ${failures} check(s) failed`);
 process.exit(failures === 0 ? 0 : 1);
