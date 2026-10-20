@@ -93,9 +93,7 @@
   },
   "gaps": {
     "onAudioInterruptionBegin": {"platforms": ["ohos"], "reason": "the OpenHarmony audio output does not report interruptions yet"},
-    "onAudioInterruptionEnd": {"platforms": ["ohos"], "reason": "the OpenHarmony audio output does not report interruptions yet"},
-    "getScreenBrightness": {"platforms": ["linux"], "reason": "the Qt Host Kit does not read or set a backlight yet (sysfs and logind)"},
-    "setScreenBrightness": {"platforms": ["linux"], "reason": "the Qt Host Kit does not read or set a backlight yet (sysfs and logind)"}
+    "onAudioInterruptionEnd": {"platforms": ["ohos"], "reason": "the OpenHarmony audio output does not report interruptions yet"}
   },
   "unsupported": {
     "createInferenceSession": {"platforms": "*", "reason": "on-device inference needs a model runtime per platform; not offered"},

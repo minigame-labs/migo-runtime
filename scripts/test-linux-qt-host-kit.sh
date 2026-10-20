@@ -45,7 +45,7 @@ require_literal() {
     rg --fixed-strings --quiet "$literal" "$path" || fail "$message"
 }
 
-for command in cmake c++ ninja rg xvfb-run; do
+for command in cmake c++ ninja rg xvfb-run dbus-run-session; do
     require_command "$command"
 done
 
@@ -187,7 +187,9 @@ require_file "$BUILD_DIR/install-consumer/migo-host-kit-install-consumer"
 env QT_QPA_PLATFORM=offscreen "$BUILD_DIR/migo-qt-x11-view-test"
 env QT_QPA_PLATFORM=offscreen "$BUILD_DIR/migo-qt-x11-input-test"
 env QT_QPA_PLATFORM=offscreen "$BUILD_DIR/migo-qt-managed-session-test"
-env QT_QPA_PLATFORM=offscreen "$BUILD_DIR/migo-qt-host-services-test"
+# The host services ask the system over D-Bus; their test answers for logind on
+# a session bus of its own.
+dbus-run-session -- env QT_QPA_PLATFORM=offscreen "$BUILD_DIR/migo-qt-host-services-test"
 # Pin xcb explicitly: developer desktops often export WAYLAND_DISPLAY, while
 # this adapter and its positive-path test intentionally exercise X11 only.
 xvfb-run -a env -u WAYLAND_DISPLAY QT_QPA_PLATFORM=xcb \
@@ -196,7 +198,7 @@ xvfb-run -a env -u WAYLAND_DISPLAY QT_QPA_PLATFORM=xcb \
     "$BUILD_DIR/migo-qt-x11-input-test"
 xvfb-run -a env -u WAYLAND_DISPLAY QT_QPA_PLATFORM=xcb \
     "$BUILD_DIR/migo-qt-managed-session-test"
-xvfb-run -a env -u WAYLAND_DISPLAY QT_QPA_PLATFORM=xcb \
+xvfb-run -a dbus-run-session -- env -u WAYLAND_DISPLAY QT_QPA_PLATFORM=xcb \
     "$BUILD_DIR/migo-qt-host-services-test"
 
 if [[ "$SANITIZE" == "1" ]]; then
@@ -222,7 +224,7 @@ if [[ "$SANITIZE" == "1" ]]; then
         "$BUILD_DIR/sanitize/migo-qt-x11-input-test"
     xvfb-run -a env -u WAYLAND_DISPLAY QT_QPA_PLATFORM=xcb \
         "$BUILD_DIR/sanitize/migo-qt-managed-session-test"
-    xvfb-run -a env -u WAYLAND_DISPLAY QT_QPA_PLATFORM=xcb \
+    xvfb-run -a dbus-run-session -- env -u WAYLAND_DISPLAY QT_QPA_PLATFORM=xcb \
         "$BUILD_DIR/sanitize/migo-qt-host-services-test"
     printf 'Linux Qt Host Kit contract: ASan/UBSan PASS\n'
 fi

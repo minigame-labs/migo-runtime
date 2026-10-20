@@ -1,3 +1,4 @@
+#include "backlight.hpp"
 #include "fake_migo.hpp"
 #include "x11_player.hpp"
 
@@ -8,7 +9,12 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QCursor>
+#include <QDBusConnection>
+#include <QDBusContext>
+#include <QDBusError>
 #include <QDeadlineTimer>
+#include <QDir>
+#include <QFile>
 #include <QDialog>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -25,6 +31,7 @@
 #include <QtTest>
 
 #include <memory>
+#include <optional>
 
 using migo::linux_host::SurfaceHost;
 using migo::linux_host::SurfaceState;
@@ -115,6 +122,45 @@ struct Managed {
         }
     }
 };
+
+/// logind's part in a backlight, on the session bus: what it is asked to set,
+/// written where the kernel shows the backlight, as logind has the kernel do.
+class FakeLogind final : public QObject, protected QDBusContext {
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.freedesktop.login1.Session")
+
+public:
+    explicit FakeLogind(QString sysfs) : sysfs_(std::move(sysfs)) {}
+    QStringList asked;
+    bool refuse = false;
+
+public Q_SLOTS:
+    void SetBrightness(const QString &subsystem, const QString &name, uint brightness) {
+        asked << QStringLiteral("%1 %2 %3").arg(subsystem, name).arg(brightness);
+        if (refuse) {
+            sendErrorReply(QDBusError::AccessDenied, QStringLiteral("not the active session"));
+            return;
+        }
+        QFile file(sysfs_ + QLatin1Char('/') + name + QStringLiteral("/brightness"));
+        if (file.open(QIODevice::WriteOnly)) file.write(QByteArray::number(brightness) + '\n');
+    }
+
+private:
+    QString sysfs_;
+};
+
+/// A backlight where the kernel would show it.
+void makeBacklight(const QString &sysfs, const QString &name, const char *type, int max, int brightness) {
+    QDir().mkpath(sysfs + QLatin1Char('/') + name);
+    const auto write = [&](const char *attribute, const QByteArray &value) {
+        QFile file(sysfs + QLatin1Char('/') + name + QLatin1Char('/') + QLatin1String(attribute));
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write(value + '\n');
+    };
+    write("type", type);
+    write("max_brightness", QByteArray::number(max));
+    write("brightness", QByteArray::number(brightness));
+}
 
 /// An App's own services: the advert, and the clipboard it chose to answer itself.
 class AppServices final : public MigoQtHostServiceProvider {
@@ -685,6 +731,49 @@ private slots:
         QCOMPARE(fake_migo::reported_host_app_id(), std::string("com.example.debugging"));
         QCOMPARE(panel(), nullptr);
         QCOMPARE(fixture.session.close(), MIGO_OK);
+    }
+
+    /// The brightness is the backlight the desktop's own tools pick -- the
+    /// firmware's over a raw one -- read where the kernel shows it and set
+    /// through logind, never to unlit; a screen with none, or logind refusing,
+    /// is said to be.
+    void the_backlight_is_read_from_the_kernel_and_set_through_logind() {
+        QDBusConnection bus = QDBusConnection::sessionBus();
+        QVERIFY2(bus.isConnected(), "no session bus: run this test under dbus-run-session, as scripts/test-linux-qt-host-kit.sh does");
+        QTemporaryDir sysfs;
+        FakeLogind logind(sysfs.path());
+        QVERIFY(bus.registerService(QStringLiteral("org.freedesktop.login1")));
+        QVERIFY(bus.registerObject(QStringLiteral("/org/freedesktop/login1/session/auto"), &logind,
+                                   QDBusConnection::ExportAllSlots));
+        migo::linux_host::qt6::Backlight backlight(sysfs.path(), bus);
+        std::optional<QString> said;
+        const auto set = [&](double value) {
+            said.reset();
+            backlight.setBrightness(value, [&said](const QString &error) { said = error; });
+            return QTest::qWaitFor([&said] { return said.has_value(); });
+        };
+
+        QVERIFY(!backlight.brightness().has_value());
+        QVERIFY(set(0.5));
+        QCOMPARE(*said, QStringLiteral("the screen has no backlight the system controls"));
+
+        makeBacklight(sysfs.path(), QStringLiteral("intel_backlight"), "raw", 1000, 500);
+        makeBacklight(sysfs.path(), QStringLiteral("acpi_video0"), "firmware", 100, 30);
+        QCOMPARE(backlight.brightness(), std::optional<double>(0.3));
+        QVERIFY(set(0.75));
+        QCOMPARE(*said, QString());
+        QCOMPARE(logind.asked.back(), QStringLiteral("backlight acpi_video0 75"));
+        QCOMPARE(backlight.brightness(), std::optional<double>(0.75));
+        QVERIFY(set(0.0));
+        QCOMPARE(logind.asked.back(), QStringLiteral("backlight acpi_video0 1"));
+        QVERIFY(set(4.0));
+        QCOMPARE(logind.asked.back(), QStringLiteral("backlight acpi_video0 100"));
+
+        logind.refuse = true;
+        QVERIFY(set(0.5));
+        QCOMPARE(*said, QStringLiteral("not the active session"));
+        bus.unregisterObject(QStringLiteral("/org/freedesktop/login1/session/auto"));
+        QVERIFY(bus.unregisterService(QStringLiteral("org.freedesktop.login1")));
     }
 
     /// A call is answered once; a failure needs a reason, and one without is

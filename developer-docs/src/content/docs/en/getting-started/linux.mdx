@@ -49,7 +49,7 @@ sudo apt-get install -y \
   cmake ninja-build g++ ripgrep xvfb xauth \
   qt6-base-dev qt6-base-dev-tools qt6-qpa-plugins \
   libx11-dev libxkbcommon-x11-dev libxcb-cursor0 \
-  pkg-config libxcb-xinput-dev libxtst-dev
+  pkg-config libxcb-xinput-dev libxtst-dev dbus
 ```
 
 If the host uses only the toolkit-neutral `migo::linux-surface-host` controller (Wayland), also
@@ -182,9 +182,12 @@ desktop already offers with Qt's own:
   panel over the top 40% of the game -- the frames a second and what content writes to its console from then -- that
   takes no input, so the game stays playable, and reports `MIGO_HOST_APP_INFO_FLAG_DEBUG` to the Session
   (`getAppBaseInfo().enableDebug`); an App that answers the screen service itself turns them with `setDebugAids()`.
-  Screenshot and recording notices and `setVisualEffectOnCapture` are not offered: a Linux desktop tells an app of
-  neither, nor keeps a window out of a screenshot (on X11 any client may read any window). The screen's brightness is
-  not supported yet (the backlight, through sysfs and logind).
+  The brightness (`getScreenBrightness`, `setScreenBrightness`) is the backlight's: read from the one the kernel shows
+  in `/sys/class/backlight` (the firmware's over the platform's over a raw one, as systemd and GNOME pick) and set
+  through logind's `Session.SetBrightness` (the active session's user needs no privileges), 0 its darkest, still lit;
+  a screen with no backlight -- an external monitor, a virtual machine -- is refused. Screenshot and recording notices
+  and `setVisualEffectOnCapture` are not offered: a Linux desktop tells an app of neither, nor keeps a window out of a
+  screenshot (on X11 any client may read any window).
 
 `MigoManagedSession` installs these services. The services the App answers itself (adverts, payments,
 sign-in, ...) come from a `MigoQtHostServiceProvider` given as `Options::appServices`: the services the
