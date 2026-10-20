@@ -43,9 +43,10 @@ function getAccountInfoSync() {
     };
 }
 
-// Callbacks only: the platform does not offer this one as a promise.
+// Answered as every asynchronous call is; the platform offers it no Promise
+// style, so its Promise's rejection is not reported as unhandled.
 function getDeviceBenchmarkInfo(options) {
-    wrapAsync('getDeviceBenchmarkInfo', function () {
+    return wrapAsync('getDeviceBenchmarkInfo', function () {
         const info = op_get_app_info();
         return { benchmarkLevel: info.benchmarkLevel, modelLevel: info.modelLevel };
     }, options);

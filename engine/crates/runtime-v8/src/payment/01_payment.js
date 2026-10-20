@@ -55,7 +55,7 @@ function requestMidasPayment(options) {
     var fail = typeof opts.fail === 'function' ? opts.fail : noop;
     var complete = typeof opts.complete === 'function' ? opts.complete : noop;
 
-    const settlement = createSettlement(opts);
+    const settlement = createSettlement('requestMidasPayment', opts);
     const resolve = settlement.resolve;
     const reject = settlement.reject;
     (function () {
@@ -123,7 +123,7 @@ function requestMidasPaymentGameItem(options) {
     var fail = typeof opts.fail === 'function' ? opts.fail : noop;
     var complete = typeof opts.complete === 'function' ? opts.complete : noop;
 
-    const settlement = createSettlement(opts);
+    const settlement = createSettlement('requestMidasPaymentGameItem', opts);
     const resolve = settlement.resolve;
     const reject = settlement.reject;
     (function () {

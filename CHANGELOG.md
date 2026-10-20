@@ -741,6 +741,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- An API the reference gives no Promise style (`reportScene`, `login`, `restartMiniProgram`, `setDeviceOrientation`,
+  71 in all), called without callbacks, still returns a Promise, as every asynchronous API does here, but its failure
+  is no longer reported as an unhandled rejection. Content written for the reference does not look at what such a call
+  returns, and with no rejection listener an unhandled rejection reaches the game's `onError`: each such call that
+  failed arrived there as an error the platform never raises. Content that waits for the Promise still has the
+  rejection. `scripts/test-promise-style-contract.sh` holds the list to the API spec. `saveFileToDisk`,
+  `getShowSplashAdStatus` and `getDeviceBenchmarkInfo`, which each kept a rule of their own and returned nothing
+  without callbacks, return that Promise too.
 - On iOS (Performance+), a show that carries no options shows the game as it was last entered, as the embedded
   execution has since the previous fix: it reset `getEnterOptionsSync()` and `onShow`'s options to the defaults. Both
   executions now follow one rule.

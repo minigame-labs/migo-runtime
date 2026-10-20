@@ -58,6 +58,7 @@ mod window_resize;
 #[cfg(all(feature = "api-media", feature = "api-connectivity"))]
 mod permission_revocation;
 mod prelude;
+mod promise_style;
 mod published_namespace_isolation;
 #[cfg(feature = "api-connectivity")]
 mod reporting;

@@ -35,11 +35,11 @@ fn the_status_is_the_hosts_last_report_and_unknown_before_one() {
     let after = run(
         &mut runtime,
         &script,
-        "JSON.stringify([__results.getShowSplashAdStatus, migo.getShowSplashAdStatus()])",
+        "JSON.stringify([__results.getShowSplashAdStatus, typeof migo.getShowSplashAdStatus().then])",
     );
     assert_eq!(
         after,
-        r#"[{"ok":true,"res":{"errMsg":"getShowSplashAdStatus:ok","status":"success","code":1}},null]"#,
-        "the callback form only: no promise"
+        r#"[{"ok":true,"res":{"errMsg":"getShowSplashAdStatus:ok","status":"success","code":1}},"function"]"#,
+        "and without callbacks, a Promise, as every asynchronous call returns"
     );
 }
