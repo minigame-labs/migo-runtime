@@ -118,6 +118,8 @@ red "the macOS game view that stops answering the window service" platforms/appl
     'text.replace("builtIn.insert(.window)", "// builtIn.insert(.window)", 1)'
 red "the Swift SDK that stops reporting the system's switches" platforms/apple/Sources/MigoAppleRenderer/MigoEngineSession.swift \
     'text.replace("migo_session_set_system_settings(session", "migo_session_set_system_settings_gone(session", 1)'
+red "the Swift SDK that stops reporting the network" platforms/apple/Sources/MigoAppleRenderer/MigoEngineSession.swift \
+    'text.replace("migo_session_report_network(session", "migo_session_report_network_gone(session", 1)'
 red "a capability product that stops answering its service" platforms/apple/Sources/MigoAppleLocation/MigoLocation.swift \
     'text.replace("builtIn.insert(.location)", "// builtIn.insert(.location)", 1)'
 red "an engine decoder compiled for another system" engine/crates/capi/src/host_kit.rs \
