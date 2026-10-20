@@ -164,6 +164,9 @@ private:
     // is undefined behaviour; on the heap it reads the allocator's fill byte.
     QTimer release_timer_;
     QTimer metrics_update_timer_;
+    /// The attach a show schedules: it runs once Qt has mapped the native
+    /// window and applied its geometry, which it does after the show event.
+    QTimer attach_timer_;
     QElapsedTimer release_elapsed_;
     MigoResult last_error_ = MIGO_OK;
     std::uint64_t owned_generation_ = 0;
