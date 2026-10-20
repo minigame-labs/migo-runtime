@@ -152,11 +152,12 @@ MigoSession  > SurfaceHost ──> MigoQtX11SurfaceView
 
 - **剪贴板**（`setClipboardData`、`getClipboardData`）：`QClipboard`。
 - **交互**（`showToast`、`hideToast`、`showLoading`、`hideLoading`、`showModal`、`showActionSheet`）：
-  toast 与 loading 是叠在游戏上方的指示窗，同一时间只显示一个，`hideToast` 只收 toast、
+  toast 与 loading 是叠在游戏上方、不接收输入（点在上面就是点游戏）的指示窗，同一时间只显示一个，`hideToast` 只收 toast、
   `hideLoading` 只收 loading，带 `mask` 时游戏收不到玩家输入；modal 是窗口模态对话框，
   `editable` 时 `content` 是输入框的初始文字；action sheet 是游戏中央弹出的菜单，关闭菜单即以
   `cancel` 失败。按钮颜色不应用：桌面的对话框是桌面的。
 - **窗口**（`setWindowSize`、`setCursor`、`requestPointerLock`、`onWindowStateChange`）：`setWindowSize` 是游戏的像素尺寸，窗口按视图需要的差额伸缩（全屏时拒绝）；窗口状态变化（最小化、最大化——全屏也算——、复原）逐次上报；`setCursor` 设置游戏上方的光标，CSS 关键字或图片加热点。指针锁只在玩家在游戏上时授予——视图持有键盘焦点、光标在视图可见部分之上，否则拒绝并上报：锁定期间光标隐藏、鼠标被抓取，XInput 2 的原始位移（经过指针加速）从光标原处移动内容的指针，可越过视图边缘，点击落在内容的指针处；Esc 释放（这次 Esc 及其抬起不交给游戏），视图失去焦点、游戏结束也释放，释放后光标回到原处。
+- **屏幕**（`setDeviceOrientation`、`onDeviceOrientationChange`、`setEnableDebug`）：桌面的屏幕不会转，转的是窗口，所以屏幕方向就是游戏的形状——视图高大于宽为 portrait，否则 landscape，视图每次从一种形状跨到另一种时上报一次；`setDeviceOrientation` 把窗口转成所要的形状（视图宽高互换；全屏时、屏幕放不下转后的窗口时拒绝）。`setEnableDebug` 打开或关闭调试辅助：`MigoManagedSession` 在游戏上方 40% 处显示一个面板——每秒帧数和此后内容写到控制台的内容——不接收任何输入，游戏照常可玩，并把 `MIGO_HOST_APP_INFO_FLAG_DEBUG` 报给 Session（`getAppBaseInfo().enableDebug`）；自己回答屏幕服务的 App 用 `setDebugAids()` 开关。截屏、录屏通知与 `setVisualEffectOnCapture` 不提供：Linux 桌面不告诉应用有人截屏或录屏，也无法把窗口排除在截屏之外（X11 上任何客户端都能读任何窗口）；屏幕亮度暂不支持（背光经 sysfs 与 logind，尚未实现）。
 
 `MigoManagedSession` 自动装上这些服务。App 自己回答的服务（广告、支付、登录……）用构造参数
 `Options::appServices` 提供一个 `MigoQtHostServiceProvider`：App 声明的服务归 App，包括内建

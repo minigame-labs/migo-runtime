@@ -1,16 +1,165 @@
 #include <migo/linux/qt6/managed_session.hpp>
 
+#include "overlay.hpp"
+
+#include <QElapsedTimer>
+#include <QEvent>
+#include <QFontDatabase>
 #include <QGuiApplication>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLabel>
 #include <QMetaObject>
+#include <QPlainTextEdit>
 #include <QPointer>
 #include <QThread>
+#include <QTimer>
+#include <QVBoxLayout>
+#include <QWidget>
 
 #include <atomic>
+#include <cmath>
+#include <optional>
 #include <utility>
 
 namespace migo::linux_host::qt6 {
+
+namespace {
+
+/// The debugging panel, shown while the debugging aids are on: the frames a
+/// second the view delivered and the latest lines content wrote to its console,
+/// read from the Session twice a second however fast content writes, over the
+/// top of the game (`showOverTheGame`), taking no input, so the game stays
+/// playable under it; it follows the newest line.
+class DebugPanel final : public QWidget {
+public:
+    /// The panel keeps the latest lines, as the Session's own buffer keeps its latest.
+    static constexpr int kLineLimit = 200;
+
+    DebugPanel(MigoSession *session, MigoQtX11SurfaceView &view)
+        : QWidget(view.window(), Qt::ToolTip | Qt::FramelessWindowHint | Qt::WindowDoesNotAcceptFocus),
+          session_(session),
+          view_(&view),
+          header_(new QLabel(this)),
+          lines_(new QPlainTextEdit(this)) {
+        setObjectName(QStringLiteral("migoDebugPanel"));
+        setStyleSheet(QStringLiteral(
+            "#migoDebugPanel { background: rgba(20, 20, 20, 200); }"
+            " QLabel { color: white; font-weight: 600; }"
+            " QPlainTextEdit { background: transparent; border: none; color: #e0e0e0; }"));
+        const QFont fixed = QFontDatabase::systemFont(QFontDatabase::FixedFont);
+        header_->setFont(fixed);
+        lines_->setFont(fixed);
+        lines_->setReadOnly(true);
+        lines_->setMaximumBlockCount(kLineLimit);
+        lines_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        lines_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        auto *layout = new QVBoxLayout(this);
+        layout->setContentsMargins(6, 4, 6, 4);
+        layout->setSpacing(2);
+        layout->addWidget(header_);
+        layout->addWidget(lines_, 1);
+        view.installEventFilter(this);
+        view.window()->installEventFilter(this);
+        clock_.start();
+        connect(&timer_, &QTimer::timeout, this, [this] { refresh(); });
+        timer_.start(500);
+        refresh();
+        place();
+        showOverTheGame(*this);
+    }
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override {
+        if (event->type() == QEvent::Move || event->type() == QEvent::Resize) place();
+        return QWidget::eventFilter(watched, event);
+    }
+
+private:
+    /// Over the top 40% of the game, its full width.
+    void place() {
+        if (view_.isNull()) return;
+        setGeometry(QRect(view_->mapToGlobal(QPoint(0, 0)),
+                          QSize(view_->width(), qMax(1, qRound(view_->height() * 0.4)))));
+    }
+
+    void refresh() {
+        readConsole();
+        if (view_.isNull()) return;
+        // The rate is the change in frames delivered since the last sample.
+        const std::uint64_t delivered = view_->framesDelivered();
+        const qint64 now = clock_.nsecsElapsed();
+        if (sampled_at_ >= 0 && now > sampled_at_ && delivered >= sampled_frames_) {
+            frames_per_second_ = static_cast<double>(delivered - sampled_frames_) * 1e9 /
+                                 static_cast<double>(now - sampled_at_);
+        }
+        sampled_frames_ = delivered;
+        sampled_at_ = now;
+        header_->setText(frames_per_second_.has_value()
+                             ? QString::asprintf("%.1f frames/s", *frames_per_second_)
+                             : QStringLiteral("-- frames/s"));
+    }
+
+    /// What content wrote since the last read. New lines can arrive between
+    /// the measure and the copy, so a copy refused as too small is measured again.
+    void readConsole() {
+        std::size_t length = 0;
+        MigoResult result = migo_session_copy_console_logs(session_, cursor_, nullptr, 0, &length);
+        for (int attempt = 0; attempt < 4 && result == MIGO_ERROR_INVALID_ARGUMENT; ++attempt) {
+            buffer_.resize(static_cast<qsizetype>(length + 1));
+            result = migo_session_copy_console_logs(session_, cursor_, buffer_.data(),
+                                                    static_cast<std::size_t>(buffer_.size()), &length);
+        }
+        if (result != MIGO_OK) return;
+        const QJsonObject read =
+            QJsonDocument::fromJson(QByteArray::fromRawData(buffer_.constData(), static_cast<qsizetype>(length)))
+                .object();
+        const QJsonArray logs = read.value(QStringLiteral("logs")).toArray();
+        for (const QJsonValue &value : logs) {
+            const QJsonObject log = value.toObject();
+            const int level = log.value(QStringLiteral("l")).toInt(1);
+            QString line = QStringLiteral("%1 %2").arg(mark(level), log.value(QStringLiteral("m")).toString());
+            line = line.toHtmlEscaped().replace(QLatin1Char('\n'), QStringLiteral("<br>"));
+            lines_->appendHtml(QStringLiteral("<span style=\"color:%1\">%2</span>").arg(colour(level), line));
+        }
+        if (!logs.isEmpty()) lines_->ensureCursorVisible();
+        cursor_ = static_cast<std::uint64_t>(
+            read.value(QStringLiteral("cursor")).toInteger(static_cast<qint64>(cursor_)));
+    }
+
+    static QString mark(int level) {
+        switch (level) {
+            case 3: return QStringLiteral("E");
+            case 2: return QStringLiteral("W");
+            case 0: return QStringLiteral("D");
+            default: return QStringLiteral("I");
+        }
+    }
+
+    static QString colour(int level) {
+        switch (level) {
+            case 3: return QStringLiteral("#f0544f");
+            case 2: return QStringLiteral("#ffb84d");
+            case 0: return QStringLiteral("#9e9e9e");
+            default: return QStringLiteral("#e0e0e0");
+        }
+    }
+
+    MigoSession *const session_;
+    QPointer<MigoQtX11SurfaceView> view_;
+    QLabel *const header_;
+    QPlainTextEdit *const lines_;
+    QTimer timer_;
+    QElapsedTimer clock_;
+    QByteArray buffer_;
+    std::uint64_t cursor_ = 0;
+    std::uint64_t sampled_frames_ = 0;
+    qint64 sampled_at_ = -1;
+    std::optional<double> frames_per_second_;
+};
+
+}  // namespace
 
 /// Everything the wrapper owns, kept out of the header so the public type
 /// exposes no engine handles a caller could retire behind its back.
@@ -30,6 +179,10 @@ public:
     MigoQtHostServiceProvider *app_services = nullptr;
     std::uint64_t app_mask = 0;
     std::unique_ptr<MigoQtBuiltInHostServices> built_in;
+    /// Who the App is, as it was reported; reported again with the debugging aids.
+    QByteArray app_id;
+    bool debug_aids = false;
+    QPointer<DebugPanel> debug_panel;
     bool closing = false;
     bool closed = false;
     /// Whether the view has attached: the Session has its host from then on.
@@ -80,6 +233,28 @@ public:
 
     void finishClose();
     MigoResult loadNow(const QByteArray &content_id, const QByteArray &entry);
+
+    /// What the App says about itself: who it is, and whether its debugging aids are on.
+    MigoResult reportAppInfo() {
+        MigoHostAppInfo app_info{};
+        app_info.struct_size = static_cast<std::uint32_t>(sizeof(app_info));
+        app_info.abi_version = MIGO_ABI_VERSION_1;
+        app_info.app_id_utf8 = app_id.isEmpty() ? nullptr : app_id.constData();
+        // The rest is the engine's: the system's language, no benchmark score.
+        app_info.benchmark_level = -1;
+        app_info.flags = debug_aids ? MIGO_HOST_APP_INFO_FLAG_DEBUG : 0U;
+        return migo_session_set_host_app_info(session, &app_info);
+    }
+
+    /// The panel over the top of the game, from the moment the aids are turned
+    /// on: what content writes from then is what it shows.
+    void showDebugPanel(bool on) {
+        if (on && debug_panel.isNull() && !view.isNull()) {
+            debug_panel = new DebugPanel(session, *view);
+        } else if (!on && !debug_panel.isNull()) {
+            delete debug_panel.data();
+        }
+    }
 };
 
 MigoResult MigoManagedSession::Impl::loadNow(const QByteArray &content_id, const QByteArray &entry) {
@@ -170,9 +345,10 @@ void MIGO_CALL MigoManagedSession::Impl::onHostServiceCall(void *user_data, Migo
 
 void MigoManagedSession::Impl::finishClose() {
     // No answer may reach the Session once it is destroyed, and what the
-    // built-in services show goes with the game.
+    // built-in services show goes with the game, as does the panel reading it.
     if (channel != nullptr) channel->close();
     built_in.reset();
+    showDebugPanel(false);
     if (session != nullptr) {
         // Refuses while an attachment is live, a transition is running, or any
         // release is pending, so reaching here means all three are settled.
@@ -247,17 +423,8 @@ MigoManagedSession::MigoManagedSession(MigoEngine &engine, QWidget &parent, cons
     MigoResult installed = migo_session_set_host_callbacks(impl_->session, &callbacks);
     // Who the host is, as content reads it. A Linux App has no identifier the
     // system hands out; it names itself, and its desktop file name is that name.
-    const QByteArray app_id =
-        (options.appId.isEmpty() ? QGuiApplication::desktopFileName() : options.appId).toUtf8();
-    if (installed == MIGO_OK && !app_id.isEmpty()) {
-        MigoHostAppInfo app_info{};
-        app_info.struct_size = static_cast<std::uint32_t>(sizeof(app_info));
-        app_info.abi_version = MIGO_ABI_VERSION_1;
-        app_info.app_id_utf8 = app_id.constData();
-        // The rest is the engine's: the system's language, no benchmark score.
-        app_info.benchmark_level = -1;
-        installed = migo_session_set_host_app_info(impl_->session, &app_info);
-    }
+    impl_->app_id = (options.appId.isEmpty() ? QGuiApplication::desktopFileName() : options.appId).toUtf8();
+    if (installed == MIGO_OK && !impl_->app_id.isEmpty()) installed = impl_->reportAppInfo();
     if (installed != MIGO_OK) {
         impl_->last_error = installed;
         impl_->channel->close();
@@ -270,6 +437,8 @@ MigoManagedSession::MigoManagedSession(MigoEngine &engine, QWidget &parent, cons
     }
     impl_->accepting_tasks.store(true, std::memory_order_release);
 
+    connect(impl_->built_in.get(), &MigoQtBuiltInHostServices::debugAidsRequested, this,
+            [this](bool on) { (void)setDebugAids(on); });
     connect(impl_->view.data(), &MigoQtX11SurfaceView::surfaceError, this,
             &MigoManagedSession::migoError);
     connect(impl_->view.data(), &MigoQtX11SurfaceView::inputRejected, this,
@@ -311,6 +480,20 @@ MigoResult MigoManagedSession::lastError() const noexcept { return impl_->last_e
 MigoQtX11SurfaceView *MigoManagedSession::view() const noexcept { return impl_->view.data(); }
 
 bool MigoManagedSession::isClosed() const noexcept { return impl_->closed; }
+
+bool MigoManagedSession::debugAids() const noexcept { return impl_->debug_aids; }
+
+MigoResult MigoManagedSession::setDebugAids(bool on) {
+    if (QThread::currentThread() != impl_->gui_thread) return MIGO_ERROR_WRONG_THREAD;
+    if (impl_->session == nullptr || impl_->closing) return MIGO_ERROR_INVALID_STATE;
+    if (on == impl_->debug_aids) return MIGO_OK;
+    impl_->debug_aids = on;
+    const MigoResult reported = impl_->reportAppInfo();
+    if (reported != MIGO_OK) impl_->last_error = reported;
+    impl_->showDebugPanel(on);
+    Q_EMIT debugAidsChanged(on);
+    return reported;
+}
 
 MigoResult MigoManagedSession::loadContent(const QString &content_id, const QString &entry) {
     if (QThread::currentThread() != impl_->gui_thread) return MIGO_ERROR_WRONG_THREAD;

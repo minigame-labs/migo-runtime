@@ -74,6 +74,7 @@ set_target_properties(migo-qt-host-services-test PROPERTIES AUTOMOC ON)
 target_link_libraries(migo-qt-host-services-test PRIVATE
     migo::qt6-managed-session
     migo_host_kit_fake_capi
+    migo_host_kit_x11_player
     Qt6::Test
 )
 

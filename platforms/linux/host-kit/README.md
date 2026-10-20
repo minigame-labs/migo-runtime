@@ -16,9 +16,12 @@ What is claimed:
   Session's channel is closed; the provider interface an App answers its own
   services through; and `MigoQtBuiltInHostServices`, which answers with Qt's own
   what a desktop already offers -- the clipboard; the game's toasts, loading
-  indicators, modals and action sheets; and the window's size, state, cursor and
-  pointer lock (the cursor hidden, XInput 2's raw motion moving content's pointer,
-  Esc releasing it).
+  indicators, modals and action sheets, standing over the game and taking none of
+  its input; the window's size, state, cursor and pointer lock (the cursor hidden,
+  XInput 2's raw motion moving content's pointer, Esc releasing it); and the
+  screen's orientation -- the game's shape, which `setDeviceOrientation` turns the
+  window to -- and `setEnableDebug`, which `MigoManagedSession` answers with a
+  panel of the frames a second and content's console over the game.
 - `migo::qt6-managed-session` is the Managed ownership shape: `MigoManagedSession`
   owns the Session, its callback table and the view, and installs the built-in
   services. Its `Options` carry the network policy, the launch options and the

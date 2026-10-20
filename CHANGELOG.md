@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The Linux Host Kit answers the screen service: the screen's orientation is the game's shape, reported each time its
+  view crosses from one to the other, and `setDeviceOrientation` turns the window to it (refused while full screen, or
+  when the screen cannot hold the window turned); `setEnableDebug` is `MigoQtBuiltInHostServices::debugAidsRequested`,
+  which `MigoManagedSession` answers (`debugAids()`, `setDebugAids()`, `debugAidsChanged`) by reporting
+  `MIGO_HOST_APP_INFO_FLAG_DEBUG` and showing a panel over the game of the frames a second the view delivers
+  (`MigoQtX11SurfaceView::framesDelivered()`) and content's console. Screenshot and recording notices and
+  `setVisualEffectOnCapture` are recorded as not offered on Linux, which offers apps none of them; the backlight is a
+  recorded gap.
 - The Linux Host Kit holds a pointer lock: `MigoQtX11SurfaceView::lockPointer()` / `unlockPointer()` /
   `isPointerLocked()` and `pointerLockChanged`, which the window service's `requestPointerLock` / `exitPointerLock`
   now answer with. It is taken only with the player at the game -- the view holding the keyboard, the cursor over the
@@ -789,6 +797,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- The Linux Host Kit's toasts and loading indicators took the clicks that landed on them: Qt (6.4, xcb) gives an X
+  window created with `Qt::WindowTransparentForInput` no empty input shape. What stands over the game now takes none
+  of its input.
 - The Linux Host Kit's view attaches once Qt has mapped its window at the widget's size. Qt sends a widget its show
   event before it maps the native window and applies its geometry, and the engine binds the window as the X server
   has it: a view a layout placed -- every Managed Session's -- was bound while its window was still unmapped at a

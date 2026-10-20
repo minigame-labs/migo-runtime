@@ -933,8 +933,10 @@ void MigoQtX11SurfaceView::notifyFrameBoundary() {
     // engine treats it as a monotonic frame time, not as a display timestamp.
     const auto now = std::chrono::steady_clock::now().time_since_epoch();
     const auto nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
-    recordInputResult(
-        migo_session_notify_vsync(surface_host_.session(), static_cast<std::int64_t>(nanos)));
+    const MigoResult result =
+        migo_session_notify_vsync(surface_host_.session(), static_cast<std::int64_t>(nanos));
+    if (result == MIGO_OK) ++frames_delivered_;
+    recordInputResult(result);
 }
 
 void MigoQtX11SurfaceView::paintEvent(QPaintEvent *event) {

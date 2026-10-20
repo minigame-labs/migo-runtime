@@ -1,5 +1,7 @@
 #include <migo/linux/qt6/host_services.hpp>
 
+#include "overlay.hpp"
+
 #include <QAction>
 #include <QClipboard>
 #include <QCursor>
@@ -18,6 +20,7 @@
 #include <QPixmap>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QScreen>
 #include <QStyle>
 #include <QTimer>
 #include <QVBoxLayout>
@@ -197,12 +200,10 @@ private:
                        std::optional<double> duration_ms) {
         hideIndicator();
         if (surface_.isNull()) return;
-        // A window of its own, over the game: the game is drawn in a native
-        // window that a sibling widget cannot stand above.
+        // Over the game, taking none of its input: a mask keeps that from the
+        // game, not the indicator.
         auto *panel = new QWidget(surface_->window(),
                                   Qt::ToolTip | Qt::FramelessWindowHint | Qt::WindowDoesNotAcceptFocus);
-        panel->setAttribute(Qt::WA_ShowWithoutActivating);
-        panel->setAttribute(Qt::WA_TransparentForMouseEvents);
         panel->setObjectName(QStringLiteral("migoIndicator"));
         panel->setStyleSheet(QStringLiteral(
             "#migoIndicator { background: rgba(32, 32, 32, 230); border-radius: 8px; }"
@@ -237,7 +238,7 @@ private:
         masked_ = mask;
         panel->adjustSize();
         placeIndicator();
-        panel->show();
+        showOverTheGame(*panel);
         if (duration_ms.has_value()) expiry_.start(static_cast<int>(qMax(0.0, *duration_ms)));
     }
 
@@ -358,6 +359,12 @@ private:
 
 namespace {
 
+/// The screen's orientation on a desktop: the game's shape. Square is
+/// landscape, as a phone's screen is never square.
+QString orientationOf(QSize game) {
+    return game.height() > game.width() ? QStringLiteral("portrait") : QStringLiteral("landscape");
+}
+
 /// A window's state in the platform's words: full screen is maximized too.
 QString stateOf(const QWidget &window) {
     if (window.isMinimized()) return QStringLiteral("minimize");
@@ -409,8 +416,14 @@ std::optional<Qt::CursorShape> cursorShape(const QString &keyword) {
 class MigoQtBuiltInHostServices::WindowService final : public QObject {
 public:
     WindowService(MigoQtX11SurfaceView &view, std::shared_ptr<MigoQtHostServiceChannel> channel)
-        : view_(&view), channel_(std::move(channel)), reported_(stateOf(*view.window())) {
+        : view_(&view),
+          channel_(std::move(channel)),
+          reported_(stateOf(*view.window())),
+          reported_orientation_(orientationOf(view.size())) {
         view.window()->installEventFilter(this);
+        // The game turns when its view does, whatever turned it: the window
+        // dragged to the other shape, the App's layout, or setDeviceOrientation.
+        view.installEventFilter(this);
         // A lock taken, or released -- by content, by the player's Esc, by the
         // view losing the keyboard -- is reported as it happens.
         connect(&view, &MigoQtX11SurfaceView::pointerLockChanged, this, [this](bool locked) {
@@ -449,8 +462,48 @@ public:
         }
     }
 
+    /// setDeviceOrientation: the game's window turned to the shape asked for,
+    /// the view's width and height exchanged when it is the other shape.
+    /// Content hears the turn as the view turns.
+    void setOrientation(const QJsonObject &request, MigoQtHostServiceReply reply) {
+        const QString value = request.value(QStringLiteral("value")).toString();
+        if (value != QLatin1String("portrait") && value != QLatin1String("landscape")) {
+            (void)reply.fail(QStringLiteral("value must be portrait or landscape"));
+            return;
+        }
+        if (view_.isNull()) {
+            (void)reply.fail(QStringLiteral("there is no window to turn"));
+            return;
+        }
+        QWidget *window = view_->window();
+        if (window->isFullScreen()) {
+            (void)reply.fail(QStringLiteral("the window is full screen"));
+            return;
+        }
+        const QSize game = view_->size();
+        if (orientationOf(game) == value) {
+            (void)reply.succeed();
+            return;
+        }
+        const QSize turned = window->size() - game + game.transposed();
+        // The window's frame, which the window manager draws, comes with it.
+        const QSize frame = window->frameGeometry().size() - window->size();
+        if (const QScreen *screen = window->screen(); screen != nullptr) {
+            const QSize room = screen->availableGeometry().size();
+            if (turned.width() + frame.width() > room.width() || turned.height() + frame.height() > room.height()) {
+                (void)reply.fail(QStringLiteral("the screen cannot hold the window turned"));
+                return;
+            }
+        }
+        window->resize(turned);
+        (void)reply.succeed();
+    }
+
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override {
+        if (event->type() == QEvent::Resize && !view_.isNull() && watched == view_.data()) {
+            reportOrientation();
+        }
         if (event->type() == QEvent::WindowStateChange && !view_.isNull() && watched == view_->window()) {
             const QString state = stateOf(*view_->window());
             if (state != reported_) {
@@ -510,9 +563,23 @@ private:
         view_->setCursor(QCursor(image, x, y));
     }
 
+    /// Content hears the game turn when its view crosses from one shape to
+    /// the other, as a turn is heard on a phone -- not on every resize.
+    void reportOrientation() {
+        const QString orientation = orientationOf(view_->size());
+        if (orientation == reported_orientation_) return;
+        reported_orientation_ = orientation;
+        (void)channel_->post(MIGO_HOST_SERVICE_SCREEN, MIGO_SCREEN_EVENT_DEVICE_ORIENTATION_CHANGE,
+                             {{QStringLiteral("value"), orientation}});
+    }
+
     QPointer<MigoQtX11SurfaceView> view_;
     std::shared_ptr<MigoQtHostServiceChannel> channel_;
+    /// The window's state last reported, or the one the game started in.
     QString reported_;
+    /// The screen's orientation last reported -- the game's shape -- or the one
+    /// the game started in.
+    QString reported_orientation_;
 };
 
 // ---- the built-in services --------------------------------------------------------------------
@@ -532,6 +599,7 @@ std::uint64_t MigoQtBuiltInHostServices::services() const noexcept {
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_CLIPBOARD);
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_INTERACTION);
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_WINDOW);
+    builtIn |= hostServiceBit(MIGO_HOST_SERVICE_SCREEN);
     return builtIn;
 }
 
@@ -543,6 +611,18 @@ void MigoQtBuiltInHostServices::call(MigoHostService service, std::uint32_t meth
             return;
         case MIGO_HOST_SERVICE_WINDOW:
             window_->call(method, request, std::move(reply));
+            return;
+        case MIGO_HOST_SERVICE_SCREEN:
+            if (method == MIGO_SCREEN_SET_DEVICE_ORIENTATION) {
+                window_->setOrientation(request, std::move(reply));
+            } else if (method == MIGO_SCREEN_SET_ENABLE_DEBUG) {
+                Q_EMIT debugAidsRequested(request.value(QStringLiteral("enableDebug")).toBool());
+            } else {
+                // A screenshot, a recording, keeping the window out of them, the
+                // backlight: see the class's comment. The observers are commands,
+                // and a command's failure reaches no one.
+                (void)reply.fail(QStringLiteral("not supported"));
+            }
             return;
         case MIGO_HOST_SERVICE_CLIPBOARD:
             if (method == MIGO_CLIPBOARD_SET_CLIPBOARD_DATA) {

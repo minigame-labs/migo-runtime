@@ -92,6 +92,8 @@ if(MIGO_LINUX_HOST_KIT_BUILD_QT6_X11)
     add_library(migo_qt6_host_services STATIC
         include/migo/linux/qt6/host_services.hpp
         src/qt6/host_services.cpp
+        # Internal, not installed: how what stands over the game is shown.
+        src/qt6/overlay.hpp
     )
     add_library(migo::qt6-host-services ALIAS migo_qt6_host_services)
     set_target_properties(migo_qt6_host_services PROPERTIES

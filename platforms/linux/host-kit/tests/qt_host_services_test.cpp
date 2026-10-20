@@ -1,4 +1,5 @@
 #include "fake_migo.hpp"
+#include "x11_player.hpp"
 
 #include <migo/linux/qt6/host_services.hpp>
 #include <migo/linux/qt6/managed_session.hpp>
@@ -16,7 +17,9 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QPixmap>
+#include <QPlainTextEdit>
 #include <QPushButton>
+#include <QScreen>
 #include <QTemporaryDir>
 #include <QVBoxLayout>
 #include <QtTest>
@@ -161,6 +164,17 @@ struct AttachedServices {
     }
 };
 
+/// Whether the game was pressed at `at`.
+bool pressAt(QPointF at) {
+    for (const fake_migo::PointerRecord &pointer : fake_migo::pointers()) {
+        if (pointer.event_type == MIGO_POINTER_EVENT_DOWN && pointer.x == static_cast<float>(at.x()) &&
+            pointer.y == static_cast<float>(at.y())) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void press(QWidget &view) {
     const QPointF at(10.0, 10.0);
     QMouseEvent event(QEvent::MouseButtonPress, at, at, view.mapToGlobal(at), Qt::LeftButton, Qt::LeftButton,
@@ -187,7 +201,8 @@ private slots:
         QVERIFY(installed.on_host_service_call != nullptr);
         QCOMPARE(installed.host_services, hostServiceBit(MIGO_HOST_SERVICE_INTERACTION) |
                                               hostServiceBit(MIGO_HOST_SERVICE_CLIPBOARD) |
-                                              hostServiceBit(MIGO_HOST_SERVICE_WINDOW));
+                                              hostServiceBit(MIGO_HOST_SERVICE_WINDOW) |
+                                              hostServiceBit(MIGO_HOST_SERVICE_SCREEN));
         QCOMPARE(fake_migo::created_network_policy(), std::string());
         QCOMPARE(fake_migo::created_launch_options(), std::string());
 
@@ -242,7 +257,8 @@ private slots:
         QVERIFY(managed.isValid());
         QCOMPARE(fake_migo::installed_callbacks().host_services,
                  hostServiceBit(MIGO_HOST_SERVICE_AD) | hostServiceBit(MIGO_HOST_SERVICE_CLIPBOARD) |
-                     hostServiceBit(MIGO_HOST_SERVICE_INTERACTION) | hostServiceBit(MIGO_HOST_SERVICE_WINDOW));
+                     hostServiceBit(MIGO_HOST_SERVICE_INTERACTION) | hostServiceBit(MIGO_HOST_SERVICE_WINDOW) |
+                     hostServiceBit(MIGO_HOST_SERVICE_SCREEN));
 
         fake_migo::deliver_host_service_call_from_engine_thread(MIGO_HOST_SERVICE_CLIPBOARD,
                                                                 MIGO_CLIPBOARD_GET_CLIPBOARD_DATA, 3, "{}");
@@ -398,6 +414,22 @@ private slots:
         QCOMPARE(fake_migo::pointers().size(), std::size_t{1});
     }
 
+    /// An indicator stands over the game and takes none of the player's
+    /// input: a click on it is the game's.
+    void an_indicator_takes_none_of_the_players_input() {
+        if (!require_xcb("xcb-only test", __FILE__, __LINE__)) return;
+        AttachedServices fixture;
+        QTRY_COMPARE(fake_migo::calls().attach, 1);
+        fixture.command(MIGO_HOST_SERVICE_INTERACTION, MIGO_INTERACTION_SHOW_TOAST,
+                        {{QStringLiteral("title"), QStringLiteral("Saved")}, {QStringLiteral("duration"), 10000}});
+        QCOMPARE(fixture.services.indicatorTitle(), QStringLiteral("Saved"));
+        x11_player::Hands hands;
+        const QPoint centre = fixture.view.rect().center();
+        QCursor::setPos(fixture.view.mapToGlobal(centre));
+        hands.click(1);
+        QTRY_VERIFY(pressAt(QPointF(centre)));
+    }
+
     /// The cursor over the game is the one content asks for: a CSS keyword, the
     /// system's for "default", or an image with its hotspot clamped into it.
     void the_cursor_is_the_one_content_asks_for() {
@@ -535,6 +567,123 @@ private slots:
         command(MIGO_WINDOW_EXIT_POINTER_LOCK);
         QTRY_VERIFY(!view.isPointerLocked());
         QCOMPARE(locks(), (std::vector<std::string>{R"({"locked":true})", R"({"locked":false})"}));
+        QCOMPARE(fixture.session.close(), MIGO_OK);
+    }
+
+    /// The screen's orientation is the game's shape: each crossing of the view
+    /// from one shape to the other is reported once, and setDeviceOrientation
+    /// turns the window -- refused for a value that is neither shape, while the
+    /// window is full screen, and when the screen cannot hold it turned.
+    void the_game_turns_with_its_window() {
+        Managed fixture;
+        MigoQtX11SurfaceView &view = *fixture.session.view();
+        auto *layout = new QVBoxLayout(&fixture.container);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->addWidget(&view);
+        fixture.container.resize(320, 200);
+        fixture.container.show();
+        QTRY_COMPARE(view.size(), QSize(320, 200));
+        const auto turns = [] {
+            std::vector<std::string> said;
+            for (const auto &event : fake_migo::host_service_events()) {
+                if (event.service == MIGO_HOST_SERVICE_SCREEN &&
+                    event.event == MIGO_SCREEN_EVENT_DEVICE_ORIENTATION_CHANGE) {
+                    said.push_back(event.payload);
+                }
+            }
+            return said;
+        };
+        const auto turn = [](std::uint64_t call_id, const char *value) {
+            fake_migo::deliver_host_service_call_from_engine_thread(
+                MIGO_HOST_SERVICE_SCREEN, MIGO_SCREEN_SET_DEVICE_ORIENTATION, call_id, json({{"value", value}}));
+            QTRY_VERIFY(answerTo(call_id) != nullptr);
+        };
+        const std::size_t before = turns().size();
+
+        turn(70, "portrait");
+        QCOMPARE(answerTo(70)->status, MIGO_HOST_SERVICE_STATUS_OK);
+        QTRY_COMPARE(view.size(), QSize(200, 320));
+        QTRY_COMPARE(turns().size(), before + 1);
+        QCOMPARE(turns().back(), std::string(R"({"value":"portrait"})"));
+        turn(71, "portrait");
+        QCOMPARE(answerTo(71)->status, MIGO_HOST_SERVICE_STATUS_OK);
+        QCOMPARE(view.size(), QSize(200, 320));
+        turn(72, "upside-down");
+        QCOMPARE(answerTo(72)->message, std::string("value must be portrait or landscape"));
+
+        // Wider than the screen is tall: turned, it would not fit.
+        const QSize room = fixture.container.screen()->availableGeometry().size();
+        fixture.container.resize(room.height() + 50, 100);
+        QTRY_COMPARE(view.size(), QSize(room.height() + 50, 100));
+        QTRY_COMPARE(turns().size(), before + 2);
+        QCOMPARE(turns().back(), std::string(R"({"value":"landscape"})"));
+        turn(73, "portrait");
+        QCOMPARE(answerTo(73)->message, std::string("the screen cannot hold the window turned"));
+
+        fixture.container.showFullScreen();
+        turn(74, "portrait");
+        QCOMPARE(answerTo(74)->message, std::string("the window is full screen"));
+        fixture.container.hide();
+        QCOMPARE(fixture.session.close(), MIGO_OK);
+    }
+
+    /// setEnableDebug turns the debugging aids: the Session is told -- with who
+    /// the App is, as before -- and a panel over the top of the game shows what
+    /// content writes to its console, taking none of the player's input.
+    void the_debugging_aids_show_the_console_and_tell_the_session() {
+        MigoManagedSession::Options options;
+        options.appId = QStringLiteral("com.example.debugging");
+        Managed fixture(options);
+        MigoQtX11SurfaceView &view = *fixture.session.view();
+        auto *layout = new QVBoxLayout(&fixture.container);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->addWidget(&view);
+        fixture.container.resize(320, 200);
+        fixture.container.show();
+        QTRY_COMPARE(view.size(), QSize(320, 200));
+        QSignalSpy changes(&fixture.session, &MigoManagedSession::debugAidsChanged);
+        const auto panel = [] {
+            for (QWidget *window : QApplication::topLevelWidgets()) {
+                if (window->objectName() == QLatin1String("migoDebugPanel")) return window;
+            }
+            return static_cast<QWidget *>(nullptr);
+        };
+        const auto debugging = [](bool on) {
+            fake_migo::deliver_host_service_call_from_engine_thread(
+                MIGO_HOST_SERVICE_SCREEN, MIGO_SCREEN_SET_ENABLE_DEBUG, 0, json({{"enableDebug", on}}));
+        };
+        QCOMPARE(panel(), nullptr);
+        debugging(true);
+        QTRY_VERIFY(fixture.session.debugAids());
+        QCOMPARE(changes.size(), 1);
+        QCOMPARE(fake_migo::reported_host_app_flags(), std::uint32_t{MIGO_HOST_APP_INFO_FLAG_DEBUG});
+        QCOMPARE(fake_migo::reported_host_app_id(), std::string("com.example.debugging"));
+        QVERIFY(panel() != nullptr);
+        QVERIFY(panel()->isVisible());
+        QCOMPARE(panel()->geometry().topLeft(), view.mapToGlobal(QPoint(0, 0)));
+        QCOMPARE(panel()->width(), view.width());
+        fake_migo::write_console(1, "hello");
+        fake_migo::write_console(3, "it broke");
+        auto *lines = panel()->findChild<QPlainTextEdit *>();
+        QVERIFY(lines != nullptr);
+        QTRY_VERIFY(lines->toPlainText().contains(QStringLiteral("E it broke")));
+        QVERIFY(lines->toPlainText().contains(QStringLiteral("I hello")));
+
+        if (QGuiApplication::platformName() == QStringLiteral("xcb")) {
+            // A click on the panel is the game's.
+            QTRY_COMPARE(fake_migo::calls().attach, 1);
+            x11_player::Hands hands;
+            QCursor::setPos(view.mapToGlobal(QPoint(10, 10)));
+            hands.click(1);
+            QTRY_VERIFY(pressAt(QPointF(10.0, 10.0)));
+        }
+
+        debugging(false);
+        QTRY_VERIFY(!fixture.session.debugAids());
+        QCOMPARE(changes.size(), 2);
+        QCOMPARE(fake_migo::reported_host_app_flags(), std::uint32_t{0});
+        QCOMPARE(fake_migo::reported_host_app_id(), std::string("com.example.debugging"));
+        QCOMPARE(panel(), nullptr);
         QCOMPARE(fixture.session.close(), MIGO_OK);
     }
 
