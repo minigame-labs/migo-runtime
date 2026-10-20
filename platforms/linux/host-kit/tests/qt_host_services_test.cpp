@@ -6,6 +6,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QClipboard>
+#include <QDeadlineTimer>
 #include <QDialog>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -13,7 +14,10 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
+#include <QPixmap>
 #include <QPushButton>
+#include <QTemporaryDir>
+#include <QVBoxLayout>
 #include <QtTest>
 
 #include <memory>
@@ -96,6 +100,15 @@ struct Managed {
         : session(*fake_migo::engine(), container, options) {}
     ~Managed() {
         if (!session.isClosed()) (void)session.close();
+        // A view that attached (xcb) retires first: the library reports RELEASED,
+        // and only then is the Session closed.
+        if (!session.isClosed() && session.view() != nullptr) {
+            fake_migo::set_release_status(session.view()->generation(), MIGO_SURFACE_RELEASE_RELEASED);
+            QDeadlineTimer deadline(5000);
+            while (!session.isClosed() && !deadline.hasExpired()) {
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+            }
+        }
     }
 };
 
@@ -124,7 +137,7 @@ struct AttachedServices {
     QWidget container;
     MigoQtX11SurfaceView view{host, container};
     std::shared_ptr<MigoQtHostServiceChannel> channel = MigoQtHostServiceChannel::open(fake_migo::session());
-    MigoQtBuiltInHostServices services{view};
+    MigoQtBuiltInHostServices services{view, channel};
 
     AttachedServices() {
         view.resize(320, 180);
@@ -171,8 +184,9 @@ private slots:
 
         const MigoHostCallbacks &installed = fake_migo::installed_callbacks();
         QVERIFY(installed.on_host_service_call != nullptr);
-        QCOMPARE(installed.host_services,
-                 hostServiceBit(MIGO_HOST_SERVICE_INTERACTION) | hostServiceBit(MIGO_HOST_SERVICE_CLIPBOARD));
+        QCOMPARE(installed.host_services, hostServiceBit(MIGO_HOST_SERVICE_INTERACTION) |
+                                              hostServiceBit(MIGO_HOST_SERVICE_CLIPBOARD) |
+                                              hostServiceBit(MIGO_HOST_SERVICE_WINDOW));
         QCOMPARE(fake_migo::created_network_policy(), std::string());
         QCOMPARE(fake_migo::created_launch_options(), std::string());
 
@@ -227,7 +241,7 @@ private slots:
         QVERIFY(managed.isValid());
         QCOMPARE(fake_migo::installed_callbacks().host_services,
                  hostServiceBit(MIGO_HOST_SERVICE_AD) | hostServiceBit(MIGO_HOST_SERVICE_CLIPBOARD) |
-                     hostServiceBit(MIGO_HOST_SERVICE_INTERACTION));
+                     hostServiceBit(MIGO_HOST_SERVICE_INTERACTION) | hostServiceBit(MIGO_HOST_SERVICE_WINDOW));
 
         fake_migo::deliver_host_service_call_from_engine_thread(MIGO_HOST_SERVICE_CLIPBOARD,
                                                                 MIGO_CLIPBOARD_GET_CLIPBOARD_DATA, 3, "{}");
@@ -381,6 +395,104 @@ private slots:
         fixture.command(MIGO_HOST_SERVICE_INTERACTION, MIGO_INTERACTION_HIDE_LOADING, {});
         press(fixture.view);
         QCOMPARE(fake_migo::pointers().size(), std::size_t{1});
+    }
+
+    /// The cursor over the game is the one content asks for: a CSS keyword, the
+    /// system's for "default", or an image with its hotspot clamped into it.
+    void the_cursor_is_the_one_content_asks_for() {
+        Managed fixture;
+        MigoQtX11SurfaceView &view = *fixture.session.view();
+        const auto cursor = [](const QJsonObject &request) {
+            fake_migo::deliver_host_service_call_from_engine_thread(MIGO_HOST_SERVICE_WINDOW, MIGO_WINDOW_SET_CURSOR,
+                                                                    0, json(request));
+        };
+        cursor({{"keyword", "pointer"}});
+        QTRY_COMPARE(view.cursor().shape(), Qt::PointingHandCursor);
+        cursor({{"keyword", "none"}});
+        QTRY_COMPARE(view.cursor().shape(), Qt::BlankCursor);
+        cursor({{"keyword", "default"}});
+        QTRY_VERIFY(!view.testAttribute(Qt::WA_SetCursor));
+
+        QTemporaryDir directory;
+        QPixmap image(8, 8);
+        image.fill(Qt::red);
+        const QString path = directory.filePath(QStringLiteral("cursor.png"));
+        QVERIFY(image.save(path));
+        cursor({{"path", path}, {"x", 3}, {"y", 99}});
+        QTRY_COMPARE(view.cursor().shape(), Qt::BitmapCursor);
+        QCOMPARE(view.cursor().hotSpot(), QPoint(3, 7));
+        // An image Qt cannot read leaves the cursor as it was.
+        cursor({{"path", directory.filePath(QStringLiteral("none.png"))}});
+        QCoreApplication::processEvents();
+        QCOMPARE(view.cursor().shape(), Qt::BitmapCursor);
+        QCOMPARE(fixture.session.close(), MIGO_OK);
+    }
+
+    /// The size asked for is the game's: the window grows or shrinks by what the
+    /// view must, and a full-screen window is not sized.
+    void the_window_is_sized_for_the_game() {
+        Managed fixture;
+        auto *layout = new QVBoxLayout(&fixture.container);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->addWidget(fixture.session.view());
+        fixture.container.resize(320, 200);
+        fixture.container.show();
+        QTRY_COMPARE(fixture.session.view()->size(), QSize(320, 200));
+
+        const qreal ratio = fixture.session.view()->devicePixelRatioF();
+        fake_migo::deliver_host_service_call_from_engine_thread(
+            MIGO_HOST_SERVICE_WINDOW, MIGO_WINDOW_SET_WINDOW_SIZE, 50,
+            json({{"width", qRound(400 * ratio)}, {"height", qRound(300 * ratio)}}));
+        QTRY_VERIFY(answerTo(50) != nullptr);
+        QCOMPARE(answerTo(50)->status, MIGO_HOST_SERVICE_STATUS_OK);
+        QTRY_COMPARE(fixture.session.view()->size(), QSize(400, 300));
+
+        fake_migo::deliver_host_service_call_from_engine_thread(MIGO_HOST_SERVICE_WINDOW,
+                                                                MIGO_WINDOW_SET_WINDOW_SIZE, 51,
+                                                                json({{"width", 0}, {"height", 300}}));
+        QTRY_VERIFY(answerTo(51) != nullptr);
+        QCOMPARE(answerTo(51)->message, std::string("width and height must be positive numbers"));
+
+        fixture.container.showFullScreen();
+        fake_migo::deliver_host_service_call_from_engine_thread(MIGO_HOST_SERVICE_WINDOW,
+                                                                MIGO_WINDOW_SET_WINDOW_SIZE, 52,
+                                                                json({{"width", 200}, {"height", 100}}));
+        QTRY_VERIFY(answerTo(52) != nullptr);
+        QCOMPARE(answerTo(52)->message, std::string("the window is full screen"));
+        fixture.container.hide();
+        QCOMPARE(fixture.session.close(), MIGO_OK);
+    }
+
+    /// Each change of the window's state is reported once, in the platform's
+    /// words; a pointer lock is refused, and said to be.
+    void the_window_reports_its_state_and_refuses_a_pointer_lock() {
+        Managed fixture;
+        const auto events = [] {
+            std::vector<std::string> said;
+            for (const auto &event : fake_migo::host_service_events()) {
+                if (event.service == MIGO_HOST_SERVICE_WINDOW) said.push_back(event.payload);
+            }
+            return said;
+        };
+        // One change at a time, each settled: the platform confirms a state
+        // change after the event loop runs, and a request made before that is
+        // confirmed in its turn too.
+        const auto settle = [](QWidget &window, Qt::WindowStates state) {
+            window.setWindowState(state);
+            QTest::qWait(100);
+        };
+        settle(fixture.container, Qt::WindowMinimized);
+        settle(fixture.container, Qt::WindowMinimized);
+        settle(fixture.container, Qt::WindowFullScreen);
+        settle(fixture.container, Qt::WindowNoState);
+        QCOMPARE(events(), (std::vector<std::string>{R"({"state":"minimize"})", R"({"state":"maximize"})",
+                                                     R"({"state":"normalize"})"}));
+
+        fake_migo::deliver_host_service_call_from_engine_thread(MIGO_HOST_SERVICE_WINDOW,
+                                                                MIGO_WINDOW_REQUEST_POINTER_LOCK, 0, "{}");
+        QTRY_COMPARE(events().size(), std::size_t{4});
+        QCOMPARE(events().back(), std::string(R"({"locked":false})"));
+        QCOMPARE(fixture.session.close(), MIGO_OK);
     }
 
     /// A call is answered once; a failure needs a reason, and one without is

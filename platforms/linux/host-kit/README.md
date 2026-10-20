@@ -15,8 +15,9 @@ What is claimed:
   answers a call exactly once, from any thread, and reaches nobody once its
   Session's channel is closed; the provider interface an App answers its own
   services through; and `MigoQtBuiltInHostServices`, which answers with Qt's own
-  what a desktop already offers -- the clipboard, and the game's toasts, loading
-  indicators, modals and action sheets.
+  what a desktop already offers -- the clipboard; the game's toasts, loading
+  indicators, modals and action sheets; and the window's size, state and cursor
+  (a pointer lock is refused until the Host Kit reads XInput 2's raw motion).
 - `migo::qt6-managed-session` is the Managed ownership shape: `MigoManagedSession`
   owns the Session, its callback table and the view, and installs the built-in
   services. Its `Options` carry the network policy, the launch options and the
