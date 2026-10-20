@@ -94,6 +94,56 @@ fn realtime_logs_reach_the_host_s_game_log_with_their_filters() {
 }
 
 #[test]
+fn a_game_log_manager_answers_once_it_is_returned_and_keeps_its_state_to_itself() {
+    let host = Arc::new(FakeHost::default());
+    let mut runtime = boot(host);
+    // The reference's own example uses what the call returns; its callbacks
+    // run once there is something to use.
+    let said = run_to_idle(
+        &mut runtime,
+        r#"
+        globalThis.__said = [];
+        const logger = migo.getGameLogManager({
+            commonInfo: { version: '1.0.0' },
+            success(res) { globalThis.__said.push(res.errMsg, typeof logger.log); },
+            complete() { globalThis.__said.push('complete'); },
+        });
+        globalThis.__own = Object.keys(logger).join();
+        globalThis.__info = JSON.stringify(logger.getCommonInfo());
+        "#,
+        "JSON.stringify([globalThis.__said, globalThis.__own, globalThis.__info])",
+    );
+    assert_eq!(
+        said,
+        r#"[["getGameLogManager:ok","function","complete"],"","{\"version\":\"1.0.0\"}"]"#
+    );
+}
+
+#[test]
+fn a_game_s_logs_are_limited_per_run_and_by_the_bytes_they_weigh() {
+    let host = Arc::new(FakeHost::default());
+    let mut runtime = boot(host.clone());
+    let said = run_to_idle(
+        &mut runtime,
+        r#"
+        globalThis.__fails = [];
+        const fail = (res) => globalThis.__fails.push(res.errMsg);
+        // 6000 characters of three bytes each: 18 KB, though fewer than 16 K characters.
+        migo.getGameLogManager().log({ level: 'info', value: '\u4e2d'.repeat(6000), fail });
+        // The run's 999, each through a manager of its own, and one more.
+        for (let i = 0; i < 999; i++) migo.getGameLogManager().log({ level: 'info', value: i, fail });
+        migo.getGameLogManager().log({ level: 'info', value: 'one too many', fail });
+        "#,
+        "JSON.stringify(globalThis.__fails)",
+    );
+    assert_eq!(host.logs.lock().unwrap().len(), 999);
+    assert_eq!(
+        said,
+        r#"["gameLog.log:fail log size exceeds limit (max 16KB)","gameLog.log:fail log count limit exceeded (max 999)"]"#
+    );
+}
+
+#[test]
 fn analytics_reach_the_host_and_a_scene_is_checked_and_reported_once() {
     let host = Arc::new(FakeHost::default());
     let mut runtime = boot(host.clone());

@@ -759,6 +759,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- `getGameLogManager` answers its callbacks once it has returned the manager, so a `success` that uses it -- as the
+  reference's example does -- finds it, instead of throwing on a variable not yet assigned (the throw was swallowed
+  and the callback never ran). The run's 999-log limit is the run's, not each manager's, and a log's 16 KB is
+  counted in the bytes it leaves as rather than in UTF-16 units. The manager's state is private: it carried
+  `_commonInfo`, `_debug` and `_logCount` as enumerable properties.
 - A video decoder where the platform has none (iOS, today) answers every call as a decoder that is not decoding:
   `getFrameData()` is null, `seek()` fails, `stop()` and `remove()` succeed. Only `start()` said "not supported";
   everything else threw, so a game tidying up after a failed start -- `remove()` -- threw out of its own cleanup.
