@@ -296,8 +296,12 @@ def lane_facts(root: pathlib.Path) -> dict[str, dict[str, set[str]]]:
                 for platform in platform_lines if only is None else [p for p in platform_lines if p in only]:
                     for field in re.findall(r"callbacks\.(on_\w+)\s*=", line):
                         facts[platform]["callbacks"].add(field)
-                    for what in re.findall(r"migo_session_set_(battery|network)_status\s*\(", line):
-                        facts[platform]["reports"].add(what)
+                    # The battery's status, and the network's: its whole report, or the
+                    # status alone that is shorthand for one.
+                    for status, report in re.findall(
+                        r"migo_session_(?:set_(battery|network)_status|report_(network))\s*\(", line
+                    ):
+                        facts[platform]["reports"].add(status or report)
                     facts[platform]["entries"] |= set(re.findall(r"\b(migo_session_\w+)\s*\(", line))
                     if re.search(r"\bhost_services\s*=", line):
                         facts[platform]["services"].add("*")
