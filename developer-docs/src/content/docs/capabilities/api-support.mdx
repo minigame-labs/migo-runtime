@@ -62,7 +62,7 @@ import ApiSupport from '../../../components/ApiSupport.astro';
 
 1. **矩阵是生成的。** `python3 scripts/gen-api-platform-matrix.py --check` 从源码重新推导,并与提交的 `contracts/runtime/api-platform-matrix.json` 比对;PR CI 跑门禁 `scripts/test-api-platform-matrix-contract.sh`,它还证明每类漂移都会让自己变红。
 2. **每个 API 要什么,是实际调用它测出来的。** 记录在 `contracts/runtime/minigame-api-reach.json`,由运行时测试 `api_reach` 保持为真。
-3. **✓ 来自各平台一致性测试运行的导入记录** `contracts/runtime/api-conformance-<平台>.json`:运行日期、runner、被测的 migo-runtime 提交(列在汇总表下方)。一致性测试套件本身目前不公开,所以这一步能复核的是记录,还不能自己重跑。
+3. **✓ 来自各平台一致性测试运行的导入记录** `contracts/runtime/api-conformance-<平台>.json`:每次运行的日期、runner、被测的 migo-runtime 提交(列在汇总表下方)。一个平台可以在多个宿主上测:Linux 既跑 C ABI 的最小宿主,也跑它自己的宿主层 Qt Host Kit,任一次运行验证过即为 ✓。一致性测试套件本身目前不公开,所以这一步能复核的是记录,还不能自己重跑。
 4. **测不出来的取舍写在** `contracts/runtime/api-platform-decisions.json`:纯引擎 API、有意不提供的 API 与已知缺口,每条带理由。
 
 Windows 与 OpenHarmony 还没有一致性测试运行记录,所以它们没有 ✓,「引擎」与「默认」格都是「未验证」。

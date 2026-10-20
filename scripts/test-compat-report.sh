@@ -55,7 +55,7 @@ contracts = {
     },
     "decisions": {"unsupported": {"notOffered": {"reason": "needs a vision runtime"}}, "host_owned": ["auth", "ad"]},
     "conformance": {
-        "measured": {"date": "2026-10-15"},
+        "measured": [{"runner": "android", "date": "2026-10-15"}],
         "apis": {
             "breaks": {"status": "failing", "failing": ["api-spec/breaks/succeeds"]},
             "answeredUnverified": {"status": "present"},

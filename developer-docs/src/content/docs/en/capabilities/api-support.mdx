@@ -62,7 +62,7 @@ Every verdict here can be checked in the public repository:
 
 1. **The matrix is generated.** `python3 scripts/gen-api-platform-matrix.py --check` derives it again from the sources and compares it with the committed `contracts/runtime/api-platform-matrix.json`; PR CI runs the gate `scripts/test-api-platform-matrix-contract.sh`, which also proves that each kind of drift turns it red.
 2. **What each API takes is measured by calling it.** It is recorded in `contracts/runtime/minigame-api-reach.json`, which the runtime test `api_reach` keeps true.
-3. **✓ comes from each platform's imported conformance run**, `contracts/runtime/api-conformance-<platform>.json`: the date, the runner, and the migo-runtime commit that was tested (listed under the summary). The conformance suite itself is not public yet, so what you can check is the record; you cannot rerun it yourself yet.
+3. **✓ comes from each platform's imported conformance runs**, `contracts/runtime/api-conformance-<platform>.json`: for each run, the date, the runner, and the migo-runtime commit that was tested (listed under the summary). A platform may be measured on more than one host -- Linux on the C ABI's minimal host and on the Qt Host Kit, its own host layer -- and an API any run verified has its ✓. The conformance suite itself is not public yet, so what you can check is the record; you cannot rerun it yourself yet.
 4. **The choices that cannot be measured are in** `contracts/runtime/api-platform-decisions.json`: engine-only APIs, APIs deliberately not offered, and known gaps, each with its reason.
 
 Windows and OpenHarmony have no conformance run recorded yet, so they have no ✓, and their engine and default cells are all "unverified".
