@@ -1,6 +1,8 @@
 #include "fake_migo.hpp"
 
 #include <cstring>
+#include <map>
+#include <memory>
 #include <thread>
 
 namespace {
@@ -36,6 +38,12 @@ MigoResult g_session_create_result = MIGO_OK;
 MigoResult g_set_callbacks_result = MIGO_OK;
 MigoResult g_load_content_result = MIGO_OK;
 MigoResult g_session_destroy_result = MIGO_OK;
+std::string g_network_policy;
+std::string g_launch_options;
+std::vector<fake_migo::HostServiceAnswer> g_answers;
+std::vector<fake_migo::HostServiceEvent> g_events;
+/// Calls delivered and not yet completed, with the service each is of.
+std::map<uint64_t, MigoHostService> g_open_calls;
 constexpr uintptr_t kEngineToken = 0x4040;
 
 constexpr uintptr_t kSessionToken = 0x1010;
@@ -48,6 +56,11 @@ namespace fake_migo {
 
 void reset() noexcept {
     g_calls = {};
+    g_network_policy.clear();
+    g_launch_options.clear();
+    g_answers.clear();
+    g_events.clear();
+    g_open_calls.clear();
     g_surface = {};
     g_metrics = {};
     g_release_query = {};
@@ -153,6 +166,10 @@ MigoEngine *engine() noexcept { return reinterpret_cast<MigoEngine *>(kEngineTok
 const MigoHostCallbacks &installed_callbacks() noexcept { return g_callbacks; }
 bool session_is_alive() noexcept { return g_session_alive; }
 const std::string &loaded_content_id() noexcept { return g_content_id; }
+const std::string &created_network_policy() noexcept { return g_network_policy; }
+const std::string &created_launch_options() noexcept { return g_launch_options; }
+const std::vector<HostServiceAnswer> &host_service_answers() noexcept { return g_answers; }
+const std::vector<HostServiceEvent> &host_service_events() noexcept { return g_events; }
 void set_session_create_result(MigoResult result) noexcept { g_session_create_result = result; }
 void set_set_callbacks_result(MigoResult result) noexcept { g_set_callbacks_result = result; }
 void set_load_content_result(MigoResult result) noexcept { g_load_content_result = result; }
@@ -205,6 +222,48 @@ void deliver_error_from_engine_thread(MigoResult code, const char *message) noex
         error.message_length = static_cast<uint32_t>(g_pending_error_message.size());
         callbacks.on_error(callbacks.user_data, session(), &error);
     });
+}
+
+namespace {
+
+/// One request on its way to the host, owned by the task that carries it:
+/// consecutive deliveries are queued before any runs, so each carries its own.
+struct PendingCall {
+    MigoHostService service = 0;
+    uint32_t method = 0;
+    uint64_t call_id = 0;
+    std::string payload;
+};
+
+}  // namespace
+
+void deliver_host_service_call_from_engine_thread(MigoHostService service, uint32_t method,
+                                                  uint64_t call_id,
+                                                  const std::string &payload_json) noexcept {
+    if (call_id != 0) g_open_calls[call_id] = service;
+    if (g_callbacks.dispatch == nullptr) return;
+    auto *pending = new PendingCall{service, method, call_id, payload_json};
+    std::thread engine_thread([pending] {
+        const MigoResult accepted = g_callbacks.dispatch(
+            g_callbacks.dispatcher_data,
+            [](void *context) {
+                const std::unique_ptr<PendingCall> call(static_cast<PendingCall *>(context));
+                if (g_callbacks.on_host_service_call == nullptr) return;
+                MigoHostServiceCall request{};
+                request.struct_size = sizeof(request);
+                request.abi_version = MIGO_ABI_VERSION_CURRENT;
+                request.call_id = call->call_id;
+                request.service = call->service;
+                request.method = call->method;
+                request.payload_json_utf8 = call->payload.c_str();
+                request.payload_length = static_cast<uint32_t>(call->payload.size());
+                g_callbacks.on_host_service_call(g_callbacks.user_data, fake_migo::session(), &request);
+            },
+            pending);
+        // Refused, the task is the deliverer's again.
+        if (accepted != MIGO_OK) delete pending;
+    });
+    engine_thread.join();
 }
 
 void deliver_frame_request_from_engine_thread() noexcept {
@@ -373,6 +432,8 @@ extern "C" MigoResult MIGO_CALL migo_session_create(MigoEngine *engine,
     }
     if (config->struct_size != sizeof(*config)) return MIGO_ERROR_INVALID_ARGUMENT;
     if (g_session_create_result != MIGO_OK) return g_session_create_result;
+    g_network_policy = config->network_policy_json_utf8 != nullptr ? config->network_policy_json_utf8 : "";
+    g_launch_options = config->launch_options_json_utf8 != nullptr ? config->launch_options_json_utf8 : "";
     g_session_alive = true;
     *out_session = fake_migo::session();
     return MIGO_OK;
@@ -395,6 +456,15 @@ migo_session_set_host_callbacks(MigoSession *session, const MigoHostCallbacks *c
                                    (callbacks->on_hide_keyboard != nullptr ? 1 : 0) +
                                    (callbacks->on_update_keyboard != nullptr ? 1 : 0);
     if (keyboard_installed != 0 && keyboard_installed != 3) return MIGO_ERROR_INVALID_ARGUMENT;
+    // The host-service channel: the callback and the services it answers, both or neither, and only
+    // services the header defines.
+    if ((callbacks->on_host_service_call != nullptr) != (callbacks->host_services != 0)) {
+        return MIGO_ERROR_INVALID_ARGUMENT;
+    }
+    if ((callbacks->host_services >> (MIGO_HOST_SERVICE_UPDATE + 1)) != 0) return MIGO_ERROR_INVALID_ARGUMENT;
+    if (callbacks->on_host_service_call != nullptr && callbacks->dispatch == nullptr) {
+        return MIGO_ERROR_INVALID_ARGUMENT;
+    }
     if (g_set_callbacks_result != MIGO_OK) return g_set_callbacks_result;
     g_callbacks = *callbacks;
     return MIGO_OK;
@@ -418,5 +488,41 @@ extern "C" MigoResult MIGO_CALL migo_session_destroy(MigoSession *session) {
     if (session == nullptr) return MIGO_ERROR_INVALID_ARGUMENT;
     if (g_session_destroy_result != MIGO_OK) return g_session_destroy_result;
     g_session_alive = false;
+    return MIGO_OK;
+}
+
+extern "C" MigoResult MIGO_CALL migo_session_complete_host_service_call(
+    MigoSession *session, uint64_t call_id, const MigoHostServiceResult *result) {
+    // As strict as the library: an open call of a declared service, answered
+    // once, a failure with a reason.
+    if (session != fake_migo::session() || !g_session_alive || result == nullptr) {
+        return MIGO_ERROR_INVALID_ARGUMENT;
+    }
+    const auto open = g_open_calls.find(call_id);
+    if (open == g_open_calls.end()) return MIGO_ERROR_INVALID_ARGUMENT;
+    if ((g_callbacks.host_services & (uint64_t{1} << open->second)) == 0) return MIGO_ERROR_INVALID_ARGUMENT;
+    if (result->status == MIGO_HOST_SERVICE_STATUS_FAIL && result->message_length == 0) {
+        return MIGO_ERROR_INVALID_ARGUMENT;
+    }
+    g_open_calls.erase(open);
+    fake_migo::HostServiceAnswer answer;
+    answer.call_id = call_id;
+    answer.status = result->status;
+    if (result->message_utf8 != nullptr) answer.message.assign(result->message_utf8, result->message_length);
+    if (result->payload_json_utf8 != nullptr) answer.payload.assign(result->payload_json_utf8, result->payload_length);
+    answer.has_error_code = (result->flags & MIGO_HOST_SERVICE_RESULT_FLAG_ERROR_CODE) != 0;
+    answer.error_code = result->error_code;
+    g_answers.push_back(answer);
+    return MIGO_OK;
+}
+
+extern "C" MigoResult MIGO_CALL migo_session_post_host_service_event(
+    MigoSession *session, MigoHostService service, uint32_t event, const char *payload_json_utf8,
+    uint32_t payload_length) {
+    if (session != fake_migo::session() || !g_session_alive || payload_json_utf8 == nullptr) {
+        return MIGO_ERROR_INVALID_ARGUMENT;
+    }
+    if ((g_callbacks.host_services & (uint64_t{1} << service)) == 0) return MIGO_ERROR_INVALID_ARGUMENT;
+    g_events.push_back({service, event, std::string(payload_json_utf8, payload_length)});
     return MIGO_OK;
 }

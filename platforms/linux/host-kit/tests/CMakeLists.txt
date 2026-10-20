@@ -57,6 +57,14 @@ target_link_libraries(migo-qt-x11-input-test PRIVATE
     Qt6::Test
 )
 
+add_executable(migo-qt-host-services-test qt_host_services_test.cpp)
+set_target_properties(migo-qt-host-services-test PROPERTIES AUTOMOC ON)
+target_link_libraries(migo-qt-host-services-test PRIVATE
+    migo::qt6-managed-session
+    migo_host_kit_fake_capi
+    Qt6::Test
+)
+
 add_executable(migo-qt-managed-session-test qt_managed_session_test.cpp)
 set_target_properties(migo-qt-managed-session-test PROPERTIES AUTOMOC ON)
 target_link_libraries(migo-qt-managed-session-test PRIVATE

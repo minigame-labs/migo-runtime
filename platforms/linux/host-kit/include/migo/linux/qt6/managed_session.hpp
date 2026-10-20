@@ -1,9 +1,11 @@
 #ifndef MIGO_LINUX_QT6_MANAGED_SESSION_HPP_
 #define MIGO_LINUX_QT6_MANAGED_SESSION_HPP_
 
+#include <migo/linux/qt6/host_services.hpp>
 #include <migo/linux/qt6/x11_surface_view.hpp>
 #include <migo/linux/surface_host.hpp>
 
+#include <QByteArray>
 #include <QObject>
 #include <QString>
 
@@ -41,12 +43,36 @@ class MigoManagedSession final : public QObject {
     Q_OBJECT
 
 public:
+    /// What the Session is created with. Everything here is fixed for the
+    /// Session's life: the C ABI takes it at creation and when the callback
+    /// table is installed, both of which happen in the constructor.
+    struct Options {
+        /// The network content may reach, as `MigoSessionConfig`'s
+        /// `network_policy_json_utf8` takes it. Empty grants none: the engine
+        /// gives content no network a host did not.
+        QByteArray networkPolicyJson;
+        /// What the game is launched with, as `MigoSessionConfig`'s
+        /// `launch_options_json_utf8` takes it. Empty launches it with the
+        /// engine's defaults.
+        QByteArray launchOptionsJson;
+        /// The host services the App answers itself -- its adverts, payments,
+        /// sign-in -- or null. The services it names are its, including any
+        /// the Host Kit would answer; the Host Kit answers the rest it can
+        /// with Qt's own (`MigoQtBuiltInHostServices`). It must outlive the
+        /// Session, and is called on the GUI thread.
+        MigoQtHostServiceProvider *appServices = nullptr;
+    };
+
     /// Constructs the Session and its view, and installs the callback table.
     ///
     /// The callback table can be installed only once per Session and only
     /// before the first attach, so it happens here rather than being exposed:
     /// a later install would be refused, and a host that could try would have a
     /// window in which queued callbacks observed replaced function pointers.
+    MigoManagedSession(MigoEngine &engine, QWidget &parent, const Options &options,
+                       QObject *object_parent = nullptr);
+    /// The same, with no network, the default launch and no services of the
+    /// App's own.
     MigoManagedSession(MigoEngine &engine, QWidget &parent, QObject *object_parent = nullptr);
     ~MigoManagedSession() override;
 

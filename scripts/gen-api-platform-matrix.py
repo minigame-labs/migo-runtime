@@ -308,9 +308,15 @@ def lane_facts(root: pathlib.Path) -> dict[str, dict[str, set[str]]]:
                     # A service the host layer answers itself when the app does not
                     # (the Swift SDK's MigoBuiltInHostServices, the macOS game view's
                     # MigoGameViewHostServices, an optional capability product's
-                    # services): `builtIn.insert(.name)`.
+                    # services): `builtIn.insert(.name)`; in C++ (the Linux Host
+                    # Kit's MigoQtBuiltInHostServices),
+                    # `builtIn |= hostServiceBit(MIGO_HOST_SERVICE_NAME)`.
                     for name in re.findall(r"\bbuiltIn\.insert\(\.(\w+)\)", line.split("//", 1)[0]):
                         facts[platform]["builtin"].add(re.sub(r"(?<!^)([A-Z])", r"_\1", name).lower())
+                    for name in re.findall(
+                        r"\bbuiltIn\s*\|=\s*hostServiceBit\(MIGO_HOST_SERVICE_([A-Z_]+)\)", line.split("//", 1)[0]
+                    ):
+                        facts[platform]["builtin"].add(name.lower())
                     # A host-service event the host layer posts itself: Swift
                     # names it MigoHostServiceID.<Service>.Event.<event>, C and
                     # C++ MIGO_<SERVICE>_EVENT_<EVENT>.

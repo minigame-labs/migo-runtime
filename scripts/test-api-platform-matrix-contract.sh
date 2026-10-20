@@ -136,6 +136,8 @@ red "the iPad's game view that stops reporting the screen's turn" platforms/appl
     'text.replace("MigoHostServiceID.Screen.Event.deviceOrientationChange", "MigoHostServiceID.Screen.Event.recordingStateChange")'
 red "a listener decided by an event no service has" contracts/runtime/api-platform-decisions.json \
     'text.replace("\"screen.device_orientation_change\"", "\"screen.turned\"", 1)'
+red "the Linux Host Kit that stops answering a service itself" platforms/linux/host-kit/src/qt6/host_services.cpp \
+    'text.replace("builtIn |= hostServiceBit(MIGO_HOST_SERVICE_CLIPBOARD);", "// clipboard", 1)'
 red "a host layer that stops feeding touch" platforms/linux/host-kit/src/qt6/x11_surface_view.cpp \
     'text.replace("migo_session_send_touch(", "migo_session_send_touch_removed(")'
 red "an unsupported decision with no reason" contracts/runtime/api-platform-decisions.json \

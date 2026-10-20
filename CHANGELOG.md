@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The Linux Host Kit answers the host services a desktop already offers: `migo::qt6-host-services`'s
+  `MigoQtBuiltInHostServices` answers the clipboard (`QClipboard`) and the game's toasts, loading indicators,
+  modals and action sheets (one indicator at a time, a mask that keeps the player's input from the game, a
+  window-modal dialog, a menu over the game), and `MigoManagedSession` installs it. `MigoManagedSession::Options`
+  carries what a Managed App could not give before: the network policy -- without one its game had no network,
+  and no way to be granted any -- the launch options, and the App's own services (`MigoQtHostServiceProvider`),
+  which take precedence over the built-in ones. A reply answers once, from any thread, and an answer that
+  arrives after the game has gone reaches nobody (`MigoQtHostServiceChannel`).
 - The developer docs say, for every API of the common mini-game platform and every platform Migo ships, who answers
   it, whether conformance testing verified it there, and what a host provides for it: Host capabilities > API
   platform support, in Chinese and English. The page is rendered when the docs are built, from
