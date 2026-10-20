@@ -161,6 +161,8 @@ MigoSession  > SurfaceHost ──> MigoQtX11SurfaceView
 
 `MigoManagedSession` 还替内容保持屏幕常亮（`setKeepScreenOn`）：经 XDG 桌面门户的 `Inhibit`（会话空闲：熄屏、锁屏）向桌面申请，桌面没有门户时退回 freedesktop 屏保接口（`org.freedesktop.ScreenSaver.Inhibit`）；内容不再要求或游戏结束时释放。两者都没有的桌面不做任何保持，并记一条警告。
 
+它也把系统给出的电量和网络报给 Session，并在变化时再报：电量是 UPower 的显示设备（所有电池合成一个）的电量与是否充电，power-profiles-daemon 的省电档即低电量模式（`isLowPowerModeEnabled`）；没有电池的机器不报，内容的 `getBatteryInfo` 如实答"不支持"。网络是 NetworkManager 的主连接：Wi-Fi 与有线都报 `wifi`（API 里最接近的），调制解调器报 `unknown`（代数不归 NetworkManager 说），断开报 `none`；是否连通互联网看 NetworkManager 的连通性检查，检查关闭时看它的状态。没有 NetworkManager 的机器不报。
+
 `MigoManagedSession` 自动装上这些服务。App 自己回答的服务（广告、支付、登录……）用构造参数
 `Options::appServices` 提供一个 `MigoQtHostServiceProvider`：App 声明的服务归 App，包括内建
 也能回答的；其余由内建回答。同一个 `Options` 还带网络策略（`networkPolicyJson`，不给则游戏

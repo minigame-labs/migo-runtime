@@ -1,10 +1,12 @@
 #include "fake_migo.hpp"
 #include "screen_awake.hpp"
+#include "system_reports.hpp"
 
 #include <migo/linux/qt6/managed_session.hpp>
 
 #include <QApplication>
 #include <QDBusConnection>
+#include <QDBusMessage>
 #include <QDBusObjectPath>
 #include <QVariantMap>
 #include <QSignalSpy>
@@ -12,9 +14,12 @@
 #include <QtTest>
 
 #include <memory>
+#include <vector>
 
 using migo::linux_host::SurfaceState;
 using migo::linux_host::qt6::MigoManagedSession;
+using migo::linux_host::qt6::BatteryReport;
+using migo::linux_host::qt6::NetworkReport;
 using migo::linux_host::qt6::ScreenAwake;
 
 namespace {
@@ -67,12 +72,61 @@ public Q_SLOTS:
     void UnInhibit(uint cookie) { released << cookie; }
 };
 
+/// UPower's display device: every battery the machine has, as one.
+class FakeBattery final : public QObject {
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.freedesktop.UPower.Device")
+    Q_PROPERTY(uint Type MEMBER type)
+    Q_PROPERTY(bool IsPresent MEMBER present)
+    Q_PROPERTY(double Percentage MEMBER percentage)
+    Q_PROPERTY(uint State MEMBER state)
+
+public:
+    uint type = 2;  // a battery
+    bool present = true;
+    double percentage = 76.4;
+    uint state = 2;  // discharging
+};
+
+/// power-profiles-daemon, as UPower's.
+class FakePowerProfiles final : public QObject {
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.freedesktop.UPower.PowerProfiles")
+    Q_PROPERTY(QString ActiveProfile MEMBER profile)
+
+public:
+    QString profile = QStringLiteral("power-saver");
+};
+
+/// NetworkManager.
+class FakeNetworkManager final : public QObject {
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.freedesktop.NetworkManager")
+    Q_PROPERTY(uint State MEMBER state)
+    Q_PROPERTY(uint Connectivity MEMBER connectivity)
+    Q_PROPERTY(QString PrimaryConnectionType MEMBER primary)
+
+public:
+    uint state = 70;         // connected, globally
+    uint connectivity = 4;   // full
+    QString primary = QStringLiteral("802-11-wireless");
+};
+
+/// Say, as a D-Bus object does, that its properties of `interface` changed.
+void announce(const QString &path, const QString &interface) {
+    QDBusMessage signal =
+        QDBusMessage::createSignal(path, QStringLiteral("org.freedesktop.DBus.Properties"), QStringLiteral("PropertiesChanged"));
+    signal << interface << QVariantMap() << QStringList();
+    QDBusConnection::sessionBus().send(signal);
+}
+
 /// A fake standing on the session bus as `service` at `path` while it lives.
 class OnTheBus {
 public:
     OnTheBus(QObject &fake, const QString &service, const QString &path) : service_(service), path_(path) {
         QDBusConnection bus = QDBusConnection::sessionBus();
-        registered_ = bus.registerService(service) && bus.registerObject(path, &fake, QDBusConnection::ExportAllSlots);
+        registered_ = bus.registerService(service) &&
+                      bus.registerObject(path, &fake, QDBusConnection::ExportAllSlots | QDBusConnection::ExportAllProperties);
     }
     ~OnTheBus() {
         QDBusConnection bus = QDBusConnection::sessionBus();
@@ -223,6 +277,102 @@ private slots:
         QCOMPARE(portal.request.closed, 0);
         QCOMPARE(managed.close(), MIGO_OK);
         QTRY_COMPARE(portal.request.closed, 1);
+    }
+
+    /// The battery is UPower's display device -- its level, whether it charges
+    /// -- with the power profile's saver as the low-power mode, reported each
+    /// time what is reported changes.
+    void the_battery_is_reported_as_upower_shows_it() {
+        QVERIFY2(QDBusConnection::sessionBus().isConnected(),
+                 "no session bus: run this test under dbus-run-session, as scripts/test-linux-qt-host-kit.sh does");
+        const QString device = QStringLiteral("/org/freedesktop/UPower/devices/DisplayDevice");
+        FakeBattery battery;
+        OnTheBus upower(battery, QStringLiteral("org.freedesktop.UPower"), device);
+        QVERIFY(upower.registered());
+        std::vector<BatteryReport::State> reports;
+        BatteryReport report(QDBusConnection::sessionBus(),
+                             [&reports](const BatteryReport::State &state) { reports.push_back(state); });
+
+        QTRY_COMPARE(reports.size(), std::size_t{1});
+        QCOMPARE(reports[0].level_percent, 76U);
+        QCOMPARE(reports[0].flags, MigoBatteryFlags{MIGO_BATTERY_FLAG_NONE});
+        battery.state = 1;  // charging
+        announce(device, QStringLiteral("org.freedesktop.UPower.Device"));
+        QTRY_COMPARE(reports.size(), std::size_t{2});
+        QCOMPARE(reports[1].flags, MigoBatteryFlags{MIGO_BATTERY_FLAG_CHARGING});
+
+        FakePowerProfiles profiles;
+        OnTheBus saver(profiles, QStringLiteral("org.freedesktop.UPower.PowerProfiles"),
+                       QStringLiteral("/org/freedesktop/UPower/PowerProfiles"));
+        QVERIFY(saver.registered());
+        QTRY_COMPARE(reports.size(), std::size_t{3});
+        QCOMPARE(reports[2].flags, MigoBatteryFlags{MIGO_BATTERY_FLAG_CHARGING | MIGO_BATTERY_FLAG_LOW_POWER_MODE});
+
+        // A change below what the level is reported in is not reported again.
+        battery.percentage = 76.2;
+        announce(device, QStringLiteral("org.freedesktop.UPower.Device"));
+        QTest::qWait(200);
+        QCOMPARE(reports.size(), std::size_t{3});
+    }
+
+    /// A machine with no battery reports none: content is told its call is
+    /// not supported, the answer for such a machine.
+    void a_machine_without_a_battery_reports_none() {
+        QVERIFY2(QDBusConnection::sessionBus().isConnected(),
+                 "no session bus: run this test under dbus-run-session, as scripts/test-linux-qt-host-kit.sh does");
+        FakeBattery none;
+        none.type = 0;
+        none.present = false;
+        OnTheBus upower(none, QStringLiteral("org.freedesktop.UPower"),
+                        QStringLiteral("/org/freedesktop/UPower/devices/DisplayDevice"));
+        QVERIFY(upower.registered());
+        std::vector<BatteryReport::State> reports;
+        BatteryReport report(QDBusConnection::sessionBus(),
+                             [&reports](const BatteryReport::State &state) { reports.push_back(state); });
+        QTest::qWait(300);
+        QVERIFY(reports.empty());
+    }
+
+    /// The network is NetworkManager's primary connection: Wi-Fi, and wired as
+    /// Wi-Fi; a modem's generation unknown; whether it reaches the internet by
+    /// NetworkManager's check, or by its state where the check is off; none
+    /// while disconnected.
+    void the_network_is_reported_as_networkmanager_shows_it() {
+        QVERIFY2(QDBusConnection::sessionBus().isConnected(),
+                 "no session bus: run this test under dbus-run-session, as scripts/test-linux-qt-host-kit.sh does");
+        const QString path = QStringLiteral("/org/freedesktop/NetworkManager");
+        const QString interface = QStringLiteral("org.freedesktop.NetworkManager");
+        FakeNetworkManager manager;
+        OnTheBus networkmanager(manager, interface, path);
+        QVERIFY(networkmanager.registered());
+        std::vector<NetworkReport::State> reports;
+        NetworkReport report(QDBusConnection::sessionBus(),
+                             [&reports](const NetworkReport::State &state) { reports.push_back(state); });
+        const auto last = [&reports] { return reports.back(); };
+
+        QTRY_COMPARE(reports.size(), std::size_t{1});
+        QCOMPARE(last().type, MigoNetworkType{MIGO_NETWORK_WIFI});
+        QVERIFY(last().connected);
+        manager.primary = QStringLiteral("802-3-ethernet");
+        manager.connectivity = 3;  // limited: no internet
+        announce(path, interface);
+        QTRY_COMPARE(reports.size(), std::size_t{2});
+        QCOMPARE(last().type, MigoNetworkType{MIGO_NETWORK_WIFI});
+        QVERIFY(!last().connected);
+        manager.connectivity = 0;  // not checked: the state says
+        announce(path, interface);
+        QTRY_COMPARE(reports.size(), std::size_t{3});
+        QVERIFY(last().connected);
+        manager.primary = QStringLiteral("gsm");
+        announce(path, interface);
+        QTRY_COMPARE(reports.size(), std::size_t{4});
+        QCOMPARE(last().type, MigoNetworkType{MIGO_NETWORK_UNKNOWN});
+        manager.state = 20;  // disconnected
+        manager.primary.clear();
+        announce(path, interface);
+        QTRY_COMPARE(reports.size(), std::size_t{5});
+        QCOMPARE(last().type, MigoNetworkType{MIGO_NETWORK_NONE});
+        QVERIFY(!last().connected);
     }
 
     /// A Session created but left without callbacks must not be stranded.

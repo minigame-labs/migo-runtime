@@ -27,7 +27,9 @@ What is claimed:
   owns the Session, its callback table and the view, and installs the built-in
   services; it holds content's `setKeepScreenOn` off the desktop's idle through
   the XDG desktop portal's Inhibit, or the freedesktop screen saver where no
-  portal answers, and lets go when the game stops asking or ends. Its `Options` carry the network policy, the launch options and the
+  portal answers, and lets go when the game stops asking or ends; and it reports
+  the battery as UPower shows it (with power-profiles-daemon's saver as the
+  low-power mode) and the network as NetworkManager does, each time they change. Its `Options` carry the network policy, the launch options and the
   App's own services; what the App names is its, the built-in services answer the
   rest. The Bound shape is the view driven by an App-owned `SurfaceHost`. They are
   separate targets, so an App that owns its own Session never links a type that

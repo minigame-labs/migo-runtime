@@ -126,9 +126,12 @@ if(MIGO_LINUX_HOST_KIT_BUILD_QT6_X11)
     add_library(migo_qt6_managed_session STATIC
         include/migo/linux/qt6/managed_session.hpp
         src/qt6/managed_session.cpp
-        # Internal, not installed: content's setKeepScreenOn, over Qt's D-Bus.
+        # Internal, not installed: content's setKeepScreenOn, and the battery and
+        # the network the system reports, over Qt's D-Bus.
         src/qt6/screen_awake.hpp
         src/qt6/screen_awake.cpp
+        src/qt6/system_reports.hpp
+        src/qt6/system_reports.cpp
     )
     add_library(migo::qt6-managed-session ALIAS migo_qt6_managed_session)
     set_target_properties(migo_qt6_managed_session PROPERTIES

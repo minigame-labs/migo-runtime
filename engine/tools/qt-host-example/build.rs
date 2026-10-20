@@ -20,7 +20,7 @@ const MOC_HEADERS: [&str; 3] = [
 
 /// The Host Kit's sources this host links: the surface controller, the Qt view,
 /// the host services and the Managed shape.
-const KIT_SOURCES: [&str; 8] = [
+const KIT_SOURCES: [&str; 9] = [
     "src/surface_host.cpp",
     "src/qt6/x11_surface_view.cpp",
     "src/qt6/dom_key_names.cpp",
@@ -29,6 +29,7 @@ const KIT_SOURCES: [&str; 8] = [
     "src/qt6/backlight.cpp",
     "src/qt6/managed_session.cpp",
     "src/qt6/screen_awake.cpp",
+    "src/qt6/system_reports.cpp",
 ];
 
 fn pkg_config(arguments: &[&str]) -> String {

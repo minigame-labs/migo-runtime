@@ -105,6 +105,18 @@ const std::string &reported_host_app_id() noexcept;
 /// The flags of the host's last report about itself (MIGO_HOST_APP_INFO_FLAG_*).
 uint32_t reported_host_app_flags() noexcept;
 
+/// What the host reported of the battery and the network, in order.
+struct BatteryRecord {
+    uint32_t level_percent = 0;
+    MigoBatteryFlags flags = 0;
+};
+struct NetworkRecord {
+    MigoNetworkType type = 0;
+    uint8_t connected = 0;
+};
+const std::vector<BatteryRecord> &battery_reports() noexcept;
+const std::vector<NetworkRecord> &network_reports() noexcept;
+
 /// A line content writes to its console, which the host's debugging panel
 /// reads back (migo_session_copy_console_logs): level 0 debug .. 3 error.
 void write_console(int level, const std::string &text);

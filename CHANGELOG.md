@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The Linux Host Kit reports the battery and the network: `MigoManagedSession` reports UPower's display device (level,
+  charging) with power-profiles-daemon's saver as the low-power mode (`migo_session_set_battery_status`), and
+  NetworkManager's primary connection -- Wi-Fi and wired as Wi-Fi, a modem as unknown, none while disconnected --
+  with whether it reaches the internet by NetworkManager's connectivity check, or its state where the check is off
+  (`migo_session_set_network_status`), each time what it reports changes. A machine with no battery, or without
+  NetworkManager, reports none.
 - The Linux Host Kit keeps the display awake for content's `setKeepScreenOn`: `MigoManagedSession` installs
   `on_keep_screen_on` and holds the desktop's idle off through the XDG desktop portal's `Inhibit` for the game's
   window, or the freedesktop screen saver's where no portal answers, letting go when content stops asking or the

@@ -194,6 +194,14 @@ desktop portal's `Inhibit` (the session's idle: blanking, locking), or through t
 (`org.freedesktop.ScreenSaver.Inhibit`) where no portal answers, and lets go when content stops asking or the game
 ends. A desktop with neither holds nothing, and the host logs a warning.
 
+It also reports the battery and the network as the system shows them, and again each time they change. The battery is
+UPower's display device (every battery the machine has, as one): its level and whether it charges, with
+power-profiles-daemon's saver as the low-power mode (`isLowPowerModeEnabled`); a machine with no battery reports none,
+and content's `getBatteryInfo` says, truly, that it is not supported. The network is NetworkManager's primary
+connection: Wi-Fi and wired both `wifi` (the nearest the API has), a modem `unknown` (its generation is not
+NetworkManager's to say), disconnected `none`; whether it reaches the internet is NetworkManager's connectivity check, or
+its state where the check is off. A machine without NetworkManager reports none.
+
 `MigoManagedSession` installs these services. The services the App answers itself (adverts, payments,
 sign-in, ...) come from a `MigoQtHostServiceProvider` given as `Options::appServices`: the services the
 App names are its, including any the built-in services would answer, and the built-in services answer
