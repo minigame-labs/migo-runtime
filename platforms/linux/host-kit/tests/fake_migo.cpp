@@ -46,6 +46,8 @@ uint32_t g_host_app_flags = 0;
 /// What content wrote to its console, as the library keeps it: each line's
 /// JSON, in order; a line's cursor is its index plus one.
 std::vector<std::string> g_console;
+std::vector<fake_migo::BatteryRecord> g_battery;
+std::vector<fake_migo::NetworkRecord> g_network;
 std::string g_launch_options;
 std::vector<fake_migo::HostServiceAnswer> g_answers;
 std::vector<fake_migo::HostServiceEvent> g_events;
@@ -67,6 +69,8 @@ void reset() noexcept {
     g_host_app_id.clear();
     g_host_app_flags = 0;
     g_console.clear();
+    g_battery.clear();
+    g_network.clear();
     g_launch_options.clear();
     g_answers.clear();
     g_events.clear();
@@ -180,6 +184,8 @@ const std::string &loaded_content_id() noexcept { return g_content_id; }
 const std::string &created_network_policy() noexcept { return g_network_policy; }
 const std::string &reported_host_app_id() noexcept { return g_host_app_id; }
 uint32_t reported_host_app_flags() noexcept { return g_host_app_flags; }
+const std::vector<BatteryRecord> &battery_reports() noexcept { return g_battery; }
+const std::vector<NetworkRecord> &network_reports() noexcept { return g_network; }
 
 void write_console(int level, const std::string &text) {
     // Plain text only: the tests write no character JSON would need escaped.
@@ -566,6 +572,24 @@ extern "C" MigoResult MIGO_CALL migo_session_set_host_app_info(MigoSession *sess
     if (info->struct_size != sizeof(*info) || info->benchmark_level < -2) return MIGO_ERROR_INVALID_ARGUMENT;
     g_host_app_id = info->app_id_utf8 != nullptr ? info->app_id_utf8 : "";
     g_host_app_flags = info->flags;
+    return MIGO_OK;
+}
+
+extern "C" MigoResult MIGO_CALL migo_session_set_battery_status(MigoSession *session, uint32_t level_percent,
+                                                              MigoBatteryFlags flags) {
+    if (session != fake_migo::session() || !g_session_alive || level_percent > 100) return MIGO_ERROR_INVALID_ARGUMENT;
+    if ((flags & ~(MIGO_BATTERY_FLAG_CHARGING | MIGO_BATTERY_FLAG_LOW_POWER_MODE)) != 0) return MIGO_ERROR_INVALID_ARGUMENT;
+    g_battery.push_back({level_percent, flags});
+    return MIGO_OK;
+}
+
+extern "C" MigoResult MIGO_CALL migo_session_set_network_status(MigoSession *session, MigoNetworkType type,
+                                                              uint8_t connected) {
+    if (session != fake_migo::session() || !g_session_alive || type > MIGO_NETWORK_5G || connected > 1 ||
+        (type == MIGO_NETWORK_NONE && connected != 0)) {
+        return MIGO_ERROR_INVALID_ARGUMENT;
+    }
+    g_network.push_back({type, connected});
     return MIGO_OK;
 }
 

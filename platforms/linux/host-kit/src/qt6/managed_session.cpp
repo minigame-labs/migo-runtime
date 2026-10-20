@@ -2,6 +2,7 @@
 
 #include "overlay.hpp"
 #include "screen_awake.hpp"
+#include "system_reports.hpp"
 
 #include <QDBusConnection>
 #include <QElapsedTimer>
@@ -187,6 +188,9 @@ public:
     QPointer<DebugPanel> debug_panel;
     /// Content's setKeepScreenOn, held for it while it asks and the Session runs.
     std::unique_ptr<ScreenAwake> screen_awake;
+    /// What the system says of the battery and the network, reported to the Session as it changes.
+    std::unique_ptr<BatteryReport> battery;
+    std::unique_ptr<NetworkReport> network;
     bool closing = false;
     bool closed = false;
     /// Whether the view has attached: the Session has its host from then on.
@@ -360,8 +364,11 @@ void MigoManagedSession::Impl::finishClose() {
     if (channel != nullptr) channel->close();
     built_in.reset();
     showDebugPanel(false);
-    // The Session's request ends with it, whatever it last said.
+    // The Session's request ends with it, whatever it last said, and nothing
+    // more is reported to it.
     screen_awake.reset();
+    battery.reset();
+    network.reset();
     if (session != nullptr) {
         // Refuses while an attachment is live, a transition is running, or any
         // release is pending, so reaching here means all three are settled.
@@ -451,6 +458,20 @@ MigoManagedSession::MigoManagedSession(MigoEngine &engine, QWidget &parent, cons
         return;
     }
     impl_->accepting_tasks.store(true, std::memory_order_release);
+
+    // The battery and the network, as the system says they are and each time
+    // they change; the Session keeps what it was told.
+    Impl *impl = impl_.get();
+    impl_->battery = std::make_unique<BatteryReport>(
+        QDBusConnection::systemBus(), [impl](const BatteryReport::State &state) {
+            if (impl->session == nullptr || impl->closing) return;
+            (void)migo_session_set_battery_status(impl->session, state.level_percent, state.flags);
+        });
+    impl_->network = std::make_unique<NetworkReport>(
+        QDBusConnection::systemBus(), [impl](const NetworkReport::State &state) {
+            if (impl->session == nullptr || impl->closing) return;
+            (void)migo_session_set_network_status(impl->session, state.type, state.connected ? 1U : 0U);
+        });
 
     connect(impl_->built_in.get(), &MigoQtBuiltInHostServices::debugAidsRequested, this,
             [this](bool on) { (void)setDebugAids(on); });
