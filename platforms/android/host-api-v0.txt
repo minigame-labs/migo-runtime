@@ -124,6 +124,7 @@
   public com.migo.runtime.RuntimeConfig$Builder setDebugEnabled(boolean);
   public com.migo.runtime.RuntimeConfig$Builder setDeviceBenchmark(int, int);
   public com.migo.runtime.RuntimeConfig$Builder setImmersiveMode(boolean);
+  public com.migo.runtime.RuntimeConfig$Builder setLaunchOptions(org.json.JSONObject);
   public com.migo.runtime.RuntimeConfig$Builder setLogLevel(com.migo.runtime.RuntimeConfig$LogLevel);
   public com.migo.runtime.RuntimeConfig$Builder setNetworkPolicy(com.migo.runtime.NetworkPolicy);
   public com.migo.runtime.RuntimeConfig$Builder setStartupOrientation(java.lang.String);

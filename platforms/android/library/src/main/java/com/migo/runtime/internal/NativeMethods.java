@@ -220,16 +220,22 @@ public final class NativeMethods {
         }
     }
 
+    /**
+     * The options a show carries: what the activity's intent says the game was opened with -- the extras above, or
+     * the query of the link that opened it -- or null when it says nothing, and the game is shown as it was last
+     * entered, or launched ({@code RuntimeConfig.Builder.setLaunchOptions}). Options built from an intent that says
+     * nothing would be the defaults, and would put them in place of what the host launched the game with.
+     */
     private static String buildLaunchOptionsJson(int sessionId) {
         try {
             RuntimeContext runtimeContext = RuntimeRegistry.get(sessionId);
             Activity activity = runtimeContext != null ? runtimeContext.getActivity() : null;
             Intent intent = activity != null ? activity.getIntent() : null;
+            if (intent == null || !carriesLaunchOptions(intent)) {
+                return null;
+            }
 
             JSONObject launchOptions = createDefaultLaunchOptions();
-            if (intent == null) {
-                return launchOptions.toString();
-            }
 
             String launchOptionsJson = intent.getStringExtra(EXTRA_LAUNCH_OPTIONS_JSON);
             if (launchOptionsJson != null && !launchOptionsJson.trim().isEmpty()) {
@@ -246,8 +252,25 @@ public final class NativeMethods {
             launchOptions.put("referrerInfo", readReferrerInfo(intent));
             return launchOptions.toString();
         } catch (Exception ignored) {
-            return createDefaultLaunchOptions().toString();
+            return null;
         }
+    }
+
+    private static final String[] LAUNCH_EXTRAS = {
+        EXTRA_LAUNCH_OPTIONS_JSON, EXTRA_SCENE, EXTRA_QUERY, EXTRA_QUERY_JSON, EXTRA_SHARE_TICKET,
+        EXTRA_REFERRER_APP_ID, EXTRA_REFERRER_CHAT_TYPE, EXTRA_REFERRER_EXTRA_DATA_JSON,
+    };
+
+    /** Whether the intent says anything about how the game was opened. */
+    private static boolean carriesLaunchOptions(Intent intent) {
+        for (String extra : LAUNCH_EXTRAS) {
+            if (intent.hasExtra(extra)) {
+                return true;
+            }
+        }
+        Uri data = intent.getData();
+        String query = data != null ? data.getQuery() : null;
+        return query != null && !query.isEmpty();
     }
 
     private static JSONObject createDefaultLaunchOptions() {
