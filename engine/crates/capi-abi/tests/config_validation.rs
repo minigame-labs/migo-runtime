@@ -162,6 +162,8 @@ fn session_config_has_no_v1_flags() {
         // Absent, which is what a session with no external producer supplies.
         launch_nonce: [0u8; 16],
         network_policy_json_utf8: std::ptr::null(),
+
+        launch_options_json_utf8: std::ptr::null(),
     };
     // SAFETY: the record carries no string.
     unsafe { raw.validate() }.expect("zero flags");
@@ -185,6 +187,8 @@ fn session_config_copies_the_network_policy_and_zero_extends_to_none() {
         flags: 0,
         launch_nonce: [0u8; 16],
         network_policy_json_utf8: json.as_ptr(),
+
+        launch_options_json_utf8: std::ptr::null(),
     };
     // SAFETY: `json` outlives the call.
     let validated = unsafe { raw.validate() }.expect("a policy");
@@ -418,20 +422,58 @@ fn inside_a_pointer(start: usize) -> std::ops::Range<usize> {
     start + 1..start + size_of::<*const c_char>()
 }
 
+/// The launch options are copied out of the caller's string as the policy is; null is none, and a
+/// caller whose record ends before the field -- built before it existed -- is zero-extended to none.
+#[test]
+fn session_config_copies_the_launch_options_and_zero_extends_to_none() {
+    let json = CString::new(r#"{"scene":1007,"query":{"from":"share"}}"#).unwrap();
+    let mut raw = MigoSessionConfig {
+        header: header::<MigoSessionConfig>(),
+        flags: 0,
+        launch_nonce: [0u8; 16],
+        network_policy_json_utf8: std::ptr::null(),
+        launch_options_json_utf8: json.as_ptr(),
+    };
+    // SAFETY: `json` outlives the call.
+    let validated = unsafe { raw.validate() }.expect("launch options");
+    assert_eq!(validated.launch_options_json.as_deref(), json.to_str().ok());
+
+    raw.header.struct_size =
+        std::mem::offset_of!(MigoSessionConfig, launch_options_json_utf8) as u32;
+    // SAFETY: `raw` is readable for its full size, more than the shorter count announced.
+    let older = unsafe { MigoSessionConfig::parse(&raw) }.expect("the shorter record");
+    assert_eq!(
+        older.launch_options_json, None,
+        "the pointer past the record is not read"
+    );
+
+    let invalid = [0xffu8, 0];
+    raw.header.struct_size = size_of::<MigoSessionConfig>() as u32;
+    raw.launch_options_json_utf8 = invalid.as_ptr().cast();
+    // SAFETY: NUL-terminated.
+    assert_eq!(
+        unsafe { raw.validate() }.unwrap_err(),
+        MIGO_ERROR_INVALID_ARGUMENT
+    );
+}
+
 /// A size that ends inside a pointer would copy part of an address and zero the rest, and the
 /// record would hand on an address nobody wrote. A record whose shorter releases end before a
 /// pointer refuses such a size, and still takes the sizes that end between fields. The pointers are
 /// null, so a size wrongly accepted is seen as `Ok`, not as a read.
 #[test]
-fn a_session_config_size_inside_the_policy_pointer_is_refused() {
+fn a_session_config_size_inside_a_string_pointer_is_refused() {
     let mut session = MigoSessionConfig {
         header: header::<MigoSessionConfig>(),
         flags: 0,
         launch_nonce: [0; 16],
         network_policy_json_utf8: std::ptr::null(),
+
+        launch_options_json_utf8: std::ptr::null(),
     };
     let policy = std::mem::offset_of!(MigoSessionConfig, network_policy_json_utf8);
-    for size in inside_a_pointer(policy) {
+    let launch_options = std::mem::offset_of!(MigoSessionConfig, launch_options_json_utf8);
+    for size in inside_a_pointer(policy).chain(inside_a_pointer(launch_options)) {
         session.header.struct_size = size as u32;
         // SAFETY: `session` is readable for its full size.
         let parsed = unsafe { MigoSessionConfig::parse(&session) };
@@ -441,7 +483,7 @@ fn a_session_config_size_inside_the_policy_pointer_is_refused() {
             "{size} bytes"
         );
     }
-    for size in [policy, size_of::<MigoSessionConfig>()] {
+    for size in [policy, launch_options, size_of::<MigoSessionConfig>()] {
         session.header.struct_size = size as u32;
         // SAFETY: as above.
         assert!(

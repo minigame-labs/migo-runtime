@@ -537,16 +537,18 @@ static int package_name(ANativeActivity *activity, char *out, size_t cap) {
     return found;
 }
 
-/* The network this host grants its content: <files>/network-policy, the JSON
- * migo_session_create takes, read whole -- or NULL, no network at all, when there
- * is none. A real embedder decides its game's network itself; this example is
- * pointed at different bundles during validation, so the runner writes the policy
- * beside content-id, among the host's own settings, where the content cannot.
- * A file that cannot be read stops the host: running under no policy instead
- * would fail every network check for a reason none of them names. */
-static char *read_network_policy(const char *files_dir) {
+/* A setting's JSON, read whole from <files>/<name> -- or NULL when there is none:
+ * network-policy, the network this host grants its content (none at all without
+ * it), and launch-options, what the game is launched with (the defaults without
+ * it), each the JSON migo_session_create takes. A real embedder decides these
+ * itself; this example is pointed at different bundles during validation, so the
+ * runner writes them beside content-id, among the host's own settings, where the
+ * content cannot. A file that cannot be read stops the host: running without the
+ * setting instead would fail every check that needs it for a reason none of them
+ * names. */
+static char *read_setting_json(const char *files_dir, const char *name) {
     char path[512];
-    snprintf(path, sizeof path, "%s/network-policy", files_dir);
+    snprintf(path, sizeof path, "%s/%s", files_dir, name);
     FILE *file = fopen(path, "rb");
     if (file == NULL) return NULL;
     long size = -1;
@@ -554,7 +556,7 @@ static char *read_network_policy(const char *files_dir) {
     char *json = (size >= 0) ? malloc((size_t)size + 1) : NULL;
     if (json == NULL || fseek(file, 0, SEEK_SET) != 0
         || fread(json, 1, (size_t)size, file) != (size_t)size) {
-        LOGE("cannot read the network policy %s", path);
+        LOGE("cannot read %s", path);
         abort();
     }
     fclose(file);
@@ -637,11 +639,14 @@ static int create_engine(struct host *h, const char *files_dir) {
     session_config.struct_size = (uint32_t)sizeof session_config;
     session_config.abi_version = MIGO_ABI_VERSION_CURRENT;
     session_config.flags = MIGO_SESSION_FLAG_NONE;
-    char *network_policy = read_network_policy(files_dir);
+    char *network_policy = read_setting_json(files_dir, "network-policy");
+    char *launch_options = read_setting_json(files_dir, "launch-options");
     session_config.network_policy_json_utf8 = network_policy;
+    session_config.launch_options_json_utf8 = launch_options;
 
     result = migo_session_create(h->engine, &session_config, &h->session);
     free(network_policy);
+    free(launch_options);
     if (result != MIGO_OK) {
         LOGE("migo_session_create failed: %d", (int)result);
         return 0;

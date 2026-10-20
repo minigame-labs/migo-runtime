@@ -135,6 +135,9 @@ pub struct InitOptions {
     prelude_scripts: Vec<(String, String)>,
     /// What network content may reach. The default refuses everything.
     network_policy: NetworkPolicy,
+    /// The options the game is launched with -- `getLaunchOptionsSync()`, and what a show that carries none shows
+    /// it with until one carries some -- or `None` for the engine's defaults.
+    launch_options: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 impl Default for InitOptions {
@@ -155,6 +158,7 @@ impl Default for InitOptions {
             code_signing_pubkey: None,
             prelude_scripts: Vec::new(),
             network_policy: NetworkPolicy::default(),
+            launch_options: None,
         }
     }
 }
@@ -303,6 +307,12 @@ impl InitOptions {
     #[inline]
     pub fn network_policy(&self) -> &NetworkPolicy {
         &self.network_policy
+    }
+
+    /// The options the game is launched with, or `None` for the engine's defaults.
+    #[inline]
+    pub fn launch_options(&self) -> Option<&serde_json::Map<String, serde_json::Value>> {
+        self.launch_options.as_ref()
     }
 
     /// Sets the pixel ratio (builder pattern).
@@ -492,6 +502,16 @@ impl InitOptions {
     #[must_use]
     pub fn with_network_policy(mut self, policy: NetworkPolicy) -> Self {
         self.network_policy = policy;
+        self
+    }
+
+    /// Sets the options the game is launched with (builder pattern).
+    #[must_use]
+    pub fn with_launch_options(
+        mut self,
+        options: Option<serde_json::Map<String, serde_json::Value>>,
+    ) -> Self {
+        self.launch_options = options;
         self
     }
 }

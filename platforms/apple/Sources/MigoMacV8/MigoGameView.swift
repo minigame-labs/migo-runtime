@@ -97,11 +97,18 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             /// allowlist per channel. `nil`, the default, is no network at all.
             public var networkPolicyJSON: String?
 
+            /// What the game is launched with -- `getLaunchOptionsSync()` --
+            /// as the JSON object `MigoSessionConfig.launch_options_json_utf8`
+            /// documents: the scene, and the query of the link that opened it.
+            /// `nil`, the default, is the engine's defaults.
+            public var launchOptionsJSON: String?
+
             public init(
                 directories: MigoGameDirectories, contentSigning: MigoContentSigning,
                 preferredFramesPerSecond: Int? = nil, mouse: MouseInput = .touch,
                 hostServices: MigoHostServiceProvider? = nil,
-                capabilities: [MigoSystemCapability] = [], networkPolicyJSON: String? = nil
+                capabilities: [MigoSystemCapability] = [], networkPolicyJSON: String? = nil,
+                launchOptionsJSON: String? = nil
             ) {
                 self.directories = directories
                 self.contentSigning = contentSigning
@@ -110,6 +117,7 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
                 self.hostServices = hostServices
                 self.capabilities = capabilities
                 self.networkPolicyJSON = networkPolicyJSON
+                self.launchOptionsJSON = launchOptionsJSON
             }
 
             public static func standard(contentSigning: MigoContentSigning) throws -> Configuration {
@@ -326,7 +334,8 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
                     directories: configuration.directories, contentSigning: configuration.contentSigning,
                     preferredFramesPerSecond: configuration.preferredFramesPerSecond,
                     hostServices: MigoGameViewHostServices(app: configuration.hostServices, window: windowService),
-                    capabilities: configuration.capabilities, networkPolicyJSON: configuration.networkPolicyJSON)
+                    capabilities: configuration.capabilities, networkPolicyJSON: configuration.networkPolicyJSON,
+                    launchOptionsJSON: configuration.launchOptionsJSON)
                 self.engine = engine
                 engine.onEvent = { [weak self] event in self?.engineEvent(event) }
                 for (name, json) in ecosystemValues { engine.setEcosystemValue(name, json: json) }

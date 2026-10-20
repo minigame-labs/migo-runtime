@@ -267,10 +267,13 @@ public final class MigoEngineSession {
     /// `networkPolicyJSON` is what network the content may reach, in the form
     /// `MigoSessionConfig.network_policy_json_utf8` documents; `nil` is none at
     /// all, and one that does not parse fails `migo_session_create`.
+    /// `launchOptionsJSON` is what the game is launched with, the object
+    /// `MigoSessionConfig.launch_options_json_utf8` documents; `nil` is the
+    /// engine's defaults, and anything but an object fails `migo_session_create`.
     public init(
         directories: Directories, contentSigning: ContentSigning, preferredFramesPerSecond: Int? = nil,
         hostServices: MigoHostServiceProvider? = nil, capabilities: [MigoSystemCapability] = [],
-        networkPolicyJSON: String? = nil
+        networkPolicyJSON: String? = nil, launchOptionsJSON: String? = nil
     ) throws {
         self.capabilities = capabilities
         var signingKey = [UInt8](repeating: 0, count: 32)
@@ -323,15 +326,13 @@ public final class MigoEngineSession {
         sessionConfig.abi_version = MIGO_ABI_VERSION_CURRENT
         withUnsafeMutableBytes(of: &sessionConfig.launch_nonce) { $0.copyBytes(from: nonce) }
         var startedSession: OpaquePointer?
-        let sessionResult: MigoResult
-        if let networkPolicyJSON = networkPolicyJSON {
-            // Borrowed for the call only: the library copies it.
-            sessionResult = networkPolicyJSON.withCString { policy in
+        // Borrowed for the call only: the library copies them.
+        let sessionResult = Self.withOptionalCString(networkPolicyJSON) { policy in
+            Self.withOptionalCString(launchOptionsJSON) { launchOptions in
                 sessionConfig.network_policy_json_utf8 = policy
+                sessionConfig.launch_options_json_utf8 = launchOptions
                 return migo_session_create(engine, &sessionConfig, &startedSession)
             }
-        } else {
-            sessionResult = migo_session_create(engine, &sessionConfig, &startedSession)
         }
         guard sessionResult == MIGO_OK, let session = startedSession else {
             _ = migo_engine_destroy(engine)
@@ -1000,6 +1001,14 @@ public final class MigoEngineSession {
     fileprivate func deliver(_ event: Event) {
         guard !isClosed else { return }
         onEvent?(event)
+    }
+
+    /// `body` with `text` as a C string for its duration, or with null for none.
+    private static func withOptionalCString<R>(
+        _ text: String?, _ body: (UnsafePointer<CChar>?) -> R
+    ) -> R {
+        guard let text else { return body(nil) }
+        return text.withCString { body($0) }
     }
 
     private static func displayLinkDecision(_ preferred: Int?) -> MigoDisplayLinkPolicy.Decision {

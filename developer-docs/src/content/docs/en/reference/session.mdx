@@ -24,6 +24,7 @@ typedef struct MigoSessionConfig {
     MigoSessionFlags flags;
     uint8_t  launch_nonce[16];
     const char *network_policy_json_utf8;
+    const char *launch_options_json_utf8;
 } MigoSessionConfig;
 ```
 
@@ -37,6 +38,15 @@ Creation parameters passed to `migo_session_create`. `flags` has no defined bits
 ```
 
 Each of `request`, `download` (which also covers remote images, audio streaming and asset prefetch), `upload`, `socket`, `tcp` and `udp` is an array of domains or `"unrestricted"`; a channel left out is refused. `example.com` matches that host only, `*.example.com` its subdomains and not itself, and an IP address cannot be listed. `allowPlainHttp` is what permits `http://` and `ws://`; `lan` lets socket, tcp and udp reach other devices on the local network, which request, download and upload never reach. An unknown key or a malformed entry makes `migo_session_create` return `MIGO_ERROR_INVALID_ARGUMENT`. This field is appended too: a host passing the older struct gets NULL, which is no network.
+
+`launch_options_json_utf8` is what the game is launched with, as NUL-terminated UTF-8 JSON borrowed for the duration of `migo_session_create`; NULL launches it with the engine's defaults (scene 1001, an empty query).
+
+```json
+{"scene": 1007, "query": {"level": "2"},
+ "referrerInfo": {"appId": "...", "extraData": {}}}
+```
+
+It is an object, as `getLaunchOptionsSync()` answers one: `scene`, `query` (an object of strings, or a query string), `shareTicket`, `apiCategory` and `referrerInfo`. What it leaves out keeps its default, and a field of the wrong type gets the default too. It is also what content is shown with until a show carries options of its own (no show through this interface does), and what a restart launches the game with again, with the query that `restartMiniProgram`'s `path` names. Anything that is not a JSON object makes `migo_session_create` return `MIGO_ERROR_INVALID_ARGUMENT`. Appended as well: a host passing the older struct gets NULL, the defaults it always had.
 
 Initialization example:
 

@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- C ABI hosts launch a game with options of their own: `MigoSessionConfig.launch_options_json_utf8` (appended) is the
+  object `getLaunchOptionsSync()` answers -- the scene, the query of the link that opened the game, who referred it --
+  and what content is shown with until a show carries options of its own; anything but a JSON object refuses the
+  session. A C ABI host had no way to give any, so every game it ran was launched in scene 1001 with an empty query.
+  `MigoGameView.Configuration.launchOptionsJSON` takes them on macOS and iOS, the headless player
+  `--launch-options FILE`, and the C example hosts `MIGO_C_HOST_LAUNCH_OPTIONS` (Linux) and `files/launch-options`
+  (NativeActivity).
 - `scripts/measure-session-churn.sh` measures what a session leaves behind when a host runs one game after another,
   as a game centre does: the player's `--sessions N` runs the game N times in one process, shuts each session down and
   joins it, and reports the C heap's live bytes and the resident set once glibc has handed back what it held free; the
@@ -731,6 +738,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- On iOS (Performance+), a show that carries no options shows the game as it was last entered, as the embedded
+  execution has since the previous fix: it reset `getEnterOptionsSync()` and `onShow`'s options to the defaults. Both
+  executions now follow one rule.
 - A game that calls `exitMiniProgram` is closed. The engine told a host the game exited whenever its session ended
   on a shutdown, the host's own included, so a host could not tell its own shutdown from content's exit; it now says so
   only when content asked. `MigoGameActivity` finishes when its game exits unless a listener of the subclass's takes

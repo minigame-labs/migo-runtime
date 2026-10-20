@@ -128,6 +128,12 @@ pub struct MigoSessionConfig {
     /// Appended: `copy_versioned` zero-extends a caller that passes the record
     /// without it, and null is the refusal such a caller had no way to change.
     pub network_policy_json_utf8: *const c_char,
+    /// The options the game is launched with, as NUL-terminated UTF-8 JSON, or
+    /// null for the engine's defaults.
+    ///
+    /// Appended: `copy_versioned` zero-extends a caller that passes the record
+    /// without it, and null is the defaults such a caller always had.
+    pub launch_options_json_utf8: *const c_char,
 }
 
 // SAFETY: the repr(C) record contains only zero-valid integer and pointer
@@ -146,6 +152,9 @@ pub struct ValidatedSessionConfig {
     /// The network policy's JSON, copied; `None` when the caller gave none.
     /// Parsed by the library, which owns the grammar.
     pub network_policy_json: Option<String>,
+    /// The launch options' JSON, copied; `None` when the caller gave none.
+    /// Parsed by the library, which owns what they may hold.
+    pub launch_options_json: Option<String>,
 }
 
 impl MigoSessionConfig {
@@ -153,7 +162,7 @@ impl MigoSessionConfig {
     ///
     /// # Safety
     /// `config` must be null or readable for the byte count in its header, and
-    /// a non-null policy pointer NUL-terminated and readable for this call.
+    /// every non-null string pointer NUL-terminated and readable for this call.
     pub unsafe fn parse(config: *const Self) -> Result<ValidatedSessionConfig, MigoResult> {
         // SAFETY: forwarded from the public parser contract.
         let raw = unsafe { copy_versioned::<Self>(config.cast::<VersionedHeader>()) }?;
@@ -161,11 +170,11 @@ impl MigoSessionConfig {
         unsafe { raw.validate_fields() }
     }
 
-    /// Validate a full local record and copy its borrowed string.
+    /// Validate a full local record and copy its borrowed strings.
     ///
     /// # Safety
-    /// A non-null policy pointer must be NUL-terminated and readable for this
-    /// call.
+    /// Every non-null string pointer must be NUL-terminated and readable for
+    /// this call.
     pub unsafe fn validate(&self) -> Result<ValidatedSessionConfig, MigoResult> {
         // SAFETY: a reference to Self supplies the complete local allocation.
         let raw =
@@ -182,12 +191,19 @@ impl MigoSessionConfig {
             // SAFETY: the caller guarantees a readable NUL-terminated string.
             Some(unsafe { copy_utf8(self.network_policy_json_utf8) }?)
         };
+        let launch_options_json = if self.launch_options_json_utf8.is_null() {
+            None
+        } else {
+            // SAFETY: the caller guarantees a readable NUL-terminated string.
+            Some(unsafe { copy_utf8(self.launch_options_json_utf8) }?)
+        };
         Ok(ValidatedSessionConfig {
             // Read through the one conversion both records share. All-zero is
             // treated as absent rather than as a value: it is what an
             // uninitialised struct holds and what a v1 caller zero-extends to.
             launch_nonce: crate::external_frames::launch_nonce_from_bytes(self.launch_nonce),
             network_policy_json,
+            launch_options_json,
         })
     }
 }
@@ -304,9 +320,11 @@ const _: () = assert!(offset_of!(MigoContentDescriptor, flags) == 8);
 const _: () = assert!(offset_of!(MigoContentDescriptor, environment) == 12);
 
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(size_of::<MigoSessionConfig>() == 40);
+const _: () = assert!(size_of::<MigoSessionConfig>() == 48);
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(offset_of!(MigoSessionConfig, network_policy_json_utf8) == 32);
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(offset_of!(MigoSessionConfig, launch_options_json_utf8) == 40);
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(size_of::<MigoEngineConfig>() == 80);
 #[cfg(target_pointer_width = "64")]

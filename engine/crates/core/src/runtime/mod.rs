@@ -13,6 +13,7 @@ mod input_state;
 // A session's `/tmp`, emptied at the start and removed at the end: both
 // executions mount content, and both are handed files into it.
 mod session_temp;
+mod show_options;
 #[cfg(feature = "embedded-v8")]
 pub mod thread;
 

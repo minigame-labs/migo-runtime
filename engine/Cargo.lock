@@ -1819,6 +1819,7 @@ dependencies = [
  "migo-platform",
  "migo-shared",
  "png 0.17.16",
+ "serde_json",
  "tracing",
  "tracing-subscriber",
  "x11-dl",

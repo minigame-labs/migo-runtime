@@ -18,6 +18,7 @@
 //! only request production and do not acknowledge completion. Surface and
 //! resource generations are updated from the renderer's lifecycle events.
 
+use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::sync::{
     Arc, OnceLock, Weak,
@@ -61,6 +62,7 @@ use crate::runtime::session_thread::{
     create_runtime_before_ready, spawn_session_thread,
 };
 use crate::runtime::shell::SessionShell;
+use crate::runtime::show_options::ShowOptions;
 use crate::services::PlatformServices;
 
 /// A running external-frame session.
@@ -3013,7 +3015,7 @@ fn run_external_session(
     // What content has been told is held down, so losing focus can release it.
     let mut input = InputState::default();
     // What content has been told about being shown and hidden.
-    let mut lifecycle = Lifecycle::default();
+    let mut lifecycle = Lifecycle::launched_with(opt.launch_options());
     runtime.block_on(async move {
         // Whether the session ended because it was asked to -- by content's
         // `exitMiniProgram`, which reaches here as `Shutdown` -- as opposed to
@@ -3180,16 +3182,25 @@ fn run_external_session(
 /// the window, which is what the embedded execution does there.
 #[derive(Default)]
 struct Lifecycle {
+    /// What content is shown with, by the rule the embedded execution follows.
+    options: ShowOptions,
     /// `onShow`'s arguments, waiting for a surface.
-    pending_show: Option<String>,
+    pending_show: Option<Cow<'static, str>>,
 }
 
 impl Lifecycle {
-    /// The host says the app is visible. The arguments are its options object,
-    /// as JSON, in the array `_internalDispatch` applies -- the embedded
-    /// execution's `build_on_show_args`, including its fallbacks.
+    /// Before the first show: the options the session was launched with.
+    fn launched_with(launch_options: Option<&serde_json::Map<String, serde_json::Value>>) -> Self {
+        Self {
+            options: ShowOptions::launched_with(launch_options),
+            pending_show: None,
+        }
+    }
+
+    /// The host says the app is visible, with its options object as JSON, or
+    /// none: content is shown with what it was last shown with.
     fn show(&mut self, options_json: Option<&str>) {
-        self.pending_show = Some(on_show_args(options_json));
+        self.pending_show = Some(self.options.show(options_json));
     }
 
     /// A surface is live and the app is not hidden.
@@ -3208,24 +3219,6 @@ impl Lifecycle {
         // hide that overtook it.
         self.pending_show = None;
         sink.host_hook("_internalTriggerOnHide", HOOK_ARGS_NONE);
-    }
-}
-
-/// `onShow`'s options as the hook takes them: one argument, or none when the
-/// host named none and when what it named is not an object -- the embedded
-/// execution's rule, so a host's malformed options are ignored the same way
-/// rather than passed to content on one lane only.
-fn on_show_args(options_json: Option<&str>) -> String {
-    let Some(options_json) = options_json.map(str::trim).filter(|json| !json.is_empty()) else {
-        return HOOK_ARGS_NONE.to_string();
-    };
-    match serde_json::from_str::<serde_json::Value>(options_json) {
-        Ok(value) if value.is_object() => hook_args_one(value).into_owned(),
-        Ok(_) => HOOK_ARGS_NONE.to_string(),
-        Err(error) => {
-            warn!("an onShow options JSON the host sent is not JSON: {error}");
-            HOOK_ARGS_NONE.to_string()
-        }
     }
 }
 
@@ -3688,17 +3681,18 @@ mod tests {
                 ("_internalTriggerWindowResize".to_string(), "[]".to_string()),
             ]
         );
-    }
 
-    /// The embedded execution's rule for a host's `onShow` options, including
-    /// what it does with options that are not an object.
-    #[test]
-    fn on_show_options_are_one_argument_or_none() {
-        assert_eq!(on_show_args(None), "[]");
-        assert_eq!(on_show_args(Some("   ")), "[]");
-        assert_eq!(on_show_args(Some("[1]")), "[]");
-        assert_eq!(on_show_args(Some("not json")), "[]");
-        assert_eq!(on_show_args(Some(r#"{"a":1}"#)), r#"[{"a":1}]"#);
+        // A show that carries no options shows the game as it was last
+        // entered, not with defaults no host gave.
+        lifecycle.show(None);
+        lifecycle.entered_foreground(&sink);
+        assert_eq!(
+            hooks(&sink).last(),
+            Some(&(
+                "_internalTriggerOnShow".to_string(),
+                r#"[{"scene":1001}]"#.to_string()
+            ))
+        );
     }
 
     #[test]

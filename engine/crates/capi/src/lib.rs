@@ -334,15 +334,20 @@ pub struct MigoSession {
     /// none. Immutable for the session's life, so every Host it starts -- the
     /// first attach and every reattach -- is held to the one the host chose.
     pub(crate) network_policy: shared::network_policy::NetworkPolicy,
+    /// What the game is launched with, from
+    /// `MigoSessionConfig.launch_options_json_utf8`; the engine's defaults when
+    /// the host gave none. Immutable, for the policy's reason.
+    pub(crate) launch_options: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 impl MigoSession {
     /// The options a Host of this session starts from: the Engine's, and this
-    /// session's network policy.
+    /// session's network policy and launch options.
     pub(crate) fn init_options(&self, pixel_ratio: f32) -> InitOptions {
         self.engine
             .session_init_options(pixel_ratio)
             .with_network_policy(self.network_policy.clone())
+            .with_launch_options(self.launch_options.clone())
     }
 
     #[inline]
@@ -622,6 +627,22 @@ pub unsafe extern "C" fn migo_session_create(
                 }
             },
         };
+        // Launch options are an object, as getLaunchOptionsSync() answers one;
+        // anything else is refused rather than run as the defaults.
+        let launch_options = match validated.launch_options_json.as_deref() {
+            None => None,
+            Some(json) => match serde_json::from_str(json) {
+                Ok(serde_json::Value::Object(options)) => Some(options),
+                Ok(_) => {
+                    tracing::error!("migo_session_create: launch options are not a JSON object");
+                    return MIGO_ERROR_INVALID_ARGUMENT;
+                }
+                Err(error) => {
+                    tracing::error!("migo_session_create: launch options: {error}");
+                    return MIGO_ERROR_INVALID_ARGUMENT;
+                }
+            },
+        };
 
         match engine.inner.live_sessions.lock() {
             Ok(mut live) => *live += 1,
@@ -640,6 +661,7 @@ pub unsafe extern "C" fn migo_session_create(
             device: Default::default(),
             host_reports: Default::default(),
             network_policy,
+            launch_options,
         });
         *out_session = Arc::into_raw(session).cast_mut();
         MIGO_OK
@@ -1382,6 +1404,54 @@ mod tests {
             ] {
                 let malformed = CString::new(malformed).unwrap();
                 config.network_policy_json_utf8 = malformed.as_ptr();
+                let mut session: *mut MigoSession = std::ptr::null_mut();
+                assert_eq!(
+                    unsafe { migo_session_create(engine, &config, &mut session) },
+                    MIGO_ERROR_INVALID_ARGUMENT,
+                    "{malformed:?}"
+                );
+                assert!(session.is_null());
+            }
+        });
+    }
+
+    /// The launch options a host writes into its session config are the ones
+    /// every Host of that session starts with; none is the defaults; ones that
+    /// are not a JSON object make no session at all.
+    #[test]
+    fn a_session_s_launch_options_reach_its_hosts_and_malformed_ones_are_refused() {
+        with_engine("launch-options", |engine| {
+            let json = CString::new(r#"{"scene":1007,"query":{"from":"share"}}"#).unwrap();
+            let mut config = session_config();
+            config.launch_options_json_utf8 = json.as_ptr();
+            let mut session: *mut MigoSession = std::ptr::null_mut();
+            assert_eq!(
+                unsafe { migo_session_create(engine, &config, &mut session) },
+                MIGO_OK
+            );
+            assert_eq!(
+                unsafe { &*session }
+                    .init_options(1.0)
+                    .launch_options()
+                    .map(|options| serde_json::Value::Object(options.clone())),
+                Some(serde_json::json!({"scene": 1007, "query": {"from": "share"}}))
+            );
+            assert_eq!(unsafe { migo_session_destroy(session) }, MIGO_OK);
+
+            let mut session: *mut MigoSession = std::ptr::null_mut();
+            assert_eq!(
+                unsafe { migo_session_create(engine, &session_config(), &mut session) },
+                MIGO_OK
+            );
+            assert_eq!(
+                unsafe { &*session }.init_options(1.0).launch_options(),
+                None
+            );
+            assert_eq!(unsafe { migo_session_destroy(session) }, MIGO_OK);
+
+            for malformed in ["[1]", r#""scene=1007""#, "{"] {
+                let malformed = CString::new(malformed).unwrap();
+                config.launch_options_json_utf8 = malformed.as_ptr();
                 let mut session: *mut MigoSession = std::ptr::null_mut();
                 assert_eq!(
                     unsafe { migo_session_create(engine, &config, &mut session) },
