@@ -1,8 +1,12 @@
 #include "fake_migo.hpp"
+#include "screen_awake.hpp"
 
 #include <migo/linux/qt6/managed_session.hpp>
 
 #include <QApplication>
+#include <QDBusConnection>
+#include <QDBusObjectPath>
+#include <QVariantMap>
 #include <QSignalSpy>
 #include <QThread>
 #include <QtTest>
@@ -11,8 +15,78 @@
 
 using migo::linux_host::SurfaceState;
 using migo::linux_host::qt6::MigoManagedSession;
+using migo::linux_host::qt6::ScreenAwake;
 
 namespace {
+
+const QString kRequestPath = QStringLiteral("/org/freedesktop/portal/desktop/request/1_1/migo");
+
+/// What closing the portal's request ends: the inhibition.
+class FakeRequest final : public QObject {
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.freedesktop.portal.Request")
+
+public:
+    int closed = 0;
+
+public Q_SLOTS:
+    void Close() { ++closed; }
+};
+
+/// The desktop portal's Inhibit, on the session bus.
+class FakePortal final : public QObject {
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.freedesktop.portal.Inhibit")
+
+public:
+    QStringList asked;
+    FakeRequest request;
+
+public Q_SLOTS:
+    QDBusObjectPath Inhibit(const QString &window, uint flags, const QVariantMap &options) {
+        asked << QStringLiteral("%1 %2 %3").arg(window).arg(flags).arg(options.value(QStringLiteral("reason")).toString());
+        QDBusConnection::sessionBus().registerObject(kRequestPath, &request, QDBusConnection::ExportAllSlots);
+        return QDBusObjectPath(kRequestPath);
+    }
+};
+
+/// The freedesktop screen saver, on the session bus.
+class FakeScreenSaver final : public QObject {
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.freedesktop.ScreenSaver")
+
+public:
+    QStringList asked;
+    QList<uint> released;
+
+public Q_SLOTS:
+    uint Inhibit(const QString &application, const QString &reason) {
+        asked << application + QStringLiteral(": ") + reason;
+        return 7;
+    }
+    void UnInhibit(uint cookie) { released << cookie; }
+};
+
+/// A fake standing on the session bus as `service` at `path` while it lives.
+class OnTheBus {
+public:
+    OnTheBus(QObject &fake, const QString &service, const QString &path) : service_(service), path_(path) {
+        QDBusConnection bus = QDBusConnection::sessionBus();
+        registered_ = bus.registerService(service) && bus.registerObject(path, &fake, QDBusConnection::ExportAllSlots);
+    }
+    ~OnTheBus() {
+        QDBusConnection bus = QDBusConnection::sessionBus();
+        bus.unregisterObject(path_);
+        bus.unregisterObject(kRequestPath);
+        bus.unregisterService(service_);
+    }
+    [[nodiscard]] bool registered() const { return registered_; }
+
+private:
+    QString service_;
+    QString path_;
+    bool registered_ = false;
+};
 
 bool require_xcb(const char *why, const char *file, int line) {
     if (QGuiApplication::platformName() == QStringLiteral("xcb")) return true;
@@ -69,6 +143,86 @@ private slots:
         QVERIFY(installed.on_request_frame != nullptr);
 
         QCOMPARE(managed.close(), MIGO_OK);
+    }
+
+    /// The display is kept awake through the desktop portal's Inhibit, for the
+    /// game's window, and let go when the game stops asking.
+    void the_display_is_kept_awake_through_the_portal() {
+        QVERIFY2(QDBusConnection::sessionBus().isConnected(),
+                 "no session bus: run this test under dbus-run-session, as scripts/test-linux-qt-host-kit.sh does");
+        FakePortal portal;
+        OnTheBus standing(portal, QStringLiteral("org.freedesktop.portal.Desktop"),
+                          QStringLiteral("/org/freedesktop/portal/desktop"));
+        QVERIFY(standing.registered());
+        ScreenAwake awake(QDBusConnection::sessionBus());
+
+        awake.keepAwake(true, 0x2a00001);
+        QTRY_VERIFY(awake.isHeld());
+        QCOMPARE(portal.asked, QStringList{QStringLiteral("x11:2a00001 8 A game asked to keep the display on")});
+        awake.keepAwake(true, 0x2a00001);
+        QCOMPARE(portal.asked.size(), 1);
+        awake.keepAwake(false, 0x2a00001);
+        QVERIFY(!awake.isHeld());
+        QTRY_COMPARE(portal.request.closed, 1);
+
+        // Let go while the desktop was still answering: let go as it answers.
+        awake.keepAwake(true, 0x2a00001);
+        awake.keepAwake(false, 0x2a00001);
+        QTRY_COMPARE(portal.request.closed, 2);
+        QVERIFY(!awake.isHeld());
+    }
+
+    /// Where no portal answers, the freedesktop screen saver does; what is
+    /// held goes with the holder.
+    void without_a_portal_the_screen_saver_keeps_the_display_awake() {
+        QVERIFY2(QDBusConnection::sessionBus().isConnected(),
+                 "no session bus: run this test under dbus-run-session, as scripts/test-linux-qt-host-kit.sh does");
+        FakeScreenSaver saver;
+        OnTheBus standing(saver, QStringLiteral("org.freedesktop.ScreenSaver"),
+                          QStringLiteral("/org/freedesktop/ScreenSaver"));
+        QVERIFY(standing.registered());
+        {
+            ScreenAwake awake(QDBusConnection::sessionBus());
+            awake.keepAwake(true, 1);
+            QTRY_VERIFY(awake.isHeld());
+            QCOMPARE(saver.asked.size(), 1);
+            QVERIFY(saver.asked[0].endsWith(QStringLiteral(": A game asked to keep the display on")));
+        }
+        QTRY_COMPARE(saver.released, QList<uint>{7});
+    }
+
+    /// Where neither answers, nothing holds the display, and the host says why.
+    void without_either_nothing_holds_the_display() {
+        QVERIFY2(QDBusConnection::sessionBus().isConnected(),
+                 "no session bus: run this test under dbus-run-session, as scripts/test-linux-qt-host-kit.sh does");
+        QTest::ignoreMessage(QtWarningMsg,
+                             QRegularExpression(QStringLiteral("neither the desktop portal nor the screen saver answers")));
+        ScreenAwake awake(QDBusConnection::sessionBus());
+        awake.keepAwake(true, 1);
+        QTest::qWait(300);
+        QVERIFY(!awake.isHeld());
+    }
+
+    /// The Managed session holds content's setKeepScreenOn for it, and lets go
+    /// when the Session ends, whatever content last asked.
+    void the_session_keeps_the_display_awake_while_content_asks() {
+        QVERIFY2(QDBusConnection::sessionBus().isConnected(),
+                 "no session bus: run this test under dbus-run-session, as scripts/test-linux-qt-host-kit.sh does");
+        FakePortal portal;
+        OnTheBus standing(portal, QStringLiteral("org.freedesktop.portal.Desktop"),
+                          QStringLiteral("/org/freedesktop/portal/desktop"));
+        QVERIFY(standing.registered());
+        QWidget container;
+        MigoManagedSession managed(*fake_migo::engine(), container);
+        QVERIFY(fake_migo::installed_callbacks().on_keep_screen_on != nullptr);
+
+        fake_migo::deliver_keep_screen_on_from_engine_thread(true);
+        QTRY_COMPARE(portal.asked.size(), 1);
+        QVERIFY(portal.asked[0].startsWith(QStringLiteral("x11:%1 ").arg(container.winId(), 0, 16)));
+        QTest::qWait(100);
+        QCOMPARE(portal.request.closed, 0);
+        QCOMPARE(managed.close(), MIGO_OK);
+        QTRY_COMPARE(portal.request.closed, 1);
     }
 
     /// A Session created but left without callbacks must not be stranded.

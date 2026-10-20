@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The Linux Host Kit keeps the display awake for content's `setKeepScreenOn`: `MigoManagedSession` installs
+  `on_keep_screen_on` and holds the desktop's idle off through the XDG desktop portal's `Inhibit` for the game's
+  window, or the freedesktop screen saver's where no portal answers, letting go when content stops asking or the
+  Session ends. `migo::qt6-managed-session` links `Qt6::DBus`; its test answers for both on a session bus of its own.
 - The Linux Host Kit answers the screen's brightness from the backlight: read where the kernel shows it
   (`/sys/class/backlight`, the firmware's over the platform's over a raw one, as systemd and GNOME pick) and set
   through logind's `Session.SetBrightness` over Qt's D-Bus, 0 its darkest and still lit; a screen with no backlight is

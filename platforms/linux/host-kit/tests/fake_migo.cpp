@@ -292,6 +292,19 @@ void deliver_frame_request_from_engine_thread() noexcept {
     });
 }
 
+void deliver_keep_screen_on_from_engine_thread(bool keep_on) noexcept {
+    // Each delivery is its own task: a capture by value outlives this call.
+    if (keep_on) {
+        dispatch_from_engine_thread([](const MigoHostCallbacks &callbacks) {
+            if (callbacks.on_keep_screen_on != nullptr) callbacks.on_keep_screen_on(callbacks.user_data, session(), 1);
+        });
+    } else {
+        dispatch_from_engine_thread([](const MigoHostCallbacks &callbacks) {
+            if (callbacks.on_keep_screen_on != nullptr) callbacks.on_keep_screen_on(callbacks.user_data, session(), 0);
+        });
+    }
+}
+
 }  // namespace fake_migo
 
 extern "C" MigoResult MIGO_CALL

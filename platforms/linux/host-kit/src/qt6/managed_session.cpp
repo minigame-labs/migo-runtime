@@ -1,7 +1,9 @@
 #include <migo/linux/qt6/managed_session.hpp>
 
 #include "overlay.hpp"
+#include "screen_awake.hpp"
 
+#include <QDBusConnection>
 #include <QElapsedTimer>
 #include <QEvent>
 #include <QFontDatabase>
@@ -183,6 +185,8 @@ public:
     QByteArray app_id;
     bool debug_aids = false;
     QPointer<DebugPanel> debug_panel;
+    /// Content's setKeepScreenOn, held for it while it asks and the Session runs.
+    std::unique_ptr<ScreenAwake> screen_awake;
     bool closing = false;
     bool closed = false;
     /// Whether the view has attached: the Session has its host from then on.
@@ -213,6 +217,7 @@ public:
     static void MIGO_CALL onError(void *user_data, MigoSession *session, const MigoError *error);
     static void MIGO_CALL onExitRequested(void *user_data, MigoSession *session);
     static void MIGO_CALL onRequestFrame(void *user_data, MigoSession *session);
+    static void MIGO_CALL onKeepScreenOn(void *user_data, MigoSession *session, std::uint8_t keep_on);
     static void MIGO_CALL onHostServiceCall(void *user_data, MigoSession *session,
                                             const MigoHostServiceCall *call);
 
@@ -323,6 +328,12 @@ void MIGO_CALL MigoManagedSession::Impl::onRequestFrame(void *user_data, MigoSes
     (void)impl->view->requestFrame();
 }
 
+void MIGO_CALL MigoManagedSession::Impl::onKeepScreenOn(void *user_data, MigoSession *, std::uint8_t keep_on) {
+    auto *impl = static_cast<Impl *>(user_data);
+    if (impl == nullptr || impl->screen_awake == nullptr || impl->view.isNull()) return;
+    impl->screen_awake->keepAwake(keep_on != 0, static_cast<std::uint64_t>(impl->view->window()->winId()));
+}
+
 void MIGO_CALL MigoManagedSession::Impl::onHostServiceCall(void *user_data, MigoSession *,
                                                            const MigoHostServiceCall *call) {
     auto *impl = static_cast<Impl *>(user_data);
@@ -349,6 +360,8 @@ void MigoManagedSession::Impl::finishClose() {
     if (channel != nullptr) channel->close();
     built_in.reset();
     showDebugPanel(false);
+    // The Session's request ends with it, whatever it last said.
+    screen_awake.reset();
     if (session != nullptr) {
         // Refuses while an attachment is live, a transition is running, or any
         // release is pending, so reaching here means all three are settled.
@@ -397,6 +410,8 @@ MigoManagedSession::MigoManagedSession(MigoEngine &engine, QWidget &parent, cons
     callbacks.on_error = &Impl::onError;
     callbacks.on_exit_requested = &Impl::onExitRequested;
     callbacks.on_request_frame = &Impl::onRequestFrame;
+    callbacks.on_keep_screen_on = &Impl::onKeepScreenOn;
+    impl_->screen_awake = std::make_unique<ScreenAwake>(QDBusConnection::sessionBus());
     // The three soft-keyboard callbacks are deliberately absent, and absent
     // together: installing a subset is refused, and installing all three would
     // claim a capability this wrapper cannot honour. The common mini-game platform's soft keyboard

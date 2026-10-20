@@ -25,7 +25,9 @@ What is claimed:
   answers with a panel of the frames a second and content's console over the game.
 - `migo::qt6-managed-session` is the Managed ownership shape: `MigoManagedSession`
   owns the Session, its callback table and the view, and installs the built-in
-  services. Its `Options` carry the network policy, the launch options and the
+  services; it holds content's `setKeepScreenOn` off the desktop's idle through
+  the XDG desktop portal's Inhibit, or the freedesktop screen saver where no
+  portal answers, and lets go when the game stops asking or ends. Its `Options` carry the network policy, the launch options and the
   App's own services; what the App names is its, the built-in services answer the
   rest. The Bound shape is the view driven by an App-owned `SurfaceHost`. They are
   separate targets, so an App that owns its own Session never links a type that

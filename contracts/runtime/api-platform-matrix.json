@@ -25,7 +25,7 @@
     "android": {"engine": 61, "default": 125, "host": 180, "missing": 6, "unsupported": 10, "wired": 376, "verified": 221, "ready": 352},
     "ios": {"engine": 71, "default": 110, "host": 174, "missing": 12, "unsupported": 15, "wired": 369, "verified": 198, "ready": 330},
     "macos": {"engine": 71, "default": 88, "host": 170, "missing": 9, "unsupported": 44, "wired": 372, "verified": 201, "ready": 346},
-    "linux": {"engine": 71, "default": 43, "host": 242, "missing": 10, "unsupported": 16, "wired": 279, "verified": 211, "ready": 271},
+    "linux": {"engine": 71, "default": 44, "host": 241, "missing": 10, "unsupported": 16, "wired": 280, "verified": 211, "ready": 271},
     "windows": {"engine": 71, "default": 2, "host": 289, "missing": 10, "unsupported": 10, "wired": 232, "verified": 0, "ready": 159},
     "ohos": {"engine": 69, "default": 12, "host": 0, "missing": 292, "unsupported": 9, "wired": 90, "verified": 0, "ready": 9}
   },
@@ -364,7 +364,7 @@
     "setEnableDebug": {"category": "base/debug", "needs": ["channel:screen.set_enable_debug"], "android": "default", "ios": "default", "macos": "default", "linux": "default", "windows": "host", "ohos": "missing", "verified": ["android", "ios", "macos", "linux"], "not_ready": ["windows", "ohos"]},
     "setHandoffQuery": {"category": "share", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "host", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ohos"]},
     "setInnerAudioOption": {"category": "media/audio", "needs": ["native:audio_platform(ios,linux,macos,windows)"], "android": "default", "ios": "default", "macos": "default", "linux": "default", "windows": "default", "ohos": "missing", "verified": ["android", "ios", "macos", "linux"], "not_ready": ["windows", "ohos"]},
-    "setKeepScreenOn": {"category": "device/screen", "needs": ["callback:on_keep_screen_on"], "android": "default", "ios": "default", "macos": "default", "linux": "host", "windows": "host", "ohos": "missing", "verified": ["android", "ios", "macos"], "not_ready": ["linux", "windows", "ohos"]},
+    "setKeepScreenOn": {"category": "device/screen", "needs": ["callback:on_keep_screen_on"], "android": "default", "ios": "default", "macos": "default", "linux": "default", "windows": "host", "ohos": "missing", "verified": ["android", "ios", "macos"], "not_ready": ["linux", "windows", "ohos"]},
     "setMenuStyle": {"category": "ui/menu", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "host", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ohos"]},
     "setMessageToFriendQuery": {"category": "share", "needs": ["channel:share.share_message_to_friend"], "android": "host", "ios": "host", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ohos"]},
     "setPreferredFramesPerSecond": {"category": "render/frame", "needs": [], "android": "engine", "ios": "engine", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine", "verified": ["android", "ios", "macos", "linux"], "not_ready": ["windows", "ohos"]},
