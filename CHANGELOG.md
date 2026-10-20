@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `MigoManagedSession::Options::appId`: who the App is, as content reads it (`getAppBaseInfo().host.appId`);
+  without it, the App's `QGuiApplication::desktopFileName()`.
 - `tests/qt_host/linux`: a whole App on the Linux Host Kit's Managed shape -- an engine, a window, a game with its
   network policy and launch options -- built and run by `scripts/dev-run-qt-host.sh` (cargo drives the link, as for
   the C host; `tools/qt-host-example` runs moc over the Host Kit's QObject headers). It is the host of
@@ -772,6 +774,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- The Linux Host Kit's view attaches once Qt has mapped its window at the widget's size. Qt sends a widget its show
+  event before it maps the native window and applies its geometry, and the engine binds the window as the X server
+  has it: a view a layout placed -- every Managed Session's -- was bound while its window was still unmapped at a
+  child's default 100x30, and the game drew into a 100x30 canvas behind a full-size view. `MigoManagedSession`
+  loads content once the view has attached, which is when the Session has something to run it on; asked for
+  earlier, it is loaded then (a refusal at that point arrives as `contentFailed`), where it used to be refused.
+  Both were found by migo-conformance's new Host Kit lane, the first to run real games on the Host Kit.
 - `getGameLogManager` answers its callbacks once it has returned the manager, so a `success` that uses it -- as the
   reference's example does -- finds it, instead of throwing on a variable not yet assigned (the throw was swallowed
   and the callback never ran). The run's 999-log limit is the run's, not each manager's, and a log's 16 KB is
