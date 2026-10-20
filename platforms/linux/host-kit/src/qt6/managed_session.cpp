@@ -1,5 +1,7 @@
 #include <migo/linux/qt6/managed_session.hpp>
 
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QMetaObject>
 #include <QPointer>
 #include <QThread>
@@ -21,6 +23,12 @@ public:
     std::unique_ptr<SurfaceHost> surface_host;
     QPointer<MigoQtX11SurfaceView> view;
     MigoResult last_error = MIGO_OK;
+    /// Where host-service answers go; closed before the Session is destroyed.
+    std::shared_ptr<MigoQtHostServiceChannel> channel;
+    /// The App's own services and the services it declared, read once.
+    MigoQtHostServiceProvider *app_services = nullptr;
+    std::uint64_t app_mask = 0;
+    std::unique_ptr<MigoQtBuiltInHostServices> built_in;
     bool closing = false;
     bool closed = false;
     /// Read from engine threads inside the dispatcher, so it cannot be a plain
@@ -44,6 +52,8 @@ public:
     static void MIGO_CALL onError(void *user_data, MigoSession *session, const MigoError *error);
     static void MIGO_CALL onExitRequested(void *user_data, MigoSession *session);
     static void MIGO_CALL onRequestFrame(void *user_data, MigoSession *session);
+    static void MIGO_CALL onHostServiceCall(void *user_data, MigoSession *session,
+                                            const MigoHostServiceCall *call);
 
     void runTask(Task task) {
         if (task.function != nullptr) task.function(task.context);
@@ -114,7 +124,31 @@ void MIGO_CALL MigoManagedSession::Impl::onRequestFrame(void *user_data, MigoSes
     (void)impl->view->requestFrame();
 }
 
+void MIGO_CALL MigoManagedSession::Impl::onHostServiceCall(void *user_data, MigoSession *,
+                                                           const MigoHostServiceCall *call) {
+    auto *impl = static_cast<Impl *>(user_data);
+    if (impl == nullptr || call == nullptr || impl->channel == nullptr) return;
+    // The payload is borrowed for this callback only: read now.
+    const QJsonObject request =
+        QJsonDocument::fromJson(QByteArray(call->payload_json_utf8, static_cast<qsizetype>(call->payload_length)))
+            .object();
+    MigoQtHostServiceReply reply = impl->channel->reply(call->call_id);
+    const std::uint64_t bit = hostServiceBit(call->service);
+    if (impl->app_services != nullptr && (impl->app_mask & bit) != 0) {
+        impl->app_services->call(call->service, call->method, request, std::move(reply));
+    } else if (impl->built_in != nullptr && (impl->built_in->services() & bit) != 0) {
+        impl->built_in->call(call->service, call->method, request, std::move(reply));
+    } else {
+        // Declared at install, gone since: the built-in services go with the view.
+        (void)reply.fail(QStringLiteral("not supported"));
+    }
+}
+
 void MigoManagedSession::Impl::finishClose() {
+    // No answer may reach the Session once it is destroyed, and what the
+    // built-in services show goes with the game.
+    if (channel != nullptr) channel->close();
+    built_in.reset();
     if (session != nullptr) {
         // Refuses while an attachment is live, a transition is running, or any
         // release is pending, so reaching here means all three are settled.
@@ -132,10 +166,19 @@ void MigoManagedSession::Impl::finishClose() {
 }
 
 MigoManagedSession::MigoManagedSession(MigoEngine &engine, QWidget &parent, QObject *object_parent)
+    : MigoManagedSession(engine, parent, Options{}, object_parent) {}
+
+MigoManagedSession::MigoManagedSession(MigoEngine &engine, QWidget &parent, const Options &options,
+                                       QObject *object_parent)
     : QObject(object_parent), impl_(std::make_unique<Impl>(*this)) {
     MigoSessionConfig config{};
     config.struct_size = static_cast<std::uint32_t>(sizeof(config));
     config.abi_version = MIGO_ABI_VERSION_1;
+    // NUL-terminated, as QByteArray always is; empty is the C ABI's NULL.
+    config.network_policy_json_utf8 =
+        options.networkPolicyJson.isEmpty() ? nullptr : options.networkPolicyJson.constData();
+    config.launch_options_json_utf8 =
+        options.launchOptionsJson.isEmpty() ? nullptr : options.launchOptionsJson.constData();
 
     const MigoResult created = migo_session_create(&engine, &config, &impl_->session);
     if (created != MIGO_OK || impl_->session == nullptr) {
@@ -163,17 +206,33 @@ MigoManagedSession::MigoManagedSession(MigoEngine &engine, QWidget &parent, QObj
     // capability and then not maintaining a field would be worse than not
     // having it -- content's migo.showKeyboard correctly reports failure instead.
 
+    // The view is made before the table is installed because the built-in
+    // services stand over it; nothing reaches either until content runs.
+    impl_->surface_host = std::make_unique<SurfaceHost>(impl_->session);
+    impl_->view = new MigoQtX11SurfaceView(*impl_->surface_host, parent);
+    impl_->channel = MigoQtHostServiceChannel::open(impl_->session);
+    impl_->built_in = std::make_unique<MigoQtBuiltInHostServices>(*impl_->view);
+    impl_->app_services = options.appServices;
+    impl_->app_mask = options.appServices != nullptr ? options.appServices->services() : 0;
+    const std::uint64_t declared = impl_->app_mask | impl_->built_in->services();
+    if (declared != 0) {
+        callbacks.on_host_service_call = &Impl::onHostServiceCall;
+        callbacks.host_services = declared;
+    }
+
     const MigoResult installed = migo_session_set_host_callbacks(impl_->session, &callbacks);
     if (installed != MIGO_OK) {
         impl_->last_error = installed;
+        impl_->channel->close();
+        impl_->built_in.reset();
+        delete impl_->view.data();
+        impl_->surface_host.reset();
         (void)migo_session_destroy(impl_->session);
         impl_->session = nullptr;
         return;
     }
     impl_->accepting_tasks.store(true, std::memory_order_release);
 
-    impl_->surface_host = std::make_unique<SurfaceHost>(impl_->session);
-    impl_->view = new MigoQtX11SurfaceView(*impl_->surface_host, parent);
     connect(impl_->view.data(), &MigoQtX11SurfaceView::surfaceError, this,
             &MigoManagedSession::migoError);
     connect(impl_->view.data(), &MigoQtX11SurfaceView::inputRejected, this,

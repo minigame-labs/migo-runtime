@@ -29,8 +29,10 @@ The three currently declared CMake targets are:
 - `migo::qt6-x11-surface-view` — a Qt 6.4+ Widgets adapter based on the `xcb` platform plugin,
   using a native child `QWidget` and handling surface lifecycle, input, focus, IME composition, and
   frame requests.
+- `migo::qt6-host-services` — the host-service channel for Qt, and the built-in services Qt's own
+  facilities answer (the clipboard; toasts, loading indicators, modals and action sheets).
 - `migo::qt6-managed-session` — the Managed ownership form: `MigoManagedSession` owns the Session,
-  callback table, and view.
+  callback table, and view, and installs the built-in services.
 
 Qt Wayland, Qt Quick, and GTK 4 are **not yet supported**. The public C ABI is still marked
 `MIGO_C_ABI_CANDIDATE`; this Host Kit is an integration preview until the ABI is frozen.
@@ -146,6 +148,51 @@ MigoSession  > SurfaceHost ──> MigoQtX11SurfaceView
 
 `QApplication` must exist before the Qt view and must be destroyed only after the view's final surface release,
 because Qt owns the X11 connection and GUI event loop.
+
+### Host services
+
+When content calls APIs such as `migo.showToast`, `showModal` or `setClipboardData`, the engine asks the
+host through the C ABI's host-service channel (`MigoHostCallbacks.host_services` and
+`on_host_service_call`). `MigoQtBuiltInHostServices` in `migo::qt6-host-services` answers the part a
+desktop already offers with Qt's own:
+
+- **Clipboard** (`setClipboardData`, `getClipboardData`): `QClipboard`.
+- **Interaction** (`showToast`, `hideToast`, `showLoading`, `hideLoading`, `showModal`, `showActionSheet`):
+  toasts and loading indicators are a panel over the game, one at a time -- `hideToast` hides only a
+  toast and `hideLoading` only a loading indicator -- and with `mask` the game hears none of the
+  player's input while one is up; a modal is a window-modal dialog, and when `editable` its `content`
+  is what the field starts with; an action sheet is a menu popped up over the game's centre, and closing
+  it fails with `cancel`. Button colours are not applied: a desktop's dialogs are the desktop's.
+
+`MigoManagedSession` installs these services. The services the App answers itself (adverts, payments,
+sign-in, ...) come from a `MigoQtHostServiceProvider` given as `Options::appServices`: the services the
+App names are its, including any the built-in services would answer, and the built-in services answer
+the rest. The same `Options` carry the network policy (`networkPolicyJson`; without one the game has no
+network at all) and the launch options (`launchOptionsJson`), each the JSON of the `MigoSessionConfig`
+field of the same name:
+
+```cpp
+class AppServices final : public migo::linux_host::qt6::MigoQtHostServiceProvider {
+public:
+    std::uint64_t services() const noexcept override {
+        return migo::linux_host::qt6::hostServiceBit(MIGO_HOST_SERVICE_AD);
+    }
+    void call(MigoHostService service, std::uint32_t method, const QJsonObject &request,
+              migo::linux_host::qt6::MigoQtHostServiceReply reply) override {
+        // Hand it to the advert SDK; when its result arrives, reply.succeed(...) or reply.fail("..."), once.
+    }
+};
+
+migo::linux_host::qt6::MigoManagedSession::Options options;
+options.networkPolicyJson = R"({"request": ["api.example.com"]})";
+options.appServices = &app_services;  // must outlive the Session
+migo::linux_host::qt6::MigoManagedSession game(engine, window, options);
+```
+
+An App that owns its Session (the Bound shape) uses `MigoQtBuiltInHostServices` and
+`MigoQtHostServiceChannel` directly: it hands calls to them from its own `on_host_service_call`, and
+closes the channel before `migo_session_destroy`. A dialog can be answered after the game has gone, and
+a closed channel keeps that answer from reaching a destroyed Session.
 
 ## 5. Input and frames
 

@@ -11,10 +11,19 @@ What is claimed:
 - `migo::qt6-x11-surface-view` is a Qt 6.4+ Widgets adapter for the `xcb`
   platform plugin, using a native child `QWidget`. It carries the Surface
   lifecycle, input, focus, IME composition and the frame request.
+- `migo::qt6-host-services` is the host-service channel for Qt: a reply that
+  answers a call exactly once, from any thread, and reaches nobody once its
+  Session's channel is closed; the provider interface an App answers its own
+  services through; and `MigoQtBuiltInHostServices`, which answers with Qt's own
+  what a desktop already offers -- the clipboard, and the game's toasts, loading
+  indicators, modals and action sheets.
 - `migo::qt6-managed-session` is the Managed ownership shape: `MigoManagedSession`
-  owns the Session, its callback table and the view. The Bound shape is the view
-  driven by an App-owned `SurfaceHost`. They are separate targets, so an App that
-  owns its own Session never links a type that creates and destroys Sessions.
+  owns the Session, its callback table and the view, and installs the built-in
+  services. Its `Options` carry the network policy, the launch options and the
+  App's own services; what the App names is its, the built-in services answer the
+  rest. The Bound shape is the view driven by an App-owned `SurfaceHost`. They are
+  separate targets, so an App that owns its own Session never links a type that
+  creates and destroys Sessions.
 - Qt Wayland, Qt Quick and GTK 4 are not claimed, and the last two are blocked
   on the same thing -- see "Render-path limits".
 

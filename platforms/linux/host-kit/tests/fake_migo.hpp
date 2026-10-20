@@ -96,6 +96,38 @@ void set_set_callbacks_result(MigoResult result) noexcept;
 void set_load_content_result(MigoResult result) noexcept;
 void set_session_destroy_result(MigoResult result) noexcept;
 
+/// What the Session was created with: its network policy and launch options,
+/// empty where the host passed NULL.
+const std::string &created_network_policy() noexcept;
+const std::string &created_launch_options() noexcept;
+
+/// One answer the host gave a host-service call.
+struct HostServiceAnswer {
+    uint64_t call_id = 0;
+    MigoHostServiceStatus status = 0;
+    std::string message;
+    std::string payload;
+    bool has_error_code = false;
+    int32_t error_code = 0;
+};
+
+/// One event the host posted for a service it declared.
+struct HostServiceEvent {
+    MigoHostService service = 0;
+    uint32_t event = 0;
+    std::string payload;
+};
+
+const std::vector<HostServiceAnswer> &host_service_answers() noexcept;
+const std::vector<HostServiceEvent> &host_service_events() noexcept;
+
+/// Deliver content's request of a host service the way the library does:
+/// through the host's dispatcher, from an engine thread. A call (call_id != 0)
+/// stays open until the host completes it, once; a command (0) is not answered.
+void deliver_host_service_call_from_engine_thread(MigoHostService service, uint32_t method,
+                                                  uint64_t call_id,
+                                                  const std::string &payload_json) noexcept;
+
 /// Drive the engine-side callbacks the way the real library would: through the
 /// host's dispatcher, from a thread that is not the GUI thread.
 void deliver_ready_from_engine_thread() noexcept;

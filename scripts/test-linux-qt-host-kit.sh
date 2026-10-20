@@ -187,6 +187,7 @@ require_file "$BUILD_DIR/install-consumer/migo-host-kit-install-consumer"
 env QT_QPA_PLATFORM=offscreen "$BUILD_DIR/migo-qt-x11-view-test"
 env QT_QPA_PLATFORM=offscreen "$BUILD_DIR/migo-qt-x11-input-test"
 env QT_QPA_PLATFORM=offscreen "$BUILD_DIR/migo-qt-managed-session-test"
+env QT_QPA_PLATFORM=offscreen "$BUILD_DIR/migo-qt-host-services-test"
 # Pin xcb explicitly: developer desktops often export WAYLAND_DISPLAY, while
 # this adapter and its positive-path test intentionally exercise X11 only.
 xvfb-run -a env -u WAYLAND_DISPLAY QT_QPA_PLATFORM=xcb \
@@ -195,6 +196,8 @@ xvfb-run -a env -u WAYLAND_DISPLAY QT_QPA_PLATFORM=xcb \
     "$BUILD_DIR/migo-qt-x11-input-test"
 xvfb-run -a env -u WAYLAND_DISPLAY QT_QPA_PLATFORM=xcb \
     "$BUILD_DIR/migo-qt-managed-session-test"
+xvfb-run -a env -u WAYLAND_DISPLAY QT_QPA_PLATFORM=xcb \
+    "$BUILD_DIR/migo-qt-host-services-test"
 
 if [[ "$SANITIZE" == "1" ]]; then
     # -fno-sanitize-recover=all is what makes this a gate rather than a report:
@@ -219,6 +222,8 @@ if [[ "$SANITIZE" == "1" ]]; then
         "$BUILD_DIR/sanitize/migo-qt-x11-input-test"
     xvfb-run -a env -u WAYLAND_DISPLAY QT_QPA_PLATFORM=xcb \
         "$BUILD_DIR/sanitize/migo-qt-managed-session-test"
+    xvfb-run -a env -u WAYLAND_DISPLAY QT_QPA_PLATFORM=xcb \
+        "$BUILD_DIR/sanitize/migo-qt-host-services-test"
     printf 'Linux Qt Host Kit contract: ASan/UBSan PASS\n'
 fi
 

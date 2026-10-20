@@ -26,8 +26,10 @@ Linux UI；它不创建应用、顶层窗口或事件循环——这些始终归
   或 Wayland 句柄。
 - `migo::qt6-x11-surface-view` — 基于 `xcb` 平台插件的 Qt 6.4+ Widgets 适配器，使用
   原生子 `QWidget`，负责 surface 生命周期、输入、焦点、IME 合成和帧请求。
+- `migo::qt6-host-services` — 宿主服务通道的 Qt 实现，以及 Qt 自带能力回答的内建服务
+  （剪贴板、toast/loading/modal/action sheet）。
 - `migo::qt6-managed-session` — Managed 所有权形态：`MigoManagedSession` 拥有 Session、
-  回调表和 view。
+  回调表和 view，并装上内建服务。
 
 Qt Wayland、Qt Quick 和 GTK 4 **尚不支持**。公开 C ABI 仍标记为
 `MIGO_C_ABI_CANDIDATE`；在 ABI 冻结之前，此 Host Kit 为集成预览版本。
@@ -140,6 +142,47 @@ MigoSession  > SurfaceHost ──> MigoQtX11SurfaceView
 
 `QApplication` 必须在 Qt view 之前存在并在其最终 release 之后才销毁，因为 Qt
 拥有 X11 连接和 GUI 事件循环。
+
+### 宿主服务
+
+内容调用 `migo.showToast`、`showModal`、`setClipboardData` 这类 API 时，引擎经 C ABI 的
+宿主服务通道请宿主回答（`MigoHostCallbacks.host_services` 与 `on_host_service_call`）。
+`migo::qt6-host-services` 的 `MigoQtBuiltInHostServices` 用 Qt 自带的能力回答其中桌面已经提供的部分：
+
+- **剪贴板**（`setClipboardData`、`getClipboardData`）：`QClipboard`。
+- **交互**（`showToast`、`hideToast`、`showLoading`、`hideLoading`、`showModal`、`showActionSheet`）：
+  toast 与 loading 是叠在游戏上方的指示窗，同一时间只显示一个，`hideToast` 只收 toast、
+  `hideLoading` 只收 loading，带 `mask` 时游戏收不到玩家输入；modal 是窗口模态对话框，
+  `editable` 时 `content` 是输入框的初始文字；action sheet 是游戏中央弹出的菜单，关闭菜单即以
+  `cancel` 失败。按钮颜色不应用：桌面的对话框是桌面的。
+
+`MigoManagedSession` 自动装上这些服务。App 自己回答的服务（广告、支付、登录……）用构造参数
+`Options::appServices` 提供一个 `MigoQtHostServiceProvider`：App 声明的服务归 App，包括内建
+也能回答的；其余由内建回答。同一个 `Options` 还带网络策略（`networkPolicyJson`，不给则游戏
+没有任何网络）和启动参数（`launchOptionsJson`），两者都是 `MigoSessionConfig` 的同名 JSON：
+
+```cpp
+class AppServices final : public migo::linux_host::qt6::MigoQtHostServiceProvider {
+public:
+    std::uint64_t services() const noexcept override {
+        return migo::linux_host::qt6::hostServiceBit(MIGO_HOST_SERVICE_AD);
+    }
+    void call(MigoHostService service, std::uint32_t method, const QJsonObject &request,
+              migo::linux_host::qt6::MigoQtHostServiceReply reply) override {
+        // 交给广告 SDK；结果到达时 reply.succeed(...) 或 reply.fail("...")，恰好一次。
+    }
+};
+
+migo::linux_host::qt6::MigoManagedSession::Options options;
+options.networkPolicyJson = R"({"request": ["api.example.com"]})";
+options.appServices = &app_services;  // 须比 Session 活得久
+migo::linux_host::qt6::MigoManagedSession game(engine, window, options);
+```
+
+自己持有 Session 的 App（Bound 形态）直接用 `MigoQtBuiltInHostServices` 与
+`MigoQtHostServiceChannel`：在自己的 `on_host_service_call` 里把调用交给它，并在
+`migo_session_destroy` 之前关闭通道。对话框可能在游戏结束后才被回答，关闭的通道让这样的
+回答不再到达已销毁的 Session。
 
 ## 5. 输入与帧
 
