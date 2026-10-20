@@ -21,6 +21,7 @@ members = [
  "testing/executor-probe",
  "tools/c-host-example",
  "tools/player",
+ "tools/qt-host-example",
  "tools/snapshot-gen",
 ]
 

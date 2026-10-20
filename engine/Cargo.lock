@@ -1826,6 +1826,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "migo-qt-host-example"
+version = "0.9.19"
+dependencies = [
+ "cc",
+ "migo-capi",
+]
+
+[[package]]
 name = "migo-runtime-v8"
 version = "0.9.19"
 dependencies = [
