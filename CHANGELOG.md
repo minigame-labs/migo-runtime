@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `getNetworkType` answers with every field the reference names -- `signalStrength`, `hasSystemProxy`, `weakNet` with
+  `networkType` and `isConnected` -- on every platform. A C ABI host reports them in one record,
+  `migo_session_report_network` with `MigoNetworkReport` (flags `MIGO_NETWORK_FLAG_CONNECTED`, `_SYSTEM_PROXY`,
+  `_WEAK`, and the signal in dBm, 0 when unknown); `migo_session_set_network_status` is that report with the rest
+  unknown. The Apple SDK reports the system's proxy setting (and the Wi-Fi signal on a Mac). Content's listeners hear
+  only what changed for them: `onNetworkStatusChange` a change of the connection or its type, and
+  `onNetworkWeakChange` a change of the weak-network judgement -- every report reached the first, changed or not, and
+  a change of the judgement alone reached nobody.
 - C ABI hosts launch a game with options of their own: `MigoSessionConfig.launch_options_json_utf8` (appended) is the
   object `getLaunchOptionsSync()` answers -- the scene, the query of the link that opened the game, who referred it --
   and what content is shown with until a show carries options of its own; anything but a JSON object refuses the
@@ -741,6 +749,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- Android: `getNetworkType().hasSystemProxy` is the platform's own default proxy (`ConnectivityManager.getDefaultProxy`),
+  a configuration script included; it read the JVM's `http.proxyHost`, which the framework copies a hand-set proxy
+  into and a configuration script never sets. The cell's `signalStrength` is the dBm the platform reports, or 0,
+  rather than its 0-4 level mapped to a made-up dBm.
 - `getDeviceInfo().memorySize` is the device's memory in MB, as on Android, on every platform: it was empty on macOS,
   Linux, Windows and OpenHarmony, and absent on iOS (Performance+), though the engine reads the memory for its own
   budgets.

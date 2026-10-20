@@ -760,6 +760,40 @@ MIGO_API MigoResult MIGO_CALL migo_session_copy_console_logs(MigoSession *sessio
 
 线程模型：任意线程。
 
+## migo_session_report_network
+
+```c
+/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+typedef struct MigoNetworkReport {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    MigoNetworkType type;
+    MigoNetworkFlags flags;      /* MIGO_NETWORK_FLAG_CONNECTED、_SYSTEM_PROXY、_WEAK */
+    int32_t signal_strength_dbm; /* 不知道时为 0 */
+    uint32_t reserved0;          /* 置零 */
+} MigoNetworkReport;
+
+MIGO_API MigoResult MIGO_CALL migo_session_report_network(MigoSession *session,
+                                                          const MigoNetworkReport *report);
+```
+
+完整的网络，即 `getNetworkType` 的答案。宿主现在报一次，之后其中任何一项变化都再报。连接或其类型的变化，
+内容通过 `onNetworkStatusChange` 得知；宿主判断的变化，通过 `onNetworkWeakChange` 得知。
+
+- `MIGO_NETWORK_FLAG_CONNECTED`：网络能连到互联网。
+- `MIGO_NETWORK_FLAG_SYSTEM_PROXY`（`hasSystemProxy`）：系统按平台自己的设置把网络走代理。游戏用它拒绝在抓包代理下
+  运行，所以它是设备的设置，不是猜测。
+- `MIGO_NETWORK_FLAG_WEAK`（`weakNet`）：宿主判断网络弱。
+- `signal_strength_dbm`（`signalStrength`）：接收信号强度，单位 dBm，即 Wi-Fi 的 RSSI 或蜂窝信号；宿主读不到时为 `0`，
+  iOS 即是如此。
+
+返回：
+
+- `MIGO_OK` — 已保留（内容正在监听且有变化时已转发）
+- `MIGO_ERROR_INVALID_ARGUMENT` — `session` 或 `report` 为 NULL；`type` 超出 `MIGO_NETWORK_5G`；含头文件未定义的
+  标志；`MIGO_NETWORK_NONE` 却报告已连接或弱；信号为正；`reserved0` 非零
+- `MIGO_ERROR_INVALID_STATE` — Session 已销毁
+
 ## migo_session_set_network_status
 
 ```c
@@ -769,7 +803,7 @@ MIGO_API MigoResult MIGO_CALL migo_session_set_network_status(MigoSession *sessi
                                                               uint8_t connected);
 ```
 
-设备当前所在的网络，按内容的 `getNetworkType`/`onNetworkStatusChange` 的口径。宿主现在报一次，
+只知道类型与是否连接的报告：没有代理、没有信号、不弱。设备当前所在的网络，按内容的 `getNetworkType`/`onNetworkStatusChange` 的口径。宿主现在报一次，
 之后每次变化再报；引擎保留最后一次报告，只在内容正在监听时把变化告诉内容。首次报告之前，
 内容的网络调用得到"not supported"。可以在 attach surface 之前调用，报告会被保留。
 

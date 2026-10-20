@@ -65,7 +65,7 @@ import { CardGrid, LinkCard } from '@astrojs/starlight/components';
 | 内容请宿主去做 | `MigoHostCallbacks.on_vibrate` | `vibrateShort` / `vibrateLong` | not supported |
 | 内容请宿主去做 | `MigoHostCallbacks.on_keep_screen_on` | `setKeepScreenOn` | not supported |
 | 内容请宿主去做 | `MigoHostCallbacks.on_game_log` | `getGameLogManager().log` | not supported |
-| 宿主报告现状 | `migo_session_set_network_status` | `getNetworkType` / `onNetworkStatusChange` | 首次报告前 not supported |
+| 宿主报告现状 | `migo_session_report_network`（或 `migo_session_set_network_status`） | `getNetworkType` / `onNetworkStatusChange` | 首次报告前 not supported |
 | 宿主报告现状 | `migo_session_set_battery_status` | `getBatteryInfo` | 首次报告前 not supported(没有电池的设备正该这样回答) |
 
 三个回调各自可选、互相独立,与其他回调一样经 `dispatch` 投递;两个状态入口由引擎保留最后一次报告,内容正在监听时才转发变化。细节见 [Session · 设备能力回调](/docs/reference/session/#设备能力回调)。

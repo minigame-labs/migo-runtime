@@ -121,7 +121,11 @@ public final class MigoDeviceStatusReporter {
         #endif
         observers.append(
             NotificationCenter.default.addObserver(forName: activation, object: nil, queue: .main) {
-                [weak self] _ in self?.reportAuthorizations()
+                [weak self] _ in
+                guard let self else { return }
+                self.reportAuthorizations()
+                // A proxy set while the app was away changes no path.
+                self.report(self.monitor.currentPath)
             })
         #if os(macOS)
             let wifi = WiFiPower { [weak self] in self?.reportWiFi() }
@@ -194,10 +198,30 @@ public final class MigoDeviceStatusReporter {
         return (MigoNetworkType(MIGO_NETWORK_UNKNOWN), true)
     }
 
+    /// Whether the system routes the network through a proxy -- one set by hand
+    /// or a configuration script -- as `getNetworkType`'s `hasSystemProxy` says.
+    /// The keys are the system's own, read the same on iOS and macOS.
+    static func systemProxy() -> Bool {
+        guard let settings = CFNetworkCopySystemProxySettings()?.takeRetainedValue() as? [String: Any] else {
+            return false
+        }
+        return ["HTTPEnable", "HTTPSEnable", "SOCKSEnable", "ProxyAutoConfigEnable"].contains {
+            (settings[$0] as? NSNumber)?.boolValue == true
+        }
+    }
+
     private func report(_ path: NWPath) {
         guard running else { return }
         let (type, connected) = Self.networkType(of: path)
-        session?.setNetworkStatus(type, connected: connected)
+        var signal: Int32 = 0
+        #if os(macOS)
+            // CoreWLAN reads the Wi-Fi signal; iOS offers apps no read of one.
+            if type == MigoNetworkType(MIGO_NETWORK_WIFI), path.usesInterfaceType(.wifi), let wifi {
+                signal = wifi.signalStrengthDBm
+            }
+        #endif
+        session?.reportNetwork(
+            type, connected: connected, systemProxy: Self.systemProxy(), signalStrengthDBm: signal)
         #if os(iOS)
             // iOS offers apps no read of the Wi-Fi switch. A path with a Wi-Fi
             // interface has it on; a switch that is on with no network joined
@@ -235,6 +259,10 @@ public final class MigoDeviceStatusReporter {
 
             /// Off on a Mac with no Wi-Fi interface.
             var isOn: Bool { client.interface()?.powerOn() ?? false }
+
+            /// The received signal of the network joined, in dBm; 0 when none is
+            /// joined, which is the API's "unknown".
+            var signalStrengthDBm: Int32 { Int32(clamping: min(client.interface()?.rssiValue() ?? 0, 0)) }
 
             func powerStateDidChangeForWiFiInterface(withName interfaceName: String) {
                 DispatchQueue.main.async { [weak self] in self?.changed() }
