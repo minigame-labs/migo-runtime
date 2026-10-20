@@ -226,11 +226,14 @@ import os
                 // No benchmark level: content reads the host's assessment of the
                 // device with the rest of what the app says about itself, so the
                 // two cannot disagree.
+                // The memory as the reference's `memorySize` is, MB in a string, and as
+                // the engine answers on every other platform.
                 let device: [String: Any] = [
                     "brand": brand,
                     "model": model,
                     "system": system,
                     "platform": platform,
+                    "memorySize": String(ProcessInfo.processInfo.physicalMemory >> 20),
                 ]
                 return [
                     "windowInfo": Self.json(window),

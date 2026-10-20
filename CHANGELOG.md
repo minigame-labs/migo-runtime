@@ -741,6 +741,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- `getDeviceInfo().memorySize` is the device's memory in MB, as on Android, on every platform: it was empty on macOS,
+  Linux, Windows and OpenHarmony, and absent on iOS (Performance+), though the engine reads the memory for its own
+  budgets.
 - `setInnerAudioOption` follows the reference on every platform. With the speaker on -- the default, and so nearly every
   call, `{ obeyMuteSwitch: false }` to play through the silent switch among them -- the reference ignores
   `mixWithOther` and plays alone: on iOS the session took the `Ambient` category, which mixes by its nature, so other
