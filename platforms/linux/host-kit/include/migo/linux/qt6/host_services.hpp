@@ -137,6 +137,17 @@ public:
 /// view's (`MigoQtX11SurfaceView::lockPointer`), reported as it is taken and
 /// released, and refused -- and said to be -- while the player is not at the game.
 ///
+/// The screen: a desktop's screen does not turn, its window does, so the
+/// screen's orientation is the game's shape -- portrait when its view is taller
+/// than wide, landscape otherwise -- reported each time the view crosses from
+/// one to the other, and `setDeviceOrientation` turns the window, the view's
+/// width and height exchanged (refused while full screen, or when the screen
+/// cannot hold the window turned). `setEnableDebug` is `debugAidsRequested`, for
+/// whoever owns the Session to turn its debugging aids (`MigoManagedSession`
+/// does). The rest of the screen is refused: no desktop tells an app of a
+/// screenshot or a recording, nor keeps a window out of one, and the backlight
+/// is not read yet.
+///
 /// GUI thread only. What is on screen goes with this object.
 class MigoQtBuiltInHostServices final : public QObject, public MigoQtHostServiceProvider {
     Q_OBJECT
@@ -157,6 +168,12 @@ public:
     /// The indicator shown, for an App or a test that reads what the player
     /// sees: its title, or empty when none is.
     [[nodiscard]] QString indicatorTitle() const;
+
+Q_SIGNALS:
+    /// Content's setEnableDebug: the debugging aids on or off. Content is told
+    /// the new state by the Session once its owner reports it
+    /// (`MIGO_HOST_APP_INFO_FLAG_DEBUG`).
+    void debugAidsRequested(bool on);
 
 private:
     class Interaction;

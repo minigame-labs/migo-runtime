@@ -42,6 +42,10 @@ bool g_has_host = false;
 MigoResult g_session_destroy_result = MIGO_OK;
 std::string g_network_policy;
 std::string g_host_app_id;
+uint32_t g_host_app_flags = 0;
+/// What content wrote to its console, as the library keeps it: each line's
+/// JSON, in order; a line's cursor is its index plus one.
+std::vector<std::string> g_console;
 std::string g_launch_options;
 std::vector<fake_migo::HostServiceAnswer> g_answers;
 std::vector<fake_migo::HostServiceEvent> g_events;
@@ -61,6 +65,8 @@ void reset() noexcept {
     g_calls = {};
     g_network_policy.clear();
     g_host_app_id.clear();
+    g_host_app_flags = 0;
+    g_console.clear();
     g_launch_options.clear();
     g_answers.clear();
     g_events.clear();
@@ -173,6 +179,12 @@ bool session_is_alive() noexcept { return g_session_alive; }
 const std::string &loaded_content_id() noexcept { return g_content_id; }
 const std::string &created_network_policy() noexcept { return g_network_policy; }
 const std::string &reported_host_app_id() noexcept { return g_host_app_id; }
+uint32_t reported_host_app_flags() noexcept { return g_host_app_flags; }
+
+void write_console(int level, const std::string &text) {
+    // Plain text only: the tests write no character JSON would need escaped.
+    g_console.push_back("{\"l\":" + std::to_string(level) + ",\"t\":0,\"m\":\"" + text + "\"}");
+}
 const std::string &created_launch_options() noexcept { return g_launch_options; }
 const std::vector<HostServiceAnswer> &host_service_answers() noexcept { return g_answers; }
 const std::vector<HostServiceEvent> &host_service_events() noexcept { return g_events; }
@@ -540,5 +552,21 @@ extern "C" MigoResult MIGO_CALL migo_session_set_host_app_info(MigoSession *sess
     if (session != fake_migo::session() || !g_session_alive || info == nullptr) return MIGO_ERROR_INVALID_ARGUMENT;
     if (info->struct_size != sizeof(*info) || info->benchmark_level < -2) return MIGO_ERROR_INVALID_ARGUMENT;
     g_host_app_id = info->app_id_utf8 != nullptr ? info->app_id_utf8 : "";
+    g_host_app_flags = info->flags;
+    return MIGO_OK;
+}
+
+extern "C" MigoResult MIGO_CALL migo_session_copy_console_logs(MigoSession *session, uint64_t since_cursor,
+                                                             char *buffer, size_t capacity, size_t *out_length) {
+    if (session != fake_migo::session() || !g_session_alive || out_length == nullptr) return MIGO_ERROR_INVALID_ARGUMENT;
+    std::string json = "{\"logs\":[";
+    for (size_t index = since_cursor; index < g_console.size(); ++index) {
+        if (index > since_cursor) json += ",";
+        json += g_console[index];
+    }
+    json += "],\"cursor\":" + std::to_string(g_console.size()) + "}";
+    *out_length = json.size();
+    if (buffer == nullptr || capacity < json.size() + 1) return MIGO_ERROR_INVALID_ARGUMENT;
+    std::memcpy(buffer, json.c_str(), json.size() + 1);
     return MIGO_OK;
 }

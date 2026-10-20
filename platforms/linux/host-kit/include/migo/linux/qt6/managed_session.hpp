@@ -116,6 +116,19 @@ public:
     /// Whether the Session has been destroyed.
     [[nodiscard]] bool isClosed() const noexcept;
 
+    /// Whether the debugging aids are on: content's setEnableDebug turns them,
+    /// and getAppBaseInfo().enableDebug says so. While they are on, a panel
+    /// over the top of the game shows the frames a second the view delivers
+    /// and what content writes to its console from then, and takes no input:
+    /// the game stays playable under it.
+    [[nodiscard]] bool debugAids() const noexcept;
+
+    /// Turn the debugging aids on or off, and tell the Session, which tells
+    /// content. An App that answers the screen service itself turns them here.
+    /// Returns the Session's answer to the report; MIGO_ERROR_INVALID_STATE
+    /// once the Session is closing.
+    [[nodiscard]] MigoResult setDebugAids(bool on);
+
 Q_SIGNALS:
     /// Content finished loading and is running.
     void contentReady();
@@ -128,6 +141,8 @@ Q_SIGNALS:
     /// A Surface or input call was refused. Forwarded from the view so an App
     /// using the Managed shape does not have to connect to it separately.
     void migoError(MigoResult code);
+    /// The debugging aids were turned on or off.
+    void debugAidsChanged(bool on);
 
 private:
     class Impl;

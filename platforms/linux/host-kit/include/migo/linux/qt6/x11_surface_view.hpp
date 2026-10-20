@@ -117,6 +117,10 @@ public:
     /// Whether a requested frame has not yet been reported to the engine.
     [[nodiscard]] bool isFramePending() const noexcept { return frame_requested_; }
 
+    /// The frames reported to the engine so far: what a debugging panel's
+    /// frames a second are counted from.
+    [[nodiscard]] std::uint64_t framesDelivered() const noexcept { return frames_delivered_; }
+
     [[nodiscard]] SurfaceState surfaceState() const noexcept {
         return owns_surface_ ? surface_host_.state() : SurfaceState::Detached;
     }
@@ -216,6 +220,7 @@ private:
     bool composing_ = false;
     /// True between a frame request and the frame boundary it produced.
     bool frame_requested_ = false;
+    std::uint64_t frames_delivered_ = 0;
 
     /// What a held pointer lock reads the mouse with; null while none is held.
     class PointerLock;

@@ -102,6 +102,12 @@ const std::string &created_network_policy() noexcept;
 const std::string &created_launch_options() noexcept;
 /// The host app's identifier the host last reported, empty when it reported none.
 const std::string &reported_host_app_id() noexcept;
+/// The flags of the host's last report about itself (MIGO_HOST_APP_INFO_FLAG_*).
+uint32_t reported_host_app_flags() noexcept;
+
+/// A line content writes to its console, which the host's debugging panel
+/// reads back (migo_session_copy_console_logs): level 0 debug .. 3 error.
+void write_console(int level, const std::string &text);
 
 /// One answer the host gave a host-service call.
 struct HostServiceAnswer {
