@@ -17,6 +17,8 @@
 //!
 //! `--network-policy FILE` gives the game the network a host would: FILE is the
 //! JSON a C-ABI host writes into `MigoSessionConfig.network_policy_json_utf8`.
+//! `--launch-options FILE` launches it as a host would, with the JSON object a
+//! C-ABI host writes into `MigoSessionConfig.launch_options_json_utf8`.
 //! Without it the game reaches no network at all, as under a host that set none.
 
 // X11 is the Linux windowed path. The offscreen path below is portable, which is
@@ -188,6 +190,7 @@ fn main() {
     let mut windowed = std::env::var_os("MIGO_PLAYER_WINDOW").is_some_and(|v| v != "0");
     let mut resize = None;
     let mut network_policy = shared::network_policy::NetworkPolicy::default();
+    let mut launch_options = None;
     let mut prelude_files = Vec::new();
     let mut sessions: u32 = 1;
     let mut args = std::env::args().skip(1);
@@ -221,6 +224,26 @@ fn main() {
                     Ok(policy) => network_policy = policy,
                     Err(message) => {
                         tracing::error!("--network-policy: {message}");
+                        std::process::exit(2);
+                    }
+                }
+            }
+            "--launch-options" => {
+                let read = args
+                    .next()
+                    .ok_or_else(|| "--launch-options takes a JSON file".to_string())
+                    .and_then(|file| {
+                        std::fs::read_to_string(&file).map_err(|error| format!("{file}: {error}"))
+                    })
+                    .and_then(|json| match serde_json::from_str(&json) {
+                        Ok(serde_json::Value::Object(options)) => Ok(options),
+                        Ok(_) => Err("launch options are a JSON object".to_string()),
+                        Err(error) => Err(error.to_string()),
+                    });
+                match read {
+                    Ok(options) => launch_options = Some(options),
+                    Err(message) => {
+                        tracing::error!("--launch-options: {message}");
                         std::process::exit(2);
                     }
                 }
@@ -262,6 +285,11 @@ fn main() {
         }
     };
     let secs: u64 = positional.get(1).and_then(|s| s.parse().ok()).unwrap_or(8);
+    // What the host chooses for the game; `prepare` adds where it runs.
+    let settings = InitOptions::new()
+        .with_network_policy(network_policy)
+        .with_launch_options(launch_options)
+        .with_prelude_scripts(preludes);
 
     if sessions > 1 {
         if windowed || resize.is_some() {
@@ -270,21 +298,14 @@ fn main() {
             );
             std::process::exit(2);
         }
-        if let Err(err) = run_sessions(&bundle_dir, secs, sessions, network_policy, preludes) {
+        if let Err(err) = run_sessions(&bundle_dir, secs, sessions, settings) {
             tracing::error!("player failed: {err}");
             std::process::exit(1);
         }
         return;
     }
 
-    if let Err(err) = run(
-        &bundle_dir,
-        secs,
-        windowed,
-        resize,
-        network_policy,
-        preludes,
-    ) {
+    if let Err(err) = run(&bundle_dir, secs, windowed, resize, settings) {
         tracing::error!("player failed: {err}");
         std::process::exit(1);
     }
@@ -293,7 +314,7 @@ fn main() {
 fn print_usage() {
     eprintln!(
         "usage: migo-player GAME_BUNDLE_DIR [SECONDS] [--window|--offscreen] [--network-policy FILE] \
-         [--prelude SCRIPT]... [--sessions N]"
+         [--launch-options FILE] [--prelude SCRIPT]... [--sessions N]"
     );
 }
 
@@ -332,13 +353,10 @@ fn parse_extent(text: &str) -> Option<(u32, u32)> {
 }
 
 /// Deploy the bundle into a scratch app directory and build the options a session starts
-/// from. Every session of a run starts from these, so what one leaves in the app's files or
-/// caches the next finds, as it would in an app.
-fn prepare(
-    bundle_dir: &PathBuf,
-    network_policy: shared::network_policy::NetworkPolicy,
-    preludes: Vec<(String, String)>,
-) -> Result<(PathBuf, InitOptions), String> {
+/// from: `settings`, what the host chose, in that directory. Every session of a run starts
+/// from these, so what one leaves in the app's files or caches the next finds, as it would in
+/// an app.
+fn prepare(bundle_dir: &PathBuf, settings: InitOptions) -> Result<(PathBuf, InitOptions), String> {
     // ---- Scratch dirs (files / cache / code cache) ----
     let root = std::env::temp_dir().join(format!("migo-player-{}", std::process::id()));
     let files_dir = root.join("files");
@@ -374,15 +392,13 @@ fn prepare(
     tracing::info!("deployed game '{GAME_ID}' to {}", code_dir.display());
 
     // ---- InitOptions (signing off: dev player has no signed receipt) ----
-    let opt = InitOptions::new()
+    let opt = settings
         .with_files_dir(files_dir)
         .with_cache_dir(cache_dir)
         .with_code_cache_dir(code_cache_dir)
         .with_pixel_ratio(1.0)
         .with_debug_enabled(true)
-        .with_code_signing_enabled(false)
-        .with_network_policy(network_policy)
-        .with_prelude_scripts(preludes);
+        .with_code_signing_enabled(false);
 
     Ok((root, opt))
 }
@@ -392,10 +408,9 @@ fn run(
     secs: u64,
     windowed: bool,
     resize: Option<(u32, u32)>,
-    network_policy: shared::network_policy::NetworkPolicy,
-    preludes: Vec<(String, String)>,
+    settings: InitOptions,
 ) -> Result<(), String> {
-    let (root, opt) = prepare(bundle_dir, network_policy, preludes)?;
+    let (root, opt) = prepare(bundle_dir, settings)?;
 
     // ---- Render target: a real X11 window, or an offscreen pbuffer ----
     // The window (when present) must outlive the engine session: the render
@@ -640,10 +655,9 @@ fn run_sessions(
     bundle_dir: &PathBuf,
     secs: u64,
     sessions: u32,
-    network_policy: shared::network_policy::NetworkPolicy,
-    preludes: Vec<(String, String)>,
+    settings: InitOptions,
 ) -> Result<(), String> {
-    let (root, opt) = prepare(bundle_dir, network_policy, preludes)?;
+    let (root, opt) = prepare(bundle_dir, settings)?;
     let png_path = std::env::var_os("MIGO_PLAYER_PNG")
         .map(PathBuf::from)
         .unwrap_or_else(|| root.join("migo-player-frame.png"));

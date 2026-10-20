@@ -85,11 +85,15 @@ import os
             /// those calls failing as they do on a platform with no device
             /// services.
             public var device: DeviceProfile?
+            /// What the game is launched with, the JSON object
+            /// `MigoSessionConfig.launch_options_json_utf8` documents -- the same
+            /// the engine session was created with. `nil` is the engine's defaults.
+            public var launchOptionsJSON: String?
 
             public init(
                 launchNonce: [UInt8], runtimeGeneration: UInt64 = 1, surfaceGeneration: UInt64,
                 resourceEpoch: UInt64 = 0, surfaceWidthPixels: Int, surfaceHeightPixels: Int,
-                device: DeviceProfile? = nil
+                device: DeviceProfile? = nil, launchOptionsJSON: String? = nil
             ) {
                 self.launchNonce = launchNonce
                 self.runtimeGeneration = runtimeGeneration
@@ -98,6 +102,7 @@ import os
                 self.surfaceWidthPixels = surfaceWidthPixels
                 self.surfaceHeightPixels = surfaceHeightPixels
                 self.device = device
+                self.launchOptionsJSON = launchOptionsJSON
             }
 
             /// What the page is handed. The 64- and 128-bit fields are strings,
@@ -115,6 +120,7 @@ import os
                     "surfaceHeight": surfaceHeightPixels,
                 ]
                 if let device { fields["device"] = device.injected }
+                if let launchOptionsJSON { fields["launchOptions"] = launchOptionsJSON }
                 return fields
             }
 

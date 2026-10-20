@@ -45,6 +45,7 @@ pub(crate) fn callback_session_pin() -> Arc<MigoSession> {
         device: Default::default(),
         host_reports: Default::default(),
         network_policy: Default::default(),
+        launch_options: None,
     })
 }
 
@@ -86,6 +87,8 @@ pub(crate) fn session_config() -> MigoSessionConfig {
         // No external producer in these tests, so no identity to pair with one.
         launch_nonce: [0u8; 16],
         network_policy_json_utf8: std::ptr::null(),
+
+        launch_options_json_utf8: std::ptr::null(),
     }
 }
 

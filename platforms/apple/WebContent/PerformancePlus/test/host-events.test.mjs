@@ -39,16 +39,23 @@ const { bindEngineHost, readEngineSessionConfig } = await import(`${root}/engine
 const { HOST_EVENT, bindHostEvents, dispatchHostEvent } = await import(`${root}/host-events.mjs`);
 const { DOWN_EVENT, decodeServiceDownMessage } = await import(`${root}/service.mjs`);
 
+const described = {
+  launchNonce: "0x0123456789abcdeffedcba9876543210",
+  runtimeGeneration: "1",
+  surfaceGeneration: "1",
+  resourceEpoch: "0",
+  surfaceWidth: 64,
+  surfaceHeight: 64,
+  launchOptions: '{"scene":1007,"query":{"level":"2"},"referrerInfo":{"appId":"referrer.example"}}',
+};
+// Launch options that are not an object are not a launch.
+for (const launchOptions of ["[1]", '"scene=1007"', "{"]) {
+  assert.throws(() => readEngineSessionConfig({ ...described, launchOptions }), `${launchOptions} is refused`);
+}
+const identity = readEngineSessionConfig(described);
 bindEngineHost({
   session: new FrameSession({ send() {}, sendControl() {} }),
-  identity: readEngineSessionConfig({
-    launchNonce: "0x0123456789abcdeffedcba9876543210",
-    runtimeGeneration: "1",
-    surfaceGeneration: "1",
-    resourceEpoch: "0",
-    surfaceWidth: 64,
-    surfaceHeight: 64,
-  }),
+  identity,
   socketCeilingBytes: 64 * 1024,
   report() {},
 });
@@ -56,8 +63,19 @@ await import(`${root}/engine/boot.mjs`);
 
 // What the producer does once the engine has loaded.
 const bridgeName = Symbol.for("Migo.hostBridge");
+globalThis[bridgeName]._internalLaunch(identity.launchOptions);
 const bound = bindHostEvents(globalThis[bridgeName]);
 delete globalThis[bridgeName];
+
+// Launched with what the host created the session with, before content's first line.
+{
+  const launch = globalThis.migo.getLaunchOptionsSync();
+  assert.equal(launch.scene, 1007, "the scene the host launched the game in");
+  assert.deepEqual(launch.query, { level: "2" }, "the query the host launched the game with");
+  assert.equal(launch.referrerInfo.appId, "referrer.example", "who the host said referred it");
+  assert.equal(launch.shareTicket, "", "what the host left out is the default");
+  assert.deepEqual(globalThis.migo.getEnterOptionsSync(), launch, "and entered with them");
+}
 
 const seen = [];
 const note = (name) => (event) => seen.push([name, event]);

@@ -487,6 +487,8 @@ fn the_session_config_and_the_descriptor_read_a_nonce_identically() {
         flags: 0,
         launch_nonce: bytes,
         network_policy_json_utf8: std::ptr::null(),
+
+        launch_options_json_utf8: std::ptr::null(),
     };
     // SAFETY: the record carries no string.
     let validated = unsafe { config.validate() }.expect("a well-formed config");

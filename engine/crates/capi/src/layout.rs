@@ -188,9 +188,11 @@ mod lp64 {
     const _: () = assert!(offset_of!(MigoEngineConfig, code_cache_dir_utf8) == 40);
 
     // Appended after the nonce, for the same reason: a caller passing the
-    // 32-byte record is zero-extended to a null policy, which grants nothing.
-    const _: () = assert!(size_of::<MigoSessionConfig>() == 40);
+    // 32-byte record is zero-extended to a null policy, which grants nothing,
+    // and one passing the 40-byte record to null launch options, the defaults.
+    const _: () = assert!(size_of::<MigoSessionConfig>() == 48);
     const _: () = assert!(offset_of!(MigoSessionConfig, network_policy_json_utf8) == 32);
+    const _: () = assert!(offset_of!(MigoSessionConfig, launch_options_json_utf8) == 40);
     const _: () = assert!(size_of::<MigoContentDescriptor>() == 40);
     const _: () = assert!(offset_of!(MigoContentDescriptor, flags) == 8);
     const _: () = assert!(offset_of!(MigoContentDescriptor, environment) == 12);

@@ -36,6 +36,7 @@ migo-core = { path = "../../crates/core", default-features = false }
 platform = { package = "migo-platform", path = "../../crates/platform", default-features = false }
 graphics = { package = "migo-graphics", path = "../../crates/graphics", default-features = false }
 shared = { package = "migo-shared", path = "../../crates/shared", default-features = false }
+serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 png = "0.17"

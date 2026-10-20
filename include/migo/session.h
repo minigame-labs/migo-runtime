@@ -127,19 +127,43 @@ typedef struct MigoSessionConfig {
      * Anything else -- an unknown key, a malformed entry -- makes
      * migo_session_create fail with MIGO_ERROR_INVALID_ARGUMENT.
      *
-     * Appended, which is why it is last: the library zero-extends a caller
-     * that passes the shorter record, and NULL is the refusal such a caller
-     * had no way to change.
+     * Appended: the library zero-extends a caller that passes the shorter
+     * record, and NULL is the refusal such a caller had no way to change.
      */
     const char *network_policy_json_utf8;
+    /*
+     * The options the game is launched with, as NUL-terminated UTF-8 JSON;
+     * borrowed for the duration of migo_session_create. NULL launches it with
+     * the engine's defaults (scene 1001, an empty query).
+     *
+     *   {"scene": 1007, "query": {"level": "2"},
+     *    "referrerInfo": {"appId": "...", "extraData": {}}}
+     *
+     * An object, as getLaunchOptionsSync() answers one: scene, query (an
+     * object of strings, or a query string), shareTicket, apiCategory and
+     * referrerInfo; what it leaves out has its default, and a field of the
+     * wrong type is the default too. It is also what content is shown with
+     * until a show carries options of its own -- which no show through this
+     * interface does -- and what a restart launches the game with again, its
+     * query the one restartMiniProgram's path names. Anything that is not a
+     * JSON object makes migo_session_create fail with
+     * MIGO_ERROR_INVALID_ARGUMENT.
+     *
+     * Appended, which is why it is last: the library zero-extends a caller
+     * that passes the shorter record, and NULL is the defaults such a caller
+     * always had.
+     */
+    const char *launch_options_json_utf8;
 } MigoSessionConfig;
 
 MIGO_STATIC_ASSERT(offsetof(MigoSessionConfig, struct_size) == 0,
                    "every versioned struct must begin with struct_size");
 #if MIGO_LP64
-MIGO_STATIC_ASSERT(sizeof(MigoSessionConfig) == 40, "MigoSessionConfig LP64 size changed");
+MIGO_STATIC_ASSERT(sizeof(MigoSessionConfig) == 48, "MigoSessionConfig LP64 size changed");
 MIGO_STATIC_ASSERT(offsetof(MigoSessionConfig, network_policy_json_utf8) == 32,
                    "MigoSessionConfig.network_policy_json_utf8 moved");
+MIGO_STATIC_ASSERT(offsetof(MigoSessionConfig, launch_options_json_utf8) == 40,
+                   "MigoSessionConfig.launch_options_json_utf8 moved");
 #endif
 
 typedef uint32_t MigoContentFlags;

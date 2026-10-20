@@ -183,12 +183,14 @@ static int fail(const char *what, MigoResult result) {
     return 1;
 }
 
-/* The network policy, read whole from the file MIGO_C_HOST_NETWORK_POLICY names,
- * or NULL -- no network at all -- when it names none. A file that cannot be read
- * stops the host: running it under no policy instead would fail every network
- * check for a reason no check names. */
-static char *read_network_policy(void) {
-    const char *path = getenv("MIGO_C_HOST_NETWORK_POLICY");
+/* A setting's JSON, read whole from the file the environment variable `name`
+ * names, or NULL when it names none: MIGO_C_HOST_NETWORK_POLICY, the network
+ * (none at all without it), and MIGO_C_HOST_LAUNCH_OPTIONS, what the game is
+ * launched with (the defaults without it). A file that cannot be read stops the
+ * host: running without the setting instead would fail every check that needs
+ * it for a reason no check names. */
+static char *read_setting(const char *name) {
+    const char *path = getenv(name);
     if (path == NULL || path[0] == '\0') return NULL;
     FILE *file = fopen(path, "rb");
     long size = -1;
@@ -196,7 +198,7 @@ static char *read_network_policy(void) {
     char *json = (size >= 0) ? malloc((size_t)size + 1) : NULL;
     if (json == NULL || fseek(file, 0, SEEK_SET) != 0
         || fread(json, 1, (size_t)size, file) != (size_t)size) {
-        fprintf(stderr, "[c-host] cannot read the network policy %s\n", path);
+        fprintf(stderr, "[c-host] cannot read %s=%s\n", name, path);
         exit(2);
     }
     fclose(file);
@@ -490,13 +492,16 @@ int main(int argc, char **argv) {
     session_config.struct_size = (uint32_t)sizeof(session_config);
     session_config.abi_version = MIGO_ABI_VERSION_CURRENT;
     session_config.flags = MIGO_SESSION_FLAG_NONE;
-    /* Borrowed for the create only, so it is freed straight after. */
-    char *network_policy = read_network_policy();
+    /* Borrowed for the create only, so they are freed straight after. */
+    char *network_policy = read_setting("MIGO_C_HOST_NETWORK_POLICY");
+    char *launch_options = read_setting("MIGO_C_HOST_LAUNCH_OPTIONS");
     session_config.network_policy_json_utf8 = network_policy;
+    session_config.launch_options_json_utf8 = launch_options;
 
     MigoSession *session = NULL;
     result = migo_session_create(engine, &session_config, &session);
     free(network_policy);
+    free(launch_options);
     if (result != MIGO_OK) return fail("migo_session_create", result);
 
     /* ---- Callbacks install once, before the first attach. ---- */

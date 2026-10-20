@@ -26,6 +26,7 @@ typedef struct MigoSessionConfig {
     MigoSessionFlags flags;
     uint8_t  launch_nonce[16];
     const char *network_policy_json_utf8;
+    const char *launch_options_json_utf8;
 } MigoSessionConfig;
 ```
 
@@ -44,6 +45,15 @@ typedef struct MigoSessionConfig {
 ```
 
 `request`、`download`(含远程图片、音频流、资源预取)、`upload`、`socket`、`tcp`、`udp` 各自是一个域名数组或 `"unrestricted"`;没写的通道全部拒绝。`example.com` 只匹配它本身,`*.example.com` 只匹配子域,不能写 IP 地址。`allowPlainHttp` 才允许 `http://`/`ws://`;`lan` 让 socket、tcp、udp 能访问局域网的其他设备,request、download、upload 无论如何都到不了局域网。未知的键或写错的条目让 `migo_session_create` 返回 `MIGO_ERROR_INVALID_ARGUMENT`。这个字段同样是追加的:传旧版结构体的宿主得到 NULL,即没有网络。
+
+`launch_options_json_utf8` 是游戏的启动参数,NUL 结尾的 UTF-8 JSON,只在 `migo_session_create` 调用期间借用;NULL 即引擎默认值(场景 1001、空 query)。
+
+```json
+{"scene": 1007, "query": {"level": "2"},
+ "referrerInfo": {"appId": "...", "extraData": {}}}
+```
+
+它是一个对象,形状同 `getLaunchOptionsSync()` 的返回:`scene`、`query`(字符串组成的对象,或查询字符串)、`shareTicket`、`apiCategory`、`referrerInfo`;没写的字段取默认值,类型不对的字段也取默认值。内容在某次 show 自带参数之前一直以它展示(经这个接口的 show 都不带参数),重启时也以它重新启动,query 换成 `restartMiniProgram` 的 `path` 指定的那个。不是 JSON 对象的值让 `migo_session_create` 返回 `MIGO_ERROR_INVALID_ARGUMENT`。同样是追加的字段:传旧版结构体的宿主得到 NULL,即一直以来的默认值。
 
 初始化示例：
 

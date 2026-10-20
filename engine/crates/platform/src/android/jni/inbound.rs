@@ -525,8 +525,24 @@ pub(crate) extern "system" fn init(
             }
         };
 
+        // What the game is launched with: null for none, otherwise the object
+        // `RuntimeConfig.Builder.setLaunchOptions` serialised, so one that is not an
+        // object is a Java/native mismatch, refused for the policy's reason.
+        let launch_options =
+            match super::get_optional_string_field(&mut env, "launchOptionsJson", &options)
+                .map(|json| serde_json::from_str::<serde_json::Value>(&json))
+            {
+                None => None,
+                Some(Ok(serde_json::Value::Object(options))) => Some(options),
+                Some(_) => {
+                    error!("init failed: RuntimeConfig.launchOptions is not a JSON object");
+                    return -1;
+                }
+            };
+
         let init_options = InitOptions::new()
             .with_network_policy(network_policy)
+            .with_launch_options(launch_options)
             .with_pixel_ratio(display_density)
             .with_cache_dir(PathBuf::from(cache_dir))
             .with_files_dir(PathBuf::from(files_dir))

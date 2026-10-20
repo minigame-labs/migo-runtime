@@ -2,6 +2,8 @@ package com.migo.runtime;
 
 import android.content.Context;
 
+import org.json.JSONObject;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -107,6 +109,8 @@ public final class RuntimeConfig {
     private final String preludeScriptsJson;
     // Internal: the NetworkPolicy, in the form the engine parses, for JNI field access
     private final String networkPolicyJson;
+    // Internal: what the game is launched with, as JSON, or null for none -- for JNI field access
+    private final String launchOptionsJson;
 
     private RuntimeConfig(Builder builder) {
         this.cacheDir = builder.cacheDir;
@@ -129,6 +133,7 @@ public final class RuntimeConfig {
         this.preludeScripts = Collections.unmodifiableList(new ArrayList<>(builder.preludeScripts));
         this.preludeScriptsJson = buildPreludeScriptsJson(this.preludeScripts);
         this.networkPolicyJson = builder.networkPolicy.toJson();
+        this.launchOptionsJson = builder.launchOptionsJson;
     }
 
     // ==================== Getters ====================
@@ -299,6 +304,7 @@ public final class RuntimeConfig {
 
         private final List<String[]> preludeScripts = new ArrayList<>();
         private NetworkPolicy networkPolicy = NetworkPolicy.denyAll();
+        private String launchOptionsJson = null;
 
         /**
          * Create a new builder with required context.
@@ -582,6 +588,22 @@ public final class RuntimeConfig {
                         "networkPolicy must not be null; use NetworkPolicy.denyAll() for none");
             }
             this.networkPolicy = policy;
+            return this;
+        }
+
+        /**
+         * Set what the game is launched with: what {@code getLaunchOptionsSync()} answers -- the scene, the query of
+         * the link that opened it, who referred it ({@code scene}, {@code query}, {@code shareTicket},
+         * {@code apiCategory}, {@code referrerInfo}). What it leaves out has its default, and so does a field of the
+         * wrong type. It is also what the game is entered with until a show carries options of its own, and what a
+         * restart launches it with again, its query the one {@code restartMiniProgram}'s path names.
+         * <p>
+         * Default: none -- scene 1001 and an empty query, unless the activity's intent carries launch options.
+         *
+         * @param options the options, copied as they are now; null for none
+         */
+        public Builder setLaunchOptions(JSONObject options) {
+            this.launchOptionsJson = options == null ? null : options.toString();
             return this;
         }
 

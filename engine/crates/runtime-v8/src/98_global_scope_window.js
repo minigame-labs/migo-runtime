@@ -153,6 +153,7 @@ const WindowGlobalScope = {
     offAppHide: core.propNonEnumerable(appLifecycle.offHide),
     getLaunchOptionsSync: core.propNonEnumerable(appLifecycle.getLaunchOptionsSync),
     getEnterOptionsSync: core.propNonEnumerable(appLifecycle.getEnterOptionsSync),
+    _internalLaunch: core.propNonEnumerable(appLifecycle._internalLaunch),
     _internalTriggerOnShow: core.propNonEnumerable(function (option) {
         timersInternal._internalSetTimerBackgrounded(false);
         appLifecycle._internalTriggerOnShow(option);
