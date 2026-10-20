@@ -33,7 +33,16 @@ if(NOT DEFINED MIGO_LINUX_HOST_KIT_ENABLE_INSTALL)
 endif()
 add_subdirectory("${HOST_KIT_ROOT}" "${CMAKE_CURRENT_BINARY_DIR}/host-kit")
 
-find_package(Qt6 6.4 REQUIRED COMPONENTS Test)
+find_package(Qt6 6.4 REQUIRED COMPONENTS Gui Test)
+find_package(X11 REQUIRED)
+if(NOT TARGET X11::Xtst)
+    message(FATAL_ERROR "the xcb input tests drive the X server through XTest (libxtst-dev)")
+endif()
+
+# The player's hands on the X server, through XTest: its own unit, because
+# Xlib's macros break Qt's names wherever both are seen.
+add_library(migo_host_kit_x11_player STATIC x11_player.cpp)
+target_link_libraries(migo_host_kit_x11_player PUBLIC Qt6::Gui PRIVATE X11::X11 X11::Xtst)
 
 add_executable(migo-surface-host-test surface_host_test.cpp)
 target_link_libraries(migo-surface-host-test PRIVATE
@@ -51,9 +60,12 @@ target_link_libraries(migo-qt-x11-view-test PRIVATE
 
 add_executable(migo-qt-x11-input-test qt_x11_input_test.cpp)
 set_target_properties(migo-qt-x11-input-test PROPERTIES AUTOMOC ON)
+# The raw-motion reader is internal to the adapter; this test reads it directly.
+target_include_directories(migo-qt-x11-input-test PRIVATE "${HOST_KIT_ROOT}/src/qt6")
 target_link_libraries(migo-qt-x11-input-test PRIVATE
     migo::qt6-x11-surface-view
     migo_host_kit_fake_capi
+    migo_host_kit_x11_player
     Qt6::Test
 )
 
@@ -88,6 +100,7 @@ target_compile_definitions(migo-gnu-extension-consumer-test PRIVATE
 
 foreach(target
         migo_host_kit_fake_capi
+        migo_host_kit_x11_player
         migo-surface-host-test
         migo-qt-x11-view-test
         migo-qt-x11-input-test

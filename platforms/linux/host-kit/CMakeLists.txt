@@ -48,14 +48,20 @@ set(_migo_linux_host_kit_targets migo_linux_surface_host)
 if(MIGO_LINUX_HOST_KIT_BUILD_QT6_X11)
     find_package(Qt6 6.4 REQUIRED COMPONENTS Core Gui Widgets)
     find_package(X11 REQUIRED)
+    # XInput 2 on Qt's own xcb connection: the raw motion a pointer lock reads.
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(MIGO_XCB_XINPUT REQUIRED IMPORTED_TARGET xcb xcb-xinput)
 
     add_library(migo_qt6_x11_surface_view STATIC
         include/migo/linux/qt6/x11_surface_view.hpp
         src/qt6/x11_surface_view.cpp
-        # Internal, not installed: the DOM key/code tables are an implementation
-        # detail of this adapter, not part of the Host Kit's public contract.
+        # Internal, not installed: the DOM key/code tables and the raw-motion
+        # reader are implementation details of this adapter, not part of the
+        # Host Kit's public contract.
         src/qt6/dom_key_names.hpp
         src/qt6/dom_key_names.cpp
+        src/qt6/xi2_raw_motion.hpp
+        src/qt6/xi2_raw_motion.cpp
     )
     add_library(migo::qt6-x11-surface-view ALIAS migo_qt6_x11_surface_view)
     set_target_properties(migo_qt6_x11_surface_view PROPERTIES
@@ -75,6 +81,7 @@ if(MIGO_LINUX_HOST_KIT_BUILD_QT6_X11)
             Qt6::Widgets
         PRIVATE
             X11::X11
+            PkgConfig::MIGO_XCB_XINPUT
     )
     list(APPEND _migo_linux_host_kit_targets migo_qt6_x11_surface_view)
 

@@ -6,6 +6,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QClipboard>
+#include <QCursor>
 #include <QDeadlineTimer>
 #include <QDialog>
 #include <QJsonArray>
@@ -464,8 +465,9 @@ private slots:
     }
 
     /// Each change of the window's state is reported once, in the platform's
-    /// words; a pointer lock is refused, and said to be.
-    void the_window_reports_its_state_and_refuses_a_pointer_lock() {
+    /// words; a pointer lock asked for with the player elsewhere is refused,
+    /// and said to be.
+    void the_window_reports_its_state_and_a_refused_pointer_lock() {
         Managed fixture;
         const auto events = [] {
             std::vector<std::string> said;
@@ -488,10 +490,51 @@ private slots:
         QCOMPARE(events(), (std::vector<std::string>{R"({"state":"minimize"})", R"({"state":"maximize"})",
                                                      R"({"state":"normalize"})"}));
 
+        // The view does not hold the keyboard: Esc, the way out, would not reach it.
+        fixture.session.view()->clearFocus();
         fake_migo::deliver_host_service_call_from_engine_thread(MIGO_HOST_SERVICE_WINDOW,
                                                                 MIGO_WINDOW_REQUEST_POINTER_LOCK, 0, "{}");
         QTRY_COMPARE(events().size(), std::size_t{4});
         QCOMPARE(events().back(), std::string(R"({"locked":false})"));
+        QCOMPARE(fixture.session.close(), MIGO_OK);
+    }
+
+    /// A lock content asks for with the player at the game is taken and said
+    /// to be, as its release is.
+    void a_pointer_lock_is_reported_as_it_is_taken_and_released() {
+        if (!require_xcb("xcb-only test", __FILE__, __LINE__)) return;
+        Managed fixture;
+        MigoQtX11SurfaceView &view = *fixture.session.view();
+        auto *layout = new QVBoxLayout(&fixture.container);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->addWidget(&view);
+        fixture.container.resize(320, 200);
+        fixture.container.show();
+        QTRY_COMPARE(fake_migo::calls().attach, 1);
+        fixture.container.activateWindow();
+        QVERIFY(QTest::qWaitForWindowActive(&fixture.container));
+        view.setFocus();
+        QCursor::setPos(view.mapToGlobal(QPoint(10, 10)));
+        const auto locks = [] {
+            std::vector<std::string> said;
+            for (const auto &event : fake_migo::host_service_events()) {
+                if (event.service == MIGO_HOST_SERVICE_WINDOW &&
+                    event.event == MIGO_WINDOW_EVENT_POINTER_LOCK_CHANGE) {
+                    said.push_back(event.payload);
+                }
+            }
+            return said;
+        };
+        const auto command = [](std::uint32_t method) {
+            fake_migo::deliver_host_service_call_from_engine_thread(MIGO_HOST_SERVICE_WINDOW, method, 0, "{}");
+        };
+
+        command(MIGO_WINDOW_REQUEST_POINTER_LOCK);
+        QTRY_VERIFY(view.isPointerLocked());
+        command(MIGO_WINDOW_REQUEST_POINTER_LOCK);
+        command(MIGO_WINDOW_EXIT_POINTER_LOCK);
+        QTRY_VERIFY(!view.isPointerLocked());
+        QCOMPARE(locks(), (std::vector<std::string>{R"({"locked":true})", R"({"locked":false})"}));
         QCOMPARE(fixture.session.close(), MIGO_OK);
     }
 

@@ -1,8 +1,11 @@
 #include <migo/linux/qt6/x11_surface_view.hpp>
 
 #include "dom_key_names.hpp"
+#include "xi2_raw_motion.hpp"
 
+#include <QAbstractNativeEventFilter>
 #include <QCloseEvent>
+#include <QCursor>
 #include <QFocusEvent>
 #include <QInputMethodEvent>
 #include <QKeyEvent>
@@ -25,12 +28,17 @@
 #endif
 
 #include <X11/Xlib.h>
+#include <xcb/xcb.h>
+#include <xcb/xinput.h>
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <optional>
+#include <vector>
 
 namespace migo::linux_host::qt6 {
 
@@ -42,7 +50,118 @@ constexpr int kStalledReleasePollIntervalMs = 250;
 constexpr qint64 kFastReleaseWindowMs = 100;
 constexpr qint64 kReleaseStallThresholdMs = 2000;
 
+struct XcbFree {
+    void operator()(void *reply) const noexcept { std::free(reply); }
+};
+template <typename T>
+using XcbReply = std::unique_ptr<T, XcbFree>;
+
 }  // namespace
+
+// ---------------------------------------------------------------------------
+// Pointer lock
+//
+// While a lock holds, the mouse is grabbed and the cursor hidden -- Qt's grab
+// with a cursor is an application's override cursor, so a cursor content sets
+// meanwhile shows once the lock is gone, as in a browser -- and what moves
+// content's pointer is XInput 2's raw motion. The root window reports it
+// whatever the cursor does, at the screen's edge too, where a cursor stops, and
+// to every client that selected it there, grab or none. A selection is this
+// client's, one per window and device, so the lock's is made over what this
+// client had selected on the root for every master device, and that is put back.
+// ---------------------------------------------------------------------------
+
+class MigoQtX11SurfaceView::PointerLock final : public QAbstractNativeEventFilter {
+public:
+    /// Reads `view`'s raw motion from now on; null when the X server will not report it.
+    static std::unique_ptr<PointerLock> engage(MigoQtX11SurfaceView &view) {
+        auto *native = qGuiApp->nativeInterface<QNativeInterface::QX11Application>();
+        xcb_connection_t *connection = native != nullptr ? native->connection() : nullptr;
+        if (connection == nullptr) return nullptr;
+        const xcb_query_extension_reply_t *xi = xcb_get_extension_data(connection, &xcb_input_id);
+        if (xi == nullptr || xi->present == 0) return nullptr;
+        // Raw events are reported on the root of the view's screen alone.
+        const XcbReply<xcb_get_geometry_reply_t> geometry(xcb_get_geometry_reply(
+            connection, xcb_get_geometry(connection, static_cast<xcb_drawable_t>(view.winId())),
+            nullptr));
+        if (geometry == nullptr) return nullptr;
+        const XcbReply<xcb_input_xi_get_selected_events_reply_t> selected(
+            xcb_input_xi_get_selected_events_reply(
+                connection, xcb_input_xi_get_selected_events(connection, geometry->root), nullptr));
+        if (selected == nullptr) return nullptr;
+        std::vector<std::uint32_t> previous{0};
+        for (auto masks = xcb_input_xi_get_selected_events_masks_iterator(selected.get());
+             masks.rem > 0; xcb_input_event_mask_next(&masks)) {
+            if (masks.data->deviceid != XCB_INPUT_DEVICE_ALL_MASTER || masks.data->mask_len == 0) {
+                continue;
+            }
+            const std::uint32_t *words = xcb_input_event_mask_mask(masks.data);
+            previous.assign(words, words + masks.data->mask_len);
+        }
+
+        std::unique_ptr<PointerLock> lock(
+            new PointerLock(view, connection, geometry->root, xi->major_opcode, std::move(previous)));
+        std::vector<std::uint32_t> wanted = lock->previous_;
+        wanted[0] |= XCB_INPUT_XI_EVENT_MASK_RAW_MOTION;
+        const std::vector<std::uint32_t> request = lock->selection(wanted);
+        if (XcbReply<xcb_generic_error_t> error(xcb_request_check(
+                connection, xcb_input_xi_select_events_checked(
+                                connection, lock->root_, 1,
+                                reinterpret_cast<const xcb_input_event_mask_t *>(request.data()))));
+            error != nullptr) {
+            return nullptr;
+        }
+        qApp->installNativeEventFilter(lock.get());
+        return lock;
+    }
+
+    ~PointerLock() override {
+        qApp->removeNativeEventFilter(this);
+        const std::vector<std::uint32_t> request = selection(previous_);
+        xcb_input_xi_select_events(connection_, root_, 1,
+                                   reinterpret_cast<const xcb_input_event_mask_t *>(request.data()));
+        xcb_flush(connection_);
+    }
+
+    PointerLock(const PointerLock &) = delete;
+    PointerLock &operator=(const PointerLock &) = delete;
+
+    bool nativeEventFilter(const QByteArray &type, void *message, qintptr *result) override {
+        Q_UNUSED(result);
+        if (type != "xcb_generic_event_t") return false;
+        if (const std::optional<RawMotion> motion = rawMotion(message, opcode_)) {
+            // The screen's pixels are the view's times its device pixel ratio.
+            view_.moveLockedPointer(motion->delta / view_.devicePixelRatioF(),
+                                    static_cast<double>(motion->time));
+        }
+        // Not taken from Qt: another filter may read the same motion.
+        return false;
+    }
+
+private:
+    PointerLock(MigoQtX11SurfaceView &view, xcb_connection_t *connection, xcb_window_t root,
+                std::uint8_t opcode, std::vector<std::uint32_t> previous)
+        : view_(view), connection_(connection), root_(root), opcode_(opcode),
+          previous_(std::move(previous)) {}
+
+    /// XISelectEvents' one mask for every master device: its head, then `mask`.
+    static std::vector<std::uint32_t> selection(const std::vector<std::uint32_t> &mask) {
+        std::vector<std::uint32_t> request(1 + mask.size());
+        const xcb_input_event_mask_t head{XCB_INPUT_DEVICE_ALL_MASTER,
+                                          static_cast<std::uint16_t>(mask.size())};
+        static_assert(sizeof(head) == sizeof(std::uint32_t));
+        std::memcpy(request.data(), &head, sizeof(head));
+        std::copy(mask.begin(), mask.end(), request.begin() + 1);
+        return request;
+    }
+
+    MigoQtX11SurfaceView &view_;
+    xcb_connection_t *const connection_;
+    const xcb_window_t root_;
+    const std::uint8_t opcode_;
+    /// What this client had selected on the root for every master device.
+    const std::vector<std::uint32_t> previous_;
+};
 
 MigoQtX11SurfaceView::MigoQtX11SurfaceView(SurfaceHost &surface_host, QWidget &parent)
     : QWidget(&parent),
@@ -105,6 +224,12 @@ MigoQtX11SurfaceView::MigoQtX11SurfaceView(SurfaceHost &surface_host, QWidget &p
 MigoQtX11SurfaceView::~MigoQtX11SurfaceView() {
     release_timer_.stop();
     metrics_update_timer_.stop();
+    // The player's mouse is never left grabbed, whatever happened; there is no
+    // one left to tell.
+    if (pointer_lock_ != nullptr) {
+        pointer_lock_.reset();
+        releaseMouse();
+    }
     if (owns_surface_) {
         qFatal("MigoQtX11SurfaceView destroyed before its native Surface reached RELEASED");
     }
@@ -208,6 +333,8 @@ MigoResult MigoQtX11SurfaceView::beginDetach() {
         recordError(MIGO_ERROR_INVALID_STATE);
         return MIGO_ERROR_INVALID_STATE;
     }
+    // The game is going: a lock it holds goes first.
+    unlockPointer();
     const MigoResult result = surface_host_.begin_detach();
     recordError(result);
     if (result == MIGO_OK) {
@@ -397,23 +524,20 @@ std::uint32_t dom_button_held(Qt::MouseButtons buttons) noexcept {
 
 }  // namespace
 
-void MigoQtX11SurfaceView::deliverPointer(const QMouseEvent &event, std::uint32_t kind) {
+void MigoQtX11SurfaceView::deliverPointer(std::uint32_t kind, std::uint32_t button,
+                                          double timestamp_ms) {
     MigoPointerEvent out{};
     out.struct_size = static_cast<std::uint32_t>(sizeof(out));
     out.abi_version = MIGO_ABI_VERSION_1;
     out.event_type = kind;
-    // A press or a release names the button that changed state; a move names what
-    // is still down. Both come from the event, so there is no remembered ordinal
-    // to go stale between them.
-    out.button = kind == MIGO_POINTER_EVENT_MOVE ? dom_button_held(event.buttons())
-                                                 : dom_button(event.button());
+    out.button = button;
     out.x = last_pointer_x_;
     out.y = last_pointer_y_;
-    out.timestamp_ms = static_cast<double>(event.timestamp());
+    out.timestamp_ms = timestamp_ms;
     recordInputResult(migo_session_send_pointer_event(surface_host_.session(), &out));
 }
 
-void MigoQtX11SurfaceView::deliverMouseAsTouch(const QMouseEvent &event, MigoTouchType kind) {
+void MigoQtX11SurfaceView::deliverMouseAsTouch(MigoTouchType kind, double timestamp_ms) {
     // mini-game content has no hover concept, so a mouse maps to one finger with id 0
     // and only while a button is held. A free-motion stream would be events no
     // game reads.
@@ -432,51 +556,110 @@ void MigoQtX11SurfaceView::deliverMouseAsTouch(const QMouseEvent &event, MigoTou
     out.abi_version = MIGO_ABI_VERSION_1;
     out.type = kind;
     out.point_count = 1;
-    out.timestamp_ms = static_cast<std::int64_t>(event.timestamp());
+    out.timestamp_ms = static_cast<std::int64_t>(timestamp_ms);
     out.points = touch_points_.data();
     recordInputResult(migo_session_send_touch(surface_host_.session(), &out));
 }
 
+// A press or a release names the button that changed state; a move names what is
+// still down. Both come from the event, so there is no remembered ordinal to go
+// stale between them. While a lock holds the pointer, a press or a release is
+// where content's pointer is, not where the hidden cursor went.
+
 void MigoQtX11SurfaceView::mousePressEvent(QMouseEvent *event) {
     QWidget::mousePressEvent(event);
     if (!inputIsDeliverable()) return;
-    last_pointer_x_ = static_cast<float>(event->position().x());
-    last_pointer_y_ = static_cast<float>(event->position().y());
+    if (pointer_lock_ == nullptr) {
+        last_pointer_x_ = static_cast<float>(event->position().x());
+        last_pointer_y_ = static_cast<float>(event->position().y());
+    }
+    const auto timestamp = static_cast<double>(event->timestamp());
     const bool first_press = !mouse_pressed_;
     mouse_pressed_ = true;
     if (pointer_delivery_ != PointerDelivery::TouchOnly) {
-        deliverPointer(*event, MIGO_POINTER_EVENT_DOWN);
+        deliverPointer(MIGO_POINTER_EVENT_DOWN, dom_button(event->button()), timestamp);
     }
     if (pointer_delivery_ != PointerDelivery::MouseOnly && first_press) {
-        deliverMouseAsTouch(*event, MIGO_TOUCH_START);
+        deliverMouseAsTouch(MIGO_TOUCH_START, timestamp);
     }
 }
 
 void MigoQtX11SurfaceView::mouseMoveEvent(QMouseEvent *event) {
     QWidget::mouseMoveEvent(event);
-    if (!inputIsDeliverable()) return;
+    // Locked, the raw motion moves content's pointer (moveLockedPointer); this is
+    // the hidden cursor's.
+    if (!inputIsDeliverable() || pointer_lock_ != nullptr) return;
     last_pointer_x_ = static_cast<float>(event->position().x());
     last_pointer_y_ = static_cast<float>(event->position().y());
+    const auto timestamp = static_cast<double>(event->timestamp());
     if (pointer_delivery_ != PointerDelivery::TouchOnly) {
-        deliverPointer(*event, MIGO_POINTER_EVENT_MOVE);
+        deliverPointer(MIGO_POINTER_EVENT_MOVE, dom_button_held(event->buttons()), timestamp);
     }
     if (pointer_delivery_ != PointerDelivery::MouseOnly && mouse_pressed_) {
-        deliverMouseAsTouch(*event, MIGO_TOUCH_MOVE);
+        deliverMouseAsTouch(MIGO_TOUCH_MOVE, timestamp);
     }
 }
 
 void MigoQtX11SurfaceView::mouseReleaseEvent(QMouseEvent *event) {
     QWidget::mouseReleaseEvent(event);
     if (!inputIsDeliverable()) return;
-    last_pointer_x_ = static_cast<float>(event->position().x());
-    last_pointer_y_ = static_cast<float>(event->position().y());
+    if (pointer_lock_ == nullptr) {
+        last_pointer_x_ = static_cast<float>(event->position().x());
+        last_pointer_y_ = static_cast<float>(event->position().y());
+    }
+    const auto timestamp = static_cast<double>(event->timestamp());
     const bool was_pressed = mouse_pressed_;
     mouse_pressed_ = false;
     if (pointer_delivery_ != PointerDelivery::TouchOnly) {
-        deliverPointer(*event, MIGO_POINTER_EVENT_UP);
+        deliverPointer(MIGO_POINTER_EVENT_UP, dom_button(event->button()), timestamp);
     }
     if (pointer_delivery_ != PointerDelivery::MouseOnly && was_pressed) {
-        deliverMouseAsTouch(*event, MIGO_TOUCH_END);
+        deliverMouseAsTouch(MIGO_TOUCH_END, timestamp);
+    }
+}
+
+// The pointer lock; what reads the mouse while it holds is PointerLock, above.
+
+bool MigoQtX11SurfaceView::lockPointer() {
+    if (pointer_lock_ != nullptr) return true;
+    // With the player at the game: the view holds the keyboard -- so Esc, the way
+    // out, reaches it -- and the cursor is over the part of it that shows.
+    if (!inputIsDeliverable() || !hasFocus()) return false;
+    const QPoint origin = QCursor::pos(screen());
+    const QPointF position = mapFromGlobal(QPointF(origin));
+    if (!visibleRegion().contains(position.toPoint())) return false;
+    pointer_lock_ = PointerLock::engage(*this);
+    if (pointer_lock_ == nullptr) return false;
+    lock_origin_ = origin;
+    locked_position_ = position;
+    last_pointer_x_ = static_cast<float>(position.x());
+    last_pointer_y_ = static_cast<float>(position.y());
+    grabMouse(QCursor(Qt::BlankCursor));
+    Q_EMIT pointerLockChanged(true);
+    return true;
+}
+
+void MigoQtX11SurfaceView::unlockPointer() {
+    if (pointer_lock_ == nullptr) return;
+    pointer_lock_.reset();
+    releaseMouse();
+    // The motion that moved content's pointer moved the hidden cursor too: it
+    // stands where it stood when the lock was taken.
+    QCursor::setPos(screen(), lock_origin_);
+    Q_EMIT pointerLockChanged(false);
+}
+
+void MigoQtX11SurfaceView::moveLockedPointer(QPointF delta, double timestamp_ms) {
+    if (!inputIsDeliverable()) return;
+    locked_position_ += delta;
+    last_pointer_x_ = static_cast<float>(locked_position_.x());
+    last_pointer_y_ = static_cast<float>(locked_position_.y());
+    if (pointer_delivery_ != PointerDelivery::TouchOnly) {
+        deliverPointer(MIGO_POINTER_EVENT_MOVE, dom_button_held(QGuiApplication::mouseButtons()),
+                       timestamp_ms);
+    }
+    if (pointer_delivery_ != PointerDelivery::MouseOnly && mouse_pressed_) {
+        deliverMouseAsTouch(MIGO_TOUCH_MOVE, timestamp_ms);
     }
 }
 
@@ -534,6 +717,16 @@ void MigoQtX11SurfaceView::deliverKey(const QKeyEvent &event, std::uint32_t kind
 }
 
 void MigoQtX11SurfaceView::keyPressEvent(QKeyEvent *event) {
+    // Esc is the player's way out of a pointer lock, as in a browser: that Esc,
+    // its repeats and its release are not the game's.
+    if (event->key() == Qt::Key_Escape && (pointer_lock_ != nullptr || escape_released_lock_)) {
+        if (pointer_lock_ != nullptr) {
+            escape_released_lock_ = true;
+            unlockPointer();
+        }
+        event->accept();
+        return;
+    }
     if (!inputIsDeliverable()) {
         QWidget::keyPressEvent(event);
         return;
@@ -543,6 +736,12 @@ void MigoQtX11SurfaceView::keyPressEvent(QKeyEvent *event) {
 }
 
 void MigoQtX11SurfaceView::keyReleaseEvent(QKeyEvent *event) {
+    if (escape_released_lock_ && event->key() == Qt::Key_Escape) {
+        // X11 repeats a held key as a release and a press each time.
+        if (!event->isAutoRepeat()) escape_released_lock_ = false;
+        event->accept();
+        return;
+    }
     if (!inputIsDeliverable()) {
         QWidget::keyReleaseEvent(event);
         return;
@@ -756,6 +955,8 @@ void MigoQtX11SurfaceView::focusInEvent(QFocusEvent *event) {
 
 void MigoQtX11SurfaceView::focusOutEvent(QFocusEvent *event) {
     QWidget::focusOutEvent(event);
+    // Esc no longer reaches the view: a lock it holds is released.
+    unlockPointer();
     // Order matters: the press and the preedit are retracted while content
     // still believes it has focus, so a listener that ignores input while
     // unfocused still sees them end. Held keys are deliberately not synthesized

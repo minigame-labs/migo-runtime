@@ -411,6 +411,17 @@ public:
     WindowService(MigoQtX11SurfaceView &view, std::shared_ptr<MigoQtHostServiceChannel> channel)
         : view_(&view), channel_(std::move(channel)), reported_(stateOf(*view.window())) {
         view.window()->installEventFilter(this);
+        // A lock taken, or released -- by content, by the player's Esc, by the
+        // view losing the keyboard -- is reported as it happens.
+        connect(&view, &MigoQtX11SurfaceView::pointerLockChanged, this, [this](bool locked) {
+            (void)channel_->post(MIGO_HOST_SERVICE_WINDOW, MIGO_WINDOW_EVENT_POINTER_LOCK_CHANGE,
+                                 {{QStringLiteral("locked"), locked}});
+        });
+    }
+
+    ~WindowService() override {
+        // The game's lock goes with the game.
+        if (!view_.isNull()) view_->unlockPointer();
     }
 
     void call(std::uint32_t method, const QJsonObject &request, MigoQtHostServiceReply reply) {
@@ -422,14 +433,15 @@ public:
                 setCursor(request);
                 return;
             case MIGO_WINDOW_REQUEST_POINTER_LOCK:
-                // Refused, as a host may: a lock holds the cursor still and moves
-                // content's pointer by the mouse's raw motion, which this Host Kit
-                // does not read yet.
-                (void)channel_->post(MIGO_HOST_SERVICE_WINDOW, MIGO_WINDOW_EVENT_POINTER_LOCK_CHANGE,
-                                     {{QStringLiteral("locked"), false}});
+                // A lock taken is reported by the view; a refusal -- the player is
+                // not at the game -- here. A lock already held is no change.
+                if (view_.isNull() || !view_->lockPointer()) {
+                    (void)channel_->post(MIGO_HOST_SERVICE_WINDOW, MIGO_WINDOW_EVENT_POINTER_LOCK_CHANGE,
+                                         {{QStringLiteral("locked"), false}});
+                }
                 return;
             case MIGO_WINDOW_EXIT_POINTER_LOCK:
-                // None is held.
+                if (!view_.isNull()) view_->unlockPointer();
                 return;
             default:
                 (void)reply.fail(QStringLiteral("not supported"));

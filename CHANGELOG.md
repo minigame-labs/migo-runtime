@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The Linux Host Kit holds a pointer lock: `MigoQtX11SurfaceView::lockPointer()` / `unlockPointer()` /
+  `isPointerLocked()` and `pointerLockChanged`, which the window service's `requestPointerLock` / `exitPointerLock`
+  now answer with. It is taken only with the player at the game -- the view holding the keyboard, the cursor over the
+  part of it that shows -- and refused, and said to be, otherwise. While it holds, the mouse is grabbed and the cursor
+  hidden, and XInput 2's raw motion on Qt's own xcb connection moves content's pointer from where the cursor stood,
+  past the view's edges too; Esc releases it (that Esc and its release are not the game's), as do the view losing
+  the keyboard and the game ending, and the cursor then stands where it stood. The Qt adapter now links
+  `xcb-xinput` (found through pkg-config); its xcb tests drive the X server through XTest (`libxtst-dev`). The
+  Linux gaps for `requestPointerLock` / `exitPointerLock` in `api-platform-decisions.json` are gone.
 - The Linux Host Kit answers the window service with Qt's own: `setWindowSize` (the game's size in pixels; the window
   grows or shrinks by what the view must, and is not sized while full screen), `setCursor` (a CSS keyword as Qt's
   cursor, or an image and its hotspot) and `onWindowStateChange` (minimize, maximize -- full screen included --
