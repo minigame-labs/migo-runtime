@@ -1252,11 +1252,9 @@ fn audio_platform(
         .and_then(|services| services.audio_platform())
 }
 
-/// Set inner audio options via platform AudioManager.
-/// Routes through DeviceServices for platform-specific audio configuration:
-/// - mixWithOther: Android audio focus behavior (duck vs abandon)
-/// - obeyMuteSwitch: Respect device ringer/mute mode
-/// - speakerOn: Route audio output to speaker
+/// Content's `setInnerAudioOption`, as given: the services layer applies the reference's
+/// rule (with the speaker on, `mixWithOther` is ignored) and hands the platform what is
+/// left for it, whether the silent switch is obeyed.
 #[op2(fast)]
 pub fn op_audio_set_inner_audio_option(
     state: &mut OpState,

@@ -227,6 +227,34 @@ mod callback_isolation_tests {
         );
     }
 
+    /// The audio options are answered as every asynchronous call is: callback-style
+    /// content gets nothing back and hears its callbacks after the call returns.
+    /// `setInnerAudioOption` and `getAvailableAudioSources` called them before
+    /// returning, and returned a Promise to callback-style content too, whose
+    /// rejection nobody held.
+    #[cfg(feature = "api-media")]
+    #[test]
+    fn the_audio_options_answer_after_returning_and_return_nothing_to_callbacks() {
+        let mut rt = boot();
+        exec(
+            &mut rt,
+            r#"
+            for (const api of ['setInnerAudioOption', 'getAvailableAudioSources']) {
+                const returned = migo[api]({
+                    complete: function () { globalThis.__log.push(api + ' complete'); },
+                });
+                globalThis.__log.push(api + (returned === undefined ? ' returned nothing' : ' RETURNED'));
+            }
+            "#,
+        );
+        assert_js(
+            &mut rt,
+            "globalThis.__log.join(',') === 'setInnerAudioOption returned nothing,\
+             getAvailableAudioSources returned nothing,setInnerAudioOption complete,\
+             getAvailableAudioSources complete'",
+        );
+    }
+
     /// An op's error must reach JS as a constructible Error, not as `undefined`.
     ///
     /// `#[class("AudioError")]` on the Rust side only names the class; deno_core

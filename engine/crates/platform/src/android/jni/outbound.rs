@@ -735,33 +735,6 @@ pub fn get_network_type_json(host_id: i32) -> Result<String, String> {
 
 // ==================== Audio Platform ====================
 
-/// Set inner audio options: mixWithOther, obeyMuteSwitch, speakerOn.
-/// Calls Java: NativeExports.setInnerAudioOption(hostId, mixWithOther, obeyMuteSwitch, speakerOn)
-pub fn set_inner_audio_option(
-    host_id: i32,
-    mix_with_other: bool,
-    obey_mute_switch: bool,
-    speaker_on: bool,
-) -> Result<(), String> {
-    call_static_method(
-        "setInnerAudioOption",
-        ReturnType::Primitive(Primitive::Void),
-        |_env, _| Ok(()),
-        &[
-            jvalue { i: host_id },
-            jvalue {
-                z: mix_with_other as u8,
-            },
-            jvalue {
-                z: obey_mute_switch as u8,
-            },
-            jvalue {
-                z: speaker_on as u8,
-            },
-        ],
-    )
-}
-
 /// Get available audio input sources as JSON array string.
 /// Calls Java: NativeExports.getAvailableAudioSources(hostId) -> String (JSON array)
 pub fn get_available_audio_sources(host_id: i32) -> Result<String, String> {

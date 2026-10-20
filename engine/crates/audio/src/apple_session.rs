@@ -7,13 +7,14 @@
 //! crate -- so the engine configures its own session, which is also the only
 //! thing `setInnerAudioOption` can act on:
 //!
-//! - `obeyMuteSwitch` chooses the category: `Ambient` respects the silent
-//!   switch, `Playback` plays through it.
-//! - `mixWithOther` adds `MixWithOthers`, so another app's music keeps playing.
-//! - `speakerOn` is the speaker, which both categories already route to. The
-//!   receiver route needs `PlayAndRecord`, and that asks for the microphone --
-//!   a permission this profile does not grant -- so a `false` is accepted and
-//!   not honoured, as Android's own best-effort `setSpeakerphoneOn` is.
+//! - `obeyMuteSwitch` chooses the category: `SoloAmbient` respects the silent
+//!   switch, `Playback` plays through it. Neither mixes with other apps' audio:
+//!   with the speaker on the reference plays alone whatever `mixWithOther` says,
+//!   and that is decided before this is asked (`migo_services::audio`).
+//! - `speakerOn` is the speaker, which both categories route to. The receiver
+//!   route needs `PlayAndRecord`, and that asks for the microphone -- a
+//!   permission this profile does not grant -- so `false` is answered as not
+//!   supported, before this is asked.
 //!
 //! `getAvailableAudioSources` reads the session's inputs: `auto`, and the
 //! built-in and headset microphones by the names the API gives them.
@@ -58,7 +59,7 @@ unsafe extern "C" {
 
 #[link(name = "AVFoundation", kind = "framework")]
 unsafe extern "C" {
-    static AVAudioSessionCategoryAmbient: *const Object;
+    static AVAudioSessionCategorySoloAmbient: *const Object;
     static AVAudioSessionCategoryPlayback: *const Object;
     static AVAudioSessionInterruptionNotification: *const Object;
     static AVAudioSessionInterruptionTypeKey: *const Object;
@@ -66,8 +67,6 @@ unsafe extern "C" {
     static AVAudioSessionPortHeadsetMic: *const Object;
 }
 
-/// `AVAudioSessionCategoryOptionMixWithOthers`.
-const MIX_WITH_OTHERS: u64 = 1;
 /// `AVAudioSessionInterruptionTypeBegan`.
 const INTERRUPTION_BEGAN: u64 = 1;
 
@@ -89,23 +88,33 @@ unsafe fn send(receiver: *const Object, sel: Sel) -> *mut Object {
     unsafe { msg(receiver, sel) }
 }
 
-/// What content asked of the session.
+/// What content asked of the session that is the session's to do: whether the
+/// silent switch is obeyed. The game's audio is exclusive of other apps' either
+/// way -- with the speaker on, the reference ignores `mixWithOther`
+/// (`migo_services::audio::set_inner_audio_option`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AudioSessionOptions {
-    pub mix_with_other: bool,
     pub obey_mute_switch: bool,
-    pub speaker_on: bool,
 }
 
 impl Default for AudioSessionOptions {
-    /// The mini-game API's defaults: the silent switch is obeyed and other
-    /// apps' audio keeps playing.
+    /// The mini-game API's default: the silent switch is obeyed.
     fn default() -> Self {
         Self {
-            mix_with_other: true,
             obey_mute_switch: true,
-            speaker_on: true,
         }
+    }
+}
+
+/// The category for `options`: solo ambient, which the silent switch silences, or
+/// playback, which it does not. Neither mixes with other apps' audio -- ambient,
+/// which the session used to take, does by its nature, so every game played over
+/// whatever else was playing, where the reference's plays alone.
+fn category_name(options: AudioSessionOptions) -> &'static str {
+    if options.obey_mute_switch {
+        "soloAmbient"
+    } else {
+        "playback"
     }
 }
 
@@ -307,16 +316,13 @@ pub fn configure(options: AudioSessionOptions) -> EngineResult<()> {
     })?;
     let category = unsafe {
         if options.obey_mute_switch {
-            AVAudioSessionCategoryAmbient
+            AVAudioSessionCategorySoloAmbient
         } else {
             AVAudioSessionCategoryPlayback
         }
     };
-    let category_options = if options.mix_with_other {
-        MIX_WITH_OTHERS
-    } else {
-        0
-    };
+    // No category options: `MixWithOthers` is what would let other apps play on.
+    let category_options = 0;
     let set_category: unsafe extern "C" fn(
         *const Object,
         Sel,
@@ -356,15 +362,7 @@ pub fn configure(options: AudioSessionOptions) -> EngineResult<()> {
             ),
         ));
     }
-    info!(
-        "audio session active: category={}, mixWithOthers={}",
-        if options.obey_mute_switch {
-            "ambient"
-        } else {
-            "playback"
-        },
-        options.mix_with_other
-    );
+    info!("audio session active: category={}", category_name(options));
     let mut state = state().lock().expect("the session state is never poisoned");
     state.options = options;
     state.applied = true;
@@ -462,16 +460,9 @@ pub struct AppleAudioPlatform;
 impl shared::services::AudioPlatformService for AppleAudioPlatform {
     fn set_inner_audio_option(
         &self,
-        mix_with_other: bool,
         obey_mute_switch: bool,
-        speaker_on: bool,
     ) -> Result<(), shared::protocol::error::ServiceError> {
-        configure(AudioSessionOptions {
-            mix_with_other,
-            obey_mute_switch,
-            speaker_on,
-        })
-        .map_err(|error| {
+        configure(AudioSessionOptions { obey_mute_switch }).map_err(|error| {
             shared::protocol::error::ServiceError::system(
                 error.detail.unwrap_or_else(|| error.msg.to_string()),
             )
@@ -491,7 +482,20 @@ impl shared::services::AudioPlatformService for AppleAudioPlatform {
 
 #[cfg(test)]
 mod tests {
-    use super::sources;
+    use super::{AudioSessionOptions, category_name, sources};
+
+    /// The silent switch decides between the two categories that play alone:
+    /// obeyed by default, solo ambient; not obeyed, playback.
+    #[test]
+    fn the_session_plays_alone_and_obeys_the_silent_switch_by_default() {
+        assert_eq!(category_name(AudioSessionOptions::default()), "soloAmbient");
+        assert_eq!(
+            category_name(AudioSessionOptions {
+                obey_mute_switch: false
+            }),
+            "playback"
+        );
+    }
 
     /// `auto` leads whenever there is an input; the two microphones iOS names
     /// follow by name; a session that lists nothing and has no input offers

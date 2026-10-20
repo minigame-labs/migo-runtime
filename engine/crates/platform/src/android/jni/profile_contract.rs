@@ -242,7 +242,6 @@ const JAVA_SENSORS: &[JniMethod] = methods![
 ];
 
 const JAVA_MEDIA: &[JniMethod] = methods![
-    ("setInnerAudioOption", "(IZZZ)V"),
     ("getAvailableAudioSources", "(I)Ljava/lang/String;"),
     ("recorderStart", "(ILjava/lang/String;)V"),
     ("recorderPause", "(I)V"),
@@ -513,8 +512,9 @@ mod tests {
         // +1 Java (`getHostAppInfoJson`). The host's package updates add +2
         // Java, System (`updateAvailable`, `applyUpdate`). Returning to the
         // mini program that opened this one adds +1 Java, Connectivity
-        // (`navigateBackMiniProgram`).
-        assert_eq!(java.len(), 147, "full NativeExports surface changed");
+        // (`navigateBackMiniProgram`). `setInnerAudioOption` is gone, -1 Java,
+        // Media: what the option leaves the platform is nothing Android does.
+        assert_eq!(java.len(), 146, "full NativeExports surface changed");
         assert_unique(&native);
         assert_unique(&java);
     }

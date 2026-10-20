@@ -695,18 +695,14 @@ struct AndroidAudioPlatform {
 }
 
 impl AudioPlatformService for AndroidAudioPlatform {
-    fn set_inner_audio_option(
-        &self,
-        mix_with_other: bool,
-        obey_mute_switch: bool,
-        speaker_on: bool,
-    ) -> Result<(), ServiceError> {
-        Ok(jni::set_inner_audio_option(
-            self.host_id,
-            mix_with_other,
-            obey_mute_switch,
-            speaker_on,
-        )?)
+    /// Nothing is left for Android to do: it has no silent switch over a game's
+    /// media, and the game's audio focus, exclusive as the reference's is with the
+    /// speaker on, is the session's own (`AudioFocusManager`). It used to take a second
+    /// focus here, with no listener and never given back -- ducking other apps for
+    /// `mixWithOther`, against the option's meaning -- and to switch the device's
+    /// call routing with `setSpeakerphoneOn`.
+    fn set_inner_audio_option(&self, _obey_mute_switch: bool) -> Result<(), ServiceError> {
+        Ok(())
     }
 
     fn get_available_audio_sources(&self) -> Result<Vec<String>, ServiceError> {

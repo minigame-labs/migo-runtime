@@ -1207,20 +1207,33 @@ pub fn get_reduction(tx: &AudioSender, node_id: AudioNodeId) -> Result<Pending<f
 // Platform audio options
 // ---------------------------------------------------------------------------
 
-/// `setInnerAudioOption`, through the platform's audio service. Without one the
-/// option cannot be honoured, and saying so is the answer.
+/// `setInnerAudioOption`, as the reference has it, through the platform's audio
+/// service. Without one the option cannot be honoured, and saying so is the answer.
+///
+/// With the speaker on, the reference's client ignores `mixWithOther` and plays
+/// exclusively of other audio -- the case of nearly every call, the speaker being on by
+/// default, including `{ obeyMuteSwitch: false }` to play through the silent switch,
+/// which leaves `mixWithOther` at its default of `true`. Mixing is only asked for with
+/// the earpiece, and no platform routes a game's output there yet: `speakerOn: false` is
+/// answered as not supported rather than played through the speaker.
 pub fn set_inner_audio_option(
     platform: Option<&dyn AudioPlatformService>,
     mix_with_other: bool,
     obey_mute_switch: bool,
     speaker_on: bool,
 ) -> Result<(), ServiceError> {
-    match platform {
-        Some(platform) => platform
-            .set_inner_audio_option(mix_with_other, obey_mute_switch, speaker_on)
-            .map_err(|error| audio_error(error.message)),
-        None => Err(audio_error("setInnerAudioOption:fail not supported")),
+    let _ = mix_with_other;
+    let Some(platform) = platform else {
+        return Err(audio_error("setInnerAudioOption:fail not supported"));
+    };
+    if !speaker_on {
+        return Err(audio_error(
+            "setInnerAudioOption:fail speakerOn: false (the earpiece) is not supported",
+        ));
     }
+    platform
+        .set_inner_audio_option(obey_mute_switch)
+        .map_err(|error| audio_error(error.message))
 }
 
 /// The recorder's input sources, from the platform's audio service.

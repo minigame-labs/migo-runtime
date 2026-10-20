@@ -216,17 +216,13 @@ pub trait AccelerometerService: Send + Sync {
 /// Handles operations that require platform AudioManager access,
 /// such as audio focus, speaker routing, and input source queries.
 pub trait AudioPlatformService: Send + Sync {
-    /// Configure inner audio behavior.
+    /// Content's `setInnerAudioOption`, as much of it as is the platform's to act on.
     ///
-    /// - `mix_with_other`: Allow mixing with other audio apps (Android: abandon focus vs duck)
-    /// - `obey_mute_switch`: Respect device mute/ringer mode
-    /// - `speaker_on`: Route audio to speaker (vs earpiece/headset)
-    fn set_inner_audio_option(
-        &self,
-        _mix_with_other: bool,
-        _obey_mute_switch: bool,
-        _speaker_on: bool,
-    ) -> Result<(), ServiceError> {
+    /// The rest is decided before this is called (`migo_services::audio::set_inner_audio_option`):
+    /// the speaker is on and the game's audio is exclusive -- the reference ignores
+    /// `mixWithOther` with the speaker on -- so what is left is whether the silent switch
+    /// is obeyed, which only iOS has.
+    fn set_inner_audio_option(&self, _obey_mute_switch: bool) -> Result<(), ServiceError> {
         Err(ServiceError::not_supported(
             "setInnerAudioOption:fail not supported",
         ))
