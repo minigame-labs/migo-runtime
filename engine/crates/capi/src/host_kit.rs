@@ -611,7 +611,7 @@ mod tests {
             .and_then(|services| services.audio_platform())
             .expect("the engine's audio settings, with no host callbacks at all");
         audio
-            .set_inner_audio_option(false, false, false)
+            .set_inner_audio_option(false)
             .expect("the options are accepted");
         let sources = audio
             .get_available_audio_sources()

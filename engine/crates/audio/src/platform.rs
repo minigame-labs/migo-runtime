@@ -69,12 +69,8 @@ mod desktop {
     pub(super) struct DesktopAudio;
 
     impl AudioPlatformService for DesktopAudio {
-        fn set_inner_audio_option(
-            &self,
-            _mix_with_other: bool,
-            _obey_mute_switch: bool,
-            _speaker_on: bool,
-        ) -> Result<(), ServiceError> {
+        /// A desktop has no silent switch to obey.
+        fn set_inner_audio_option(&self, _obey_mute_switch: bool) -> Result<(), ServiceError> {
             Ok(())
         }
 
@@ -128,14 +124,10 @@ mod tests {
     #[test]
     fn the_engine_answers_on_a_desktop() {
         let service = service().expect("a desktop's audio is the engine's");
-        for mix in [true, false] {
-            for obey in [true, false] {
-                for speaker in [true, false] {
-                    service
-                        .set_inner_audio_option(mix, obey, speaker)
-                        .expect("a desktop accepts every option");
-                }
-            }
+        for obey in [true, false] {
+            service
+                .set_inner_audio_option(obey)
+                .expect("a desktop accepts the option");
         }
         let sources = service
             .get_available_audio_sources()

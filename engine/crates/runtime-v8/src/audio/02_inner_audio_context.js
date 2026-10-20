@@ -15,7 +15,7 @@ import {
   op_audio_set_inner_audio_option,
   op_audio_get_available_audio_sources,
 } from "ext:core/ops";
-import { allocateHostCallbackId, createListenerGroup, invokeCallback, errorMessage, failMessage } from "ext:host_v8_base/02_async.js";
+import { allocateHostCallbackId, createListenerGroup, errorMessage, promisify } from "ext:host_v8_base/02_async.js";
 
 // ID counter for InnerAudioContext instances
 
@@ -506,46 +506,17 @@ function createInnerAudioContext() {
   return new InnerAudioContext();
 }
 
-function setInnerAudioOption(options = {}) {
-  const {
-    mixWithOther = true,
-    obeyMuteSwitch = true,
-    speakerOn = true,
-    success,
-    fail,
-    complete,
-  } = options;
+// Answered as every asynchronous call is (`promisify`): by its callbacks after it
+// returns, or by its Promise when it has none. Both answered at once before, with a
+// Promise returned to callback-style content as well, whose rejection nobody held.
+const setInnerAudioOption = promisify("setInnerAudioOption", (opts) => {
+  const { mixWithOther = true, obeyMuteSwitch = true, speakerOn = true } = opts;
+  op_audio_set_inner_audio_option(mixWithOther, obeyMuteSwitch, speakerOn);
+});
 
-  try {
-    op_audio_set_inner_audio_option(mixWithOther, obeyMuteSwitch, speakerOn);
-    const res = { errMsg: 'setInnerAudioOption:ok' };
-    invokeCallback('setInnerAudioOption', 'success', success, res);
-    invokeCallback('setInnerAudioOption', 'complete', complete, res);
-    return Promise.resolve(res);
-  } catch (err) {
-    const res = { errMsg: failMessage('setInnerAudioOption', err) };
-    invokeCallback('setInnerAudioOption', 'fail', fail, res);
-    invokeCallback('setInnerAudioOption', 'complete', complete, res);
-    return Promise.reject(res);
-  }
-}
-
-function getAvailableAudioSources(options = {}) {
-  const { success, fail, complete } = options;
-
-  try {
-    const sources = op_audio_get_available_audio_sources();
-    const res = { errMsg: 'getAvailableAudioSources:ok', audioSources: sources };
-    invokeCallback('getAvailableAudioSources', 'success', success, res);
-    invokeCallback('getAvailableAudioSources', 'complete', complete, res);
-    return Promise.resolve(res);
-  } catch (err) {
-    const res = { errMsg: failMessage('getAvailableAudioSources', err) };
-    invokeCallback('getAvailableAudioSources', 'fail', fail, res);
-    invokeCallback('getAvailableAudioSources', 'complete', complete, res);
-    return Promise.reject(res);
-  }
-}
+const getAvailableAudioSources = promisify("getAvailableAudioSources", () => ({
+  audioSources: op_audio_get_available_audio_sources(),
+}));
 
 export {
   InnerAudioContext,

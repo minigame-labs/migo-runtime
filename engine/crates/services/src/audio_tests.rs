@@ -570,6 +570,41 @@ fn a_full_queue_is_saturation_not_disconnection() {
 // Platform options
 // ---------------------------------------------------------------------------
 
+/// The platform is asked for what is its to act on: whether the silent switch is obeyed.
+/// The speaker is on, so the audio is exclusive whatever `mixWithOther` says (the
+/// reference), and the earpiece, which no platform routes to, is refused by name.
+#[test]
+fn the_platform_is_asked_only_about_the_silent_switch_and_the_earpiece_is_refused() {
+    #[derive(Default)]
+    struct Asked(std::sync::Mutex<Vec<bool>>);
+    impl AudioPlatformService for Asked {
+        fn set_inner_audio_option(
+            &self,
+            obey_mute_switch: bool,
+        ) -> Result<(), shared::services::ServiceError> {
+            self.0.lock().unwrap().push(obey_mute_switch);
+            Ok(())
+        }
+    }
+    let asked = Asked::default();
+    for mix in [true, false] {
+        set_inner_audio_option(Some(&asked), mix, false, true).expect("the speaker is on");
+    }
+    set_inner_audio_option(Some(&asked), true, true, true).expect("the speaker is on");
+    assert_eq!(*asked.0.lock().unwrap(), [false, false, true]);
+    assert_eq!(
+        set_inner_audio_option(Some(&asked), true, true, false)
+            .unwrap_err()
+            .message,
+        "setInnerAudioOption:fail speakerOn: false (the earpiece) is not supported"
+    );
+    assert_eq!(
+        asked.0.lock().unwrap().len(),
+        3,
+        "a refused call asks nothing"
+    );
+}
+
 #[test]
 fn without_a_platform_audio_service_the_options_are_refused_by_name() {
     assert_eq!(

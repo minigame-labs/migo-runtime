@@ -2115,18 +2115,10 @@ mod tests {
         use shared::services::{AudioPlatformService, ServiceError as DeviceError};
         use std::sync::Mutex;
         #[derive(Default)]
-        struct Audio(Mutex<Vec<(bool, bool, bool)>>);
+        struct Audio(Mutex<Vec<bool>>);
         impl AudioPlatformService for Audio {
-            fn set_inner_audio_option(
-                &self,
-                mix_with_other: bool,
-                obey_mute_switch: bool,
-                speaker_on: bool,
-            ) -> Result<(), DeviceError> {
-                self.0
-                    .lock()
-                    .unwrap()
-                    .push((mix_with_other, obey_mute_switch, speaker_on));
+            fn set_inner_audio_option(&self, obey_mute_switch: bool) -> Result<(), DeviceError> {
+                self.0.lock().unwrap().push(obey_mute_switch);
                 Ok(())
             }
             fn get_available_audio_sources(&self) -> Result<Vec<String>, DeviceError> {
@@ -2144,11 +2136,12 @@ mod tests {
             }
         }
         let root = std::env::temp_dir().join(format!("migo-audio-platform-{}", std::process::id()));
-        let options = || {
+        // mixWithOther, obeyMuteSwitch, speakerOn.
+        let options = |speaker_on| {
             vec![
                 OwnedValue::Bool(false),
                 OwnedValue::Bool(true),
-                OwnedValue::Bool(false),
+                OwnedValue::Bool(speaker_on),
             ]
         };
 
@@ -2156,10 +2149,22 @@ mod tests {
         let context = ServiceContext::new(root.join("files"), root.join("cache"));
         context.bind_device(Some(Arc::new(Platform(Arc::clone(&audio)))));
         assert!(matches!(
-            context.call_sync(id::op_audio_set_inner_audio_option, options()),
+            context.call_sync(id::op_audio_set_inner_audio_option, options(true)),
             Ok(OwnedValue::Null)
         ));
-        assert_eq!(*audio.0.lock().unwrap(), [(false, true, false)]);
+        assert_eq!(*audio.0.lock().unwrap(), [true]);
+        assert_eq!(
+            context
+                .call_sync(id::op_audio_set_inner_audio_option, options(false))
+                .unwrap_err()
+                .message,
+            "setInnerAudioOption:fail speakerOn: false (the earpiece) is not supported"
+        );
+        assert_eq!(
+            audio.0.lock().unwrap().len(),
+            1,
+            "the earpiece asks the platform nothing"
+        );
         match context.call_sync(id::op_audio_get_available_audio_sources, Vec::new()) {
             Ok(OwnedValue::Array(sources)) => assert!(matches!(
                 sources.as_slice(),
@@ -2171,7 +2176,7 @@ mod tests {
         let none = ServiceContext::new(root.join("files"), root.join("cache"));
         none.bind_device(None);
         assert_eq!(
-            none.call_sync(id::op_audio_set_inner_audio_option, options())
+            none.call_sync(id::op_audio_set_inner_audio_option, options(true))
                 .unwrap_err()
                 .message,
             "setInnerAudioOption:fail not supported"

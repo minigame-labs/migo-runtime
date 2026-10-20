@@ -741,6 +741,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- `setInnerAudioOption` follows the reference on every platform. With the speaker on -- the default, and so nearly every
+  call, `{ obeyMuteSwitch: false }` to play through the silent switch among them -- the reference ignores
+  `mixWithOther` and plays alone: on iOS the session took the `Ambient` category, which mixes by its nature, so other
+  apps' music played on under every game; it is now `SoloAmbient` (or `Playback` through the silent switch). On
+  Android the option took a second audio focus with no listener, never given back, ducking other apps for
+  `mixWithOther`, and switched the device's call routing with `setSpeakerphoneOn`; the session's own focus is the
+  game's, and the option asks Android for nothing. `speakerOn: false`, the earpiece, which no platform routes a
+  game's output to, is answered as not supported rather than played through the speaker. Both it and
+  `getAvailableAudioSources` answer callback-style content after returning, and return it nothing.
 - An API the reference gives no Promise style (`reportScene`, `login`, `restartMiniProgram`, `setDeviceOrientation`,
   71 in all), called without callbacks, still returns a Promise, as every asynchronous API does here, but its failure
   is no longer reported as an unhandled rejection. Content written for the reference does not look at what such a call

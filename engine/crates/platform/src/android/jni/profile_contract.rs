@@ -242,7 +242,6 @@ const JAVA_SENSORS: &[JniMethod] = methods![
 ];
 
 const JAVA_MEDIA: &[JniMethod] = methods![
-    ("setInnerAudioOption", "(IZZZ)V"),
     ("getAvailableAudioSources", "(I)Ljava/lang/String;"),
     ("recorderStart", "(ILjava/lang/String;)V"),
     ("recorderPause", "(I)V"),

@@ -1567,45 +1567,6 @@ public final class NativeExports {
     // ==================== Audio Platform ====================
 
     /**
-     * Set inner audio options for audio focus and routing.
-     *
-     * @param sessionId      The session ID
-     * @param mixWithOther   If true, duck other audio instead of taking exclusive focus
-     * @param obeyMuteSwitch If true, respect the device ringer/mute mode
-     * @param speakerOn      If true, route audio output to speaker
-     */
-    public static void setInnerAudioOption(int sessionId, boolean mixWithOther,
-                                           boolean obeyMuteSwitch, boolean speakerOn) {
-        RuntimeContext context = RuntimeRegistry.get(sessionId);
-        if (context == null) return;
-        Activity activity = context.getActivity();
-        if (activity == null) return;
-
-        try {
-            android.media.AudioManager audioManager =
-                    (android.media.AudioManager) activity.getSystemService(Context.AUDIO_SERVICE);
-            if (audioManager == null) return;
-
-            // Audio focus: GAIN_TRANSIENT_MAY_DUCK allows mixing, GAIN takes exclusive focus
-            int focusGain = mixWithOther
-                    ? android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK
-                    : android.media.AudioManager.AUDIOFOCUS_GAIN;
-            audioManager.requestAudioFocus(null,
-                    android.media.AudioManager.STREAM_MUSIC, focusGain);
-
-            // Speaker routing
-            audioManager.setSpeakerphoneOn(speakerOn);
-
-            // obeyMuteSwitch: adjust stream type behavior
-            // When obeyMuteSwitch is false, use STREAM_MUSIC which ignores ringer mode
-            // When true, the app should check ringer mode before playing
-            // This is stored and checked at playback time by the audio engine
-        } catch (Exception e) {
-            // Silently fail - audio options are best-effort
-        }
-    }
-
-    /**
      * Get available audio input sources: the identifiers RecorderManager.start()
      * takes on Android, as the mini-game API lists them -- "auto" (the
      * MediaRecorder DEFAULT source) on every platform, then Android's four.
