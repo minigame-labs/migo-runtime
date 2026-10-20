@@ -747,6 +747,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cannot replace it in place, and it had no way to ask. The C ABI carries the request as
   `MigoHostCallbacks.on_restart_requested` (appended), which only a session whose content runs outside the engine
   calls.
+- A restart is a cold start: the restarted runtime is shown before its content runs, as a host's first show is, rather
+  than after it, which made the new entry's `onShow` listener hear one. The reference reads a cold start from
+  `getLaunchOptionsSync()` and `getEnterOptionsSync()`; `onShow` is the return to the foreground.
+- Apple: `MigoEngineSession.close` completes when its surface is released while the session is still running. Its
+  polls held the session weakly, and a view lets go of its session as it closes it, so the polls stopped and neither
+  the destroy nor the completion ran; a game started again in a new session never started.
 - On iOS (Performance+), a show that carries no options shows the game as it was last entered, as the embedded
   execution has since the previous fix: it reset `getEnterOptionsSync()` and `onShow`'s options to the defaults. Both
   executions now follow one rule.

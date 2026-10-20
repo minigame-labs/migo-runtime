@@ -958,6 +958,12 @@ public final class MigoEngineSession {
     /// Polled on the main run loop rather than blocked on: the renderer's
     /// release can need the main thread (Core Animation hands drawables back
     /// there), so a main thread that sleeps here can wait on itself.
+    ///
+    /// The polls hold the session until it finishes. A close outlives the
+    /// reference that started it -- a view lets go of its session as it closes
+    /// it -- and polls that held it weakly stopped when that reference went,
+    /// with the surface still PENDING, so neither the destroy nor `completion`
+    /// ran: a game restarted in a new session never started. `finish` lets go.
     private func waitForRelease(
         _ observer: OpaquePointer, deadline: Date, completion: ((Bool) -> Void)?
     ) {
@@ -976,11 +982,11 @@ public final class MigoEngineSession {
             return
         }
         // The release edge callback wakes this early; the timer is the floor.
-        relay.releaseWaiter = { [weak self] in
-            self?.waitForRelease(observer, deadline: deadline, completion: completion)
+        relay.releaseWaiter = {
+            self.waitForRelease(observer, deadline: deadline, completion: completion)
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(4)) { [weak self] in
-            guard let self, let waiter = self.relay.releaseWaiter else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(4)) {
+            guard let waiter = self.relay.releaseWaiter else { return }
             self.relay.releaseWaiter = nil
             waiter()
         }
