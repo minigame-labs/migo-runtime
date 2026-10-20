@@ -1,5 +1,6 @@
 #include <migo/linux/qt6/managed_session.hpp>
 
+#include <QGuiApplication>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMetaObject>
@@ -243,7 +244,20 @@ MigoManagedSession::MigoManagedSession(MigoEngine &engine, QWidget &parent, cons
         callbacks.host_services = declared;
     }
 
-    const MigoResult installed = migo_session_set_host_callbacks(impl_->session, &callbacks);
+    MigoResult installed = migo_session_set_host_callbacks(impl_->session, &callbacks);
+    // Who the host is, as content reads it. A Linux App has no identifier the
+    // system hands out; it names itself, and its desktop file name is that name.
+    const QByteArray app_id =
+        (options.appId.isEmpty() ? QGuiApplication::desktopFileName() : options.appId).toUtf8();
+    if (installed == MIGO_OK && !app_id.isEmpty()) {
+        MigoHostAppInfo app_info{};
+        app_info.struct_size = static_cast<std::uint32_t>(sizeof(app_info));
+        app_info.abi_version = MIGO_ABI_VERSION_1;
+        app_info.app_id_utf8 = app_id.constData();
+        // The rest is the engine's: the system's language, no benchmark score.
+        app_info.benchmark_level = -1;
+        installed = migo_session_set_host_app_info(impl_->session, &app_info);
+    }
     if (installed != MIGO_OK) {
         impl_->last_error = installed;
         impl_->channel->close();

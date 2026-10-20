@@ -55,6 +55,11 @@ public:
         /// `launch_options_json_utf8` takes it. Empty launches it with the
         /// engine's defaults.
         QByteArray launchOptionsJson;
+        /// Who the App is, as content reads it (`getAppBaseInfo().host.appId`).
+        /// Empty takes `QGuiApplication::desktopFileName()` -- the name an App
+        /// gives itself on Linux, by convention its reverse-DNS desktop file
+        /// name; with neither, the Session is not told, and content reads none.
+        QString appId;
         /// The host services the App answers itself -- its adverts, payments,
         /// sign-in -- or null. The services it names are its, including any
         /// the Host Kit would answer; the Host Kit answers the rest it can

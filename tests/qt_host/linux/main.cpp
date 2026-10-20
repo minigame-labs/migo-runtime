@@ -120,6 +120,8 @@ private:
 
 int main(int argc, char **argv) {
     QApplication app(argc, argv);
+    // Who the host is, as content reads it (getAppBaseInfo().host.appId): an App's desktop file name.
+    QGuiApplication::setDesktopFileName(QStringLiteral("com.migo.example.qt"));
     const QByteArray files_dir = argc > 1 ? QByteArray(argv[1]) : QByteArray("/tmp/migo-qt-host/files");
     const QString content_id = argc > 2 ? QString::fromLocal8Bit(argv[2]) : QStringLiteral("qt-host-demo");
     const int seconds = argc > 3 ? std::atoi(argv[3]) : 10;

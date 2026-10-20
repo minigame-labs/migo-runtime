@@ -41,6 +41,7 @@ MigoResult g_load_content_result = MIGO_OK;
 bool g_has_host = false;
 MigoResult g_session_destroy_result = MIGO_OK;
 std::string g_network_policy;
+std::string g_host_app_id;
 std::string g_launch_options;
 std::vector<fake_migo::HostServiceAnswer> g_answers;
 std::vector<fake_migo::HostServiceEvent> g_events;
@@ -59,6 +60,7 @@ namespace fake_migo {
 void reset() noexcept {
     g_calls = {};
     g_network_policy.clear();
+    g_host_app_id.clear();
     g_launch_options.clear();
     g_answers.clear();
     g_events.clear();
@@ -170,6 +172,7 @@ const MigoHostCallbacks &installed_callbacks() noexcept { return g_callbacks; }
 bool session_is_alive() noexcept { return g_session_alive; }
 const std::string &loaded_content_id() noexcept { return g_content_id; }
 const std::string &created_network_policy() noexcept { return g_network_policy; }
+const std::string &reported_host_app_id() noexcept { return g_host_app_id; }
 const std::string &created_launch_options() noexcept { return g_launch_options; }
 const std::vector<HostServiceAnswer> &host_service_answers() noexcept { return g_answers; }
 const std::vector<HostServiceEvent> &host_service_events() noexcept { return g_events; }
@@ -530,5 +533,12 @@ extern "C" MigoResult MIGO_CALL migo_session_post_host_service_event(
     }
     if ((g_callbacks.host_services & (uint64_t{1} << service)) == 0) return MIGO_ERROR_INVALID_ARGUMENT;
     g_events.push_back({service, event, std::string(payload_json_utf8, payload_length)});
+    return MIGO_OK;
+}
+
+extern "C" MigoResult MIGO_CALL migo_session_set_host_app_info(MigoSession *session, const MigoHostAppInfo *info) {
+    if (session != fake_migo::session() || !g_session_alive || info == nullptr) return MIGO_ERROR_INVALID_ARGUMENT;
+    if (info->struct_size != sizeof(*info) || info->benchmark_level < -2) return MIGO_ERROR_INVALID_ARGUMENT;
+    g_host_app_id = info->app_id_utf8 != nullptr ? info->app_id_utf8 : "";
     return MIGO_OK;
 }

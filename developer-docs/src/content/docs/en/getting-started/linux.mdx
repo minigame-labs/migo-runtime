@@ -169,7 +169,8 @@ sign-in, ...) come from a `MigoQtHostServiceProvider` given as `Options::appServ
 App names are its, including any the built-in services would answer, and the built-in services answer
 the rest. The same `Options` carry the network policy (`networkPolicyJson`; without one the game has no
 network at all) and the launch options (`launchOptionsJson`), each the JSON of the `MigoSessionConfig`
-field of the same name:
+field of the same name; `appId` is what content reads as `getAppBaseInfo().host.appId`, and without it the App's
+`QGuiApplication::desktopFileName()` -- the name a Linux App gives itself:
 
 ```cpp
 class AppServices final : public migo::linux_host::qt6::MigoQtHostServiceProvider {

@@ -100,6 +100,8 @@ void set_session_destroy_result(MigoResult result) noexcept;
 /// empty where the host passed NULL.
 const std::string &created_network_policy() noexcept;
 const std::string &created_launch_options() noexcept;
+/// The host app's identifier the host last reported, empty when it reported none.
+const std::string &reported_host_app_id() noexcept;
 
 /// One answer the host gave a host-service call.
 struct HostServiceAnswer {
