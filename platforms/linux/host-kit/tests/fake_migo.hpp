@@ -129,6 +129,9 @@ const MigoAppAuthorizeSetting &reported_app_authorization() noexcept;
 const std::vector<MigoMemoryWarningLevel> &memory_warnings() noexcept;
 /// The standing decision the host recorded for `scope`; UNKNOWN until one.
 MigoScopeState scope_state(MigoScope scope) noexcept;
+/// The motion readings the host delivered, in order. A copy: they arrive on
+/// the sensors' own thread.
+std::vector<MigoSensorSample> sensor_samples();
 
 /// A line content writes to its console, which the host's debugging panel
 /// reads back (migo_session_copy_console_logs): level 0 debug .. 3 error.

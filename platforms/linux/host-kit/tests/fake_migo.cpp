@@ -1,5 +1,6 @@
 #include "fake_migo.hpp"
 
+#include <cmath>
 #include <cstring>
 #include <map>
 #include <memory>
@@ -57,6 +58,7 @@ std::vector<MigoMemoryWarningLevel> g_memory_warnings;
 /// Recorded from any thread, as the library lets a host.
 std::mutex g_scopes_mutex;
 std::map<MigoScope, MigoScopeState> g_scopes;
+std::vector<MigoSensorSample> g_sensor_samples;
 std::string g_launch_options;
 /// Guards the calls and their answers: the host completes a call from any thread.
 std::mutex g_answers_mutex;
@@ -91,6 +93,7 @@ void reset() noexcept {
     {
         const std::lock_guard<std::mutex> lock(g_scopes_mutex);
         g_scopes.clear();
+        g_sensor_samples.clear();
     }
     g_launch_options.clear();
     {
@@ -216,6 +219,10 @@ uint32_t reported_system_settings() noexcept { return g_system_settings; }
 int system_settings_reports() noexcept { return g_system_settings_reports; }
 const MigoAppAuthorizeSetting &reported_app_authorization() noexcept { return g_app_authorization; }
 const std::vector<MigoMemoryWarningLevel> &memory_warnings() noexcept { return g_memory_warnings; }
+std::vector<MigoSensorSample> sensor_samples() {
+    const std::lock_guard<std::mutex> lock(g_scopes_mutex);
+    return g_sensor_samples;
+}
 MigoScopeState scope_state(MigoScope scope) noexcept {
     const std::lock_guard<std::mutex> lock(g_scopes_mutex);
     const auto found = g_scopes.find(scope);
@@ -620,6 +627,23 @@ extern "C" MigoResult MIGO_CALL migo_session_set_scope_state(MigoSession *sessio
     }
     const std::lock_guard<std::mutex> lock(g_scopes_mutex);
     g_scopes[scope] = state;
+    return MIGO_OK;
+}
+
+extern "C" MigoResult MIGO_CALL migo_session_post_sensor_sample(MigoSession *session, const MigoSensorSample *sample) {
+    // As strict as the library: a whole sample of a known kind, finite, from a
+    // host that declared the motion service.
+    if (session != fake_migo::session() || !g_session_alive || sample == nullptr ||
+        sample->struct_size < sizeof(MigoSensorSample) || sample->kind > MIGO_SENSOR_COMPASS ||
+        sample->compass_accuracy > MIGO_COMPASS_ACCURACY_UNRELIABLE ||
+        (g_callbacks.host_services & (uint64_t{1} << MIGO_HOST_SERVICE_MOTION)) == 0) {
+        return MIGO_ERROR_INVALID_ARGUMENT;
+    }
+    for (const double value : sample->values) {
+        if (!std::isfinite(value)) return MIGO_ERROR_INVALID_ARGUMENT;
+    }
+    const std::lock_guard<std::mutex> lock(g_scopes_mutex);
+    g_sensor_samples.push_back(*sample);
     return MIGO_OK;
 }
 
