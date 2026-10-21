@@ -60,6 +60,8 @@ std::mutex g_scopes_mutex;
 std::map<MigoScope, MigoScopeState> g_scopes;
 std::vector<MigoSensorSample> g_sensor_samples;
 std::vector<fake_migo::BleValue> g_ble_values;
+std::vector<fake_migo::GamepadAnnouncement> g_gamepad_announcements;
+std::vector<fake_migo::GamepadSample> g_gamepad_samples;
 std::string g_launch_options;
 /// Guards the calls and their answers: the host completes a call from any thread.
 std::mutex g_answers_mutex;
@@ -96,6 +98,8 @@ void reset() noexcept {
         g_scopes.clear();
         g_sensor_samples.clear();
         g_ble_values.clear();
+        g_gamepad_announcements.clear();
+        g_gamepad_samples.clear();
     }
     g_launch_options.clear();
     {
@@ -221,6 +225,8 @@ uint32_t reported_system_settings() noexcept { return g_system_settings; }
 int system_settings_reports() noexcept { return g_system_settings_reports; }
 const MigoAppAuthorizeSetting &reported_app_authorization() noexcept { return g_app_authorization; }
 const std::vector<MigoMemoryWarningLevel> &memory_warnings() noexcept { return g_memory_warnings; }
+const std::vector<GamepadAnnouncement> &gamepad_announcements() noexcept { return g_gamepad_announcements; }
+const std::vector<GamepadSample> &gamepad_samples() noexcept { return g_gamepad_samples; }
 std::vector<BleValue> ble_values() {
     const std::lock_guard<std::mutex> lock(g_scopes_mutex);
     return g_ble_values;
@@ -677,6 +683,35 @@ extern "C" MigoResult MIGO_CALL migo_session_post_ble_characteristic_value(MigoS
     posted.value.assign(reinterpret_cast<const char *>(value->value), value->value_length);
     const std::lock_guard<std::mutex> lock(g_scopes_mutex);
     g_ble_values.push_back(std::move(posted));
+    return MIGO_OK;
+}
+
+extern "C" MigoResult MIGO_CALL migo_session_set_gamepad_connected(MigoSession *session, const MigoGamepadInfo *info,
+                                                                   uint32_t connected) {
+    if (session != fake_migo::session() || !g_session_alive || info == nullptr) return MIGO_ERROR_INVALID_ARGUMENT;
+    // As strict as the library: haptics need someone to play them.
+    if (connected != 0 && info->haptics != 0 && g_callbacks.on_gamepad_rumble == nullptr) {
+        return MIGO_ERROR_INVALID_ARGUMENT;
+    }
+    fake_migo::GamepadAnnouncement announced;
+    announced.info = *info;
+    if (info->id_utf8 != nullptr) announced.id = info->id_utf8;
+    if (info->mapping_utf8 != nullptr) announced.mapping = info->mapping_utf8;
+    announced.connected = connected != 0;
+    g_gamepad_announcements.push_back(std::move(announced));
+    return MIGO_OK;
+}
+
+extern "C" MigoResult MIGO_CALL migo_session_send_gamepad_state(MigoSession *session, const MigoGamepadStateEvent *event) {
+    if (session != fake_migo::session() || !g_session_alive || event == nullptr ||
+        event->axis_count > MIGO_GAMEPAD_MAX_AXES || event->button_count > MIGO_GAMEPAD_MAX_BUTTONS) {
+        return MIGO_ERROR_INVALID_ARGUMENT;
+    }
+    fake_migo::GamepadSample sample;
+    sample.index = event->index;
+    sample.axes.assign(event->axes, event->axes + event->axis_count);
+    sample.buttons.assign(event->buttons, event->buttons + event->button_count);
+    g_gamepad_samples.push_back(std::move(sample));
     return MIGO_OK;
 }
 

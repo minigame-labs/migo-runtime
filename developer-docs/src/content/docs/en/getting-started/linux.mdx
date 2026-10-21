@@ -246,6 +246,15 @@ desktop already offers with Qt's own:
   the App's, which a desktop does not gate. Any other scope is refused (`auth deny`): an App that decides scopes --
   sign-in, its own consent dialog -- answers the permission service itself, all of it.
 
+`MigoManagedSession` reads the gamepads the kernel shows (`getGamepads`, `onGamepadConnected`,
+`onGamepadDisconnected`, `vibrationActuator`): the evdev devices udev tags as joysticks, found as they come and go. A
+pad that follows the kernel's gamepad layout (`Documentation/input/gamepad.rst`) is mapped onto the W3C standard
+layout -- 17 buttons and 4 axes, with the analog triggers and the D-pad's hat where the driver reports them -- and one
+that does not is passed on as it is (its buttons and axes in code order, `mapping` empty). A pad whose driver plays
+`FF_RUMBLE`, opened writable, has dual rumble. Samples are stamped on `CLOCK_MONOTONIC`, the clock the X server stamps
+the view's input with. Reading a gamepad needs access to its `/dev/input/event*` node, which desktop sessions grant the
+logged-in user (udev's `uaccess`); inside a Flatpak it needs `--device=all`.
+
 `MigoManagedSession` also keeps the display awake for content (`setKeepScreenOn`): it asks the desktop through the XDG
 desktop portal's `Inhibit` (the session's idle: blanking, locking), or through the freedesktop screen saver
 (`org.freedesktop.ScreenSaver.Inhibit`) where no portal answers, and lets go when content stops asking or the game

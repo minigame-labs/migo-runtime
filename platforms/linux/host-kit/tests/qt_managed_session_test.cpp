@@ -1,4 +1,5 @@
 #include "fake_migo.hpp"
+#include "gamepads.hpp"
 #include "memory_monitor.hpp"
 #include "screen_awake.hpp"
 #include "system_reports.hpp"
@@ -16,6 +17,11 @@
 #include <QThread>
 #include <QtTest>
 
+#include <linux/input.h>
+
+#include <fcntl.h>
+#include <unistd.h>
+
 #include <memory>
 #include <string>
 #include <vector>
@@ -23,6 +29,7 @@
 using migo::linux_host::SurfaceState;
 using migo::linux_host::qt6::MigoManagedSession;
 using migo::linux_host::qt6::BatteryReport;
+using migo::linux_host::qt6::Gamepads;
 using migo::linux_host::qt6::MemoryMonitor;
 using migo::linux_host::qt6::NetworkReport;
 using migo::linux_host::qt6::ScreenAwake;
@@ -688,6 +695,150 @@ private slots:
         QTRY_VERIFY(managed.isClosed());
         QCOMPARE(fake_migo::calls().session_destroy, 1);
         QVERIFY(!fake_migo::session_is_alive());
+    }
+
+    /// The gamepads the kernel shows: a pad following the kernel's gamepad
+    /// layout mapped onto the standard one -- buttons, sticks, analog
+    /// triggers, the D-pad's hat -- with its rumble; one that does not passed on
+    /// as it is; the lowest free index; a report delivered whole, none after
+    /// the kernel dropped events until it reports again; an unplugged pad
+    /// withdrawn.
+    void gamepads_are_the_kernels() {
+        struct Heard {
+            std::vector<std::pair<MigoGamepadInfo, bool>> connections;
+            std::vector<std::string> ids;
+            std::vector<std::string> mappings;
+            std::vector<std::vector<float>> axes;
+            std::vector<std::vector<MigoGamepadButton>> buttons;
+            std::vector<double> times;
+        } heard;
+        Gamepads pads(Gamepads::Sink{
+            [&heard](const MigoGamepadInfo &info, bool connected) {
+                heard.connections.emplace_back(info, connected);
+                heard.ids.emplace_back(info.id_utf8);
+                heard.mappings.emplace_back(info.mapping_utf8);
+            },
+            [&heard](const MigoGamepadStateEvent &sample) {
+                heard.axes.emplace_back(sample.axes, sample.axes + sample.axis_count);
+                heard.buttons.emplace_back(sample.buttons, sample.buttons + sample.button_count);
+                heard.times.push_back(sample.timestamp_ms);
+            }});
+        // A pipe for each device: what the kernel would write, written here.
+        const auto device = [] {
+            std::array<int, 2> ends{};
+            if (::pipe2(ends.data(), O_NONBLOCK | O_CLOEXEC) != 0) qFatal("pipe2");
+            return ends;
+        };
+        const auto send = [](int fd, std::vector<input_event> events) {
+            for (input_event &event : events) {
+                event.input_event_sec = 12;
+                event.input_event_usec = 500000;
+            }
+            const auto bytes = static_cast<ssize_t>(events.size() * sizeof(input_event));
+            QCOMPARE(::write(fd, events.data(), static_cast<size_t>(bytes)), bytes);
+        };
+        const auto event = [](int type, int code, int value) {
+            input_event made{};
+            made.type = static_cast<__u16>(type);
+            made.code = static_cast<__u16>(code);
+            made.value = value;
+            return made;
+        };
+
+        Gamepads::Capabilities standard;
+        standard.name = "Pad";
+        standard.keys = {BTN_SOUTH, BTN_EAST, BTN_NORTH, BTN_WEST, BTN_TL, BTN_TR, BTN_SELECT, BTN_START, BTN_MODE,
+                         BTN_THUMBL, BTN_THUMBR};
+        for (const int stick : {ABS_X, ABS_Y, ABS_RX, ABS_RY}) standard.axes[stick] = {-32768, 32767};
+        standard.axes[ABS_Z] = {0, 1023};
+        standard.axes[ABS_RZ] = {0, 1023};
+        standard.axes[ABS_HAT0X] = {-1, 1};
+        standard.axes[ABS_HAT0Y] = {-1, 1};
+        std::vector<std::tuple<float, float, std::uint32_t>> rumbled;
+        const auto first = device();
+        pads.add(QStringLiteral("/dev/input/event7"), first[0], standard,
+                 [&rumbled](float strong, float weak, std::uint32_t ms) { rumbled.emplace_back(strong, weak, ms); });
+        QCOMPARE(heard.connections.size(), std::size_t{1});
+        const MigoGamepadInfo announced = heard.connections[0].first;
+        QVERIFY(heard.connections[0].second);
+        QCOMPARE(announced.index, 0U);
+        QCOMPARE(announced.axis_count, 4U);
+        QCOMPARE(announced.button_count, 17U);
+        QCOMPARE(announced.haptics, MIGO_GAMEPAD_HAPTICS_DUAL_RUMBLE);
+        QCOMPARE(heard.ids[0], std::string("Pad"));
+        QCOMPARE(heard.mappings[0], std::string("standard"));
+
+        // A, the left stick right, the left trigger full, the D-pad up; the left
+        // action button is BTN_WEST, the top one BTN_NORTH.
+        send(first[1], {event(EV_KEY, BTN_SOUTH, 1), event(EV_KEY, BTN_WEST, 1), event(EV_ABS, ABS_X, 32767),
+                        event(EV_ABS, ABS_Z, 1023), event(EV_ABS, ABS_HAT0Y, -1), event(EV_SYN, SYN_REPORT, 0)});
+        QTRY_COMPARE(heard.buttons.size(), std::size_t{1});
+        const auto &pressed = heard.buttons[0];
+        QVERIFY(pressed[0].flags & MIGO_GAMEPAD_BUTTON_FLAG_PRESSED);
+        QCOMPARE(pressed[0].value, 1.0F);
+        QVERIFY(pressed[2].flags & MIGO_GAMEPAD_BUTTON_FLAG_PRESSED);
+        QCOMPARE(pressed[3].value, 0.0F);
+        QCOMPARE(pressed[6].value, 1.0F);
+        QVERIFY(pressed[6].flags & MIGO_GAMEPAD_BUTTON_FLAG_PRESSED);
+        QVERIFY(pressed[12].flags & MIGO_GAMEPAD_BUTTON_FLAG_PRESSED);
+        QCOMPARE(pressed[13].value, 0.0F);
+        QCOMPARE(heard.axes[0][0], 1.0F);
+        QVERIFY(std::abs(heard.axes[0][1]) < 1e-4F);
+        QCOMPARE(heard.times[0], 12500.0);
+
+        // Events after the kernel dropped some make no sample until it reports again.
+        send(first[1], {event(EV_SYN, SYN_DROPPED, 0), event(EV_KEY, BTN_EAST, 1), event(EV_SYN, SYN_REPORT, 0)});
+        QTest::qWait(50);
+        QCOMPARE(heard.buttons.size(), std::size_t{1});
+        send(first[1], {event(EV_ABS, ABS_Z, 0), event(EV_SYN, SYN_REPORT, 0)});
+        QTRY_COMPARE(heard.buttons.size(), std::size_t{2});
+        QCOMPARE(heard.buttons[1][6].value, 0.0F);
+
+        // A joystick of its own layout: as it is.
+        Gamepads::Capabilities stick;
+        stick.name = "Stick";
+        stick.keys = {BTN_TRIGGER, BTN_THUMB, BTN_THUMB2};
+        stick.axes[ABS_X] = {0, 255};
+        stick.axes[ABS_Y] = {0, 255};
+        stick.axes[ABS_THROTTLE] = {0, 255};
+        const auto second = device();
+        pads.add(QStringLiteral("/dev/input/event9"), second[0], stick, {});
+        QCOMPARE(heard.connections.back().first.index, 1U);
+        QCOMPARE(heard.connections.back().first.button_count, 3U);
+        QCOMPARE(heard.connections.back().first.axis_count, 3U);
+        QCOMPARE(heard.connections.back().first.haptics, MIGO_GAMEPAD_HAPTICS_NONE);
+        QCOMPARE(heard.mappings.back(), std::string());
+
+        MigoGamepadRumble rumble{};
+        rumble.struct_size = sizeof(rumble);
+        rumble.index = 0;
+        rumble.duration_ms = 200;
+        rumble.strong_magnitude = 0.75F;
+        rumble.weak_magnitude = 0.25F;
+        pads.rumble(rumble);
+        QCOMPARE(rumbled.size(), std::size_t{1});
+        QCOMPARE(std::get<0>(rumbled[0]), 0.75F);
+        QCOMPARE(std::get<2>(rumbled[0]), 200U);
+
+        // Unplugged: withdrawn, and its index free for the next pad.
+        ::close(first[1]);
+        QTRY_COMPARE(heard.connections.size(), std::size_t{3});
+        QVERIFY(!heard.connections.back().second);
+        QCOMPARE(heard.connections.back().first.index, 0U);
+        const auto third = device();
+        pads.add(QStringLiteral("/dev/input/event11"), third[0], standard, {});
+        QCOMPARE(heard.connections.back().first.index, 0U);
+        ::close(second[1]);
+        ::close(third[1]);
+    }
+
+    /// A Managed Session plays the pads' effects, so their rumble is announced.
+    void a_managed_session_plays_the_gamepads_rumble() {
+        QWidget parent;
+        MigoManagedSession managed(*fake_migo::engine(), parent);
+        QVERIFY(managed.isValid());
+        QVERIFY(fake_migo::installed_callbacks().on_gamepad_rumble != nullptr);
+        QCOMPARE(managed.close(), MIGO_OK);
     }
 };
 
