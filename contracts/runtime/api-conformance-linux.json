@@ -16,8 +16,8 @@
   ],
   "platform": "linux",
   "measured": [
-    {"date": "2026-10-21", "runner": "linux-capi", "bundles": ["api-spec", "audio-spec", "babylon", "canvas2d", "easeljs", "egret", "font-generics", "fs-sandbox", "fs-spec", "geometry", "howler", "image", "inner-audio-spec", "intl-spec", "io-spec", "lan-spec", "lifecycle-exit", "lifecycle-launch-options", "lifecycle-restart", "location-spec", "network-spec", "offscreen-readback", "p5", "phaser", "phaser-canvas", "phaser-loader", "pixi", "playcanvas", "readback", "resize", "robustness", "screen-fill", "screen-fill-webgl", "screen-fill-webgl2-read-none", "sensor-spec", "smoothing", "spec", "state", "storage-spec", "system-info-spec", "text", "three", "three-adv", "three-loaders", "timers-spec", "wasm", "webgl", "webgl-buffer", "webgl-buffer-presented", "webgl-buffer-presented-stencil", "webgl-buffer-preserved", "webgl-spec", "webgl-zero-size", "worker-spec"], "runtime": "0598de6325956132161e75d716ada4676b4bc4ce", "conformance": "4586759768adbe1582b626319e698e542e0f81aa"},
-    {"date": "2026-10-21", "runner": "linux-qt", "bundles": ["api-spec", "audio-spec", "babylon", "canvas2d", "device-spec", "easeljs", "egret", "font-generics", "fs-sandbox", "fs-spec", "geometry", "howler", "image", "inner-audio-spec", "intl-spec", "io-spec", "lan-spec", "lifecycle-exit", "lifecycle-launch-options", "lifecycle-restart", "network-spec", "offscreen-readback", "p5", "phaser", "phaser-canvas", "phaser-loader", "pixi", "playcanvas", "readback", "resize", "robustness", "screen-fill", "screen-fill-webgl", "screen-fill-webgl2-read-none", "smoothing", "spec", "state", "storage-spec", "system-info-spec", "text", "three", "three-adv", "three-loaders", "timers-spec", "ui-spec", "wasm", "webgl", "webgl-buffer", "webgl-buffer-presented", "webgl-buffer-presented-stencil", "webgl-buffer-preserved", "webgl-spec", "webgl-zero-size", "worker-spec"], "runtime": "0598de6325956132161e75d716ada4676b4bc4ce", "conformance": "4586759768adbe1582b626319e698e542e0f81aa"}
+    {"date": "2026-10-22", "runner": "linux-capi", "bundles": ["api-spec", "audio-spec", "babylon", "canvas2d", "easeljs", "egret", "font-generics", "fs-sandbox", "fs-spec", "geometry", "howler", "image", "inner-audio-spec", "intl-spec", "io-spec", "lan-spec", "lifecycle-exit", "lifecycle-launch-options", "lifecycle-restart", "location-spec", "network-spec", "offscreen-readback", "p5", "phaser", "phaser-canvas", "phaser-loader", "pixi", "playcanvas", "readback", "resize", "robustness", "screen-fill", "screen-fill-webgl", "screen-fill-webgl2-read-none", "sensor-spec", "smoothing", "spec", "state", "storage-spec", "system-info-spec", "text", "three", "three-adv", "three-loaders", "timers-spec", "wasm", "webgl", "webgl-buffer", "webgl-buffer-presented", "webgl-buffer-presented-stencil", "webgl-buffer-preserved", "webgl-spec", "webgl-zero-size", "worker-spec"], "runtime": "445cffa068abbc69bbdd1513d2612920fc18eab5", "conformance": "7677501cb746dd53dc1c8785ef6d0b131b6b58a2"},
+    {"date": "2026-10-22", "runner": "linux-qt", "bundles": ["api-spec", "audio-spec", "babylon", "canvas2d", "device-spec", "easeljs", "egret", "font-generics", "fs-sandbox", "fs-spec", "geometry", "howler", "image", "inner-audio-spec", "intl-spec", "io-spec", "lan-spec", "lifecycle-exit", "lifecycle-launch-options", "lifecycle-restart", "media-spec", "network-spec", "offscreen-readback", "p5", "phaser", "phaser-canvas", "phaser-loader", "pixi", "playcanvas", "readback", "resize", "robustness", "screen-fill", "screen-fill-webgl", "screen-fill-webgl2-read-none", "smoothing", "spec", "state", "storage-spec", "system-info-spec", "text", "three", "three-adv", "three-loaders", "timers-spec", "ui-spec", "wasm", "webgl", "webgl-buffer", "webgl-buffer-presented", "webgl-buffer-presented-stencil", "webgl-buffer-preserved", "webgl-spec", "webgl-zero-size", "worker-spec"], "runtime": "445cffa068abbc69bbdd1513d2612920fc18eab5", "conformance": "7677501cb746dd53dc1c8785ef6d0b131b6b58a2"}
   ],
   "apis": {
     "addCard": {"status": "present"},
@@ -36,7 +36,7 @@
     "closeBLEConnection": {"status": "present"},
     "closeBluetoothAdapter": {"status": "present"},
     "closeSocket": {"status": "verified"},
-    "compressImage": {"status": "present"},
+    "compressImage": {"status": "verified"},
     "connectSocket": {"status": "verified"},
     "createAdSkipCard": {"status": "present"},
     "createBLEConnection": {"status": "present"},
@@ -66,7 +66,7 @@
     "createUserInfoButton": {"status": "present"},
     "createVKSession": {"status": "absent"},
     "createVideo": {"status": "present"},
-    "createVideoDecoder": {"status": "present"},
+    "createVideoDecoder": {"status": "verified"},
     "createWebAudioContext": {"status": "verified"},
     "createWorker": {"status": "verified"},
     "decode": {"status": "verified"},
@@ -354,7 +354,7 @@
     "setEnableDebug": {"status": "verified"},
     "setHandoffQuery": {"status": "present"},
     "setInnerAudioOption": {"status": "verified"},
-    "setKeepScreenOn": {"status": "failing", "failing": ["api-spec/setKeepScreenOn/succeeds"]},
+    "setKeepScreenOn": {"status": "verified"},
     "setMenuStyle": {"status": "present"},
     "setMessageToFriendQuery": {"status": "present"},
     "setPreferredFramesPerSecond": {"status": "verified"},
