@@ -151,9 +151,9 @@ use migo_core::{
     spawn_host_thread,
 };
 use shared::protocol::camera_frame::{
-    CameraFrameEntry, CameraFramePush, PlaneWindow, pack_yuv_planes, publish_camera_frame,
-    take_camera_frame, validate_camera_frame_dimensions, validate_camera_frame_payload_lengths,
-    with_camera_frame_admission,
+    CameraFrameEntry, CameraFramePush, PlaneWindow, publish_camera_frame, take_camera_frame,
+    validate_camera_frame_dimensions, validate_camera_frame_payload_lengths,
+    with_camera_frame_admission, yuv_frame_to_rgba,
 };
 use shared::protocol::host_cmd::{
     GAMEPAD_HAPTICS_KNOWN, GAMEPAD_MAX_AXES, GAMEPAD_MAX_BUTTONS, GAMEPAD_MAX_COUNT, HostCommand,
@@ -1636,20 +1636,24 @@ pub(crate) extern "system" fn onCameraFrameData<'local>(
     y_buf: JByteBuffer<'local>,
     y_off: jint,
     y_len: jint,
+    y_row_stride: jint,
     u_buf: JByteBuffer<'local>,
     u_off: jint,
     u_len: jint,
     v_buf: JByteBuffer<'local>,
     v_off: jint,
     v_len: jint,
+    uv_row_stride: jint,
+    uv_pixel_stride: jint,
     width: jint,
     height: jint,
 ) {
     jni_safe!("onCameraFrameData", {
         // Reject oversized dimensions and byte windows before converting signed
-        // values or borrowing a Java direct-buffer address. `pack_yuv_planes`
-        // repeats the byte cap after capacity-window validation, so both JNI
-        // ingress and the shared copy boundary are independently bounded.
+        // values or borrowing a Java direct-buffer address. `yuv_frame_to_rgba`
+        // repeats the frame cap and checks every window against its strides
+        // before reading, so both JNI ingress and the shared conversion are
+        // independently bounded.
         let (width, height) = match validate_camera_frame_dimensions(width, height) {
             Ok(dimensions) => dimensions,
             Err(error) => {
@@ -1692,36 +1696,48 @@ pub(crate) extern "system" fn onCameraFrameData<'local>(
                 // SAFETY: each (addr, cap) comes from a live, direct ByteBuffer whose
                 // backing Image is held open by the synchronous Java caller for the
                 // duration of this call. `u8` has alignment 1 and `addr` is non-null
-                // (the jni wrapper rejects null). These capacity slices are used only
-                // to pack into an owned `Vec` below; no slice, raw address, or
+                // (the jni wrapper rejects null). These capacity slices are only
+                // read into an owned RGBA `Vec` below; no slice, raw address, or
                 // `JByteBuffer` escapes this call or crosses the host channel.
                 let y_slice = unsafe { std::slice::from_raw_parts(y_addr as *const u8, y_cap) };
                 let u_slice = unsafe { std::slice::from_raw_parts(u_addr as *const u8, u_cap) };
                 let v_slice = unsafe { std::slice::from_raw_parts(v_addr as *const u8, v_cap) };
 
-                // The single copy: validate each `[offset, offset+len)` window against
-                // its capacity and concatenate Y/U/V into one owned Vec.
+                // The single pass: validate each `[offset, offset+len)` window
+                // against its capacity and its strides, and read the planes into
+                // the RGBA content is given. A `YUV_420_888` luma plane's pixel
+                // stride is always 1; its chroma planes share theirs.
                 Some(
-                    match pack_yuv_planes([
-                        PlaneWindow {
-                            buffer: y_slice,
-                            offset: y_off,
-                            len: y_len,
-                        },
-                        PlaneWindow {
-                            buffer: u_slice,
-                            offset: u_off,
-                            len: u_len,
-                        },
-                        PlaneWindow {
-                            buffer: v_slice,
-                            offset: v_off,
-                            len: v_len,
-                        },
-                    ]) {
+                    match yuv_frame_to_rgba(
+                        [
+                            PlaneWindow {
+                                buffer: y_slice,
+                                offset: y_off,
+                                len: y_len,
+                                row_stride: y_row_stride,
+                                pixel_stride: 1,
+                            },
+                            PlaneWindow {
+                                buffer: u_slice,
+                                offset: u_off,
+                                len: u_len,
+                                row_stride: uv_row_stride,
+                                pixel_stride: uv_pixel_stride,
+                            },
+                            PlaneWindow {
+                                buffer: v_slice,
+                                offset: v_off,
+                                len: v_len,
+                                row_stride: uv_row_stride,
+                                pixel_stride: uv_pixel_stride,
+                            },
+                        ],
+                        width,
+                        height,
+                    ) {
                         Ok(v) => v,
                         Err(e) => {
-                            tracing::warn!("onCameraFrameData: invalid plane window: {:?}", e);
+                            tracing::warn!("onCameraFrameData: invalid plane: {:?}", e);
                             return None;
                         }
                     },

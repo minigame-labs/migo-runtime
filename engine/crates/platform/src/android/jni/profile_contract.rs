@@ -120,7 +120,7 @@ const NATIVE_MEDIA: &[JniMethod] = methods![
     ),
     (
         "onCameraFrameData",
-        "(IJILjava/nio/ByteBuffer;IILjava/nio/ByteBuffer;IILjava/nio/ByteBuffer;IIII)V"
+        "(IJILjava/nio/ByteBuffer;IIILjava/nio/ByteBuffer;IILjava/nio/ByteBuffer;IIIIII)V"
     ),
     ("onSaveImageToPhotosAlbumResult", "(ILjava/lang/String;)V"),
     ("onPreviewImageResult", "(ILjava/lang/String;)V"),

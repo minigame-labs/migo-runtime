@@ -1266,8 +1266,8 @@ impl JsBindings {
         }
     }
 
-    /// Dispatch camera frame data (raw Y/U/V plane-window bytes concatenated in
-    /// Y, U, V order, for onCameraFrame / listenFrameChange).
+    /// Dispatch camera frame data (straight RGBA, four bytes a pixel, rows top
+    /// first, for onCameraFrame / listenFrameChange).
     pub(crate) fn dispatch_camera_frame_data(
         &self,
         rt: &mut deno_core::JsRuntime,

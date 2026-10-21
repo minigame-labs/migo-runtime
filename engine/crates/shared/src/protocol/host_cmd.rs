@@ -589,8 +589,8 @@ pub enum HostCommand {
     CameraFrameData {
         /// JS-assigned camera instance ID.
         camera_id: u32,
-        /// Raw Y/U/V plane-window bytes concatenated in Y, U, V order (each
-        /// plane's `position..limit`), exactly as delivered to JS.
+        /// The frame as content reads it: straight RGBA, four bytes a pixel,
+        /// rows top first, as the reference defines onCameraFrame's data.
         data: Vec<u8>,
         /// Frame width in pixels.
         width: u32,

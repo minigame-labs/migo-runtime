@@ -19,12 +19,10 @@ use std::{
 use shared::{
     protocol::error::ServiceError,
     services::{FrameTiming, VideoDecoderService, VideoFrameSource},
-};
-
-use crate::{
-    android::surface::ANativeWindow,
     yuv::{self, Colour, Matrix, Plane},
 };
+
+use crate::android::surface::ANativeWindow;
 
 #[repr(C)]
 struct AMediaExtractor(c_void);

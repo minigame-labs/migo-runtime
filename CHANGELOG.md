@@ -876,6 +876,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- Android camera frames reach content as the reference defines `onCameraFrame`'s `data`: straight RGBA, four bytes a
+  pixel. They were the camera's three YUV planes concatenated as they lay, row padding and interleaved chroma
+  included -- 1.5 bytes a pixel nobody could read without the strides, which were not given. The planes' strides now
+  cross JNI and the frame is converted once, as camera2 defines its YUV (full-range BT.601).
 - The Linux Host Kit's toasts and loading indicators took the clicks that landed on them: Qt (6.4, xcb) gives an X
   window created with `Qt::WindowTransparentForInput` no empty input shape. What stands over the game now takes none
   of its input.

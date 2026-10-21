@@ -354,28 +354,33 @@ final class NativeBridge {
      * Callback when camera frame data is available.
      *
      * <p>The three YUV_420_888 plane buffers are passed by reference (direct
-     * ByteBuffers) together with each plane's window; native code copies the
-     * {@code [offset, offset + length)} bytes synchronously. The buffers must
-     * stay valid (their Image open) for the duration of this call.
+     * ByteBuffers) together with each plane's window and strides; native code
+     * reads the {@code [offset, offset + length)} bytes through the strides
+     * synchronously, into the RGBA content is given. The buffers must stay
+     * valid (their Image open) for the duration of this call.
      *
-     * @param sessionId The session ID
-     * @param cameraId  The camera instance ID
-     * @param yBuffer   Direct Y-plane ByteBuffer
-     * @param yOffset   Y-plane window start (buffer position)
-     * @param yLength   Y-plane window length (buffer remaining)
-     * @param uBuffer   Direct U-plane ByteBuffer
-     * @param uOffset   U-plane window start
-     * @param uLength   U-plane window length
-     * @param vBuffer   Direct V-plane ByteBuffer
-     * @param vOffset   V-plane window start
-     * @param vLength   V-plane window length
-     * @param width     Frame width in pixels
-     * @param height    Frame height in pixels
+     * @param sessionId     The session ID
+     * @param cameraId      The camera instance ID
+     * @param yBuffer       Direct Y-plane ByteBuffer
+     * @param yOffset       Y-plane window start (buffer position)
+     * @param yLength       Y-plane window length (buffer remaining)
+     * @param yRowStride    Y-plane row stride
+     * @param uBuffer       Direct U-plane ByteBuffer
+     * @param uOffset       U-plane window start
+     * @param uLength       U-plane window length
+     * @param vBuffer       Direct V-plane ByteBuffer
+     * @param vOffset       V-plane window start
+     * @param vLength       V-plane window length
+     * @param uvRowStride   U- and V-plane row stride
+     * @param uvPixelStride U- and V-plane pixel stride
+     * @param width         Frame width in pixels
+     * @param height        Frame height in pixels
      */
     static native void onCameraFrameData(int sessionId, long generation, int cameraId,
-            ByteBuffer yBuffer, int yOffset, int yLength,
+            ByteBuffer yBuffer, int yOffset, int yLength, int yRowStride,
             ByteBuffer uBuffer, int uOffset, int uLength,
             ByteBuffer vBuffer, int vOffset, int vLength,
+            int uvRowStride, int uvPixelStride,
             int width, int height);
 
     // ==================== Bluetooth Callbacks ====================
