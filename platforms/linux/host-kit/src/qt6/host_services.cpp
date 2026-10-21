@@ -1,8 +1,10 @@
 #include <migo/linux/qt6/host_services.hpp>
 
 #include "backlight.hpp"
+#include "geolocation.hpp"
 #include "images.hpp"
 #include "overlay.hpp"
+#include "sandbox.hpp"
 
 #include <QAction>
 #include <QClipboard>
@@ -29,6 +31,7 @@
 #include <QVBoxLayout>
 #include <QWidget>
 
+#include <chrono>
 #include <cmath>
 #include <optional>
 #include <utility>
@@ -57,6 +60,12 @@ MigoResult MigoQtHostServiceChannel::post(MigoHostService service, std::uint32_t
     if (session_ == nullptr) return MIGO_OK;
     return migo_session_post_host_service_event(session_, service, event, json.constData(),
                                                 static_cast<std::uint32_t>(json.size()));
+}
+
+MigoResult MigoQtHostServiceChannel::setScopeState(MigoScope scope, MigoScopeState state) {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    if (session_ == nullptr) return MIGO_OK;
+    return migo_session_set_scope_state(session_, scope, state);
 }
 
 MigoResult MigoQtHostServiceChannel::complete(std::uint64_t call_id, const MigoHostServiceResult &result) {
@@ -593,10 +602,24 @@ MigoQtBuiltInHostServices::MigoQtBuiltInHostServices(MigoQtX11SurfaceView &view,
                                                      QObject *parent)
     : QObject(parent),
       surface_(&view),
+      channel_(channel),
       interaction_(std::make_unique<Interaction>(view)),
       window_(std::make_unique<WindowService>(view, std::move(channel))),
       backlight_(std::make_unique<Backlight>(QStringLiteral("/sys/class/backlight"), QDBusConnection::systemBus())),
-      images_(std::make_unique<Images>(view, Images::Places::system())) {}
+      images_(std::make_unique<Images>(view, Images::Places::system())) {
+    // Inside a sandbox the portal asks GeoClue for the App, and stands its
+    // dialog over the game's window.
+    const bool sandboxed = insideSandbox();
+    const QString desktop = QGuiApplication::desktopFileName();
+    geolocation_ = std::make_unique<Geolocation>(
+        sandboxed ? QDBusConnection::sessionBus() : QDBusConnection::systemBus(),
+        sandboxed ? Geolocation::Source::Portal : Geolocation::Source::GeoClue,
+        desktop.isEmpty() ? QCoreApplication::applicationName() : desktop,
+        [game = QPointer<QWidget>(&view)]() -> QString {
+            if (game.isNull() || QGuiApplication::platformName() != QLatin1String("xcb")) return {};
+            return QStringLiteral("x11:%1").arg(static_cast<quint64>(game->window()->winId()), 0, 16);
+        });
+}
 
 MigoQtBuiltInHostServices::~MigoQtBuiltInHostServices() = default;
 
@@ -607,6 +630,8 @@ std::uint64_t MigoQtBuiltInHostServices::services() const noexcept {
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_WINDOW);
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_SCREEN);
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_IMAGE);
+    builtIn |= hostServiceBit(MIGO_HOST_SERVICE_LOCATION);
+    builtIn |= hostServiceBit(MIGO_HOST_SERVICE_PERMISSION);
     return builtIn;
 }
 
@@ -624,6 +649,12 @@ void MigoQtBuiltInHostServices::call(MigoHostService service, std::uint32_t meth
             return;
         case MIGO_HOST_SERVICE_IMAGE:
             images_->call(method, request, std::move(reply));
+            return;
+        case MIGO_HOST_SERVICE_LOCATION:
+            location(method, request, std::move(reply));
+            return;
+        case MIGO_HOST_SERVICE_PERMISSION:
+            permission(method, request, std::move(reply));
             return;
         case MIGO_HOST_SERVICE_CLIPBOARD:
             if (method == MIGO_CLIPBOARD_SET_CLIPBOARD_DATA) {
@@ -673,6 +704,88 @@ void MigoQtBuiltInHostServices::screen(std::uint32_t method, const QJsonObject &
             // class's comment. The observers are commands, and a command's
             // failure reaches no one.
             (void)reply.fail(QStringLiteral("not supported"));
+            return;
+    }
+}
+
+void MigoQtBuiltInHostServices::location(std::uint32_t method, const QJsonObject &request,
+                                         MigoQtHostServiceReply reply) {
+    // As long as the Android SDK waits for a position.
+    constexpr std::chrono::milliseconds kWait{10'000};
+    switch (method) {
+        case MIGO_LOCATION_GET_LOCATION: {
+            const bool high = request.value(QStringLiteral("isHighAccuracy")).toBool(false);
+            const double expiry = request.value(QStringLiteral("highAccuracyExpireTime")).toDouble(0);
+            const bool altitude = request.value(QStringLiteral("altitude")).toBool(false);
+            const std::chrono::milliseconds wait =
+                high && expiry >= 1 ? std::chrono::milliseconds(static_cast<std::int64_t>(qMin(expiry, 3.6e6))) : kWait;
+            geolocation_->locate(high ? Geolocation::Accuracy::Exact : Geolocation::Accuracy::Street, wait,
+                                 [reply, altitude](const Geolocation::Outcome &outcome) mutable {
+                                     if (!outcome.position.has_value()) {
+                                         (void)reply.fail(outcome.error);
+                                         return;
+                                     }
+                                     const Geolocation::Position &at = *outcome.position;
+                                     (void)reply.succeed({
+                                         {QStringLiteral("latitude"), at.latitude},
+                                         {QStringLiteral("longitude"), at.longitude},
+                                         {QStringLiteral("speed"), at.speed.value_or(0)},
+                                         {QStringLiteral("accuracy"), at.accuracy},
+                                         {QStringLiteral("altitude"), altitude ? at.altitude.value_or(0) : 0.0},
+                                         // GeoClue reports no vertical accuracy.
+                                         {QStringLiteral("verticalAccuracy"), 0},
+                                         {QStringLiteral("horizontalAccuracy"), at.accuracy},
+                                     });
+                                 });
+            return;
+        }
+        case MIGO_LOCATION_GET_FUZZY_LOCATION:
+            geolocation_->locate(Geolocation::Accuracy::City, kWait,
+                                 [reply](const Geolocation::Outcome &outcome) mutable {
+                                     if (!outcome.position.has_value()) {
+                                         (void)reply.fail(outcome.error);
+                                         return;
+                                     }
+                                     (void)reply.succeed({{QStringLiteral("latitude"), outcome.position->latitude},
+                                                          {QStringLiteral("longitude"), outcome.position->longitude}});
+                                 });
+            return;
+        default:
+            (void)reply.fail(QStringLiteral("not supported"));
+            return;
+    }
+}
+
+void MigoQtBuiltInHostServices::permission(std::uint32_t method, const QJsonObject &request,
+                                           MigoQtHostServiceReply reply) {
+    if (method != MIGO_PERMISSION_REQUEST_SCOPE) {
+        (void)reply.fail(QStringLiteral("not supported"));
+        return;
+    }
+    // Recorded before the answer, so content acting on a grant finds it.
+    const auto scope = static_cast<MigoScope>(request.value(QStringLiteral("scopeId")).toInt(-1));
+    switch (scope) {
+        case MIGO_SCOPE_USER_LOCATION:
+        case MIGO_SCOPE_USER_LOCATION_BACKGROUND:
+            geolocation_->decide([channel = channel_, scope, reply](const Geolocation::Outcome &outcome) mutable {
+                if (outcome.allowed) {
+                    (void)channel->setScopeState(scope, MIGO_SCOPE_STATE_GRANTED);
+                    (void)reply.succeed();
+                } else if (outcome.denied) {
+                    (void)channel->setScopeState(scope, MIGO_SCOPE_STATE_DENIED);
+                    (void)reply.fail(QStringLiteral("auth deny"));
+                } else {
+                    // Nobody decided: there was no one to ask.
+                    (void)reply.fail(outcome.error);
+                }
+            });
+            return;
+        case MIGO_SCOPE_WRITE_PHOTOS_ALBUM:
+            (void)channel_->setScopeState(scope, MIGO_SCOPE_STATE_GRANTED);
+            (void)reply.succeed();
+            return;
+        default:
+            (void)reply.fail(QStringLiteral("auth deny"));
             return;
     }
 }

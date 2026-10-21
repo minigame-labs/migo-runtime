@@ -29,7 +29,10 @@ What is claimed:
   wherever Qt finds one -- and `saveImageToPhotosAlbum` into the player's Pictures
   folder; the previews in a viewer over the game (http(s) images downloaded over
   Qt's network). What the game is given is a copy, staged in the App's cache
-  until the engine takes it; the camera and videos are refused.
+  until the engine takes it; the camera and videos are refused; where the device
+  is, GeoClue's (through the desktop portal inside a sandbox); and the scopes the
+  desktop decides -- `scope.userLocation` by GeoClue's agent or the portal asking
+  the player, `scope.writePhotosAlbum` granted -- recorded as decided.
 - `migo::qt6-managed-session` is the Managed ownership shape: `MigoManagedSession`
   owns the Session, its callback table and the view, and installs the built-in
   services; it holds content's `setKeepScreenOn` off the desktop's idle through

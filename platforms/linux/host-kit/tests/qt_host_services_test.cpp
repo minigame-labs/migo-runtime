@@ -1,5 +1,6 @@
 #include "backlight.hpp"
 #include "fake_migo.hpp"
+#include "geolocation.hpp"
 #include "image_viewer.hpp"
 #include "x11_player.hpp"
 
@@ -13,6 +14,8 @@
 #include <QDBusConnection>
 #include <QDBusContext>
 #include <QDBusError>
+#include <QDBusMessage>
+#include <QDBusObjectPath>
 #include <QDeadlineTimer>
 #include <QDir>
 #include <QFile>
@@ -41,12 +44,16 @@
 #include <QVBoxLayout>
 #include <QtTest>
 
+#include <cfloat>
+#include <chrono>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
 
 using migo::linux_host::SurfaceHost;
 using migo::linux_host::SurfaceState;
+using migo::linux_host::qt6::Geolocation;
 using migo::linux_host::qt6::hostServiceBit;
 using migo::linux_host::qt6::ImageViewer;
 using migo::linux_host::qt6::MigoManagedSession;
@@ -160,6 +167,191 @@ public Q_SLOTS:
 
 private:
     QString sysfs_;
+};
+
+/// Where GeoClue says the device is.
+class FakeGeoClueLocation final : public QObject {
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.freedesktop.GeoClue2.Location")
+    Q_PROPERTY(double Latitude MEMBER latitude)
+    Q_PROPERTY(double Longitude MEMBER longitude)
+    Q_PROPERTY(double Accuracy MEMBER accuracy)
+    Q_PROPERTY(double Altitude MEMBER altitude)
+    Q_PROPERTY(double Speed MEMBER speed)
+
+public:
+    double latitude = 31.2304;
+    double longitude = 121.4737;
+    double accuracy = 25;
+    // GeoClue's "unknown" for each.
+    double altitude = -DBL_MAX;
+    double speed = -1;
+};
+
+class FakeGeoClue;
+
+/// One of GeoClue's clients: started as its agent decides.
+class FakeGeoClueClient final : public QObject, protected QDBusContext {
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.freedesktop.GeoClue2.Client")
+    Q_PROPERTY(QString DesktopId MEMBER desktop_id)
+    Q_PROPERTY(uint RequestedAccuracyLevel MEMBER accuracy_level)
+
+public:
+    FakeGeoClueClient(FakeGeoClue &geoclue, QString path) : geoclue_(geoclue), path_(std::move(path)) {}
+    QString desktop_id;
+    uint accuracy_level = 0;
+
+public Q_SLOTS:
+    void Start();
+    void Stop() {}
+
+private:
+    FakeGeoClue &geoclue_;
+    const QString path_;
+};
+
+/// GeoClue, on the session bus: its agent grants or refuses, and the position
+/// is reported on starting, or not at all.
+class FakeGeoClue final : public QObject {
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.freedesktop.GeoClue2.Manager")
+
+public:
+    explicit FakeGeoClue(QDBusConnection bus) : bus_(std::move(bus)) {
+        registered_ = bus_.registerService(QStringLiteral("org.freedesktop.GeoClue2")) &&
+                      bus_.registerObject(QStringLiteral("/org/freedesktop/GeoClue2/Manager"), this,
+                                          QDBusConnection::ExportAllSlots) &&
+                      bus_.registerObject(QStringLiteral("/org/freedesktop/GeoClue2/Location/1"), &location,
+                                          QDBusConnection::ExportAllProperties);
+    }
+    ~FakeGeoClue() override {
+        for (const auto &client : clients) bus_.unregisterObject(client.first);
+        bus_.unregisterObject(QStringLiteral("/org/freedesktop/GeoClue2/Location/1"));
+        bus_.unregisterObject(QStringLiteral("/org/freedesktop/GeoClue2/Manager"));
+        bus_.unregisterService(QStringLiteral("org.freedesktop.GeoClue2"));
+    }
+    [[nodiscard]] bool registered() const { return registered_; }
+
+    bool refuse = false;
+    bool report = true;
+    int created = 0;
+    int deleted = 0;
+    /// "<desktop id> <accuracy level>", each time a client starts.
+    QStringList started;
+    FakeGeoClueLocation location;
+    std::map<QString, std::unique_ptr<FakeGeoClueClient>> clients;
+    QDBusConnection bus_;
+
+public Q_SLOTS:
+    QDBusObjectPath CreateClient() {
+        const QString path = QStringLiteral("/org/freedesktop/GeoClue2/Client/%1").arg(++created);
+        auto client = std::make_unique<FakeGeoClueClient>(*this, path);
+        bus_.registerObject(path, client.get(), QDBusConnection::ExportAllSlots | QDBusConnection::ExportAllProperties);
+        clients.emplace(path, std::move(client));
+        return QDBusObjectPath(path);
+    }
+    void DeleteClient(const QDBusObjectPath &client) {
+        ++deleted;
+        bus_.unregisterObject(client.path());
+    }
+
+private:
+    bool registered_ = false;
+};
+
+void FakeGeoClueClient::Start() {
+    geoclue_.started << QStringLiteral("%1 %2").arg(desktop_id).arg(accuracy_level);
+    if (geoclue_.refuse) {
+        sendErrorReply(QDBusError::AccessDenied, QStringLiteral("'%1' disallowed by the agent").arg(desktop_id));
+        return;
+    }
+    if (!geoclue_.report) return;
+    QDBusMessage updated =
+        QDBusMessage::createSignal(path_, QStringLiteral("org.freedesktop.GeoClue2.Client"), QStringLiteral("LocationUpdated"));
+    updated << QVariant::fromValue(QDBusObjectPath(QStringLiteral("/")))
+            << QVariant::fromValue(QDBusObjectPath(QStringLiteral("/org/freedesktop/GeoClue2/Location/1")));
+    geoclue_.bus_.send(updated);
+}
+
+/// A portal session, which the App closes.
+class FakePortalSession final : public QObject {
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.freedesktop.portal.Session")
+
+public:
+    int closed = 0;
+
+public Q_SLOTS:
+    void Close() { ++closed; }
+};
+
+/// The desktop portal's Location, on the session bus: the player answers its
+/// dialog with `response` (0 allowed, 1 refused), and it reports `location`.
+class FakeLocationPortal final : public QObject, protected QDBusContext {
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.freedesktop.portal.Location")
+
+public:
+    explicit FakeLocationPortal(QDBusConnection bus) : bus_(std::move(bus)) {
+        registered_ = bus_.registerService(QStringLiteral("org.freedesktop.portal.Desktop")) &&
+                      bus_.registerObject(QStringLiteral("/org/freedesktop/portal/desktop"), this,
+                                          QDBusConnection::ExportAllSlots);
+    }
+    ~FakeLocationPortal() override {
+        if (!session_.isEmpty()) bus_.unregisterObject(session_);
+        bus_.unregisterObject(QStringLiteral("/org/freedesktop/portal/desktop"));
+        bus_.unregisterService(QStringLiteral("org.freedesktop.portal.Desktop"));
+    }
+    [[nodiscard]] bool registered() const { return registered_; }
+
+    uint response = 0;
+    QVariantMap location{{QStringLiteral("Latitude"), 48.8566}, {QStringLiteral("Longitude"), 2.3522},
+                         {QStringLiteral("Accuracy"), 40.0}, {QStringLiteral("Altitude"), 35.0},
+                         {QStringLiteral("Speed"), -1.0}};
+    /// "<accuracy> <parent window>", each time a session starts.
+    QStringList asked;
+    FakePortalSession session;
+
+public Q_SLOTS:
+    QDBusObjectPath CreateSession(const QVariantMap &options) {
+        accuracy_ = options.value(QStringLiteral("accuracy")).toUInt();
+        session_ = QStringLiteral("/org/freedesktop/portal/desktop/session/%1/%2")
+                       .arg(escaped(), options.value(QStringLiteral("session_handle_token")).toString());
+        bus_.registerObject(session_, &session, QDBusConnection::ExportAllSlots);
+        return QDBusObjectPath(session_);
+    }
+    QDBusObjectPath Start(const QDBusObjectPath &started, const QString &parent, const QVariantMap &options) {
+        asked << QStringLiteral("%1 %2").arg(accuracy_).arg(parent);
+        const QString request = QStringLiteral("/org/freedesktop/portal/desktop/request/%1/%2")
+                                    .arg(escaped(), options.value(QStringLiteral("handle_token")).toString());
+        // The dialog answers later, as a player does.
+        QTimer::singleShot(0, this, [this, request, path = started.path()] {
+            QDBusMessage answered = QDBusMessage::createSignal(request, QStringLiteral("org.freedesktop.portal.Request"),
+                                                               QStringLiteral("Response"));
+            answered << response << QVariantMap();
+            bus_.send(answered);
+            if (response != 0) return;
+            QDBusMessage updated = QDBusMessage::createSignal(QStringLiteral("/org/freedesktop/portal/desktop"),
+                                                              QStringLiteral("org.freedesktop.portal.Location"),
+                                                              QStringLiteral("LocationUpdated"));
+            updated << QVariant::fromValue(QDBusObjectPath(path)) << location;
+            bus_.send(updated);
+        });
+        return QDBusObjectPath(request);
+    }
+
+private:
+    /// The caller's unique name as a portal puts it in a path.
+    QString escaped() const {
+        QString sender = message().service();
+        return sender.remove(0, 1).replace(QLatin1Char('.'), QLatin1Char('_'));
+    }
+
+    QDBusConnection bus_;
+    bool registered_ = false;
+    uint accuracy_ = 0;
+    QString session_;
 };
 
 /// A backlight where the kernel would show it.
@@ -484,7 +676,9 @@ private slots:
                                               hostServiceBit(MIGO_HOST_SERVICE_CLIPBOARD) |
                                               hostServiceBit(MIGO_HOST_SERVICE_WINDOW) |
                                               hostServiceBit(MIGO_HOST_SERVICE_SCREEN) |
-                                              hostServiceBit(MIGO_HOST_SERVICE_IMAGE));
+                                              hostServiceBit(MIGO_HOST_SERVICE_IMAGE) |
+                                              hostServiceBit(MIGO_HOST_SERVICE_LOCATION) |
+                                              hostServiceBit(MIGO_HOST_SERVICE_PERMISSION));
         QCOMPARE(fake_migo::created_network_policy(), std::string());
         QCOMPARE(fake_migo::created_launch_options(), std::string());
 
@@ -540,7 +734,8 @@ private slots:
         QCOMPARE(fake_migo::installed_callbacks().host_services,
                  hostServiceBit(MIGO_HOST_SERVICE_AD) | hostServiceBit(MIGO_HOST_SERVICE_CLIPBOARD) |
                      hostServiceBit(MIGO_HOST_SERVICE_INTERACTION) | hostServiceBit(MIGO_HOST_SERVICE_WINDOW) |
-                     hostServiceBit(MIGO_HOST_SERVICE_SCREEN) | hostServiceBit(MIGO_HOST_SERVICE_IMAGE));
+                     hostServiceBit(MIGO_HOST_SERVICE_SCREEN) | hostServiceBit(MIGO_HOST_SERVICE_IMAGE) |
+                     hostServiceBit(MIGO_HOST_SERVICE_LOCATION) | hostServiceBit(MIGO_HOST_SERVICE_PERMISSION));
 
         fake_migo::deliver_host_service_call_from_engine_thread(MIGO_HOST_SERVICE_CLIPBOARD,
                                                                 MIGO_CLIPBOARD_GET_CLIPBOARD_DATA, 3, "{}");
@@ -1464,6 +1659,135 @@ private slots:
         QCOMPARE(fixture.session.close(), MIGO_OK);
         QVERIFY(fixture.session.isClosed());
         QTRY_VERIFY(imageViewer() == nullptr);
+    }
+
+    /// GeoClue: a client of the App's own, named by its desktop file and asked
+    /// at the accuracy wanted, started -- its agent deciding -- and answered with
+    /// the first position; requests while it runs share it; it stops and goes
+    /// once answered. An unknown altitude or speed is no altitude or speed.
+    void geoclue_says_where_the_device_is() {
+        using namespace std::chrono_literals;
+        QDBusConnection bus = QDBusConnection::sessionBus();
+        QVERIFY2(bus.isConnected(), "no session bus: run this test under dbus-run-session");
+        FakeGeoClue geoclue(bus);
+        QVERIFY(geoclue.registered());
+        Geolocation where(bus, Geolocation::Source::GeoClue, QStringLiteral("com.example.game"), [] { return QString(); });
+
+        std::optional<Geolocation::Outcome> exact;
+        std::optional<Geolocation::Outcome> city;
+        where.locate(Geolocation::Accuracy::Exact, 5s, [&exact](const Geolocation::Outcome &outcome) { exact = outcome; });
+        where.locate(Geolocation::Accuracy::City, 5s, [&city](const Geolocation::Outcome &outcome) { city = outcome; });
+        QTRY_VERIFY(exact.has_value() && city.has_value());
+        QVERIFY(exact->allowed);
+        QVERIFY(exact->position.has_value());
+        QCOMPARE(exact->position->latitude, 31.2304);
+        QCOMPARE(exact->position->longitude, 121.4737);
+        QCOMPARE(exact->position->accuracy, 25.0);
+        QVERIFY(!exact->position->altitude.has_value());
+        QVERIFY(!exact->position->speed.has_value());
+        QCOMPARE(city->position->latitude, 31.2304);
+        QCOMPARE(geoclue.created, 1);
+        QCOMPARE(geoclue.started, QStringList{QStringLiteral("com.example.game 8")});
+        QTRY_COMPARE(geoclue.deleted, 1);
+
+        geoclue.location.altitude = 12.5;
+        geoclue.location.speed = 3;
+        std::optional<Geolocation::Outcome> moving;
+        where.locate(Geolocation::Accuracy::Street, 5s, [&moving](const Geolocation::Outcome &outcome) { moving = outcome; });
+        QTRY_VERIFY(moving.has_value());
+        QCOMPARE(moving->position->altitude, std::optional<double>(12.5));
+        QCOMPARE(moving->position->speed, std::optional<double>(3.0));
+        QCOMPARE(geoclue.started.last(), QStringLiteral("com.example.game 6"));
+
+        // Deciding is starting: answered as soon as it has, position or not.
+        geoclue.report = false;
+        std::optional<Geolocation::Outcome> decided;
+        where.decide([&decided](const Geolocation::Outcome &outcome) { decided = outcome; });
+        QTRY_VERIFY(decided.has_value());
+        QVERIFY(decided->allowed);
+        QVERIFY(!decided->position.has_value());
+        QTRY_COMPARE(geoclue.deleted, 3);
+
+        // Started, but no position in time.
+        std::optional<Geolocation::Outcome> late;
+        where.locate(Geolocation::Accuracy::Street, 200ms, [&late](const Geolocation::Outcome &outcome) { late = outcome; });
+        QTRY_VERIFY(late.has_value());
+        QVERIFY(late->allowed);
+        QVERIFY(!late->position.has_value());
+        QCOMPARE(late->error, QStringLiteral("unable to get location"));
+        QTRY_COMPARE(geoclue.deleted, 4);
+
+        // The agent refuses.
+        geoclue.refuse = true;
+        std::optional<Geolocation::Outcome> refused;
+        where.decide([&refused](const Geolocation::Outcome &outcome) { refused = outcome; });
+        QTRY_VERIFY(refused.has_value());
+        QVERIFY(!refused->allowed);
+        QVERIFY(refused->denied);
+        QVERIFY2(refused->error.startsWith(QStringLiteral("location access denied")), qPrintable(refused->error));
+    }
+
+    /// Without GeoClue, nobody decides and there is no position.
+    void without_geoclue_there_is_no_one_to_ask() {
+        Geolocation where(QDBusConnection::sessionBus(), Geolocation::Source::GeoClue, QStringLiteral("com.example.game"),
+                          [] { return QString(); });
+        std::optional<Geolocation::Outcome> decided;
+        where.decide([&decided](const Geolocation::Outcome &outcome) { decided = outcome; });
+        QTRY_VERIFY(decided.has_value());
+        QVERIFY(!decided->allowed);
+        QVERIFY(!decided->denied);
+        QVERIFY2(decided->error.startsWith(QStringLiteral("location services are not available")),
+                 qPrintable(decided->error));
+    }
+
+    /// Inside a sandbox, the portal: its dialog over the game's window, at the
+    /// accuracy wanted on its own scale; the player allows or refuses; the
+    /// session is closed once answered.
+    void the_portal_says_where_the_device_is() {
+        using namespace std::chrono_literals;
+        QDBusConnection bus = QDBusConnection::sessionBus();
+        FakeLocationPortal portal(bus);
+        QVERIFY(portal.registered());
+        Geolocation where(bus, Geolocation::Source::Portal, QString(), [] { return QStringLiteral("x11:2a"); });
+
+        std::optional<Geolocation::Outcome> located;
+        where.locate(Geolocation::Accuracy::Exact, 5s, [&located](const Geolocation::Outcome &outcome) { located = outcome; });
+        QTRY_VERIFY(located.has_value());
+        QVERIFY(located->allowed);
+        QVERIFY(located->position.has_value());
+        QCOMPARE(located->position->latitude, 48.8566);
+        QCOMPARE(located->position->altitude, std::optional<double>(35.0));
+        QVERIFY(!located->position->speed.has_value());
+        QCOMPARE(portal.asked, QStringList{QStringLiteral("5 x11:2a")});
+        QTRY_COMPARE(portal.session.closed, 1);
+
+        portal.response = 1;
+        std::optional<Geolocation::Outcome> refused;
+        where.decide([&refused](const Geolocation::Outcome &outcome) { refused = outcome; });
+        QTRY_VERIFY(refused.has_value());
+        QVERIFY(!refused->allowed);
+        QVERIFY(refused->denied);
+        QCOMPARE(portal.asked.last(), QStringLiteral("2 x11:2a"));
+    }
+
+    /// The permission service: the photo album granted and recorded, a scope
+    /// the desktop does not decide refused and not recorded.
+    void the_desktop_decides_the_scopes_it_gates() {
+        Managed fixture;
+        fake_migo::deliver_host_service_call_from_engine_thread(
+            MIGO_HOST_SERVICE_PERMISSION, MIGO_PERMISSION_REQUEST_SCOPE, 1,
+            json({{"scope", "scope.writePhotosAlbum"}, {"scopeId", static_cast<int>(MIGO_SCOPE_WRITE_PHOTOS_ALBUM)}}));
+        QTRY_VERIFY(answerTo(1).has_value());
+        QCOMPARE(answerTo(1)->status, MIGO_HOST_SERVICE_STATUS_OK);
+        QCOMPARE(fake_migo::scope_state(MIGO_SCOPE_WRITE_PHOTOS_ALBUM), MIGO_SCOPE_STATE_GRANTED);
+
+        fake_migo::deliver_host_service_call_from_engine_thread(
+            MIGO_HOST_SERVICE_PERMISSION, MIGO_PERMISSION_REQUEST_SCOPE, 2,
+            json({{"scope", "scope.userInfo"}, {"scopeId", static_cast<int>(MIGO_SCOPE_USER_INFO)}}));
+        QTRY_VERIFY(answerTo(2).has_value());
+        QCOMPARE(answerTo(2)->message, std::string("auth deny"));
+        QCOMPARE(fake_migo::scope_state(MIGO_SCOPE_USER_INFO), MIGO_SCOPE_STATE_UNKNOWN);
+        QCOMPARE(fixture.session.close(), MIGO_OK);
     }
 
 private:

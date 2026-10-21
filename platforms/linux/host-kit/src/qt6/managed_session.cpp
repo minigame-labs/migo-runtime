@@ -2,12 +2,12 @@
 
 #include "memory_monitor.hpp"
 #include "overlay.hpp"
+#include "sandbox.hpp"
 #include "screen_awake.hpp"
 #include "system_reports.hpp"
 
 #include <QDBusConnection>
 #include <QElapsedTimer>
-#include <QFile>
 #include <QWindow>
 #include <QEvent>
 #include <QFontDatabase>
@@ -32,12 +32,6 @@
 namespace migo::linux_host::qt6 {
 
 namespace {
-
-/// Whether the App runs inside a sandbox (Flatpak, Snap), where the desktop's
-/// portals stand between it and the system.
-bool insideSandbox() {
-    return QFile::exists(QStringLiteral("/.flatpak-info")) || qEnvironmentVariableIsSet("SNAP");
-}
 
 /// The debugging panel, shown while the debugging aids are on: the frames a
 /// second the view delivered and the latest lines content wrote to its console,
@@ -559,7 +553,8 @@ MigoManagedSession::MigoManagedSession(MigoEngine &engine, QWidget &parent, cons
     // the system could gate -- its files, its devices, its notifications --
     // for the user who runs it; inside one (Flatpak, Snap) the portals decide
     // as content asks, which is not determined until then. Location is
-    // GeoClue's agent's to decide, which the Host Kit does not ask.
+    // GeoClue's agent's to decide, asked when content asks for
+    // scope.userLocation (MigoQtBuiltInHostServices), and not reported here.
     MigoAppAuthorizeSetting granted{};
     granted.struct_size = static_cast<std::uint32_t>(sizeof(granted));
     granted.abi_version = MIGO_ABI_VERSION_1;

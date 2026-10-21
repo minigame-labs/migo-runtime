@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The Linux Host Kit says where the device is and decides the scopes the desktop gates: `getLocation` and
+  `getFuzzyLocation` ask GeoClue on the system bus, or inside Flatpak or Snap the desktop portal's Location (street
+  level, exact with `isHighAccuracy`, city level for the fuzzy position; ten seconds, or `highAccuracyExpireTime`);
+  requests made meanwhile share one client, which stops once they are answered. `scope.userLocation` is GeoClue's to
+  decide -- its agent or the portal asking the player -- and is recorded with `migo_session_set_scope_state`;
+  `scope.writePhotosAlbum` is granted; any other scope is refused for the App to decide. `MigoQtHostServiceChannel`
+  gains `setScopeState`.
 - The Linux Host Kit previews images: `previewImage` and `previewMedia` show a viewer over the game, its window's size --
   the images one at a time, fitted, from the one content asked for, Left and Right between them, Esc closing it. Each
   image is held open before the call is answered, so nothing is copied; an http(s) one is downloaded over Qt's network

@@ -209,6 +209,19 @@ desktop already offers with Qt's own:
   download -- is downloaded over Qt's network, with no referrer, into a file removed as it is made. Another preview
   replaces the one shown. The camera and videos -- in `chooseMedia` and `previewMedia` -- are refused: nothing here
   says a video's length, size or cover, nor plays one, yet.
+- **Location** (`getLocation`, `getFuzzyLocation`): GeoClue's position, asked of GeoClue on the system bus outside a
+  sandbox and of the XDG desktop portal's `Location` inside one (Flatpak, Snap), which asks GeoClue for the App.
+  `getLocation` asks at street level, or exactly with `isHighAccuracy`, and waits ten seconds for a position --
+  `highAccuracyExpireTime` instead when given with it -- failing with `unable to get location`; `getFuzzyLocation` asks
+  at city level, and the engine rounds what it answers. Requests made while GeoClue runs share it, and it stops once
+  they are answered. GeoClue names the App to its agent by `QGuiApplication::desktopFileName()` (else the application
+  name): set it to the App's desktop file id.
+- **Permission** (`authorize` and the calls that need a scope): the scopes the desktop decides. `scope.userLocation`
+  (and `scope.userLocationBackground`: a desktop has no other) is GeoClue's -- its agent, or inside a sandbox the
+  portal, asks the player the first time the App asks -- and is recorded as decided; with no GeoClue there is no one to
+  ask, and the scope stays undecided. `scope.writePhotosAlbum` is granted: the player's Pictures folder is theirs and
+  the App's, which a desktop does not gate. Any other scope is refused (`auth deny`): an App that decides scopes --
+  sign-in, its own consent dialog -- answers the permission service itself, all of it.
 
 `MigoManagedSession` also keeps the display awake for content (`setKeepScreenOn`): it asks the desktop through the XDG
 desktop portal's `Inhibit` (the session's idle: blanking, locking), or through the freedesktop screen saver
