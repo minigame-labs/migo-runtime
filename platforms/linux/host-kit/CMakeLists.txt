@@ -46,7 +46,7 @@ target_link_libraries(migo_linux_surface_host PUBLIC migo::migo Threads::Threads
 set(_migo_linux_host_kit_targets migo_linux_surface_host)
 
 if(MIGO_LINUX_HOST_KIT_BUILD_QT6_X11)
-    find_package(Qt6 6.4 REQUIRED COMPONENTS Core Gui Widgets DBus)
+    find_package(Qt6 6.4 REQUIRED COMPONENTS Core Gui Widgets DBus Network)
     find_package(X11 REQUIRED)
     # XInput 2 on Qt's own xcb connection: the raw motion a pointer lock reads.
     find_package(PkgConfig REQUIRED)
@@ -93,12 +93,15 @@ if(MIGO_LINUX_HOST_KIT_BUILD_QT6_X11)
         include/migo/linux/qt6/host_services.hpp
         src/qt6/host_services.cpp
         # Internal, not installed: how what stands over the game is shown, the
-        # backlight (sysfs and logind, over Qt's D-Bus), and the image service.
+        # backlight (sysfs and logind, over Qt's D-Bus), and the image service
+        # with its viewer (downloading over Qt's network).
         src/qt6/overlay.hpp
         src/qt6/backlight.hpp
         src/qt6/backlight.cpp
         src/qt6/images.hpp
         src/qt6/images.cpp
+        src/qt6/image_viewer.hpp
+        src/qt6/image_viewer.cpp
     )
     add_library(migo::qt6-host-services ALIAS migo_qt6_host_services)
     set_target_properties(migo_qt6_host_services PROPERTIES
@@ -119,6 +122,7 @@ if(MIGO_LINUX_HOST_KIT_BUILD_QT6_X11)
             Qt6::Widgets
         PRIVATE
             Qt6::DBus
+            Qt6::Network
     )
     list(APPEND _migo_linux_host_kit_targets migo_qt6_host_services)
 

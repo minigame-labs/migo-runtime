@@ -33,7 +33,7 @@ if(NOT DEFINED MIGO_LINUX_HOST_KIT_ENABLE_INSTALL)
 endif()
 add_subdirectory("${HOST_KIT_ROOT}" "${CMAKE_CURRENT_BINARY_DIR}/host-kit")
 
-find_package(Qt6 6.4 REQUIRED COMPONENTS Gui Test DBus)
+find_package(Qt6 6.4 REQUIRED COMPONENTS Gui Test DBus Network)
 find_package(X11 REQUIRED)
 if(NOT TARGET X11::Xtst)
     message(FATAL_ERROR "the xcb input tests drive the X server through XTest (libxtst-dev)")
@@ -80,6 +80,7 @@ target_link_libraries(migo-qt-host-services-test PRIVATE
     migo_host_kit_x11_player
     Qt6::Test
     Qt6::DBus
+    Qt6::Network
 )
 
 add_executable(migo-qt-managed-session-test qt_managed_session_test.cpp)
