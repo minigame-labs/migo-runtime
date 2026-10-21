@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `createVideoDecoder` on Linux, through GStreamer: loaded when the system has it, not linked, so a system without it
+  runs every game and only this API answers not supported. Frames come as RGBA converted as the stream's colorimetry
+  says, timed in the video's own time, and a seek lands on the frame shown at the position.
 - The Linux Host Kit reads the gamepads the kernel shows: `MigoManagedSession` finds the evdev joysticks through udev
   as they come and go, maps a pad following the kernel's gamepad layout onto the W3C standard layout (17 buttons,
   4 axes, analog triggers, the D-pad's hat) and passes others on as they are, plays `FF_RUMBLE` for

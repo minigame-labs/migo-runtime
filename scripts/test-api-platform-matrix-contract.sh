@@ -124,6 +124,12 @@ red "a capability product that stops answering its service" platforms/apple/Sour
     'text.replace("builtIn.insert(.location)", "// builtIn.insert(.location)", 1)'
 red "an engine decoder compiled for another system" engine/crates/capi/src/host_kit.rs \
     'text.replace("#[cfg(target_os = \"macos\")]\n    fn video_decoder", "#[cfg(target_os = \"windows\")]\n    fn video_decoder", 1)'
+# OpenHarmony's targets are `target_os = "linux"` too: an accessor that stops
+# telling them apart claims a decoder for a platform that has none.
+red "an engine decoder that a bare Linux cfg also builds for OpenHarmony" engine/crates/capi/src/host_kit.rs \
+    'text.replace("#[cfg(all(target_os = \"linux\", not(target_env = \"ohos\")))]\n    fn video_decoder", "#[cfg(target_os = \"linux\")]\n    fn video_decoder", 1)'
+red "an accessor cfg that does not say which platforms" engine/crates/capi/src/host_kit.rs \
+    'text.replace("#[cfg(all(target_os = \"linux\", not(target_env = \"ohos\")))]\n    fn video_decoder", "#[cfg(all(target_os = \"linux\", feature = \"gst\"))]\n    fn video_decoder", 1)'
 red "the engine's audio settings no longer built for Windows" engine/crates/capi/src/host_kit.rs \
     'text.replace("target_os = \"windows\"\n    ))]\n    fn audio_platform", "target_os = \"linux\"\n    ))]\n    fn audio_platform", 1)'
 red "the Mac's game view that stops feeding the mouse" platforms/apple/Sources/MigoMacV8/MigoGameView.swift \
