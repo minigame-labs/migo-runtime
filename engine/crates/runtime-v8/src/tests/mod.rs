@@ -67,6 +67,14 @@ mod request_through_the_engine;
 mod restart_launch_query;
 mod runtime_restart_boundary;
 mod save_file_to_disk;
+// Location from `api-sensors`, the recorder from `api-media`, authorize from
+// `api-connectivity`.
+#[cfg(all(
+    feature = "api-sensors",
+    feature = "api-media",
+    feature = "api-connectivity"
+))]
+mod scope_asking;
 #[cfg(feature = "api-commerce")]
 mod share;
 mod snapshot_fingerprint;

@@ -756,6 +756,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a relink, is INVALID_OPERATION and null, as are a deleted program and one that did not link.
 
 ### Changed
+- A call that needs a scope nobody has decided asks for it, as `authorize` does, and goes ahead once the host has
+  decided: granted, it runs; refused, or with no permission service to ask, it refuses as before (`auth deny: <scope>
+  is not granted`). The reference's `authorize` is how content asks *in advance* -- once granted, later calls do not
+  ask -- so a game that calls `getLocation`, `saveImageToPhotosAlbum`, `openBluetoothAdapter`, `createCamera` or
+  `RecorderManager.start` straight away no longer fails on a question nobody put to the player. Calls made while the
+  player is asked share one question; a decided scope is not asked again; `scope.userInfo` is never asked this way;
+  the call's own timeout stops while the player is asked. `authorize`, `openSetting`, `openSystemBluetoothSetting`,
+  `scanCode` and `navigateToMiniProgram` no longer time out after 30 seconds: a player answers them when they do.
 - `contracts/runtime/minigame-api-spec.json` records where the reference contradicts itself about a field, and reads
   it as the page's own words support (`erratum`): `getGamepads` returns gamepads whose `index` is a number, as the
   browser standard the page cites has it and its own description says, though its table types it string. An

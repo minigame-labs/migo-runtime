@@ -5,7 +5,7 @@ import {
   op_recorder_resume,
   op_recorder_stop,
 } from "ext:core/ops";
-import { createListenerGroup, errorMessage } from "ext:host_v8_base/02_async.js";
+import { createListenerGroup, errorMessage, withScope } from "ext:host_v8_base/02_async.js";
 
 // Singleton instance
 let _instance = null;
@@ -66,29 +66,25 @@ class RecorderManager {
       opts.frameSize = Number.isFinite(fs) ? Math.max(0, Math.min(1024, fs)) : 0;
     }
 
-    try {
-      op_recorder_start(JSON.stringify(opts));
-    } catch (e) {
+    // scope.record undecided, the call asks for it first (withScope).
+    const request = JSON.stringify(opts);
+    withScope(() => op_recorder_start(request), () => {}, (e) => {
       this.#fireListeners("error", { errMsg: errorMessage(e) });
-    }
+    });
   }
 
   /** Pause recording. */
   pause() {
-    try {
-      op_recorder_pause();
-    } catch (e) {
+    withScope(() => op_recorder_pause(), () => {}, (e) => {
       this.#fireListeners("error", { errMsg: errorMessage(e) });
-    }
+    });
   }
 
   /** Resume recording after pause. */
   resume() {
-    try {
-      op_recorder_resume();
-    } catch (e) {
+    withScope(() => op_recorder_resume(), () => {}, (e) => {
       this.#fireListeners("error", { errMsg: errorMessage(e) });
-    }
+    });
   }
 
   /** Stop recording. Results delivered via onStop callback. */

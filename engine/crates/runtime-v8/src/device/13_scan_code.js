@@ -1,7 +1,8 @@
 import { op_scan_code } from "ext:core/ops";
 import { createDeferredApi } from "ext:host_v8_base/02_async.js";
 
-const _scanCodeApi = createDeferredApi('scanCode');
+// Timeout disabled: the player aims the camera, or gives up, when they do.
+const _scanCodeApi = createDeferredApi('scanCode', 0);
 
 function scanCode(options = {}) {
     return _scanCodeApi.invoke(options, function (opts, requestId) {

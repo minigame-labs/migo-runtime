@@ -8,7 +8,8 @@ import { wrapAsync, createDeferredApi } from "ext:host_v8_base/02_async.js";
 
 // ---- navigateToMiniProgram (Mode C) ----------------------------------------
 
-const _navigateApi = createDeferredApi('navigateToMiniProgram');
+// Timeout disabled: the host may ask the player first, who answers when they do.
+const _navigateApi = createDeferredApi('navigateToMiniProgram', 0);
 
 function navigateToMiniProgram(options) {
     return _navigateApi.invoke(options, function (opts, requestId) {
