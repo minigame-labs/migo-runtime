@@ -93,8 +93,9 @@ if(MIGO_LINUX_HOST_KIT_BUILD_QT6_X11)
         include/migo/linux/qt6/host_services.hpp
         src/qt6/host_services.cpp
         # Internal, not installed: how what stands over the game is shown, the
-        # backlight (sysfs and logind, over Qt's D-Bus), and the image service
-        # with its viewer (downloading over Qt's network).
+        # backlight (sysfs and logind, over Qt's D-Bus), the image service
+        # with its viewer (downloading over Qt's network), and where the device
+        # is (GeoClue, or the desktop portal inside a sandbox).
         src/qt6/overlay.hpp
         src/qt6/backlight.hpp
         src/qt6/backlight.cpp
@@ -102,6 +103,9 @@ if(MIGO_LINUX_HOST_KIT_BUILD_QT6_X11)
         src/qt6/images.cpp
         src/qt6/image_viewer.hpp
         src/qt6/image_viewer.cpp
+        src/qt6/geolocation.hpp
+        src/qt6/geolocation.cpp
+        src/qt6/sandbox.hpp
     )
     add_library(migo::qt6-host-services ALIAS migo_qt6_host_services)
     set_target_properties(migo_qt6_host_services PROPERTIES

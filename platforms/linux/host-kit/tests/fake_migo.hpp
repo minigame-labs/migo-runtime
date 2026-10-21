@@ -127,6 +127,8 @@ int system_settings_reports() noexcept;
 const MigoAppAuthorizeSetting &reported_app_authorization() noexcept;
 /// The memory warnings the host passed on, in order.
 const std::vector<MigoMemoryWarningLevel> &memory_warnings() noexcept;
+/// The standing decision the host recorded for `scope`; UNKNOWN until one.
+MigoScopeState scope_state(MigoScope scope) noexcept;
 
 /// A line content writes to its console, which the host's debugging panel
 /// reads back (migo_session_copy_console_logs): level 0 debug .. 3 error.

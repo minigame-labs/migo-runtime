@@ -14,7 +14,7 @@ use std::{
 /// The Host Kit's headers that declare QObjects, which moc reads, each with the
 /// name its source includes it by: a public header through the public include
 /// path, an internal one beside the sources.
-const MOC_HEADERS: [(&str, &str); 4] = [
+const MOC_HEADERS: [(&str, &str); 5] = [
     (
         "include/migo/linux/qt6/x11_surface_view.hpp",
         "migo/linux/qt6/x11_surface_view.hpp",
@@ -28,11 +28,12 @@ const MOC_HEADERS: [(&str, &str); 4] = [
         "migo/linux/qt6/managed_session.hpp",
     ),
     ("src/qt6/memory_monitor.hpp", "memory_monitor.hpp"),
+    ("src/qt6/geolocation.hpp", "geolocation.hpp"),
 ];
 
 /// The Host Kit's sources this host links: the surface controller, the Qt view,
 /// the host services and the Managed shape.
-const KIT_SOURCES: [&str; 12] = [
+const KIT_SOURCES: [&str; 13] = [
     "src/surface_host.cpp",
     "src/qt6/x11_surface_view.cpp",
     "src/qt6/dom_key_names.cpp",
@@ -41,6 +42,7 @@ const KIT_SOURCES: [&str; 12] = [
     "src/qt6/backlight.cpp",
     "src/qt6/images.cpp",
     "src/qt6/image_viewer.cpp",
+    "src/qt6/geolocation.cpp",
     "src/qt6/managed_session.cpp",
     "src/qt6/screen_awake.cpp",
     "src/qt6/system_reports.cpp",

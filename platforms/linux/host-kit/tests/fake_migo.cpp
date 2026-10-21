@@ -54,6 +54,9 @@ uint32_t g_system_settings = 0;
 int g_system_settings_reports = 0;
 MigoAppAuthorizeSetting g_app_authorization{};
 std::vector<MigoMemoryWarningLevel> g_memory_warnings;
+/// Recorded from any thread, as the library lets a host.
+std::mutex g_scopes_mutex;
+std::map<MigoScope, MigoScopeState> g_scopes;
 std::string g_launch_options;
 /// Guards the calls and their answers: the host completes a call from any thread.
 std::mutex g_answers_mutex;
@@ -85,6 +88,10 @@ void reset() noexcept {
     g_system_settings_reports = 0;
     g_app_authorization = {};
     g_memory_warnings.clear();
+    {
+        const std::lock_guard<std::mutex> lock(g_scopes_mutex);
+        g_scopes.clear();
+    }
     g_launch_options.clear();
     {
         const std::lock_guard<std::mutex> lock(g_answers_mutex);
@@ -209,6 +216,11 @@ uint32_t reported_system_settings() noexcept { return g_system_settings; }
 int system_settings_reports() noexcept { return g_system_settings_reports; }
 const MigoAppAuthorizeSetting &reported_app_authorization() noexcept { return g_app_authorization; }
 const std::vector<MigoMemoryWarningLevel> &memory_warnings() noexcept { return g_memory_warnings; }
+MigoScopeState scope_state(MigoScope scope) noexcept {
+    const std::lock_guard<std::mutex> lock(g_scopes_mutex);
+    const auto found = g_scopes.find(scope);
+    return found == g_scopes.end() ? MIGO_SCOPE_STATE_UNKNOWN : found->second;
+}
 
 void write_console(int level, const std::string &text) {
     // Plain text only: the tests write no character JSON would need escaped.
@@ -594,6 +606,20 @@ extern "C" MigoResult MIGO_CALL migo_session_complete_host_service_call(
     if (take) take(answer);
     const std::lock_guard<std::mutex> lock(g_answers_mutex);
     g_answers.push_back(std::move(answer));
+    return MIGO_OK;
+}
+
+extern "C" MigoResult MIGO_CALL migo_session_set_scope_state(MigoSession *session, MigoScope scope,
+                                                              MigoScopeState state) {
+    // As strict as the library: a known scope and state, and the permission
+    // service declared, without which no decision is read.
+    if (session != fake_migo::session() || !g_session_alive || scope > MIGO_SCOPE_GAME_CLUB_DATA ||
+        state > MIGO_SCOPE_STATE_DENIED ||
+        (g_callbacks.host_services & (uint64_t{1} << MIGO_HOST_SERVICE_PERMISSION)) == 0) {
+        return MIGO_ERROR_INVALID_ARGUMENT;
+    }
+    const std::lock_guard<std::mutex> lock(g_scopes_mutex);
+    g_scopes[scope] = state;
     return MIGO_OK;
 }
 

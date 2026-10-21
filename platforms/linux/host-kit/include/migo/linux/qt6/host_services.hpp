@@ -55,6 +55,11 @@ public:
     /// no running content left to tell.
     MigoResult post(MigoHostService service, std::uint32_t event, const QJsonObject &payload);
 
+    /// Records the standing decision for one of content's scopes
+    /// (`migo_session_set_scope_state`), which every gated call is checked
+    /// against. MIGO_OK once closed.
+    MigoResult setScopeState(MigoScope scope, MigoScopeState state);
+
 private:
     explicit MigoQtHostServiceChannel(MigoSession *session) noexcept : session_(session) {}
 
@@ -116,7 +121,8 @@ public:
 /// The services Qt already offers an App, answered with Qt's own: the
 /// clipboard; the game's toasts, loading indicator, modals and action sheets;
 /// the window the game is shown in -- its size, its state, the cursor over the
-/// game; the screen; and images -- compressing them, picking and saving files.
+/// game; the screen; images -- compressing them, picking and saving files; and
+/// where the device is, with the scopes the desktop decides.
 ///
 /// An App that names one of these services answers it instead; one that wants
 /// a service refused names it and refuses. `scripts/gen-api-platform-matrix.py`
@@ -161,8 +167,26 @@ public:
 /// an http(s) one downloaded -- so the engine may take back what it lent once
 /// the call is answered. The camera and videos are refused.
 ///
+/// Location: GeoClue's, on the system bus outside a sandbox and through the
+/// desktop portal's Location inside one. getLocation asks it at street level,
+/// or exactly with `isHighAccuracy`, and waits ten seconds for a position --
+/// `highAccuracyExpireTime` instead, when given with it -- failing with
+/// "unable to get location" when none comes; getFuzzyLocation asks at city
+/// level, the engine rounding what it answers. GeoClue names the App to its
+/// agent by `QGuiApplication::desktopFileName()`, or its application name.
+///
+/// Permission: the scopes the desktop decides. `scope.userLocation` (and its
+/// background form: a desktop has no other) is GeoClue's to decide -- its agent
+/// or the portal asking the player the first time the App asks -- and is
+/// recorded as decided; `scope.writePhotosAlbum` is granted, the player's
+/// Pictures folder being theirs and the App's, which a desktop does not gate.
+/// Any other scope is the App's to decide, and refused ("auth deny") without
+/// an answer of its own: an App that decides scopes answers the permission
+/// service itself.
+///
 /// GUI thread only. What is on screen goes with this object.
 class Backlight;
+class Geolocation;
 class Images;
 
 class MigoQtBuiltInHostServices final : public QObject, public MigoQtHostServiceProvider {
@@ -193,14 +217,18 @@ Q_SIGNALS:
 
 private:
     void screen(std::uint32_t method, const QJsonObject &request, MigoQtHostServiceReply reply);
+    void location(std::uint32_t method, const QJsonObject &request, MigoQtHostServiceReply reply);
+    void permission(std::uint32_t method, const QJsonObject &request, MigoQtHostServiceReply reply);
 
     class Interaction;
     class WindowService;
     QPointer<QWidget> surface_;
+    std::shared_ptr<MigoQtHostServiceChannel> channel_;
     std::unique_ptr<Interaction> interaction_;
     std::unique_ptr<WindowService> window_;
     std::unique_ptr<Backlight> backlight_;
     std::unique_ptr<Images> images_;
+    std::unique_ptr<Geolocation> geolocation_;
 };
 
 }  // namespace migo::linux_host::qt6
