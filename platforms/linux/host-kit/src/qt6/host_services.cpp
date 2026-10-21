@@ -3,6 +3,7 @@
 #include "backlight.hpp"
 #include "geolocation.hpp"
 #include "images.hpp"
+#include "motion.hpp"
 #include "overlay.hpp"
 #include "sandbox.hpp"
 
@@ -66,6 +67,12 @@ MigoResult MigoQtHostServiceChannel::setScopeState(MigoScope scope, MigoScopeSta
     const std::lock_guard<std::mutex> lock(mutex_);
     if (session_ == nullptr) return MIGO_OK;
     return migo_session_set_scope_state(session_, scope, state);
+}
+
+MigoResult MigoQtHostServiceChannel::postSensorSample(const MigoSensorSample &sample) {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    if (session_ == nullptr) return MIGO_OK;
+    return migo_session_post_sensor_sample(session_, &sample);
 }
 
 MigoResult MigoQtHostServiceChannel::complete(std::uint64_t call_id, const MigoHostServiceResult &result) {
@@ -632,6 +639,7 @@ std::uint64_t MigoQtBuiltInHostServices::services() const noexcept {
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_IMAGE);
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_LOCATION);
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_PERMISSION);
+    builtIn |= hostServiceBit(MIGO_HOST_SERVICE_MOTION);
     return builtIn;
 }
 
@@ -655,6 +663,9 @@ void MigoQtBuiltInHostServices::call(MigoHostService service, std::uint32_t meth
             return;
         case MIGO_HOST_SERVICE_PERMISSION:
             permission(method, request, std::move(reply));
+            return;
+        case MIGO_HOST_SERVICE_MOTION:
+            motion(method, request, std::move(reply));
             return;
         case MIGO_HOST_SERVICE_CLIPBOARD:
             if (method == MIGO_CLIPBOARD_SET_CLIPBOARD_DATA) {
@@ -788,6 +799,45 @@ void MigoQtBuiltInHostServices::permission(std::uint32_t method, const QJsonObje
             (void)reply.fail(QStringLiteral("auth deny"));
             return;
     }
+}
+
+void MigoQtBuiltInHostServices::motion(std::uint32_t method, const QJsonObject &request,
+                                       MigoQtHostServiceReply reply) {
+    if (motion_ == nullptr) {
+        motion_ = std::make_unique<MotionSensors>(
+            MotionSensors::enumerate(),
+            [channel = channel_](const MigoSensorSample &sample) { (void)channel->postSensorSample(sample); });
+    }
+    // Each sensor's start and stop, in the order the header numbers them.
+    static constexpr struct {
+        std::uint32_t start;
+        std::uint32_t stop;
+        MigoSensorKind kind;
+    } kSensors[] = {
+        {MIGO_MOTION_START_ACCELEROMETER, MIGO_MOTION_STOP_ACCELEROMETER, MIGO_SENSOR_ACCELEROMETER},
+        {MIGO_MOTION_START_GYROSCOPE, MIGO_MOTION_STOP_GYROSCOPE, MIGO_SENSOR_GYROSCOPE},
+        {MIGO_MOTION_START_COMPASS, MIGO_MOTION_STOP_COMPASS, MIGO_SENSOR_COMPASS},
+        {MIGO_MOTION_START_DEVICE_MOTION, MIGO_MOTION_STOP_DEVICE_MOTION, MIGO_SENSOR_DEVICE_MOTION},
+    };
+    for (const auto &sensor : kSensors) {
+        if (method == sensor.stop) {
+            motion_->stop(sensor.kind);
+            return;
+        }
+        if (method != sensor.start) continue;
+        if (const QString missing = motion_->missing(sensor.kind); !missing.isEmpty()) {
+            (void)reply.fail(missing);
+            return;
+        }
+        const QString interval = request.value(QStringLiteral("interval")).toString(QStringLiteral("normal"));
+        const std::chrono::milliseconds every = interval == QLatin1String("game") ? std::chrono::milliseconds{20}
+                                                : interval == QLatin1String("ui") ? std::chrono::milliseconds{60}
+                                                                                   : std::chrono::milliseconds{200};
+        motion_->start(sensor.kind, every);
+        (void)reply.succeed();
+        return;
+    }
+    (void)reply.fail(QStringLiteral("not supported"));
 }
 
 QString MigoQtBuiltInHostServices::indicatorTitle() const { return interaction_->indicatorTitle(); }

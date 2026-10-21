@@ -216,6 +216,14 @@ desktop already offers with Qt's own:
   at city level, and the engine rounds what it answers. Requests made while GeoClue runs share it, and it stops once
   they are answered. GeoClue names the App to its agent by `QGuiApplication::desktopFileName()` (else the application
   name): set it to the App's desktop file id.
+- **Motion** (`startAccelerometer`, `startGyroscope`, `startCompass`, `startDeviceMotionListening` and their stops): the
+  accelerometer, gyroscope and magnetometer the kernel shows through IIO, read where udev finds them, in the screen's
+  frame (x right, y up the screen, z out of it) -- udev's `ACCEL_MOUNT_MATRIX`, the hardware database's correction for
+  the laptop, over the kernel's `mount_matrix`; a convertible's display accelerometer over its base's. Read at the
+  interval asked (`game` 20 ms, `ui` 60 ms, `normal` 200 ms) on a thread of their own. The compass heading and the
+  device's orientation are worked out from gravity and the magnetic field as Android's `SensorManager` does, so the two
+  platforms answer one position alike; IIO says nothing of a magnetometer's calibration, so the compass's accuracy is
+  `unknown`. A sensor the device lacks is refused with what it lacks: nothing is made up. The Host Kit links libudev.
 - **Permission** (`authorize` and the calls that need a scope): the scopes the desktop decides. `scope.userLocation`
   (and `scope.userLocationBackground`: a desktop has no other) is GeoClue's -- its agent, or inside a sandbox the
   portal, asks the player the first time the App asks -- and is recorded as decided; with no GeoClue there is no one to

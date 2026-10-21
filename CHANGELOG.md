@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The Linux Host Kit reads the device's motion sensors: the accelerometer (in g), gyroscope (rad/s) and magnetometer the
+  kernel shows through IIO, found with libudev and turned into the screen's frame by udev's `ACCEL_MOUNT_MATRIX` or the
+  kernel's `mount_matrix` (a convertible's display accelerometer over its base's), read at the interval content asks
+  for on a thread of their own; the compass heading and the W3C device orientation are worked out from gravity and the
+  field as Android's `SensorManager` does. A sensor the device lacks is refused with what it lacks.
+  `MigoQtHostServiceChannel` gains `postSensorSample`; the Host Kit links libudev (`libudev-dev`).
 - The Linux Host Kit says where the device is and decides the scopes the desktop gates: `getLocation` and
   `getFuzzyLocation` ask GeoClue on the system bus, or inside Flatpak or Snap the desktop portal's Location (street
   level, exact with `isHighAccuracy`, city level for the fuzzy position; ten seconds, or `highAccuracyExpireTime`);

@@ -2,6 +2,7 @@
 #include "fake_migo.hpp"
 #include "geolocation.hpp"
 #include "image_viewer.hpp"
+#include "motion.hpp"
 #include "x11_player.hpp"
 
 #include <migo/linux/qt6/host_services.hpp>
@@ -62,6 +63,7 @@ using migo::linux_host::qt6::MigoQtHostServiceChannel;
 using migo::linux_host::qt6::MigoQtHostServiceProvider;
 using migo::linux_host::qt6::MigoQtHostServiceReply;
 using migo::linux_host::qt6::MigoQtX11SurfaceView;
+using migo::linux_host::qt6::MotionSensors;
 
 namespace {
 
@@ -583,6 +585,46 @@ bool nothingLeftBeside(const QString &file) {
     return QDir(QFileInfo(file).path()).entryList(QDir::Files | QDir::Hidden).isEmpty();
 }
 
+/// An IIO device where the kernel would show it: `channel`'s raw values, and
+/// what else it shows (a scale, an offset, a mount matrix), in a directory of
+/// its own under `root`.
+QString makeIio(const QString &root, const QString &name, const QString &channel, std::array<int, 3> raw,
+                const QHash<QString, QByteArray> &attributes = {}) {
+    const QString device = root + QLatin1Char('/') + name;
+    QDir().mkpath(device);
+    const char *axes[] = {"x", "y", "z"};
+    for (int axis = 0; axis < 3; ++axis) {
+        writeFile(QStringLiteral("%1/in_%2_%3_raw").arg(device, channel, QLatin1String(axes[axis])),
+                  QByteArray::number(raw[axis]) + '\n');
+    }
+    for (auto attribute = attributes.cbegin(); attribute != attributes.cend(); ++attribute) {
+        writeFile(device + QLatin1Char('/') + attribute.key(), attribute.value() + '\n');
+    }
+    return device;
+}
+
+/// Readings a sensor reported, as it reports them: on its own thread.
+struct Readings {
+    std::mutex mutex;
+    std::vector<MigoSensorSample> samples;
+    std::function<void(const MigoSensorSample &)> sink() {
+        return [this](const MigoSensorSample &sample) {
+            const std::lock_guard<std::mutex> lock(mutex);
+            samples.push_back(sample);
+        };
+    }
+    std::size_t size() {
+        const std::lock_guard<std::mutex> lock(mutex);
+        return samples.size();
+    }
+    MigoSensorSample last() {
+        const std::lock_guard<std::mutex> lock(mutex);
+        return samples.back();
+    }
+};
+
+bool near(double actual, double expected) { return std::abs(actual - expected) < 1e-6; }
+
 /// The preview shown, or null.
 ImageViewer *imageViewer() {
     for (QWidget *widget : QApplication::topLevelWidgets()) {
@@ -678,7 +720,8 @@ private slots:
                                               hostServiceBit(MIGO_HOST_SERVICE_SCREEN) |
                                               hostServiceBit(MIGO_HOST_SERVICE_IMAGE) |
                                               hostServiceBit(MIGO_HOST_SERVICE_LOCATION) |
-                                              hostServiceBit(MIGO_HOST_SERVICE_PERMISSION));
+                                              hostServiceBit(MIGO_HOST_SERVICE_PERMISSION) |
+                                              hostServiceBit(MIGO_HOST_SERVICE_MOTION));
         QCOMPARE(fake_migo::created_network_policy(), std::string());
         QCOMPARE(fake_migo::created_launch_options(), std::string());
 
@@ -735,7 +778,8 @@ private slots:
                  hostServiceBit(MIGO_HOST_SERVICE_AD) | hostServiceBit(MIGO_HOST_SERVICE_CLIPBOARD) |
                      hostServiceBit(MIGO_HOST_SERVICE_INTERACTION) | hostServiceBit(MIGO_HOST_SERVICE_WINDOW) |
                      hostServiceBit(MIGO_HOST_SERVICE_SCREEN) | hostServiceBit(MIGO_HOST_SERVICE_IMAGE) |
-                     hostServiceBit(MIGO_HOST_SERVICE_LOCATION) | hostServiceBit(MIGO_HOST_SERVICE_PERMISSION));
+                     hostServiceBit(MIGO_HOST_SERVICE_LOCATION) | hostServiceBit(MIGO_HOST_SERVICE_PERMISSION) |
+                     hostServiceBit(MIGO_HOST_SERVICE_MOTION));
 
         fake_migo::deliver_host_service_call_from_engine_thread(MIGO_HOST_SERVICE_CLIPBOARD,
                                                                 MIGO_CLIPBOARD_GET_CLIPBOARD_DATA, 3, "{}");
@@ -1787,6 +1831,166 @@ private slots:
         QTRY_VERIFY(answerTo(2).has_value());
         QCOMPARE(answerTo(2)->message, std::string("auth deny"));
         QCOMPARE(fake_migo::scope_state(MIGO_SCOPE_USER_INFO), MIGO_SCOPE_STATE_UNKNOWN);
+        QCOMPARE(fixture.session.close(), MIGO_OK);
+    }
+
+    /// The accelerometer the kernel shows, in g and in the screen's frame:
+    /// udev's mount matrix over the kernel's, the display's accelerometer over
+    /// the base's; an offset and a scale applied; read until stopped. What the
+    /// device lacks is named.
+    void the_accelerometer_reads_in_g_in_the_screens_frame() {
+        using namespace std::chrono_literals;
+        QTemporaryDir sysfs;
+        // 1000 counts of 0.00980665 m/s^2: one g.
+        const QByteArray scale = "0.00980665";
+        const QString flat = makeIio(sysfs.path(), QStringLiteral("iio:device0"), QStringLiteral("accel"), {0, 0, 1000},
+                                     {{QStringLiteral("in_accel_scale"), scale}});
+        {
+            Readings readings;
+            MotionSensors sensors({{flat, {}}}, readings.sink());
+            QCOMPARE(sensors.missing(MIGO_SENSOR_ACCELEROMETER), QString());
+            QCOMPARE(sensors.missing(MIGO_SENSOR_GYROSCOPE), QStringLiteral("the device has no gyroscope"));
+            QCOMPARE(sensors.missing(MIGO_SENSOR_COMPASS), QStringLiteral("the device has no magnetometer"));
+            QCOMPARE(sensors.missing(MIGO_SENSOR_DEVICE_MOTION), QStringLiteral("the device has no magnetometer"));
+            sensors.start(MIGO_SENSOR_ACCELEROMETER, 20ms);
+            QTRY_VERIFY(readings.size() >= 3);
+            const MigoSensorSample face_up = readings.last();
+            QCOMPARE(face_up.kind, MIGO_SENSOR_ACCELEROMETER);
+            QCOMPARE(face_up.struct_size, static_cast<std::uint32_t>(sizeof(MigoSensorSample)));
+            QVERIFY(near(face_up.values[0], 0) && near(face_up.values[1], 0) && near(face_up.values[2], 1));
+            sensors.stop(MIGO_SENSOR_ACCELEROMETER);
+            QTest::qWait(100);
+            const std::size_t stopped = readings.size();
+            QTest::qWait(100);
+            QCOMPARE(readings.size(), stopped);
+        }
+
+        // udev's correction turns the sensor's x into the screen's -y; the
+        // kernel's own matrix would have turned it otherwise.
+        const QString turned = makeIio(sysfs.path(), QStringLiteral("iio:device1"), QStringLiteral("accel"), {1000, 0, 0},
+                                       {{QStringLiteral("in_accel_scale"), scale},
+                                        {QStringLiteral("mount_matrix"), "-1, 0, 0; 0, 1, 0; 0, 0, 1"}});
+        {
+            Readings readings;
+            MotionSensors sensors({{turned, {{QStringLiteral("ACCEL_MOUNT_MATRIX"), QStringLiteral("0, 1, 0; -1, 0, 0; 0, 0, 1")}}}},
+                                  readings.sink());
+            sensors.start(MIGO_SENSOR_ACCELEROMETER, 20ms);
+            QTRY_VERIFY(readings.size() >= 1);
+            const MigoSensorSample sample = readings.last();
+            QVERIFY2(near(sample.values[0], 0) && near(sample.values[1], -1) && near(sample.values[2], 0),
+                     qPrintable(QStringLiteral("%1 %2 %3").arg(sample.values[0]).arg(sample.values[1]).arg(sample.values[2])));
+        }
+        {
+            Readings readings;
+            MotionSensors sensors({{turned, {}}}, readings.sink());
+            sensors.start(MIGO_SENSOR_ACCELEROMETER, 20ms);
+            QTRY_VERIFY(readings.size() >= 1);
+            QVERIFY(near(readings.last().values[0], -1));
+        }
+
+        // A convertible: the base's accelerometer, listed first, is not the
+        // device's; and an offset -- one for every axis -- is added before the scale.
+        const QString base = makeIio(sysfs.path(), QStringLiteral("iio:device2"), QStringLiteral("accel"), {0, 1000, 0},
+                                     {{QStringLiteral("in_accel_scale"), scale}});
+        const QString display = makeIio(sysfs.path(), QStringLiteral("iio:device3"), QStringLiteral("accel"), {-10, -10, 990},
+                                        {{QStringLiteral("in_accel_scale"), scale}, {QStringLiteral("in_accel_offset"), "10"}});
+        {
+            Readings readings;
+            MotionSensors sensors({{base, {{QStringLiteral("ACCEL_LOCATION"), QStringLiteral("base")}}},
+                                   {display, {{QStringLiteral("ACCEL_LOCATION"), QStringLiteral("display")}}}},
+                                  readings.sink());
+            sensors.start(MIGO_SENSOR_ACCELEROMETER, 20ms);
+            QTRY_VERIFY(readings.size() >= 1);
+            const MigoSensorSample sample = readings.last();
+            QVERIFY2(near(sample.values[1], 0) && near(sample.values[2], 1),
+                     qPrintable(QStringLiteral("%1 %2 %3").arg(sample.values[0]).arg(sample.values[1]).arg(sample.values[2])));
+        }
+    }
+
+    /// The gyroscope in rad/s; the compass and the device's orientation from
+    /// gravity and the field, as Android's SensorManager works them out.
+    void the_compass_and_orientation_are_worked_out_as_android_does() {
+        using namespace std::chrono_literals;
+        // Face up, the top towards magnetic north: the field points north and down.
+        const auto level = MotionSensors::rotation({0, 0, 9.81}, {0, 22, -42});
+        QVERIFY(level.has_value());
+        QVERIFY(near(MotionSensors::heading(*level), 0));
+        const auto still = MotionSensors::orientation(*level);
+        QVERIFY(near(still[0], 0) && near(still[1], 0) && near(still[2], 0));
+
+        // Turned a quarter clockwise on the table: the top points east.
+        const auto east = MotionSensors::rotation({0, 0, 9.81}, {-22, 0, -42});
+        QVERIFY(near(MotionSensors::heading(*east), 90));
+        QVERIFY(near(MotionSensors::orientation(*east)[0], 270));
+
+        // Held up facing north, the screen towards the player.
+        const auto upright = MotionSensors::rotation({0, 9.81, 0}, {0, -42, -22});
+        const auto standing = MotionSensors::orientation(*upright);
+        QVERIFY(near(standing[0], 0) && near(standing[1], 90) && near(standing[2], 0));
+
+        // Tipped to the left, face up: gamma.
+        const auto tipped = MotionSensors::orientation(*MotionSensors::rotation({4.905, 0, 8.496}, {0, 22, -42}));
+        QVERIFY2(std::abs(tipped[2] - -30) < 0.01, qPrintable(QString::number(tipped[2])));
+
+        // In free fall there is no down, and no east.
+        QVERIFY(!MotionSensors::rotation({0, 0, 0}, {0, 22, -42}).has_value());
+
+        // A device with all three: the readings in their units.
+        QTemporaryDir sysfs;
+        const QString imu = makeIio(sysfs.path(), QStringLiteral("iio:device0"), QStringLiteral("accel"), {0, 0, 1000},
+                                    {{QStringLiteral("in_accel_scale"), "0.00981"},
+                                     {QStringLiteral("in_anglvel_x_raw"), "0"},
+                                     {QStringLiteral("in_anglvel_y_raw"), "0"},
+                                     {QStringLiteral("in_anglvel_z_raw"), "500"},
+                                     {QStringLiteral("in_anglvel_scale"), "0.001"},
+                                     {QStringLiteral("in_magn_x_raw"), "0"},
+                                     {QStringLiteral("in_magn_y_raw"), "220"},
+                                     {QStringLiteral("in_magn_z_raw"), "-420"},
+                                     {QStringLiteral("in_magn_scale"), "0.001"}});
+        Readings readings;
+        MotionSensors sensors({{imu, {}}}, readings.sink());
+        QCOMPARE(sensors.missing(MIGO_SENSOR_GYROSCOPE), QString());
+        QCOMPARE(sensors.missing(MIGO_SENSOR_DEVICE_MOTION), QString());
+        sensors.start(MIGO_SENSOR_GYROSCOPE, 20ms);
+        sensors.start(MIGO_SENSOR_COMPASS, 20ms);
+        sensors.start(MIGO_SENSOR_DEVICE_MOTION, 20ms);
+        QTRY_VERIFY(readings.size() >= 6);
+        bool turning = false;
+        bool compass = false;
+        bool motion = false;
+        {
+            const std::lock_guard<std::mutex> lock(readings.mutex);
+            for (const MigoSensorSample &sample : readings.samples) {
+                if (sample.kind == MIGO_SENSOR_GYROSCOPE) turning = near(sample.values[2], 0.5);
+                if (sample.kind == MIGO_SENSOR_COMPASS) {
+                    compass = near(sample.values[0], 0) && sample.compass_accuracy == MIGO_COMPASS_ACCURACY_UNKNOWN;
+                }
+                if (sample.kind == MIGO_SENSOR_DEVICE_MOTION) {
+                    motion = near(sample.values[0], 0) && near(sample.values[1], 0) && near(sample.values[2], 0);
+                }
+            }
+        }
+        QVERIFY(turning);
+        QVERIFY(compass);
+        QVERIFY(motion);
+    }
+
+    /// The motion service through the Session: a reading reaches it as the
+    /// sensors' thread delivers it.
+    void a_reading_reaches_the_session() {
+        using namespace std::chrono_literals;
+        Managed fixture;
+        std::shared_ptr<MigoQtHostServiceChannel> channel = MigoQtHostServiceChannel::open(fake_migo::session());
+        QTemporaryDir sysfs;
+        const QString flat = makeIio(sysfs.path(), QStringLiteral("iio:device0"), QStringLiteral("accel"), {0, 0, 1000},
+                                     {{QStringLiteral("in_accel_scale"), "0.00980665"}});
+        MotionSensors sensors({{flat, {}}},
+                              [channel](const MigoSensorSample &sample) { (void)channel->postSensorSample(sample); });
+        sensors.start(MIGO_SENSOR_ACCELEROMETER, 20ms);
+        QTRY_VERIFY(!fake_migo::sensor_samples().empty());
+        QVERIFY(near(fake_migo::sensor_samples().front().values[2], 1));
+        sensors.stop(MIGO_SENSOR_ACCELEROMETER);
+        channel->close();
         QCOMPARE(fixture.session.close(), MIGO_OK);
     }
 

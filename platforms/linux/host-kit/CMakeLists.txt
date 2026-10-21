@@ -51,6 +51,8 @@ if(MIGO_LINUX_HOST_KIT_BUILD_QT6_X11)
     # XInput 2 on Qt's own xcb connection: the raw motion a pointer lock reads.
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(MIGO_XCB_XINPUT REQUIRED IMPORTED_TARGET xcb xcb-xinput)
+    # udev: the IIO motion sensors, and the hardware database's mount matrices.
+    pkg_check_modules(MIGO_LIBUDEV REQUIRED IMPORTED_TARGET libudev)
 
     add_library(migo_qt6_x11_surface_view STATIC
         include/migo/linux/qt6/x11_surface_view.hpp
@@ -94,8 +96,9 @@ if(MIGO_LINUX_HOST_KIT_BUILD_QT6_X11)
         src/qt6/host_services.cpp
         # Internal, not installed: how what stands over the game is shown, the
         # backlight (sysfs and logind, over Qt's D-Bus), the image service
-        # with its viewer (downloading over Qt's network), and where the device
-        # is (GeoClue, or the desktop portal inside a sandbox).
+        # with its viewer (downloading over Qt's network), where the device is
+        # (GeoClue, or the desktop portal inside a sandbox), and its motion
+        # sensors (IIO, through udev).
         src/qt6/overlay.hpp
         src/qt6/backlight.hpp
         src/qt6/backlight.cpp
@@ -105,6 +108,8 @@ if(MIGO_LINUX_HOST_KIT_BUILD_QT6_X11)
         src/qt6/image_viewer.cpp
         src/qt6/geolocation.hpp
         src/qt6/geolocation.cpp
+        src/qt6/motion.hpp
+        src/qt6/motion.cpp
         src/qt6/sandbox.hpp
     )
     add_library(migo::qt6-host-services ALIAS migo_qt6_host_services)
@@ -127,6 +132,7 @@ if(MIGO_LINUX_HOST_KIT_BUILD_QT6_X11)
         PRIVATE
             Qt6::DBus
             Qt6::Network
+            PkgConfig::MIGO_LIBUDEV
     )
     list(APPEND _migo_linux_host_kit_targets migo_qt6_host_services)
 

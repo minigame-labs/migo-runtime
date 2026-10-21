@@ -60,6 +60,10 @@ public:
     /// against. MIGO_OK once closed.
     MigoResult setScopeState(MigoScope scope, MigoScopeState state);
 
+    /// Delivers one motion reading (`migo_session_post_sensor_sample`). Any
+    /// thread; MIGO_OK once closed.
+    MigoResult postSensorSample(const MigoSensorSample &sample);
+
 private:
     explicit MigoQtHostServiceChannel(MigoSession *session) noexcept : session_(session) {}
 
@@ -175,6 +179,12 @@ public:
 /// level, the engine rounding what it answers. GeoClue names the App to its
 /// agent by `QGuiApplication::desktopFileName()`, or its application name.
 ///
+/// Motion: the accelerometer, gyroscope and magnetometer the kernel shows
+/// through IIO, in the screen's frame (udev's mount matrix, else the kernel's),
+/// read at the interval content asks for; the compass and the device's
+/// orientation worked out from gravity and the field as Android's SensorManager
+/// does. A sensor the device lacks is refused with what it lacks.
+///
 /// Permission: the scopes the desktop decides. `scope.userLocation` (and its
 /// background form: a desktop has no other) is GeoClue's to decide -- its agent
 /// or the portal asking the player the first time the App asks -- and is
@@ -188,6 +198,7 @@ public:
 class Backlight;
 class Geolocation;
 class Images;
+class MotionSensors;
 
 class MigoQtBuiltInHostServices final : public QObject, public MigoQtHostServiceProvider {
     Q_OBJECT
@@ -219,6 +230,7 @@ private:
     void screen(std::uint32_t method, const QJsonObject &request, MigoQtHostServiceReply reply);
     void location(std::uint32_t method, const QJsonObject &request, MigoQtHostServiceReply reply);
     void permission(std::uint32_t method, const QJsonObject &request, MigoQtHostServiceReply reply);
+    void motion(std::uint32_t method, const QJsonObject &request, MigoQtHostServiceReply reply);
 
     class Interaction;
     class WindowService;
@@ -229,6 +241,8 @@ private:
     std::unique_ptr<Backlight> backlight_;
     std::unique_ptr<Images> images_;
     std::unique_ptr<Geolocation> geolocation_;
+    /// Made the first time content starts a sensor.
+    std::unique_ptr<MotionSensors> motion_;
 };
 
 }  // namespace migo::linux_host::qt6
