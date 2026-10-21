@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The Linux Host Kit answers Bluetooth as a BLE central through BlueZ: the adapter, scans filtered by service (devices
+  reported as heard, batched by `interval`, once each unless `allowDuplicatesKey`), the connected devices offering a
+  service, connections answered once their services are resolved, services, characteristics, reads, writes,
+  notifications and the MTU, with the common platform's codes; `scope.bluetooth` is granted. A connected device's RSSI,
+  pairing, setting the MTU, the peripheral mode and iBeacons are refused. `MigoQtHostServiceChannel` gains
+  `postBleCharacteristicValue`.
 - The Linux Host Kit reads the device's motion sensors: the accelerometer (in g), gyroscope (rad/s) and magnetometer the
   kernel shows through IIO, found with libudev and turned into the screen's frame by udev's `ACCEL_MOUNT_MATRIX` or the
   kernel's `mount_matrix` (a convertible's display accelerometer over its base's), read at the interval content asks

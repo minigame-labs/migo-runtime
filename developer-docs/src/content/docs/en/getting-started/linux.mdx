@@ -216,6 +216,14 @@ desktop already offers with Qt's own:
   at city level, and the engine rounds what it answers. Requests made while GeoClue runs share it, and it stops once
   they are answered. GeoClue names the App to its agent by `QGuiApplication::desktopFileName()` (else the application
   name): set it to the App's desktop file id.
+- **Bluetooth** (`openBluetoothAdapter` and the BLE central APIs): BlueZ's, on the system bus -- the adapter (not
+  powered is `10001`), a BLE scan with the services asked for (`SetDiscoveryFilter`), devices reported as heard
+  (batched by `interval`, once each unless `allowDuplicatesKey`), the connected devices offering a service, and
+  connections answered once BlueZ has resolved the device's services (`timeout` honoured, `-1` for one already made).
+  Services, characteristics, reads (the value arrives on its own), writes with or without response, notifications and
+  the MTU (BlueZ 5.62 on) work as on the other platforms, with the common platform's codes. A device is named by its
+  address. A connected device's RSSI (BlueZ gives no app one), pairing and setting the MTU (Android's in the
+  reference), the peripheral mode and iBeacons are refused. BlueZ is mirrored only while the adapter is open.
 - **Motion** (`startAccelerometer`, `startGyroscope`, `startCompass`, `startDeviceMotionListening` and their stops): the
   accelerometer, gyroscope and magnetometer the kernel shows through IIO, read where udev finds them, in the screen's
   frame (x right, y up the screen, z out of it) -- udev's `ACCEL_MOUNT_MATRIX`, the hardware database's correction for

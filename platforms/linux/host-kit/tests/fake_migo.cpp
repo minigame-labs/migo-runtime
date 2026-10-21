@@ -59,6 +59,7 @@ std::vector<MigoMemoryWarningLevel> g_memory_warnings;
 std::mutex g_scopes_mutex;
 std::map<MigoScope, MigoScopeState> g_scopes;
 std::vector<MigoSensorSample> g_sensor_samples;
+std::vector<fake_migo::BleValue> g_ble_values;
 std::string g_launch_options;
 /// Guards the calls and their answers: the host completes a call from any thread.
 std::mutex g_answers_mutex;
@@ -94,6 +95,7 @@ void reset() noexcept {
         const std::lock_guard<std::mutex> lock(g_scopes_mutex);
         g_scopes.clear();
         g_sensor_samples.clear();
+        g_ble_values.clear();
     }
     g_launch_options.clear();
     {
@@ -219,6 +221,10 @@ uint32_t reported_system_settings() noexcept { return g_system_settings; }
 int system_settings_reports() noexcept { return g_system_settings_reports; }
 const MigoAppAuthorizeSetting &reported_app_authorization() noexcept { return g_app_authorization; }
 const std::vector<MigoMemoryWarningLevel> &memory_warnings() noexcept { return g_memory_warnings; }
+std::vector<BleValue> ble_values() {
+    const std::lock_guard<std::mutex> lock(g_scopes_mutex);
+    return g_ble_values;
+}
 std::vector<MigoSensorSample> sensor_samples() {
     const std::lock_guard<std::mutex> lock(g_scopes_mutex);
     return g_sensor_samples;
@@ -309,6 +315,11 @@ struct PendingCall {
 };
 
 }  // namespace
+
+void expect_host_service_call(MigoHostService service, uint64_t call_id) noexcept {
+    const std::lock_guard<std::mutex> lock(g_answers_mutex);
+    g_open_calls[call_id] = service;
+}
 
 void deliver_host_service_call_from_engine_thread(MigoHostService service, uint32_t method,
                                                   uint64_t call_id,
@@ -644,6 +655,28 @@ extern "C" MigoResult MIGO_CALL migo_session_post_sensor_sample(MigoSession *ses
     }
     const std::lock_guard<std::mutex> lock(g_scopes_mutex);
     g_sensor_samples.push_back(*sample);
+    return MIGO_OK;
+}
+
+extern "C" MigoResult MIGO_CALL migo_session_post_ble_characteristic_value(MigoSession *session,
+                                                                          const MigoBleCharacteristicValue *value) {
+    // As strict as the library: ids present and bounded, a value of at most 512
+    // bytes, from a host that declared Bluetooth.
+    if (session != fake_migo::session() || !g_session_alive || value == nullptr ||
+        value->struct_size < sizeof(MigoBleCharacteristicValue) || value->device_id_length == 0 ||
+        value->service_id_length == 0 || value->characteristic_id_length == 0 || value->device_id_length > 256 ||
+        value->service_id_length > 256 || value->characteristic_id_length > 256 || value->value_length > 512 ||
+        (value->value_length > 0 && value->value == nullptr) ||
+        (g_callbacks.host_services & (uint64_t{1} << MIGO_HOST_SERVICE_BLUETOOTH)) == 0) {
+        return MIGO_ERROR_INVALID_ARGUMENT;
+    }
+    fake_migo::BleValue posted;
+    posted.device.assign(value->device_id_utf8, value->device_id_length);
+    posted.service.assign(value->service_id_utf8, value->service_id_length);
+    posted.characteristic.assign(value->characteristic_id_utf8, value->characteristic_id_length);
+    posted.value.assign(reinterpret_cast<const char *>(value->value), value->value_length);
+    const std::lock_guard<std::mutex> lock(g_scopes_mutex);
+    g_ble_values.push_back(std::move(posted));
     return MIGO_OK;
 }
 

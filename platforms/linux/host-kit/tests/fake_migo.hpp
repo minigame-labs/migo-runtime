@@ -133,6 +133,15 @@ MigoScopeState scope_state(MigoScope scope) noexcept;
 /// the sensors' own thread.
 std::vector<MigoSensorSample> sensor_samples();
 
+/// One characteristic value the host delivered.
+struct BleValue {
+    std::string device;
+    std::string service;
+    std::string characteristic;
+    std::string value;
+};
+std::vector<BleValue> ble_values();
+
 /// A line content writes to its console, which the host's debugging panel
 /// reads back (migo_session_copy_console_logs): level 0 debug .. 3 error.
 void write_console(int level, const std::string &text);
@@ -163,6 +172,10 @@ const std::vector<HostServiceEvent> &host_service_events() noexcept;
 /// that completes it and before the answer is recorded: where the library takes
 /// the files a result names into the Session (none, unless a test says so).
 void set_host_service_completion(std::function<void(const HostServiceAnswer &)> take);
+
+/// Open the call `call_id` of `service` as the library does on delivering it,
+/// for a test that hands the request to a service itself.
+void expect_host_service_call(MigoHostService service, uint64_t call_id) noexcept;
 
 /// Deliver content's request of a host service the way the library does:
 /// through the host's dispatcher, from an engine thread. A call (call_id != 0)
