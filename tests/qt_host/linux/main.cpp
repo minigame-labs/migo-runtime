@@ -23,6 +23,7 @@
 // the line arrives.
 
 #include <migo/linux/qt6/managed_session.hpp>
+#include <migo/linux/qt6/media.hpp>
 
 #include <QAbstractButton>
 #include <QAction>
@@ -36,9 +37,11 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 #include <string>
 
 using migo::linux_host::qt6::MigoManagedSession;
+using migo::linux_host::qt6::MigoQtMedia;
 
 namespace {
 
@@ -153,6 +156,8 @@ int main(int argc, char **argv) {
     MigoManagedSession::Options options;
     options.networkPolicyJson = readSetting("MIGO_QT_HOST_NETWORK_POLICY");
     options.launchOptionsJson = readSetting("MIGO_QT_HOST_LAUNCH_OPTIONS");
+    // Videos picked and previewed, through GStreamer.
+    options.videos = std::make_shared<MigoQtMedia>();
     auto *game = new MigoManagedSession(*engine, window, options, &app);
     if (!game->isValid()) {
         std::fprintf(stderr, "[qt-host] the session was not created: %d\n", static_cast<int>(game->lastError()));

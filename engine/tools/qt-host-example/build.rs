@@ -34,8 +34,8 @@ const MOC_HEADERS: [(&str, &str); 7] = [
 ];
 
 /// The Host Kit's sources this host links: the surface controller, the Qt view,
-/// the host services and the Managed shape.
-const KIT_SOURCES: [&str; 17] = [
+/// the host services, the Managed shape and the videos (`migo::qt6-media`).
+const KIT_SOURCES: [&str; 18] = [
     "src/surface_host.cpp",
     "src/qt6/x11_surface_view.cpp",
     "src/qt6/dom_key_names.cpp",
@@ -43,7 +43,7 @@ const KIT_SOURCES: [&str; 17] = [
     "src/qt6/host_services.cpp",
     "src/qt6/backlight.cpp",
     "src/qt6/images.cpp",
-    "src/qt6/image_viewer.cpp",
+    "src/qt6/media_viewer.cpp",
     "src/qt6/geolocation.cpp",
     "src/qt6/motion.cpp",
     "src/qt6/bluetooth.cpp",
@@ -53,16 +53,21 @@ const KIT_SOURCES: [&str; 17] = [
     "src/qt6/system_reports.cpp",
     "src/qt6/memory_monitor.cpp",
     "src/qt6/gamepads.cpp",
+    "src/qt6/media.cpp",
 ];
+
+/// What the videos link: GStreamer, its app sink and its video helpers.
+const GSTREAMER: [&str; 3] = ["gstreamer-1.0", "gstreamer-app-1.0", "gstreamer-video-1.0"];
 
 fn pkg_config(arguments: &[&str]) -> String {
     let output = Command::new("pkg-config")
         .args(arguments)
         .output()
-        .expect("pkg-config is required to find Qt 6");
+        .expect("pkg-config is required to find Qt 6 and GStreamer");
     assert!(
         output.status.success(),
-        "pkg-config {arguments:?} failed: the Qt host needs Qt 6 Widgets (qt6-base-dev)"
+        "pkg-config {arguments:?} failed: the Qt host needs Qt 6 Widgets (qt6-base-dev) and \
+         GStreamer (libgstreamer1.0-dev, libgstreamer-plugins-base1.0-dev)"
     );
     String::from_utf8(output.stdout)
         .expect("pkg-config prints UTF-8")
@@ -84,7 +89,13 @@ fn main() {
     println!("cargo:rerun-if-changed={}", host.display());
     println!("cargo:rerun-if-changed={}", repo.join("include").display());
 
-    let flags = pkg_config(&["--cflags", "Qt6Widgets", "Qt6DBus", "Qt6Network", "libudev"]);
+    let flags = pkg_config(
+        &[
+            &["--cflags", "Qt6Widgets", "Qt6DBus", "Qt6Network", "libudev"][..],
+            &GSTREAMER[..],
+        ]
+        .concat(),
+    );
     let includes: Vec<&str> = flags
         .split_whitespace()
         .filter_map(|flag| flag.strip_prefix("-I"))
@@ -144,7 +155,8 @@ fn main() {
     // The host owns its window and the Host Kit's view reads its X11 handle and
     // the mouse's raw motion (XInput 2), and its services ask the system over
     // D-Bus, download a preview's images and read the motion sensors through
-    // udev, so these -- not the engine -- link Qt, Xlib, xcb and libudev.
+    // udev, and play videos through GStreamer, so these -- not the engine --
+    // link Qt, Xlib, xcb, libudev and GStreamer.
     for library in [
         "Qt6Widgets",
         "Qt6DBus",
@@ -157,5 +169,11 @@ fn main() {
         "udev",
     ] {
         println!("cargo:rustc-link-lib={library}");
+    }
+    let gstreamer = pkg_config(&[&["--libs-only-l"][..], &GSTREAMER[..]].concat());
+    for library in gstreamer.split_whitespace() {
+        if let Some(name) = library.strip_prefix("-l") {
+            println!("cargo:rustc-link-lib={name}");
+        }
     }
 }

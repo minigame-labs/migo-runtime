@@ -995,7 +995,9 @@ jobs:
               cmake ninja-build g++ ripgrep xvfb xauth \
               qt6-base-dev qt6-base-dev-tools qt6-qpa-plugins \
               libx11-dev libxkbcommon-x11-dev libxcb-cursor0 \
-              pkg-config libxcb-xinput-dev libxtst-dev libudev-dev dbus || return 1
+              pkg-config libxcb-xinput-dev libxtst-dev libudev-dev dbus \
+              libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+              gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav || return 1
           }
           install_pkgs || {
             echo "Qt/X11 package install failed; retrying once" >&2

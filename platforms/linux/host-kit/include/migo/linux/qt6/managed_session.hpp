@@ -66,6 +66,10 @@ public:
         /// with Qt's own (`MigoQtBuiltInHostServices`). It must outlive the
         /// Session, and is called on the GUI thread.
         MigoQtHostServiceProvider *appServices = nullptr;
+        /// What describes and plays videos for the image service --
+        /// `MigoQtMedia`, from the `migo::qt6-media` component -- or null,
+        /// which refuses videos.
+        std::shared_ptr<const MigoQtVideoSupport> videos;
     };
 
     /// Constructs the Session and its view, and installs the callback table.

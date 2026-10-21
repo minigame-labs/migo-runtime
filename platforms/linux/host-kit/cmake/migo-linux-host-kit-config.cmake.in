@@ -23,6 +23,23 @@ if(@MIGO_LINUX_HOST_KIT_BUILD_QT6_X11@)
         set(${CMAKE_FIND_PACKAGE_NAME}_FOUND FALSE)
         return()
     endif()
+    # migo::qt6-media links GStreamer: needed by an App that links it -- one
+    # that asks for the component -- and by no other.
+    if(@MIGO_LINUX_HOST_KIT_BUILD_QT6_MEDIA@)
+        pkg_check_modules(MIGO_GSTREAMER QUIET IMPORTED_TARGET
+            gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0)
+        if(NOT MIGO_GSTREAMER_FOUND AND "qt6-media" IN_LIST ${CMAKE_FIND_PACKAGE_NAME}_FIND_COMPONENTS)
+            set(${CMAKE_FIND_PACKAGE_NAME}_NOT_FOUND_MESSAGE
+                "migo::qt6-media links GStreamer, which pkg-config does not find")
+            set(${CMAKE_FIND_PACKAGE_NAME}_FOUND FALSE)
+            return()
+        endif()
+    elseif("qt6-media" IN_LIST ${CMAKE_FIND_PACKAGE_NAME}_FIND_COMPONENTS)
+        set(${CMAKE_FIND_PACKAGE_NAME}_NOT_FOUND_MESSAGE
+            "this Host Kit was built without migo::qt6-media (MIGO_LINUX_HOST_KIT_BUILD_QT6_MEDIA)")
+        set(${CMAKE_FIND_PACKAGE_NAME}_FOUND FALSE)
+        return()
+    endif()
 endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/migo-linux-host-kit-targets.cmake")

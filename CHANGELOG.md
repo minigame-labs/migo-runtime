@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Videos in the Linux Host Kit's image service, through the optional `migo::qt6-media` component (GStreamer):
+  `chooseMedia` picks videos -- described by their length, their size as shown and their first frame as the cover --
+  and `previewMedia` plays them in the viewer, with their poster, sound and controls. An App opts in by building the
+  component and giving the Session a `MigoQtMedia`; without it, videos are refused as before.
 - `createVideoDecoder` on Linux, through GStreamer: loaded when the system has it, not linked, so a system without it
   runs every game and only this API answers not supported. Frames come as RGBA converted as the stream's colorimetry
   says, timed in the video's own time, and a seek lands on the frame shown at the position.

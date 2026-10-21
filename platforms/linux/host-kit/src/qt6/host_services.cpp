@@ -630,13 +630,19 @@ private:
 MigoQtBuiltInHostServices::MigoQtBuiltInHostServices(MigoQtX11SurfaceView &view,
                                                      std::shared_ptr<MigoQtHostServiceChannel> channel,
                                                      QObject *parent)
+    : MigoQtBuiltInHostServices(view, std::move(channel), nullptr, parent) {}
+
+MigoQtBuiltInHostServices::MigoQtBuiltInHostServices(MigoQtX11SurfaceView &view,
+                                                     std::shared_ptr<MigoQtHostServiceChannel> channel,
+                                                     std::shared_ptr<const MigoQtVideoSupport> videos,
+                                                     QObject *parent)
     : QObject(parent),
       surface_(&view),
       channel_(channel),
       interaction_(std::make_unique<Interaction>(view)),
       window_(std::make_unique<WindowService>(view, std::move(channel))),
       backlight_(std::make_unique<Backlight>(QStringLiteral("/sys/class/backlight"), QDBusConnection::systemBus())),
-      images_(std::make_unique<Images>(view, Images::Places::system())) {
+      images_(std::make_unique<Images>(view, Images::Places::system(), std::move(videos))) {
     // Inside a sandbox the portal asks GeoClue for the App, and stands its
     // dialog over the game's window.
     const bool sandboxed = insideSandbox();
