@@ -27,8 +27,9 @@ What is claimed:
   (`chooseImage`, `chooseMedia`'s images, `chooseMessageFile`) and
   `saveFileToDisk` through the file dialog -- the desktop's, through its portal,
   wherever Qt finds one -- and `saveImageToPhotosAlbum` into the player's Pictures
-  folder. What the game is given is a copy, staged in the App's cache until the
-  engine takes it; the camera, videos and the previews are refused.
+  folder; the previews in a viewer over the game (http(s) images downloaded over
+  Qt's network). What the game is given is a copy, staged in the App's cache
+  until the engine takes it; the camera and videos are refused.
 - `migo::qt6-managed-session` is the Managed ownership shape: `MigoManagedSession`
   owns the Session, its callback table and the view, and installs the built-in
   services; it holds content's `setKeepScreenOn` off the desktop's idle through

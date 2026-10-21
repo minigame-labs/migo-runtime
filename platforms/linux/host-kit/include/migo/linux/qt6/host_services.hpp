@@ -156,8 +156,10 @@ public:
 /// of what the player picked; saveFileToDisk through the dialog to save; and
 /// saveImageToPhotosAlbum into the player's Pictures folder. A file answered
 /// with is staged in the App's cache (`QStandardPaths::CacheLocation`) until the
-/// Session takes it; one it does not take is removed. The camera, videos in
-/// chooseMedia and the previews are refused.
+/// Session takes it; one it does not take is removed. previewImage and
+/// previewMedia show the images in a viewer over the game, each held open --
+/// an http(s) one downloaded -- so the engine may take back what it lent once
+/// the call is answered. The camera and videos are refused.
 ///
 /// GUI thread only. What is on screen goes with this object.
 class Backlight;

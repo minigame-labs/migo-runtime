@@ -1,5 +1,6 @@
 #include "backlight.hpp"
 #include "fake_migo.hpp"
+#include "image_viewer.hpp"
 #include "x11_player.hpp"
 
 #include <migo/linux/qt6/host_services.hpp>
@@ -19,6 +20,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHash>
+#include <QHostAddress>
 #include <QImageReader>
 #include <QImageWriter>
 #include <QJsonArray>
@@ -33,6 +35,8 @@
 #include <QRegularExpression>
 #include <QScreen>
 #include <QStandardPaths>
+#include <QTcpServer>
+#include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QVBoxLayout>
 #include <QtTest>
@@ -44,6 +48,7 @@
 using migo::linux_host::SurfaceHost;
 using migo::linux_host::SurfaceState;
 using migo::linux_host::qt6::hostServiceBit;
+using migo::linux_host::qt6::ImageViewer;
 using migo::linux_host::qt6::MigoManagedSession;
 using migo::linux_host::qt6::MigoQtBuiltInHostServices;
 using migo::linux_host::qt6::MigoQtHostServiceChannel;
@@ -385,6 +390,63 @@ fake_migo::HostServiceAnswer askImages(std::uint32_t method, std::uint64_t call_
 bool nothingLeftBeside(const QString &file) {
     return QDir(QFileInfo(file).path()).entryList(QDir::Files | QDir::Hidden).isEmpty();
 }
+
+/// The preview shown, or null.
+ImageViewer *imageViewer() {
+    for (QWidget *widget : QApplication::topLevelWidgets()) {
+        if (auto *viewer = dynamic_cast<ImageViewer *>(widget); viewer != nullptr && viewer->isVisible()) return viewer;
+    }
+    return nullptr;
+}
+
+/// Every file staged in the App's cache, where the image service keeps its own.
+QStringList stagedFiles() {
+    QStringList files;
+    const QDir cache(QStandardPaths::writableLocation(QStandardPaths::CacheLocation));
+    for (const QString &staging : cache.entryList({QStringLiteral("migo-host-files-*")}, QDir::Dirs)) {
+        files << QDir(cache.filePath(staging)).entryList(QDir::Files | QDir::Hidden);
+    }
+    return files;
+}
+
+/// A web server on the loopback: a GET of one of `files`' paths answers its
+/// bytes, of any other 404.
+class LocalWeb final : public QObject {
+public:
+    explicit LocalWeb(QHash<QByteArray, QByteArray> files) : files_(std::move(files)) {
+        connect(&server_, &QTcpServer::newConnection, this, [this] {
+            while (QTcpSocket *socket = server_.nextPendingConnection()) {
+                connect(socket, &QTcpSocket::readyRead, socket, [this, socket] { answer(*socket); });
+                connect(socket, &QTcpSocket::disconnected, socket, &QObject::deleteLater);
+            }
+        });
+        listening_ = server_.listen(QHostAddress::LocalHost, 0);
+    }
+
+    [[nodiscard]] bool listening() const { return listening_; }
+    [[nodiscard]] QString url(const char *path) const {
+        return QStringLiteral("http://127.0.0.1:%1%2").arg(server_.serverPort()).arg(QLatin1String(path));
+    }
+
+private:
+    void answer(QTcpSocket &socket) {
+        QByteArray &request = requests_[&socket];
+        request += socket.readAll();
+        if (!request.contains("\r\n\r\n")) return;
+        const auto found = files_.constFind(request.split(' ').value(1));
+        const QByteArray body = found == files_.cend() ? QByteArray() : *found;
+        socket.write((found == files_.cend() ? "HTTP/1.1 404 Not Found\r\n" : "HTTP/1.1 200 OK\r\n") +
+                     QByteArray("Content-Length: ") + QByteArray::number(body.size()) +
+                     "\r\nConnection: close\r\n\r\n" + body);
+        socket.disconnectFromHost();
+        requests_.remove(&socket);
+    }
+
+    QTcpServer server_;
+    bool listening_ = false;
+    QHash<QByteArray, QByteArray> files_;
+    QHash<QTcpSocket *, QByteArray> requests_;
+};
 
 }  // namespace
 
@@ -1297,13 +1359,111 @@ private slots:
         QTRY_VERIFY(fileDialog() != nullptr);
         QCOMPARE(askImages(MIGO_IMAGE_CHOOSE_MESSAGE_FILE, 2, {{"count", 1}}).message,
                  std::string("another file dialog is showing"));
-        QCOMPARE(askImages(MIGO_IMAGE_PREVIEW_IMAGE, 3, {{"urls", QJsonArray{"/a.png"}}}).message,
-                 std::string("not supported"));
 
         QCOMPARE(fixture.session.close(), MIGO_OK);
         QVERIFY(fixture.session.isClosed());
         QTRY_VERIFY(fileDialog() == nullptr);
         QVERIFY(!answerTo(1).has_value());
+    }
+
+    /// previewImage: the viewer over the game, from the one asked for; the
+    /// arrows go between them and no further; each image is held open, so what
+    /// the engine lent may go once the call is answered; an http(s) one is
+    /// downloaded; what is no image shows a warning in its place; Esc closes it,
+    /// and nothing is left behind.
+    void a_preview_shows_the_images_from_the_one_asked_for() {
+        QTemporaryDir scratch;
+        Managed fixture;
+        const QString first = scratch.filePath(QStringLiteral("first.png"));
+        const QString second = scratch.filePath(QStringLiteral("second.png"));
+        const QString notes = scratch.filePath(QStringLiteral("notes.txt"));
+        writeQuadrants(first, "png");
+        writeQuadrants(second, "png", {64, 48});
+        writeFile(notes, "hello");
+        LocalWeb web({{"/third.png", bytesOf(first)}});
+        QVERIFY(web.listening());
+
+        const auto shown = askImages(MIGO_IMAGE_PREVIEW_IMAGE, 1,
+                                     {{"urls", QJsonArray{first, second, web.url("/third.png"), notes}},
+                                      {"current", second}});
+        QCOMPARE(shown.status, MIGO_HOST_SERVICE_STATUS_OK);
+        ImageViewer *viewer = imageViewer();
+        QVERIFY(viewer != nullptr);
+        QCOMPARE(viewer->count(), 4);
+        QCOMPARE(viewer->current(), 1);
+        QVERIFY(viewer->showsImage());
+
+        // Taken back once the call is answered, they still show.
+        QVERIFY(QFile::remove(first));
+        QVERIFY(QFile::remove(second));
+        QTest::keyClick(viewer, Qt::Key_Left);
+        QCOMPARE(viewer->current(), 0);
+        QVERIFY(viewer->showsImage());
+        QTest::keyClick(viewer, Qt::Key_Left);
+        QCOMPARE(viewer->current(), 0);
+        QTest::keyClick(viewer, Qt::Key_Right);
+        QVERIFY(viewer->showsImage());
+        QTest::keyClick(viewer, Qt::Key_Right);
+        QCOMPARE(viewer->current(), 2);
+        QVERIFY(viewer->showsImage());
+        QTest::keyClick(viewer, Qt::Key_Right);
+        QCOMPARE(viewer->current(), 3);
+        QVERIFY(!viewer->showsImage());
+        QTest::keyClick(viewer, Qt::Key_Right);
+        QCOMPARE(viewer->current(), 3);
+        QVERIFY(stagedFiles().isEmpty());
+
+        QTest::keyClick(viewer, Qt::Key_Escape);
+        QTRY_VERIFY(imageViewer() == nullptr);
+        QCOMPARE(fixture.session.close(), MIGO_OK);
+    }
+
+    /// A preview fails with the first image it cannot have; previewMedia shows
+    /// images from the one asked for and refuses videos; another preview
+    /// replaces the one shown, and the game going closes it.
+    void a_preview_fails_replaces_and_goes_with_the_game() {
+        QTemporaryDir scratch;
+        Managed fixture;
+        const QString image = scratch.filePath(QStringLiteral("image.png"));
+        writeQuadrants(image, "png");
+        LocalWeb web({});
+        QVERIFY(web.listening());
+
+        QCOMPARE(askImages(MIGO_IMAGE_PREVIEW_IMAGE, 1, {{"urls", QJsonArray{image, web.url("/missing.png")}}}).message,
+                 std::string("download failed: HTTP 404"));
+        QCOMPARE(askImages(MIGO_IMAGE_PREVIEW_IMAGE, 2, {{"urls", QJsonArray{scratch.filePath("none.png")}}}).message,
+                 std::string("file not found"));
+        QCOMPARE(askImages(MIGO_IMAGE_PREVIEW_IMAGE, 3, {{"urls", QJsonArray{}}}).message,
+                 std::string("nothing to preview"));
+        QCOMPARE(askImages(MIGO_IMAGE_PREVIEW_MEDIA, 4,
+                           {{"sources", QJsonArray{QJsonObject{{"url", image}},
+                                                   QJsonObject{{"url", image}, {"type", "video"}}}}})
+                     .message,
+                 std::string("not supported"));
+        QVERIFY(imageViewer() == nullptr);
+        QVERIFY(stagedFiles().isEmpty());
+
+        QCOMPARE(askImages(MIGO_IMAGE_PREVIEW_MEDIA, 5,
+                           {{"sources", QJsonArray{QJsonObject{{"url", image}}, QJsonObject{{"url", image}, {"type", "image"}}}},
+                            {"current", 1}})
+                     .status,
+                 MIGO_HOST_SERVICE_STATUS_OK);
+        QVERIFY(imageViewer() != nullptr);
+        QCOMPARE(imageViewer()->count(), 2);
+        QCOMPARE(imageViewer()->current(), 1);
+
+        QCOMPARE(askImages(MIGO_IMAGE_PREVIEW_IMAGE, 6, {{"urls", QJsonArray{image}}}).status,
+                 MIGO_HOST_SERVICE_STATUS_OK);
+        QTRY_COMPARE(imageViewer()->count(), 1);
+        int shown = 0;
+        for (QWidget *widget : QApplication::topLevelWidgets()) {
+            if (dynamic_cast<ImageViewer *>(widget) != nullptr && widget->isVisible()) ++shown;
+        }
+        QCOMPARE(shown, 1);
+
+        QCOMPARE(fixture.session.close(), MIGO_OK);
+        QVERIFY(fixture.session.isClosed());
+        QTRY_VERIFY(imageViewer() == nullptr);
     }
 
 private:

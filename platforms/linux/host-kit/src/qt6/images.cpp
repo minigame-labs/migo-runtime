@@ -1,5 +1,7 @@
 #include "images.hpp"
 
+#include "image_viewer.hpp"
+
 #include <QByteArray>
 #include <QDateTime>
 #include <QDir>
@@ -15,12 +17,18 @@
 #include <QJsonValue>
 #include <QMimeDatabase>
 #include <QMimeType>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QSaveFile>
 #include <QSet>
 #include <QStandardPaths>
 #include <QTemporaryDir>
+#include <QTemporaryFile>
 #include <QThreadPool>
+#include <QUrl>
 #include <QUuid>
+#include <QVariant>
 #include <QWidget>
 
 #include <cmath>
@@ -47,6 +55,9 @@ public:
         return dir_->filePath(name);
     }
 
+    /// The directory, or empty when there is none.
+    [[nodiscard]] QString directory() const { return dir_ == nullptr ? QString() : dir_->path(); }
+
 private:
     static std::unique_ptr<QTemporaryDir> make(const QString &root) {
         const QString pattern = QStringLiteral("/migo-host-files-XXXXXX");
@@ -68,6 +79,9 @@ private:
 namespace {
 
 const QString kNotSupported = QStringLiteral("not supported");
+const QString kNoWindow = QStringLiteral("there is no window to show it in");
+/// How long a preview's download may go without a byte: the network calls' own default.
+constexpr int kTransferTimeoutMs = 60'000;
 const QString kNowhere = QStringLiteral("there is nowhere to put the file");
 const QString kCancel = QStringLiteral("cancel");
 
@@ -328,8 +342,11 @@ Images::Images(QWidget &surface, Places places) : surface_(&surface), places_(st
 
 Images::~Images() {
     // A dialog still up is dismissed with the service that showed it; the
-    // answer it gives reaches nobody once the channel is closed.
+    // answer it gives reaches nobody once the channel is closed. A preview
+    // shown goes too, and those still loading stop.
     if (!dialog_.isNull()) dialog_->reject();
+    if (!viewer_.isNull()) viewer_->close();
+    for (const QPointer<QObject> &load : std::as_const(loads_)) delete load.data();
 }
 
 QSize Images::targetSize(QSize source, int width, int height) {
@@ -365,8 +382,29 @@ void Images::call(std::uint32_t method, const QJsonObject &request, MigoQtHostSe
         case MIGO_IMAGE_SAVE_IMAGE_TO_PHOTOS_ALBUM:
             saveImageToPhotosAlbum(request, std::move(reply));
             return;
+        case MIGO_IMAGE_PREVIEW_IMAGE: {
+            QStringList urls;
+            for (const QJsonValue &url : request.value(QStringLiteral("urls")).toArray()) urls << url.toString();
+            // `current` is one of them, made a real path as they were.
+            const int current = qMax(0, urls.indexOf(request.value(QStringLiteral("current")).toString()));
+            preview(urls, current, std::move(reply));
+            return;
+        }
+        case MIGO_IMAGE_PREVIEW_MEDIA: {
+            QStringList urls;
+            for (const QJsonValue &source : request.value(QStringLiteral("sources")).toArray()) {
+                const QJsonObject item = source.toObject();
+                // Videos are not offered: see the class's comment.
+                if (item.value(QStringLiteral("type")).toString() == QLatin1String("video")) {
+                    (void)reply.fail(kNotSupported);
+                    return;
+                }
+                urls << item.value(QStringLiteral("url")).toString();
+            }
+            preview(urls, request.value(QStringLiteral("current")).toInt(0), std::move(reply));
+            return;
+        }
         default:
-            // The previews: see the class's comment.
             (void)reply.fail(kNotSupported);
             return;
     }
@@ -375,6 +413,11 @@ void Images::call(std::uint32_t method, const QJsonObject &request, MigoQtHostSe
 std::shared_ptr<Images::Staging> Images::staging() {
     if (staging_ == nullptr) staging_ = std::make_shared<Staging>(places_.staging);
     return staging_;
+}
+
+QNetworkAccessManager &Images::network() {
+    if (network_ == nullptr) network_ = new QNetworkAccessManager(this);
+    return *network_;
 }
 
 // ---- compressImage -------------------------------------------------------------------------
@@ -414,7 +457,7 @@ void Images::compressImage(const QJsonObject &request, MigoQtHostServiceReply re
 
 bool Images::canShowDialog(MigoQtHostServiceReply &reply) {
     if (surface_.isNull()) {
-        (void)reply.fail(QStringLiteral("there is no window to show it in"));
+        (void)reply.fail(kNoWindow);
         return false;
     }
     if (!dialog_.isNull()) {
@@ -642,6 +685,150 @@ void Images::saveImageToPhotosAlbum(const QJsonObject &request, MigoQtHostServic
         QString error;
         (void)(copyFile(source, destination, error) ? reply.succeed() : reply.fail(error));
     });
+}
+
+// ---- the previews --------------------------------------------------------------------------
+
+/// One preview's images, each opened -- a file -- or downloaded -- an http(s)
+/// URL -- and then shown: the call is answered as the viewer shows, or failed
+/// with the first image that cannot be had. It goes once done, or with the
+/// service, its downloads stopped.
+class Images::PreviewLoad final : public QObject {
+public:
+    PreviewLoad(Images &images, int count, int current, MigoQtHostServiceReply reply)
+        : QObject(&images),
+          images_(images),
+          opened_(static_cast<std::size_t>(count)),
+          pending_(count),
+          current_(current),
+          reply_(std::move(reply)) {}
+
+    ~PreviewLoad() override {
+        for (const QPointer<QNetworkReply> &download : std::as_const(downloads_)) {
+            if (download.isNull()) continue;
+            download->disconnect(this);
+            download->abort();
+            download->deleteLater();
+        }
+    }
+
+    [[nodiscard]] bool done() const noexcept { return done_; }
+
+    /// Opens the image `source` names, the `index`th.
+    void open(int index, const QString &source) {
+        const QUrl url(source);
+        const QString scheme = url.scheme().toLower();
+        if (scheme == QLatin1String("http") || scheme == QLatin1String("https")) {
+            download(index, url);
+            return;
+        }
+        auto file = std::make_unique<QFile>(source);
+        if (!file->open(QIODevice::ReadOnly)) {
+            settle(index, nullptr,
+                   file->exists() ? QStringLiteral("%1 cannot be read").arg(QFileInfo(source).fileName())
+                                  : QStringLiteral("file not found"));
+            return;
+        }
+        settle(index, std::move(file), {});
+    }
+
+private:
+    /// Downloads `url` into a file removed as it is made: what arrives is
+    /// read back through the handle that stays open, and nothing is left behind.
+    void download(int index, const QUrl &url) {
+        const QString directory = images_.staging()->directory();
+        auto file = std::make_unique<QTemporaryFile>(
+            (directory.isEmpty() ? QDir::tempPath() : directory) + QStringLiteral("/preview-XXXXXX"));
+        if (!file->open()) {
+            settle(index, nullptr, kNowhere);
+            return;
+        }
+        QFile::remove(file->fileName());
+        file->setAutoRemove(false);
+        // Shared by the download's two handlers until it passes to the viewer.
+        auto sink = std::make_shared<std::unique_ptr<QTemporaryFile>>(std::move(file));
+
+        QNetworkRequest request(url);
+        // No referrer, whatever referrerPolicy says: the host has none to send.
+        request.setTransferTimeout(kTransferTimeoutMs);
+        QNetworkReply *download = images_.network().get(request);
+        downloads_.append(download);
+        auto unwritten = std::make_shared<QString>();
+        connect(download, &QIODevice::readyRead, this, [download, sink, unwritten] {
+            if (unwritten->isEmpty() && (*sink)->write(download->readAll()) < 0) {
+                *unwritten = (*sink)->errorString();
+                download->abort();
+            }
+        });
+        connect(download, &QNetworkReply::finished, this, [this, index, download, sink, unwritten] {
+            download->deleteLater();
+            QTemporaryFile &received = **sink;
+            const QVariant status = download->attribute(QNetworkRequest::HttpStatusCodeAttribute);
+            QString error;
+            if (!unwritten->isEmpty()) {
+                error = QStringLiteral("download failed: %1").arg(*unwritten);
+            } else if (status.isValid() && (status.toInt() < 200 || status.toInt() >= 300)) {
+                error = QStringLiteral("download failed: HTTP %1").arg(status.toInt());
+            } else if (download->error() != QNetworkReply::NoError) {
+                error = QStringLiteral("download failed: %1").arg(download->errorString());
+            } else if (received.write(download->readAll()) < 0 || !received.flush() || !received.seek(0)) {
+                error = QStringLiteral("download failed: %1").arg(received.errorString());
+            }
+            settle(index, error.isEmpty() ? std::move(*sink) : nullptr, error);
+        });
+    }
+
+    void settle(int index, std::unique_ptr<QIODevice> image, const QString &error) {
+        if (done_) return;
+        if (!error.isEmpty()) {
+            done_ = true;
+            (void)reply_.fail(error);
+            deleteLater();
+            return;
+        }
+        opened_.at(static_cast<std::size_t>(index)) = std::move(image);
+        if (--pending_ > 0) return;
+        done_ = true;
+        images_.showPreview(std::move(opened_), current_, reply_);
+        deleteLater();
+    }
+
+    Images &images_;
+    std::vector<std::unique_ptr<QIODevice>> opened_;
+    int pending_;
+    const int current_;
+    MigoQtHostServiceReply reply_;
+    bool done_ = false;
+    QList<QPointer<QNetworkReply>> downloads_;
+};
+
+void Images::preview(const QStringList &sources, int current, MigoQtHostServiceReply reply) {
+    if (sources.isEmpty() || sources.contains(QString())) {
+        (void)reply.fail(QStringLiteral("nothing to preview"));
+        return;
+    }
+    if (surface_.isNull()) {
+        (void)reply.fail(kNoWindow);
+        return;
+    }
+    auto *load = new PreviewLoad(*this, sources.size(), qBound(0, current, sources.size() - 1), std::move(reply));
+    loads_.removeAll(nullptr);
+    loads_.append(load);
+    for (int index = 0; index < sources.size() && !load->done(); ++index) load->open(index, sources.at(index));
+}
+
+void Images::showPreview(std::vector<std::unique_ptr<QIODevice>> images, int current, MigoQtHostServiceReply reply) {
+    if (surface_.isNull()) {
+        (void)reply.fail(kNoWindow);
+        return;
+    }
+    // Another preview replaces the one shown.
+    if (!viewer_.isNull()) viewer_->close();
+    auto *viewer = new ImageViewer(*surface_->window(), std::move(images), current);
+    viewer->setAttribute(Qt::WA_DeleteOnClose);
+    viewer_ = viewer;
+    viewer->open();
+    (void)reply.succeed();
 }
 
 }  // namespace migo::linux_host::qt6

@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The Linux Host Kit previews images: `previewImage` and `previewMedia` show a viewer over the game, its window's size --
+  the images one at a time, fitted, from the one content asked for, Left and Right between them, Esc closing it. Each
+  image is held open before the call is answered, so nothing is copied; an http(s) one is downloaded over Qt's network
+  into a file removed as it is made. Videos in `previewMedia` are refused. `migo::qt6-host-services` now links
+  `Qt6::Network`.
 - The Linux Host Kit answers the image service: `compressImage` with Qt's image readers and writers (upright, its EXIF
   orientation applied, decoded no larger than asked where the format can; a PNG stays a PNG, anything else becomes a
   JPEG at the quality asked; at most 50 million pixels); `chooseImage`, `chooseMedia` (images) and `chooseMessageFile`

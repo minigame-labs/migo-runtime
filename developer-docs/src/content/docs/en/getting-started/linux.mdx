@@ -189,7 +189,7 @@ desktop already offers with Qt's own:
   and `setVisualEffectOnCapture` are not offered: a Linux desktop tells an app of neither, nor keeps a window out of a
   screenshot (on X11 any client may read any window).
 - **Images** (`compressImage`, `chooseImage`, `chooseMedia`, `chooseMessageFile`, `saveFileToDisk`,
-  `saveImageToPhotosAlbum`): `compressImage` reads with Qt's image readers -- upright, its EXIF orientation applied,
+  `saveImageToPhotosAlbum`, `previewImage`, `previewMedia`): `compressImage` reads with Qt's image readers -- upright, its EXIF orientation applied,
   decoded no larger than the size asked where the format can -- and writes a PNG as a PNG and anything else as a JPEG at
   the quality asked (at most 50 million pixels, as on the other platforms). The pickers are the file dialog -- the
   desktop's, through its portal or its platform theme, wherever Qt finds one, and Qt's own otherwise -- and the game is
@@ -202,8 +202,13 @@ desktop already offers with Qt's own:
   `PICTURES` directory) as `IMG_<milliseconds>.<suffix>`, refusing what is no image. A file the game is given is staged
   in the App's cache (`QStandardPaths::CacheLocation`), where the engine takes it as the call completes -- a rename
   when the engine's `cache_dir` is on the same volume -- and one it does not take is removed. One file dialog shows at
-  a time. The camera, videos in `chooseMedia` (nothing here says a video's length, size or cover yet) and the previews
-  (`previewImage`, `previewMedia`) are refused.
+  a time. The previews are a viewer over the game, its window's size: the images one at a time, fitted to it, from the
+  one content asked for; Left and Right or the buttons go between them, Esc or the close button closes it, and an image
+  that cannot be decoded shows a warning sign. Each image is held open before the call is answered, so the engine may
+  take back what it lent; an http(s) one -- which the engine lets through as the session's network policy lets content
+  download -- is downloaded over Qt's network, with no referrer, into a file removed as it is made. Another preview
+  replaces the one shown. The camera and videos -- in `chooseMedia` and `previewMedia` -- are refused: nothing here
+  says a video's length, size or cover, nor plays one, yet.
 
 `MigoManagedSession` also keeps the display awake for content (`setKeepScreenOn`): it asks the desktop through the XDG
 desktop portal's `Inhibit` (the session's idle: blanking, locking), or through the freedesktop screen saver

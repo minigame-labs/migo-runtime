@@ -32,7 +32,7 @@ const MOC_HEADERS: [(&str, &str); 4] = [
 
 /// The Host Kit's sources this host links: the surface controller, the Qt view,
 /// the host services and the Managed shape.
-const KIT_SOURCES: [&str; 11] = [
+const KIT_SOURCES: [&str; 12] = [
     "src/surface_host.cpp",
     "src/qt6/x11_surface_view.cpp",
     "src/qt6/dom_key_names.cpp",
@@ -40,6 +40,7 @@ const KIT_SOURCES: [&str; 11] = [
     "src/qt6/host_services.cpp",
     "src/qt6/backlight.cpp",
     "src/qt6/images.cpp",
+    "src/qt6/image_viewer.cpp",
     "src/qt6/managed_session.cpp",
     "src/qt6/screen_awake.cpp",
     "src/qt6/system_reports.cpp",
@@ -75,7 +76,7 @@ fn main() {
     println!("cargo:rerun-if-changed={}", host.display());
     println!("cargo:rerun-if-changed={}", repo.join("include").display());
 
-    let flags = pkg_config(&["--cflags", "Qt6Widgets", "Qt6DBus"]);
+    let flags = pkg_config(&["--cflags", "Qt6Widgets", "Qt6DBus", "Qt6Network"]);
     let includes: Vec<&str> = flags
         .split_whitespace()
         .filter_map(|flag| flag.strip_prefix("-I"))
@@ -134,10 +135,12 @@ fn main() {
 
     // The host owns its window and the Host Kit's view reads its X11 handle and
     // the mouse's raw motion (XInput 2), and its services ask the system over
-    // D-Bus, so these -- not the engine -- link Qt, Xlib and xcb.
+    // D-Bus and download a preview's images, so these -- not the engine -- link
+    // Qt, Xlib and xcb.
     for library in [
         "Qt6Widgets",
         "Qt6DBus",
+        "Qt6Network",
         "Qt6Gui",
         "Qt6Core",
         "X11",
