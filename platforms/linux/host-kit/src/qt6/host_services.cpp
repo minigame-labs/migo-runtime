@@ -1,6 +1,7 @@
 #include <migo/linux/qt6/host_services.hpp>
 
 #include "backlight.hpp"
+#include "bluetooth.hpp"
 #include "geolocation.hpp"
 #include "images.hpp"
 #include "motion.hpp"
@@ -73,6 +74,27 @@ MigoResult MigoQtHostServiceChannel::postSensorSample(const MigoSensorSample &sa
     const std::lock_guard<std::mutex> lock(mutex_);
     if (session_ == nullptr) return MIGO_OK;
     return migo_session_post_sensor_sample(session_, &sample);
+}
+
+MigoResult MigoQtHostServiceChannel::postBleCharacteristicValue(const QString &device, const QString &service,
+                                                               const QString &characteristic, const QByteArray &value) {
+    const QByteArray device_id = device.toUtf8();
+    const QByteArray service_id = service.toUtf8();
+    const QByteArray characteristic_id = characteristic.toUtf8();
+    MigoBleCharacteristicValue posted{};
+    posted.struct_size = static_cast<std::uint32_t>(sizeof(posted));
+    posted.abi_version = MIGO_ABI_VERSION_1;
+    posted.device_id_utf8 = device_id.constData();
+    posted.device_id_length = static_cast<std::uint32_t>(device_id.size());
+    posted.service_id_utf8 = service_id.constData();
+    posted.service_id_length = static_cast<std::uint32_t>(service_id.size());
+    posted.characteristic_id_utf8 = characteristic_id.constData();
+    posted.characteristic_id_length = static_cast<std::uint32_t>(characteristic_id.size());
+    posted.value = reinterpret_cast<const std::uint8_t *>(value.constData());
+    posted.value_length = static_cast<std::uint32_t>(value.size());
+    const std::lock_guard<std::mutex> lock(mutex_);
+    if (session_ == nullptr) return MIGO_OK;
+    return migo_session_post_ble_characteristic_value(session_, &posted);
 }
 
 MigoResult MigoQtHostServiceChannel::complete(std::uint64_t call_id, const MigoHostServiceResult &result) {
@@ -626,6 +648,15 @@ MigoQtBuiltInHostServices::MigoQtBuiltInHostServices(MigoQtX11SurfaceView &view,
             if (game.isNull() || QGuiApplication::platformName() != QLatin1String("xcb")) return {};
             return QStringLiteral("x11:%1").arg(static_cast<quint64>(game->window()->winId()), 0, 16);
         });
+    bluetooth_ = std::make_unique<Bluetooth>(
+        QDBusConnection::systemBus(),
+        [channel = channel_](std::uint32_t event, const QJsonObject &payload) {
+            (void)channel->post(MIGO_HOST_SERVICE_BLUETOOTH, event, payload);
+        },
+        [channel = channel_](const QString &device, const QString &service, const QString &characteristic,
+                             const QByteArray &value) {
+            (void)channel->postBleCharacteristicValue(device, service, characteristic, value);
+        });
 }
 
 MigoQtBuiltInHostServices::~MigoQtBuiltInHostServices() = default;
@@ -640,6 +671,7 @@ std::uint64_t MigoQtBuiltInHostServices::services() const noexcept {
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_LOCATION);
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_PERMISSION);
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_MOTION);
+    builtIn |= hostServiceBit(MIGO_HOST_SERVICE_BLUETOOTH);
     return builtIn;
 }
 
@@ -666,6 +698,9 @@ void MigoQtBuiltInHostServices::call(MigoHostService service, std::uint32_t meth
             return;
         case MIGO_HOST_SERVICE_MOTION:
             motion(method, request, std::move(reply));
+            return;
+        case MIGO_HOST_SERVICE_BLUETOOTH:
+            bluetooth_->call(method, request, std::move(reply));
             return;
         case MIGO_HOST_SERVICE_CLIPBOARD:
             if (method == MIGO_CLIPBOARD_SET_CLIPBOARD_DATA) {
@@ -792,6 +827,7 @@ void MigoQtBuiltInHostServices::permission(std::uint32_t method, const QJsonObje
             });
             return;
         case MIGO_SCOPE_WRITE_PHOTOS_ALBUM:
+        case MIGO_SCOPE_BLUETOOTH:
             (void)channel_->setScopeState(scope, MIGO_SCOPE_STATE_GRANTED);
             (void)reply.succeed();
             return;

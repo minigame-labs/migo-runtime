@@ -64,6 +64,11 @@ public:
     /// thread; MIGO_OK once closed.
     MigoResult postSensorSample(const MigoSensorSample &sample);
 
+    /// Delivers one characteristic's value, read or notified
+    /// (`migo_session_post_ble_characteristic_value`). MIGO_OK once closed.
+    MigoResult postBleCharacteristicValue(const QString &device, const QString &service, const QString &characteristic,
+                                          const QByteArray &value);
+
 private:
     explicit MigoQtHostServiceChannel(MigoSession *session) noexcept : session_(session) {}
 
@@ -179,6 +184,12 @@ public:
 /// level, the engine rounding what it answers. GeoClue names the App to its
 /// agent by `QGuiApplication::desktopFileName()`, or its application name.
 ///
+/// Bluetooth: BlueZ's, as a BLE central -- the adapter, scanning, devices,
+/// connections and GATT, answered as the Apple SDK answers them, with the same
+/// codes; a device is named by its address. A connected device's RSSI (BlueZ
+/// gives no app one), pairing and setting the MTU (the reference's for Android
+/// only), the peripheral mode and iBeacons are refused.
+///
 /// Motion: the accelerometer, gyroscope and magnetometer the kernel shows
 /// through IIO, in the screen's frame (udev's mount matrix, else the kernel's),
 /// read at the interval content asks for; the compass and the device's
@@ -188,14 +199,16 @@ public:
 /// Permission: the scopes the desktop decides. `scope.userLocation` (and its
 /// background form: a desktop has no other) is GeoClue's to decide -- its agent
 /// or the portal asking the player the first time the App asks -- and is
-/// recorded as decided; `scope.writePhotosAlbum` is granted, the player's
-/// Pictures folder being theirs and the App's, which a desktop does not gate.
+/// recorded as decided; `scope.writePhotosAlbum` and `scope.bluetooth` are
+/// granted, the player's Pictures folder and Bluetooth being theirs and the
+/// App's, which a desktop does not gate.
 /// Any other scope is the App's to decide, and refused ("auth deny") without
 /// an answer of its own: an App that decides scopes answers the permission
 /// service itself.
 ///
 /// GUI thread only. What is on screen goes with this object.
 class Backlight;
+class Bluetooth;
 class Geolocation;
 class Images;
 class MotionSensors;
@@ -243,6 +256,7 @@ private:
     std::unique_ptr<Geolocation> geolocation_;
     /// Made the first time content starts a sensor.
     std::unique_ptr<MotionSensors> motion_;
+    std::unique_ptr<Bluetooth> bluetooth_;
 };
 
 }  // namespace migo::linux_host::qt6

@@ -97,8 +97,8 @@ if(MIGO_LINUX_HOST_KIT_BUILD_QT6_X11)
         # Internal, not installed: how what stands over the game is shown, the
         # backlight (sysfs and logind, over Qt's D-Bus), the image service
         # with its viewer (downloading over Qt's network), where the device is
-        # (GeoClue, or the desktop portal inside a sandbox), and its motion
-        # sensors (IIO, through udev).
+        # (GeoClue, or the desktop portal inside a sandbox), its motion sensors
+        # (IIO, through udev), and Bluetooth (BlueZ).
         src/qt6/overlay.hpp
         src/qt6/backlight.hpp
         src/qt6/backlight.cpp
@@ -110,6 +110,8 @@ if(MIGO_LINUX_HOST_KIT_BUILD_QT6_X11)
         src/qt6/geolocation.cpp
         src/qt6/motion.hpp
         src/qt6/motion.cpp
+        src/qt6/bluetooth.hpp
+        src/qt6/bluetooth.cpp
         src/qt6/sandbox.hpp
     )
     add_library(migo::qt6-host-services ALIAS migo_qt6_host_services)

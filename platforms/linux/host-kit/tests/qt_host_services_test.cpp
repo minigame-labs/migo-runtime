@@ -1,4 +1,5 @@
 #include "backlight.hpp"
+#include "bluetooth.hpp"
 #include "fake_migo.hpp"
 #include "geolocation.hpp"
 #include "image_viewer.hpp"
@@ -14,7 +15,9 @@
 #include <QCursor>
 #include <QDBusConnection>
 #include <QDBusContext>
+#include <QDBusArgument>
 #include <QDBusError>
+#include <QDBusMetaType>
 #include <QDBusMessage>
 #include <QDBusObjectPath>
 #include <QDeadlineTimer>
@@ -45,6 +48,7 @@
 #include <QVBoxLayout>
 #include <QtTest>
 
+#include <algorithm>
 #include <cfloat>
 #include <chrono>
 #include <map>
@@ -54,6 +58,9 @@
 
 using migo::linux_host::SurfaceHost;
 using migo::linux_host::SurfaceState;
+using migo::linux_host::qt6::Bluetooth;
+using migo::linux_host::qt6::BluezInterfaces;
+using migo::linux_host::qt6::BluezObjects;
 using migo::linux_host::qt6::Geolocation;
 using migo::linux_host::qt6::hostServiceBit;
 using migo::linux_host::qt6::ImageViewer;
@@ -355,6 +362,159 @@ private:
     uint accuracy_ = 0;
     QString session_;
 };
+
+const QString kAdapterPath = QStringLiteral("/org/bluez/hci0");
+const QString kDevicePath = QStringLiteral("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF");
+const QString kServicePath = QStringLiteral("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF/service000a");
+const QString kCharacteristicPath = QStringLiteral("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF/service000a/char000b");
+
+class FakeBluez;
+
+/// BlueZ's adapter: scanning, with the filter it was given.
+class FakeBluezAdapter final : public QObject {
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.bluez.Adapter1")
+
+public:
+    explicit FakeBluezAdapter(FakeBluez &bluez) : bluez_(bluez) {}
+    QVariantMap filter;
+    int started = 0;
+    int stopped = 0;
+
+public Q_SLOTS:
+    void SetDiscoveryFilter(const QVariantMap &given) { filter = given; }
+    void StartDiscovery();
+    void StopDiscovery() { ++stopped; }
+
+private:
+    FakeBluez &bluez_;
+};
+
+/// A device: connected, its services resolved -- or refusing, or never resolving.
+class FakeBluezDevice final : public QObject, protected QDBusContext {
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.bluez.Device1")
+
+public:
+    explicit FakeBluezDevice(FakeBluez &bluez) : bluez_(bluez) {}
+    bool refuse = false;
+    bool resolve = true;
+    int disconnected = 0;
+
+public Q_SLOTS:
+    void Connect();
+    void Disconnect() { ++disconnected; }
+
+private:
+    FakeBluez &bluez_;
+};
+
+/// A characteristic: read, written, notifying.
+class FakeBluezCharacteristic final : public QObject {
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.bluez.GattCharacteristic1")
+
+public:
+    QByteArray value = QByteArray::fromHex("0a0b");
+    QStringList written;
+    bool notifying = false;
+
+public Q_SLOTS:
+    QByteArray ReadValue(const QVariantMap &) { return value; }
+    void WriteValue(const QByteArray &bytes, const QVariantMap &options) {
+        written << QString::fromLatin1(bytes.toHex()) + QLatin1Char(' ') + options.value(QStringLiteral("type")).toString();
+    }
+    void StartNotify() { notifying = true; }
+    void StopNotify() { notifying = false; }
+};
+
+/// BlueZ on the session bus: one adapter, one device with a heart-rate
+/// service, its ObjectManager answering what it holds and reporting changes.
+class FakeBluez final : public QObject {
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.freedesktop.DBus.ObjectManager")
+
+public:
+    explicit FakeBluez(QDBusConnection bus, bool powered = true)
+        : bus_(std::move(bus)), adapter(*this), device(*this) {
+        qDBusRegisterMetaType<BluezInterfaces>();
+        qDBusRegisterMetaType<BluezObjects>();
+        QDBusArgument manufacturer;
+        manufacturer.beginMap(QMetaType::fromType<quint16>(), QMetaType::fromType<QDBusVariant>());
+        manufacturer.beginMapEntry();
+        manufacturer << quint16{0x004c} << QDBusVariant(QByteArray::fromHex("0215"));
+        manufacturer.endMapEntry();
+        manufacturer.endMap();
+        objects[QDBusObjectPath(kAdapterPath)][QStringLiteral("org.bluez.Adapter1")] = {
+            {QStringLiteral("Powered"), powered}, {QStringLiteral("Discovering"), false}};
+        objects[QDBusObjectPath(kDevicePath)][QStringLiteral("org.bluez.Device1")] = {
+            {QStringLiteral("Address"), QStringLiteral("AA:BB:CC:DD:EE:FF")},
+            {QStringLiteral("Name"), QStringLiteral("Heart")},
+            {QStringLiteral("UUIDs"), QStringList{QStringLiteral("0000180d-0000-1000-8000-00805f9b34fb")}},
+            {QStringLiteral("ManufacturerData"), QVariant::fromValue(manufacturer)},
+            {QStringLiteral("Connected"), false},
+            {QStringLiteral("ServicesResolved"), false}};
+        objects[QDBusObjectPath(kServicePath)][QStringLiteral("org.bluez.GattService1")] = {
+            {QStringLiteral("UUID"), QStringLiteral("0000180d-0000-1000-8000-00805f9b34fb")},
+            {QStringLiteral("Primary"), true},
+            {QStringLiteral("Device"), QVariant::fromValue(QDBusObjectPath(kDevicePath))}};
+        objects[QDBusObjectPath(kCharacteristicPath)][QStringLiteral("org.bluez.GattCharacteristic1")] = {
+            {QStringLiteral("UUID"), QStringLiteral("00002a37-0000-1000-8000-00805f9b34fb")},
+            {QStringLiteral("Service"), QVariant::fromValue(QDBusObjectPath(kServicePath))},
+            {QStringLiteral("Flags"), QStringList{QStringLiteral("read"), QStringLiteral("write"), QStringLiteral("notify")}},
+            {QStringLiteral("MTU"), QVariant::fromValue(quint16{185})}};
+        registered_ = bus_.registerService(QStringLiteral("org.bluez")) &&
+                      bus_.registerObject(QStringLiteral("/"), this, QDBusConnection::ExportAllSlots) &&
+                      bus_.registerObject(kAdapterPath, &adapter, QDBusConnection::ExportAllSlots) &&
+                      bus_.registerObject(kDevicePath, &device, QDBusConnection::ExportAllSlots) &&
+                      bus_.registerObject(kCharacteristicPath, &characteristic, QDBusConnection::ExportAllSlots);
+    }
+    ~FakeBluez() override {
+        for (const QString &path : {kCharacteristicPath, kDevicePath, kAdapterPath, QStringLiteral("/")}) {
+            bus_.unregisterObject(path);
+        }
+        bus_.unregisterService(QStringLiteral("org.bluez"));
+    }
+    [[nodiscard]] bool registered() const { return registered_; }
+
+    /// Changes `properties` of `path`'s `interface`, and says so as BlueZ does.
+    void change(const QString &path, const QString &interface, const QVariantMap &properties) {
+        for (auto value = properties.cbegin(); value != properties.cend(); ++value) {
+            objects[QDBusObjectPath(path)][interface].insert(value.key(), value.value());
+        }
+        QDBusMessage changed = QDBusMessage::createSignal(path, QStringLiteral("org.freedesktop.DBus.Properties"),
+                                                          QStringLiteral("PropertiesChanged"));
+        changed << interface << properties << QStringList();
+        bus_.send(changed);
+    }
+
+    BluezObjects objects;
+    FakeBluezAdapter adapter;
+    FakeBluezDevice device;
+    FakeBluezCharacteristic characteristic;
+
+public Q_SLOTS:
+    migo::linux_host::qt6::BluezObjects GetManagedObjects() { return objects; }
+
+private:
+    QDBusConnection bus_;
+    bool registered_ = false;
+};
+
+void FakeBluezAdapter::StartDiscovery() {
+    ++started;
+    // The device advertising, heard.
+    bluez_.change(kDevicePath, QStringLiteral("org.bluez.Device1"), {{QStringLiteral("RSSI"), QVariant::fromValue(qint16{-60})}});
+}
+
+void FakeBluezDevice::Connect() {
+    if (refuse) {
+        sendErrorReply(QStringLiteral("org.bluez.Error.Failed"), QStringLiteral("le-connection-abort-by-local"));
+        return;
+    }
+    bluez_.change(kDevicePath, QStringLiteral("org.bluez.Device1"), {{QStringLiteral("Connected"), true}});
+    if (resolve) bluez_.change(kDevicePath, QStringLiteral("org.bluez.Device1"), {{QStringLiteral("ServicesResolved"), true}});
+}
 
 /// A backlight where the kernel would show it.
 void makeBacklight(const QString &sysfs, const QString &name, const char *type, int max, int brightness) {
@@ -721,7 +881,8 @@ private slots:
                                               hostServiceBit(MIGO_HOST_SERVICE_IMAGE) |
                                               hostServiceBit(MIGO_HOST_SERVICE_LOCATION) |
                                               hostServiceBit(MIGO_HOST_SERVICE_PERMISSION) |
-                                              hostServiceBit(MIGO_HOST_SERVICE_MOTION));
+                                              hostServiceBit(MIGO_HOST_SERVICE_MOTION) |
+                                              hostServiceBit(MIGO_HOST_SERVICE_BLUETOOTH));
         QCOMPARE(fake_migo::created_network_policy(), std::string());
         QCOMPARE(fake_migo::created_launch_options(), std::string());
 
@@ -779,7 +940,7 @@ private slots:
                      hostServiceBit(MIGO_HOST_SERVICE_INTERACTION) | hostServiceBit(MIGO_HOST_SERVICE_WINDOW) |
                      hostServiceBit(MIGO_HOST_SERVICE_SCREEN) | hostServiceBit(MIGO_HOST_SERVICE_IMAGE) |
                      hostServiceBit(MIGO_HOST_SERVICE_LOCATION) | hostServiceBit(MIGO_HOST_SERVICE_PERMISSION) |
-                     hostServiceBit(MIGO_HOST_SERVICE_MOTION));
+                     hostServiceBit(MIGO_HOST_SERVICE_MOTION) | hostServiceBit(MIGO_HOST_SERVICE_BLUETOOTH));
 
         fake_migo::deliver_host_service_call_from_engine_thread(MIGO_HOST_SERVICE_CLIPBOARD,
                                                                 MIGO_CLIPBOARD_GET_CLIPBOARD_DATA, 3, "{}");
@@ -1992,6 +2153,189 @@ private slots:
         sensors.stop(MIGO_SENSOR_ACCELEROMETER);
         channel->close();
         QCOMPARE(fixture.session.close(), MIGO_OK);
+    }
+
+    /// Bluetooth through BlueZ, as the Apple SDK answers it: the adapter, a
+    /// scan with its filter and the device it hears, a connection answered once
+    /// its services are resolved, the GATT -- services, characteristics, a read,
+    /// writes, notifications, the MTU -- the device going, and the codes.
+    void bluetooth_is_bluez_as_a_central() {
+        Managed fixture;
+        std::shared_ptr<MigoQtHostServiceChannel> channel = MigoQtHostServiceChannel::open(fake_migo::session());
+        QDBusConnection bus = QDBusConnection::sessionBus();
+        std::vector<std::pair<std::uint32_t, QJsonObject>> events;
+        std::vector<QStringList> values;
+        Bluetooth bluetooth(
+            bus, [&events](std::uint32_t event, const QJsonObject &payload) { events.emplace_back(event, payload); },
+            [&values](const QString &device, const QString &service, const QString &characteristic,
+                      const QByteArray &value) {
+                values.push_back({device, service, characteristic, QString::fromLatin1(value.toHex())});
+            });
+        std::uint64_t next = 100;
+        const auto ask = [&](std::uint32_t method, const QJsonObject &request) {
+            const std::uint64_t id = ++next;
+            fake_migo::expect_host_service_call(MIGO_HOST_SERVICE_BLUETOOTH, id);
+            bluetooth.call(method, request, channel->reply(id));
+            (void)QTest::qWaitFor([id] { return answerTo(id).has_value(); }, 5000);
+            return answerTo(id).value_or(fake_migo::HostServiceAnswer{});
+        };
+        const auto code = [](const fake_migo::HostServiceAnswer &answer) {
+            return answer.has_error_code ? answer.error_code : 0;
+        };
+        const QJsonObject device{{"deviceId", "aa:bb:cc:dd:ee:ff"}};
+        const QJsonObject heart{{"deviceId", "AA:BB:CC:DD:EE:FF"}, {"serviceId", "180D"}, {"characteristicId", "2A37"}};
+
+        // No BlueZ, no Bluetooth; and nothing open, nothing to ask.
+        QCOMPARE(code(ask(MIGO_BLUETOOTH_OPEN_ADAPTER, {})), 10001);
+        QCOMPARE(code(ask(MIGO_BLUETOOTH_CLOSE_ADAPTER, {})), 0);
+        QCOMPARE(code(ask(MIGO_BLUETOOTH_GET_ADAPTER_STATE, {})), 10000);
+
+        FakeBluez bluez(bus);
+        QVERIFY(bluez.registered());
+        QCOMPARE(ask(MIGO_BLUETOOTH_OPEN_ADAPTER, {}).status, MIGO_HOST_SERVICE_STATUS_OK);
+        QCOMPARE(parsed(ask(MIGO_BLUETOOTH_GET_ADAPTER_STATE, {}).payload),
+                 (QJsonObject{{"available", true}, {"discovering", false}}));
+        QCOMPARE(code(ask(MIGO_BLUETOOTH_OPEN_ADAPTER, {{"mode", "peripheral"}})), 0);
+
+        // A scan: BLE only, the services asked for; the device heard once.
+        QCOMPARE(code(ask(MIGO_BLUETOOTH_START_DEVICES_DISCOVERY, {{"services", QJsonArray{"zz"}}})), 10013);
+        QCOMPARE(ask(MIGO_BLUETOOTH_START_DEVICES_DISCOVERY, {{"services", QJsonArray{"180D"}}}).status,
+                 MIGO_HOST_SERVICE_STATUS_OK);
+        QCOMPARE(bluez.adapter.started, 1);
+        QCOMPARE(bluez.adapter.filter.value(QStringLiteral("UUIDs")).toStringList(),
+                 QStringList{QStringLiteral("0000180d-0000-1000-8000-00805f9b34fb")});
+        QCOMPARE(bluez.adapter.filter.value(QStringLiteral("Transport")).toString(), QStringLiteral("le"));
+        QTRY_VERIFY(std::any_of(events.begin(), events.end(), [](const auto &event) {
+            return event.first == MIGO_BLUETOOTH_EVENT_DEVICE_FOUND;
+        }));
+        const auto found = std::find_if(events.begin(), events.end(), [](const auto &event) {
+            return event.first == MIGO_BLUETOOTH_EVENT_DEVICE_FOUND;
+        });
+        const QJsonObject heard = found->second.value(QStringLiteral("devices")).toArray().at(0).toObject();
+        QCOMPARE(heard.value(QStringLiteral("deviceId")).toString(), QStringLiteral("AA:BB:CC:DD:EE:FF"));
+        QCOMPARE(heard.value(QStringLiteral("name")).toString(), QStringLiteral("Heart"));
+        QCOMPARE(heard.value(QStringLiteral("RSSI")).toInt(), -60);
+        QCOMPARE(heard.value(QStringLiteral("advertisData")).toString(), QStringLiteral("4c000215"));
+        QCOMPARE(heard.value(QStringLiteral("advertisServiceUUIDs")).toArray().at(0).toString(),
+                 QStringLiteral("0000180D-0000-1000-8000-00805F9B34FB"));
+        QVERIFY(std::any_of(events.begin(), events.end(), [](const auto &event) {
+            return event.first == MIGO_BLUETOOTH_EVENT_ADAPTER_STATE_CHANGE &&
+                   event.second.value(QStringLiteral("discovering")).toBool();
+        }));
+        const auto foundCount = [&events] {
+            return std::count_if(events.begin(), events.end(), [](const auto &event) {
+                return event.first == MIGO_BLUETOOTH_EVENT_DEVICE_FOUND;
+            });
+        };
+        bluez.change(kDevicePath, QStringLiteral("org.bluez.Device1"), {{QStringLiteral("RSSI"), QVariant::fromValue(qint16{-50})}});
+        QTest::qWait(100);
+        QCOMPARE(foundCount(), 1);
+        QCOMPARE(parsed(ask(MIGO_BLUETOOTH_GET_DEVICES, {}).payload).value(QStringLiteral("devices")).toArray().size(), 1);
+        QCOMPARE(ask(MIGO_BLUETOOTH_STOP_DEVICES_DISCOVERY, {}).status, MIGO_HOST_SERVICE_STATUS_OK);
+        QTRY_COMPARE(bluez.adapter.stopped, 1);
+
+        // A connection, answered once its services are resolved.
+        QCOMPARE(code(ask(MIGO_BLUETOOTH_CREATE_BLE_CONNECTION, {{"deviceId", "11:22:33:44:55:66"}})), 10002);
+        QCOMPARE(code(ask(MIGO_BLUETOOTH_GET_BLE_DEVICE_SERVICES, device)), 10006);
+        QCOMPARE(ask(MIGO_BLUETOOTH_CREATE_BLE_CONNECTION, device).status, MIGO_HOST_SERVICE_STATUS_OK);
+        QVERIFY(std::any_of(events.begin(), events.end(), [](const auto &event) {
+            return event.first == MIGO_BLUETOOTH_EVENT_BLE_CONNECTION_STATE_CHANGE &&
+                   event.second.value(QStringLiteral("connected")).toBool();
+        }));
+        QCOMPARE(code(ask(MIGO_BLUETOOTH_CREATE_BLE_CONNECTION, device)), -1);
+        QCOMPARE(parsed(ask(MIGO_BLUETOOTH_GET_BLE_DEVICE_SERVICES, device).payload),
+                 (QJsonObject{{"services", QJsonArray{QJsonObject{{"uuid", "0000180D-0000-1000-8000-00805F9B34FB"},
+                                                                  {"isPrimary", true}}}}}));
+        const QJsonObject characteristic =
+            parsed(ask(MIGO_BLUETOOTH_GET_BLE_DEVICE_CHARACTERISTICS, {{"deviceId", "AA:BB:CC:DD:EE:FF"}, {"serviceId", "180D"}})
+                       .payload)
+                .value(QStringLiteral("characteristics")).toArray().at(0).toObject();
+        QCOMPARE(characteristic.value(QStringLiteral("uuid")).toString(), QStringLiteral("00002A37-0000-1000-8000-00805F9B34FB"));
+        QCOMPARE(characteristic.value(QStringLiteral("properties")).toObject(),
+                 (QJsonObject{{"read", true}, {"write", true}, {"notify", true}, {"indicate", false},
+                              {"writeNoResponse", false}, {"writeDefault", true}}));
+        QCOMPARE(code(ask(MIGO_BLUETOOTH_GET_BLE_DEVICE_CHARACTERISTICS, {{"deviceId", "AA:BB:CC:DD:EE:FF"}, {"serviceId", "180F"}})),
+                 10004);
+
+        // A read is answered as issued; its value arrives on its own.
+        QCOMPARE(ask(MIGO_BLUETOOTH_READ_BLE_CHARACTERISTIC_VALUE, heart).status, MIGO_HOST_SERVICE_STATUS_OK);
+        QTRY_COMPARE(values.size(), std::size_t{1});
+        QCOMPARE(values.at(0), (QStringList{"AA:BB:CC:DD:EE:FF", "0000180D-0000-1000-8000-00805F9B34FB",
+                                            "00002A37-0000-1000-8000-00805F9B34FB", "0a0b"}));
+        QJsonObject other = heart;
+        other.insert(QStringLiteral("characteristicId"), QStringLiteral("2A38"));
+        QCOMPARE(code(ask(MIGO_BLUETOOTH_READ_BLE_CHARACTERISTIC_VALUE, other)), 10005);
+
+        // Writes: acknowledged, refused for bad data or a type it does not take.
+        QJsonObject writing = heart;
+        writing.insert(QStringLiteral("value"), QStringLiteral("0102"));
+        QCOMPARE(ask(MIGO_BLUETOOTH_WRITE_BLE_CHARACTERISTIC_VALUE, writing).status, MIGO_HOST_SERVICE_STATUS_OK);
+        QCOMPARE(bluez.characteristic.written, QStringList{QStringLiteral("0102 request")});
+        writing.insert(QStringLiteral("value"), QStringLiteral("zz"));
+        QCOMPARE(code(ask(MIGO_BLUETOOTH_WRITE_BLE_CHARACTERISTIC_VALUE, writing)), 10013);
+        writing.insert(QStringLiteral("value"), QStringLiteral("01"));
+        writing.insert(QStringLiteral("writeType"), QStringLiteral("writeNoResponse"));
+        QCOMPARE(code(ask(MIGO_BLUETOOTH_WRITE_BLE_CHARACTERISTIC_VALUE, writing)), 10007);
+
+        // Notifications: values while listening, none after.
+        QJsonObject listening = heart;
+        listening.insert(QStringLiteral("state"), true);
+        QCOMPARE(ask(MIGO_BLUETOOTH_NOTIFY_BLE_CHARACTERISTIC_VALUE_CHANGE, listening).status, MIGO_HOST_SERVICE_STATUS_OK);
+        QVERIFY(bluez.characteristic.notifying);
+        bluez.change(kCharacteristicPath, QStringLiteral("org.bluez.GattCharacteristic1"),
+                     {{QStringLiteral("Value"), QByteArray::fromHex("4c")}});
+        QTRY_COMPARE(values.size(), std::size_t{2});
+        QCOMPARE(values.at(1).last(), QStringLiteral("4c"));
+        listening.insert(QStringLiteral("state"), false);
+        QCOMPARE(ask(MIGO_BLUETOOTH_NOTIFY_BLE_CHARACTERISTIC_VALUE_CHANGE, listening).status, MIGO_HOST_SERVICE_STATUS_OK);
+        bluez.change(kCharacteristicPath, QStringLiteral("org.bluez.GattCharacteristic1"),
+                     {{QStringLiteral("Value"), QByteArray::fromHex("4d")}});
+        QTest::qWait(100);
+        QCOMPARE(values.size(), std::size_t{2});
+
+        QCOMPARE(parsed(ask(MIGO_BLUETOOTH_GET_BLE_MTU, device).payload).value(QStringLiteral("mtu")).toInt(), 185);
+        QCOMPARE(ask(MIGO_BLUETOOTH_GET_BLE_DEVICE_RSSI, device).message, std::string("not supported"));
+        QCOMPARE(code(ask(MIGO_BLUETOOTH_START_BEACON_DISCOVERY, {})), 11000);
+
+        // The device goes: content hears it, and its calls find no connection.
+        bluez.change(kDevicePath, QStringLiteral("org.bluez.Device1"),
+                     {{QStringLiteral("Connected"), false}, {QStringLiteral("ServicesResolved"), false}});
+        QTRY_VERIFY(std::any_of(events.begin(), events.end(), [](const auto &event) {
+            return event.first == MIGO_BLUETOOTH_EVENT_BLE_CONNECTION_STATE_CHANGE &&
+                   !event.second.value(QStringLiteral("connected")).toBool();
+        }));
+        QCOMPARE(code(ask(MIGO_BLUETOOTH_GET_BLE_DEVICE_SERVICES, device)), 10006);
+
+        // A connection refused, and one that never resolves in time.
+        bluez.device.refuse = true;
+        QCOMPARE(code(ask(MIGO_BLUETOOTH_CREATE_BLE_CONNECTION, device)), 10003);
+        bluez.device.refuse = false;
+        bluez.device.resolve = false;
+        bluez.change(kDevicePath, QStringLiteral("org.bluez.Device1"), {{QStringLiteral("Connected"), false}});
+        // Heard before the next connection is asked for, not during it.
+        QTest::qWait(100);
+        QJsonObject hurried = device;
+        hurried.insert(QStringLiteral("timeout"), 150);
+        QCOMPARE(code(ask(MIGO_BLUETOOTH_CREATE_BLE_CONNECTION, hurried)), 10012);
+
+        // Closed, nothing is open; and a switch turned off is unavailable.
+        QCOMPARE(ask(MIGO_BLUETOOTH_CLOSE_ADAPTER, {}).status, MIGO_HOST_SERVICE_STATUS_OK);
+        QCOMPARE(code(ask(MIGO_BLUETOOTH_GET_ADAPTER_STATE, {})), 10000);
+        bluez.change(kAdapterPath, QStringLiteral("org.bluez.Adapter1"), {{QStringLiteral("Powered"), false}});
+        QCOMPARE(code(ask(MIGO_BLUETOOTH_OPEN_ADAPTER, {})), 10001);
+
+        channel->close();
+        QCOMPARE(fixture.session.close(), MIGO_OK);
+    }
+
+    /// UUIDs in any of their forms, in full and upper case.
+    void a_uuid_is_named_in_full() {
+        QCOMPARE(Bluetooth::fullUuid(QStringLiteral("180d")), QStringLiteral("0000180D-0000-1000-8000-00805F9B34FB"));
+        QCOMPARE(Bluetooth::fullUuid(QStringLiteral("0000180D")), QStringLiteral("0000180D-0000-1000-8000-00805F9B34FB"));
+        QCOMPARE(Bluetooth::fullUuid(QStringLiteral("6e400001-b5a3-f393-e0a9-e50e24dcca9e")),
+                 QStringLiteral("6E400001-B5A3-F393-E0A9-E50E24DCCA9E"));
+        QCOMPARE(Bluetooth::fullUuid(QStringLiteral("not-a-uuid")), QString());
+        QCOMPARE(Bluetooth::fullUuid(QStringLiteral("12345")), QString());
     }
 
 private:

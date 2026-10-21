@@ -35,7 +35,8 @@ What is claimed:
   the player, `scope.writePhotosAlbum` granted -- recorded as decided; and the
   motion sensors the kernel shows through IIO (found with libudev, turned into
   the screen's frame by udev's or the kernel's mount matrix), the compass and the
-  device's orientation worked out as Android's SensorManager does.
+  device's orientation worked out as Android's SensorManager does; and Bluetooth
+  as a BLE central, BlueZ's, answered as the Apple SDK answers it.
 - `migo::qt6-managed-session` is the Managed ownership shape: `MigoManagedSession`
   owns the Session, its callback table and the view, and installs the built-in
   services; it holds content's `setKeepScreenOn` off the desktop's idle through
