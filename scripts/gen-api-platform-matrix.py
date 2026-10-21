@@ -74,7 +74,16 @@ ANDROID_EVENTS = {
 }
 
 # Rust's target_os for the platforms the matrix names.
-TARGET_OS = {"macos": "macos", "ios": "ios", "linux": "linux", "windows": "windows", "android": "android"}
+# What each platform's Rust targets answer to `cfg(...)`: OpenHarmony's are
+# `target_os = "linux"` too, told apart by their environment.
+CFG_FACTS = {
+    "android": {"target_os": "android"},
+    "ios": {"target_os": "ios", "target_vendor": "apple"},
+    "macos": {"target_os": "macos", "target_vendor": "apple"},
+    "linux": {"target_os": "linux", "target_env": "gnu"},
+    "windows": {"target_os": "windows"},
+    "ohos": {"target_os": "linux", "target_env": "ohos"},
+}
 
 # Host input, lifecycle and reported state, by kind: the C ABI entry point a host
 # feeds it through, and the Java SDK's native for the same -- None where the
@@ -149,6 +158,32 @@ def found(what: str, items):
     return items
 
 
+def cfg_holds(condition: str, facts: dict[str, str]) -> bool:
+    """Whether a `cfg(...)` predicate -- `key = "value"`, `any`, `all`, `not` --
+    holds for a target with these facts. ValueError for one it cannot read."""
+    condition = condition.strip()
+    combinator = re.fullmatch(r"(any|all|not)\((.*)\)", condition, re.S)
+    if combinator:
+        terms, depth, start = [], 0, 0
+        inner = combinator.group(2)
+        for index, char in enumerate(inner):
+            depth += {"(": 1, ")": -1}.get(char, 0)
+            if char == "," and depth == 0:
+                terms.append(inner[start:index])
+                start = index + 1
+        terms = [term for term in terms + [inner[start:]] if term.strip()]
+        held = [cfg_holds(term, facts) for term in terms]
+        if combinator.group(1) == "not":
+            if len(held) != 1:
+                raise ValueError(f"cfg(not({inner})) takes one predicate")
+            return not held[0]
+        return any(held) if combinator.group(1) == "any" else all(held)
+    pair = re.fullmatch(r'(target_os|target_env|target_vendor) = "(\w+)"', condition)
+    if not pair:
+        raise ValueError(f"cfg predicate {condition!r} does not say which platforms")
+    return facts.get(pair.group(1)) == pair.group(2)
+
+
 def braced(text: str, start: int) -> str:
     """The body of the block whose `{` is at or after `start`."""
     open_at = text.index("{", start)
@@ -175,6 +210,24 @@ def channel_ops(root: pathlib.Path) -> dict[str, tuple[str, str]]:
             if "op" in spec:
                 ops[spec["op"]] = (service, method)
     return found("host-service ops", ops)
+
+
+def cfg_before(text: str) -> str | None:
+    """The condition of the `#[cfg(...)]` that `text` ends with -- doc comments
+    and whitespace after it aside -- or None."""
+    tail = re.search(r"\)\]\s*(?:///[^\n]*\n\s*)*$", text)
+    if not tail:
+        return None
+    depth, index = 0, tail.start()
+    while index >= 0:
+        depth += {")": 1, "(": -1}.get(text[index], 0)
+        if depth == 0:
+            break
+        index -= 1
+    head = text[:index]
+    if index < 0 or not head.endswith("#[cfg"):
+        return None
+    return text[index + 1 : tail.start()]
 
 
 def capi_services(root: pathlib.Path) -> dict[str, tuple[str, str | None]]:
@@ -208,17 +261,23 @@ def capi_services(root: pathlib.Path) -> dict[str, tuple[str, str | None]]:
             # The `#[cfg(...)]` attribute right before the function, if any --
             # whole, however rustfmt wrapped it: an attribute too long for one
             # line spans several, and reading only the last would miss it.
-            only = re.search(r"#\[cfg\(((?:[^()]|\([^()]*\))*)\)\]\s*(?:///[^\n]*\n\s*)*$", body[: found_fn.start()])
-            if only:
+            only = cfg_before(body[: found_fn.start()])
+            if only is not None:
                 # One line, as it would be written by hand: whitespace collapsed,
                 # none inside the parentheses, no trailing comma.
-                condition = re.sub(r"\s+", " ", only.group(1)).strip()
+                condition = re.sub(r"\s+", " ", only).strip()
                 condition = re.sub(r"\(\s+", "(", condition)
                 condition = re.sub(r",?\s*\)", ")", condition).rstrip(", ")
-                systems = re.findall(r'target_os = "(\w+)"', condition)
-                if not systems or not re.fullmatch(r'(any\()?target_os = "\w+"(, target_os = "\w+")*\)?', condition):
-                    raise Fail(f"C ABI accessor {name}: cfg({condition}) is not a list of operating systems")
-                kinds[name] = ("native", ",".join(sorted(TARGET_OS[system] for system in systems)))
+                try:
+                    systems = {platform for platform, facts in CFG_FACTS.items() if cfg_holds(condition, facts)}
+                except ValueError as error:
+                    raise Fail(f"C ABI accessor {name}: {error}") from None
+                if not systems:
+                    raise Fail(f"C ABI accessor {name}: cfg({condition}) holds on no platform")
+                # An accessor defined once per platform group: the groups together.
+                if name in kinds and kinds[name][0] == "native":
+                    systems |= set(kinds[name][1].split(","))
+                kinds[name] = ("native", ",".join(sorted(systems)))
                 continue
             channel = re.search(r"MIGO_HOST_SERVICE_(\w+)", accessor)
             typed = re.search(r"self\.device\.(\w+)\(\)", accessor)

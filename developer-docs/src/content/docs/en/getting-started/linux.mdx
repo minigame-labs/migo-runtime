@@ -49,7 +49,7 @@ sudo apt-get install -y \
   cmake ninja-build g++ ripgrep xvfb xauth \
   qt6-base-dev qt6-base-dev-tools qt6-qpa-plugins \
   libx11-dev libxkbcommon-x11-dev libxcb-cursor0 \
-  pkg-config libxcb-xinput-dev libxtst-dev dbus
+  pkg-config libxcb-xinput-dev libxtst-dev libudev-dev dbus
 ```
 
 If the host uses only the toolkit-neutral `migo::linux-surface-host` controller (Wayland), also
@@ -60,6 +60,16 @@ sudo apt-get install -y libwayland-dev
 ```
 
 Do not install Qt private-header packages; Host Kit does not depend on any private Qt API.
+
+At run time, `createVideoDecoder` decodes through GStreamer, which the engine loads when it is there
+and does not link: its base plugins (`playbin`, `videoconvert`), the demuxers and decoders the
+videos need -- `gstreamer1.0-plugins-good` for MP4, `gstreamer1.0-libav` for H.264 among others.
+A system without GStreamer runs every game; only `createVideoDecoder` answers that it is not
+supported.
+
+```bash
+sudo apt-get install -y gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav
+```
 
 ## 2. Obtain the Linux SDK
 

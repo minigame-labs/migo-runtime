@@ -14,7 +14,10 @@ use migo_capi_abi::host_services::{
     MIGO_HOST_SERVICE_SCAN_CODE, MIGO_HOST_SERVICE_SCREEN, MIGO_HOST_SERVICE_SHARE,
     MIGO_HOST_SERVICE_SUBPACKAGE, MIGO_HOST_SERVICE_UPDATE, MIGO_HOST_SERVICE_WINDOW,
 };
-#[cfg(target_os = "macos")]
+#[cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", not(target_env = "ohos"))
+))]
 use migo_core::services::VideoDecoderService;
 use migo_core::services::{
     AccelerometerService, AdService, AuthService, BatteryService, BluetoothService,
@@ -28,7 +31,7 @@ use migo_core::services::{
 #[cfg(any(
     target_os = "ios",
     target_os = "macos",
-    target_os = "linux",
+    all(target_os = "linux", not(target_env = "ohos")),
     target_os = "windows"
 ))]
 use migo_core::services::{AudioPlatformService, platform_audio_service};
@@ -283,7 +286,7 @@ impl MediaServices for CapiDeviceServices {
     #[cfg(any(
         target_os = "ios",
         target_os = "macos",
-        target_os = "linux",
+        all(target_os = "linux", not(target_env = "ohos")),
         target_os = "windows"
     ))]
     fn audio_platform(&self) -> Option<Arc<dyn AudioPlatformService>> {
@@ -300,6 +303,13 @@ impl MediaServices for CapiDeviceServices {
     #[cfg(target_os = "macos")]
     fn video_decoder(&self) -> Option<Arc<dyn VideoDecoderService>> {
         Some(Arc::new(platform::apple::video_decoder::AppleVideoDecoder))
+    }
+
+    /// GStreamer's decoders on Linux, when the system has GStreamer.
+    #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+    fn video_decoder(&self) -> Option<Arc<dyn VideoDecoderService>> {
+        platform::linux::video_decoder::GstVideoDecoder::available()
+            .map(|decoder| Arc::new(decoder) as Arc<dyn VideoDecoderService>)
     }
 }
 

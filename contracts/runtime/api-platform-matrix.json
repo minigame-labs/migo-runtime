@@ -25,7 +25,7 @@
     "android": {"engine": 61, "default": 125, "host": 180, "missing": 6, "unsupported": 10, "wired": 376, "verified": 221, "ready": 352},
     "ios": {"engine": 71, "default": 110, "host": 174, "missing": 12, "unsupported": 15, "wired": 369, "verified": 198, "ready": 330},
     "macos": {"engine": 71, "default": 88, "host": 170, "missing": 9, "unsupported": 44, "wired": 372, "verified": 201, "ready": 346},
-    "linux": {"engine": 71, "default": 126, "host": 159, "missing": 10, "unsupported": 16, "wired": 360, "verified": 211, "ready": 318},
+    "linux": {"engine": 71, "default": 127, "host": 159, "missing": 9, "unsupported": 16, "wired": 361, "verified": 211, "ready": 318},
     "windows": {"engine": 71, "default": 2, "host": 289, "missing": 10, "unsupported": 10, "wired": 232, "verified": 0, "ready": 159},
     "ohos": {"engine": 69, "default": 12, "host": 0, "missing": 292, "unsupported": 9, "wired": 90, "verified": 0, "ready": 9}
   },
@@ -76,7 +76,7 @@
     "createUserInfoButton": {"category": "open-api/user-info", "needs": ["channel:auth.get_user_info", "channel:permission"], "android": "host", "ios": "host", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ohos"]},
     "createVKSession": {"category": "ai/visionkit", "needs": ["unpublished"], "android": "unsupported", "ios": "unsupported", "macos": "unsupported", "linux": "unsupported", "windows": "unsupported", "ohos": "unsupported"},
     "createVideo": {"category": "media/video", "needs": ["service:video"], "android": "default", "ios": "missing", "macos": "missing", "linux": "missing", "windows": "missing", "ohos": "missing", "not_ready": ["android", "ios", "macos", "linux", "windows", "ohos"]},
-    "createVideoDecoder": {"category": "media/video-decoder", "needs": ["native:video_decoder(macos)"], "android": "default", "ios": "missing", "macos": "default", "linux": "missing", "windows": "missing", "ohos": "missing", "verified": ["macos"], "not_ready": ["android", "ios", "linux", "windows", "ohos"]},
+    "createVideoDecoder": {"category": "media/video-decoder", "needs": ["native:video_decoder(linux,macos)"], "android": "default", "ios": "missing", "macos": "default", "linux": "default", "windows": "missing", "ohos": "missing", "verified": ["macos"], "not_ready": ["android", "ios", "linux", "windows", "ohos"]},
     "createWebAudioContext": {"category": "media/audio", "needs": [], "android": "engine", "ios": "engine", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine", "verified": ["android", "ios", "macos", "linux"], "not_ready": ["windows", "ohos"]},
     "createWorker": {"category": "worker", "needs": [], "android": "engine", "ios": "engine", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine", "verified": ["android", "ios", "macos", "linux"], "not_ready": ["windows", "ohos"]},
     "decode": {"category": "util", "needs": [], "android": "engine", "ios": "engine", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine", "verified": ["android", "ios", "macos", "linux"], "not_ready": ["windows", "ohos"]},

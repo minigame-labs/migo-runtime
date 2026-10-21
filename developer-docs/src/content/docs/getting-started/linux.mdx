@@ -44,7 +44,7 @@ sudo apt-get install -y \
   cmake ninja-build g++ ripgrep xvfb xauth \
   qt6-base-dev qt6-base-dev-tools qt6-qpa-plugins \
   libx11-dev libxkbcommon-x11-dev libxcb-cursor0 \
-  pkg-config libxcb-xinput-dev libxtst-dev dbus
+  pkg-config libxcb-xinput-dev libxtst-dev libudev-dev dbus
 ```
 
 若宿主只使用工具包中立的 `migo::linux-surface-host` 控制器（Wayland），还需：
@@ -54,6 +54,12 @@ sudo apt-get install -y libwayland-dev
 ```
 
 不要安装 Qt 私有头文件包；Host Kit 不依赖任何私有 Qt API。
+
+运行时，`createVideoDecoder` 经 GStreamer 解码：引擎在系统有 GStreamer 时加载它，不链接它。需要其基础插件（`playbin`、`videoconvert`）以及视频所需的解复用器与解码器——MP4 需要 `gstreamer1.0-plugins-good`，H.264 等需要 `gstreamer1.0-libav`。没有 GStreamer 的系统照常运行所有游戏，只有 `createVideoDecoder` 回答不支持。
+
+```bash
+sudo apt-get install -y gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav
+```
 
 ## 2. 获取 Linux SDK
 
