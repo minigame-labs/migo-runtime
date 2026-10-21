@@ -112,6 +112,8 @@ if(MIGO_LINUX_HOST_KIT_BUILD_QT6_X11)
         src/qt6/motion.cpp
         src/qt6/bluetooth.hpp
         src/qt6/bluetooth.cpp
+        src/qt6/beacons.hpp
+        src/qt6/beacons.cpp
         src/qt6/sandbox.hpp
     )
     add_library(migo::qt6-host-services ALIAS migo_qt6_host_services)

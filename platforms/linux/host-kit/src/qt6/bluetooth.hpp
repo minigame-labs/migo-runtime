@@ -40,8 +40,8 @@ using BluezObjects = QMap<QDBusObjectPath, BluezInterfaces>;
 ///
 /// What BlueZ offers no app -- a connected device's RSSI -- is refused, as are
 /// what the reference has for Android only (pairing, asking whether a device is
-/// paired, setting the MTU), the peripheral mode, and iBeacons, which are not
-/// built yet. BlueZ is mirrored -- its objects and their properties -- from the
+/// paired, setting the MTU) and the peripheral mode; iBeacons are `Beacons`'s.
+/// BlueZ is mirrored -- its objects and their properties -- from the
 /// adapter opening to its closing; nothing is asked of the bus before.
 ///
 /// GUI thread.
@@ -123,6 +123,9 @@ private:
     bool opened_ = false;
     bool discovering_ = false;
     bool allow_duplicates_ = false;
+    /// The services the scan is for, in full; none is any. Checked here too:
+    /// BlueZ's devices are every client's, so another's scan finds them as well.
+    QSet<QString> services_;
     int interval_ms_ = 0;
     QString adapter_;
     /// Calls waiting for BlueZ's objects.
