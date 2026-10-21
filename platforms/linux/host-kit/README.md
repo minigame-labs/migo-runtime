@@ -47,7 +47,10 @@ What is claimed:
   time they change; content runs while its window is shown and not minimized,
   and shows while it is also exposed; the App's authorisations -- all the
   system could gate, outside a sandbox -- are reported once; and the desktop's
-  warnings that memory runs low reach content, heard where GLib hears them. Its `Options` carry the network policy, the launch options and the
+  warnings that memory runs low reach content, heard where GLib hears them; and
+  the gamepads the kernel shows (evdev, found through udev) reach content, in the
+  W3C standard layout where the pad follows the kernel's gamepad layout, with
+  their rumble. Its `Options` carry the network policy, the launch options and the
   App's own services; what the App names is its, the built-in services answer the
   rest. The Bound shape is the view driven by an App-owned `SurfaceHost`. They are
   separate targets, so an App that owns its own Session never links a type that

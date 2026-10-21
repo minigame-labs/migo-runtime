@@ -142,6 +142,21 @@ struct BleValue {
 };
 std::vector<BleValue> ble_values();
 
+/// The gamepads the host announced and withdrew, and its samples.
+struct GamepadAnnouncement {
+    MigoGamepadInfo info{};
+    std::string id;
+    std::string mapping;
+    bool connected = false;
+};
+const std::vector<GamepadAnnouncement> &gamepad_announcements() noexcept;
+struct GamepadSample {
+    uint32_t index = 0;
+    std::vector<float> axes;
+    std::vector<MigoGamepadButton> buttons;
+};
+const std::vector<GamepadSample> &gamepad_samples() noexcept;
+
 /// A line content writes to its console, which the host's debugging panel
 /// reads back (migo_session_copy_console_logs): level 0 debug .. 3 error.
 void write_console(int level, const std::string &text);

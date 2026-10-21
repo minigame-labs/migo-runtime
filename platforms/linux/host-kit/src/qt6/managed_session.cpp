@@ -1,5 +1,6 @@
 #include <migo/linux/qt6/managed_session.hpp>
 
+#include "gamepads.hpp"
 #include "memory_monitor.hpp"
 #include "overlay.hpp"
 #include "sandbox.hpp"
@@ -196,6 +197,8 @@ public:
     std::unique_ptr<NetworkReport> network;
     /// The desktop's warnings that memory runs low, passed on to the Session.
     std::unique_ptr<MemoryMonitor> memory;
+    /// The gamepads the kernel shows, announced to the Session while it has a Surface.
+    std::unique_ptr<Gamepads> gamepads;
     /// The system switches reported so far (getSystemSetting).
     MigoSystemSettingFlags system_settings = MIGO_SYSTEM_SETTING_FLAG_NONE;
     /// What content was last told of its window: it starts shown and running.
@@ -239,6 +242,7 @@ public:
     static void MIGO_CALL onExitRequested(void *user_data, MigoSession *session);
     static void MIGO_CALL onRequestFrame(void *user_data, MigoSession *session);
     static void MIGO_CALL onKeepScreenOn(void *user_data, MigoSession *session, std::uint8_t keep_on);
+    static void MIGO_CALL onGamepadRumble(void *user_data, MigoSession *session, const MigoGamepadRumble *rumble);
     static void MIGO_CALL onHostServiceCall(void *user_data, MigoSession *session,
                                             const MigoHostServiceCall *call);
 
@@ -412,6 +416,13 @@ void MIGO_CALL MigoManagedSession::Impl::onKeepScreenOn(void *user_data, MigoSes
     impl->screen_awake->keepAwake(keep_on != 0, static_cast<std::uint64_t>(impl->view->window()->winId()));
 }
 
+void MIGO_CALL MigoManagedSession::Impl::onGamepadRumble(void *user_data, MigoSession *,
+                                                         const MigoGamepadRumble *rumble) {
+    auto *impl = static_cast<Impl *>(user_data);
+    if (impl == nullptr || rumble == nullptr || impl->gamepads == nullptr) return;
+    impl->gamepads->rumble(*rumble);
+}
+
 void MIGO_CALL MigoManagedSession::Impl::onHostServiceCall(void *user_data, MigoSession *,
                                                            const MigoHostServiceCall *call) {
     auto *impl = static_cast<Impl *>(user_data);
@@ -444,6 +455,7 @@ void MigoManagedSession::Impl::finishClose() {
     battery.reset();
     network.reset();
     memory.reset();
+    gamepads.reset();
     if (session != nullptr) {
         // Refuses while an attachment is live, a transition is running, or any
         // release is pending, so reaching here means all three are settled.
@@ -493,6 +505,7 @@ MigoManagedSession::MigoManagedSession(MigoEngine &engine, QWidget &parent, cons
     callbacks.on_exit_requested = &Impl::onExitRequested;
     callbacks.on_request_frame = &Impl::onRequestFrame;
     callbacks.on_keep_screen_on = &Impl::onKeepScreenOn;
+    callbacks.on_gamepad_rumble = &Impl::onGamepadRumble;
     impl_->screen_awake = std::make_unique<ScreenAwake>(QDBusConnection::sessionBus());
     // The three soft-keyboard callbacks are deliberately absent, and absent
     // together: installing a subset is refused, and installing all three would
@@ -578,6 +591,20 @@ MigoManagedSession::MigoManagedSession(MigoEngine &engine, QWidget &parent, cons
             (void)migo_session_post_memory_warning(impl->session, level);
         });
 
+    // The gamepads, told to the Session while it has a Surface to deliver to:
+    // before its first attach, and between a detach and the next, there is
+    // nobody to tell, and the pads are announced again as it attaches.
+    impl_->gamepads = std::make_unique<Gamepads>(Gamepads::Sink{
+        [impl](const MigoGamepadInfo &info, bool connected) {
+            if (impl->session == nullptr || impl->closing || !impl->attached) return;
+            (void)migo_session_set_gamepad_connected(impl->session, &info, connected ? 1U : 0U);
+        },
+        [impl](const MigoGamepadStateEvent &sample) {
+            if (impl->session == nullptr || impl->closing || !impl->attached) return;
+            (void)migo_session_send_gamepad_state(impl->session, &sample);
+        }});
+    impl_->gamepads->watchSystem();
+
     connect(impl_->built_in.get(), &MigoQtBuiltInHostServices::debugAidsRequested, this,
             [this](bool on) { (void)setDebugAids(on); });
     connect(impl_->view.data(), &MigoQtX11SurfaceView::surfaceError, this,
@@ -594,6 +621,9 @@ MigoManagedSession::MigoManagedSession(MigoEngine &engine, QWidget &parent, cons
     // before then is loaded now.
     connect(impl_->view.data(), &MigoQtX11SurfaceView::surfaceAttached, this, [this](quint64) {
         impl_->attached = true;
+        // A pad the Session has already heard of answers that it has; one that
+        // came while nothing was attached is heard of now.
+        if (impl_->gamepads != nullptr) impl_->gamepads->announce();
         // The window is on screen by now, with its native window to watch for
         // exposure; a view reparented since its last attach has another.
         impl_->watch(impl_->view->window());
