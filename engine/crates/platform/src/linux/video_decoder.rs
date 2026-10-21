@@ -256,19 +256,23 @@ impl VideoDecoderService for GstVideoDecoder {
     }
 }
 
-/// The bus's handler: an error is queued for the decode thread, anything else
-/// dropped.
+/// The bus's handler, given GStreamer's entry points: an error is queued for
+/// the decode thread, anything else dropped -- and a message dropped is the
+/// handler's to release.
 unsafe extern "C" fn errors_only(
     _bus: *mut c_void,
     message: *mut GstMessage,
-    _data: *mut c_void,
+    gst: *mut c_void,
 ) -> c_int {
-    // SAFETY: GStreamer hands the handler a live message.
-    if unsafe { (*message).kind } == GST_MESSAGE_ERROR {
-        GST_BUS_PASS
-    } else {
-        GST_BUS_DROP
+    // SAFETY: GStreamer hands the handler a live message, whose reference it
+    // owns when it drops it; `gst` is the process's `Gst`.
+    unsafe {
+        if (*message).kind == GST_MESSAGE_ERROR {
+            return GST_BUS_PASS;
+        }
+        ((*gst.cast::<Gst>()).mini_object_unref)(message.cast());
     }
+    GST_BUS_DROP
 }
 
 /// One source playing into the sink the decode thread pulls from.
@@ -395,7 +399,7 @@ impl Source {
                 (gst.bus_set_sync_handler)(
                     bus,
                     Some(errors_only),
-                    std::ptr::null_mut(),
+                    std::ptr::from_ref(gst).cast_mut().cast(),
                     std::ptr::null_mut(),
                 );
                 (gst.object_unref)(bus);
@@ -741,6 +745,39 @@ mod tests {
             let pending = have_pending(bus);
             (gst.object_unref)(bus);
             assert_eq!(pending, 0, "messages wait on the bus for no one");
+        }
+    }
+
+    #[test]
+    fn a_message_dropped_is_released() {
+        let gst = Gst::initialised().expect("GStreamer");
+        let source = Source::open(gst, &clip()).expect("open");
+        // SAFETY: the functions of those names, with their prototypes; the
+        // message is the test's own reference and the bus's, the bus the
+        // pipeline's, released after.
+        unsafe {
+            let library = &gst._libraries[0];
+            let structure: libloading::Symbol<unsafe extern "C" fn(*const c_char) -> *mut c_void> =
+                library.get(b"gst_structure_new_empty\0").expect("symbol");
+            let application: libloading::Symbol<
+                unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut GstMessage,
+            > = library
+                .get(b"gst_message_new_application\0")
+                .expect("symbol");
+            let reference: libloading::Symbol<unsafe extern "C" fn(*mut c_void) -> *mut c_void> =
+                library.get(b"gst_mini_object_ref\0").expect("symbol");
+            let post: libloading::Symbol<
+                unsafe extern "C" fn(*mut c_void, *mut GstMessage) -> Gboolean,
+            > = library.get(b"gst_bus_post\0").expect("symbol");
+            let message = application(std::ptr::null_mut(), structure(c"probe".as_ptr()));
+            reference(message.cast());
+            let bus = (gst.element_get_bus)(source.pipeline);
+            assert_ne!(post(bus, message), 0);
+            (gst.object_unref)(bus);
+            // The bus took one reference and its handler, dropping the
+            // message, released it: the test's is the only one left.
+            assert_eq!((*message).mini_object.refcount, 1);
+            (gst.mini_object_unref)(message.cast());
         }
     }
 
