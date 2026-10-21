@@ -22,7 +22,13 @@ What is claimed:
   screen's orientation -- the game's shape, which `setDeviceOrientation` turns the
   window to -- its brightness -- the backlight's, read from sysfs and set through
   logind over Qt's D-Bus -- and `setEnableDebug`, which `MigoManagedSession`
-  answers with a panel of the frames a second and content's console over the game.
+  answers with a panel of the frames a second and content's console over the game;
+  and images: `compressImage` with Qt's image readers and writers, the pickers
+  (`chooseImage`, `chooseMedia`'s images, `chooseMessageFile`) and
+  `saveFileToDisk` through the file dialog -- the desktop's, through its portal,
+  wherever Qt finds one -- and `saveImageToPhotosAlbum` into the player's Pictures
+  folder. What the game is given is a copy, staged in the App's cache until the
+  engine takes it; the camera, videos and the previews are refused.
 - `migo::qt6-managed-session` is the Managed ownership shape: `MigoManagedSession`
   owns the Session, its callback table and the view, and installs the built-in
   services; it holds content's `setKeepScreenOn` off the desktop's idle through

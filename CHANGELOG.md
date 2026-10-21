@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The Linux Host Kit answers the image service: `compressImage` with Qt's image readers and writers (upright, its EXIF
+  orientation applied, decoded no larger than asked where the format can; a PNG stays a PNG, anything else becomes a
+  JPEG at the quality asked; at most 50 million pixels); `chooseImage`, `chooseMedia` (images) and `chooseMessageFile`
+  through the file dialog -- the desktop's, through its portal, wherever Qt finds one -- giving the game copies, with
+  what content cannot draw written as a PNG or a JPEG; `saveFileToDisk` through the dialog to save; and
+  `saveImageToPhotosAlbum` into the player's Pictures folder as `IMG_<milliseconds>.<suffix>`. A file the game is given
+  is staged in the App's cache until the engine takes it, and removed if it does not. The camera, videos in
+  `chooseMedia` and the previews are refused.
 - The Linux Host Kit passes on the desktop's memory warnings: `MigoManagedSession` hears low-memory-monitor's
   `LowMemoryWarning` on the system bus, or inside a sandbox the desktop portal's `MemoryMonitor`, and posts each at
   its level (50 moderate, 100 low, 255 critical) with `migo_session_post_memory_warning`. `tools/qt-host-example`

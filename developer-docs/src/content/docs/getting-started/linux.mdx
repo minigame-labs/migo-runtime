@@ -27,7 +27,7 @@ Linux UI；它不创建应用、顶层窗口或事件循环——这些始终归
 - `migo::qt6-x11-surface-view` — 基于 `xcb` 平台插件的 Qt 6.4+ Widgets 适配器，使用
   原生子 `QWidget`，负责 surface 生命周期、输入、焦点、IME 合成和帧请求。
 - `migo::qt6-host-services` — 宿主服务通道的 Qt 实现，以及 Qt 自带能力回答的内建服务
-  （剪贴板、toast/loading/modal/action sheet、窗口的尺寸/状态/光标）。
+  （剪贴板、toast/loading/modal/action sheet、窗口的尺寸/状态/光标、屏幕、图片与文件的压缩/选取/保存）。
 - `migo::qt6-managed-session` — Managed 所有权形态：`MigoManagedSession` 拥有 Session、
   回调表和 view，并装上内建服务。
 
@@ -158,6 +158,7 @@ MigoSession  > SurfaceHost ──> MigoQtX11SurfaceView
   `cancel` 失败。按钮颜色不应用：桌面的对话框是桌面的。
 - **窗口**（`setWindowSize`、`setCursor`、`requestPointerLock`、`onWindowStateChange`）：`setWindowSize` 是游戏的像素尺寸，窗口按视图需要的差额伸缩（全屏时拒绝）；窗口状态变化（最小化、最大化——全屏也算——、复原）逐次上报；`setCursor` 设置游戏上方的光标，CSS 关键字或图片加热点。指针锁只在玩家在游戏上时授予——视图持有键盘焦点、光标在视图可见部分之上，否则拒绝并上报：锁定期间光标隐藏、鼠标被抓取，XInput 2 的原始位移（经过指针加速）从光标原处移动内容的指针，可越过视图边缘，点击落在内容的指针处；Esc 释放（这次 Esc 及其抬起不交给游戏），视图失去焦点、游戏结束也释放，释放后光标回到原处。
 - **屏幕**（`setDeviceOrientation`、`onDeviceOrientationChange`、`setEnableDebug`）：桌面的屏幕不会转，转的是窗口，所以屏幕方向就是游戏的形状——视图高大于宽为 portrait，否则 landscape，视图每次从一种形状跨到另一种时上报一次；`setDeviceOrientation` 把窗口转成所要的形状（视图宽高互换；全屏时、屏幕放不下转后的窗口时拒绝）。`setEnableDebug` 打开或关闭调试辅助：`MigoManagedSession` 在游戏上方 40% 处显示一个面板——每秒帧数和此后内容写到控制台的内容——不接收任何输入，游戏照常可玩，并把 `MIGO_HOST_APP_INFO_FLAG_DEBUG` 报给 Session（`getAppBaseInfo().enableDebug`）；自己回答屏幕服务的 App 用 `setDebugAids()` 开关。屏幕亮度（`getScreenBrightness`、`setScreenBrightness`）是背光的：从内核在 `/sys/class/backlight` 给出的背光读取（固件的优先于平台的、再优先于 raw，与 systemd、GNOME 的选法一致），经 logind 的 `Session.SetBrightness` 设置（活动会话的用户无需特权），0 是最暗而不是熄灭；没有背光的屏幕（外接显示器、虚拟机）拒绝。截屏、录屏通知与 `setVisualEffectOnCapture` 不提供：Linux 桌面不告诉应用有人截屏或录屏，也无法把窗口排除在截屏之外（X11 上任何客户端都能读任何窗口）。
+- **图片**（`compressImage`、`chooseImage`、`chooseMedia`、`chooseMessageFile`、`saveFileToDisk`、`saveImageToPhotosAlbum`）：`compressImage` 用 Qt 的图片读取器读取——按 EXIF 方向摆正，格式允许时（如 JPEG）直接按所要尺寸解码——PNG 仍写成 PNG，其余写成所要质量的 JPEG（最多 5000 万像素，与其他平台一致）。选取器是文件对话框——Qt 找得到时用桌面自己的（经门户或平台主题），否则用 Qt 自带的——游戏拿到的是副本，绝不是玩家的原文件：JPEG、PNG、GIF、BMP、WebP 原样复制，Qt 能读的其他格式（TIFF、SVG、有插件时的 HEIF）摆正后有透明写 PNG、无透明写 JPEG。`chooseMessageFile` 给每个文件附上玩家看到的文件名、类别（`image`、`video` 或 `file`，按桌面认定的类型）和最后修改时间；`extension` 按参考文档只对 `type: 'file'` 生效。对话框不计数，取玩家所选的前 `count` 个。`saveFileToDisk` 是保存对话框，复制完整后才替换已有文件；`saveImageToPhotosAlbum` 写进玩家的图片目录（XDG `PICTURES` 目录），命名为 `IMG_<毫秒>.<后缀>`，不是图片则拒绝。交给游戏的文件先暂存在 App 的缓存目录（`QStandardPaths::CacheLocation`），调用完成时由引擎取走——引擎的 `cache_dir` 在同一卷上时只是一次重命名——没被取走的会删除。同一时间只显示一个文件对话框。相机、`chooseMedia` 的视频（这里还无法给出视频的时长、尺寸和封面）以及预览（`previewImage`、`previewMedia`）都拒绝。
 
 `MigoManagedSession` 还替内容保持屏幕常亮（`setKeepScreenOn`）：经 XDG 桌面门户的 `Inhibit`（会话空闲：熄屏、锁屏）向桌面申请，桌面没有门户时退回 freedesktop 屏保接口（`org.freedesktop.ScreenSaver.Inhibit`）；内容不再要求或游戏结束时释放。两者都没有的桌面不做任何保持，并记一条警告。
 

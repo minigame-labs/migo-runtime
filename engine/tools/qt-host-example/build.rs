@@ -23,13 +23,14 @@ const MOC_HEADERS: [(&str, &str); 4] = [
 
 /// The Host Kit's sources this host links: the surface controller, the Qt view,
 /// the host services and the Managed shape.
-const KIT_SOURCES: [&str; 10] = [
+const KIT_SOURCES: [&str; 11] = [
     "src/surface_host.cpp",
     "src/qt6/x11_surface_view.cpp",
     "src/qt6/dom_key_names.cpp",
     "src/qt6/xi2_raw_motion.cpp",
     "src/qt6/host_services.cpp",
     "src/qt6/backlight.cpp",
+    "src/qt6/images.cpp",
     "src/qt6/managed_session.cpp",
     "src/qt6/screen_awake.cpp",
     "src/qt6/system_reports.cpp",
