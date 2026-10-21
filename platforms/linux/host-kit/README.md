@@ -29,9 +29,10 @@ What is claimed:
   wherever Qt finds one -- and `saveImageToPhotosAlbum` into the player's Pictures
   folder; the previews in a viewer over the game (http(s) images downloaded over
   Qt's network). What the game is given is a copy, staged in the App's cache
-  until the engine takes it; the camera and videos are refused; where the device
-  is, GeoClue's (through the desktop portal inside a sandbox); and the scopes the
-  desktop decides -- `scope.userLocation` by GeoClue's agent or the portal asking
+  until the engine takes it; the camera is refused, and videos unless the App
+  gives video support (`migo::qt6-media`); where the device is, GeoClue's
+  (through the desktop portal inside a sandbox); and the scopes the desktop
+  decides -- `scope.userLocation` by GeoClue's agent or the portal asking
   the player, `scope.writePhotosAlbum` granted -- recorded as decided; and the
   motion sensors the kernel shows through IIO (found with libudev, turned into
   the screen's frame by udev's or the kernel's mount matrix), the compass and the
@@ -50,11 +51,17 @@ What is claimed:
   warnings that memory runs low reach content, heard where GLib hears them; and
   the gamepads the kernel shows (evdev, found through udev) reach content, in the
   W3C standard layout where the pad follows the kernel's gamepad layout, with
-  their rumble. Its `Options` carry the network policy, the launch options and the
-  App's own services; what the App names is its, the built-in services answer the
-  rest. The Bound shape is the view driven by an App-owned `SurfaceHost`. They are
-  separate targets, so an App that owns its own Session never links a type that
-  creates and destroys Sessions.
+  their rumble. Its `Options` carry the network policy, the launch options, the
+  App's own services and its video support; what the App names is its, the
+  built-in services answer the rest. The Bound shape is the view driven by an
+  App-owned `SurfaceHost`. They are separate targets, so an App that owns its own
+  Session never links a type that creates and destroys Sessions.
+- `migo::qt6-media` (optional: `-DMIGO_LINUX_HOST_KIT_BUILD_QT6_MEDIA=ON`) is
+  videos for the image service, through GStreamer: `chooseMedia` picks videos,
+  described by their length, size as shown and cover, and `previewMedia` plays
+  them. An App links it and gives a `MigoQtMedia` to the Session
+  (`MigoManagedSession::Options::videos`); without it, videos are refused and
+  nothing links GStreamer.
 - Qt Wayland, Qt Quick and GTK 4 are not claimed, and the last two are blocked
   on the same thing -- see "Render-path limits".
 

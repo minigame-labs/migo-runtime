@@ -12,6 +12,9 @@ endif()
 
 option(MIGO_LINUX_HOST_KIT_BUILD_QT6_X11
        "Build the Qt 6 Widgets X11 surface adapter" ON)
+# Off unless an App asks: it links GStreamer, which nothing else here needs.
+option(MIGO_LINUX_HOST_KIT_BUILD_QT6_MEDIA
+       "Build migo::qt6-media: videos for the Qt host services, through GStreamer" OFF)
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     set(_migo_linux_host_kit_install_default ON)
 else()
@@ -104,8 +107,8 @@ if(MIGO_LINUX_HOST_KIT_BUILD_QT6_X11)
         src/qt6/backlight.cpp
         src/qt6/images.hpp
         src/qt6/images.cpp
-        src/qt6/image_viewer.hpp
-        src/qt6/image_viewer.cpp
+        src/qt6/media_viewer.hpp
+        src/qt6/media_viewer.cpp
         src/qt6/geolocation.hpp
         src/qt6/geolocation.cpp
         src/qt6/motion.hpp
@@ -180,6 +183,43 @@ if(MIGO_LINUX_HOST_KIT_BUILD_QT6_X11)
             PkgConfig::MIGO_LIBUDEV
     )
     list(APPEND _migo_linux_host_kit_targets migo_qt6_managed_session)
+
+    # Videos for the image service: its own target, since it links GStreamer,
+    # which nothing else here does. An App that links it gives a MigoQtMedia to
+    # the services; one that does not refuses videos and needs no GStreamer.
+    if(MIGO_LINUX_HOST_KIT_BUILD_QT6_MEDIA)
+        pkg_check_modules(MIGO_GSTREAMER QUIET IMPORTED_TARGET
+            gstreamer-1.0 gstreamer-app-1.0 gstreamer-video-1.0)
+        if(NOT MIGO_GSTREAMER_FOUND)
+            message(FATAL_ERROR
+                "migo::qt6-media links GStreamer, which pkg-config does not find: install "
+                "libgstreamer1.0-dev and libgstreamer-plugins-base1.0-dev, or leave "
+                "MIGO_LINUX_HOST_KIT_BUILD_QT6_MEDIA off to refuse videos")
+        endif()
+        add_library(migo_qt6_media STATIC
+            include/migo/linux/qt6/media.hpp
+            src/qt6/media.cpp
+        )
+        add_library(migo::qt6-media ALIAS migo_qt6_media)
+        set_target_properties(migo_qt6_media PROPERTIES
+            EXPORT_NAME qt6-media
+            POSITION_INDEPENDENT_CODE ON
+        )
+        target_compile_features(migo_qt6_media PUBLIC cxx_std_17)
+        target_include_directories(migo_qt6_media
+            PUBLIC
+                $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+                $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+        )
+        target_link_libraries(migo_qt6_media
+            PUBLIC
+                migo::qt6-host-services
+                Qt6::Widgets
+            PRIVATE
+                PkgConfig::MIGO_GSTREAMER
+        )
+        list(APPEND _migo_linux_host_kit_targets migo_qt6_media)
+    endif()
 endif()
 
 if(MIGO_LINUX_HOST_KIT_ENABLE_INSTALL)
@@ -199,6 +239,10 @@ if(MIGO_LINUX_HOST_KIT_ENABLE_INSTALL)
                       include/migo/linux/qt6/host_services.hpp
                       include/migo/linux/qt6/managed_session.hpp
             DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/migo/linux/qt6")
+        if(MIGO_LINUX_HOST_KIT_BUILD_QT6_MEDIA)
+            install(FILES include/migo/linux/qt6/media.hpp
+                DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/migo/linux/qt6")
+        endif()
     endif()
     install(FILES README.md
         DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/doc/migo-linux-host-kit")

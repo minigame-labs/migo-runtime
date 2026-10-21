@@ -3,15 +3,17 @@
 #include "bluetooth.hpp"
 #include "fake_migo.hpp"
 #include "geolocation.hpp"
-#include "image_viewer.hpp"
+#include "media_viewer.hpp"
 #include "motion.hpp"
 #include "x11_player.hpp"
 
 #include <migo/linux/qt6/host_services.hpp>
 #include <migo/linux/qt6/managed_session.hpp>
+#include <migo/linux/qt6/media.hpp>
 
 #include <QAction>
 #include <QApplication>
+#include <QBuffer>
 #include <QClipboard>
 #include <QCursor>
 #include <QDBusConnection>
@@ -27,6 +29,8 @@
 #include <QDialog>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QSlider>
+#include <QToolButton>
 #include <QHash>
 #include <QHostAddress>
 #include <QImageReader>
@@ -65,12 +69,14 @@ using migo::linux_host::qt6::BluezInterfaces;
 using migo::linux_host::qt6::BluezObjects;
 using migo::linux_host::qt6::Geolocation;
 using migo::linux_host::qt6::hostServiceBit;
-using migo::linux_host::qt6::ImageViewer;
+using migo::linux_host::qt6::MediaViewer;
 using migo::linux_host::qt6::MigoManagedSession;
 using migo::linux_host::qt6::MigoQtBuiltInHostServices;
 using migo::linux_host::qt6::MigoQtHostServiceChannel;
 using migo::linux_host::qt6::MigoQtHostServiceProvider;
 using migo::linux_host::qt6::MigoQtHostServiceReply;
+using migo::linux_host::qt6::MigoQtMedia;
+using migo::linux_host::qt6::MigoQtVideoSupport;
 using migo::linux_host::qt6::MigoQtX11SurfaceView;
 using migo::linux_host::qt6::MotionSensors;
 
@@ -700,7 +706,8 @@ private:
         for (const QJsonValue &path : result.value(QStringLiteral("tempFilePaths")).toArray()) named << path.toString();
         for (const QJsonValue &file : result.value(QStringLiteral("tempFiles")).toArray()) {
             named << file.toObject().value(QStringLiteral("path")).toString()
-                  << file.toObject().value(QStringLiteral("tempFilePath")).toString();
+                  << file.toObject().value(QStringLiteral("tempFilePath")).toString()
+                  << file.toObject().value(QStringLiteral("thumbTempFilePath")).toString();
         }
         const std::lock_guard<std::mutex> lock(mutex_);
         for (const QString &file : std::as_const(named)) {
@@ -788,9 +795,9 @@ struct Readings {
 bool near(double actual, double expected) { return std::abs(actual - expected) < 1e-6; }
 
 /// The preview shown, or null.
-ImageViewer *imageViewer() {
+MediaViewer *mediaViewer() {
     for (QWidget *widget : QApplication::topLevelWidgets()) {
-        if (auto *viewer = dynamic_cast<ImageViewer *>(widget); viewer != nullptr && viewer->isVisible()) return viewer;
+        if (auto *viewer = dynamic_cast<MediaViewer *>(widget); viewer != nullptr && viewer->isVisible()) return viewer;
     }
     return nullptr;
 }
@@ -1633,6 +1640,119 @@ private slots:
         QCOMPARE(fixture.session.close(), MIGO_OK);
     }
 
+    /// GStreamer describes a video as it is shown: how long it plays, its size
+    /// upright -- a track turned as a phone records one turned back -- and its
+    /// first frame as the cover. A file with no video in it is none.
+    void videos_are_described_as_shown() {
+        const MigoQtMedia media;
+        QVERIFY(media.isValid());
+        const std::optional<MigoQtVideoSupport::Description> clip = media.describe(QStringLiteral(MIGO_TEST_PROBE_CLIP));
+        QVERIFY(clip.has_value());
+        QVERIFY2(std::abs(clip->durationSeconds - 1.0) < 0.05, qPrintable(QString::number(clip->durationSeconds)));
+        QCOMPARE(clip->size, QSize(64, 48));
+        QCOMPARE(clip->cover.size(), QSize(64, 48));
+        QVERIFY(looksLike(clip->cover, {32, 24}, QColor(0, 255, 128)));
+
+        const std::optional<MigoQtVideoSupport::Description> turned =
+            media.describe(QStringLiteral(MIGO_TEST_VIDEOS "/turned.mp4"));
+        QVERIFY(turned.has_value());
+        QCOMPARE(turned->size, QSize(48, 64));
+        QCOMPARE(turned->cover.size(), QSize(48, 64));
+        // Turned a quarter clockwise: what was top left is top right.
+        QVERIFY(looksLike(turned->cover, {36, 16}, QColor(255, 0, 0)));
+        QVERIFY(looksLike(turned->cover, {36, 48}, QColor(0, 255, 0)));
+        QVERIFY(looksLike(turned->cover, {12, 16}, QColor(0, 0, 255)));
+        QVERIFY(looksLike(turned->cover, {12, 48}, QColor(255, 255, 255)));
+
+        QTemporaryDir scratch;
+        writeFile(scratch.filePath(QStringLiteral("notes.mp4")), "not really a video");
+        QVERIFY(!media.describe(scratch.filePath(QStringLiteral("notes.mp4"))).has_value());
+        QVERIFY(!media.describe(scratch.filePath(QStringLiteral("missing.mp4"))).has_value());
+    }
+
+    /// Where the App gives video support, chooseMedia offers videos too: each
+    /// described as shown, its cover a JPEG handed over with it, a video
+    /// GStreamer cannot read with zeros and no cover; images and videos
+    /// together are a "mix".
+    void choose_media_offers_videos_where_the_app_gives_them() {
+        QTemporaryDir scratch;
+        TakenFiles taken(scratch.filePath(QStringLiteral("session-tmp")));
+        MigoManagedSession::Options options;
+        options.videos = std::make_shared<MigoQtMedia>();
+        Managed fixture(options);
+        const QString picked = scratch.filePath(QStringLiteral("picked"));
+        QVERIFY(QDir().mkpath(picked));
+        writeTurnedQuadrants(picked + QStringLiteral("/turned.jpg"));
+        QVERIFY(QFile::copy(QStringLiteral(MIGO_TEST_PROBE_CLIP), picked + QStringLiteral("/clip.mp4")));
+        QVERIFY(QFile::copy(QStringLiteral(MIGO_TEST_VIDEOS "/turned.mp4"), picked + QStringLiteral("/turned.mp4")));
+        writeFile(picked + QStringLiteral("/broken.mp4"), "not really a video");
+
+        fake_migo::deliver_host_service_call_from_engine_thread(MIGO_HOST_SERVICE_IMAGE, MIGO_IMAGE_CHOOSE_MEDIA, 1,
+                                                                json({{"count", 4}}));
+        QTRY_VERIFY(fileDialog() != nullptr);
+        const QStringList filters = fileDialog()->nameFilters();
+        QCOMPARE(filters.size(), 3);
+        QVERIFY(filters.at(0).startsWith(QStringLiteral("Images and videos (")));
+        QVERIFY(filters.at(0).contains(QStringLiteral("*.mp4")) && filters.at(0).contains(QStringLiteral("*.jpg")));
+        choose(*fileDialog(), picked,
+               {QStringLiteral("turned.jpg"), QStringLiteral("clip.mp4"), QStringLiteral("turned.mp4"),
+                QStringLiteral("broken.mp4")});
+        QTRY_VERIFY_WITH_TIMEOUT(answerTo(1).has_value(), 20000);
+        QCOMPARE(answerTo(1)->status, MIGO_HOST_SERVICE_STATUS_OK);
+        const QJsonObject chosen = parsed(answerTo(1)->payload);
+        QCOMPARE(chosen.value(QStringLiteral("type")).toString(), QStringLiteral("mix"));
+        const QJsonArray items = chosen.value(QStringLiteral("tempFiles")).toArray();
+        QCOMPARE(items.size(), 4);
+        // The dialog orders the names it was given as it lists them.
+        QHash<QString, QJsonObject> byBytes;
+        for (const QJsonValue &value : items) {
+            const QJsonObject item = value.toObject();
+            byBytes.insert(QString::fromLatin1(bytesOf(taken[item.value(QStringLiteral("tempFilePath")).toString()]).toHex()),
+                           item);
+        }
+        const auto itemOf = [&](const QString &name) {
+            return byBytes.value(QString::fromLatin1(bytesOf(picked + QLatin1Char('/') + name).toHex()));
+        };
+
+        const QJsonObject image = itemOf(QStringLiteral("turned.jpg"));
+        QCOMPARE(image.value(QStringLiteral("fileType")).toString(), QStringLiteral("image"));
+        QCOMPARE(image.value(QStringLiteral("width")).toInt(), 192);
+
+        const QJsonObject clip = itemOf(QStringLiteral("clip.mp4"));
+        QCOMPARE(clip.value(QStringLiteral("fileType")).toString(), QStringLiteral("video"));
+        QVERIFY(std::abs(clip.value(QStringLiteral("duration")).toDouble() - 1.0) < 0.05);
+        QCOMPARE(clip.value(QStringLiteral("width")).toInt(), 64);
+        QCOMPARE(clip.value(QStringLiteral("height")).toInt(), 48);
+        QCOMPARE(clip.value(QStringLiteral("size")).toInteger(), QFileInfo(picked + QStringLiteral("/clip.mp4")).size());
+        const QString clipCover = taken[clip.value(QStringLiteral("thumbTempFilePath")).toString()];
+        QCOMPARE(formatOf(clipCover), QByteArray("jpeg"));
+        QVERIFY(looksLike(QImage(clipCover), {32, 24}, QColor(0, 255, 128)));
+
+        const QJsonObject turned = itemOf(QStringLiteral("turned.mp4"));
+        QCOMPARE(turned.value(QStringLiteral("width")).toInt(), 48);
+        QCOMPARE(turned.value(QStringLiteral("height")).toInt(), 64);
+        const QImage turnedCover(taken[turned.value(QStringLiteral("thumbTempFilePath")).toString()]);
+        QCOMPARE(turnedCover.size(), QSize(48, 64));
+        QVERIFY(looksLike(turnedCover, {36, 16}, QColor(255, 0, 0)));
+
+        const QJsonObject broken = itemOf(QStringLiteral("broken.mp4"));
+        QCOMPARE(broken.value(QStringLiteral("fileType")).toString(), QStringLiteral("video"));
+        QCOMPARE(broken.value(QStringLiteral("duration")).toDouble(), 0.0);
+        QCOMPARE(broken.value(QStringLiteral("width")).toInt(), 0);
+        QVERIFY(!broken.contains(QStringLiteral("thumbTempFilePath")));
+
+        // Only videos: only their filter; the player who dismisses it cancels.
+        fake_migo::deliver_host_service_call_from_engine_thread(MIGO_HOST_SERVICE_IMAGE, MIGO_IMAGE_CHOOSE_MEDIA, 2,
+                                                                json({{"mediaType", QJsonArray{"video"}}}));
+        QTRY_VERIFY(fileDialog() != nullptr);
+        QCOMPARE(fileDialog()->nameFilters().size(), 1);
+        QVERIFY(fileDialog()->nameFilters().at(0).startsWith(QStringLiteral("Videos (")));
+        fileDialog()->reject();
+        QTRY_VERIFY(answerTo(2).has_value());
+        QCOMPARE(answerTo(2)->message, std::string("cancel"));
+        QCOMPARE(fixture.session.close(), MIGO_OK);
+    }
+
     /// chooseMessageFile: the files of the type asked for, each with the name
     /// the player saw, its kind and when it was last changed.
     void the_player_picks_message_files() {
@@ -1789,7 +1909,7 @@ private slots:
                                      {{"urls", QJsonArray{first, second, web.url("/third.png"), notes}},
                                       {"current", second}});
         QCOMPARE(shown.status, MIGO_HOST_SERVICE_STATUS_OK);
-        ImageViewer *viewer = imageViewer();
+        MediaViewer *viewer = mediaViewer();
         QVERIFY(viewer != nullptr);
         QCOMPARE(viewer->count(), 4);
         QCOMPARE(viewer->current(), 1);
@@ -1816,7 +1936,82 @@ private slots:
         QVERIFY(stagedFiles().isEmpty());
 
         QTest::keyClick(viewer, Qt::Key_Escape);
-        QTRY_VERIFY(imageViewer() == nullptr);
+        QTRY_VERIFY(mediaViewer() == nullptr);
+        QCOMPARE(fixture.session.close(), MIGO_OK);
+    }
+
+    /// previewMedia plays a video where the App gives video support: its
+    /// poster -- downloaded -- until it plays, its first frame where it has
+    /// none, then its frames to the last, read from the file held open, which
+    /// the engine may take back once the call is answered. Going to another
+    /// item stops it.
+    void a_preview_plays_videos_where_the_app_gives_them() {
+        QTemporaryDir scratch;
+        MigoManagedSession::Options options;
+        options.videos = std::make_shared<MigoQtMedia>();
+        Managed fixture(options);
+        const QString clip = scratch.filePath(QStringLiteral("clip.mp4"));
+        QVERIFY(QFile::copy(QStringLiteral(MIGO_TEST_PROBE_CLIP), clip));
+        const QString image = scratch.filePath(QStringLiteral("image.png"));
+        writeQuadrants(image, "png");
+        QImage magenta(32, 32, QImage::Format_RGB32);
+        magenta.fill(QColor(255, 0, 255));
+        QByteArray poster;
+        {
+            QBuffer buffer(&poster);
+            QVERIFY(buffer.open(QIODevice::WriteOnly));
+            QVERIFY(magenta.save(&buffer, "PNG"));
+        }
+        LocalWeb web({{"/poster.png", poster}});
+        QVERIFY(web.listening());
+
+        const auto shown = askImages(
+            MIGO_IMAGE_PREVIEW_MEDIA, 1,
+            {{"sources", QJsonArray{QJsonObject{{"url", image}},
+                                    QJsonObject{{"url", clip}, {"type", "video"}, {"poster", web.url("/poster.png")}},
+                                    QJsonObject{{"url", clip}, {"type", "video"}}}},
+             {"current", 1}});
+        QCOMPARE(shown.status, MIGO_HOST_SERVICE_STATUS_OK);
+        MediaViewer *viewer = mediaViewer();
+        QVERIFY(viewer != nullptr);
+        QVERIFY(!viewer->showsImage());
+        QVERIFY(viewer->player() != nullptr);
+        // Taken back once the call is answered, it still plays.
+        QVERIFY(QFile::remove(clip));
+
+        // What the video shows, in the middle of where it is drawn.
+        const auto shows = [viewer](const QColor &want) {
+            QWidget *player = viewer->player();
+            if (player == nullptr) return false;
+            auto *screen = player->findChild<QWidget *>(QStringLiteral("migoVideoScreen"));
+            if (screen == nullptr || screen->width() < 32 || screen->height() < 32) return false;
+            const QImage shot = screen->grab().toImage();
+            return looksLike(shot, {shot.width() / 2, shot.height() / 2}, want);
+        };
+        // Paused on its first frame -- its length known, which is told after the
+        // frame is -- it still shows the poster.
+        auto *slider = viewer->player()->findChild<QSlider *>();
+        QVERIFY(slider != nullptr);
+        QTRY_VERIFY_WITH_TIMEOUT(slider->maximum() > 0, 10000);
+        QVERIFY(shows(QColor(255, 0, 255)));
+        auto *play = viewer->player()->findChild<QToolButton *>();
+        QVERIFY(play != nullptr);
+        play->click();
+        // Played to its end: the last frame, (225, 30, 128).
+        QTRY_VERIFY_WITH_TIMEOUT(shows(QColor(225, 30, 128)), 10000);
+
+        // Another item stops it; one with no poster shows its first frame.
+        QTest::keyClick(viewer, Qt::Key_Left);
+        QVERIFY(viewer->player() == nullptr);
+        QVERIFY(viewer->showsImage());
+        QTest::keyClick(viewer, Qt::Key_Right);
+        QTest::keyClick(viewer, Qt::Key_Right);
+        QCOMPARE(viewer->current(), 2);
+        QTRY_VERIFY_WITH_TIMEOUT(shows(QColor(0, 255, 128)), 10000);
+
+        QTest::keyClick(viewer, Qt::Key_Escape);
+        QTRY_VERIFY(mediaViewer() == nullptr);
+        QVERIFY(stagedFiles().isEmpty());
         QCOMPARE(fixture.session.close(), MIGO_OK);
     }
 
@@ -1842,7 +2037,7 @@ private slots:
                                                    QJsonObject{{"url", image}, {"type", "video"}}}}})
                      .message,
                  std::string("not supported"));
-        QVERIFY(imageViewer() == nullptr);
+        QVERIFY(mediaViewer() == nullptr);
         QVERIFY(stagedFiles().isEmpty());
 
         QCOMPARE(askImages(MIGO_IMAGE_PREVIEW_MEDIA, 5,
@@ -1850,22 +2045,22 @@ private slots:
                             {"current", 1}})
                      .status,
                  MIGO_HOST_SERVICE_STATUS_OK);
-        QVERIFY(imageViewer() != nullptr);
-        QCOMPARE(imageViewer()->count(), 2);
-        QCOMPARE(imageViewer()->current(), 1);
+        QVERIFY(mediaViewer() != nullptr);
+        QCOMPARE(mediaViewer()->count(), 2);
+        QCOMPARE(mediaViewer()->current(), 1);
 
         QCOMPARE(askImages(MIGO_IMAGE_PREVIEW_IMAGE, 6, {{"urls", QJsonArray{image}}}).status,
                  MIGO_HOST_SERVICE_STATUS_OK);
-        QTRY_COMPARE(imageViewer()->count(), 1);
+        QTRY_COMPARE(mediaViewer()->count(), 1);
         int shown = 0;
         for (QWidget *widget : QApplication::topLevelWidgets()) {
-            if (dynamic_cast<ImageViewer *>(widget) != nullptr && widget->isVisible()) ++shown;
+            if (dynamic_cast<MediaViewer *>(widget) != nullptr && widget->isVisible()) ++shown;
         }
         QCOMPARE(shown, 1);
 
         QCOMPARE(fixture.session.close(), MIGO_OK);
         QVERIFY(fixture.session.isClosed());
-        QTRY_VERIFY(imageViewer() == nullptr);
+        QTRY_VERIFY(mediaViewer() == nullptr);
     }
 
     /// GeoClue: a client of the App's own, named by its desktop file and asked

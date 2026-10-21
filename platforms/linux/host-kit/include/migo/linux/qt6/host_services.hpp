@@ -4,9 +4,11 @@
 #include <migo/linux/qt6/x11_surface_view.hpp>
 #include <migo/migo.h>
 
+#include <QImage>
 #include <QJsonObject>
 #include <QObject>
 #include <QPointer>
+#include <QSize>
 #include <QString>
 
 #include <atomic>
@@ -127,6 +129,34 @@ public:
                       MigoQtHostServiceReply reply) = 0;
 };
 
+/// Videos, for the image service. The Host Kit's core links no media framework:
+/// the optional `migo::qt6-media` component is one (`MigoQtMedia`), and
+/// without one chooseMedia and previewMedia refuse videos.
+class MigoQtVideoSupport {
+public:
+    virtual ~MigoQtVideoSupport() = default;
+
+    /// A video as chooseMedia describes it.
+    struct Description {
+        /// How long it plays, in seconds.
+        double durationSeconds = 0;
+        /// Its size as it is shown: upright, in square pixels.
+        QSize size;
+        /// Its first frame as it is shown; null when none could be decoded.
+        QImage cover;
+    };
+
+    /// The video in `file`, or none when there is no video in it this plays.
+    /// Any thread; blocks while it reads the file.
+    [[nodiscard]] virtual std::optional<Description> describe(const QString &file) const = 0;
+
+    /// A widget, a child of `parent`, playing `source` -- a file's path or an
+    /// http(s) URL -- with its sound, and the controls to pause it and move
+    /// through it; `poster` stands in its place until it first plays, its first
+    /// frame when null. It stops when it goes. GUI thread.
+    [[nodiscard]] virtual QWidget *player(const QString &source, const QImage &poster, QWidget &parent) const = 0;
+};
+
 /// The services Qt already offers an App, answered with Qt's own: the
 /// clipboard; the game's toasts, loading indicator, modals and action sheets;
 /// the window the game is shown in -- its size, its state, the cursor over the
@@ -174,7 +204,10 @@ public:
 /// Session takes it; one it does not take is removed. previewImage and
 /// previewMedia show the images in a viewer over the game, each held open --
 /// an http(s) one downloaded -- so the engine may take back what it lent once
-/// the call is answered. The camera and videos are refused.
+/// the call is answered. Videos are picked -- described by their length, size
+/// and cover -- and previewed, played in the viewer, where the App gives the
+/// support to (`MigoQtVideoSupport`), and refused where it does not. The camera
+/// is refused.
 ///
 /// Location: GeoClue's, on the system bus outside a sandbox and through the
 /// desktop portal's Location inside one. getLocation asks it at street level,
@@ -226,6 +259,10 @@ public:
     /// reported through.
     MigoQtBuiltInHostServices(MigoQtX11SurfaceView &view, std::shared_ptr<MigoQtHostServiceChannel> channel,
                               QObject *parent = nullptr);
+    /// The same, with the videos `videos` describes and plays; null refuses
+    /// videos. Shared, since describing one outlasts a call whose Session goes.
+    MigoQtBuiltInHostServices(MigoQtX11SurfaceView &view, std::shared_ptr<MigoQtHostServiceChannel> channel,
+                              std::shared_ptr<const MigoQtVideoSupport> videos, QObject *parent = nullptr);
     ~MigoQtBuiltInHostServices() override;
 
     [[nodiscard]] std::uint64_t services() const noexcept override;

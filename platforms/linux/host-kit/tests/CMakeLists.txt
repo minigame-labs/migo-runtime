@@ -28,6 +28,7 @@ set_target_properties(migo::migo PROPERTIES
 )
 
 set(MIGO_LINUX_HOST_KIT_BUILD_QT6_X11 ON CACHE BOOL "" FORCE)
+set(MIGO_LINUX_HOST_KIT_BUILD_QT6_MEDIA ON CACHE BOOL "" FORCE)
 if(NOT DEFINED MIGO_LINUX_HOST_KIT_ENABLE_INSTALL)
     set(MIGO_LINUX_HOST_KIT_ENABLE_INSTALL OFF CACHE BOOL "")
 endif()
@@ -76,11 +77,19 @@ set_target_properties(migo-qt-host-services-test PROPERTIES AUTOMOC ON)
 target_include_directories(migo-qt-host-services-test PRIVATE "${HOST_KIT_ROOT}/src/qt6")
 target_link_libraries(migo-qt-host-services-test PRIVATE
     migo::qt6-managed-session
+    migo::qt6-media
     migo_host_kit_fake_capi
     migo_host_kit_x11_player
     Qt6::Test
     Qt6::DBus
     Qt6::Network
+)
+
+# The videos GStreamer is asked to describe and play: the engine's probe clip,
+# and one turned as a phone records it.
+target_compile_definitions(migo-qt-host-services-test PRIVATE
+    MIGO_TEST_PROBE_CLIP="${MIGO_REPOSITORY_ROOT}/scripts/fixtures/video-decoder-probe/clip.mp4"
+    MIGO_TEST_VIDEOS="${CMAKE_CURRENT_LIST_DIR}/fixtures"
 )
 
 add_executable(migo-qt-managed-session-test qt_managed_session_test.cpp)
@@ -123,6 +132,7 @@ endforeach()
 target_compile_options(migo_linux_surface_host PRIVATE -Wall -Wextra -Werror)
 target_compile_options(migo_qt6_x11_surface_view PRIVATE -Wall -Wextra -Werror)
 target_compile_options(migo_qt6_managed_session PRIVATE -Wall -Wextra -Werror)
+target_compile_options(migo_qt6_media PRIVATE -Wall -Wextra -Werror)
 
 enable_testing()
 add_test(NAME migo-surface-host COMMAND migo-surface-host-test)

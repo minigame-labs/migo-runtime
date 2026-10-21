@@ -1,6 +1,6 @@
 #include "images.hpp"
 
-#include "image_viewer.hpp"
+#include "media_viewer.hpp"
 
 #include <QByteArray>
 #include <QDateTime>
@@ -31,6 +31,7 @@
 #include <QVariant>
 #include <QWidget>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <optional>
@@ -292,23 +293,73 @@ QString filter(const QString &label, QStringList patterns) {
     return QStringLiteral("%1 (%2)").arg(label, patterns.join(QLatin1Char(' ')));
 }
 
-/// Every image Qt reads.
-QString imageFilter() {
+/// The names of every image Qt reads.
+QStringList imagePatterns() {
     const QMimeDatabase types;
     QStringList patterns;
     for (const QByteArray &name : QImageReader::supportedMimeTypes()) {
         patterns << types.mimeTypeForName(QString::fromLatin1(name)).globPatterns();
     }
-    return filter(QStringLiteral("Images"), std::move(patterns));
+    return patterns;
 }
 
-/// Every video the desktop knows of.
-QString videoFilter() {
+/// The names of every video the desktop knows of.
+QStringList videoPatterns() {
     QStringList patterns;
     for (const QMimeType &type : QMimeDatabase().allMimeTypes()) {
         if (type.name().startsWith(QLatin1String("video/"))) patterns << type.globPatterns();
     }
-    return filter(QStringLiteral("Videos"), std::move(patterns));
+    return patterns;
+}
+
+QString imageFilter() { return filter(QStringLiteral("Images"), imagePatterns()); }
+
+QString videoFilter() { return filter(QStringLiteral("Videos"), videoPatterns()); }
+
+/// A staged copy of the picked video at `file`, as chooseMedia describes it:
+/// its length, its size as shown and its cover where `videos` reads it, and
+/// zeros and no cover where it cannot, as the other platforms answer. What it
+/// stages is added to `staged`; none, with `error`, when there is nowhere to
+/// put it.
+std::optional<QJsonObject> stageVideo(const Images::Staging &staging, const MigoQtVideoSupport &videos,
+                                      const QString &file, QStringList &staged, QString &error) {
+    const QFileInfo original(file);
+    const QString copy = staging.path(original.suffix());
+    if (copy.isEmpty()) {
+        error = kNowhere;
+        return std::nullopt;
+    }
+    if (!QFile::copy(file, copy)) {
+        error = QStringLiteral("%1 could not be copied").arg(original.fileName());
+        return std::nullopt;
+    }
+    staged << copy;
+    QJsonObject item{{QStringLiteral("tempFilePath"), copy},
+                     {QStringLiteral("size"), QFileInfo(copy).size()},
+                     {QStringLiteral("duration"), 0},
+                     {QStringLiteral("width"), 0},
+                     {QStringLiteral("height"), 0},
+                     {QStringLiteral("fileType"), QStringLiteral("video")}};
+    const std::optional<MigoQtVideoSupport::Description> described = videos.describe(copy);
+    if (!described.has_value()) return item;
+    item[QStringLiteral("duration")] = described->durationSeconds;
+    item[QStringLiteral("width")] = described->size.width();
+    item[QStringLiteral("height")] = described->size.height();
+    if (described->cover.isNull()) return item;
+    // The cover as the other platforms write it: a JPEG at 80.
+    const QString cover = staging.path(QStringLiteral("jpg"));
+    QString unwritten;
+    if (!cover.isEmpty() && write(described->cover, cover, "jpeg", 80, unwritten)) {
+        staged << cover;
+        item[QStringLiteral("thumbTempFilePath")] = cover;
+    }
+    return item;
+}
+
+/// Whether `source` is an http(s) URL rather than a path.
+bool remote(const QString &source) {
+    const QString scheme = QUrl(source).scheme().toLower();
+    return scheme == QLatin1String("http") || scheme == QLatin1String("https");
 }
 
 /// The most the player may pick: `value`, or `fallback`, from 1 to 100.
@@ -338,7 +389,8 @@ Images::Places Images::Places::system() {
             QStandardPaths::writableLocation(QStandardPaths::PicturesLocation)};
 }
 
-Images::Images(QWidget &surface, Places places) : surface_(&surface), places_(std::move(places)) {}
+Images::Images(QWidget &surface, Places places, std::shared_ptr<const MigoQtVideoSupport> videos)
+    : surface_(&surface), places_(std::move(places)), videos_(std::move(videos)) {}
 
 Images::~Images() {
     // A dialog still up is dismissed with the service that showed it; the
@@ -387,21 +439,25 @@ void Images::call(std::uint32_t method, const QJsonObject &request, MigoQtHostSe
             for (const QJsonValue &url : request.value(QStringLiteral("urls")).toArray()) urls << url.toString();
             // `current` is one of them, made a real path as they were.
             const int current = qMax(0, urls.indexOf(request.value(QStringLiteral("current")).toString()));
-            preview(urls, current, std::move(reply));
+            std::vector<PreviewSource> sources;
+            for (const QString &url : std::as_const(urls)) sources.push_back({url, false, {}});
+            preview(std::move(sources), current, std::move(reply));
             return;
         }
         case MIGO_IMAGE_PREVIEW_MEDIA: {
-            QStringList urls;
+            std::vector<PreviewSource> sources;
             for (const QJsonValue &source : request.value(QStringLiteral("sources")).toArray()) {
                 const QJsonObject item = source.toObject();
-                // Videos are not offered: see the class's comment.
-                if (item.value(QStringLiteral("type")).toString() == QLatin1String("video")) {
+                const bool video = item.value(QStringLiteral("type")).toString() == QLatin1String("video");
+                // Videos where the App gives what plays them: see the class's comment.
+                if (video && videos_ == nullptr) {
                     (void)reply.fail(kNotSupported);
                     return;
                 }
-                urls << item.value(QStringLiteral("url")).toString();
+                sources.push_back({item.value(QStringLiteral("url")).toString(), video,
+                                   video ? item.value(QStringLiteral("poster")).toString() : QString()});
             }
-            preview(urls, request.value(QStringLiteral("current")).toInt(0), std::move(reply));
+            preview(std::move(sources), request.value(QStringLiteral("current")).toInt(0), std::move(reply));
             return;
         }
         default:
@@ -527,20 +583,40 @@ void Images::chooseImage(const QJsonObject &request, MigoQtHostServiceReply repl
 
 void Images::chooseMedia(const QJsonObject &request, MigoQtHostServiceReply reply) {
     const QJsonArray types = request.value(QStringLiteral("mediaType")).toArray();
-    const bool images = types.isEmpty() || types.contains(QStringLiteral("image")) || types.contains(QStringLiteral("mix"));
-    // Videos are not offered (see the class's comment): a call for only them is
-    // refused, and one that allows images too is shown images.
-    if (!images || !albumAllowed(request.value(QStringLiteral("sourceType")))) {
+    // None named, or "mix", is both.
+    const bool both = types.isEmpty() || types.contains(QStringLiteral("mix"));
+    const bool images = both || types.contains(QStringLiteral("image"));
+    // Videos where the App gives what describes them (see the class's comment):
+    // without it, a call for only them is refused, and one that allows images
+    // too is shown images.
+    const bool videos = videos_ != nullptr && (both || types.contains(QStringLiteral("video")));
+    if (!(images || videos) || !albumAllowed(request.value(QStringLiteral("sourceType")))) {
         (void)reply.fail(kNotSupported);
         return;
     }
-    pick(countOf(request.value(QStringLiteral("count")), 9), {imageFilter()}, places_.album, std::move(reply),
-         [staging = staging()](QStringList files, MigoQtHostServiceReply reply) {
-             offTheGuiThread([staging, files = std::move(files), reply]() mutable {
+    QStringList filters;
+    if (images && videos) filters << filter(QStringLiteral("Images and videos"), imagePatterns() + videoPatterns());
+    if (images) filters << imageFilter();
+    if (videos) filters << videoFilter();
+    pick(countOf(request.value(QStringLiteral("count")), 9), filters, places_.album, std::move(reply),
+         [staging = staging(), support = videos ? videos_ : nullptr](QStringList files, MigoQtHostServiceReply reply) {
+             offTheGuiThread([staging, support, files = std::move(files), reply]() mutable {
                  QStringList staged;
                  QJsonArray items;
+                 bool sawImage = false;
+                 bool sawVideo = false;
                  for (const QString &file : std::as_const(files)) {
                      QString error;
+                     if (support != nullptr && kindOf(file) == QLatin1String("video")) {
+                         const std::optional<QJsonObject> item = stageVideo(*staging, *support, file, staged, error);
+                         if (!item.has_value()) {
+                             giveUp(reply, error, staged);
+                             return;
+                         }
+                         items.append(*item);
+                         sawVideo = true;
+                         continue;
+                     }
                      const QString copy = stageImage(*staging, file, error);
                      if (copy.isEmpty()) {
                          giveUp(reply, error, staged);
@@ -553,9 +629,12 @@ void Images::chooseMedia(const QJsonObject &request, MigoQtHostServiceReply repl
                                               {QStringLiteral("width"), size.width()},
                                               {QStringLiteral("height"), size.height()},
                                               {QStringLiteral("fileType"), QStringLiteral("image")}});
+                     sawImage = true;
                  }
-                 handOver(reply, {{QStringLiteral("type"), QStringLiteral("image")}, {QStringLiteral("tempFiles"), items}},
-                          staged);
+                 const QString type = sawImage && sawVideo ? QStringLiteral("mix")
+                                      : sawVideo           ? QStringLiteral("video")
+                                                           : QStringLiteral("image");
+                 handOver(reply, {{QStringLiteral("type"), type}, {QStringLiteral("tempFiles"), items}}, staged);
              });
          });
 }
@@ -689,19 +768,15 @@ void Images::saveImageToPhotosAlbum(const QJsonObject &request, MigoQtHostServic
 
 // ---- the previews --------------------------------------------------------------------------
 
-/// One preview's images, each opened -- a file -- or downloaded -- an http(s)
-/// URL -- and then shown: the call is answered as the viewer shows, or failed
-/// with the first image that cannot be had. It goes once done, or with the
-/// service, its downloads stopped.
+/// One preview's images, videos and posters, each opened -- a file -- or
+/// downloaded -- an http(s) image or poster -- and then shown, an http(s) video
+/// left to stream: the call is answered as the viewer shows, or failed with
+/// the first that cannot be had. It goes once done, or with the service, its
+/// downloads stopped.
 class Images::PreviewLoad final : public QObject {
 public:
-    PreviewLoad(Images &images, int count, int current, MigoQtHostServiceReply reply)
-        : QObject(&images),
-          images_(images),
-          opened_(static_cast<std::size_t>(count)),
-          pending_(count),
-          current_(current),
-          reply_(std::move(reply)) {}
+    PreviewLoad(Images &images, std::size_t count, int current, MigoQtHostServiceReply reply)
+        : QObject(&images), images_(images), items_(count), current_(current), reply_(std::move(reply)) {}
 
     ~PreviewLoad() override {
         for (const QPointer<QNetworkReply> &download : std::as_const(downloads_)) {
@@ -712,35 +787,55 @@ public:
         }
     }
 
-    [[nodiscard]] bool done() const noexcept { return done_; }
+    /// Opens what `sources` name, the viewer shown once all are.
+    void start(const std::vector<PreviewSource> &sources) {
+        // Everything to open is counted first, so none settles the whole before
+        // the rest have started.
+        for (const PreviewSource &source : sources) {
+            if (!source.video || !remote(source.url)) ++pending_;
+            if (!source.poster.isEmpty()) ++pending_;
+        }
+        for (std::size_t index = 0; index < sources.size() && !done_; ++index) {
+            const PreviewSource &source = sources[index];
+            MediaViewer::Item &item = items_[index];
+            item.video = source.video;
+            if (source.video && remote(source.url)) {
+                item.url = source.url;
+            } else {
+                open(index, &MediaViewer::Item::file, source.url);
+            }
+            if (!done_ && !source.poster.isEmpty()) open(index, &MediaViewer::Item::poster, source.poster);
+        }
+        if (!done_ && pending_ == 0) finish();
+    }
 
-    /// Opens the image `source` names, the `index`th.
-    void open(int index, const QString &source) {
-        const QUrl url(source);
-        const QString scheme = url.scheme().toLower();
-        if (scheme == QLatin1String("http") || scheme == QLatin1String("https")) {
-            download(index, url);
+private:
+    using Part = std::unique_ptr<QIODevice> MediaViewer::Item::*;
+
+    /// Opens `source` as the `part` of the `index`th item.
+    void open(std::size_t index, Part part, const QString &source) {
+        if (remote(source)) {
+            download(index, part, QUrl(source));
             return;
         }
         auto file = std::make_unique<QFile>(source);
         if (!file->open(QIODevice::ReadOnly)) {
-            settle(index, nullptr,
+            settle(index, part, nullptr,
                    file->exists() ? QStringLiteral("%1 cannot be read").arg(QFileInfo(source).fileName())
                                   : QStringLiteral("file not found"));
             return;
         }
-        settle(index, std::move(file), {});
+        settle(index, part, std::move(file), {});
     }
 
-private:
     /// Downloads `url` into a file removed as it is made: what arrives is
     /// read back through the handle that stays open, and nothing is left behind.
-    void download(int index, const QUrl &url) {
+    void download(std::size_t index, Part part, const QUrl &url) {
         const QString directory = images_.staging()->directory();
         auto file = std::make_unique<QTemporaryFile>(
             (directory.isEmpty() ? QDir::tempPath() : directory) + QStringLiteral("/preview-XXXXXX"));
         if (!file->open()) {
-            settle(index, nullptr, kNowhere);
+            settle(index, part, nullptr, kNowhere);
             return;
         }
         QFile::remove(file->fileName());
@@ -760,7 +855,7 @@ private:
                 download->abort();
             }
         });
-        connect(download, &QNetworkReply::finished, this, [this, index, download, sink, unwritten] {
+        connect(download, &QNetworkReply::finished, this, [this, index, part, download, sink, unwritten] {
             download->deleteLater();
             QTemporaryFile &received = **sink;
             const QVariant status = download->attribute(QNetworkRequest::HttpStatusCodeAttribute);
@@ -774,11 +869,11 @@ private:
             } else if (received.write(download->readAll()) < 0 || !received.flush() || !received.seek(0)) {
                 error = QStringLiteral("download failed: %1").arg(received.errorString());
             }
-            settle(index, error.isEmpty() ? std::move(*sink) : nullptr, error);
+            settle(index, part, error.isEmpty() ? std::move(*sink) : nullptr, error);
         });
     }
 
-    void settle(int index, std::unique_ptr<QIODevice> image, const QString &error) {
+    void settle(std::size_t index, Part part, std::unique_ptr<QIODevice> opened, const QString &error) {
         if (done_) return;
         if (!error.isEmpty()) {
             done_ = true;
@@ -786,24 +881,29 @@ private:
             deleteLater();
             return;
         }
-        opened_.at(static_cast<std::size_t>(index)) = std::move(image);
-        if (--pending_ > 0) return;
+        items_.at(index).*part = std::move(opened);
+        if (--pending_ == 0) finish();
+    }
+
+    void finish() {
         done_ = true;
-        images_.showPreview(std::move(opened_), current_, reply_);
+        images_.showPreview(std::move(items_), current_, reply_);
         deleteLater();
     }
 
     Images &images_;
-    std::vector<std::unique_ptr<QIODevice>> opened_;
-    int pending_;
+    std::vector<MediaViewer::Item> items_;
+    int pending_ = 0;
     const int current_;
     MigoQtHostServiceReply reply_;
     bool done_ = false;
     QList<QPointer<QNetworkReply>> downloads_;
 };
 
-void Images::preview(const QStringList &sources, int current, MigoQtHostServiceReply reply) {
-    if (sources.isEmpty() || sources.contains(QString())) {
+void Images::preview(std::vector<PreviewSource> sources, int current, MigoQtHostServiceReply reply) {
+    const bool unnamed =
+        std::any_of(sources.cbegin(), sources.cend(), [](const PreviewSource &source) { return source.url.isEmpty(); });
+    if (sources.empty() || unnamed) {
         (void)reply.fail(QStringLiteral("nothing to preview"));
         return;
     }
@@ -811,20 +911,21 @@ void Images::preview(const QStringList &sources, int current, MigoQtHostServiceR
         (void)reply.fail(kNoWindow);
         return;
     }
-    auto *load = new PreviewLoad(*this, sources.size(), qBound(0, current, sources.size() - 1), std::move(reply));
+    const int last = static_cast<int>(sources.size()) - 1;
+    auto *load = new PreviewLoad(*this, sources.size(), qBound(0, current, last), std::move(reply));
     loads_.removeAll(nullptr);
     loads_.append(load);
-    for (int index = 0; index < sources.size() && !load->done(); ++index) load->open(index, sources.at(index));
+    load->start(sources);
 }
 
-void Images::showPreview(std::vector<std::unique_ptr<QIODevice>> images, int current, MigoQtHostServiceReply reply) {
+void Images::showPreview(std::vector<MediaViewer::Item> items, int current, MigoQtHostServiceReply reply) {
     if (surface_.isNull()) {
         (void)reply.fail(kNoWindow);
         return;
     }
     // Another preview replaces the one shown.
     if (!viewer_.isNull()) viewer_->close();
-    auto *viewer = new ImageViewer(*surface_->window(), std::move(images), current);
+    auto *viewer = new MediaViewer(*surface_->window(), std::move(items), current, videos_);
     viewer->setAttribute(Qt::WA_DeleteOnClose);
     viewer_ = viewer;
     viewer->open();

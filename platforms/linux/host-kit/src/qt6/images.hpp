@@ -1,6 +1,8 @@
 #ifndef MIGO_LINUX_QT6_IMAGES_HPP_
 #define MIGO_LINUX_QT6_IMAGES_HPP_
 
+#include "media_viewer.hpp"
+
 #include <migo/linux/qt6/host_services.hpp>
 
 #include <QJsonObject>
@@ -23,14 +25,13 @@ class QWidget;
 
 namespace migo::linux_host::qt6 {
 
-class ImageViewer;
-
 /// The image service, answered with what Qt and the desktop offer every App:
 /// compressing an image with Qt's own readers and writers; the file dialog --
 /// the desktop's, through its portal, wherever Qt finds one -- to pick images
 /// and files, and to save a file where the player chooses; the player's
 /// Pictures folder as the photo album; and a viewer of the Host Kit's own for
-/// the previews (`ImageViewer`).
+/// the previews (`MediaViewer`). Videos are the App's video support's to
+/// describe and play (`MigoQtVideoSupport`).
 ///
 /// A file a call answers with is the Host Kit's own copy, in a staging
 /// directory of its own: the Session takes each file named as the call is
@@ -39,17 +40,21 @@ class ImageViewer;
 /// staging directory is in the App's cache, usually on the volume of the
 /// engine's `cache_dir`, so taking a file is a rename rather than a copy.
 ///
-/// A preview's images are opened before the call is answered -- a file the
-/// engine lends, which it may take back once the call is answered, is held
-/// open rather than copied -- and an http(s) one, which the engine let through
-/// as the session's network policy lets content download, is downloaded into
-/// a file removed as it is made, read through the handle that stays open.
-/// What the viewer shows goes when it closes; another preview replaces it.
+/// A preview's images, videos and posters are opened before the call is
+/// answered -- a file the engine lends, which it may take back once the call is
+/// answered, is held open rather than copied -- and an http(s) image or poster,
+/// which the engine let through as the session's network policy lets content
+/// download, is downloaded into a file removed as it is made, read through the
+/// handle that stays open; an http(s) video is played as it streams. What the
+/// viewer shows goes when it closes; another preview replaces it.
+///
+/// A video chooseMedia picks is described as the other platforms describe one:
+/// its length, its size as shown and its first frame as the cover, written as
+/// a JPEG -- or zeros and no cover when the video support cannot read it.
 ///
 /// Not offered: the camera (a call that allows only it is refused, one that
 /// allows the album too is shown the dialog); and videos, in chooseMedia and in
-/// previewMedia, since nothing here can say a video's length, size or cover,
-/// nor play one.
+/// previewMedia, where the App gives no video support.
 ///
 /// GUI thread only; decoding, encoding and copying run on Qt's thread pool and
 /// answer from there.
@@ -66,8 +71,9 @@ public:
         [[nodiscard]] static Places system();
     };
 
-    /// `surface` is the game's view: the dialogs are its window's.
-    Images(QWidget &surface, Places places);
+    /// `surface` is the game's view: the dialogs are its window's. `videos`
+    /// describes and plays videos; null refuses them.
+    Images(QWidget &surface, Places places, std::shared_ptr<const MigoQtVideoSupport> videos = nullptr);
     ~Images() override;
 
     void call(std::uint32_t method, const QJsonObject &request, MigoQtHostServiceReply reply);
@@ -93,12 +99,18 @@ private:
     void chooseMessageFile(const QJsonObject &request, MigoQtHostServiceReply reply);
     void saveFileToDisk(const QJsonObject &request, MigoQtHostServiceReply reply);
     void saveImageToPhotosAlbum(const QJsonObject &request, MigoQtHostServiceReply reply);
-    /// previewImage and previewMedia: `sources` -- real paths and http(s)
-    /// URLs -- from the one at `current`.
-    void preview(const QStringList &sources, int current, MigoQtHostServiceReply reply);
-    /// Shows `images`, each open, from the one at `current`, and answers once
+    /// One thing to preview: a real path or an http(s) URL, and a video's
+    /// poster, if it has one.
+    struct PreviewSource {
+        QString url;
+        bool video = false;
+        QString poster;
+    };
+    /// previewImage and previewMedia: `sources` from the one at `current`.
+    void preview(std::vector<PreviewSource> sources, int current, MigoQtHostServiceReply reply);
+    /// Shows `items`, each open, from the one at `current`, and answers once
     /// shown.
-    void showPreview(std::vector<std::unique_ptr<QIODevice>> images, int current, MigoQtHostServiceReply reply);
+    void showPreview(std::vector<MediaViewer::Item> items, int current, MigoQtHostServiceReply reply);
 
     /// Shows the file dialog to open at most `count` files among `filters`
     /// (none: any file), starting in `directory` when given. A player who
@@ -118,11 +130,12 @@ private:
 
     QPointer<QWidget> surface_;
     Places places_;
+    const std::shared_ptr<const MigoQtVideoSupport> videos_;
     std::shared_ptr<Staging> staging_;
     /// The one file dialog up, if any.
     QPointer<QFileDialog> dialog_;
     /// The preview shown, if any.
-    QPointer<ImageViewer> viewer_;
+    QPointer<MediaViewer> viewer_;
     /// The previews still opening and downloading their images.
     QList<QPointer<QObject>> loads_;
     QNetworkAccessManager *network_ = nullptr;

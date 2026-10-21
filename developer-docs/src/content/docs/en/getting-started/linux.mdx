@@ -217,8 +217,26 @@ desktop already offers with Qt's own:
   that cannot be decoded shows a warning sign. Each image is held open before the call is answered, so the engine may
   take back what it lent; an http(s) one -- which the engine lets through as the session's network policy lets content
   download -- is downloaded over Qt's network, with no referrer, into a file removed as it is made. Another preview
-  replaces the one shown. The camera and videos -- in `chooseMedia` and `previewMedia` -- are refused: nothing here
-  says a video's length, size or cover, nor plays one, yet.
+  replaces the one shown. Videos are the optional `migo::qt6-media` component's (below): without it, `chooseMedia` and
+  `previewMedia` refuse them. The camera is refused.
+- **Videos** (`chooseMedia`, `previewMedia`), with `migo::qt6-media`: GStreamer -- the engine's decoder on Linux too --
+  describes and plays them. It is its own component because it links GStreamer, which the rest of the Host Kit does
+  not: configure the Host Kit with `-DMIGO_LINUX_HOST_KIT_BUILD_QT6_MEDIA=ON` (it needs `libgstreamer1.0-dev` and
+  `libgstreamer-plugins-base1.0-dev`), link `migo::qt6-media`, and give the Session a `MigoQtMedia`:
+
+  ```cpp
+  MigoManagedSession::Options options;
+  options.videos = std::make_shared<MigoQtMedia>();
+  ```
+
+  `chooseMedia` then offers images and videos -- or only videos, as `mediaType` asks -- and describes a video as the
+  other platforms do: `duration` in seconds, `width` and `height` as it is shown (a video recorded turned is measured
+  upright, non-square pixels at their intended shape), and its first frame as the cover (`thumbTempFilePath`, a
+  JPEG); one GStreamer cannot read is answered with zeros and no cover. `previewMedia` plays a video in the viewer,
+  with its sound: its `poster` until it first plays (its first frame without one), a click or the button to play and
+  pause, and a slider to move through it. A file is played through the handle the viewer holds, so the engine may
+  take back what it lent; an http(s) video is played as it streams. Which videos play is GStreamer's plugins':
+  `gstreamer1.0-plugins-good` for MP4 and WebM, `gstreamer1.0-libav` for H.264 and most other codecs.
 - **Location** (`getLocation`, `getFuzzyLocation`): GeoClue's position, asked of GeoClue on the system bus outside a
   sandbox and of the XDG desktop portal's `Location` inside one (Flatpak, Snap), which asks GeoClue for the App.
   `getLocation` asks at street level, or exactly with `isHighAccuracy`, and waits ten seconds for a position --
