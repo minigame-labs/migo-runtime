@@ -341,6 +341,29 @@ mod timer_tests {
         assert_js(&mut rt, "__fired === true");
     }
 
+    /// A timer restored the moment its runtime is shown fires on its own
+    /// millisecond wherever the clock stands: the deadline is not worked out in
+    /// fractional milliseconds, where `start + 25 - start` can exceed 25 and
+    /// the native timer's whole milliseconds round it up to 26.
+    #[tokio::test(start_paused = true)]
+    async fn restored_timers_fire_on_their_millisecond_wherever_the_clock_stands() {
+        let mut rt = boot_runtime();
+        for _ in 0..200 {
+            // A clock that stands somewhere else each time, between milliseconds.
+            advance_and_drain(&mut rt, Duration::from_micros(1_337)).await;
+            hide(&mut rt);
+            exec(
+                &mut rt,
+                "globalThis.__fired = false; setTimeout(() => __fired = true, 25)",
+            );
+            show(&mut rt);
+            advance_and_drain(&mut rt, Duration::from_millis(24)).await;
+            assert_js(&mut rt, "__fired === false");
+            advance_and_drain(&mut rt, Duration::from_millis(1)).await;
+            assert_js(&mut rt, "__fired === true");
+        }
+    }
+
     #[tokio::test(start_paused = true)]
     async fn equal_deadline_timeouts_keep_creation_order() {
         let mut rt = boot_runtime();
