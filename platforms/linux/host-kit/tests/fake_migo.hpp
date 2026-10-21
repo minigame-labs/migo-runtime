@@ -6,6 +6,7 @@
 #include <migo/platform/wayland.h>
 #include <migo/platform/x11.h>
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -148,8 +149,15 @@ struct HostServiceEvent {
     std::string payload;
 };
 
-const std::vector<HostServiceAnswer> &host_service_answers() noexcept;
+/// The answers so far. A copy: the host answers from any thread, as the
+/// library lets it, while a test reads them on its own.
+std::vector<HostServiceAnswer> host_service_answers();
 const std::vector<HostServiceEvent> &host_service_events() noexcept;
+
+/// Runs `take` on each answer as the host completes the call, on the thread
+/// that completes it and before the answer is recorded: where the library takes
+/// the files a result names into the Session (none, unless a test says so).
+void set_host_service_completion(std::function<void(const HostServiceAnswer &)> take);
 
 /// Deliver content's request of a host service the way the library does:
 /// through the host's dispatcher, from an engine thread. A call (call_id != 0)

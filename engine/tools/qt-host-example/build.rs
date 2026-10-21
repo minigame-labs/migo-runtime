@@ -15,21 +15,31 @@ use std::{
 /// name its source includes it by: a public header through the public include
 /// path, an internal one beside the sources.
 const MOC_HEADERS: [(&str, &str); 4] = [
-    ("include/migo/linux/qt6/x11_surface_view.hpp", "migo/linux/qt6/x11_surface_view.hpp"),
-    ("include/migo/linux/qt6/host_services.hpp", "migo/linux/qt6/host_services.hpp"),
-    ("include/migo/linux/qt6/managed_session.hpp", "migo/linux/qt6/managed_session.hpp"),
+    (
+        "include/migo/linux/qt6/x11_surface_view.hpp",
+        "migo/linux/qt6/x11_surface_view.hpp",
+    ),
+    (
+        "include/migo/linux/qt6/host_services.hpp",
+        "migo/linux/qt6/host_services.hpp",
+    ),
+    (
+        "include/migo/linux/qt6/managed_session.hpp",
+        "migo/linux/qt6/managed_session.hpp",
+    ),
     ("src/qt6/memory_monitor.hpp", "memory_monitor.hpp"),
 ];
 
 /// The Host Kit's sources this host links: the surface controller, the Qt view,
 /// the host services and the Managed shape.
-const KIT_SOURCES: [&str; 10] = [
+const KIT_SOURCES: [&str; 11] = [
     "src/surface_host.cpp",
     "src/qt6/x11_surface_view.cpp",
     "src/qt6/dom_key_names.cpp",
     "src/qt6/xi2_raw_motion.cpp",
     "src/qt6/host_services.cpp",
     "src/qt6/backlight.cpp",
+    "src/qt6/images.cpp",
     "src/qt6/managed_session.cpp",
     "src/qt6/screen_awake.cpp",
     "src/qt6/system_reports.cpp",
@@ -92,13 +102,21 @@ fn main() {
     }
     for (header, included) in MOC_HEADERS {
         let input = kit.join(header);
-        let stem = input.file_stem().expect("a header name").to_string_lossy().into_owned();
+        let stem = input
+            .file_stem()
+            .expect("a header name")
+            .to_string_lossy()
+            .into_owned();
         let output = out.join(format!("moc_{stem}.cpp"));
         let mut command = Command::new(&moc);
         // The generated file includes its header as the sources do, through the
         // include path, rather than by a path relative to OUT_DIR that a
         // symlinked target directory makes wrong.
-        command.arg(&input).arg("-o").arg(&output).arg(format!("-f{included}"));
+        command
+            .arg(&input)
+            .arg("-o")
+            .arg(&output)
+            .arg(format!("-f{included}"));
         for directory in &includes {
             command.arg(format!("-I{directory}"));
         }
@@ -117,7 +135,15 @@ fn main() {
     // The host owns its window and the Host Kit's view reads its X11 handle and
     // the mouse's raw motion (XInput 2), and its services ask the system over
     // D-Bus, so these -- not the engine -- link Qt, Xlib and xcb.
-    for library in ["Qt6Widgets", "Qt6DBus", "Qt6Gui", "Qt6Core", "X11", "xcb-xinput", "xcb"] {
+    for library in [
+        "Qt6Widgets",
+        "Qt6DBus",
+        "Qt6Gui",
+        "Qt6Core",
+        "X11",
+        "xcb-xinput",
+        "xcb",
+    ] {
         println!("cargo:rustc-link-lib={library}");
     }
 }

@@ -31,7 +31,7 @@ The three currently declared CMake targets are:
   frame requests.
 - `migo::qt6-host-services` — the host-service channel for Qt, and the built-in services Qt's own
   facilities answer (the clipboard; toasts, loading indicators, modals and action sheets; the window's
-  size, state and cursor).
+  size, state and cursor; the screen; compressing, picking and saving images and files).
 - `migo::qt6-managed-session` — the Managed ownership form: `MigoManagedSession` owns the Session,
   callback table, and view, and installs the built-in services.
 
@@ -188,6 +188,22 @@ desktop already offers with Qt's own:
   a screen with no backlight -- an external monitor, a virtual machine -- is refused. Screenshot and recording notices
   and `setVisualEffectOnCapture` are not offered: a Linux desktop tells an app of neither, nor keeps a window out of a
   screenshot (on X11 any client may read any window).
+- **Images** (`compressImage`, `chooseImage`, `chooseMedia`, `chooseMessageFile`, `saveFileToDisk`,
+  `saveImageToPhotosAlbum`): `compressImage` reads with Qt's image readers -- upright, its EXIF orientation applied,
+  decoded no larger than the size asked where the format can -- and writes a PNG as a PNG and anything else as a JPEG at
+  the quality asked (at most 50 million pixels, as on the other platforms). The pickers are the file dialog -- the
+  desktop's, through its portal or its platform theme, wherever Qt finds one, and Qt's own otherwise -- and the game is
+  given copies, never the player's files: a JPEG, PNG, GIF, BMP or WebP as it is, anything else Qt reads (a TIFF, an
+  SVG, a HEIF where a plugin reads it) written upright as a PNG when it has transparency and a JPEG when not.
+  `chooseMessageFile` gives each file the name the player saw, its kind (`image`, `video` or `file`, by what the desktop
+  knows it to be) and when it last changed; `extension` narrows `type: 'file'` only, as the reference says. A dialog
+  does not count, so the first `count` the player picked are given. `saveFileToDisk` is the dialog to save, the copy
+  replacing a file only once whole; `saveImageToPhotosAlbum` writes into the player's Pictures folder (the XDG
+  `PICTURES` directory) as `IMG_<milliseconds>.<suffix>`, refusing what is no image. A file the game is given is staged
+  in the App's cache (`QStandardPaths::CacheLocation`), where the engine takes it as the call completes -- a rename
+  when the engine's `cache_dir` is on the same volume -- and one it does not take is removed. One file dialog shows at
+  a time. The camera, videos in `chooseMedia` (nothing here says a video's length, size or cover yet) and the previews
+  (`previewImage`, `previewMedia`) are refused.
 
 `MigoManagedSession` also keeps the display awake for content (`setKeepScreenOn`): it asks the desktop through the XDG
 desktop portal's `Inhibit` (the session's idle: blanking, locking), or through the freedesktop screen saver

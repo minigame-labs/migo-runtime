@@ -92,11 +92,13 @@ if(MIGO_LINUX_HOST_KIT_BUILD_QT6_X11)
     add_library(migo_qt6_host_services STATIC
         include/migo/linux/qt6/host_services.hpp
         src/qt6/host_services.cpp
-        # Internal, not installed: how what stands over the game is shown, and
-        # the backlight (sysfs and logind, over Qt's D-Bus).
+        # Internal, not installed: how what stands over the game is shown, the
+        # backlight (sysfs and logind, over Qt's D-Bus), and the image service.
         src/qt6/overlay.hpp
         src/qt6/backlight.hpp
         src/qt6/backlight.cpp
+        src/qt6/images.hpp
+        src/qt6/images.cpp
     )
     add_library(migo::qt6-host-services ALIAS migo_qt6_host_services)
     set_target_properties(migo_qt6_host_services PROPERTIES

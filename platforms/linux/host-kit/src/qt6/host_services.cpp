@@ -1,6 +1,7 @@
 #include <migo/linux/qt6/host_services.hpp>
 
 #include "backlight.hpp"
+#include "images.hpp"
 #include "overlay.hpp"
 
 #include <QAction>
@@ -594,7 +595,8 @@ MigoQtBuiltInHostServices::MigoQtBuiltInHostServices(MigoQtX11SurfaceView &view,
       surface_(&view),
       interaction_(std::make_unique<Interaction>(view)),
       window_(std::make_unique<WindowService>(view, std::move(channel))),
-      backlight_(std::make_unique<Backlight>(QStringLiteral("/sys/class/backlight"), QDBusConnection::systemBus())) {}
+      backlight_(std::make_unique<Backlight>(QStringLiteral("/sys/class/backlight"), QDBusConnection::systemBus())),
+      images_(std::make_unique<Images>(view, Images::Places::system())) {}
 
 MigoQtBuiltInHostServices::~MigoQtBuiltInHostServices() = default;
 
@@ -604,6 +606,7 @@ std::uint64_t MigoQtBuiltInHostServices::services() const noexcept {
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_INTERACTION);
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_WINDOW);
     builtIn |= hostServiceBit(MIGO_HOST_SERVICE_SCREEN);
+    builtIn |= hostServiceBit(MIGO_HOST_SERVICE_IMAGE);
     return builtIn;
 }
 
@@ -618,6 +621,9 @@ void MigoQtBuiltInHostServices::call(MigoHostService service, std::uint32_t meth
             return;
         case MIGO_HOST_SERVICE_SCREEN:
             screen(method, request, std::move(reply));
+            return;
+        case MIGO_HOST_SERVICE_IMAGE:
+            images_->call(method, request, std::move(reply));
             return;
         case MIGO_HOST_SERVICE_CLIPBOARD:
             if (method == MIGO_CLIPBOARD_SET_CLIPBOARD_DATA) {

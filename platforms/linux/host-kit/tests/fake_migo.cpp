@@ -3,6 +3,7 @@
 #include <cstring>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <thread>
 
 namespace {
@@ -54,10 +55,13 @@ int g_system_settings_reports = 0;
 MigoAppAuthorizeSetting g_app_authorization{};
 std::vector<MigoMemoryWarningLevel> g_memory_warnings;
 std::string g_launch_options;
+/// Guards the calls and their answers: the host completes a call from any thread.
+std::mutex g_answers_mutex;
 std::vector<fake_migo::HostServiceAnswer> g_answers;
 std::vector<fake_migo::HostServiceEvent> g_events;
 /// Calls delivered and not yet completed, with the service each is of.
 std::map<uint64_t, MigoHostService> g_open_calls;
+std::function<void(const fake_migo::HostServiceAnswer &)> g_completion;
 constexpr uintptr_t kEngineToken = 0x4040;
 
 constexpr uintptr_t kSessionToken = 0x1010;
@@ -82,9 +86,13 @@ void reset() noexcept {
     g_app_authorization = {};
     g_memory_warnings.clear();
     g_launch_options.clear();
-    g_answers.clear();
+    {
+        const std::lock_guard<std::mutex> lock(g_answers_mutex);
+        g_answers.clear();
+        g_open_calls.clear();
+        g_completion = nullptr;
+    }
     g_events.clear();
-    g_open_calls.clear();
     g_surface = {};
     g_metrics = {};
     g_release_query = {};
@@ -207,7 +215,14 @@ void write_console(int level, const std::string &text) {
     g_console.push_back("{\"l\":" + std::to_string(level) + ",\"t\":0,\"m\":\"" + text + "\"}");
 }
 const std::string &created_launch_options() noexcept { return g_launch_options; }
-const std::vector<HostServiceAnswer> &host_service_answers() noexcept { return g_answers; }
+std::vector<HostServiceAnswer> host_service_answers() {
+    const std::lock_guard<std::mutex> lock(g_answers_mutex);
+    return g_answers;
+}
+void set_host_service_completion(std::function<void(const HostServiceAnswer &)> take) {
+    const std::lock_guard<std::mutex> lock(g_answers_mutex);
+    g_completion = std::move(take);
+}
 const std::vector<HostServiceEvent> &host_service_events() noexcept { return g_events; }
 void set_session_create_result(MigoResult result) noexcept { g_session_create_result = result; }
 void set_set_callbacks_result(MigoResult result) noexcept { g_set_callbacks_result = result; }
@@ -279,7 +294,10 @@ struct PendingCall {
 void deliver_host_service_call_from_engine_thread(MigoHostService service, uint32_t method,
                                                   uint64_t call_id,
                                                   const std::string &payload_json) noexcept {
-    if (call_id != 0) g_open_calls[call_id] = service;
+    if (call_id != 0) {
+        const std::lock_guard<std::mutex> lock(g_answers_mutex);
+        g_open_calls[call_id] = service;
+    }
     if (g_callbacks.dispatch == nullptr) return;
     auto *pending = new PendingCall{service, method, call_id, payload_json};
     std::thread engine_thread([pending] {
@@ -553,13 +571,18 @@ extern "C" MigoResult MIGO_CALL migo_session_complete_host_service_call(
     if (session != fake_migo::session() || !g_session_alive || result == nullptr) {
         return MIGO_ERROR_INVALID_ARGUMENT;
     }
-    const auto open = g_open_calls.find(call_id);
-    if (open == g_open_calls.end()) return MIGO_ERROR_INVALID_ARGUMENT;
-    if ((g_callbacks.host_services & (uint64_t{1} << open->second)) == 0) return MIGO_ERROR_INVALID_ARGUMENT;
-    if (result->status == MIGO_HOST_SERVICE_STATUS_FAIL && result->message_length == 0) {
-        return MIGO_ERROR_INVALID_ARGUMENT;
+    std::function<void(const fake_migo::HostServiceAnswer &)> take;
+    {
+        const std::lock_guard<std::mutex> lock(g_answers_mutex);
+        const auto open = g_open_calls.find(call_id);
+        if (open == g_open_calls.end()) return MIGO_ERROR_INVALID_ARGUMENT;
+        if ((g_callbacks.host_services & (uint64_t{1} << open->second)) == 0) return MIGO_ERROR_INVALID_ARGUMENT;
+        if (result->status == MIGO_HOST_SERVICE_STATUS_FAIL && result->message_length == 0) {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        }
+        g_open_calls.erase(open);
+        take = g_completion;
     }
-    g_open_calls.erase(open);
     fake_migo::HostServiceAnswer answer;
     answer.call_id = call_id;
     answer.status = result->status;
@@ -567,7 +590,10 @@ extern "C" MigoResult MIGO_CALL migo_session_complete_host_service_call(
     if (result->payload_json_utf8 != nullptr) answer.payload.assign(result->payload_json_utf8, result->payload_length);
     answer.has_error_code = (result->flags & MIGO_HOST_SERVICE_RESULT_FLAG_ERROR_CODE) != 0;
     answer.error_code = result->error_code;
-    g_answers.push_back(answer);
+    // Before the answer is seen, as the library takes the files before content hears of them.
+    if (take) take(answer);
+    const std::lock_guard<std::mutex> lock(g_answers_mutex);
+    g_answers.push_back(std::move(answer));
     return MIGO_OK;
 }
 

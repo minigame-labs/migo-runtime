@@ -16,6 +16,11 @@
 #include <QDir>
 #include <QFile>
 #include <QDialog>
+#include <QFileDialog>
+#include <QFileInfo>
+#include <QHash>
+#include <QImageReader>
+#include <QImageWriter>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -25,12 +30,15 @@
 #include <QPixmap>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QScreen>
+#include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QVBoxLayout>
 #include <QtTest>
 
 #include <memory>
+#include <mutex>
 #include <optional>
 
 using migo::linux_host::SurfaceHost;
@@ -59,12 +67,12 @@ QJsonObject parsed(const std::string &payload) {
     return QJsonDocument::fromJson(QByteArray::fromStdString(payload)).object();
 }
 
-/// The answer the host gave the call `call_id`, or null.
-const fake_migo::HostServiceAnswer *answerTo(std::uint64_t call_id) {
+/// The answer the host gave the call `call_id`, if it has.
+std::optional<fake_migo::HostServiceAnswer> answerTo(std::uint64_t call_id) {
     for (const auto &answer : fake_migo::host_service_answers()) {
-        if (answer.call_id == call_id) return &answer;
+        if (answer.call_id == call_id) return answer;
     }
-    return nullptr;
+    return std::nullopt;
 }
 
 /// The indicator standing over the game, or null.
@@ -228,12 +236,177 @@ void press(QWidget &view) {
     QCoreApplication::sendEvent(&view, &event);
 }
 
+/// The colour of each quadrant of a picture `writeQuadrants` writes.
+QColor quadrant(bool left, bool top) {
+    if (top) return left ? QColor(255, 0, 0) : QColor(0, 255, 0);
+    return left ? QColor(0, 0, 255) : QColor(255, 255, 255);
+}
+
+/// A picture `size` large in four quadrants -- red, green; blue, white -- as `format`.
+void writeQuadrants(const QString &path, const char *format, QSize size = {256, 192}) {
+    QImage image(size, QImage::Format_RGB32);
+    for (int y = 0; y < size.height(); ++y) {
+        for (int x = 0; x < size.width(); ++x) {
+            image.setPixel(x, y, quadrant(x < size.width() / 2, y < size.height() / 2).rgb());
+        }
+    }
+    QImageWriter writer(path, format);
+    writer.setQuality(95);
+    QVERIFY2(writer.write(image), qPrintable(writer.errorString()));
+}
+
+/// The quadrants as a camera held on its side stores them: 256x192 as taken,
+/// with an EXIF orientation (6) saying they are seen turned a quarter clockwise.
+/// Qt's JPEG writer turns the pixels instead of saying so, so the orientation
+/// is written here, in an APP1 segment after the start of the image.
+void writeTurnedQuadrants(const QString &path) {
+    writeQuadrants(path, "jpeg");
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::ReadWrite));
+    QByteArray bytes = file.readAll();
+    QVERIFY(bytes.startsWith("\xFF\xD8"));
+    static const char exif[] =
+        "\xFF\xE1\x00\x22"                         // APP1, 34 bytes
+        "Exif\x00\x00"                               //
+        "MM\x00\x2A\x00\x00\x00\x08"                 // big-endian TIFF, IFD at 8
+        "\x00\x01"                                   // one entry:
+        "\x01\x12\x00\x03\x00\x00\x00\x01\x00\x06\x00\x00"  //   Orientation, SHORT, 1, 6
+        "\x00\x00\x00\x00";                         // no next IFD
+    bytes.insert(2, exif, sizeof(exif) - 1);
+    QVERIFY(file.seek(0));
+    QCOMPARE(file.write(bytes), bytes.size());
+    file.close();
+    QImageReader stored(path);
+    QCOMPARE(stored.size(), QSize(256, 192));
+    QCOMPARE(stored.transformation(), QImageIOHandler::TransformationRotate90);
+}
+
+void writeFile(const QString &path, const QByteArray &bytes) {
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    QCOMPARE(file.write(bytes), bytes.size());
+}
+
+QByteArray bytesOf(const QString &path) {
+    QFile file(path);
+    return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+}
+
+/// Whether the 16x16 pixels around `at` average within 48 of `want`, each channel.
+bool looksLike(const QImage &image, QPoint at, const QColor &want) {
+    qint64 red = 0, green = 0, blue = 0, count = 0;
+    for (int y = at.y() - 8; y < at.y() + 8; ++y) {
+        for (int x = at.x() - 8; x < at.x() + 8; ++x) {
+            const QColor pixel = image.pixelColor(x, y);
+            red += pixel.red();
+            green += pixel.green();
+            blue += pixel.blue();
+            ++count;
+        }
+    }
+    return qAbs(red / count - want.red()) <= 48 && qAbs(green / count - want.green()) <= 48 &&
+           qAbs(blue / count - want.blue()) <= 48;
+}
+
+/// What the image at `path` is stored as, by its content.
+QByteArray formatOf(const QString &path) {
+    QImageReader reader(path);
+    reader.setDecideFormatFromContent(true);
+    return reader.format();
+}
+
+/// Takes the files an answer names into `into`, as the library takes them into
+/// the Session's /tmp as the call completes, and says where each went.
+class TakenFiles final {
+public:
+    explicit TakenFiles(QString into) : into_(std::move(into)) {
+        QDir().mkpath(into_);
+        fake_migo::set_host_service_completion([this](const fake_migo::HostServiceAnswer &answer) { take(answer); });
+    }
+    ~TakenFiles() { fake_migo::set_host_service_completion(nullptr); }
+
+    /// Where the file the host named `named` went, or empty when it was not taken.
+    QString operator[](const QString &named) const {
+        const std::lock_guard<std::mutex> lock(mutex_);
+        return taken_.value(named);
+    }
+
+private:
+    void take(const fake_migo::HostServiceAnswer &answer) {
+        if (answer.status != MIGO_HOST_SERVICE_STATUS_OK) return;
+        const QJsonObject result = parsed(answer.payload);
+        QStringList named{result.value(QStringLiteral("tempFilePath")).toString()};
+        for (const QJsonValue &path : result.value(QStringLiteral("tempFilePaths")).toArray()) named << path.toString();
+        for (const QJsonValue &file : result.value(QStringLiteral("tempFiles")).toArray()) {
+            named << file.toObject().value(QStringLiteral("path")).toString()
+                  << file.toObject().value(QStringLiteral("tempFilePath")).toString();
+        }
+        const std::lock_guard<std::mutex> lock(mutex_);
+        for (const QString &file : std::as_const(named)) {
+            if (file.isEmpty() || taken_.contains(file)) continue;
+            const QString to = QStringLiteral("%1/host-%2.%3").arg(into_).arg(++taken_count_).arg(QFileInfo(file).suffix());
+            if (QFile::rename(file, to)) taken_.insert(file, to);
+        }
+    }
+
+    const QString into_;
+    mutable std::mutex mutex_;
+    QHash<QString, QString> taken_;
+    int taken_count_ = 0;
+};
+
+/// The file dialog the player sees, or null.
+QFileDialog *fileDialog() { return shownWindow<QFileDialog>(); }
+
+/// The player picks `names` in `directory` -- or names the file to save -- and confirms.
+void choose(QFileDialog &dialog, const QString &directory, const QStringList &names) {
+    dialog.setDirectory(directory);
+    auto *field = dialog.findChild<QLineEdit *>(QStringLiteral("fileNameEdit"));
+    QVERIFY(field != nullptr);
+    field->setText(names.size() == 1 ? names.first()
+                                     : QLatin1Char('"') + names.join(QStringLiteral("\" \"")) + QLatin1Char('"'));
+    // QFileDialog's own accept, which checks what was named, is reached through QDialog's.
+    static_cast<QDialog &>(dialog).accept();
+}
+
+/// Asks the image service `method` as content does, and waits for its answer:
+/// a failure "no answer" when none comes.
+fake_migo::HostServiceAnswer askImages(std::uint32_t method, std::uint64_t call_id, const QJsonObject &request) {
+    fake_migo::deliver_host_service_call_from_engine_thread(MIGO_HOST_SERVICE_IMAGE, method, call_id, json(request));
+    (void)QTest::qWaitFor([call_id] { return answerTo(call_id).has_value(); }, 10000);
+    if (std::optional<fake_migo::HostServiceAnswer> answer = answerTo(call_id)) return *answer;
+    fake_migo::HostServiceAnswer none;
+    none.status = MIGO_HOST_SERVICE_STATUS_FAIL;
+    none.message = "no answer";
+    return none;
+}
+
+/// Whether the directory `file` is staged in holds no file.
+bool nothingLeftBeside(const QString &file) {
+    return QDir(QFileInfo(file).path()).entryList(QDir::Files | QDir::Hidden).isEmpty();
+}
+
 }  // namespace
 
 class QtHostServicesTest final : public QObject {
     Q_OBJECT
 
 private slots:
+    void initTestCase() {
+        // The player's dialogs here are Qt's own, which a test can drive; an
+        // App's are the desktop's.
+        QCoreApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
+        // The App's cache, where images are staged, and the player's Pictures
+        // folder, the photo album: the desktop's, as the XDG directories say.
+        QVERIFY(home_.isValid());
+        qputenv("XDG_CACHE_HOME", QFile::encodeName(home_.filePath(QStringLiteral("cache"))));
+        qputenv("XDG_CONFIG_HOME", QFile::encodeName(home_.filePath(QStringLiteral("config"))));
+        QVERIFY(QDir().mkpath(home_.filePath(QStringLiteral("config"))));
+        writeFile(home_.filePath(QStringLiteral("config/user-dirs.dirs")),
+                  "XDG_PICTURES_DIR=\"" + QFile::encodeName(pictures()) + "\"\n");
+        QCOMPARE(QStandardPaths::writableLocation(QStandardPaths::PicturesLocation), pictures());
+    }
+
     void init() { fake_migo::reset(); }
 
     /// A Managed Session declares what Qt answers itself, and creates the
@@ -248,7 +421,8 @@ private slots:
         QCOMPARE(installed.host_services, hostServiceBit(MIGO_HOST_SERVICE_INTERACTION) |
                                               hostServiceBit(MIGO_HOST_SERVICE_CLIPBOARD) |
                                               hostServiceBit(MIGO_HOST_SERVICE_WINDOW) |
-                                              hostServiceBit(MIGO_HOST_SERVICE_SCREEN));
+                                              hostServiceBit(MIGO_HOST_SERVICE_SCREEN) |
+                                              hostServiceBit(MIGO_HOST_SERVICE_IMAGE));
         QCOMPARE(fake_migo::created_network_policy(), std::string());
         QCOMPARE(fake_migo::created_launch_options(), std::string());
 
@@ -304,17 +478,17 @@ private slots:
         QCOMPARE(fake_migo::installed_callbacks().host_services,
                  hostServiceBit(MIGO_HOST_SERVICE_AD) | hostServiceBit(MIGO_HOST_SERVICE_CLIPBOARD) |
                      hostServiceBit(MIGO_HOST_SERVICE_INTERACTION) | hostServiceBit(MIGO_HOST_SERVICE_WINDOW) |
-                     hostServiceBit(MIGO_HOST_SERVICE_SCREEN));
+                     hostServiceBit(MIGO_HOST_SERVICE_SCREEN) | hostServiceBit(MIGO_HOST_SERVICE_IMAGE));
 
         fake_migo::deliver_host_service_call_from_engine_thread(MIGO_HOST_SERVICE_CLIPBOARD,
                                                                 MIGO_CLIPBOARD_GET_CLIPBOARD_DATA, 3, "{}");
-        QTRY_VERIFY(answerTo(3) != nullptr);
+        QTRY_VERIFY(answerTo(3).has_value());
         QCOMPARE(parsed(answerTo(3)->payload).value(QStringLiteral("data")).toString(), QStringLiteral("the app's"));
         QCOMPARE(app.calls.size(), std::size_t{1});
 
         fake_migo::deliver_host_service_call_from_engine_thread(
             MIGO_HOST_SERVICE_INTERACTION, MIGO_INTERACTION_SHOW_ACTION_SHEET, 4, json({{"itemList", QJsonArray()}}));
-        QTRY_VERIFY(answerTo(4) != nullptr);
+        QTRY_VERIFY(answerTo(4).has_value());
         QCOMPARE(answerTo(4)->message, std::string("itemList is empty"));
         QCOMPARE(app.calls.size(), std::size_t{1});
 
@@ -327,13 +501,13 @@ private slots:
         MigoManagedSession &managed = fixture.session;
         fake_migo::deliver_host_service_call_from_engine_thread(
             MIGO_HOST_SERVICE_CLIPBOARD, MIGO_CLIPBOARD_SET_CLIPBOARD_DATA, 1, json({{"data", "migo \u00e9"}}));
-        QTRY_VERIFY(answerTo(1) != nullptr);
+        QTRY_VERIFY(answerTo(1).has_value());
         QCOMPARE(answerTo(1)->status, MIGO_HOST_SERVICE_STATUS_OK);
         QCOMPARE(QGuiApplication::clipboard()->text(), QStringLiteral("migo \u00e9"));
 
         fake_migo::deliver_host_service_call_from_engine_thread(MIGO_HOST_SERVICE_CLIPBOARD,
                                                                 MIGO_CLIPBOARD_GET_CLIPBOARD_DATA, 2, "{}");
-        QTRY_VERIFY(answerTo(2) != nullptr);
+        QTRY_VERIFY(answerTo(2).has_value());
         QCOMPARE(parsed(answerTo(2)->payload).value(QStringLiteral("data")).toString(), QStringLiteral("migo \u00e9"));
         QCOMPARE(managed.close(), MIGO_OK);
     }
@@ -350,7 +524,7 @@ private slots:
         QDialog *dialog = shownWindow<QDialog>();
         QVERIFY(buttonNamed(*dialog, QStringLiteral("\u53d6\u6d88")) != nullptr);
         buttonNamed(*dialog, QStringLiteral("Quit"))->click();
-        QTRY_VERIFY(answerTo(10) != nullptr);
+        QTRY_VERIFY(answerTo(10).has_value());
         QCOMPARE(parsed(answerTo(10)->payload),
                  QJsonObject({{QStringLiteral("confirm"), true}, {QStringLiteral("cancel"), false}}));
 
@@ -365,7 +539,7 @@ private slots:
         QCOMPARE(field->placeholderText(), QStringLiteral("your name"));
         field->setText(QStringLiteral("Grace"));
         buttonNamed(*dialog, QStringLiteral("\u786e\u5b9a"))->click();
-        QTRY_VERIFY(answerTo(11) != nullptr);
+        QTRY_VERIFY(answerTo(11).has_value());
         QCOMPARE(parsed(answerTo(11)->payload).value(QStringLiteral("content")).toString(), QStringLiteral("Grace"));
 
         // Dismissed any other way, it is declined.
@@ -373,7 +547,7 @@ private slots:
             MIGO_HOST_SERVICE_INTERACTION, MIGO_INTERACTION_SHOW_MODAL, 12, json({{"content", "Sure?"}}));
         QTRY_VERIFY(shownWindow<QDialog>() != nullptr);
         shownWindow<QDialog>()->reject();
-        QTRY_VERIFY(answerTo(12) != nullptr);
+        QTRY_VERIFY(answerTo(12).has_value());
         QCOMPARE(parsed(answerTo(12)->payload),
                  QJsonObject({{QStringLiteral("confirm"), false}, {QStringLiteral("cancel"), true}}));
         QCOMPARE(managed.close(), MIGO_OK);
@@ -397,7 +571,7 @@ private slots:
         // As a click does it: the menu hides, then reports the item.
         menu->hide();
         group->trigger();
-        QTRY_VERIFY(answerTo(20) != nullptr);
+        QTRY_VERIFY(answerTo(20).has_value());
         QCOMPARE(parsed(answerTo(20)->payload).value(QStringLiteral("tapIndex")).toInt(-1), 1);
 
         fake_migo::deliver_host_service_call_from_engine_thread(
@@ -405,7 +579,7 @@ private slots:
             json({{"itemList", QJsonArray({"Friends"})}}));
         QTRY_VERIFY(shownWindow<QMenu>() != nullptr);
         shownWindow<QMenu>()->close();
-        QTRY_VERIFY(answerTo(21) != nullptr);
+        QTRY_VERIFY(answerTo(21).has_value());
         QCOMPARE(answerTo(21)->status, MIGO_HOST_SERVICE_STATUS_FAIL);
         QCOMPARE(answerTo(21)->message, std::string("cancel"));
         QCOMPARE(managed.close(), MIGO_OK);
@@ -522,21 +696,21 @@ private slots:
         fake_migo::deliver_host_service_call_from_engine_thread(
             MIGO_HOST_SERVICE_WINDOW, MIGO_WINDOW_SET_WINDOW_SIZE, 50,
             json({{"width", qRound(400 * ratio)}, {"height", qRound(300 * ratio)}}));
-        QTRY_VERIFY(answerTo(50) != nullptr);
+        QTRY_VERIFY(answerTo(50).has_value());
         QCOMPARE(answerTo(50)->status, MIGO_HOST_SERVICE_STATUS_OK);
         QTRY_COMPARE(fixture.session.view()->size(), QSize(400, 300));
 
         fake_migo::deliver_host_service_call_from_engine_thread(MIGO_HOST_SERVICE_WINDOW,
                                                                 MIGO_WINDOW_SET_WINDOW_SIZE, 51,
                                                                 json({{"width", 0}, {"height", 300}}));
-        QTRY_VERIFY(answerTo(51) != nullptr);
+        QTRY_VERIFY(answerTo(51).has_value());
         QCOMPARE(answerTo(51)->message, std::string("width and height must be positive numbers"));
 
         fixture.container.showFullScreen();
         fake_migo::deliver_host_service_call_from_engine_thread(MIGO_HOST_SERVICE_WINDOW,
                                                                 MIGO_WINDOW_SET_WINDOW_SIZE, 52,
                                                                 json({{"width", 200}, {"height", 100}}));
-        QTRY_VERIFY(answerTo(52) != nullptr);
+        QTRY_VERIFY(answerTo(52).has_value());
         QCOMPARE(answerTo(52)->message, std::string("the window is full screen"));
         fixture.container.hide();
         QCOMPARE(fixture.session.close(), MIGO_OK);
@@ -642,7 +816,7 @@ private slots:
         const auto turn = [](std::uint64_t call_id, const char *value) {
             fake_migo::deliver_host_service_call_from_engine_thread(
                 MIGO_HOST_SERVICE_SCREEN, MIGO_SCREEN_SET_DEVICE_ORIENTATION, call_id, json({{"value", value}}));
-            QTRY_VERIFY(answerTo(call_id) != nullptr);
+            QTRY_VERIFY(answerTo(call_id).has_value());
         };
         const std::size_t before = turns().size();
 
@@ -787,12 +961,12 @@ private slots:
         std::shared_ptr<MigoQtHostServiceChannel> channel = MigoQtHostServiceChannel::open(fake_migo::session());
 
         fake_migo::deliver_host_service_call_from_engine_thread(MIGO_HOST_SERVICE_AD, 0, 30, "{}");
-        QTRY_VERIFY(answerTo(30) != nullptr);
+        QTRY_VERIFY(answerTo(30).has_value());
         // The App answered it; a second answer through a copy of the reply is refused here, not by the library.
         MigoQtHostServiceReply reply = channel->reply(31);
         QCOMPARE(reply.fail(QString()), MIGO_ERROR_INVALID_ARGUMENT);
         fake_migo::deliver_host_service_call_from_engine_thread(MIGO_HOST_SERVICE_AD, 0, 31, "{}");
-        QTRY_VERIFY(answerTo(31) != nullptr);
+        QTRY_VERIFY(answerTo(31).has_value());
         QCOMPARE(reply.fail(QStringLiteral("too late")), MIGO_ERROR_INVALID_ARGUMENT);
         MigoQtHostServiceReply copy = reply;
         QCOMPARE(copy.succeed(), MIGO_ERROR_INVALID_STATE);
@@ -813,9 +987,329 @@ private slots:
         QCOMPARE(managed.close(), MIGO_OK);
         QVERIFY(managed.isClosed());
         QTRY_VERIFY(shownWindow<QDialog>() == nullptr);
-        QVERIFY(answerTo(40) == nullptr);
+        QVERIFY(!answerTo(40).has_value());
         QVERIFY(!fake_migo::session_is_alive());
     }
+
+    /// compressImage: the picture kept, upright, at the size and quality asked;
+    /// a PNG stays a PNG; what is not there, or would be too large, fails. The
+    /// Session is handed the Host Kit's own file, and nothing is left behind.
+    void an_image_is_compressed_as_asked() {
+        QTemporaryDir scratch;
+        TakenFiles taken(scratch.filePath(QStringLiteral("session-tmp")));
+        Managed fixture;
+        const QString jpeg = scratch.filePath(QStringLiteral("quadrants.jpg"));
+        writeQuadrants(jpeg, "jpeg");
+
+        const auto low = askImages(MIGO_IMAGE_COMPRESS_IMAGE, 1, {{"src", jpeg}, {"quality", 10}});
+        QCOMPARE(low.status, MIGO_HOST_SERVICE_STATUS_OK);
+        const QString staged = parsed(low.payload).value(QStringLiteral("tempFilePath")).toString();
+        QVERIFY2(staged.endsWith(QStringLiteral(".jpg")), qPrintable(staged));
+        QVERIFY(!staged.startsWith(scratch.path()));
+        const QString lowFile = taken[staged];
+        QVERIFY2(!lowFile.isEmpty(), qPrintable(staged));
+        QVERIFY(nothingLeftBeside(staged));
+        const QImage picture(lowFile);
+        QCOMPARE(picture.size(), QSize(256, 192));
+        QVERIFY(looksLike(picture, {64, 48}, quadrant(true, true)));
+        QVERIFY(looksLike(picture, {192, 48}, quadrant(false, true)));
+        QVERIFY(looksLike(picture, {64, 144}, quadrant(true, false)));
+        QVERIFY(looksLike(picture, {192, 144}, quadrant(false, false)));
+        QVERIFY(bytesOf(jpeg).size() > 0);
+
+        // The quality asked for: a higher one keeps more, in more bytes.
+        const auto high = askImages(MIGO_IMAGE_COMPRESS_IMAGE, 2, {{"src", jpeg}, {"quality", 90}});
+        const QString highFile = taken[parsed(high.payload).value(QStringLiteral("tempFilePath")).toString()];
+        QVERIFY(QFileInfo(lowFile).size() < QFileInfo(highFile).size());
+
+        // A width alone scales the height with it; both are both.
+        const auto narrow = askImages(MIGO_IMAGE_COMPRESS_IMAGE, 3, {{"src", jpeg}, {"compressedWidth", 64}});
+        QCOMPARE(QImage(taken[parsed(narrow.payload).value(QStringLiteral("tempFilePath")).toString()]).size(),
+                 QSize(64, 48));
+        const auto exact =
+            askImages(MIGO_IMAGE_COMPRESS_IMAGE, 4, {{"src", jpeg}, {"compressedWidth", 30}, {"compressedHeight", 40}});
+        QCOMPARE(QImage(taken[parsed(exact.payload).value(QStringLiteral("tempFilePath")).toString()]).size(),
+                 QSize(30, 40));
+
+        // Stored turned, it comes out upright: what was top-left is now top-right.
+        const QString turned = scratch.filePath(QStringLiteral("turned.jpg"));
+        writeTurnedQuadrants(turned);
+        const auto upright = askImages(MIGO_IMAGE_COMPRESS_IMAGE, 5, {{"src", turned}});
+        QImageReader uprightReader(taken[parsed(upright.payload).value(QStringLiteral("tempFilePath")).toString()]);
+        uprightReader.setAutoTransform(false);
+        const QImage uprightPicture = uprightReader.read();
+        QCOMPARE(uprightPicture.size(), QSize(192, 256));
+        QVERIFY(looksLike(uprightPicture, {144, 64}, quadrant(true, true)));
+        QVERIFY(looksLike(uprightPicture, {48, 64}, quadrant(true, false)));
+
+        // A PNG stays a PNG.
+        const QString png = scratch.filePath(QStringLiteral("quadrants.png"));
+        writeQuadrants(png, "png");
+        const auto stillPng = askImages(MIGO_IMAGE_COMPRESS_IMAGE, 6, {{"src", png}, {"quality", 10}});
+        const QString pngStaged = parsed(stillPng.payload).value(QStringLiteral("tempFilePath")).toString();
+        QVERIFY(pngStaged.endsWith(QStringLiteral(".png")));
+        QCOMPARE(formatOf(taken[pngStaged]), QByteArray("png"));
+
+        const auto missing = askImages(MIGO_IMAGE_COMPRESS_IMAGE, 7, {{"src", scratch.filePath("none.jpg")}});
+        QCOMPARE(missing.status, MIGO_HOST_SERVICE_STATUS_FAIL);
+        QCOMPARE(missing.message, std::string("file not found"));
+        const auto notAnImage = scratch.filePath(QStringLiteral("notes.txt"));
+        writeFile(notAnImage, "hello");
+        QCOMPARE(askImages(MIGO_IMAGE_COMPRESS_IMAGE, 8, {{"src", notAnImage}}).message, std::string("invalid image"));
+        QCOMPARE(askImages(MIGO_IMAGE_COMPRESS_IMAGE, 9,
+                           {{"src", jpeg}, {"compressedWidth", 10000}, {"compressedHeight", 10000}}).message,
+                 std::string("image too large"));
+        QCOMPARE(askImages(MIGO_IMAGE_COMPRESS_IMAGE, 10, {}).message, std::string("src is required"));
+
+        // What the Session does not take -- its game has gone -- is removed.
+        fake_migo::set_host_service_completion(nullptr);
+        const auto untaken = askImages(MIGO_IMAGE_COMPRESS_IMAGE, 11, {{"src", jpeg}});
+        const QString left = parsed(untaken.payload).value(QStringLiteral("tempFilePath")).toString();
+        QVERIFY(!left.isEmpty());
+        QVERIFY(!QFileInfo::exists(left));
+        QVERIFY(nothingLeftBeside(left));
+        QCOMPARE(fixture.session.close(), MIGO_OK);
+    }
+
+    /// chooseImage: the player picks in the file dialog, and the game is given
+    /// copies -- a JPEG, PNG, GIF, BMP or WebP as it is, anything else Qt reads
+    /// as a JPEG -- never the player's own files, and no more than it asked for.
+    void the_player_picks_images_and_the_game_gets_copies() {
+        QTemporaryDir scratch;
+        TakenFiles taken(scratch.filePath(QStringLiteral("session-tmp")));
+        Managed fixture;
+        const QString photos = scratch.filePath(QStringLiteral("photos"));
+        QVERIFY(QDir().mkpath(photos));
+        writeQuadrants(photos + QStringLiteral("/a.png"), "png");
+        writeQuadrants(photos + QStringLiteral("/b.ppm"), "ppm");
+        writeQuadrants(photos + QStringLiteral("/c.png"), "png");
+        writeFile(photos + QStringLiteral("/notes.txt"), "hello");
+
+        fake_migo::deliver_host_service_call_from_engine_thread(MIGO_HOST_SERVICE_IMAGE, MIGO_IMAGE_CHOOSE_IMAGE, 1,
+                                                                json({{"count", 2}}));
+        QTRY_VERIFY(fileDialog() != nullptr);
+        QCOMPARE(fileDialog()->fileMode(), QFileDialog::ExistingFiles);
+        choose(*fileDialog(), photos, {QStringLiteral("a.png"), QStringLiteral("b.ppm"), QStringLiteral("c.png")});
+        QTRY_VERIFY_WITH_TIMEOUT(answerTo(1).has_value(), 10000);
+        QCOMPARE(answerTo(1)->status, MIGO_HOST_SERVICE_STATUS_OK);
+        const QJsonObject chosen = parsed(answerTo(1)->payload);
+        const QJsonArray paths = chosen.value(QStringLiteral("tempFilePaths")).toArray();
+        const QJsonArray files = chosen.value(QStringLiteral("tempFiles")).toArray();
+        QCOMPARE(paths.size(), 2);
+        QCOMPARE(files.size(), 2);
+        for (int i = 0; i < 2; ++i) {
+            QCOMPARE(files.at(i).toObject().value(QStringLiteral("path")).toString(), paths.at(i).toString());
+            const QString file = taken[paths.at(i).toString()];
+            QVERIFY2(!file.isEmpty(), qPrintable(paths.at(i).toString()));
+            QCOMPARE(files.at(i).toObject().value(QStringLiteral("size")).toInteger(), QFileInfo(file).size());
+        }
+        // The PNG as it was; the PPM, which content cannot draw, as a JPEG of it.
+        QCOMPARE(bytesOf(taken[paths.at(0).toString()]), bytesOf(photos + QStringLiteral("/a.png")));
+        const QString converted = taken[paths.at(1).toString()];
+        QCOMPARE(formatOf(converted), QByteArray("jpeg"));
+        QVERIFY(looksLike(QImage(converted), {64, 48}, quadrant(true, true)));
+        QVERIFY(QFileInfo::exists(photos + QStringLiteral("/a.png")));
+        QVERIFY(QFileInfo::exists(photos + QStringLiteral("/b.ppm")));
+        QVERIFY(nothingLeftBeside(paths.at(0).toString()));
+
+        // Dismissed, it is the failure "cancel".
+        fake_migo::deliver_host_service_call_from_engine_thread(MIGO_HOST_SERVICE_IMAGE, MIGO_IMAGE_CHOOSE_IMAGE, 2,
+                                                                json({{"count", 1}}));
+        QTRY_VERIFY(fileDialog() != nullptr);
+        QCOMPARE(fileDialog()->fileMode(), QFileDialog::ExistingFile);
+        fileDialog()->reject();
+        QTRY_VERIFY(answerTo(2).has_value());
+        QCOMPARE(answerTo(2)->message, std::string("cancel"));
+
+        // What is no image fails, naming it, and leaves nothing staged.
+        fake_migo::deliver_host_service_call_from_engine_thread(MIGO_HOST_SERVICE_IMAGE, MIGO_IMAGE_CHOOSE_IMAGE, 3,
+                                                                json({}));
+        QTRY_VERIFY(fileDialog() != nullptr);
+        choose(*fileDialog(), photos, {QStringLiteral("a.png"), QStringLiteral("notes.txt")});
+        QTRY_VERIFY_WITH_TIMEOUT(answerTo(3).has_value(), 10000);
+        QCOMPARE(answerTo(3)->message, std::string("notes.txt: invalid image"));
+        QVERIFY(nothingLeftBeside(paths.at(0).toString()));
+
+        // The camera is not offered.
+        QCOMPARE(askImages(MIGO_IMAGE_CHOOSE_IMAGE, 4, {{"sourceType", QJsonArray{"camera"}}}).message,
+                 std::string("not supported"));
+        QVERIFY(fileDialog() == nullptr);
+        QCOMPARE(fixture.session.close(), MIGO_OK);
+    }
+
+    /// chooseMedia offers images, each with its size as seen -- upright; a call
+    /// for only videos, or only the camera, is refused.
+    void choose_media_offers_images() {
+        QTemporaryDir scratch;
+        TakenFiles taken(scratch.filePath(QStringLiteral("session-tmp")));
+        Managed fixture;
+        writeTurnedQuadrants(scratch.filePath(QStringLiteral("turned.jpg")));
+
+        fake_migo::deliver_host_service_call_from_engine_thread(MIGO_HOST_SERVICE_IMAGE, MIGO_IMAGE_CHOOSE_MEDIA, 1,
+                                                                json({{"mediaType", QJsonArray{"mix"}}, {"count", 1}}));
+        QTRY_VERIFY(fileDialog() != nullptr);
+        choose(*fileDialog(), scratch.path(), {QStringLiteral("turned.jpg")});
+        QTRY_VERIFY_WITH_TIMEOUT(answerTo(1).has_value(), 10000);
+        const QJsonObject chosen = parsed(answerTo(1)->payload);
+        QCOMPARE(chosen.value(QStringLiteral("type")).toString(), QStringLiteral("image"));
+        const QJsonArray items = chosen.value(QStringLiteral("tempFiles")).toArray();
+        QCOMPARE(items.size(), 1);
+        const QJsonObject item = items.at(0).toObject();
+        QCOMPARE(item.value(QStringLiteral("fileType")).toString(), QStringLiteral("image"));
+        QCOMPARE(item.value(QStringLiteral("width")).toInt(), 192);
+        QCOMPARE(item.value(QStringLiteral("height")).toInt(), 256);
+        const QString file = taken[item.value(QStringLiteral("tempFilePath")).toString()];
+        QCOMPARE(bytesOf(file), bytesOf(scratch.filePath(QStringLiteral("turned.jpg"))));
+        QCOMPARE(item.value(QStringLiteral("size")).toInteger(), QFileInfo(file).size());
+
+        QCOMPARE(askImages(MIGO_IMAGE_CHOOSE_MEDIA, 2, {{"mediaType", QJsonArray{"video"}}}).message,
+                 std::string("not supported"));
+        QCOMPARE(askImages(MIGO_IMAGE_CHOOSE_MEDIA, 3, {{"sourceType", QJsonArray{"camera"}}}).message,
+                 std::string("not supported"));
+        QCOMPARE(fixture.session.close(), MIGO_OK);
+    }
+
+    /// chooseMessageFile: the files of the type asked for, each with the name
+    /// the player saw, its kind and when it was last changed.
+    void the_player_picks_message_files() {
+        QTemporaryDir scratch;
+        TakenFiles taken(scratch.filePath(QStringLiteral("session-tmp")));
+        Managed fixture;
+        const QString picked = scratch.filePath(QStringLiteral("picked"));
+        QVERIFY(QDir().mkpath(picked));
+        writeQuadrants(picked + QStringLiteral("/a.png"), "png");
+        writeFile(picked + QStringLiteral("/clip.mp4"), "not really a video");
+        writeFile(picked + QStringLiteral("/notes.txt"), "hello");
+        const QStringList all{QStringLiteral("a.png"), QStringLiteral("clip.mp4"), QStringLiteral("notes.txt")};
+
+        fake_migo::deliver_host_service_call_from_engine_thread(MIGO_HOST_SERVICE_IMAGE, MIGO_IMAGE_CHOOSE_MESSAGE_FILE,
+                                                                1, json({{"count", 3}, {"type", "all"}}));
+        QTRY_VERIFY(fileDialog() != nullptr);
+        choose(*fileDialog(), picked, all);
+        QTRY_VERIFY_WITH_TIMEOUT(answerTo(1).has_value(), 10000);
+        const QJsonArray everything = parsed(answerTo(1)->payload).value(QStringLiteral("tempFiles")).toArray();
+        QCOMPARE(everything.size(), 3);
+        QStringList kinds;
+        for (const QJsonValue &file : everything) {
+            kinds << file.toObject().value(QStringLiteral("name")).toString() + QLatin1Char('=') +
+                         file.toObject().value(QStringLiteral("type")).toString();
+        }
+        QCOMPARE(kinds, QStringList({"a.png=image", "clip.mp4=video", "notes.txt=file"}));
+
+        // "file" is what is neither an image nor a video.
+        fake_migo::deliver_host_service_call_from_engine_thread(MIGO_HOST_SERVICE_IMAGE, MIGO_IMAGE_CHOOSE_MESSAGE_FILE,
+                                                                2, json({{"count", 3}, {"type", "file"}}));
+        QTRY_VERIFY(fileDialog() != nullptr);
+        choose(*fileDialog(), picked, all);
+        QTRY_VERIFY_WITH_TIMEOUT(answerTo(2).has_value(), 10000);
+        const QJsonArray files = parsed(answerTo(2)->payload).value(QStringLiteral("tempFiles")).toArray();
+        QCOMPARE(files.size(), 1);
+        const QJsonObject notes = files.at(0).toObject();
+        QCOMPARE(notes.value(QStringLiteral("name")).toString(), QStringLiteral("notes.txt"));
+        QCOMPARE(notes.value(QStringLiteral("type")).toString(), QStringLiteral("file"));
+        QCOMPARE(notes.value(QStringLiteral("size")).toInteger(), qint64{5});
+        QCOMPARE(notes.value(QStringLiteral("time")).toInteger(),
+                 QFileInfo(picked + QStringLiteral("/notes.txt")).lastModified().toSecsSinceEpoch());
+        QCOMPARE(bytesOf(taken[notes.value(QStringLiteral("path")).toString()]), QByteArray("hello"));
+
+        // Extensions narrow files: a .txt is not a .md.
+        fake_migo::deliver_host_service_call_from_engine_thread(
+            MIGO_HOST_SERVICE_IMAGE, MIGO_IMAGE_CHOOSE_MESSAGE_FILE, 3,
+            json({{"count", 1}, {"type", "file"}, {"extension", QJsonArray{".MD"}}}));
+        QTRY_VERIFY(fileDialog() != nullptr);
+        QCOMPARE(fileDialog()->nameFilters(), QStringList{QStringLiteral("Files (*.md)")});
+        choose(*fileDialog(), picked, {QStringLiteral("notes.txt")});
+        QTRY_VERIFY_WITH_TIMEOUT(answerTo(3).has_value(), 10000);
+        QCOMPARE(parsed(answerTo(3)->payload).value(QStringLiteral("tempFiles")).toArray().size(), 0);
+        QCOMPARE(fixture.session.close(), MIGO_OK);
+    }
+
+    /// saveFileToDisk: the dialog to save, offering the file's name, and the
+    /// file copied where the player chose.
+    void a_file_is_saved_where_the_player_chooses() {
+        QTemporaryDir scratch;
+        Managed fixture;
+        const QString source = scratch.filePath(QStringLiteral("report.bin"));
+        writeFile(source, QByteArray(300 * 1024, 'm'));
+        const QString chosen = scratch.filePath(QStringLiteral("chosen"));
+        QVERIFY(QDir().mkpath(chosen));
+
+        fake_migo::deliver_host_service_call_from_engine_thread(MIGO_HOST_SERVICE_IMAGE, MIGO_IMAGE_SAVE_FILE_TO_DISK, 1,
+                                                                json({{"filePath", source}}));
+        QTRY_VERIFY(fileDialog() != nullptr);
+        QCOMPARE(fileDialog()->acceptMode(), QFileDialog::AcceptSave);
+        QCOMPARE(fileDialog()->findChild<QLineEdit *>(QStringLiteral("fileNameEdit"))->text(),
+                 QStringLiteral("report.bin"));
+        choose(*fileDialog(), chosen, {QStringLiteral("saved.bin")});
+        QTRY_VERIFY_WITH_TIMEOUT(answerTo(1).has_value(), 10000);
+        QCOMPARE(answerTo(1)->status, MIGO_HOST_SERVICE_STATUS_OK);
+        QCOMPARE(bytesOf(chosen + QStringLiteral("/saved.bin")), bytesOf(source));
+
+        fake_migo::deliver_host_service_call_from_engine_thread(MIGO_HOST_SERVICE_IMAGE, MIGO_IMAGE_SAVE_FILE_TO_DISK, 2,
+                                                                json({{"filePath", source}}));
+        QTRY_VERIFY(fileDialog() != nullptr);
+        fileDialog()->reject();
+        QTRY_VERIFY(answerTo(2).has_value());
+        QCOMPARE(answerTo(2)->message, std::string("cancel"));
+
+        QCOMPARE(askImages(MIGO_IMAGE_SAVE_FILE_TO_DISK, 3, {{"filePath", scratch.filePath("none")}}).message,
+                 std::string("file not found"));
+        QVERIFY(fileDialog() == nullptr);
+        QCOMPARE(fixture.session.close(), MIGO_OK);
+    }
+
+    /// saveImageToPhotosAlbum: into the player's Pictures folder, named as a
+    /// camera names a photo; what is no image is refused.
+    void an_image_is_saved_to_the_pictures_folder() {
+        QTemporaryDir scratch;
+        Managed fixture;
+        const QString png = scratch.filePath(QStringLiteral("shot.bin"));
+        writeQuadrants(png, "png");
+
+        QCOMPARE(askImages(MIGO_IMAGE_SAVE_IMAGE_TO_PHOTOS_ALBUM, 1, {{"filePath", png}}).status,
+                 MIGO_HOST_SERVICE_STATUS_OK);
+        QCOMPARE(askImages(MIGO_IMAGE_SAVE_IMAGE_TO_PHOTOS_ALBUM, 2, {{"filePath", png}}).status,
+                 MIGO_HOST_SERVICE_STATUS_OK);
+        const QStringList saved = QDir(pictures()).entryList(QDir::Files, QDir::Name);
+        QCOMPARE(saved.size(), 2);
+        for (const QString &name : saved) {
+            QVERIFY2(QRegularExpression(QStringLiteral("^IMG_\\d+(_\\d+)?\\.png$")).match(name).hasMatch(), qPrintable(name));
+            QCOMPARE(bytesOf(pictures() + QLatin1Char('/') + name), bytesOf(png));
+        }
+
+        const QString notes = scratch.filePath(QStringLiteral("notes.png"));
+        writeFile(notes, "hello");
+        QCOMPARE(askImages(MIGO_IMAGE_SAVE_IMAGE_TO_PHOTOS_ALBUM, 3, {{"filePath", notes}}).message,
+                 std::string("not an image"));
+        QCOMPARE(askImages(MIGO_IMAGE_SAVE_IMAGE_TO_PHOTOS_ALBUM, 4, {{"filePath", scratch.filePath("none.png")}}).message,
+                 std::string("file not found"));
+        QCOMPARE(QDir(pictures()).entryList(QDir::Files).size(), 2);
+        QVERIFY(QDir(pictures()).removeRecursively());
+        QCOMPARE(fixture.session.close(), MIGO_OK);
+    }
+
+    /// One file dialog at a time; one still up when the game goes is closed
+    /// with it, and its answer reaches nobody.
+    void a_file_dialog_is_one_at_a_time_and_goes_with_the_game() {
+        Managed fixture;
+        fake_migo::deliver_host_service_call_from_engine_thread(MIGO_HOST_SERVICE_IMAGE, MIGO_IMAGE_CHOOSE_IMAGE, 1,
+                                                                json({}));
+        QTRY_VERIFY(fileDialog() != nullptr);
+        QCOMPARE(askImages(MIGO_IMAGE_CHOOSE_MESSAGE_FILE, 2, {{"count", 1}}).message,
+                 std::string("another file dialog is showing"));
+        QCOMPARE(askImages(MIGO_IMAGE_PREVIEW_IMAGE, 3, {{"urls", QJsonArray{"/a.png"}}}).message,
+                 std::string("not supported"));
+
+        QCOMPARE(fixture.session.close(), MIGO_OK);
+        QVERIFY(fixture.session.isClosed());
+        QTRY_VERIFY(fileDialog() == nullptr);
+        QVERIFY(!answerTo(1).has_value());
+    }
+
+private:
+    QString pictures() const { return home_.filePath(QStringLiteral("Pictures")); }
+
+    QTemporaryDir home_;
 };
 
 QTEST_MAIN(QtHostServicesTest)

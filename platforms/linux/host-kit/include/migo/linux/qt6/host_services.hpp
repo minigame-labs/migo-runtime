@@ -115,8 +115,8 @@ public:
 
 /// The services Qt already offers an App, answered with Qt's own: the
 /// clipboard; the game's toasts, loading indicator, modals and action sheets;
-/// and the window the game is shown in -- its size, its state, the cursor over
-/// the game.
+/// the window the game is shown in -- its size, its state, the cursor over the
+/// game; the screen; and images -- compressing them, picking and saving files.
 ///
 /// An App that names one of these services answers it instead; one that wants
 /// a service refused names it and refuses. `scripts/gen-api-platform-matrix.py`
@@ -149,8 +149,19 @@ public:
 /// a virtual machine's. The rest of the screen is refused: no Linux desktop
 /// tells an app of a screenshot or a recording, nor keeps a window out of one.
 ///
+/// Images: compressImage with Qt's image readers and writers (upright, scaled as
+/// asked; a PNG stays a PNG, anything else becomes a JPEG at the quality asked);
+/// chooseImage, chooseMedia and chooseMessageFile through the file dialog -- the
+/// desktop's, through its portal, wherever Qt finds one -- answered with copies
+/// of what the player picked; saveFileToDisk through the dialog to save; and
+/// saveImageToPhotosAlbum into the player's Pictures folder. A file answered
+/// with is staged in the App's cache (`QStandardPaths::CacheLocation`) until the
+/// Session takes it; one it does not take is removed. The camera, videos in
+/// chooseMedia and the previews are refused.
+///
 /// GUI thread only. What is on screen goes with this object.
 class Backlight;
+class Images;
 
 class MigoQtBuiltInHostServices final : public QObject, public MigoQtHostServiceProvider {
     Q_OBJECT
@@ -187,6 +198,7 @@ private:
     std::unique_ptr<Interaction> interaction_;
     std::unique_ptr<WindowService> window_;
     std::unique_ptr<Backlight> backlight_;
+    std::unique_ptr<Images> images_;
 };
 
 }  // namespace migo::linux_host::qt6
