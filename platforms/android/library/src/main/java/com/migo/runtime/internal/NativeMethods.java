@@ -54,7 +54,7 @@ public final class NativeMethods {
     private static final long MAX_CAMERA_FRAME_PIXELS =
             (long) MAX_CAMERA_FRAME_DIMENSION * MAX_CAMERA_FRAME_DIMENSION;
 
-    /** Maximum synchronous Y/U/V payload copied from a camera callback. */
+    /** Maximum synchronous payload a camera callback reads -- its Y/U/V -- or writes -- its RGBA. */
     private static final long MAX_CAMERA_FRAME_BYTES = 64L * 1024L * 1024L;
 
     private static final int DEFAULT_LAUNCH_SCENE = 1001;
@@ -758,38 +758,44 @@ public final class NativeMethods {
      * Callback for camera frame data.
      * Called from {@link com.migo.runtime.internal.platform.CameraManager}.
      *
-     * @param sessionId The session ID
-     * @param cameraId  The camera instance ID
-     * @param yBuffer   Direct Y-plane ByteBuffer
-     * @param yOffset   Y-plane window start (buffer position)
-     * @param yLength   Y-plane window length (buffer remaining)
-     * @param uBuffer   Direct U-plane ByteBuffer
-     * @param uOffset   U-plane window start
-     * @param uLength   U-plane window length
-     * @param vBuffer   Direct V-plane ByteBuffer
-     * @param vOffset   V-plane window start
-     * @param vLength   V-plane window length
-     * @param width     Frame width in pixels
-     * @param height    Frame height in pixels
+     * @param sessionId     The session ID
+     * @param cameraId      The camera instance ID
+     * @param yBuffer       Direct Y-plane ByteBuffer
+     * @param yOffset       Y-plane window start (buffer position)
+     * @param yLength       Y-plane window length (buffer remaining)
+     * @param yRowStride    Y-plane row stride
+     * @param uBuffer       Direct U-plane ByteBuffer
+     * @param uOffset       U-plane window start
+     * @param uLength       U-plane window length
+     * @param vBuffer       Direct V-plane ByteBuffer
+     * @param vOffset       V-plane window start
+     * @param vLength       V-plane window length
+     * @param uvRowStride   U- and V-plane row stride
+     * @param uvPixelStride U- and V-plane pixel stride
+     * @param width         Frame width in pixels
+     * @param height        Frame height in pixels
      */
     public static void onCameraFrameData(int sessionId, long generation, int cameraId,
-            ByteBuffer yBuffer, int yOffset, int yLength,
+            ByteBuffer yBuffer, int yOffset, int yLength, int yRowStride,
             ByteBuffer uBuffer, int uOffset, int uLength,
             ByteBuffer vBuffer, int vOffset, int vLength,
+            int uvRowStride, int uvPixelStride,
             int width, int height) {
         // Native code reads each plane via its direct address. Reject malformed
         // or oversized metadata before crossing JNI; the Rust entry point and
-        // shared packing boundary repeat their own checks.
+        // the shared conversion repeat their own checks.
         if (sessionId >= 0
                 && isCameraFrameMetadataWithinLimits(
                         width, height, yLength, uLength, vLength)
+                && yRowStride > 0 && uvRowStride > 0 && uvPixelStride > 0
                 && yBuffer != null && yBuffer.isDirect()
                 && uBuffer != null && uBuffer.isDirect()
                 && vBuffer != null && vBuffer.isDirect()) {
             NativeBridge.onCameraFrameData(sessionId, generation, cameraId,
-                    yBuffer, yOffset, yLength,
+                    yBuffer, yOffset, yLength, yRowStride,
                     uBuffer, uOffset, uLength,
                     vBuffer, vOffset, vLength,
+                    uvRowStride, uvPixelStride,
                     width, height);
         }
     }
@@ -804,15 +810,20 @@ public final class NativeMethods {
         }
 
         final long pixels;
+        final long rgbaBytes;
         final long totalBytes;
         try {
             pixels = Math.multiplyExact((long) width, (long) height);
+            // What content is given: four bytes a pixel.
+            rgbaBytes = Math.multiplyExact(pixels, 4L);
             totalBytes = Math.addExact(
                     Math.addExact((long) yLength, (long) uLength), (long) vLength);
         } catch (ArithmeticException ignored) {
             return false;
         }
-        return pixels <= MAX_CAMERA_FRAME_PIXELS && totalBytes <= MAX_CAMERA_FRAME_BYTES;
+        return pixels <= MAX_CAMERA_FRAME_PIXELS
+                && rgbaBytes <= MAX_CAMERA_FRAME_BYTES
+                && totalBytes <= MAX_CAMERA_FRAME_BYTES;
     }
 
     // ==================== Bluetooth Callbacks ====================

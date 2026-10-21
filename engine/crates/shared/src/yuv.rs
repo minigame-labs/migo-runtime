@@ -1,14 +1,15 @@
-//! Decoded video, YUV 4:2:0, as the straight RGBA8 content draws.
+//! YUV 4:2:0 -- a decoder's frames, a camera's -- as the straight RGBA8 content
+//! draws and reads.
 //!
-//! A platform decoder hands out three planes with their own strides -- a
-//! separate Cb and Cr (I420), interleaved ones (NV12, NV21: a pixel stride of
-//! two), whatever its codec produced -- so the planes are read through their
-//! strides, never assumed packed. The matrix and range are the stream's own,
-//! as its decoder reports them.
+//! A platform hands out three planes with their own strides -- a separate Cb
+//! and Cr (I420), interleaved ones (NV12, NV21: a pixel stride of two),
+//! whatever its codec or camera produced -- so the planes are read through
+//! their strides, never assumed packed. The matrix and range are the source's
+//! own, as its decoder or camera reports them.
 
 /// Which YUV-to-RGB matrix a stream was encoded with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Matrix {
+pub enum Matrix {
     Bt601,
     Bt709,
     Bt2020,
@@ -17,7 +18,7 @@ pub(crate) enum Matrix {
 /// What a stream says of itself: its matrix, and whether luma spans 0..255
 /// (full) or 16..235 (limited, the broadcast default).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Colour {
+pub struct Colour {
     pub matrix: Matrix,
     pub full_range: bool,
 }
@@ -25,7 +26,7 @@ pub(crate) struct Colour {
 impl Colour {
     /// The common reading of a stream that says nothing: limited range, BT.709
     /// from 720 lines up and BT.601 below.
-    pub(crate) fn assumed(height: u32) -> Self {
+    pub fn assumed(height: u32) -> Self {
         Self {
             matrix: if height >= 720 {
                 Matrix::Bt709
@@ -39,7 +40,7 @@ impl Colour {
 
 /// One plane: its bytes from the crop's origin, the distance between rows and
 /// between neighbouring samples.
-pub(crate) struct Plane<'a> {
+pub struct Plane<'a> {
     pub data: &'a [u8],
     pub row_stride: usize,
     pub pixel_stride: usize,
@@ -83,7 +84,7 @@ impl Coefficients {
 /// Write `width` x `height` pixels of 4:2:0 `y`, `cb`, `cr` into `rgba`, row
 /// by row, top first, alpha opaque. The chroma planes hold one sample per two
 /// by two pixels.
-pub(crate) fn to_rgba(
+pub fn to_rgba(
     y: &Plane,
     cb: &Plane,
     cr: &Plane,

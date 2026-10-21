@@ -1016,10 +1016,12 @@ public final class CameraManager implements RuntimeScoped {
                     }
 
                     // Pass each plane's direct ByteBuffer by reference plus its
-                    // [position, position+remaining) window; native code copies
-                    // the windows once, concatenating them in Y/U/V order.
+                    // [position, position+remaining) window and strides; native
+                    // code reads them once, into the RGBA content is given.
                     // position()/remaining() are pure reads (no get()), so the
                     // window matches position..limit and the planes are untouched.
+                    // YUV_420_888's U and V planes share their row and pixel
+                    // strides; its Y plane's pixel stride is always 1.
                     ByteBuffer yBuffer = planes[0].getBuffer();
                     ByteBuffer uBuffer = planes[1].getBuffer();
                     ByteBuffer vBuffer = planes[2].getBuffer();
@@ -1033,9 +1035,10 @@ public final class CameraManager implements RuntimeScoped {
 
                     // Synchronous native copy while the Image is still open.
                     NativeMethods.onCameraFrameData(sessionId, token.generation(), cameraId,
-                            yBuffer, yOff, yLen,
+                            yBuffer, yOff, yLen, planes[0].getRowStride(),
                             uBuffer, uOff, uLen,
                             vBuffer, vOff, vLen,
+                            planes[1].getRowStride(), planes[1].getPixelStride(),
                             image.getWidth(), image.getHeight());
                 } finally {
                     // Close the Image BEFORE releasing the monitor so no closer

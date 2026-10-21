@@ -270,7 +270,7 @@ mod tests {
             .find(|method| method.name == "onCameraFrameData")
             .expect("media camera-frame contract");
         assert_eq!(method.sig.matches("Ljava/nio/ByteBuffer;").count(), 3);
-        assert_eq!(method.sig.matches('I').count(), 10);
+        assert_eq!(method.sig.matches('I').count(), 13);
         assert!(method.sig.ends_with(")V"));
     }
 }
