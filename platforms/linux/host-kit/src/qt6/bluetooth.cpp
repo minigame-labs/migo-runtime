@@ -213,12 +213,6 @@ void Bluetooth::call(std::uint32_t method, const QJsonObject &request, MigoQtHos
         case MIGO_BLUETOOTH_GET_BLE_MTU:
             mtu(request, std::move(reply));
             return;
-        case MIGO_BLUETOOTH_START_BEACON_DISCOVERY:
-        case MIGO_BLUETOOTH_STOP_BEACON_DISCOVERY:
-        case MIGO_BLUETOOTH_GET_BEACONS:
-            // The common platform's "unsupport", as on Apple without beacons.
-            (void)reply.fail(QStringLiteral("unsupport"), 11000);
-            return;
         default:
             // A connected device's RSSI, which BlueZ gives no app; pairing,
             // asking whether a device is paired and setting the MTU, the
@@ -441,6 +435,8 @@ void Bluetooth::startDiscovery(const QJsonObject &request, MigoQtHostServiceRepl
         if (uuid.isEmpty()) return fail(reply, kInvalidData);
         services << uuid.toLower();
     }
+    services_.clear();
+    for (const QString &service : std::as_const(services)) services_.insert(service.toUpper());
     allow_duplicates_ = request.value(QStringLiteral("allowDuplicatesKey")).toBool(false);
     interval_ms_ = qMax(0, request.value(QStringLiteral("interval")).toInt(0));
     reported_.clear();
@@ -484,6 +480,13 @@ void Bluetooth::stopDiscovery() {
 
 void Bluetooth::found(const QString &path) {
     if (!path.startsWith(adapter_ + QLatin1Char('/'))) return;
+    if (!services_.isEmpty()) {
+        bool offers = false;
+        for (const QString &uuid : demarshal<QStringList>(properties(path, "org.bluez.Device1").value(QStringLiteral("UUIDs")))) {
+            offers = offers || services_.contains(fullUuid(uuid));
+        }
+        if (!offers) return;
+    }
     seen_.insert(path);
     if (!allow_duplicates_ && reported_.contains(path)) return;
     reported_.insert(path);

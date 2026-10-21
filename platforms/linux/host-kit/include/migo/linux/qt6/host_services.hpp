@@ -188,7 +188,9 @@ public:
 /// connections and GATT, answered as the Apple SDK answers them, with the same
 /// codes; a device is named by its address. A connected device's RSSI (BlueZ
 /// gives no app one), pairing and setting the MTU (the reference's for Android
-/// only), the peripheral mode and iBeacons are refused.
+/// only) and the peripheral mode are refused. iBeacons are heard in the BLE
+/// advertisements BlueZ reports, on a scan of their own, and reported every
+/// second as CoreLocation ranges them.
 ///
 /// Motion: the accelerometer, gyroscope and magnetometer the kernel shows
 /// through IIO, in the screen's frame (udev's mount matrix, else the kernel's),
@@ -208,6 +210,7 @@ public:
 ///
 /// GUI thread only. What is on screen goes with this object.
 class Backlight;
+class Beacons;
 class Bluetooth;
 class Geolocation;
 class Images;
@@ -257,6 +260,8 @@ private:
     /// Made the first time content starts a sensor.
     std::unique_ptr<MotionSensors> motion_;
     std::unique_ptr<Bluetooth> bluetooth_;
+    /// Made the first time content looks for beacons, with a connection of its own.
+    std::unique_ptr<Beacons> beacons_;
 };
 
 }  // namespace migo::linux_host::qt6

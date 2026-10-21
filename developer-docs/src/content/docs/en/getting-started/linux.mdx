@@ -222,8 +222,15 @@ desktop already offers with Qt's own:
   connections answered once BlueZ has resolved the device's services (`timeout` honoured, `-1` for one already made).
   Services, characteristics, reads (the value arrives on its own), writes with or without response, notifications and
   the MTU (BlueZ 5.62 on) work as on the other platforms, with the common platform's codes. A device is named by its
-  address. A connected device's RSSI (BlueZ gives no app one), pairing and setting the MTU (Android's in the
-  reference), the peripheral mode and iBeacons are refused. BlueZ is mirrored only while the adapter is open.
+  address; a scan for some services reports only devices offering one, whoever else scans. A connected device's RSSI
+  (BlueZ gives no app one), pairing and setting the MTU (Android's in the reference) and the peripheral mode are
+  refused. BlueZ is mirrored only while the adapter is open.
+- **iBeacons** (`startBeaconDiscovery`, `getBeacons`, `onBeaconUpdate`, `onBeaconServiceChange`): heard in the BLE
+  advertisements BlueZ reports -- the Apple segment of type 2, length 21 -- on a scan of their own (its own D-Bus
+  connection, so content's device scan and the beacon scan neither narrow nor stop each other), for the proximity UUIDs
+  asked for (128-bit; anything else `11006`). The beacons in range are reported every second, as CoreLocation ranges
+  them, those not heard for ten seconds dropped; the distance and proximity are estimated from the RSSI and the
+  transmit power as the Android SDK does. Bluetooth off is `11001`. A second start ranges the new UUIDs instead.
 - **Motion** (`startAccelerometer`, `startGyroscope`, `startCompass`, `startDeviceMotionListening` and their stops): the
   accelerometer, gyroscope and magnetometer the kernel shows through IIO, read where udev finds them, in the screen's
   frame (x right, y up the screen, z out of it) -- udev's `ACCEL_MOUNT_MATRIX`, the hardware database's correction for

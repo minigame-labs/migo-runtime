@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The Linux Host Kit hears iBeacons in the BLE advertisements BlueZ reports, on a scan of its own, for the proximity
+  UUIDs asked for, reporting those in range every second (dropped after ten seconds unheard) with the Android SDK's
+  distance estimate. A device scan for some services now reports only devices offering one, whoever else scans.
 - The Linux Host Kit answers Bluetooth as a BLE central through BlueZ: the adapter, scans filtered by service (devices
   reported as heard, batched by `interval`, once each unless `allowDuplicatesKey`), the connected devices offering a
   service, connections answered once their services are resolved, services, characteristics, reads, writes,

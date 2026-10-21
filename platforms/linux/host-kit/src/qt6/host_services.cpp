@@ -1,6 +1,7 @@
 #include <migo/linux/qt6/host_services.hpp>
 
 #include "backlight.hpp"
+#include "beacons.hpp"
 #include "bluetooth.hpp"
 #include "geolocation.hpp"
 #include "images.hpp"
@@ -700,7 +701,20 @@ void MigoQtBuiltInHostServices::call(MigoHostService service, std::uint32_t meth
             motion(method, request, std::move(reply));
             return;
         case MIGO_HOST_SERVICE_BLUETOOTH:
-            bluetooth_->call(method, request, std::move(reply));
+            if (method == MIGO_BLUETOOTH_START_BEACON_DISCOVERY || method == MIGO_BLUETOOTH_STOP_BEACON_DISCOVERY ||
+                method == MIGO_BLUETOOTH_GET_BEACONS) {
+                if (beacons_ == nullptr) {
+                    beacons_ = std::make_unique<Beacons>(
+                        QDBusConnection::connectToBus(QDBusConnection::SystemBus,
+                                                      QStringLiteral("migo-beacons-%1").arg(reinterpret_cast<quintptr>(this))),
+                        [channel = channel_](std::uint32_t event, const QJsonObject &payload) {
+                            (void)channel->post(MIGO_HOST_SERVICE_BLUETOOTH, event, payload);
+                        });
+                }
+                beacons_->call(method, request, std::move(reply));
+            } else {
+                bluetooth_->call(method, request, std::move(reply));
+            }
             return;
         case MIGO_HOST_SERVICE_CLIPBOARD:
             if (method == MIGO_CLIPBOARD_SET_CLIPBOARD_DATA) {

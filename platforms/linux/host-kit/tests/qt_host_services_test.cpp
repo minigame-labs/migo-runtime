@@ -1,4 +1,5 @@
 #include "backlight.hpp"
+#include "beacons.hpp"
 #include "bluetooth.hpp"
 #include "fake_migo.hpp"
 #include "geolocation.hpp"
@@ -58,6 +59,7 @@
 
 using migo::linux_host::SurfaceHost;
 using migo::linux_host::SurfaceState;
+using migo::linux_host::qt6::Beacons;
 using migo::linux_host::qt6::Bluetooth;
 using migo::linux_host::qt6::BluezInterfaces;
 using migo::linux_host::qt6::BluezObjects;
@@ -2295,7 +2297,6 @@ private slots:
 
         QCOMPARE(parsed(ask(MIGO_BLUETOOTH_GET_BLE_MTU, device).payload).value(QStringLiteral("mtu")).toInt(), 185);
         QCOMPARE(ask(MIGO_BLUETOOTH_GET_BLE_DEVICE_RSSI, device).message, std::string("not supported"));
-        QCOMPARE(code(ask(MIGO_BLUETOOTH_START_BEACON_DISCOVERY, {})), 11000);
 
         // The device goes: content hears it, and its calls find no connection.
         bluez.change(kDevicePath, QStringLiteral("org.bluez.Device1"),
@@ -2324,6 +2325,133 @@ private slots:
         bluez.change(kAdapterPath, QStringLiteral("org.bluez.Adapter1"), {{QStringLiteral("Powered"), false}});
         QCOMPARE(code(ask(MIGO_BLUETOOTH_OPEN_ADAPTER, {})), 10001);
 
+        channel->close();
+        QCOMPARE(fixture.session.close(), MIGO_OK);
+    }
+
+    /// A device scan for some services reports only devices offering one:
+    /// BlueZ's devices are every client's, found by another's scan too.
+    void a_scan_reports_only_the_services_asked_for() {
+        Managed fixture;
+        std::shared_ptr<MigoQtHostServiceChannel> channel = MigoQtHostServiceChannel::open(fake_migo::session());
+        QDBusConnection bus = QDBusConnection::sessionBus();
+        FakeBluez bluez(bus);
+        QVERIFY(bluez.registered());
+        std::vector<std::uint32_t> events;
+        Bluetooth bluetooth(bus, [&events](std::uint32_t event, const QJsonObject &) { events.push_back(event); },
+                            [](const QString &, const QString &, const QString &, const QByteArray &) {});
+        std::uint64_t next = 300;
+        const auto ask = [&](std::uint32_t method, const QJsonObject &request) {
+            const std::uint64_t id = ++next;
+            fake_migo::expect_host_service_call(MIGO_HOST_SERVICE_BLUETOOTH, id);
+            bluetooth.call(method, request, channel->reply(id));
+            (void)QTest::qWaitFor([id] { return answerTo(id).has_value(); }, 5000);
+            return answerTo(id).value_or(fake_migo::HostServiceAnswer{});
+        };
+        QCOMPARE(ask(MIGO_BLUETOOTH_OPEN_ADAPTER, {}).status, MIGO_HOST_SERVICE_STATUS_OK);
+        // A battery service is asked for; the heart-rate device is heard all the same.
+        QCOMPARE(ask(MIGO_BLUETOOTH_START_DEVICES_DISCOVERY, {{"services", QJsonArray{"180F"}}}).status,
+                 MIGO_HOST_SERVICE_STATUS_OK);
+        QTest::qWait(200);
+        QVERIFY(std::none_of(events.begin(), events.end(),
+                             [](std::uint32_t event) { return event == MIGO_BLUETOOTH_EVENT_DEVICE_FOUND; }));
+        QCOMPARE(ask(MIGO_BLUETOOTH_CLOSE_ADAPTER, {}).status, MIGO_HOST_SERVICE_STATUS_OK);
+        channel->close();
+        QCOMPARE(fixture.session.close(), MIGO_OK);
+    }
+
+    /// iBeacons: the Apple segment parsed, only the UUIDs asked for, the
+    /// beacons in range every second with the Android SDK's distance, a
+    /// second start ranging the new UUIDs, and the codes.
+    void beacons_are_heard_and_ranged() {
+        using namespace std::chrono_literals;
+        // The segment: type 2, length 21, UUID, major 1, minor 2, -59 dBm at a metre.
+        const QByteArray segment = QByteArray::fromHex("0215fda50693a4e24fb1afcfc6eb0764782500010002c5");
+        const auto sighting = Beacons::parse(segment);
+        QVERIFY(sighting.has_value());
+        QCOMPARE(sighting->uuid, QStringLiteral("FDA50693-A4E2-4FB1-AFCF-C6EB07647825"));
+        QCOMPARE(sighting->major, 1);
+        QCOMPARE(sighting->minor, 2);
+        QCOMPARE(sighting->power, -59);
+        QVERIFY(!Beacons::parse(QByteArray::fromHex("0215fda5")).has_value());
+        QVERIFY(!Beacons::parse(QByteArray::fromHex("0315fda50693a4e24fb1afcfc6eb0764782500010002c5")).has_value());
+        QVERIFY(std::abs(Beacons::accuracy(-59, -59) - 1.0109) < 0.001);
+        QCOMPARE(Beacons::accuracy(0, -59), -1.0);
+        QCOMPARE(Beacons::proximity(-1), 0);
+        QCOMPARE(Beacons::proximity(0.3), 1);
+        QCOMPARE(Beacons::proximity(1.0), 2);
+        QCOMPARE(Beacons::proximity(9.0), 3);
+
+        Managed fixture;
+        std::shared_ptr<MigoQtHostServiceChannel> channel = MigoQtHostServiceChannel::open(fake_migo::session());
+        FakeBluez bluez(QDBusConnection::sessionBus());
+        QVERIFY(bluez.registered());
+        QDBusArgument manufacturer;
+        manufacturer.beginMap(QMetaType::fromType<quint16>(), QMetaType::fromType<QDBusVariant>());
+        manufacturer.beginMapEntry();
+        manufacturer << quint16{0x004c} << QDBusVariant(segment);
+        manufacturer.endMapEntry();
+        manufacturer.endMap();
+        bluez.objects[QDBusObjectPath(kDevicePath)][QStringLiteral("org.bluez.Device1")].insert(
+            QStringLiteral("ManufacturerData"), QVariant::fromValue(manufacturer));
+
+        std::vector<std::pair<std::uint32_t, QJsonObject>> events;
+        Beacons beacons(QDBusConnection::connectToBus(QDBusConnection::SessionBus, QStringLiteral("migo-beacons-test")),
+                        [&events](std::uint32_t event, const QJsonObject &payload) { events.emplace_back(event, payload); });
+        std::uint64_t next = 200;
+        const auto ask = [&](std::uint32_t method, const QJsonObject &request) {
+            const std::uint64_t id = ++next;
+            fake_migo::expect_host_service_call(MIGO_HOST_SERVICE_BLUETOOTH, id);
+            beacons.call(method, request, channel->reply(id));
+            (void)QTest::qWaitFor([id] { return answerTo(id).has_value(); }, 5000);
+            return answerTo(id).value_or(fake_migo::HostServiceAnswer{});
+        };
+        const auto code = [](const fake_migo::HostServiceAnswer &answer) {
+            return answer.has_error_code ? answer.error_code : 0;
+        };
+        QCOMPARE(code(ask(MIGO_BLUETOOTH_START_BEACON_DISCOVERY, {})), 11006);
+        QCOMPARE(code(ask(MIGO_BLUETOOTH_START_BEACON_DISCOVERY, {{"uuids", QJsonArray{"180D"}}})), 11006);
+        QCOMPARE(ask(MIGO_BLUETOOTH_START_BEACON_DISCOVERY, {{"uuids", QJsonArray{"fda50693-a4e2-4fb1-afcf-c6eb07647825"}}}).status,
+                 MIGO_HOST_SERVICE_STATUS_OK);
+        QCOMPARE(bluez.adapter.started, 1);
+        QCOMPARE(bluez.adapter.filter.value(QStringLiteral("DuplicateData")).toBool(), true);
+        QVERIFY(std::any_of(events.begin(), events.end(), [](const auto &event) {
+            return event.first == MIGO_BLUETOOTH_EVENT_BEACON_SERVICE_CHANGE &&
+                   event.second.value(QStringLiteral("discovering")).toBool();
+        }));
+        // The advertisement heard as the scan started; reported within a second.
+        const auto lastUpdate = [&events] {
+            for (auto event = events.rbegin(); event != events.rend(); ++event) {
+                if (event->first == MIGO_BLUETOOTH_EVENT_BEACON_UPDATE) return event->second.value(QStringLiteral("beacons")).toArray();
+            }
+            return QJsonArray();
+        };
+        QTRY_COMPARE_WITH_TIMEOUT(lastUpdate().size(), 1, 3000);
+        const QJsonObject beacon = lastUpdate().at(0).toObject();
+        QCOMPARE(beacon.value(QStringLiteral("uuid")).toString(), QStringLiteral("FDA50693-A4E2-4FB1-AFCF-C6EB07647825"));
+        QCOMPARE(beacon.value(QStringLiteral("major")).toInt(), 1);
+        QCOMPARE(beacon.value(QStringLiteral("minor")).toInt(), 2);
+        QCOMPARE(beacon.value(QStringLiteral("rssi")).toInt(), -60);
+        QCOMPARE(beacon.value(QStringLiteral("proximity")).toInt(), 2);
+        QCOMPARE(parsed(ask(MIGO_BLUETOOTH_GET_BEACONS, {}).payload).value(QStringLiteral("beacons")).toArray().size(), 1);
+
+        // Another UUID: this beacon is not one of them.
+        QCOMPARE(ask(MIGO_BLUETOOTH_START_BEACON_DISCOVERY, {{"uuids", QJsonArray{"E2C56DB5-DFFB-48D2-B060-D0F5A71096E0"}}}).status,
+                 MIGO_HOST_SERVICE_STATUS_OK);
+        QCOMPARE(bluez.adapter.started, 1);
+        bluez.change(kDevicePath, QStringLiteral("org.bluez.Device1"), {{QStringLiteral("RSSI"), QVariant::fromValue(qint16{-55})}});
+        QTest::qWait(1300);
+        QCOMPARE(lastUpdate().size(), 0);
+
+        QCOMPARE(ask(MIGO_BLUETOOTH_STOP_BEACON_DISCOVERY, {}).status, MIGO_HOST_SERVICE_STATUS_OK);
+        QTRY_COMPARE(bluez.adapter.stopped, 1);
+        QCOMPARE(ask(MIGO_BLUETOOTH_STOP_BEACON_DISCOVERY, {}).status, MIGO_HOST_SERVICE_STATUS_OK);
+        QCOMPARE(parsed(ask(MIGO_BLUETOOTH_GET_BEACONS, {}).payload).value(QStringLiteral("beacons")).toArray().size(), 0);
+
+        // The switch off: no beacons to hear.
+        bluez.change(kAdapterPath, QStringLiteral("org.bluez.Adapter1"), {{QStringLiteral("Powered"), false}});
+        QCOMPARE(code(ask(MIGO_BLUETOOTH_START_BEACON_DISCOVERY, {{"uuids", QJsonArray{"fda50693-a4e2-4fb1-afcf-c6eb07647825"}}})),
+                 11001);
         channel->close();
         QCOMPARE(fixture.session.close(), MIGO_OK);
     }
