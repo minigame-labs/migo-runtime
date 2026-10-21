@@ -306,6 +306,48 @@ var _deferredPendingCount = 0;
 // admission can fail, and APIs with timeout disabled would otherwise have no
 // bound.
 
+// ---- a call that asks for its scope ----------------------------------------
+//
+// What content may do only with a scope it has been granted asks for that scope
+// itself when nobody has decided it: authorize is how content asks in advance,
+// and once it is granted later calls do not ask (the reference's authorize
+// page). system/14_setting.js owns the asking and registers it here: given what
+// a gated op threw, a Promise settled once the scope is decided, or null when
+// the refusal is not of an undecided scope. The call then runs again, and its
+// op decides from the recorded decision: granted, it goes ahead; refused, or
+// with nobody to ask, it refuses as it did.
+var _scopeAsker = null;
+
+function setScopeAsker(asker) {
+    _scopeAsker = asker;
+}
+
+// For a call made outside createDeferredApi: runs `call`, then `done`; when
+// `call` throws the refusal of a scope nobody has decided, asks for the scope
+// and runs it once more. `failed` gets anything else it throws.
+function withScope(call, done, failed) {
+    try {
+        call();
+    } catch (e) {
+        var asking = _scopeAsker === null ? null : _scopeAsker(e);
+        if (asking === null) {
+            failed(e);
+            return;
+        }
+        asking.then(function () {
+            try {
+                call();
+            } catch (again) {
+                failed(again);
+                return;
+            }
+            done();
+        });
+        return;
+    }
+    done();
+}
+
 function createDeferredApi(apiName, defaultTimeoutMs) {
     var _pending = new Map();
     if (defaultTimeoutMs === undefined) defaultTimeoutMs = 30000;
@@ -407,10 +449,31 @@ function createDeferredApi(apiName, defaultTimeoutMs) {
                 entry.reject(res);
             }
 
+            // Refused for a scope nobody has decided, the call asks for it --
+            // once -- and starts again when it is decided. The player's answer
+            // is not the call's time: its timer stops while they are asked.
+            var askedForScope = false;
+            function refused(e) {
+                var asking = askedForScope || _scopeAsker === null ? null : _scopeAsker(e);
+                if (asking === null) {
+                    failStart(e);
+                    return;
+                }
+                askedForScope = true;
+                clearTimeout(pendingEntry._timer);
+                asking.then(function () {
+                    try {
+                        start();
+                    } catch (again) {
+                        failStart(again);
+                    }
+                });
+            }
+
             // Timer admission and executor dispatch are one rollback scope:
             // either both start, or the pending entry and timer are removed and
             // the caller receives exactly one failure settlement.
-            try {
+            function start() {
                 var ms = (opts && typeof opts._timeout === 'number') ? opts._timeout : defaultTimeoutMs;
                 if (ms > 0) {
                     pendingEntry._timer = setTimeout(function () {
@@ -427,10 +490,13 @@ function createDeferredApi(apiName, defaultTimeoutMs) {
                 // names. Its rejection fails the request as a throw would.
                 var started = executor(opts, requestId);
                 if (started !== undefined && started !== null && typeof started.then === 'function') {
-                    started.then(undefined, failStart);
+                    started.then(undefined, refused);
                 }
+            }
+            try {
+                start();
             } catch (e) {
-                failStart(e);
+                refused(e);
             }
         })();
         return settlement.promise;
@@ -609,4 +675,6 @@ export {
     // rest" is a second answer to that.
     invokeCallback,
     errorMessage,
+    setScopeAsker,
+    withScope,
 };

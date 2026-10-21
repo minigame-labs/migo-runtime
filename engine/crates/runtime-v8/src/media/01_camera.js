@@ -9,7 +9,7 @@ import {
   op_camera_listen_frame_change,
   op_camera_close_frame_change,
 } from "ext:core/ops";
-import { allocateHostCallbackId, wrapAsync, createListenerGroup, invokeCallback, errorMessage, failMessage } from "ext:host_v8_base/02_async.js";
+import { allocateHostCallbackId, wrapAsync, createListenerGroup, invokeCallback, errorMessage, failMessage, withScope } from "ext:host_v8_base/02_async.js";
 
 // Camera instance registry: cameraId -> Camera
 const _cameras = new Map();
@@ -265,47 +265,42 @@ class Camera {
  * @returns {Camera}
  */
 function createCamera(options = {}) {
+  const failed = (e) => {
+    invokeCallback("createCamera", "fail", options.fail, { errMsg: failMessage("createCamera", e) });
+    invokeCallback("createCamera", "complete", options.complete, undefined);
+  };
   let cameraId;
-  let camera;
   try {
     // From the Host's id space rather than a module counter: the platform keeps
     // the camera slot in a table that outlives this isolate, so a counter
     // restarting at 1 aims the retired runtime's frames at the replacement's
-    // camera. Inside this `try` on purpose -- an exhausted id space then takes
-    // the same `fail`/`complete` path everything else here takes, and needs no
-    // failure convention of its own.
+    // camera. An exhausted id space takes the same `fail`/`complete` path the
+    // host's refusal does. With no id there is no handle to give -- a Camera
+    // under an id nobody allocated would route somebody else's frames.
     cameraId = allocateHostCallbackId();
-    const opts = JSON.stringify({
-      cameraId,
-      x: options.x ?? 0,
-      y: options.y ?? 0,
-      width: options.width ?? 300,
-      height: options.height ?? 150,
-      devicePosition: options.devicePosition ?? "back",
-      flash: options.flash ?? "auto",
-      size: options.size ?? "small",
-    });
-
-    op_camera_create(opts);
-    camera = new Camera(cameraId);
-    _cameras.set(cameraId, camera);
-
-    invokeCallback("createCamera", "success", options.success, { camera });
   } catch (e) {
-    const errMsg = failMessage("createCamera", e);
-    invokeCallback("createCamera", "fail", options.fail, { errMsg });
-    // The host refused, but the id is this runtime's: content still gets a
-    // handle so its later calls fail cleanly instead of on `undefined`. With no
-    // id there is no handle to give -- a Camera under an id nobody allocated
-    // would route somebody else's frames.
-    if (!camera && cameraId !== undefined) {
-      camera = new Camera(cameraId);
-      _cameras.set(cameraId, camera);
-    }
-  } finally {
-    invokeCallback("createCamera", "complete", options.complete, undefined);
+    failed(e);
+    return undefined;
   }
-
+  const opts = JSON.stringify({
+    cameraId,
+    x: options.x ?? 0,
+    y: options.y ?? 0,
+    width: options.width ?? 300,
+    height: options.height ?? 150,
+    devicePosition: options.devicePosition ?? "back",
+    flash: options.flash ?? "auto",
+    size: options.size ?? "small",
+  });
+  // The handle is content's whatever the host answers, so its later calls fail
+  // cleanly instead of on `undefined`; with scope.camera undecided, the host
+  // is answered after the player is asked (withScope).
+  const camera = new Camera(cameraId);
+  _cameras.set(cameraId, camera);
+  withScope(() => op_camera_create(opts), () => {
+    invokeCallback("createCamera", "success", options.success, { camera });
+    invokeCallback("createCamera", "complete", options.complete, undefined);
+  }, failed);
   return camera;
 }
 

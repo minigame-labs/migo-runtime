@@ -340,7 +340,7 @@ mod runtime_restart_boundary_tests {
             &mut rt,
             r#"
             globalThis.__checked = [];
-            globalThis.__assertTakesOneId = function (name, fn) {
+            globalThis.__assertTakesIds = function (name, fn, wanted) {
                 if (typeof fn !== 'function') return;
                 const before = globalThis.__allocId();
                 try {
@@ -351,12 +351,15 @@ mod runtime_restart_boundary_tests {
                     // listening. Allocation happens first, which is the property.
                 }
                 const after = globalThis.__allocId();
-                if (after - before !== 2) {
+                if (after - before - 1 !== wanted) {
                     throw new Error(
-                        name + ' took ' + (after - before - 1) + ' ids from the Host space, want 1'
+                        name + ' took ' + (after - before - 1) + ' ids from the Host space, want ' + wanted
                     );
                 }
                 globalThis.__checked.push(name);
+            };
+            globalThis.__assertTakesOneId = function (name, fn) {
+                globalThis.__assertTakesIds(name, fn, 1);
             };
 
             __assertTakesOneId('migo.login', migo.login && function () { return migo.login({}); });
@@ -375,7 +378,9 @@ mod runtime_restart_boundary_tests {
             // a module counter restarting at 1 points the retired runtime's
             // events -- camera frames, audio playback, an ad's reward verdict --
             // at the replacement runtime's objects.
-            __assertTakesOneId('migo.createCamera', migo.createCamera && function () { return migo.createCamera({}); });
+            // Two: the camera's, and that of asking for scope.camera, which
+            // nobody here has decided -- the call asks for it, as authorize does.
+            __assertTakesIds('migo.createCamera', migo.createCamera && function () { return migo.createCamera({}); }, 2);
             __assertTakesOneId(
                 'migo.createInnerAudioContext',
                 migo.createInnerAudioContext && function () { return migo.createInnerAudioContext(); },

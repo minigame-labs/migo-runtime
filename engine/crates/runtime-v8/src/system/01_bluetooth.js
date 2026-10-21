@@ -29,7 +29,8 @@ import { bytesToHex, hexToBytes } from "ext:host_v8_system/00_host_binary.js";
 // ==================== System Bluetooth Setting ====================
 
 // Named for the API content calls: its errMsg is `openSystemBluetoothSetting:ok`.
-const _openBluetoothSettingApi = createDeferredApi('openSystemBluetoothSetting');
+// Timeout disabled: the player is in the system settings as long as they like.
+const _openBluetoothSettingApi = createDeferredApi('openSystemBluetoothSetting', 0);
 
 function openSystemBluetoothSetting(options = {}) {
     return _openBluetoothSettingApi.invoke(options, function (opts, requestId) {
