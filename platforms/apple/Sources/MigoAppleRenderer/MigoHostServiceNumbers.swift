@@ -22,10 +22,11 @@ extension MigoHostServiceID {
     public static let ecosystem = Self(rawValue: 17)
     public static let update = Self(rawValue: 18)
     public static let camera = Self(rawValue: 19)
+    public static let recorder = Self(rawValue: 20)
 
     /// Every service this SDK knows, in number order.
     public static let all: [Self] = [
-        .ad, .payment, .auth, .share, .navigate, .subpackage, .permission, .setting, .interaction, .clipboard, .scanCode, .location, .image, .motion, .screen, .bluetooth, .window, .ecosystem, .update, .camera,
+        .ad, .payment, .auth, .share, .navigate, .subpackage, .permission, .setting, .interaction, .clipboard, .scanCode, .location, .image, .motion, .screen, .bluetooth, .window, .ecosystem, .update, .camera, .recorder,
     ]
 
     /// `ad`'s method and event numbers, as `include/migo/host_services.h` documents them.
@@ -354,6 +355,29 @@ extension MigoHostServiceID {
         public enum Event {
             public static let stop: UInt32 = 0
             public static let authCancel: UInt32 = 1
+        }
+    }
+
+    /// `recorder`'s method and event numbers, as `include/migo/host_services.h` documents them.
+    public enum Recorder {
+        /// `start`: a command, unanswered.
+        public static let start: UInt32 = 0
+        /// `pause`: a command, unanswered.
+        public static let pause: UInt32 = 1
+        /// `resume`: a command, unanswered.
+        public static let resume: UInt32 = 2
+        /// `stop`: a command, unanswered.
+        public static let stop: UInt32 = 3
+
+        /// The service's events, for `postHostServiceEvent`.
+        public enum Event {
+            public static let start: UInt32 = 0
+            public static let pause: UInt32 = 1
+            public static let resume: UInt32 = 2
+            public static let stop: UInt32 = 3
+            public static let error: UInt32 = 4
+            public static let interruptionBegin: UInt32 = 5
+            public static let interruptionEnd: UInt32 = 6
         }
     }
 }

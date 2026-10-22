@@ -242,11 +242,13 @@ mod tests {
             "normal data lane must be saturated"
         );
 
+        // The recording's STOP event, as every SDK delivers it: its hook, on
+        // the reliable lane.
         reliable_tx
-            .send(crate::protocol::host_cmd::HostCommand::RecorderEvent {
-                event_type: "stop".to_owned(),
-                json_payload: "{}".to_owned(),
-                runtime_generation: None,
+            .send(crate::protocol::host_cmd::HostCommand::InvokeHostHook {
+                hook: crate::services::RECORDER_EVENT_HOOKS
+                    [crate::services::recorder_event::STOP as usize],
+                args_json: std::borrow::Cow::Borrowed(r#"["{\"recordingId\":1}"]"#),
             })
             .expect("reliable termination event must bypass normal saturation");
 
@@ -256,8 +258,8 @@ mod tests {
         ));
         assert!(matches!(
             receiver.try_recv().expect("termination event remains queued"),
-            crate::protocol::host_cmd::HostCommand::RecorderEvent { event_type, .. }
-                if event_type == "stop"
+            crate::protocol::host_cmd::HostCommand::InvokeHostHook { hook, .. }
+                if hook == "_internalOnRecorderStopEvent"
         ));
     }
     #[test]

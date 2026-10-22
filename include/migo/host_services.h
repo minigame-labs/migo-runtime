@@ -57,6 +57,7 @@ typedef uint32_t MigoHostService;
 #define MIGO_HOST_SERVICE_ECOSYSTEM 17U
 #define MIGO_HOST_SERVICE_UPDATE 18U
 #define MIGO_HOST_SERVICE_CAMERA 19U
+#define MIGO_HOST_SERVICE_RECORDER 20U
 
 /*
  * Ads. All six are commands addressed to the advert by the adId in their
@@ -488,6 +489,43 @@ typedef uint32_t MigoHostService;
 #define MIGO_CAMERA_EVENT_AUTH_CANCEL 1U
 
 /*
+ * MIGO_HOST_SERVICE_RECORDER: getRecorderManager's microphone, one recording at
+ * a time. Every method is a command -- the reference's recorder is heard through
+ * events -- and scope.record is the engine's: no START reaches the host before
+ * it is granted. Each request carries the recording's "recordingId", and every
+ * event and frame the host reports carries it back: content drops what is not
+ * of the recording it holds.
+ *
+ *   START {"recordingId", "duration", "sampleRate", "numberOfChannels",
+ *       "encodeBitRate", "format", "frameSize"?, "audioSource", "audioMode"}:
+ *       record for at most duration ms (up to 600000), format "mp3", "aac",
+ *       "wav" or "PCM"; with frameSize (KB), hand over frames of about that size
+ *       with migo_session_post_recorder_frame as they are recorded. A recording
+ *       already under way stops first, with no STOP. Reported: EVENT_START once
+ *       it records, or EVENT_ERROR.
+ *   PAUSE, RESUME {"recordingId"}: EVENT_PAUSE, EVENT_RESUME once done; a
+ *       request in the wrong state is ignored.
+ *   STOP {"recordingId"}: EVENT_STOP once the file is written.
+ *
+ * Events, each {"recordingId", ...}: START, PAUSE, RESUME; STOP with
+ * {"tempFilePath", "duration" (ms), "fileSize" (bytes)} -- also when the
+ * duration runs out -- the file handed over as a call result's are; ERROR with
+ * {"errMsg"}; INTERRUPTION_BEGIN and INTERRUPTION_END when the system takes the
+ * microphone away and gives it back.
+ */
+#define MIGO_RECORDER_START 0U
+#define MIGO_RECORDER_PAUSE 1U
+#define MIGO_RECORDER_RESUME 2U
+#define MIGO_RECORDER_STOP 3U
+#define MIGO_RECORDER_EVENT_START 0U
+#define MIGO_RECORDER_EVENT_PAUSE 1U
+#define MIGO_RECORDER_EVENT_RESUME 2U
+#define MIGO_RECORDER_EVENT_STOP 3U
+#define MIGO_RECORDER_EVENT_ERROR 4U
+#define MIGO_RECORDER_EVENT_INTERRUPTION_BEGIN 5U
+#define MIGO_RECORDER_EVENT_INTERRUPTION_END 6U
+
+/*
  * Content's permission scopes, in migo.getSetting()'s order. The host decides
  * each; until it reports one, content's capability calls that need it fail with
  * "auth deny", and getSetting omits it -- nobody has decided, which content
@@ -691,6 +729,23 @@ MIGO_STATIC_ASSERT(offsetof(MigoCameraFrame, struct_size) == 0,
                    "every versioned struct must begin with struct_size");
 MIGO_STATIC_ASSERT(offsetof(MigoCameraFrame, pixels) == 32, "MigoCameraFrame layout changed");
 
+/* One frame of a recording whose START asked for frames: length bytes of the
+ * recording's format (at most 1 MiB); is_last_frame 1 for the frame that ends
+ * the recording, which may be empty, else 0. */
+typedef struct MigoRecorderFrame {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint32_t recording_id;
+    uint32_t is_last_frame;
+    const uint8_t *data;
+    uint32_t length;
+    uint32_t reserved0;
+} MigoRecorderFrame;
+
+MIGO_STATIC_ASSERT(offsetof(MigoRecorderFrame, struct_size) == 0,
+                   "every versioned struct must begin with struct_size");
+MIGO_STATIC_ASSERT(offsetof(MigoRecorderFrame, data) == 16, "MigoRecorderFrame layout changed");
+
 /*
  * The largest payload or message either direction carries, in bytes. A longer
  * one is refused with MIGO_ERROR_INVALID_ARGUMENT before any byte is read.
@@ -878,6 +933,20 @@ MIGO_API MigoResult MIGO_CALL migo_session_post_ble_characteristic_value(
  */
 MIGO_API MigoResult MIGO_CALL migo_session_post_camera_frame(MigoSession *session,
                                                              const MigoCameraFrame *frame);
+
+/*
+ * Deliver one frame of a recording, from any thread, while a Surface is
+ * attached. Typed because a microphone sends many a second: the bytes are copied
+ * as the call reads them, so the record is only borrowed for the call. Frames
+ * share a byte budget content drains; a frame over it is refused with
+ * MIGO_ERROR_WOULD_BLOCK and dropped, the last frame never is. Returns
+ * MIGO_ERROR_INVALID_ARGUMENT for a NULL or malformed record, a recording_id of
+ * 0, an is_last_frame other than 0 or 1, a length over 1 MiB or data NULL with
+ * a length, or when the host did not declare MIGO_HOST_SERVICE_RECORDER;
+ * MIGO_ERROR_INVALID_STATE with no Surface attached.
+ */
+MIGO_API MigoResult MIGO_CALL migo_session_post_recorder_frame(MigoSession *session,
+                                                               const MigoRecorderFrame *frame);
 
 /*
  * Report the value a synchronous ecosystem getter answers with -- name is one of

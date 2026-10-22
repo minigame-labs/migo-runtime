@@ -109,11 +109,8 @@ const NATIVE_SENSORS: &[JniMethod] = methods![
 const NATIVE_MEDIA: &[JniMethod] = methods![
     ("onAudioInterruptionBegin", "(I)V"),
     ("onAudioInterruptionEnd", "(I)V"),
-    (
-        "onRecorderEvent",
-        "(IJLjava/lang/String;Ljava/lang/String;)V"
-    ),
-    ("onRecorderFrameData", "(IJ[BIZ)V"),
+    ("onRecorderEvent", "(IILjava/lang/String;)V"),
+    ("onRecorderFrameData", "(II[BIZ)V"),
     ("onCameraEvent", "(III)V"),
     ("onCameraResult", "(IILjava/lang/String;)V"),
     (
@@ -242,9 +239,9 @@ const JAVA_SENSORS: &[JniMethod] = methods![
 const JAVA_MEDIA: &[JniMethod] = methods![
     ("getAvailableAudioSources", "(I)Ljava/lang/String;"),
     ("recorderStart", "(ILjava/lang/String;)V"),
-    ("recorderPause", "(I)V"),
-    ("recorderResume", "(I)V"),
-    ("recorderStop", "(I)V"),
+    ("recorderPause", "(ILjava/lang/String;)V"),
+    ("recorderResume", "(ILjava/lang/String;)V"),
+    ("recorderStop", "(ILjava/lang/String;)V"),
     ("cameraCreate", "(ILjava/lang/String;)V"),
     ("cameraDestroy", "(ILjava/lang/String;)V"),
     ("cameraSet", "(ILjava/lang/String;)V"),

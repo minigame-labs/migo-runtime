@@ -1280,38 +1280,31 @@ public final class NativeMethods {
     // ==================== Recorder Callbacks ====================
 
     /**
-     * Callback for recorder events.
-     * Called from {@link com.migo.runtime.internal.platform.AudioRecorderManager}.
-     *
-     * @param sessionId   The session ID
-     * @param eventType   Event type: "start", "pause", "resume", "stop", "error",
-     *                    "interruptionBegin", "interruptionEnd"
-     * @param jsonPayload JSON-encoded event data
+     * What happened to a recording, by event number
+     * ({@code AudioRecorderManager.EVENT_*}): {@code payloadJson} is
+     * {@code {"recordingId", ...}} -- STOP's with its file, ERROR's with errMsg.
      */
-    public static void onRecorderEvent(
-            int sessionId, long generation, String eventType, String jsonPayload) {
-        if (sessionId >= 0 && eventType != null) {
-            NativeBridge.onRecorderEvent(
-                    sessionId, generation, eventType, jsonPayload != null ? jsonPayload : "{}");
+    public static void onRecorderEvent(int sessionId, int event, String payloadJson) {
+        if (sessionId >= 0 && payloadJson != null) {
+            NativeBridge.onRecorderEvent(sessionId, event, payloadJson);
         }
     }
 
     /**
-     * Callback for recorder frame data.
+     * One frame of recording {@code recordingId}.
      * Called from {@link com.migo.runtime.internal.platform.AudioRecorderManager}.
      *
-     * @param sessionId   The session ID
      * @param frameData   Raw audio frame bytes
      * @param frameLength Number of valid bytes at the start of {@code frameData}
      * @param isLastFrame Whether this is the last frame before stop
      */
     public static void onRecorderFrameData(
-            int sessionId, long generation, byte[] frameData, int frameLength,
+            int sessionId, int recordingId, byte[] frameData, int frameLength,
             boolean isLastFrame) {
         if (sessionId >= 0 && frameData != null
                 && frameLength >= 0 && frameLength <= frameData.length) {
             NativeBridge.onRecorderFrameData(
-                    sessionId, generation, frameData, frameLength, isLastFrame);
+                    sessionId, recordingId, frameData, frameLength, isLastFrame);
         }
     }
 

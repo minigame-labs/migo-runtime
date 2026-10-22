@@ -1491,33 +1491,33 @@ pub(crate) extern "system" fn onNetworkStatusChange<'local>(
 
 // ==================== Recorder Events ====================
 
+/// What happened to recording `recordingId` (in the payload), by its event
+/// number (`shared::services::RECORDER_EVENT_HOOKS`); a STOP hands its file over.
+/// Must-deliver, on the reliable lane: a full data queue may drop a frame, but
+/// it must never swallow a recording's end.
 pub(crate) extern "system" fn onRecorderEvent<'local>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
     host_id: jint,
-    generation: jlong,
-    event_type: JString<'local>,
-    json_payload: JString<'local>,
+    event: jint,
+    payload_json: JString<'local>,
 ) {
     jni_safe!("onRecorderEvent", {
-        let evt: String = env
-            .get_string(&event_type)
-            .map(|s| s.into())
-            .unwrap_or_default();
-        let payload: String = env
-            .get_string(&json_payload)
-            .map(|s| s.into())
-            .unwrap_or_else(|_| "{}".to_string());
-        // Recorder lifecycle events are must-deliver: a full data queue may
-        // drop a PCM frame, but it must never swallow stop/error state.
-        let _ = send_reliable_command_to_host(
+        let Some((event, hook)) = u32::try_from(event).ok().and_then(|event| {
+            shared::services::RECORDER_EVENT_HOOKS
+                .get(event as usize)
+                .map(|hook| (event, *hook))
+        }) else {
+            error!("onRecorderEvent: no recorder event {event}");
+            return;
+        };
+        let json = read_json_result(&mut env, &payload_json, "{}");
+        let for_js = shared::services::host_files::deliver_event(
             host_id,
-            HostCommand::RecorderEvent {
-                event_type: evt,
-                json_payload: payload,
-                runtime_generation: captured_generation(generation),
-            },
+            shared::services::recorder_event_files(event),
+            &json,
         );
+        send_json_result_to_js(host_id, &for_js, hook);
     });
 }
 
@@ -1525,7 +1525,7 @@ pub(crate) extern "system" fn onRecorderFrameData(
     mut env: JNIEnv,
     _class: JClass,
     host_id: jint,
-    generation: jlong,
+    recording_id: jint,
     frame_data: jni::sys::jbyteArray,
     frame_length: jint,
     is_last_frame: jni::sys::jboolean,
@@ -1582,10 +1582,10 @@ pub(crate) extern "system" fn onRecorderFrameData(
         std::mem::forget(raw);
         let data = unsafe { Vec::from_raw_parts(ptr, len, capacity) };
         let command = HostCommand::RecorderFrameData {
+            recording_id: recording_id as u32,
             data,
             is_last_frame,
             credit,
-            runtime_generation: captured_generation(generation),
         };
         if is_last_frame {
             let _ = send_reliable_command_to_host(host_id, command);

@@ -11,9 +11,9 @@ use migo_capi_abi::host_services::{
     MIGO_HOST_SERVICE_CAMERA, MIGO_HOST_SERVICE_CLIPBOARD, MIGO_HOST_SERVICE_ECOSYSTEM,
     MIGO_HOST_SERVICE_IMAGE, MIGO_HOST_SERVICE_INTERACTION, MIGO_HOST_SERVICE_LOCATION,
     MIGO_HOST_SERVICE_MOTION, MIGO_HOST_SERVICE_NAVIGATE, MIGO_HOST_SERVICE_PAYMENT,
-    MIGO_HOST_SERVICE_PERMISSION, MIGO_HOST_SERVICE_SCAN_CODE, MIGO_HOST_SERVICE_SCREEN,
-    MIGO_HOST_SERVICE_SHARE, MIGO_HOST_SERVICE_SUBPACKAGE, MIGO_HOST_SERVICE_UPDATE,
-    MIGO_HOST_SERVICE_WINDOW,
+    MIGO_HOST_SERVICE_PERMISSION, MIGO_HOST_SERVICE_RECORDER, MIGO_HOST_SERVICE_SCAN_CODE,
+    MIGO_HOST_SERVICE_SCREEN, MIGO_HOST_SERVICE_SHARE, MIGO_HOST_SERVICE_SUBPACKAGE,
+    MIGO_HOST_SERVICE_UPDATE, MIGO_HOST_SERVICE_WINDOW,
 };
 #[cfg(any(
     target_os = "macos",
@@ -25,9 +25,9 @@ use migo_core::services::{
     ClipboardService, CommerceServices, CompassService, ConnectivityServices, DeviceMotionService,
     EcosystemService, GameLogService, GamepadService, GyroscopeService, ImageApiService,
     InteractionService, KeyboardService, LocationService, MediaServices, NavigateService,
-    NetworkService, PaymentService, PermissionService, ScanCodeService, ScreenService,
-    SensorServices, ShareService, SubpackageService, SystemInfoService, SystemUtilServices,
-    UpdateService, VibrationService, WindowService,
+    NetworkService, PaymentService, PermissionService, RecorderService, ScanCodeService,
+    ScreenService, SensorServices, ShareService, SubpackageService, SystemInfoService,
+    SystemUtilServices, UpdateService, VibrationService, WindowService,
 };
 #[cfg(any(
     target_os = "ios",
@@ -302,6 +302,11 @@ impl MediaServices for CapiDeviceServices {
     fn camera(&self) -> Option<Arc<dyn CameraService>> {
         self.host_service(MIGO_HOST_SERVICE_CAMERA)
             .map(|services| services as Arc<dyn CameraService>)
+    }
+
+    fn recorder(&self) -> Option<Arc<dyn RecorderService>> {
+        self.host_service(MIGO_HOST_SERVICE_RECORDER)
+            .map(|services| services as Arc<dyn RecorderService>)
     }
 
     /// The platform's own decoders, in the engine: AVFoundation's on macOS.

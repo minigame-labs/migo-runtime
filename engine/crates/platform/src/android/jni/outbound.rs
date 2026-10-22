@@ -759,14 +759,14 @@ pub fn get_available_audio_sources(host_id: i32) -> Result<String, String> {
 // Calls Java: NativeExports.recorderStart(hostId, optionsJson)
 jni_void_json!(recorder_start, "recorderStart");
 
-// Pause recording. Calls Java: NativeExports.recorderPause(hostId)
-jni_void!(recorder_pause, "recorderPause");
+// Pause recording. Calls Java: NativeExports.recorderPause(hostId, requestJson)
+jni_void_json!(recorder_pause, "recorderPause");
 
-// Resume recording. Calls Java: NativeExports.recorderResume(hostId)
-jni_void!(recorder_resume, "recorderResume");
+// Resume recording. Calls Java: NativeExports.recorderResume(hostId, requestJson)
+jni_void_json!(recorder_resume, "recorderResume");
 
-// Stop recording. Calls Java: NativeExports.recorderStop(hostId)
-jni_void!(recorder_stop, "recorderStop");
+// Stop recording. Calls Java: NativeExports.recorderStop(hostId, requestJson)
+jni_void_json!(recorder_stop, "recorderStop");
 
 // ==================== Charset Encoding (GBK) ====================
 

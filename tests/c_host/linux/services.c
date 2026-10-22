@@ -69,9 +69,21 @@ typedef struct QueuedCall {
     uint64_t call_id;
     MigoHostService service;
     uint32_t method;
-    long arg;      /* a START's interval in ms; a REQUEST_SCOPE's MigoScope; a camera's id */
+    long arg;      /* a START's interval in ms; a REQUEST_SCOPE's MigoScope; a camera's
+                      or a recording's id */
     double number; /* SET_ZOOM's zoom */
+    struct {
+        long duration_ms;
+        long sample_rate;
+        long channels;
+        long frame_bytes; /* 0: no frames */
+        int format;       /* RecordFormat */
+    } record; /* a recorder START's options */
 } QueuedCall;
+
+/* What this host records into: a WAV file, or raw 16-bit PCM. The compressed
+ * formats need an encoder this host does not have. */
+typedef enum { RECORD_WAV, RECORD_PCM, RECORD_UNSUPPORTED } RecordFormat;
 
 #define QUEUE_CAPACITY 64U
 static QueuedCall g_queue[QUEUE_CAPACITY];
@@ -155,7 +167,11 @@ static long start_interval(const char *json, size_t length, uint32_t method) {
 void MIGO_CALL services_on_call(void *user_data, MigoSession *session,
                                 const MigoHostServiceCall *call) {
     (void)user_data;
-    QueuedCall queued = {call->call_id, call->service, call->method, 0, 0.0};
+    QueuedCall queued;
+    memset(&queued, 0, sizeof(queued));
+    queued.call_id = call->call_id;
+    queued.service = call->service;
+    queued.method = call->method;
     const char *json = call->payload_json_utf8 != NULL ? call->payload_json_utf8 : "";
     size_t length = call->payload_json_utf8 != NULL ? call->payload_length : 0;
     if (call->service == MIGO_HOST_SERVICE_MOTION && call->method % 2 == 0) {
@@ -168,6 +184,22 @@ void MIGO_CALL services_on_call(void *user_data, MigoSession *session,
         queued.arg = value != NULL ? strtol(value, NULL, 10) : -1;
         const char *zoom = json_value(json, length, "zoom");
         queued.number = zoom != NULL ? strtod(zoom, NULL) : 1.0;
+    } else if (call->service == MIGO_HOST_SERVICE_RECORDER) {
+        const char *end = json + length;
+        const char *value = json_value(json, length, "recordingId");
+        queued.arg = value != NULL ? strtol(value, NULL, 10) : 0;
+        value = json_value(json, length, "duration");
+        queued.record.duration_ms = value != NULL ? strtol(value, NULL, 10) : 60000;
+        value = json_value(json, length, "sampleRate");
+        queued.record.sample_rate = value != NULL ? strtol(value, NULL, 10) : 8000;
+        value = json_value(json, length, "numberOfChannels");
+        queued.record.channels = value != NULL ? strtol(value, NULL, 10) : 2;
+        value = json_value(json, length, "frameSize");
+        queued.record.frame_bytes = value != NULL ? strtol(value, NULL, 10) * 1024 : 0;
+        value = json_value(json, length, "format");
+        queued.record.format = value_is(value, end, "\"wav\"")   ? RECORD_WAV
+                               : value_is(value, end, "\"PCM\"") ? RECORD_PCM
+                                                                 : RECORD_UNSUPPORTED;
     }
     if (!queue_push(&queued)) {
         /* A full queue is the loop not keeping up; refuse rather than wait on
@@ -457,6 +489,215 @@ static void camera_tick(MigoSession *session, long now) {
     }
 }
 
+/* ---- The microphone: one that hears a steady tone. ---- */
+
+static const double TONE_HZ = 440.0;
+
+static struct {
+    int active;
+    int paused;
+    long id;
+    long sample_rate;
+    long channels;
+    long duration_ms;
+    int format;
+    FILE *file;
+    char path[256];
+    uint64_t frames_written; /* sample frames: one sample per channel */
+    long resumed_ms;         /* when it last started or resumed recording */
+    long recorded_ms;        /* recorded before that */
+    uint8_t *frame;          /* the frame being filled, frame_bytes long */
+    long frame_bytes;
+    long frame_fill;
+} g_recording;
+
+static void post_recorder_event(MigoSession *session, uint32_t event, const char *json) {
+    MigoResult r = migo_session_post_host_service_event(session, MIGO_HOST_SERVICE_RECORDER,
+                                                        event, json, (uint32_t)strlen(json));
+    if (r != MIGO_OK) {
+        fprintf(stderr, "[c-host] a recorder event was refused: %d\n", (int)r);
+        fflush(stderr);
+    }
+}
+
+static void recorder_fail(MigoSession *session, long id, const char *reason) {
+    char json[256];
+    snprintf(json, sizeof(json), "{\"recordingId\":%ld,\"errMsg\":\"%s\"}", id, reason);
+    post_recorder_event(session, MIGO_RECORDER_EVENT_ERROR, json);
+}
+
+static void post_recorder_frame(MigoSession *session, int last) {
+    MigoRecorderFrame frame;
+    memset(&frame, 0, sizeof(frame));
+    frame.struct_size = (uint32_t)sizeof(frame);
+    frame.abi_version = MIGO_ABI_VERSION_CURRENT;
+    frame.recording_id = (uint32_t)g_recording.id;
+    frame.is_last_frame = last ? 1U : 0U;
+    frame.data = g_recording.frame_fill > 0 ? g_recording.frame : NULL;
+    frame.length = (uint32_t)g_recording.frame_fill;
+    MigoResult r = migo_session_post_recorder_frame(session, &frame);
+    if (r != MIGO_OK && r != MIGO_ERROR_WOULD_BLOCK) {
+        fprintf(stderr, "[c-host] a recorder frame was refused: %d\n", (int)r);
+        fflush(stderr);
+    }
+    g_recording.frame_fill = 0;
+}
+
+/* A WAV header for `data_bytes` of 16-bit PCM, written at the file's start. */
+static void wav_header(FILE *file, long sample_rate, long channels, unsigned long data_bytes) {
+    fputs("RIFF", file);
+    put_u32(file, 36UL + data_bytes);
+    fputs("WAVEfmt ", file);
+    put_u32(file, 16);
+    put_u16(file, 1);
+    put_u16(file, (unsigned)channels);
+    put_u32(file, (unsigned long)sample_rate);
+    put_u32(file, (unsigned long)(sample_rate * channels * 2));
+    put_u16(file, (unsigned)(channels * 2));
+    put_u16(file, 16);
+    fputs("data", file);
+    put_u32(file, data_bytes);
+}
+
+/* The tone from where the recording is up to until `now`, into the file and
+ * the frames. */
+static void record_until(MigoSession *session, long now) {
+    if (!g_recording.active || g_recording.paused) return;
+    long elapsed = g_recording.recorded_ms + (now - g_recording.resumed_ms);
+    if (elapsed > g_recording.duration_ms) elapsed = g_recording.duration_ms;
+    uint64_t due = (uint64_t)elapsed * (uint64_t)g_recording.sample_rate / 1000U;
+    for (; g_recording.frames_written < due; g_recording.frames_written++) {
+        double t = (double)g_recording.frames_written / (double)g_recording.sample_rate;
+        int16_t sample = (int16_t)lround(16000.0 * sin(2.0 * PI * TONE_HZ * t));
+        for (long c = 0; c < g_recording.channels; c++) {
+            uint8_t bytes[2] = {(uint8_t)(sample & 0xFF), (uint8_t)((sample >> 8) & 0xFF)};
+            fwrite(bytes, 1, 2, g_recording.file);
+            if (g_recording.frame_bytes > 0) {
+                for (int b = 0; b < 2; b++) {
+                    g_recording.frame[g_recording.frame_fill++] = bytes[b];
+                    if (g_recording.frame_fill == g_recording.frame_bytes) {
+                        post_recorder_frame(session, 0);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/* The recording ends: the file finished, the last frame and STOP reported --
+ * or, when `report` is 0 (a new START replaces it), nothing. */
+static void recorder_finish(MigoSession *session, long now, int report) {
+    if (!g_recording.active) return;
+    record_until(session, now);
+    long recorded = g_recording.paused
+                        ? g_recording.recorded_ms
+                        : g_recording.recorded_ms + (now - g_recording.resumed_ms);
+    if (recorded > g_recording.duration_ms) recorded = g_recording.duration_ms;
+    unsigned long data_bytes =
+        (unsigned long)(g_recording.frames_written * (uint64_t)g_recording.channels * 2U);
+    if (g_recording.format == RECORD_WAV) {
+        fseek(g_recording.file, 0, SEEK_SET);
+        wav_header(g_recording.file, g_recording.sample_rate, g_recording.channels, data_bytes);
+    }
+    long file_size = (long)data_bytes + (g_recording.format == RECORD_WAV ? 44 : 0);
+    int written = fclose(g_recording.file) == 0;
+    if (report && g_recording.frame_bytes > 0) post_recorder_frame(session, 1);
+    if (report) {
+        if (!written) {
+            recorder_fail(session, g_recording.id, "the recording could not be written");
+        } else {
+            char json[512];
+            snprintf(json, sizeof(json),
+                     "{\"recordingId\":%ld,\"tempFilePath\":\"%s\",\"duration\":%ld,"
+                     "\"fileSize\":%ld}",
+                     g_recording.id, g_recording.path, recorded, file_size);
+            post_recorder_event(session, MIGO_RECORDER_EVENT_STOP, json);
+        }
+    } else {
+        remove(g_recording.path);
+    }
+    free(g_recording.frame);
+    memset(&g_recording, 0, sizeof(g_recording));
+}
+
+static void answer_recorder(MigoSession *session, const QueuedCall *call, long now) {
+    char json[64];
+    snprintf(json, sizeof(json), "{\"recordingId\":%ld}", call->arg);
+    int ours = g_recording.active && g_recording.id == call->arg;
+    switch (call->method) {
+    case MIGO_RECORDER_START: {
+        recorder_finish(session, now, 0);
+        if (call->record.format == RECORD_UNSUPPORTED) {
+            recorder_fail(session, call->arg,
+                          "recorderManager.start:fail this host records wav and PCM only");
+            return;
+        }
+        if (call->record.sample_rate <= 0 || call->record.channels < 1 ||
+            call->record.channels > 2) {
+            recorder_fail(session, call->arg, "recorderManager.start:fail invalid audio parameters");
+            return;
+        }
+        g_recording.file = staged(call->record.format == RECORD_WAV ? ".wav" : ".pcm",
+                                  g_recording.path, sizeof(g_recording.path));
+        if (g_recording.file == NULL) {
+            recorder_fail(session, call->arg, "recorderManager.start:fail no file to record into");
+            return;
+        }
+        if (call->record.format == RECORD_WAV) {
+            wav_header(g_recording.file, call->record.sample_rate, call->record.channels, 0);
+        }
+        if (call->record.frame_bytes > 0) {
+            g_recording.frame = malloc((size_t)call->record.frame_bytes);
+            if (g_recording.frame == NULL) {
+                fclose(g_recording.file);
+                remove(g_recording.path);
+                recorder_fail(session, call->arg, "recorderManager.start:fail out of memory");
+                return;
+            }
+            g_recording.frame_bytes = call->record.frame_bytes;
+        }
+        g_recording.active = 1;
+        g_recording.id = call->arg;
+        g_recording.sample_rate = call->record.sample_rate;
+        g_recording.channels = call->record.channels;
+        g_recording.duration_ms = call->record.duration_ms;
+        g_recording.format = call->record.format;
+        g_recording.resumed_ms = now;
+        post_recorder_event(session, MIGO_RECORDER_EVENT_START, json);
+        return;
+    }
+    case MIGO_RECORDER_PAUSE:
+        if (!ours || g_recording.paused) return;
+        record_until(session, now);
+        g_recording.recorded_ms += now - g_recording.resumed_ms;
+        g_recording.paused = 1;
+        post_recorder_event(session, MIGO_RECORDER_EVENT_PAUSE, json);
+        return;
+    case MIGO_RECORDER_RESUME:
+        if (!ours || !g_recording.paused) return;
+        g_recording.paused = 0;
+        g_recording.resumed_ms = now;
+        post_recorder_event(session, MIGO_RECORDER_EVENT_RESUME, json);
+        return;
+    case MIGO_RECORDER_STOP:
+        if (ours) recorder_finish(session, now, 1);
+        return;
+    default:
+        return;
+    }
+}
+
+/* The tone recorded as time passes; the recording stops on its own when its
+ * duration runs out. */
+static void recorder_tick(MigoSession *session, long now) {
+    if (!g_recording.active || g_recording.paused) return;
+    if (g_recording.recorded_ms + (now - g_recording.resumed_ms) >= g_recording.duration_ms) {
+        recorder_finish(session, now, 1);
+    } else {
+        record_until(session, now);
+    }
+}
+
 /* ---- Readings. ---- */
 
 static double wrap_degrees(double degrees) {
@@ -634,12 +875,16 @@ void services_pump(MigoSession *session) {
         case MIGO_HOST_SERVICE_CAMERA:
             answer_camera(session, &call, now);
             break;
+        case MIGO_HOST_SERVICE_RECORDER:
+            answer_recorder(session, &call, now);
+            break;
         default:
             if (call.call_id != 0) complete(session, call.call_id, NULL, "unknown service");
             break;
         }
     }
     camera_tick(session, now);
+    recorder_tick(session, now);
     for (size_t i = 0; i < sizeof(g_sensors) / sizeof(g_sensors[0]); i++) {
         Sensor *sensor = &g_sensors[i];
         if (!sensor->running || now < sensor->due_ms) continue;

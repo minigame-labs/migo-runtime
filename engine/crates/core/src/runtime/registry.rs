@@ -19,6 +19,7 @@ use shared::{
         take_camera_frame, with_camera_frame_admission,
     },
     protocol::host_cmd::{BleCharacteristicData, GamepadState, HostCommand, TouchData},
+    protocol::recorder_frame::with_recorder_frame_credit,
     surface::{
         PublicSurfaceGeneration, SurfaceControl, SurfaceGeneration, SurfaceLease, SurfaceRef,
         SurfaceResourceLease,
@@ -158,6 +159,38 @@ impl HostIngress {
                 sent
             }
             CameraFramePush::Superseded => Ok(()),
+        }
+    }
+
+    /// Hand content one frame of recording `recording_id`, copied once. A frame
+    /// reserves its bytes from the recorder's budget and is dropped when the
+    /// budget is spent -- a microphone outrunning content loses frames, not
+    /// memory; the last frame carries no bytes of budget and travels the
+    /// reliable lane, so a recording's end is never what is lost.
+    pub fn try_send_recorder_frame(
+        &self,
+        recording_id: u32,
+        data: &[u8],
+        is_last_frame: bool,
+    ) -> Result<(), HostIngressSendError> {
+        let reserved = if is_last_frame { 0 } else { data.len() };
+        let Some((credit, data)) =
+            with_recorder_frame_credit(self.host_id, reserved, || data.to_vec())
+        else {
+            self.stats.command_drops.fetch_add(1, Ordering::Relaxed);
+            return Err(HostIngressSendError::Full);
+        };
+        let command = HostCommand::RecorderFrameData {
+            recording_id,
+            data,
+            is_last_frame,
+            credit,
+        };
+        if is_last_frame {
+            send_reliable_command_to_host(self.host_id, command)
+                .map_err(|_| HostIngressSendError::Closed)
+        } else {
+            self.try_send(command)
         }
     }
 

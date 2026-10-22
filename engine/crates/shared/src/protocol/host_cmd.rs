@@ -31,7 +31,7 @@
 //! - **Desktop pointer** (4): `OnMouseDown` .. `OnWheel`
 //! - **Sensor Events** (5): `OnDeviceMotionChange` .. `OnAccelerometerChange`
 //! - **Network** (1): `OnNetworkStatusChange`
-//! - **Recorder** (2): `RecorderEvent`, `RecorderFrameData`
+//! - **Recorder** (1): `RecorderFrameData`
 //! - **Camera** (1): `CameraFrameData`
 //! - **Keyboard** (6): `OnKeyboardInput` .. `OnKeyUp`
 //! - **Gamepad** (3): `OnGamepadConnected` .. `OnGamepadState`
@@ -262,7 +262,7 @@ fn retain_string_within(buffer: &mut String, limit: usize) {
 /// - **Sensor Events** (5): `OnDeviceMotionChange` .. `OnAccelerometerChange`
 /// - **Network** (1): `OnNetworkStatusChange`
 /// - **Audio Events** (4): `OnAudioInterruptionBegin`, `OnAudioInterruptionEnd`, `InnerAudioEvent`, `AudioSourceEnded`
-/// - **Recorder Events** (2): `RecorderEvent`, `RecorderFrameData`
+/// - **Recorder Events** (1): `RecorderFrameData`
 /// - **Camera Events** (1): `CameraFrameData`
 /// - **Bluetooth / BLE Events** (7): `OnBluetoothAdapterStateChange` .. `OnBeaconServiceChange`
 /// - **Video Events** (1): `OnVideoStateChange`
@@ -545,31 +545,23 @@ pub enum HostCommand {
     },
 
     // ---- Recorder Events ----
-    /// Recorder event pushed from platform (start, pause, resume, stop, error, interruption).
-    RecorderEvent {
-        /// Event type string (e.g., “start”, “stop”, “error”, “interruptionBegin”).
-        event_type: String,
-        /// JSON-encoded payload (e.g., stop result with tempFilePath/duration/fileSize).
-        json_payload: String,
-        /// See [`HostCommand::callback_generation`].
-        runtime_generation: Option<NonZeroI64>,
-    },
-
-    /// Recorder frame data pushed from platform (for onFrameRecorded).
+    /// One frame of a recording, for onFrameRecorded. The recorder's other
+    /// events travel the host-service channel (`services::RECORDER_EVENT_HOOKS`).
     ///
     /// Non-termination frames carry a byte reservation acquired before their
-    /// JNI payload copy. The reservation is mandatory so an unaccounted frame
+    /// payload copy. The reservation is mandatory so an unaccounted frame
     /// cannot be constructed; termination frames use a zero-byte credit and
     /// travel on the reliable lane.
     RecorderFrameData {
+        /// The recording it belongs to: content drops a frame of a recording it
+        /// no longer has, as it drops that recording's events.
+        recording_id: u32,
         /// Raw PCM/encoded audio frame bytes.
         data: Vec<u8>,
         /// Whether this is the last frame before stop.
         is_last_frame: bool,
         /// Byte budget reservation held for this command.
         credit: crate::protocol::recorder_frame::RecorderFrameCredit,
-        /// See [`HostCommand::callback_generation`].
-        runtime_generation: Option<NonZeroI64>,
     },
 
     // ---- Camera Events ----
@@ -1006,17 +998,12 @@ impl HostCommand {
                 runtime_generation, ..
             }
             | Self::OnUserCaptureScreen { runtime_generation }
-            // Camera, microphone and video: the managers that hold hardware.
-            // Their events and their frames both stop belonging to anything the
-            // moment the isolate that opened them is replaced, and the teardown
-            // that releases the hardware reports as it goes.
+            // The camera's frames and video: the managers that hold hardware.
+            // What they report stops belonging to anything the moment the
+            // isolate that opened them is replaced, and the teardown that
+            // releases the hardware reports as it goes. (The microphone's
+            // reports carry their recording's id instead.)
             | Self::CameraFrameData {
-                runtime_generation, ..
-            }
-            | Self::RecorderEvent {
-                runtime_generation, ..
-            }
-            | Self::RecorderFrameData {
                 runtime_generation, ..
             }
             | Self::OnVideoStateChange {
@@ -1026,6 +1013,8 @@ impl HostCommand {
             Self::EvaluateModule { .. }
             | Self::EvalScript { .. }
             | Self::InvokeHostHook { .. }
+            // Fenced by its recording's id, as the recorder's events are.
+            | Self::RecorderFrameData { .. }
             | Self::Restart { .. }
             | Self::Shutdown
             | Self::OnShow { .. }
@@ -1319,13 +1308,6 @@ mod generation_tests {
                 },
                 runtime_generation: generation(4),
             },
-            HostCommand::RecorderFrameData {
-                data: Vec::new(),
-                is_last_frame: true,
-                credit: crate::protocol::recorder_frame::try_reserve_recorder_frame_bytes(9300, 0)
-                    .expect("test recorder frame credit"),
-                runtime_generation: generation(4),
-            },
             HostCommand::OnVideoStateChange {
                 video_id: 0,
                 event_type: "ended".to_owned(),
@@ -1344,9 +1326,10 @@ mod generation_tests {
         // `UNFENCED` zero the Java side stamps. It answers a call the live
         // runtime has just made, so it cannot be stale and must never be
         // dropped -- and zero must not be read as "produced for generation 0".
-        let reply = HostCommand::RecorderEvent {
+        let reply = HostCommand::OnVideoStateChange {
+            video_id: 0,
             event_type: "error".to_owned(),
-            json_payload: "{}".to_owned(),
+            data: "{}".to_owned(),
             runtime_generation: captured_generation(0),
         };
         assert_eq!(reply.callback_generation(), None);

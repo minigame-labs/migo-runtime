@@ -1135,6 +1135,37 @@ Returns:
   `MIGO_HOST_SERVICE_CAMERA`
 - `MIGO_ERROR_INVALID_STATE` — no Surface attached
 
+## migo_session_post_recorder_frame
+
+```c
+typedef struct MigoRecorderFrame {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint32_t recording_id;
+    uint32_t is_last_frame;
+    const uint8_t *data;
+    uint32_t length;
+    uint32_t reserved0;
+} MigoRecorderFrame;
+
+MIGO_API MigoResult MIGO_CALL migo_session_post_recorder_frame(MigoSession *session,
+                                                               const MigoRecorderFrame *frame);
+```
+
+One frame of a recording whose `MIGO_RECORDER_START` asked for frames (`frameSize`), from any thread while a Surface is
+attached: `length` bytes of the recording's format, at most 1 MiB, for content's `onFrameRecorded`. `is_last_frame` is 1
+for the frame that ends the recording -- which may be empty -- and 0 otherwise. A microphone sends many a second, so this
+is a typed record, borrowed for the call and copied once. Frames share a byte budget content drains: one over it is
+refused and dropped, so a host that outruns content loses frames rather than memory; the last frame is never dropped.
+
+Returns:
+
+- `MIGO_OK` — delivered
+- `MIGO_ERROR_WOULD_BLOCK` — content has not taken enough of the frames before it; this one is dropped
+- `MIGO_ERROR_INVALID_ARGUMENT` — a NULL or malformed record; a `recording_id` of 0; an `is_last_frame` other than 0 or 1;
+  a `length` over 1 MiB, or `data` NULL with a length; the host did not declare `MIGO_HOST_SERVICE_RECORDER`
+- `MIGO_ERROR_INVALID_STATE` — no Surface attached
+
 ## migo_session_set_ecosystem_value
 
 ```c

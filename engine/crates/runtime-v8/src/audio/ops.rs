@@ -1287,62 +1287,72 @@ pub fn op_audio_get_available_audio_sources(
 // Recorder Operations
 // ============================================================================
 
-/// Start recording with the given options (JSON string).
-/// Routes through DeviceServices RecorderService.
+// Each is a command of the host-service channel's recorder: the request content
+// made -- `{"recordingId", ...}` -- and nothing answered; what happens comes back
+// as the recording's events (`shared::services::RECORDER_EVENT_HOOKS`).
+
+fn recorder(state: &OpState) -> Option<std::sync::Arc<dyn shared::services::RecorderService>> {
+    state
+        .borrow::<HostOpState>()
+        .device_services
+        .as_ref()
+        .and_then(|services| services.recorder())
+}
+
+/// Start recording: `{"recordingId", duration, sampleRate, numberOfChannels,
+/// encodeBitRate, format, frameSize?, audioSource, audioMode}`.
 #[op2(fast)]
 pub fn op_recorder_start(
     state: &mut OpState,
-    #[string] options_json: &str,
+    #[string] request_json: &str,
 ) -> Result<(), AudioError> {
     crate::permission::require_scope(state, Scope::Record)
         .map_err(|denied| audio_err(denied.to_string()))?;
-    let host = state.borrow::<HostOpState>();
-    if let Some(ref services) = host.device_services {
-        if let Some(recorder) = services.recorder() {
-            return recorder.start(options_json).map_err(AudioError::from);
-        }
+    match recorder(state) {
+        Some(recorder) => recorder.start(request_json).map_err(AudioError::from),
+        None => Err(audio_err("recorderManager.start:fail not supported")),
     }
-    Err(audio_err("recorderManager.start:fail not supported"))
 }
 
-/// Pause recording.
+/// Pause recording `{"recordingId"}`.
 #[op2(fast)]
-pub fn op_recorder_pause(state: &mut OpState) -> Result<(), AudioError> {
+pub fn op_recorder_pause(
+    state: &mut OpState,
+    #[string] request_json: &str,
+) -> Result<(), AudioError> {
     crate::permission::require_scope(state, Scope::Record)
         .map_err(|denied| audio_err(denied.to_string()))?;
-    let host = state.borrow::<HostOpState>();
-    if let Some(ref services) = host.device_services {
-        if let Some(recorder) = services.recorder() {
-            return recorder.pause().map_err(AudioError::from);
-        }
+    match recorder(state) {
+        Some(recorder) => recorder.pause(request_json).map_err(AudioError::from),
+        None => Err(audio_err("recorderManager.pause:fail not supported")),
     }
-    Err(audio_err("recorderManager.pause:fail not supported"))
 }
 
-/// Resume recording after pause.
+/// Resume recording `{"recordingId"}`.
 #[op2(fast)]
-pub fn op_recorder_resume(state: &mut OpState) -> Result<(), AudioError> {
+pub fn op_recorder_resume(
+    state: &mut OpState,
+    #[string] request_json: &str,
+) -> Result<(), AudioError> {
     crate::permission::require_scope(state, Scope::Record)
         .map_err(|denied| audio_err(denied.to_string()))?;
-    let host = state.borrow::<HostOpState>();
-    if let Some(ref services) = host.device_services {
-        if let Some(recorder) = services.recorder() {
-            return recorder.resume().map_err(AudioError::from);
-        }
+    match recorder(state) {
+        Some(recorder) => recorder.resume(request_json).map_err(AudioError::from),
+        None => Err(audio_err("recorderManager.resume:fail not supported")),
     }
-    Err(audio_err("recorderManager.resume:fail not supported"))
 }
 
-/// Stop recording. Results delivered asynchronously via RecorderEvent.
+/// Stop recording `{"recordingId"}`. Not gated: letting go of the microphone
+/// needs no permission.
 #[op2(fast)]
-pub fn op_recorder_stop(state: &mut OpState) -> Result<(), AudioError> {
-    let host = state.borrow::<HostOpState>();
-    if let Some(ref services) = host.device_services {
-        if let Some(recorder) = services.recorder() {
-            return recorder.stop().map_err(AudioError::from);
-        }
+pub fn op_recorder_stop(
+    state: &mut OpState,
+    #[string] request_json: &str,
+) -> Result<(), AudioError> {
+    match recorder(state) {
+        Some(recorder) => recorder.stop(request_json).map_err(AudioError::from),
+        None => Err(audio_err("recorderManager.stop:fail not supported")),
     }
-    Err(audio_err("recorderManager.stop:fail not supported"))
 }
 
 // ============================================================================

@@ -723,28 +723,30 @@ struct AndroidRecorder {
     session: SessionGate,
 }
 
+/// Every request goes to the SDK as content made it, `{"recordingId", ...}`;
+/// what happens comes back through `onRecorderEvent`.
 impl RecorderService for AndroidRecorder {
-    fn start(&self, options_json: &str) -> Result<(), ServiceError> {
+    fn start(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, Some(Scope::Record), || {
-            jni::recorder_start(self.session.host_id(), options_json)
+            jni::recorder_start(self.session.host_id(), request_json)
         })
     }
 
-    fn pause(&self) -> Result<(), ServiceError> {
+    fn pause(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, Some(Scope::Record), || {
-            jni::recorder_pause(self.session.host_id())
+            jni::recorder_pause(self.session.host_id(), request_json)
         })
     }
 
-    fn resume(&self) -> Result<(), ServiceError> {
+    fn resume(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, Some(Scope::Record), || {
-            jni::recorder_resume(self.session.host_id())
+            jni::recorder_resume(self.session.host_id(), request_json)
         })
     }
 
-    fn stop(&self) -> Result<(), ServiceError> {
+    fn stop(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, None, || {
-            jni::recorder_stop(self.session.host_id())
+            jni::recorder_stop(self.session.host_id(), request_json)
         })
     }
 }

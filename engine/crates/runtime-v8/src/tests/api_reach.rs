@@ -113,7 +113,6 @@ impl GyroscopeService for ProbeService {}
 impl CompassService for ProbeService {}
 impl AccelerometerService for ProbeService {}
 impl AudioPlatformService for ProbeService {}
-impl RecorderService for ProbeService {}
 impl ImageApiService for ProbeService {}
 impl NetworkService for ProbeService {}
 impl BluetoothService for ProbeService {}
@@ -139,6 +138,14 @@ impl EcosystemService for ProbeService {}
 /// create failed is destroyed, and its methods reach nothing.
 impl CameraService for ProbeService {
     fn create(&self, _request_json: &str) -> Result<(), ServiceError> {
+        Ok(())
+    }
+}
+
+/// A host that has taken content's recording: the recording stays content's,
+/// so what its pause, resume and stop reach is measured too.
+impl RecorderService for ProbeService {
+    fn start(&self, _request_json: &str) -> Result<(), ServiceError> {
         Ok(())
     }
 }

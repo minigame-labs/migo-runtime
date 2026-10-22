@@ -1058,6 +1058,64 @@
           "hook": "_internalOnCameraAuthCancelEvent"
         }
       }
+    },
+    "recorder": {
+      "id": 20,
+      "methods": {
+        "start": {
+          "id": 0,
+          "kind": "command",
+          "op": "op_recorder_start"
+        },
+        "pause": {
+          "id": 1,
+          "kind": "command",
+          "op": "op_recorder_pause"
+        },
+        "resume": {
+          "id": 2,
+          "kind": "command",
+          "op": "op_recorder_resume"
+        },
+        "stop": {
+          "id": 3,
+          "kind": "command",
+          "op": "op_recorder_stop"
+        }
+      },
+      "events": {
+        "start": {
+          "id": 0,
+          "hook": "_internalOnRecorderStartEvent"
+        },
+        "pause": {
+          "id": 1,
+          "hook": "_internalOnRecorderPauseEvent"
+        },
+        "resume": {
+          "id": 2,
+          "hook": "_internalOnRecorderResumeEvent"
+        },
+        "stop": {
+          "id": 3,
+          "hook": "_internalOnRecorderStopEvent",
+          "files": [
+            "tempFilePath"
+          ]
+        },
+        "error": {
+          "id": 4,
+          "hook": "_internalOnRecorderErrorEvent"
+        },
+        "interruption_begin": {
+          "id": 5,
+          "hook": "_internalOnRecorderInterruptionBeginEvent"
+        },
+        "interruption_end": {
+          "id": 6,
+          "hook": "_internalOnRecorderInterruptionEndEvent"
+        }
+      }
     }
   }
 }

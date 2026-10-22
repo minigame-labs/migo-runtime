@@ -839,22 +839,14 @@ impl Host {
             // is the only place that may act on it: a handler comparing it again
             // would be a second decision point that could disagree with the one
             // that already let this command through. Hence `_` here and below.
-            HostCommand::RecorderEvent {
-                event_type,
-                json_payload,
-                runtime_generation: _,
-            } => {
-                self.js.dispatch_recorder_event(&event_type, &json_payload);
-                Ok(())
-            }
-
             HostCommand::RecorderFrameData {
+                recording_id,
                 data,
                 is_last_frame,
-                runtime_generation: _,
                 credit: _credit,
             } => {
-                self.js.dispatch_recorder_frame_data(data, is_last_frame);
+                self.js
+                    .dispatch_recorder_frame_data(recording_id, data, is_last_frame);
                 Ok(())
             }
 

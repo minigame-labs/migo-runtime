@@ -144,6 +144,12 @@ for name, service in services.items():
             fail(f"{where}: no hook")
         else:
             hooks[event["hook"]] = where
+        # An event may hand over files as a call's result does: a recording's STOP.
+        files = event.get("files", [])
+        if not isinstance(files, list) or not all(
+            isinstance(f, str) and FILE_FIELD.fullmatch(f) for f in files
+        ):
+            fail(f"{where}: files must list event fields as `a`, `a[]` or `a[].b`")
 
 # Names in the header's MIGO_HOST_SERVICE_ space that are not service numbers.
 NOT_NUMBERING = re.compile(r"MIGO_HOST_SERVICE_(STATUS_|RESULT_FLAG_|PAYLOAD_MAX_BYTES$)")

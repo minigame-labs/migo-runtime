@@ -63,6 +63,8 @@ mod permission_revocation;
 mod prelude;
 mod promise_style;
 mod published_namespace_isolation;
+#[cfg(feature = "api-media")]
+mod recorder_lifecycle;
 #[cfg(feature = "api-connectivity")]
 mod reporting;
 mod request_through_the_engine;
