@@ -167,6 +167,7 @@ pub const GATED_SERVICE_METHODS: &[(&str, Scope)] = &[
 /// gates each request by looking its op up here ([`op_scope`]).
 pub const PERMISSION_GATED_OPS: &[(&str, Scope)] = &[
     ("op_camera_create", Scope::Camera),
+    ("op_camera_set", Scope::Camera),
     ("op_camera_take_photo", Scope::Camera),
     ("op_camera_start_record", Scope::Camera),
     ("op_camera_set_zoom", Scope::Camera),

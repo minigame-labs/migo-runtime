@@ -32,7 +32,7 @@
 //! - **Sensor Events** (5): `OnDeviceMotionChange` .. `OnAccelerometerChange`
 //! - **Network** (1): `OnNetworkStatusChange`
 //! - **Recorder** (2): `RecorderEvent`, `RecorderFrameData`
-//! - **Camera** (2): `CameraEvent`, `CameraFrameData`
+//! - **Camera** (1): `CameraFrameData`
 //! - **Keyboard** (6): `OnKeyboardInput` .. `OnKeyUp`
 //! - **Gamepad** (3): `OnGamepadConnected` .. `OnGamepadState`
 //! - **IME composition** (3): `OnCompositionStart` .. `OnCompositionEnd`
@@ -263,7 +263,7 @@ fn retain_string_within(buffer: &mut String, limit: usize) {
 /// - **Network** (1): `OnNetworkStatusChange`
 /// - **Audio Events** (4): `OnAudioInterruptionBegin`, `OnAudioInterruptionEnd`, `InnerAudioEvent`, `AudioSourceEnded`
 /// - **Recorder Events** (2): `RecorderEvent`, `RecorderFrameData`
-/// - **Camera Events** (2): `CameraEvent`, `CameraFrameData`
+/// - **Camera Events** (1): `CameraFrameData`
 /// - **Bluetooth / BLE Events** (7): `OnBluetoothAdapterStateChange` .. `OnBeaconServiceChange`
 /// - **Video Events** (1): `OnVideoStateChange`
 /// - **System Events** (3): `OnMemoryWarning`, `OnUserCaptureScreen`, `OnThermalStatusChanged`
@@ -573,18 +573,6 @@ pub enum HostCommand {
     },
 
     // ---- Camera Events ----
-    /// Camera event pushed from platform (stop, authCancel, error, timeoutCallback).
-    CameraEvent {
-        /// JS-assigned camera instance ID.
-        camera_id: u32,
-        /// Event type string (e.g., “stop”, “authCancel”, “error”, “timeoutCallback”).
-        event_type: String,
-        /// JSON-encoded payload.
-        json_payload: String,
-        /// See [`HostCommand::callback_generation`].
-        runtime_generation: Option<NonZeroI64>,
-    },
-
     /// Camera frame data pushed from platform (for onCameraFrame / listenFrameChange).
     CameraFrameData {
         /// JS-assigned camera instance ID.
@@ -1022,9 +1010,6 @@ impl HostCommand {
             // Their events and their frames both stop belonging to anything the
             // moment the isolate that opened them is replaced, and the teardown
             // that releases the hardware reports as it goes.
-            | Self::CameraEvent {
-                runtime_generation, ..
-            }
             | Self::CameraFrameData {
                 runtime_generation, ..
             }
@@ -1310,16 +1295,9 @@ mod generation_tests {
 
     #[test]
     fn the_hardware_managers_carry_their_generation_on_events_and_on_frames() {
-        // Frames as well as events: a camera that keeps delivering into the
-        // isolate that replaced the one which opened it is the same defect at
-        // thirty times the rate.
+        // A camera that keeps delivering frames into the isolate that replaced
+        // the one which opened it is a defect at thirty times a second.
         let commands = [
-            HostCommand::CameraEvent {
-                camera_id: 0,
-                event_type: "stop".to_owned(),
-                json_payload: "{}".to_owned(),
-                runtime_generation: generation(4),
-            },
             HostCommand::CameraFrameData {
                 camera_id: 0,
                 data: Vec::new(),

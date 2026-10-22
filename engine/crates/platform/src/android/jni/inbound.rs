@@ -1597,33 +1597,60 @@ pub(crate) extern "system" fn onRecorderFrameData(
 
 // ==================== Camera ====================
 
+/// What happened to camera `camera_id` on its own, by its event number
+/// (`shared::services::CAMERA_EVENT_HOOKS`): it stopped, or the player refused
+/// the system's permission.
 pub(crate) extern "system" fn onCameraEvent<'local>(
+    _env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    host_id: jint,
+    camera_id: jint,
+    event: jint,
+) {
+    jni_safe!("onCameraEvent", {
+        let Some(hook) = usize::try_from(event)
+            .ok()
+            .and_then(|event| shared::services::CAMERA_EVENT_HOOKS.get(event))
+        else {
+            error!("onCameraEvent: no camera event {event}");
+            return;
+        };
+        send_json_result_to_js(host_id, &format!(r#"{{"cameraId":{camera_id}}}"#), hook);
+    });
+}
+
+/// The answer to a camera call, for the call's method number: through the hook
+/// and with the files the one table names for it
+/// (`shared::services::CAMERA_RESULT_HOOKS`, `camera_result_files`).
+pub(crate) extern "system" fn onCameraResult<'local>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
     host_id: jint,
-    generation: jlong,
-    camera_id: jint,
-    event_type: JString<'local>,
-    json_payload: JString<'local>,
+    method: jint,
+    result_json: JString<'local>,
 ) {
-    jni_safe!("onCameraEvent", {
-        let evt: String = env
-            .get_string(&event_type)
-            .map(|s| s.into())
-            .unwrap_or_default();
-        let payload: String = env
-            .get_string(&json_payload)
-            .map(|s| s.into())
-            .unwrap_or_else(|_| "{}".to_string());
-        let _ = send_command_to_host(
-            host_id,
-            HostCommand::CameraEvent {
-                camera_id: camera_id as u32,
-                event_type: evt,
-                json_payload: payload,
-                runtime_generation: captured_generation(generation),
-            },
+    jni_safe!("onCameraResult", {
+        let Some((method, hook)) = u32::try_from(method).ok().and_then(|method| {
+            shared::services::CAMERA_RESULT_HOOKS
+                .get(method as usize)
+                .copied()
+                .flatten()
+                .map(|hook| (method, hook))
+        }) else {
+            error!("onCameraResult: no camera call {method}");
+            return;
+        };
+        let json = read_json_result(
+            &mut env,
+            &result_json,
+            r#"{"error":"failed to read result"}"#,
         );
+        let for_js = shared::services::host_files::deliver_result(
+            host_id,
+            shared::services::camera_result_files(method),
+            &json,
+        );
+        send_json_result_to_js(host_id, &for_js, hook);
     });
 }
 

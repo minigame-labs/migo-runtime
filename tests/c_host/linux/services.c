@@ -2,14 +2,16 @@
  * The device services this host supplies: see services.h.
  */
 
-/* open, read and pthreads are POSIX, not ISO C11. */
+/* open, read and pthreads are POSIX, not ISO C11; mkstemps is the C library's. */
 #define _POSIX_C_SOURCE 200809L
+#define _DEFAULT_SOURCE
 
 #include "services.h"
 
 #include <fcntl.h>
 #include <math.h>
 #include <pthread.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -67,7 +69,8 @@ typedef struct QueuedCall {
     uint64_t call_id;
     MigoHostService service;
     uint32_t method;
-    long arg; /* a START's interval in ms; a REQUEST_SCOPE's MigoScope */
+    long arg;      /* a START's interval in ms; a REQUEST_SCOPE's MigoScope; a camera's id */
+    double number; /* SET_ZOOM's zoom */
 } QueuedCall;
 
 #define QUEUE_CAPACITY 64U
@@ -152,7 +155,7 @@ static long start_interval(const char *json, size_t length, uint32_t method) {
 void MIGO_CALL services_on_call(void *user_data, MigoSession *session,
                                 const MigoHostServiceCall *call) {
     (void)user_data;
-    QueuedCall queued = {call->call_id, call->service, call->method, 0};
+    QueuedCall queued = {call->call_id, call->service, call->method, 0, 0.0};
     const char *json = call->payload_json_utf8 != NULL ? call->payload_json_utf8 : "";
     size_t length = call->payload_json_utf8 != NULL ? call->payload_length : 0;
     if (call->service == MIGO_HOST_SERVICE_MOTION && call->method % 2 == 0) {
@@ -160,6 +163,11 @@ void MIGO_CALL services_on_call(void *user_data, MigoSession *session,
     } else if (call->service == MIGO_HOST_SERVICE_PERMISSION) {
         const char *value = json_value(json, length, "scopeId");
         queued.arg = value != NULL ? strtol(value, NULL, 10) : -1;
+    } else if (call->service == MIGO_HOST_SERVICE_CAMERA) {
+        const char *value = json_value(json, length, "cameraId");
+        queued.arg = value != NULL ? strtol(value, NULL, 10) : -1;
+        const char *zoom = json_value(json, length, "zoom");
+        queued.number = zoom != NULL ? strtod(zoom, NULL) : 1.0;
     }
     if (!queue_push(&queued)) {
         /* A full queue is the loop not keeping up; refuse rather than wait on
@@ -229,6 +237,223 @@ static void answer_motion(MigoSession *session, const QueuedCall *call, long now
         complete(session, call->call_id, "", NULL);
     } else {
         sensor->running = 0;
+    }
+}
+
+/* ---- The camera: the device's one, which makes its own pictures. ---- */
+
+#define CAMERA_WIDTH 64
+#define CAMERA_HEIGHT 48
+#define CAMERA_FRAME_MS 33L
+
+static struct {
+    int open;
+    long id;
+    int listening;
+    int recording;
+    long next_frame_ms;
+    uint32_t frame;          /* the picture it shows now */
+    uint32_t recording_from; /* the first picture of the recording */
+} g_camera;
+
+/* Picture n, BGRA: blue across, green down, red along the diagonal and moved on
+ * by its number -- every channel a picture, every picture its own. */
+static void camera_picture(uint32_t n, uint8_t bgra[CAMERA_HEIGHT][CAMERA_WIDTH][4]) {
+    for (int y = 0; y < CAMERA_HEIGHT; y++) {
+        for (int x = 0; x < CAMERA_WIDTH; x++) {
+            bgra[y][x][0] = (uint8_t)(x * 4);
+            bgra[y][x][1] = (uint8_t)(y * 5);
+            bgra[y][x][2] = (uint8_t)((x + y) * 2 + n);
+            bgra[y][x][3] = 255;
+        }
+    }
+}
+
+/* A new file of the host's own in the system's temporary directory, named for
+ * what it holds: the engine takes it as the call completes. NULL on failure. */
+static FILE *staged(const char *suffix, char *path, size_t size) {
+    snprintf(path, size, "/tmp/migo-c-host-XXXXXX%s", suffix);
+    int fd = mkstemps(path, (int)strlen(suffix));
+    if (fd < 0) return NULL;
+    FILE *file = fdopen(fd, "wb");
+    if (file == NULL) close(fd);
+    return file;
+}
+
+static void put_u16(FILE *file, unsigned value) {
+    fputc((int)(value & 0xFF), file);
+    fputc((int)((value >> 8) & 0xFF), file);
+}
+
+static void put_u32(FILE *file, unsigned long value) {
+    put_u16(file, (unsigned)(value & 0xFFFF));
+    put_u16(file, (unsigned)((value >> 16) & 0xFFFF));
+}
+
+/* Picture n as a 24-bit BMP, which content decodes, into `path`. */
+static int write_picture(uint32_t n, char *path, size_t size) {
+    FILE *file = staged(".bmp", path, size);
+    if (file == NULL) return 0;
+    static uint8_t bgra[CAMERA_HEIGHT][CAMERA_WIDTH][4];
+    camera_picture(n, bgra);
+    const unsigned long pixels = CAMERA_WIDTH * CAMERA_HEIGHT * 3UL;
+    fputs("BM", file);
+    put_u32(file, 54UL + pixels);
+    put_u32(file, 0);
+    put_u32(file, 54);
+    put_u32(file, 40);
+    put_u32(file, CAMERA_WIDTH);
+    put_u32(file, CAMERA_HEIGHT);
+    put_u16(file, 1);
+    put_u16(file, 24);
+    put_u32(file, 0);
+    put_u32(file, pixels);
+    put_u32(file, 2835);
+    put_u32(file, 2835);
+    put_u32(file, 0);
+    put_u32(file, 0);
+    /* Bottom row first; 64 x 3 bytes needs no padding to four. */
+    for (int y = CAMERA_HEIGHT - 1; y >= 0; y--) {
+        for (int x = 0; x < CAMERA_WIDTH; x++) fwrite(bgra[y][x], 1, 3, file);
+    }
+    return fclose(file) == 0;
+}
+
+/* Pictures first .. first + count - 1 as a YUV4MPEG2 video at thirty a second:
+ * the plainest video there is, which GStreamer and FFmpeg read. */
+static int write_video(uint32_t first, uint32_t count, char *path, size_t size) {
+    FILE *file = staged(".y4m", path, size);
+    if (file == NULL) return 0;
+    static uint8_t bgra[CAMERA_HEIGHT][CAMERA_WIDTH][4];
+    static uint8_t luma[CAMERA_HEIGHT][CAMERA_WIDTH];
+    static uint8_t cb[CAMERA_HEIGHT / 2][CAMERA_WIDTH / 2];
+    static uint8_t cr[CAMERA_HEIGHT / 2][CAMERA_WIDTH / 2];
+    fprintf(file, "YUV4MPEG2 W%d H%d F30:1 Ip A1:1 C420jpeg\n", CAMERA_WIDTH, CAMERA_HEIGHT);
+    for (uint32_t n = first; n < first + count; n++) {
+        camera_picture(n, bgra);
+        /* Full-range BT.601, chroma of each 2 x 2 block's top left. */
+        for (int y = 0; y < CAMERA_HEIGHT; y++) {
+            for (int x = 0; x < CAMERA_WIDTH; x++) {
+                double b = bgra[y][x][0], g = bgra[y][x][1], r = bgra[y][x][2];
+                luma[y][x] = (uint8_t)lround(0.299 * r + 0.587 * g + 0.114 * b);
+                if (x % 2 == 0 && y % 2 == 0) {
+                    cb[y / 2][x / 2] = (uint8_t)lround(128 - 0.168736 * r - 0.331264 * g + 0.5 * b);
+                    cr[y / 2][x / 2] = (uint8_t)lround(128 + 0.5 * r - 0.418688 * g - 0.081312 * b);
+                }
+            }
+        }
+        fputs("FRAME\n", file);
+        fwrite(luma, 1, sizeof(luma), file);
+        fwrite(cb, 1, sizeof(cb), file);
+        fwrite(cr, 1, sizeof(cr), file);
+    }
+    return fclose(file) == 0;
+}
+
+static void answer_camera(MigoSession *session, const QueuedCall *call, long now) {
+    char json[1024];
+    char picture[256];
+    char video[256];
+    int open = g_camera.open && g_camera.id == call->arg;
+    switch (call->method) {
+    case MIGO_CAMERA_CREATE:
+        g_camera.open = 1;
+        g_camera.id = call->arg;
+        g_camera.listening = 0;
+        g_camera.recording = 0;
+        g_camera.next_frame_ms = now;
+        complete(session, call->call_id, "{}", NULL);
+        return;
+    case MIGO_CAMERA_DESTROY:
+        if (open) memset(&g_camera, 0, sizeof(g_camera));
+        return;
+    case MIGO_CAMERA_LISTEN_FRAME_CHANGE:
+    case MIGO_CAMERA_CLOSE_FRAME_CHANGE:
+        if (open) g_camera.listening = call->method == MIGO_CAMERA_LISTEN_FRAME_CHANGE;
+        return;
+    case MIGO_CAMERA_SET:
+        /* Nothing on screen: where its preview stands changes nothing here. */
+        return;
+    default:
+        break;
+    }
+    if (!open) {
+        complete(session, call->call_id, NULL, "camera not open");
+        return;
+    }
+    switch (call->method) {
+    case MIGO_CAMERA_TAKE_PHOTO:
+        if (!write_picture(g_camera.frame, picture, sizeof(picture))) {
+            complete(session, call->call_id, NULL, "the photo could not be written");
+            return;
+        }
+        snprintf(json, sizeof(json), "{\"tempImagePath\":\"%s\",\"width\":%d,\"height\":%d}",
+                 picture, CAMERA_WIDTH, CAMERA_HEIGHT);
+        complete(session, call->call_id, json, NULL);
+        return;
+    case MIGO_CAMERA_START_RECORD:
+        if (g_camera.recording) {
+            complete(session, call->call_id, NULL, "already recording");
+            return;
+        }
+        g_camera.recording = 1;
+        g_camera.recording_from = g_camera.frame;
+        complete(session, call->call_id, "{}", NULL);
+        return;
+    case MIGO_CAMERA_STOP_RECORD: {
+        if (!g_camera.recording) {
+            complete(session, call->call_id, NULL, "not recording");
+            return;
+        }
+        g_camera.recording = 0;
+        uint32_t count = g_camera.frame - g_camera.recording_from + 1;
+        if (!write_video(g_camera.recording_from, count, video, sizeof(video)) ||
+            !write_picture(g_camera.recording_from, picture, sizeof(picture))) {
+            complete(session, call->call_id, NULL, "the video could not be written");
+            return;
+        }
+        snprintf(json, sizeof(json), "{\"tempVideoPath\":\"%s\",\"tempThumbPath\":\"%s\"}", video,
+                 picture);
+        complete(session, call->call_id, json, NULL);
+        return;
+    }
+    case MIGO_CAMERA_SET_ZOOM: {
+        /* A camera that zooms from 1 to 4, to a tenth. */
+        double zoom = call->number < 1.0 ? 1.0 : call->number > 4.0 ? 4.0 : call->number;
+        snprintf(json, sizeof(json), "{\"zoom\":%.1f}", zoom);
+        complete(session, call->call_id, json, NULL);
+        return;
+    }
+    default:
+        if (call->call_id != 0) complete(session, call->call_id, NULL, "unknown request");
+        return;
+    }
+}
+
+/* The camera's next picture, due every frame; content is handed it while it
+ * listens. */
+static void camera_tick(MigoSession *session, long now) {
+    if (!g_camera.open || now < g_camera.next_frame_ms) return;
+    g_camera.frame++;
+    g_camera.next_frame_ms += CAMERA_FRAME_MS;
+    if (g_camera.next_frame_ms <= now) g_camera.next_frame_ms = now + CAMERA_FRAME_MS;
+    if (!g_camera.listening) return;
+    static uint8_t bgra[CAMERA_HEIGHT][CAMERA_WIDTH][4];
+    camera_picture(g_camera.frame, bgra);
+    MigoCameraFrame frame;
+    memset(&frame, 0, sizeof(frame));
+    frame.struct_size = (uint32_t)sizeof(frame);
+    frame.abi_version = MIGO_ABI_VERSION_CURRENT;
+    frame.camera_id = (uint32_t)g_camera.id;
+    frame.width = CAMERA_WIDTH;
+    frame.height = CAMERA_HEIGHT;
+    frame.row_stride = CAMERA_WIDTH * 4;
+    frame.format = MIGO_PIXEL_FORMAT_BGRA8;
+    frame.pixels = &bgra[0][0][0];
+    MigoResult r = migo_session_post_camera_frame(session, &frame);
+    if (r != MIGO_OK && r != MIGO_ERROR_INVALID_STATE) {
+        fprintf(stderr, "[c-host] a camera frame was refused: %d\n", (int)r);
+        fflush(stderr);
     }
 }
 
@@ -406,11 +631,15 @@ void services_pump(MigoSession *session) {
         case MIGO_HOST_SERVICE_MOTION:
             answer_motion(session, &call, now);
             break;
+        case MIGO_HOST_SERVICE_CAMERA:
+            answer_camera(session, &call, now);
+            break;
         default:
             if (call.call_id != 0) complete(session, call.call_id, NULL, "unknown service");
             break;
         }
     }
+    camera_tick(session, now);
     for (size_t i = 0; i < sizeof(g_sensors) / sizeof(g_sensors[0]); i++) {
         Sensor *sensor = &g_sensors[i];
         if (!sensor->running || now < sensor->due_ms) continue;

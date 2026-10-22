@@ -31,42 +31,47 @@ struct FakeCamera {
 }
 
 impl CameraService for FakeCamera {
-    fn create(&self, _options_json: &str) -> Result<String, ServiceError> {
-        self.protected_calls.fetch_add(1, Ordering::SeqCst);
-        Ok("{}".to_string())
-    }
-
-    fn take_photo_async(&self, _request_id: u32, _options_json: &str) -> Result<(), ServiceError> {
+    fn create(&self, _request_json: &str) -> Result<(), ServiceError> {
         self.protected_calls.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 
-    fn start_record(&self, _options_json: &str) -> Result<String, ServiceError> {
-        self.protected_calls.fetch_add(1, Ordering::SeqCst);
-        Ok("{}".to_string())
-    }
-
-    fn set_zoom(&self, _options_json: &str) -> Result<String, ServiceError> {
-        self.protected_calls.fetch_add(1, Ordering::SeqCst);
-        Ok("{}".to_string())
-    }
-
-    fn listen_frame_change(&self, _camera_id: u32) -> Result<(), ServiceError> {
+    fn set(&self, _request_json: &str) -> Result<(), ServiceError> {
         self.protected_calls.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 
-    fn destroy(&self, _camera_id: u32) -> Result<(), ServiceError> {
+    fn take_photo(&self, _request_json: &str) -> Result<(), ServiceError> {
+        self.protected_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn start_record(&self, _request_json: &str) -> Result<(), ServiceError> {
+        self.protected_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn set_zoom(&self, _request_json: &str) -> Result<(), ServiceError> {
+        self.protected_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn listen_frame_change(&self, _request_json: &str) -> Result<(), ServiceError> {
+        self.protected_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn destroy(&self, _request_json: &str) -> Result<(), ServiceError> {
         self.cleanup_calls.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 
-    fn stop_record(&self, _options_json: &str) -> Result<String, ServiceError> {
+    fn stop_record(&self, _request_json: &str) -> Result<(), ServiceError> {
         self.cleanup_calls.fetch_add(1, Ordering::SeqCst);
-        Ok("{}".to_string())
+        Ok(())
     }
 
-    fn close_frame_change(&self, _camera_id: u32) -> Result<(), ServiceError> {
+    fn close_frame_change(&self, _request_json: &str) -> Result<(), ServiceError> {
         self.cleanup_calls.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -362,11 +367,13 @@ fn denied_camera_can_release_but_cannot_acquire_or_use() {
 
     run(
         &mut runtime,
-        "try { __camera.takePhoto({ fail() {} }); } catch (_) {} \
-         __camera.startRecord({ fail() {} }); \
-         __camera.setZoom({ zoom: 2, fail() {} }); \
+        "const ignore = () => {}; \
+         __camera.takePhoto('normal').catch(ignore); \
+         __camera.startRecord().catch(ignore); \
+         __camera.setZoom({ zoom: 2 }).catch(ignore); \
+         __camera.x = 10; \
          __camera.listenFrameChange(); \
-         __camera.stopRecord({ fail() {} }); \
+         __camera.stopRecord(false).catch(ignore); \
          __camera.closeFrameChange(); \
          __camera.destroy();",
     );

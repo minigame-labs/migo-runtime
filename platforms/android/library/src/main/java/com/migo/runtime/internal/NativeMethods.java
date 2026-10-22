@@ -738,19 +738,23 @@ public final class NativeMethods {
     // ==================== Camera Callbacks ====================
 
     /**
-     * Callback for camera events.
-     * Called from {@link com.migo.runtime.internal.platform.CameraManager}.
-     *
-     * @param sessionId   The session ID
-     * @param cameraId    The camera instance ID
-     * @param eventType   Event type: "stop", "error", "authCancel", "timeoutCallback"
-     * @param jsonPayload JSON-encoded event data
+     * What happened to camera {@code cameraId} on its own, by event number
+     * ({@code CameraManager.EVENT_*}): it stopped, or the player refused the
+     * system's permission.
      */
-    public static void onCameraEvent(
-            int sessionId, long generation, int cameraId, String eventType, String jsonPayload) {
-        if (sessionId >= 0 && eventType != null) {
-            NativeBridge.onCameraEvent(sessionId, generation, cameraId, eventType,
-                    jsonPayload != null ? jsonPayload : "{}");
+    public static void onCameraEvent(int sessionId, int cameraId, int event) {
+        if (sessionId >= 0) {
+            NativeBridge.onCameraEvent(sessionId, cameraId, event);
+        }
+    }
+
+    /**
+     * The answer to a camera call, by method number ({@code CameraManager.METHOD_*}):
+     * the result with its {@code requestId}, or {@code {"requestId", "error"}}.
+     */
+    public static void onCameraResult(int sessionId, int method, String resultJson) {
+        if (sessionId >= 0 && resultJson != null) {
+            NativeBridge.onCameraResult(sessionId, method, resultJson);
         }
     }
 

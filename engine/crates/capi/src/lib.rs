@@ -29,6 +29,7 @@ mod android;
 mod bluetooth;
 mod callback_gate;
 mod callbacks;
+mod camera;
 mod capabilities;
 #[cfg(test)]
 mod concurrent_sessions;

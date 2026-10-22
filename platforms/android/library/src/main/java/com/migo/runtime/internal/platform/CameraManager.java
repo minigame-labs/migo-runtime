@@ -12,11 +12,12 @@ import android.hardware.camera2.CameraCaptureSession;
 import android.hardware.camera2.CameraCharacteristics;
 import android.hardware.camera2.CameraDevice;
 import android.hardware.camera2.CaptureRequest;
-import android.hardware.camera2.TotalCaptureResult;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.Image;
 import android.media.ImageReader;
+import android.media.MediaMetadataRetriever;
 import android.media.MediaRecorder;
+import android.graphics.Bitmap;
 import android.os.Build;
 import android.os.Handler;
 import android.os.HandlerThread;
@@ -39,6 +40,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -48,14 +50,28 @@ import java.util.concurrent.atomic.AtomicInteger;
  * Platform-level camera manager using Camera2 API.
  * <p>
  * Supports photo capture, video recording, zoom control, and real-time frame streaming.
- * Events are sent via {@link NativeMethods#onCameraEvent} and
- * frame data via {@link NativeMethods#onCameraFrameData}.
+ * Every request is the engine's, carrying content's {@code cameraId} and a call's
+ * {@code requestId}; a call is answered through {@link NativeMethods#onCameraResult}
+ * once what it asked has happened -- {@code create} once the preview runs -- and
+ * never blocks the thread that made it. What happens to a camera on its own is
+ * {@link NativeMethods#onCameraEvent}; frames go to
+ * {@link NativeMethods#onCameraFrameData}.
  *
  * @hide
  */
 public final class CameraManager implements RuntimeScoped {
 
     private static final String TAG = "CameraManager";
+
+    /** The camera's calls and events by number, as the engine numbers them
+     *  ({@code shared::services::camera_method}, {@code MIGO_CAMERA_*}). */
+    public static final int METHOD_CREATE = 0;
+    public static final int METHOD_TAKE_PHOTO = 3;
+    public static final int METHOD_START_RECORD = 4;
+    public static final int METHOD_STOP_RECORD = 5;
+    public static final int METHOD_SET_ZOOM = 6;
+    public static final int EVENT_STOP = 0;
+    public static final int EVENT_AUTH_CANCEL = 1;
 
     /** Camera states. */
     private static final int STATE_CLOSED = 0;
@@ -94,13 +110,17 @@ public final class CameraManager implements RuntimeScoped {
     private MediaRecorder mediaRecorder;
     private String videoFilePath;
     private long recordStartTime;
-    private final Semaphore recordStartCompleteLock = new Semaphore(0);
 
     // Semaphore to prevent concurrent open/close
     private final Semaphore cameraOpenCloseLock = new Semaphore(1);
 
-    // Semaphore to wait for camera opening to complete
-    private final Semaphore cameraOpenCompleteLock = new Semaphore(0);
+    /** Every call in flight, request id to method: each is answered once, and
+     *  those still waiting when the camera goes fail with it. */
+    private final ConcurrentHashMap<Integer, Integer> pendingCalls = new ConcurrentHashMap<>();
+    /** The create request waiting for the preview to run, or 0 once answered. */
+    private final AtomicInteger pendingCreate = new AtomicInteger();
+    /** The start-record request waiting for the recorder to run, or 0. */
+    private final AtomicInteger pendingRecordStart = new AtomicInteger();
 
     private final AtomicInteger state = new AtomicInteger(STATE_CLOSED);
     private final LifecycleRequestState<Boolean> cameraActivityRequest;
@@ -152,89 +172,70 @@ public final class CameraManager implements RuntimeScoped {
     }
 
     /**
-     * Create and open the camera with the given options.
+     * Open the camera content asked for and answer {@code requestId} once its
+     * preview runs -- or with why it could not. Returns at once: the camera
+     * opens on its own thread.
      *
-     * @param optionsJson JSON with keys: x, y, width, height, devicePosition, flash, size
-     * @return JSON result string: {"cameraId": <id>}
+     * @param requestJson cameraId, devicePosition, flash, size, and where the preview goes
      */
-    public String create(String optionsJson) {
-        Log.d(TAG, "create() called with optionsJson: " + optionsJson);
-        cameraOpenCompleteLock.drainPermits(); // Clear any stale permits
-        parseOptions(optionsJson);
-        Log.d(TAG, "create() parsed options - position: " + position + ", flash: " + flash + ", size: " + sizePreset);
+    public void create(int requestId, String requestJson) {
+        pendingCalls.put(requestId, METHOD_CREATE);
+        pendingCreate.set(requestId);
+        parseOptions(requestJson);
 
         if (activity.checkSelfPermission(Manifest.permission.CAMERA)
                 != PackageManager.PERMISSION_GRANTED) {
-            Log.w(TAG, "create() camera permission denied");
-            fireEvent("authCancel", "{}");
-            return errorJson("createCamera:fail auth deny");
+            fireEvent(EVENT_AUTH_CANCEL);
+            failOrStop("auth deny");
+            return;
         }
         // Keyed by position, not by "camera": a device has several physical cameras
         // and two games using different ones is legitimate.
         if (!ExclusiveDeviceArbiter.tryAcquire(
                 ExclusiveDeviceArbiter.camera(position), sessionId)) {
-            return errorJson("createCamera:fail in use by another game");
+            failOrStop("in use by another game");
+            return;
         }
-        Log.d(TAG, "create() permission check passed");
-
         cameraManager = (android.hardware.camera2.CameraManager)
                 activity.getSystemService(Context.CAMERA_SERVICE);
         if (cameraManager == null) {
-            Log.e(TAG, "create() failed to get camera service");
-            return errorJson("createCamera:fail camera service unavailable");
+            failOrStop("camera service unavailable");
+            return;
         }
-        Log.d(TAG, "create() got camera manager");
-
         try {
             hardwareCameraId = findCameraId();
-            Log.d(TAG, "create() found hardwareCameraId: " + hardwareCameraId);
             if (hardwareCameraId == null) {
-                Log.e(TAG, "create() no camera found for position: " + position);
-                return errorJson("createCamera:fail no camera found for position: " + position);
+                failOrStop("no " + position + " camera");
+                return;
             }
-
             resolveSizes();
-            Log.d(TAG, "create() resolved sizes - preview: " + previewSize + ", photo: " + photoSize + ", video: " + videoSize);
             synchronized (initializationLock) {
                 if (cameraActivityRequest.isDestroyed()) {
-                    return errorJson("createCamera:fail session destroyed");
+                    failOrStop("camera destroyed");
+                    return;
                 }
                 startBackgroundThread();
-                Log.d(TAG, "create() started background thread");
-
-                LifecycleRequestState.Action action =
-                        cameraActivityRequest.requestStart(Boolean.TRUE);
-                if (action == LifecycleRequestState.Action.NONE) {
-                    if (cameraActivityRequest.isDestroyed()) {
-                        return errorJson("createCamera:fail session destroyed");
-                    }
-                    Log.d(TAG, "create() deferred camera open while lifecycle-suspended");
-                    return createResultJson();
+                // Lifecycle-suspended: it opens when the session resumes, and is
+                // answered then.
+                if (cameraActivityRequest.requestStart(Boolean.TRUE)
+                        == LifecycleRequestState.Action.NONE) {
+                    return;
                 }
-
-                if (cameraActivityRequest.isDestroyed()) {
-                    return errorJson("createCamera:fail session destroyed");
-                }
-                openCamera();
-                Log.d(TAG, "create() called openCamera()");
+                backgroundHandler.post(this::openOrFail);
             }
-
-            // Wait for camera to be fully opened and preview session configured
-            Log.d(TAG, "create() waiting for camera open to complete...");
-            boolean opened = cameraOpenCompleteLock.tryAcquire(5000, TimeUnit.MILLISECONDS);
-            if (!opened) {
-                Log.w(TAG, "create() timeout waiting for camera open");
-                cameraActivityRequest.startFailed(false);
-                return errorJson("createCamera:fail timeout waiting for camera open");
-            }
-            Log.d(TAG, "create() camera open completed");
-
-            Log.d(TAG, "create() returning successfully with cameraId: " + cameraId);
-            return createResultJson();
         } catch (Exception e) {
             cameraActivityRequest.startFailed(false);
-            Log.e(TAG, "create() exception: " + e.getMessage(), e);
-            return errorJson("createCamera:fail " + e.getMessage());
+            failOrStop(String.valueOf(e.getMessage()));
+        }
+    }
+
+    /** Open the camera on its own thread; a failure fails its creation. */
+    private void openOrFail() {
+        try {
+            openCamera();
+        } catch (Exception e) {
+            cameraActivityRequest.startFailed(false);
+            failOrStop(String.valueOf(e.getMessage()));
         }
     }
 
@@ -252,7 +253,13 @@ public final class CameraManager implements RuntimeScoped {
                     () -> ExclusiveDeviceArbiter.release(
                             ExclusiveDeviceArbiter.camera(position), sessionId));
         }
-        fireEvent("stop", "{}");
+        // Content let it go: no onStop, which is for a camera that stops on its
+        // own. What it still waited for fails with it.
+        pendingCreate.set(0);
+        pendingRecordStart.set(0);
+        for (Integer requestId : new ArrayList<>(pendingCalls.keySet())) {
+            fail(requestId, "camera destroyed");
+        }
         Log.d(TAG, "destroy() completed");
     }
 
@@ -310,13 +317,11 @@ public final class CameraManager implements RuntimeScoped {
         if (!cameraActivityRequest.isActive() || cameraActivityRequest.isDestroyed()) return;
 
         if (cameraDevice == null) {
-            cameraOpenCompleteLock.drainPermits();
             try {
                 openCamera();
             } catch (Exception e) {
                 cameraActivityRequest.startFailed(true);
-                fireEvent("error", "{\"errMsg\":\""
-                        + escapeJson("camera resume:fail " + e.getMessage()) + "\"}");
+                failOrStop("camera resume failed: " + e.getMessage());
             }
             return;
         }
@@ -331,8 +336,7 @@ public final class CameraManager implements RuntimeScoped {
                 }
                 startPreviewSession();
             } catch (Exception e) {
-                fireEvent("error", "{\"errMsg\":\""
-                        + escapeJson("camera resume:fail " + e.getMessage()) + "\"}");
+                failOrStop("camera resume failed: " + e.getMessage());
             }
             return;
         }
@@ -342,8 +346,7 @@ public final class CameraManager implements RuntimeScoped {
                 try {
                     startPreviewSession();
                 } catch (Exception e) {
-                    fireEvent("error", "{\"errMsg\":\""
-                            + escapeJson("camera resume:fail " + e.getMessage()) + "\"}");
+                    failOrStop("camera resume failed: " + e.getMessage());
                 }
             }
             return;
@@ -359,61 +362,46 @@ public final class CameraManager implements RuntimeScoped {
                 recordingPausedForLifecycle = false;
             }
         } catch (Exception e) {
-            fireEvent("error", "{\"errMsg\":\""
-                    + escapeJson("camera resume:fail " + e.getMessage()) + "\"}");
+            failOrStop("camera resume failed: " + e.getMessage());
         }
     }
 
     /**
-     * Submit a photo capture and return immediately.
-     *
-     * <p>The old implementation waited on a latch here, which put the Java
-     * callback's disk write on the V8 thread.  The request id is carried in
-     * the eventual {@code takePhotoResult} event so a restarted or destroyed
-     * camera cannot settle a different request.
+     * Take a photo at {@code quality} and answer {@code requestId} with its file
+     * once written. Returns at once: the capture and the write run on the
+     * camera's thread.
      */
-    public void takePhotoAsync(final int requestId, String optionsJson) {
-        Log.d(TAG, "takePhotoAsync() called with optionsJson: " + optionsJson);
+    public void takePhoto(final int requestId, String requestJson) {
+        pendingCalls.put(requestId, METHOD_TAKE_PHOTO);
         if (!cameraActivityRequest.isActive()) {
-            firePhotoResult(requestId, errorJson("camera.takePhoto:fail camera lifecycle suspended"));
+            fail(requestId, "camera suspended");
             return;
         }
-        if (state.get() == STATE_CLOSED || captureSession == null || cameraDevice == null) {
-            firePhotoResult(requestId, errorJson("camera.takePhoto:fail camera not ready"));
+        if (state.get() == STATE_CLOSED || captureSession == null || cameraDevice == null
+                || photoReader == null) {
+            fail(requestId, "camera not ready");
             return;
         }
-
         String quality = "normal";
         try {
-            JSONObject opts = new JSONObject(optionsJson);
-            quality = opts.optString("quality", "normal");
+            quality = new JSONObject(requestJson).optString("quality", "normal");
         } catch (JSONException ignored) {
-            // Keep the public default for malformed optional quality.
+            // The public default for a quality content did not give.
         }
-
         final int jpegQuality;
         switch (quality) {
             case "high": jpegQuality = 95; break;
             case "low": jpegQuality = 60; break;
             default: jpegQuality = 80; break;
         }
-
         try {
-            if (photoReader == null) {
-                firePhotoResult(requestId,
-                        errorJson("camera.takePhoto:fail photoReader not initialized"));
-                return;
-            }
-
             final String tempPath = createTempFilePath("photo", ".jpg");
-            final int finalJpegQuality = jpegQuality;
             photoReader.setOnImageAvailableListener(reader -> {
                 Image image = null;
                 try {
                     image = reader.acquireLatestImage();
                     if (image == null) {
-                        firePhotoResult(requestId,
-                                errorJson("camera.takePhoto:fail no image"));
+                        fail(requestId, "no image");
                         return;
                     }
                     ByteBuffer buffer = image.getPlanes()[0].getBuffer();
@@ -422,17 +410,14 @@ public final class CameraManager implements RuntimeScoped {
                     try (FileOutputStream fos = new FileOutputStream(tempPath)) {
                         fos.write(bytes);
                     }
-
                     JSONObject result = new JSONObject();
-                    result.put("requestId", requestId);
                     result.put("tempImagePath", tempPath);
                     result.put("width", photoSize.getWidth());
                     result.put("height", photoSize.getHeight());
-                    fireEvent("takePhotoResult", result.toString());
+                    succeed(requestId, result);
                 } catch (Exception e) {
                     new File(tempPath).delete();
-                    firePhotoResult(requestId,
-                            errorJson("camera.takePhoto:fail " + e.getMessage()));
+                    fail(requestId, String.valueOf(e.getMessage()));
                 } finally {
                     if (image != null) image.close();
                 }
@@ -441,82 +426,56 @@ public final class CameraManager implements RuntimeScoped {
             CaptureRequest.Builder captureBuilder =
                     cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
             captureBuilder.addTarget(photoReader.getSurface());
-            captureBuilder.set(CaptureRequest.JPEG_QUALITY, (byte) finalJpegQuality);
+            captureBuilder.set(CaptureRequest.JPEG_QUALITY, (byte) jpegQuality);
             applyFlashMode(captureBuilder);
             applyZoom(captureBuilder);
-            captureSession.capture(captureBuilder.build(),
-                    new CameraCaptureSession.CaptureCallback() {
-                        @Override
-                        public void onCaptureCompleted(CameraCaptureSession session,
-                                                       CaptureRequest request,
-                                                       TotalCaptureResult result) {
-                            Log.d(TAG, "takePhotoAsync() capture completed");
-                        }
-                    }, backgroundHandler);
+            captureSession.capture(captureBuilder.build(), null, backgroundHandler);
         } catch (Exception e) {
-            firePhotoResult(requestId,
-                    errorJson("camera.takePhoto:fail " + e.getMessage()));
+            fail(requestId, String.valueOf(e.getMessage()));
         }
-    }
-
-    private void firePhotoResult(int requestId, String payload) {
-        try {
-            JSONObject result = new JSONObject(payload);
-            result.put("requestId", requestId);
-            fireEvent("takePhotoResult", result.toString());
-        } catch (JSONException e) {
-            fireEvent("takePhotoResult",
-                    "{\"requestId\":" + requestId + ",\"_error\":{\"errMsg\":\"camera.takePhoto:fail result\"}}");
-        }
-    }
-
-    static String recordingResultForTests(int recordingState) {
-        return recordingState == STATE_RECORDING
-                ? "{}"
-                : "{\"_error\":{\"errMsg\":\"camera.startRecord:fail recording not started\"}}";
     }
 
     /**
-     * Start video recording.
-     *
-     * @param optionsJson JSON with keys: cameraId
-     * @return JSON result: {} on success
+     * Start recording and answer {@code requestId} once the recorder runs.
+     * Returns at once: the recording session is made on the camera's thread.
      */
-    public String startRecord(String optionsJson) {
-        Log.d(TAG, "startRecord() called");
+    public void startRecord(final int requestId) {
+        pendingCalls.put(requestId, METHOD_START_RECORD);
         if (!cameraActivityRequest.isActive()) {
-            return errorJson("camera.startRecord:fail camera lifecycle suspended");
+            fail(requestId, "camera suspended");
+            return;
         }
-        if (state.get() != STATE_OPENED || cameraDevice == null) {
-            Log.e(TAG, "startRecord() camera not ready - state: " + state.get() + ", cameraDevice: " + (cameraDevice != null));
-            return errorJson("camera.startRecord:fail camera not ready");
+        if (state.get() != STATE_OPENED || cameraDevice == null || backgroundHandler == null) {
+            fail(requestId, state.get() == STATE_RECORDING ? "already recording" : "camera not ready");
+            return;
         }
-        Log.d(TAG, "startRecord() camera ready, starting recording");
+        if (!pendingRecordStart.compareAndSet(0, requestId)) {
+            fail(requestId, "already starting");
+            return;
+        }
+        backgroundHandler.post(this::startRecordInternal);
+    }
 
+    private void startRecordInternal() {
         try {
-            recordStartCompleteLock.drainPermits();
             closeSession();
-
             videoFilePath = createTempFilePath("video", ".mp4");
             setupMediaRecorder();
             recordingPausedForLifecycle = false;
 
-            // Create recording session with preview + mediaRecorder surfaces
+            // Recording: the recorder's surface, and the frames' while content
+            // listens to them.
             List<android.view.Surface> surfaces = new ArrayList<>();
             android.view.Surface recorderSurface = mediaRecorder.getSurface();
             surfaces.add(recorderSurface);
-
             if (frameListening.get() && frameReader != null) {
                 surfaces.add(frameReader.getSurface());
             }
-
             previewRequestBuilder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
             previewRequestBuilder.addTarget(recorderSurface);
-
             if (frameListening.get() && frameReader != null) {
                 previewRequestBuilder.addTarget(frameReader.getSurface());
             }
-
             applyFlashMode(previewRequestBuilder);
             applyZoom(previewRequestBuilder);
 
@@ -525,6 +484,7 @@ public final class CameraManager implements RuntimeScoped {
                         @Override
                         public void onConfigured(CameraCaptureSession session) {
                             captureSession = session;
+                            int requestId = pendingRecordStart.getAndSet(0);
                             try {
                                 if (cameraActivityRequest.isDestroyed()) {
                                     session.close();
@@ -542,69 +502,66 @@ public final class CameraManager implements RuntimeScoped {
                                     recordingPausedForLifecycle = true;
                                     captureSession.stopRepeating();
                                 }
+                                succeed(requestId, new JSONObject());
                             } catch (Exception e) {
-                                fireEvent("error",
-                                        "{\"errMsg\":\"" + escapeJson("camera.startRecord:fail " + e.getMessage()) + "\"}");
-                            } finally {
-                                recordStartCompleteLock.release();
+                                fail(requestId, String.valueOf(e.getMessage()));
+                                restorePreview();
                             }
                         }
 
                         @Override
                         public void onConfigureFailed(CameraCaptureSession session) {
-                            fireEvent("error",
-                                    "{\"errMsg\":\"camera.startRecord:fail session config failed\"}");
-                            recordStartCompleteLock.release();
+                            fail(pendingRecordStart.getAndSet(0), "recording session config failed");
+                            restorePreview();
                         }
                     }, backgroundHandler);
-
-            if (!recordStartCompleteLock.tryAcquire(5_000, TimeUnit.MILLISECONDS)) {
-                return errorJson("camera.startRecord:fail timeout waiting for recording");
-            }
-            return recordingResultForTests(state.get());
         } catch (Exception e) {
-            return errorJson("camera.startRecord:fail " + e.getMessage());
+            fail(pendingRecordStart.getAndSet(0), String.valueOf(e.getMessage()));
+            restorePreview();
+        }
+    }
+
+    /** After a recording that did not start: the recorder let go, the preview back. */
+    private void restorePreview() {
+        releaseMediaRecorder(false);
+        try {
+            sessionNeedsReconfigure = false;
+            startPreviewSession();
+        } catch (Exception e) {
+            failOrStop("preview failed: " + e.getMessage());
         }
     }
 
     /**
-     * Stop video recording.
-     *
-     * @param optionsJson JSON with keys: cameraId, compressed (boolean)
-     * @return JSON result: {"tempThumbPath": "", "tempVideoPath": "<path>"}
+     * Stop recording and answer {@code requestId} with the video and its cover,
+     * its first frame, once both are written. Returns at once.
      */
-    public String stopRecord(String optionsJson) {
-        Log.d(TAG, "stopRecord() called");
-        if (state.get() != STATE_RECORDING) {
-            Log.e(TAG, "stopRecord() not recording, state: " + state.get());
-            return errorJson("camera.stopRecord:fail not recording");
+    public void stopRecord(final int requestId) {
+        pendingCalls.put(requestId, METHOD_STOP_RECORD);
+        if (state.get() != STATE_RECORDING || backgroundHandler == null) {
+            fail(requestId, "not recording");
+            return;
         }
-
-        return stopRecordInternal();
+        backgroundHandler.post(() -> stopRecordInternal(requestId));
     }
 
     /**
-     * Set zoom level.
-     *
-     * @param optionsJson JSON with keys: zoom (number)
-     * @return JSON result: {"zoom": <actual_zoom>}
+     * Zoom to what content asked, within what the camera can, and answer
+     * {@code requestId} with the zoom taken.
      */
-    public synchronized String setZoom(String optionsJson) {
-        Log.d(TAG, "setZoom() called with optionsJson: " + optionsJson);
+    public synchronized void setZoom(int requestId, String requestJson) {
+        pendingCalls.put(requestId, METHOD_SET_ZOOM);
         if (state.get() == STATE_CLOSED && !cameraActivityRequest.isRequested()) {
-            Log.e(TAG, "setZoom() camera not ready");
-            return errorJson("camera.setZoom:fail camera not ready");
+            fail(requestId, "camera not ready");
+            return;
         }
-
         float zoom = 1.0f;
         try {
-            JSONObject opts = new JSONObject(optionsJson);
-            zoom = (float) opts.optDouble("zoom", 1.0);
-        } catch (JSONException ignored) {}
-
+            zoom = (float) new JSONObject(requestJson).optDouble("zoom", 1.0);
+        } catch (JSONException ignored) {
+            // The engine checked the zoom content gave.
+        }
         currentZoom = Math.max(1.0f, Math.min(zoom, maxZoom));
-        Log.d(TAG, "setZoom() requested: " + zoom + ", actual: " + currentZoom + ", maxZoom: " + maxZoom);
-
         if (cameraActivityRequest.isActive()
                 && previewRequestBuilder != null
                 && captureSession != null) {
@@ -612,21 +569,84 @@ public final class CameraManager implements RuntimeScoped {
                 applyZoom(previewRequestBuilder);
                 captureSession.setRepeatingRequest(
                         previewRequestBuilder.build(), null, backgroundHandler);
-                Log.d(TAG, "setZoom() applied to capture session");
             } catch (Exception e) {
-                Log.e(TAG, "setZoom() exception: " + e.getMessage(), e);
-                return errorJson("camera.setZoom:fail " + e.getMessage());
+                fail(requestId, String.valueOf(e.getMessage()));
+                return;
             }
-        } else {
-            Log.w(TAG, "setZoom() previewRequestBuilder or captureSession not ready");
         }
-
         try {
             JSONObject result = new JSONObject();
-            result.put("zoom", currentZoom);
-            return result.toString();
+            // To a tenth, as the reference reports it.
+            result.put("zoom", Math.round(currentZoom * 10) / 10.0);
+            succeed(requestId, result);
         } catch (JSONException e) {
-            return "{\"zoom\":" + currentZoom + "}";
+            fail(requestId, "result");
+        }
+    }
+
+    /**
+     * What content changed on the camera: the flash at once; the camera it
+     * faces or its frames' size by opening it again, when it is not recording.
+     * Where its preview stands is kept for the preview.
+     */
+    public void set(String requestJson) {
+        JSONObject changed;
+        try {
+            changed = new JSONObject(requestJson);
+        } catch (JSONException e) {
+            return;
+        }
+        Handler handler = backgroundHandler;
+        if (handler == null) return;
+        handler.post(() -> {
+            if (cameraActivityRequest.isDestroyed()) return;
+            if (changed.has("flash")) {
+                flash = changed.optString("flash", flash);
+                if (state.get() != STATE_CLOSED && previewRequestBuilder != null
+                        && captureSession != null && cameraActivityRequest.isActive()) {
+                    try {
+                        applyFlashMode(previewRequestBuilder);
+                        captureSession.setRepeatingRequest(
+                                previewRequestBuilder.build(), null, backgroundHandler);
+                    } catch (Exception e) {
+                        Log.w(TAG, "set() flash: " + e.getMessage());
+                    }
+                }
+            }
+            String newPosition = changed.optString("devicePosition", position);
+            String newSize = changed.optString("size", sizePreset);
+            if ((newPosition.equals(position) && newSize.equals(sizePreset))
+                    || state.get() == STATE_RECORDING) {
+                return;
+            }
+            reopen(newPosition, newSize);
+        });
+    }
+
+    /** The same camera, facing {@code newPosition} with frames of {@code newSize}. */
+    private void reopen(String newPosition, String newSize) {
+        if (!newPosition.equals(position)) {
+            if (!ExclusiveDeviceArbiter.tryAcquire(
+                    ExclusiveDeviceArbiter.camera(newPosition), sessionId)) {
+                Log.w(TAG, "set() the " + newPosition + " camera is another game's");
+                return;
+            }
+            ExclusiveDeviceArbiter.release(ExclusiveDeviceArbiter.camera(position), sessionId);
+        }
+        position = newPosition;
+        sizePreset = newSize;
+        try {
+            closeCamera(false);
+            hardwareCameraId = findCameraId();
+            if (hardwareCameraId == null) {
+                failOrStop("no " + position + " camera");
+                return;
+            }
+            resolveSizes();
+            if (frameListening.get()) createFrameReader();
+            if (cameraActivityRequest.isActive()) openCamera();
+        } catch (Exception e) {
+            failOrStop("camera reopen failed: " + e.getMessage());
         }
     }
 
@@ -654,8 +674,7 @@ public final class CameraManager implements RuntimeScoped {
             Log.d(TAG, "listenFrameChange() started successfully");
         } catch (Exception e) {
             Log.e(TAG, "listenFrameChange() exception: " + e.getMessage(), e);
-            fireEvent("error",
-                    "{\"errMsg\":\"" + escapeJson("camera.listenFrameChange:fail " + e.getMessage()) + "\"}");
+            failOrStop("camera frames failed: " + e.getMessage());
         }
     }
 
@@ -696,9 +715,9 @@ public final class CameraManager implements RuntimeScoped {
         // The grant may have been revoked since create() checked it.
         if (activity.checkSelfPermission(Manifest.permission.CAMERA)
                 != PackageManager.PERMISSION_GRANTED) {
-            fireEvent("authCancel", "{}");
+            fireEvent(EVENT_AUTH_CANCEL);
             throw new CameraAccessException(
-                    CameraAccessException.CAMERA_ERROR, "Camera permission denied");
+                    CameraAccessException.CAMERA_ERROR, "auth deny");
         }
         if (!cameraOpenCloseLock.tryAcquire(2500, TimeUnit.MILLISECONDS)) {
             Log.e(TAG, "openCamera() timeout waiting for camera lock");
@@ -723,11 +742,12 @@ public final class CameraManager implements RuntimeScoped {
                             camera.close();
                             cameraDevice = null;
                             state.set(STATE_CLOSED);
-                            cameraOpenCompleteLock.release();
                             return;
                         }
+                        // Opened as the session was suspended: it is the camera
+                        // content asked for, and its preview runs on resume.
                         if (!cameraActivityRequest.isActive()) {
-                            cameraOpenCompleteLock.release();
+                            answerCreate();
                             return;
                         }
                         if (frameListening.get()) {
@@ -741,9 +761,7 @@ public final class CameraManager implements RuntimeScoped {
                         Log.d(TAG, "openCamera() preview session started successfully");
                     } catch (Exception e) {
                         Log.e(TAG, "openCamera() onOpened exception: " + e.getMessage(), e);
-                        cameraOpenCompleteLock.release();
-                        fireEvent("error",
-                                "{\"errMsg\":\"" + escapeJson("camera open:fail " + e.getMessage()) + "\"}");
+                        failOrStop("camera open failed: " + e.getMessage());
                     }
                 }
 
@@ -751,34 +769,30 @@ public final class CameraManager implements RuntimeScoped {
                 public void onDisconnected(CameraDevice camera) {
                     Log.w(TAG, "openCamera() onDisconnected callback called");
                     cameraOpenCloseLock.release();
-                    cameraOpenCompleteLock.release();
                     camera.close();
                     cameraDevice = null;
                     state.set(STATE_CLOSED);
                     cameraActivityRequest.startFailed(true);
-                    fireEvent("stop", "{}");
+                    failOrStop("camera disconnected");
                 }
 
                 @Override
                 public void onError(CameraDevice camera, int error) {
                     Log.e(TAG, "openCamera() onError callback called with error code: " + error);
                     cameraOpenCloseLock.release();
-                    cameraOpenCompleteLock.release();
                     camera.close();
                     cameraDevice = null;
                     state.set(STATE_CLOSED);
                     cameraActivityRequest.startFailed(true);
-                    fireEvent("error", "{\"errMsg\":\"camera device error: " + error + "\"}");
+                    failOrStop("camera device error " + error);
                 }
             }, backgroundHandler);
             Log.d(TAG, "openCamera() openCamera() call completed");
         } catch (SecurityException e) {
             Log.e(TAG, "openCamera() SecurityException: " + e.getMessage(), e);
             cameraOpenCloseLock.release();
-            cameraOpenCompleteLock.release();
-            fireEvent("authCancel", "{}");
-            throw new CameraAccessException(CameraAccessException.CAMERA_ERROR,
-                    "Camera permission denied");
+            fireEvent(EVENT_AUTH_CANCEL);
+            throw new CameraAccessException(CameraAccessException.CAMERA_ERROR, "auth deny");
         }
     }
 
@@ -915,14 +929,14 @@ public final class CameraManager implements RuntimeScoped {
                         Log.d(TAG, "startPreviewSession() onConfigured callback called");
                         if (cameraDevice == null) {
                             Log.e(TAG, "startPreviewSession() onConfigured cameraDevice is null");
-                            cameraOpenCompleteLock.release();
+                            failOrStop("camera closed");
                             return;
                         }
                         captureSession = session;
                         sessionNeedsReconfigure = false;
                         if (!cameraActivityRequest.isActive()) {
                             Log.d(TAG, "startPreviewSession() configured while suspended");
-                            cameraOpenCompleteLock.release();
+                            answerCreate();
                             return;
                         }
                         try {
@@ -930,13 +944,10 @@ public final class CameraManager implements RuntimeScoped {
                             captureSession.setRepeatingRequest(
                                     previewRequestBuilder.build(), null, backgroundHandler);
                             Log.d(TAG, "startPreviewSession() repeating request set successfully");
-                            Log.d(TAG, "startPreviewSession() onConfigured completed, releasing lock");
-                            cameraOpenCompleteLock.release();
+                            answerCreate();
                         } catch (Exception e) {
                             Log.e(TAG, "startPreviewSession() onConfigured exception: " + e.getMessage(), e);
-                            cameraOpenCompleteLock.release();
-                            fireEvent("error",
-                                    "{\"errMsg\":\"" + escapeJson("preview:fail " + e.getMessage()) + "\"}");
+                            failOrStop("preview failed: " + e.getMessage());
                         }
                     }
 
@@ -944,8 +955,7 @@ public final class CameraManager implements RuntimeScoped {
                     public void onConfigureFailed(CameraCaptureSession session) {
                         Log.e(TAG, "startPreviewSession() onConfigureFailed callback called");
                         sessionNeedsReconfigure = true;
-                        cameraOpenCompleteLock.release();
-                        fireEvent("error", "{\"errMsg\":\"preview session config failed\"}");
+                        failOrStop("preview session config failed");
                     }
                 }, backgroundHandler);
         Log.d(TAG, "startPreviewSession() createCaptureSession call completed");
@@ -1055,7 +1065,19 @@ public final class CameraManager implements RuntimeScoped {
 
     private void setupMediaRecorder() throws IOException {
         mediaRecorder = new MediaRecorder();
-        mediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
+        // With its sound where the microphone may be used and there is one; the
+        // picture alone otherwise, rather than no video at all.
+        boolean withSound = activity.checkSelfPermission(Manifest.permission.RECORD_AUDIO)
+                == PackageManager.PERMISSION_GRANTED;
+        if (withSound) {
+            try {
+                mediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
+            } catch (RuntimeException e) {
+                Log.w(TAG, "recording without sound: " + e.getMessage());
+                withSound = false;
+                mediaRecorder.reset();
+            }
+        }
         mediaRecorder.setVideoSource(MediaRecorder.VideoSource.SURFACE);
         mediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
         mediaRecorder.setOutputFile(videoFilePath);
@@ -1063,7 +1085,7 @@ public final class CameraManager implements RuntimeScoped {
         mediaRecorder.setVideoFrameRate(30);
         mediaRecorder.setVideoSize(videoSize.getWidth(), videoSize.getHeight());
         mediaRecorder.setVideoEncoder(MediaRecorder.VideoEncoder.H264);
-        mediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
+        if (withSound) mediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
 
         // Handle front camera orientation
         if ("front".equals(position)) {
@@ -1075,53 +1097,66 @@ public final class CameraManager implements RuntimeScoped {
         mediaRecorder.prepare();
     }
 
-    private String stopRecordInternal() {
-        Log.d(TAG, "stopRecordInternal() called");
+    private void stopRecordInternal(int requestId) {
         if (state.get() != STATE_RECORDING) {
-            Log.e(TAG, "stopRecordInternal() not recording");
-            return errorJson("camera.stopRecord:fail not recording");
+            fail(requestId, "not recording");
+            return;
         }
-
         state.set(STATE_OPENED);
         recordingPausedForLifecycle = false;
-        Log.d(TAG, "stopRecordInternal() state set to OPENED");
-
         try {
             captureSession.stopRepeating();
-            Log.d(TAG, "stopRecordInternal() stopped repeating request");
         } catch (Exception e) {
-            Log.w(TAG, "stopRecordInternal() error stopping repeating: " + e.getMessage());
+            Log.w(TAG, "stopRecord() stopping the repeating request: " + e.getMessage());
         }
-
+        String video = videoFilePath;
+        boolean written = true;
         try {
             mediaRecorder.stop();
-            Log.d(TAG, "stopRecordInternal() media recorder stopped");
-        } catch (Exception e) {
-            Log.w(TAG, "stopRecordInternal() error stopping media recorder: " + e.getMessage());
+        } catch (RuntimeException e) {
+            // MediaRecorder throws when it stopped before writing a frame.
+            written = false;
+            Log.w(TAG, "stopRecord() " + e.getMessage());
         }
-
-        mediaRecorder.reset();
-        mediaRecorder.release();
-        mediaRecorder = null;
-
-        // Restart preview
+        releaseMediaRecorder(false);
         try {
             sessionNeedsReconfigure = false;
             startPreviewSession();
-            Log.d(TAG, "stopRecordInternal() preview session restarted");
         } catch (Exception e) {
-            Log.w(TAG, "stopRecordInternal() error restarting preview: " + e.getMessage());
-            // Best effort
+            failOrStop("preview failed: " + e.getMessage());
         }
-
+        if (!written) {
+            new File(video).delete();
+            fail(requestId, "nothing was recorded");
+            return;
+        }
         try {
             JSONObject result = new JSONObject();
-            result.put("tempThumbPath", "");
-            result.put("tempVideoPath", videoFilePath);
-            Log.d(TAG, "stopRecordInternal() returning: " + result.toString());
-            return result.toString();
-        } catch (JSONException e) {
-            return "{\"tempThumbPath\":\"\",\"tempVideoPath\":\"" + escapeJson(videoFilePath) + "\"}";
+            result.put("tempVideoPath", video);
+            result.put("tempThumbPath", writeCover(video));
+            succeed(requestId, result);
+        } catch (Exception e) {
+            new File(video).delete();
+            fail(requestId, String.valueOf(e.getMessage()));
+        }
+    }
+
+    /** The video's first frame as a JPEG beside it: its cover. */
+    private String writeCover(String video) throws IOException {
+        MediaMetadataRetriever retriever = new MediaMetadataRetriever();
+        try {
+            retriever.setDataSource(video);
+            Bitmap frame = retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
+            if (frame == null) throw new IOException("the video has no frame");
+            String cover = createTempFilePath("cover", ".jpg");
+            try (FileOutputStream out = new FileOutputStream(cover)) {
+                frame.compress(Bitmap.CompressFormat.JPEG, 80, out);
+            } finally {
+                frame.recycle();
+            }
+            return cover;
+        } finally {
+            retriever.release();
         }
     }
 
@@ -1341,28 +1376,54 @@ public final class CameraManager implements RuntimeScoped {
                 .getAbsolutePath();
     }
 
-    private void fireEvent(String eventType, String jsonPayload) {
-        Log.d(TAG, "fireEvent() eventType: " + eventType + ", payload: " + jsonPayload);
-        NativeMethods.onCameraEvent(
-                sessionId, token.generation(), cameraId, eventType, jsonPayload);
+    /** What happened to the camera on its own: {@code EVENT_*}. */
+    private void fireEvent(int event) {
+        NativeMethods.onCameraEvent(sessionId, cameraId, event);
     }
 
-    private String createResultJson() throws JSONException {
+    /** Answer call {@code requestId} with {@code result}, if it waits for one. */
+    private void succeed(int requestId, JSONObject result) {
+        Integer method = pendingCalls.remove(requestId);
+        if (method == null) return;
+        try {
+            result.put("requestId", requestId);
+        } catch (JSONException ignored) {
+            // A request id always fits.
+        }
+        NativeMethods.onCameraResult(sessionId, method, result.toString());
+    }
+
+    /** Fail call {@code requestId} with {@code reason}, if it waits for an answer. */
+    private void fail(int requestId, String reason) {
+        Integer method = pendingCalls.remove(requestId);
+        if (method == null) return;
         JSONObject result = new JSONObject();
-        result.put("cameraId", cameraId);
-        return result.toString();
+        try {
+            result.put("requestId", requestId);
+            result.put("error", reason);
+        } catch (JSONException ignored) {
+            // Strings and an int always fit.
+        }
+        NativeMethods.onCameraResult(sessionId, method, result.toString());
     }
 
-    private static String errorJson(String errMsg) {
-        return "{\"_error\":{\"errMsg\":\"" + escapeJson(errMsg) + "\"}}";
+    /** The preview runs: the create request, if it still waits, succeeds. */
+    private void answerCreate() {
+        int requestId = pendingCreate.getAndSet(0);
+        if (requestId != 0) succeed(requestId, new JSONObject());
     }
 
-    private static String escapeJson(String s) {
-        if (s == null) return "";
-        return s.replace("\\", "\\\\")
-                .replace("\"", "\\\"")
-                .replace("\n", "\\n")
-                .replace("\r", "\\r")
-                .replace("\t", "\\t");
+    /**
+     * The camera cannot run: its create request fails with {@code reason} if it
+     * still waits; a camera content already has has stopped.
+     */
+    private void failOrStop(String reason) {
+        int requestId = pendingCreate.getAndSet(0);
+        if (requestId != 0) {
+            fail(requestId, reason);
+        } else {
+            Log.w(TAG, "camera stopped: " + reason);
+            fireEvent(EVENT_STOP);
+        }
     }
 }

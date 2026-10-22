@@ -981,6 +981,83 @@
           "hook": "_internalOnUpdateEvent"
         }
       }
+    },
+    "camera": {
+      "id": 19,
+      "methods": {
+        "create": {
+          "id": 0,
+          "kind": "call",
+          "op": "op_camera_create",
+          "hook": "_internalOnCreateCameraResult",
+          "error_code_field": null
+        },
+        "destroy": {
+          "id": 1,
+          "kind": "command",
+          "op": "op_camera_destroy"
+        },
+        "set": {
+          "id": 2,
+          "kind": "command",
+          "op": "op_camera_set"
+        },
+        "take_photo": {
+          "id": 3,
+          "kind": "call",
+          "op": "op_camera_take_photo",
+          "hook": "_internalOnCameraTakePhotoResult",
+          "error_code_field": null,
+          "files": [
+            "tempImagePath"
+          ]
+        },
+        "start_record": {
+          "id": 4,
+          "kind": "call",
+          "op": "op_camera_start_record",
+          "hook": "_internalOnCameraStartRecordResult",
+          "error_code_field": null
+        },
+        "stop_record": {
+          "id": 5,
+          "kind": "call",
+          "op": "op_camera_stop_record",
+          "hook": "_internalOnCameraStopRecordResult",
+          "error_code_field": null,
+          "files": [
+            "tempVideoPath",
+            "tempThumbPath"
+          ]
+        },
+        "set_zoom": {
+          "id": 6,
+          "kind": "call",
+          "op": "op_camera_set_zoom",
+          "hook": "_internalOnCameraSetZoomResult",
+          "error_code_field": null
+        },
+        "listen_frame_change": {
+          "id": 7,
+          "kind": "command",
+          "op": "op_camera_listen_frame_change"
+        },
+        "close_frame_change": {
+          "id": 8,
+          "kind": "command",
+          "op": "op_camera_close_frame_change"
+        }
+      },
+      "events": {
+        "stop": {
+          "id": 0,
+          "hook": "_internalOnCameraStopEvent"
+        },
+        "auth_cancel": {
+          "id": 1,
+          "hook": "_internalOnCameraAuthCancelEvent"
+        }
+      }
     }
   }
 }

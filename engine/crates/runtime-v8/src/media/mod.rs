@@ -48,109 +48,117 @@ where
 }
 
 // ==================== Camera Ops ====================
+//
+// Every one is a request the camera service answers -- a call through its
+// result hook (`CAMERA_RESULT_HOOKS`), a command not at all -- carrying
+// content's `cameraId` and options, and a call's `requestId`. Opening, taking
+// and changing what the camera sees needs `scope.camera`; letting it go does
+// not, so a camera the player stopped allowing can still be closed.
 
-/// Create a camera instance. Returns JSON: `{"cameraId": <id>}`.
-#[op2]
-#[string]
+/// Open a camera and show its preview: a call, answered once it shows.
+#[op2(fast)]
 pub fn op_camera_create(
     state: &mut OpState,
-    #[string] options_json: &str,
-) -> Result<String, JsErrorBox> {
+    #[string] request_json: &str,
+) -> Result<(), JsErrorBox> {
     crate::permission::require_scope(state, Scope::Camera)?;
-    with_camera_service(state, "createCamera:fail not supported", |c| {
-        c.create(options_json)
+    with_camera_service(state, "createCamera:fail not supported", |camera| {
+        camera.create(request_json)
     })
 }
 
-/// Destroy a camera instance and release all resources.
+/// Close a camera: a command.
 #[op2(fast)]
-pub fn op_camera_destroy(state: &mut OpState, #[smi] camera_id: u32) -> Result<(), JsErrorBox> {
-    with_camera_service(state, "camera.destroy:fail not supported", |c| {
-        c.destroy(camera_id)
+pub fn op_camera_destroy(
+    state: &mut OpState,
+    #[string] request_json: &str,
+) -> Result<(), JsErrorBox> {
+    with_camera_service(state, "camera.destroy:fail not supported", |camera| {
+        camera.destroy(request_json)
     })
 }
 
-/// Start a photo capture without blocking the V8 isolate.
-///
-/// The returned request id is echoed by the platform's `takePhotoResult`
-/// camera event.  Keeping allocation here, before entering the platform
-/// service, means every accepted request has a unique completion identity.
+/// What content changed on a camera -- where its preview is, which camera, the flash, the frame size: a command.
+#[op2(fast)]
+pub fn op_camera_set(state: &mut OpState, #[string] request_json: &str) -> Result<(), JsErrorBox> {
+    crate::permission::require_scope(state, Scope::Camera)?;
+    with_camera_service(state, "camera:fail not supported", |camera| {
+        camera.set(request_json)
+    })
+}
+
+/// Take a photo: a call, answered with the file.
 #[op2(fast)]
 pub fn op_camera_take_photo(
     state: &mut OpState,
-    #[string] options_json: &str,
-) -> Result<u32, JsErrorBox> {
+    #[string] request_json: &str,
+) -> Result<(), JsErrorBox> {
     crate::permission::require_scope(state, Scope::Camera)?;
-    let request_id = state
-        .borrow::<HostOpState>()
-        .callback_ids
-        .allocate()
-        .map_err(|error| JsErrorBox::generic(error.to_string()))? as u32;
-    with_camera_service(state, "camera.takePhoto:fail not supported", |c| {
-        c.take_photo_async(request_id, options_json)?;
-        Ok(request_id)
+    with_camera_service(state, "camera.takePhoto:fail not supported", |camera| {
+        camera.take_photo(request_json)
     })
 }
 
-/// Start video recording. Options as JSON.
-#[op2]
-#[string]
+/// Start recording video: a call, answered once it records.
+#[op2(fast)]
 pub fn op_camera_start_record(
     state: &mut OpState,
-    #[string] options_json: &str,
-) -> Result<String, JsErrorBox> {
+    #[string] request_json: &str,
+) -> Result<(), JsErrorBox> {
     crate::permission::require_scope(state, Scope::Camera)?;
-    with_camera_service(state, "camera.startRecord:fail not supported", |c| {
-        c.start_record(options_json)
+    with_camera_service(state, "camera.startRecord:fail not supported", |camera| {
+        camera.start_record(request_json)
     })
 }
 
-/// Stop video recording. Returns JSON with tempThumbPath, tempVideoPath.
-#[op2]
-#[string]
+/// Stop recording: a call, answered with the video and its cover once written.
+#[op2(fast)]
 pub fn op_camera_stop_record(
     state: &mut OpState,
-    #[string] options_json: &str,
-) -> Result<String, JsErrorBox> {
-    with_camera_service(state, "camera.stopRecord:fail not supported", |c| {
-        c.stop_record(options_json)
+    #[string] request_json: &str,
+) -> Result<(), JsErrorBox> {
+    with_camera_service(state, "camera.stopRecord:fail not supported", |camera| {
+        camera.stop_record(request_json)
     })
 }
 
-/// Set camera zoom level. Returns JSON with actual zoom applied.
-#[op2]
-#[string]
+/// Zoom: a call, answered with the zoom taken.
+#[op2(fast)]
 pub fn op_camera_set_zoom(
     state: &mut OpState,
-    #[string] options_json: &str,
-) -> Result<String, JsErrorBox> {
+    #[string] request_json: &str,
+) -> Result<(), JsErrorBox> {
     crate::permission::require_scope(state, Scope::Camera)?;
-    with_camera_service(state, "camera.setZoom:fail not supported", |c| {
-        c.set_zoom(options_json)
+    with_camera_service(state, "camera.setZoom:fail not supported", |camera| {
+        camera.set_zoom(request_json)
     })
 }
 
-/// Start listening for camera frame changes (high-frequency streaming).
+/// Start handing content the frames: a command.
 #[op2(fast)]
 pub fn op_camera_listen_frame_change(
     state: &mut OpState,
-    #[smi] camera_id: u32,
+    #[string] request_json: &str,
 ) -> Result<(), JsErrorBox> {
     crate::permission::require_scope(state, Scope::Camera)?;
-    with_camera_service(state, "camera.listenFrameChange:fail not supported", |c| {
-        c.listen_frame_change(camera_id)
-    })
+    with_camera_service(
+        state,
+        "camera.listenFrameChange:fail not supported",
+        |camera| camera.listen_frame_change(request_json),
+    )
 }
 
-/// Stop listening for camera frame changes.
+/// Stop handing content the frames: a command.
 #[op2(fast)]
 pub fn op_camera_close_frame_change(
     state: &mut OpState,
-    #[smi] camera_id: u32,
+    #[string] request_json: &str,
 ) -> Result<(), JsErrorBox> {
-    with_camera_service(state, "camera.closeFrameChange:fail not supported", |c| {
-        c.close_frame_change(camera_id)
-    })
+    with_camera_service(
+        state,
+        "camera.closeFrameChange:fail not supported",
+        |camera| camera.close_frame_change(request_json),
+    )
 }
 
 // ==================== Image API Ops ====================
@@ -375,6 +383,7 @@ deno_core::extension!(
     ops = [
         op_camera_create,
         op_camera_destroy,
+        op_camera_set,
         op_camera_take_photo,
         op_camera_start_record,
         op_camera_stop_record,

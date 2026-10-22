@@ -21,10 +21,11 @@ extension MigoHostServiceID {
     public static let window = Self(rawValue: 16)
     public static let ecosystem = Self(rawValue: 17)
     public static let update = Self(rawValue: 18)
+    public static let camera = Self(rawValue: 19)
 
     /// Every service this SDK knows, in number order.
     public static let all: [Self] = [
-        .ad, .payment, .auth, .share, .navigate, .subpackage, .permission, .setting, .interaction, .clipboard, .scanCode, .location, .image, .motion, .screen, .bluetooth, .window, .ecosystem, .update,
+        .ad, .payment, .auth, .share, .navigate, .subpackage, .permission, .setting, .interaction, .clipboard, .scanCode, .location, .image, .motion, .screen, .bluetooth, .window, .ecosystem, .update, .camera,
     ]
 
     /// `ad`'s method and event numbers, as `include/migo/host_services.h` documents them.
@@ -325,6 +326,34 @@ extension MigoHostServiceID {
         /// The service's events, for `postHostServiceEvent`.
         public enum Event {
             public static let state: UInt32 = 0
+        }
+    }
+
+    /// `camera`'s method and event numbers, as `include/migo/host_services.h` documents them.
+    public enum Camera {
+        /// `create`: a call, answered once.
+        public static let create: UInt32 = 0
+        /// `destroy`: a command, unanswered.
+        public static let destroy: UInt32 = 1
+        /// `set`: a command, unanswered.
+        public static let set: UInt32 = 2
+        /// `take_photo`: a call, answered once.
+        public static let takePhoto: UInt32 = 3
+        /// `start_record`: a call, answered once.
+        public static let startRecord: UInt32 = 4
+        /// `stop_record`: a call, answered once.
+        public static let stopRecord: UInt32 = 5
+        /// `set_zoom`: a call, answered once.
+        public static let setZoom: UInt32 = 6
+        /// `listen_frame_change`: a command, unanswered.
+        public static let listenFrameChange: UInt32 = 7
+        /// `close_frame_change`: a command, unanswered.
+        public static let closeFrameChange: UInt32 = 8
+
+        /// The service's events, for `postHostServiceEvent`.
+        public enum Event {
+            public static let stop: UInt32 = 0
+            public static let authCancel: UInt32 = 1
         }
     }
 }

@@ -56,6 +56,7 @@ typedef uint32_t MigoHostService;
 #define MIGO_HOST_SERVICE_WINDOW 16U
 #define MIGO_HOST_SERVICE_ECOSYSTEM 17U
 #define MIGO_HOST_SERVICE_UPDATE 18U
+#define MIGO_HOST_SERVICE_CAMERA 19U
 
 /*
  * Ads. All six are commands addressed to the advert by the adId in their
@@ -439,6 +440,51 @@ typedef uint32_t MigoHostService;
 #define MIGO_UPDATE_EVENT_STATE 0U
 
 /*
+ * The camera: createCamera's preview over the game, its frames, photos, video
+ * and zoom. Every request names its camera by the cameraId content gave CREATE,
+ * and a call is answered once what it asked has happened. scope.camera is the
+ * engine's: no request that opens or uses a camera reaches the host before it is
+ * granted. Requests and answers, in order:
+ *
+ *   CREATE {"cameraId", "x", "y", "width", "height", "devicePosition", "flash", "size"}
+ *       -> {} once the preview shows at x, y, width x height in content's
+ *       coordinates (the window's logical pixels), devicePosition "back" or
+ *       "front", flash "auto", "on" or "off", and frames of size "small",
+ *       "medium" or "large" -- the reference sets no pixel counts; Android's are
+ *       its camera's nearest to 320 x 240, 1280 x 720 and 1920 x 1080.
+ *   DESTROY {"cameraId"}, a command: the camera closed and its preview gone; its
+ *       calls still unanswered fail ("camera destroyed").
+ *   SET {"cameraId", any of "x", "y", "width", "height", "devicePosition",
+ *       "flash", "size"}, a command: what content changed on it.
+ *   TAKE_PHOTO {"cameraId", "quality"} -> {"tempImagePath", "width", "height"},
+ *       quality "high", "normal" or "low"; the file is handed over.
+ *   START_RECORD {"cameraId"} -> {} once it records.
+ *   STOP_RECORD {"cameraId", "compressed"} -> {"tempThumbPath", "tempVideoPath"}
+ *       once the video and its cover are written; the files are handed over.
+ *   SET_ZOOM {"cameraId", "zoom"} -> {"zoom"}: the zoom the camera took, from 1
+ *       to its largest, to a tenth.
+ *   LISTEN_FRAME_CHANGE {"cameraId"}, a command: from now until
+ *       CLOSE_FRAME_CHANGE {"cameraId"}, each frame goes to
+ *       migo_session_post_camera_frame.
+ *
+ * What happens to a camera on its own is reported with {"cameraId"}: EVENT_STOP
+ * when it stops -- the App went to the background, another App took the device
+ * -- and EVENT_AUTH_CANCEL when the player refuses the system's permission,
+ * which fails CREATE too.
+ */
+#define MIGO_CAMERA_CREATE 0U
+#define MIGO_CAMERA_DESTROY 1U
+#define MIGO_CAMERA_SET 2U
+#define MIGO_CAMERA_TAKE_PHOTO 3U
+#define MIGO_CAMERA_START_RECORD 4U
+#define MIGO_CAMERA_STOP_RECORD 5U
+#define MIGO_CAMERA_SET_ZOOM 6U
+#define MIGO_CAMERA_LISTEN_FRAME_CHANGE 7U
+#define MIGO_CAMERA_CLOSE_FRAME_CHANGE 8U
+#define MIGO_CAMERA_EVENT_STOP 0U
+#define MIGO_CAMERA_EVENT_AUTH_CANCEL 1U
+
+/*
  * Content's permission scopes, in migo.getSetting()'s order. The host decides
  * each; until it reports one, content's capability calls that need it fail with
  * "auth deny", and getSetting omits it -- nobody has decided, which content
@@ -618,6 +664,30 @@ typedef struct MigoBleCharacteristicValue {
 MIGO_STATIC_ASSERT(offsetof(MigoBleCharacteristicValue, struct_size) == 0,
                    "every versioned struct must begin with struct_size");
 
+/* How a frame's four-byte pixels are laid out. */
+typedef uint32_t MigoPixelFormat;
+#define MIGO_PIXEL_FORMAT_RGBA8 0U
+#define MIGO_PIXEL_FORMAT_BGRA8 1U
+
+/* One frame of a camera content listens to (MIGO_CAMERA_LISTEN_FRAME_CHANGE):
+ * width x height pixels of format, rows top first, row_stride bytes apart (at
+ * least width * 4). Alpha is not read: content's frames are opaque. */
+typedef struct MigoCameraFrame {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint32_t camera_id;
+    uint32_t width;
+    uint32_t height;
+    uint32_t row_stride;
+    MigoPixelFormat format;
+    uint32_t reserved0;
+    const uint8_t *pixels;
+} MigoCameraFrame;
+
+MIGO_STATIC_ASSERT(offsetof(MigoCameraFrame, struct_size) == 0,
+                   "every versioned struct must begin with struct_size");
+MIGO_STATIC_ASSERT(offsetof(MigoCameraFrame, pixels) == 32, "MigoCameraFrame layout changed");
+
 /*
  * The largest payload or message either direction carries, in bytes. A longer
  * one is refused with MIGO_ERROR_INVALID_ARGUMENT before any byte is read.
@@ -791,6 +861,20 @@ MIGO_API MigoResult MIGO_CALL migo_session_post_sensor_sample(MigoSession *sessi
  */
 MIGO_API MigoResult MIGO_CALL migo_session_post_ble_characteristic_value(
     MigoSession *session, const MigoBleCharacteristicValue *value);
+
+/*
+ * Deliver one frame of a camera content listens to, from any thread, while a
+ * Surface is attached. Typed because a camera sends thirty a second: the pixels
+ * are read into content's RGBA as the call copies them, so the record is only
+ * borrowed for the call, and only the latest frame waits -- one that arrives
+ * before content took the last replaces it. Returns MIGO_ERROR_INVALID_ARGUMENT
+ * for a NULL or malformed record, a format this header does not define, a width
+ * or height of 0 or over 8192, a row_stride below width * 4, a frame whose RGBA
+ * is over 64 MiB, or when the host did not declare MIGO_HOST_SERVICE_CAMERA;
+ * MIGO_ERROR_INVALID_STATE with no Surface attached.
+ */
+MIGO_API MigoResult MIGO_CALL migo_session_post_camera_frame(MigoSession *session,
+                                                             const MigoCameraFrame *frame);
 
 /*
  * Report the value a synchronous ecosystem getter answers with -- name is one of

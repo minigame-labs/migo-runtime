@@ -11,7 +11,13 @@ const { ObjectDefineProperties } = primordials;
 ObjectDefineProperties(globalThis, {
     // Camera
     createCamera: core.propNonEnumerable(cameraApi.createCamera),
-    _internalOnCameraEvent: core.propNonEnumerable(cameraApi._internalOnCameraEvent),
+    _internalOnCreateCameraResult: core.propNonEnumerable(cameraApi._internalOnCreateCameraResult),
+    _internalOnCameraTakePhotoResult: core.propNonEnumerable(cameraApi._internalOnCameraTakePhotoResult),
+    _internalOnCameraStartRecordResult: core.propNonEnumerable(cameraApi._internalOnCameraStartRecordResult),
+    _internalOnCameraStopRecordResult: core.propNonEnumerable(cameraApi._internalOnCameraStopRecordResult),
+    _internalOnCameraSetZoomResult: core.propNonEnumerable(cameraApi._internalOnCameraSetZoomResult),
+    _internalOnCameraStopEvent: core.propNonEnumerable(cameraApi._internalOnCameraStopEvent),
+    _internalOnCameraAuthCancelEvent: core.propNonEnumerable(cameraApi._internalOnCameraAuthCancelEvent),
     _internalOnCameraFrameData: core.propNonEnumerable(cameraApi._internalOnCameraFrameData),
 
     // Image API

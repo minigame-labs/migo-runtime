@@ -41,22 +41,26 @@ use migo_capi_abi::{
         MIGO_BLUETOOTH_READ_BLE_CHARACTERISTIC_VALUE, MIGO_BLUETOOTH_SET_BLE_MTU,
         MIGO_BLUETOOTH_START_BEACON_DISCOVERY, MIGO_BLUETOOTH_START_DEVICES_DISCOVERY,
         MIGO_BLUETOOTH_STOP_BEACON_DISCOVERY, MIGO_BLUETOOTH_STOP_DEVICES_DISCOVERY,
-        MIGO_BLUETOOTH_WRITE_BLE_CHARACTERISTIC_VALUE, MIGO_CLIPBOARD_GET_CLIPBOARD_DATA,
+        MIGO_BLUETOOTH_WRITE_BLE_CHARACTERISTIC_VALUE, MIGO_CAMERA_CLOSE_FRAME_CHANGE,
+        MIGO_CAMERA_CREATE, MIGO_CAMERA_DESTROY, MIGO_CAMERA_EVENT_AUTH_CANCEL,
+        MIGO_CAMERA_EVENT_STOP, MIGO_CAMERA_LISTEN_FRAME_CHANGE, MIGO_CAMERA_SET,
+        MIGO_CAMERA_SET_ZOOM, MIGO_CAMERA_START_RECORD, MIGO_CAMERA_STOP_RECORD,
+        MIGO_CAMERA_TAKE_PHOTO, MIGO_CLIPBOARD_GET_CLIPBOARD_DATA,
         MIGO_CLIPBOARD_SET_CLIPBOARD_DATA, MIGO_ECOSYSTEM_CALL, MIGO_ECOSYSTEM_EVENT_EVENT,
         MIGO_ECOSYSTEM_REPLY, MIGO_HOST_SERVICE_AD, MIGO_HOST_SERVICE_AUTH,
-        MIGO_HOST_SERVICE_BLUETOOTH, MIGO_HOST_SERVICE_CLIPBOARD, MIGO_HOST_SERVICE_ECOSYSTEM,
-        MIGO_HOST_SERVICE_IMAGE, MIGO_HOST_SERVICE_INTERACTION, MIGO_HOST_SERVICE_LOCATION,
-        MIGO_HOST_SERVICE_MOTION, MIGO_HOST_SERVICE_NAVIGATE, MIGO_HOST_SERVICE_PAYMENT,
-        MIGO_HOST_SERVICE_PERMISSION, MIGO_HOST_SERVICE_SCAN_CODE, MIGO_HOST_SERVICE_SCREEN,
-        MIGO_HOST_SERVICE_SETTING, MIGO_HOST_SERVICE_SHARE, MIGO_HOST_SERVICE_SUBPACKAGE,
-        MIGO_HOST_SERVICE_UPDATE, MIGO_HOST_SERVICE_WINDOW, MIGO_IMAGE_CHOOSE_IMAGE,
-        MIGO_IMAGE_CHOOSE_MEDIA, MIGO_IMAGE_CHOOSE_MESSAGE_FILE, MIGO_IMAGE_COMPRESS_IMAGE,
-        MIGO_IMAGE_PREVIEW_IMAGE, MIGO_IMAGE_PREVIEW_MEDIA, MIGO_IMAGE_SAVE_FILE_TO_DISK,
-        MIGO_IMAGE_SAVE_IMAGE_TO_PHOTOS_ALBUM, MIGO_INTERACTION_HIDE_LOADING,
-        MIGO_INTERACTION_HIDE_TOAST, MIGO_INTERACTION_SHOW_ACTION_SHEET,
-        MIGO_INTERACTION_SHOW_LOADING, MIGO_INTERACTION_SHOW_MODAL, MIGO_INTERACTION_SHOW_TOAST,
-        MIGO_LOCATION_GET_FUZZY_LOCATION, MIGO_LOCATION_GET_LOCATION,
-        MIGO_MOTION_START_ACCELEROMETER, MIGO_MOTION_START_COMPASS,
+        MIGO_HOST_SERVICE_BLUETOOTH, MIGO_HOST_SERVICE_CAMERA, MIGO_HOST_SERVICE_CLIPBOARD,
+        MIGO_HOST_SERVICE_ECOSYSTEM, MIGO_HOST_SERVICE_IMAGE, MIGO_HOST_SERVICE_INTERACTION,
+        MIGO_HOST_SERVICE_LOCATION, MIGO_HOST_SERVICE_MOTION, MIGO_HOST_SERVICE_NAVIGATE,
+        MIGO_HOST_SERVICE_PAYMENT, MIGO_HOST_SERVICE_PERMISSION, MIGO_HOST_SERVICE_SCAN_CODE,
+        MIGO_HOST_SERVICE_SCREEN, MIGO_HOST_SERVICE_SETTING, MIGO_HOST_SERVICE_SHARE,
+        MIGO_HOST_SERVICE_SUBPACKAGE, MIGO_HOST_SERVICE_UPDATE, MIGO_HOST_SERVICE_WINDOW,
+        MIGO_IMAGE_CHOOSE_IMAGE, MIGO_IMAGE_CHOOSE_MEDIA, MIGO_IMAGE_CHOOSE_MESSAGE_FILE,
+        MIGO_IMAGE_COMPRESS_IMAGE, MIGO_IMAGE_PREVIEW_IMAGE, MIGO_IMAGE_PREVIEW_MEDIA,
+        MIGO_IMAGE_SAVE_FILE_TO_DISK, MIGO_IMAGE_SAVE_IMAGE_TO_PHOTOS_ALBUM,
+        MIGO_INTERACTION_HIDE_LOADING, MIGO_INTERACTION_HIDE_TOAST,
+        MIGO_INTERACTION_SHOW_ACTION_SHEET, MIGO_INTERACTION_SHOW_LOADING,
+        MIGO_INTERACTION_SHOW_MODAL, MIGO_INTERACTION_SHOW_TOAST, MIGO_LOCATION_GET_FUZZY_LOCATION,
+        MIGO_LOCATION_GET_LOCATION, MIGO_MOTION_START_ACCELEROMETER, MIGO_MOTION_START_COMPASS,
         MIGO_MOTION_START_DEVICE_MOTION, MIGO_MOTION_START_GYROSCOPE,
         MIGO_MOTION_STOP_ACCELEROMETER, MIGO_MOTION_STOP_COMPASS, MIGO_MOTION_STOP_DEVICE_MOTION,
         MIGO_MOTION_STOP_GYROSCOPE, MIGO_NAVIGATE_NAVIGATE_BACK_MINI_PROGRAM,
@@ -92,7 +96,10 @@ use shared::{
     js_escape::hook_args_one,
     protocol::error::ServiceError,
     protocol::host_cmd::HostCommand,
-    services::{BLUETOOTH_RESULT_HOOKS, host_files::HostFiles},
+    services::{
+        BLUETOOTH_RESULT_HOOKS, CAMERA_EVENT_HOOKS, CAMERA_RESULT_HOOKS, CameraService,
+        camera_result_files, host_files::HostFiles,
+    },
 };
 
 use crate::{
@@ -497,6 +504,28 @@ const BLUETOOTH_GET_BLE_DEVICE_RSSI: Call = bluetooth_call(MIGO_BLUETOOTH_GET_BL
 const BLUETOOTH_SET_BLE_MTU: Call = bluetooth_call(MIGO_BLUETOOTH_SET_BLE_MTU);
 const BLUETOOTH_GET_BLE_MTU: Call = bluetooth_call(MIGO_BLUETOOTH_GET_BLE_MTU);
 
+/// A camera call: answered through the hook the one shared table names for
+/// its method, handing over the files the one shared table names for it.
+const fn camera_call(method: u32) -> Call {
+    Call {
+        service: MIGO_HOST_SERVICE_CAMERA,
+        method,
+        hook: match CAMERA_RESULT_HOOKS[method as usize] {
+            Some(hook) => hook,
+            None => panic!("a camera command is not a call"),
+        },
+        error_code_field: None,
+        progress_hook: None,
+        delivery: Delivery::HostFiles(camera_result_files(method)),
+    }
+}
+
+const CAMERA_CREATE: Call = camera_call(MIGO_CAMERA_CREATE);
+const CAMERA_TAKE_PHOTO: Call = camera_call(MIGO_CAMERA_TAKE_PHOTO);
+const CAMERA_START_RECORD: Call = camera_call(MIGO_CAMERA_START_RECORD);
+const CAMERA_STOP_RECORD: Call = camera_call(MIGO_CAMERA_STOP_RECORD);
+const CAMERA_SET_ZOOM: Call = camera_call(MIGO_CAMERA_SET_ZOOM);
+
 const SET_WINDOW_SIZE: Call = Call {
     service: MIGO_HOST_SERVICE_WINDOW,
     method: MIGO_WINDOW_SET_WINDOW_SIZE,
@@ -581,6 +610,11 @@ const CALLS: &[&Call] = &[
     &BLUETOOTH_GET_BLE_MTU,
     &SET_WINDOW_SIZE,
     &ECOSYSTEM_CALL,
+    &CAMERA_CREATE,
+    &CAMERA_TAKE_PHOTO,
+    &CAMERA_START_RECORD,
+    &CAMERA_STOP_RECORD,
+    &CAMERA_SET_ZOOM,
 ];
 
 /// Fire-and-forget requests, as `(service, method)`. Listed so the contract test
@@ -628,6 +662,10 @@ const COMMANDS: &[(u32, u32)] = &[
     (MIGO_HOST_SERVICE_SHARE, MIGO_SHARE_SET_SHARE_MENU),
     (MIGO_HOST_SERVICE_SHARE, MIGO_SHARE_MENU_SHARE_REPLY),
     (MIGO_HOST_SERVICE_UPDATE, MIGO_UPDATE_APPLY_UPDATE),
+    (MIGO_HOST_SERVICE_CAMERA, MIGO_CAMERA_DESTROY),
+    (MIGO_HOST_SERVICE_CAMERA, MIGO_CAMERA_SET),
+    (MIGO_HOST_SERVICE_CAMERA, MIGO_CAMERA_LISTEN_FRAME_CHANGE),
+    (MIGO_HOST_SERVICE_CAMERA, MIGO_CAMERA_CLOSE_FRAME_CHANGE),
 ];
 
 /// A service's own events, as `(service, event, hook)`.
@@ -706,6 +744,16 @@ const EVENTS: &[(u32, u32, &str)] = &[
         MIGO_HOST_SERVICE_UPDATE,
         MIGO_UPDATE_EVENT_STATE,
         "_internalOnUpdateEvent",
+    ),
+    (
+        MIGO_HOST_SERVICE_CAMERA,
+        MIGO_CAMERA_EVENT_STOP,
+        CAMERA_EVENT_HOOKS[MIGO_CAMERA_EVENT_STOP as usize],
+    ),
+    (
+        MIGO_HOST_SERVICE_CAMERA,
+        MIGO_CAMERA_EVENT_AUTH_CANCEL,
+        CAMERA_EVENT_HOOKS[MIGO_CAMERA_EVENT_AUTH_CANCEL as usize],
     ),
 ];
 
@@ -1191,6 +1239,44 @@ impl EcosystemService for CapiHostServices {
     }
 }
 
+impl CameraService for CapiHostServices {
+    fn create(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&CAMERA_CREATE, request_json)
+    }
+    fn destroy(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.command(MIGO_HOST_SERVICE_CAMERA, MIGO_CAMERA_DESTROY, request_json)
+    }
+    fn set(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.command(MIGO_HOST_SERVICE_CAMERA, MIGO_CAMERA_SET, request_json)
+    }
+    fn take_photo(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&CAMERA_TAKE_PHOTO, request_json)
+    }
+    fn start_record(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&CAMERA_START_RECORD, request_json)
+    }
+    fn stop_record(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&CAMERA_STOP_RECORD, request_json)
+    }
+    fn set_zoom(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&CAMERA_SET_ZOOM, request_json)
+    }
+    fn listen_frame_change(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.command(
+            MIGO_HOST_SERVICE_CAMERA,
+            MIGO_CAMERA_LISTEN_FRAME_CHANGE,
+            request_json,
+        )
+    }
+    fn close_frame_change(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.command(
+            MIGO_HOST_SERVICE_CAMERA,
+            MIGO_CAMERA_CLOSE_FRAME_CHANGE,
+            request_json,
+        )
+    }
+}
+
 impl UpdateService for CapiHostServices {
     fn apply_update(&self) -> Result<(), ServiceError> {
         self.command(MIGO_HOST_SERVICE_UPDATE, MIGO_UPDATE_APPLY_UPDATE, "{}")
@@ -1550,6 +1636,7 @@ mod tests {
             "window" => MIGO_HOST_SERVICE_WINDOW,
             "ecosystem" => MIGO_HOST_SERVICE_ECOSYSTEM,
             "update" => MIGO_HOST_SERVICE_UPDATE,
+            "camera" => MIGO_HOST_SERVICE_CAMERA,
             other => panic!("the contract names a service the ABI has no constant for: {other}"),
         }
     }

@@ -29,7 +29,7 @@
     "createBLEPeripheralServer": null,
     "createBannerAd": {"ops":["op_ad_create","op_ad_destroy","op_ad_hide","op_ad_is_supported","op_ad_show"],"services":["ad"]},
     "createBufferURL": {"ops":["op_create_buffer_url"],"services":[]},
-    "createCamera": {"ops":["op_camera_close_frame_change","op_camera_create","op_camera_destroy","op_camera_listen_frame_change","op_camera_set_zoom","op_camera_start_record","op_camera_stop_record","op_camera_take_photo"],"services":["camera","permission"]},
+    "createCamera": {"ops":["op_camera_close_frame_change","op_camera_create","op_camera_destroy","op_camera_listen_frame_change","op_camera_start_record","op_camera_stop_record","op_camera_take_photo"],"services":["camera","permission"]},
     "createCanvas": {"ops":["op_get_canvas_info"],"services":[]},
     "createCustomAd": {"ops":["op_ad_create","op_ad_destroy","op_ad_hide","op_ad_is_supported","op_ad_show"],"services":["ad"]},
     "createFeedbackButton": {"ops":["op_ecosystem_call"],"services":["ecosystem"]},

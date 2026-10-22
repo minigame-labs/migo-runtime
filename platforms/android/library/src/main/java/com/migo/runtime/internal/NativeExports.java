@@ -1667,91 +1667,55 @@ public final class NativeExports {
 
     // ==================== Camera (delegates to MediaExports) ====================
 
-    /**
-     * Create a camera instance.
-     *
-     * @param sessionId   The session ID
-     * @param optionsJson JSON with keys: cameraId, x, y, width, height, devicePosition, flash, size
-     * @return JSON result: {"cameraId": <id>} or error JSON
-     */
-    public static String cameraCreate(int sessionId, String optionsJson) {
-        return MediaExports.cameraCreate(sessionId, optionsJson);
+    // ==================== Camera ====================
+    //
+    // Every one is the request content made -- {"cameraId", ...}, and a call's
+    // "requestId" -- answered, for a call, through NativeMethods.onCameraResult
+    // once it has happened. None blocks the engine's thread.
+
+    /** Open a camera and show its preview: a call, answered once it runs. */
+    public static void cameraCreate(int sessionId, String requestJson) {
+        MediaExports.cameraCreate(sessionId, requestJson);
     }
 
-    /**
-     * Destroy a camera instance.
-     *
-     * @param sessionId The session ID
-     * @param cameraId  The camera instance ID
-     */
-    public static void cameraDestroy(int sessionId, int cameraId) {
-        MediaExports.cameraDestroy(sessionId, cameraId);
+    /** Close a camera: a command. */
+    public static void cameraDestroy(int sessionId, String requestJson) {
+        MediaExports.cameraDestroy(sessionId, requestJson);
     }
 
-
-    /**
-     * Start a photo capture without blocking the native caller.
-     *
-     * @param sessionId session identifier
-     * @param requestId host callback identifier
-     * @param optionsJson JSON with keys: cameraId, quality
-     */
-    public static void cameraTakePhotoAsync(
-            int sessionId, int requestId, String optionsJson) {
-        MediaExports.cameraTakePhotoAsync(sessionId, requestId, optionsJson);
+    /** What content changed on a camera: a command. */
+    public static void cameraSet(int sessionId, String requestJson) {
+        MediaExports.cameraSet(sessionId, requestJson);
     }
 
-    /**
-     * Start video recording.
-     *
-     * @param sessionId   The session ID
-     * @param optionsJson JSON with keys: cameraId
-     * @return JSON result or error JSON
-     */
-    public static String cameraStartRecord(int sessionId, String optionsJson) {
-        return MediaExports.cameraStartRecord(sessionId, optionsJson);
+    /** Take a photo: a call, answered with its file. */
+    public static void cameraTakePhoto(int sessionId, String requestJson) {
+        MediaExports.cameraTakePhoto(sessionId, requestJson);
     }
 
-    /**
-     * Stop video recording.
-     *
-     * @param sessionId   The session ID
-     * @param optionsJson JSON with keys: cameraId, compressed
-     * @return JSON result or error JSON
-     */
-    public static String cameraStopRecord(int sessionId, String optionsJson) {
-        return MediaExports.cameraStopRecord(sessionId, optionsJson);
+    /** Start recording: a call, answered once it records. */
+    public static void cameraStartRecord(int sessionId, String requestJson) {
+        MediaExports.cameraStartRecord(sessionId, requestJson);
     }
 
-    /**
-     * Set camera zoom level.
-     *
-     * @param sessionId   The session ID
-     * @param optionsJson JSON with keys: cameraId, zoom
-     * @return JSON result or error JSON
-     */
-    public static String cameraSetZoom(int sessionId, String optionsJson) {
-        return MediaExports.cameraSetZoom(sessionId, optionsJson);
+    /** Stop recording: a call, answered with the video and its cover. */
+    public static void cameraStopRecord(int sessionId, String requestJson) {
+        MediaExports.cameraStopRecord(sessionId, requestJson);
     }
 
-    /**
-     * Start listening for camera frame changes.
-     *
-     * @param sessionId The session ID
-     * @param cameraId  The camera instance ID
-     */
-    public static void cameraListenFrameChange(int sessionId, int cameraId) {
-        MediaExports.cameraListenFrameChange(sessionId, cameraId);
+    /** Zoom: a call, answered with the zoom taken. */
+    public static void cameraSetZoom(int sessionId, String requestJson) {
+        MediaExports.cameraSetZoom(sessionId, requestJson);
     }
 
-    /**
-     * Stop listening for camera frame changes.
-     *
-     * @param sessionId The session ID
-     * @param cameraId  The camera instance ID
-     */
-    public static void cameraCloseFrameChange(int sessionId, int cameraId) {
-        MediaExports.cameraCloseFrameChange(sessionId, cameraId);
+    /** Start handing content the camera's frames: a command. */
+    public static void cameraListenFrameChange(int sessionId, String requestJson) {
+        MediaExports.cameraListenFrameChange(sessionId, requestJson);
+    }
+
+    /** Stop handing content the camera's frames: a command. */
+    public static void cameraCloseFrameChange(int sessionId, String requestJson) {
+        MediaExports.cameraCloseFrameChange(sessionId, requestJson);
     }
 
     /**

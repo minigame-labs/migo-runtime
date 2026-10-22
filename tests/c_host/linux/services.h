@@ -1,6 +1,8 @@
 /*
  * The device services this host supplies through the host-service channel
- * (migo/host_services.h): permission, location and the motion sensors.
+ * (migo/host_services.h): permission, location, the motion sensors and a
+ * camera -- one that makes its own pictures, a gradient that moves, and
+ * photographs (BMP) and records (YUV4MPEG2) them.
  *
  * The host runs on a desktop -- often a VM -- with no motion sensors and no
  * position of its own, so its device is scripted, as its gamepad and keyboard
@@ -31,7 +33,8 @@
 #define C_HOST_SERVICES                                                        \
     ((UINT64_C(1) << MIGO_HOST_SERVICE_PERMISSION) |                           \
      (UINT64_C(1) << MIGO_HOST_SERVICE_LOCATION) |                             \
-     (UINT64_C(1) << MIGO_HOST_SERVICE_MOTION))
+     (UINT64_C(1) << MIGO_HOST_SERVICE_MOTION) |                               \
+     (UINT64_C(1) << MIGO_HOST_SERVICE_CAMERA))
 
 /* Opens the feed, when MIGO_C_HOST_DEVICE_FEED names one. */
 void services_init(void);

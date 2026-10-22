@@ -339,16 +339,11 @@ final class NativeBridge {
 
     // ==================== Camera Callbacks ====================
 
-    /**
-     * Callback when a camera event occurs (stop, error, authCancel, timeoutCallback).
-     *
-     * @param sessionId   The session ID
-     * @param cameraId    The camera instance ID
-     * @param eventType   Event type string
-     * @param jsonPayload JSON-encoded event data
-     */
-    static native void onCameraEvent(
-            int sessionId, long generation, int cameraId, String eventType, String jsonPayload);
+    /** What happened to camera {@code cameraId} on its own, by event number. */
+    static native void onCameraEvent(int sessionId, int cameraId, int event);
+
+    /** The answer to a camera call, by method number. */
+    static native void onCameraResult(int sessionId, int method, String resultJson);
 
     /**
      * Callback when camera frame data is available.

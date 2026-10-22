@@ -378,9 +378,10 @@ mod runtime_restart_boundary_tests {
             // a module counter restarting at 1 points the retired runtime's
             // events -- camera frames, audio playback, an ad's reward verdict --
             // at the replacement runtime's objects.
-            // Two: the camera's, and that of asking for scope.camera, which
-            // nobody here has decided -- the call asks for it, as authorize does.
-            __assertTakesIds('migo.createCamera', migo.createCamera && function () { return migo.createCamera({}); }, 2);
+            // Three: the camera's, its request's, and that of asking for
+            // scope.camera, which nobody here has decided -- the call asks for
+            // it, as authorize does.
+            __assertTakesIds('migo.createCamera', migo.createCamera && function () { return migo.createCamera({}); }, 3);
             __assertTakesOneId(
                 'migo.createInnerAudioContext',
                 migo.createInnerAudioContext && function () { return migo.createInnerAudioContext(); },
