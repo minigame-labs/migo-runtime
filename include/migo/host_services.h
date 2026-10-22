@@ -58,6 +58,7 @@ typedef uint32_t MigoHostService;
 #define MIGO_HOST_SERVICE_UPDATE 18U
 #define MIGO_HOST_SERVICE_CAMERA 19U
 #define MIGO_HOST_SERVICE_RECORDER 20U
+#define MIGO_HOST_SERVICE_VIDEO 21U
 
 /*
  * Ads. All six are commands addressed to the advert by the adId in their
@@ -526,6 +527,55 @@ typedef uint32_t MigoHostService;
 #define MIGO_RECORDER_EVENT_INTERRUPTION_END 6U
 
 /*
+ * MIGO_HOST_SERVICE_VIDEO: createVideo's players, each shown where content put
+ * it -- x, y, width x height in content's coordinates (the logical pixels its
+ * touches arrive in, from the game surface's top left) -- over the game, or
+ * under it when underGameView. Every request carries the player's "videoId",
+ * which content takes from the Host id space, and every event names it back: an
+ * event for a player content no longer holds is dropped. A call is answered once
+ * what it asked has happened, as the reference's promises settle.
+ *
+ *   CREATE {"videoId", "x", "y", "width", "height", "src", "poster",
+ *       "initialTime", "playbackRate", "live", "objectFit", "controls",
+ *       "showProgress", "showProgressInControlMode", "backgroundColor",
+ *       "autoplay", "loop", "muted", "obeyMuteSwitch", "enableProgressGesture",
+ *       "enablePlayGesture", "showCenterPlayBtn", "underGameView",
+ *       "autoPauseIfNavigate", "autoPauseIfOpenNative"}, a command: src and
+ *       poster are a file the host can open or a URL the engine allowed.
+ *   DESTROY {"videoId"}, a command: the player gone; its calls still
+ *       unanswered fail ("video destroyed").
+ *   SET {"videoId", any of CREATE's options}, a command: what content changed.
+ *   PLAY, PAUSE, STOP {"videoId"} -> {} once playing, paused, or stopped back
+ *       at the start.
+ *   SEEK {"videoId", "time"} -> {} once at time seconds.
+ *   REQUEST_FULL_SCREEN {"videoId", "direction"} -> {} once it fills the
+ *       screen, direction 0, 90 (counterclockwise) or -90 (clockwise).
+ *   EXIT_FULL_SCREEN {"videoId"} -> {} once back where content put it.
+ *
+ * Events, each {"videoId", ...}: PLAY, PAUSE, ENDED, WAITING; TIME_UPDATE with
+ * {"position", "duration"} in seconds, several a second while it plays; ERROR
+ * with {"errMsg"}; PROGRESS with {"buffered" (percent), "duration"}. TIME_UPDATE
+ * and PROGRESS are readings the next one supersedes: refused with
+ * MIGO_ERROR_WOULD_BLOCK, and dropped, when content falls behind.
+ */
+#define MIGO_VIDEO_CREATE 0U
+#define MIGO_VIDEO_DESTROY 1U
+#define MIGO_VIDEO_SET 2U
+#define MIGO_VIDEO_PLAY 3U
+#define MIGO_VIDEO_PAUSE 4U
+#define MIGO_VIDEO_STOP 5U
+#define MIGO_VIDEO_SEEK 6U
+#define MIGO_VIDEO_REQUEST_FULL_SCREEN 7U
+#define MIGO_VIDEO_EXIT_FULL_SCREEN 8U
+#define MIGO_VIDEO_EVENT_PLAY 0U
+#define MIGO_VIDEO_EVENT_PAUSE 1U
+#define MIGO_VIDEO_EVENT_ENDED 2U
+#define MIGO_VIDEO_EVENT_TIME_UPDATE 3U
+#define MIGO_VIDEO_EVENT_ERROR 4U
+#define MIGO_VIDEO_EVENT_WAITING 5U
+#define MIGO_VIDEO_EVENT_PROGRESS 6U
+
+/*
  * Content's permission scopes, in migo.getSetting()'s order. The host decides
  * each; until it reports one, content's capability calls that need it fail with
  * "auth deny", and getSetting omits it -- nobody has decided, which content
@@ -841,9 +891,12 @@ MIGO_API MigoResult MIGO_CALL migo_session_update_host_service_call(
 /*
  * Report one of a declared service's own events, from any thread. payload is a
  * JSON object, length-delimited UTF-8, read during the call. Returns MIGO_OK
- * when the event was accepted or there is no running content to deliver it to,
- * and MIGO_ERROR_INVALID_ARGUMENT for a service the host did not declare, an
- * event that service does not define, or a payload that is not a JSON object.
+ * when the event was accepted or there is no running content to deliver it to;
+ * MIGO_ERROR_WOULD_BLOCK when the event is a reading the next one supersedes
+ * (MIGO_VIDEO_EVENT_TIME_UPDATE, MIGO_VIDEO_EVENT_PROGRESS) and content has
+ * fallen behind -- it is dropped; any other event always arrives; and
+ * MIGO_ERROR_INVALID_ARGUMENT for a service the host did not declare, an event
+ * that service does not define, or a payload that is not a JSON object.
  */
 MIGO_API MigoResult MIGO_CALL migo_session_post_host_service_event(
     MigoSession *session, MigoHostService service, uint32_t event,

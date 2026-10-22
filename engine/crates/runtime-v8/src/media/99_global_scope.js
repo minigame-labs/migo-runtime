@@ -42,5 +42,17 @@ ObjectDefineProperties(globalThis, {
 
     // Video
     createVideo: core.propNonEnumerable(videoApi.createVideo),
-    _internalTriggerVideoEvent: core.propNonEnumerable(videoApi._internalTriggerVideoEvent),
+    _internalOnVideoPlayResult: core.propNonEnumerable(videoApi._internalOnVideoPlayResult),
+    _internalOnVideoPauseResult: core.propNonEnumerable(videoApi._internalOnVideoPauseResult),
+    _internalOnVideoStopResult: core.propNonEnumerable(videoApi._internalOnVideoStopResult),
+    _internalOnVideoSeekResult: core.propNonEnumerable(videoApi._internalOnVideoSeekResult),
+    _internalOnVideoRequestFullScreenResult: core.propNonEnumerable(videoApi._internalOnVideoRequestFullScreenResult),
+    _internalOnVideoExitFullScreenResult: core.propNonEnumerable(videoApi._internalOnVideoExitFullScreenResult),
+    _internalOnVideoPlayEvent: core.propNonEnumerable(videoApi._internalOnVideoPlayEvent),
+    _internalOnVideoPauseEvent: core.propNonEnumerable(videoApi._internalOnVideoPauseEvent),
+    _internalOnVideoEndedEvent: core.propNonEnumerable(videoApi._internalOnVideoEndedEvent),
+    _internalOnVideoTimeUpdateEvent: core.propNonEnumerable(videoApi._internalOnVideoTimeUpdateEvent),
+    _internalOnVideoErrorEvent: core.propNonEnumerable(videoApi._internalOnVideoErrorEvent),
+    _internalOnVideoWaitingEvent: core.propNonEnumerable(videoApi._internalOnVideoWaitingEvent),
+    _internalOnVideoProgressEvent: core.propNonEnumerable(videoApi._internalOnVideoProgressEvent),
 });

@@ -1116,6 +1116,100 @@
           "hook": "_internalOnRecorderInterruptionEndEvent"
         }
       }
+    },
+    "video": {
+      "id": 21,
+      "methods": {
+        "create": {
+          "id": 0,
+          "kind": "command",
+          "op": "op_video_create"
+        },
+        "destroy": {
+          "id": 1,
+          "kind": "command",
+          "op": "op_video_destroy"
+        },
+        "set": {
+          "id": 2,
+          "kind": "command",
+          "op": "op_video_set"
+        },
+        "play": {
+          "id": 3,
+          "kind": "call",
+          "op": "op_video_play",
+          "hook": "_internalOnVideoPlayResult",
+          "error_code_field": null
+        },
+        "pause": {
+          "id": 4,
+          "kind": "call",
+          "op": "op_video_pause",
+          "hook": "_internalOnVideoPauseResult",
+          "error_code_field": null
+        },
+        "stop": {
+          "id": 5,
+          "kind": "call",
+          "op": "op_video_stop",
+          "hook": "_internalOnVideoStopResult",
+          "error_code_field": null
+        },
+        "seek": {
+          "id": 6,
+          "kind": "call",
+          "op": "op_video_seek",
+          "hook": "_internalOnVideoSeekResult",
+          "error_code_field": null
+        },
+        "request_full_screen": {
+          "id": 7,
+          "kind": "call",
+          "op": "op_video_request_full_screen",
+          "hook": "_internalOnVideoRequestFullScreenResult",
+          "error_code_field": null
+        },
+        "exit_full_screen": {
+          "id": 8,
+          "kind": "call",
+          "op": "op_video_exit_full_screen",
+          "hook": "_internalOnVideoExitFullScreenResult",
+          "error_code_field": null
+        }
+      },
+      "events": {
+        "play": {
+          "id": 0,
+          "hook": "_internalOnVideoPlayEvent"
+        },
+        "pause": {
+          "id": 1,
+          "hook": "_internalOnVideoPauseEvent"
+        },
+        "ended": {
+          "id": 2,
+          "hook": "_internalOnVideoEndedEvent"
+        },
+        "time_update": {
+          "id": 3,
+          "hook": "_internalOnVideoTimeUpdateEvent",
+          "droppable": true
+        },
+        "error": {
+          "id": 4,
+          "hook": "_internalOnVideoErrorEvent"
+        },
+        "waiting": {
+          "id": 5,
+          "hook": "_internalOnVideoWaitingEvent"
+        },
+        "progress": {
+          "id": 6,
+          "hook": "_internalOnVideoProgressEvent",
+          "droppable": true
+        }
+      }
     }
   }
 }

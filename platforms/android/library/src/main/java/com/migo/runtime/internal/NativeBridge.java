@@ -729,16 +729,11 @@ final class NativeBridge {
 
     // ==================== Video Callbacks ====================
 
-    /**
-     * Callback when a video player event occurs (play, pause, ended, error, timeupdate, etc.).
-     *
-     * @param sessionId The session ID
-     * @param videoId   The video player instance ID
-     * @param eventType Event type string
-     * @param dataJson  JSON-encoded event data
-     */
-    static native void onVideoEvent(
-            int sessionId, long generation, int videoId, String eventType, String dataJson);
+    /** What a player did, by event number, with its {@code videoId}. */
+    static native void onVideoEvent(int sessionId, int event, String payloadJson);
+
+    /** The answer to a video call, by method number. */
+    static native void onVideoResult(int sessionId, int method, String resultJson);
 
     // ==================== Script Execution ====================
 

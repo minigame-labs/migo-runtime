@@ -78,7 +78,10 @@ pub use system_info::{
     SystemInfoService, default_device_info_json, host_os_name, host_platform_name,
 };
 pub use update::UpdateService;
-pub use video::VideoService;
+pub use video::{
+    VIDEO_EVENT_HOOKS, VIDEO_RESULT_HOOKS, VideoService, video_event, video_event_droppable,
+    video_method,
+};
 pub use video_decoder::{FrameTiming, VideoDecoderService, VideoFrameSource};
 pub use window::WindowService;
 

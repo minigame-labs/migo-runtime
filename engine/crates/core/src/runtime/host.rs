@@ -922,16 +922,6 @@ impl Host {
                 Ok(())
             }
 
-            HostCommand::OnVideoStateChange {
-                video_id,
-                event_type,
-                data,
-                runtime_generation: _,
-            } => {
-                self.js.dispatch_video_event(video_id, &event_type, &data);
-                Ok(())
-            }
-
             HostCommand::SendToHost { json } => {
                 self.platform.notify_host_message(self.id, &json);
                 Ok(())

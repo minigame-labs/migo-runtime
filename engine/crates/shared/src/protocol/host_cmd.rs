@@ -37,7 +37,6 @@
 //! - **Gamepad** (3): `OnGamepadConnected` .. `OnGamepadState`
 //! - **IME composition** (3): `OnCompositionStart` .. `OnCompositionEnd`
 //! - **Bluetooth / BLE** (7): `OnBluetoothAdapterStateChange` .. `OnBeaconServiceChange`
-//! - **Video** (1): `OnVideoStateChange`
 //! - **System** (3): `OnMemoryWarning`, `OnUserCaptureScreen`, `OnThermalStatusChanged`
 
 use std::borrow::Cow;
@@ -265,7 +264,6 @@ fn retain_string_within(buffer: &mut String, limit: usize) {
 /// - **Recorder Events** (1): `RecorderFrameData`
 /// - **Camera Events** (1): `CameraFrameData`
 /// - **Bluetooth / BLE Events** (7): `OnBluetoothAdapterStateChange` .. `OnBeaconServiceChange`
-/// - **Video Events** (1): `OnVideoStateChange`
 /// - **System Events** (3): `OnMemoryWarning`, `OnUserCaptureScreen`, `OnThermalStatusChanged`
 ///
 /// # Thread Safety
@@ -865,29 +863,6 @@ pub enum HostCommand {
         discovering: bool,
     },
 
-    // ---- Video Events ----
-    /// Video player state change event.
-    ///
-    /// Uses a single variant with `event_type` to cover all video events:
-    /// "play", "pause", "ended", "timeupdate", "waiting", "progress",
-    /// "error", "fullscreenchange".
-    ///
-    /// Triggers the corresponding event listener on the Video instance
-    /// identified by `video_id`.
-    OnVideoStateChange {
-        /// The video player instance ID.
-        video_id: u32,
-        /// Event type: "play", "pause", "ended", "timeupdate", "waiting",
-        /// "progress", "error", "fullscreenchange".
-        event_type: String,
-        /// JSON-encoded event data (e.g. `{"currentTime":12.5}` for timeupdate,
-        /// `{"errMsg":"..."}` for error, `{"fullScreen":true,"direction":0}` for
-        /// fullscreenchange).
-        data: String,
-        /// See [`HostCommand::callback_generation`].
-        runtime_generation: Option<NonZeroI64>,
-    },
-
     // ---- System Events ----
     /// Memory warning from the system.
     ///
@@ -998,15 +973,12 @@ impl HostCommand {
                 runtime_generation, ..
             }
             | Self::OnUserCaptureScreen { runtime_generation }
-            // The camera's frames and video: the managers that hold hardware.
-            // What they report stops belonging to anything the moment the
-            // isolate that opened them is replaced, and the teardown that
-            // releases the hardware reports as it goes. (The microphone's
-            // reports carry their recording's id instead.)
+            // The camera's frames: a manager that holds hardware. What it
+            // reports stops belonging to anything the moment the isolate that
+            // opened it is replaced, and the teardown that releases the
+            // hardware reports as it goes. (The microphone's and the video
+            // players' reports carry their recording's or player's id instead.)
             | Self::CameraFrameData {
-                runtime_generation, ..
-            }
-            | Self::OnVideoStateChange {
                 runtime_generation, ..
             } => *runtime_generation,
 
@@ -1286,35 +1258,27 @@ mod generation_tests {
     fn the_hardware_managers_carry_their_generation_on_events_and_on_frames() {
         // A camera that keeps delivering frames into the isolate that replaced
         // the one which opened it is a defect at thirty times a second.
-        let commands = [
-            HostCommand::CameraFrameData {
-                camera_id: 0,
-                data: Vec::new(),
-                width: 1,
-                height: 1,
-                credit: match crate::protocol::camera_frame::push_camera_frame(
-                    9301,
-                    0,
-                    crate::protocol::camera_frame::CameraFrameEntry {
-                        data: Vec::new(),
-                        width: 1,
-                        height: 1,
-                    },
-                ) {
-                    crate::protocol::camera_frame::CameraFramePush::Notify(credit) => credit,
-                    crate::protocol::camera_frame::CameraFramePush::Superseded => {
-                        panic!("test frame credit")
-                    }
+        let commands = [HostCommand::CameraFrameData {
+            camera_id: 0,
+            data: Vec::new(),
+            width: 1,
+            height: 1,
+            credit: match crate::protocol::camera_frame::push_camera_frame(
+                9301,
+                0,
+                crate::protocol::camera_frame::CameraFrameEntry {
+                    data: Vec::new(),
+                    width: 1,
+                    height: 1,
                 },
-                runtime_generation: generation(4),
+            ) {
+                crate::protocol::camera_frame::CameraFramePush::Notify(credit) => credit,
+                crate::protocol::camera_frame::CameraFramePush::Superseded => {
+                    panic!("test frame credit")
+                }
             },
-            HostCommand::OnVideoStateChange {
-                video_id: 0,
-                event_type: "ended".to_owned(),
-                data: "{}".to_owned(),
-                runtime_generation: generation(4),
-            },
-        ];
+            runtime_generation: generation(4),
+        }];
         for command in &commands {
             assert_eq!(command.callback_generation(), generation(4), "{command:?}");
         }
@@ -1326,10 +1290,7 @@ mod generation_tests {
         // `UNFENCED` zero the Java side stamps. It answers a call the live
         // runtime has just made, so it cannot be stale and must never be
         // dropped -- and zero must not be read as "produced for generation 0".
-        let reply = HostCommand::OnVideoStateChange {
-            video_id: 0,
-            event_type: "error".to_owned(),
-            data: "{}".to_owned(),
+        let reply = HostCommand::OnUserCaptureScreen {
             runtime_generation: captured_generation(0),
         };
         assert_eq!(reply.callback_generation(), None);

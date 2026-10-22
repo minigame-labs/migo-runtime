@@ -124,7 +124,8 @@ const NATIVE_MEDIA: &[JniMethod] = methods![
     ("onChooseImageResult", "(ILjava/lang/String;)V"),
     ("onChooseMessageFileResult", "(ILjava/lang/String;)V"),
     ("onChooseMediaResult", "(ILjava/lang/String;)V"),
-    ("onVideoEvent", "(IJILjava/lang/String;Ljava/lang/String;)V"),
+    ("onVideoEvent", "(IILjava/lang/String;)V"),
+    ("onVideoResult", "(IILjava/lang/String;)V"),
 ];
 
 const NATIVE_CONNECTIVITY: &[JniMethod] = methods![
@@ -258,15 +259,15 @@ const JAVA_MEDIA: &[JniMethod] = methods![
     ("imageChooseMessageFile", "(ILjava/lang/String;)V"),
     ("imageChooseImage", "(ILjava/lang/String;)V"),
     ("imageChooseMedia", "(ILjava/lang/String;)V"),
-    ("videoCreate", "(ILjava/lang/String;)Ljava/lang/String;"),
-    ("videoPlay", "(II)V"),
-    ("videoPause", "(II)V"),
-    ("videoStop", "(II)V"),
+    ("videoCreate", "(ILjava/lang/String;)V"),
+    ("videoDestroy", "(ILjava/lang/String;)V"),
+    ("videoSet", "(ILjava/lang/String;)V"),
+    ("videoPlay", "(ILjava/lang/String;)V"),
+    ("videoPause", "(ILjava/lang/String;)V"),
+    ("videoStop", "(ILjava/lang/String;)V"),
     ("videoSeek", "(ILjava/lang/String;)V"),
-    ("videoRequestFullscreen", "(ILjava/lang/String;)V"),
-    ("videoExitFullscreen", "(II)V"),
-    ("videoSetProperty", "(ILjava/lang/String;)V"),
-    ("videoDestroy", "(II)V"),
+    ("videoRequestFullScreen", "(ILjava/lang/String;)V"),
+    ("videoExitFullScreen", "(ILjava/lang/String;)V"),
 ];
 
 const JAVA_CONNECTIVITY: &[JniMethod] = methods![
@@ -482,8 +483,9 @@ mod tests {
         // `onGamepadState`). The host's package updates add +1 native, System
         // (`onUpdateEvent`). Camera requests the SDK answers once they have
         // happened add +1 native (`onCameraResult`, one for all of them, keyed
-        // by method number).
-        assert_eq!(native.len(), 88, "full NativeBridge surface changed");
+        // by method number). Video calls answered the same way add +1 native
+        // (`onVideoResult`).
+        assert_eq!(native.len(), 89, "full NativeBridge surface changed");
         // Runtime-generation fencing adds +2 Java (`beginRuntimeRestart`,
         // `completeRuntimeRestart`), both Core: every profile restarts.
         // Concurrent-session correctness removes -1 Java (`getCacheDirPath`,

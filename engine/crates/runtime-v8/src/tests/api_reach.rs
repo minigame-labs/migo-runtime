@@ -179,33 +179,10 @@ impl VideoDecoderService for ProbeService {
     }
 }
 
+/// A host that has made content's player: what its methods reach is measured.
 impl VideoService for ProbeService {
-    fn create(&self, _options_json: &str) -> Result<String, ServiceError> {
-        refused()
-    }
-    fn play(&self, _video_id: u32) -> Result<(), ServiceError> {
-        refused()
-    }
-    fn pause(&self, _video_id: u32) -> Result<(), ServiceError> {
-        refused()
-    }
-    fn stop(&self, _video_id: u32) -> Result<(), ServiceError> {
-        refused()
-    }
-    fn seek(&self, _video_id: u32, _position: f64) -> Result<(), ServiceError> {
-        refused()
-    }
-    fn request_fullscreen(&self, _video_id: u32, _direction: i32) -> Result<(), ServiceError> {
-        refused()
-    }
-    fn exit_fullscreen(&self, _video_id: u32) -> Result<(), ServiceError> {
-        refused()
-    }
-    fn set_property(&self, _video_id: u32, _property_json: &str) -> Result<(), ServiceError> {
-        refused()
-    }
-    fn destroy(&self, _video_id: u32) -> Result<(), ServiceError> {
-        refused()
+    fn create(&self, _request_json: &str) -> Result<(), ServiceError> {
+        Ok(())
     }
 }
 
@@ -341,6 +318,13 @@ const CALLS: &[(&str, &str)] = &[
     (
         "createInterstitialAd",
         "__probeCall('createInterstitialAd', [{ adUnitId: 'probe' }])",
+    ),
+    (
+        "createVideo",
+        "__probeCall('createVideo', [{}]); \
+         var __video = migo.createVideo({}); \
+         __video.seek(1).then(function () {}, function () {}); \
+         __video.requestFullScreen(0).then(function () {}, function () {})",
     ),
     (
         "createVideoDecoder",

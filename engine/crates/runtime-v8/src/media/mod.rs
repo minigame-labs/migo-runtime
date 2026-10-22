@@ -273,105 +273,105 @@ pub fn op_choose_media(
 }
 
 // ==================== Video Ops ====================
+//
+// Every one is a request the video service carries out: a call answered
+// through its result hook (`VIDEO_RESULT_HOOKS`) once it has happened -- the
+// reference's promises settle then -- or a command answered by nothing, each
+// with content's `videoId` and a call's `requestId`.
 
-/// Create a video player instance. Returns JSON: `{"videoId": <id>}`.
-///
-/// The player is handed `src` and `poster` as the real file or the checked URL
-/// they name, never content's string: a player that opened it verbatim played
-/// any URL under a policy that granted nothing, and any file the host could read.
-#[op2]
-#[string]
+/// Make a player and show it. Its `src` and `poster` reach the host as the real
+/// file or the checked URL they name, never content's string: a player that
+/// opened it verbatim played any URL under a policy that granted nothing, and
+/// any file the host could read.
+#[op2(fast)]
 pub fn op_video_create(
     state: &mut OpState,
-    #[string] options_json: &str,
-) -> Result<String, JsErrorBox> {
+    #[string] request_json: &str,
+) -> Result<(), JsErrorBox> {
     let sandbox = crate::file::host_paths::sandbox_of(state);
     with_video(state, "createVideo:fail not supported", |v| {
         v.create(
-            &files::export_json_now(&sandbox, options_json, files::VIDEO)
+            &files::export_json_now(&sandbox, request_json, files::VIDEO)
                 .map_err(|e| ServiceError::invalid_param(e.message))?,
         )
     })
 }
 
-/// Start or resume video playback.
+/// Take a player away.
 #[op2(fast)]
-pub fn op_video_play(state: &mut OpState, #[smi] video_id: u32) -> Result<(), JsErrorBox> {
-    with_video(state, "video.play:fail not supported", |v| v.play(video_id))
-}
-
-/// Pause video playback.
-#[op2(fast)]
-pub fn op_video_pause(state: &mut OpState, #[smi] video_id: u32) -> Result<(), JsErrorBox> {
-    with_video(state, "video.pause:fail not supported", |v| {
-        v.pause(video_id)
-    })
-}
-
-/// Stop video playback and reset to beginning.
-#[op2(fast)]
-pub fn op_video_stop(state: &mut OpState, #[smi] video_id: u32) -> Result<(), JsErrorBox> {
-    with_video(state, "video.stop:fail not supported", |v| v.stop(video_id))
-}
-
-/// Seek to a specific position in seconds.
-#[op2(fast)]
-pub fn op_video_seek(
+pub fn op_video_destroy(
     state: &mut OpState,
-    #[smi] video_id: u32,
-    position: f64,
+    #[string] request_json: &str,
 ) -> Result<(), JsErrorBox> {
-    with_video(state, "video.seek:fail not supported", |v| {
-        v.seek(video_id, position)
+    with_video(state, "video.destroy:fail not supported", |v| {
+        v.destroy(request_json)
     })
 }
 
-/// Enter fullscreen mode.
+/// What content changed on a player; a new `src` or `poster` is exported as
+/// `createVideo`'s are.
 #[op2(fast)]
-pub fn op_video_request_fullscreen(
+pub fn op_video_set(state: &mut OpState, #[string] request_json: &str) -> Result<(), JsErrorBox> {
+    let sandbox = crate::file::host_paths::sandbox_of(state);
+    with_video(state, "video:fail not supported", |v| {
+        v.set(
+            &files::export_json_now(&sandbox, request_json, files::VIDEO)
+                .map_err(|e| ServiceError::invalid_param(e.message))?,
+        )
+    })
+}
+
+/// Play: a call, answered once it plays.
+#[op2(fast)]
+pub fn op_video_play(state: &mut OpState, #[string] request_json: &str) -> Result<(), JsErrorBox> {
+    with_video(state, "video.play:fail not supported", |v| {
+        v.play(request_json)
+    })
+}
+
+/// Pause: a call, answered once paused.
+#[op2(fast)]
+pub fn op_video_pause(state: &mut OpState, #[string] request_json: &str) -> Result<(), JsErrorBox> {
+    with_video(state, "video.pause:fail not supported", |v| {
+        v.pause(request_json)
+    })
+}
+
+/// Stop: a call, answered once stopped.
+#[op2(fast)]
+pub fn op_video_stop(state: &mut OpState, #[string] request_json: &str) -> Result<(), JsErrorBox> {
+    with_video(state, "video.stop:fail not supported", |v| {
+        v.stop(request_json)
+    })
+}
+
+/// Seek: a call, answered once there.
+#[op2(fast)]
+pub fn op_video_seek(state: &mut OpState, #[string] request_json: &str) -> Result<(), JsErrorBox> {
+    with_video(state, "video.seek:fail not supported", |v| {
+        v.seek(request_json)
+    })
+}
+
+/// Full screen: a call, answered once it fills the screen.
+#[op2(fast)]
+pub fn op_video_request_full_screen(
     state: &mut OpState,
-    #[smi] video_id: u32,
-    direction: i32,
+    #[string] request_json: &str,
 ) -> Result<(), JsErrorBox> {
     with_video(state, "video.requestFullScreen:fail not supported", |v| {
-        v.request_fullscreen(video_id, direction)
+        v.request_full_screen(request_json)
     })
 }
 
-/// Exit fullscreen mode.
+/// Leave full screen: a call, answered once back where content put it.
 #[op2(fast)]
-pub fn op_video_exit_fullscreen(
+pub fn op_video_exit_full_screen(
     state: &mut OpState,
-    #[smi] video_id: u32,
+    #[string] request_json: &str,
 ) -> Result<(), JsErrorBox> {
     with_video(state, "video.exitFullScreen:fail not supported", |v| {
-        v.exit_fullscreen(video_id)
-    })
-}
-
-/// Set a video property (JSON-encoded key-value pair).
-#[op2(fast)]
-pub fn op_video_set_property(
-    state: &mut OpState,
-    #[smi] video_id: u32,
-    #[string] options_json: &str,
-) -> Result<(), JsErrorBox> {
-    // A new `src` or `poster` is exported as `createVideo`'s are.
-    let sandbox = crate::file::host_paths::sandbox_of(state);
-    with_video(state, "video.setProperty:fail not supported", |v| {
-        v.set_property(
-            video_id,
-            &files::export_json_now(&sandbox, options_json, files::VIDEO)
-                .map_err(|e| ServiceError::invalid_param(e.message))?,
-        )
-    })
-}
-
-/// Destroy a video player instance and release all resources.
-#[op2(fast)]
-pub fn op_video_destroy(state: &mut OpState, #[smi] video_id: u32) -> Result<(), JsErrorBox> {
-    with_video(state, "video.destroy:fail not supported", |v| {
-        v.destroy(video_id)
+        v.exit_full_screen(request_json)
     })
 }
 
@@ -402,9 +402,9 @@ deno_core::extension!(
         op_video_pause,
         op_video_stop,
         op_video_seek,
-        op_video_request_fullscreen,
-        op_video_exit_fullscreen,
-        op_video_set_property,
+        op_video_request_full_screen,
+        op_video_exit_full_screen,
+        op_video_set,
         op_video_destroy,
         video_decoder::op_video_decoder_available,
         video_decoder::op_video_decoder_start,

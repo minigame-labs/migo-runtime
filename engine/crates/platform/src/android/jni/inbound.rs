@@ -2385,33 +2385,66 @@ jni_json_callback!(
 
 // ==================== Video Callbacks ====================
 
+/// What a player did, by event number (`shared::services::VIDEO_EVENT_HOOKS`),
+/// with its `{"videoId", ...}`. A reading the next one supersedes -- the
+/// position, the buffering -- travels the bounded lane and is dropped when
+/// content falls behind; every other event must arrive.
 pub(crate) extern "system" fn onVideoEvent<'local>(
     mut env: JNIEnv<'local>,
     _class: JClass<'local>,
     host_id: jint,
-    generation: jlong,
-    video_id: jint,
-    event_type: JString<'local>,
-    data_json: JString<'local>,
+    event: jint,
+    payload_json: JString<'local>,
 ) {
     jni_safe!("onVideoEvent", {
-        let evt: String = env
-            .get_string(&event_type)
-            .map(|s| s.into())
-            .unwrap_or_default();
-        let data: String = env
-            .get_string(&data_json)
-            .map(|s| s.into())
-            .unwrap_or_else(|_| "{}".to_string());
-        let _ = send_command_to_host(
-            host_id,
-            HostCommand::OnVideoStateChange {
-                video_id: video_id as u32,
-                event_type: evt,
-                data,
-                runtime_generation: captured_generation(generation),
-            },
+        let Some((event, hook)) = u32::try_from(event).ok().and_then(|event| {
+            shared::services::VIDEO_EVENT_HOOKS
+                .get(event as usize)
+                .map(|hook| (event, *hook))
+        }) else {
+            error!("onVideoEvent: no video event {event}");
+            return;
+        };
+        let json = read_json_result(&mut env, &payload_json, "{}");
+        if shared::services::video_event_droppable(event) {
+            let _ = send_command_to_host(
+                host_id,
+                HostCommand::InvokeHostHook {
+                    hook,
+                    args_json: hook_args_one(&json),
+                },
+            );
+        } else {
+            send_json_result_to_js(host_id, &json, hook);
+        }
+    });
+}
+
+/// The answer to a video call, by method number
+/// (`shared::services::VIDEO_RESULT_HOOKS`).
+pub(crate) extern "system" fn onVideoResult<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    host_id: jint,
+    method: jint,
+    result_json: JString<'local>,
+) {
+    jni_safe!("onVideoResult", {
+        let Some(hook) = u32::try_from(method).ok().and_then(|method| {
+            shared::services::VIDEO_RESULT_HOOKS
+                .get(method as usize)
+                .copied()
+                .flatten()
+        }) else {
+            error!("onVideoResult: no video call {method}");
+            return;
+        };
+        let json = read_json_result(
+            &mut env,
+            &result_json,
+            r#"{"error":"failed to read result"}"#,
         );
+        send_json_result_to_js(host_id, &json, hook);
     });
 }
 

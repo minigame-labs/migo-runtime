@@ -25,8 +25,8 @@ use crate::{
         onScanCodeResult, onScreenRecordingStateChanged, onShareAppMessageResult, onShareMenuEvent,
         onShareMessageToFriendResult, onShow, onShowShareImageMenuResult, onSubpackageProgress,
         onSubpackageResult, onSurfaceDestroyed, onThermalStatusChanged, onTouch, onUpdateEvent,
-        onUserCaptureScreen, onVideoEvent, onVsync, onWheelEvent, onWindowStateChanged, shutdown,
-        updatePermission, updateSurface, version,
+        onUserCaptureScreen, onVideoEvent, onVideoResult, onVsync, onWheelEvent,
+        onWindowStateChanged, shutdown, updatePermission, updateSurface, version,
     },
     jni_profile_contract::{self, JniMethod, MethodDirection},
 };
@@ -109,6 +109,7 @@ fn native_fn_ptr(name: &str) -> Option<*mut c_void> {
         "onChooseMediaResult" => onChooseMediaResult as *mut c_void,
         #[cfg(feature = "api-media")]
         "onVideoEvent" => onVideoEvent as *mut c_void,
+        "onVideoResult" => onVideoResult as *mut c_void,
         #[cfg(feature = "api-connectivity")]
         "onOpenSystemBluetoothSetting" => onOpenSystemBluetoothSetting as *mut c_void,
         #[cfg(feature = "api-connectivity")]

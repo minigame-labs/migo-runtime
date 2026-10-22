@@ -1147,41 +1147,35 @@ struct AndroidVideo {
     host_id: i32,
 }
 
+/// Every request goes to the SDK as content made it, `{"videoId", ...}`; a call
+/// is answered through `onVideoResult` once it has happened.
 impl VideoService for AndroidVideo {
-    fn create(&self, options_json: &str) -> Result<String, ServiceError> {
-        Ok(jni::video_create(self.host_id, options_json)?)
+    fn create(&self, request_json: &str) -> Result<(), ServiceError> {
+        Ok(jni::video_create(self.host_id, request_json)?)
     }
-    fn play(&self, video_id: u32) -> Result<(), ServiceError> {
-        Ok(jni::video_play(self.host_id, video_id)?)
+    fn destroy(&self, request_json: &str) -> Result<(), ServiceError> {
+        Ok(jni::video_destroy(self.host_id, request_json)?)
     }
-    fn pause(&self, video_id: u32) -> Result<(), ServiceError> {
-        Ok(jni::video_pause(self.host_id, video_id)?)
+    fn set(&self, request_json: &str) -> Result<(), ServiceError> {
+        Ok(jni::video_set(self.host_id, request_json)?)
     }
-    fn stop(&self, video_id: u32) -> Result<(), ServiceError> {
-        Ok(jni::video_stop(self.host_id, video_id)?)
+    fn play(&self, request_json: &str) -> Result<(), ServiceError> {
+        Ok(jni::video_play(self.host_id, request_json)?)
     }
-    fn seek(&self, video_id: u32, position: f64) -> Result<(), ServiceError> {
-        Ok(jni::video_seek(self.host_id, video_id, position)?)
+    fn pause(&self, request_json: &str) -> Result<(), ServiceError> {
+        Ok(jni::video_pause(self.host_id, request_json)?)
     }
-    fn request_fullscreen(&self, video_id: u32, direction: i32) -> Result<(), ServiceError> {
-        Ok(jni::video_request_fullscreen(
-            self.host_id,
-            video_id,
-            direction,
-        )?)
+    fn stop(&self, request_json: &str) -> Result<(), ServiceError> {
+        Ok(jni::video_stop(self.host_id, request_json)?)
     }
-    fn exit_fullscreen(&self, video_id: u32) -> Result<(), ServiceError> {
-        Ok(jni::video_exit_fullscreen(self.host_id, video_id)?)
+    fn seek(&self, request_json: &str) -> Result<(), ServiceError> {
+        Ok(jni::video_seek(self.host_id, request_json)?)
     }
-    fn set_property(&self, video_id: u32, property_json: &str) -> Result<(), ServiceError> {
-        Ok(jni::video_set_property(
-            self.host_id,
-            video_id,
-            property_json,
-        )?)
+    fn request_full_screen(&self, request_json: &str) -> Result<(), ServiceError> {
+        Ok(jni::video_request_full_screen(self.host_id, request_json)?)
     }
-    fn destroy(&self, video_id: u32) -> Result<(), ServiceError> {
-        Ok(jni::video_destroy(self.host_id, video_id)?)
+    fn exit_full_screen(&self, request_json: &str) -> Result<(), ServiceError> {
+        Ok(jni::video_exit_full_screen(self.host_id, request_json)?)
     }
 }
 

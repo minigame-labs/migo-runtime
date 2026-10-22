@@ -447,19 +447,6 @@ fn call_void_with_int_and_string(
     })
 }
 
-/// Call a NativeExports static method with signature `(II)V`.
-/// Avoids the String allocation needed by `call_void_with_string` when
-/// the second argument is just an integer.
-fn call_void_with_int(method_name: &str, host_id: i32, value: i32) -> Result<(), String> {
-    with_env(|env| {
-        call_void_impl(
-            env,
-            method_name,
-            &[jvalue { i: host_id }, jvalue { i: value }],
-        )
-    })
-}
-
 jni_void_json!(show_toast, "showToast");
 jni_void!(hide_toast, "hideToast");
 jni_void_json!(show_modal, "showModal");
@@ -1581,52 +1568,16 @@ jni_void_json!(
 );
 
 // ==================== Video ====================
+//
+// Each hands the SDK the request content made, `{"videoId", ...}`; a call's
+// answer comes back through onVideoResult.
 
-jni_json!(video_create, "videoCreate");
-
-pub fn video_play(host_id: i32, video_id: u32) -> Result<(), String> {
-    call_void_with_int("videoPlay", host_id, video_id as i32)
-}
-
-pub fn video_pause(host_id: i32, video_id: u32) -> Result<(), String> {
-    call_void_with_int("videoPause", host_id, video_id as i32)
-}
-
-pub fn video_stop(host_id: i32, video_id: u32) -> Result<(), String> {
-    call_void_with_int("videoStop", host_id, video_id as i32)
-}
-
-pub fn video_seek(host_id: i32, video_id: u32, position: f64) -> Result<(), String> {
-    call_void_with_string(
-        "videoSeek",
-        host_id,
-        &format!("{{\"videoId\":{},\"position\":{}}}", video_id, position),
-    )
-}
-
-pub fn video_request_fullscreen(host_id: i32, video_id: u32, direction: i32) -> Result<(), String> {
-    call_void_with_string(
-        "videoRequestFullscreen",
-        host_id,
-        &format!("{{\"videoId\":{},\"direction\":{}}}", video_id, direction),
-    )
-}
-
-pub fn video_exit_fullscreen(host_id: i32, video_id: u32) -> Result<(), String> {
-    call_void_with_int("videoExitFullscreen", host_id, video_id as i32)
-}
-
-pub fn video_set_property(host_id: i32, video_id: u32, property_json: &str) -> Result<(), String> {
-    call_void_with_string(
-        "videoSetProperty",
-        host_id,
-        &format!(
-            "{{\"videoId\":{},\"properties\":{}}}",
-            video_id, property_json
-        ),
-    )
-}
-
-pub fn video_destroy(host_id: i32, video_id: u32) -> Result<(), String> {
-    call_void_with_int("videoDestroy", host_id, video_id as i32)
-}
+jni_void_json!(video_create, "videoCreate");
+jni_void_json!(video_destroy, "videoDestroy");
+jni_void_json!(video_set, "videoSet");
+jni_void_json!(video_play, "videoPlay");
+jni_void_json!(video_pause, "videoPause");
+jni_void_json!(video_stop, "videoStop");
+jni_void_json!(video_seek, "videoSeek");
+jni_void_json!(video_request_full_screen, "videoRequestFullScreen");
+jni_void_json!(video_exit_full_screen, "videoExitFullScreen");

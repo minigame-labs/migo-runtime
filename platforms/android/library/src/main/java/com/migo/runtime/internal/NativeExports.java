@@ -1992,40 +1992,43 @@ public final class NativeExports {
 
     // ==================== Video (delegates to MediaExports) ====================
 
-    public static String videoCreate(int sessionId, String optionsJson) {
-        return MediaExports.videoCreate(sessionId, optionsJson);
+    // Each takes the request content made, {"videoId", ...}; a call's answer
+    // comes back through NativeMethods.onVideoResult once it has happened.
+
+    public static void videoCreate(int sessionId, String requestJson) {
+        MediaExports.videoCreate(sessionId, requestJson);
     }
 
-    public static void videoPlay(int sessionId, int videoId) {
-        MediaExports.videoPlay(sessionId, videoId);
+    public static void videoDestroy(int sessionId, String requestJson) {
+        MediaExports.videoDestroy(sessionId, requestJson);
     }
 
-    public static void videoPause(int sessionId, int videoId) {
-        MediaExports.videoPause(sessionId, videoId);
+    public static void videoSet(int sessionId, String requestJson) {
+        MediaExports.videoSet(sessionId, requestJson);
     }
 
-    public static void videoStop(int sessionId, int videoId) {
-        MediaExports.videoStop(sessionId, videoId);
+    public static void videoPlay(int sessionId, String requestJson) {
+        MediaExports.videoPlay(sessionId, requestJson);
     }
 
-    public static void videoSeek(int sessionId, String json) {
-        MediaExports.videoSeek(sessionId, json);
+    public static void videoPause(int sessionId, String requestJson) {
+        MediaExports.videoPause(sessionId, requestJson);
     }
 
-    public static void videoRequestFullscreen(int sessionId, String json) {
-        MediaExports.videoRequestFullscreen(sessionId, json);
+    public static void videoStop(int sessionId, String requestJson) {
+        MediaExports.videoStop(sessionId, requestJson);
     }
 
-    public static void videoExitFullscreen(int sessionId, int videoId) {
-        MediaExports.videoExitFullscreen(sessionId, videoId);
+    public static void videoSeek(int sessionId, String requestJson) {
+        MediaExports.videoSeek(sessionId, requestJson);
     }
 
-    public static void videoSetProperty(int sessionId, String json) {
-        MediaExports.videoSetProperty(sessionId, json);
+    public static void videoRequestFullScreen(int sessionId, String requestJson) {
+        MediaExports.videoRequestFullScreen(sessionId, requestJson);
     }
 
-    public static void videoDestroy(int sessionId, int videoId) {
-        MediaExports.videoDestroy(sessionId, videoId);
+    public static void videoExitFullScreen(int sessionId, String requestJson) {
+        MediaExports.videoExitFullScreen(sessionId, requestJson);
     }
 
     /**

@@ -442,65 +442,95 @@ public final class MediaExports {
             Activity activity = ctx.getActivity();
             if (activity == null) return null;
             boolean suspended = NativeExports.isSessionResourceSuspended(sessionId);
-            VideoManager mgr = new VideoManager(sessionId, activity, suspended);
+            VideoManager mgr = new VideoManager(sessionId, activity,
+                    NativeExports.inputViewOf(sessionId), suspended);
             sVideoManagers.put(sessionId, mgr);
             syncVideoLifecycle(sessionId, mgr);
             return mgr;
         }
     }
 
-    public static String videoCreate(int sessionId, String optionsJson) {
-        VideoManager mgr = getOrCreateVideoManager(sessionId);
-        if (mgr == null) throw new RuntimeException("videoCreate:fail no context");
-        return mgr.create(optionsJson);
+    /** A video call no manager could take, answered so content's promise settles. */
+    private static void failVideoCall(int sessionId, int method, String requestJson, String reason) {
+        org.json.JSONObject result = new org.json.JSONObject();
+        try {
+            result.put("requestId", new org.json.JSONObject(requestJson).optInt("requestId", 0));
+            result.put("error", reason);
+        } catch (org.json.JSONException | NullPointerException ignored) {
+            // A call that names no request is answered for none.
+        }
+        NativeMethods.onVideoResult(sessionId, method, result.toString());
     }
 
-    public static void videoPlay(int sessionId, int videoId) {
+    public static void videoCreate(int sessionId, String requestJson) {
         VideoManager mgr = getOrCreateVideoManager(sessionId);
-        if (mgr == null) return;
-        mgr.play(videoId);
+        if (mgr != null) mgr.create(requestJson);
     }
 
-    public static void videoPause(int sessionId, int videoId) {
-        VideoManager mgr = getOrCreateVideoManager(sessionId);
-        if (mgr == null) return;
-        mgr.pause(videoId);
+    public static void videoDestroy(int sessionId, String requestJson) {
+        VideoManager mgr = liveVideoManager(sessionId);
+        if (mgr != null) mgr.destroy(requestJson);
     }
 
-    public static void videoStop(int sessionId, int videoId) {
-        VideoManager mgr = getOrCreateVideoManager(sessionId);
-        if (mgr == null) return;
-        mgr.stop(videoId);
+    public static void videoSet(int sessionId, String requestJson) {
+        VideoManager mgr = liveVideoManager(sessionId);
+        if (mgr != null) mgr.set(requestJson);
     }
 
-    public static void videoSeek(int sessionId, String json) {
-        VideoManager mgr = getOrCreateVideoManager(sessionId);
-        if (mgr == null) return;
-        mgr.seek(json);
+    public static void videoPlay(int sessionId, String requestJson) {
+        VideoManager mgr = liveVideoManager(sessionId);
+        if (mgr == null) {
+            failVideoCall(sessionId, VideoManager.METHOD_PLAY, requestJson, "video not found");
+        } else {
+            mgr.play(requestJson);
+        }
     }
 
-    public static void videoRequestFullscreen(int sessionId, String json) {
-        VideoManager mgr = getOrCreateVideoManager(sessionId);
-        if (mgr == null) return;
-        mgr.requestFullscreen(json);
+    public static void videoPause(int sessionId, String requestJson) {
+        VideoManager mgr = liveVideoManager(sessionId);
+        if (mgr == null) {
+            failVideoCall(sessionId, VideoManager.METHOD_PAUSE, requestJson, "video not found");
+        } else {
+            mgr.pause(requestJson);
+        }
     }
 
-    public static void videoExitFullscreen(int sessionId, int videoId) {
-        VideoManager mgr = getOrCreateVideoManager(sessionId);
-        if (mgr == null) return;
-        mgr.exitFullscreen(videoId);
+    public static void videoStop(int sessionId, String requestJson) {
+        VideoManager mgr = liveVideoManager(sessionId);
+        if (mgr == null) {
+            failVideoCall(sessionId, VideoManager.METHOD_STOP, requestJson, "video not found");
+        } else {
+            mgr.stop(requestJson);
+        }
     }
 
-    public static void videoSetProperty(int sessionId, String json) {
-        VideoManager mgr = getOrCreateVideoManager(sessionId);
-        if (mgr == null) return;
-        mgr.setProperty(json);
+    public static void videoSeek(int sessionId, String requestJson) {
+        VideoManager mgr = liveVideoManager(sessionId);
+        if (mgr == null) {
+            failVideoCall(sessionId, VideoManager.METHOD_SEEK, requestJson, "video not found");
+        } else {
+            mgr.seek(requestJson);
+        }
     }
 
-    public static void videoDestroy(int sessionId, int videoId) {
-        VideoManager mgr = getOrCreateVideoManager(sessionId);
-        if (mgr == null) return;
-        mgr.destroyVideo(videoId);
+    public static void videoRequestFullScreen(int sessionId, String requestJson) {
+        VideoManager mgr = liveVideoManager(sessionId);
+        if (mgr == null) {
+            failVideoCall(sessionId, VideoManager.METHOD_REQUEST_FULL_SCREEN, requestJson,
+                    "video not found");
+        } else {
+            mgr.requestFullScreen(requestJson);
+        }
+    }
+
+    public static void videoExitFullScreen(int sessionId, String requestJson) {
+        VideoManager mgr = liveVideoManager(sessionId);
+        if (mgr == null) {
+            failVideoCall(sessionId, VideoManager.METHOD_EXIT_FULL_SCREEN, requestJson,
+                    "video not found");
+        } else {
+            mgr.exitFullScreen(requestJson);
+        }
     }
 
     public static void destroyVideoManager(int sessionId) {

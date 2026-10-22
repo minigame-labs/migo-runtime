@@ -140,6 +140,7 @@ load, close and other events are reported with
 | `MIGO_HOST_SERVICE_IMAGE` | `chooseImage` / `chooseMedia` / `chooseMessageFile` / `compressImage` / `previewImage` / `previewMedia` / `saveImageToPhotosAlbum` | not supported |
 | `MIGO_HOST_SERVICE_CAMERA` | `createCamera` and its `Camera`: the preview over the game, its properties, `takePhoto` / `startRecord` / `stopRecord` / `setZoom`; `onStop` / `onAuthCancel` hear `MIGO_CAMERA_EVENT_*`; `onCameraFrame` hears the frames the host hands over with `migo_session_post_camera_frame` | not supported |
 | `MIGO_HOST_SERVICE_RECORDER` | `getRecorderManager`: `start` / `pause` / `resume` / `stop`, each naming its recording; `onStart` / `onPause` / `onResume` / `onStop` / `onError` / `onInterruptionBegin` / `onInterruptionEnd` hear `MIGO_RECORDER_EVENT_*`, STOP handing its file over; `onFrameRecorded` hears the frames the host hands over with `migo_session_post_recorder_frame` | not supported |
+| `MIGO_HOST_SERVICE_VIDEO` | `createVideo` and its `Video`: the player where content put it, its properties, `play` / `pause` / `stop` / `seek` / `requestFullScreen` / `exitFullScreen` settling once done; `onPlay` / `onPause` / `onEnded` / `onTimeUpdate` / `onError` / `onWaiting` / `onProgress` hear `MIGO_VIDEO_EVENT_*` -- a position or buffering reading content fell behind on is dropped | not supported |
 
 The host gives the success fields or the failure's reason; the engine puts a
 failure's code in the field its API defines (`errno` or `errCode`), content

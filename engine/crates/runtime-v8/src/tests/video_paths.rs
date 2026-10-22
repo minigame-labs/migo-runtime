@@ -31,33 +31,12 @@ impl FakeVideo {
 }
 
 impl VideoService for FakeVideo {
-    fn create(&self, options_json: &str) -> Result<String, ServiceError> {
-        self.record("create", options_json);
-        Ok("{}".to_string())
-    }
-    fn play(&self, _: u32) -> Result<(), ServiceError> {
+    fn create(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.record("create", request_json);
         Ok(())
     }
-    fn pause(&self, _: u32) -> Result<(), ServiceError> {
-        Ok(())
-    }
-    fn stop(&self, _: u32) -> Result<(), ServiceError> {
-        Ok(())
-    }
-    fn seek(&self, _: u32, _: f64) -> Result<(), ServiceError> {
-        Ok(())
-    }
-    fn request_fullscreen(&self, _: u32, _: i32) -> Result<(), ServiceError> {
-        Ok(())
-    }
-    fn exit_fullscreen(&self, _: u32) -> Result<(), ServiceError> {
-        Ok(())
-    }
-    fn set_property(&self, _: u32, property_json: &str) -> Result<(), ServiceError> {
-        self.record("set_property", property_json);
-        Ok(())
-    }
-    fn destroy(&self, _: u32) -> Result<(), ServiceError> {
+    fn set(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.record("set", request_json);
         Ok(())
     }
 }
@@ -113,7 +92,7 @@ fn a_video_player_is_handed_the_sandbox_file_or_the_checked_url_and_nothing_else
     let calls = video.calls();
     assert_eq!(
         calls.iter().map(|(call, _)| *call).collect::<Vec<_>>(),
-        ["create", "create", "set_property"],
+        ["create", "create", "set"],
         "only what the sandbox and the policy allow reaches the player: {calls:?}"
     );
     let first = &calls[0].1;
