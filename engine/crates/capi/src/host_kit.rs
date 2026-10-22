@@ -7,13 +7,14 @@
 //! supplied directly by the versioned Surface descriptor.
 
 use migo_capi_abi::host_services::{
-    MIGO_HOST_SERVICE_AD, MIGO_HOST_SERVICE_AUTH, MIGO_HOST_SERVICE_BLUETOOTH,
-    MIGO_HOST_SERVICE_CAMERA, MIGO_HOST_SERVICE_CLIPBOARD, MIGO_HOST_SERVICE_ECOSYSTEM,
-    MIGO_HOST_SERVICE_IMAGE, MIGO_HOST_SERVICE_INTERACTION, MIGO_HOST_SERVICE_LOCATION,
-    MIGO_HOST_SERVICE_MOTION, MIGO_HOST_SERVICE_NAVIGATE, MIGO_HOST_SERVICE_PAYMENT,
-    MIGO_HOST_SERVICE_PERMISSION, MIGO_HOST_SERVICE_RECORDER, MIGO_HOST_SERVICE_SCAN_CODE,
-    MIGO_HOST_SERVICE_SCREEN, MIGO_HOST_SERVICE_SHARE, MIGO_HOST_SERVICE_SUBPACKAGE,
-    MIGO_HOST_SERVICE_UPDATE, MIGO_HOST_SERVICE_VIDEO, MIGO_HOST_SERVICE_WINDOW,
+    MIGO_HOST_SERVICE_AD, MIGO_HOST_SERVICE_AUTH, MIGO_HOST_SERVICE_BLE_PERIPHERAL,
+    MIGO_HOST_SERVICE_BLUETOOTH, MIGO_HOST_SERVICE_CAMERA, MIGO_HOST_SERVICE_CLIPBOARD,
+    MIGO_HOST_SERVICE_ECOSYSTEM, MIGO_HOST_SERVICE_IMAGE, MIGO_HOST_SERVICE_INTERACTION,
+    MIGO_HOST_SERVICE_LOCATION, MIGO_HOST_SERVICE_MOTION, MIGO_HOST_SERVICE_NAVIGATE,
+    MIGO_HOST_SERVICE_PAYMENT, MIGO_HOST_SERVICE_PERMISSION, MIGO_HOST_SERVICE_RECORDER,
+    MIGO_HOST_SERVICE_SCAN_CODE, MIGO_HOST_SERVICE_SCREEN, MIGO_HOST_SERVICE_SHARE,
+    MIGO_HOST_SERVICE_SUBPACKAGE, MIGO_HOST_SERVICE_UPDATE, MIGO_HOST_SERVICE_VIDEO,
+    MIGO_HOST_SERVICE_WINDOW,
 };
 #[cfg(any(
     target_os = "macos",
@@ -21,13 +22,14 @@ use migo_capi_abi::host_services::{
 ))]
 use migo_core::services::VideoDecoderService;
 use migo_core::services::{
-    AccelerometerService, AdService, AuthService, BatteryService, BluetoothService, CameraService,
-    ClipboardService, CommerceServices, CompassService, ConnectivityServices, DeviceMotionService,
-    EcosystemService, GameLogService, GamepadService, GyroscopeService, ImageApiService,
-    InteractionService, KeyboardService, LocationService, MediaServices, NavigateService,
-    NetworkService, PaymentService, PermissionService, RecorderService, ScanCodeService,
-    ScreenService, SensorServices, ShareService, SubpackageService, SystemInfoService,
-    SystemUtilServices, UpdateService, VibrationService, VideoService, WindowService,
+    AccelerometerService, AdService, AuthService, BatteryService, BlePeripheralService,
+    BluetoothService, CameraService, ClipboardService, CommerceServices, CompassService,
+    ConnectivityServices, DeviceMotionService, EcosystemService, GameLogService, GamepadService,
+    GyroscopeService, ImageApiService, InteractionService, KeyboardService, LocationService,
+    MediaServices, NavigateService, NetworkService, PaymentService, PermissionService,
+    RecorderService, ScanCodeService, ScreenService, SensorServices, ShareService,
+    SubpackageService, SystemInfoService, SystemUtilServices, UpdateService, VibrationService,
+    VideoService, WindowService,
 };
 #[cfg(any(
     target_os = "ios",
@@ -342,6 +344,11 @@ impl ConnectivityServices for CapiDeviceServices {
     fn bluetooth(&self) -> Option<Arc<dyn BluetoothService>> {
         self.host_service(MIGO_HOST_SERVICE_BLUETOOTH)
             .map(|services| services as Arc<dyn BluetoothService>)
+    }
+
+    fn ble_peripheral(&self) -> Option<Arc<dyn BlePeripheralService>> {
+        self.host_service(MIGO_HOST_SERVICE_BLE_PERIPHERAL)
+            .map(|services| services as Arc<dyn BlePeripheralService>)
     }
 }
 

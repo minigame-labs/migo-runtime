@@ -1110,6 +1110,27 @@ jni_void_json!(ble_get_device_rssi, "bleGetDeviceRSSI");
 jni_void_json!(ble_set_mtu, "bleSetMTU");
 jni_void_json!(ble_get_mtu, "bleGetMTU");
 
+// ==================== BLE Peripheral ====================
+//
+// Each hands the SDK the request content made, `{"serverId", "requestId", ...}`;
+// the answer comes back through onBlePeripheralResult once it has happened.
+
+jni_void_json!(ble_peripheral_create_server, "blePeripheralCreateServer");
+jni_void_json!(ble_peripheral_add_service, "blePeripheralAddService");
+jni_void_json!(ble_peripheral_remove_service, "blePeripheralRemoveService");
+jni_void_json!(
+    ble_peripheral_start_advertising,
+    "blePeripheralStartAdvertising"
+);
+jni_void_json!(
+    ble_peripheral_stop_advertising,
+    "blePeripheralStopAdvertising"
+);
+jni_void_json!(
+    ble_peripheral_write_characteristic_value,
+    "blePeripheralWriteCharacteristicValue"
+);
+
 // ==================== Image API ====================
 
 jni_void_json!(image_save_to_photos_album, "imageSaveToPhotosAlbum");

@@ -25,6 +25,8 @@ mod audio_context_close;
 #[cfg(feature = "api-media")]
 mod audio_source_ended;
 mod binary_helper;
+#[cfg(feature = "api-connectivity")]
+mod ble_peripheral_lifecycle;
 mod callback_isolation;
 #[cfg(feature = "api-media")]
 mod camera_lifecycle;

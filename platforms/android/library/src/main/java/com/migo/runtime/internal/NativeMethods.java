@@ -1026,6 +1026,18 @@ public final class NativeMethods {
         }
     }
 
+    public static void onBlePeripheralResult(int sessionId, int method, String resultJson) {
+        if (sessionId >= 0 && resultJson != null) {
+            NativeBridge.onBlePeripheralResult(sessionId, method, resultJson);
+        }
+    }
+
+    public static void onBlePeripheralEvent(int sessionId, int event, String payloadJson) {
+        if (sessionId >= 0 && payloadJson != null) {
+            NativeBridge.onBlePeripheralEvent(sessionId, event, payloadJson);
+        }
+    }
+
     // ==================== Image API Callbacks ====================
 
     public static void onSaveImageToPhotosAlbumResult(int sessionId, String resultJson) {

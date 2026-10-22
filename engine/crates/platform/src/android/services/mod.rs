@@ -6,9 +6,9 @@ use std::sync::{Arc, OnceLock};
 
 use migo_core::services::{
     AccelerometerService, AdService, AudioPlatformService, AuthService, BatteryService,
-    BluetoothService, CameraService, ClipboardService, CodecService, CommerceServices,
-    CompassService, ConnectivityServices, DeviceMotionService, EcosystemService, FileService,
-    GameLogService, GamepadRumble, GamepadService, GyroscopeService, ImageApiService,
+    BlePeripheralService, BluetoothService, CameraService, ClipboardService, CodecService,
+    CommerceServices, CompassService, ConnectivityServices, DeviceMotionService, EcosystemService,
+    FileService, GameLogService, GamepadRumble, GamepadService, GyroscopeService, ImageApiService,
     InteractionService, KeyboardService, LocationService, MediaServices, NavigateService,
     NetworkService, PaymentService, PermissionService, RecorderService, ScanCodeService, Scope,
     ScopeState, ScreenService, SensorServices, ServiceError, ServiceErrorCode, ShareService,
@@ -166,6 +166,12 @@ impl ConnectivityServices for AndroidDeviceServices {
     #[cfg(feature = "api-connectivity")]
     fn bluetooth(&self) -> Option<Arc<dyn BluetoothService>> {
         Some(Arc::new(AndroidBluetooth {
+            session: self.session.clone(),
+        }))
+    }
+    #[cfg(feature = "api-connectivity")]
+    fn ble_peripheral(&self) -> Option<Arc<dyn BlePeripheralService>> {
+        Some(Arc::new(AndroidBlePeripheral {
             session: self.session.clone(),
         }))
     }
@@ -1040,6 +1046,51 @@ impl BluetoothService for AndroidBluetooth {
     fn get_ble_mtu(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, Some(Scope::Bluetooth), || {
             jni::ble_get_mtu(self.session.host_id(), request_json)
+        })
+    }
+}
+
+struct AndroidBlePeripheral {
+    session: SessionGate,
+}
+
+// The SDK answers every request through `onBlePeripheralResult`; serving and
+// advertising need `scope.bluetooth`, releasing what was acquired under it
+// does not.
+impl BlePeripheralService for AndroidBlePeripheral {
+    fn create_server(&self, request_json: &str) -> Result<(), ServiceError> {
+        permission_jni_call(&self.session, Some(Scope::Bluetooth), || {
+            jni::ble_peripheral_create_server(self.session.host_id(), request_json)
+        })
+    }
+
+    fn add_service(&self, request_json: &str) -> Result<(), ServiceError> {
+        permission_jni_call(&self.session, Some(Scope::Bluetooth), || {
+            jni::ble_peripheral_add_service(self.session.host_id(), request_json)
+        })
+    }
+
+    fn remove_service(&self, request_json: &str) -> Result<(), ServiceError> {
+        permission_jni_call(&self.session, None, || {
+            jni::ble_peripheral_remove_service(self.session.host_id(), request_json)
+        })
+    }
+
+    fn start_advertising(&self, request_json: &str) -> Result<(), ServiceError> {
+        permission_jni_call(&self.session, Some(Scope::Bluetooth), || {
+            jni::ble_peripheral_start_advertising(self.session.host_id(), request_json)
+        })
+    }
+
+    fn stop_advertising(&self, request_json: &str) -> Result<(), ServiceError> {
+        permission_jni_call(&self.session, None, || {
+            jni::ble_peripheral_stop_advertising(self.session.host_id(), request_json)
+        })
+    }
+
+    fn write_characteristic_value(&self, request_json: &str) -> Result<(), ServiceError> {
+        permission_jni_call(&self.session, Some(Scope::Bluetooth), || {
+            jni::ble_peripheral_write_characteristic_value(self.session.host_id(), request_json)
         })
     }
 }

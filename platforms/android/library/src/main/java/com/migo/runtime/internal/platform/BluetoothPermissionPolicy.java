@@ -15,6 +15,10 @@ final class BluetoothPermissionPolicy {
         return sdkInt < ANDROID_12_API || bluetoothConnectGranted;
     }
 
+    static boolean canAdvertise(int sdkInt, boolean bluetoothAdvertiseGranted) {
+        return sdkInt < ANDROID_12_API || bluetoothAdvertiseGranted;
+    }
+
     static boolean canScan(
             int sdkInt,
             boolean bluetoothScanGranted,

@@ -59,6 +59,7 @@ typedef uint32_t MigoHostService;
 #define MIGO_HOST_SERVICE_CAMERA 19U
 #define MIGO_HOST_SERVICE_RECORDER 20U
 #define MIGO_HOST_SERVICE_VIDEO 21U
+#define MIGO_HOST_SERVICE_BLE_PERIPHERAL 22U
 
 /*
  * Ads. All six are commands addressed to the advert by the adId in their
@@ -574,6 +575,60 @@ typedef uint32_t MigoHostService;
 #define MIGO_VIDEO_EVENT_ERROR 4U
 #define MIGO_VIDEO_EVENT_WAITING 5U
 #define MIGO_VIDEO_EVENT_PROGRESS 6U
+
+/*
+ * MIGO_HOST_SERVICE_BLE_PERIPHERAL: createBLEPeripheralServer's GATT servers --
+ * this device as a Bluetooth LE peripheral. Every request carries the server's
+ * "serverId", which content takes from the Host id space, and every event names
+ * it back. Every method is a call, answered once what it asked has happened, or
+ * with {"error", "errCode"} in the central role's Bluetooth codes (10000 the
+ * adapter is not open, 10001 Bluetooth is not available, ...). Binary values
+ * cross as lower-case hex. The host closes a session's servers with it.
+ *
+ *   CREATE_SERVER {"serverId"} -> {} once it serves.
+ *   ADD_SERVICE {"serverId", "service": {"uuid", "characteristics": [{"uuid",
+ *       "properties": {"write", "writeNoResponse", "read", "notify",
+ *       "indicate"}, "permission": {"readable", "writeable",
+ *       "readEncryptionRequired", "writeEncryptionRequired"}, "value",
+ *       "descriptors": [{"uuid", "permission": {"write", "read"},
+ *       "value"}]}]}} -> {} once served; every flag is present.
+ *   REMOVE_SERVICE {"serverId", "serviceId"} -> {} once removed.
+ *   START_ADVERTISING {"serverId", "advertiseRequest": {"connectable",
+ *       "deviceName"?, "serviceUuids"?, "manufacturerData"?:
+ *       [{"manufacturerId" ("0x" and hex), "manufacturerSpecificData"}],
+ *       "beacon"?: {"uuid", "major", "minor", "measuredPower"?}}, "powerLevel"
+ *       ("low", "medium", "high")} -> {} once advertising; it replaces what
+ *       this server advertised. A beacon comes without the other three.
+ *   STOP_ADVERTISING {"serverId"} -> {} once stopped.
+ *   WRITE_CHARACTERISTIC_VALUE {"serverId", "serviceId", "characteristicId",
+ *       "value", "needNotify", "callbackId"?} -> {} once set, and, with
+ *       needNotify, sent to the centrals subscribed to it; with callbackId it
+ *       is also the response to that read or write request, if one waits.
+ *
+ * Events, each {"serverId", ...}: CHARACTERISTIC_READ_REQUEST with
+ * {"serviceId", "characteristicId", "callbackId"} and
+ * CHARACTERISTIC_WRITE_REQUEST with those and "value" -- callbackId a number
+ * the host makes, which content answers with WRITE_CHARACTERISTIC_VALUE. A
+ * request content does not answer gets no response, as the reference says; the
+ * host itself answers only what content never sees: the rest of a long read,
+ * from the value content gave; a long write's parts until it is executed, then
+ * reported whole; descriptors, from their values. CHARACTERISTIC_SUBSCRIBED
+ * and CHARACTERISTIC_UNSUBSCRIBED with {"serviceId", "characteristicId"} as a
+ * central turns its notifications or indications on or off.
+ * CONNECTION_STATE_CHANGED with {"deviceId", "connected"} as a central
+ * connects or disconnects.
+ */
+#define MIGO_BLE_PERIPHERAL_CREATE_SERVER 0U
+#define MIGO_BLE_PERIPHERAL_ADD_SERVICE 1U
+#define MIGO_BLE_PERIPHERAL_REMOVE_SERVICE 2U
+#define MIGO_BLE_PERIPHERAL_START_ADVERTISING 3U
+#define MIGO_BLE_PERIPHERAL_STOP_ADVERTISING 4U
+#define MIGO_BLE_PERIPHERAL_WRITE_CHARACTERISTIC_VALUE 5U
+#define MIGO_BLE_PERIPHERAL_EVENT_CHARACTERISTIC_READ_REQUEST 0U
+#define MIGO_BLE_PERIPHERAL_EVENT_CHARACTERISTIC_WRITE_REQUEST 1U
+#define MIGO_BLE_PERIPHERAL_EVENT_CHARACTERISTIC_SUBSCRIBED 2U
+#define MIGO_BLE_PERIPHERAL_EVENT_CHARACTERISTIC_UNSUBSCRIBED 3U
+#define MIGO_BLE_PERIPHERAL_EVENT_CONNECTION_STATE_CHANGED 4U
 
 /*
  * Content's permission scopes, in migo.getSetting()'s order. The host decides

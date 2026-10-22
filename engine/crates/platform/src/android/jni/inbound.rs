@@ -2213,6 +2213,58 @@ pub(crate) extern "system" fn onBluetoothResult<'local>(
     });
 }
 
+// ==================== BLE Peripheral Callbacks ====================
+
+/// The answer to a peripheral request, by method number
+/// (`shared::services::BLE_PERIPHERAL_RESULT_HOOKS`).
+pub(crate) extern "system" fn onBlePeripheralResult<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    host_id: jint,
+    method: jint,
+    result_json: JString<'local>,
+) {
+    jni_safe!("onBlePeripheralResult", {
+        let Some(hook) = usize::try_from(method)
+            .ok()
+            .and_then(|method| shared::services::BLE_PERIPHERAL_RESULT_HOOKS.get(method))
+        else {
+            error!("onBlePeripheralResult: no peripheral method {method}");
+            return;
+        };
+        let json = read_json_result(
+            &mut env,
+            &result_json,
+            r#"{"error":"failed to read result"}"#,
+        );
+        send_json_result_to_js(host_id, &json, hook);
+    });
+}
+
+/// What a central did to a server, by event number
+/// (`shared::services::BLE_PERIPHERAL_EVENT_HOOKS`), with its `{"serverId", ...}`:
+/// every one must arrive -- a request content does not hear of is one the
+/// central never gets answered.
+pub(crate) extern "system" fn onBlePeripheralEvent<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    host_id: jint,
+    event: jint,
+    payload_json: JString<'local>,
+) {
+    jni_safe!("onBlePeripheralEvent", {
+        let Some(hook) = usize::try_from(event)
+            .ok()
+            .and_then(|event| shared::services::BLE_PERIPHERAL_EVENT_HOOKS.get(event))
+        else {
+            error!("onBlePeripheralEvent: no peripheral event {event}");
+            return;
+        };
+        let json = read_json_result(&mut env, &payload_json, "{}");
+        send_json_result_to_js(host_id, &json, hook);
+    });
+}
+
 // ==================== Image API Callbacks ====================
 
 jni_host_files_callback!(

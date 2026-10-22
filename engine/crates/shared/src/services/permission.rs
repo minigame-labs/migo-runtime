@@ -199,6 +199,13 @@ pub const PERMISSION_GATED_OPS: &[(&str, Scope)] = &[
     ("op_get_ble_mtu", Scope::Bluetooth),
     ("op_start_beacon_discovery", Scope::Bluetooth),
     ("op_get_beacons", Scope::Bluetooth),
+    ("op_create_ble_peripheral_server", Scope::Bluetooth),
+    ("op_ble_peripheral_add_service", Scope::Bluetooth),
+    ("op_ble_peripheral_start_advertising", Scope::Bluetooth),
+    (
+        "op_ble_peripheral_write_characteristic_value",
+        Scope::Bluetooth,
+    ),
     ("op_get_user_info", Scope::UserInfo),
 ];
 
@@ -215,6 +222,8 @@ pub const PERMISSION_CLEANUP_OPS: &[(&str, Scope)] = &[
     ("op_stop_bluetooth_devices_discovery", Scope::Bluetooth),
     ("op_close_ble_connection", Scope::Bluetooth),
     ("op_stop_beacon_discovery", Scope::Bluetooth),
+    ("op_ble_peripheral_remove_service", Scope::Bluetooth),
+    ("op_ble_peripheral_stop_advertising", Scope::Bluetooth),
 ];
 
 /// The scope an op must hold before it reaches the host, if it is gated.
