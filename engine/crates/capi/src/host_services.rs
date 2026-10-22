@@ -22,6 +22,12 @@
 
 use std::sync::Arc;
 
+use migo_capi_abi::host_services::{
+    MIGO_HOST_SERVICE_RECORDER, MIGO_RECORDER_EVENT_ERROR, MIGO_RECORDER_EVENT_INTERRUPTION_BEGIN,
+    MIGO_RECORDER_EVENT_INTERRUPTION_END, MIGO_RECORDER_EVENT_PAUSE, MIGO_RECORDER_EVENT_RESUME,
+    MIGO_RECORDER_EVENT_START, MIGO_RECORDER_EVENT_STOP, MIGO_RECORDER_PAUSE, MIGO_RECORDER_RESUME,
+    MIGO_RECORDER_START, MIGO_RECORDER_STOP,
+};
 use migo_capi_abi::{
     MIGO_ERROR_INTERNAL, MIGO_ERROR_INVALID_ARGUMENT, MIGO_OK, MigoResult,
     host_services::{
@@ -98,7 +104,8 @@ use shared::{
     protocol::host_cmd::HostCommand,
     services::{
         BLUETOOTH_RESULT_HOOKS, CAMERA_EVENT_HOOKS, CAMERA_RESULT_HOOKS, CameraService,
-        camera_result_files, host_files::HostFiles,
+        RECORDER_EVENT_HOOKS, RecorderService, camera_result_files, host_files::HostFiles,
+        recorder_event_files,
     },
 };
 
@@ -140,6 +147,10 @@ enum Delivery {
     /// path, and what the engine copied out for the request is released
     /// (`shared::services::host_files::deliver_result`).
     HostFiles(&'static HostFiles),
+    /// Fields of an event naming files the host hands over: taken over as a
+    /// result's are, with no request to correlate
+    /// (`shared::services::host_files::deliver_event`).
+    EventFiles(&'static HostFiles),
 }
 
 const REQUEST_MIDAS_PAYMENT: Call = Call {
@@ -666,6 +677,10 @@ const COMMANDS: &[(u32, u32)] = &[
     (MIGO_HOST_SERVICE_CAMERA, MIGO_CAMERA_SET),
     (MIGO_HOST_SERVICE_CAMERA, MIGO_CAMERA_LISTEN_FRAME_CHANGE),
     (MIGO_HOST_SERVICE_CAMERA, MIGO_CAMERA_CLOSE_FRAME_CHANGE),
+    (MIGO_HOST_SERVICE_RECORDER, MIGO_RECORDER_START),
+    (MIGO_HOST_SERVICE_RECORDER, MIGO_RECORDER_PAUSE),
+    (MIGO_HOST_SERVICE_RECORDER, MIGO_RECORDER_RESUME),
+    (MIGO_HOST_SERVICE_RECORDER, MIGO_RECORDER_STOP),
 ];
 
 /// A service's own events, as `(service, event, hook)`.
@@ -755,7 +770,32 @@ const EVENTS: &[(u32, u32, &str)] = &[
         MIGO_CAMERA_EVENT_AUTH_CANCEL,
         CAMERA_EVENT_HOOKS[MIGO_CAMERA_EVENT_AUTH_CANCEL as usize],
     ),
+    recorder_event(MIGO_RECORDER_EVENT_START),
+    recorder_event(MIGO_RECORDER_EVENT_PAUSE),
+    recorder_event(MIGO_RECORDER_EVENT_RESUME),
+    recorder_event(MIGO_RECORDER_EVENT_STOP),
+    recorder_event(MIGO_RECORDER_EVENT_ERROR),
+    recorder_event(MIGO_RECORDER_EVENT_INTERRUPTION_BEGIN),
+    recorder_event(MIGO_RECORDER_EVENT_INTERRUPTION_END),
 ];
+
+/// A recorder event's row: its hook from the one shared table.
+const fn recorder_event(event: u32) -> (u32, u32, &'static str) {
+    (
+        MIGO_HOST_SERVICE_RECORDER,
+        event,
+        RECORDER_EVENT_HOOKS[event as usize],
+    )
+}
+
+/// The files an event hands over, from the shared tables that name them --
+/// a recording's STOP -- as a call's are.
+fn event_files(service: u32, event: u32) -> &'static HostFiles {
+    match service {
+        MIGO_HOST_SERVICE_RECORDER => recorder_event_files(event),
+        _ => &HostFiles::NONE,
+    }
+}
 
 fn event_hook(service: u32, event: u32) -> Option<&'static str> {
     EVENTS
@@ -1277,6 +1317,33 @@ impl CameraService for CapiHostServices {
     }
 }
 
+impl RecorderService for CapiHostServices {
+    fn start(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.command(
+            MIGO_HOST_SERVICE_RECORDER,
+            MIGO_RECORDER_START,
+            request_json,
+        )
+    }
+    fn pause(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.command(
+            MIGO_HOST_SERVICE_RECORDER,
+            MIGO_RECORDER_PAUSE,
+            request_json,
+        )
+    }
+    fn resume(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.command(
+            MIGO_HOST_SERVICE_RECORDER,
+            MIGO_RECORDER_RESUME,
+            request_json,
+        )
+    }
+    fn stop(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.command(MIGO_HOST_SERVICE_RECORDER, MIGO_RECORDER_STOP, request_json)
+    }
+}
+
 impl UpdateService for CapiHostServices {
     fn apply_update(&self) -> Result<(), ServiceError> {
         self.command(MIGO_HOST_SERVICE_UPDATE, MIGO_UPDATE_APPLY_UPDATE, "{}")
@@ -1487,6 +1554,9 @@ fn deliver(
         Delivery::HostFiles(files) => {
             shared::services::host_files::deliver_result(host, files, &json)
         }
+        Delivery::EventFiles(files) => {
+            shared::services::host_files::deliver_event(host, files, &json)
+        }
     };
     if let Err(error) = migo_core::send_reliable_command_to_host(
         host,
@@ -1591,7 +1661,13 @@ pub unsafe extern "C" fn migo_session_post_host_service_event(
         ) {
             return MIGO_ERROR_INVALID_ARGUMENT;
         }
-        deliver(&session, service, hook, payload, &Delivery::Verbatim)
+        let files = event_files(service, event);
+        let delivery = if files.0.is_empty() {
+            Delivery::Verbatim
+        } else {
+            Delivery::EventFiles(files)
+        };
+        deliver(&session, service, hook, payload, &delivery)
     })
 }
 
@@ -1637,6 +1713,7 @@ mod tests {
             "ecosystem" => MIGO_HOST_SERVICE_ECOSYSTEM,
             "update" => MIGO_HOST_SERVICE_UPDATE,
             "camera" => MIGO_HOST_SERVICE_CAMERA,
+            "recorder" => MIGO_HOST_SERVICE_RECORDER,
             other => panic!("the contract names a service the ABI has no constant for: {other}"),
         }
     }
@@ -1698,6 +1775,9 @@ mod tests {
                             Delivery::Verbatim => (vec![], vec![]),
                             Delivery::SubpackageZip => (vec!["zipPath".into()], vec![]),
                             Delivery::HostFiles(files) => (vec![], files.describe()),
+                            Delivery::EventFiles(_) => {
+                                panic!("{name}.{method_name}: a call's result is not an event")
+                            }
                         };
                         assert_eq!(listed("withheld"), withheld, "{method_name} withheld");
                         assert_eq!(listed("files"), files, "{method_name} files");
@@ -1719,6 +1799,20 @@ mod tests {
                     event_hook(service, id),
                     event["hook"].as_str(),
                     "{name}.{event_name}"
+                );
+                let listed: Vec<String> = event["files"]
+                    .as_array()
+                    .map(|files| {
+                        files
+                            .iter()
+                            .map(|file| file.as_str().expect("a file field").to_owned())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                assert_eq!(
+                    listed,
+                    event_files(service, id).describe(),
+                    "{name}.{event_name} files"
                 );
                 events_seen += 1;
             }

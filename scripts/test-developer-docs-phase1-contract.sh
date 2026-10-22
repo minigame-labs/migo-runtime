@@ -325,6 +325,7 @@ ADDED_AFTER_ARCHIVE = {
     "migo_session_post_sensor_sample": "0.9.20",
     "migo_session_post_ble_characteristic_value": "0.9.20",
     "migo_session_post_camera_frame": "0.9.20",
+    "migo_session_post_recorder_frame": "0.9.20",
     "migo_session_set_ecosystem_value": "0.9.20",
     "migo_session_set_host_app_info": "0.9.20",
     "migo_session_post_memory_warning": "0.9.20",

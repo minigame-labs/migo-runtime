@@ -89,17 +89,17 @@ impl RecorderService for FakeRecorder {
         Ok(())
     }
 
-    fn pause(&self) -> Result<(), ServiceError> {
+    fn pause(&self, _request_json: &str) -> Result<(), ServiceError> {
         self.protected_calls.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 
-    fn resume(&self) -> Result<(), ServiceError> {
+    fn resume(&self, _request_json: &str) -> Result<(), ServiceError> {
         self.protected_calls.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 
-    fn stop(&self) -> Result<(), ServiceError> {
+    fn stop(&self, _request_json: &str) -> Result<(), ServiceError> {
         self.cleanup_calls.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }

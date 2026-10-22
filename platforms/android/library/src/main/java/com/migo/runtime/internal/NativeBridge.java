@@ -315,26 +315,12 @@ final class NativeBridge {
 
     // ==================== Recorder Callbacks ====================
 
-    /**
-     * Callback when a recorder event occurs (start, pause, resume, stop, error, interruption).
-     *
-     * @param sessionId   The session ID
-     * @param eventType   Event type string
-     * @param jsonPayload JSON-encoded event data
-     */
-    static native void onRecorderEvent(
-            int sessionId, long generation, String eventType, String jsonPayload);
+    /** What happened to a recording, by event number, with its {@code recordingId}. */
+    static native void onRecorderEvent(int sessionId, int event, String payloadJson);
 
-    /**
-     * Callback when recorder frame data is available.
-     *
-     * @param sessionId   The session ID
-     * @param frameData   Raw audio frame bytes
-     * @param frameLength Number of valid bytes at the start of {@code frameData}
-     * @param isLastFrame Whether this is the last frame before stop
-     */
+    /** One frame of recording {@code recordingId}. */
     static native void onRecorderFrameData(
-            int sessionId, long generation, byte[] frameData, int frameLength,
+            int sessionId, int recordingId, byte[] frameData, int frameLength,
             boolean isLastFrame);
 
     // ==================== Camera Callbacks ====================

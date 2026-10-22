@@ -1109,6 +1109,32 @@ MIGO_API MigoResult MIGO_CALL migo_session_post_camera_frame(MigoSession *sessio
 - `MIGO_ERROR_INVALID_ARGUMENT` — 记录为 NULL 或格式不对；头文件未定义的 format；宽或高为 0 或超过 8192；`row_stride` 小于 `width * 4`；RGBA 超过 64 MiB；宿主未声明 `MIGO_HOST_SERVICE_CAMERA`
 - `MIGO_ERROR_INVALID_STATE` — 没有附着的 Surface
 
+## migo_session_post_recorder_frame
+
+```c
+typedef struct MigoRecorderFrame {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint32_t recording_id;
+    uint32_t is_last_frame;
+    const uint8_t *data;
+    uint32_t length;
+    uint32_t reserved0;
+} MigoRecorderFrame;
+
+MIGO_API MigoResult MIGO_CALL migo_session_post_recorder_frame(MigoSession *session,
+                                                               const MigoRecorderFrame *frame);
+```
+
+`MIGO_RECORDER_START` 要了帧（`frameSize`）的录音的一帧，可在任意线程、Surface 附着期间调用：录音格式的 `length` 字节（至多 1 MiB），交给内容的 `onFrameRecorded`。结束录音的那一帧 `is_last_frame` 为 1（可以为空），其余为 0。麦克风每秒送很多帧，所以这是类型化记录、只在调用期间借用、拷贝一次。各帧共用一份内容消化的字节额度：超出额度的帧被拒绝并丢弃——跑在内容前面的宿主丢的是帧而不是内存；最后一帧从不丢弃。
+
+返回：
+
+- `MIGO_OK` — 已交付
+- `MIGO_ERROR_WOULD_BLOCK` — 内容还没取走足够多的先前帧，这一帧被丢弃
+- `MIGO_ERROR_INVALID_ARGUMENT` — 记录为 NULL 或格式不对；`recording_id` 为 0；`is_last_frame` 不是 0 或 1；`length` 超过 1 MiB，或有长度但 `data` 为 NULL；宿主未声明 `MIGO_HOST_SERVICE_RECORDER`
+- `MIGO_ERROR_INVALID_STATE` — 没有附着的 Surface
+
 ## migo_session_set_ecosystem_value
 
 ```c

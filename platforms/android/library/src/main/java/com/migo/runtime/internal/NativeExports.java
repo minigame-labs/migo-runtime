@@ -1617,43 +1617,28 @@ public final class NativeExports {
 
     // ==================== Recorder (delegates to MediaExports) ====================
 
-    /**
-     * Start recording with the given options.
-     *
-     * @param sessionId   The session ID
-     * @param optionsJson JSON string with recording options:
-     *                    duration, sampleRate, numberOfChannels, encodeBitRate,
-     *                    format, frameSize, audioSource
-     */
-    public static void recorderStart(int sessionId, String optionsJson) {
-        MediaExports.recorderStart(sessionId, optionsJson);
+    // Each takes the request content made, {"recordingId", ...}; what happens
+    // comes back through NativeMethods.onRecorderEvent.
+
+    /** Start recording: recordingId, duration, sampleRate, numberOfChannels,
+     *  encodeBitRate, format, frameSize, audioSource, audioMode. */
+    public static void recorderStart(int sessionId, String requestJson) {
+        MediaExports.recorderStart(sessionId, requestJson);
     }
 
-    /**
-     * Pause recording.
-     *
-     * @param sessionId The session ID
-     */
-    public static void recorderPause(int sessionId) {
-        MediaExports.recorderPause(sessionId);
+    /** Pause the recording the request names. */
+    public static void recorderPause(int sessionId, String requestJson) {
+        MediaExports.recorderPause(sessionId, requestJson);
     }
 
-    /**
-     * Resume recording after pause.
-     *
-     * @param sessionId The session ID
-     */
-    public static void recorderResume(int sessionId) {
-        MediaExports.recorderResume(sessionId);
+    /** Resume the recording the request names. */
+    public static void recorderResume(int sessionId, String requestJson) {
+        MediaExports.recorderResume(sessionId, requestJson);
     }
 
-    /**
-     * Stop recording.
-     *
-     * @param sessionId The session ID
-     */
-    public static void recorderStop(int sessionId) {
-        MediaExports.recorderStop(sessionId);
+    /** Stop the recording the request names. */
+    public static void recorderStop(int sessionId, String requestJson) {
+        MediaExports.recorderStop(sessionId, requestJson);
     }
 
     /**

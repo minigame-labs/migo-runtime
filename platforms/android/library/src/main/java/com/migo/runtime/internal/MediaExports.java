@@ -69,17 +69,27 @@ public final class MediaExports {
 
     // ==================== Recorder ====================
 
-    public static void recorderStart(int sessionId, String optionsJson) {
+    /** A recording that could not start before any recorder took it. */
+    private static void failRecording(int sessionId, String requestJson, String errMsg) {
+        org.json.JSONObject payload = new org.json.JSONObject();
+        try {
+            payload.put("recordingId", new org.json.JSONObject(requestJson).optInt("recordingId", 0));
+            payload.put("errMsg", errMsg);
+        } catch (org.json.JSONException | NullPointerException ignored) {
+            // A recording that names no id is answered for none.
+        }
+        NativeMethods.onRecorderEvent(sessionId, AudioRecorderManager.EVENT_ERROR, payload.toString());
+    }
+
+    public static void recorderStart(int sessionId, String requestJson) {
         RuntimeContext ctx = RuntimeRegistry.get(sessionId);
         if (ctx == null) {
-            NativeMethods.onRecorderEvent(sessionId, RuntimeGenerationBoundary.UNFENCED, "error",
-                    "{\"errMsg\":\"recorderManager.start:fail no context\"}");
+            failRecording(sessionId, requestJson, "recorderManager.start:fail no context");
             return;
         }
         Activity activity = ctx.getActivity();
         if (activity == null) {
-            NativeMethods.onRecorderEvent(sessionId, RuntimeGenerationBoundary.UNFENCED, "error",
-                    "{\"errMsg\":\"recorderManager.start:fail no activity\"}");
+            failRecording(sessionId, requestJson, "recorderManager.start:fail no activity");
             return;
         }
 
@@ -93,27 +103,27 @@ public final class MediaExports {
                 }
             }
         }
-        mgr.start(optionsJson);
+        mgr.start(requestJson);
     }
 
-    public static void recorderPause(int sessionId) {
+    public static void recorderPause(int sessionId, String requestJson) {
         AudioRecorderManager mgr = liveRecorder(sessionId);
         if (mgr != null) {
-            mgr.pause();
+            mgr.pause(requestJson);
         }
     }
 
-    public static void recorderResume(int sessionId) {
+    public static void recorderResume(int sessionId, String requestJson) {
         AudioRecorderManager mgr = liveRecorder(sessionId);
         if (mgr != null) {
-            mgr.resume();
+            mgr.resume(requestJson);
         }
     }
 
-    public static void recorderStop(int sessionId) {
+    public static void recorderStop(int sessionId, String requestJson) {
         AudioRecorderManager mgr = liveRecorder(sessionId);
         if (mgr != null) {
-            mgr.stop();
+            mgr.stop(requestJson);
         }
     }
 

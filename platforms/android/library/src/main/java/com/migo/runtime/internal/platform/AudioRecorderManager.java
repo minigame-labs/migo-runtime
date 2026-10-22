@@ -2,11 +2,11 @@ package com.migo.runtime.internal.platform;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.content.Context;
 import android.content.pm.PackageManager;
 import android.media.AudioFormat;
 import android.media.AudioRecord;
 import android.media.MediaRecorder;
-import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.ParcelFileDescriptor;
@@ -43,13 +43,25 @@ import java.util.concurrent.atomic.AtomicInteger;
  * </ul>
  * <p>
  * Events are sent via {@link NativeMethods#onRecorderEvent} and
- * frame data via {@link NativeMethods#onRecorderFrameData}.
+ * frame data via {@link NativeMethods#onRecorderFrameData}, each with the
+ * recording's {@code recordingId}: content took it from the Host id space when
+ * it started the recording, and drops what is not of the recording it holds.
  *
  * @hide
  */
 public final class AudioRecorderManager implements RuntimeScoped {
 
     private static final String TAG = "AudioRecorderManager";
+
+    /** What happens to a recording, by number, as the engine numbers it
+     *  ({@code shared::services::recorder_event}, {@code MIGO_RECORDER_EVENT_*}). */
+    public static final int EVENT_START = 0;
+    public static final int EVENT_PAUSE = 1;
+    public static final int EVENT_RESUME = 2;
+    public static final int EVENT_STOP = 3;
+    public static final int EVENT_ERROR = 4;
+    public static final int EVENT_INTERRUPTION_BEGIN = 5;
+    public static final int EVENT_INTERRUPTION_END = 6;
 
     /** Recording states. */
     private static final int STATE_IDLE = 0;
@@ -89,22 +101,25 @@ public final class AudioRecorderManager implements RuntimeScoped {
     private int encodeBitRate = 48000;
     private String format = "aac";
     private String audioSource = "auto";
+    private String audioMode = "default";
     private int frameSize = 0; // 0 = disabled
 
-    // Recording state
+    // Recording state: the recording content holds, which every event and frame
+    // names; 0 before the first.
+    private volatile int recordingId;
     private String outputFilePath;
     private long recordStartTime;
     private long recordedDuration; // accumulated ms across pause/resume cycles
     private Runnable autoStopRunnable;
     private int frameMode = FRAME_NONE;
+    /** Set as a recording ends the way the reference counts as normal -- stopped,
+     *  or its duration ran out -- so its last frame is sent, flagged. */
+    private volatile boolean lastFrameDue;
 
     /**
-     * The runtime this recorder belongs to.
-     *
-     * <p>Captured once, here, and stamped on every event and frame it reports.
-     * Stopping the recorder reports, and the microphone is
-     * released by the same path, so the report has to be attributable to the
-     * runtime that started it.
+     * The runtime this recorder belongs to, which tears it down when it goes.
+     * What it reports names its recording rather than the runtime: an id from
+     * the Host id space, which a replacement runtime never holds.
      */
     private final RuntimeGenerationBoundary.Token token;
 
@@ -127,22 +142,20 @@ public final class AudioRecorderManager implements RuntimeScoped {
      *                    encodeBitRate, format, frameSize, audioSource
      */
     public void start(String optionsJson) {
-        if (!Permissions.isGranted(activity, Permissions.RECORD_AUDIO)) {
-            fireEvent("error",
-                    "{\"errMsg\":\"recorderManager.start:fail auth deny, permission RECORD_AUDIO is required\"}");
-            return;
-        }
-
         if (state.get() != STATE_IDLE) {
             stopInternal(false);
+        }
+        recordingId = recordingIdOf(optionsJson);
+        if (!Permissions.isGranted(activity, Permissions.RECORD_AUDIO)) {
+            fail("recorderManager.start:fail auth deny, permission RECORD_AUDIO is required");
+            return;
         }
 
         // One microphone, one owner. Refusing the newcomer keeps the running
         // capture intact; a silent takeover would corrupt it with nothing for the
         // incumbent to observe.
         if (!ExclusiveDeviceArbiter.tryAcquire(ExclusiveDeviceArbiter.MICROPHONE, sessionId)) {
-            fireEvent("error",
-                    "{\"errMsg\":\"recorderManager.start:fail in use by another game\"}");
+            fail("recorderManager.start:fail in use by another game");
             return;
         }
 
@@ -150,13 +163,14 @@ public final class AudioRecorderManager implements RuntimeScoped {
         try {
             parseOptions(optionsJson);
 
-            if (frameSize > 0) {
-                String fmt = format.toLowerCase();
-                if ("pcm".equals(fmt) || "wav".equals(fmt)) {
-                    frameMode = FRAME_PCM;
-                } else {
-                    frameMode = FRAME_ENCODED;
-                }
+            // PCM and WAV are the microphone's samples as they come, which
+            // AudioRecord hands over -- with or without frames; the compressed
+            // formats are MediaRecorder's.
+            String fmt = format.toLowerCase();
+            if ("pcm".equals(fmt) || "wav".equals(fmt)) {
+                frameMode = FRAME_PCM;
+            } else if (frameSize > 0) {
+                frameMode = FRAME_ENCODED;
             } else {
                 frameMode = FRAME_NONE;
             }
@@ -176,8 +190,7 @@ public final class AudioRecorderManager implements RuntimeScoped {
                     break;
             }
         } catch (Exception e) {
-            fireEvent("error",
-                    "{\"errMsg\":\"" + escapeJson("recorderManager.start:fail " + e.getMessage()) + "\"}");
+            fail("recorderManager.start:fail " + e.getMessage());
         } finally {
             if (!ok) {
                 ExclusiveDeviceArbiter.release(ExclusiveDeviceArbiter.MICROPHONE, sessionId);
@@ -185,16 +198,16 @@ public final class AudioRecorderManager implements RuntimeScoped {
         }
     }
 
-    /** Pause recording. */
-    public void pause() {
-        if (state.get() != STATE_RECORDING) return;
+    /** Pause recording {@code {"recordingId"}}, if it is the one recording. */
+    public void pause(String requestJson) {
+        if (state.get() != STATE_RECORDING || recordingIdOf(requestJson) != recordingId) return;
 
         if (frameMode == FRAME_PCM) {
             // AudioRecord: flip state, capture thread will sleep
             state.set(STATE_PAUSED);
             recordedDuration += System.currentTimeMillis() - recordStartTime;
             cancelAutoStop();
-            fireEvent("pause", "{}");
+            fireEvent(EVENT_PAUSE);
         } else {
             // MediaRecorder-based (encoded mode or encoded-frame mode)
             try {
@@ -202,39 +215,38 @@ public final class AudioRecorderManager implements RuntimeScoped {
                 state.set(STATE_PAUSED);
                 recordedDuration += System.currentTimeMillis() - recordStartTime;
                 cancelAutoStop();
-                fireEvent("pause", "{}");
+                fireEvent(EVENT_PAUSE);
             } catch (Exception e) {
-                fireEvent("error",
-                        "{\"errMsg\":\"" + escapeJson("recorderManager.pause:fail " + e.getMessage()) + "\"}");
+                fail("recorderManager.pause:fail " + e.getMessage());
             }
         }
     }
 
-    /** Resume recording after pause. */
-    public void resume() {
-        if (state.get() != STATE_PAUSED) return;
+    /** Resume recording {@code {"recordingId"}} after pause, if it is the one paused. */
+    public void resume(String requestJson) {
+        if (state.get() != STATE_PAUSED || recordingIdOf(requestJson) != recordingId) return;
 
         if (frameMode == FRAME_PCM) {
             state.set(STATE_RECORDING);
             recordStartTime = System.currentTimeMillis();
             scheduleAutoStop();
-            fireEvent("resume", "{}");
+            fireEvent(EVENT_RESUME);
         } else {
             try {
                 mediaRecorder.resume();
                 state.set(STATE_RECORDING);
                 recordStartTime = System.currentTimeMillis();
                 scheduleAutoStop();
-                fireEvent("resume", "{}");
+                fireEvent(EVENT_RESUME);
             } catch (Exception e) {
-                fireEvent("error",
-                        "{\"errMsg\":\"" + escapeJson("recorderManager.resume:fail " + e.getMessage()) + "\"}");
+                fail("recorderManager.resume:fail " + e.getMessage());
             }
         }
     }
 
-    /** Stop recording. */
-    public void stop() {
+    /** Stop recording {@code {"recordingId"}}, if it is the one under way. */
+    public void stop(String requestJson) {
+        if (recordingIdOf(requestJson) != recordingId) return;
         stopInternal(true);
     }
 
@@ -249,7 +261,7 @@ public final class AudioRecorderManager implements RuntimeScoped {
 
     private boolean startEncodedMode() {
         try {
-            int source = mapAudioSource(audioSource);
+            int source = recordingSource();
             Log.d(TAG, "startEncodedMode: audioSource=" + audioSource + " mapped=" + source
                     + " format=" + format + " sampleRate=" + sampleRate
                     + " channels=" + numberOfChannels + " bitRate=" + encodeBitRate);
@@ -280,8 +292,7 @@ public final class AudioRecorderManager implements RuntimeScoped {
             state.set(STATE_IDLE);
             cancelAutoStop();
             Log.e(TAG, "startEncodedMode failed", e);
-            fireEvent("error",
-                    "{\"errMsg\":\"" + escapeJson("recorderManager.start:fail " + e.getMessage()) + "\"}");
+            fail("recorderManager.start:fail " + e.getMessage());
             resetMediaRecorder();
             return false;
         }
@@ -298,8 +309,7 @@ public final class AudioRecorderManager implements RuntimeScoped {
         // Permission can be revoked after start() validates it.
         if (activity.checkSelfPermission(Permissions.RECORD_AUDIO)
                 != PackageManager.PERMISSION_GRANTED) {
-            fireEvent("error",
-                    "{\"errMsg\":\"recorderManager.start:fail auth deny, permission RECORD_AUDIO is required\"}");
+            fail("recorderManager.start:fail auth deny, permission RECORD_AUDIO is required");
             return false;
         }
 
@@ -316,7 +326,7 @@ public final class AudioRecorderManager implements RuntimeScoped {
                 + (Permissions.isGranted(activity, Permissions.RECORD_AUDIO) ? "GRANTED" : "DENIED"));
 
         if (minBufSize == AudioRecord.ERROR_BAD_VALUE || minBufSize == AudioRecord.ERROR) {
-            fireEvent("error", "{\"errMsg\":\"recorderManager.start:fail invalid audio parameters\"}");
+            fail("recorderManager.start:fail invalid audio parameters");
             return false;
         }
 
@@ -325,20 +335,24 @@ public final class AudioRecorderManager implements RuntimeScoped {
 
         try {
             audioRecord = new AudioRecord(
-                    mapAudioSource(audioSource),
+                    recordingSource(),
                     sampleRate,
                     channelConfig,
                     audioFmt,
                     bufferSize);
 
             if (audioRecord.getState() != AudioRecord.STATE_INITIALIZED) {
-                fireEvent("error", "{\"errMsg\":\"recorderManager.start:fail AudioRecord init failed\"}");
+                fail("recorderManager.start:fail AudioRecord init failed");
                 releaseAudioRecord();
                 return false;
             }
 
             outputFilePath = createOutputFilePath();
             outputFileStream = new FileOutputStream(outputFilePath);
+            if (isWav()) {
+                // Sizes unknown until the recording ends; patched then.
+                outputFileStream.write(wavHeader(0));
+            }
 
             audioRecord.startRecording();
             // CAP-01: publish STATE_RECORDING before the capture thread is created.
@@ -353,8 +367,7 @@ public final class AudioRecorderManager implements RuntimeScoped {
         } catch (Exception e) {
             state.set(STATE_IDLE);
             cancelAutoStop();
-            fireEvent("error",
-                    "{\"errMsg\":\"" + escapeJson("recorderManager.start:fail " + e.getMessage()) + "\"}");
+            fail("recorderManager.start:fail " + e.getMessage());
             releaseAudioRecord();
             closeOutputStream();
             return false;
@@ -366,7 +379,7 @@ public final class AudioRecorderManager implements RuntimeScoped {
         final int chunkBytes = frameSize * 1024;
         byte[] accumulator = new byte[chunkBytes];
         int accOffset = 0;
-        int readSize = Math.min(chunkBytes, 4096);
+        int readSize = chunkBytes > 0 ? Math.min(chunkBytes, 4096) : 4096;
         byte[] readBuf = new byte[readSize];
 
         try {
@@ -385,8 +398,7 @@ public final class AudioRecorderManager implements RuntimeScoped {
                     // Any negative return is a fatal AudioRecord error (dead object,
                     // invalid op, bad value, ...). Stop + clean up instead of
                     // breaking without cleanup or spinning on repeated errors.
-                    fireEvent("error",
-                            "{\"errMsg\":\"" + escapeJson("recorderManager: AudioRecord read error " + bytesRead) + "\"}");
+                    fail("recorderManager: AudioRecord read error " + bytesRead);
                     mainHandler.post(() -> stopInternal(false));
                     break;
                 }
@@ -400,20 +412,21 @@ public final class AudioRecorderManager implements RuntimeScoped {
                 }
 
                 // Accumulate and fire frame callbacks
-                accOffset = accumulateAndFire(readBuf, bytesRead, accumulator, accOffset, chunkBytes);
+                if (chunkBytes > 0) {
+                    accOffset = accumulateAndFire(
+                            readBuf, bytesRead, accumulator, accOffset, chunkBytes);
+                }
             }
         } catch (InterruptedException ignored) {
             // Normal shutdown
         } catch (IOException e) {
-            fireEvent("error",
-                    "{\"errMsg\":\"" + escapeJson("recording write error: " + e.getMessage()) + "\"}");
+            fail("recording write error: " + e.getMessage());
             // Fatal I/O error: tear down + go idle from the main thread (the capture
             // thread can't join itself). Idempotent with an explicit stop().
             mainHandler.post(() -> stopInternal(false));
         }
 
-        // Flush remaining
-        flushAccumulator(accumulator, accOffset);
+        if (chunkBytes > 0) flushAccumulator(accumulator, accOffset);
     }
 
     // ========================================================================
@@ -426,7 +439,7 @@ public final class AudioRecorderManager implements RuntimeScoped {
             pipeReadFd = pipe[0];
             pipeWriteFd = pipe[1];
 
-            int source = mapAudioSource(audioSource);
+            int source = recordingSource();
             Log.d(TAG, "startEncodedFrameMode: audioSource=" + audioSource + " mapped=" + source
                     + " format=" + format + " sampleRate=" + sampleRate
                     + " channels=" + numberOfChannels + " bitRate=" + encodeBitRate
@@ -467,8 +480,7 @@ public final class AudioRecorderManager implements RuntimeScoped {
             state.set(STATE_IDLE);
             cancelAutoStop();
             Log.e(TAG, "startEncodedFrameMode failed", e);
-            fireEvent("error",
-                    "{\"errMsg\":\"" + escapeJson("recorderManager.start:fail " + e.getMessage()) + "\"}");
+            fail("recorderManager.start:fail " + e.getMessage());
             resetMediaRecorder();
             closePipe();
             closeOutputStream();
@@ -505,8 +517,7 @@ public final class AudioRecorderManager implements RuntimeScoped {
             }
         } catch (IOException e) {
             if (captureRunning) {
-                fireEvent("error",
-                        "{\"errMsg\":\"" + escapeJson("pipe read error: " + e.getMessage()) + "\"}");
+                fail("pipe read error: " + e.getMessage());
                 // Fatal error mid-recording: tear down from the main thread.
                 mainHandler.post(() -> stopInternal(false));
             }
@@ -540,18 +551,22 @@ public final class AudioRecorderManager implements RuntimeScoped {
                 // The JNI call copies synchronously before returning, so the
                 // capture-owned accumulator can be reused without a Java clone.
                 NativeMethods.onRecorderFrameData(
-                        sessionId, token.generation(), accumulator, chunkBytes, false);
+                        sessionId, recordingId, accumulator, chunkBytes, false);
                 accOffset = 0;
             }
         }
         return accOffset;
     }
 
-    /** Flush any remaining bytes as the last frame without allocating a partial clone. */
+    /**
+     * The recording's last frame: what is left, which may be nothing -- a
+     * recording of whole frames still ends with one flagged -- when it ended
+     * normally; a recording replaced or torn down has no last frame.
+     */
     private void flushAccumulator(byte[] accumulator, int accOffset) {
-        if (accOffset > 0) {
+        if (lastFrameDue) {
             NativeMethods.onRecorderFrameData(
-                    sessionId, token.generation(), accumulator, accOffset, true);
+                    sessionId, recordingId, accumulator, accOffset, true);
         }
     }
 
@@ -571,7 +586,7 @@ public final class AudioRecorderManager implements RuntimeScoped {
         recordStartTime = System.currentTimeMillis();
         recordedDuration = 0;
         scheduleAutoStop();
-        fireEvent("start", "{}");
+        fireEvent(EVENT_START);
     }
 
     private void attachMediaRecorderListeners() {
@@ -583,7 +598,7 @@ public final class AudioRecorderManager implements RuntimeScoped {
 
         mediaRecorder.setOnErrorListener((mr, what, extra) -> {
             String errMsg = "MediaRecorder error: what=" + what + " extra=" + extra;
-            fireEvent("error", "{\"errMsg\":\"" + escapeJson(errMsg) + "\"}");
+            fail(errMsg);
             mainHandler.post(() -> stopInternal(false));
         });
     }
@@ -603,6 +618,7 @@ public final class AudioRecorderManager implements RuntimeScoped {
                 && pipeWriteFd == null) return;
 
         cancelAutoStop();
+        lastFrameDue = notifyStop;
 
         if (prevState == STATE_RECORDING) {
             recordedDuration += System.currentTimeMillis() - recordStartTime;
@@ -643,6 +659,10 @@ public final class AudioRecorderManager implements RuntimeScoped {
         }
         state.set(STATE_IDLE);
 
+        lastFrameDue = false;
+        if (outputFilePath != null && frameMode == FRAME_PCM && isWav()) {
+            patchWavHeader(new File(outputFilePath));
+        }
         if (notifyStop && outputFilePath != null) {
             File file = new File(outputFilePath);
             long fileSize = file.exists() ? file.length() : 0;
@@ -654,7 +674,7 @@ public final class AudioRecorderManager implements RuntimeScoped {
                 result.put("fileSize", fileSize);
             } catch (JSONException ignored) {}
 
-            fireEvent("stop", result.toString());
+            fireEvent(EVENT_STOP, result);
         }
     }
 
@@ -769,6 +789,7 @@ public final class AudioRecorderManager implements RuntimeScoped {
             encodeBitRate = opts.optInt("encodeBitRate", 48000);
             format = opts.optString("format", "aac");
             audioSource = opts.optString("audioSource", "auto");
+            audioMode = opts.optString("audioMode", "default");
             // Clamp to [0, 1024] KB: 0 disables frame mode; frameSize*1024 is the
             // per-chunk byte allocation (new byte[frameSize*1024]), so an unbounded
             // value would overflow int and/or OOM.
@@ -776,6 +797,32 @@ public final class AudioRecorderManager implements RuntimeScoped {
         } catch (JSONException e) {
             // Use defaults
         }
+    }
+
+    /** The input the recording uses: its audioMode's, which the reference says
+     *  wins when content gives both, else its audioSource's. */
+    private int recordingSource() {
+        switch (audioMode) {
+            case "voiceChat":
+                return MediaRecorder.AudioSource.VOICE_COMMUNICATION;
+            case "voiceRecognition":
+                return MediaRecorder.AudioSource.VOICE_RECOGNITION;
+            case "recording":
+                return unprocessedSupported()
+                        ? MediaRecorder.AudioSource.UNPROCESSED
+                        : MediaRecorder.AudioSource.MIC;
+            default:
+                return mapAudioSource(audioSource);
+        }
+    }
+
+    /** Whether the device records its microphone untouched, as a high-fidelity
+     *  recording asks. */
+    private boolean unprocessedSupported() {
+        android.media.AudioManager audio =
+                (android.media.AudioManager) activity.getSystemService(Context.AUDIO_SERVICE);
+        return audio != null && "true".equals(audio.getProperty(
+                android.media.AudioManager.PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED));
     }
 
     private int mapAudioSource(String source) {
@@ -799,56 +846,20 @@ public final class AudioRecorderManager implements RuntimeScoped {
     }
 
     /**
-     * Configure a streaming-compatible (non-seekable) output format for encoded frame mode.
-     * Pipe file descriptors are not seekable, so container formats that require seeking
-     * (e.g. MPEG_4) cannot be used.
+     * The compressed recording a stream of frames is read from: AAC in an ADTS
+     * stream, since a pipe cannot seek and MPEG-4 needs to. Android has no MP3
+     * encoder; "mp3" records AAC. PCM and WAV never come here (AudioRecord).
      */
     private void configureStreamingFormatAndEncoder(MediaRecorder recorder) {
-        switch (format.toLowerCase()) {
-            case "wav":
-            case "pcm":
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    recorder.setOutputFormat(MediaRecorder.OutputFormat.OGG);
-                    recorder.setAudioEncoder(MediaRecorder.AudioEncoder.OPUS);
-                } else {
-                    recorder.setOutputFormat(MediaRecorder.OutputFormat.THREE_GPP);
-                    recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AMR_WB);
-                }
-                break;
-            case "mp3":
-            case "aac":
-            default:
-                // AAC_ADTS is a streaming AAC format that does not require seeking.
-                recorder.setOutputFormat(MediaRecorder.OutputFormat.AAC_ADTS);
-                recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
-                break;
-        }
+        recorder.setOutputFormat(MediaRecorder.OutputFormat.AAC_ADTS);
+        recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
     }
 
+    /** The compressed recording written to a file: AAC in MPEG-4, for "aac" and
+     *  for "mp3", which Android cannot encode. */
     private void configureFormatAndEncoder(MediaRecorder recorder) {
-        switch (format.toLowerCase()) {
-            case "mp3":
-                recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
-                recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
-                // Android doesn't natively support MP3 encoding.
-                // Use AAC in MP4 container as closest equivalent.
-                break;
-            case "wav":
-            case "pcm":
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    recorder.setOutputFormat(MediaRecorder.OutputFormat.OGG);
-                    recorder.setAudioEncoder(MediaRecorder.AudioEncoder.OPUS);
-                } else {
-                    recorder.setOutputFormat(MediaRecorder.OutputFormat.THREE_GPP);
-                    recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AMR_WB);
-                }
-                break;
-            case "aac":
-            default:
-                recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
-                recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
-                break;
-        }
+        recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
+        recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
     }
 
     private String createOutputFilePath() {
@@ -872,24 +883,44 @@ public final class AudioRecorderManager implements RuntimeScoped {
     private String outputExtension() {
         switch (frameMode) {
             case FRAME_PCM:
-                // AudioRecord writes raw PCM (no WAV header) regardless of whether
-                // "pcm" or "wav" was requested.
-                return ".pcm";
+                // AudioRecord's samples: raw, or behind a WAV header.
+                return isWav() ? ".wav" : ".pcm";
             case FRAME_ENCODED:
                 // configureStreamingFormatAndEncoder(): AAC in an ADTS stream.
                 return ".aac";
             default: // FRAME_NONE -> configureFormatAndEncoder()
-                switch (format.toLowerCase()) {
-                    case "wav":
-                    case "pcm":
-                        // OGG/Opus on Android Q+, else 3GPP/AMR-WB.
-                        return (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) ? ".ogg" : ".3gp";
-                    case "mp3":
-                    case "aac":
-                    default:
-                        // MPEG-4 container with an AAC track.
-                        return ".m4a";
-                }
+                // MPEG-4 container with an AAC track: Android has no MP3 encoder.
+                return ".m4a";
+        }
+    }
+
+    private boolean isWav() {
+        return "wav".equalsIgnoreCase(format);
+    }
+
+    /** A canonical 44-byte WAV header for {@code dataBytes} of this recording's
+     *  16-bit PCM. */
+    private byte[] wavHeader(long dataBytes) {
+        java.nio.ByteBuffer header =
+                java.nio.ByteBuffer.allocate(44).order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        int blockAlign = numberOfChannels * 2;
+        header.put(new byte[] {'R', 'I', 'F', 'F'}).putInt((int) (36 + dataBytes))
+                .put(new byte[] {'W', 'A', 'V', 'E', 'f', 'm', 't', ' '})
+                .putInt(16).putShort((short) 1).putShort((short) numberOfChannels)
+                .putInt(sampleRate).putInt(sampleRate * blockAlign)
+                .putShort((short) blockAlign).putShort((short) 16)
+                .put(new byte[] {'d', 'a', 't', 'a'}).putInt((int) dataBytes);
+        return header.array();
+    }
+
+    /** The header written as the recording began, given the sizes it ended with. */
+    private void patchWavHeader(File file) {
+        try (java.io.RandomAccessFile wav = new java.io.RandomAccessFile(file, "rw")) {
+            long dataBytes = Math.max(0, wav.length() - 44);
+            wav.seek(0);
+            wav.write(wavHeader(dataBytes));
+        } catch (IOException e) {
+            Log.w(TAG, "WAV header not completed: " + e.getMessage());
         }
     }
 
@@ -914,16 +945,36 @@ public final class AudioRecorderManager implements RuntimeScoped {
         }
     }
 
-    private void fireEvent(String eventType, String jsonPayload) {
-        NativeMethods.onRecorderEvent(sessionId, token.generation(), eventType, jsonPayload);
+    /** The recording a request names, or 0. */
+    private static int recordingIdOf(String requestJson) {
+        try {
+            return new JSONObject(requestJson).optInt("recordingId", 0);
+        } catch (JSONException | NullPointerException e) {
+            return 0;
+        }
     }
 
-    private static String escapeJson(String s) {
-        if (s == null) return "";
-        return s.replace("\\", "\\\\")
-                .replace("\"", "\\\"")
-                .replace("\n", "\\n")
-                .replace("\r", "\\r")
-                .replace("\t", "\\t");
+    private void fireEvent(int event) {
+        fireEvent(event, new JSONObject());
+    }
+
+    /** What happened to the recording, with its id. */
+    private void fireEvent(int event, JSONObject payload) {
+        try {
+            payload.put("recordingId", recordingId);
+        } catch (JSONException ignored) {
+            // An int always fits.
+        }
+        NativeMethods.onRecorderEvent(sessionId, event, payload.toString());
+    }
+
+    private void fail(String errMsg) {
+        JSONObject payload = new JSONObject();
+        try {
+            payload.put("errMsg", errMsg);
+        } catch (JSONException ignored) {
+            // A string always fits.
+        }
+        fireEvent(EVENT_ERROR, payload);
     }
 }

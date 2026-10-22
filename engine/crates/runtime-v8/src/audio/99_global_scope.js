@@ -49,7 +49,13 @@ ObjectDefineProperties(globalThis, {
 
     // RecorderManager
     getRecorderManager: core.propNonEnumerable(recorderManager.getRecorderManager),
-    _internalOnRecorderEvent: core.propNonEnumerable(recorderManager._internalOnRecorderEvent),
+    _internalOnRecorderStartEvent: core.propNonEnumerable(recorderManager._internalOnRecorderStartEvent),
+    _internalOnRecorderPauseEvent: core.propNonEnumerable(recorderManager._internalOnRecorderPauseEvent),
+    _internalOnRecorderResumeEvent: core.propNonEnumerable(recorderManager._internalOnRecorderResumeEvent),
+    _internalOnRecorderStopEvent: core.propNonEnumerable(recorderManager._internalOnRecorderStopEvent),
+    _internalOnRecorderErrorEvent: core.propNonEnumerable(recorderManager._internalOnRecorderErrorEvent),
+    _internalOnRecorderInterruptionBeginEvent: core.propNonEnumerable(recorderManager._internalOnRecorderInterruptionBeginEvent),
+    _internalOnRecorderInterruptionEndEvent: core.propNonEnumerable(recorderManager._internalOnRecorderInterruptionEndEvent),
     _internalOnRecorderFrameData: core.propNonEnumerable(recorderManager._internalOnRecorderFrameData),
 
     // Audio Interruption

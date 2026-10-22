@@ -29,6 +29,7 @@ mod navigate;
 mod network;
 mod payment;
 mod permission;
+mod recorder;
 mod scan_code;
 mod share;
 mod subpackage;
@@ -49,8 +50,8 @@ pub use device::{
     AccelerometerService, AudioPlatformService, BLUETOOTH_RESULT_HOOKS, BatteryService,
     BluetoothService, CommerceServices, CompassService, ConnectivityServices, DeviceMotionService,
     DeviceServices, GAMEPAD_EFFECT_MAX_MS, GamepadRumble, GamepadService, GyroscopeService,
-    KeyboardService, MediaServices, RecorderService, ScreenService, SensorServices,
-    SystemUtilServices, VibrationService,
+    KeyboardService, MediaServices, ScreenService, SensorServices, SystemUtilServices,
+    VibrationService,
 };
 pub use ecosystem::EcosystemService;
 pub use file::FileService;
@@ -64,6 +65,9 @@ pub use payment::PaymentService;
 pub use permission::{
     PERMISSION_CLEANUP_OPS, PERMISSION_GATED_OPS, PermissionService, Scope, ScopeState,
     auth_setting_json, op_scope,
+};
+pub use recorder::{
+    RECORDER_EVENT_HOOKS, RecorderService, recorder_event, recorder_event_files, recorder_method,
 };
 pub use scan_code::ScanCodeService;
 pub use share::ShareService;
