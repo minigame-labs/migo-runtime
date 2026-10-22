@@ -265,6 +265,7 @@
         "op_camera_create": "unsupported",
         "op_camera_destroy": "unsupported",
         "op_camera_listen_frame_change": "unsupported",
+        "op_camera_set": "unsupported",
         "op_camera_set_zoom": "unsupported",
         "op_camera_start_record": "unsupported",
         "op_camera_stop_record": "unsupported",
