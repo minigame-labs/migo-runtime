@@ -104,7 +104,7 @@ mod v8_limits;
 #[cfg(feature = "api-media")]
 mod video_decoder;
 #[cfg(feature = "api-media")]
-#[cfg(feature = "api-media")]
 mod video_lifecycle;
+#[cfg(feature = "api-media")]
 mod video_paths;
 mod window_service;
