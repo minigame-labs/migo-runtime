@@ -29,7 +29,6 @@ use shared::protocol::host_cmd::{TouchPoint, TouchType};
 /// - **Gamepad** (3): connected, disconnected, state
 /// - **Composition** (3): start, update, end
 /// - **Mouse / Wheel** (4): down, move, up, wheel
-/// - **Video** (1): `video_event_fn`
 pub(crate) struct JsBindings {
     main_js_context: v8::Global<v8::Context>,
 
@@ -108,9 +107,7 @@ pub(crate) struct JsBindings {
     mouse_move_fn: Option<v8::Global<v8::Function>>,
     mouse_up_fn: Option<v8::Global<v8::Function>>,
     wheel_fn: Option<v8::Global<v8::Function>>,
-
     // ---- Video ----
-    video_event_fn: Option<v8::Global<v8::Function>>,
 }
 
 impl JsBindings {
@@ -165,7 +162,6 @@ impl JsBindings {
             mouse_move_fn: None,
             mouse_up_fn: None,
             wheel_fn: None,
-            video_event_fn: None,
         };
 
         this.reload(rt, host_id);
@@ -260,7 +256,6 @@ impl JsBindings {
             kb_complete,
             key_down,
             key_up,
-            video_event,
         ) = self.with_main_context(rt, |scope, _ctx, _global| {
             // Hooks were relocated off the global onto the host-bridge holder
             // (see 99_main.js); look every one of them up there.
@@ -295,7 +290,6 @@ impl JsBindings {
                 get_global_fn(scope, bridge, "_internalTriggerKeyboardComplete"),
                 get_global_fn(scope, bridge, "_internalTriggerKeyDown"),
                 get_global_fn(scope, bridge, "_internalTriggerKeyUp"),
-                get_global_fn(scope, bridge, "_internalTriggerVideoEvent"),
             )
         });
 
@@ -324,7 +318,6 @@ impl JsBindings {
         self.keyboard_complete_fn = kb_complete;
         self.key_down_fn = key_down;
         self.key_up_fn = key_up;
-        self.video_event_fn = video_event;
 
         // Resolved separately to avoid growing the tuple above; init-time only.
         let (
@@ -1234,34 +1227,6 @@ impl JsBindings {
             let func = v8::Local::new(scope, func_g);
             let _ = func.call(scope, global.into(), &args);
         });
-    }
-
-    // ---- Video event dispatch ----
-
-    /// Dispatch video player event to JS.
-    /// Args: (video_id: u32, event_type: &str, data: &str)
-    pub(crate) fn dispatch_video_event(
-        &self,
-        rt: &mut deno_core::JsRuntime,
-        video_id: u32,
-        event_type: &str,
-        data: &str,
-    ) {
-        if let Some(func_g) = self.video_event_fn.as_ref() {
-            self.with_main_context(rt, |scope, _ctx, global| {
-                let args = [
-                    v8::Integer::new_from_unsigned(scope, video_id).into(),
-                    v8::String::new(scope, event_type)
-                        .unwrap_or_else(|| v8::Local::new(scope, &self.empty_string))
-                        .into(),
-                    v8::String::new(scope, data)
-                        .unwrap_or_else(|| v8::Local::new(scope, &self.empty_string))
-                        .into(),
-                ];
-                let func = v8::Local::new(scope, func_g);
-                let _ = func.call(scope, global.into(), &args);
-            });
-        }
     }
 }
 

@@ -1416,23 +1416,23 @@ public final class NativeMethods {
     // ==================== Video Callbacks ====================
 
     /**
-     * Callback for video player events.
-     * Called from {@link com.migo.runtime.internal.platform.VideoManager}.
-     *
-     * @param sessionId The session ID
-     * @param videoId   The video player instance ID
-     * @param eventType Event type: "play", "pause", "ended", "error", "timeupdate",
-     *                  "progress", "fullscreenchange"
-     * @param dataJson  JSON-encoded event data
+     * What a player did, by event number ({@code VideoManager.EVENT_*}), with
+     * its {@code {"videoId", ...}}.
      */
-    public static void onVideoEvent(
-            int sessionId, long generation, int videoId, String eventType, String dataJson) {
-        try {
-            NativeBridge.onVideoEvent(sessionId, generation, videoId,
-                eventType != null ? eventType : "",
-                dataJson != null ? dataJson : "{}");
-        } catch (Exception e) {
-            // Ignore callback errors during shutdown
+    public static void onVideoEvent(int sessionId, int event, String payloadJson) {
+        if (sessionId >= 0 && payloadJson != null) {
+            NativeBridge.onVideoEvent(sessionId, event, payloadJson);
+        }
+    }
+
+    /**
+     * The answer to a video call, by method number
+     * ({@code VideoManager.METHOD_*}): {@code {"requestId"}}, or with
+     * {@code "error"}.
+     */
+    public static void onVideoResult(int sessionId, int method, String resultJson) {
+        if (sessionId >= 0 && resultJson != null) {
+            NativeBridge.onVideoResult(sessionId, method, resultJson);
         }
     }
 

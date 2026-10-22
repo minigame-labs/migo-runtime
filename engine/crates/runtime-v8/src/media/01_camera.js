@@ -38,6 +38,10 @@ function command(op, request) {
   }
 }
 
+// Hands what a camera reports to its listeners: set by the class, reachable by
+// nothing content holds.
+let _dispatch;
+
 /**
  * A camera: its preview over the game, its frames, photos, video and zoom.
  * Made by createCamera; its properties may be set, moving the preview, turning
@@ -195,12 +199,8 @@ class Camera {
     command(op_camera_set, { cameraId: this.#id, [name]: value });
   }
 
-  _handleEvent(type) {
-    this.#listeners[type].trigger();
-  }
-
-  _handleFrameData(data, width, height) {
-    this.#listeners.cameraFrame.trigger({ data, width, height });
+  static {
+    _dispatch = (camera, type, res) => camera.#listeners[type].trigger(res);
   }
 }
 
@@ -316,12 +316,12 @@ function cameraOf(eventJson) {
 
 function _internalOnCameraStopEvent(eventJson) {
   const camera = cameraOf(eventJson);
-  if (camera) camera._handleEvent("stop");
+  if (camera) _dispatch(camera, "stop");
 }
 
 function _internalOnCameraAuthCancelEvent(eventJson) {
   const camera = cameraOf(eventJson);
-  if (camera) camera._handleEvent("authCancel");
+  if (camera) _dispatch(camera, "authCancel");
 }
 
 /**
@@ -334,7 +334,7 @@ function _internalOnCameraAuthCancelEvent(eventJson) {
 function _internalOnCameraFrameData(cameraId, data, width, height) {
   const camera = _cameras.get(cameraId);
   if (camera) {
-    camera._handleFrameData(data, width, height);
+    _dispatch(camera, "cameraFrame", { data, width, height });
   }
 }
 

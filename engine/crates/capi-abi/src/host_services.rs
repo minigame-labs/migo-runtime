@@ -48,6 +48,7 @@ pub const MIGO_HOST_SERVICE_ECOSYSTEM: u32 = 17;
 pub const MIGO_HOST_SERVICE_UPDATE: u32 = 18;
 pub const MIGO_HOST_SERVICE_CAMERA: u32 = 19;
 pub const MIGO_HOST_SERVICE_RECORDER: u32 = 20;
+pub const MIGO_HOST_SERVICE_VIDEO: u32 = 21;
 
 /// Every service this library knows. A host declaring a bit outside it was
 /// built against a newer header than the library it runs with.
@@ -71,7 +72,8 @@ pub const MIGO_HOST_SERVICES_KNOWN: u64 = (1 << MIGO_HOST_SERVICE_AD)
     | (1 << MIGO_HOST_SERVICE_ECOSYSTEM)
     | (1 << MIGO_HOST_SERVICE_UPDATE)
     | (1 << MIGO_HOST_SERVICE_CAMERA)
-    | (1 << MIGO_HOST_SERVICE_RECORDER);
+    | (1 << MIGO_HOST_SERVICE_RECORDER)
+    | (1 << MIGO_HOST_SERVICE_VIDEO);
 
 // ---- Methods, numbered per service. ----
 
@@ -222,6 +224,23 @@ pub const MIGO_RECORDER_EVENT_STOP: u32 = 3;
 pub const MIGO_RECORDER_EVENT_ERROR: u32 = 4;
 pub const MIGO_RECORDER_EVENT_INTERRUPTION_BEGIN: u32 = 5;
 pub const MIGO_RECORDER_EVENT_INTERRUPTION_END: u32 = 6;
+
+pub const MIGO_VIDEO_CREATE: u32 = 0;
+pub const MIGO_VIDEO_DESTROY: u32 = 1;
+pub const MIGO_VIDEO_SET: u32 = 2;
+pub const MIGO_VIDEO_PLAY: u32 = 3;
+pub const MIGO_VIDEO_PAUSE: u32 = 4;
+pub const MIGO_VIDEO_STOP: u32 = 5;
+pub const MIGO_VIDEO_SEEK: u32 = 6;
+pub const MIGO_VIDEO_REQUEST_FULL_SCREEN: u32 = 7;
+pub const MIGO_VIDEO_EXIT_FULL_SCREEN: u32 = 8;
+pub const MIGO_VIDEO_EVENT_PLAY: u32 = 0;
+pub const MIGO_VIDEO_EVENT_PAUSE: u32 = 1;
+pub const MIGO_VIDEO_EVENT_ENDED: u32 = 2;
+pub const MIGO_VIDEO_EVENT_TIME_UPDATE: u32 = 3;
+pub const MIGO_VIDEO_EVENT_ERROR: u32 = 4;
+pub const MIGO_VIDEO_EVENT_WAITING: u32 = 5;
+pub const MIGO_VIDEO_EVENT_PROGRESS: u32 = 6;
 
 // ---- Events, numbered per service. ----
 

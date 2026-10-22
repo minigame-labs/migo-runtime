@@ -79,6 +79,11 @@ typedef struct QueuedCall {
         long frame_bytes; /* 0: no frames */
         int format;       /* RecordFormat */
     } record; /* a recorder START's options */
+    struct {
+        int src;      /* -1: not given; 0: empty; 1: a source */
+        int loop;     /* -1: not given; else 0 or 1 */
+        int autoplay; /* 0 or 1 */
+    } video;          /* a video CREATE's or SET's options; SEEK's time is `number` */
 } QueuedCall;
 
 /* What this host records into: a WAV file, or raw 16-bit PCM. The compressed
@@ -184,6 +189,22 @@ void MIGO_CALL services_on_call(void *user_data, MigoSession *session,
         queued.arg = value != NULL ? strtol(value, NULL, 10) : -1;
         const char *zoom = json_value(json, length, "zoom");
         queued.number = zoom != NULL ? strtod(zoom, NULL) : 1.0;
+    } else if (call->service == MIGO_HOST_SERVICE_VIDEO) {
+        const char *end = json + length;
+        const char *value = json_value(json, length, "videoId");
+        queued.arg = value != NULL ? strtol(value, NULL, 10) : 0;
+        value = json_value(json, length, "time");
+        queued.number = value != NULL ? strtod(value, NULL) : 0.0;
+        if (call->method == MIGO_VIDEO_CREATE) {
+            value = json_value(json, length, "initialTime");
+            queued.number = value != NULL ? strtod(value, NULL) : 0.0;
+        }
+        value = json_value(json, length, "src");
+        queued.video.src = value == NULL ? -1 : value_is(value, end, "\"\"") ? 0 : 1;
+        value = json_value(json, length, "loop");
+        queued.video.loop = value == NULL ? -1 : value_is(value, end, "true");
+        value = json_value(json, length, "autoplay");
+        queued.video.autoplay = value_is(value, end, "true");
     } else if (call->service == MIGO_HOST_SERVICE_RECORDER) {
         const char *end = json + length;
         const char *value = json_value(json, length, "recordingId");
@@ -698,6 +719,170 @@ static void recorder_tick(MigoSession *session, long now) {
     }
 }
 
+/* ---- Video players: each a clip two seconds long, whatever its source. ---- */
+
+#define VIDEO_PLAYERS 8
+static const double CLIP_SECONDS = 2.0;
+static const long VIDEO_TICK_MS = 250;
+
+static struct VideoPlayer {
+    long id; /* 0: a free slot */
+    int has_src;
+    int loop;
+    int playing;
+    double position;
+    long played_from_ms; /* when position was last brought up to date */
+    long next_update_ms;
+} g_videos[VIDEO_PLAYERS];
+
+static struct VideoPlayer *video_of(long id) {
+    for (size_t i = 0; i < VIDEO_PLAYERS; i++) {
+        if (id != 0 && g_videos[i].id == id) return &g_videos[i];
+    }
+    return NULL;
+}
+
+static void post_video_event(MigoSession *session, uint32_t event, const char *json) {
+    MigoResult r = migo_session_post_host_service_event(session, MIGO_HOST_SERVICE_VIDEO, event,
+                                                        json, (uint32_t)strlen(json));
+    /* A position or a buffering reading content fell behind on is superseded. */
+    if (r != MIGO_OK && r != MIGO_ERROR_WOULD_BLOCK) {
+        fprintf(stderr, "[c-host] a video event was refused: %d\n", (int)r);
+        fflush(stderr);
+    }
+}
+
+static void video_event_for(MigoSession *session, const struct VideoPlayer *video,
+                            uint32_t event) {
+    char json[64];
+    snprintf(json, sizeof(json), "{\"videoId\":%ld}", video->id);
+    post_video_event(session, event, json);
+}
+
+/* Bring a playing clip's position up to `now`; at its end it loops or ends. */
+static void video_advance(MigoSession *session, struct VideoPlayer *video, long now) {
+    if (!video->playing) return;
+    video->position += (double)(now - video->played_from_ms) / 1000.0;
+    video->played_from_ms = now;
+    if (video->position < CLIP_SECONDS) return;
+    if (video->loop) {
+        video->position = fmod(video->position, CLIP_SECONDS);
+        return;
+    }
+    video->position = CLIP_SECONDS;
+    video->playing = 0;
+    video_event_for(session, video, MIGO_VIDEO_EVENT_ENDED);
+}
+
+static void video_start(MigoSession *session, struct VideoPlayer *video, long now) {
+    if (video->position >= CLIP_SECONDS) video->position = 0.0;
+    video->playing = 1;
+    video->played_from_ms = now;
+    video->next_update_ms = now + VIDEO_TICK_MS;
+    video_event_for(session, video, MIGO_VIDEO_EVENT_PLAY);
+}
+
+static void answer_video(MigoSession *session, const QueuedCall *call, long now) {
+    struct VideoPlayer *video = video_of(call->arg);
+    if (call->method == MIGO_VIDEO_CREATE) {
+        if (video != NULL) return;
+        for (size_t i = 0; i < VIDEO_PLAYERS && video == NULL; i++) {
+            if (g_videos[i].id == 0) video = &g_videos[i];
+        }
+        if (video == NULL) {
+            char json[128];
+            snprintf(json, sizeof(json),
+                     "{\"videoId\":%ld,\"errMsg\":\"createVideo:fail too many players\"}",
+                     call->arg);
+            post_video_event(session, MIGO_VIDEO_EVENT_ERROR, json);
+            return;
+        }
+        memset(video, 0, sizeof(*video));
+        video->id = call->arg;
+        video->has_src = call->video.src == 1;
+        video->loop = call->video.loop == 1;
+        video->position = call->number < CLIP_SECONDS ? call->number : 0.0;
+        if (video->has_src) {
+            char json[128];
+            snprintf(json, sizeof(json), "{\"videoId\":%ld,\"buffered\":100,\"duration\":%.1f}",
+                     video->id, CLIP_SECONDS);
+            post_video_event(session, MIGO_VIDEO_EVENT_PROGRESS, json);
+            if (call->video.autoplay) video_start(session, video, now);
+        }
+        return;
+    }
+    if (call->method == MIGO_VIDEO_DESTROY) {
+        if (video != NULL) memset(video, 0, sizeof(*video));
+        return;
+    }
+    if (call->method == MIGO_VIDEO_SET) {
+        if (video == NULL) return;
+        if (call->video.loop >= 0) video->loop = call->video.loop;
+        if (call->video.src >= 0) {
+            video->has_src = call->video.src == 1;
+            video->playing = 0;
+            video->position = 0.0;
+        }
+        return;
+    }
+    if (video == NULL) {
+        complete(session, call->call_id, NULL, "video not found");
+        return;
+    }
+    video_advance(session, video, now);
+    switch (call->method) {
+    case MIGO_VIDEO_PLAY:
+        if (!video->has_src) {
+            complete(session, call->call_id, NULL, "no src");
+            return;
+        }
+        if (!video->playing) video_start(session, video, now);
+        complete(session, call->call_id, "{}", NULL);
+        return;
+    case MIGO_VIDEO_PAUSE:
+        if (video->playing) {
+            video->playing = 0;
+            video_event_for(session, video, MIGO_VIDEO_EVENT_PAUSE);
+        }
+        complete(session, call->call_id, "{}", NULL);
+        return;
+    case MIGO_VIDEO_STOP:
+        video->playing = 0;
+        video->position = 0.0;
+        complete(session, call->call_id, "{}", NULL);
+        return;
+    case MIGO_VIDEO_SEEK:
+        video->position = call->number < 0.0           ? 0.0
+                          : call->number > CLIP_SECONDS ? CLIP_SECONDS
+                                                        : call->number;
+        complete(session, call->call_id, "{}", NULL);
+        return;
+    case MIGO_VIDEO_REQUEST_FULL_SCREEN:
+    case MIGO_VIDEO_EXIT_FULL_SCREEN:
+        /* Nothing on screen: there is no layout to wait for. */
+        complete(session, call->call_id, "{}", NULL);
+        return;
+    default:
+        complete(session, call->call_id, NULL, "unknown request");
+        return;
+    }
+}
+
+/* Playing clips move on, and say where they are four times a second. */
+static void video_tick(MigoSession *session, long now) {
+    for (size_t i = 0; i < VIDEO_PLAYERS; i++) {
+        struct VideoPlayer *video = &g_videos[i];
+        if (video->id == 0 || !video->playing) continue;
+        video_advance(session, video, now);
+        if (!video->playing || now < video->next_update_ms) continue;
+        video->next_update_ms = now + VIDEO_TICK_MS;
+        char json[128];
+        snprintf(json, sizeof(json), "{\"videoId\":%ld,\"position\":%.3f,\"duration\":%.1f}",
+                 video->id, video->position, CLIP_SECONDS);
+        post_video_event(session, MIGO_VIDEO_EVENT_TIME_UPDATE, json);
+    }
+}
+
 /* ---- Readings. ---- */
 
 static double wrap_degrees(double degrees) {
@@ -878,6 +1063,9 @@ void services_pump(MigoSession *session) {
         case MIGO_HOST_SERVICE_RECORDER:
             answer_recorder(session, &call, now);
             break;
+        case MIGO_HOST_SERVICE_VIDEO:
+            answer_video(session, &call, now);
+            break;
         default:
             if (call.call_id != 0) complete(session, call.call_id, NULL, "unknown service");
             break;
@@ -885,6 +1073,7 @@ void services_pump(MigoSession *session) {
     }
     camera_tick(session, now);
     recorder_tick(session, now);
+    video_tick(session, now);
     for (size_t i = 0; i < sizeof(g_sensors) / sizeof(g_sensors[0]); i++) {
         Sensor *sensor = &g_sensors[i];
         if (!sensor->running || now < sensor->due_ms) continue;

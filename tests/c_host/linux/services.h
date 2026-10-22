@@ -3,7 +3,9 @@
  * (migo/host_services.h): permission, location, the motion sensors and a
  * camera -- one that makes its own pictures, a gradient that moves, and
  * photographs (BMP) and records (YUV4MPEG2) them -- and a microphone that hears
- * a steady 440 Hz tone, recorded as WAV or raw PCM with its frames.
+ * a steady 440 Hz tone, recorded as WAV or raw PCM with its frames -- and video
+ * players that play any source as a clip two seconds long, with nothing on
+ * screen.
  *
  * The host runs on a desktop -- often a VM -- with no motion sensors and no
  * position of its own, so its device is scripted, as its gamepad and keyboard
@@ -36,7 +38,8 @@
      (UINT64_C(1) << MIGO_HOST_SERVICE_LOCATION) |                             \
      (UINT64_C(1) << MIGO_HOST_SERVICE_MOTION) |                               \
      (UINT64_C(1) << MIGO_HOST_SERVICE_CAMERA) |                               \
-     (UINT64_C(1) << MIGO_HOST_SERVICE_RECORDER))
+     (UINT64_C(1) << MIGO_HOST_SERVICE_RECORDER) |                             \
+     (UINT64_C(1) << MIGO_HOST_SERVICE_VIDEO))
 
 /* Opens the feed, when MIGO_C_HOST_DEVICE_FEED names one. */
 void services_init(void);

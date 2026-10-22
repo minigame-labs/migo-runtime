@@ -854,13 +854,6 @@ impl HostJsRuntime {
         });
     }
 
-    // ---- Video event dispatch ----
-
-    #[inline]
-    pub fn dispatch_video_event(&mut self, video_id: u32, event_type: &str, data: &str) {
-        self.with_v8(|rt, bindings| bindings.dispatch_video_event(rt, video_id, event_type, data));
-    }
-
     // ---- Scripts / modules ----
 
     /// Execute a script without pumping the event loop.

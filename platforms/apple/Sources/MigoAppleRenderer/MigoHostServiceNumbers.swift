@@ -23,10 +23,11 @@ extension MigoHostServiceID {
     public static let update = Self(rawValue: 18)
     public static let camera = Self(rawValue: 19)
     public static let recorder = Self(rawValue: 20)
+    public static let video = Self(rawValue: 21)
 
     /// Every service this SDK knows, in number order.
     public static let all: [Self] = [
-        .ad, .payment, .auth, .share, .navigate, .subpackage, .permission, .setting, .interaction, .clipboard, .scanCode, .location, .image, .motion, .screen, .bluetooth, .window, .ecosystem, .update, .camera, .recorder,
+        .ad, .payment, .auth, .share, .navigate, .subpackage, .permission, .setting, .interaction, .clipboard, .scanCode, .location, .image, .motion, .screen, .bluetooth, .window, .ecosystem, .update, .camera, .recorder, .video,
     ]
 
     /// `ad`'s method and event numbers, as `include/migo/host_services.h` documents them.
@@ -378,6 +379,39 @@ extension MigoHostServiceID {
             public static let error: UInt32 = 4
             public static let interruptionBegin: UInt32 = 5
             public static let interruptionEnd: UInt32 = 6
+        }
+    }
+
+    /// `video`'s method and event numbers, as `include/migo/host_services.h` documents them.
+    public enum Video {
+        /// `create`: a command, unanswered.
+        public static let create: UInt32 = 0
+        /// `destroy`: a command, unanswered.
+        public static let destroy: UInt32 = 1
+        /// `set`: a command, unanswered.
+        public static let set: UInt32 = 2
+        /// `play`: a call, answered once.
+        public static let play: UInt32 = 3
+        /// `pause`: a call, answered once.
+        public static let pause: UInt32 = 4
+        /// `stop`: a call, answered once.
+        public static let stop: UInt32 = 5
+        /// `seek`: a call, answered once.
+        public static let seek: UInt32 = 6
+        /// `request_full_screen`: a call, answered once.
+        public static let requestFullScreen: UInt32 = 7
+        /// `exit_full_screen`: a call, answered once.
+        public static let exitFullScreen: UInt32 = 8
+
+        /// The service's events, for `postHostServiceEvent`.
+        public enum Event {
+            public static let play: UInt32 = 0
+            public static let pause: UInt32 = 1
+            public static let ended: UInt32 = 2
+            public static let timeUpdate: UInt32 = 3
+            public static let error: UInt32 = 4
+            public static let waiting: UInt32 = 5
+            public static let progress: UInt32 = 6
         }
     }
 }

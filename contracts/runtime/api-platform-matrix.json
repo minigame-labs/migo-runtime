@@ -24,9 +24,9 @@
   "summary": {
     "android": {"engine": 61, "default": 125, "host": 180, "missing": 6, "unsupported": 10, "wired": 376, "verified": 221, "ready": 352},
     "ios": {"engine": 71, "default": 110, "host": 174, "missing": 12, "unsupported": 15, "wired": 369, "verified": 198, "ready": 330},
-    "macos": {"engine": 71, "default": 88, "host": 172, "missing": 7, "unsupported": 44, "wired": 372, "verified": 201, "ready": 346},
-    "linux": {"engine": 71, "default": 127, "host": 161, "missing": 7, "unsupported": 16, "wired": 361, "verified": 214, "ready": 321},
-    "windows": {"engine": 71, "default": 2, "host": 291, "missing": 8, "unsupported": 10, "wired": 232, "verified": 0, "ready": 159},
+    "macos": {"engine": 71, "default": 88, "host": 173, "missing": 6, "unsupported": 44, "wired": 372, "verified": 201, "ready": 346},
+    "linux": {"engine": 71, "default": 127, "host": 162, "missing": 6, "unsupported": 16, "wired": 361, "verified": 214, "ready": 321},
+    "windows": {"engine": 71, "default": 2, "host": 292, "missing": 7, "unsupported": 10, "wired": 232, "verified": 0, "ready": 159},
     "ohos": {"engine": 69, "default": 12, "host": 0, "missing": 292, "unsupported": 9, "wired": 90, "verified": 0, "ready": 9}
   },
   "apis": {
@@ -75,7 +75,7 @@
     "createUDPSocket": {"category": "network/udp", "needs": [], "android": "engine", "ios": "engine", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine", "verified": ["android", "ios", "macos", "linux"], "not_ready": ["windows", "ohos"]},
     "createUserInfoButton": {"category": "open-api/user-info", "needs": ["channel:auth.get_user_info", "channel:permission"], "android": "host", "ios": "host", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ohos"]},
     "createVKSession": {"category": "ai/visionkit", "needs": ["unpublished"], "android": "unsupported", "ios": "unsupported", "macos": "unsupported", "linux": "unsupported", "windows": "unsupported", "ohos": "unsupported"},
-    "createVideo": {"category": "media/video", "needs": ["service:video"], "android": "default", "ios": "missing", "macos": "missing", "linux": "missing", "windows": "missing", "ohos": "missing", "not_ready": ["android", "ios", "macos", "linux", "windows", "ohos"]},
+    "createVideo": {"category": "media/video", "needs": ["channel:video.create", "channel:video.destroy", "channel:video.exit_full_screen", "channel:video.pause", "channel:video.play", "channel:video.request_full_screen", "channel:video.seek", "channel:video.stop"], "android": "default", "ios": "missing", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["android", "ios", "macos", "linux", "windows", "ohos"]},
     "createVideoDecoder": {"category": "media/video-decoder", "needs": ["native:video_decoder(linux,macos)"], "android": "default", "ios": "missing", "macos": "default", "linux": "default", "windows": "missing", "ohos": "missing", "verified": ["macos", "linux"], "not_ready": ["android", "ios", "windows", "ohos"]},
     "createWebAudioContext": {"category": "media/audio", "needs": [], "android": "engine", "ios": "engine", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine", "verified": ["android", "ios", "macos", "linux"], "not_ready": ["windows", "ohos"]},
     "createWorker": {"category": "worker", "needs": [], "android": "engine", "ios": "engine", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine", "verified": ["android", "ios", "macos", "linux"], "not_ready": ["windows", "ohos"]},

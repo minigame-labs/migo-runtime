@@ -28,8 +28,15 @@ use migo_capi_abi::host_services::{
     MIGO_RECORDER_EVENT_START, MIGO_RECORDER_EVENT_STOP, MIGO_RECORDER_PAUSE, MIGO_RECORDER_RESUME,
     MIGO_RECORDER_START, MIGO_RECORDER_STOP,
 };
+use migo_capi_abi::host_services::{
+    MIGO_HOST_SERVICE_VIDEO, MIGO_VIDEO_CREATE, MIGO_VIDEO_DESTROY, MIGO_VIDEO_EVENT_ENDED,
+    MIGO_VIDEO_EVENT_ERROR, MIGO_VIDEO_EVENT_PAUSE, MIGO_VIDEO_EVENT_PLAY,
+    MIGO_VIDEO_EVENT_PROGRESS, MIGO_VIDEO_EVENT_TIME_UPDATE, MIGO_VIDEO_EVENT_WAITING,
+    MIGO_VIDEO_EXIT_FULL_SCREEN, MIGO_VIDEO_PAUSE, MIGO_VIDEO_PLAY, MIGO_VIDEO_REQUEST_FULL_SCREEN,
+    MIGO_VIDEO_SEEK, MIGO_VIDEO_SET, MIGO_VIDEO_STOP,
+};
 use migo_capi_abi::{
-    MIGO_ERROR_INTERNAL, MIGO_ERROR_INVALID_ARGUMENT, MIGO_OK, MigoResult,
+    MIGO_ERROR_INTERNAL, MIGO_ERROR_INVALID_ARGUMENT, MIGO_ERROR_WOULD_BLOCK, MIGO_OK, MigoResult,
     host_services::{
         HostServiceOutcome, MIGO_AD_CREATE, MIGO_AD_DESTROY, MIGO_AD_EVENT_LIFECYCLE, MIGO_AD_HIDE,
         MIGO_AD_LOAD, MIGO_AD_SHOW, MIGO_AD_UPDATE_STYLE, MIGO_AUTH_CHECK_SESSION,
@@ -104,8 +111,8 @@ use shared::{
     protocol::host_cmd::HostCommand,
     services::{
         BLUETOOTH_RESULT_HOOKS, CAMERA_EVENT_HOOKS, CAMERA_RESULT_HOOKS, CameraService,
-        RECORDER_EVENT_HOOKS, RecorderService, camera_result_files, host_files::HostFiles,
-        recorder_event_files,
+        RECORDER_EVENT_HOOKS, RecorderService, VIDEO_EVENT_HOOKS, VIDEO_RESULT_HOOKS, VideoService,
+        camera_result_files, host_files::HostFiles, recorder_event_files, video_event_droppable,
     },
 };
 
@@ -537,6 +544,29 @@ const CAMERA_START_RECORD: Call = camera_call(MIGO_CAMERA_START_RECORD);
 const CAMERA_STOP_RECORD: Call = camera_call(MIGO_CAMERA_STOP_RECORD);
 const CAMERA_SET_ZOOM: Call = camera_call(MIGO_CAMERA_SET_ZOOM);
 
+/// A video call: answered through the hook the one shared table names for its
+/// method, once what it asked has happened.
+const fn video_call(method: u32) -> Call {
+    Call {
+        service: MIGO_HOST_SERVICE_VIDEO,
+        method,
+        hook: match VIDEO_RESULT_HOOKS[method as usize] {
+            Some(hook) => hook,
+            None => panic!("a video command is not a call"),
+        },
+        error_code_field: None,
+        progress_hook: None,
+        delivery: Delivery::Verbatim,
+    }
+}
+
+const VIDEO_PLAY: Call = video_call(MIGO_VIDEO_PLAY);
+const VIDEO_PAUSE: Call = video_call(MIGO_VIDEO_PAUSE);
+const VIDEO_STOP: Call = video_call(MIGO_VIDEO_STOP);
+const VIDEO_SEEK: Call = video_call(MIGO_VIDEO_SEEK);
+const VIDEO_REQUEST_FULL_SCREEN: Call = video_call(MIGO_VIDEO_REQUEST_FULL_SCREEN);
+const VIDEO_EXIT_FULL_SCREEN: Call = video_call(MIGO_VIDEO_EXIT_FULL_SCREEN);
+
 const SET_WINDOW_SIZE: Call = Call {
     service: MIGO_HOST_SERVICE_WINDOW,
     method: MIGO_WINDOW_SET_WINDOW_SIZE,
@@ -626,6 +656,12 @@ const CALLS: &[&Call] = &[
     &CAMERA_START_RECORD,
     &CAMERA_STOP_RECORD,
     &CAMERA_SET_ZOOM,
+    &VIDEO_PLAY,
+    &VIDEO_PAUSE,
+    &VIDEO_STOP,
+    &VIDEO_SEEK,
+    &VIDEO_REQUEST_FULL_SCREEN,
+    &VIDEO_EXIT_FULL_SCREEN,
 ];
 
 /// Fire-and-forget requests, as `(service, method)`. Listed so the contract test
@@ -681,6 +717,9 @@ const COMMANDS: &[(u32, u32)] = &[
     (MIGO_HOST_SERVICE_RECORDER, MIGO_RECORDER_PAUSE),
     (MIGO_HOST_SERVICE_RECORDER, MIGO_RECORDER_RESUME),
     (MIGO_HOST_SERVICE_RECORDER, MIGO_RECORDER_STOP),
+    (MIGO_HOST_SERVICE_VIDEO, MIGO_VIDEO_CREATE),
+    (MIGO_HOST_SERVICE_VIDEO, MIGO_VIDEO_DESTROY),
+    (MIGO_HOST_SERVICE_VIDEO, MIGO_VIDEO_SET),
 ];
 
 /// A service's own events, as `(service, event, hook)`.
@@ -777,6 +816,13 @@ const EVENTS: &[(u32, u32, &str)] = &[
     recorder_event(MIGO_RECORDER_EVENT_ERROR),
     recorder_event(MIGO_RECORDER_EVENT_INTERRUPTION_BEGIN),
     recorder_event(MIGO_RECORDER_EVENT_INTERRUPTION_END),
+    video_event(MIGO_VIDEO_EVENT_PLAY),
+    video_event(MIGO_VIDEO_EVENT_PAUSE),
+    video_event(MIGO_VIDEO_EVENT_ENDED),
+    video_event(MIGO_VIDEO_EVENT_TIME_UPDATE),
+    video_event(MIGO_VIDEO_EVENT_ERROR),
+    video_event(MIGO_VIDEO_EVENT_WAITING),
+    video_event(MIGO_VIDEO_EVENT_PROGRESS),
 ];
 
 /// A recorder event's row: its hook from the one shared table.
@@ -788,12 +834,30 @@ const fn recorder_event(event: u32) -> (u32, u32, &'static str) {
     )
 }
 
+/// A video event's row: its hook from the one shared table.
+const fn video_event(event: u32) -> (u32, u32, &'static str) {
+    (
+        MIGO_HOST_SERVICE_VIDEO,
+        event,
+        VIDEO_EVENT_HOOKS[event as usize],
+    )
+}
+
 /// The files an event hands over, from the shared tables that name them --
 /// a recording's STOP -- as a call's are.
 fn event_files(service: u32, event: u32) -> &'static HostFiles {
     match service {
         MIGO_HOST_SERVICE_RECORDER => recorder_event_files(event),
         _ => &HostFiles::NONE,
+    }
+}
+
+/// Whether an event is a reading the next one supersedes, which travels the
+/// bounded lane and is refused when content falls behind.
+fn event_droppable(service: u32, event: u32) -> bool {
+    match service {
+        MIGO_HOST_SERVICE_VIDEO => video_event_droppable(event),
+        _ => false,
     }
 }
 
@@ -1344,6 +1408,36 @@ impl RecorderService for CapiHostServices {
     }
 }
 
+impl VideoService for CapiHostServices {
+    fn create(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.command(MIGO_HOST_SERVICE_VIDEO, MIGO_VIDEO_CREATE, request_json)
+    }
+    fn destroy(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.command(MIGO_HOST_SERVICE_VIDEO, MIGO_VIDEO_DESTROY, request_json)
+    }
+    fn set(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.command(MIGO_HOST_SERVICE_VIDEO, MIGO_VIDEO_SET, request_json)
+    }
+    fn play(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&VIDEO_PLAY, request_json)
+    }
+    fn pause(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&VIDEO_PAUSE, request_json)
+    }
+    fn stop(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&VIDEO_STOP, request_json)
+    }
+    fn seek(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&VIDEO_SEEK, request_json)
+    }
+    fn request_full_screen(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&VIDEO_REQUEST_FULL_SCREEN, request_json)
+    }
+    fn exit_full_screen(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&VIDEO_EXIT_FULL_SCREEN, request_json)
+    }
+}
+
 impl UpdateService for CapiHostServices {
     fn apply_update(&self) -> Result<(), ServiceError> {
         self.command(MIGO_HOST_SERVICE_UPDATE, MIGO_UPDATE_APPLY_UPDATE, "{}")
@@ -1531,6 +1625,7 @@ fn deliver(
     hook: &'static str,
     json: String,
     delivery: &Delivery,
+    droppable: bool,
 ) -> MigoResult {
     let Ok(state) = session.state.lock() else {
         return MIGO_ERROR_INTERNAL;
@@ -1558,13 +1653,19 @@ fn deliver(
             shared::services::host_files::deliver_event(host, files, &json)
         }
     };
-    if let Err(error) = migo_core::send_reliable_command_to_host(
-        host,
-        HostCommand::InvokeHostHook {
-            hook,
-            args_json: hook_args_one(json),
-        },
-    ) {
+    let command = HostCommand::InvokeHostHook {
+        hook,
+        args_json: hook_args_one(json),
+    };
+    if droppable {
+        // A reading the next one supersedes: refused, not queued, when content
+        // falls behind.
+        return match migo_core::send_command_to_host(host, command) {
+            Ok(()) => MIGO_OK,
+            Err(_) => MIGO_ERROR_WOULD_BLOCK,
+        };
+    }
+    if let Err(error) = migo_core::send_reliable_command_to_host(host, command) {
         tracing::warn!("host service result for {hook} not delivered: {error}");
     }
     MIGO_OK
@@ -1592,7 +1693,14 @@ pub unsafe extern "C" fn migo_session_complete_host_service_call(
             Err(error) => return error,
         };
         match completion_json(call, request_id, outcome) {
-            Ok(json) => deliver(&session, call.service, call.hook, json, &call.delivery),
+            Ok(json) => deliver(
+                &session,
+                call.service,
+                call.hook,
+                json,
+                &call.delivery,
+                false,
+            ),
             Err(error) => error,
         }
     })
@@ -1624,7 +1732,14 @@ pub unsafe extern "C" fn migo_session_update_host_service_call(
             Err(error) => return error,
         };
         match progress_json(request_id, &payload) {
-            Ok(json) => deliver(&session, call.service, hook, json, &Delivery::Verbatim),
+            Ok(json) => deliver(
+                &session,
+                call.service,
+                hook,
+                json,
+                &Delivery::Verbatim,
+                false,
+            ),
             Err(error) => error,
         }
     })
@@ -1667,7 +1782,14 @@ pub unsafe extern "C" fn migo_session_post_host_service_event(
         } else {
             Delivery::EventFiles(files)
         };
-        deliver(&session, service, hook, payload, &delivery)
+        deliver(
+            &session,
+            service,
+            hook,
+            payload,
+            &delivery,
+            event_droppable(service, event),
+        )
     })
 }
 
@@ -1714,6 +1836,7 @@ mod tests {
             "update" => MIGO_HOST_SERVICE_UPDATE,
             "camera" => MIGO_HOST_SERVICE_CAMERA,
             "recorder" => MIGO_HOST_SERVICE_RECORDER,
+            "video" => MIGO_HOST_SERVICE_VIDEO,
             other => panic!("the contract names a service the ABI has no constant for: {other}"),
         }
     }
@@ -1813,6 +1936,11 @@ mod tests {
                     listed,
                     event_files(service, id).describe(),
                     "{name}.{event_name} files"
+                );
+                assert_eq!(
+                    event["droppable"].as_bool().unwrap_or(false),
+                    event_droppable(service, id),
+                    "{name}.{event_name} droppable"
                 );
                 events_seen += 1;
             }

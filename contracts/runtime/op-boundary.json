@@ -285,12 +285,12 @@
         "op_video_decoder_stop": "unsupported",
         "op_video_decoder_take_frame": "unsupported",
         "op_video_destroy": "unsupported",
-        "op_video_exit_fullscreen": "unsupported",
+        "op_video_exit_full_screen": "unsupported",
         "op_video_pause": "unsupported",
         "op_video_play": "unsupported",
-        "op_video_request_fullscreen": "unsupported",
+        "op_video_request_full_screen": "unsupported",
         "op_video_seek": "unsupported",
-        "op_video_set_property": "unsupported",
+        "op_video_set": "unsupported",
         "op_video_stop": "unsupported"
       }
     },

@@ -51,7 +51,7 @@
     "createUDPSocket": {"ops":["op_udp_bind"],"services":[]},
     "createUserInfoButton": {"ops":["op_get_auth_setting","op_get_user_info"],"services":["auth","permission"]},
     "createVKSession": null,
-    "createVideo": {"ops":["op_video_create","op_video_destroy","op_video_exit_fullscreen","op_video_pause","op_video_play","op_video_request_fullscreen","op_video_seek","op_video_stop"],"services":["video"]},
+    "createVideo": {"ops":["op_video_create","op_video_destroy","op_video_exit_full_screen","op_video_pause","op_video_play","op_video_request_full_screen","op_video_seek","op_video_stop"],"services":["video"]},
     "createVideoDecoder": {"ops":["op_video_decoder_available","op_video_decoder_start"],"services":["video_decoder"]},
     "createWebAudioContext": {"ops":["op_audio_create_context"],"services":[]},
     "createWorker": {"ops":["op_worker_create","op_worker_terminate"],"services":[]},

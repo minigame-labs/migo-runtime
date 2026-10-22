@@ -13,7 +13,7 @@ use migo_capi_abi::host_services::{
     MIGO_HOST_SERVICE_MOTION, MIGO_HOST_SERVICE_NAVIGATE, MIGO_HOST_SERVICE_PAYMENT,
     MIGO_HOST_SERVICE_PERMISSION, MIGO_HOST_SERVICE_RECORDER, MIGO_HOST_SERVICE_SCAN_CODE,
     MIGO_HOST_SERVICE_SCREEN, MIGO_HOST_SERVICE_SHARE, MIGO_HOST_SERVICE_SUBPACKAGE,
-    MIGO_HOST_SERVICE_UPDATE, MIGO_HOST_SERVICE_WINDOW,
+    MIGO_HOST_SERVICE_UPDATE, MIGO_HOST_SERVICE_VIDEO, MIGO_HOST_SERVICE_WINDOW,
 };
 #[cfg(any(
     target_os = "macos",
@@ -27,7 +27,7 @@ use migo_core::services::{
     InteractionService, KeyboardService, LocationService, MediaServices, NavigateService,
     NetworkService, PaymentService, PermissionService, RecorderService, ScanCodeService,
     ScreenService, SensorServices, ShareService, SubpackageService, SystemInfoService,
-    SystemUtilServices, UpdateService, VibrationService, WindowService,
+    SystemUtilServices, UpdateService, VibrationService, VideoService, WindowService,
 };
 #[cfg(any(
     target_os = "ios",
@@ -307,6 +307,11 @@ impl MediaServices for CapiDeviceServices {
     fn recorder(&self) -> Option<Arc<dyn RecorderService>> {
         self.host_service(MIGO_HOST_SERVICE_RECORDER)
             .map(|services| services as Arc<dyn RecorderService>)
+    }
+
+    fn video(&self) -> Option<Arc<dyn VideoService>> {
+        self.host_service(MIGO_HOST_SERVICE_VIDEO)
+            .map(|services| services as Arc<dyn VideoService>)
     }
 
     /// The platform's own decoders, in the engine: AVFoundation's on macOS.
