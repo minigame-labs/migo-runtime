@@ -74,7 +74,8 @@ function errorMessage(err) {
 // sibling's -- is told under this one.
 function failMessage(apiName, e) {
     var why = errorMessage(e);
-    var named = /^[A-Za-z_$][\w$]*:fail /.exec(why);
+    // A class's method is named with its class: `BLEPeripheralServer.addService`.
+    var named = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*:fail /.exec(why);
     return apiName + ':fail ' + (named ? why.slice(named[0].length) : why);
 }
 

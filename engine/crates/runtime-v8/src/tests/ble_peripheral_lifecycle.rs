@@ -137,7 +137,7 @@ fn a_server_is_described_in_the_references_terms_and_hears_its_centrals() {
         "__server.addService({ service: { uuid: 'FFE0', characteristics: [{ uuid: 'FFE1', \
              properties: { read: true, notify: true, bogus: true }, permission: { readable: true }, \
              value: new Uint8Array([1, 171]).buffer, descriptors: [{ uuid: '2902', value: new ArrayBuffer(2) }] }] }, \
-             fail: (res) => __heard.push(res.errMsg) }); \
+             fail: (res) => __heard.push(res.errMsg + ' ' + res.errCode) }); \
          __server.addService({ service: { characteristics: [] }, fail: (res) => __heard.push(res.errMsg) }); \
          __server.startAdvertising({ advertiseRequest: { deviceName: 'migo', serviceUuids: ['FFE0'], \
              manufacturerData: [{ manufacturerId: '0x004C', manufacturerSpecificData: new Uint8Array([2]).buffer }] }, \
@@ -176,6 +176,14 @@ fn a_server_is_described_in_the_references_terms_and_hears_its_centrals() {
     );
 
     let events = [
+        // A host's failure already naming the method names it once, with its code.
+        dispatch(
+            "_internalOnBLEPeripheralAddServiceResult",
+            &format!(
+                "{{ requestId: {}, error: 'BLEPeripheralServer.addService:fail permission denied', errCode: 10008 }}",
+                service["requestId"]
+            ),
+        ),
         dispatch(
             "_internalOnBLEPeripheralCharacteristicReadRequestEvent",
             &format!("{{ serverId: {server_id}, serviceId: 'FFE0', characteristicId: 'FFE1', callbackId: 7 }}"),
@@ -207,6 +215,7 @@ fn a_server_is_described_in_the_references_terms_and_hears_its_centrals() {
         [
             "made createBLEPeripheralServer:ok true".to_owned(),
             "BLEPeripheralServer.addService:fail service.uuid is required".to_owned(),
+            "BLEPeripheralServer.addService:fail permission denied 10008".to_owned(),
             r#"read {"serviceId":"FFE0","characteristicId":"FFE1","callbackId":7}"#.to_owned(),
             "write 8 10,255".to_owned(),
             format!(r#"conn {{"deviceId":"AA:BB","serverId":"{server_id}","connected":true}}"#),
