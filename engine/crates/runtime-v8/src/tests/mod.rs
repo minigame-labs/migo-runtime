@@ -26,6 +26,8 @@ mod audio_context_close;
 mod audio_source_ended;
 mod binary_helper;
 mod callback_isolation;
+#[cfg(feature = "api-media")]
+mod camera_lifecycle;
 mod canvas_follows_surface;
 mod canvas_temp_file;
 mod code_cache_dir;

@@ -2951,7 +2951,8 @@ public final class NativeExports {
         if (view != null) view.post(view::releasePointerCapture);
     }
 
-    private static View inputViewOf(int sessionId) {
+    /** The game's view of a live session, or null. */
+    static View inputViewOf(int sessionId) {
         GameSession session = sSessions.get(sessionId);
         return session != null && !isSessionTerminated(sessionId) ? session.getInputView() : null;
     }

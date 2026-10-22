@@ -114,7 +114,6 @@ impl CompassService for ProbeService {}
 impl AccelerometerService for ProbeService {}
 impl AudioPlatformService for ProbeService {}
 impl RecorderService for ProbeService {}
-impl CameraService for ProbeService {}
 impl ImageApiService for ProbeService {}
 impl NetworkService for ProbeService {}
 impl BluetoothService for ProbeService {}
@@ -134,6 +133,15 @@ impl ScanCodeService for ProbeService {}
 impl NavigateService for ProbeService {}
 impl WindowService for ProbeService {}
 impl EcosystemService for ProbeService {}
+
+/// A host that has taken content's camera and not yet answered: the camera
+/// stays content's, so what its methods reach is measured too. A camera whose
+/// create failed is destroyed, and its methods reach nothing.
+impl CameraService for ProbeService {
+    fn create(&self, _request_json: &str) -> Result<(), ServiceError> {
+        Ok(())
+    }
+}
 
 impl UpdateService for ProbeService {
     fn apply_update(&self) -> Result<(), ServiceError> {

@@ -21,9 +21,10 @@ use crate::services::host_files::HostFiles;
 /// (`protocol::camera_frame`).
 pub trait CameraService: Send + Sync {
     /// Open camera `cameraId` -- `devicePosition` "back" or "front" -- and show
-    /// its preview at `x`, `y`, `width` x `height` in the game's pixels, with
-    /// `flash` ("auto", "on", "off") and frames of `size` ("small", "medium",
-    /// "large"). A call, answered `{}` once the preview shows.
+    /// its preview over the game at `x`, `y`, `width` x `height` in the game's
+    /// logical pixels, covering it, with `flash` ("auto", "on", "off") and
+    /// frames of `size` ("small", "medium", "large"). A call, answered `{}` once
+    /// the preview shows; one that fails is followed by `destroy`.
     fn create(&self, _request_json: &str) -> Result<(), ServiceError> {
         Err(ServiceError::not_supported(
             "createCamera:fail not supported",

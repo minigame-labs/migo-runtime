@@ -266,12 +266,13 @@ function createCamera(options = {}) {
   const camera = new Camera(cameraId, settings);
   _cameras.set(cameraId, camera);
   // Not a promise API: content hears through its callbacks, and a camera that
-  // did not open is gone -- nothing more reaches it.
+  // did not open is gone -- destroyed, so the host lets go of whatever it had
+  // opened, and nothing more reaches it.
   _createApi.invoke(
     {
       success: options.success,
       fail: (res) => {
-        _cameras.delete(cameraId);
+        camera.destroy();
         invokeCallback("createCamera", "fail", options.fail, res);
       },
       complete: options.complete,
