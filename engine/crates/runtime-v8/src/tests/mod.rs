@@ -17,6 +17,8 @@ mod ad_reward_integrity;
 #[cfg(feature = "api-system")]
 mod ad_splash_status;
 mod api_failures;
+// What every API reaches is the full profile's record.
+#[cfg(feature = "profile-full")]
 mod api_reach;
 #[cfg(feature = "api-media")]
 mod audio_aud11;

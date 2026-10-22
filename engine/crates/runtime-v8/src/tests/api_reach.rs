@@ -561,7 +561,6 @@ fn eval_string(runtime: &mut JsRuntime, source: String) -> String {
     v8::Local::new(scope, value).to_rust_string_lossy(scope)
 }
 
-#[cfg(feature = "profile-full")]
 #[test]
 fn api_reach_matches_the_committed_record() {
     let reference: Value = serde_json::from_str(
