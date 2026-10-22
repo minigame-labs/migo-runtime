@@ -24,6 +24,7 @@ import android.os.HandlerThread;
 import android.os.Looper;
 import android.util.Log;
 import android.util.Size;
+import android.view.View;
 
 import com.migo.runtime.internal.ExclusiveDeviceArbiter;
 import com.migo.runtime.internal.NativeMethods;
@@ -99,9 +100,20 @@ public final class CameraManager implements RuntimeScoped {
     private ImageReader frameReader;
     private final AtomicBoolean frameListening = new AtomicBoolean(false);
 
-    // Preview surface resources (must be released to avoid native leaks)
-    private SurfaceTexture previewTexture;
+    // The preview. The camera draws into previewTexture, this manager's from
+    // construction to destroy, through previewSurface, one per capture session;
+    // preview (main thread only) shows it over the game, in the rectangle
+    // content gave -- in the game's logical pixels.
+    private final View gameView;
+    private final SurfaceTexture previewTexture = new SurfaceTexture(false);
     private android.view.Surface previewSurface;
+    private CameraPreview preview;
+    /** Set once create has found the camera: there is a preview to show. */
+    private volatile boolean previewWanted = false;
+    private volatile float previewX = 0f;
+    private volatile float previewY = 0f;
+    private volatile float previewWidth = 300f;
+    private volatile float previewHeight = 150f;
 
     // Photo capture
     private ImageReader photoReader;
@@ -134,8 +146,12 @@ public final class CameraManager implements RuntimeScoped {
     private float currentZoom = 1.0f;
     private float maxZoom = 1.0f;
 
-    // Resolved sizes
-    private Size previewSize;
+    // Resolved sizes: the preview's picture, content's frames (its "size"), a
+    // photo, a video; and how the sensor is turned from the device's natural
+    // orientation.
+    private Size displaySize;
+    private Size frameSize;
+    private int sensorOrientation;
     private Size photoSize;
     private Size videoSize;
 
@@ -154,19 +170,20 @@ public final class CameraManager implements RuntimeScoped {
         return token;
     }
 
-    public CameraManager(int sessionId, int cameraId, Activity activity) {
-        this(sessionId, cameraId, activity, false);
-    }
-
+    /**
+     * @param gameView the game's view, which the preview's rectangle is from
+     */
     public CameraManager(
             int sessionId,
             int cameraId,
             Activity activity,
+            View gameView,
             boolean lifecycleSuspended) {
         this.sessionId = sessionId;
         this.token = RuntimeGenerationBoundary.acquire(sessionId);
         this.cameraId = cameraId;
         this.activity = activity;
+        this.gameView = gameView;
         this.mainHandler = new Handler(Looper.getMainLooper());
         this.cameraActivityRequest = new LifecycleRequestState<>(lifecycleSuspended);
     }
@@ -215,6 +232,8 @@ public final class CameraManager implements RuntimeScoped {
                     return;
                 }
                 startBackgroundThread();
+                previewWanted = true;
+                mainHandler.post(this::placePreview);
                 // Lifecycle-suspended: it opens when the session resumes, and is
                 // answered then.
                 if (cameraActivityRequest.requestStart(Boolean.TRUE)
@@ -253,6 +272,14 @@ public final class CameraManager implements RuntimeScoped {
                     () -> ExclusiveDeviceArbiter.release(
                             ExclusiveDeviceArbiter.camera(position), sessionId));
         }
+        // The camera has let go of the texture; once the view has too, it goes.
+        mainHandler.post(() -> {
+            if (preview != null) {
+                preview.remove();
+                preview = null;
+            }
+            previewTexture.release();
+        });
         // Content let it go: no onStop, which is for a camera that stops on its
         // own. What it still waited for fails with it.
         pendingCreate.set(0);
@@ -463,15 +490,18 @@ public final class CameraManager implements RuntimeScoped {
             setupMediaRecorder();
             recordingPausedForLifecycle = false;
 
-            // Recording: the recorder's surface, and the frames' while content
-            // listens to them.
+            // Recording: the preview, which shows what is recorded, the
+            // recorder's surface, and the frames' while content listens to them.
             List<android.view.Surface> surfaces = new ArrayList<>();
+            android.view.Surface shown = openPreviewSurface();
             android.view.Surface recorderSurface = mediaRecorder.getSurface();
+            surfaces.add(shown);
             surfaces.add(recorderSurface);
             if (frameListening.get() && frameReader != null) {
                 surfaces.add(frameReader.getSurface());
             }
             previewRequestBuilder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_RECORD);
+            previewRequestBuilder.addTarget(shown);
             previewRequestBuilder.addTarget(recorderSurface);
             if (frameListening.get() && frameReader != null) {
                 previewRequestBuilder.addTarget(frameReader.getSurface());
@@ -584,10 +614,17 @@ public final class CameraManager implements RuntimeScoped {
         }
     }
 
+    /** Show the preview where content put it, or move it there. Main thread. */
+    private void placePreview() {
+        if (!previewWanted || cameraActivityRequest.isDestroyed()) return;
+        if (preview == null) preview = new CameraPreview(activity, gameView, previewTexture);
+        preview.place(previewX, previewY, previewWidth, previewHeight);
+    }
+
     /**
-     * What content changed on the camera: the flash at once; the camera it
-     * faces or its frames' size by opening it again, when it is not recording.
-     * Where its preview stands is kept for the preview.
+     * What content changed on the camera: where its preview stands and the
+     * flash at once; the camera it faces or its frames' size by opening it
+     * again, when it is not recording.
      */
     public void set(String requestJson) {
         JSONObject changed;
@@ -595,6 +632,13 @@ public final class CameraManager implements RuntimeScoped {
             changed = new JSONObject(requestJson);
         } catch (JSONException e) {
             return;
+        }
+        if (changed.has("x") || changed.has("y") || changed.has("width") || changed.has("height")) {
+            previewX = (float) changed.optDouble("x", previewX);
+            previewY = (float) changed.optDouble("y", previewY);
+            previewWidth = (float) changed.optDouble("width", previewWidth);
+            previewHeight = (float) changed.optDouble("height", previewHeight);
+            mainHandler.post(this::placePreview);
         }
         Handler handler = backgroundHandler;
         if (handler == null) return;
@@ -853,7 +897,6 @@ public final class CameraManager implements RuntimeScoped {
     private void closeSession() {
         CameraCaptureSession session = captureSession;
         android.view.Surface surface = previewSurface;
-        SurfaceTexture texture = previewTexture;
         ResourceCleanup.runAll(
                 () -> {
                     if (session != null) {
@@ -866,12 +909,6 @@ public final class CameraManager implements RuntimeScoped {
                         surface.release();
                         if (previewSurface == surface) previewSurface = null;
                     }
-                },
-                () -> {
-                    if (texture != null) {
-                        texture.release();
-                        if (previewTexture == texture) previewTexture = null;
-                    }
                 });
     }
 
@@ -883,20 +920,7 @@ public final class CameraManager implements RuntimeScoped {
         }
 
         List<android.view.Surface> surfaces = new ArrayList<>();
-
-        // Use a dummy SurfaceTexture for preview (we don't render preview on screen)
-        // Release previous preview resources if any
-        if (previewSurface != null) {
-            previewSurface.release();
-        }
-        if (previewTexture != null) {
-            previewTexture.release();
-        }
-        previewTexture = new SurfaceTexture(0);
-        previewTexture.setDefaultBufferSize(previewSize.getWidth(), previewSize.getHeight());
-        previewSurface = new android.view.Surface(previewTexture);
-        surfaces.add(previewSurface);
-        Log.d(TAG, "startPreviewSession() created preview surface");
+        surfaces.add(openPreviewSurface());
 
         // Pre-create photoReader so its surface is registered in the session
         if (photoReader != null) {
@@ -961,6 +985,23 @@ public final class CameraManager implements RuntimeScoped {
         Log.d(TAG, "startPreviewSession() createCaptureSession call completed");
     }
 
+    /**
+     * The camera's way into the preview texture for a new session, at the
+     * picture size it draws, which the preview is told so it can show it.
+     */
+    private android.view.Surface openPreviewSurface() {
+        if (previewSurface != null) previewSurface.release();
+        int width = displaySize.getWidth();
+        int height = displaySize.getHeight();
+        int orientation = sensorOrientation;
+        previewTexture.setDefaultBufferSize(width, height);
+        previewSurface = new android.view.Surface(previewTexture);
+        mainHandler.post(() -> {
+            if (preview != null) preview.setBuffer(width, height, orientation);
+        });
+        return previewSurface;
+    }
+
     private void restartPreviewSession() throws CameraAccessException {
         if (state.get() == STATE_RECORDING) {
             // Don't restart preview during recording
@@ -996,7 +1037,7 @@ public final class CameraManager implements RuntimeScoped {
 
         // Use YUV_420_888 for frame data - widely supported and efficient
         frameReader = ImageReader.newInstance(
-                previewSize.getWidth(), previewSize.getHeight(),
+                frameSize.getWidth(), frameSize.getHeight(),
                 ImageFormat.YUV_420_888, 2);
 
         frameReader.setOnImageAvailableListener(reader -> {
@@ -1171,6 +1212,10 @@ public final class CameraManager implements RuntimeScoped {
             position = opts.optString("devicePosition", "back");
             flash = opts.optString("flash", "auto");
             sizePreset = opts.optString("size", "small");
+            previewX = (float) opts.optDouble("x", 0);
+            previewY = (float) opts.optDouble("y", 0);
+            previewWidth = (float) opts.optDouble("width", 300);
+            previewHeight = (float) opts.optDouble("height", 150);
         } catch (JSONException ignored) {}
     }
 
@@ -1221,10 +1266,17 @@ public final class CameraManager implements RuntimeScoped {
         Size[] yuvSizes = map.getOutputSizes(ImageFormat.YUV_420_888);
         Log.d(TAG, "resolveSizes() JPEG sizes available: " + jpegSizes.length + ", YUV sizes available: " + yuvSizes.length);
 
+        Integer orientation = chars.get(CameraCharacteristics.SENSOR_ORIENTATION);
+        sensorOrientation = orientation != null ? orientation : 0;
+        float density = DisplayCompat.getDensity(activity);
+        boolean sideways = (sensorOrientation + 90 * DisplayCompat.getRotation(activity)) % 180 != 0;
+        displaySize = CameraPreview.chooseBufferSize(map.getOutputSizes(SurfaceTexture.class),
+                Math.round(previewWidth * density), Math.round(previewHeight * density), sideways);
         photoSize = choosePhotoSize(jpegSizes);
-        previewSize = choosePreviewSize(yuvSizes);
+        frameSize = chooseFrameSize(yuvSizes);
         videoSize = chooseVideoSize(map.getOutputSizes(MediaRecorder.class));
-        Log.d(TAG, "resolveSizes() selected - photo: " + photoSize + ", preview: " + previewSize + ", video: " + videoSize);
+        Log.d(TAG, "resolveSizes() selected - display: " + displaySize + ", photo: " + photoSize
+                + ", frames: " + frameSize + ", video: " + videoSize);
     }
 
     private Size choosePhotoSize(Size[] sizes) {
@@ -1242,12 +1294,12 @@ public final class CameraManager implements RuntimeScoped {
         return chooseClosestSize(sizes, targetPixels);
     }
 
-    private Size choosePreviewSize(Size[] sizes) {
+    private Size chooseFrameSize(Size[] sizes) {
         if (sizes == null || sizes.length == 0) {
             return new Size(1280, 720);
         }
 
-        // For frame streaming, use moderate resolution for performance
+        // Content's frames, at the size it asked for
         int targetPixels;
         switch (sizePreset) {
             case "small":  targetPixels = 320 * 240; break;

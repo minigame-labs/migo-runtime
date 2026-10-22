@@ -218,10 +218,15 @@ public final class MediaExports {
             failCameraCall(sessionId, CameraManager.METHOD_CREATE, requestJson, "session destroyed");
             return;
         }
+        android.view.View gameView = NativeExports.inputViewOf(sessionId);
+        if (gameView == null) {
+            failCameraCall(sessionId, CameraManager.METHOD_CREATE, requestJson, "no game view");
+            return;
+        }
         int cameraId = extractCameraId(requestJson);
         String key = cameraKey(sessionId, cameraId);
         boolean suspended = NativeExports.isSessionResourceSuspended(sessionId);
-        CameraManager mgr = new CameraManager(sessionId, cameraId, activity, suspended);
+        CameraManager mgr = new CameraManager(sessionId, cameraId, activity, gameView, suspended);
         sCameraManagers.compute(key, (ignored, existing) -> {
             CameraSlot<CameraManager> retained = existing != null
                     ? existing

@@ -448,12 +448,15 @@ typedef uint32_t MigoHostService;
  *
  *   CREATE {"cameraId", "x", "y", "width", "height", "devicePosition", "flash", "size"}
  *       -> {} once the preview shows at x, y, width x height in content's
- *       coordinates (the window's logical pixels), devicePosition "back" or
+ *       coordinates (the logical pixels its touches arrive in, from the game
+ *       surface's top left), covering it, over the game; devicePosition "back" or
  *       "front", flash "auto", "on" or "off", and frames of size "small",
  *       "medium" or "large" -- the reference sets no pixel counts; Android's are
  *       its camera's nearest to 320 x 240, 1280 x 720 and 1920 x 1080.
  *   DESTROY {"cameraId"}, a command: the camera closed and its preview gone; its
- *       calls still unanswered fail ("camera destroyed").
+ *       calls still unanswered fail ("camera destroyed"). It follows a CREATE
+ *       that failed too, so a camera that did not open is let go the one way
+ *       every camera is.
  *   SET {"cameraId", any of "x", "y", "width", "height", "devicePosition",
  *       "flash", "size"}, a command: what content changed on it.
  *   TAKE_PHOTO {"cameraId", "quality"} -> {"tempImagePath", "width", "height"},
