@@ -8,11 +8,12 @@
 
 use migo_capi_abi::host_services::{
     MIGO_HOST_SERVICE_AD, MIGO_HOST_SERVICE_AUTH, MIGO_HOST_SERVICE_BLUETOOTH,
-    MIGO_HOST_SERVICE_CLIPBOARD, MIGO_HOST_SERVICE_ECOSYSTEM, MIGO_HOST_SERVICE_IMAGE,
-    MIGO_HOST_SERVICE_INTERACTION, MIGO_HOST_SERVICE_LOCATION, MIGO_HOST_SERVICE_MOTION,
-    MIGO_HOST_SERVICE_NAVIGATE, MIGO_HOST_SERVICE_PAYMENT, MIGO_HOST_SERVICE_PERMISSION,
-    MIGO_HOST_SERVICE_SCAN_CODE, MIGO_HOST_SERVICE_SCREEN, MIGO_HOST_SERVICE_SHARE,
-    MIGO_HOST_SERVICE_SUBPACKAGE, MIGO_HOST_SERVICE_UPDATE, MIGO_HOST_SERVICE_WINDOW,
+    MIGO_HOST_SERVICE_CAMERA, MIGO_HOST_SERVICE_CLIPBOARD, MIGO_HOST_SERVICE_ECOSYSTEM,
+    MIGO_HOST_SERVICE_IMAGE, MIGO_HOST_SERVICE_INTERACTION, MIGO_HOST_SERVICE_LOCATION,
+    MIGO_HOST_SERVICE_MOTION, MIGO_HOST_SERVICE_NAVIGATE, MIGO_HOST_SERVICE_PAYMENT,
+    MIGO_HOST_SERVICE_PERMISSION, MIGO_HOST_SERVICE_SCAN_CODE, MIGO_HOST_SERVICE_SCREEN,
+    MIGO_HOST_SERVICE_SHARE, MIGO_HOST_SERVICE_SUBPACKAGE, MIGO_HOST_SERVICE_UPDATE,
+    MIGO_HOST_SERVICE_WINDOW,
 };
 #[cfg(any(
     target_os = "macos",
@@ -20,7 +21,7 @@ use migo_capi_abi::host_services::{
 ))]
 use migo_core::services::VideoDecoderService;
 use migo_core::services::{
-    AccelerometerService, AdService, AuthService, BatteryService, BluetoothService,
+    AccelerometerService, AdService, AuthService, BatteryService, BluetoothService, CameraService,
     ClipboardService, CommerceServices, CompassService, ConnectivityServices, DeviceMotionService,
     EcosystemService, GameLogService, GamepadService, GyroscopeService, ImageApiService,
     InteractionService, KeyboardService, LocationService, MediaServices, NavigateService,
@@ -296,6 +297,11 @@ impl MediaServices for CapiDeviceServices {
     fn image_api(&self) -> Option<Arc<dyn ImageApiService>> {
         self.host_service(MIGO_HOST_SERVICE_IMAGE)
             .map(|services| services as Arc<dyn ImageApiService>)
+    }
+
+    fn camera(&self) -> Option<Arc<dyn CameraService>> {
+        self.host_service(MIGO_HOST_SERVICE_CAMERA)
+            .map(|services| services as Arc<dyn CameraService>)
     }
 
     /// The platform's own decoders, in the engine: AVFoundation's on macOS.

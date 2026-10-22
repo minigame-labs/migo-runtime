@@ -114,10 +114,8 @@ const NATIVE_MEDIA: &[JniMethod] = methods![
         "(IJLjava/lang/String;Ljava/lang/String;)V"
     ),
     ("onRecorderFrameData", "(IJ[BIZ)V"),
-    (
-        "onCameraEvent",
-        "(IJILjava/lang/String;Ljava/lang/String;)V"
-    ),
+    ("onCameraEvent", "(III)V"),
+    ("onCameraResult", "(IILjava/lang/String;)V"),
     (
         "onCameraFrameData",
         "(IJILjava/nio/ByteBuffer;IIILjava/nio/ByteBuffer;IILjava/nio/ByteBuffer;IIIIII)V"
@@ -247,20 +245,15 @@ const JAVA_MEDIA: &[JniMethod] = methods![
     ("recorderPause", "(I)V"),
     ("recorderResume", "(I)V"),
     ("recorderStop", "(I)V"),
-    ("cameraCreate", "(ILjava/lang/String;)Ljava/lang/String;"),
-    ("cameraDestroy", "(II)V"),
-    ("cameraTakePhotoAsync", "(IILjava/lang/String;)V"),
-    (
-        "cameraStartRecord",
-        "(ILjava/lang/String;)Ljava/lang/String;"
-    ),
-    (
-        "cameraStopRecord",
-        "(ILjava/lang/String;)Ljava/lang/String;"
-    ),
-    ("cameraSetZoom", "(ILjava/lang/String;)Ljava/lang/String;"),
-    ("cameraListenFrameChange", "(II)V"),
-    ("cameraCloseFrameChange", "(II)V"),
+    ("cameraCreate", "(ILjava/lang/String;)V"),
+    ("cameraDestroy", "(ILjava/lang/String;)V"),
+    ("cameraSet", "(ILjava/lang/String;)V"),
+    ("cameraTakePhoto", "(ILjava/lang/String;)V"),
+    ("cameraStartRecord", "(ILjava/lang/String;)V"),
+    ("cameraStopRecord", "(ILjava/lang/String;)V"),
+    ("cameraSetZoom", "(ILjava/lang/String;)V"),
+    ("cameraListenFrameChange", "(ILjava/lang/String;)V"),
+    ("cameraCloseFrameChange", "(ILjava/lang/String;)V"),
     ("imageSaveToPhotosAlbum", "(ILjava/lang/String;)V"),
     ("imagePreviewMedia", "(ILjava/lang/String;)V"),
     ("imagePreviewImage", "(ILjava/lang/String;)V"),
@@ -490,8 +483,10 @@ mod tests {
         // (`onPointerLockChanged`, `onWindowStateChanged`). A physical keyboard and
         // gamepads add +3 native, Core (`onKeyEvent`, `onGamepadConnection`,
         // `onGamepadState`). The host's package updates add +1 native, System
-        // (`onUpdateEvent`).
-        assert_eq!(native.len(), 87, "full NativeBridge surface changed");
+        // (`onUpdateEvent`). Camera requests the SDK answers once they have
+        // happened add +1 native (`onCameraResult`, one for all of them, keyed
+        // by method number).
+        assert_eq!(native.len(), 88, "full NativeBridge surface changed");
         // Runtime-generation fencing adds +2 Java (`beginRuntimeRestart`,
         // `completeRuntimeRestart`), both Core: every profile restarts.
         // Concurrent-session correctness removes -1 Java (`getCacheDirPath`,
@@ -514,7 +509,9 @@ mod tests {
         // mini program that opened this one adds +1 Java, Connectivity
         // (`navigateBackMiniProgram`). `setInnerAudioOption` is gone, -1 Java,
         // Media: what the option leaves the platform is nothing Android does.
-        assert_eq!(java.len(), 146, "full NativeExports surface changed");
+        // A camera's properties content may set add +1 Java, Media
+        // (`cameraSet`).
+        assert_eq!(java.len(), 147, "full NativeExports surface changed");
         assert_unique(&native);
         assert_unique(&java);
     }

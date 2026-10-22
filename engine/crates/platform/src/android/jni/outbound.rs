@@ -1055,80 +1055,20 @@ fn call_json_method(method_name: &str, host_id: i32, options_json: &str) -> Resu
     })
 }
 
-/// Start a camera photo capture without waiting for the image callback.
-/// The result is delivered through `onCameraEvent("takePhotoResult", ...)`.
-pub fn camera_take_photo_async(
-    host_id: i32,
-    request_id: u32,
-    options_json: &str,
-) -> Result<(), String> {
-    call_void_with_int_and_string(
-        "cameraTakePhotoAsync",
-        host_id,
-        request_id as i32,
-        options_json,
-    )
-}
-// Create a camera instance.
-// Calls Java: NativeExports.cameraCreate(hostId, optionsJson) -> String
-jni_json!(camera_create, "cameraCreate");
-
-/// Destroy a camera instance.
-/// Calls Java: NativeExports.cameraDestroy(hostId, cameraId)
-pub fn camera_destroy(host_id: i32, camera_id: u32) -> Result<(), String> {
-    call_static_method(
-        "cameraDestroy",
-        ReturnType::Primitive(Primitive::Void),
-        |_env, _| Ok(()),
-        &[
-            jvalue { i: host_id },
-            jvalue {
-                i: camera_id as i32,
-            },
-        ],
-    )
-}
-
-// Start video recording. Calls Java: NativeExports.cameraStartRecord(hostId, optionsJson) -> String
-jni_json!(camera_start_record, "cameraStartRecord");
-
-// Stop video recording. Calls Java: NativeExports.cameraStopRecord(hostId, optionsJson) -> String
-jni_json!(camera_stop_record, "cameraStopRecord");
-
-// Set camera zoom level. Calls Java: NativeExports.cameraSetZoom(hostId, optionsJson) -> String
-jni_json!(camera_set_zoom, "cameraSetZoom");
-
-/// Start listening for camera frame changes.
-/// Calls Java: NativeExports.cameraListenFrameChange(hostId, cameraId)
-pub fn camera_listen_frame_change(host_id: i32, camera_id: u32) -> Result<(), String> {
-    call_static_method(
-        "cameraListenFrameChange",
-        ReturnType::Primitive(Primitive::Void),
-        |_env, _| Ok(()),
-        &[
-            jvalue { i: host_id },
-            jvalue {
-                i: camera_id as i32,
-            },
-        ],
-    )
-}
-
-/// Stop listening for camera frame changes.
-/// Calls Java: NativeExports.cameraCloseFrameChange(hostId, cameraId)
-pub fn camera_close_frame_change(host_id: i32, camera_id: u32) -> Result<(), String> {
-    call_static_method(
-        "cameraCloseFrameChange",
-        ReturnType::Primitive(Primitive::Void),
-        |_env, _| Ok(()),
-        &[
-            jvalue { i: host_id },
-            jvalue {
-                i: camera_id as i32,
-            },
-        ],
-    )
-}
+// ==================== Camera ====================
+//
+// Every one is the request content made -- `{"cameraId", ...}`, and a call's
+// `"requestId"` -- which the SDK answers, for a call, through `onCameraResult`
+// once it has happened.
+jni_void_json!(camera_create, "cameraCreate");
+jni_void_json!(camera_destroy, "cameraDestroy");
+jni_void_json!(camera_set, "cameraSet");
+jni_void_json!(camera_take_photo, "cameraTakePhoto");
+jni_void_json!(camera_start_record, "cameraStartRecord");
+jni_void_json!(camera_stop_record, "cameraStopRecord");
+jni_void_json!(camera_set_zoom, "cameraSetZoom");
+jni_void_json!(camera_listen_frame_change, "cameraListenFrameChange");
+jni_void_json!(camera_close_frame_change, "cameraCloseFrameChange");
 
 // ==================== Bluetooth ====================
 //

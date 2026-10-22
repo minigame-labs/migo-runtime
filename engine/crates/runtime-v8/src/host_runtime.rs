@@ -652,14 +652,7 @@ impl HostJsRuntime {
         });
     }
 
-    // ---- Camera event dispatch ----
-
-    pub fn dispatch_camera_event(&mut self, camera_id: u32, event_type: &str, json_payload: &str) {
-        let host_id = self.host_id;
-        self.with_v8(|rt, bindings| {
-            bindings.dispatch_camera_event(rt, host_id, camera_id, event_type, json_payload)
-        });
-    }
+    // ---- Camera frame dispatch ----
 
     pub fn dispatch_camera_frame_data(
         &mut self,

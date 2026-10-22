@@ -755,52 +755,60 @@ struct AndroidCamera {
     session: SessionGate,
 }
 
+/// Every request goes to the SDK as content made it; a call is answered through
+/// `onCameraResult` once it has happened.
 impl CameraService for AndroidCamera {
-    fn create(&self, options_json: &str) -> Result<String, ServiceError> {
+    fn create(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, Some(Scope::Camera), || {
-            jni::camera_create(self.session.host_id(), options_json)
+            jni::camera_create(self.session.host_id(), request_json)
         })
     }
 
-    fn destroy(&self, camera_id: u32) -> Result<(), ServiceError> {
+    fn destroy(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, None, || {
-            jni::camera_destroy(self.session.host_id(), camera_id)
+            jni::camera_destroy(self.session.host_id(), request_json)
         })
     }
 
-    fn take_photo_async(&self, request_id: u32, options_json: &str) -> Result<(), ServiceError> {
+    fn set(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, Some(Scope::Camera), || {
-            jni::camera_take_photo_async(self.session.host_id(), request_id, options_json)
+            jni::camera_set(self.session.host_id(), request_json)
         })
     }
 
-    fn start_record(&self, options_json: &str) -> Result<String, ServiceError> {
+    fn take_photo(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, Some(Scope::Camera), || {
-            jni::camera_start_record(self.session.host_id(), options_json)
+            jni::camera_take_photo(self.session.host_id(), request_json)
         })
     }
 
-    fn stop_record(&self, options_json: &str) -> Result<String, ServiceError> {
+    fn start_record(&self, request_json: &str) -> Result<(), ServiceError> {
+        permission_jni_call(&self.session, Some(Scope::Camera), || {
+            jni::camera_start_record(self.session.host_id(), request_json)
+        })
+    }
+
+    fn stop_record(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, None, || {
-            jni::camera_stop_record(self.session.host_id(), options_json)
+            jni::camera_stop_record(self.session.host_id(), request_json)
         })
     }
 
-    fn set_zoom(&self, options_json: &str) -> Result<String, ServiceError> {
+    fn set_zoom(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, Some(Scope::Camera), || {
-            jni::camera_set_zoom(self.session.host_id(), options_json)
+            jni::camera_set_zoom(self.session.host_id(), request_json)
         })
     }
 
-    fn listen_frame_change(&self, camera_id: u32) -> Result<(), ServiceError> {
+    fn listen_frame_change(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, Some(Scope::Camera), || {
-            jni::camera_listen_frame_change(self.session.host_id(), camera_id)
+            jni::camera_listen_frame_change(self.session.host_id(), request_json)
         })
     }
 
-    fn close_frame_change(&self, camera_id: u32) -> Result<(), ServiceError> {
+    fn close_frame_change(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, None, || {
-            jni::camera_close_frame_change(self.session.host_id(), camera_id)
+            jni::camera_close_frame_change(self.session.host_id(), request_json)
         })
     }
 }
@@ -1229,7 +1237,8 @@ pub(crate) const ANDROID_PERMISSION_GATED_METHODS: &[(&str, Scope)] = &[
     ("RecorderService::pause", Scope::Record),
     ("RecorderService::resume", Scope::Record),
     ("CameraService::create", Scope::Camera),
-    ("CameraService::take_photo_async", Scope::Camera),
+    ("CameraService::set", Scope::Camera),
+    ("CameraService::take_photo", Scope::Camera),
     ("CameraService::start_record", Scope::Camera),
     ("CameraService::set_zoom", Scope::Camera),
     ("CameraService::listen_frame_change", Scope::Camera),

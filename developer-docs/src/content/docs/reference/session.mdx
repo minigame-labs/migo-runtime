@@ -1078,6 +1078,37 @@ MIGO_API MigoResult MIGO_CALL migo_session_post_ble_characteristic_value(
   宿主未声明 `MIGO_HOST_SERVICE_BLUETOOTH`
 - `MIGO_ERROR_INVALID_STATE` — 没有已 attach 的 Surface
 
+## migo_session_post_camera_frame
+
+```c
+typedef uint32_t MigoPixelFormat;
+#define MIGO_PIXEL_FORMAT_RGBA8 0U
+#define MIGO_PIXEL_FORMAT_BGRA8 1U
+
+typedef struct MigoCameraFrame {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint32_t camera_id;
+    uint32_t width;
+    uint32_t height;
+    uint32_t row_stride;
+    MigoPixelFormat format;
+    uint32_t reserved0;
+    const uint8_t *pixels;
+} MigoCameraFrame;
+
+MIGO_API MigoResult MIGO_CALL migo_session_post_camera_frame(MigoSession *session,
+                                                             const MigoCameraFrame *frame);
+```
+
+内容正在监听的相机（`MIGO_CAMERA_LISTEN_FRAME_CHANGE`）的一帧，可在任意线程、Surface 附着期间调用：`width` x `height` 个 `format` 像素，自上而下逐行，行距 `row_stride` 字节。相机每秒三十帧，所以这是类型化记录、只在调用期间借用：像素一次性读成内容的 RGBA——参考文档 `onCameraFrame` 的 data，每像素四字节、不透明——且只有最新一帧等待内容：内容还没取走上一帧时，新来的替换它。
+
+返回：
+
+- `MIGO_OK` — 已交付，或替换了内容尚未取走的那一帧
+- `MIGO_ERROR_INVALID_ARGUMENT` — 记录为 NULL 或格式不对；头文件未定义的 format；宽或高为 0 或超过 8192；`row_stride` 小于 `width * 4`；RGBA 超过 64 MiB；宿主未声明 `MIGO_HOST_SERVICE_CAMERA`
+- `MIGO_ERROR_INVALID_STATE` — 没有附着的 Surface
+
 ## migo_session_set_ecosystem_value
 
 ```c

@@ -18,7 +18,7 @@ use shared::protocol::host_cmd::{TouchPoint, TouchType};
 /// - **Touch / Input** (1): `enqueue_touch_event_fn`
 /// - **Audio** (1): `enqueue_inner_audio_event_fn`
 /// - **Recorder** (2): `recorder_event_fn`, `recorder_frame_fn`
-/// - **Camera** (2): `camera_event_fn`, `camera_frame_fn`
+/// - **Camera** (1): `camera_frame_fn`
 /// - **Sensors** (6): device motion, gyroscope, accelerometer, compass, orientation, network
 /// - **Bluetooth / Beacon** (4): adapter state, device found, beacon update, beacon service
 /// - **BLE GATT** (3): connection state, characteristic value, MTU
@@ -62,7 +62,6 @@ pub(crate) struct JsBindings {
     recorder_frame_fn: Option<v8::Global<v8::Function>>,
 
     // ---- Camera ----
-    camera_event_fn: Option<v8::Global<v8::Function>>,
     camera_frame_fn: Option<v8::Global<v8::Function>>,
 
     // ---- Sensors (high-frequency; cached to avoid JS-side name lookup overhead) ----
@@ -135,7 +134,6 @@ impl JsBindings {
             enqueue_inner_audio_event_fn: None,
             recorder_event_fn: None,
             recorder_frame_fn: None,
-            camera_event_fn: None,
             camera_frame_fn: None,
             sensor_device_motion_fn: None,
             sensor_gyroscope_fn: None,
@@ -244,7 +242,6 @@ impl JsBindings {
             enqueue_audio,
             rec_event,
             rec_frame,
-            cam_event,
             cam_frame,
             dev_motion,
             gyro,
@@ -277,7 +274,6 @@ impl JsBindings {
                 get_global_fn(scope, bridge, "_internalEnqueueInnerAudioEvent"),
                 get_global_fn(scope, bridge, "_internalOnRecorderEvent"),
                 get_global_fn(scope, bridge, "_internalOnRecorderFrameData"),
-                get_global_fn(scope, bridge, "_internalOnCameraEvent"),
                 get_global_fn(scope, bridge, "_internalOnCameraFrameData"),
                 get_global_fn(scope, bridge, "_internalTriggerDeviceMotionChange"),
                 get_global_fn(scope, bridge, "_internalTriggerGyroscopeChange"),
@@ -312,7 +308,6 @@ impl JsBindings {
         self.enqueue_inner_audio_event_fn = enqueue_audio;
         self.recorder_event_fn = rec_event;
         self.recorder_frame_fn = rec_frame;
-        self.camera_event_fn = cam_event;
         self.camera_frame_fn = cam_frame;
         self.sensor_device_motion_fn = dev_motion;
         self.sensor_gyroscope_fn = gyro;
@@ -686,37 +681,6 @@ impl JsBindings {
             let ab = Self::adopt_as_array_buffer(scope, data);
 
             let args = [ab.into(), v8::Boolean::new(scope, is_last_frame).into()];
-            let func = v8::Local::new(scope, func_g);
-            let _ = func.call(scope, global.into(), &args);
-        });
-    }
-
-    // ---- Camera event dispatch ----
-
-    /// Dispatch camera event (stop, authCancel, error, timeoutCallback).
-    pub(crate) fn dispatch_camera_event(
-        &self,
-        rt: &mut deno_core::JsRuntime,
-        host_id: i32,
-        camera_id: u32,
-        event_type: &str,
-        json_payload: &str,
-    ) {
-        let Some(func_g) = self.camera_event_fn.as_ref() else {
-            warn!("[Host {}] camera event handler not installed", host_id);
-            return;
-        };
-
-        self.with_main_context(rt, |scope, _ctx, global| {
-            let args = [
-                v8::Integer::new_from_unsigned(scope, camera_id).into(),
-                v8::String::new(scope, event_type)
-                    .unwrap_or_else(|| v8::Local::new(scope, &self.empty_string))
-                    .into(),
-                v8::String::new(scope, json_payload)
-                    .unwrap_or_else(|| v8::Local::new(scope, &self.empty_string))
-                    .into(),
-            ];
             let func = v8::Local::new(scope, func_g);
             let _ = func.call(scope, global.into(), &args);
         });

@@ -294,6 +294,56 @@ pub fn yuv_frame_to_rgba(
     Ok(rgba)
 }
 
+/// The layout of a frame of four-byte pixels a host hands over
+/// (`MIGO_PIXEL_FORMAT_*`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PixelLayout {
+    Rgba,
+    Bgra,
+}
+
+/// The `width` x `height` frame of four-byte `layout` pixels in `pixels`, its
+/// rows `row_stride` bytes apart, as content's RGBA: rows packed, opaque.
+/// Validates the size, the stride and that `pixels` holds every row before
+/// reading. Source slices are never mutated.
+pub fn packed_frame_to_rgba(
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+    row_stride: usize,
+    layout: PixelLayout,
+) -> Result<Vec<u8>, CameraFramePackError> {
+    if width == 0
+        || height == 0
+        || width > MAX_CAMERA_FRAME_DIMENSION
+        || height > MAX_CAMERA_FRAME_DIMENSION
+    {
+        return Err(CameraFramePackError::DimensionsOutOfBounds);
+    }
+    let bytes = camera_frame_rgba_len(width, height)?;
+    let row = width as usize * 4;
+    let reach = (height as usize - 1)
+        .checked_mul(row_stride)
+        .and_then(|start| start.checked_add(row))
+        .ok_or(CameraFramePackError::StrideOutOfBounds)?;
+    if row_stride < row || reach > pixels.len() {
+        return Err(CameraFramePackError::StrideOutOfBounds);
+    }
+    let mut rgba = Vec::new();
+    rgba.try_reserve_exact(bytes)
+        .map_err(|_| CameraFramePackError::AllocFailed)?;
+    for line in pixels.chunks(row_stride).take(height as usize) {
+        for pixel in line[..row].chunks_exact(4) {
+            let (red, blue) = match layout {
+                PixelLayout::Rgba => (pixel[0], pixel[2]),
+                PixelLayout::Bgra => (pixel[2], pixel[0]),
+            };
+            rgba.extend_from_slice(&[red, pixel[1], blue, 255]);
+        }
+    }
+    Ok(rgba)
+}
+
 /// The bytes a `width` x `height` RGBA frame takes, within the frame budget.
 fn camera_frame_rgba_len(width: u32, height: u32) -> Result<usize, CameraFramePackError> {
     let bytes = u64::from(width)
@@ -720,6 +770,46 @@ mod tests {
             checked_total(usize::MAX - 1, 1, 1),
             Err(CameraFramePackError::TotalOverflow),
             "second add overflows"
+        );
+    }
+
+    #[test]
+    fn a_hosts_rgba_or_bgra_rows_become_packed_opaque_rgba() {
+        // 2 x 2, rows 12 bytes apart (a 4-byte pad each), alpha left at 0.
+        let rgba_rows = [
+            1u8, 2, 3, 0, 4, 5, 6, 0, 0xEE, 0xEE, 0xEE, 0xEE, //
+            7, 8, 9, 0, 10, 11, 12, 0,
+        ];
+        let packed = packed_frame_to_rgba(&rgba_rows, 2, 2, 12, PixelLayout::Rgba).unwrap();
+        assert_eq!(
+            packed,
+            [1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255]
+        );
+        let bgra = packed_frame_to_rgba(&rgba_rows, 2, 2, 12, PixelLayout::Bgra).unwrap();
+        assert_eq!(&bgra[..8], &[3, 2, 1, 255, 6, 5, 4, 255]);
+    }
+
+    #[test]
+    fn a_hosts_frame_short_of_its_rows_or_stride_is_refused() {
+        let rows = [0u8; 20];
+        assert_eq!(
+            packed_frame_to_rgba(&rows, 2, 2, 7, PixelLayout::Rgba),
+            Err(CameraFramePackError::StrideOutOfBounds),
+            "a stride shorter than a row"
+        );
+        assert_eq!(
+            packed_frame_to_rgba(&rows[..19], 2, 2, 12, PixelLayout::Rgba),
+            Err(CameraFramePackError::StrideOutOfBounds),
+            "the last row cut short"
+        );
+        assert!(packed_frame_to_rgba(&rows, 2, 2, 12, PixelLayout::Rgba).is_ok());
+        assert_eq!(
+            packed_frame_to_rgba(&rows, 0, 2, 12, PixelLayout::Rgba),
+            Err(CameraFramePackError::DimensionsOutOfBounds)
+        );
+        assert_eq!(
+            packed_frame_to_rgba(&rows, 4096, 4097, 16384, PixelLayout::Rgba),
+            Err(CameraFramePackError::FrameTooLarge)
         );
     }
 

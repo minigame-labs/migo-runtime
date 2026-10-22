@@ -78,6 +78,11 @@ impl HostFiles {
 
     /// `compressImage`.
     pub const COMPRESS_IMAGE: Self = Self(&[&[Step::Key("tempFilePath")]]);
+    /// A camera's `takePhoto`.
+    pub const CAMERA_TAKE_PHOTO: Self = Self(&[&[Step::Key("tempImagePath")]]);
+    /// A camera's `stopRecord`: the video and its cover.
+    pub const CAMERA_STOP_RECORD: Self =
+        Self(&[&[Step::Key("tempVideoPath")], &[Step::Key("tempThumbPath")]]);
 
     /// The fields as the contract spells them: `tempFiles[].path`.
     pub fn describe(&self) -> Vec<String> {

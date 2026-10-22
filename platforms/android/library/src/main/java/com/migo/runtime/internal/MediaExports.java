@@ -186,26 +186,40 @@ public final class MediaExports {
         return manager;
     }
 
-    public static String cameraCreate(int sessionId, String optionsJson) {
-        RuntimeContext ctx = RuntimeRegistry.get(sessionId);
-        if (ctx == null) {
-            return "{\"_error\":{\"errMsg\":\"createCamera:fail no context\"}}";
-        }
-        Activity activity = ctx.getActivity();
-        if (activity == null) {
-            return "{\"_error\":{\"errMsg\":\"createCamera:fail no activity\"}}";
-        }
-
-        int cameraId = 0;
+    /** The request id a camera call carries, or 0. */
+    private static int extractRequestId(String requestJson) {
         try {
-            org.json.JSONObject opts = new org.json.JSONObject(optionsJson);
-            cameraId = opts.optInt("cameraId", 0);
-        } catch (Exception ignored) {}
-
-        String key = cameraKey(sessionId, cameraId);
-        if (NativeExports.isSessionTerminated(sessionId)) {
-            return "{\"_error\":{\"errMsg\":\"createCamera:fail session destroyed\"}}";
+            return new org.json.JSONObject(requestJson).optInt("requestId", 0);
+        } catch (Exception ignored) {
+            return 0;
         }
+    }
+
+    /** Fail camera call {@code method} before any camera could take it. */
+    private static void failCameraCall(int sessionId, int method, String requestJson, String reason) {
+        org.json.JSONObject result = new org.json.JSONObject();
+        try {
+            result.put("requestId", extractRequestId(requestJson));
+            result.put("error", reason);
+        } catch (org.json.JSONException ignored) {
+            // An int and a string always fit.
+        }
+        NativeMethods.onCameraResult(sessionId, method, result.toString());
+    }
+
+    public static void cameraCreate(int sessionId, String requestJson) {
+        RuntimeContext ctx = RuntimeRegistry.get(sessionId);
+        Activity activity = ctx != null ? ctx.getActivity() : null;
+        if (activity == null) {
+            failCameraCall(sessionId, CameraManager.METHOD_CREATE, requestJson, "no activity");
+            return;
+        }
+        if (NativeExports.isSessionTerminated(sessionId)) {
+            failCameraCall(sessionId, CameraManager.METHOD_CREATE, requestJson, "session destroyed");
+            return;
+        }
+        int cameraId = extractCameraId(requestJson);
+        String key = cameraKey(sessionId, cameraId);
         boolean suspended = NativeExports.isSessionResourceSuspended(sessionId);
         CameraManager mgr = new CameraManager(sessionId, cameraId, activity, suspended);
         sCameraManagers.compute(key, (ignored, existing) -> {
@@ -216,77 +230,67 @@ public final class MediaExports {
             return retained;
         });
         syncCameraLifecycle(sessionId, mgr);
-        String result = mgr.create(optionsJson);
+        mgr.create(extractRequestId(requestJson), requestJson);
         syncCameraLifecycle(sessionId, mgr);
-        return result;
     }
 
-    public static void cameraDestroy(int sessionId, int cameraId) {
-        String key = cameraKey(sessionId, cameraId);
+    public static void cameraDestroy(int sessionId, String requestJson) {
+        String key = cameraKey(sessionId, extractCameraId(requestJson));
         sCameraManagers.computeIfPresent(key, (ignored, retained) -> {
             retained.destroy();
             return null;
         });
     }
 
+    public static void cameraSet(int sessionId, String requestJson) {
+        CameraManager mgr = getCameraManager(sessionId, extractCameraId(requestJson));
+        if (mgr != null) mgr.set(requestJson);
+    }
 
-    public static void cameraTakePhotoAsync(
-            int sessionId, int requestId, String optionsJson) {
-        int cameraId = extractCameraId(optionsJson);
-        CameraManager mgr = getCameraManager(sessionId, cameraId);
+    public static void cameraTakePhoto(int sessionId, String requestJson) {
+        CameraManager mgr = getCameraManager(sessionId, extractCameraId(requestJson));
         if (mgr == null) {
-            String payload = "{\"requestId\":" + requestId
-                    + ",\"_error\":{\"errMsg\":\"camera.takePhoto:fail camera not found\"}}";
-            NativeMethods.onCameraEvent(
-                    sessionId,
-                    RuntimeGenerationBoundary.UNFENCED,
-                    cameraId,
-                    "takePhotoResult",
-                    payload);
+            failCameraCall(sessionId, CameraManager.METHOD_TAKE_PHOTO, requestJson, "camera not found");
             return;
         }
-        mgr.takePhotoAsync(requestId, optionsJson);
+        mgr.takePhoto(extractRequestId(requestJson), requestJson);
     }
 
-    public static String cameraStartRecord(int sessionId, String optionsJson) {
-        int cameraId = extractCameraId(optionsJson);
-        CameraManager mgr = getCameraManager(sessionId, cameraId);
+    public static void cameraStartRecord(int sessionId, String requestJson) {
+        CameraManager mgr = getCameraManager(sessionId, extractCameraId(requestJson));
         if (mgr == null) {
-            return "{\"_error\":{\"errMsg\":\"camera.startRecord:fail camera not found\"}}";
+            failCameraCall(sessionId, CameraManager.METHOD_START_RECORD, requestJson, "camera not found");
+            return;
         }
-        return mgr.startRecord(optionsJson);
+        mgr.startRecord(extractRequestId(requestJson));
     }
 
-    public static String cameraStopRecord(int sessionId, String optionsJson) {
-        int cameraId = extractCameraId(optionsJson);
-        CameraManager mgr = getCameraManager(sessionId, cameraId);
+    public static void cameraStopRecord(int sessionId, String requestJson) {
+        CameraManager mgr = getCameraManager(sessionId, extractCameraId(requestJson));
         if (mgr == null) {
-            return "{\"_error\":{\"errMsg\":\"camera.stopRecord:fail camera not found\"}}";
+            failCameraCall(sessionId, CameraManager.METHOD_STOP_RECORD, requestJson, "camera not found");
+            return;
         }
-        return mgr.stopRecord(optionsJson);
+        mgr.stopRecord(extractRequestId(requestJson));
     }
 
-    public static String cameraSetZoom(int sessionId, String optionsJson) {
-        int cameraId = extractCameraId(optionsJson);
-        CameraManager mgr = getCameraManager(sessionId, cameraId);
+    public static void cameraSetZoom(int sessionId, String requestJson) {
+        CameraManager mgr = getCameraManager(sessionId, extractCameraId(requestJson));
         if (mgr == null) {
-            return "{\"_error\":{\"errMsg\":\"camera.setZoom:fail camera not found\"}}";
+            failCameraCall(sessionId, CameraManager.METHOD_SET_ZOOM, requestJson, "camera not found");
+            return;
         }
-        return mgr.setZoom(optionsJson);
+        mgr.setZoom(extractRequestId(requestJson), requestJson);
     }
 
-    public static void cameraListenFrameChange(int sessionId, int cameraId) {
-        CameraManager mgr = getCameraManager(sessionId, cameraId);
-        if (mgr != null) {
-            mgr.listenFrameChange();
-        }
+    public static void cameraListenFrameChange(int sessionId, String requestJson) {
+        CameraManager mgr = getCameraManager(sessionId, extractCameraId(requestJson));
+        if (mgr != null) mgr.listenFrameChange();
     }
 
-    public static void cameraCloseFrameChange(int sessionId, int cameraId) {
-        CameraManager mgr = getCameraManager(sessionId, cameraId);
-        if (mgr != null) {
-            mgr.closeFrameChange();
-        }
+    public static void cameraCloseFrameChange(int sessionId, String requestJson) {
+        CameraManager mgr = getCameraManager(sessionId, extractCameraId(requestJson));
+        if (mgr != null) mgr.closeFrameChange();
     }
 
     public static void destroyCameraManagers(int sessionId) {

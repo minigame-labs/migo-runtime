@@ -858,17 +858,6 @@ impl Host {
                 Ok(())
             }
 
-            HostCommand::CameraEvent {
-                camera_id,
-                event_type,
-                runtime_generation: _,
-                json_payload,
-            } => {
-                self.js
-                    .dispatch_camera_event(camera_id, &event_type, &json_payload);
-                Ok(())
-            }
-
             HostCommand::CameraFrameData {
                 camera_id,
                 credit: _credit,

@@ -24,9 +24,9 @@
   "summary": {
     "android": {"engine": 61, "default": 125, "host": 180, "missing": 6, "unsupported": 10, "wired": 376, "verified": 221, "ready": 352},
     "ios": {"engine": 71, "default": 110, "host": 174, "missing": 12, "unsupported": 15, "wired": 369, "verified": 198, "ready": 330},
-    "macos": {"engine": 71, "default": 88, "host": 170, "missing": 9, "unsupported": 44, "wired": 372, "verified": 201, "ready": 346},
-    "linux": {"engine": 71, "default": 127, "host": 159, "missing": 9, "unsupported": 16, "wired": 361, "verified": 214, "ready": 321},
-    "windows": {"engine": 71, "default": 2, "host": 289, "missing": 10, "unsupported": 10, "wired": 232, "verified": 0, "ready": 159},
+    "macos": {"engine": 71, "default": 88, "host": 171, "missing": 8, "unsupported": 44, "wired": 372, "verified": 201, "ready": 346},
+    "linux": {"engine": 71, "default": 127, "host": 160, "missing": 8, "unsupported": 16, "wired": 361, "verified": 214, "ready": 321},
+    "windows": {"engine": 71, "default": 2, "host": 290, "missing": 9, "unsupported": 10, "wired": 232, "verified": 0, "ready": 159},
     "ohos": {"engine": 69, "default": 12, "host": 0, "missing": 292, "unsupported": 9, "wired": 90, "verified": 0, "ready": 9}
   },
   "apis": {
@@ -53,7 +53,7 @@
     "createBLEPeripheralServer": {"category": "device/bluetooth-peripheral", "needs": ["unpublished"], "android": "missing", "ios": "missing", "macos": "missing", "linux": "missing", "windows": "missing", "ohos": "missing", "not_ready": ["android", "ios", "macos", "linux", "windows", "ohos"]},
     "createBannerAd": {"category": "ad", "needs": ["channel:ad.create", "channel:ad.destroy", "channel:ad.hide", "channel:ad.show"], "android": "host", "ios": "host", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ohos"]},
     "createBufferURL": {"category": "storage", "needs": [], "android": "engine", "ios": "engine", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine", "verified": ["android", "ios", "macos", "linux"], "not_ready": ["windows", "ohos"]},
-    "createCamera": {"category": "media/camera", "needs": ["channel:permission", "service:camera"], "android": "host", "ios": "missing", "macos": "missing", "linux": "missing", "windows": "missing", "ohos": "missing", "not_ready": ["ios", "macos", "linux", "windows", "ohos"]},
+    "createCamera": {"category": "media/camera", "needs": ["channel:camera.close_frame_change", "channel:camera.create", "channel:camera.destroy", "channel:camera.listen_frame_change", "channel:camera.start_record", "channel:camera.stop_record", "channel:camera.take_photo", "channel:permission"], "android": "host", "ios": "missing", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ios", "macos", "linux", "windows", "ohos"]},
     "createCanvas": {"category": "render/canvas", "needs": [], "android": "engine", "ios": "engine", "macos": "engine", "linux": "engine", "windows": "engine", "ohos": "engine", "verified": ["android", "ios", "macos", "linux"], "not_ready": ["windows", "ohos"]},
     "createCustomAd": {"category": "ad", "needs": ["channel:ad.create", "channel:ad.destroy", "channel:ad.hide", "channel:ad.show"], "android": "host", "ios": "host", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ohos"]},
     "createFeedbackButton": {"category": "open-api/feedback", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "host", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ohos"]},
