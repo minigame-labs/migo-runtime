@@ -1,4 +1,4 @@
-use deno_core::{Extension, OpState, extension, op2};
+use deno_core::{Extension, OpState, op2};
 use deno_error::JsErrorBox;
 use shared::op_state::HostOpState;
 use shared::services::GamepadRumble;
@@ -69,17 +69,20 @@ fn op_gamepad_rumble(
     }
 }
 
-extension!(host_v8_touch,
-ops = [op_show_keyboard, op_hide_keyboard, op_update_keyboard, op_gamepad_rumble],
-esm = [
-    dir "src/input",
-    "00_input_clock.js",
-    "01_touch.js",
-    "02_keyboard.js",
-    "03_mouse.js",
-    "04_gamepad.js",
-    "05_composition.js",
-]
+main_runtime_extension!(
+    host_v8_touch,
+    {
+        ops = [op_show_keyboard, op_hide_keyboard, op_update_keyboard, op_gamepad_rumble],
+    },
+    esm = [
+        dir "src/input",
+        "00_input_clock.js",
+        "01_touch.js",
+        "02_keyboard.js",
+        "03_mouse.js",
+        "04_gamepad.js",
+        "05_composition.js",
+    ],
 );
 
 pub fn touch_extensions() -> Vec<Extension> {

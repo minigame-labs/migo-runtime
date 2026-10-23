@@ -293,6 +293,11 @@ impl Host {
         vsync_rx: Option<crossbeam_channel::Receiver<f64>>,
         restart_boundary: crate::runtime::restart_boundary::RestartBoundary,
     ) -> EngineResult<Self> {
+        // On Android Skia's text layout reads V8's ICU, and the render thread
+        // the shell starts builds its text context before the JavaScript
+        // runtime below exists. ICU caches a resource bundle it failed to open,
+        // so the data goes in first, not merely "before the first isolate".
+        runtime_v8::install_icu_data();
         // The engine-neutral half: render thread, frame clock, audio, platform
         // services, GPU capabilities, background and context-loss state. It is
         // shared with the external-frame execution, which needs every one of
