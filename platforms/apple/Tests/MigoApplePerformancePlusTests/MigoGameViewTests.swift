@@ -295,9 +295,11 @@ import XCTest
                 case .console(_, let message):
                     guard message.hasPrefix("drew "),
                         let report = try? JSONSerialization.jsonObject(with: Data(message.dropFirst(5).utf8))
-                            as? [String: [Double]]
+                            as? [String: Any]
                     else { return }
-                    drew.append(report)
+                    // `heard` is null until content hears a resize: a strict
+                    // `[String: [Double]]` cast drops that first report whole.
+                    drew.append(report.compactMapValues { $0 as? [Double] })
                     if drew.count == 1 { started.fulfill() }
                     if report["window"] == [844, 390] { followed.fulfill() }
                 case .failed(let reason):
