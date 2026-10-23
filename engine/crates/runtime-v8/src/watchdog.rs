@@ -1353,12 +1353,16 @@ mod scheduler_tests {
     /// The budget the script spent before a wait stays spent: the wait suspends it, it does not restart it.
     #[test]
     fn a_wait_keeps_what_the_script_spent_before_it() {
+        // 600 of 1000 ms spent, then a wait longer than the 400 left: resumed,
+        // the budget runs out 400 ms after the wait; restarted, 1000 ms after.
+        // Each side has 300 ms -- a shared runner oversleeps by tens of ms, and
+        // the 50 this once allowed went red there.
         let sched = Scheduler::new_test();
-        let (wd, fired) = counting_wd(sched, Duration::from_millis(400));
+        let (wd, fired) = counting_wd(sched, Duration::from_millis(1000));
         let _scope = wd.enter();
-        std::thread::sleep(Duration::from_millis(350));
+        std::thread::sleep(Duration::from_millis(600));
         wd.begin_wait();
-        std::thread::sleep(Duration::from_millis(200));
+        std::thread::sleep(Duration::from_millis(1000));
         assert_eq!(fired.load(Ordering::Acquire), 0);
         wd.end_wait();
         let resumed = Instant::now();
@@ -1367,7 +1371,7 @@ mod scheduler_tests {
             Duration::from_secs(3)
         ));
         assert!(
-            resumed.elapsed() < Duration::from_millis(300),
+            resumed.elapsed() < Duration::from_millis(700),
             "fired {:?} after the wait: the budget was restarted, not resumed",
             resumed.elapsed()
         );
