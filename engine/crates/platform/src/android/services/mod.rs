@@ -1325,6 +1325,13 @@ pub(crate) const ANDROID_PERMISSION_GATED_METHODS: &[(&str, Scope)] = &[
     ("BluetoothService::get_ble_device_rssi", Scope::Bluetooth),
     ("BluetoothService::set_ble_mtu", Scope::Bluetooth),
     ("BluetoothService::get_ble_mtu", Scope::Bluetooth),
+    ("BlePeripheralService::create_server", Scope::Bluetooth),
+    ("BlePeripheralService::add_service", Scope::Bluetooth),
+    ("BlePeripheralService::start_advertising", Scope::Bluetooth),
+    (
+        "BlePeripheralService::write_characteristic_value",
+        Scope::Bluetooth,
+    ),
     (
         "ImageApiService::save_image_to_photos_album",
         Scope::WritePhotosAlbum,
@@ -1346,6 +1353,8 @@ pub(crate) const ANDROID_PERMISSION_CLEANUP_METHODS: &[(&str, Scope)] = &[
     ("BluetoothService::stop_devices_discovery", Scope::Bluetooth),
     ("BluetoothService::stop_beacon_discovery", Scope::Bluetooth),
     ("BluetoothService::close_ble_connection", Scope::Bluetooth),
+    ("BlePeripheralService::remove_service", Scope::Bluetooth),
+    ("BlePeripheralService::stop_advertising", Scope::Bluetooth),
 ];
 
 /// Scope decisions the host has pushed for a session.

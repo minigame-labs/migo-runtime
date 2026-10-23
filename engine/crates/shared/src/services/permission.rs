@@ -147,6 +147,7 @@ pub const GATED_ACCESSORS: &[(&str, Scope)] = &[
     ("recorder", Scope::Record),
     ("location", Scope::UserLocation),
     ("bluetooth", Scope::Bluetooth),
+    ("ble_peripheral", Scope::Bluetooth),
 ];
 
 /// Permission-sensitive methods on services whose other methods are unscoped.
