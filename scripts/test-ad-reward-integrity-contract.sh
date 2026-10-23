@@ -34,6 +34,8 @@ import re
 import sys
 
 root = pathlib.Path(sys.argv[1]).resolve()
+sys.path.insert(0, str(root / "scripts" / "lib"))
+import runtime_ops  # noqa: E402
 
 crates_dir = root / "engine/crates"
 ad_js = crates_dir / "runtime-v8/src/ad/01_ad.js"
@@ -119,7 +121,6 @@ if sanitised_sites == 0:
 
 ad_js_source = ad_js.read_text(encoding="utf-8")
 ad_scope_source = ad_scope_js.read_text(encoding="utf-8")
-ad_ops_source = ad_ops_rs.read_text(encoding="utf-8")
 ad_service_source = ad_service_rs.read_text(encoding="utf-8")
 
 if not re.search(r"\bfunction\s+_internalOnAdEvent\s*\(", ad_js_source):
@@ -149,26 +150,22 @@ if not re.search(r"\bpub\s+trait\s+AdService\b", ad_service_source):
 # literal `fn op_ad_show` to find, and a gate keyed on that spelling reports a
 # violation against a perfectly wired bridge. The registration list is what
 # deno_core actually exposes to JS, which is the property being asserted.
-ops_block = re.search(
-    r"deno_core::extension!\s*\(.*?\bops\s*=\s*\[(?P<ops>.*?)\]",
-    ad_ops_source,
-    re.DOTALL,
-)
-if not ops_block:
+#
+# Read through the engine's one parser of extension declarations
+# (scripts/lib/runtime_ops.py), not a regex of this gate's own: the regex knew
+# only `deno_core::extension!(`, and when the runtime's extensions moved into
+# `main_runtime_extension!` (#619) it found no ops in a fully wired bridge.
+registered_ops = {
+    name for name, op in runtime_ops.registered_ops(root).items() if op.extension == "host_v8_ad"
+}
+if not registered_ops:
     failures.append(
         f"{ad_ops_rs.relative_to(root)}: the ad extension declares no `ops = [...]` "
         "list; the JS layer has no host bridge to call and this check cannot run"
     )
-    registered_ops: set[str] = set()
-else:
-    registered_ops = {
-        name.strip()
-        for name in ops_block.group("ops").split(",")
-        if name.strip()
-    }
 
 for required_op in ("op_ad_is_supported", "op_ad_show", "op_ad_create"):
-    if ops_block and required_op not in registered_ops:
+    if registered_ops and required_op not in registered_ops:
         failures.append(
             f"{ad_ops_rs.relative_to(root)}: `{required_op}` is not registered in "
             f"the ad extension (registered: {sorted(registered_ops)}); the ad "

@@ -376,6 +376,11 @@ allowed_to_declare() {
         platforms/apple/core/Sources/MigoAppleCore/MigoDeploymentFloor.swift) return 0 ;;
         scripts/build-apple-sdk.sh) return 0 ;;
         scripts/build-v8-apple.sh) return 0 ;;
+        # The vendored skia-bindings (#619) reads MACOSX_DEPLOYMENT_TARGET from
+        # the environment build-apple-sdk.sh exports and passes it to Skia's
+        # compile as the minimum: it consumes the derived floor, as the V8
+        # recipe does, and declares none of its own.
+        engine/third_party/skia-bindings-*/build_support/platform/macos.rs) return 0 ;;
         platforms/apple/ProbeApp/MigoProbe.xcodeproj/project.pbxproj) return 0 ;;
         platforms/apple/DeviceTestHost/MigoDeviceTestHost.xcodeproj/project.pbxproj) return 0 ;;
         scripts/test-apple-deployment-floor-contract.sh) return 0 ;;
