@@ -116,8 +116,10 @@ jobs:
         # job hit its 20-minute ceiling several steps later, which reads as
         # "the contract hung" rather than "apt hung". So probe for what the
         # lane actually needs -- a compiler that can target -m32 -- and only
-        # reach for the network when it is missing, with every attempt bounded
-        # so a slow mirror fails quickly instead of eating the whole budget.
+        # reach for the network when it is missing. A transfer that stalls is
+        # given up after 30 s and retried (Acquire::*); the install itself is
+        # not capped, because a cap cannot tell a hung mirror from a slow one
+        # that is getting there, and the slow one is the common day.
         # A probe that guesses wrong cannot hide anything: the required-ILP32
         # invocations below turn a skipped lane into a failure either way.
         run: |
@@ -126,8 +128,9 @@ jobs:
               | "$1" -m32 -ffreestanding -std=c11 -c -x c - -o /dev/null 2>/dev/null
           }
           install_multilib() {
-            timeout 90 sudo apt-get update -qq || return 1
-            timeout 150 sudo apt-get install -y -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -qq gcc-multilib || return 1
+            timeout 90 sudo apt-get update -qq \
+              || echo "apt-get update incomplete; continuing on the image's indexes" >&2
+            sudo apt-get install -y -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -qq gcc-multilib || return 1
           }
           if ! can_target_m32 gcc || ! can_target_m32 clang; then
             install_multilib || {
@@ -690,8 +693,9 @@ jobs:
       - name: Install the libraries the host engine links
         run: |
           install_libs() {
-            timeout 90 sudo apt-get update -qq || return 1
-            timeout 150 sudo apt-get install -y -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -qq \
+            timeout 90 sudo apt-get update -qq \
+              || echo "apt-get update incomplete; continuing on the image's indexes" >&2
+            sudo apt-get install -y -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -qq \
               libgl-dev libegl-dev libfontconfig1-dev libfreetype-dev \
               libasound2-dev || return 1
           }
@@ -1084,8 +1088,13 @@ jobs:
           # that stalls is given up after 30 s and retried (Acquire::*): the
           # mirror stalling on one package -- libcodec2, 9 MB -- used the whole
           # 300 s twice over, failed the job, and with it skipped the AAR build.
+          # The install is not capped as a whole: on 2026-10-23 the mirror ran
+          # at about 200 KB/s, every package arriving, and a 300 s cap killed
+          # the install and its retry at exactly 300 s each. Stalls are what a
+          # bound is for, and Acquire::http::Timeout bounds them; the job's
+          # ceiling bounds the rest.
           install_pkgs() {
-            timeout 300 sudo apt-get install -y -o Acquire::Retries=5 -o Acquire::http::Timeout=30 \
+            sudo apt-get install -y -o Acquire::Retries=5 -o Acquire::http::Timeout=30 \
               cmake ninja-build g++ ripgrep xvfb xauth \
               qt6-base-dev qt6-base-dev-tools qt6-qpa-plugins \
               libx11-dev libxkbcommon-x11-dev libxcb-cursor0 \
@@ -1342,7 +1351,7 @@ jobs:
           timeout 180 sudo apt-get update -qq \
             || echo "apt-get update incomplete; continuing on the image's indexes" >&2
           install_pkgs() {
-            timeout 300 sudo apt-get install -y -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -qq \
+            sudo apt-get install -y -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -qq \
               clang ninja-build \
               libgl-dev libegl-dev libgles-dev \
               libgl1-mesa-dri libegl-mesa0 \
@@ -1475,7 +1484,7 @@ jobs:
           timeout 180 sudo apt-get update -qq \
             || echo "apt-get update incomplete; continuing on the image's indexes" >&2
           install_pkgs() {
-            timeout 300 sudo apt-get install -y -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -qq \
+            sudo apt-get install -y -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -qq \
               ninja-build \
               libgl-dev libegl-dev libgles-dev \
               libgl1-mesa-dri libegl-mesa0 \
