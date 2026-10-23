@@ -111,7 +111,9 @@ fn main() {
             startup_snapshot: None,
             skip_op_registration: false,
             extensions,
-            extension_transpiler: None,
+            // Comments and indentation are bytes in the snapshot and on every isolate's heap, and
+            // nothing reads them; lines keep their numbers (runtime_v8::js_strip).
+            extension_transpiler: Some(runtime_v8::js_strip::snapshot_transpiler()),
             with_runtime_cb: match snapshot_kind {
                 SnapshotKind::Host => None,
                 SnapshotKind::Worker => Some(Box::new(|rt| {

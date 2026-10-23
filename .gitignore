@@ -8,6 +8,9 @@ Cargo.lock
 # lockfile is missing.
 !engine/Cargo.lock
 !tools/artifact-manifest/Cargo.lock
+# The vendored skia-bindings is the published crate byte for byte, its lockfile included
+# (scripts/test-skia-bindings-vendor-contract.sh compares every file).
+!engine/third_party/skia-bindings-*/Cargo.lock
 
 # Build outputs
 *.aar
@@ -133,6 +136,9 @@ engine/third_party/linux-sysroot/*
 # unsuffixed directory's contents already are.
 engine/third_party/angle-windows/
 engine/third_party/angle-windows-*/
+# What the vendored skia-bindings build script downloads into its own directory.
+engine/third_party/skia-bindings-*/skia/
+engine/third_party/skia-bindings-*/depot_tools/
 
 # The same class of file for Apple, from scripts/build-angle-apple.sh: the
 # libEGL.dylib and libGLESv2.dylib each xcframework slice group is assembled

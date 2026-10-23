@@ -12,12 +12,15 @@
 //!     locale's file ICU falls back to the root, which formats `1234.5` as `1,234.5` for a German user: a wrong
 //!     answer, not a missing one. The files are small (about 2 KB each), so all of them stay.
 //!   * **Break iterators and their dictionaries**: `Intl.Segmenter`, line breaking in text layout, Chinese and Japanese
-//!     word segmentation (`cjdict`, 2 MB, which is what a Chinese-market engine cannot do without).
+//!     word segmentation (`cjdict`, 2 MB). Without `cjdict` nothing throws: `我们是中国人` comes back as one word, the
+//!     same kind of wrong answer the rule above refuses.
 //!   * **Collation** for the root and for Chinese (pinyin, stroke and zhuyin orders: sorting a Chinese player list).
+//!     Without the tailoring Chinese sorts by code point, and `'张'.localeCompare('李', 'zh')` changes sign.
 //!   * **Time zones**: the rules (`zoneinfo64`, `metaZones`, `windowsZones`) are part of the core and stay.
 //!   * **Display names** (languages, regions, currencies, units, zone names) only for the locales below: the top
-//!     languages of the platforms this engine targets. Everything else falls back to the root, and the root spells
-//!     a currency by its ISO code and a language by its tag.
+//!     languages of the markets this engine ships to, South Asia (`hi`, `bn`, `ur`) and South-East Asia (`ms`, `fil`)
+//!     among them. Everything else falls back to English, the default locale: a Hindi currency name read
+//!     "Indian rupees" before `hi` was listed. About 40 KB a language.
 //!
 //! Dropped: converters, transliteration, number spell-out, the confusables and UTS #46 tables, the "scf" normalizer,
 //! and the collation tailorings and display names of the locales not listed.
@@ -26,7 +29,7 @@
 /// are always kept: other items refer to them.
 pub const KEEP_LOCALES: &[&str] = &[
     "root", "en", "zh", "ja", "ko", "es", "fr", "de", "pt", "ru", "ar", "id", "th", "vi", "tr",
-    "it",
+    "it", "hi", "bn", "ur", "ms", "fil",
 ];
 
 /// Collation tailorings kept besides the root's.
@@ -71,8 +74,8 @@ pub fn keep(name: &str) -> bool {
                 || stem == "ucadata"
                 || KEEP_COLLATION.contains(&language(stem))
         }
-        // Break iterators and dictionaries: every one stays. `brkitr/root.res` names the dictionaries of the
-        // scripts it breaks, and a missing one is an error the first time such a script is segmented.
+        // Break iterators and dictionaries: every one stays. A missing dictionary is not an error but a silent
+        // wrong answer -- the script's run is treated as one word (see the module docs).
         _ => true,
     }
 }

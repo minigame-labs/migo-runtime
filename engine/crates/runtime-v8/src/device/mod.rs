@@ -443,54 +443,56 @@ pub fn op_scan_code(state: &mut OpState, #[string] options_json: String) -> Resu
 
 // ==================== Extension Definition ====================
 
-deno_core::extension!(
+main_runtime_extension!(
     host_v8_device,
-    deps = [host_v8_base],
-    ops = [
-        // Clipboard
-        op_set_clipboard_data,
-        op_get_clipboard_data,
-        // Battery
-        op_get_battery_info,
-        // Vibration
-        op_vibrate_short,
-        op_vibrate_long,
-        // Screen
-        op_get_screen_brightness,
-        op_set_screen_brightness,
-        op_set_keep_screen_on,
-        op_set_device_orientation,
-        op_start_capture_screen,
-        op_stop_capture_screen,
-        op_get_screen_recording_state,
-        op_start_screen_recording_observer,
-        op_stop_screen_recording_observer,
-        op_set_visual_effect_on_capture,
-        // Debug
-        op_set_enable_debug,
-        // Device Motion
-        op_start_device_motion,
-        op_stop_device_motion,
-        // Gyroscope
-        op_start_gyroscope,
-        op_stop_gyroscope,
-        // Compass
-        op_start_compass,
-        op_stop_compass,
-        // Accelerometer
-        op_start_accelerometer,
-        op_stop_accelerometer,
-        // Network
-        op_start_network_monitoring,
-        op_stop_network_monitoring,
-        op_get_network_type,
-        op_get_local_ip_address,
-        // Location
-        op_get_location,
-        op_get_fuzzy_location,
-        // Scan Code
-        op_scan_code,
-    ],
+    {
+        deps = [host_v8_base],
+        ops = [
+            // Clipboard
+            op_set_clipboard_data,
+            op_get_clipboard_data,
+            // Battery
+            op_get_battery_info,
+            // Vibration
+            op_vibrate_short,
+            op_vibrate_long,
+            // Screen
+            op_get_screen_brightness,
+            op_set_screen_brightness,
+            op_set_keep_screen_on,
+            op_set_device_orientation,
+            op_start_capture_screen,
+            op_stop_capture_screen,
+            op_get_screen_recording_state,
+            op_start_screen_recording_observer,
+            op_stop_screen_recording_observer,
+            op_set_visual_effect_on_capture,
+            // Debug
+            op_set_enable_debug,
+            // Device Motion
+            op_start_device_motion,
+            op_stop_device_motion,
+            // Gyroscope
+            op_start_gyroscope,
+            op_stop_gyroscope,
+            // Compass
+            op_start_compass,
+            op_stop_compass,
+            // Accelerometer
+            op_start_accelerometer,
+            op_stop_accelerometer,
+            // Network
+            op_start_network_monitoring,
+            op_stop_network_monitoring,
+            op_get_network_type,
+            op_get_local_ip_address,
+            // Location
+            op_get_location,
+            op_get_fuzzy_location,
+            // Scan Code
+            op_scan_code,
+        ],
+    },
     esm_entry_point = "ext:host_v8_device/99_global_scope.js",
     esm = [
         dir "src/device",
@@ -508,7 +510,7 @@ deno_core::extension!(
         "12_location.js",
         "13_scan_code.js",
         "99_global_scope.js",
-    ]
+    ],
 );
 
 pub fn device_extensions() -> Vec<Extension> {

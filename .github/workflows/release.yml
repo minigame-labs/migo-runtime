@@ -307,6 +307,7 @@ jobs:
           bash scripts/test-v8-gn-pin-contract.sh
           bash scripts/test-apple-frame-channel-contract.sh
           bash scripts/test-v8-patch-application-contract.sh
+          bash scripts/test-skia-bindings-vendor-contract.sh
 
       - name: Every contract gate is invoked by something
         run: bash scripts/test-every-gate-is-invoked.sh
