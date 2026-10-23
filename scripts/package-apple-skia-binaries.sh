@@ -112,10 +112,17 @@ info() { echo "[skia-package] $*"; }
 #
 # `.cargo_vcs_info.json` is written by `cargo package` and is what skia-bindings
 # itself reads (`cargo::crate_repository_hash`) to build the key it looks for.
-# Deriving it the same way is what makes the archive findable.
-VCS_INFO="$(find "${CARGO_HOME:-$HOME/.cargo}/registry/src" -maxdepth 2 \
-    -type d -name 'skia-bindings-*' -print 2>/dev/null | sort | tail -1)/.cargo_vcs_info.json"
-[[ -f "$VCS_INFO" ]] || fail "no .cargo_vcs_info.json under the cargo registry; is skia-bindings vendored differently?"
+# Deriving it the same way is what makes the archive findable. The crate is the one cargo builds,
+# asked of cargo: skia-bindings is vendored under engine/third_party (with the published
+# `.cargo_vcs_info.json`, so the key is unchanged), and a `[patch]`ed crate is never unpacked into
+# the registry -- a registry lookup found nothing on a clean machine.
+SKIA_BINDINGS_DIR="$(cd "$ROOT/engine" && cargo metadata --format-version 1 \
+    | python3 -c 'import json, os, sys
+m = json.load(sys.stdin)
+print(next(os.path.dirname(p["manifest_path"]) for p in m["packages"] if p["name"] == "skia-bindings"))')" \
+    || fail "cargo metadata does not name the skia-bindings crate"
+VCS_INFO="$SKIA_BINDINGS_DIR/.cargo_vcs_info.json"
+[[ -f "$VCS_INFO" ]] || fail "no .cargo_vcs_info.json in $SKIA_BINDINGS_DIR"
 SHA="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["git"]["sha1"])' "$VCS_INFO")"
 SHORT="${SHA:0:20}"
 info "rust-skia commit      $SHORT (from $(basename "$(dirname "$VCS_INFO")"))"

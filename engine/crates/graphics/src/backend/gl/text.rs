@@ -345,8 +345,15 @@ impl Default for TextContext {
 impl TextContext {
     const SYSTEM_FALLBACK_FAMILY: &'static str = "sans-serif";
     const BUNDLED_FALLBACK_FAMILY: &'static str = "migo-default-sans";
-    const BUNDLED_FALLBACK_FONT: &'static [u8] =
-        include_bytes!("../../../tests/fixtures/fonts/NotoSans-Regular.ttf");
+    /// The face for a system with no fonts at all. Android is never that system:
+    /// `sans-serif` resolves through SkFontMgr_Android before this family is
+    /// reached, so shipping it there is 421 KB no chain can arrive at.
+    #[cfg(not(target_os = "android"))]
+    const BUNDLED_FALLBACK_FONT: Option<&'static [u8]> = Some(include_bytes!(
+        "../../../tests/fixtures/fonts/NotoSans-Regular.ttf"
+    ));
+    #[cfg(target_os = "android")]
+    const BUNDLED_FALLBACK_FONT: Option<&'static [u8]> = None;
 
     /// Create a text context with deterministic fallback fonts installed.
     /// Custom families still need explicit registration via
@@ -433,10 +440,10 @@ impl TextContext {
     }
 
     fn install_bundled_fallback(&mut self) {
-        if !self.register_family(
-            &self.bundled_fallback_family.clone(),
-            Self::BUNDLED_FALLBACK_FONT,
-        ) {
+        let Some(font) = Self::BUNDLED_FALLBACK_FONT else {
+            return;
+        };
+        if !self.register_family(&self.bundled_fallback_family.clone(), font) {
             tracing::warn!(
                 "Canvas2D text: failed to install bundled fallback family '{}'",
                 self.bundled_fallback_family
@@ -495,12 +502,18 @@ impl TextContext {
     #[allow(dead_code)]
     fn resolve_primary_typeface(&self, attrs: &TextAttrs) -> Option<Typeface> {
         let style = self.font_style(attrs);
-        // Try the head of the family list first, then the fallback.
+        // Each family in the order the paragraph's `FontCollection` asks for
+        // it -- the asset manager, then the system's -- so both paths settle on
+        // the same face. Searching the whole chain in the asset manager first
+        // let a system `serif` lose to a later asset family, or to nothing.
         // Reuse the cached `asset_font_mgr` instead of
         // cloning the provider on every call — on a UI-heavy
         // scene this helper runs hundreds of times per frame.
         for family in self.effective_families(attrs).iter() {
             if let Some(tf) = self.asset_font_mgr.match_family_style(family, style) {
+                return Some(tf);
+            }
+            if let Some(tf) = self.system_font_mgr.match_family_style(family, style) {
                 return Some(tf);
             }
         }

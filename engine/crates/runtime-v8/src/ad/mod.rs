@@ -112,18 +112,20 @@ pub fn op_ad_destroy(state: &mut OpState, #[string] request_json: &str) -> Resul
     })
 }
 
-deno_core::extension!(
+main_runtime_extension!(
     host_v8_ad,
-    deps = [host_v8_base],
-    ops = [
-        op_ad_is_supported,
-        op_ad_create,
-        op_ad_load,
-        op_ad_show,
-        op_ad_hide,
-        op_ad_update_style,
-        op_ad_destroy,
-    ],
+    {
+        deps = [host_v8_base],
+        ops = [
+            op_ad_is_supported,
+            op_ad_create,
+            op_ad_load,
+            op_ad_show,
+            op_ad_hide,
+            op_ad_update_style,
+            op_ad_destroy,
+        ],
+    },
     esm_entry_point = "ext:host_v8_ad/99_global_scope.js",
     esm = [
         dir "src/ad",

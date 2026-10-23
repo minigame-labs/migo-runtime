@@ -62,14 +62,16 @@ pub fn op_request_midas_payment_game_item(
     ))
 }
 
-deno_core::extension!(
+main_runtime_extension!(
     host_v8_payment,
-    deps = [host_v8_base],
-    ops = [
-        op_check_is_support_midas_payment,
-        op_request_midas_payment,
-        op_request_midas_payment_game_item,
-    ],
+    {
+        deps = [host_v8_base],
+        ops = [
+            op_check_is_support_midas_payment,
+            op_request_midas_payment,
+            op_request_midas_payment_game_item,
+        ],
+    },
     esm_entry_point = "ext:host_v8_payment/99_global_scope.js",
     esm = [
         dir "src/payment",

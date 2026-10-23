@@ -13,6 +13,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib/v8-materialise.sh
 source "$SCRIPT_DIR/lib/v8-materialise.sh"
+# shellcheck source=scripts/lib/skia-external-icu.sh
+source "$SCRIPT_DIR/lib/skia-external-icu.sh"
 # shellcheck source=scripts/lib/cargo-target-dir.sh
 source "$SCRIPT_DIR/lib/cargo-target-dir.sh"
 # shellcheck source=scripts/lib/release-version.sh
@@ -89,6 +91,7 @@ V8_MANIFEST="$V8_DIR/component-manifest.json"
 v8_materialise "$V8_DIR" "$ENGINE_DIR/target/v8-materialised" || exit 1
 export RUSTY_V8_ARCHIVE="$V8_MATERIALISED_ARCHIVE"
 export RUSTY_V8_SRC_BINDING_PATH="$V8_MATERIALISED_BINDING"
+skia_external_icu_export "$ENGINE_DIR" "$TARGET" || exit 1
 
 MANIFEST_TOOL="${MIGO_ARTIFACT_MANIFEST_TOOL:-}"
 if [[ -z "$MANIFEST_TOOL" ]]; then
@@ -160,6 +163,10 @@ TARGET_U="${TARGET//-/_}"
 STATIC_LIB="$CARGO_TARGET/$TARGET/release/libmigo_capi.a"
 [[ -f "$STATIC_LIB" ]] || { err "no static library produced"; exit 1; }
 info "built: $STATIC_LIB ($(stat -c %s "$STATIC_LIB") bytes)"
+# One ICU, V8's, as in every AAR the size gate checks: this archive is linked into a consumer's own
+# .so, where nothing of ours looks again (scripts/lib/skia-external-icu.sh).
+icu="$(python3 "$SCRIPT_DIR/lib/icu_packages.py" "$STATIC_LIB" --expect 1)" \
+    || { err "the static library carries ICU data packages '$icu', not one: Skia must link V8's ICU"; exit 1; }
 
 info "capturing the link line cargo uses"
 CARGO_OUT="$CARGO_TARGET/$TARGET/release/migo-android-native-static-libs.txt"

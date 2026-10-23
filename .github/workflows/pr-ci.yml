@@ -333,6 +333,7 @@ jobs:
           bash scripts/test-v8-gn-pin-contract.sh
           bash scripts/test-apple-frame-channel-contract.sh
           bash scripts/test-v8-patch-application-contract.sh
+          bash scripts/test-skia-bindings-vendor-contract.sh
 
       # And the rule itself, so the list above cannot grow again in silence.
       - name: Every contract gate is invoked by something
