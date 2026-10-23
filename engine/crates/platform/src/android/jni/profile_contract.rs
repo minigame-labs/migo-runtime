@@ -132,6 +132,8 @@ const NATIVE_CONNECTIVITY: &[JniMethod] = methods![
     ("onOpenSystemBluetoothSetting", "(III)V"),
     ("onOpenAppAuthorizeSetting", "(III)V"),
     ("onBluetoothResult", "(IILjava/lang/String;)V"),
+    ("onBlePeripheralResult", "(IILjava/lang/String;)V"),
+    ("onBlePeripheralEvent", "(IILjava/lang/String;)V"),
     ("onBluetoothAdapterStateChange", "(IZZ)V"),
     ("onBluetoothDeviceFound", "(ILjava/lang/String;)V"),
     ("onBeaconUpdate", "(ILjava/lang/String;)V"),
@@ -303,6 +305,15 @@ const JAVA_CONNECTIVITY: &[JniMethod] = methods![
     ("bleGetDeviceRSSI", "(ILjava/lang/String;)V"),
     ("bleSetMTU", "(ILjava/lang/String;)V"),
     ("bleGetMTU", "(ILjava/lang/String;)V"),
+    ("blePeripheralCreateServer", "(ILjava/lang/String;)V"),
+    ("blePeripheralAddService", "(ILjava/lang/String;)V"),
+    ("blePeripheralRemoveService", "(ILjava/lang/String;)V"),
+    ("blePeripheralStartAdvertising", "(ILjava/lang/String;)V"),
+    ("blePeripheralStopAdvertising", "(ILjava/lang/String;)V"),
+    (
+        "blePeripheralWriteCharacteristicValue",
+        "(ILjava/lang/String;)V"
+    ),
     ("gameLogReport", "(ILjava/lang/String;)V"),
     ("authLogin", "(ILjava/lang/String;)V"),
     ("authCheckSession", "(ILjava/lang/String;)V"),
@@ -484,8 +495,9 @@ mod tests {
         // (`onUpdateEvent`). Camera requests the SDK answers once they have
         // happened add +1 native (`onCameraResult`, one for all of them, keyed
         // by method number). Video calls answered the same way add +1 native
-        // (`onVideoResult`).
-        assert_eq!(native.len(), 89, "full NativeBridge surface changed");
+        // (`onVideoResult`). This device as a BLE peripheral adds +2 native,
+        // Connectivity (`onBlePeripheralResult`, `onBlePeripheralEvent`).
+        assert_eq!(native.len(), 91, "full NativeBridge surface changed");
         // Runtime-generation fencing adds +2 Java (`beginRuntimeRestart`,
         // `completeRuntimeRestart`), both Core: every profile restarts.
         // Concurrent-session correctness removes -1 Java (`getCacheDirPath`,
@@ -509,8 +521,9 @@ mod tests {
         // (`navigateBackMiniProgram`). `setInnerAudioOption` is gone, -1 Java,
         // Media: what the option leaves the platform is nothing Android does.
         // A camera's properties content may set add +1 Java, Media
-        // (`cameraSet`).
-        assert_eq!(java.len(), 147, "full NativeExports surface changed");
+        // (`cameraSet`). This device as a BLE peripheral adds +6 Java,
+        // Connectivity (`blePeripheral*`, one per request).
+        assert_eq!(java.len(), 153, "full NativeExports surface changed");
         assert_unique(&native);
         assert_unique(&java);
     }

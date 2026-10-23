@@ -1210,6 +1210,75 @@
           "droppable": true
         }
       }
+    },
+    "ble_peripheral": {
+      "id": 22,
+      "methods": {
+        "create_server": {
+          "id": 0,
+          "kind": "call",
+          "op": "op_create_ble_peripheral_server",
+          "hook": "_internalOnCreateBLEPeripheralServerResult",
+          "error_code_field": "errCode"
+        },
+        "add_service": {
+          "id": 1,
+          "kind": "call",
+          "op": "op_ble_peripheral_add_service",
+          "hook": "_internalOnBLEPeripheralAddServiceResult",
+          "error_code_field": "errCode"
+        },
+        "remove_service": {
+          "id": 2,
+          "kind": "call",
+          "op": "op_ble_peripheral_remove_service",
+          "hook": "_internalOnBLEPeripheralRemoveServiceResult",
+          "error_code_field": "errCode"
+        },
+        "start_advertising": {
+          "id": 3,
+          "kind": "call",
+          "op": "op_ble_peripheral_start_advertising",
+          "hook": "_internalOnBLEPeripheralStartAdvertisingResult",
+          "error_code_field": "errCode"
+        },
+        "stop_advertising": {
+          "id": 4,
+          "kind": "call",
+          "op": "op_ble_peripheral_stop_advertising",
+          "hook": "_internalOnBLEPeripheralStopAdvertisingResult",
+          "error_code_field": "errCode"
+        },
+        "write_characteristic_value": {
+          "id": 5,
+          "kind": "call",
+          "op": "op_ble_peripheral_write_characteristic_value",
+          "hook": "_internalOnBLEPeripheralWriteCharacteristicValueResult",
+          "error_code_field": "errCode"
+        }
+      },
+      "events": {
+        "characteristic_read_request": {
+          "id": 0,
+          "hook": "_internalOnBLEPeripheralCharacteristicReadRequestEvent"
+        },
+        "characteristic_write_request": {
+          "id": 1,
+          "hook": "_internalOnBLEPeripheralCharacteristicWriteRequestEvent"
+        },
+        "characteristic_subscribed": {
+          "id": 2,
+          "hook": "_internalOnBLEPeripheralCharacteristicSubscribedEvent"
+        },
+        "characteristic_unsubscribed": {
+          "id": 3,
+          "hook": "_internalOnBLEPeripheralCharacteristicUnsubscribedEvent"
+        },
+        "connection_state_changed": {
+          "id": 4,
+          "hook": "_internalOnBLEPeripheralConnectionStateChangedEvent"
+        }
+      }
     }
   }
 }

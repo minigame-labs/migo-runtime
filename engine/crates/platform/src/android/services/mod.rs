@@ -6,9 +6,9 @@ use std::sync::{Arc, OnceLock};
 
 use migo_core::services::{
     AccelerometerService, AdService, AudioPlatformService, AuthService, BatteryService,
-    BluetoothService, CameraService, ClipboardService, CodecService, CommerceServices,
-    CompassService, ConnectivityServices, DeviceMotionService, EcosystemService, FileService,
-    GameLogService, GamepadRumble, GamepadService, GyroscopeService, ImageApiService,
+    BlePeripheralService, BluetoothService, CameraService, ClipboardService, CodecService,
+    CommerceServices, CompassService, ConnectivityServices, DeviceMotionService, EcosystemService,
+    FileService, GameLogService, GamepadRumble, GamepadService, GyroscopeService, ImageApiService,
     InteractionService, KeyboardService, LocationService, MediaServices, NavigateService,
     NetworkService, PaymentService, PermissionService, RecorderService, ScanCodeService, Scope,
     ScopeState, ScreenService, SensorServices, ServiceError, ServiceErrorCode, ShareService,
@@ -166,6 +166,12 @@ impl ConnectivityServices for AndroidDeviceServices {
     #[cfg(feature = "api-connectivity")]
     fn bluetooth(&self) -> Option<Arc<dyn BluetoothService>> {
         Some(Arc::new(AndroidBluetooth {
+            session: self.session.clone(),
+        }))
+    }
+    #[cfg(feature = "api-connectivity")]
+    fn ble_peripheral(&self) -> Option<Arc<dyn BlePeripheralService>> {
+        Some(Arc::new(AndroidBlePeripheral {
             session: self.session.clone(),
         }))
     }
@@ -1044,6 +1050,51 @@ impl BluetoothService for AndroidBluetooth {
     }
 }
 
+struct AndroidBlePeripheral {
+    session: SessionGate,
+}
+
+// The SDK answers every request through `onBlePeripheralResult`; serving and
+// advertising need `scope.bluetooth`, releasing what was acquired under it
+// does not.
+impl BlePeripheralService for AndroidBlePeripheral {
+    fn create_server(&self, request_json: &str) -> Result<(), ServiceError> {
+        permission_jni_call(&self.session, Some(Scope::Bluetooth), || {
+            jni::ble_peripheral_create_server(self.session.host_id(), request_json)
+        })
+    }
+
+    fn add_service(&self, request_json: &str) -> Result<(), ServiceError> {
+        permission_jni_call(&self.session, Some(Scope::Bluetooth), || {
+            jni::ble_peripheral_add_service(self.session.host_id(), request_json)
+        })
+    }
+
+    fn remove_service(&self, request_json: &str) -> Result<(), ServiceError> {
+        permission_jni_call(&self.session, None, || {
+            jni::ble_peripheral_remove_service(self.session.host_id(), request_json)
+        })
+    }
+
+    fn start_advertising(&self, request_json: &str) -> Result<(), ServiceError> {
+        permission_jni_call(&self.session, Some(Scope::Bluetooth), || {
+            jni::ble_peripheral_start_advertising(self.session.host_id(), request_json)
+        })
+    }
+
+    fn stop_advertising(&self, request_json: &str) -> Result<(), ServiceError> {
+        permission_jni_call(&self.session, None, || {
+            jni::ble_peripheral_stop_advertising(self.session.host_id(), request_json)
+        })
+    }
+
+    fn write_characteristic_value(&self, request_json: &str) -> Result<(), ServiceError> {
+        permission_jni_call(&self.session, Some(Scope::Bluetooth), || {
+            jni::ble_peripheral_write_characteristic_value(self.session.host_id(), request_json)
+        })
+    }
+}
+
 // ==================== Keyboard ====================
 
 struct AndroidKeyboard {
@@ -1274,6 +1325,13 @@ pub(crate) const ANDROID_PERMISSION_GATED_METHODS: &[(&str, Scope)] = &[
     ("BluetoothService::get_ble_device_rssi", Scope::Bluetooth),
     ("BluetoothService::set_ble_mtu", Scope::Bluetooth),
     ("BluetoothService::get_ble_mtu", Scope::Bluetooth),
+    ("BlePeripheralService::create_server", Scope::Bluetooth),
+    ("BlePeripheralService::add_service", Scope::Bluetooth),
+    ("BlePeripheralService::start_advertising", Scope::Bluetooth),
+    (
+        "BlePeripheralService::write_characteristic_value",
+        Scope::Bluetooth,
+    ),
     (
         "ImageApiService::save_image_to_photos_album",
         Scope::WritePhotosAlbum,
@@ -1295,6 +1353,8 @@ pub(crate) const ANDROID_PERMISSION_CLEANUP_METHODS: &[(&str, Scope)] = &[
     ("BluetoothService::stop_devices_discovery", Scope::Bluetooth),
     ("BluetoothService::stop_beacon_discovery", Scope::Bluetooth),
     ("BluetoothService::close_ble_connection", Scope::Bluetooth),
+    ("BlePeripheralService::remove_service", Scope::Bluetooth),
+    ("BlePeripheralService::stop_advertising", Scope::Bluetooth),
 ];
 
 /// Scope decisions the host has pushed for a session.

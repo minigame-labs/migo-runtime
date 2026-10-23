@@ -17,6 +17,8 @@ mod ad_reward_integrity;
 #[cfg(feature = "api-system")]
 mod ad_splash_status;
 mod api_failures;
+// What every API reaches is the full profile's record.
+#[cfg(feature = "profile-full")]
 mod api_reach;
 #[cfg(feature = "api-media")]
 mod audio_aud11;
@@ -25,6 +27,8 @@ mod audio_context_close;
 #[cfg(feature = "api-media")]
 mod audio_source_ended;
 mod binary_helper;
+#[cfg(feature = "api-connectivity")]
+mod ble_peripheral_lifecycle;
 mod callback_isolation;
 #[cfg(feature = "api-media")]
 mod camera_lifecycle;

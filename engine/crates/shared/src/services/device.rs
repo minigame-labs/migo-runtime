@@ -5,11 +5,11 @@ use std::sync::Arc;
 use crate::protocol::error::ServiceError;
 
 use super::{
-    AdService, AuthService, CameraService, ClipboardService, CodecService, EcosystemService,
-    FileService, GameLogService, ImageApiService, InteractionService, LocationService,
-    NavigateService, NetworkService, PaymentService, PermissionService, RecorderService,
-    ScanCodeService, ShareService, SubpackageService, SystemInfoService, UpdateService,
-    VideoDecoderService, VideoService, WindowService,
+    AdService, AuthService, BlePeripheralService, CameraService, ClipboardService, CodecService,
+    EcosystemService, FileService, GameLogService, ImageApiService, InteractionService,
+    LocationService, NavigateService, NetworkService, PaymentService, PermissionService,
+    RecorderService, ScanCodeService, ShareService, SubpackageService, SystemInfoService,
+    UpdateService, VideoDecoderService, VideoService, WindowService,
 };
 
 // ==================== Battery ====================
@@ -624,6 +624,11 @@ pub trait ConnectivityServices: Send + Sync {
         None
     }
     fn bluetooth(&self) -> Option<Arc<dyn BluetoothService>> {
+        None
+    }
+    /// This device as a Bluetooth LE peripheral, which a host declares apart
+    /// from the central role.
+    fn ble_peripheral(&self) -> Option<Arc<dyn BlePeripheralService>> {
         None
     }
     fn location(&self) -> Option<Arc<dyn LocationService>> {

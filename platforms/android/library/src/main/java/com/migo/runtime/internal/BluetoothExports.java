@@ -2,6 +2,7 @@ package com.migo.runtime.internal;
 
 import android.app.Activity;
 
+import com.migo.runtime.internal.platform.BlePeripheral;
 import com.migo.runtime.internal.platform.BluetoothManager;
 
 import org.json.JSONException;
@@ -97,8 +98,13 @@ public final class BluetoothExports {
             }
             return;
         }
+        answer(reply, () -> operation.run(manager, options, reply));
+    }
+
+    /** Run what answers {@code reply}; a failure it throws is the answer instead. */
+    private static void answer(BluetoothManager.Reply reply, Runnable operation) {
         try {
-            operation.run(manager, options, reply);
+            operation.run();
         } catch (BluetoothManager.BluetoothFailure failure) {
             reply.fail(failure.errCode, failure.getMessage());
         } catch (SecurityException denied) {
@@ -228,6 +234,79 @@ public final class BluetoothExports {
     public static void bleGetMTU(int sessionId, String requestJson) {
         request(sessionId, BluetoothManager.Method.GET_BLE_MTU, requestJson, false,
                 BluetoothManager::getBLEMTU);
+    }
+
+    // ==================== Peripheral ====================
+    //
+    // This device as a peripheral serves through the session's open adapter, as
+    // on the reference: before openBluetoothAdapter every request is "not init".
+    // Each is answered once through NativeMethods.onBlePeripheralResult.
+
+    private static final BluetoothManager.ResultSink PERIPHERAL_SINK = NativeMethods::onBlePeripheralResult;
+
+    private interface PeripheralOperation {
+        void run(BlePeripheral peripheral, JSONObject options, BluetoothManager.Reply reply);
+    }
+
+    private static void peripheralRequest(int sessionId, BlePeripheral.Method method, String requestJson,
+                                          PeripheralOperation operation) {
+        JSONObject options;
+        try {
+            options = new JSONObject(requestJson);
+        } catch (JSONException malformed) {
+            new BluetoothManager.Reply(sessionId, method.ordinal(), method.apiName,
+                    CallbackCorrelation.ABSENT, PERIPHERAL_SINK)
+                    .fail(BluetoothManager.INVALID_DATA, "invalid data");
+            return;
+        }
+        BluetoothManager.Reply reply = new BluetoothManager.Reply(sessionId, method.ordinal(),
+                method.apiName, CallbackCorrelation.requestIdOf(options), PERIPHERAL_SINK);
+        BluetoothManager manager = sBluetoothManagers.get(sessionId);
+        if (method == BlePeripheral.Method.STOP_ADVERTISING) {
+            // Nothing open advertises nothing.
+            BlePeripheral open = manager != null ? manager.openPeripheral() : null;
+            if (open == null) {
+                reply.ok();
+                return;
+            }
+            answer(reply, () -> operation.run(open, options, reply));
+            return;
+        }
+        if (manager == null) {
+            reply.fail(BluetoothManager.NOT_INIT, "not init");
+            return;
+        }
+        answer(reply, () -> operation.run(manager.peripheral(), options, reply));
+    }
+
+    public static void blePeripheralCreateServer(int sessionId, String requestJson) {
+        peripheralRequest(sessionId, BlePeripheral.Method.CREATE_SERVER, requestJson,
+                BlePeripheral::createServer);
+    }
+
+    public static void blePeripheralAddService(int sessionId, String requestJson) {
+        peripheralRequest(sessionId, BlePeripheral.Method.ADD_SERVICE, requestJson,
+                BlePeripheral::addService);
+    }
+
+    public static void blePeripheralRemoveService(int sessionId, String requestJson) {
+        peripheralRequest(sessionId, BlePeripheral.Method.REMOVE_SERVICE, requestJson,
+                BlePeripheral::removeService);
+    }
+
+    public static void blePeripheralStartAdvertising(int sessionId, String requestJson) {
+        peripheralRequest(sessionId, BlePeripheral.Method.START_ADVERTISING, requestJson,
+                BlePeripheral::startAdvertising);
+    }
+
+    public static void blePeripheralStopAdvertising(int sessionId, String requestJson) {
+        peripheralRequest(sessionId, BlePeripheral.Method.STOP_ADVERTISING, requestJson,
+                BlePeripheral::stopAdvertising);
+    }
+
+    public static void blePeripheralWriteCharacteristicValue(int sessionId, String requestJson) {
+        peripheralRequest(sessionId, BlePeripheral.Method.WRITE_CHARACTERISTIC_VALUE, requestJson,
+                BlePeripheral::writeCharacteristicValue);
     }
 
     public static void destroyBluetoothManager(int sessionId) {

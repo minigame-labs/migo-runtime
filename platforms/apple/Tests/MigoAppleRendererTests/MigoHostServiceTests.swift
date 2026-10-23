@@ -59,10 +59,14 @@ final class MigoHostServiceTests: XCTestCase {
     }
 
     func testTheServicesAreTheHeadersNumbersOneBitEach() {
-        XCTAssertEqual(MigoHostServiceID.all.count, 19)
-        XCTAssertEqual(MigoHostServiceID.all.map(\.rawValue), Array(0..<19).map(UInt32.init))
+        // Every number up to the header's newest service, none missing: a count
+        // written here went stale three services ago.
+        let count = Int(MIGO_HOST_SERVICE_BLE_PERIPHERAL) + 1
+        XCTAssertEqual(MigoHostServiceID.all.count, count)
+        XCTAssertEqual(MigoHostServiceID.all.map(\.rawValue), Array(0..<count).map(UInt32.init))
         XCTAssertEqual(MigoHostServiceID.update.rawValue, UInt32(MIGO_HOST_SERVICE_UPDATE))
-        XCTAssertEqual(Set(MigoHostServiceID.all.map(\.bit)).count, 19)
+        XCTAssertEqual(MigoHostServiceID.blePeripheral.rawValue, UInt32(MIGO_HOST_SERVICE_BLE_PERIPHERAL))
+        XCTAssertEqual(Set(MigoHostServiceID.all.map(\.bit)).count, count)
     }
 
     private final class Provider: MigoHostServiceProvider {

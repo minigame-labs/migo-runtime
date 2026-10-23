@@ -29,12 +29,12 @@ use deno_core::serde_json::{self, Value, json};
 use deno_core::{FastString, JsRuntime, PollEventLoopOptions, RuntimeOptions, v8};
 use shared::services::{
     AccelerometerService, AdService, AudioPlatformService, AuthService, BatteryService,
-    BluetoothService, CameraService, ClipboardService, CodecService, CommerceServices,
-    CompassService, ConnectivityServices, DeviceMotionService, EcosystemService, FileService,
-    GameLogService, GamepadService, GyroscopeService, ImageApiService, InteractionService,
-    KeyboardService, LocationService, MediaServices, NavigateService, NetworkService,
-    PaymentService, PermissionService, RecorderService, ScanCodeService, Scope, ScopeState,
-    ScreenService, SensorServices, ServiceError, ShareService, SubpackageService,
+    BlePeripheralService, BluetoothService, CameraService, ClipboardService, CodecService,
+    CommerceServices, CompassService, ConnectivityServices, DeviceMotionService, EcosystemService,
+    FileService, GameLogService, GamepadService, GyroscopeService, ImageApiService,
+    InteractionService, KeyboardService, LocationService, MediaServices, NavigateService,
+    NetworkService, PaymentService, PermissionService, RecorderService, ScanCodeService, Scope,
+    ScopeState, ScreenService, SensorServices, ServiceError, ShareService, SubpackageService,
     SystemInfoService, SystemUtilServices, UpdateService, VibrationService, VideoDecoderService,
     VideoFrameSource, VideoService, WindowService,
 };
@@ -81,6 +81,7 @@ probe_accessors!(MediaServices {
 probe_accessors!(ConnectivityServices {
     network: NetworkService,
     bluetooth: BluetoothService,
+    ble_peripheral: BlePeripheralService,
     location: LocationService,
 });
 probe_accessors!(CommerceServices {
@@ -139,6 +140,40 @@ impl EcosystemService for ProbeService {}
 impl CameraService for ProbeService {
     fn create(&self, _request_json: &str) -> Result<(), ServiceError> {
         Ok(())
+    }
+}
+
+/// The calls a probed host answers, as a host does once it has done what was
+/// asked: the hook, and the request it answers. Drained by the probe loop, which
+/// dispatches each answer as a host's would arrive.
+static ANSWERS: Mutex<Vec<(&str, String)>> = Mutex::new(Vec::new());
+
+/// A host that serves: content's server is made, so what its methods reach is
+/// measured too. Its server arrives only in the answer.
+impl BlePeripheralService for ProbeService {
+    fn create_server(&self, request_json: &str) -> Result<(), ServiceError> {
+        ANSWERS.lock().unwrap().push((
+            shared::services::BLE_PERIPHERAL_RESULT_HOOKS
+                [shared::services::ble_peripheral_method::CREATE_SERVER as usize],
+            request_json.to_owned(),
+        ));
+        Ok(())
+    }
+}
+
+/// Every answer a probed host owes, dispatched as the host's would arrive.
+fn answer_probed_calls(runtime: &mut JsRuntime) {
+    let answers: Vec<_> = ANSWERS.lock().unwrap().drain(..).collect();
+    for (hook, request) in answers {
+        let request: Value = serde_json::from_str(&request).expect("a request is JSON");
+        let answer = json!({ "requestId": request["requestId"] }).to_string();
+        eval_string(
+            runtime,
+            format!(
+                "globalThis[Symbol.for('Migo.hostBridge')]._internalDispatch({hook:?}, {:?}); ''",
+                json!([answer]).to_string()
+            ),
+        );
     }
 }
 
@@ -318,6 +353,18 @@ const CALLS: &[(&str, &str)] = &[
     (
         "createInterstitialAd",
         "__probeCall('createInterstitialAd', [{ adUnitId: 'probe' }])",
+    ),
+    (
+        "createBLEPeripheralServer",
+        "migo.createBLEPeripheralServer().then(function (res) { \
+             var server = res.server; \
+             server.addService({ service: { uuid: 'FFE0', characteristics: [] } }); \
+             server.removeService({ serviceId: 'FFE0' }); \
+             server.startAdvertising({ advertiseRequest: {} }); \
+             server.stopAdvertising({}); \
+             server.writeCharacteristicValue({ serviceId: 'FFE0', characteristicId: 'FFE1', \
+                 value: new ArrayBuffer(1), needNotify: false }); \
+         }, function () {})",
     ),
     (
         "createVideo",
@@ -514,7 +561,6 @@ fn eval_string(runtime: &mut JsRuntime, source: String) -> String {
     v8::Local::new(scope, value).to_rust_string_lossy(scope)
 }
 
-#[cfg(feature = "profile-full")]
 #[test]
 fn api_reach_matches_the_committed_record() {
     let reference: Value = serde_json::from_str(
@@ -611,6 +657,7 @@ fn api_reach_matches_the_committed_record() {
             let deadline = std::time::Instant::now() + SETTLE_BOUND;
             loop {
                 let before = dispatched.get();
+                answer_probed_calls(&mut runtime);
                 reactor.block_on(async {
                     let _ = tokio::time::timeout(
                         SETTLE_SLICE,
