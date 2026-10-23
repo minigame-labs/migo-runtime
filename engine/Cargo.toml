@@ -37,6 +37,8 @@ members = [
 # `#[global_allocator]`, which is unique per binary, so it must never be reachable
 # from a shipped crate's `[dependencies]`; being a separate crate consumed only
 # through `[dev-dependencies]` is what makes that cargo's rule instead of a promise.
+# Not tools/snapshot-gen: its runtime-v8 takes `all-extension-js`, and a default build that includes it
+# unifies that feature into the shipped library, which then carries JS its snapshot already holds.
 default-members = [
  "crates/android-jni",
  "crates/audio",
@@ -54,7 +56,6 @@ default-members = [
  "testing/alloc-probe",
  "testing/contention-probe",
  "testing/executor-probe",
- "tools/snapshot-gen",
 ]
 
 # Mirrors `release/VERSION`, which is the repository's single release-version
@@ -317,6 +318,13 @@ opt-level = 3
 
 [profile.release-hot3.package.migo-runtime-v8]
 opt-level = 3
+
+# Skia's ICU calls resolve against V8's on Android instead of a second, bundled ICU (1.36 MB of
+# libmigo.so and a second Unicode version). Inert unless SKIA_EXTERNAL_ICU_INCLUDE_DIRS is set; the
+# copy is the published crate plus engine/third_party/skia-bindings-patches, which
+# scripts/test-skia-bindings-vendor-contract.sh proves byte for byte.
+[patch.crates-io]
+skia-bindings = { path = "third_party/skia-bindings-0.93.1" }
 
 # =============================================================================
 # Dev Profile - Faster compilation for development
