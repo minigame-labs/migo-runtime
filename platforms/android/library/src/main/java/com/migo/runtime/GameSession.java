@@ -423,6 +423,18 @@ public final class GameSession implements Closeable {
         Log.d("MigoSession", "Session " + sessionId + " state: " + prev + " -> RUNNING");
         notifyStateChange(prev, SessionState.RUNNING);
         NativeExports.resumePowerSensitiveManagers(sessionId);
+        // A session created with its Surface is given no first updateSurface, and its activity's
+        // onResume came before it existed: its debug overlay goes up as it starts running, as on a
+        // resume -- monitoring first, which a pause stops. With no window token yet, the next
+        // resume or surface update tries again.
+        synchronized (lock) {
+            if (debugOverlay != null) {
+                debugOverlay.startMonitoring();
+                if (!debugOverlayAttached) {
+                    tryAttachDebugOverlay();
+                }
+            }
+        }
     }
 
     /**
