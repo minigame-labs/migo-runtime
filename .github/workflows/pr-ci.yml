@@ -1437,8 +1437,10 @@ jobs:
       # And one the tests need at run time, not build time: the Linux video
       # decoder loads GStreamer, so its tests want it present, with its base,
       # good and libav plugins -- playbin and videoconvert, the MP4 demuxer, the
-      # H.264 decoder the fixture clip needs:
+      # H.264 decoder the fixture clip needs -- and the game recorder's tests
+      # want an H.264 encoder to record with, x264's from the ugly plugins:
       #   gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav
+      #   gstreamer1.0-plugins-ugly
       # NO Rust cache, for the reason scripts/lib/v8-materialise.sh's header
       # states: `cargo test -p migo-core` links V8, and Swatinem/rust-cache keeps
       # the v8 build script's fingerprint while pruning the archive that script
@@ -1477,7 +1479,8 @@ jobs:
               libgl1-mesa-dri libegl-mesa0 \
               libfontconfig1-dev libfreetype-dev \
               libasound2-dev \
-              gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav || return 1
+              gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav \
+              gstreamer1.0-plugins-ugly || return 1
           }
           install_pkgs || {
             echo "host build dependency install failed; retrying once" >&2

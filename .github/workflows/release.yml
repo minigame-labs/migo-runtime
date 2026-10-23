@@ -1061,7 +1061,8 @@ jobs:
               libgl1-mesa-dri libegl-mesa0 \
               libfontconfig1-dev libfreetype-dev \
               libasound2-dev \
-              gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav || return 1
+              gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav \
+              gstreamer1.0-plugins-ugly || return 1
           }
           install_pkgs || {
             echo "host build dependency install failed; retrying once" >&2

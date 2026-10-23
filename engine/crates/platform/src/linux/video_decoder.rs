@@ -17,25 +17,19 @@
 //! instead of its own time.
 
 use std::ffi::{CStr, CString, c_char, c_int, c_uint, c_void};
-use std::sync::OnceLock;
 
-use libloading::Library;
+use super::gst::{
+    GST_CLOCK_TIME_NONE, GST_MAP_READ, GST_MESSAGE_ERROR, GST_STATE_CHANGE_FAILURE, GST_STATE_NULL,
+    GST_STATE_PLAYING, Gst, GstClockTime, GstMapInfo, GstMessage,
+};
+
 use shared::protocol::error::ServiceError;
 use shared::services::{FrameTiming, VideoDecoderService, VideoFrameSource};
 
-type Gboolean = c_int;
-type GstClockTime = u64;
-
-const GST_CLOCK_TIME_NONE: GstClockTime = u64::MAX;
-const GST_STATE_NULL: c_int = 1;
-const GST_STATE_PLAYING: c_int = 4;
-const GST_STATE_CHANGE_FAILURE: c_int = 0;
 const GST_FORMAT_TIME: c_int = 3;
 const GST_SEEK_FLAG_FLUSH: c_int = 1 << 0;
 const GST_SEEK_FLAG_KEY_UNIT: c_int = 1 << 2;
 const GST_SEEK_FLAG_SNAP_BEFORE: c_int = 1 << 5;
-const GST_MAP_READ: c_int = 1;
-const GST_MESSAGE_ERROR: c_uint = 1 << 1;
 const GST_BUS_DROP: c_int = 0;
 const GST_BUS_PASS: c_int = 1;
 /// playbin's flags: the video, deinterlaced when it is interlaced.
@@ -43,202 +37,6 @@ const GST_PLAY_FLAGS: c_uint = 0x1 | 0x200;
 /// How long a wait for a frame goes before the pipeline is asked whether it
 /// failed: a failed pipeline stops sending, and never says so to the sink.
 const PULL_WAIT_NS: GstClockTime = 100_000_000;
-
-#[repr(C)]
-struct GError {
-    domain: u32,
-    code: c_int,
-    message: *const c_char,
-}
-
-#[repr(C)]
-struct GstMiniObject {
-    kind: usize,
-    refcount: c_int,
-    lockstate: c_int,
-    flags: c_uint,
-    copy: *mut c_void,
-    dispose: *mut c_void,
-    free: *mut c_void,
-    priv_uint: c_uint,
-    priv_pointer: *mut c_void,
-}
-
-/// GstBuffer's public head, which its timestamp is read from: the C API reads
-/// it through a macro on this field.
-#[repr(C)]
-struct GstBuffer {
-    mini_object: GstMiniObject,
-    pool: *mut c_void,
-    pts: GstClockTime,
-    dts: GstClockTime,
-    duration: GstClockTime,
-}
-
-/// GstMessage's public head, which its type is read from: the C API reads it
-/// through a macro on this field.
-#[repr(C)]
-struct GstMessage {
-    mini_object: GstMiniObject,
-    kind: c_uint,
-}
-
-#[repr(C)]
-struct GstMapInfo {
-    memory: *mut c_void,
-    flags: c_int,
-    data: *const u8,
-    size: usize,
-    maxsize: usize,
-    user_data: [*mut c_void; 4],
-    reserved: [*mut c_void; 4],
-}
-
-/// The GStreamer entry points used, resolved once.
-struct Gst {
-    init_check:
-        unsafe extern "C" fn(*mut c_int, *mut *mut *mut c_char, *mut *mut GError) -> Gboolean,
-    element_factory_make: unsafe extern "C" fn(*const c_char, *const c_char) -> *mut c_void,
-    parse_bin_from_description:
-        unsafe extern "C" fn(*const c_char, Gboolean, *mut *mut GError) -> *mut c_void,
-    bin_get_by_name: unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_void,
-    filename_to_uri: unsafe extern "C" fn(*const c_char, *mut *mut GError) -> *mut c_char,
-    element_set_state: unsafe extern "C" fn(*mut c_void, c_int) -> c_int,
-    element_seek_simple: unsafe extern "C" fn(*mut c_void, c_int, c_int, i64) -> Gboolean,
-    element_get_bus: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
-    bus_set_sync_handler: unsafe extern "C" fn(
-        *mut c_void,
-        Option<unsafe extern "C" fn(*mut c_void, *mut GstMessage, *mut c_void) -> c_int>,
-        *mut c_void,
-        *mut c_void,
-    ),
-    bus_pop_filtered: unsafe extern "C" fn(*mut c_void, c_uint) -> *mut c_void,
-    message_parse_error: unsafe extern "C" fn(*mut c_void, *mut *mut GError, *mut *mut c_char),
-    mini_object_unref: unsafe extern "C" fn(*mut c_void),
-    object_ref_sink: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
-    object_unref: unsafe extern "C" fn(*mut c_void),
-    sample_get_buffer: unsafe extern "C" fn(*mut c_void) -> *mut GstBuffer,
-    sample_get_caps: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
-    sample_get_segment: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
-    segment_to_stream_time: unsafe extern "C" fn(*const c_void, c_int, u64) -> u64,
-    caps_get_structure: unsafe extern "C" fn(*mut c_void, c_uint) -> *mut c_void,
-    structure_get_int: unsafe extern "C" fn(*mut c_void, *const c_char, *mut c_int) -> Gboolean,
-    buffer_map: unsafe extern "C" fn(*mut GstBuffer, *mut GstMapInfo, c_int) -> Gboolean,
-    buffer_unmap: unsafe extern "C" fn(*mut GstBuffer, *mut GstMapInfo),
-    app_sink_try_pull_sample: unsafe extern "C" fn(*mut c_void, GstClockTime) -> *mut c_void,
-    app_sink_is_eos: unsafe extern "C" fn(*mut c_void) -> Gboolean,
-    object_set: unsafe extern "C" fn(*mut c_void, *const c_char, ...),
-    error_free: unsafe extern "C" fn(*mut GError),
-    free: unsafe extern "C" fn(*mut c_void),
-    // Held for as long as the entry points are: for the process.
-    _libraries: [Library; 4],
-}
-
-// SAFETY: the entry points are plain functions, safe to call from any thread;
-// GStreamer serialises what it must itself.
-unsafe impl Send for Gst {}
-unsafe impl Sync for Gst {}
-
-impl Gst {
-    /// GStreamer, loaded; `None` when the system has none.
-    fn loaded() -> Option<&'static Gst> {
-        static LOADED: OnceLock<Option<Gst>> = OnceLock::new();
-        LOADED.get_or_init(Gst::load).as_ref()
-    }
-
-    /// GStreamer, loaded and initialised, or why not.
-    fn initialised() -> Result<&'static Gst, ServiceError> {
-        static INITIALISED: OnceLock<Result<(), String>> = OnceLock::new();
-        let gst = Gst::loaded()
-            .ok_or_else(|| ServiceError::not_supported("GStreamer is not installed"))?;
-        INITIALISED
-            .get_or_init(|| {
-                let mut error = std::ptr::null_mut();
-                // SAFETY: GStreamer may be initialised from any thread, more
-                // than once; the error, if any, is ours.
-                let done = unsafe {
-                    (gst.init_check)(std::ptr::null_mut(), std::ptr::null_mut(), &mut error)
-                };
-                // SAFETY: as above.
-                let why = unsafe { gst.take_error(error) };
-                if done != 0 {
-                    Ok(())
-                } else {
-                    Err(why.unwrap_or_else(|| "GStreamer could not start".to_owned()))
-                }
-            })
-            .as_ref()
-            .map(|()| gst)
-            .map_err(|why| ServiceError::not_supported(why.clone()))
-    }
-
-    fn load() -> Option<Gst> {
-        // SAFETY: loading the system's GStreamer, GObject and GLib runs their
-        // constructors, which have no preconditions.
-        let (gst, app, gobject, glib) = unsafe {
-            (
-                Library::new("libgstreamer-1.0.so.0").ok()?,
-                Library::new("libgstapp-1.0.so.0").ok()?,
-                Library::new("libgobject-2.0.so.0").ok()?,
-                Library::new("libglib-2.0.so.0").ok()?,
-            )
-        };
-        macro_rules! symbol {
-            ($library:expr, $name:literal) => {
-                // SAFETY: the symbol is the C function of that name, whose
-                // prototype the field it is stored in declares.
-                *unsafe { $library.get(concat!($name, "\0").as_bytes()) }.ok()?
-            };
-        }
-        Some(Gst {
-            init_check: symbol!(gst, "gst_init_check"),
-            element_factory_make: symbol!(gst, "gst_element_factory_make"),
-            parse_bin_from_description: symbol!(gst, "gst_parse_bin_from_description"),
-            bin_get_by_name: symbol!(gst, "gst_bin_get_by_name"),
-            filename_to_uri: symbol!(gst, "gst_filename_to_uri"),
-            element_set_state: symbol!(gst, "gst_element_set_state"),
-            element_seek_simple: symbol!(gst, "gst_element_seek_simple"),
-            element_get_bus: symbol!(gst, "gst_element_get_bus"),
-            bus_set_sync_handler: symbol!(gst, "gst_bus_set_sync_handler"),
-            bus_pop_filtered: symbol!(gst, "gst_bus_pop_filtered"),
-            message_parse_error: symbol!(gst, "gst_message_parse_error"),
-            mini_object_unref: symbol!(gst, "gst_mini_object_unref"),
-            object_ref_sink: symbol!(gst, "gst_object_ref_sink"),
-            object_unref: symbol!(gst, "gst_object_unref"),
-            sample_get_buffer: symbol!(gst, "gst_sample_get_buffer"),
-            sample_get_caps: symbol!(gst, "gst_sample_get_caps"),
-            sample_get_segment: symbol!(gst, "gst_sample_get_segment"),
-            segment_to_stream_time: symbol!(gst, "gst_segment_to_stream_time"),
-            caps_get_structure: symbol!(gst, "gst_caps_get_structure"),
-            structure_get_int: symbol!(gst, "gst_structure_get_int"),
-            buffer_map: symbol!(gst, "gst_buffer_map"),
-            buffer_unmap: symbol!(gst, "gst_buffer_unmap"),
-            app_sink_try_pull_sample: symbol!(app, "gst_app_sink_try_pull_sample"),
-            app_sink_is_eos: symbol!(app, "gst_app_sink_is_eos"),
-            object_set: symbol!(gobject, "g_object_set"),
-            error_free: symbol!(glib, "g_error_free"),
-            free: symbol!(glib, "g_free"),
-            _libraries: [gst, app, gobject, glib],
-        })
-    }
-
-    /// The text of `error`, which is freed.
-    unsafe fn take_error(&self, error: *mut GError) -> Option<String> {
-        if error.is_null() {
-            return None;
-        }
-        // SAFETY: a GError GStreamer filled, its message NUL-terminated.
-        unsafe {
-            let message = (!(*error).message.is_null()).then(|| {
-                CStr::from_ptr((*error).message)
-                    .to_string_lossy()
-                    .into_owned()
-            });
-            (self.error_free)(error);
-            message
-        }
-    }
-}
 
 /// GStreamer's decoders, when the system has GStreamer.
 pub struct GstVideoDecoder;
@@ -629,6 +427,7 @@ impl Drop for Source {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::linux::gst::Gboolean;
 
     /// The probe's clip: ten 64 x 48 frames at ten a second, frame i flat
     /// (i * 25, 255 - i * 25, 128), BT.709 said in the stream.
