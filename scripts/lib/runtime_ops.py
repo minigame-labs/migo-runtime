@@ -33,11 +33,12 @@ from dataclasses import asdict, dataclass, field
 
 RUNTIME_SRC = pathlib.Path("engine/crates/runtime-v8/src")
 
-# A block is `extension!(` or `deno_core::extension!(` up to its matching
-# parenthesis. Test fixtures register throwaway extensions; those live in files
-# under tests/ or named *_tests.rs, or inside #[cfg(test)] modules, and are not
-# the engine's surface.
-EXTENSION_OPEN = re.compile(r"(?:deno_core::)?extension!\s*\(")
+# A block is `extension!(`, `deno_core::extension!(` or the runtime's
+# `main_runtime_extension!(` (lib.rs, which wraps deno_core's) up to its
+# matching parenthesis. Test fixtures register throwaway extensions; those live
+# in files under tests/ or named *_tests.rs, or inside #[cfg(test)] modules, and
+# are not the engine's surface -- nor is a macro_rules! body (not_declared_spans).
+EXTENSION_OPEN = re.compile(r"\b(?:deno_core::)?(?:main_runtime_)?extension!\s*\(")
 IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 OP_DEF = re.compile(
     r"#\[(?:deno_core::)?op2(?P<attr>\([^\]]*\))?\]\s*"
@@ -168,9 +169,15 @@ def is_test_source(path: pathlib.Path) -> bool:
     return "tests" in parts or path.name.endswith("_tests.rs") or path.name == "tests.rs"
 
 
-def cfg_test_spans(text: str) -> list[tuple[int, int]]:
+def not_declared_spans(text: str) -> list[tuple[int, int]]:
+    """Where an extension's spelling is not an extension declared: a
+    `#[cfg(test)]` module, and a `macro_rules!` body -- a template, whose
+    `extension!($name, ... esm = [ $($esm)* ])` names no extension at all
+    (`main_runtime_extension!` in lib.rs, 2026-10-23: read as a declaration it
+    was an extension called `name` with an esm list and no dir, and the
+    Performance+ engine could not be staged)."""
     spans = []
-    for match in re.finditer(r"#\[cfg\(test\)\]\s*mod\s+\w+\s*\{", text):
+    for match in re.finditer(r"#\[cfg\(test\)\]\s*mod\s+\w+\s*\{|\bmacro_rules!\s*\w+\s*\{", text):
         brace = text.index("{", match.start())
         body = balanced(text, brace)
         spans.append((match.start(), brace + len(body) + 2))
@@ -183,7 +190,7 @@ def registered_ops(root: pathlib.Path) -> dict[str, Op]:
         if is_test_source(path.relative_to(root / RUNTIME_SRC)):
             continue
         text = mask_rust(path.read_text(encoding="utf-8"))
-        excluded = cfg_test_spans(text)
+        excluded = not_declared_spans(text)
         for match in EXTENSION_OPEN.finditer(text):
             if any(start <= match.start() < end for start, end in excluded):
                 continue
