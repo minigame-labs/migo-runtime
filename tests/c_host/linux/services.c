@@ -84,6 +84,13 @@ typedef struct QueuedCall {
         int loop;     /* -1: not given; else 0 or 1 */
         int autoplay; /* 0 or 1 */
     } video;          /* a video CREATE's or SET's options; SEEK's time is `number` */
+    struct {
+        long callback;           /* a write's callbackId; 0: none */
+        int notify;              /* a write's needNotify */
+        char service[40];        /* ADD_SERVICE's service uuid, or a request's serviceId */
+        char characteristic[40]; /* a write's characteristicId */
+        char value[2 * 512 + 1]; /* a write's value, hex */
+    } ble; /* a peripheral request's options; its serverId is `arg` */
 } QueuedCall;
 
 /* What this host records into: a WAV file, or raw 16-bit PCM. The compressed
@@ -112,8 +119,8 @@ static int queue_pop(QueuedCall *call) {
     return popped;
 }
 
-static void complete(MigoSession *session, uint64_t call_id, const char *payload_json,
-                     const char *failure) {
+static void complete_with(MigoSession *session, uint64_t call_id, const char *payload_json,
+                          const char *failure, int32_t error_code) {
     MigoHostServiceResult result;
     memset(&result, 0, sizeof(result));
     result.struct_size = (uint32_t)sizeof(result);
@@ -122,6 +129,10 @@ static void complete(MigoSession *session, uint64_t call_id, const char *payload
         result.status = MIGO_HOST_SERVICE_STATUS_FAIL;
         result.message_utf8 = failure;
         result.message_length = (uint32_t)strlen(failure);
+        if (error_code != 0) {
+            result.flags = MIGO_HOST_SERVICE_RESULT_FLAG_ERROR_CODE;
+            result.error_code = error_code;
+        }
     } else {
         result.status = MIGO_HOST_SERVICE_STATUS_OK;
         result.payload_json_utf8 = payload_json;
@@ -132,6 +143,11 @@ static void complete(MigoSession *session, uint64_t call_id, const char *payload
         fprintf(stderr, "[c-host] completing a host-service call failed: %d\n", (int)r);
         fflush(stderr);
     }
+}
+
+static void complete(MigoSession *session, uint64_t call_id, const char *payload_json,
+                     const char *failure) {
+    complete_with(session, call_id, payload_json, failure, 0);
 }
 
 /* The value of a top-level "key" in a JSON object of `length` bytes (not
@@ -157,6 +173,19 @@ static const char *json_value(const char *json, size_t length, const char *key) 
 static int value_is(const char *value, const char *end, const char *literal) {
     size_t n = strlen(literal);
     return value != NULL && (size_t)(end - value) >= n && memcmp(value, literal, n) == 0;
+}
+
+/* The string "key" names, copied into out when it fits: a UUID or a hex value,
+ * which have nothing to escape. */
+static int json_string(const char *json, size_t length, const char *key, char *out, size_t size) {
+    const char *end = json + length;
+    const char *value = json_value(json, length, key);
+    if (value == NULL || *value != '"') return 0;
+    const char *close = memchr(value + 1, '"', (size_t)(end - value - 1));
+    if (close == NULL || (size_t)(close - value - 1) >= size) return 0;
+    memcpy(out, value + 1, (size_t)(close - value - 1));
+    out[close - value - 1] = '\0';
+    return 1;
 }
 
 /* A START's {"interval"}: "game" 20 ms, "ui" 60, "normal" -- the default -- 200. */
@@ -205,6 +234,20 @@ void MIGO_CALL services_on_call(void *user_data, MigoSession *session,
         queued.video.loop = value == NULL ? -1 : value_is(value, end, "true");
         value = json_value(json, length, "autoplay");
         queued.video.autoplay = value_is(value, end, "true");
+    } else if (call->service == MIGO_HOST_SERVICE_BLE_PERIPHERAL) {
+        const char *end = json + length;
+        const char *value = json_value(json, length, "serverId");
+        queued.arg = value != NULL ? strtol(value, NULL, 10) : 0;
+        value = json_value(json, length, "callbackId");
+        queued.ble.callback = value != NULL ? strtol(value, NULL, 10) : 0;
+        queued.ble.notify = value_is(json_value(json, length, "needNotify"), end, "true");
+        /* A service's own uuid comes first in ADD_SERVICE's payload. */
+        if (!json_string(json, length, "serviceId", queued.ble.service, sizeof(queued.ble.service))) {
+            json_string(json, length, "uuid", queued.ble.service, sizeof(queued.ble.service));
+        }
+        json_string(json, length, "characteristicId", queued.ble.characteristic,
+                    sizeof(queued.ble.characteristic));
+        json_string(json, length, "value", queued.ble.value, sizeof(queued.ble.value));
     } else if (call->service == MIGO_HOST_SERVICE_RECORDER) {
         const char *end = json + length;
         const char *value = json_value(json, length, "recordingId");
@@ -883,6 +926,228 @@ static void video_tick(MigoSession *session, long now) {
     }
 }
 
+/* ---- A peripheral, and the one central the feed scripts. ---- */
+
+#define BLE_SERVERS 4
+#define BLE_SERVICES 4
+/* The central role's codes (migo/host_services.h). */
+static const int32_t BLE_NO_SERVICE = 10004;
+static const int32_t BLE_SYSTEM_ERROR = 10008;
+
+static struct BleServer {
+    long id; /* 0: a free slot */
+    int advertising;
+    char services[BLE_SERVICES][40]; /* "": a free slot */
+} g_ble_servers[BLE_SERVERS];
+
+/* The central: connected under its deviceId (""), subscribed to one
+ * characteristic, waiting on at most one read -- it writes back what it reads
+ * and what it is notified of, so content sees the round trip. */
+static struct {
+    char device[32];
+    char subscribed_service[40];
+    char subscribed_characteristic[40];
+    long read_callback;
+    long next_callback;
+} g_ble_central = {"", "", "", 0, 1};
+
+static struct BleServer *ble_server(long id) {
+    for (size_t i = 0; i < BLE_SERVERS; i++) {
+        if (id != 0 && g_ble_servers[i].id == id) return &g_ble_servers[i];
+    }
+    return NULL;
+}
+
+static char *ble_service(struct BleServer *server, const char *uuid) {
+    for (size_t i = 0; i < BLE_SERVICES; i++) {
+        if (server->services[i][0] != '\0' && strcmp(server->services[i], uuid) == 0) {
+            return server->services[i];
+        }
+    }
+    return NULL;
+}
+
+/* The server serving `uuid`: where the central's requests for it go. */
+static struct BleServer *ble_server_serving(const char *uuid) {
+    for (size_t i = 0; i < BLE_SERVERS; i++) {
+        if (g_ble_servers[i].id != 0 && ble_service(&g_ble_servers[i], uuid) != NULL) {
+            return &g_ble_servers[i];
+        }
+    }
+    return NULL;
+}
+
+static void post_ble_event(MigoSession *session, uint32_t event, const char *json) {
+    MigoResult r = migo_session_post_host_service_event(
+        session, MIGO_HOST_SERVICE_BLE_PERIPHERAL, event, json, (uint32_t)strlen(json));
+    if (r != MIGO_OK) {
+        fprintf(stderr, "[c-host] a peripheral event was refused: %d\n", (int)r);
+        fflush(stderr);
+    }
+}
+
+/* The central writes `value` (hex) to a characteristic of `server`. */
+static void ble_central_write(MigoSession *session, const struct BleServer *server,
+                              const char *service, const char *characteristic,
+                              const char *value) {
+    char json[160 + 2 * 512];
+    snprintf(json, sizeof(json),
+             "{\"serverId\":%ld,\"serviceId\":\"%s\",\"characteristicId\":\"%s\","
+             "\"callbackId\":%ld,\"value\":\"%s\"}",
+             server->id, service, characteristic, g_ble_central.next_callback++, value);
+    post_ble_event(session, MIGO_BLE_PERIPHERAL_EVENT_CHARACTERISTIC_WRITE_REQUEST, json);
+}
+
+static void answer_ble_peripheral(MigoSession *session, const QueuedCall *call) {
+    struct BleServer *server = ble_server(call->arg);
+    if (call->method == MIGO_BLE_PERIPHERAL_CREATE_SERVER) {
+        if (call->arg <= 0 || server != NULL) {
+            complete_with(session, call->call_id, NULL, "invalid serverId", BLE_SYSTEM_ERROR);
+            return;
+        }
+        for (size_t i = 0; server == NULL && i < BLE_SERVERS; i++) {
+            if (g_ble_servers[i].id == 0) server = &g_ble_servers[i];
+        }
+        if (server == NULL) {
+            complete_with(session, call->call_id, NULL, "too many servers", BLE_SYSTEM_ERROR);
+            return;
+        }
+        memset(server, 0, sizeof(*server));
+        server->id = call->arg;
+        complete(session, call->call_id, "{}", NULL);
+        return;
+    }
+    if (call->method == MIGO_BLE_PERIPHERAL_STOP_ADVERTISING) {
+        /* A server that is gone advertises nothing. */
+        if (server != NULL) server->advertising = 0;
+        complete(session, call->call_id, "{}", NULL);
+        return;
+    }
+    if (server == NULL) {
+        complete_with(session, call->call_id, NULL, "server closed", BLE_SYSTEM_ERROR);
+        return;
+    }
+    char *service = ble_service(server, call->ble.service);
+    switch (call->method) {
+    case MIGO_BLE_PERIPHERAL_ADD_SERVICE:
+        if (service != NULL) {
+            complete_with(session, call->call_id, NULL, "service already added", BLE_SYSTEM_ERROR);
+            return;
+        }
+        for (size_t i = 0; i < BLE_SERVICES; i++) {
+            if (server->services[i][0] == '\0') {
+                snprintf(server->services[i], sizeof(server->services[i]), "%s", call->ble.service);
+                complete(session, call->call_id, "{}", NULL);
+                return;
+            }
+        }
+        complete_with(session, call->call_id, NULL, "too many services", BLE_SYSTEM_ERROR);
+        return;
+    case MIGO_BLE_PERIPHERAL_REMOVE_SERVICE:
+        if (service == NULL) {
+            complete_with(session, call->call_id, NULL, "no service", BLE_NO_SERVICE);
+            return;
+        }
+        service[0] = '\0';
+        complete(session, call->call_id, "{}", NULL);
+        return;
+    case MIGO_BLE_PERIPHERAL_START_ADVERTISING:
+        server->advertising = 1;
+        complete(session, call->call_id, "{}", NULL);
+        return;
+    case MIGO_BLE_PERIPHERAL_WRITE_CHARACTERISTIC_VALUE:
+        if (service == NULL) {
+            complete_with(session, call->call_id, NULL, "no service", BLE_NO_SERVICE);
+            return;
+        }
+        complete(session, call->call_id, "{}", NULL);
+        if (call->ble.callback != 0 && call->ble.callback == g_ble_central.read_callback) {
+            /* What the central read, written back. */
+            g_ble_central.read_callback = 0;
+            ble_central_write(session, server, call->ble.service, call->ble.characteristic,
+                              call->ble.value);
+        } else if (call->ble.notify && g_ble_central.device[0] != '\0' &&
+                   strcmp(g_ble_central.subscribed_service, call->ble.service) == 0 &&
+                   strcmp(g_ble_central.subscribed_characteristic, call->ble.characteristic) == 0) {
+            /* What the central was notified of, written back. */
+            ble_central_write(session, server, call->ble.service, call->ble.characteristic,
+                              call->ble.value);
+        }
+        return;
+    default:
+        complete(session, call->call_id, NULL, "unknown request");
+        return;
+    }
+}
+
+static void ble_connection(MigoSession *session, int connected) {
+    for (size_t i = 0; i < BLE_SERVERS; i++) {
+        if (g_ble_servers[i].id == 0) continue;
+        char json[128];
+        snprintf(json, sizeof(json), "{\"serverId\":%ld,\"deviceId\":\"%s\",\"connected\":%s}",
+                 g_ble_servers[i].id, g_ble_central.device, connected ? "true" : "false");
+        post_ble_event(session, MIGO_BLE_PERIPHERAL_EVENT_CONNECTION_STATE_CHANGED, json);
+    }
+}
+
+/* One BLE-CENTRAL line of the feed: what the central does next. 1 when it was
+ * understood. */
+static int ble_central(MigoSession *session, const char *line) {
+    char verb[16], service[40], characteristic[40], value[2 * 64 + 1];
+    int fields = sscanf(line, "BLE-CENTRAL %15s %39s %39s %128s", verb, service, characteristic, value);
+    if (fields < 1) return 0;
+    if (strcmp(verb, "CONNECT") == 0 && fields == 2) {
+        snprintf(g_ble_central.device, sizeof(g_ble_central.device), "%s", service);
+        ble_connection(session, 1);
+        return 1;
+    }
+    if (strcmp(verb, "DISCONNECT") == 0 && fields == 1 && g_ble_central.device[0] != '\0') {
+        ble_connection(session, 0);
+        g_ble_central.device[0] = '\0';
+        g_ble_central.subscribed_service[0] = '\0';
+        g_ble_central.subscribed_characteristic[0] = '\0';
+        g_ble_central.read_callback = 0;
+        return 1;
+    }
+    if (fields < 3 || g_ble_central.device[0] == '\0') return 0;
+    struct BleServer *server = ble_server_serving(service);
+    if (server == NULL) {
+        printf("[c-host] feed: no server serves %s\n", service);
+        fflush(stdout);
+        return 1;
+    }
+    char json[160 + 2 * 64];
+    snprintf(json, sizeof(json), "{\"serverId\":%ld,\"serviceId\":\"%s\",\"characteristicId\":\"%s\"",
+             server->id, service, characteristic);
+    size_t used = strlen(json);
+    if (strcmp(verb, "SUBSCRIBE") == 0 && fields == 3) {
+        snprintf(g_ble_central.subscribed_service, sizeof(g_ble_central.subscribed_service), "%s", service);
+        snprintf(g_ble_central.subscribed_characteristic,
+                 sizeof(g_ble_central.subscribed_characteristic), "%s", characteristic);
+        snprintf(json + used, sizeof(json) - used, "}");
+        post_ble_event(session, MIGO_BLE_PERIPHERAL_EVENT_CHARACTERISTIC_SUBSCRIBED, json);
+        return 1;
+    }
+    if (strcmp(verb, "UNSUBSCRIBE") == 0 && fields == 3) {
+        g_ble_central.subscribed_service[0] = '\0';
+        g_ble_central.subscribed_characteristic[0] = '\0';
+        snprintf(json + used, sizeof(json) - used, "}");
+        post_ble_event(session, MIGO_BLE_PERIPHERAL_EVENT_CHARACTERISTIC_UNSUBSCRIBED, json);
+        return 1;
+    }
+    if (strcmp(verb, "READ") == 0 && fields == 3) {
+        g_ble_central.read_callback = g_ble_central.next_callback++;
+        snprintf(json + used, sizeof(json) - used, ",\"callbackId\":%ld}", g_ble_central.read_callback);
+        post_ble_event(session, MIGO_BLE_PERIPHERAL_EVENT_CHARACTERISTIC_READ_REQUEST, json);
+        return 1;
+    }
+    if (strcmp(verb, "WRITE") == 0 && fields == 4) {
+        ble_central_write(session, server, service, characteristic, value);
+        return 1;
+    }
+    return 0;
+}
+
 /* ---- Readings. ---- */
 
 static double wrap_degrees(double degrees) {
@@ -974,10 +1239,16 @@ static char g_line[256];
 static size_t g_line_length;
 static int g_line_too_long;
 
-static void apply(const char *line) {
+static void apply(MigoSession *session, const char *line) {
     char name[32];
     double v[3];
-    if (sscanf(line, "SET-SENSOR %31s %lf:%lf:%lf", name, &v[0], &v[1], &v[2]) == 4) {
+    if (strncmp(line, "BLE-CENTRAL ", 12) == 0) {
+        if (!ble_central(session, line)) {
+            printf("[c-host] feed: not understood: %s\n", line);
+            fflush(stdout);
+            return;
+        }
+    } else if (sscanf(line, "SET-SENSOR %31s %lf:%lf:%lf", name, &v[0], &v[1], &v[2]) == 4) {
         if (strcmp(name, "acceleration") == 0) {
             memcpy(g_device.acceleration, v, sizeof(v));
         } else if (strcmp(name, "gyroscope") == 0) {
@@ -1004,7 +1275,7 @@ static void apply(const char *line) {
 
 /* Whatever was appended since the last tick, a line at a time; a partial line
  * waits for the rest. */
-static void read_feed(void) {
+static void read_feed(MigoSession *session) {
     if (g_feed < 0) return;
     char chunk[512];
     ssize_t n;
@@ -1017,7 +1288,7 @@ static void read_feed(void) {
                     fprintf(stderr, "[c-host] feed: a line longer than %zu bytes was dropped\n",
                             sizeof(g_line) - 1);
                 } else if (g_line_length > 0) {
-                    apply(g_line);
+                    apply(session, g_line);
                 }
                 g_line_length = 0;
                 g_line_too_long = 0;
@@ -1044,7 +1315,7 @@ void services_init(void) {
 
 void services_pump(MigoSession *session) {
     long now = monotonic_ms();
-    read_feed();
+    read_feed(session);
     QueuedCall call;
     while (queue_pop(&call)) {
         switch (call.service) {
@@ -1065,6 +1336,9 @@ void services_pump(MigoSession *session) {
             break;
         case MIGO_HOST_SERVICE_VIDEO:
             answer_video(session, &call, now);
+            break;
+        case MIGO_HOST_SERVICE_BLE_PERIPHERAL:
+            answer_ble_peripheral(session, &call);
             break;
         default:
             if (call.call_id != 0) complete(session, call.call_id, NULL, "unknown service");

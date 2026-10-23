@@ -131,7 +131,7 @@ jobs:
           }
           install_multilib() {
             timeout 90 sudo apt-get update -qq || return 1
-            timeout 150 sudo apt-get install -y -qq gcc-multilib || return 1
+            timeout 150 sudo apt-get install -y -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -qq gcc-multilib || return 1
           }
           if ! can_target_m32 gcc || ! can_target_m32 clang; then
             install_multilib || {
@@ -146,7 +146,7 @@ jobs:
         # ripgrep is not preinstalled on the runners, and the contract needs it
         # for its multiline patterns.
         run: |
-          command -v rg >/dev/null 2>&1 || sudo apt-get install -y ripgrep
+          command -v rg >/dev/null 2>&1 || sudo apt-get install -y -o Acquire::Retries=5 -o Acquire::http::Timeout=30 ripgrep
           bash scripts/test-surface-attachment-contract.sh
           bash scripts/test-x11-owned-connection-contract.sh
 
@@ -654,7 +654,7 @@ jobs:
         run: |
           install_libs() {
             timeout 90 sudo apt-get update -qq || return 1
-            timeout 150 sudo apt-get install -y -qq \
+            timeout 150 sudo apt-get install -y -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -qq \
               libgl-dev libegl-dev libfontconfig1-dev libfreetype-dev \
               libasound2-dev || return 1
           }
@@ -992,7 +992,7 @@ jobs:
           # The install is the real gate: if the packages cannot be had, the
           # contract below cannot run, so this one fails the step.
           install_pkgs() {
-            timeout 300 sudo apt-get install -y \
+            timeout 300 sudo apt-get install -y -o Acquire::Retries=5 -o Acquire::http::Timeout=30 \
               cmake ninja-build g++ ripgrep xvfb xauth \
               qt6-base-dev qt6-base-dev-tools qt6-qpa-plugins \
               libx11-dev libxkbcommon-x11-dev libxcb-cursor0 \
@@ -1056,7 +1056,7 @@ jobs:
           timeout 180 sudo apt-get update -qq \
             || echo "apt-get update incomplete; continuing on the image's indexes" >&2
           install_pkgs() {
-            timeout 300 sudo apt-get install -y -qq \
+            timeout 300 sudo apt-get install -y -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -qq \
               ninja-build \
               libgl-dev libegl-dev libgles-dev \
               libgl1-mesa-dri libegl-mesa0 \
@@ -1495,7 +1495,7 @@ jobs:
       # -- but failing 40 minutes into a release is worse than installing it here.
       - name: Install the linker the SDK links with
         run: |
-          command -v lld >/dev/null 2>&1 || sudo apt-get install -y lld
+          command -v lld >/dev/null 2>&1 || sudo apt-get install -y -o Acquire::Retries=5 -o Acquire::http::Timeout=30 lld
 
       # The sysroot each V8 archive was built against, verified by sha256. The SDK
       # build refuses when the engine's sysroot identity and the archive's disagree,

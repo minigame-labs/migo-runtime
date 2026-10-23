@@ -488,6 +488,19 @@ final class NativeBridge {
      */
     static native void onBluetoothResult(int sessionId, int method, String resultJson);
 
+    /**
+     * Answers a peripheral request: {@code method} is its number in the
+     * host-service contract ({@code BlePeripheral.Method#ordinal}), the JSON its
+     * result or {@code {error, errCode}}, stamped with the request's id.
+     */
+    static native void onBlePeripheralResult(int sessionId, int method, String resultJson);
+
+    /**
+     * What a central did to a peripheral server, by event number
+     * ({@code BlePeripheral.EVENT_*}), with its {@code {"serverId", ...}}.
+     */
+    static native void onBlePeripheralEvent(int sessionId, int event, String payloadJson);
+
     // ==================== Image API Callbacks ====================
     //
     // A file a result names is handed over: the runtime moves it into the

@@ -75,8 +75,10 @@ final class MigoSystemMotionTests: XCTestCase {
             0, 30, 0, "top raised")
         // Both, turned to face west: every angle at once.
         // R = Rz(90) Rx(30) Ry(20): the device's view of north and of gravity.
-        let (a, b, g) = (Double.pi / 2, Double.pi / 6, Double.pi / 9)
-        let r = [
+        let (a, b, g): (Double, Double, Double) = (Double.pi / 2, Double.pi / 6, Double.pi / 9)
+        // Typed: an untyped nested literal of products of trigonometry is a search
+        // the type checker gave up on, in time, on a slower runner.
+        let r: [[Double]] = [
             [cos(a) * cos(g) - sin(a) * sin(b) * sin(g), -cos(b) * sin(a), cos(g) * sin(a) * sin(b) + cos(a) * sin(g)],
             [cos(g) * sin(a) + cos(a) * sin(b) * sin(g), cos(a) * cos(b), sin(a) * sin(g) - cos(a) * cos(g) * sin(b)],
             [-cos(b) * sin(g), sin(b), cos(b) * cos(g)],

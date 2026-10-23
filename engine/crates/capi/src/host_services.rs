@@ -23,6 +23,16 @@
 use std::sync::Arc;
 
 use migo_capi_abi::host_services::{
+    MIGO_BLE_PERIPHERAL_ADD_SERVICE, MIGO_BLE_PERIPHERAL_CREATE_SERVER,
+    MIGO_BLE_PERIPHERAL_EVENT_CHARACTERISTIC_READ_REQUEST,
+    MIGO_BLE_PERIPHERAL_EVENT_CHARACTERISTIC_SUBSCRIBED,
+    MIGO_BLE_PERIPHERAL_EVENT_CHARACTERISTIC_UNSUBSCRIBED,
+    MIGO_BLE_PERIPHERAL_EVENT_CHARACTERISTIC_WRITE_REQUEST,
+    MIGO_BLE_PERIPHERAL_EVENT_CONNECTION_STATE_CHANGED, MIGO_BLE_PERIPHERAL_REMOVE_SERVICE,
+    MIGO_BLE_PERIPHERAL_START_ADVERTISING, MIGO_BLE_PERIPHERAL_STOP_ADVERTISING,
+    MIGO_BLE_PERIPHERAL_WRITE_CHARACTERISTIC_VALUE, MIGO_HOST_SERVICE_BLE_PERIPHERAL,
+};
+use migo_capi_abi::host_services::{
     MIGO_HOST_SERVICE_RECORDER, MIGO_RECORDER_EVENT_ERROR, MIGO_RECORDER_EVENT_INTERRUPTION_BEGIN,
     MIGO_RECORDER_EVENT_INTERRUPTION_END, MIGO_RECORDER_EVENT_PAUSE, MIGO_RECORDER_EVENT_RESUME,
     MIGO_RECORDER_EVENT_START, MIGO_RECORDER_EVENT_STOP, MIGO_RECORDER_PAUSE, MIGO_RECORDER_RESUME,
@@ -105,6 +115,9 @@ use migo_core::services::{
     UpdateService, WindowService,
 };
 use serde_json::{Map, Value};
+use shared::services::{
+    BLE_PERIPHERAL_EVENT_HOOKS, BLE_PERIPHERAL_RESULT_HOOKS, BlePeripheralService,
+};
 use shared::{
     js_escape::hook_args_one,
     protocol::error::ServiceError,
@@ -567,6 +580,30 @@ const VIDEO_SEEK: Call = video_call(MIGO_VIDEO_SEEK);
 const VIDEO_REQUEST_FULL_SCREEN: Call = video_call(MIGO_VIDEO_REQUEST_FULL_SCREEN);
 const VIDEO_EXIT_FULL_SCREEN: Call = video_call(MIGO_VIDEO_EXIT_FULL_SCREEN);
 
+/// A BLE peripheral call: answered through the hook the one shared table names
+/// for its method -- every one of them is a call -- and failing in the central
+/// role's Bluetooth codes.
+const fn ble_peripheral_call(method: u32) -> Call {
+    Call {
+        service: MIGO_HOST_SERVICE_BLE_PERIPHERAL,
+        method,
+        hook: BLE_PERIPHERAL_RESULT_HOOKS[method as usize],
+        error_code_field: Some("errCode"),
+        progress_hook: None,
+        delivery: Delivery::Verbatim,
+    }
+}
+
+const BLE_PERIPHERAL_CREATE_SERVER: Call = ble_peripheral_call(MIGO_BLE_PERIPHERAL_CREATE_SERVER);
+const BLE_PERIPHERAL_ADD_SERVICE: Call = ble_peripheral_call(MIGO_BLE_PERIPHERAL_ADD_SERVICE);
+const BLE_PERIPHERAL_REMOVE_SERVICE: Call = ble_peripheral_call(MIGO_BLE_PERIPHERAL_REMOVE_SERVICE);
+const BLE_PERIPHERAL_START_ADVERTISING: Call =
+    ble_peripheral_call(MIGO_BLE_PERIPHERAL_START_ADVERTISING);
+const BLE_PERIPHERAL_STOP_ADVERTISING: Call =
+    ble_peripheral_call(MIGO_BLE_PERIPHERAL_STOP_ADVERTISING);
+const BLE_PERIPHERAL_WRITE_CHARACTERISTIC_VALUE: Call =
+    ble_peripheral_call(MIGO_BLE_PERIPHERAL_WRITE_CHARACTERISTIC_VALUE);
+
 const SET_WINDOW_SIZE: Call = Call {
     service: MIGO_HOST_SERVICE_WINDOW,
     method: MIGO_WINDOW_SET_WINDOW_SIZE,
@@ -662,6 +699,12 @@ const CALLS: &[&Call] = &[
     &VIDEO_SEEK,
     &VIDEO_REQUEST_FULL_SCREEN,
     &VIDEO_EXIT_FULL_SCREEN,
+    &BLE_PERIPHERAL_CREATE_SERVER,
+    &BLE_PERIPHERAL_ADD_SERVICE,
+    &BLE_PERIPHERAL_REMOVE_SERVICE,
+    &BLE_PERIPHERAL_START_ADVERTISING,
+    &BLE_PERIPHERAL_STOP_ADVERTISING,
+    &BLE_PERIPHERAL_WRITE_CHARACTERISTIC_VALUE,
 ];
 
 /// Fire-and-forget requests, as `(service, method)`. Listed so the contract test
@@ -823,6 +866,11 @@ const EVENTS: &[(u32, u32, &str)] = &[
     video_event(MIGO_VIDEO_EVENT_ERROR),
     video_event(MIGO_VIDEO_EVENT_WAITING),
     video_event(MIGO_VIDEO_EVENT_PROGRESS),
+    ble_peripheral_event(MIGO_BLE_PERIPHERAL_EVENT_CHARACTERISTIC_READ_REQUEST),
+    ble_peripheral_event(MIGO_BLE_PERIPHERAL_EVENT_CHARACTERISTIC_WRITE_REQUEST),
+    ble_peripheral_event(MIGO_BLE_PERIPHERAL_EVENT_CHARACTERISTIC_SUBSCRIBED),
+    ble_peripheral_event(MIGO_BLE_PERIPHERAL_EVENT_CHARACTERISTIC_UNSUBSCRIBED),
+    ble_peripheral_event(MIGO_BLE_PERIPHERAL_EVENT_CONNECTION_STATE_CHANGED),
 ];
 
 /// A recorder event's row: its hook from the one shared table.
@@ -831,6 +879,15 @@ const fn recorder_event(event: u32) -> (u32, u32, &'static str) {
         MIGO_HOST_SERVICE_RECORDER,
         event,
         RECORDER_EVENT_HOOKS[event as usize],
+    )
+}
+
+/// A BLE peripheral event's row: its hook from the one shared table.
+const fn ble_peripheral_event(event: u32) -> (u32, u32, &'static str) {
+    (
+        MIGO_HOST_SERVICE_BLE_PERIPHERAL,
+        event,
+        BLE_PERIPHERAL_EVENT_HOOKS[event as usize],
     )
 }
 
@@ -1438,6 +1495,27 @@ impl VideoService for CapiHostServices {
     }
 }
 
+impl BlePeripheralService for CapiHostServices {
+    fn create_server(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&BLE_PERIPHERAL_CREATE_SERVER, request_json)
+    }
+    fn add_service(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&BLE_PERIPHERAL_ADD_SERVICE, request_json)
+    }
+    fn remove_service(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&BLE_PERIPHERAL_REMOVE_SERVICE, request_json)
+    }
+    fn start_advertising(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&BLE_PERIPHERAL_START_ADVERTISING, request_json)
+    }
+    fn stop_advertising(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&BLE_PERIPHERAL_STOP_ADVERTISING, request_json)
+    }
+    fn write_characteristic_value(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&BLE_PERIPHERAL_WRITE_CHARACTERISTIC_VALUE, request_json)
+    }
+}
+
 impl UpdateService for CapiHostServices {
     fn apply_update(&self) -> Result<(), ServiceError> {
         self.command(MIGO_HOST_SERVICE_UPDATE, MIGO_UPDATE_APPLY_UPDATE, "{}")
@@ -1837,6 +1915,7 @@ mod tests {
             "camera" => MIGO_HOST_SERVICE_CAMERA,
             "recorder" => MIGO_HOST_SERVICE_RECORDER,
             "video" => MIGO_HOST_SERVICE_VIDEO,
+            "ble_peripheral" => MIGO_HOST_SERVICE_BLE_PERIPHERAL,
             other => panic!("the contract names a service the ABI has no constant for: {other}"),
         }
     }

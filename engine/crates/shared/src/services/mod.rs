@@ -14,6 +14,7 @@
 mod ad;
 pub mod app_info;
 mod auth;
+mod ble_peripheral;
 mod camera;
 mod clipboard;
 mod codec;
@@ -41,6 +42,10 @@ mod window;
 
 pub use ad::AdService;
 pub use auth::AuthService;
+pub use ble_peripheral::{
+    BLE_PERIPHERAL_EVENT_HOOKS, BLE_PERIPHERAL_RESULT_HOOKS, BlePeripheralService,
+    ble_peripheral_event, ble_peripheral_method,
+};
 pub use camera::{
     CAMERA_EVENT_HOOKS, CAMERA_RESULT_HOOKS, CameraService, camera_method, camera_result_files,
 };

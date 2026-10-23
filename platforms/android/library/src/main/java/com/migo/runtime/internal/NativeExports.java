@@ -1842,6 +1842,33 @@ public final class NativeExports {
         BluetoothExports.bleGetMTU(sessionId, requestJson);
     }
 
+    // This device as a BLE peripheral: each request {"serverId", "requestId", ...}
+    // is answered through NativeMethods.onBlePeripheralResult.
+
+    public static void blePeripheralCreateServer(int sessionId, String requestJson) {
+        BluetoothExports.blePeripheralCreateServer(sessionId, requestJson);
+    }
+
+    public static void blePeripheralAddService(int sessionId, String requestJson) {
+        BluetoothExports.blePeripheralAddService(sessionId, requestJson);
+    }
+
+    public static void blePeripheralRemoveService(int sessionId, String requestJson) {
+        BluetoothExports.blePeripheralRemoveService(sessionId, requestJson);
+    }
+
+    public static void blePeripheralStartAdvertising(int sessionId, String requestJson) {
+        BluetoothExports.blePeripheralStartAdvertising(sessionId, requestJson);
+    }
+
+    public static void blePeripheralStopAdvertising(int sessionId, String requestJson) {
+        BluetoothExports.blePeripheralStopAdvertising(sessionId, requestJson);
+    }
+
+    public static void blePeripheralWriteCharacteristicValue(int sessionId, String requestJson) {
+        BluetoothExports.blePeripheralWriteCharacteristicValue(sessionId, requestJson);
+    }
+
     /**
      * Clean up Bluetooth resources for a session. Call on session shutdown.
      */

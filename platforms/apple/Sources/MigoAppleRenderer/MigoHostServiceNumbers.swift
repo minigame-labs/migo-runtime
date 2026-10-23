@@ -24,10 +24,11 @@ extension MigoHostServiceID {
     public static let camera = Self(rawValue: 19)
     public static let recorder = Self(rawValue: 20)
     public static let video = Self(rawValue: 21)
+    public static let blePeripheral = Self(rawValue: 22)
 
     /// Every service this SDK knows, in number order.
     public static let all: [Self] = [
-        .ad, .payment, .auth, .share, .navigate, .subpackage, .permission, .setting, .interaction, .clipboard, .scanCode, .location, .image, .motion, .screen, .bluetooth, .window, .ecosystem, .update, .camera, .recorder, .video,
+        .ad, .payment, .auth, .share, .navigate, .subpackage, .permission, .setting, .interaction, .clipboard, .scanCode, .location, .image, .motion, .screen, .bluetooth, .window, .ecosystem, .update, .camera, .recorder, .video, .blePeripheral,
     ]
 
     /// `ad`'s method and event numbers, as `include/migo/host_services.h` documents them.
@@ -412,6 +413,31 @@ extension MigoHostServiceID {
             public static let error: UInt32 = 4
             public static let waiting: UInt32 = 5
             public static let progress: UInt32 = 6
+        }
+    }
+
+    /// `ble_peripheral`'s method and event numbers, as `include/migo/host_services.h` documents them.
+    public enum BlePeripheral {
+        /// `create_server`: a call, answered once.
+        public static let createServer: UInt32 = 0
+        /// `add_service`: a call, answered once.
+        public static let addService: UInt32 = 1
+        /// `remove_service`: a call, answered once.
+        public static let removeService: UInt32 = 2
+        /// `start_advertising`: a call, answered once.
+        public static let startAdvertising: UInt32 = 3
+        /// `stop_advertising`: a call, answered once.
+        public static let stopAdvertising: UInt32 = 4
+        /// `write_characteristic_value`: a call, answered once.
+        public static let writeCharacteristicValue: UInt32 = 5
+
+        /// The service's events, for `postHostServiceEvent`.
+        public enum Event {
+            public static let characteristicReadRequest: UInt32 = 0
+            public static let characteristicWriteRequest: UInt32 = 1
+            public static let characteristicSubscribed: UInt32 = 2
+            public static let characteristicUnsubscribed: UInt32 = 3
+            public static let connectionStateChanged: UInt32 = 4
         }
     }
 }
