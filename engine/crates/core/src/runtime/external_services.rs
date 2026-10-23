@@ -319,6 +319,12 @@ pub(crate) struct ServiceContext {
     /// The package entries copied out as cursors, one copy per entry for the
     /// session, as the embedded op keeps them.
     cursors: migo_services::cursor::CursorCopies,
+    /// The renderer, for what a synchronous call asks of it: whether the game
+    /// can be recorded. The dispatcher binds it, as each is made.
+    renderer: RwLock<Option<shared::op_state::CanvasOpState>>,
+    /// The events of the recording being made, for the producer's wait on
+    /// them.
+    recording: Mutex<Option<Arc<shared::game_recorder::RecorderEvents>>>,
 }
 
 /// A device service's refusal in the words the embedded op shows: its
@@ -344,6 +350,8 @@ impl ServiceContext {
             gpu: OnceLock::new(),
             signing: OnceLock::new(),
             cursors: migo_services::cursor::CursorCopies::default(),
+            renderer: RwLock::new(None),
+            recording: Mutex::new(None),
         }
     }
 
@@ -726,6 +734,13 @@ impl ServiceContext {
         let paths = self.game_paths();
         let paths = paths.as_deref();
         match op {
+            id::op_game_recorder_supported => {
+                let [] = exactly(op, args)?;
+                let renderer = self.renderer.read().clone();
+                Ok(OwnedValue::Bool(renderer.is_some_and(|canvas| {
+                    migo_services::game_recorder::supported(&canvas)
+                })))
+            }
             id::op_storage_get => {
                 let [key] = exactly(op, args)?;
                 migo_services::storage::get_sync(self.scheduler()?, paths, &string(op, 0, key)?)
@@ -1045,10 +1060,68 @@ impl ServiceContext {
         Ok(match op {
             files if service_channel::names_files(files) => service_channel::request_with_files(
                 self.sandbox()?,
+                paths.clone(),
                 self.device.get().cloned().flatten(),
                 files,
                 args,
             )?,
+            // The game recorder: the render thread is asked as the embedded ops
+            // ask it, and the recording's events are waited on here.
+            id::op_game_recorder_start => {
+                let [fps, bitrate, gop, duration] = exactly(op, args)?;
+                let params = shared::game_recorder::RecordingParams {
+                    fps: u32_of(op, 0, fps)?,
+                    bitrate_kbps: u32_of(op, 1, bitrate)?,
+                    gop: u32_of(op, 2, gop)?,
+                    duration_ms: f64_of(op, 3, duration)? as u64,
+                };
+                let events = Arc::new(shared::game_recorder::RecorderEvents::default());
+                *self.recording.lock() = Some(Arc::clone(&events));
+                let canvas = render.canvas.clone();
+                Box::pin(async move {
+                    let started = migo_services::game_recorder::start(
+                        &canvas,
+                        paths.as_deref(),
+                        params,
+                        events,
+                    )
+                    .await;
+                    Ok(OwnedValue::U32(started))
+                })
+            }
+            id::op_game_recorder_pause
+            | id::op_game_recorder_resume
+            | id::op_game_recorder_abort => {
+                let [] = exactly(op, args)?;
+                let canvas = render.canvas.clone();
+                Box::pin(async move {
+                    use shared::game_recorder::GameRecorderCmd;
+                    let done = migo_services::game_recorder::control(&canvas, |resp| match op {
+                        id::op_game_recorder_pause => GameRecorderCmd::Pause { resp },
+                        id::op_game_recorder_resume => GameRecorderCmd::Resume { resp },
+                        _ => GameRecorderCmd::Abort { resp },
+                    })
+                    .await;
+                    Ok(OwnedValue::U32(done))
+                })
+            }
+            id::op_game_recorder_stop => {
+                let [] = exactly(op, args)?;
+                let canvas = render.canvas.clone();
+                Box::pin(async move {
+                    Ok(OwnedValue::F64(
+                        migo_services::game_recorder::stop(&canvas).await,
+                    ))
+                })
+            }
+            id::op_game_recorder_next_event => {
+                let [] = exactly(op, args)?;
+                let events = self.recording.lock().clone();
+                Box::pin(async move {
+                    let event = migo_services::game_recorder::next_event(events).await;
+                    Ok(OwnedValue::Json(event.to_json().to_string()))
+                })
+            }
             id::op_load_image => {
                 let [image_id, src, tw, th] = exactly(op, args)?;
                 let (image_id, src) = (u32_of(op, 0, image_id)?, string(op, 1, src)?);
@@ -1685,6 +1758,7 @@ impl Drop for ServiceDispatcher {
 
 impl ServiceDispatcher {
     pub(crate) fn new(host: &ServiceHost, render: RenderHandles) -> Self {
+        *host.context.renderer.write() = Some(render.canvas.clone());
         Self {
             context: Arc::clone(&host.context),
             outbox: Arc::clone(&host.outbox),
@@ -1779,6 +1853,172 @@ impl ServiceDispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The game recorder as the producer asks it: whether the device records,
+    /// on the synchronous lane; a recording started, its time reported and
+    /// stopped, through the render thread; and its share, refused before the
+    /// app is asked when there is nothing recorded or no such music, and
+    /// otherwise handed the engine's own file.
+    #[test]
+    fn the_recorder_is_the_render_thread_s_and_its_share_the_app_s() {
+        use shared::game_recorder::GameRecorderCmd;
+        use shared::protocol::render_cmd::RenderCommand;
+        use shared::services::ShareService;
+
+        #[derive(Default)]
+        struct Sharer(Mutex<Vec<String>>);
+        impl ShareService for Sharer {
+            fn share_game_recording(
+                &self,
+                request_json: &str,
+            ) -> Result<(), shared::services::ServiceError> {
+                self.0.lock().push(request_json.to_owned());
+                Ok(())
+            }
+        }
+        struct Platform(Arc<Sharer>);
+        impl shared::services::SensorServices for Platform {}
+        impl shared::services::ConnectivityServices for Platform {}
+        impl shared::services::MediaServices for Platform {}
+        impl shared::services::SystemUtilServices for Platform {}
+        impl shared::services::CommerceServices for Platform {
+            fn share(&self) -> Option<Arc<dyn ShareService>> {
+                Some(Arc::clone(&self.0) as Arc<dyn ShareService>)
+            }
+        }
+
+        let root =
+            std::env::temp_dir().join(format!("migo-external-recorder-{}", std::process::id()));
+        let files = root.join("files");
+        let cache = root.join("cache");
+        let installed = shared::vfs::GamePaths::new(&files, &cache, "g", 1).unwrap();
+        std::fs::create_dir_all(installed.code_dir()).unwrap();
+        std::fs::write(installed.code_dir().join("bgm.mp3"), b"mp3").unwrap();
+        let sharer = Arc::new(Sharer::default());
+        let context = Arc::new(ServiceContext::new(files, cache));
+        context.bind_session(1);
+        context.bind_device(Some(Arc::new(Platform(Arc::clone(&sharer)))));
+        context.load_content("g", "game.js").expect("mounts");
+
+        // A renderer that records as a device that can: started, a second and
+        // a half reported, stopped at 3.2 s.
+        let (sender, commands) = shared::render_command_sender::CommandSender::new();
+        let renderer = std::thread::spawn(move || {
+            let mut events = None;
+            while let Ok(command) = commands.recv_timeout(std::time::Duration::from_secs(5)) {
+                let RenderCommand::GameRecorder(cmd) = command else {
+                    continue;
+                };
+                match cmd {
+                    GameRecorderCmd::Supported { resp } => resp.ok(true),
+                    GameRecorderCmd::Start {
+                        events: heard,
+                        resp,
+                        ..
+                    } => {
+                        resp.ok(());
+                        heard.time(1500);
+                        events = Some(heard);
+                    }
+                    GameRecorderCmd::Stop { resp } => {
+                        resp.ok(3200);
+                        if let Some(events) = events.take() {
+                            events.close();
+                        }
+                    }
+                    GameRecorderCmd::Pause { resp }
+                    | GameRecorderCmd::Resume { resp }
+                    | GameRecorderCmd::Abort { resp } => resp.ok(()),
+                }
+            }
+        });
+        let render = RenderHandles {
+            canvas: shared::op_state::CanvasOpState::for_host(sender, 1),
+            gpu_caps: shared::device::gpu_caps::GpuCaps::new(),
+        };
+        *context.renderer.write() = Some(render.canvas.clone());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let call = |op, args: Vec<OwnedValue>| {
+            let future = context
+                .call_async(op, args, &render)
+                .expect("a known async op");
+            runtime.block_on(future).map_err(|e| e.message)
+        };
+
+        assert_eq!(
+            context.call_sync(id::op_game_recorder_supported, vec![]),
+            Ok(OwnedValue::Bool(true))
+        );
+        assert_eq!(
+            call(
+                id::op_game_recorder_start,
+                vec![
+                    OwnedValue::U32(30),
+                    OwnedValue::U32(2000),
+                    OwnedValue::U32(30),
+                    OwnedValue::F64(10_000.0)
+                ]
+            ),
+            Ok(OwnedValue::U32(migo_services::game_recorder::DONE))
+        );
+        assert_eq!(
+            call(id::op_game_recorder_next_event, vec![]),
+            Ok(OwnedValue::Json(r#"{"kind":"time","ms":1500.0}"#.into()))
+        );
+        assert_eq!(
+            call(id::op_game_recorder_pause, vec![]),
+            Ok(OwnedValue::U32(migo_services::game_recorder::DONE))
+        );
+        assert_eq!(
+            call(id::op_game_recorder_stop, vec![]),
+            Ok(OwnedValue::F64(3200.0))
+        );
+        assert_eq!(
+            call(id::op_game_recorder_next_event, vec![]),
+            Ok(OwnedValue::Json(r#"{"kind":"closed"}"#.into()))
+        );
+
+        let share = |request: &str| {
+            call(
+                id::op_share_game_recording,
+                vec![OwnedValue::Str(request.into())],
+            )
+        };
+        assert_eq!(share("{}"), Err("no recorded video".into()));
+        let video = context.game_paths().unwrap().recording_path();
+        std::fs::create_dir_all(video.parent().unwrap()).unwrap();
+        std::fs::write(&video, b"mp4").unwrap();
+        assert_eq!(
+            share(r#"{"bgm":"missing.mp3"}"#),
+            Err("bgm not found".into())
+        );
+        assert_eq!(
+            share(r#"{"requestId":3,"bgm":"bgm.mp3","atempo":2}"#),
+            Ok(OwnedValue::Null)
+        );
+        let asked = sharer.0.lock().clone();
+        assert_eq!(
+            asked.len(),
+            1,
+            "only the share past the refusals reached the app"
+        );
+        let asked: serde_json::Value = serde_json::from_str(&asked[0]).unwrap();
+        assert_eq!(asked["video"], video.to_string_lossy().as_ref());
+        assert_eq!(asked["atempo"], 2);
+        assert_ne!(
+            asked["bgm"], "bgm.mp3",
+            "the music is the real file, not content's string"
+        );
+
+        // The renderer stops once nothing can send to it.
+        *context.renderer.write() = None;
+        drop(render);
+        renderer.join().unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+    }
     use crate::runtime::service_args::CLASS_TYPE_ERROR;
     use frame_wire::service::{encode_service_message, read_down_message, read_down_record_bytes};
     use frame_wire::value::read_value;

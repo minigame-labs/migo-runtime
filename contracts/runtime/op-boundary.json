@@ -259,7 +259,7 @@
       }
     },
     "host_v8_media": {
-      "reason": "Camera, video and photo-album surfaces are native UI and native permissions, outside the Performance+ profile; so is video decoding, which content is told this profile does not have. Choosing images, media and files is the host app's picker, reached as a command through the host-service channel; the files it hands over are taken into the session's /tmp, as in process. Compressing, previewing and saving to the album name content's files: they are awaited, because the host resolves each path through the game's sandbox into a file the app can open before it asks (migo_services::host_paths, as the embedded ops do), and a refusal fails the call. Recording the game (getGameRecorder) is the native renderer's frames through an encoder beside it, which the Performance+ profile does not have yet.",
+      "reason": "Camera, video and photo-album surfaces are native UI and native permissions, outside the Performance+ profile; so is video decoding, which content is told this profile does not have. Choosing images, media and files is the host app's picker, reached as a command through the host-service channel; the files it hands over are taken into the session's /tmp, as in process. Compressing, previewing and saving to the album name content's files: they are awaited, because the host resolves each path through the game's sandbox into a file the app can open before it asks (migo_services::host_paths, as the embedded ops do), and a refusal fails the call. Recording the game (getGameRecorder) is the native renderer's: the host asks its render thread whether it can record (synchronously -- isFrameSupported answers at once) and to start, pause, resume, stop or abort, and the producer waits on the recording's events, which the host's render thread reports as the embedded ops'.",
       "ops": {
         "op_camera_close_frame_change": "unsupported",
         "op_camera_create": "unsupported",
@@ -274,13 +274,13 @@
         "op_choose_media": "command",
         "op_choose_message_file": "command",
         "op_compress_image": "async",
-        "op_game_recorder_abort": "unsupported",
-        "op_game_recorder_next_event": "unsupported",
-        "op_game_recorder_pause": "unsupported",
-        "op_game_recorder_resume": "unsupported",
-        "op_game_recorder_start": "unsupported",
-        "op_game_recorder_stop": "unsupported",
-        "op_game_recorder_supported": "unsupported",
+        "op_game_recorder_abort": "async",
+        "op_game_recorder_next_event": "async",
+        "op_game_recorder_pause": "async",
+        "op_game_recorder_resume": "async",
+        "op_game_recorder_start": "async",
+        "op_game_recorder_stop": "async",
+        "op_game_recorder_supported": "sync",
         "op_preview_image": "async",
         "op_preview_media": "async",
         "op_save_image_to_photos_album": "async",
@@ -336,10 +336,10 @@
       }
     },
     "host_v8_share": {
-      "reason": "Sharing is the host app's: the share menu's state is set as a command through the host-service channel, and a share -- to the app's chooser, to a friend, from the image menu, or the menu's reply -- is awaited while the host resolves the image it names through the game's sandbox (migo_services::host_paths), as the embedded ops do. Sharing the game's recording (operateGameRecorderVideo, its share button) shares what getGameRecorder recorded, which the Performance+ profile does not have yet.",
+      "reason": "Sharing is the host app's: the share menu's state is set as a command through the host-service channel, and a share -- to the app's chooser, to a friend, from the image menu, or the menu's reply -- is awaited while the host resolves the image it names through the game's sandbox (migo_services::host_paths), as the embedded ops do. Sharing the game's recording (operateGameRecorderVideo, its share button) is awaited the same way: the host checks it has a finished recording and resolves the music through the sandbox, and hands the app its own recording file.",
       "ops": {
         "op_share_app_message": "async",
-        "op_share_game_recording": "unsupported",
+        "op_share_game_recording": "async",
         "op_share_menu_reply": "async",
         "op_share_message_to_friend": "async",
         "op_share_set_menu": "command",

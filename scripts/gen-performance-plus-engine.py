@@ -76,6 +76,8 @@ HOST_CHANNEL_FORMS = {
     "files": ("async", ["string"]),
     "ecosystem": ("async", ["string", "string"]),
     "menu_reply": ("async", ["string"]),
+    # The game's recording, shared with its music exported and its video added.
+    "recording": ("async", ["string"]),
 }
 HOST_EVENT_ENTRY = re.compile(r"^\s*(_internal[A-Za-z0-9_]+):\s*(\d+),\s*$", re.M)
 PROFILE = "performance_plus"

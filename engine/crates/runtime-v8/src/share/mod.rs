@@ -75,37 +75,27 @@ pub async fn op_show_share_image_menu(
         .map_err(JsErrorBox::generic)
 }
 
-/// What a recording's share is refused for before the host is asked: the
-/// recorder's module (`05_game_recorder.js`) answers each in the reference's
-/// codes.
-pub const NO_RECORDED_VIDEO: &str = "no recorded video";
-pub const BGM_NOT_FOUND: &str = "bgm not found";
-
 /// Share the game's last finished recording through the host, with the share
 /// options content set. The video is the engine's own file, never a path
-/// content named; `bgm` is resolved through the sandbox.
+/// content named; `bgm` is resolved through the sandbox. What it is refused
+/// for before the host is asked (`migo_services::game_recorder`) the
+/// recorder's module (`05_game_recorder.js`) answers in the reference's codes.
 #[op2]
 pub async fn op_share_game_recording(
     state: Rc<RefCell<OpState>>,
     #[string] request_json: String,
 ) -> Result<(), JsErrorBox> {
-    let video = state
-        .borrow()
-        .borrow::<HostOpState>()
-        .game_paths
-        .as_ref()
-        .map(|paths| paths.recording_path())
-        .filter(|video| video.is_file())
-        .ok_or_else(|| JsErrorBox::generic(NO_RECORDED_VIDEO))?;
     let service = share_service(&state, "operateGameRecorderVideo:fail not supported")?;
-    let request = export_paths(&state, &request_json, files::SHARE_GAME_RECORDING)
-        .await
-        .map_err(|_| JsErrorBox::generic(BGM_NOT_FOUND))?;
-    let mut request: Value = serde_json::from_str(&request)
-        .map_err(|e| JsErrorBox::generic(format!("malformed request: {e}")))?;
-    request["video"] = Value::String(video.to_string_lossy().into_owned());
+    let paths = state.borrow().borrow::<HostOpState>().game_paths.clone();
+    let request = migo_services::game_recorder::share_request(
+        &host_paths::sandbox(&state),
+        paths.as_deref(),
+        &request_json,
+    )
+    .await
+    .map_err(|error| JsErrorBox::generic(error.message))?;
     service
-        .share_game_recording(&request.to_string())
+        .share_game_recording(&request)
         .map_err(JsErrorBox::generic)
 }
 
