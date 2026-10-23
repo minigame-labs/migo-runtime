@@ -2417,6 +2417,11 @@ jni_host_files_callback!(
     "_internalOnShowShareImageMenuResult",
     HostFiles::NONE
 );
+jni_host_files_callback!(
+    onShareGameRecordingResult,
+    "_internalOnShareGameRecordingResult",
+    HostFiles::NONE
+);
 // The player picked a share item from the host's menu.
 jni_json_callback!(onShareMenuEvent, "_internalOnShareMenuEvent");
 

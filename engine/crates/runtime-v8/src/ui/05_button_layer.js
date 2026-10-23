@@ -144,4 +144,20 @@ function _paintNow() {
     _presented = true;
 }
 
-export { attachButtonLayer, invalidateButtonLayer };
+/**
+ * How wide `text` is in `font`, as this layer draws it: for a button that lays
+ * itself out around its text. Measured on the layer's own canvas, made now if
+ * no button has been drawn yet -- the one canvas every button is drawn on.
+ */
+function measureButtonText(font, text) {
+    if (_context === null) {
+        _canvas = createOffscreenCanvas(1, 1);
+        _context = _canvas.getContext("2d");
+        _width = 1;
+        _height = 1;
+    }
+    _context.font = font;
+    return _context.measureText(text).width;
+}
+
+export { attachButtonLayer, invalidateButtonLayer, measureButtonText };

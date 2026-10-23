@@ -2847,6 +2847,22 @@ public final class NativeExports {
                         HostDelegation.shareSink(settlement)));
     }
 
+    /**
+     * Share the game's last finished recording. Delegates to the session's {@link ShareHandler}.
+     *
+     * @param sessionId   The session ID
+     * @param optionsJson JSON with video, the share options content set, volume, atempo and audioMix
+     */
+    public static void shareGameRecording(int sessionId, String optionsJson) {
+        JSONObject options = HostDelegation.options(optionsJson);
+        HostDelegation.Settlement settlement =
+                settlement(sessionId, options, NativeMethods::onShareGameRecordingResult);
+        delegate(sessionId, sShareHandlers, "operateGameRecorderVideo", settlement,
+                handler -> handler.shareGameRecording(
+                        HostDelegation.recordingShareRequest(options),
+                        HostDelegation.shareSink(settlement)));
+    }
+
     // ==================== Navigate ====================
 
     /**

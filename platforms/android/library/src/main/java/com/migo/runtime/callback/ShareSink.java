@@ -27,6 +27,18 @@ public interface ShareSink {
     void settleShared();
 
     /**
+     * Report that a recording's share finished, with what came of sharing it to
+     * your game center: for {@link ShareHandler#shareGameRecording} only, whose
+     * result tells content as {@code shareToGameCenter}. A host without a game
+     * center settles with {@link #settleShared()}.
+     *
+     * @param gameCenterErrCode 0 when the recording reached your game center,
+     *                          else your code for why it did not
+     * @param gameCenterErrMsg  what content receives as that status's errMsg
+     */
+    void settleSharedToGameCenter(int gameCenterErrCode, String gameCenterErrMsg);
+
+    /**
      * Settle the request as failed.
      *
      * @param errCode SDK-specific error code, or -1 if there is none

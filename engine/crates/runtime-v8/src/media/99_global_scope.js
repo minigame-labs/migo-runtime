@@ -44,6 +44,9 @@ ObjectDefineProperties(globalThis, {
     // Video
     createVideo: core.propNonEnumerable(videoApi.createVideo),
     getGameRecorder: core.propNonEnumerable(gameRecorderApi.getGameRecorder),
+    operateGameRecorderVideo: core.propNonEnumerable(gameRecorderApi.operateGameRecorderVideo),
+    createGameRecorderShareButton: core.propNonEnumerable(gameRecorderApi.createGameRecorderShareButton),
+    _internalOnShareGameRecordingResult: core.propNonEnumerable(gameRecorderApi._internalOnShareGameRecordingResult),
     _internalOnVideoPlayResult: core.propNonEnumerable(videoApi._internalOnVideoPlayResult),
     _internalOnVideoPauseResult: core.propNonEnumerable(videoApi._internalOnVideoPauseResult),
     _internalOnVideoStopResult: core.propNonEnumerable(videoApi._internalOnVideoStopResult),

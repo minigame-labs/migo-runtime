@@ -336,9 +336,10 @@
       }
     },
     "host_v8_share": {
-      "reason": "Sharing is the host app's: the share menu's state is set as a command through the host-service channel, and a share -- to the app's chooser, to a friend, from the image menu, or the menu's reply -- is awaited while the host resolves the image it names through the game's sandbox (migo_services::host_paths), as the embedded ops do.",
+      "reason": "Sharing is the host app's: the share menu's state is set as a command through the host-service channel, and a share -- to the app's chooser, to a friend, from the image menu, or the menu's reply -- is awaited while the host resolves the image it names through the game's sandbox (migo_services::host_paths), as the embedded ops do. Sharing the game's recording (operateGameRecorderVideo, its share button) shares what getGameRecorder recorded, which the Performance+ profile does not have yet.",
       "ops": {
         "op_share_app_message": "async",
+        "op_share_game_recording": "unsupported",
         "op_share_menu_reply": "async",
         "op_share_message_to_friend": "async",
         "op_share_set_menu": "command",

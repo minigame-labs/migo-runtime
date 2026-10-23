@@ -40,6 +40,8 @@ mod device_motion;
 mod fetch_through_the_service;
 #[cfg(feature = "api-media")]
 mod game_recorder_lifecycle;
+#[cfg(feature = "api-media")]
+mod game_recorder_share;
 mod gamepad_haptics;
 mod global_surface;
 mod host_bridge_dispatch;

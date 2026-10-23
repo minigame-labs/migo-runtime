@@ -347,6 +347,11 @@ const CALLS: &[(&str, &str)] = &[
         "__probeCall('createCustomAd', [{ adUnitId: 'probe', style: { left: 0, top: 0 } }])",
     ),
     (
+        "createGameRecorderShareButton",
+        "__probeCall('createGameRecorderShareButton', [{ style: {}, \
+             share: { bgm: '/tmp/probe.mp3', timeRange: [[0, 3000]] } }])",
+    ),
+    (
         "createGridAd",
         "__probeCall('createGridAd', [{ adUnitId: 'probe', style: { left: 0, top: 0, width: 300 } }])",
     ),
@@ -426,6 +431,10 @@ const CALLS: &[(&str, &str)] = &[
     (
         "preDownloadSubpackage",
         "__probeCall('preDownloadSubpackage', [{ name: 'probe' }])",
+    ),
+    (
+        "operateGameRecorderVideo",
+        "__probeCall('operateGameRecorderVideo', [{}])",
     ),
     (
         "previewImage",
@@ -596,8 +605,15 @@ fn api_reach_matches_the_committed_record() {
     let temp = sandbox.paths.temp_dir();
     std::fs::write(temp.join("probe.png"), [0x89, b'P', b'N', b'G']).expect("probe image");
     std::fs::write(temp.join("probe.ttf"), [0, 1, 0, 0]).expect("probe font");
+    std::fs::write(temp.join("probe.mp3"), [0xff, 0xfb]).expect("probe music");
+    // A recording the recorder finished, so sharing it gets as far as the host.
+    let recording = sandbox.paths.recording_path();
+    std::fs::create_dir_all(recording.parent().expect("the recordings directory"))
+        .expect("the recordings directory");
+    std::fs::write(&recording, b"mp4").expect("probe recording");
     let mut state = super::support::test_host_state();
     state.vfs = Some(sandbox.vfs());
+    state.game_paths = Some(Arc::new(sandbox.paths.clone()));
     // Every channel granted, so a network call gets past the gate and reaches what it would reach in a host that
     // allowed it: the record is the API's reach, not the default policy's refusal.
     state.network_policy = shared::network_policy::NetworkPolicy::unrestricted();
