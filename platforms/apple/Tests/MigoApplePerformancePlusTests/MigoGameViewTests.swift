@@ -250,12 +250,18 @@ import XCTest
         /// answers, the main canvas content never sized is the new window, and
         /// its frames keep coming at the new size.
         func testTheGameFollowsTheViewWhenItResizes() throws {
+            // Content says what it sees five frames after it starts and five
+            // after each resize it hears. Its first report is its own: the
+            // reference fires onWindowResize on a change, so a view sized before
+            // content ran has no event to send -- the version of this test that
+            // waited for one at start waited out its timeout on every runner.
             let game = try package(
                 named: "resizing",
                 game: """
                     const canvas = migo.createCanvas();
                     const gl = canvas.getContext("webgl");
                     let frames = 0;
+                    let heard = null;
                     const draw = () => {
                       frames += 1;
                       gl.clearColor(0, 0, 1, 1);
@@ -263,36 +269,37 @@ import XCTest
                       requestAnimationFrame(draw);
                     };
                     requestAnimationFrame(draw);
-                    migo.onWindowResize((res) => {
-                      const info = migo.getWindowInfo();
-                      console.log("resized " + JSON.stringify({ heard: [res.windowWidth, res.windowHeight],
-                        window: [info.windowWidth, info.windowHeight], canvas: [canvas.width, canvas.height] }));
-                      const at = frames;
-                      const wait = () => frames >= at + 5 ? console.log("drew " + canvas.width)
-                        : requestAnimationFrame(wait);
+                    const report = (from) => {
+                      const wait = () => {
+                        if (frames < from + 5) return requestAnimationFrame(wait);
+                        const info = migo.getWindowInfo();
+                        console.log("drew " + JSON.stringify({ heard: heard,
+                          window: [info.windowWidth, info.windowHeight], canvas: [canvas.width, canvas.height] }));
+                      };
                       requestAnimationFrame(wait);
+                    };
+                    migo.onWindowResize((res) => {
+                      heard = [res.windowWidth, res.windowHeight];
+                      report(frames);
                     });
+                    report(0);
                     """)
             try MigoGameInstaller.install(package: game, id: "resizing", into: directories)
             let view = MigoGameView(configuration: .init(directories: directories, contentSigning: .unsigned))
-            var resized: [[String: [Double]]] = []
-            var drew: [String] = []
+            var drew: [[String: [Double]]] = []
             var failure: String?
-            let started = expectation(description: "content heard its first size and drew")
-            let followed = expectation(description: "content heard the new size and drew")
+            let started = expectation(description: "content drew at its first size")
+            let followed = expectation(description: "content heard the new size and drew at it")
             view.onEvent = { event in
                 switch event {
                 case .console(_, let message):
-                    if message.hasPrefix("resized "),
-                        let heard = try? JSONSerialization.jsonObject(with: Data(message.dropFirst(8).utf8))
+                    guard message.hasPrefix("drew "),
+                        let report = try? JSONSerialization.jsonObject(with: Data(message.dropFirst(5).utf8))
                             as? [String: [Double]]
-                    {
-                        resized.append(heard)
-                    }
-                    if message.hasPrefix("drew ") {
-                        drew.append(String(message.dropFirst(5)))
-                        (drew.count == 1 ? started : followed).fulfill()
-                    }
+                    else { return }
+                    drew.append(report)
+                    if drew.count == 1 { started.fulfill() }
+                    if report["window"] == [844, 390] { followed.fulfill() }
                 case .failed(let reason):
                     failure = reason
                     started.fulfill()
@@ -303,17 +310,17 @@ import XCTest
             view.loadGame(id: "resizing")
             wait(for: [started], timeout: 240)
             XCTAssertNil(failure)
+            XCTAssertEqual(drew.first?["window"], [390, 844], "content starts at the view's size")
+            XCTAssertEqual(drew.first?["canvas"], [390, 844], "the canvas content never sized is the window")
 
             // Turned: the window's width and height exchanged.
             view.autoresizingMask = []
             view.frame = CGRect(x: 0, y: 0, width: 844, height: 390)
             view.layoutIfNeeded()
             wait(for: [followed], timeout: 30)
-            XCTAssertEqual(resized.first?["heard"], [390, 844], "content's listener hears the size it starts at")
-            XCTAssertEqual(resized.last?["heard"], [844, 390], "\(resized)")
-            XCTAssertEqual(resized.last?["window"], [844, 390], "getWindowInfo() answers the new size")
-            XCTAssertEqual(resized.last?["canvas"], [844, 390], "the canvas content never sized follows")
-            XCTAssertEqual(drew.last, "844", "frames keep coming at the new size")
+            XCTAssertEqual(drew.last?["heard"], [844, 390], "content's listener hears the new size: \(drew)")
+            XCTAssertEqual(drew.last?["window"], [844, 390], "getWindowInfo() answers the new size")
+            XCTAssertEqual(drew.last?["canvas"], [844, 390], "the canvas content never sized follows")
             view.stop()
         }
 
