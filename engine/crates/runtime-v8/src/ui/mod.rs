@@ -162,22 +162,24 @@ pub fn op_exit_pointer_lock(state: &mut OpState) -> Result<(), JsErrorBox> {
         .map_err(JsErrorBox::generic)
 }
 
-deno_core::extension!(
+main_runtime_extension!(
     host_v8_ui,
-    deps = [host_v8_base],
-    ops = [
-        op_show_toast,
-        op_hide_toast,
-        op_show_modal,
-        op_show_loading,
-        op_hide_loading,
-        op_show_action_sheet,
-        op_get_menu_button_rect,
-        op_set_window_size,
-        op_set_cursor,
-        op_request_pointer_lock,
-        op_exit_pointer_lock,
-    ],
+    {
+        deps = [host_v8_base],
+        ops = [
+            op_show_toast,
+            op_hide_toast,
+            op_show_modal,
+            op_show_loading,
+            op_hide_loading,
+            op_show_action_sheet,
+            op_get_menu_button_rect,
+            op_set_window_size,
+            op_set_cursor,
+            op_request_pointer_lock,
+            op_exit_pointer_lock,
+        ],
+    },
     esm_entry_point = "ext:host_v8_ui/99_global_scope.js",
     esm = [
         dir "src/ui",
@@ -186,7 +188,7 @@ deno_core::extension!(
         "04_window.js",
         "05_button_layer.js",
         "99_global_scope.js",
-    ]
+    ],
 );
 
 pub fn ui_extensions() -> Vec<Extension> {

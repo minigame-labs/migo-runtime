@@ -31,5 +31,5 @@ deno_core.workspace = true
 # IMPORTANT: features must match the runtime build exactly.
 # Mismatched features → different op count → different ExternalReferenceTable::kSize
 # → V8 snapshot magic number mismatch → crash at runtime.
-runtime-v8 = { package = "migo-runtime-v8", path = "../../crates/runtime-v8", default-features = false }
+runtime-v8 = { package = "migo-runtime-v8", path = "../../crates/runtime-v8", default-features = false, features = ["all-extension-js"] }
 shared = { package = "migo-shared", path = "../../crates/shared", default-features = false }

@@ -1855,6 +1855,7 @@ dependencies = [
  "migo-frame-wire",
  "migo-icu-data",
  "migo-io",
+ "migo-runtime-v8",
  "migo-services",
  "migo-shared",
  "parking_lot",
@@ -2777,8 +2778,6 @@ checksum = "e320a6c5ad31d271ad523dcf3ad13e2767ad8b1cb8f047f75a8aeaf8da139da2"
 [[package]]
 name = "skia-bindings"
 version = "0.93.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2359f7e30c9da3f322f8ca3d4ec0abbc12a40035ce758309db0cdab07b5d4476"
 dependencies = [
  "bindgen",
  "cc",

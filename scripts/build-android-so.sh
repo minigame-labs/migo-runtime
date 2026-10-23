@@ -69,6 +69,8 @@ V8_LIBS_DIR="$ENGINE_ROOT/third_party/rusty_v8"
 source "$SCRIPT_DIR/lib/android-ndk.sh"
 # shellcheck source=scripts/lib/v8-materialise.sh
 source "$SCRIPT_DIR/lib/v8-materialise.sh"
+# shellcheck source=scripts/lib/skia-external-icu.sh
+source "$SCRIPT_DIR/lib/skia-external-icu.sh"
 
 if [[ ! -d "$ENGINE_ROOT" ]]; then
     print_error "engine directory not found at $ENGINE_ROOT"
@@ -256,65 +258,6 @@ get_host_platform() {
 # ------------------------------------------------------------
 # Build one platform
 # ------------------------------------------------------------
-# ------------------------------------------------------------
-# Slim the embedded ICU data (stage 2 size reduction)
-# ------------------------------------------------------------
-# Skia bakes an ICU data blob into libicu.a via GN's make_data_assembly
-# (externals/icu/<variant>/icudtl.dat -> icudtl_dat.S -> libicu.a). On
-# Android it picks the `android` variant (8.5 MB, 121 locales). Our game
-# runtime never uses ICU locale/format data (no Intl); text rendering
-# only needs the break-iterator + char/line data. The `flutter` variant
-# (761 KB) keeps char.brk / line_normal_cj.brk / word.brk + SE-Asian
-# dictionaries (thai/khmer/lao/burmese) and drops the locale tables,
-# saving ~7.7 MB off the final .so.
-#
-# We overwrite the `android` variant file with the `flutter` one (idempotent;
-# the original is kept as .orig). Done before cargo build so GN/ninja
-# regenerate icudtl_dat.S from the smaller blob. Set MIGO_FULL_ICU=1 to
-# restore the full android data.
-slim_icu_data() {
-    local cargo_registry="${CARGO_HOME:-$HOME/.cargo}/registry/src"
-    local skia_src
-    # A missing registry is a supported cold-build state, and CARGO_HOME may be
-    # isolated in CI. `find` must not trip `set -euo pipefail` before the
-    # function can take its documented skip path.
-    skia_src="$(find "$cargo_registry" -maxdepth 2 -type d -name 'skia-bindings-*' \
-        2>/dev/null | sort | tail -1 || true)"
-    if [[ -z "$skia_src" ]]; then
-        print_warning "skia-bindings src not found; skipping ICU slim"
-        return 0
-    fi
-    local icu_dir="$skia_src/skia/third_party/externals/icu"
-    local android_dat="$icu_dir/android/icudtl.dat"
-    local flutter_dat="$icu_dir/flutter/icudtl.dat"
-    [[ -f "$android_dat" && -f "$flutter_dat" ]] || { print_warning "ICU variants missing; skipping"; return 0; }
-
-    # Keep a one-time backup of the ORIGINAL (large) android blob. Guard
-    # against backing up an already-slimmed file: only snapshot when no
-    # backup exists AND the current android blob differs from flutter
-    # (i.e. it is still the original large variant).
-    if [[ ! -f "$android_dat.orig" ]] && ! cmp -s "$flutter_dat" "$android_dat"; then
-        cp "$android_dat" "$android_dat.orig"
-    fi
-
-    if [[ "${MIGO_FULL_ICU:-0}" == "1" ]]; then
-        cp "$android_dat.orig" "$android_dat"
-        print_info "ICU: restored full android data (MIGO_FULL_ICU=1)"
-        return 0
-    fi
-
-    # overwrite only if not already the flutter (small) blob
-    if ! cmp -s "$flutter_dat" "$android_dat"; then
-        cp "$flutter_dat" "$android_dat"
-        print_info "ICU: slimmed android->flutter icudtl ($(du -h "$android_dat" | cut -f1))"
-        # force GN to regenerate the data assembly on next build
-        find "$TARGET_DIR" -path '*skia-bindings*/out/skia/gen/third_party/icu/icudtl_dat.S' -delete 2>/dev/null || true
-        find "$TARGET_DIR" -path '*skia-bindings*/out/skia/libicu.a' -delete 2>/dev/null || true
-    else
-        print_info "ICU: already slimmed (flutter blob)"
-    fi
-}
-
 build_platform() {
     local platform="$1"
     local build_type="$2"
@@ -388,6 +331,11 @@ build_platform() {
     export RUSTY_V8_SRC_BINDING_PATH="$V8_MATERIALISED_BINDING"
     print_info "RUSTY_V8_ARCHIVE = $RUSTY_V8_ARCHIVE"
     print_info "RUSTY_V8_SRC_BINDING_PATH = $RUSTY_V8_SRC_BINDING_PATH"
+    if ! skia_external_icu_export "$ENGINE_ROOT" "$target_triple"; then
+        print_error "cannot give Skia V8's ICU for $target_triple"
+        exit 1
+    fi
+    print_info "SKIA_EXTERNAL_ICU_INCLUDE_DIRS = $SKIA_EXTERNAL_ICU_INCLUDE_DIRS"
 
     # --------------------------------------------------------
     # RUSTFLAGS (arm64 builtins)
@@ -507,9 +455,18 @@ build_platform() {
         package_args=(-p migo-capi)
         features_argument="migo-capi/profile-$product_profile"
     fi
-    cargo ndk --target "$target_triple" --platform "$ANDROID_API" -- build \
+    # MIGO_LINK_MAP=<path>.map asks for the link map scripts/size_report/attribute_map.py reads,
+    # written as <path>.<platform>.map. `cargo rustc` hands the flag to the cdylib alone, so no other
+    # crate's fingerprint moves and the .so is byte-for-byte the one a plain build links.
+    local -a subcommand=(build)
+    local -a link_map_args=()
+    if [[ -n "${MIGO_LINK_MAP:-}" && "$compile_only" != true ]]; then
+        subcommand=(rustc --lib)
+        link_map_args=(-- -C "link-arg=-Wl,-Map=${MIGO_LINK_MAP%.map}.$platform.map")
+    fi
+    cargo ndk --target "$target_triple" --platform "$ANDROID_API" -- "${subcommand[@]}" \
         --target-dir "$TARGET_DIR" "${profile_args[@]}" "${package_args[@]}" \
-        --no-default-features --features "$features_argument" \
+        --no-default-features --features "$features_argument" "${link_map_args[@]}" \
         || cargo_rc=$?
 
     popd > /dev/null
@@ -769,9 +726,6 @@ print_info "Codegen    : $codegen_profile"
 print_info "Worker snap: $worker_snapshot"
 print_info "Mode       : $([[ "$compile_only" == true ]] && echo "compile-only (no cdylib)" || echo "full .so")"
 print_info "Platforms  : ${platforms[*]}"
-
-# Stage-2: ensure the embedded ICU blob is the slim variant before building.
-slim_icu_data
 
 failed=()
 for p in "${platforms[@]}"; do
