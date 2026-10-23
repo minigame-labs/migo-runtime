@@ -80,17 +80,21 @@ mod input_clock_tests {
     }
 
     /// Inside a burst the host's spacing is what content sees, not the spacing of when the game read them.
+    ///
+    /// The host's 20 ms against a read 40 ms and more later: the read gap is never shorter than the host's, which
+    /// would put the second stamp after `performance.now()`, and stays far inside the quarter second that ends a
+    /// burst. With 100 ms against 120 a shared runner read them 257 ms apart, a new burst.
     #[test]
     fn the_spacing_inside_a_burst_is_the_hosts() {
         let (executor, mut runtime) = boot();
         run(&executor, &mut runtime, SETUP);
         run(&executor, &mut runtime, &touch("62067560000"));
-        std::thread::sleep(Duration::from_millis(120));
-        run(&executor, &mut runtime, &touch("62067560100"));
+        std::thread::sleep(Duration::from_millis(40));
+        run(&executor, &mut runtime, &touch("62067560020"));
         check(
             &executor,
             &mut runtime,
-            "__stamps.length === 2 && Math.abs((__stamps[1] - __stamps[0]) - 100) < 0.001",
+            "__stamps.length === 2 && Math.abs((__stamps[1] - __stamps[0]) - 20) < 0.001",
         );
     }
 

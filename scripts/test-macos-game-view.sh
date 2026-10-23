@@ -217,11 +217,13 @@ grep -q 'migo-swift-host-probe: compressed=16x8' "$LAST_LOG" \
   || fail "the SDK's image service did not compress the game's image"
 grep -q 'migo-swift-host-probe: previewed' "$LAST_LOG" \
   || fail "the SDK's viewer did not show the game's image"
-grep -q 'migo-swift-host-probe: bluetooth=.* scope=refused' "$LAST_LOG" \
+# Granted where the Mac already allows the app, refused without a prompt where it
+# does not: the probe holds each to the grant it reads, and fails otherwise.
+grep -qE 'migo-swift-host-probe: bluetooth=.* scope=(granted|refused)' "$LAST_LOG" \
   || fail "the Bluetooth capability did not decide scope.bluetooth for the game"
-grep -q 'migo-swift-host-probe: album=.* scope=refused' "$LAST_LOG" \
+grep -qE 'migo-swift-host-probe: album=.* scope=(granted|refused)' "$LAST_LOG" \
   || fail "the photo library capability did not decide scope.writePhotosAlbum for the game"
-grep -q 'migo-swift-host-probe: location=.* scope=refused' "$LAST_LOG" \
+grep -qE 'migo-swift-host-probe: location=.* scope=(granted|refused)' "$LAST_LOG" \
   || fail "the location capability did not decide scope.userLocation for the game"
 grep -q "migo-swift-host-probe: wifi=$expected_wifi camera=not determined" "$LAST_LOG" \
   || fail "the game did not read the Mac's Wi-Fi switch ($expected_wifi) and an undetermined camera: $(grep -o 'migo-swift-host-probe: wifi=.*' "$LAST_LOG")"
