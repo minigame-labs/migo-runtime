@@ -80,17 +80,22 @@ mod input_clock_tests {
     }
 
     /// Inside a burst the host's spacing is what content sees, not the spacing of when the game read them.
+    ///
+    /// The second touch must be read at least the host's 10 ms after the first (sooner, its time would be in the future
+    /// and is clamped to now) and within the quarter second that keeps it in the burst. The 40 ms between the reads
+    /// leave 210 ms for a loaded machine to stall in: with 100 ms of host spacing and 120 ms of sleep, a CI runner's
+    /// 141 ms stall read the second touch 261 ms after the first, a new burst, and the test failed on the runner.
     #[test]
     fn the_spacing_inside_a_burst_is_the_hosts() {
         let (executor, mut runtime) = boot();
         run(&executor, &mut runtime, SETUP);
         run(&executor, &mut runtime, &touch("62067560000"));
-        std::thread::sleep(Duration::from_millis(120));
-        run(&executor, &mut runtime, &touch("62067560100"));
+        std::thread::sleep(Duration::from_millis(40));
+        run(&executor, &mut runtime, &touch("62067560010"));
         check(
             &executor,
             &mut runtime,
-            "__stamps.length === 2 && Math.abs((__stamps[1] - __stamps[0]) - 100) < 0.001",
+            "__stamps.length === 2 && Math.abs((__stamps[1] - __stamps[0]) - 10) < 0.001",
         );
     }
 
