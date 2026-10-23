@@ -101,7 +101,7 @@
     "getGameClubData": {"ops":["op_ecosystem_call"],"services":["ecosystem"]},
     "getGameExptInfo": {"ops":["op_ecosystem_call"],"services":["ecosystem"]},
     "getGameLogManager": {"ops":["op_encode","op_game_log_report"],"services":["game_log"]},
-    "getGameRecorder": null,
+    "getGameRecorder": {"ops":["op_game_recorder_start","op_game_recorder_supported"],"services":[]},
     "getGameServerManager": {"ops":["op_ecosystem_call"],"services":["ecosystem"]},
     "getGamepads": {"ops":[],"services":[]},
     "getGroupCloudStorage": {"ops":["op_ecosystem_call"],"services":["ecosystem"]},

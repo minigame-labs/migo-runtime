@@ -92,6 +92,7 @@
     "onDeviceOrientationChange": "screen.device_orientation_change"
   },
   "gaps": {
+    "getGameRecorder": {"platforms": ["ios", "macos", "linux", "windows", "ohos"], "reason": "the engine records the game through a platform encoder, and only Android has one yet: elsewhere isFrameSupported() is false and start reports frame not supported (R1c Apple, R1d Linux, R1e Windows)"},
     "onAudioInterruptionBegin": {"platforms": ["ohos"], "reason": "the OpenHarmony audio output does not report interruptions yet"},
     "onAudioInterruptionEnd": {"platforms": ["ohos"], "reason": "the OpenHarmony audio output does not report interruptions yet"}
   },

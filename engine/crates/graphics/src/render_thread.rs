@@ -2356,7 +2356,10 @@ impl RenderThread {
                     // other session's GL texture names stay unreachable.
                     text_cache,
                 ) {
-                    Ok(c) => c,
+                    Ok(mut c) => {
+                        c.set_video_encoder(graphics_platform.video_encoder().cloned());
+                        c
+                    }
                     Err(e) => {
                         gpu_caps.set_failed(format!("CanvasManager init failed: {}", e));
                         error!("CanvasManager init failed: {}", e);
@@ -2864,6 +2867,9 @@ impl RenderThread {
                         RenderCommand::Pause => {
                             if !*paused {
                                 *paused = true;
+                                // Nothing is presented in the background: a
+                                // recording's clock waits.
+                                cm.suspend_recording(true);
                                 // Java stops the scheduler on pause (removing
                                 // any posted callback); clear our in-flight flag so
                                 // Resume re-arms retained demand.
@@ -2903,6 +2909,7 @@ impl RenderThread {
                         RenderCommand::Resume => {
                             if *paused {
                                 *paused = false;
+                                cm.suspend_recording(false);
                                 // Clear in-flight flag so the forced first-frame
                                 // dirty below re-arms even if a stale callback was
                                 // dropped while paused.
@@ -3019,6 +3026,8 @@ impl RenderThread {
                                 return LoopCtl::Failed(failure);
                             }
                         }
+
+                        RenderCommand::GameRecorder(cmd) => cm.game_recorder(cmd),
 
                         RenderCommand::TrimTextCache { level } => {
                             // The text texture cache is per session, and

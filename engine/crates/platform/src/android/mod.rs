@@ -52,6 +52,10 @@ pub unsafe fn init_context(vm: *mut std::ffi::c_void, activity: *mut std::ffi::c
     });
 }
 
+#[cfg(feature = "api-media")]
+pub mod game_recorder;
+#[cfg(feature = "api-media")]
+pub(crate) mod media_ndk;
 pub mod platform;
 pub mod presenter;
 pub mod services;

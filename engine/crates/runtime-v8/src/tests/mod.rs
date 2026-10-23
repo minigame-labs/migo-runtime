@@ -38,6 +38,8 @@ mod code_cache_dir;
 #[cfg(feature = "api-sensors")]
 mod device_motion;
 mod fetch_through_the_service;
+#[cfg(feature = "api-media")]
+mod game_recorder_lifecycle;
 mod gamepad_haptics;
 mod global_surface;
 mod host_bridge_dispatch;
