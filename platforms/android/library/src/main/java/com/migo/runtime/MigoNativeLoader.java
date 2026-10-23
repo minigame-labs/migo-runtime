@@ -20,7 +20,7 @@ import java.io.InputStream;
  *
  * <p>By default nothing here needs calling: {@code libmigo.so} ships inside the
  * AAR, {@code System.loadLibrary} finds it, and this class stays out of the
- * way. It exists for hosts that would rather not carry ~17 MB of download and
+ * way. It exists for hosts that would rather not carry ~19 MB of download and
  * ~45 MB of install for users who may never open a mini-game.
  *
  * <p>To take that path, depend on the {@code -nojni} AAR — the same build with

@@ -6,7 +6,7 @@ import java.io.File;
  * Delivers the Migo engine binary when it is not packaged in the APK.
  *
  * <p>Install one with {@link MigoNativeLoader#setProvider} to keep
- * {@code libmigo.so} (~17 MB compressed, ~45 MB installed, per ABI) out of your
+ * {@code libmigo.so} (~19 MB compressed, ~45 MB installed, per ABI) out of your
  * first-install download. Users who never open a mini-game never pay for it.
  *
  * <p>The SDK never downloads anything itself, because the compliant way to
