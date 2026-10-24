@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `getBatteryInfo` and `getBatteryInfoSync` on a Mac laptop: the Apple SDK reports the internal battery among IOKit's
+  power sources (its charge, and whether it is charging or full on the charger) and Low Power Mode from macOS 12, at
+  each change. A Mac without a battery still answers "not supported".
 - The Linux Host Kit's `MigoManagedSession` supplies the soft keyboard: content's `showKeyboard` opens a text field
   along the bottom of the game, which holds the keyboard's focus while it shows and whose height content is told. Each
   edit reports the whole text, Enter confirms a one-line field (closing it unless content asked to hold it), Esc or

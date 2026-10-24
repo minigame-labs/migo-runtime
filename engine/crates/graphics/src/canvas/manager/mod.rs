@@ -76,6 +76,7 @@ use std::{
 mod context_2d_impl;
 pub(crate) mod drawing_buffer;
 mod egl_ops;
+mod game_recorder_impl;
 pub(crate) mod gl_object;
 mod image;
 mod overlay;
@@ -791,6 +792,14 @@ pub(crate) struct CanvasManager {
     /// None on TierB devices or if shared-context probe failed.
     pub(crate) upload_thread: Option<crate::upload_thread::UploadThreadHandle>,
 
+    /// What records the game's frames, when the platform has an encoder.
+    video_encoder: Option<std::sync::Arc<dyn crate::game_recorder::VideoEncoderFactory>>,
+    /// `getGameRecorder`'s recording, while one is being made.
+    recording: Option<crate::game_recorder::Recording>,
+    /// Encoder threads finishing recordings on their own: joined before the
+    /// EGL display they use goes.
+    finishing_recordings: Vec<crate::game_recorder::Finishing>,
+
     /// Best-effort shader binary cache.
     /// Saves compiled GL program binaries to disk; loads on next run.
     /// None if GL_NUM_PROGRAM_BINARY_FORMATS == 0.
@@ -1280,6 +1289,9 @@ impl CanvasManager {
             snapshot_fence_waits: 0,
             upload_server,
             upload_thread,
+            video_encoder: None,
+            recording: None,
+            finishing_recordings: Vec::new(),
             shader_cache,
             pending_uploads: Vec::new(),
             upload_drain_scratch: Vec::new(),
@@ -3151,6 +3163,8 @@ impl CanvasManager {
 
         // Upload thread shares the dead resource context — stop it (Drop joins
         // the thread; it does no GL in Drop) before we destroy that context.
+        // So does a recording's encoder thread.
+        self.end_recordings("the render context was lost");
         drop(self.upload_thread.take());
         self.upload_server.take();
         self.pending_uploads.clear();
@@ -3403,6 +3417,7 @@ impl CanvasManager {
         }
         self.teardown_complete = true;
 
+        self.end_recordings("the game ended");
         drop(self.upload_thread.take());
         self.upload_server.take();
 
@@ -4190,12 +4205,15 @@ impl CanvasManager {
         // context asked for: a stencil buffer it did not ask for would make its stencil test fail where none can.
         let buffers_are_the_surface_s =
             self.drawing_buffer_format(onscreen_id) == self.surface_format;
+        // A recording takes its frames from the DrawingBuffer.
+        let recording = self.recording();
         let can_bypass = can_bypass_drawing_buffer(
             canvas_count,
             drawing_buffer_preserved,
             onscreen_has_2d_context,
             onscreen_db_matches_surface,
             buffers_are_the_surface_s,
+            recording,
         );
 
         let mut mode_changed = false;
@@ -5095,10 +5113,11 @@ impl CanvasManager {
             }
         }
 
-        // The engine's overlay goes over the content's pixels, here, so it is in
-        // the presented frame and never in the content's canvas.
+        // A recording takes content's frame now: complete, and not yet under the
+        // engine's overlay, which is never recorded.
         let entry_surf = entry.ctx.surf;
         let window_context = entry.ctx.ctx.as_ptr();
+        self.record_presented_frame(id);
         self.composite_overlay(window_context, buffer_w, buffer_h);
         self.overlay_prepared = None;
 
@@ -7082,12 +7101,14 @@ fn can_bypass_drawing_buffer(
     onscreen_has_2d_context: bool,
     onscreen_db_matches_surface: bool,
     buffers_are_the_surface_s: bool,
+    recording: bool,
 ) -> bool {
     canvas_count == 1
         && !drawing_buffer_preserved
         && !onscreen_has_2d_context
         && onscreen_db_matches_surface
         && buffers_are_the_surface_s
+        && !recording
 }
 
 /// The framebuffer name that *is* a canvas's WebGL default framebuffer: the
@@ -8592,7 +8613,13 @@ mod tests {
         // The canonical bypass case: one onscreen canvas whose DrawingBuffer
         // matches the surface, no 2D context (WebGL), no readback → bypass is
         // safe.
-        assert!(can_bypass_drawing_buffer(1, false, false, true, true));
+        assert!(can_bypass_drawing_buffer(
+            1, false, false, true, true, false
+        ));
+        assert!(
+            !can_bypass_drawing_buffer(1, false, false, true, true, true),
+            "a recording takes its frames from the DrawingBuffer"
+        );
     }
 
     #[test]
@@ -8600,7 +8627,9 @@ mod tests {
         // Regression: a single onscreen Canvas2D canvas. Skia renders into the
         // DrawingBuffer FBO; if bypass skipped the blit those pixels would
         // never reach the window (black screen). Bypass MUST be off.
-        assert!(!can_bypass_drawing_buffer(1, false, true, true, true));
+        assert!(!can_bypass_drawing_buffer(
+            1, false, true, true, true, false
+        ));
     }
 
     #[test]
@@ -8611,7 +8640,9 @@ mod tests {
         // image in the corner; the DrawingBuffer→surface blit upscales it to
         // fill the window. Bypass MUST be off whenever db != surface (here also
         // false when no DrawingBuffer exists).
-        assert!(!can_bypass_drawing_buffer(1, false, false, false, true));
+        assert!(!can_bypass_drawing_buffer(
+            1, false, false, false, true, false
+        ));
     }
 
     /// A second canvas keeps the onscreen canvas on the DrawingBuffer blit.
@@ -8633,7 +8664,9 @@ mod tests {
     /// means a mutant names the guard it broke.
     #[test]
     fn a_second_canvas_keeps_the_onscreen_canvas_on_the_drawing_buffer() {
-        assert!(!can_bypass_drawing_buffer(2, false, false, true, true));
+        assert!(!can_bypass_drawing_buffer(
+            2, false, false, true, true, false
+        ));
     }
 
     /// A preserved drawing buffer has to survive `eglSwapBuffers`, and under
@@ -8641,14 +8674,18 @@ mod tests {
     /// Only the DrawingBuffer keeps it.
     #[test]
     fn a_preserved_drawing_buffer_disables_bypass() {
-        assert!(!can_bypass_drawing_buffer(1, true, false, true, true));
+        assert!(!can_bypass_drawing_buffer(
+            1, true, false, true, true, false
+        ));
     }
 
     /// Bypass hands WebGL the window's own buffers as its default framebuffer, so a context that asked for others -- no
     /// stencil, no depth, no alpha -- is drawn through its DrawingBuffer, which has exactly those.
     #[test]
     fn a_context_whose_buffers_the_window_does_not_have_is_never_bypassed() {
-        assert!(!can_bypass_drawing_buffer(1, false, false, true, false));
+        assert!(!can_bypass_drawing_buffer(
+            1, false, false, true, false, false
+        ));
     }
 
     // ---- What the default framebuffer resolves to, and who re-points it ----

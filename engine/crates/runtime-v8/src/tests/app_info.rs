@@ -98,6 +98,17 @@ fn what_the_host_reports_is_what_content_reads_everywhere_it_is_asked() {
     assert_eq!(base["enableDebug"], true);
     // The platform does not give mini games a theme.
     assert!(base.get("theme").is_none(), "{base}");
+    // The kernel's version is the platform's only on a PC, where the engine is that kernel.
+    let desktop = cfg!(any(
+        target_os = "macos",
+        target_os = "windows",
+        all(target_os = "linux", not(target_env = "ohos"))
+    ));
+    if desktop {
+        assert_eq!(base["PCKernelVersion"], RUNTIME_VERSION, "{base}");
+    } else {
+        assert!(base.get("PCKernelVersion").is_none(), "{base}");
+    }
 
     assert_eq!(
         read["account"],

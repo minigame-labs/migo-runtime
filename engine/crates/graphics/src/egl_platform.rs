@@ -237,6 +237,8 @@ pub struct GraphicsPlatform {
     surface_factory: Arc<dyn EglSurfaceFactory>,
     backend_id: GraphicsBackendId,
     platform_identity: PlatformIdentity,
+    /// What records the game's frames, where the platform has an encoder.
+    video_encoder: Option<Arc<dyn crate::game_recorder::VideoEncoderFactory>>,
 }
 
 impl GraphicsPlatform {
@@ -265,7 +267,22 @@ impl GraphicsPlatform {
             surface_factory,
             backend_id: provider_id,
             platform_identity: provider_identity,
+            video_encoder: None,
         })
+    }
+
+    /// Record the game's frames with `factory`'s encoders.
+    pub fn with_video_encoder(
+        mut self,
+        factory: Arc<dyn crate::game_recorder::VideoEncoderFactory>,
+    ) -> Self {
+        self.video_encoder = Some(factory);
+        self
+    }
+
+    #[inline]
+    pub fn video_encoder(&self) -> Option<&Arc<dyn crate::game_recorder::VideoEncoderFactory>> {
+        self.video_encoder.as_ref()
     }
 
     #[inline]

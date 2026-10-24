@@ -199,6 +199,7 @@ getFuzzyLocation
 getGameClubData
 getGameExptInfo
 getGameLogManager
+getGameRecorder
 getGameServerManager
 getGamepads
 getGroupCloudStorage
@@ -664,6 +665,7 @@ getFuzzyLocation
 getGameClubData
 getGameExptInfo
 getGameLogManager
+getGameRecorder
 getGameServerManager
 getGamepads
 getGroupCloudStorage
