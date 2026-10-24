@@ -340,7 +340,7 @@ fi
 # x86_64 was built alongside it -- separating them there would rebuild Rust for
 # nothing. Gradle's `abiFilters` does the actual filtering.
 #
-# Worth having because the number is a sales objection: 16-17 MB per ABI is the
+# Worth having because the number is a sales objection: 19-20 MB per ABI is the
 # figure a host weighs against its own APK budget, and shipping only the
 # multi-ABI AAR quotes it at double.
 ABI_ARTIFACT_SUFFIX=""
@@ -573,7 +573,7 @@ build_aar() {
 # Split the published AAR into an engine-less AAR and its engine archives
 # ------------------------------------------------------------
 #
-# A host integrating Migo pays ~17 MB of first-install download and ~45 MB
+# A host integrating Migo pays ~19 MB of first-install download and ~45 MB
 # installed for libmigo.so per ABI, whether or not a user ever opens a
 # mini-game. These two assets let that cost be deferred to the first launch of a
 # game; see MigoNativeLoader on the Java side. Nothing about the default

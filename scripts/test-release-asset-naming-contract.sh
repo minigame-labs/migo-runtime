@@ -21,7 +21,7 @@
 #                                                    it is multi-ABI so no arch segment
 #   migo-<version>-android-nojni.aar                 the same AAR with `jni/**` removed,
 #                                                    for hosts that deliver the engine at
-#                                                    runtime instead of shipping ~17 MB of
+#                                                    runtime instead of shipping ~19 MB of
 #                                                    download to users who may never open a
 #                                                    mini-game. `nojni` names exactly what
 #                                                    was deleted, which is what lets
