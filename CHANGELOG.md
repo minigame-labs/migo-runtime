@@ -161,6 +161,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scope before the game's entry, in the order given -- as an Android or Apple host injects an adapter. Content written
   against `wx` or the browser could not run there at all: `migo-examples`' `wx-adapter-demo` stopped on
   `ReferenceError: wx is not defined` and presented nothing; with the wx adapter bundle as a prelude it runs.
+- `scripts/prescreen-run.sh` takes `--adapter FILE` and `--record`: the host is handed the adapter the content is
+  written against and this checkout's compatibility recorder, and the run report calls each injected only when the
+  host's log names its sha256 -- a host that ignores the request is said to, rather than its absence being charged to
+  the bundle. `migo-examples`' debug-only `PrescreenProbeActivity`, which `PRESCREEN.md` sends a stranger to, reads
+  both; wx content through it no longer stops on `wx is not defined`.
 - `scripts/prescreen-game.sh` reads `game.json` and counts the plugins it declares, which the mini-game platform serves
   to `requirePlugin(...)` and Migo cannot. A bundle that also calls `requirePlugin` does not start as built, and no name
   scan saw it; one that only declares a plugin is told the declaration may be unused. Cocos Creator's "Separate Engine"

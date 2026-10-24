@@ -9,6 +9,10 @@
 # in scripts/lib/prescreen_run_report.py and uses compat_report's table, and this holds each verdict
 # to a capture made here: the PNGs, the focused window, the log in the device's own format.
 #
+# It also holds the run's preludes (--adapter, --record) to the host's word: a host that ignores the
+# request runs without them, so the report calls one injected only when the host's log names its
+# digest, and says when it does not.
+#
 # Host-only: python3, no device.
 set -euo pipefail
 
@@ -49,7 +53,7 @@ RUNNING = "10-19 05:00:01.000  4321  4321 D MigoSession: Session 1 state: STARTI
 
 
 def run(label: str, log_lines: list[str], *, painted: bool = True, moving: bool = True, alive: str = "4321",
-        front: str = f"{PKG}/{PKG}.GameActivity") -> str:
+        front: str = f"{PKG}/{PKG}.GameActivity", preludes: tuple = (), host_pid: str = "4321") -> str:
     with tempfile.TemporaryDirectory() as work_dir:
         work = pathlib.Path(work_dir)
         png(work / "first.png", 1, flat=not painted)
@@ -58,6 +62,8 @@ def run(label: str, log_lines: list[str], *, painted: bool = True, moving: bool 
             (work / name).write_text(f"  mCurrentFocus=Window{{a1b2c3 u0 {front}}}\n")
         (work / "logcat.txt").write_text("\n".join(log_lines) + "\n")
         (work / "log-scope.txt").write_text("pid 4321\n")
+        (work / "host-pid.txt").write_text(host_pid + "\n")
+        (work / "preludes.txt").write_text("".join(f"{role}\t{name}\t{digest}\n" for role, name, digest in preludes))
         result = subprocess.run(
             [sys.executable, str(reporter), "bundle", str(work), PKG, f"{PKG}/.GameActivity", "Pixel", "34", "20",
              alive, work_dir],
@@ -132,6 +138,82 @@ recorded = run("recorded", [
 check("a log the recorder wrote into adds what the game reached for",
       "## 4. What it reached for" in recorded and "`wx.createCanvas` | verified" in recorded)
 check("and a log without it says nothing about reach", "What it reached for" not in clean)
+
+ADAPTER = ("adapter", "migo-wx-adapter.bundle.js", "a" * 64)
+RECORDER = ("recorder", "recorder.js", "b" * 64)
+
+
+def injected(name: str, digest: str) -> str:
+    return f"10-19 05:00:00.900  4321  4321 I PrescreenProbe: injected {name} sha256={digest}"
+
+
+check("a run that asked for nothing says so", "- preludes asked of the host: none" in clean)
+confirmed = run("confirmed", [injected("<prescreen-adapter>", ADAPTER[2]), RUNNING], preludes=(ADAPTER,))
+check("an adapter the host logged injecting is called injected",
+      "adapter `migo-wx-adapter.bundle.js` (sha256 `aaaaaaaaaaaa`): injected, by the host's log" in confirmed)
+check("and nothing doubts it", "did not confirm" not in confirmed)
+ignored = run("ignored", [
+    RUNNING,
+    "10-19 05:00:01.500  4321  4340 E [migo]  : [Host 1] handle_command failed: e=[ModuleLoadError] module evaluation "
+    "failed (ReferenceError: wx is not defined",
+], preludes=(ADAPTER,))
+check("an adapter the host never logged is not called injected",
+      "**asked for, not confirmed**" in ignored and "injected, by the host's log" not in ignored)
+check("and the report says what follows is about the run", "The host did not confirm `migo-wx-adapter.bundle.js`" in ignored)
+other = run("other", [injected("<prescreen-adapter>", "c" * 64), RUNNING], preludes=(ADAPTER,))
+check("another file injected does not confirm this one", "**asked for, not confirmed**" in other)
+silent = run("silent", [injected("<migo-compat-recorder>", RECORDER[2]), RUNNING], preludes=(RECORDER,))
+refusal = run("refusal", [
+    f"10-19 05:00:00.900  4321  4321 E PrescreenProbe: not injected <prescreen-adapter> sha256={ADAPTER[2]}", RUNNING,
+], preludes=(ADAPTER,))
+check("a host saying it did not inject is not confirmation", "**asked for, not confirmed**" in refusal)
+echoed = run("echoed", [
+    f"10-19 05:00:01.100  4321  4340 I [migo]  : injected <prescreen-adapter> sha256={ADAPTER[2]}", RUNNING,
+], preludes=(ADAPTER,))
+check("the content's console saying the words is not confirmation", "**asked for, not confirmed**" in echoed)
+relayed = run("relayed", [
+    f"10-19 05:00:01.100  4321  4340 I [migo]  : PrescreenProbe: injected <prescreen-adapter> sha256={ADAPTER[2]}",
+    RUNNING,
+], preludes=(ADAPTER,))
+check("the content's console spelling a host's line is not confirmation", "**asked for, not confirmed**" in relayed)
+denied = run("denied", [
+    f"10-19 05:00:00.900  4321  4321 E PrescreenProbe: not injected: injected <prescreen-adapter> sha256={ADAPTER[2]}",
+    RUNNING,
+], preludes=(ADAPTER,))
+check("a refusal that goes on to quote the words is not confirmation", "**asked for, not confirmed**" in denied)
+# logcat repeats a message's own header on each of its lines, so a console message that spells a whole host line
+# after a newline arrives under the content's tag.
+forged = run("forged", [
+    "10-19 05:00:01.100  4321  4340 I [migo]  : x",
+    f"10-19 05:00:01.100  4321  4340 I [migo]  : 10-19 05:00:00.900  1  1 I PrescreenProbe: injected <prescreen-adapter> "
+    f"sha256={ADAPTER[2]}",
+    RUNNING,
+], preludes=(ADAPTER,))
+check("a console line spelling a whole host line is not confirmation", "**asked for, not confirmed**" in forged)
+elsewhere_pid = run("elsewhere pid", [injected("<prescreen-adapter>", ADAPTER[2]).replace("4321  4321", "9876  9876"),
+                                     RUNNING], preludes=(ADAPTER,))
+check("another process's injection is not this host's", "**asked for, not confirmed**" in elsewhere_pid)
+no_pid = run("no pid", [injected("<prescreen-adapter>", ADAPTER[2]), RUNNING], preludes=(ADAPTER,), host_pid="")
+check("with no host process found, nothing is confirmed, and it says why",
+      "the host's process was not found" in no_pid and "injected, by the host's log" not in no_pid)
+# A carriage return, though, logcat leaves inside the message.
+returned = run("returned", [
+    f"10-19 05:00:01.100  4321  4340 I [migo]  : \r10-19 05:00:00.900  1  1 I PrescreenProbe: injected <prescreen-adapter> "
+    f"sha256={ADAPTER[2]}",
+    RUNNING,
+], preludes=(ADAPTER,))
+check("nor one that starts it after a carriage return", "**asked for, not confirmed**" in returned)
+crlf = run("crlf", [injected("<prescreen-adapter>", ADAPTER[2]) + "\r", RUNNING], preludes=(ADAPTER,))
+check("a host line ending in CRLF still confirms", "injected, by the host's log" in crlf)
+spaced = run("spaced", [injected("<prescreen-adapter>", ADAPTER[2]), RUNNING],
+             preludes=(("adapter", "my adapter.js", ADAPTER[2]),))
+check("an adapter whose file name has a space is reported", "adapter `my adapter.js`" in spaced)
+check("a recorder injected whose lines are not in the log leaves nothing to read",
+      "## 4. What it reached for" in silent and "**Nothing to read.**" in silent)
+check("and says the host injected it but logs above INFO", "The host injected the recorder" in silent)
+unasked = run("unasked", [RUNNING], preludes=(RECORDER,))
+check("a recorder asked for and never confirmed says the host may not have injected it",
+      "a host that did not inject it" in unasked)
 
 print("PASS" if failures == 0 else f"FAIL: {failures} check(s) failed")
 sys.exit(1 if failures else 0)
