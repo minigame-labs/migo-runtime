@@ -8,6 +8,7 @@ import UserNotifications
 #elseif os(macOS)
     import AppKit
     import CoreWLAN
+    import IOKit.ps
 #endif
 
 /// Tells one engine session what the device's network and battery are, what
@@ -23,9 +24,11 @@ import UserNotifications
 /// reports and never answers: the platform already notifies changes, and a read
 /// between two notifications is the last value anyway.
 ///
-/// The battery is reported on iOS only. A Mac's is a laptop's power source,
-/// read through IOKit, and a desktop has none; content there hears "not
-/// supported", which is the API's answer for a device without a battery.
+/// The battery is the device's own: UIDevice's on iOS, and on a Mac the
+/// internal battery among IOKit's power sources. A Mac without one -- a
+/// desktop, which only the mains powers -- has none to report, and content
+/// there hears "not supported", the API's answer for a device without a
+/// battery.
 ///
 /// Of the system's grants it reports what it reads without the app declaring a
 /// purpose for it: notifications. Location, the camera, the microphone, the
@@ -52,6 +55,8 @@ public final class MigoDeviceStatusReporter {
         private var memoryPressure: DispatchSourceMemoryPressure?
         /// The Wi-Fi interface's power, which CoreWLAN reads exactly.
         private var wifi: WiFiPower?
+        /// IOKit's power sources, where a laptop's battery is.
+        private var powerSources: PowerSources?
     #endif
     #if os(iOS)
         /// The app's own setting, put back on `stop()`: battery monitoring is
@@ -139,6 +144,15 @@ public final class MigoDeviceStatusReporter {
             }
             pressure.resume()
             memoryPressure = pressure
+            powerSources = PowerSources { [weak self] in self?.reportBattery() }
+            // Low Power Mode came to the Mac with macOS 12.
+            if #available(macOS 12.0, *) {
+                observers.append(
+                    NotificationCenter.default.addObserver(
+                        forName: .NSProcessInfoPowerStateDidChange, object: nil, queue: .main
+                    ) { [weak self] _ in self?.reportBattery() })
+            }
+            reportBattery()
         #endif
         #if os(iOS)
             observers.append(
@@ -177,6 +191,7 @@ public final class MigoDeviceStatusReporter {
             memoryPressure?.cancel()
             memoryPressure = nil
             wifi = nil
+            powerSources = nil
         #endif
         wifiOn = nil
         monitor.cancel()
@@ -343,17 +358,87 @@ public final class MigoDeviceStatusReporter {
     #if os(iOS)
         /// The body style's size at the standard content size category.
         private static let standardBodySize: CGFloat = 17
+    #endif
 
-        private func reportBattery() {
-            guard running else { return }
+    /// `isCharging` is the device on power and charging, or on power and full:
+    /// the same on iOS and on a Mac.
+    private func reportBattery() {
+        guard running else { return }
+        #if os(iOS)
             let device = UIDevice.current
             // -1 while the level is unknown -- the simulator, for one. No
             // report then, rather than a made-up level.
             guard device.batteryLevel >= 0 else { return }
+            let levelPercent = UInt32((device.batteryLevel * 100).rounded())
             let charging = device.batteryState == .charging || device.batteryState == .full
-            session?.setBatteryStatus(
-                levelPercent: UInt32((device.batteryLevel * 100).rounded()), charging: charging,
-                lowPowerMode: ProcessInfo.processInfo.isLowPowerModeEnabled)
+            let lowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled
+        #else
+            guard let (levelPercent, charging) = powerSources?.internalBattery else { return }
+            var lowPowerMode = false
+            if #available(macOS 12.0, *) { lowPowerMode = ProcessInfo.processInfo.isLowPowerModeEnabled }
+        #endif
+        session?.setBatteryStatus(levelPercent: levelPercent, charging: charging, lowPowerMode: lowPowerMode)
+    }
+
+    #if os(macOS)
+        /// The Mac's internal battery among IOKit's power-source descriptions:
+        /// its charge in percent, and whether it is charging or on power and
+        /// full. None without one -- a desktop's power is the mains, and a UPS
+        /// is not the Mac's battery. Capacities are percentages for an internal
+        /// battery, and read as a fraction of the maximum all the same.
+        static func internalBattery(in sources: [[String: Any]]) -> (levelPercent: UInt32, charging: Bool)? {
+            guard
+                let battery = sources.first(where: {
+                    $0[kIOPSTypeKey] as? String == kIOPSInternalBatteryType && $0[kIOPSIsPresentKey] as? Bool == true
+                }),
+                let current = battery[kIOPSCurrentCapacityKey] as? Int,
+                let capacity = battery[kIOPSMaxCapacityKey] as? Int, capacity > 0
+            else { return nil }
+            let levelPercent = UInt32((Double(min(max(current, 0), capacity)) * 100 / Double(capacity)).rounded())
+            let onPower = battery[kIOPSPowerSourceStateKey] as? String == kIOPSACPowerValue
+            let charging =
+                battery[kIOPSIsChargingKey] as? Bool == true || (onPower && battery[kIOPSIsChargedKey] as? Bool == true)
+            return (levelPercent, charging)
+        }
+
+        /// IOKit's power sources, and each change of them -- a charge that
+        /// moves, a charger plugged in or pulled -- on the main run loop, where
+        /// it is also put away.
+        private final class PowerSources {
+            private let changed: () -> Void
+            private var source: CFRunLoopSource?
+
+            init(changed: @escaping () -> Void) {
+                self.changed = changed
+                let context = Unmanaged.passUnretained(self).toOpaque()
+                source = IOPSNotificationCreateRunLoopSource(
+                    { context in
+                        guard let context else { return }
+                        Unmanaged<PowerSources>.fromOpaque(context).takeUnretainedValue().changed()
+                    }, context
+                )?.takeRetainedValue()
+                if let source {
+                    CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+                } else {
+                    NSLog("MigoDeviceStatusReporter: IOKit will not report power-source changes")
+                }
+            }
+
+            /// Invalidated on the main thread its callbacks run on, so none
+            /// reaches a source being put away.
+            deinit {
+                if let source { CFRunLoopSourceInvalidate(source) }
+            }
+
+            var internalBattery: (levelPercent: UInt32, charging: Bool)? {
+                guard let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
+                    let list = IOPSCopyPowerSourcesList(info)?.takeRetainedValue() as? [CFTypeRef]
+                else { return nil }
+                return MigoDeviceStatusReporter.internalBattery(
+                    in: list.compactMap {
+                        IOPSGetPowerSourceDescription(info, $0)?.takeUnretainedValue() as? [String: Any]
+                    })
+            }
         }
     #endif
 }

@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `getBatteryInfo` and `getBatteryInfoSync` on a Mac laptop: the Apple SDK reports the internal battery among IOKit's
+  power sources (its charge, and whether it is charging or full on the charger) and Low Power Mode from macOS 12, at
+  each change. A Mac without a battery still answers "not supported".
 - Videos in the Linux Host Kit's image service, through the optional `migo::qt6-media` component (GStreamer):
   `chooseMedia` picks videos -- described by their length, their size as shown and their first frame as the cover --
   and `previewMedia` plays them in the viewer, with their poster, sound and controls. An App opts in by building the
