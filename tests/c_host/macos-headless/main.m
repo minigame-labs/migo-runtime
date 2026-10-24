@@ -1012,6 +1012,10 @@ int main(int argc, char **argv) {
     session_config.struct_size = (uint32_t)sizeof(session_config);
     session_config.abi_version = MIGO_ABI_VERSION_CURRENT;
     session_config.flags = MIGO_SESSION_FLAG_NONE;
+    /* The probe hands previewImage a URL, and a URL content hands the host is
+     * held to the download allowlist, as a download is: this host allows the
+     * one it hands over. */
+    session_config.network_policy_json_utf8 = "{\"download\": [\"example.com\"]}";
 
     MigoSession *session = NULL;
     result = migo_session_create(engine, &session_config, &session);
