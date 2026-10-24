@@ -175,6 +175,14 @@ desktop already offers with Qt's own:
   player's input while one is up; a modal is a window-modal dialog, and when `editable` its `content`
   is what the field starts with; an action sheet is a menu popped up over the game's centre, and closing
   it fails with `cancel`. Button colours are not applied: a desktop's dialogs are the desktop's.
+- **Keyboard** (`showKeyboard`, `hideKeyboard`, `updateKeyboard` and the `onKeyboard*` events): a desktop has no soft
+  keyboard and content no field of its own, so content's text is typed into a field along the bottom of the game, which
+  takes the keyboard's focus while it shows; its height is the keyboard height content is told. Each edit reports the
+  whole text (content's own `updateKeyboard` is not reported back); Enter confirms in a one-line field and closes it
+  unless content asked to hold it, and a field of several lines takes Enter as a new line. Esc, or turning to the game or
+  another window, closes it, and content is told the text it was left with. A number keyboard takes digits, and a length
+  limit counts UTF-16 code units, as on Android. An on-screen keyboard that follows the focused field (a touch
+  device's) opens for it, with digits and the confirm key content named.
 - **Window** (`setWindowSize`, `setCursor`, `requestPointerLock`, `onWindowStateChange`): `setWindowSize` is the game's
   size in pixels, the window growing or shrinking by what the view must (refused while full screen); each change of the
   window's state is reported (minimize, maximize -- full screen included -- normalize); `setCursor` sets the cursor over
@@ -376,9 +384,6 @@ this case rather than hiding the error.
   limitation is established by evidence rather than a documentation claim.
 - **Qt Quick**: it uses a compositor-owned scene graph; child-window overlays break clipping,
   transforms, and frame scheduling, so it is not supported yet.
-- **On-screen keyboard**: `MigoManagedSession` explicitly rejects keyboard capability; a desktop
-  host passes input through the physical keyboard, and `migo.showKeyboard` correctly reports failure
-  here.
 
 ## Verify the contract tests
 

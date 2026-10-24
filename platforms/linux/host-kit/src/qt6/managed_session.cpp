@@ -1,6 +1,7 @@
 #include <migo/linux/qt6/managed_session.hpp>
 
 #include "gamepads.hpp"
+#include "keyboard_field.hpp"
 #include "memory_monitor.hpp"
 #include "overlay.hpp"
 #include "sandbox.hpp"
@@ -199,6 +200,8 @@ public:
     std::unique_ptr<MemoryMonitor> memory;
     /// The gamepads the kernel shows, announced to the Session while it has a Surface.
     std::unique_ptr<Gamepads> gamepads;
+    /// The text field content's showKeyboard opens, while the Session runs.
+    std::unique_ptr<KeyboardField> keyboard;
     /// The system switches reported so far (getSystemSetting).
     MigoSystemSettingFlags system_settings = MIGO_SYSTEM_SETTING_FLAG_NONE;
     /// What content was last told of its window: it starts shown and running.
@@ -243,6 +246,11 @@ public:
     static void MIGO_CALL onRequestFrame(void *user_data, MigoSession *session);
     static void MIGO_CALL onKeepScreenOn(void *user_data, MigoSession *session, std::uint8_t keep_on);
     static void MIGO_CALL onGamepadRumble(void *user_data, MigoSession *session, const MigoGamepadRumble *rumble);
+    static void MIGO_CALL onShowKeyboard(void *user_data, MigoSession *session,
+                                         const MigoKeyboardShowOptions *options);
+    static void MIGO_CALL onHideKeyboard(void *user_data, MigoSession *session);
+    static void MIGO_CALL onUpdateKeyboard(void *user_data, MigoSession *session, const char *value_utf8,
+                                           std::uint32_t value_length);
     static void MIGO_CALL onHostServiceCall(void *user_data, MigoSession *session,
                                             const MigoHostServiceCall *call);
 
@@ -423,6 +431,29 @@ void MIGO_CALL MigoManagedSession::Impl::onGamepadRumble(void *user_data, MigoSe
     impl->gamepads->rumble(*rumble);
 }
 
+void MIGO_CALL MigoManagedSession::Impl::onShowKeyboard(void *user_data, MigoSession *,
+                                                        const MigoKeyboardShowOptions *options) {
+    auto *impl = static_cast<Impl *>(user_data);
+    if (impl == nullptr || options == nullptr || impl->keyboard == nullptr) return;
+    // The options are borrowed for this callback only; the field copies what it keeps.
+    impl->keyboard->show(*options);
+}
+
+void MIGO_CALL MigoManagedSession::Impl::onHideKeyboard(void *user_data, MigoSession *) {
+    auto *impl = static_cast<Impl *>(user_data);
+    if (impl == nullptr || impl->keyboard == nullptr) return;
+    impl->keyboard->hide();
+}
+
+void MIGO_CALL MigoManagedSession::Impl::onUpdateKeyboard(void *user_data, MigoSession *, const char *value_utf8,
+                                                          std::uint32_t value_length) {
+    auto *impl = static_cast<Impl *>(user_data);
+    if (impl == nullptr || impl->keyboard == nullptr) return;
+    impl->keyboard->replaceText(value_utf8 == nullptr
+                                    ? QString()
+                                    : QString::fromUtf8(value_utf8, static_cast<qsizetype>(value_length)));
+}
+
 void MIGO_CALL MigoManagedSession::Impl::onHostServiceCall(void *user_data, MigoSession *,
                                                            const MigoHostServiceCall *call) {
     auto *impl = static_cast<Impl *>(user_data);
@@ -448,6 +479,7 @@ void MigoManagedSession::Impl::finishClose() {
     // built-in services show goes with the game, as does the panel reading it.
     if (channel != nullptr) channel->close();
     built_in.reset();
+    keyboard.reset();
     showDebugPanel(false);
     // The Session's request ends with it, whatever it last said, and nothing
     // more is reported to it.
@@ -507,14 +539,14 @@ MigoManagedSession::MigoManagedSession(MigoEngine &engine, QWidget &parent, cons
     callbacks.on_keep_screen_on = &Impl::onKeepScreenOn;
     callbacks.on_gamepad_rumble = &Impl::onGamepadRumble;
     impl_->screen_awake = std::make_unique<ScreenAwake>(QDBusConnection::sessionBus());
-    // The three soft-keyboard callbacks are deliberately absent, and absent
-    // together: installing a subset is refused, and installing all three would
-    // claim a capability this wrapper cannot honour. The common mini-game platform's soft keyboard
-    // requires the host to own a text field and report its whole current value;
-    // a desktop host has a physical keyboard, and content already receives key
-    // events and IME composition directly through the view. Claiming the
-    // capability and then not maintaining a field would be worse than not
-    // having it -- content's migo.showKeyboard correctly reports failure instead.
+    // The soft keyboard, all three or none: content's text is typed into a
+    // field of the wrapper's own (KeyboardField), as the platform's model asks
+    // -- the host owns the field and reports its whole current value. Key
+    // events and IME composition reach content through the view besides, but
+    // they are not text a game can read as typed.
+    callbacks.on_show_keyboard = &Impl::onShowKeyboard;
+    callbacks.on_hide_keyboard = &Impl::onHideKeyboard;
+    callbacks.on_update_keyboard = &Impl::onUpdateKeyboard;
 
     // The view is made before the table is installed because the built-in
     // services stand over it; nothing reaches either until content runs.
@@ -546,6 +578,8 @@ MigoManagedSession::MigoManagedSession(MigoEngine &engine, QWidget &parent, cons
         return;
     }
     impl_->accepting_tasks.store(true, std::memory_order_release);
+    // Made before any task can run: tasks are queued to the GUI thread, which is this one.
+    impl_->keyboard = std::make_unique<KeyboardField>(impl_->session, *impl_->view);
 
     // The battery and the network, as the system says they are and each time
     // they change; the Session keeps what it was told.
@@ -704,6 +738,8 @@ MigoResult MigoManagedSession::close() {
             return began;
         }
     }
+    // Nothing typed from here reaches content, which is going.
+    impl_->keyboard.reset();
     // From here the view's own release polling drives the rest; `finishClose`
     // runs from its `surfaceReleased` signal.
     return MIGO_OK;
