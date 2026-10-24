@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `getBatteryInfo` and `getBatteryInfoSync` on a Mac laptop: the Apple SDK reports the internal battery among IOKit's
   power sources (its charge, and whether it is charging or full on the charger) and Low Power Mode from macOS 12, at
   each change. A Mac without a battery still answers "not supported".
+- The Linux Host Kit's `MigoManagedSession` supplies the soft keyboard: content's `showKeyboard` opens a text field
+  along the bottom of the game, which holds the keyboard's focus while it shows and whose height content is told. Each
+  edit reports the whole text, Enter confirms a one-line field (closing it unless content asked to hold it), Esc or
+  turning away closes it with the text it was left with, a number keyboard takes digits, and an on-screen keyboard
+  that follows the focused field opens for it with the confirm key content named. It used to decline the capability,
+  so a game could not be typed into on Linux.
 - Videos in the Linux Host Kit's image service, through the optional `migo::qt6-media` component (GStreamer):
   `chooseMedia` picks videos -- described by their length, their size as shown and their first frame as the cover --
   and `previewMedia` plays them in the viewer, with their poster, sound and controls. An App opts in by building the

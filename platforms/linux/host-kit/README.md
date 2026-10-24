@@ -77,14 +77,16 @@ What is claimed:
 They are two types rather than one type with a flag, because what differs is who
 is responsible for an asynchronous teardown, and a boolean cannot answer that.
 
-`MigoManagedSession` deliberately declines the soft-keyboard capability, and
-declines it whole: the three callbacks install together or not at all, and the
-mini-game input model migo mirrors requires the host to own a text field and
-report its whole current value. A desktop host has a physical keyboard whose
-input already reaches content as key and composition events, so claiming the
-capability and not maintaining a field would be worse than not having it --
-content's `migo.showKeyboard` (or the same call made through a platform-compat
-adapter) correctly reports failure instead.
+`MigoManagedSession` supplies the soft keyboard, whole: the mini-game input
+model migo mirrors has the host own a text field and report its whole current
+value, and the three callbacks install together. A desktop has no soft keyboard
+and content no field of its own -- key and composition events reach it through
+the view, but they are not text a game reads as typed -- so content's
+`migo.showKeyboard` opens a field along the bottom of the game, in a window of
+its own over it, holding the keyboard's focus while it shows; its height is the
+keyboard height content is told. Enter confirms a one-line field, Esc or turning
+away closes it, and an on-screen keyboard that follows the focused field opens
+for it.
 
 Teardown is the C ABI's three steps and cannot be shortened: `close()` begins
 the detach and returns immediately, the view's release observer reports

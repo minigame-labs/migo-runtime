@@ -31,6 +31,7 @@ std::vector<fake_migo::PointerRecord> g_pointers;
 std::vector<fake_migo::WheelRecord> g_wheels;
 std::vector<fake_migo::KeyRecord> g_keys;
 std::vector<fake_migo::CompositionRecord> g_compositions;
+std::vector<fake_migo::KeyboardRecord> g_keyboard_events;
 std::vector<uint8_t> g_focus_changes;
 std::vector<int64_t> g_vsyncs;
 MigoHostCallbacks g_callbacks{};
@@ -133,6 +134,7 @@ void reset() noexcept {
     g_wheels.clear();
     g_keys.clear();
     g_compositions.clear();
+    g_keyboard_events.clear();
     g_focus_changes.clear();
     g_vsyncs.clear();
     g_callbacks = {};
@@ -154,6 +156,7 @@ void reset() noexcept {
     g_wheels.reserve(kRecordCapacity);
     g_keys.reserve(kRecordCapacity);
     g_compositions.reserve(kRecordCapacity);
+    g_keyboard_events.reserve(kRecordCapacity);
     g_focus_changes.reserve(kRecordCapacity);
     g_vsyncs.reserve(kRecordCapacity);
 }
@@ -209,6 +212,7 @@ const std::vector<PointerRecord> &pointers() noexcept { return g_pointers; }
 const std::vector<WheelRecord> &wheels() noexcept { return g_wheels; }
 const std::vector<KeyRecord> &keys() noexcept { return g_keys; }
 const std::vector<CompositionRecord> &compositions() noexcept { return g_compositions; }
+const std::vector<KeyboardRecord> &keyboard_events() noexcept { return g_keyboard_events; }
 const std::vector<uint8_t> &focus_changes() noexcept { return g_focus_changes; }
 const std::vector<int64_t> &vsyncs() noexcept { return g_vsyncs; }
 MigoEngine *engine() noexcept { return reinterpret_cast<MigoEngine *>(kEngineToken); }
@@ -367,6 +371,37 @@ void deliver_frame_request_from_engine_thread() noexcept {
     });
 }
 
+void deliver_show_keyboard_from_engine_thread(const MigoKeyboardShowOptions &options,
+                                              const std::string &default_value) noexcept {
+    // Held for the task, as the engine holds its own copy until the callback runs.
+    static MigoKeyboardShowOptions s_options{};
+    static std::string s_default;
+    s_options = options;
+    s_default = default_value;
+    s_options.default_value_utf8 = s_default.data();
+    s_options.default_value_length = static_cast<uint32_t>(s_default.size());
+    dispatch_from_engine_thread([](const MigoHostCallbacks &callbacks) {
+        if (callbacks.on_show_keyboard != nullptr) callbacks.on_show_keyboard(callbacks.user_data, session(), &s_options);
+    });
+}
+
+void deliver_hide_keyboard_from_engine_thread() noexcept {
+    dispatch_from_engine_thread([](const MigoHostCallbacks &callbacks) {
+        if (callbacks.on_hide_keyboard != nullptr) callbacks.on_hide_keyboard(callbacks.user_data, session());
+    });
+}
+
+void deliver_update_keyboard_from_engine_thread(const std::string &value) noexcept {
+    static std::string s_value;
+    s_value = value;
+    dispatch_from_engine_thread([](const MigoHostCallbacks &callbacks) {
+        if (callbacks.on_update_keyboard != nullptr) {
+            callbacks.on_update_keyboard(callbacks.user_data, session(), s_value.data(),
+                                         static_cast<uint32_t>(s_value.size()));
+        }
+    });
+}
+
 void deliver_keep_screen_on_from_engine_thread(bool keep_on) noexcept {
     // Each delivery is its own task: a capture by value outlives this call.
     if (keep_on) {
@@ -477,6 +512,20 @@ extern "C" MigoResult MIGO_CALL migo_session_send_wheel_event(MigoSession *sessi
     g_wheels.push_back({event->delta_x, event->delta_y, event->delta_z, event->delta_mode,
                         event->timestamp_ms});
     return g_input_result;
+}
+
+extern "C" MigoResult MIGO_CALL migo_session_send_keyboard_event(MigoSession *session,
+                                                                 const MigoKeyboardEvent *event) {
+    if (session == nullptr || event == nullptr) return MIGO_ERROR_INVALID_ARGUMENT;
+    if (event->struct_size != sizeof(*event)) return MIGO_ERROR_INVALID_ARGUMENT;
+    if (event->event_type > MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE) return MIGO_ERROR_INVALID_ARGUMENT;
+    if (event->value_length != 0 && event->value_utf8 == nullptr) return MIGO_ERROR_INVALID_ARGUMENT;
+    fake_migo::KeyboardRecord record;
+    record.event_type = event->event_type;
+    if (event->value_utf8 != nullptr) record.value.assign(event->value_utf8, event->value_length);
+    record.height_css_px = event->height_css_px;
+    g_keyboard_events.push_back(std::move(record));
+    return MIGO_OK;
 }
 
 extern "C" MigoResult MIGO_CALL migo_session_send_key_event(MigoSession *session,
