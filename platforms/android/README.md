@@ -46,14 +46,14 @@ android {
 }
 ```
 
-and the packaged native library is 17 MB. Publish an App Bundle instead and Play
+and the native library adds about 19 MB to the download (45 MB installed). Publish an App Bundle instead and Play
 delivers per device, so `x86_64` contributes nothing to the end-user download.
 
 There is no Maven repository yet; use the local AAR.
 
 ## Shipping the engine on demand
 
-`libmigo.so` is about 17 MB of store download and 45 MB installed, per ABI. If a
+`libmigo.so` is about 19 MB of store download and 45 MB installed, per ABI. If a
 mini-game is a secondary feature of your app, you can ship an APK without it and
 fetch it the first time a user opens a game — users who never do never pay for it.
 
