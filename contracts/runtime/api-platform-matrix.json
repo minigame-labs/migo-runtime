@@ -22,7 +22,7 @@
   "platforms": ["android", "ios", "macos", "linux", "windows", "ohos"],
   "total": 382,
   "summary": {
-    "android": {"engine": 61, "default": 125, "host": 183, "missing": 3, "unsupported": 10, "wired": 379, "verified": 221, "ready": 355},
+    "android": {"engine": 62, "default": 125, "host": 183, "missing": 2, "unsupported": 10, "wired": 380, "verified": 221, "ready": 355},
     "ios": {"engine": 71, "default": 110, "host": 174, "missing": 12, "unsupported": 15, "wired": 369, "verified": 198, "ready": 330},
     "macos": {"engine": 71, "default": 88, "host": 176, "missing": 3, "unsupported": 44, "wired": 372, "verified": 201, "ready": 346},
     "linux": {"engine": 71, "default": 127, "host": 165, "missing": 3, "unsupported": 16, "wired": 361, "verified": 214, "ready": 321},
@@ -125,7 +125,7 @@
     "getGameClubData": {"category": "open-api/game-club", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "host", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ohos"]},
     "getGameExptInfo": {"category": "data-analysis", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "host", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ohos"]},
     "getGameLogManager": {"category": "data-analysis", "needs": ["callback:on_game_log"], "android": "default", "ios": "default", "macos": "default", "linux": "host", "windows": "host", "ohos": "missing", "verified": ["android", "ios", "macos", "linux"], "not_ready": ["ohos"]},
-    "getGameRecorder": {"category": "game-recorder", "needs": ["unpublished"], "android": "missing", "ios": "missing", "macos": "missing", "linux": "missing", "windows": "missing", "ohos": "missing", "not_ready": ["android", "ios", "macos", "linux", "windows", "ohos"]},
+    "getGameRecorder": {"category": "game-recorder", "needs": [], "android": "engine", "ios": "missing", "macos": "missing", "linux": "missing", "windows": "missing", "ohos": "missing", "not_ready": ["android", "ios", "macos", "linux", "windows", "ohos"]},
     "getGameServerManager": {"category": "game-server-manager", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "host", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ohos"]},
     "getGamepads": {"category": "device/gamepad", "needs": ["input:gamepad"], "android": "default", "ios": "default", "macos": "default", "linux": "default", "windows": "host", "ohos": "missing", "verified": ["android", "ios", "macos", "linux"], "not_ready": ["windows", "ohos"]},
     "getGroupCloudStorage": {"category": "open-api/data", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "host", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "not_ready": ["ohos"]},

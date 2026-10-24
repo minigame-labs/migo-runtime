@@ -79,6 +79,7 @@ pub mod draw_atlas;
 pub mod egl_platform;
 pub mod frame_capture;
 pub mod frame_scheduler;
+pub mod game_recorder;
 pub mod image_decode_ahb;
 mod legacy_frame_bridge;
 pub mod render_diagnostics;

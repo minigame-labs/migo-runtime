@@ -58,6 +58,7 @@ pub mod error;
 pub mod feature_policy;
 pub mod font_registration;
 pub mod frame_rate;
+pub mod game_recorder;
 pub mod host_channel;
 pub mod image_id;
 pub mod js_escape;

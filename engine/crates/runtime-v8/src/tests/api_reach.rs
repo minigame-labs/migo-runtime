@@ -263,6 +263,7 @@ const PLUMBING: &[&str] = &[
 const LISTENING: &[&str] = &[
     "op_await_frame_content",
     "op_await_next_frame",
+    "op_game_recorder_next_event",
     "op_tcp_next_event",
     "op_udp_next_event",
     "op_ws_next_event",

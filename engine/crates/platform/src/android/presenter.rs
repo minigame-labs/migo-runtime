@@ -157,10 +157,15 @@ impl PreparedEglSurface for AndroidPreparedSurface {
 }
 
 pub fn android_graphics_platform() -> EngineResult<GraphicsPlatform> {
-    GraphicsPlatform::try_new(
+    let platform = GraphicsPlatform::try_new(
         Arc::new(AndroidEglProvider),
         Arc::new(AndroidEglSurfaceFactory),
-    )
+    )?;
+    // The game's frames, recorded with the NDK's encoder.
+    #[cfg(feature = "api-media")]
+    let platform =
+        platform.with_video_encoder(Arc::new(super::game_recorder::AndroidVideoEncoderFactory));
+    Ok(platform)
 }
 
 #[cfg(test)]

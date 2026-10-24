@@ -4,6 +4,7 @@ import * as cameraApi from 'ext:host_v8_media/01_camera.js';
 import * as imageApi from 'ext:host_v8_media/02_image_api.js';
 import * as videoDecoderApi from 'ext:host_v8_media/03_video_decoder.js';
 import * as videoApi from 'ext:host_v8_media/04_video.js';
+import * as gameRecorderApi from 'ext:host_v8_media/05_game_recorder.js';
 
 import { primordials, core } from "ext:core/mod.js";
 const { ObjectDefineProperties } = primordials;
@@ -42,6 +43,7 @@ ObjectDefineProperties(globalThis, {
 
     // Video
     createVideo: core.propNonEnumerable(videoApi.createVideo),
+    getGameRecorder: core.propNonEnumerable(gameRecorderApi.getGameRecorder),
     _internalOnVideoPlayResult: core.propNonEnumerable(videoApi._internalOnVideoPlayResult),
     _internalOnVideoPauseResult: core.propNonEnumerable(videoApi._internalOnVideoPauseResult),
     _internalOnVideoStopResult: core.propNonEnumerable(videoApi._internalOnVideoStopResult),

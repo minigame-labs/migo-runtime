@@ -77,6 +77,8 @@
     "MAP_READ_BIT": "An access bit for glMapBufferRange, which WebGL 2 does not have: content reads a buffer back with getBufferSubData, and the engine maps only its own pack buffers."
   },
   "internal_only": {
+    "engine/crates/graphics/src/game_recorder/encoder.rs": "The game recorder's encoder thread: it copies each presented frame from a texture the render thread filled into the encoder's input surface, in a context of its own. Content names none of it; getGameRecorder takes options, never GL.",
+    "engine/crates/graphics/src/game_recorder/mod.rs": "The game recorder's frames on the render thread: the presented frame copied into a texture ring the encoder reads, fenced. Content names none of it.",
     "engine/crates/graphics/src/canvas/manager/overlay.rs": "The engine's overlay (the native buttons), composited at present time from a 2D canvas content has no handle on; it saves and restores the GL state it touches, and content names none of it.",
     "engine/crates/graphics/src/atlas/mod.rs": "Glyph and image atlas allocation. Content never names an atlas, let alone its formats.",
     "engine/crates/graphics/src/backend/gl/readback_native_test.rs": "Opt-in native pixel tests on Mesa's surfaceless EGL. Compiled only for tests.",

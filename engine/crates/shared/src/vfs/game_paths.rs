@@ -136,6 +136,9 @@ pub struct GamePaths {
     sandbox_cache_dir: PathBuf,
     /// This session's temporary directory (cleared when the session ends)
     temp_dir: PathBuf,
+    /// This session's game recording: runtime state, never mapped, gone with
+    /// the session like `temp_dir`.
+    recording_dir: PathBuf,
 }
 
 impl GamePaths {
@@ -143,6 +146,8 @@ impl GamePaths {
     const GAMES_SUBDIR: &'static str = "migo/games";
     /// Parent of the per-session temporary directories.
     const TEMP_SUBDIR: &'static str = "tmp";
+    /// Parent of the per-session recording directories.
+    const RECORDING_SUBDIR: &'static str = "recordings";
 
     /// Create game paths from base directories, game ID and session ID.
     ///
@@ -186,6 +191,9 @@ impl GamePaths {
             // store or the staging directories that sit beside it.
             temp_dir: cache_base
                 .join(Self::TEMP_SUBDIR)
+                .join(session_id.to_string()),
+            recording_dir: cache_base
+                .join(Self::RECORDING_SUBDIR)
                 .join(session_id.to_string()),
         })
     }
@@ -249,6 +257,13 @@ impl GamePaths {
         &self.temp_dir
     }
 
+    /// Where this session's game recording is made (`getGameRecorder`): under
+    /// the cache root, which no VFS mapping reaches -- content never sees the
+    /// file, as on the reference; the host is handed it to share.
+    pub fn recording_path(&self) -> PathBuf {
+        self.recording_dir.join("replay.mp4")
+    }
+
     /// Ensure all directories exist.
     ///
     /// Creates the directories if they don't exist.
@@ -268,6 +283,10 @@ impl GamePaths {
         if self.temp_dir.exists() {
             std::fs::remove_dir_all(&self.temp_dir)?;
         }
+        // A dead session's recording under this id goes with its temp files.
+        if self.recording_dir.exists() {
+            std::fs::remove_dir_all(&self.recording_dir)?;
+        }
         std::fs::create_dir_all(&self.temp_dir)?;
         Ok(())
     }
@@ -284,11 +303,14 @@ impl GamePaths {
     /// Absent is success: teardown runs on every exit path, including a panic
     /// before the first module eval created the directory.
     pub fn remove_temp(&self) -> std::io::Result<()> {
-        match std::fs::remove_dir_all(&self.temp_dir) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error),
+        for dir in [&self.temp_dir, &self.recording_dir] {
+            match std::fs::remove_dir_all(dir) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
         }
+        Ok(())
     }
 
     /// Clean the cache directory (including temp).
@@ -624,6 +646,33 @@ mod tests {
         assert_ne!(temp_root, paths.cache_dir());
         assert!(temp_root.starts_with(paths.cache_dir()));
         assert!(!paths.sandbox_cache_dir().starts_with(temp_root));
+    }
+
+    /// A session's recording is runtime state: under the cache root, outside
+    /// everything content is mapped to, and gone with the session.
+    #[test]
+    fn a_recording_is_the_session_s_and_never_content_s() {
+        let root = std::env::temp_dir().join(format!("migo-recording-{}", std::process::id()));
+        let paths = GamePaths::new(root.join("files"), root.join("cache"), "test-game", 7).unwrap();
+        let recording = paths.recording_path();
+        assert!(recording.starts_with(paths.cache_dir()));
+        assert!(!recording.starts_with(paths.sandbox_cache_dir()));
+        assert!(!recording.starts_with(paths.temp_dir()));
+        let other = GamePaths::new(root.join("files"), root.join("cache"), "test-game", 8).unwrap();
+        assert_ne!(recording, other.recording_path(), "one per session");
+
+        std::fs::create_dir_all(recording.parent().unwrap()).unwrap();
+        std::fs::write(&recording, b"mp4").unwrap();
+        paths.remove_temp().unwrap();
+        assert!(!recording.exists(), "gone with the session");
+        std::fs::create_dir_all(recording.parent().unwrap()).unwrap();
+        std::fs::write(&recording, b"mp4").unwrap();
+        paths.clean_temp().unwrap();
+        assert!(
+            !recording.exists(),
+            "a dead session's, under this id, is gone at start"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

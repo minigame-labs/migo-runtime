@@ -149,6 +149,8 @@ impl RenderCommand {
             | RenderCommand::LoadFont { .. }
             | RenderCommand::ReleaseOnscreen { .. } => CommandClass::Sync,
             RenderCommand::GetTextLineHeight { .. } => CommandClass::Sync,
+            // Every one carries the reply content's call waits on.
+            RenderCommand::GameRecorder(_) => CommandClass::Sync,
 
             // Control plane — safe to race with shutdown.
             RenderCommand::FrameRate(_)

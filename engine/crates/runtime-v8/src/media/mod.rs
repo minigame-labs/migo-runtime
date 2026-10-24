@@ -10,6 +10,7 @@ use shared::op_state::HostOpState;
 use shared::protocol::error::ServiceError;
 use shared::services::{CameraService, ImageApiService, Scope, VideoService};
 
+mod game_recorder;
 pub(crate) mod video_decoder;
 
 use crate::file::host_paths::export_paths;
@@ -413,6 +414,13 @@ main_runtime_extension!(
             video_decoder::op_video_decoder_seek,
             video_decoder::op_video_decoder_stop,
             video_decoder::op_video_decoder_remove,
+            game_recorder::op_game_recorder_supported,
+            game_recorder::op_game_recorder_start,
+            game_recorder::op_game_recorder_pause,
+            game_recorder::op_game_recorder_resume,
+            game_recorder::op_game_recorder_stop,
+            game_recorder::op_game_recorder_abort,
+            game_recorder::op_game_recorder_next_event,
         ],
     },
     esm_entry_point = "ext:host_v8_media/99_global_scope.js",
@@ -422,6 +430,7 @@ main_runtime_extension!(
         "02_image_api.js",
         "03_video_decoder.js",
         "04_video.js",
+        "05_game_recorder.js",
         "99_global_scope.js",
     ],
 );

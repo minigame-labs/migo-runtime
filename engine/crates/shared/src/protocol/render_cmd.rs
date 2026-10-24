@@ -362,6 +362,9 @@ pub enum RenderCommand {
     Canvas(CanvasCmd),
     GL(GLCmd),
 
+    /// `getGameRecorder`'s recording of the presented frames.
+    GameRecorder(crate::game_recorder::GameRecorderCmd),
+
     /// Single Canvas2D command (V1 - immediate mode)
     Canvas2D {
         canvas_id: CanvasId,
