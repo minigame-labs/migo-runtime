@@ -7,6 +7,44 @@ from gitignore_policy import check, tracked_ignored
 
 
 class GitignorePolicy(unittest.TestCase):
+    def test_authored_lf_and_raw_vendor_crlf_survive_windows_checkout(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(['git', 'init', '--quiet', '--template=', str(root)], check=True)
+            (root / '.gitattributes').write_bytes(
+                (Path(__file__).resolve().parents[2] / '.gitattributes').read_bytes())
+            fixtures = {
+                'engine/crates/runtime-v8/src/start.js': b'authored source\nnext line\n',
+                'engine/Cargo.lock': b'version = 4\n',
+                'contracts/artifact-manifest/test.lock.json': b'{\n  "schema": 1\n}\n',
+                'engine/third_party/v8-150.4.0/src/upstream.rs': b'original\r\nbytes\r\n',
+                'engine/crates/runtime-v8/testdata/frozen.json': b'{\r\n}\r\n',
+            }
+            for name, data in fixtures.items():
+                file = root / name
+                file.parent.mkdir(parents=True, exist_ok=True)
+                file.write_bytes(data)
+            subprocess.run(['git', '-C', str(root), '-c', 'core.autocrlf=true',
+                            'add', '--', '.gitattributes', *fixtures], check=True, capture_output=True)
+            checkout = root / 'checkout'
+            subprocess.run(['git', '-C', str(root), '-c', 'core.autocrlf=true',
+                            'checkout-index', '--all', '--prefix=' + str(checkout) + '/'],
+                           check=True, capture_output=True)
+            for name, expected in fixtures.items():
+                self.assertEqual((checkout / name).read_bytes(), expected, name)
+            # Removing the default reproduces the authored-input hash drift;
+            # the raw vendor/fixture exceptions continue to preserve bytes.
+            attributes = root / '.gitattributes'
+            attributes.write_bytes(attributes.read_bytes().replace(b'* text=auto eol=lf\n', b''))
+            subprocess.run(['git', '-C', str(root), 'add', '--', '.gitattributes'],
+                           check=True, capture_output=True)
+            unprotected = root / 'unprotected'
+            subprocess.run(['git', '-C', str(root), '-c', 'core.autocrlf=true',
+                            'checkout-index', '--all', '--prefix=' + str(unprotected) + '/'],
+                           check=True, capture_output=True)
+            for name in list(fixtures)[:3]:
+                self.assertNotEqual((unprotected / name).read_bytes(), fixtures[name], name)
+
     def test_byte_exact_vendor_inputs_survive_autocrlf_checkout(self):
         attributes = (Path(__file__).resolve().parents[2] / '.gitattributes').read_bytes()
         samples = [

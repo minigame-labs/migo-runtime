@@ -1,3 +1,9 @@
+# Authored text must have the same input hashes on Linux and Windows, even
+# with core.autocrlf=true. Raw upstream/fixture inputs override this below.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
 # Nothing is routed through Git LFS any more.
 #
 # The repository used to keep the two Android V8 archives (~247 MB together) in
@@ -32,3 +38,4 @@
 /engine/third_party/rustls-platform-verifier-android-*/** -text
 /engine/third_party/*-patches/** -text
 /engine/third_party/rusty_v8/*/src_binding.rs -text
+/engine/crates/runtime-v8/testdata/** -text
