@@ -1,5 +1,5 @@
 # Per-profile/arch V8 startup snapshots are committed
-# via Git LFS — see /.gitattributes and snapshots/README.md — so release builds
+# as ordinary Git blobs — see /.gitattributes and snapshots/README.md — so release builds
 # are hermetic and the arm64 snapshot (not CI-generatable) has a home. They are
 # therefore intentionally NOT ignored here.
 #

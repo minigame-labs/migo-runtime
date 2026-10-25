@@ -11,9 +11,15 @@ Cargo.lock
 # The vendored skia-bindings is the published crate byte for byte, its lockfile included
 # (scripts/test-skia-bindings-vendor-contract.sh compares every file).
 !engine/third_party/skia-bindings-*/Cargo.lock
+# These complete published crates are verified against their archive inventory.
+!engine/third_party/deno_core-0.413.0/Cargo.lock
+!engine/third_party/v8-150.4.0/Cargo.lock
+!engine/third_party/ada-url-4.0.0/Cargo.lock
 
 # Build outputs
 *.aar
+# Immutable upstream input used to verify the Android TLS helper's provenance.
+!engine/third_party/rustls-platform-verifier-android-0.2.0/rustls-platform-verifier-0.2.0.aar
 *.apk
 *.so
 *.dylib
@@ -55,6 +61,10 @@ skills-lock.json
 *.hprof
 *.profraw
 *.profdata
+perf.data
+perf.data.*
+*.cpuprofile
+*.heapsnapshot
 *.pdb
 *.dwp
 *.debug
@@ -85,6 +95,13 @@ local.properties
 # Temporary
 *.tmp
 *.temp
+*.orig
+*.rej
+# Cargo publishes these original manifests as part of the verified crate.
+!engine/third_party/deno_core-0.413.0/Cargo.toml.orig
+!engine/third_party/v8-150.4.0/Cargo.toml.orig
+!engine/third_party/ada-url-4.0.0/Cargo.toml.orig
+!engine/third_party/skia-bindings-*/Cargo.toml.orig
 AI_PROJECT_OVERVIEW.md
 
 # Python bytecode from the packaging scripts
@@ -179,6 +196,7 @@ tests/c_host/android/build/
 tests/c_host/android-multitouch/build/
 tests/maven_consumer/android/build/
 tests/c_host/android/.cxx/
+tests/c_host/android-package-consumer/build/
 tests/c_host/android/src/main/jniLibs-static/
 tests/c_host/linux/c-host
 
