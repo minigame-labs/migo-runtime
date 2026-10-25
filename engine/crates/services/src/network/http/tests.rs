@@ -51,6 +51,8 @@ async fn route(request: Request<Incoming>) -> http::Response<ServerBody> {
             .map_or_else(String::new, |value| value.to_str().unwrap().to_string())
     };
     match path.as_str() {
+        "/accept-encoding" => text(StatusCode::OK, header("accept-encoding")),
+        path if path.starts_with("/encoded/") => encoded_reply(path).await,
         "/hello" => text(StatusCode::OK, "hello"),
         "/echo" => text(
             StatusCode::OK,
@@ -99,6 +101,249 @@ async fn route(request: Request<Incoming>) -> http::Response<ServerBody> {
         }
         _ => text(StatusCode::NOT_FOUND, "no such path"),
     }
+}
+
+async fn encode_body(coding: &str, input: &[u8]) -> Vec<u8> {
+    use async_compression::tokio::bufread::{BrotliEncoder, GzipEncoder};
+    let mut output = Vec::new();
+    match coding {
+        "gzip" => {
+            GzipEncoder::new(input)
+                .read_to_end(&mut output)
+                .await
+                .unwrap();
+        }
+        "br" => {
+            BrotliEncoder::new(input)
+                .read_to_end(&mut output)
+                .await
+                .unwrap();
+        }
+        _ => unreachable!(),
+    }
+    output
+}
+
+async fn encoded_reply(path: &str) -> http::Response<ServerBody> {
+    let variant = path.strip_prefix("/encoded/").unwrap();
+    let plain = if variant == "bomb" {
+        vec![0; 4 * 1024 * 1024]
+    } else {
+        b"mini-game payload: abcdefghijklmnopqrstuvwxyz\n".repeat(2048)
+    };
+    let coding = match variant {
+        "br" => "br",
+        "mixed" | "repeated-headers" => "gzip, br",
+        "unknown" => "future-codec",
+        "too-many" => "gzip, gzip, gzip",
+        _ => "gzip",
+    };
+    let mut encoded = if coding == "future-codec" {
+        plain.clone()
+    } else {
+        encode_body("gzip", &plain).await
+    };
+    if variant == "br" {
+        encoded = encode_body("br", &plain).await;
+    }
+    if matches!(variant, "mixed" | "repeated-headers") {
+        encoded = encode_body("br", &encoded).await;
+    }
+    if variant == "members" {
+        encoded.extend(encode_body("gzip", &plain).await);
+    }
+    if variant == "truncated" {
+        encoded.truncate(encoded.len() - 7);
+    }
+    let mut response = text(
+        if variant == "range" {
+            StatusCode::PARTIAL_CONTENT
+        } else {
+            StatusCode::OK
+        },
+        encoded,
+    );
+    response
+        .headers_mut()
+        .insert("content-encoding", HeaderValue::from_static(coding));
+    if variant == "repeated-headers" {
+        response
+            .headers_mut()
+            .insert("content-encoding", HeaderValue::from_static("gzip"));
+        response
+            .headers_mut()
+            .append("content-encoding", HeaderValue::from_static("br"));
+    }
+    if variant == "range" {
+        response
+            .headers_mut()
+            .insert("content-range", HeaderValue::from_static("bytes 0-99/999"));
+    }
+    if variant == "slow" {
+        let first = futures::stream::once(async {
+            Ok::<_, Infallible>(Frame::data(Bytes::from_static(b"\x1f\x8b\x08\x00")))
+        });
+        let stalled = first.chain(futures::stream::pending());
+        *response.body_mut() = BodyExt::boxed(StreamBody::new(stalled));
+    }
+    response
+}
+
+#[tokio::test]
+async fn content_decoding_preserves_payload_and_measures_wire_separately_for_h1_and_h2() {
+    for h2 in [false, true] {
+        let (tls, root) = tls_pair(h2);
+        let server = serve(Some(tls)).await;
+        let client = HttpClientBuilder::new(
+            "migo-test",
+            h2,
+            &policy(),
+            "fetch",
+            migo_io::pools::IoPools::new(0),
+        )
+        .no_proxy()
+        .any_address()
+        .add_root(root)
+        .build()
+        .unwrap();
+        for coding in ["gzip", "br", "mixed", "repeated-headers", "members"] {
+            let url = Url::parse(&format!(
+                "https://localhost:{}/encoded/{coding}",
+                server.port()
+            ))
+            .unwrap();
+            let response = client.get(GateKind::Fetch, url).send().await.unwrap();
+            assert_eq!(
+                response.version(),
+                if h2 {
+                    Version::HTTP_2
+                } else {
+                    Version::HTTP_11
+                }
+            );
+            assert!(!response.headers().contains_key("content-encoding"));
+            assert!(!response.headers().contains_key("content-length"));
+            assert_eq!(response.content_length(), None);
+            let (body, response) = body_of(response).await;
+            let expected = "mini-game payload: abcdefghijklmnopqrstuvwxyz\n"
+                .repeat(if coding == "members" { 4096 } else { 2048 });
+            assert_eq!(body, expected, "{coding}");
+            assert_eq!(response.decoded_body_bytes(), expected.len() as u64);
+            assert!(response.wire_body_bytes() < response.decoded_body_bytes());
+            assert!(response.timing().bytes_received > response.wire_body_bytes());
+            assert!(response.timing().bytes_received < response.decoded_body_bytes());
+        }
+    }
+}
+
+#[tokio::test]
+async fn negotiation_range_unknown_and_bodyless_headers_keep_their_meaning() {
+    let server = serve(None).await;
+    let client = client(false);
+    let fetch = |path| client.get(GateKind::Fetch, url(server, path));
+    let response = fetch("/accept-encoding").send().await.unwrap();
+    assert_eq!(body_of(response).await.0, "gzip, br");
+    let response = fetch("/accept-encoding")
+        .header(RANGE, HeaderValue::from_static("bytes=0-99"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(body_of(response).await.0, "identity");
+    let response = fetch("/accept-encoding")
+        .header(ACCEPT_ENCODING, HeaderValue::from_static("identity"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(body_of(response).await.0, "identity");
+    for path in ["/encoded/range", "/encoded/unknown"] {
+        let mut response = fetch(path).send().await.unwrap();
+        assert!(response.headers().contains_key("content-encoding"));
+        assert!(response.content_length().is_some());
+        let bytes = response.chunk().await.unwrap().unwrap();
+        assert!(!bytes.is_empty());
+    }
+    // A server that ignores Range still cannot silently change resume coordinates.
+    let mut response = fetch("/encoded/gzip")
+        .header(RANGE, HeaderValue::from_static("bytes=0-99"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.headers()["content-encoding"], "gzip");
+    assert_eq!(&response.chunk().await.unwrap().unwrap()[..2], b"\x1f\x8b");
+    let mut response = client
+        .request(GateKind::Fetch, Method::HEAD, url(server, "/encoded/gzip"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.headers()["content-encoding"], "gzip");
+    assert!(response.chunk().await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn bad_compression_fails_once_and_fuses_the_response_stream() {
+    let server = serve(None).await;
+    let client = client(false);
+    for path in ["/encoded/truncated", "/encoded/bomb"] {
+        let mut response = client
+            .get(GateKind::Fetch, url(server, path))
+            .send()
+            .await
+            .unwrap();
+        let mut delivered = 0;
+        loop {
+            match response.chunk().await {
+                Ok(Some(bytes)) => {
+                    delivered += bytes.len();
+                    assert!(delivered < 4 * 1024 * 1024);
+                }
+                Ok(None) => panic!("{path}: invalid compressed response was accepted"),
+                Err(error) => {
+                    assert_eq!(error.kind(), ErrorKind::Body);
+                    break;
+                }
+            }
+        }
+        assert!(response.chunk().await.unwrap().is_none());
+        assert!(
+            response.timing().response_end.is_none(),
+            "a failed body is not a completed network sample"
+        );
+    }
+    let error = client
+        .get(GateKind::Fetch, url(server, "/encoded/too-many"))
+        .send()
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("too many Content-Encoding"));
+    let response = client
+        .get(GateKind::Fetch, url(server, "/encoded/truncated"))
+        .send()
+        .await
+        .unwrap();
+    let mut stream = response.bytes_stream();
+    let mut errors = 0;
+    while let Some(next) = stream.next().await {
+        if next.is_err() {
+            errors += 1;
+        }
+        assert!(errors <= 1);
+    }
+    assert_eq!(errors, 1);
+}
+
+#[tokio::test]
+async fn a_stalled_compressed_body_obeys_the_original_request_deadline() {
+    let server = serve(None).await;
+    let mut response = client(false)
+        .get(GateKind::Fetch, url(server, "/encoded/slow"))
+        .timeout(Duration::from_millis(100))
+        .send()
+        .await
+        .unwrap();
+    let error = response.chunk().await.unwrap_err();
+    assert!(error.is_timeout(), "{error}");
+    assert!(response.chunk().await.unwrap().is_none());
+    assert!(response.timing().response_end.is_none());
 }
 
 /// A server on the loopback, HTTP/1.1 or HTTP/2 as the connection negotiates, over TLS when `tls` is given.
@@ -173,11 +418,17 @@ fn policy() -> NetworkPolicy {
 }
 
 fn client(http2: bool) -> HttpClient {
-    HttpClientBuilder::new("migo-test", http2, &policy(), "fetch")
-        .no_proxy()
-        .any_address()
-        .build()
-        .unwrap()
+    HttpClientBuilder::new(
+        "migo-test",
+        http2,
+        &policy(),
+        "fetch",
+        migo_io::pools::IoPools::new(0),
+    )
+    .no_proxy()
+    .any_address()
+    .build()
+    .unwrap()
 }
 
 fn url(address: SocketAddr, path: &str) -> Url {
@@ -245,10 +496,16 @@ async fn a_request_measures_its_phases_and_a_second_reuses_the_connection() {
 #[tokio::test]
 async fn the_policy_resolver_refuses_the_loopback_before_connecting() {
     let server = serve(None).await;
-    let client = HttpClientBuilder::new("migo-test", false, &policy(), "fetch")
-        .no_proxy()
-        .build()
-        .unwrap();
+    let client = HttpClientBuilder::new(
+        "migo-test",
+        false,
+        &policy(),
+        "fetch",
+        migo_io::pools::IoPools::new(0),
+    )
+    .no_proxy()
+    .build()
+    .unwrap();
     let error = client
         .get(GateKind::Fetch, url(server, "/hello"))
         .send()
@@ -341,11 +598,17 @@ async fn a_redirect_the_policy_refuses_is_an_error() {
     let allowed_only =
         NetworkPolicy::from_json(r#"{"request":["allowed.example"],"allowPlainHttp":true}"#)
             .unwrap();
-    let client = HttpClientBuilder::new("migo-test", false, &allowed_only, "fetch")
-        .no_proxy()
-        .any_address()
-        .build()
-        .unwrap();
+    let client = HttpClientBuilder::new(
+        "migo-test",
+        false,
+        &allowed_only,
+        "fetch",
+        migo_io::pools::IoPools::new(0),
+    )
+    .no_proxy()
+    .any_address()
+    .build()
+    .unwrap();
     let error = client
         .get(GateKind::Fetch, url(server, "/to-blocked"))
         .send()
@@ -368,11 +631,17 @@ async fn a_redirect_stays_on_the_channel_its_request_was_made_on() {
     let request_only =
         NetworkPolicy::from_json(r#"{"request":["blocked.example"],"allowPlainHttp":true}"#)
             .unwrap();
-    let client = HttpClientBuilder::new("migo-test", false, &request_only, "fetch")
-        .no_proxy()
-        .any_address()
-        .build()
-        .unwrap();
+    let client = HttpClientBuilder::new(
+        "migo-test",
+        false,
+        &request_only,
+        "fetch",
+        migo_io::pools::IoPools::new(0),
+    )
+    .no_proxy()
+    .any_address()
+    .build()
+    .unwrap();
     let download = client
         .get(GateKind::Download, url(server, "/to-blocked"))
         .send()
@@ -429,12 +698,18 @@ async fn tls_is_timed_and_alpn_chooses_the_protocol() {
     let server = serve(Some(server_tls)).await;
     let https = Url::parse(&format!("https://localhost:{}/hello", server.port())).unwrap();
     for (http2, expected) in [(true, Version::HTTP_2), (false, Version::HTTP_11)] {
-        let client = HttpClientBuilder::new("migo-test", http2, &policy(), "fetch")
-            .no_proxy()
-            .any_address()
-            .add_root(root.clone())
-            .build()
-            .unwrap();
+        let client = HttpClientBuilder::new(
+            "migo-test",
+            http2,
+            &policy(),
+            "fetch",
+            migo_io::pools::IoPools::new(0),
+        )
+        .no_proxy()
+        .any_address()
+        .add_root(root.clone())
+        .build()
+        .unwrap();
         let response = client
             .get(GateKind::Fetch, https.clone())
             .send()
@@ -513,10 +788,16 @@ async fn plain_http_is_written_to_the_proxy_in_absolute_form() {
     let matcher = Matcher::builder()
         .all(format!("http://user:pass@127.0.0.1:{}", proxy.port()))
         .build();
-    let client = HttpClientBuilder::new("migo-test", false, &policy(), "fetch")
-        .proxies(matcher)
-        .build()
-        .unwrap();
+    let client = HttpClientBuilder::new(
+        "migo-test",
+        false,
+        &policy(),
+        "fetch",
+        migo_io::pools::IoPools::new(0),
+    )
+    .proxies(matcher)
+    .build()
+    .unwrap();
     let response = client
         .get(
             GateKind::Fetch,
@@ -550,11 +831,17 @@ async fn https_is_tunnelled_through_the_proxy() {
     let matcher = Matcher::builder()
         .all(format!("http://127.0.0.1:{}", proxy.port()))
         .build();
-    let client = HttpClientBuilder::new("migo-test", false, &policy(), "fetch")
-        .proxies(matcher)
-        .add_root(root)
-        .build()
-        .unwrap();
+    let client = HttpClientBuilder::new(
+        "migo-test",
+        false,
+        &policy(),
+        "fetch",
+        migo_io::pools::IoPools::new(0),
+    )
+    .proxies(matcher)
+    .add_root(root)
+    .build()
+    .unwrap();
     let response = client
         .get(
             GateKind::Fetch,
@@ -643,9 +930,15 @@ async fn a_request_carries_its_method() {
 #[ignore = "needs the internet"]
 async fn a_public_https_server_answers() {
     for http2 in [true, false] {
-        let client = HttpClientBuilder::new("migo-test", http2, &policy(), "fetch")
-            .build()
-            .unwrap();
+        let client = HttpClientBuilder::new(
+            "migo-test",
+            http2,
+            &policy(),
+            "fetch",
+            migo_io::pools::IoPools::new(0),
+        )
+        .build()
+        .unwrap();
         let response = client
             .get(GateKind::Fetch, Url::parse("https://example.com/").unwrap())
             .timeout(Duration::from_secs(20))

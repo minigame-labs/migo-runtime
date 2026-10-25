@@ -1,6 +1,6 @@
 {
   "schema": "migo-v8-component-manifest/v1",
-  "component_id": "9eced7eda991705a30a09fbdc57d1cb7e8214b4b5ff11532b9ba0b28279568ec",
+  "component_id": "23f136cb3e3b56e0c02f5b6397d67fa108139cd3c4a7637d83070e910f65b5fb",
   "target": {
     "triple": "aarch64-unknown-linux-gnu",
     "os": "linux",
@@ -16,21 +16,25 @@
     }
   },
   "toolchain": {
-    "rustc": "rustc 1.89.0 (29483883e 2025-08-04) | binary: rustc | commit-hash: 29483883eed69d5fb4db01964cdf2af4d86e9cb2 | commit-date: 2025-08-04 | host: x86_64-unknown-linux-gnu | release: 1.89.0 | LLVM version: 20.1.7",
-    "compiler": "Android (8481493, based on r416183c2) clang version 12.0.9 (https://android.googlesource.com/toolchain/llvm-project c935d99d7cf2016289302412d708641d52d2f7ee) | Target: x86_64-unknown-linux-gnu | Thread model: posix | InstalledDir: ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin",
-    "sdk": "Debian bullseye arm64 sysroot; sysroots.json sha256=fad7d0037e5f1da91f66f28fb666522e4d2884322e3c89db8387dad2b275291d",
-    "linker": "Ubuntu LLD 18.1.3 (compatible with GNU linkers)"
+    "rustc": "rustc 1.95.0 (59807616e 2026-04-14) | binary: rustc | commit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860 | commit-date: 2026-04-14 | host: x86_64-unknown-linux-gnu | release: 1.95.0 | LLVM version: 22.1.2",
+    "compiler": "clang version 23.0.0git (https://chromium.googlesource.com/a/external/github.com/llvm/llvm-project 20b6ec66967ac2a8f932863c1abf251e5b17a843) | Target: x86_64-unknown-linux-gnu | Thread model: posix | InstalledDir: /tmp/migo-rusty-v8-150.4.0/target/aarch64-unknown-linux-gnu/release/clang/bin",
+    "sdk": "Debian bullseye arm64 sysroot; sysroots.json sha256=57caf9c36ba1c6273a3b53cad89733c304fd41a2cdaf3629113cb28e278db632",
+    "linker": "LLD 23.0.0 (https://chromium.googlesource.com/a/external/github.com/llvm/llvm-project 20b6ec66967ac2a8f932863c1abf251e5b17a843) (compatible with GNU linkers)"
   },
   "runtime": {
     "backend": "v8",
-    "rusty_v8_version": "145.0.0",
-    "rusty_v8_revision": "e6a88b35dd3d7f2849a0df33a71d338701c55316",
-    "v8_revision": "8defb67673c5483ae56258a2de01b07e947dc921",
+    "rusty_v8_version": "150.4.0",
+    "rusty_v8_revision": "5c15a6995c9bb4bacd3e341b59fff32c909c80bf",
+    "v8_revision": "ac1e23989121713ca642f6650b34deff7b686896",
     "normalized_gn_args": [
       "chrome_pgo_phase=0",
       "exclude_unwind_tables=true",
+      "icu_copy_icudata_to_root_build_dir=true",
+      "icu_use_data_file=true",
+      "icu_use_stub_data=true",
       "is_cfi=false",
       "is_official_build=true",
+      "rusty_v8_enable_simdutf=true",
       "symbol_level=0",
       "target_cpu=arm64",
       "use_allocator_shim=false",
@@ -38,6 +42,7 @@
       "use_partition_alloc_as_malloc=false",
       "use_sysroot=true",
       "use_thin_lto=false",
+      "v8_depend_on_icu_data_file=true",
       "v8_enable_i18n_support=true",
       "v8_enable_pointer_compression=true",
       "v8_enable_sandbox=false",
@@ -48,35 +53,19 @@
     ],
     "patches": [
       {
-        "id": "compiler-use-custom-libcxx-for-v8",
-        "sha256": "9c68fd6110b6a1b2549f731816defa1cf20cb204fe96d488c433dc7ec7e1f368"
-      },
-      {
-        "id": "install-sysroot",
-        "sha256": "6d4d89570c9d48281101c51483ba262a797d221343a54d2adea05a4529816db1"
-      },
-      {
-        "id": "migo-build-rs-prebuilt-binding",
-        "sha256": "db9f843bb8a3d9b9c86c5ae87272a33efacd32a238a00f576d052a82a54b3389"
-      },
-      {
-        "id": "ohos-toolchain",
-        "sha256": "db22ae84cd9d44e85189dffe68e37316ebda107c6e0ff6771bc482cd3de16549"
-      },
-      {
-        "id": "unset-bindgen-extra-clang-args",
-        "sha256": "21a5e151cc831c8a9cda655d458fa7669f402ae1d3b96d29ade788ca20b45063"
+        "id": "bindgen-clang22-lock",
+        "sha256": "c886d224043ffd4c033dbee9269c2cc9134974d1070636f9f075aac8a5eb0bea"
       }
     ]
   },
   "hashes": {
-    "archive": "b088802ebc302f6a6a9e69f169a7fa83b09a71863a3508109415ba7a905bbeab",
-    "rust_binding": "47369bfb3ee9a7e6e0f451ae20242595d5a7f0b3afcc0b9447e4f99ff174686a"
+    "archive": "1f24d1656e67aa9a71ff3157353c5f489fb1a4eff0aaae60e81f0df5bad8bf69",
+    "rust_binding": "4077e0b8c79fb932c2cc6223602cb69af562a9b2a9cd6c49e241032ff606ff8c"
   },
   "provenance": {
-    "source_revision": "e6a88b35dd3d7f2849a0df33a71d338701c55316",
+    "source_revision": "5c15a6995c9bb4bacd3e341b59fff32c909c80bf",
     "build_recipe": "scripts/build-v8-linux.sh",
-    "build_recipe_sha256": "d5d1f88c2fa0f06454351050af12423175a9067e4735b3ec52a8c9c60a5f4968",
+    "build_recipe_sha256": "c2babcd66cdfed6d14af4466840d7adc7e5ac51d66b8f1f9042486d9ba108e0c",
     "licenses": [
       "BSD-3-Clause",
       "MIT"

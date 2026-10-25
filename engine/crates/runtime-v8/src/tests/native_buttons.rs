@@ -108,6 +108,8 @@ fn boot(host: Option<Arc<FakeHost>>) -> deno_core::JsRuntime {
 
 #[test]
 fn a_touch_on_a_button_is_the_button_s_and_a_tap_does_what_the_button_does() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let host = Arc::new(FakeHost::default());
     let mut runtime = boot(Some(host.clone()));
     let checked = run_to_idle(
@@ -160,6 +162,8 @@ fn a_touch_on_a_button_is_the_button_s_and_a_tap_does_what_the_button_does() {
 /// taps when the last press on it lifts on it.
 #[test]
 fn a_mouse_press_on_a_button_is_the_button_s_and_one_click_taps_once() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let host = Arc::new(FakeHost::default());
     let mut runtime = boot(Some(host));
     let checked = run_to_idle(
@@ -276,6 +280,8 @@ fn overlays(
 /// runs no loop of its own here: the change alone makes the frame.
 #[test]
 fn shown_buttons_are_presented_as_the_overlay_and_hidden_ones_withdrawn() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     use std::sync::atomic::{AtomicBool, Ordering};
 
     let (raf_tx, raf_rx) = shared::raf_signal::create_raf_pair();
@@ -379,6 +385,8 @@ fn shown_buttons_are_presented_as_the_overlay_and_hidden_ones_withdrawn() {
 
 #[test]
 fn the_user_info_button_hands_on_tap_the_host_s_answer() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let host = Arc::new(FakeHost::default());
     let mut runtime = boot(Some(host.clone()));
     run_to_idle(
@@ -413,6 +421,8 @@ fn the_user_info_button_hands_on_tap_the_host_s_answer() {
 
 #[test]
 fn without_a_host_a_tap_says_so_and_no_menu_button_is_made_up() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let mut runtime = boot(None);
     let checked = run_to_idle(
         &mut runtime,

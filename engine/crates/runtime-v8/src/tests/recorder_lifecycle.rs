@@ -103,6 +103,8 @@ fn frame(id: u64) -> String {
 
 #[test]
 fn content_hears_the_recording_it_holds_and_no_other() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let recorder = Arc::new(FakeRecorder::default());
     let mut runtime = boot(recorder.clone());
     run(

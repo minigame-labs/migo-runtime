@@ -71,7 +71,7 @@ impl AddressRule {
 
 pub(crate) struct ConnectorConfig {
     pub(crate) rule: AddressRule,
-    pub(crate) tls: Arc<rustls::ClientConfig>,
+    pub(crate) tls: crate::network::tls::ClientTls,
     pub(crate) proxies: Arc<Matcher>,
 }
 
@@ -115,6 +115,11 @@ async fn connect(config: &ConnectorConfig, dst: Uri) -> Result<Conn, BoxError> {
         .trim_end_matches(']')
         .to_string();
     let port = dst.port_u16().unwrap_or(if https { 443 } else { 80 });
+    let tls_config = if https {
+        Some(config.tls.config().await?)
+    } else {
+        None
+    };
 
     let (tcp, dns, connect_span, proxied) = match config.proxies.intercept(&dst) {
         Some(proxy) => {
@@ -152,12 +157,20 @@ async fn connect(config: &ConnectorConfig, dst: Uri) -> Result<Conn, BoxError> {
     let started = Instant::now();
     let server_name = ServerName::try_from(bare_host)
         .map_err(|error| format!("invalid TLS server name: {error}"))?;
-    let tls = tokio::time::timeout(
-        CONNECT_TIMEOUT,
-        TlsConnector::from(Arc::clone(&config.tls)).connect(server_name, tcp),
-    )
-    .await
-    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "TLS handshake timed out"))??;
+    let handshake = TlsConnector::from(tls_config.ok_or("missing HTTPS configuration")?)
+        .connect(server_name, tcp);
+    // Platform certificate APIs may do blocking filesystem/JVM/OCSP work.
+    // Only one handshake poll runs per admitted job; socket waits free it.
+    let handshake = migo_io::polling::run(
+        handshake,
+        config.tls.pools(),
+        migo_io::task::PoolKind::Tls,
+        1024 * 1024,
+    );
+    let connected = tokio::time::timeout(CONNECT_TIMEOUT, handshake)
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "TLS handshake timed out"))??;
+    let tls = connected?;
     let tls_span = Span::since(started);
     let protocol = match tls.get_ref().1.alpn_protocol() {
         Some(b"h2") => Version::HTTP_2,
@@ -378,30 +391,4 @@ impl hyper::rt::Write for Conn {
     ) -> Poll<io::Result<usize>> {
         Pin::new(&mut self.io).poll_write_vectored(cx, bufs)
     }
-}
-
-/// The TLS configuration every HTTPS connection uses: the Mozilla root set (webpki-roots, as the engine has always
-/// shipped), ring for the cryptography, and ALPN for HTTP/2 where the client allows it.
-pub(crate) fn tls_config(
-    enable_http2: bool,
-    extra_roots: &[rustls::pki_types::CertificateDer<'static>],
-) -> Result<Arc<rustls::ClientConfig>, BoxError> {
-    let mut roots = rustls::RootCertStore {
-        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
-    };
-    for root in extra_roots {
-        roots.add(root.clone())?;
-    }
-    let mut config = rustls::ClientConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
-    ))
-    .with_safe_default_protocol_versions()?
-    .with_root_certificates(roots)
-    .with_no_client_auth();
-    config.alpn_protocols = if enable_http2 {
-        vec![b"h2".to_vec(), b"http/1.1".to_vec()]
-    } else {
-        vec![b"http/1.1".to_vec()]
-    };
-    Ok(Arc::new(config))
 }

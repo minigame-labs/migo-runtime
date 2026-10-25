@@ -134,8 +134,6 @@ mod io_state;
 mod lifecycle;
 pub(crate) mod network;
 mod permission;
-#[cfg(feature = "api-media")]
-pub use network::fetch::create_audio_http_client;
 mod rendering;
 mod storage;
 mod url;
@@ -179,8 +177,6 @@ pub(crate) mod worker;
 mod code_cache;
 mod host_runtime;
 mod icu;
-#[allow(dead_code)]
-mod isolate_pool;
 mod js_bindings;
 pub mod js_strip;
 mod loader;
@@ -273,6 +269,9 @@ deno_core::extension!(
 /// 24  runtime         CORE      global scope registration (98_global_scope_*.js + 99_main.js)
 /// ```
 pub fn main_extensions(host: HostOpState) -> Vec<deno_core::Extension> {
+    // This public constructor is also used without HostJsRuntime. Do not let
+    // V8's fallback full ICU package mask a missing embedder initialization.
+    crate::icu::install_icu_data();
     // Build extension list using a Vec so optional extensions can be
     // conditionally appended based on feature flags.
     let mut exts: Vec<deno_core::Extension> = Vec::new();

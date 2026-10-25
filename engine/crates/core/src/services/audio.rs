@@ -86,6 +86,7 @@ pub(crate) struct AudioService {
 #[cfg(feature = "host-audio")]
 pub(crate) fn streaming_http_client_factory(
     network_policy: shared::network_policy::NetworkPolicy,
+    pools: migo_io::pools::IoPools,
 ) -> audio::streaming::StreamingHttpClientFactory {
     Arc::new(move || {
         migo_services::network::client::create_policy_http_client(
@@ -93,6 +94,7 @@ pub(crate) fn streaming_http_client_factory(
             true,
             &network_policy,
             "audio",
+            pools.clone(),
         )
         .map_err(|error| {
             EngineError::from_detail(
@@ -595,7 +597,10 @@ mod tests {
         let (host_tx, _critical_host_tx, _host_rx) = shared::host_channel::channel(1);
         AudioService::new(
             host_tx,
-            streaming_http_client_factory(shared::network_policy::NetworkPolicy::default()),
+            streaming_http_client_factory(
+                shared::network_policy::NetworkPolicy::default(),
+                migo_io::pools::IoPools::new(0),
+            ),
         )
     }
 

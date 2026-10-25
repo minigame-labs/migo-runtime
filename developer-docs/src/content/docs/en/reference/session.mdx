@@ -39,6 +39,8 @@ Creation parameters passed to `migo_session_create`. `flags` has no defined bits
 
 Each of `request`, `download` (which also covers remote images, audio streaming and asset prefetch), `upload`, `socket`, `tcp` and `udp` is an array of domains or `"unrestricted"`; a channel left out is refused. `example.com` matches that host only, `*.example.com` its subdomains and not itself, and an IP address cannot be listed. `allowPlainHttp` is what permits `http://` and `ws://`; `lan` lets socket, tcp and udp reach other devices on the local network, which request, download and upload never reach. An unknown key or a malformed entry makes `migo_session_create` return `MIGO_ERROR_INVALID_ARGUMENT`. This field is appended too: a host passing the older struct gets NULL, which is no network.
 
+`tlsTrust` fixes certificate trust for HTTPS and WSS: `"platform"` uses the platform verifier, while `"mozilla"` uses the engine's Mozilla root set. Platform is the default, except on OHOS, which defaults to Mozilla. Verification failures never switch trust stores. **Android C ABI hosts without an initialized Java SDK/JVM must explicitly set `"tlsTrust":"mozilla"`.** The Android Java SDK defaults to the host's CA and `networkSecurityConfig`; `NetworkPolicy.Builder.setTlsTrust` selects the mode. The engine does not override the embedding app's network configuration.
+
 `launch_options_json_utf8` is what the game is launched with, as NUL-terminated UTF-8 JSON borrowed for the duration of `migo_session_create`; NULL launches it with the engine's defaults (scene 1001, an empty query).
 
 ```json

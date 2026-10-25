@@ -254,6 +254,12 @@ const PLUMBING: &[&str] = &[
     "op_now",
     "op_queue_microtask",
     "op_run_microtasks",
+    "op_drain_pending_rejections",
+    "op_immediate_check",
+    "op_timer_now",
+    "op_timer_schedule",
+    "op_timer_track",
+    "op_timer_untrack",
     "op_timer_cancel",
     "op_timer_is_backgrounded",
     "op_timer_queue",
@@ -564,6 +570,8 @@ fn eval_string(runtime: &mut JsRuntime, source: String) -> String {
 
 #[test]
 fn api_reach_matches_the_committed_record() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let reference: Value = serde_json::from_str(
         &std::fs::read_to_string(contract("minigame-api.json")).expect("the API reference"),
     )

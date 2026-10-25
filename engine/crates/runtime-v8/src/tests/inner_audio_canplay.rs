@@ -72,6 +72,8 @@ mod inner_audio_canplay_tests {
 
     #[test]
     fn duration_is_known_when_canplay_fires_and_events_keep_their_order() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, responder) = boot();
         run(
             &mut runtime,

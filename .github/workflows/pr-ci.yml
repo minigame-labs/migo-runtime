@@ -337,6 +337,11 @@ jobs:
           bash scripts/test-apple-frame-channel-contract.sh
           bash scripts/test-v8-patch-application-contract.sh
           bash scripts/test-skia-bindings-vendor-contract.sh
+          bash scripts/test-gitignore-contract.sh
+          bash scripts/test-deno-core-vendor-contract.sh
+          bash scripts/test-ada-url-vendor-contract.sh
+          bash scripts/test-android-tls-vendor-contract.sh
+          bash scripts/test-rusty-v8-vendor-contract.sh
 
       # And the rule itself, so the list above cannot grow again in silence.
       - name: Every contract gate is invoked by something
@@ -1182,6 +1187,13 @@ jobs:
       # must point at it, not just ANDROID_NDK_HOME).
       - name: Install Android NDK + cargo-ndk
         uses: ./.github/actions/setup-android-ndk
+
+      - name: Reproduce Android platform TLS helper from patched source
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          sdkmanager --install "platforms;android-36"
+          bash scripts/test-android-tls-source-contract.sh
 
       # Runs here, not in the contract job, because here the NDK exists. The gate
       # skips its resolution check on a machine without one, and a gate that

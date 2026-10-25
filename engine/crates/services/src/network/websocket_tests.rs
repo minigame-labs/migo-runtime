@@ -59,6 +59,7 @@ async fn a_host_the_policy_refuses_is_never_connected_to() {
         &[],
         &[],
         None,
+        migo_io::pools::IoPools::new(0),
     )
     .await
     .expect_err("the allow list refuses it");
@@ -77,6 +78,7 @@ async fn a_host_the_policy_refuses_is_never_connected_to() {
         &[],
         &[],
         None,
+        migo_io::pools::IoPools::new(0),
     )
     .await
     .expect_err("the policy refuses plain text");
@@ -100,6 +102,7 @@ async fn a_url_that_is_not_one_is_a_type_error() {
         &[],
         &[],
         None,
+        migo_io::pools::IoPools::new(0),
     )
     .await
     .expect_err("a URL is a URL");
@@ -205,6 +208,7 @@ async fn a_sixth_web_socket_fails_and_a_closed_one_frees_its_place() {
         &[],
         &[],
         Some(1000),
+        migo_io::pools::IoPools::new(0),
     )
     .await
     .expect_err("a sixth connection");

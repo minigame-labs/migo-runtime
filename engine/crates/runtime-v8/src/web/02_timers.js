@@ -1,5 +1,6 @@
 import { core, primordials } from "ext:core/mod.js";
 import { op_now, op_timer_is_backgrounded } from "ext:core/ops";
+import { getTimerDepth, runTimerTask } from "ext:host_v8_web/01_task_context.js";
 
 const {
     MathCeil,
@@ -14,7 +15,6 @@ const {
     Number,
     NumberIsFinite,
     RangeError,
-    ReflectApply,
     SafeMap,
     TypeError,
     TypedArrayPrototypeGetBuffer,
@@ -24,7 +24,6 @@ const {
 
 const {
     getAsyncContext,
-    setAsyncContext,
 } = core;
 
 const MAX_LIVE_TIMERS = 1024;
@@ -41,6 +40,11 @@ let _backgrounded = false;
 let _lifecycleInitialized = false;
 let _liveTimerCount = 0;
 let _nextTimerId = 1;
+let _timerTaskPrelude = null;
+
+function _internalSetTimerTaskPrelude(callback) {
+    _timerTaskPrelude = callback;
+}
 
 function checkThis(thisArg) {
     if (thisArg !== null && thisArg !== undefined && thisArg !== globalThis) {
@@ -85,13 +89,7 @@ function allocateTimerId() {
 }
 
 function invokeEntry(entry) {
-    const oldContext = getAsyncContext();
-    try {
-        setAsyncContext(entry.asyncContext);
-        ReflectApply(entry.callback, globalThis, entry.args);
-    } finally {
-        setAsyncContext(oldContext);
-    }
+    runTimerTask(entry.depth, entry.callback, entry.args, entry.asyncContext);
 }
 
 function isCurrentNative(entry, generation, nativeId) {
@@ -113,14 +111,21 @@ function queueNative(entry, repeat, delayUs, logicalStartUs, onFire) {
     const nativeDelayMs = MathCeil(MathMax(0, deadlineUs - monotonicNowUs()) / 1000);
     let nativeId = null;
 
-    nativeId = core.queueUserTimer(
-        entry.depth,
-        repeat,
-        nativeDelayMs,
+    nativeId = core.createTimer(
         () => {
+            // Core 0.413 dispatches timers before resolving ready async ops.
+            // Workers must apply queued host lifecycle edges before an expired
+            // timer can run, including a complete hide/show while unpolled.
+            if (_timerTaskPrelude !== null) _timerTaskPrelude();
             if (!isCurrentNative(entry, generation, nativeId)) return;
             onFire(entry);
         },
+        nativeDelayMs,
+        undefined,
+        repeat,
+        entry.refed,
+        false,
+        true,
     );
 
     entry.nativeId = nativeId;
@@ -180,7 +185,7 @@ function createTimer(kind, callback, delay, args) {
     // for entering the background; the ordered show edge restores Worker timers.
     const backgrounded = _backgrounded || op_timer_is_backgrounded();
     const createdAtUs = monotonicNowUs();
-    const depth = core.getTimerDepth() + 1;
+    const depth = getTimerDepth() + 1;
     let delayMs = normalizeDelay(delay);
     if (depth > MAX_UNCLAMPED_NESTING_LEVEL && delayMs < MIN_NESTED_DELAY_MS) {
         delayMs = MIN_NESTED_DELAY_MS;
@@ -210,7 +215,11 @@ function createTimer(kind, callback, delay, args) {
     if (!backgrounded) {
         try {
             if (kind === "interval") {
-                armRepeatingInterval(entry, delayMs * 1000, createdAtUs);
+                if (delayMs === 0) {
+                    armResumedInterval(entry, 0, createdAtUs);
+                } else {
+                    armRepeatingInterval(entry, delayMs * 1000, createdAtUs);
+                }
             } else {
                 armTimeout(entry, delayMs * 1000, createdAtUs);
             }
@@ -331,4 +340,5 @@ export {
     unrefTimer,
     refTimer,
     _internalSetTimerBackgrounded,
+    _internalSetTimerTaskPrelude,
 };

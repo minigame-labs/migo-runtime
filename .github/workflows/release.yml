@@ -309,6 +309,11 @@ jobs:
           bash scripts/test-apple-frame-channel-contract.sh
           bash scripts/test-v8-patch-application-contract.sh
           bash scripts/test-skia-bindings-vendor-contract.sh
+          bash scripts/test-gitignore-contract.sh
+          bash scripts/test-deno-core-vendor-contract.sh
+          bash scripts/test-ada-url-vendor-contract.sh
+          bash scripts/test-android-tls-vendor-contract.sh
+          bash scripts/test-rusty-v8-vendor-contract.sh
 
       - name: Every contract gate is invoked by something
         run: bash scripts/test-every-gate-is-invoked.sh
@@ -1170,6 +1175,13 @@ jobs:
       # must point at it, not just ANDROID_NDK_HOME).
       - name: Install Android NDK + cargo-ndk
         uses: ./.github/actions/setup-android-ndk
+
+      - name: Reproduce Android platform TLS helper from patched source
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          sdkmanager --install "platforms;android-36"
+          bash scripts/test-android-tls-source-contract.sh
 
       # Layout-only compatibility check; official Android release slices stay
       # arm64-v8a/x86_64 until an ARMv7 artifact profile is explicitly added.

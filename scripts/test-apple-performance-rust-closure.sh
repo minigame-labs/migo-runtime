@@ -37,7 +37,9 @@ FORBIDDEN=(
     migo-runtime-jsc
     deno_core
     deno_ops
+    deno_v8
     v8
+    v8x
     rusty_v8
     v8_valueserializer
 )
@@ -64,7 +66,7 @@ CLEAN_CLOSURES=(
 # guard nobody should trust, and the cheapest way to see it fail is to keep a
 # case in the gate that must fail.
 POSITIVE_CONTROL="migo-capi:profile-full"
-POSITIVE_CONTROL_EXPECTS=(migo-runtime-v8 deno_core v8)
+POSITIVE_CONTROL_EXPECTS=(migo-runtime-v8 deno_core deno_v8 v8)
 
 artifact=""
 while (( $# > 0 )); do
@@ -135,6 +137,16 @@ collect_lines() {
         eval "$__target+=(\"\$__line\")"
     done
 }
+
+# New core releases route engines through a facade and optional alternate
+# backend. Neither currently occurs in the old positive control, so inject
+# their package identities through the same detector instead of waiting for a
+# product to accidentally acquire one. A removed FORBIDDEN entry must go red.
+for engine_alias in deno_v8 v8x; do
+    if [[ "$(violations_in "$engine_alias v0.0.0")" != "$engine_alias" ]]; then
+        problems+=("the detector misses the injected engine package $engine_alias")
+    fi
+done
 
 for target in ${CLEAN_CLOSURES[@]+"${CLEAN_CLOSURES[@]}"}; do
     if ! tree="$(resolve "$target")"; then

@@ -276,6 +276,12 @@ ACTUAL_V8="$(git -C "$SRC_DIR/v8" rev-parse HEAD 2>/dev/null || true)"
     || err "the V8 submodule is at $ACTUAL_V8 and the lock pins $V8_REVISION"
 info "sources       rusty_v8 ${ACTUAL_RUSTY_V8:0:12}, v8 ${ACTUAL_V8:0:12}"
 
+# Keep this path compatible with macOS bash 3.2. The Linux/Android shell audit
+# uses Bash 4; this top-level lock patch uses Git plus the same Python proof.
+python3 "$SCRIPT_DIR/apply-v8-source-lock.py" \
+    --source "$SRC_DIR" --lock "$LOCK" \
+    --patch-dir "$PROJECT_ROOT/engine/third_party/v8-patches"
+
 rustup target add "$TRIPLE" >/dev/null 2>&1 || true
 
 # ---------------------------------------------------------------------------
@@ -309,13 +315,14 @@ case "$ARCH" in
 esac
 
 export V8_FROM_SOURCE=1
-export EXTRA_GN_ARGS="mac_deployment_target=\"$DEPLOYMENT_TARGET\" target_cpu=\"$GN_CPU\" v8_target_cpu=\"$GN_CPU\""
+export EXTRA_GN_ARGS="mac_deployment_target=\"$DEPLOYMENT_TARGET\" target_cpu=\"$GN_CPU\" v8_target_cpu=\"$GN_CPU\" icu_use_data_file=true icu_use_stub_data=true"
 export MACOSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET"
+export EXTRA_GN_ARGS="$EXTRA_GN_ARGS icu_copy_icudata_to_root_build_dir=true v8_depend_on_icu_data_file=true"
 
 # Guarded expansion below, because macOS ships bash 3.2 and it treats an array
 # expansion under `set -u` as an unbound variable -- a script that runs on every
 # machine here and dies on the only OS that can build an Apple product.
-CARGO_ARGS=(build --release --target "$TRIPLE" -p v8)
+CARGO_ARGS=(build --release --target "$TRIPLE" -p v8 --features simdutf)
 [[ -n "${MIGO_V8_JOBS:-}" ]] && CARGO_ARGS+=(--jobs "$MIGO_V8_JOBS")
 
 info "building (the probe measured about 56 minutes per triple)"

@@ -424,6 +424,8 @@ function Collect-Outputs {
     $aarDir = Join-Path $LibraryDir "build/outputs/aar"
     $aar = Join-Path $aarDir "migo-$ProductProfile-$BuildType.aar"
     if (-not (Test-Path $aar)) { throw "Expected AAR not found: $aar" }
+    & python3 (Join-Path $ScriptDir "lib/android_tls_vendor.py") --aar $aar
+    if ($LASTEXITCODE -ne 0) { throw "Android TLS bytecode/provenance/host policy verification failed" }
 
     $artifactName = "migo-$ProductProfile-$BuildType$ArtifactSuffix$abiSuffix.aar"
     $outputAar = Join-Path $outDir $artifactName

@@ -73,6 +73,7 @@ pub(crate) struct NetworkBinding {
     /// be answered rather than remembered.
     http1: Mutex<Option<PolicyHttpClient>>,
     http2: Mutex<Option<PolicyHttpClient>>,
+    pools: migo_io::pools::IoPools,
 }
 
 impl NetworkBinding {
@@ -80,6 +81,7 @@ impl NetworkBinding {
         policy: NetworkPolicy,
         backgrounded: Arc<std::sync::atomic::AtomicBool>,
         runtime: tokio::runtime::Handle,
+        pools: migo_io::pools::IoPools,
     ) -> Self {
         Self {
             policy,
@@ -88,6 +90,7 @@ impl NetworkBinding {
             runtime,
             http1: Mutex::new(None),
             http2: Mutex::new(None),
+            pools,
         }
     }
 
@@ -102,10 +105,14 @@ impl NetworkBinding {
         if let Some(client) = slot.as_ref() {
             return Ok(client.clone());
         }
-        let client = create_policy_http_client(USER_AGENT, enable_http2, &self.policy, "fetch")
-            .map_err(|error| {
-                ServiceError::generic(format!("Failed to create HTTP client: {error}"))
-            })?;
+        let client = create_policy_http_client(
+            USER_AGENT,
+            enable_http2,
+            &self.policy,
+            "fetch",
+            self.pools.clone(),
+        )
+        .map_err(|error| ServiceError::generic(format!("Failed to create HTTP client: {error}")))?;
         *slot = Some(client.clone());
         Ok(client)
     }
@@ -337,18 +344,21 @@ pub(crate) fn call_async(
                 other => Some(u32_of(op, 3, other)?),
             };
             let policy = network.policy.clone();
+            let pools = network.pools.clone();
             Box::pin(async move {
-                websocket::create(&policy, &resources, &url, &protocols, &headers, timeout_ms)
-                    .await
-                    // `WsCreateResult`, in its field order: rid, protocol,
-                    // extensions.
-                    .map(|handshake| {
-                        OwnedValue::Array(vec![
-                            OwnedValue::U32(handshake.rid),
-                            OwnedValue::Str(handshake.protocol),
-                            OwnedValue::Str(handshake.extensions),
-                        ])
-                    })
+                websocket::create(
+                    &policy, &resources, &url, &protocols, &headers, timeout_ms, pools,
+                )
+                .await
+                // `WsCreateResult`, in its field order: rid, protocol,
+                // extensions.
+                .map(|handshake| {
+                    OwnedValue::Array(vec![
+                        OwnedValue::U32(handshake.rid),
+                        OwnedValue::Str(handshake.protocol),
+                        OwnedValue::Str(handshake.extensions),
+                    ])
+                })
             })
         }
         id::op_ws_next_event => {

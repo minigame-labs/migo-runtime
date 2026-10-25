@@ -133,6 +133,7 @@ pub async fn create(
     protocols: &[String],
     headers: &[(String, String)],
     timeout_ms: Option<u32>,
+    pools: migo_io::pools::IoPools,
 ) -> Result<WsHandshake, ServiceError> {
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
@@ -172,6 +173,16 @@ pub async fn create(
         .uri()
         .port_u16()
         .unwrap_or(if scheme == "wss" { 443 } else { 80 });
+    let tls = if scheme == "wss" {
+        let config = super::tls::ClientTls::new(policy.tls_trust, false, Vec::new(), pools.clone());
+        let config = tokio::time::timeout_at(deadline, config.config())
+            .await
+            .map_err(|_| generic("WebSocket TLS configuration timeout"))?
+            .map_err(|error| generic(format!("WebSocket TLS configuration failed: {error}")))?;
+        Some(tokio_tungstenite::Connector::Rustls(config))
+    } else {
+        None
+    };
     let addresses = resolve(
         &host,
         port,
@@ -206,11 +217,22 @@ pub async fn create(
     let _ = stream.set_nodelay(true);
 
     let handshake =
-        tokio_tungstenite::client_async_tls_with_config(request, stream, Some(ws_config()), None);
+        tokio_tungstenite::client_async_tls_with_config(request, stream, Some(ws_config()), tls);
+    let handshake = async move {
+        let result = if scheme == "wss" {
+            migo_io::polling::run(handshake, pools, migo_io::task::PoolKind::Tls, 1024 * 1024)
+                .await
+                .map_err(|error| generic(format!("WebSocket handshake executor failed: {error}")))?
+        } else {
+            // Plain WS has no native certificate verification. It must not
+            // wait behind slow JVM/OS trust-store or revocation operations.
+            handshake.await
+        };
+        result.map_err(|error| generic(format!("WebSocket handshake failed: {error}")))
+    };
     let (stream, response) = tokio::time::timeout_at(deadline, handshake)
         .await
-        .map_err(|_| generic("WebSocket handshake timeout"))?
-        .map_err(|error| generic(format!("WebSocket handshake failed: {error}")))?;
+        .map_err(|_| generic("WebSocket handshake timeout"))??;
 
     let header = |name: &str| {
         response

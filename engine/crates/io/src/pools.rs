@@ -129,7 +129,7 @@ impl<T> FairLane<T> {
     }
 }
 
-const POOL_COUNT: usize = 5;
+const POOL_COUNT: usize = 6;
 const PRIORITY_COUNT: usize = 3;
 const LANE_COUNT: usize = POOL_COUNT * PRIORITY_COUNT;
 
@@ -140,6 +140,7 @@ const fn pool_index(pool: PoolKind) -> usize {
         PoolKind::Image => 2,
         PoolKind::Archive => 3,
         PoolKind::Ingest => 4,
+        PoolKind::Tls => 5,
     }
 }
 
@@ -150,6 +151,7 @@ const fn pool_from_index(index: usize) -> PoolKind {
         2 => PoolKind::Image,
         3 => PoolKind::Archive,
         4 => PoolKind::Ingest,
+        5 => PoolKind::Tls,
         _ => panic!("invalid pool index"),
     }
 }
@@ -181,7 +183,7 @@ impl ExecutorConfig {
         let cpu_heavy_cap = worker_count.saturating_sub(1).clamp(1, 2);
         Self {
             worker_count,
-            // Fs, Pack, Image, Archive, Ingest.
+            // Fs, Pack, Image, Archive, Ingest, TLS.
             //
             // Archive gets the CPU-heavy cap rather than 1: extraction is
             // inflate-bound with bounded streaming buffers, not a retained
@@ -196,7 +198,14 @@ impl ExecutorConfig {
             // thread affinity to this pool cap. No separate reason for the
             // ceiling is recorded; raising it therefore needs device
             // frame-pacing evidence, not this host throughput benchmark.
-            class_caps: [worker_count, cpu_heavy_cap, cpu_heavy_cap, cpu_heavy_cap, 1],
+            class_caps: [
+                worker_count,
+                cpu_heavy_cap,
+                cpu_heavy_cap,
+                cpu_heavy_cap,
+                1,
+                cpu_heavy_cap,
+            ],
             host_cap_when_contended: worker_count.div_ceil(2),
             aging_interval: 16,
             process_byte_limit: 256 * 1024 * 1024,
@@ -857,6 +866,7 @@ impl fmt::Display for ByteAdmitError {
         }
     }
 }
+impl std::error::Error for ByteAdmitError {}
 pub struct ByteTicket {
     shared: Arc<ExecutorShared>,
     byte_count: u64,

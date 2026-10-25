@@ -24,6 +24,16 @@ public final class NetworkPolicyTest {
     private static final String CORPUS = "contracts/runtime/domain-patterns.json";
 
     @Test
+    public void tls_trust_is_a_fixed_host_choice() {
+        assertEquals("{}", new NetworkPolicy.Builder().build().toJson());
+        assertEquals("{\"tlsTrust\":\"mozilla\"}", new NetworkPolicy.Builder()
+                .setTlsTrust(NetworkPolicy.TlsTrust.MOZILLA).build().toJson());
+        assertEquals("{}", new NetworkPolicy.Builder()
+                .setTlsTrust(NetworkPolicy.TlsTrust.PLATFORM).build().toJson());
+        assertThrows(IllegalArgumentException.class, () -> new NetworkPolicy.Builder().setTlsTrust(null));
+    }
+
+    @Test
     public void the_builder_holds_to_the_shared_grammar() throws Exception {
         JSONObject corpus = corpus();
         JSONArray accepted = corpus.getJSONArray("accepted");

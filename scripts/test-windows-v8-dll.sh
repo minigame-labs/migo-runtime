@@ -61,6 +61,18 @@ extern int v8__host_callbacks_ready(void);
    v8__host_callbacks_ready stays 0, which is exactly the failure this catches
    -- and it catches it here rather than at the first serialization. */
 static const char* const kExpected[] = {
+    "crdtp__FrontendChannel__BASE__sendProtocolResponse",
+    "crdtp__FrontendChannel__BASE__sendProtocolNotification",
+    "crdtp__FrontendChannel__BASE__fallThrough",
+    "crdtp__FrontendChannel__BASE__flushProtocolNotifications",
+    "crdtp__DomainDispatcher__BASE__Dispatch",
+    "crdtp__DomainDispatcher__BASE__Drop",
+    "v8__Platform__CustomPlatform__BASE__PostTask",
+    "v8__Platform__CustomPlatform__BASE__PostNonNestableTask",
+    "v8__Platform__CustomPlatform__BASE__PostDelayedTask",
+    "v8__Platform__CustomPlatform__BASE__PostNonNestableDelayedTask",
+    "v8__Platform__CustomPlatform__BASE__PostIdleTask",
+    "v8__Platform__CustomPlatform__BASE__DROP",
     "v8__ValueSerializer__Delegate__ThrowDataCloneError",
     "v8__ValueSerializer__Delegate__HasCustomHostObject",
     "v8__ValueSerializer__Delegate__IsHostObject",

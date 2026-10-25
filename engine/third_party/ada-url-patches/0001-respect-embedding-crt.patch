@@ -1,0 +1,23 @@
+--- ada-url-4.0.0/build.rs
++++ ada-url-4.0.0/build.rs
+@@ -224,14 +224,12 @@
+             // Note: it's possible to use Clang++ explicitly on Windows as well, so this check
+             // should be specifically for "is target compiler MSVC" and not "is target OS Windows".
+             if compiler.is_like_msvc() {
+-                build.static_crt(true);
+-                link_args::windows! {
+-                    unsafe {
+-                        no_default_lib(
+-                            "libcmt.lib",
+-                        );
+-                    }
+-                }
++                // Match Rust and the embedding DLL; never force /MT or emit a
++                // process-wide /NODEFAULTLIB that hides a mixed-CRT mistake.
++                build.static_crt(
++                    env::var("CARGO_CFG_TARGET_FEATURE")
++                        .is_ok_and(|features| features.split(',').any(|f| f == "crt-static")),
++                );
+             } else if compiler.is_like_clang() && cfg!(feature = "libcpp") {
+                 build.cpp_set_stdlib("c++");
+             }

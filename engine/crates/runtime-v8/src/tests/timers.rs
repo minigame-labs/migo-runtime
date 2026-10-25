@@ -22,12 +22,22 @@ mod timer_tests {
         timer_test_bridge,
         deps = [host_v8_web],
         esm_entry_point = "ext:timer_test_bridge/bridge.js",
-        esm = ["ext:timer_test_bridge/bridge.js" = {
+        esm = [dir "src/tests", "timer_heap_prototype.js", "ext:timer_test_bridge/bridge.js" = {
             source = r#"
                     import * as timers from "ext:host_v8_web/02_timers.js";
                     import { core } from "ext:core/mod.js";
+                    import { op_now } from "ext:core/ops";
+                    import { installHeapPrototype } from "ext:timer_test_bridge/timer_heap_prototype.js";
                     globalThis.__timerInternals = timers;
-                    globalThis.__coreInternals = core;
+                    globalThis.__coreInternals = timers.__testTimerCore ?? core;
+                    globalThis.__timerUseHeapPrototype = () => {
+                        const bytes = new Uint8Array(8);
+                        const words = new Uint32Array(bytes.buffer);
+                        installHeapPrototype(timers.__testTimerCore ?? core, () => {
+                            op_now(bytes);
+                            return words[0] * 1000000 + Math.floor(words[1] / 1000);
+                        });
+                    };
                 "#
         },],
     );
@@ -67,19 +77,27 @@ mod timer_tests {
     }
 
     fn boot_runtime() -> JsRuntime {
+        let mut extensions = crate::main_extensions(test_host_state(false));
+        extensions.push(timer_test_bridge::init());
+        prepare_selected_prototype(&mut extensions);
         let mut rt = JsRuntime::new(RuntimeOptions {
-            extensions: crate::main_extensions(test_host_state(false)),
+            extensions,
             ..Default::default()
         });
+        install_selected_prototype(&mut rt);
         crate::harden_global_scope(&mut rt);
         rt
     }
 
     fn boot_hidden_runtime() -> JsRuntime {
+        let mut extensions = crate::main_extensions(test_host_state(true));
+        extensions.push(timer_test_bridge::init());
+        prepare_selected_prototype(&mut extensions);
         let mut rt = JsRuntime::new(RuntimeOptions {
-            extensions: crate::main_extensions(test_host_state(true)),
+            extensions,
             ..Default::default()
         });
+        install_selected_prototype(&mut rt);
         crate::harden_global_scope(&mut rt);
         rt
     }
@@ -87,12 +105,45 @@ mod timer_tests {
     fn boot_runtime_with_timer_internals() -> JsRuntime {
         let mut extensions = crate::main_extensions(test_host_state(false));
         extensions.push(timer_test_bridge::init());
+        prepare_selected_prototype(&mut extensions);
         let mut rt = JsRuntime::new(RuntimeOptions {
             extensions,
             ..Default::default()
         });
+        install_selected_prototype(&mut rt);
         crate::harden_global_scope(&mut rt);
         rt
+    }
+
+    fn install_selected_prototype(rt: &mut JsRuntime) {
+        if std::env::var("MIGO_TIMER_PROTOTYPE").as_deref() == Ok("heap") {
+            exec(rt, "globalThis.__timerUseHeapPrototype()");
+        }
+    }
+
+    fn prepare_selected_prototype(extensions: &mut [deno_core::Extension]) {
+        if std::env::var("MIGO_TIMER_PROTOTYPE").as_deref() != Ok("heap") {
+            return;
+        }
+        // Core is frozen. Substitute a test-only facade in the exact same
+        // policy source, rather than weakening production core hardening.
+        let extension = extensions
+            .iter_mut()
+            .find(|ext| ext.name == "host_v8_web")
+            .unwrap();
+        let source = extension
+            .esm_files
+            .to_mut()
+            .iter_mut()
+            .find(|file| file.specifier == "ext:host_v8_web/02_timers.js")
+            .unwrap();
+        let original = include_str!("../web/02_timers.js");
+        let import = "import { core, primordials } from \"ext:core/mod.js\";";
+        assert_eq!(original.matches(import).count(), 1);
+        let mut modified = original.replacen(import,
+            "import { core as upstreamCore, primordials } from \"ext:core/mod.js\";\nconst core = { ...upstreamCore };", 1);
+        modified.push_str("\nexport { core as __testTimerCore };\n");
+        source.code = deno_core::ExtensionFileSourceCode::Computed(modified.into());
     }
 
     fn exec(rt: &mut JsRuntime, source: impl Into<String>) {
@@ -442,5 +493,228 @@ mod timer_tests {
         // the next deno_core poll turn for the timer created inside callback 6.
         advance_and_drain(&mut rt, Duration::from_millis(5)).await;
         assert_js(&mut rt, "__nestedCount === 7");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn promise_jobs_finish_before_the_next_equal_deadline_timer() {
+        let mut rt = boot_runtime();
+        exec(
+            &mut rt,
+            r#"
+            globalThis.__order = [];
+            setTimeout(() => {
+                __order.push('first');
+                Promise.resolve().then(() => {
+                    __order.push('promise');
+                    return Promise.resolve();
+                }).then(() => __order.push('chained'));
+            }, 0);
+            setTimeout(() => __order.push('second'), 0);
+        "#,
+        );
+        assert_js(&mut rt, "__order.length === 0");
+        advance_and_drain(&mut rt, Duration::ZERO).await;
+        assert_js(
+            &mut rt,
+            "JSON.stringify(__order) === '[\"first\",\"promise\",\"chained\",\"second\"]'",
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn promise_jobs_inherit_timer_nesting_until_the_task_finishes() {
+        let mut rt = boot_runtime();
+        exec(
+            &mut rt,
+            r#"
+            globalThis.__nestedCount = 0;
+            function nested() {
+                __nestedCount++;
+                if (__nestedCount < 6) {
+                    Promise.resolve().then(() => Promise.resolve())
+                        .then(() => setTimeout(nested, 0));
+                }
+            }
+            setTimeout(nested, 0);
+        "#,
+        );
+        advance_and_drain(&mut rt, Duration::ZERO).await;
+        assert_js(&mut rt, "__nestedCount === 5");
+        advance_and_drain(&mut rt, Duration::from_millis(3)).await;
+        assert_js(&mut rt, "__nestedCount === 5");
+        advance_and_drain(&mut rt, Duration::from_millis(1)).await;
+        assert_js(&mut rt, "__nestedCount === 6");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_promise_can_cancel_the_next_ready_timer_without_losing_its_successor() {
+        let mut rt = boot_runtime();
+        exec(
+            &mut rt,
+            r#"
+            globalThis.__order = [];
+            setTimeout(() => {
+                __order.push('first');
+                Promise.resolve().then(() => clearTimeout(cancelled));
+            }, 0);
+            const cancelled = setTimeout(() => __order.push('cancelled'), 0);
+            setTimeout(() => __order.push('last'), 0);
+        "#,
+        );
+        advance_and_drain(&mut rt, Duration::ZERO).await;
+        assert_js(
+            &mut rt,
+            "JSON.stringify(__order) === '[\"first\",\"last\"]'",
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn zero_delay_interval_has_one_ready_tick_then_uses_its_period() {
+        let mut rt = boot_runtime();
+        exec(
+            &mut rt,
+            "globalThis.__count = 0; globalThis.__id = setInterval(() => __count++, 0)",
+        );
+        advance_and_drain(&mut rt, Duration::ZERO).await;
+        assert_js(&mut rt, "__count === 1");
+        advance_and_drain(&mut rt, Duration::from_millis(1)).await;
+        assert_js(&mut rt, "__count === 2");
+        exec(&mut rt, "clearInterval(__id)");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn zero_delay_timer_ref_state_and_cancellation_do_not_keep_the_loop_alive() {
+        let mut rt = boot_runtime_with_timer_internals();
+        exec(
+            &mut rt,
+            "globalThis.__id = setTimeout(() => { throw new Error('cancelled'); }, 0)",
+        );
+        exec(&mut rt, "__timerInternals.unrefTimer(__id)");
+        assert_js(&mut rt, "!__coreInternals.eventLoopHasMoreWork()");
+        exec(&mut rt, "__timerInternals.refTimer(__id)");
+        assert_js(&mut rt, "__coreInternals.eventLoopHasMoreWork()");
+        exec(&mut rt, "clearTimeout(__id)");
+        assert_js(&mut rt, "!__coreInternals.eventLoopHasMoreWork()");
+        advance_and_drain(&mut rt, Duration::ZERO).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn repeated_timer_churn_releases_quota_and_core_handles() {
+        let mut rt = boot_runtime_with_timer_internals();
+        exec(
+            &mut rt,
+            r#"
+            for (let round = 0; round < 10; round++) {
+                const ids = [];
+                for (let i = 0; i < 1024; i++) ids.push(setTimeout(() => {}, i & 1 ? 0 : 1000));
+                for (const id of ids) clearTimeout(id);
+            }
+        "#,
+        );
+        assert_js(&mut rt, "!__coreInternals.eventLoopHasMoreWork()");
+        advance_and_drain(&mut rt, Duration::ZERO).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "explicit same-cohort scheduler performance experiment"]
+    async fn scheduler_performance_experiment() {
+        let mut rt = boot_runtime_with_timer_internals();
+        let backend = std::env::var("MIGO_TIMER_PROTOTYPE").unwrap_or_else(|_| "core".into());
+        for population in [16, 256, 1024] {
+            for distinct in [false, true] {
+                let source = format!(
+                    r#"(() => {{
+                    const population = {population};
+                    for (let round = 0; round < 10240 / population; round++) {{
+                        const ids = [];
+                        for (let i = 0; i < population; i++) {{
+                            ids.push(setTimeout(() => {{}}, {delay}));
+                        }}
+                        for (let i = ids.length - 1; i >= 0; i--) clearTimeout(ids[i]);
+                    }}
+                }})()"#,
+                    delay = if distinct { "10000 + i" } else { "10000" }
+                );
+                let mut samples = Vec::new();
+                for iteration in 0..9 {
+                    let start = std::time::Instant::now();
+                    exec(&mut rt, source.clone());
+                    if iteration >= 2 {
+                        samples.push(start.elapsed().as_micros() as u64);
+                    }
+                }
+                println!(
+                    "TIMER_AB {}",
+                    deno_core::serde_json::json!({
+                        "backend": backend, "case": "create_cancel", "population": population,
+                        "distinct_delays": distinct, "operations": 10240, "samples_us": samples,
+                    })
+                );
+            }
+        }
+        for iteration in 0..9 {
+            let start = std::time::Instant::now();
+            exec(
+                &mut rt,
+                "globalThis.__benchmarkFired = 0; for (let i = 0; i < 1024; i++) setTimeout(() => __benchmarkFired++, 0)",
+            );
+            rt.run_event_loop(PollEventLoopOptions::default())
+                .await
+                .expect("timer batch must drain");
+            let elapsed = start.elapsed().as_micros() as u64;
+            assert_js(&mut rt, "__benchmarkFired === 1024");
+            if iteration >= 2 {
+                println!(
+                    "TIMER_AB {}",
+                    deno_core::serde_json::json!({
+                        "backend": backend, "case": "dispatch_1024", "sample_us": elapsed,
+                    })
+                );
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancelling_a_repeating_core_handle_in_its_callback_does_not_rearm_a_wakeup() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct WakeCount(AtomicUsize);
+        impl std::task::Wake for WakeCount {
+            fn wake(self: Arc<Self>) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+            fn wake_by_ref(self: &Arc<Self>) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let mut rt = boot_runtime_with_timer_internals();
+        exec(
+            &mut rt,
+            r#"
+            globalThis.fired = 0;
+            globalThis.handle = __coreInternals.createTimer(() => {
+                fired++;
+                __coreInternals.cancelTimer(handle);
+            }, 1, undefined, true, true, false);
+        "#,
+        );
+        let count = Arc::new(WakeCount(AtomicUsize::new(0)));
+        let waker = std::task::Waker::from(count.clone());
+        let mut context = std::task::Context::from_waker(&waker);
+        let _ = rt.poll_event_loop(&mut context, PollEventLoopOptions::default());
+        tokio::time::advance(Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+        assert!(
+            count.0.load(Ordering::SeqCst) > 0,
+            "the live timer must wake its consumer"
+        );
+        let _ = rt.poll_event_loop(&mut context, PollEventLoopOptions::default());
+        assert_js(&mut rt, "fired === 1");
+        count.0.store(0, Ordering::SeqCst);
+        tokio::time::advance(Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(
+            count.0.load(Ordering::SeqCst),
+            0,
+            "cancelled repeat scheduled a ghost wakeup"
+        );
     }
 }

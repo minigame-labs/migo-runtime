@@ -81,12 +81,12 @@ fn main() {
         panic!("Worker snapshot requires product profile full");
     }
 
-    // Initialize V8 platform (required before any V8 operations).
-    deno_core::JsRuntime::init_platform(None);
-
     // The runtime hands V8 its locale data before the first isolate; a snapshot is made by an isolate too, and one made
     // without the data it will run with is a snapshot of a different V8.
     runtime_v8::install_icu_data();
+
+    // The embedder's ICU package must precede platform/isolate initialization.
+    deno_core::JsRuntime::init_platform(None);
 
     let extensions = match snapshot_kind {
         SnapshotKind::Host => runtime_v8::snapshot::lazy_extensions(),
@@ -119,7 +119,7 @@ fn main() {
                 SnapshotKind::Worker => Some(Box::new(|rt| {
                     rt.execute_script(
                         "worker-snapshot-generation-check",
-                        "if (typeof Deno.core.eventLoopTick !== 'function') throw new Error('Deno.core callbacks missing');\n\
+                        "for (const name of ['__eventLoopTick', '__processTimers', '__drainNextTickAndMacrotasks', '__handleRejections', 'runImmediateCallbacks']) { if (typeof Deno.core[name] !== 'function') throw new Error('Deno.core callback missing: ' + name); }\n\
                          if (typeof globalThis.__migoStartWorkerMessagePump !== 'function') throw new Error('deferred Worker pump hook missing');",
                     )
                     .expect("Worker snapshot bootstrap must remain restorable");

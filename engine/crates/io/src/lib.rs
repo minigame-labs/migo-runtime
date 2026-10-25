@@ -29,6 +29,7 @@ pub mod mipmap;
 pub mod mmap_reader;
 #[cfg(feature = "zip-extract")]
 pub mod package_ingest;
+pub mod polling;
 pub mod pools;
 pub mod scheduler;
 pub mod storage_ops;

@@ -49,13 +49,15 @@ impl Session {
             .enable_all()
             .build()
             .expect("current-thread executor");
+        let scheduler = IoScheduler::new(7301);
         Self {
             network: NetworkBinding::new(
                 policy,
                 Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 executor.handle().clone(),
+                scheduler.pools().clone(),
             ),
-            scheduler: IoScheduler::new(7301),
+            scheduler,
             executor,
         }
     }
@@ -585,6 +587,7 @@ async fn an_image_source_is_held_to_the_policy_fetch_is_held_to() {
         policy(&["allowed.example"], true),
         Arc::new(std::sync::atomic::AtomicBool::new(false)),
         executor,
+        migo_io::pools::IoPools::new(0),
     );
     let (policy, client) = network.image_client().expect("the session has a client");
     let error = migo_services::network::image_source::fetch_http_image(

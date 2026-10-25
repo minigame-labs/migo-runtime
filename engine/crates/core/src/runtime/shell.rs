@@ -215,7 +215,10 @@ impl SessionShell {
         #[cfg(feature = "host-audio")]
         let audio = AudioService::new(
             host_tx.clone(),
-            crate::services::audio::streaming_http_client_factory(network_policy.clone()),
+            crate::services::audio::streaming_http_client_factory(
+                network_policy.clone(),
+                migo_io::pools::IoPools::new(id),
+            ),
         );
         #[cfg(not(feature = "host-audio"))]
         let audio = AudioService::new(host_tx.clone(), network_policy.clone());

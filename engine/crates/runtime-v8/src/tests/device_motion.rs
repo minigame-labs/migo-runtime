@@ -4,6 +4,8 @@ use super::support::{boot_with_services, run_to_idle};
 
 #[test]
 fn content_hears_the_angles_in_radians() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let mut runtime = boot_with_services(None, None);
     let heard = run_to_idle(
         &mut runtime,

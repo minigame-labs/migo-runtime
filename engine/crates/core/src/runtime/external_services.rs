@@ -432,9 +432,16 @@ impl ServiceContext {
         backgrounded: Arc<AtomicBool>,
         runtime: tokio::runtime::Handle,
     ) {
-        let _ = self
-            .network
-            .set(NetworkBinding::new(policy, backgrounded, runtime));
+        let scheduler = self
+            .scheduler
+            .get()
+            .expect("bind_session must precede bind_network");
+        let _ = self.network.set(NetworkBinding::new(
+            policy,
+            backgrounded,
+            runtime,
+            scheduler.pools().clone(),
+        ));
     }
 
     /// What an `http(s)://` image source is fetched with, or why there is

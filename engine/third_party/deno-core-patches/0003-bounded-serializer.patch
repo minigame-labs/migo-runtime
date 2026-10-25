@@ -1,0 +1,156 @@
+--- deno_core-0.413.0/01_core.js
++++ deno_core-0.413.0/01_core.js
+@@ -8,6 +8,7 @@
+     Error,
+     ErrorCaptureStackTrace,
+     FunctionPrototypeBind,
++    NumberIsInteger,
+     ObjectAssign,
+     ObjectDefineProperties,
+     ObjectDefineProperty,
+@@ -16,6 +17,7 @@
+     ObjectKeys,
+     ObjectHasOwn,
+     ReflectOwnKeys,
++    RangeError,
+     setQueueMicrotask,
+     SafeMap,
+     SafeWeakMap,
+@@ -1196,12 +1198,18 @@
+       options,
+       errorCallback,
+     ) => {
++      const maxBytes = options?.maxBytes;
++      if (maxBytes !== undefined &&
++        (!NumberIsInteger(maxBytes) || maxBytes < 1 || maxBytes > 0x7fffffff)) {
++        throw new RangeError("maxBytes must be a positive integer below 2^31");
++      }
+       return op_serialize(
+         value,
+         options?.hostObjects,
+         options?.transferredArrayBuffers,
+         options?.forStorage ?? false,
+         errorCallback,
++        maxBytes,
+       );
+     },
+     deserialize: (buffer, options) => {
+--- deno_core-0.413.0/ops_builtin_v8.rs
++++ deno_core-0.413.0/ops_builtin_v8.rs
+@@ -622,6 +622,7 @@
+ }
+ 
+ struct SerializeDeserialize<'a> {
++  max_serialized_bytes: Option<usize>,
+   host_objects: Option<v8::Local<'a, v8::Array>>,
+   error_callback: Option<v8::Local<'a, v8::Function>>,
+   for_storage: bool,
+@@ -640,6 +641,14 @@
+ }
+ 
+ impl v8::ValueSerializerImpl for SerializeDeserialize<'_> {
++  fn max_buffer_capacity(&self) -> usize {
++    // ExpandBuffer requests max(required, previous * 2) + 64. Allow its
++    // geometric slack while bounding temporary memory before allocation.
++    self.max_serialized_bytes.map_or(usize::MAX, |limit| {
++      limit.saturating_mul(2).saturating_add(128)
++    })
++  }
++
+   #[allow(unused_variables, reason = "parameters required by trait")]
+   fn throw_data_clone_error<'s, 'i>(
+     &self,
+@@ -675,6 +684,8 @@
+       return Some(id);
+     }
+     if self.for_storage {
++      let message = v8::String::new(scope, "SharedArrayBuffer cannot be stored")?;
++      self.throw_data_clone_error(scope, message);
+       return None;
+     }
+     let state = JsRuntime::state_from(scope);
+@@ -853,7 +864,26 @@
+   transferred_array_buffers: Option<v8::Local<'s, v8::Value>>,
+   for_storage: bool,
+   error_callback: Option<v8::Local<'s, v8::Value>>,
++  #[smi] max_serialized_bytes: Option<u32>,
+ ) -> Result<Uint8Array, JsErrorBox> {
++  let max_serialized_bytes = match max_serialized_bytes {
++    Some(limit) if limit == 0 || limit > i32::MAX as u32 => {
++      return Err(JsErrorBox::range_error(
++        "maxBytes must be a positive integer below 2^31",
++      ));
++    }
++    Some(limit) => Some(limit as usize),
++    None => None,
++  };
++  // The bounded mode never publishes store ids or detaches caller buffers.
++  // A failed serialization therefore has no out-of-band resources to undo.
++  if max_serialized_bytes.is_some()
++    && (!for_storage || transferred_array_buffers.is_some())
++  {
++    return Err(JsErrorBox::type_error(
++      "maxBytes requires forStorage without transferredArrayBuffers",
++    ));
++  }
+   let error_callback = match error_callback {
+     Some(cb) => Some(
+       v8::Local::<v8::Function>::try_from(cb)
+@@ -882,6 +912,7 @@
+   let host_object_brand = Some(symbol);
+ 
+   let serialize_deserialize = Box::new(SerializeDeserialize {
++    max_serialized_bytes,
+     host_objects,
+     error_callback,
+     for_storage,
+@@ -952,6 +983,9 @@
+     Ok(vec![].into())
+   } else if let Some(true) = ret {
+     let vector = value_serializer.release();
++    if max_serialized_bytes.is_some_and(|limit| vector.len() > limit) {
++      return Err(JsErrorBox::range_error("Serialized value exceeds maxBytes"));
++    }
+     Ok(vector.into())
+   } else {
+     Err(JsErrorBox::type_error("Failed to serialize response"))
+@@ -997,6 +1031,7 @@
+   let serialize_deserialize = Box::new(SerializeDeserialize {
+     host_objects,
+     error_callback: None,
++    max_serialized_bytes: None,
+     for_storage,
+     host_object_brand,
+     deserializers,
+@@ -1068,6 +1103,7 @@
+   let serialize_deserialize = Box::new(SerializeDeserialize {
+     host_objects: None,
+     error_callback,
++    max_serialized_bytes: None,
+     for_storage: false,
+     host_object_brand: Some(symbol),
+     deserializers: None,
+@@ -1111,6 +1147,7 @@
+   let serialize_deserialize = Box::new(SerializeDeserialize {
+     host_objects: None,
+     error_callback: None,
++    max_serialized_bytes: None,
+     for_storage: false,
+     host_object_brand: Some(symbol),
+     deserializers,
+@@ -1151,6 +1188,7 @@
+     for_storage: false,
+     host_object_brand,
+     deserializers: None,
++    max_serialized_bytes: None,
+     broadcast_shared_array_buffers: None,
+   });
+   let value_serializer = v8::ValueSerializer::new(scope, serialize_deserialize);
+@@ -1178,6 +1216,7 @@
+     for_storage: false,
+     host_object_brand,
+     deserializers,
++    max_serialized_bytes: None,
+     broadcast_shared_array_buffers: None,
+   });
+   let value_deserializer =

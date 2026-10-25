@@ -1,0 +1,492 @@
+--- v8-150.4.0/src/value_serializer.rs
++++ v8-150.4.0/src/value_serializer.rs
+@@ -39,7 +39,7 @@
+ }
+ 
+ #[unsafe(no_mangle)]
+-unsafe extern "C" fn v8__ValueSerializer__Delegate__ThrowDataCloneError(
++pub(crate) unsafe extern "C" fn v8__ValueSerializer__Delegate__ThrowDataCloneError(
+   this: &CxxValueSerializerDelegate,
+   message: Local<String>,
+ ) {
+@@ -57,7 +57,7 @@
+ }
+ 
+ #[unsafe(no_mangle)]
+-unsafe extern "C" fn v8__ValueSerializer__Delegate__HasCustomHostObject(
++pub(crate) unsafe extern "C" fn v8__ValueSerializer__Delegate__HasCustomHostObject(
+   this: &CxxValueSerializerDelegate,
+   isolate: *mut RealIsolate,
+ ) -> bool {
+@@ -69,7 +69,7 @@
+ }
+ 
+ #[unsafe(no_mangle)]
+-unsafe extern "C" fn v8__ValueSerializer__Delegate__IsHostObject(
++pub(crate) unsafe extern "C" fn v8__ValueSerializer__Delegate__IsHostObject(
+   this: &CxxValueSerializerDelegate,
+   isolate: *mut RealIsolate,
+   object: Local<Object>,
+@@ -90,7 +90,7 @@
+ }
+ 
+ #[unsafe(no_mangle)]
+-unsafe extern "C" fn v8__ValueSerializer__Delegate__WriteHostObject(
++pub(crate) unsafe extern "C" fn v8__ValueSerializer__Delegate__WriteHostObject(
+   this: &CxxValueSerializerDelegate,
+   isolate: *mut RealIsolate,
+   object: Local<Object>,
+@@ -112,7 +112,7 @@
+ }
+ 
+ #[unsafe(no_mangle)]
+-unsafe extern "C" fn v8__ValueSerializer__Delegate__GetSharedArrayBufferId(
++pub(crate) unsafe extern "C" fn v8__ValueSerializer__Delegate__GetSharedArrayBufferId(
+   this: &CxxValueSerializerDelegate,
+   isolate: *mut RealIsolate,
+   shared_array_buffer: Local<SharedArrayBuffer>,
+@@ -140,7 +140,7 @@
+ }
+ 
+ #[unsafe(no_mangle)]
+-unsafe extern "C" fn v8__ValueSerializer__Delegate__GetWasmModuleTransferId(
++pub(crate) unsafe extern "C" fn v8__ValueSerializer__Delegate__GetWasmModuleTransferId(
+   this: &CxxValueSerializerDelegate,
+   isolate: *mut RealIsolate,
+   module: Local<WasmModuleObject>,
+@@ -168,7 +168,7 @@
+ }
+ 
+ #[unsafe(no_mangle)]
+-unsafe extern "C" fn v8__ValueSerializer__Delegate__ReallocateBufferMemory(
++pub(crate) unsafe extern "C" fn v8__ValueSerializer__Delegate__ReallocateBufferMemory(
+   this: &CxxValueSerializerDelegate,
+   old_buffer: *mut c_void,
+   size: usize,
+@@ -194,7 +194,7 @@
+ }
+ 
+ #[unsafe(no_mangle)]
+-unsafe extern "C" fn v8__ValueSerializer__Delegate__FreeBufferMemory(
++pub(crate) unsafe extern "C" fn v8__ValueSerializer__Delegate__FreeBufferMemory(
+   this: &mut CxxValueSerializerDelegate,
+   buffer: *mut c_void,
+ ) {
+--- v8-150.4.0/src/value_deserializer.rs
++++ v8-150.4.0/src/value_deserializer.rs
+@@ -33,7 +33,7 @@
+ }
+ 
+ #[unsafe(no_mangle)]
+-unsafe extern "C" fn v8__ValueDeserializer__Delegate__ReadHostObject(
++pub(crate) unsafe extern "C" fn v8__ValueDeserializer__Delegate__ReadHostObject(
+   this: &CxxValueDeserializerDelegate,
+   isolate: *mut RealIsolate,
+ ) -> *const Object {
+@@ -58,7 +58,7 @@
+ }
+ 
+ #[unsafe(no_mangle)]
+-unsafe extern "C" fn v8__ValueDeserializer__Delegate__GetSharedArrayBufferFromId(
++pub(crate) unsafe extern "C" fn v8__ValueDeserializer__Delegate__GetSharedArrayBufferFromId(
+   this: &CxxValueDeserializerDelegate,
+   isolate: *mut RealIsolate,
+   transfer_id: u32,
+@@ -83,7 +83,7 @@
+ }
+ 
+ #[unsafe(no_mangle)]
+-unsafe extern "C" fn v8__ValueDeserializer__Delegate__GetWasmModuleFromId(
++pub(crate) unsafe extern "C" fn v8__ValueDeserializer__Delegate__GetWasmModuleFromId(
+   this: &mut CxxValueDeserializerDelegate,
+   isolate: *mut RealIsolate,
+   clone_id: u32,
+--- v8-150.4.0/src/cppgc.rs
++++ v8-150.4.0/src/cppgc.rs
+@@ -87,7 +87,7 @@
+ }
+ 
+ #[unsafe(no_mangle)]
+-unsafe extern "C" fn rusty_v8_RustObj_trace(
++pub(crate) unsafe extern "C" fn rusty_v8_RustObj_trace(
+   obj: *const RustObj,
+   visitor: *mut Visitor,
+ ) {
+@@ -98,7 +98,7 @@
+ }
+ 
+ #[unsafe(no_mangle)]
+-unsafe extern "C" fn rusty_v8_RustObj_get_name(
++pub(crate) unsafe extern "C" fn rusty_v8_RustObj_get_name(
+   obj: *const RustObj,
+ ) -> *const c_char {
+   let r = unsafe { get_rust_obj(obj) };
+@@ -106,7 +106,7 @@
+ }
+ 
+ #[unsafe(no_mangle)]
+-unsafe extern "C" fn rusty_v8_RustObj_drop(obj: *mut RustObj) {
++pub(crate) unsafe extern "C" fn rusty_v8_RustObj_drop(obj: *mut RustObj) {
+   unsafe {
+     let r = get_rust_obj_mut(obj);
+     std::ptr::drop_in_place(r);
+--- v8-150.4.0/src/inspector.rs
++++ v8-150.4.0/src/inspector.rs
+@@ -164,7 +164,7 @@
+ }
+ 
+ #[unsafe(no_mangle)]
+-unsafe extern "C" fn v8_inspector__V8Inspector__Channel__BASE__sendResponse(
++pub(crate) unsafe extern "C" fn v8_inspector__V8Inspector__Channel__BASE__sendResponse(
+   this: *mut RawChannel,
+   call_id: int,
+   message: UniquePtr<StringBuffer>,
+@@ -176,7 +176,7 @@
+ }
+ 
+ #[unsafe(no_mangle)]
+-unsafe extern "C" fn v8_inspector__V8Inspector__Channel__BASE__sendNotification(
++pub(crate) unsafe extern "C" fn v8_inspector__V8Inspector__Channel__BASE__sendNotification(
+   this: *mut RawChannel,
+   message: UniquePtr<StringBuffer>,
+ ) {
+@@ -186,7 +186,7 @@
+ }
+ 
+ #[unsafe(no_mangle)]
+-unsafe extern "C" fn v8_inspector__V8Inspector__Channel__BASE__flushProtocolNotifications(
++pub(crate) unsafe extern "C" fn v8_inspector__V8Inspector__Channel__BASE__flushProtocolNotifications(
+   this: *mut RawChannel,
+ ) {
+   unsafe {
+@@ -197,7 +197,7 @@
+ }
+ 
+ #[unsafe(no_mangle)]
+-unsafe extern "C" fn v8_inspector__V8InspectorClient__BASE__generateUniqueId(
++pub(crate) unsafe extern "C" fn v8_inspector__V8InspectorClient__BASE__generateUniqueId(
+   this: *mut RawV8InspectorClient,
+ ) -> i64 {
+   unsafe {
+@@ -208,7 +208,7 @@
+ }
+ 
+ #[unsafe(no_mangle)]
+-unsafe extern "C" fn v8_inspector__V8InspectorClient__BASE__runMessageLoopOnPause(
++pub(crate) unsafe extern "C" fn v8_inspector__V8InspectorClient__BASE__runMessageLoopOnPause(
+   this: *mut RawV8InspectorClient,
+   context_group_id: int,
+ ) {
+@@ -220,7 +220,7 @@
+ }
+ 
+ #[unsafe(no_mangle)]
+-unsafe extern "C" fn v8_inspector__V8InspectorClient__BASE__quitMessageLoopOnPause(
++pub(crate) unsafe extern "C" fn v8_inspector__V8InspectorClient__BASE__quitMessageLoopOnPause(
+   this: *mut RawV8InspectorClient,
+ ) {
+   unsafe {
+@@ -231,7 +231,7 @@
+ }
+ 
+ #[unsafe(no_mangle)]
+-unsafe extern "C" fn v8_inspector__V8InspectorClient__BASE__runIfWaitingForDebugger(
++pub(crate) unsafe extern "C" fn v8_inspector__V8InspectorClient__BASE__runIfWaitingForDebugger(
+   this: *mut RawV8InspectorClient,
+   context_group_id: int,
+ ) {
+@@ -243,7 +243,7 @@
+ }
+ 
+ #[unsafe(no_mangle)]
+-unsafe extern "C" fn v8_inspector__V8InspectorClient__BASE__consoleAPIMessage(
++pub(crate) unsafe extern "C" fn v8_inspector__V8InspectorClient__BASE__consoleAPIMessage(
+   this: *mut RawV8InspectorClient,
+   context_group_id: int,
+   level: int,
+@@ -269,7 +269,7 @@
+ }
+ 
+ #[unsafe(no_mangle)]
+-unsafe extern "C" fn v8_inspector__V8InspectorClient__BASE__ensureDefaultContextInGroup(
++pub(crate) unsafe extern "C" fn v8_inspector__V8InspectorClient__BASE__ensureDefaultContextInGroup(
+   this: *mut RawV8InspectorClient,
+   context_group_id: int,
+ ) -> *const Context {
+@@ -285,7 +285,7 @@
+ }
+ 
+ #[unsafe(no_mangle)]
+-unsafe extern "C" fn v8_inspector__V8InspectorClient__BASE__resourceNameToUrl(
++pub(crate) unsafe extern "C" fn v8_inspector__V8InspectorClient__BASE__resourceNameToUrl(
+   this: *mut RawV8InspectorClient,
+   resource_name: &StringView,
+ ) -> *mut StringBuffer {
+@@ -301,7 +301,7 @@
+ 
+ #[repr(C)]
+ #[derive(Debug)]
+-struct RawChannel {
++pub(crate) struct RawChannel {
+   _cxx_vtable: CxxVTable,
+ }
+ 
+--- v8-150.4.0/src/V8.rs
++++ v8-150.4.0/src/V8.rs
+@@ -183,9 +183,117 @@
+   c_str.to_str().unwrap()
+ }
+ 
++// MIGO: on Windows rusty_v8 is a DLL, and a DLL must have every symbol it
++// references resolved at link time. The callbacks V8 makes back into Rust
++// therefore cannot be plain imports; the DLL holds them in a table this fills in
++// before V8 is touched. Everywhere else rusty_v8 is a static library, the final
++// link supplies them directly, and none of this is compiled.
++#[cfg(target_os = "windows")]
++mod host_callbacks {
++  use std::ffi::c_void;
++  use std::os::raw::c_char;
++
++  unsafe extern "C" {
++    fn v8__register_host_callback(name: *const c_char, f: *const c_void) -> i32;
++    fn v8__host_callbacks_ready() -> i32;
++  }
++
++  /// Binds each callback under the name the DLL knows it by.
++  ///
++  /// The name is derived from the function identifier with `stringify!` rather
++  /// than written out beside it. `#[no_mangle]` makes the exported symbol name
++  /// identical to the Rust identifier, so the two cannot drift: a mistyped
++  /// entry fails to resolve as a Rust path and does not compile, instead of
++  /// registering under a name nothing looks up.
++  macro_rules! register_all {
++    ($($module:ident :: $func:ident),* $(,)?) => {
++      $({
++        const NAME: &str = concat!(stringify!($func), "\0");
++        // SAFETY: NAME is NUL-terminated by construction and the function is a
++        // `#[no_mangle] extern "C"` item, so its address is a valid callback.
++        let accepted = unsafe {
++          v8__register_host_callback(
++            NAME.as_ptr() as *const c_char,
++            crate::$module::$func as *const c_void,
++          )
++        };
++        assert!(
++          accepted == 1,
++          "the rusty_v8 DLL does not know the host callback {}",
++          stringify!($func),
++        );
++      })*
++    };
++  }
++
++  pub(crate) fn register() {
++    register_all!(
++      crdtp::crdtp__FrontendChannel__BASE__sendProtocolResponse,
++      crdtp::crdtp__FrontendChannel__BASE__sendProtocolNotification,
++      crdtp::crdtp__FrontendChannel__BASE__fallThrough,
++      crdtp::crdtp__FrontendChannel__BASE__flushProtocolNotifications,
++      crdtp::crdtp__DomainDispatcher__BASE__Dispatch,
++      crdtp::crdtp__DomainDispatcher__BASE__Drop,
++      platform::v8__Platform__CustomPlatform__BASE__PostTask,
++      platform::v8__Platform__CustomPlatform__BASE__PostNonNestableTask,
++      platform::v8__Platform__CustomPlatform__BASE__PostDelayedTask,
++      platform::v8__Platform__CustomPlatform__BASE__PostNonNestableDelayedTask,
++      platform::v8__Platform__CustomPlatform__BASE__PostIdleTask,
++      platform::v8__Platform__CustomPlatform__BASE__DROP,
++      value_serializer::v8__ValueSerializer__Delegate__ThrowDataCloneError,
++      value_serializer::v8__ValueSerializer__Delegate__HasCustomHostObject,
++      value_serializer::v8__ValueSerializer__Delegate__IsHostObject,
++      value_serializer::v8__ValueSerializer__Delegate__WriteHostObject,
++      value_serializer::v8__ValueSerializer__Delegate__GetSharedArrayBufferId,
++      value_serializer::v8__ValueSerializer__Delegate__GetWasmModuleTransferId,
++      value_serializer::v8__ValueSerializer__Delegate__ReallocateBufferMemory,
++      value_serializer::v8__ValueSerializer__Delegate__FreeBufferMemory,
++      value_deserializer::v8__ValueDeserializer__Delegate__ReadHostObject,
++      value_deserializer::v8__ValueDeserializer__Delegate__GetSharedArrayBufferFromId,
++      value_deserializer::v8__ValueDeserializer__Delegate__GetWasmModuleFromId,
++      cppgc::rusty_v8_RustObj_trace,
++      cppgc::rusty_v8_RustObj_get_name,
++      cppgc::rusty_v8_RustObj_drop,
++      inspector::v8_inspector__V8Inspector__Channel__BASE__sendResponse,
++      inspector::v8_inspector__V8Inspector__Channel__BASE__sendNotification,
++      inspector::v8_inspector__V8Inspector__Channel__BASE__flushProtocolNotifications,
++      inspector::v8_inspector__V8InspectorClient__BASE__generateUniqueId,
++      inspector::v8_inspector__V8InspectorClient__BASE__runMessageLoopOnPause,
++      inspector::v8_inspector__V8InspectorClient__BASE__quitMessageLoopOnPause,
++      inspector::v8_inspector__V8InspectorClient__BASE__runIfWaitingForDebugger,
++      inspector::v8_inspector__V8InspectorClient__BASE__consoleAPIMessage,
++      inspector::v8_inspector__V8InspectorClient__BASE__ensureDefaultContextInGroup,
++      inspector::v8_inspector__V8InspectorClient__BASE__resourceNameToUrl,
++    );
++
++    // Catches the other direction: a callback the DLL expects that this list
++    // does not supply. Without it such a slot stays null and faults later, at
++    // the first serialization or inspector message rather than here.
++    // SAFETY: plain query, no arguments.
++    assert!(
++      unsafe { v8__host_callbacks_ready() } == 1,
++      "the rusty_v8 DLL expects host callbacks this build does not register",
++    );
++  }
++}
++
++/// Binds the Windows DLL's host-callback table. A no-op elsewhere.
++pub(crate) fn register_host_callbacks_once() {
++  #[cfg(target_os = "windows")]
++  {
++    use std::sync::Once;
++    static REGISTERED: Once = Once::new();
++    REGISTERED.call_once(host_callbacks::register);
++  }
++}
++
+ /// Sets the v8::Platform to use. This should be invoked before V8 is
+ /// initialized.
+ pub fn initialize_platform(platform: SharedRef<Platform>) {
++  // Before any call reaches V8: this is the documented first entry point, so
++  // binding here guarantees the table is filled before anything can call back.
++  register_host_callbacks_once();
++
+   let mut global_state_guard = GLOBAL_STATE.lock().unwrap();
+   *global_state_guard = match *global_state_guard {
+     Uninitialized => PlatformInitialized(platform.clone()),
+--- v8-150.4.0/src/platform.rs
++++ v8-150.4.0/src/platform.rs
+@@ -234,7 +234,7 @@
+ // Task pointers are owned — Rust is responsible for running and deleting them.
+ 
+ #[unsafe(no_mangle)]
+-unsafe extern "C" fn v8__Platform__CustomPlatform__BASE__PostTask(
++pub(crate) unsafe extern "C" fn v8__Platform__CustomPlatform__BASE__PostTask(
+   context: *mut std::ffi::c_void,
+   isolate: *mut std::ffi::c_void,
+   task: *mut std::ffi::c_void,
+@@ -244,7 +244,7 @@
+ }
+ 
+ #[unsafe(no_mangle)]
+-unsafe extern "C" fn v8__Platform__CustomPlatform__BASE__PostNonNestableTask(
++pub(crate) unsafe extern "C" fn v8__Platform__CustomPlatform__BASE__PostNonNestableTask(
+   context: *mut std::ffi::c_void,
+   isolate: *mut std::ffi::c_void,
+   task: *mut std::ffi::c_void,
+@@ -254,7 +254,7 @@
+ }
+ 
+ #[unsafe(no_mangle)]
+-unsafe extern "C" fn v8__Platform__CustomPlatform__BASE__PostDelayedTask(
++pub(crate) unsafe extern "C" fn v8__Platform__CustomPlatform__BASE__PostDelayedTask(
+   context: *mut std::ffi::c_void,
+   isolate: *mut std::ffi::c_void,
+   task: *mut std::ffi::c_void,
+@@ -265,7 +265,7 @@
+ }
+ 
+ #[unsafe(no_mangle)]
+-unsafe extern "C" fn v8__Platform__CustomPlatform__BASE__PostNonNestableDelayedTask(
++pub(crate) unsafe extern "C" fn v8__Platform__CustomPlatform__BASE__PostNonNestableDelayedTask(
+   context: *mut std::ffi::c_void,
+   isolate: *mut std::ffi::c_void,
+   task: *mut std::ffi::c_void,
+@@ -276,7 +276,7 @@
+ }
+ 
+ #[unsafe(no_mangle)]
+-unsafe extern "C" fn v8__Platform__CustomPlatform__BASE__PostIdleTask(
++pub(crate) unsafe extern "C" fn v8__Platform__CustomPlatform__BASE__PostIdleTask(
+   context: *mut std::ffi::c_void,
+   isolate: *mut std::ffi::c_void,
+   task: *mut std::ffi::c_void,
+@@ -286,7 +286,7 @@
+ }
+ 
+ #[unsafe(no_mangle)]
+-unsafe extern "C" fn v8__Platform__CustomPlatform__BASE__DROP(
++pub(crate) unsafe extern "C" fn v8__Platform__CustomPlatform__BASE__DROP(
+   context: *mut std::ffi::c_void,
+ ) {
+   unsafe {
+@@ -453,6 +453,8 @@
+     unprotected: bool,
+     platform_impl: impl PlatformImpl + 'static,
+   ) -> UniqueRef<Self> {
++    // A failed initialization may drop the platform before initialize_platform.
++    crate::V8::register_host_callbacks_once();
+     // Double-box: inner Box<dyn> is a fat pointer, outer Box gives us a
+     // thin pointer we can pass through C++ void*.
+     let boxed: Box<dyn PlatformImpl> = Box::new(platform_impl);
+--- v8-150.4.0/src/crdtp.rs
++++ v8-150.4.0/src/crdtp.rs
+@@ -160,7 +160,7 @@
+ struct CppVecU8(Opaque);
+ 
+ #[repr(C)]
+-struct RawSerializable(Opaque);
++pub(crate) struct RawSerializable(Opaque);
+ 
+ #[repr(C)]
+ struct RawDomainDispatcher(Opaque);
+@@ -389,7 +389,7 @@
+ }
+ 
+ #[repr(C)]
+-struct RawFrontendChannel {
++pub(crate) struct RawFrontendChannel {
+   _cxx_vtable: CxxVTable,
+ }
+ 
+@@ -429,7 +429,7 @@
+ }
+ 
+ #[unsafe(no_mangle)]
+-unsafe extern "C" fn crdtp__FrontendChannel__BASE__sendProtocolResponse(
++pub(crate) unsafe extern "C" fn crdtp__FrontendChannel__BASE__sendProtocolResponse(
+   this: *mut RawFrontendChannel,
+   call_id: i32,
+   message: *mut RawSerializable,
+@@ -442,7 +442,7 @@
+ }
+ 
+ #[unsafe(no_mangle)]
+-unsafe extern "C" fn crdtp__FrontendChannel__BASE__sendProtocolNotification(
++pub(crate) unsafe extern "C" fn crdtp__FrontendChannel__BASE__sendProtocolNotification(
+   this: *mut RawFrontendChannel,
+   message: *mut RawSerializable,
+ ) {
+@@ -454,7 +454,7 @@
+ }
+ 
+ #[unsafe(no_mangle)]
+-unsafe extern "C" fn crdtp__FrontendChannel__BASE__fallThrough(
++pub(crate) unsafe extern "C" fn crdtp__FrontendChannel__BASE__fallThrough(
+   this: *mut RawFrontendChannel,
+   call_id: i32,
+   method_data: *const u8,
+@@ -471,7 +471,7 @@
+ }
+ 
+ #[unsafe(no_mangle)]
+-unsafe extern "C" fn crdtp__FrontendChannel__BASE__flushProtocolNotifications(
++pub(crate) unsafe extern "C" fn crdtp__FrontendChannel__BASE__flushProtocolNotifications(
+   this: *mut RawFrontendChannel,
+ ) {
+   unsafe {
+@@ -726,7 +726,7 @@
+ }
+ 
+ #[unsafe(no_mangle)]
+-unsafe extern "C" fn crdtp__DomainDispatcher__BASE__Dispatch(
++pub(crate) unsafe extern "C" fn crdtp__DomainDispatcher__BASE__Dispatch(
+   rust_dispatcher: *mut std::ffi::c_void,
+   command_data: *const u8,
+   command_len: usize,
+@@ -746,7 +746,7 @@
+ }
+ 
+ #[unsafe(no_mangle)]
+-unsafe extern "C" fn crdtp__DomainDispatcher__BASE__Drop(
++pub(crate) unsafe extern "C" fn crdtp__DomainDispatcher__BASE__Drop(
+   rust_dispatcher: *mut std::ffi::c_void,
+ ) {
+   unsafe {

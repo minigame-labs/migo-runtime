@@ -780,10 +780,9 @@ export function op_share_menu_reply(replyJson) {
 // ---- content's migo.createWorker (the async half: op_worker_create, op_worker_recv_message, op_worker_recv_error)
 //
 // `01_worker.js` (shared with the in-process lane) imports five ops from `ext:core/ops`; these three return a
-// promise the host (here, the page) settles, so they belong in this file. `op_worker_post_message` and
-// `op_worker_terminate` are the other two -- fire-and-forget in Rust, so they are in `lane-command.mjs` instead,
-// and `worker-relay-channel.mjs` is the shared state both files need, since a lane file's own exports are read
-// statically and cannot be a re-export of another's.
+// promise the page or direct data channel settles, so they belong in this file.
+// Admission/commit are local producer operations; termination uses the command
+// lane. All three lanes share the attempt state in worker-relay-channel.mjs.
 import {
   beginWorkerAttempt,
   nextWorkerError,

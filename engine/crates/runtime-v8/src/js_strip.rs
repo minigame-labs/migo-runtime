@@ -656,6 +656,8 @@ mod tests {
     /// The decisive check: V8 runs each program before and after, and gets the same answer.
     #[test]
     fn v8_gets_the_same_answer_before_and_after() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         fn run(src: &str) -> String {
             let mut runtime = deno_core::JsRuntime::new(Default::default());
             let value = runtime
@@ -789,6 +791,8 @@ mod tests {
     /// V8 parses every stripped file as the module it is.
     #[test]
     fn every_embedded_file_still_compiles() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         use deno_core::v8;
         let mut runtime = deno_core::JsRuntime::new(Default::default());
         deno_core::scope!(scope, &mut runtime);

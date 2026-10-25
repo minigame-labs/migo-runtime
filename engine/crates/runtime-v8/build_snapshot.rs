@@ -166,7 +166,50 @@ pub fn snapshot_feature_hash(features: &[&str]) -> String {
 /// wrongly accept an outdated snapshot, so callers must never validate/embed on
 /// error and instead fall back to source JS.
 pub fn collect_js_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
-    collect_files_with_extension(dir, "js")
+    let mut output = collect_files_with_extension(dir, "js")?;
+    if let Some(engine) = dir.parent().and_then(Path::parent) {
+        if let Some(core) = vendored_core_dir(engine)? {
+            collect_files_into(&core, "js", &mut output)?;
+        }
+    }
+    Ok(output)
+}
+
+/// A path-patched core has no source checksum in Cargo.lock. Its actual JS and
+/// Rust must be bound to the snapshot as well as its nominal release version.
+/// Small filesystem fixtures without a workspace manifest have no core input.
+pub fn vendored_core_dir(engine: &Path) -> std::io::Result<Option<PathBuf>> {
+    vendored_source_dir(engine, "deno-core-patches", "deno_core")
+}
+
+pub fn vendored_v8_dir(engine: &Path) -> std::io::Result<Option<PathBuf>> {
+    vendored_source_dir(engine, "rusty-v8-rust-patches", "v8")
+}
+
+fn vendored_source_dir(
+    engine: &Path,
+    patches: &str,
+    expected_name: &str,
+) -> std::io::Result<Option<PathBuf>> {
+    if !engine.join("Cargo.toml").is_file() {
+        return Ok(None);
+    }
+    let pin = std::fs::read_to_string(engine.join("third_party").join(patches).join("UPSTREAM"))?;
+    let mut fields = pin.split_whitespace();
+    let name = fields.next().unwrap_or_default();
+    let version = fields.next().unwrap_or_default();
+    if name != expected_name
+        || version.is_empty()
+        || !version
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte == b'.')
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "invalid vendored source pin",
+        ));
+    }
+    Ok(Some(engine.join(format!("third_party/{name}-{version}"))))
 }
 
 /// Conservatively fingerprint every Rust source in `runtime-v8` and
@@ -188,9 +231,32 @@ pub fn collect_rust_files(dir: &Path) -> std::io::Result<Vec<PathBuf>> {
             "crates directory has no engine parent",
         )
     })?;
-    let snapshot_gen = crates_dir.parent().expect("crates dir has a parent").join("tools/snapshot-gen");
+    let snapshot_gen = crates_dir
+        .parent()
+        .expect("crates dir has a parent")
+        .join("tools/snapshot-gen");
     let mut output = collect_files_with_extension(dir, "rs")?;
     collect_files_into(&snapshot_gen, "rs", &mut output)?;
+    if let Some(core) = vendored_core_dir(engine_dir)? {
+        collect_files_into(&core, "rs", &mut output)?;
+        output.push(core.join("Cargo.toml"));
+        output.push(engine_dir.join("Cargo.toml"));
+        let patches = engine_dir.join("third_party/deno-core-patches");
+        output.push(patches.join("UPSTREAM"));
+        collect_files_into(&patches, "patch", &mut output)?;
+    }
+    if let Some(v8) = vendored_v8_dir(engine_dir)? {
+        // Bind the actual Rust ABI consumer, generated FFI bindings and build
+        // selection. Native C++ bytes remain bound by the archive digest.
+        for child in ["src", "gen"] {
+            collect_files_into(&v8.join(child), "rs", &mut output)?;
+        }
+        output.push(v8.join("Cargo.toml"));
+        output.push(v8.join("build.rs"));
+        let patches = engine_dir.join("third_party/rusty-v8-rust-patches");
+        output.push(patches.join("UPSTREAM"));
+        collect_files_into(&patches, "patch", &mut output)?;
+    }
     for path in [
         dir.join("Cargo.toml"),
         snapshot_gen.join("Cargo.toml"),

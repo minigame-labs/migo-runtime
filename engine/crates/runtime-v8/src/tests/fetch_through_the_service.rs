@@ -105,6 +105,8 @@ mod fetch_service_tests {
     /// for, and a read past the end answers zero.
     #[test]
     fn a_data_url_is_fetched_and_its_body_read_through_core() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         run(
             r#"
             (async () => {
@@ -152,6 +154,8 @@ mod fetch_service_tests {
     /// content sees the throw its `fetch` facade turns into a failure.
     #[test]
     fn a_host_the_policy_does_not_allow_is_refused_at_the_op() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         run(
             r#"
             globalThis.result = (() => {
@@ -181,6 +185,8 @@ mod fetch_service_tests {
     /// facade that passed the wrong kind would be let through instead.
     #[test]
     fn request_and_download_file_are_each_held_to_their_own_channel() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut state = test_host_state();
         state.network_policy = NetworkPolicy::from_json(
             r#"{"request":["api.example.com"],"download":["dl.example.com"]}"#,
@@ -217,6 +223,8 @@ mod fetch_service_tests {
     /// neither is a TypeError rather than a default.
     #[test]
     fn the_kind_the_op_is_given_is_the_channel_it_is_held_to() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         run(
             r#"
             globalThis.result = (() => {
@@ -253,6 +261,8 @@ mod fetch_service_tests {
     /// answers that it was cancelled rather than connecting.
     #[test]
     fn closing_the_cancel_handle_stops_the_send() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         run(
             r#"
             (async () => {

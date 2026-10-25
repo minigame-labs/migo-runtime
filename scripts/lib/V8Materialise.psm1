@@ -13,6 +13,7 @@
 # that path is replaced, so content in the path is what makes its staleness rule correct.
 
 Set-StrictMode -Version Latest
+$MigoV8MaterialiseLibDir = $PSScriptRoot
 
 function Get-MigoFileSha256 {
     param([Parameter(Mandatory)][string]$Path)
@@ -48,6 +49,11 @@ function Resolve-MigoMaterialisedV8 {
         throw ("no component manifest beside $archive; a target with no committed manifest " +
                "cannot be verified, so it is not built against")
     }
+
+    $python = if (Get-Command python3 -ErrorAction SilentlyContinue) { "python3" } else { "python" }
+    & $python (Join-Path $MigoV8MaterialiseLibDir "v8_cohort.py") `
+        (Join-Path $MigoV8MaterialiseLibDir "../..") $manifest
+    if ($LASTEXITCODE -ne 0) { throw "V8 component cohort rejected before materialisation" }
 
     $recorded = (Get-Content -LiteralPath $manifest -Raw | ConvertFrom-Json).hashes
     $gotArchive = Get-MigoFileSha256 -Path $archive

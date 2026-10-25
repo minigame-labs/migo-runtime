@@ -1035,6 +1035,7 @@ mod tests {
                 false,
                 &shared::network_policy::NetworkPolicy::default(),
                 "audio",
+                migo_io::pools::IoPools::new(0),
             )
         })
     }

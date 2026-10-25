@@ -281,6 +281,8 @@ fn answers_path() -> PathBuf {
 
 #[test]
 fn v8_converts_every_probe_as_the_checked_in_answers_say() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let live = deno_answers();
     let path = answers_path();
     if std::env::var_os("MIGO_OP_ARGS_BLESS").is_some() {

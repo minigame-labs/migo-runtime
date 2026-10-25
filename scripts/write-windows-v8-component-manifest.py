@@ -25,6 +25,7 @@ import json
 import os
 import pathlib
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -43,6 +44,23 @@ TARGETS = {
         "msvc_arch_label": "arm64, cross from x64 host",
     },
 }
+
+
+def recipe_cargo_features(recipe: str) -> dict[str, bool]:
+    invocations = [shlex.split(line.strip()) for line in recipe.splitlines()
+                   if line.strip().startswith("cargo build")]
+    if len(invocations) != 1:
+        raise RuntimeError("expected one unambiguous cargo build invocation in the Windows recipe")
+    arguments = invocations[0]
+    selected = set()
+    for index, argument in enumerate(arguments):
+        if argument == "--features":
+            selected.update(arguments[index + 1].replace(",", " ").split())
+        elif argument.startswith("--features="):
+            selected.update(argument.split("=", 1)[1].replace(",", " ").split())
+    features = {name: name in selected for name in ("simdutf", "v8_enable_pointer_compression")}
+    features["use_custom_libcxx"] = "--no-default-features" not in arguments or "use_custom_libcxx" in selected
+    return features
 
 
 def run(command: list[str], label: str) -> str:
@@ -276,21 +294,7 @@ def main() -> int:
     # build leaves it on. Same class of mistake as grepping for a flag's name
     # instead of the command that would carry it.
     recipe = (repo / "scripts/build-v8-windows.sh").read_text(encoding="utf-8")
-    invocations = [
-        line.strip()
-        for line in recipe.splitlines()
-        if line.strip().startswith("cargo build")
-    ]
-    if not invocations:
-        raise RuntimeError(
-            "no `cargo build` line found in build-v8-windows.sh; cannot tell "
-            "which cargo features the build used"
-        )
-    cargo_features = {
-        "use_custom_libcxx": not any(
-            "--no-default-features" in line for line in invocations
-        )
-    }
+    cargo_features = recipe_cargo_features(recipe)
 
     verify_against_lock(
         arguments.lock.resolve(),

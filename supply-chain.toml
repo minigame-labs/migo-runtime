@@ -30,15 +30,6 @@ distribution_sha256 = "3e1af3ae886920c3ac87f7a91f816c0c7c436f276a6eefdb3da152100
 wrapper_jar_sha256 = "7d3a4ac4de1c32b59bc6a4eb8ecb8e612ccd0cf1ae1e99f66902da64df296172"
 
 [[advisory_exceptions]]
-id = "RUSTSEC-2025-0141"
-package = "bincode"
-version = "1.3.3"
-kind = "unmaintained"
-expires = "2027-02-28"
-reason = "deno_core 0.385 pins bincode 1; replace it when the runtime upstream migrates."
-tracking = "https://rustsec.org/advisories/RUSTSEC-2025-0141.html"
-
-[[advisory_exceptions]]
 id = "RUSTSEC-2024-0436"
 package = "paste"
 version = "1.0.15"
@@ -46,11 +37,3 @@ kind = "unmaintained"
 expires = "2027-02-28"
 reason = "V8 code generation and a test decoder still pull paste; review on upstream update."
 tracking = "https://rustsec.org/advisories/RUSTSEC-2024-0436.html"
-
-[[license_file_exceptions]]
-package = "syn-match"
-version = "0.3.0"
-expression = "MIT"
-sha256 = "95f88a0c83ae213c5131d788e637f79cf03bad8fd8ee7d7da2d4f5220e3fb1e6"
-reason = "The crate ships the canonical MIT text in LICENSE but omits the SPDX manifest field."
-tracking = "https://github.com/crowlKats/syn-match"

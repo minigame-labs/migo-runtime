@@ -75,6 +75,27 @@ def parse_patch(value: str) -> tuple[str, pathlib.Path]:
     return patch_id, pathlib.Path(path)
 
 
+def native_tools(gn_out: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path]:
+    """Read the compiler actually selected by GN, never the caller's PATH.
+
+    A host with an Android NDK first in PATH once recorded Clang/LLD 12 for
+    this Linux archive even though every C++ object was compiled with GN's
+    pinned Chromium Clang 23. A valid hash cannot repair that false provenance.
+    """
+    project = json.loads((gn_out / "project.json").read_text())
+    target = project["targets"]["//:rusty_v8"]
+    toolchain = project["toolchains"][target["toolchain"]]
+    command = shlex.split(toolchain["cxx"]["command"])
+    if not command or pathlib.Path(command[0]).name not in ("clang++", "clang"):
+        raise RuntimeError("cannot identify the GN target C++ compiler")
+    compiler = (gn_out / command[0]).resolve()
+    linker = compiler.with_name("ld.lld")
+    for tool in [compiler, linker]:
+        if not tool.is_file():
+            raise RuntimeError(f"GN target tool is missing: {tool}")
+    return compiler, linker
+
+
 def verify_source_changes(
     source: pathlib.Path, patches: list[tuple[str, pathlib.Path]]
 ) -> list[dict]:
@@ -206,8 +227,8 @@ def main() -> int:
     parser.add_argument("--sysroot", required=True, type=pathlib.Path)
     parser.add_argument("--output", required=True, type=pathlib.Path)
     parser.add_argument("--patch", action="append", default=[])
-    parser.add_argument("--compiler", default=os.environ.get("CXX", "clang++"))
-    parser.add_argument("--linker", default=os.environ.get("MIGO_LLD", "ld.lld"))
+    parser.add_argument("--compiler", type=pathlib.Path)
+    parser.add_argument("--linker", type=pathlib.Path)
     parser.add_argument("--tool", type=pathlib.Path)
     arguments = parser.parse_args()
 
@@ -227,6 +248,11 @@ def main() -> int:
     if not sysroot_recipe.is_file():
         raise RuntimeError(f"missing Chromium sysroot identity: {sysroot_recipe}")
     sysroot_word = {"x86_64": "amd64", "aarch64": "arm64"}[arguments.arch]
+    gn_out = source / "target" / TARGETS[arguments.arch]["triple"] / "release/gn_out"
+    compiler, linker = native_tools(gn_out)
+    for requested, actual in [(arguments.compiler, compiler), (arguments.linker, linker)]:
+        if requested is not None and requested.resolve() != actual:
+            raise RuntimeError(f"requested tool {requested} differs from GN's actual {actual}")
     sdk = (
         f"Debian bullseye {sysroot_word} sysroot; "
         f"sysroots.json sha256={hash_file(sysroot_recipe)}"
@@ -241,9 +267,9 @@ def main() -> int:
         archive_sha256=hash_file(archive),
         binding_sha256=hash_file(binding),
         rustc=run(["rustc", "--version", "--verbose"], "rustc"),
-        compiler=run([arguments.compiler, "--version"], "Linux C++ compiler"),
+        compiler=run([str(compiler), "--version"], "Linux C++ compiler"),
         sdk=sdk,
-        linker=run([arguments.linker, "--version"], "Linux linker"),
+        linker=run([str(linker), "--version"], "Linux linker"),
         recipe_sha256=hash_file(repo / "scripts/build-v8-linux.sh"),
     )
 

@@ -109,9 +109,17 @@ pub async fn op_ws_create(
     #[smi] timeout_ms: Option<u32>,
 ) -> Result<WsCreateResult, JsErrorBox> {
     let (resources, policy) = session(&state);
-    let handshake = service_ws::create(&policy, &resources, &url, &protocols, &headers, timeout_ms)
-        .await
-        .map_err(service_error)?;
+    let pools = state
+        .borrow()
+        .borrow::<crate::io_state::IoSchedulerState>()
+        .0
+        .pools()
+        .clone();
+    let handshake = service_ws::create(
+        &policy, &resources, &url, &protocols, &headers, timeout_ms, pools,
+    )
+    .await
+    .map_err(service_error)?;
 
     // The id content holds is this runtime's, naming the service's.
     let rid = state.borrow_mut().resource_table.add(ServiceHandle::new(
@@ -196,6 +204,8 @@ mod tests {
     /// error and a close.
     #[test]
     fn an_event_serializes_as_the_facade_reads_it() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut runtime = JsRuntime::new(RuntimeOptions::default());
         deno_core::scope!(scope, runtime);
         let mut rendered = |event: WsEvent| {

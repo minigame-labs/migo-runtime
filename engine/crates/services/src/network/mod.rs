@@ -20,6 +20,7 @@ pub mod quality;
 pub mod resources;
 pub mod sockets;
 pub mod tcp;
+pub mod tls;
 pub mod udp;
 pub mod upload;
 pub mod websocket;
