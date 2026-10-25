@@ -21,3 +21,14 @@
 # The V8 archives themselves are git-ignored build products; see .gitignore.
 # If a large binary genuinely needs tracking here again, prefer a release asset
 # plus a checksum in a manifest over reintroducing LFS.
+
+# Published vendor archives, ordered patches and generated FFI bindings are
+# checked byte for byte. core.autocrlf on a Windows checkout must not rewrite
+# source/license inputs after their hashes have been verified.
+/engine/third_party/deno_core-*/** -text
+/engine/third_party/v8-*/** -text
+/engine/third_party/ada-url-*/** -text
+/engine/third_party/skia-bindings-*/** -text
+/engine/third_party/rustls-platform-verifier-android-*/** -text
+/engine/third_party/*-patches/** -text
+/engine/third_party/rusty_v8/*/src_binding.rs -text

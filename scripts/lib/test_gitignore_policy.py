@@ -7,6 +7,41 @@ from gitignore_policy import check, tracked_ignored
 
 
 class GitignorePolicy(unittest.TestCase):
+    def test_byte_exact_vendor_inputs_survive_autocrlf_checkout(self):
+        attributes = (Path(__file__).resolve().parents[2] / '.gitattributes').read_bytes()
+        samples = [
+            'engine/third_party/deno_core-0.413.0/Cargo.toml.orig',
+            'engine/third_party/v8-150.4.0/src/lib.rs',
+            'engine/third_party/ada-url-4.0.0/LICENSE',
+            'engine/third_party/skia-bindings-0.93.1/Cargo.lock',
+            'engine/third_party/rustls-platform-verifier-android-0.2.0/CertificateVerifier.kt',
+            'engine/third_party/deno-core-patches/0001.patch',
+            'engine/third_party/rusty_v8/x86_64-linux-gnu/src_binding.rs',
+        ]
+        # The empty-attributes control demonstrates a real checkout rewrite.
+        for declared in [b'', attributes]:
+            with self.subTest(protected=bool(declared)), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                subprocess.run(['git', 'init', '--quiet', '--template=', str(root)], check=True)
+                (root / '.gitattributes').write_bytes(declared)
+                original = b'byte-exact upstream source\nsecond line\n'
+                for name in samples:
+                    source = root / name
+                    source.parent.mkdir(parents=True, exist_ok=True)
+                    source.write_bytes(original)
+                subprocess.run(['git', '-C', str(root), '-c', 'core.autocrlf=true',
+                                'add', '--', '.gitattributes', *samples], check=True,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                output = root / 'checkout'
+                subprocess.run(['git', '-C', str(root), '-c', 'core.autocrlf=true',
+                                'checkout-index', '--all', '--prefix=' + str(output) + '/'],
+                               check=True, capture_output=True)
+                for name in samples:
+                    if declared:
+                        self.assertEqual((output / name).read_bytes(), original)
+                    else:
+                        self.assertNotEqual((output / name).read_bytes(), original)
+
     def test_lockfile_exception_and_missing_checkout_input(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
