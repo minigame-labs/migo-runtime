@@ -1,5 +1,57 @@
 use super::*;
 
+#[tokio::test]
+async fn cancelled_native_handshake_keeps_its_connection_slot_until_poll_returns() {
+    use std::time::Duration;
+    let resources = ResourceTable::new();
+    let mut held: Vec<_> = (0..super::super::resources::MAX_WEB_SOCKETS)
+        .map(|_| resources.web_socket_slot().unwrap())
+        .collect();
+    let slot = held.pop().unwrap();
+    let (started, running) = tokio::sync::oneshot::channel();
+    let (release, gate) = std::sync::mpsc::channel();
+    let handshake = async move {
+        let _ = started.send(());
+        let _ = gate.recv();
+        Ok::<_, String>(())
+    };
+    let mut connect = Box::pin(finish_handshake(
+        handshake,
+        true,
+        slot,
+        migo_io::pools::IoPools::new(7701),
+        tokio::time::Instant::now() + Duration::from_secs(5),
+    ));
+    tokio::select! {
+        result = &mut connect => panic!("native fixture completed before release: {result:?}"),
+        result = running => result.expect("native poll started"),
+    }
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), &mut connect)
+            .await
+            .is_err()
+    );
+    drop(connect);
+    let prematurely_released = resources.web_socket_slot();
+    // Always unblock the executor, including the failing pre-fix control.
+    let _ = release.send(());
+    assert!(
+        prematurely_released.is_none(),
+        "a cancelled caller released the still-running connection's slot"
+    );
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if let Some(slot) = resources.web_socket_slot() {
+                drop(slot);
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("native completion releases the connection slot");
+}
+
 /// The headers content may not set on a handshake: the ones that would forge a
 /// hop, and the ones the upgrade itself is made of.
 #[test]

@@ -64,6 +64,41 @@ fn ws_config() -> WebSocketConfig {
         .max_write_buffer_size(WS_MAX_WRITE_BUFFER_BYTES)
 }
 
+async fn finish_handshake<F, T, E>(
+    handshake: F,
+    secure: bool,
+    slot: tokio::sync::OwnedSemaphorePermit,
+    pools: migo_io::pools::IoPools,
+    deadline: tokio::time::Instant,
+) -> Result<(T, tokio::sync::OwnedSemaphorePermit), ServiceError>
+where
+    F: std::future::Future<Output = Result<T, E>> + Send + 'static,
+    T: Send + 'static,
+    E: std::fmt::Display + Send + 'static,
+{
+    // A native verifier can outlive the cancelled caller. Its connection must
+    // continue to count against the quota until the offloaded poll returns.
+    let guarded = async move {
+        let result = handshake.await;
+        (result, slot)
+    };
+    let handshake = async move {
+        if secure {
+            migo_io::polling::run(guarded, pools, migo_io::task::PoolKind::Tls, 1024 * 1024)
+                .await
+                .map_err(|error| generic(format!("WebSocket handshake executor failed: {error}")))
+        } else {
+            // Plain WS never waits behind native certificate verification.
+            Ok(guarded.await)
+        }
+    };
+    let (result, slot) = tokio::time::timeout_at(deadline, handshake)
+        .await
+        .map_err(|_| generic("WebSocket handshake timeout"))??;
+    let value = result.map_err(|error| generic(format!("WebSocket handshake failed: {error}")))?;
+    Ok((value, slot))
+}
+
 /// Handshake-critical headers the client controls itself.
 ///
 /// Content supplying these would corrupt the upgrade, or override the
@@ -218,21 +253,8 @@ pub async fn create(
 
     let handshake =
         tokio_tungstenite::client_async_tls_with_config(request, stream, Some(ws_config()), tls);
-    let handshake = async move {
-        let result = if scheme == "wss" {
-            migo_io::polling::run(handshake, pools, migo_io::task::PoolKind::Tls, 1024 * 1024)
-                .await
-                .map_err(|error| generic(format!("WebSocket handshake executor failed: {error}")))?
-        } else {
-            // Plain WS has no native certificate verification. It must not
-            // wait behind slow JVM/OS trust-store or revocation operations.
-            handshake.await
-        };
-        result.map_err(|error| generic(format!("WebSocket handshake failed: {error}")))
-    };
-    let (stream, response) = tokio::time::timeout_at(deadline, handshake)
-        .await
-        .map_err(|_| generic("WebSocket handshake timeout"))??;
+    let ((stream, response), slot) =
+        finish_handshake(handshake, scheme == "wss", slot, pools, deadline).await?;
 
     let header = |name: &str| {
         response
