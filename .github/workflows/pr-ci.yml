@@ -82,6 +82,9 @@ jobs:
         working-directory: engine
         run: cargo fetch --locked
 
+      - name: Prepare verified host V8
+        uses: ./.github/actions/prepare-host-v8
+
       - name: Install the pinned RustSec scanner
         run: cargo install cargo-audit --version 0.22.2 --locked
 
@@ -1013,6 +1016,12 @@ jobs:
         env:
           RUST_BACKTRACE: 1
 
+      - name: Official host snapshot IO contract
+        working-directory: engine
+        run: |
+          bash ../scripts/check-snapshot-freshness.sh --os linux --snapshot-kind host --product-profile full x86_64
+          cargo test --locked --offline -p migo-runtime-v8 --test read_pixels_snapshot --test file_byob_snapshot -- --ignored
+
       # The Maven repository a host resolves the SDK from holds the release's AARs,
       # signed, and nothing else. Run here over fixture AARs, which proves the
       # checker catches each way a staged repository can be wrong; the build job
@@ -1540,6 +1549,9 @@ jobs:
       # deliberate -- it cannot answer the question, and reporting that as
       # success is how a check stops being one -- and it means this step is also
       # the thing that tells us if a runner image regresses.
+      - name: Prepare verified host V8
+        uses: ./.github/actions/prepare-host-v8
+
       - name: ASTC encoder round trip
         run: bash scripts/test-astc-encoder.sh
 
