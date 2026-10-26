@@ -162,7 +162,7 @@ tracing-subscriber = { version = "0.3.20", default-features = false, features = 
 smallvec = { version = "1.15.1", features = ["const_generics"] }
 bytemuck = { version = "1.23.2", features = ["extern_crate_alloc"] }
 deno_core = { version = "=0.413.0", default-features = false, features = ["v8", "reactor-tokio"] }
-zstd = { version = "0.13", default-features = false }
+zstd = { version = "0.14.3", default-features = false }
 deno_error = "=0.7.1"
 
 

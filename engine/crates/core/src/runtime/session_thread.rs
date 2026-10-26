@@ -629,8 +629,14 @@ pub(crate) fn create_runtime_before_ready(
     create_runtime: impl FnOnce() -> EngineResult<Runtime>,
 ) -> EngineResult<Runtime> {
     let runtime = create_runtime()?;
-    let _ = ready_tx.send(());
+    announce_ready(ready_tx);
     Ok(runtime)
+}
+
+/// Announce that startup succeeded, once everything the session runs on exists.
+/// Whether anyone is listening is not this function's business (see above).
+pub(crate) fn announce_ready(ready_tx: crossbeam_channel::Sender<()>) {
+    let _ = ready_tx.send(());
 }
 
 pub(crate) fn create_basic_runtime() -> EngineResult<Runtime> {
