@@ -54,6 +54,18 @@ fi
 if [[ -z "$md_list" ]]; then
     cannot_run "\`git ls-files '*.md'\` matched nothing, which cannot be right here."
 fi
+# Upstream's own documents, vendored byte for byte (\`linguist-vendored\` in
+# .gitattributes), link into upstream's tree -- oboe's README into its docs/ and
+# samples/, which the vendored projection leaves out -- and their bytes are held
+# to upstream's, so nothing here may correct them. The links this gate answers
+# for are the ones this repository wrote.
+if ! attributes="$(git check-attr --stdin linguist-vendored <<< "$md_list" 2>/dev/null)"; then
+    cannot_run "\`git check-attr\` failed in $ROOT_DIR."
+fi
+md_list="$(awk -F': linguist-vendored: ' '$2 != "set" { print $1 }' <<< "$attributes")"
+if [[ -z "$md_list" ]]; then
+    cannot_run "every tracked Markdown file reads as vendored, which cannot be right here."
+fi
 if ! contract_list="$(git ls-files 'contracts/*' 2>/dev/null)"; then
     cannot_run "\`git ls-files contracts/*\` failed in $ROOT_DIR."
 fi
