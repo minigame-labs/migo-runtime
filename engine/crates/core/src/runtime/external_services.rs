@@ -401,9 +401,17 @@ impl ServiceContext {
         })
     }
 
+    /// Name the session these services belong to and start its scheduler.
+    /// Bound from both sides of the spawn: by the session thread first thing,
+    /// because its own startup needs the scheduler (`bind_network`), and by the
+    /// spawner before it hands the session out, because only then can a caller
+    /// reach the services. Whichever comes first builds the one scheduler; the
+    /// other finds it.
     pub(crate) fn bind_session(&self, session_id: i32) {
-        let _ = self.session_id.set(session_id);
-        let _ = self.scheduler.set(Arc::new(IoScheduler::new(session_id)));
+        let bound = *self.session_id.get_or_init(|| session_id);
+        debug_assert_eq!(bound, session_id, "one ServiceHost serves one session");
+        self.scheduler
+            .get_or_init(|| Arc::new(IoScheduler::new(session_id)));
     }
 
     /// Give the services the session's audio: the sender its audio service
