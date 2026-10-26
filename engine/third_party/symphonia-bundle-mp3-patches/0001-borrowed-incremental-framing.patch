@@ -1,0 +1,559 @@
+--- symphonia-bundle-mp3-0.6.1/Cargo.toml
++++ symphonia-bundle-mp3-0.6.1/Cargo.toml
+@@ -41,6 +41,7 @@
+ resolver = "2"
+ 
+ [features]
++streaming = ["dep:symphonia-metadata"]
+ default = [
+     "mp1",
+     "mp2",
+@@ -70,3 +71,9 @@
+ level = "warn"
+ priority = 0
+ check-cfg = ["cfg(fuzzing)"]
++
++[dependencies.symphonia-metadata]
++version = "0.6.1"
++optional = true
++default-features = false
++features = ["id3v2"]
+--- symphonia-bundle-mp3-0.6.1/Cargo.toml.orig
++++ symphonia-bundle-mp3-0.6.1/Cargo.toml.orig
+@@ -14,6 +14,7 @@
+ version.workspace = true
+ 
+ [features]
++streaming = ["dep:symphonia-metadata"]
+ default = ["mp1", "mp2", "mp3"]
+ mp1 = []
+ mp2 = []
+@@ -26,3 +27,9 @@
+ 
+ [lints]
+ workspace = true
++
++[dependencies.symphonia-metadata]
++version = "0.6.1"
++optional = true
++default-features = false
++features = ["id3v2"]
+--- symphonia-bundle-mp3-0.6.1/src/demuxer.rs
++++ symphonia-bundle-mp3-0.6.1/src/demuxer.rs
+@@ -177,8 +177,7 @@
+                     warn!("found an unexpected xing tag, discarding");
+                     continue;
+                 }
+-            }
+-            else if is_maybe_vbri_tag(&data, &header)
++            } else if is_maybe_vbri_tag(&data, &header)
+                 && try_read_vbri_tag(&data, &header).is_some()
+             {
+                 // Discard the packet and tag since it was not at the start of the stream.
+@@ -264,8 +263,7 @@
+         // Ensure the seek position is within the bounds of the track.
+         if required_ts < min_ts {
+             return seek_error(SeekErrorKind::OutOfRange);
+-        }
+-        else if let Some(max_ts) = max_ts {
++        } else if let Some(max_ts) = max_ts {
+             if required_ts > max_ts {
+                 return seek_error(SeekErrorKind::OutOfRange);
+             }
+@@ -410,63 +408,78 @@
+     }
+ }
+ 
++pub(crate) fn first_frame_track(header: &FrameHeader, packet: &[u8]) -> (Track, bool) {
++    // Use the header to populate the codec parameters.
++    let mut codec_params = AudioCodecParameters::new();
++
++    codec_params
++        .for_codec(header.codec())
++        .with_sample_rate(header.sample_rate)
++        .with_max_frames_per_packet(u64::from(header.num_frames()))
++        .with_channels(header.channel_mode.channels());
++
++    // Create the track.
++    let mut track = Track::new(0);
++
++    track.with_codec_params(CodecParameters::Audio(codec_params));
++    track.with_time_base(TimeBase::from_recip(
++        std::num::NonZero::new(header.sample_rate).expect("parsed MPEG sample rate is nonzero"),
++    ));
++
++    let mut is_info = false;
++
++    // Check if there is a Xing/Info tag contained in the first frame.
++    if let Some(info_tag) = try_read_info_tag(packet, header) {
++        is_info = true;
++        // The LAME tag contains ReplayGain and padding information.
++        if let Some(lame_tag) = info_tag.lame {
++            track.with_delay(lame_tag.enc_delay).with_padding(lame_tag.enc_padding);
++        }
++
++        // The base Xing/Info tag may contain the number of MPEG frames.
++        if let Some(num_mpeg_frames) = info_tag.num_frames {
++            info!("using xing header for duration");
++
++            // The total number of audio frames including delay and padding frames.
++            let num_frames = u64::from(num_mpeg_frames) * u64::from(header.num_frames());
++
++            // Remove delay and padding frames.
++            let discard = track.delay.unwrap_or(0) + track.padding.unwrap_or(0);
++
++            track.with_num_frames(num_frames.saturating_sub(u64::from(discard)));
++        }
++    } else if let Some(vbri_tag) = try_read_vbri_tag(packet, header) {
++        is_info = true;
++        info!("using vbri header for duration");
++
++        let num_frames = u64::from(vbri_tag.num_mpeg_frames) * u64::from(header.num_frames());
++
++        // Check if there is a VBRI tag.
++        track.with_num_frames(num_frames);
++    }
++
++    if let Some(frames) = track.num_frames {
++        track.with_duration(Duration::new(frames));
++    }
++    (track, is_info)
++}
++
+ impl<'s> MpaReader<'s> {
+     pub fn try_new(mut mss: MediaSourceStream<'s>, opts: FormatOptions) -> Result<Self> {
+         // Try to read the first MPEG frame.
+         let (header, packet) = read_mpeg_frame_strict(&mut mss)?;
+ 
+-        // Use the header to populate the codec parameters.
+-        let mut codec_params = AudioCodecParameters::new();
+-
+-        codec_params
+-            .for_codec(header.codec())
+-            .with_sample_rate(header.sample_rate)
+-            .with_channels(header.channel_mode.channels());
+-
+-        // Create the track.
+-        let mut track = Track::new(0);
+-
+-        track.with_codec_params(CodecParameters::Audio(codec_params));
+-
+-        // Check if there is a Xing/Info tag contained in the first frame.
+-        if let Some(info_tag) = try_read_info_tag(&packet, &header) {
+-            // The LAME tag contains ReplayGain and padding information.
+-            if let Some(lame_tag) = info_tag.lame {
+-                track.with_delay(lame_tag.enc_delay).with_padding(lame_tag.enc_padding);
+-            }
+-
+-            // The base Xing/Info tag may contain the number of MPEG frames.
+-            if let Some(num_mpeg_frames) = info_tag.num_frames {
+-                info!("using xing header for duration");
+-
+-                // The total number of audio frames including delay and padding frames.
+-                let num_frames = u64::from(num_mpeg_frames) * u64::from(header.num_frames());
+-
+-                // Remove delay and padding frames.
+-                let discard = track.delay.unwrap_or(0) + track.padding.unwrap_or(0);
+-
+-                track.with_num_frames(num_frames.saturating_sub(u64::from(discard)));
+-            }
+-        }
+-        else if let Some(vbri_tag) = try_read_vbri_tag(&packet, &header) {
+-            info!("using vbri header for duration");
+-
+-            let num_frames = u64::from(vbri_tag.num_mpeg_frames) * u64::from(header.num_frames());
+-
+-            // Check if there is a VBRI tag.
+-            track.with_num_frames(num_frames);
+-        }
+-        else {
+-            // The first frame was not a Xing/Info header, rewind back to the start of the frame so
+-            // that it may be decoded.
++        let (mut track, is_info) = first_frame_track(&header, &packet);
++        if !is_info {
++            // Keep the first audio packet and the seekable-only duration estimate.
+             mss.seek_buffered_rev(MPEG_HEADER_LEN + header.frame_size);
+-
+-            // Likely not a VBR file, so estimate the duration if seekable.
+             if mss.is_seekable() {
+                 info!("estimating duration from bitrate, may be inaccurate for vbr files");
+-
+                 if let Some(n_mpeg_frames) = estimate_num_mpeg_frames(&mut mss) {
+-                    track.with_num_frames(n_mpeg_frames * u64::from(header.num_frames()));
++                    // This is an estimate, not an authoritative PCM boundary.
++                    // Keep a duration hint without enabling end trimming or an
++                    // exact-output allocation/quota preflight from this guess.
++                    track.with_duration(Duration::new(n_mpeg_frames * u64::from(header.num_frames())));
+                 }
+             }
+         }
+@@ -748,7 +761,7 @@
+ 
+ /// The Xing/Info time additional information for regarding a MP3 file.
+ #[allow(dead_code)]
+-struct XingInfoTag {
++pub(crate) struct XingInfoTag {
+     num_frames: Option<u32>,
+     num_bytes: Option<u32>,
+     toc: Option<[u8; 100]>,
+@@ -758,7 +771,7 @@
+ }
+ 
+ /// Try to read a Xing/Info tag from the provided MPEG frame.
+-fn try_read_info_tag(buf: &[u8], header: &FrameHeader) -> Option<XingInfoTag> {
++pub(crate) fn try_read_info_tag(buf: &[u8], header: &FrameHeader) -> Option<XingInfoTag> {
+     // The Info header is a completely optional piece of information. Therefore, flatten an error
+     // reading the tag into a None.
+     try_read_info_tag_inner(buf, header).ok().flatten()
+@@ -802,8 +815,7 @@
+         let mut toc = [0; 100];
+         reader.read_buf_exact(&mut toc)?;
+         Some(toc)
+-    }
+-    else {
++    } else {
+         None
+     };
+ 
+@@ -853,8 +865,7 @@
+                 let padding = trim & ((1 << 12) - 1);
+ 
+                 (delay, padding.saturating_sub(528 + 1))
+-            }
+-            else {
++            } else {
+                 (0, 0)
+             }
+         };
+@@ -882,13 +893,11 @@
+             if header.has_crc || encoder[..4] == *b"LAME" {
+                 // Read the CRC using the inner reader to not change the computed CRC.
+                 Some(reader.inner_mut().read_be_u16()?)
+-            }
+-            else {
++            } else {
+                 // No CRC is present.
+                 None
+             }
+-        }
+-        else {
++        } else {
+             // The tag is truncated. No CRC will be present.
+             info!("xing tag lame extension is truncated");
+             None
+@@ -908,14 +917,12 @@
+                 enc_delay,
+                 enc_padding,
+             })
+-        }
+-        else {
++        } else {
+             // The CRC did not match, this is probably not a LAME tag.
+             warn!("xing tag lame extension crc mismatch");
+             None
+         }
+-    }
+-    else {
++    } else {
+         // Frame not large enough for a LAME tag.
+         info!("xing tag too small for lame extension");
+         None
+@@ -931,8 +938,7 @@
+     if name == expected_name {
+         let gain = (value & 0x01ff) as f32 / 10.0;
+         Some(if value & 0x200 != 0 { -gain } else { gain })
+-    }
+-    else {
++    } else {
+         None
+     }
+ }
+@@ -971,13 +977,13 @@
+ 
+ /// The contents of a VBRI tag.
+ #[allow(dead_code)]
+-struct VbriTag {
++pub(crate) struct VbriTag {
+     num_bytes: u32,
+     num_mpeg_frames: u32,
+ }
+ 
+ /// Try to read a VBRI tag from the provided MPEG frame.
+-fn try_read_vbri_tag(buf: &[u8], header: &FrameHeader) -> Option<VbriTag> {
++pub(crate) fn try_read_vbri_tag(buf: &[u8], header: &FrameHeader) -> Option<VbriTag> {
+     // The VBRI header is a completely optional piece of information. Therefore, flatten an error
+     // reading the tag into a None.
+     try_read_vbri_tag_inner(buf, header).ok().flatten()
+--- symphonia-bundle-mp3-0.6.1/src/lib.rs
++++ symphonia-bundle-mp3-0.6.1/src/lib.rs
+@@ -50,3 +50,6 @@
+ 
+ #[deprecated = "use `symphonia_bundle_mp3::MpaReader` instead"]
+ pub type Mp3Reader<'s> = MpaReader<'s>;
++
++#[cfg(feature = "streaming")]
++pub mod streaming;
+--- /dev/null
++++ symphonia-bundle-mp3-0.6.1/src/streaming.rs
+@@ -0,0 +1,261 @@
++// Symphonia
++// Copyright (c) 2019-2026 The Project Symphonia Developers.
++//
++// This Source Code Form is subject to the terms of the Mozilla Public
++// License, v. 2.0. If a copy of the MPL was not distributed with this
++// file, You can obtain one at https://mozilla.org/MPL/2.0/.
++
++//! Nonblocking MPEG audio packetization over caller-owned contiguous input.
++//! The caller retains an incomplete prefix, skips the returned byte count and
++//! supplies more input. No blocking source adapter or per-packet allocation is
++//! required. MPEG and Xing/LAME parsing are shared with the normal demuxer.
++use symphonia_core::errors::{Error, Result, decode_error, unsupported_error};
++use symphonia_core::formats::Track;
++use symphonia_core::io::{BufReader, ReadBytes};
++use symphonia_core::packet::{PacketBuilder, PacketRef};
++use symphonia_core::units::{Duration, Timestamp};
++use symphonia_metadata::id3v2::Id3v2Reader;
++
++use crate::common::{FrameHeader, MpegLayer, MpegVersion};
++use crate::{demuxer, header};
++
++/// One incremental step. `NeedMore` never consumes input or changes timing.
++#[derive(Debug)]
++pub enum PacketStep<'a> {
++    NeedMore,
++    Discard(usize),
++    Packet { consumed: usize, packet: PacketRef<'a> },
++    End,
++}
++
++/// Bounded metadata/junk policy. These limits do not limit audio track length.
++#[derive(Clone, Copy, Debug)]
++pub struct PacketizerOptions {
++    pub max_metadata_bytes: u64,
++    pub max_junk_bytes: u64,
++}
++
++impl Default for PacketizerOptions {
++    fn default() -> Self {
++        Self { max_metadata_bytes: 64 * 1024, max_junk_bytes: 64 * 1024 }
++    }
++}
++
++/// A push packetizer. Errors are terminal; recreate it for a different stream.
++pub struct MpaPacketizer {
++    options: PacketizerOptions,
++    metadata_bytes: u64,
++    junk_bytes: u64,
++    tag_remaining: u64,
++    signature: Option<(MpegVersion, MpegLayer, u32, usize)>,
++    track: Option<Track>,
++    next_pts: Timestamp,
++    remaining_packets: Option<u64>,
++    failed: bool,
++    finished: bool,
++}
++
++impl MpaPacketizer {
++    pub fn new(options: PacketizerOptions) -> Self {
++        Self {
++            options,
++            metadata_bytes: 0,
++            junk_bytes: 0,
++            tag_remaining: 0,
++            signature: None,
++            track: None,
++            next_pts: Timestamp::ZERO,
++            remaining_packets: None,
++            failed: false,
++            finished: false,
++        }
++    }
++
++    pub fn track(&self) -> Option<&Track> {
++        self.track.as_ref()
++    }
++
++    pub fn next<'a>(&mut self, input: &'a [u8], eof: bool) -> Result<PacketStep<'a>> {
++        if self.failed {
++            return decode_error("mpa: packetizer previously failed");
++        }
++        let result = self.next_inner(input, eof);
++        if result.is_err() {
++            self.failed = true;
++        }
++        result
++    }
++
++    fn begin_tag(&mut self, len: u64, input: &[u8], eof: bool) -> Result<PacketStep<'static>> {
++        self.metadata_bytes = self
++            .metadata_bytes
++            .checked_add(len)
++            .filter(|total| *total <= self.options.max_metadata_bytes)
++            .ok_or(Error::DecodeError("mpa: metadata byte budget exceeded"))?;
++        self.tag_remaining = len;
++        self.skip_tag(input, eof)
++    }
++
++    fn skip_tag(&mut self, input: &[u8], eof: bool) -> Result<PacketStep<'static>> {
++        if eof && (input.len() as u64) < self.tag_remaining {
++            return decode_error("mpa: truncated metadata tag");
++        }
++        let consumed = self.tag_remaining.min(input.len() as u64) as usize;
++        self.tag_remaining -= consumed as u64;
++        Ok(PacketStep::Discard(consumed))
++    }
++
++    fn next_inner<'a>(&mut self, input: &'a [u8], eof: bool) -> Result<PacketStep<'a>> {
++        if self.finished {
++            return if input.is_empty() && eof {
++                Ok(PacketStep::End)
++            } else {
++                decode_error("mpa: input after end of stream")
++            };
++        }
++        if input.is_empty() {
++            if !eof {
++                return Ok(PacketStep::NeedMore);
++            }
++            if self.tag_remaining != 0 || self.remaining_packets.is_some_and(|count| count != 0) {
++                return decode_error("mpa: stream ended before its declared data");
++            }
++            self.finished = true;
++            return Ok(PacketStep::End);
++        }
++        if self.tag_remaining != 0 {
++            return self.skip_tag(input, eof);
++        }
++        if input.starts_with(b"ID3") {
++            if input.len() < 10 {
++                return if eof {
++                    decode_error("mpa: truncated ID3 header")
++                } else {
++                    Ok(PacketStep::NeedMore)
++                };
++            }
++            let len = Id3v2Reader::total_tag_len(input[..10].try_into().expect("length checked"))?;
++            return self.begin_tag(u64::from(len), input, eof);
++        }
++        // ID3v1 has one fixed 128-byte extent and no variable length fields.
++        // Only classify it at a packet boundary, never inside an encoded frame.
++        if input.starts_with(b"TAG") {
++            return self.begin_tag(128, input, eof);
++        }
++        if input.len() < header::MPEG_HEADER_LEN {
++            if !eof {
++                return Ok(PacketStep::NeedMore);
++            }
++            if input[0] == 0xff {
++                return decode_error("mpa: truncated MPEG header");
++            }
++            return self.discard_junk(input.len());
++        }
++        let word = BufReader::new(input).read_be_u32()?;
++        if !header::is_frame_header_word_synced(word) || !header::check_header(word) {
++            if self.signature.is_some() {
++                return decode_error("mpa: lost frame synchronization");
++            }
++            return self.discard_junk(1);
++        }
++        let frame = header::parse_frame_header(word)?;
++        let size = header::MPEG_HEADER_LEN + frame.frame_size;
++        if size > header::MAX_MPEG_FRAME_SIZE {
++            return decode_error("mpa: invalid MPEG frame size");
++        }
++        if input.len() < size {
++            return if eof {
++                decode_error("mpa: truncated MPEG frame")
++            } else {
++                Ok(PacketStep::NeedMore)
++            };
++        }
++        let signature = (frame.version, frame.layer, frame.sample_rate, frame.n_channels());
++        if let Some(previous) = self.signature {
++            if signature != previous {
++                return unsupported_error("mpa: changing stream format is not supported");
++            }
++        } else {
++            // Confirm the initial sync without decoding/rejecting a frame over
++            // the real decoder's bit reservoir. A complete lone EOF frame is
++            // allowed, as is a frame followed by a recognized metadata tag.
++            if !eof {
++                if input.len() < size + 4 {
++                    return Ok(PacketStep::NeedMore);
++                }
++                let next = &input[size..];
++                if !next.starts_with(b"ID3") && !next.starts_with(b"TAG") {
++                    let next_word = BufReader::new(next).read_be_u32()?;
++                    if !header::is_frame_header_word_synced(next_word) {
++                        return self.discard_junk(1);
++                    }
++                    match header::parse_frame_header(next_word) {
++                        Ok(next)
++                            if (next.version, next.layer, next.sample_rate, next.n_channels())
++                                == signature =>
++                        {
++                            ()
++                        }
++                        _ => return self.discard_junk(1),
++                    }
++                }
++            }
++            let (track, is_info) = demuxer::first_frame_track(&frame, &input[..size]);
++            if track.num_frames.is_none() && track.padding.is_some_and(|padding| padding != 0) {
++                return unsupported_error("mpa: padding without a declared frame count");
++            }
++            if let Some(valid) = track.num_frames {
++                let decoded = valid
++                    .checked_add(u64::from(track.delay.unwrap_or(0)))
++                    .and_then(|count| count.checked_add(u64::from(track.padding.unwrap_or(0))))
++                    .ok_or(Error::DecodeError("mpa: declared frame count overflow"))?;
++                if decoded % u64::from(frame.num_frames()) != 0 {
++                    return decode_error("mpa: inconsistent gapless frame count");
++                }
++                self.remaining_packets = Some(decoded / u64::from(frame.num_frames()));
++            }
++            self.next_pts = Timestamp::new(-i64::from(track.delay.unwrap_or(0)));
++            self.track = Some(track);
++            self.signature = Some(signature);
++            if is_info {
++                return Ok(PacketStep::Discard(size));
++            }
++        }
++        if demuxer::try_read_info_tag(&input[..size], &frame).is_some()
++            || demuxer::try_read_vbri_tag(&input[..size], &frame).is_some()
++        {
++            return decode_error("mpa: unexpected midstream duration tag");
++        }
++        if let Some(remaining) = self.remaining_packets.as_mut() {
++            *remaining = remaining
++                .checked_sub(1)
++                .ok_or(Error::DecodeError("mpa: audio exceeds its declared frame count"))?;
++        }
++        let track = self.track.as_ref().expect("initialized with signature");
++        let packet = PacketBuilder::new()
++            .track_id(0)
++            .pts(self.next_pts)
++            .trimmed_dur(
++                frame.duration(),
++                track
++                    .num_frames
++                    .and_then(|frames| Duration::new(frames).timestamp_from(Timestamp::ZERO)),
++            )
++            .data_by_ref(&input[..size])
++            .build_packet_ref();
++        self.next_pts = self
++            .next_pts
++            .checked_add(frame.duration())
++            .ok_or(Error::DecodeError("mpa: stream timestamp overflow"))?;
++        Ok(PacketStep::Packet { consumed: size, packet })
++    }
++
++    fn discard_junk(&mut self, bytes: usize) -> Result<PacketStep<'static>> {
++        self.junk_bytes = self
++            .junk_bytes
++            .checked_add(bytes as u64)
++            .filter(|total| *total <= self.options.max_junk_bytes)
++            .ok_or(Error::DecodeError("mpa: synchronization byte budget exceeded"))?;
++        Ok(PacketStep::Discard(bytes))
++    }
++}

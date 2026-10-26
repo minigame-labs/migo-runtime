@@ -42,11 +42,11 @@ const _JS_BUILTINS = new Set([
     "Error", "AggregateError", "EvalError", "RangeError", "ReferenceError",
     "SyntaxError", "TypeError", "URIError", "SuppressedError",
     // Numbers, dates, text
-    "Number", "BigInt", "Math", "Date", "String", "RegExp",
+    "Number", "BigInt", "Math", "Date", "Temporal", "String", "RegExp",
     // Indexed collections
     "Array", "Int8Array", "Uint8Array", "Uint8ClampedArray",
     "Int16Array", "Uint16Array", "Int32Array", "Uint32Array",
-    "BigInt64Array", "BigUint64Array", "Float32Array", "Float64Array",
+    "BigInt64Array", "BigUint64Array", "Float16Array", "Float32Array", "Float64Array",
     // Keyed collections
     "Map", "Set", "WeakMap", "WeakSet",
     // Structured data

@@ -1,0 +1,26 @@
+name: Prepare verified Linux V8 component
+description: Fetch and materialise the pinned native archive and FFI before Cargo links V8.
+inputs:
+  component:
+    description: Linux component matching the runner architecture.
+    required: false
+    default: x86_64-linux-gnu
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        MIGO_V8_COMPONENT: ${{ inputs.component }}
+      run: |
+        set -euo pipefail
+        case "$MIGO_V8_COMPONENT" in
+          x86_64-linux-gnu|aarch64-linux-gnu) ;;
+          *) echo "unsupported Linux V8 component: $MIGO_V8_COMPONENT" >&2; exit 1 ;;
+        esac
+        bash "$GITHUB_WORKSPACE/scripts/fetch-v8-archives.sh" "$MIGO_V8_COMPONENT"
+        source "$GITHUB_WORKSPACE/scripts/lib/v8-materialise.sh"
+        source "$GITHUB_WORKSPACE/scripts/lib/cargo-target-dir.sh"
+        MIGO_V8_CACHE_DIR="$(cargo_target_dir "$GITHUB_WORKSPACE/engine")/v8-materialised"
+        v8_materialise "$GITHUB_WORKSPACE/engine/third_party/rusty_v8/$MIGO_V8_COMPONENT" "$MIGO_V8_CACHE_DIR"
+        printf 'RUSTY_V8_ARCHIVE=%s\nRUSTY_V8_SRC_BINDING_PATH=%s\n' \
+          "$V8_MATERIALISED_ARCHIVE" "$V8_MATERIALISED_BINDING" >> "$GITHUB_ENV"

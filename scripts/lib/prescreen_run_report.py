@@ -89,7 +89,10 @@ def report(bundle: str, work: pathlib.Path, pkg: str, activity: str, model: str,
     log = ""
     log_path = work / "logcat.txt"
     if log_path.exists():
-        log = log_path.read_text(encoding="utf-8", errors="replace")
+        # Line endings as logcat wrote them: a carriage return inside a message is part of it, and read as a line
+        # break it would let content start a line of its own, with a header it wrote.
+        with open(log_path, encoding="utf-8", errors="replace", newline="") as captured:
+            log = captured.read()
 
     # Did a session actually run? The Java SDK logs its lifecycle at default level,
     # with no configuration, on any host that uses it -- which makes it the one
@@ -131,7 +134,39 @@ def report(bundle: str, work: pathlib.Path, pkg: str, activity: str, model: str,
     )
     if focus2 and focus2 != focus1:
         out.append(f"- and at the second capture: `{focus2}`")
+    # What the run asked the host to inject, called injected only on the host's own word: a host that does not
+    # read the request runs without it, and saying otherwise would pass its absence off as the bundle's fault.
+    preludes_path = work / "preludes.txt"
+    asked = [line.split("\t") for line in preludes_path.read_text(encoding="utf-8").splitlines() if line.strip()] \
+        if preludes_path.exists() else []
+    # The host's own line, read by logcat's header -- this host's process, the tag ending at its first colon --
+    # and then the whole message: another app's injection (an unfiltered log has them), a refusal that names the
+    # digest, or the content's console (the engine's `[migo]` tag) saying the words, even as
+    # `[migo] : SomeHost: injected ...`, is not the host saying it injected anything. With no process to
+    # attribute lines to, nothing is confirmed.
+    pid_path = work / "host-pid.txt"
+    host_pid = pid_path.read_text(encoding="utf-8").strip() if pid_path.exists() else ""
+    confirmed = set()
+    for line in log.split("\n") if host_pid else []:
+        header = re.fullmatch(r"\d\d-\d\d \d\d:\d\d:\d\d\.\d{3}\s+(\d+)\s+\d+ [VDIWEF] ([^:]*?)\s*: (.*?)\r?", line)
+        said = header and re.fullmatch(r"injected \S+ sha256=([0-9a-f]{64})\s*", header.group(3))
+        if said and header.group(1) == host_pid and header.group(2).strip() != "[migo]":
+            confirmed.add(said.group(1))
+    unconfirmed = [name for _, name, digest in asked if digest not in confirmed]
+    if not asked:
+        out.append("- preludes asked of the host: none")
+    for role, name, digest in asked:
+        state = "injected, by the host's log" if digest in confirmed else \
+            "**asked for, not confirmed**: " + ("the host never logged injecting it" if host_pid else
+                                                "the host's process was not found, so no line is attributable to it")
+        out.append(f"- {role} `{name}` (sha256 `{digest[:12]}`): {state}")
     out.append("")
+    if unconfirmed:
+        out.append(
+            f"> **The host did not confirm {', '.join(f'`{name}`' for name in unconfirmed)}.** Content written against "
+            "an adapter fails without it, so what follows is about this run, not about the bundle."
+        )
+        out.append("")
     if not focus_known:
         out.append(
             "> **Could not read which window was in front.** The sections below stand "
@@ -281,6 +316,17 @@ def report(bundle: str, work: pathlib.Path, pkg: str, activity: str, model: str,
         out.append("## 4. What it reached for")
         out.append("")
         out.extend("#" + line if line.startswith("#") else line for line in compat_report.markdown(reach)[1:])
+    elif any(role == "recorder" for role, _, _ in asked):
+        injected_recorder = any(role == "recorder" and digest in confirmed for role, _, digest in asked)
+        out.append("## 4. What it reached for")
+        out.append("")
+        out.append(
+            "**Nothing to read.** "
+            + ("The host injected the recorder and none of its lines are in the log: a host that logs above INFO "
+               if injected_recorder else
+               "The recorder was asked for and none of its lines are in the log: a host that did not inject it ")
+            + "leaves nothing here -- which says nothing about the bundle."
+        )
 
     return "\n".join(out)
 

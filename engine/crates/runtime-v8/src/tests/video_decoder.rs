@@ -106,6 +106,8 @@ fn pump(runtime: &mut JsRuntime, events: &mut HostCommandReceiver, source: &str,
 
 #[test]
 fn frames_arrive_in_order_with_their_times_and_the_events_tell_the_story() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let sandbox = Sandbox::new("video-decoder");
     std::fs::write(sandbox.paths.user_data_dir().join("video.mp4"), b"mp4").unwrap();
     let (mut runtime, mut events) = boot(&sandbox, true);
@@ -208,6 +210,8 @@ fn frames_arrive_in_order_with_their_times_and_the_events_tell_the_story() {
 
 #[test]
 fn a_source_that_does_not_open_fails_the_start() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let sandbox = Sandbox::new("video-decoder-bad");
     std::fs::write(sandbox.paths.user_data_dir().join("clip.webm"), b"webm").unwrap();
     let (mut runtime, mut events) = boot(&sandbox, true);
@@ -229,6 +233,8 @@ fn a_source_that_does_not_open_fails_the_start() {
 
 #[test]
 fn where_no_decoder_is_integrated_start_says_so_instead_of_waiting_forever() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let sandbox = Sandbox::new("video-decoder-none");
     let (mut runtime, mut events) = boot(&sandbox, false);
     runtime

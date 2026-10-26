@@ -140,17 +140,19 @@ pub async fn op_share_menu_reply(
         .map_err(JsErrorBox::generic)
 }
 
-deno_core::extension!(
+main_runtime_extension!(
     host_v8_share,
-    deps = [host_v8_base],
-    ops = [
-        op_share_app_message,
-        op_share_message_to_friend,
-        op_show_share_image_menu,
-        op_share_game_recording,
-        op_share_set_menu,
-        op_share_menu_reply,
-    ],
+    {
+        deps = [host_v8_base],
+        ops = [
+            op_share_app_message,
+            op_share_message_to_friend,
+            op_show_share_image_menu,
+            op_share_game_recording,
+            op_share_set_menu,
+            op_share_menu_reply,
+        ],
+    },
     esm_entry_point = "ext:host_v8_share/99_global_scope.js",
     esm = [
         dir "src/share",

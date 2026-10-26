@@ -11,7 +11,10 @@
 # resolved against the linking file's own directory. `http(s)://`, `mailto:`,
 # bare `#anchor` fragments, and links whose target is a directory are left
 # alone. Anchors within a target are not verified -- only that the target file
-# is there.
+# is there. A destination may be spelled in angle brackets, `](<path>)`, which
+# CommonMark reads as the same link: the vendored skia-bindings README (#619)
+# writes its URLs so, and read with the brackets on they were "relative" paths
+# that did not exist -- three violations that were https links.
 #
 # THE SECOND THING THIS CHECKS, and the reason it is not enough to ask whether
 # the file exists: existence is asked on the machine running the gate, and this
@@ -97,6 +100,10 @@ while IFS= read -r md; do
     while IFS= read -r match; do
         link="${match#](}"
         link="${link%)}"
+        if [[ "$link" == "<"*">" ]]; then
+            link="${link#<}"
+            link="${link%>}"
+        fi
         case "$link" in
             http://*|https://*|mailto:*|"#"*|"") continue ;;
         esac

@@ -42,6 +42,7 @@ fn official_snapshot_preserves_file_buffer_ownership_and_completion() {
         .unwrap();
     runtime.execute_script("snapshot-file-scenarios", r#"
         globalThis.done = false;
+        globalThis.scenarioError = null;
         const fs = migo.getFileSystemManager();
         (async () => {
             const input = new Uint8Array([99,1,2,3,99]);
@@ -52,11 +53,16 @@ fn official_snapshot_preserves_file_buffer_ownership_and_completion() {
             try {
                 const bytes = new Uint8Array(7).fill(165);
                 const events = [];
-                const result = await fs.read({fd, arrayBuffer: bytes.buffer, offset: 2, length: 20,
-                    success(value) {
-                        if (value.arrayBuffer === bytes.buffer && value.bytesRead === 3 &&
-                            bytes.join(',') === '165,165,1,2,3,165,165') events.push('success');
-                    }, complete() { events.push('complete'); }});
+                let result;
+                await new Promise((resolve, reject) => {
+                    const returned = fs.read({fd, arrayBuffer: bytes.buffer, offset: 2, length: 20,
+                        success(value) {
+                            result = value;
+                            if (value.arrayBuffer === bytes.buffer && value.bytesRead === 3 &&
+                                bytes.join(',') === '165,165,1,2,3,165,165') events.push('success');
+                        }, fail: reject, complete() { events.push('complete'); resolve(); }});
+                    if (returned !== undefined) reject(new Error('callback read returned a value'));
+                });
                 if (result.arrayBuffer !== bytes.buffer || events.join(',') !== 'success,complete')
                     throw new Error('snapshot read commit/identity');
                 const rawTarget = new Uint8Array([165,165,165,165]);
@@ -70,12 +76,21 @@ fn official_snapshot_preserves_file_buffer_ownership_and_completion() {
                 if (eof.bytesRead !== 0) throw new Error('EOF');
                 for (const length of [0, 4]) {
                     const target = new ArrayBuffer(length);
-                    let failed = 0, completed = 0, rejected = false;
-                    const read = fs.read({fd, arrayBuffer: target, position: 0,
-                        fail() { ++failed; }, complete() { ++completed; }});
+                    let succeeded = 0, failed = 0, completed = 0;
+                    const answered = new Promise(resolve => {
+                        const returned = fs.read({fd, arrayBuffer: target, position: 0,
+                            success() { ++succeeded; }, fail() { ++failed; },
+                            complete() { ++completed; resolve(); }});
+                        if (returned !== undefined) throw new Error('callback read returned a value');
+                    });
                     target.transfer();
-                    try { await read; } catch (_) { rejected = true; }
-                    if (!rejected || failed !== 1 || completed !== 1) throw new Error('detached completion');
+                    await answered;
+                    const promiseTarget = new ArrayBuffer(length);
+                    const read = fs.read({fd, arrayBuffer: promiseTarget, position: 0});
+                    promiseTarget.transfer();
+                    const rejected = await read.then(() => false, () => true);
+                    if (!rejected || succeeded || failed !== 1 || completed !== 1)
+                        throw new Error('detached completion');
                 }
                 fs.readSync({fd, arrayBuffer: new ArrayBuffer(0), position: 0});
                 const source = new Uint8Array([4,5,6]);
@@ -93,7 +108,7 @@ fn official_snapshot_preserves_file_buffer_ownership_and_completion() {
                 }
             } finally { fs.closeSync({fd}); }
             done = true;
-        })();
+        })().catch(error => { scenarioError = error?.stack || error?.errMsg || String(error); });
     "#).unwrap();
     executor
         .block_on(runtime.run_event_loop(Default::default()))
@@ -101,7 +116,7 @@ fn official_snapshot_preserves_file_buffer_ownership_and_completion() {
     runtime
         .execute_script(
             "snapshot-file-result",
-            "if (!done) throw new Error('snapshot scenarios did not finish');",
+            "if (scenarioError) throw new Error(scenarioError); if (!done) throw new Error('snapshot scenarios did not finish');",
         )
         .unwrap();
     drop(runtime);

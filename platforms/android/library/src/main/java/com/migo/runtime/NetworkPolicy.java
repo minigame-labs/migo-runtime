@@ -29,6 +29,17 @@ import java.util.Map;
  */
 public final class NetworkPolicy {
 
+    /** Fixed certificate trust for both HTTPS and WSS. Verification never falls back. */
+    public enum TlsTrust {
+        /** Android trust manager, including the host's network security configuration. */
+        PLATFORM("platform"),
+        /** The engine's pinned Mozilla root set. */
+        MOZILLA("mozilla");
+
+        final String key;
+        TlsTrust(String key) { this.key = key; }
+    }
+
     /** The kinds of traffic a policy grants separately. */
     public enum Channel {
         /** {@code request} / {@code fetch}. */
@@ -81,6 +92,7 @@ public final class NetworkPolicy {
         private final EnumSet<Channel> unrestricted = EnumSet.noneOf(Channel.class);
         private boolean allowPlainHttp = false;
         private boolean localNetwork = false;
+        private TlsTrust tlsTrust = TlsTrust.PLATFORM;
 
         /**
          * Grant {@code channel} these domains, in addition to any granted before. Every
@@ -142,6 +154,13 @@ public final class NetworkPolicy {
             return this;
         }
 
+        /** Choose the trust store before connecting. Default: Android platform trust. */
+        public Builder setTlsTrust(TlsTrust trust) {
+            if (trust == null) throw new IllegalArgumentException("TLS trust must not be null");
+            this.tlsTrust = trust;
+            return this;
+        }
+
         public NetworkPolicy build() {
             StringBuilder out = new StringBuilder("{");
             for (Channel channel : Channel.values()) {
@@ -169,6 +188,10 @@ public final class NetworkPolicy {
             if (localNetwork) {
                 if (out.length() > 1) out.append(',');
                 out.append("\"lan\":true");
+            }
+            if (tlsTrust != TlsTrust.PLATFORM) {
+                if (out.length() > 1) out.append(',');
+                out.append("\"tlsTrust\":\"").append(tlsTrust.key).append('"');
             }
             return new NetworkPolicy(out.append('}').toString());
         }

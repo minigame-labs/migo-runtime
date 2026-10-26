@@ -109,6 +109,8 @@ function canned(op, w) {
     w.json("{}");
   } else if (name === "core_read") {
     w.bytes(new Uint8Array(0));
+  } else if (name === "op_fetch_upload_cancel_handle") {
+    w.u32((cannedRid += 1));
   } else {
     w.null();
   }
@@ -255,6 +257,18 @@ async function script() {
   });
   coreStream.close(response.responseRid);
 
+  // The engine's SocketTask closes this synchronous resource while its
+  // asynchronous create is still pending. The host must resolve argument 7
+  // as a cancel id before policy/DNS/TCP, including on the external lane.
+  const socketCancel = syncLane.op_fetch_upload_cancel_handle();
+  coreStream.tryClose(socketCancel);
+  const socketRefused = await rejection(asyncLane.op_ws_create(
+    "wss://not-resolved.invalid/game", [], [], 60000, false, true, socketCancel,
+  ));
+  check("a socket closed before ready cancels before network work", () => {
+    assert.equal(socketRefused?.message, "WebSocket connect cancel handle is not open");
+  });
+
   // A prefetch is a command: nothing answers it, and a host the policy refuses
   // is skipped rather than reported.
   commandLane.op_prefetch_dns(JSON.stringify(["allowed.example"]));
@@ -275,6 +289,8 @@ if (mode === "write") {
     "op_fetch",
     "op_fetch_send",
     "op_fetch_profile",
+    "op_fetch_upload_cancel_handle",
+    "op_ws_create",
     "op_prefetch_dns",
     "core_read",
     "core_close",

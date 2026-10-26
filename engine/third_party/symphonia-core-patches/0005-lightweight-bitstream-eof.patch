@@ -1,0 +1,12 @@
+--- symphonia-core-0.6.1/src/io/bit.rs
++++ symphonia-core-0.6.1/src/io/bit.rs
+@@ -12,7 +12,8 @@
+ use crate::util::bits::*;
+ 
+ fn end_of_bitstream_error<T>() -> io::Result<T> {
+-    Err(io::Error::other("unexpected end of bitstream"))
++    // EOF is a lightweight standard kind; legal codec termination must not allocate.
++    Err(io::Error::from(io::ErrorKind::UnexpectedEof))
+ }
+ 
+ pub mod vlc {

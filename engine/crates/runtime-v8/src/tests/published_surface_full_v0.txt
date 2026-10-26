@@ -79,6 +79,7 @@ TextMetrics
 TypeError
 URIError
 URL
+URLSearchParams
 Uint16Array
 Uint32Array
 Uint8Array
@@ -547,7 +548,6 @@ ChannelSplitterNode
 ConstantSourceNode
 DelayNode
 DynamicsCompressorNode
-Float16Array
 GainNode
 IIRFilterNode
 ImageBitmap
@@ -559,9 +559,9 @@ PannerNode
 Path2D
 PeriodicWave
 ScriptProcessorNode
-Temporal
 TextMetrics
 URL
+URLSearchParams
 WaveShaperNode
 WebGL2RenderingContext
 WebGLRenderingContext

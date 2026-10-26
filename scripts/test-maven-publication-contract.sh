@@ -155,6 +155,24 @@ PY
 reseal "$BASE.pom"
 expect_refused "a POM without the SCM Central requires" "scm/connection is missing"
 
+for mutation in missing wrong-version optional; do
+    fresh_case
+    python3 - "$BASE.pom" "$mutation" <<'PY'
+import re, sys
+path, mutation = sys.argv[1:]
+text = open(path).read()
+if mutation == "missing":
+    text = re.sub(r"\s*<dependencies>.*?</dependencies>", "", text, flags=re.S)
+elif mutation == "wrong-version":
+    text = re.sub(r"(<artifactId>kotlin-stdlib</artifactId><version>)[^<]+", r"\g<1>0.0.1", text)
+else:
+    text = text.replace("</dependency>", "<optional>true</optional></dependency>")
+open(path, "w").write(text)
+PY
+    reseal "$BASE.pom"
+    expect_refused "a POM with $mutation runtime dependency" "runtime dependencies differ from canonical"
+done
+
 fresh_case
 cp "$BASE.aar" "$DIR/migo-android-$VERSION-debug.aar"
 expect_refused "a debug AAR published beside the real one" "unexpected file"
@@ -190,17 +208,13 @@ reseal "$BASE-sources.jar"
 expect_refused "a sources jar carrying test code" "is not one of the library's main sources"
 
 # ------------------------------------------------------------
-# The POM declares no dependencies because the library ships none. The day it gains
-# one, every host resolving the SDK would miss it, so that day is this failure.
+# Gradle and both POMs consume the same list; a new unrecorded dependency still
+# fails instead of silently reaching hosts without its runtime.
 # ------------------------------------------------------------
-shipping="$(sed 's|//.*||' "$ROOT/platforms/android/library/build.gradle" \
-    | grep -E '^\s*[A-Za-z]*([Ii]mplementation|[Aa]pi|[Rr]untimeOnly)\b' \
-    | grep -vE '^\s*(test|androidTest)[A-Za-z]*' || true)"
-if [[ -z "$shipping" ]]; then
-    pass "the library ships no dependencies, so a POM that declares none is complete"
+if python3 "$ROOT/scripts/lib/android_runtime_deps.py"; then
+    pass "Gradle and Maven consume the same canonical runtime dependencies"
 else
-    fail "the library now ships dependencies the staged POM does not declare:"
-    printf '%s\n' "$shipping" >&2
+    fail "Gradle runtime dependencies differ from the canonical list"
 fi
 
 # ------------------------------------------------------------

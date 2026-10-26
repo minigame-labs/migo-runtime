@@ -13,6 +13,8 @@ mod namespace_members_tests {
 
     #[test]
     fn every_name_the_namespace_publishes_is_enumerable() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut runtime = boot(test_host_state());
         assert!(
             is_true(
@@ -45,6 +47,8 @@ mod namespace_members_tests {
 
     #[test]
     fn each_name_is_otherwise_the_global_it_mirrors() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut runtime = boot(test_host_state());
         assert!(
             is_true(

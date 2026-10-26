@@ -126,8 +126,8 @@ rustflags = [
   # migo-bench's `jitless-ab.sh --label-a packed --label-b unpacked`.
   "-C", "link-arg=-Wl,--pack-dyn-relocs=android",
 
-  # Version script: only export JNI symbols, hide everything else
-  "-C", "link-arg=-Wl,--version-script=version.script",
+  # JNI export filtering belongs only to android-jni/build.rs. Applying it
+  # here also required JNI_OnLoad in unrelated Android test executables.
 ]
 
 # -----------------------------------------------------------------------------
@@ -158,8 +158,8 @@ rustflags = [
   # where the measurement and the choice of APS2 over SHT_RELR are recorded.
   "-C", "link-arg=-Wl,--pack-dyn-relocs=android",
 
-  # Version script: only export JNI symbols, hide everything else
-  "-C", "link-arg=-Wl,--version-script=version.script",
+  # JNI export filtering belongs only to android-jni/build.rs. Applying it
+  # here also required JNI_OnLoad in unrelated Android test executables.
 ]
 
 # -----------------------------------------------------------------------------
@@ -193,8 +193,8 @@ rustflags = [
   # flag set the shipped ABIs use rather than a quietly different one.
   "-C", "link-arg=-Wl,--pack-dyn-relocs=android",
 
-  # Version script: only export JNI symbols, hide everything else
-  "-C", "link-arg=-Wl,--version-script=version.script",
+  # JNI export filtering belongs only to android-jni/build.rs. Applying it
+  # here also required JNI_OnLoad in unrelated Android test executables.
 ]
 
 # -----------------------------------------------------------------------------

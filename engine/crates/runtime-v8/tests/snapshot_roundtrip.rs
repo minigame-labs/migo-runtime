@@ -2,7 +2,7 @@
 //!
 //! This is a regression guard for the deno_core snapshot integration: creating a
 //! snapshot from `lazy_extensions()` and restoring it must keep `Deno.core`
-//! (ops + `eventLoopTick`/`buildCustomError`/`runImmediateCallbacks`) intact in
+//! (ops + `__eventLoopTick`/`__processTimers`/rejection callbacks) intact in
 //! the snapshotted heap, because deno_core's restore path re-runs
 //! `store_js_callbacks` unconditionally and reads them back out.
 //!
@@ -43,7 +43,8 @@ fn snapshot_roundtrip_restores_deno_core() {
                 rt.execute_script(
                     "creation-check",
                     "if (typeof Deno.core.ops !== 'object') throw new Error('CREATION: Deno.core.ops is ' + typeof Deno.core.ops);\n\
-                     if (typeof Deno.core.eventLoopTick !== 'function') throw new Error('CREATION: Deno.core.eventLoopTick is ' + typeof Deno.core.eventLoopTick);\n\
+                     for (const name of ['__eventLoopTick', '__processTimers', '__drainNextTickAndMacrotasks', '__handleRejections', 'runImmediateCallbacks']) { if (typeof Deno.core[name] !== 'function') throw new Error('CREATION: missing callback ' + name); }\n\
+                     if (new Intl.NumberFormat('en-US').format(1234567.89) !== '1,234,567.89') throw new Error('CREATION: embedder ICU data missing');\n\
                      'ok'",
                 )
                 .expect("deno_core builtins must exist at snapshot creation");
@@ -54,6 +55,14 @@ fn snapshot_roundtrip_restores_deno_core() {
     .expect("create snapshot");
 
     let snapshot_bytes: &'static [u8] = Box::leak(output.output);
+
+    // create_snapshot owns its executor; the restored live isolate must bind
+    // to an executor that outlives it as well.
+    let executor = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let _guard = executor.enter();
 
     // ---- RESTORE SIDE (mirror HostJsRuntime::new) ----
     // store_js_callbacks runs inside JsRuntime::new; if the snapshot lacks
@@ -70,7 +79,8 @@ fn snapshot_roundtrip_restores_deno_core() {
     rt.execute_script(
         "restore-check",
         "if (typeof Deno === 'undefined') throw new Error('RESTORE: Deno missing from snapshot');\n\
-         if (typeof Deno.core.eventLoopTick !== 'function') throw new Error('RESTORE: eventLoopTick missing');\n\
+         for (const name of ['__eventLoopTick', '__processTimers', '__drainNextTickAndMacrotasks', '__handleRejections', 'runImmediateCallbacks']) { if (typeof Deno.core[name] !== 'function') throw new Error('RESTORE: missing callback ' + name); }\n\
+         if (new Intl.NumberFormat('de-DE').format(1234567.89) !== '1.234.567,89') throw new Error('RESTORE: embedder ICU data missing');\n\
          globalThis.__migo_ok = 1 + 2;",
     )
     .expect("execute_script after restore");
@@ -78,10 +88,38 @@ fn snapshot_roundtrip_restores_deno_core() {
     // The game-visible-global hardening (delete Deno/__bootstrap) is applied at
     // RUNTIME, not baked into the snapshot. Verify it works post-restore — this
     // is exactly what `runtime_v8::harden_global_scope` does.
+    runtime_v8::harden_global_scope(&mut rt);
     rt.execute_script(
         "harden-check",
-        "delete globalThis.Deno; delete globalThis.__bootstrap;\n\
-         if (typeof globalThis.Deno !== 'undefined') throw new Error('hardening failed');",
+        "if (typeof globalThis.Deno !== 'undefined') throw new Error('hardening failed');\n\
+         for (const name of ['Temporal', 'Float16Array']) { if (Object.hasOwn(migo, name)) throw new Error('standard builtin leaked into restored migo: ' + name); }\n\
+         if (new Float16Array([1.5])[0] !== 1.5) throw new Error('restored Float16Array support');\n\
+         if (Temporal.PlainDate.from('2026-10-25').add({days:1}).toString() !== '2026-10-26') throw new Error('restored Temporal support');",
     )
     .expect("hardening after restore");
+
+    #[cfg(feature = "profile-full")]
+    let baseline = include_str!("../src/tests/published_surface_full_v0.txt");
+    #[cfg(feature = "profile-slim")]
+    let baseline = include_str!("../src/tests/published_surface_slim_v0.txt");
+    let expected: Vec<&str> = baseline
+        .split("[migo]\n")
+        .nth(1)
+        .unwrap()
+        .lines()
+        .filter(|name| !name.is_empty())
+        .collect();
+    let names = rt
+        .execute_script(
+            "restored-namespace-surface",
+            "Object.getOwnPropertyNames(migo).sort()",
+        )
+        .unwrap();
+    deno_core::scope!(scope, rt);
+    let names = deno_core::v8::Local::new(scope, names);
+    let actual: Vec<String> = deno_core::serde_v8::from_v8(scope, names).unwrap();
+    assert_eq!(
+        actual, expected,
+        "source and restored snapshots must publish the same migo namespace"
+    );
 }

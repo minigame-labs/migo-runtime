@@ -37,7 +37,9 @@ FORBIDDEN=(
     migo-runtime-jsc
     deno_core
     deno_ops
+    deno_v8
     v8
+    v8x
     rusty_v8
     v8_valueserializer
 )
@@ -54,6 +56,12 @@ CLEAN_CLOSURES=(
     "migo-core:external-frames"
 )
 
+# A host-only resolution cannot detect an engine introduced by an iOS-specific
+# dependency. The source half audits the actual shipping target; the positive
+# control deliberately uses a supported embedded-V8 target.
+APPLE_TARGET=aarch64-apple-ios
+POSITIVE_CONTROL_TARGET=x86_64-unknown-linux-gnu
+
 # And the control. `migo-core` built the ordinary way *does* embed V8, so this
 # gate must be able to see it there.
 #
@@ -64,7 +72,7 @@ CLEAN_CLOSURES=(
 # guard nobody should trust, and the cheapest way to see it fail is to keep a
 # case in the gate that must fail.
 POSITIVE_CONTROL="migo-capi:profile-full"
-POSITIVE_CONTROL_EXPECTS=(migo-runtime-v8 deno_core v8)
+POSITIVE_CONTROL_EXPECTS=(migo-runtime-v8 deno_core deno_v8 v8)
 
 artifact=""
 while (( $# > 0 )); do
@@ -85,8 +93,10 @@ notes=()
 # gate wrong in the direction that gets gates disabled.
 resolve() {
     local package="${1%%:*}" features="${1#*:}"
+    local platform="${2:-$APPLE_TARGET}"
     (cd engine && cargo tree \
         -p "$package" \
+        --target "$platform" \
         --no-default-features \
         --features "$features" \
         -e normal \
@@ -136,6 +146,16 @@ collect_lines() {
     done
 }
 
+# New core releases route engines through a facade and optional alternate
+# backend. Neither currently occurs in the old positive control, so inject
+# their package identities through the same detector instead of waiting for a
+# product to accidentally acquire one. A removed FORBIDDEN entry must go red.
+for engine_alias in deno_v8 v8x; do
+    if [[ "$(violations_in "$engine_alias v0.0.0")" != "$engine_alias" ]]; then
+        problems+=("the detector misses the injected engine package $engine_alias")
+    fi
+done
+
 for target in ${CLEAN_CLOSURES[@]+"${CLEAN_CLOSURES[@]}"}; do
     if ! tree="$(resolve "$target")"; then
         problems+=("cargo tree could not resolve $target:
@@ -143,7 +163,7 @@ $(printf '%s\n' "$tree" | sed 's/^/      /')")
         continue
     fi
     count="$(package_count "$tree")"
-    notes+=("$target resolves $count packages")
+    notes+=("$target resolves $count package names for $APPLE_TARGET")
     if (( count < 20 )); then
         problems+=("$target resolved only $count packages; an almost-empty closure is not a clean one")
     fi
@@ -151,6 +171,7 @@ $(printf '%s\n' "$tree" | sed 's/^/      /')")
     for banned in ${found[@]+"${found[@]}"}; do
         [[ -n "$banned" ]] || continue
         why="$(cd engine && cargo tree \
+            --target "$APPLE_TARGET" \
             -p "${target%%:*}" --no-default-features \
             --features "${target#*:}" -e normal \
             --invert "$banned" 2>/dev/null | head -20 || true)"
@@ -163,7 +184,7 @@ done
 # engine, BY THE DETECTOR ABOVE. If it is not, either the detector broke or the
 # embedded product stopped embedding, and both are things to learn from a
 # failure here rather than from a clean run that means nothing.
-if ! control_tree="$(resolve "$POSITIVE_CONTROL")"; then
+if ! control_tree="$(resolve "$POSITIVE_CONTROL" "$POSITIVE_CONTROL_TARGET")"; then
     problems+=("the positive control $POSITIVE_CONTROL does not resolve, so the detector is unverified:
 $(printf '%s\n' "$control_tree" | sed 's/^/      /')")
 else

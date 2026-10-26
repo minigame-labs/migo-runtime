@@ -6,9 +6,9 @@ use std::{path::PathBuf, sync::Arc};
 #[path = "support/read_pixels_responder.rs"]
 mod responder;
 
-#[test]
+#[tokio::test]
 #[ignore = "requires the freshly generated official host snapshot; run explicitly"]
-fn official_snapshot_read_pixels_preserves_destination_offsets() {
+async fn official_snapshot_read_pixels_preserves_destination_offsets() {
     let snapshot =
         runtime_v8::snapshot::SNAPSHOT_BYTES.expect("official snapshot must be embedded");
     let (render_tx, render_rx) = shared::render_command_sender::CommandSender::new();

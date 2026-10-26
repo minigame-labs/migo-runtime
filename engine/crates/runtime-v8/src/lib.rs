@@ -105,6 +105,25 @@ static COUNTING_ALLOCATOR: migo_alloc_probe::CountingAllocator =
 use shared::op_state::HostOpState;
 
 // CORE modules (always compiled)
+/// An extension only the main runtime loads. A build that embeds the host snapshot carries none of
+/// its JS: `deno_core` reads no source of an extension the snapshot already holds, and the one runtime
+/// a snapshot build still boots from source -- the worker, since the release ships no worker
+/// snapshot -- never loads it. 0.36 MB of `libmigo.so`. The generator and this crate's tests keep
+/// the JS whatever snapshot the tree has (`all-extension-js`): they boot from source and build snapshots.
+macro_rules! main_runtime_extension {
+    (
+        $name:ident,
+        { $($before:tt)* },
+        $(esm_entry_point = $entry:expr,)?
+        esm = [ $($esm:tt)* ] $(,)?
+    ) => {
+        #[cfg(any(not(migo_has_snapshot), feature = "all-extension-js"))]
+        deno_core::extension!($name, $($before)* $(esm_entry_point = $entry,)? esm = [ $($esm)* ],);
+        #[cfg(all(migo_has_snapshot, not(feature = "all-extension-js")))]
+        deno_core::extension!($name, $($before)*);
+    };
+}
+
 mod base;
 mod console;
 mod env;
@@ -115,8 +134,6 @@ mod io_state;
 mod lifecycle;
 pub(crate) mod network;
 mod permission;
-#[cfg(feature = "api-media")]
-pub use network::fetch::create_audio_http_client;
 mod rendering;
 mod storage;
 mod url;
@@ -160,9 +177,8 @@ pub(crate) mod worker;
 mod code_cache;
 mod host_runtime;
 mod icu;
-#[allow(dead_code)]
-mod isolate_pool;
 mod js_bindings;
+pub mod js_strip;
 mod loader;
 pub mod snapshot;
 pub mod watchdog;
@@ -178,8 +194,9 @@ pub use rendering::image::cache::{
     drain_shared_image_cache, image_cache_registered, unregister_image_cache,
 };
 
-deno_core::extension!(
+main_runtime_extension!(
     runtime,
+    {},
     esm_entry_point = "ext:runtime/99_main.js",
     esm = [
         dir "src",
@@ -252,6 +269,9 @@ deno_core::extension!(
 /// 24  runtime         CORE      global scope registration (98_global_scope_*.js + 99_main.js)
 /// ```
 pub fn main_extensions(host: HostOpState) -> Vec<deno_core::Extension> {
+    // This public constructor is also used without HostJsRuntime. Do not let
+    // V8's fallback full ICU package mask a missing embedder initialization.
+    crate::icu::install_icu_data();
     // Build extension list using a Vec so optional extensions can be
     // conditionally appended based on feature flags.
     let mut exts: Vec<deno_core::Extension> = Vec::new();

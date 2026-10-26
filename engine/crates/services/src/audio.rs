@@ -51,7 +51,7 @@ use tokio::sync::oneshot;
 use crate::ServiceError;
 
 /// The URL type a caller's admission check for a streamed source takes.
-pub use url::Url;
+pub use crate::network::url::Url;
 
 /// The class every audio failure is thrown as.
 pub const CLASS_AUDIO_ERROR: &str = "AudioError";
@@ -1378,13 +1378,20 @@ pub async fn inner_audio_load_url<G>(
     tx: AudioSender,
     sources: InnerAudioSources<G>,
     id: InnerAudioId,
-    src: String,
+    mut src: String,
 ) -> Result<(), ServiceError>
 where
-    G: FnOnce(&url::Url) -> Result<(), ServiceError>,
+    G: FnOnce(&Url) -> Result<(), ServiceError>,
 {
     if let Some(url) = parse_remote_audio_url(&src).map_err(as_network_error)? {
         (sources.admit_remote)(&url).map_err(as_network_error)?;
+        // Queue the exact URL admitted above. Reuse the input allocation when
+        // possible, and enforce the queue's bound after percent-encoding expands it.
+        validate_audio_control_string("audio source URL", url.as_str())?;
+        if src != url.as_str() {
+            src.clear();
+            src.push_str(url.as_str());
+        }
         return request(&tx, |resp| AudioCmd::InnerAudioLoadUrl {
             id,
             url: src,
@@ -1422,24 +1429,8 @@ where
 /// A remote audio URL, without reclassifying ordinary local or VFS paths. URL
 /// schemes are case-insensitive; a malformed string that explicitly claims
 /// HTTP(S) is an error rather than a filesystem path.
-pub fn parse_remote_audio_url(src: &str) -> Result<Option<url::Url>, ServiceError> {
-    match url::Url::parse(src) {
-        Ok(url) if matches!(url.scheme(), "http" | "https") => Ok(Some(url)),
-        Ok(_) => Ok(None),
-        Err(error) => {
-            let is_http = src
-                .get(..7)
-                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("http://"));
-            let is_https = src
-                .get(..8)
-                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"));
-            if is_http || is_https {
-                Err(audio_error(format!("Invalid audio URL: {error}")))
-            } else {
-                Ok(None)
-            }
-        }
-    }
+pub fn parse_remote_audio_url(src: &str) -> Result<Option<Url>, ServiceError> {
+    Url::parse_http(src).map_err(|error| audio_error(format!("Invalid audio URL: {error}")))
 }
 
 /// Resolve a local path against the code directory, for tooling with no VFS.

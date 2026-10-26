@@ -39,6 +39,9 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent / "lib"))
+import v8_source_proof
+
 TARGETS = {
     "aarch64": {
         "triple": "aarch64-apple-darwin",
@@ -179,6 +182,7 @@ def build_component(
     sdk: str,
     linker: str,
     recipe_sha256: str,
+    patches: list[dict] | None = None,
 ) -> dict:
     target_spec = TARGETS[arch]
     return {
@@ -215,11 +219,7 @@ def build_component(
             "rusty_v8_revision": rusty_v8_revision,
             "v8_revision": v8_revision,
             "normalized_gn_args": gn_args,
-            # Apple needs none. Recorded as empty rather than omitted, because an
-            # absent field and an empty one read the same to a person and
-            # differently to a comparison -- and this platform having no patches is
-            # a fact worth being able to see.
-            "patches": [],
+            "patches": patches or [],
         },
         "hashes": {
             "archive": archive_sha256,
@@ -270,6 +270,10 @@ def main() -> int:
     )
 
     recipe = repo / "scripts/build-v8-apple.sh"
+    patch_files = v8_source_proof.locked_patches(
+        args.lock, repo / "engine/third_party/v8-patches"
+    )
+    patches = v8_source_proof.verified_patch_identities(rusty_v8_src, patch_files)
     component = build_component(
         arch=args.arch,
         rusty_v8_version=rusty_v8_version,
@@ -284,6 +288,7 @@ def main() -> int:
         sdk=args.sdk,
         linker=args.linker,
         recipe_sha256=hash_file(recipe),
+        patches=patches,
     )
 
     # The identity is computed by the tool that validates it, never here. Two

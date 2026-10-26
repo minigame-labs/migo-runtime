@@ -85,8 +85,17 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 # resident, where a compressed copy would cost the whole 6.8 MB of heap. The delta is the file's size,
 # so it is computed, not measured; the first release that carries it should be measured and these
 # tightened to ~5% over it.
+# 2026-10-23: Skia links V8's ICU (-1.36 MB), Android no longer embeds the fallback font (-0.42 MB of
+# .rodata) and V8's ICU data keeps display names for five more languages (+0.19 MB): -1.55 MB of
+# arm64 libmigo.so, 44,497,008 bytes measured on a local build without the startup snapshot. A
+# release also drops the main runtime's JS once the snapshot holds it (-377,123 bytes) and carries
+# the snapshot, whose stripped JS shrinks it by ~0.5 MB; taking today's committed 2,284,509-byte
+# arm64 snapshot as the upper bound, a release is at most 46,404,394 bytes with .rodata 13,763,557.
+# arm64 file and .rodata move to ~5% over those; .text (29,384,580) is already within 5% of its
+# ceiling. x86_64 is not re-derived here and keeps its ceilings until measured. The second ICU is held
+# off by the one-ICU check below, which no ceiling here was ever tight enough to do.
 declare -A BUDGET_FILE=(
-    ["arm64-v8a"]=49300000
+    ["arm64-v8a"]=48750000
     ["x86_64"]=52300000
 )
 declare -A BUDGET_TEXT=(
@@ -94,7 +103,7 @@ declare -A BUDGET_TEXT=(
     ["x86_64"]=33300000
 )
 declare -A BUDGET_RODATA=(
-    ["arm64-v8a"]=15300000
+    ["arm64-v8a"]=14450000
     ["x86_64"]=15600000
 )
 RELOC_BUDGET=600000
@@ -113,10 +122,10 @@ budget_hint() {
       the codegen profile is still 'z'."
             ;;
         .rodata)
-            echo "Embedded data. The usual causes are Skia's ICU blob (slim_icu_data in
-      build-android-so.sh must leave the 761 KB flutter icudtl.dat in place of
-      Skia's 8.5 MB android one), V8's own ICU data (migo-icu-data, 6.8 MB by
-      design: widen its policy.rs and this grows) and the V8 startup snapshot."
+            echo "Embedded data. The usual causes are a second ICU (Skia must link V8's:
+      SKIA_EXTERNAL_ICU_INCLUDE_DIRS has to reach skia-bindings, see
+      scripts/lib/skia-external-icu.sh), V8's own ICU data (migo-icu-data, 7.0 MB
+      by design: widen its policy.rs and this grows) and the V8 startup snapshot."
             ;;
         .rela.dyn|.rel.dyn)
             echo "The relative relocations are being shipped as a flat table. Check
@@ -252,6 +261,16 @@ for aar in "${aars[@]}"; do
             exit 1
         fi
 
+        # One ICU. Skia used to link its own beside V8's -- icudt74l next to icudt77l, 1.36 MB on
+        # arm64 -- and the names never collide, so nothing failed and no budget above is tight enough
+        # to notice. Each ICU carries one common-data package, counted by its header rather than by
+        # its name, so two copies of one version count as two (scripts/lib/icu_packages.py).
+        if ! icu_packages="$(python3 "$SCRIPT_DIR/lib/icu_packages.py" "$so" --expect 1)"; then
+            echo "FAIL: $name [$abi] libmigo.so carries ICU data packages '$icu_packages' (count, names), not one.
+      Skia must link V8's ICU: SKIA_EXTERNAL_ICU_INCLUDE_DIRS has to reach skia-bindings
+      (scripts/lib/skia-external-icu.sh)." >&2
+            exit 1
+        fi
         say "$(printf '  %s [%s]: %d bytes (.text %d, .rodata %d, reloc %d)' \
             "$name" "$abi" "$file_size" "$text_size" "$rodata_size" "$reloc_size")"
 

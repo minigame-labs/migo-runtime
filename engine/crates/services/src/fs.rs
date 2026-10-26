@@ -87,6 +87,7 @@ fn domain_err(err: DomainError) -> ServiceError {
 #[inline]
 fn pool_err(err: PoolError) -> ServiceError {
     match err {
+        PoolError::AudioQueueLimit { .. } => ioerr(err.to_string()),
         PoolError::Closed => ioerr("IO worker pool closed"),
         PoolError::ByteLimitExceeded {
             requested,

@@ -214,23 +214,25 @@ pub fn op_revoke_buffer_url(state: &mut OpState, #[string] url: &str) -> Result<
 
 // ==================== Extension ====================
 
-deno_core::extension!(
+main_runtime_extension!(
     host_v8_storage,
-    deps = [host_v8_base],
-    ops = [
-        op_storage_get,
-        op_storage_set,
-        op_storage_remove,
-        op_storage_clear,
-        op_storage_info,
-        op_storage_get_async,
-        op_storage_set_async,
-        op_storage_remove_async,
-        op_storage_clear_async,
-        op_storage_info_async,
-        op_create_buffer_url,
-        op_revoke_buffer_url,
-    ],
+    {
+        deps = [host_v8_base],
+        ops = [
+            op_storage_get,
+            op_storage_set,
+            op_storage_remove,
+            op_storage_clear,
+            op_storage_info,
+            op_storage_get_async,
+            op_storage_set_async,
+            op_storage_remove_async,
+            op_storage_clear_async,
+            op_storage_info_async,
+            op_create_buffer_url,
+            op_revoke_buffer_url,
+        ],
+    },
     esm = [
         dir "src/storage",
         "01_storage.js",

@@ -26,6 +26,16 @@
 //!     migo_alloc_probe::CountingAllocator::system();
 //! ```
 
+#[cfg(unix)]
+mod realtime;
+#[cfg(unix)]
+pub use realtime::RealtimeProbe;
+
+#[cfg(any(unix, windows))]
+mod native_thread;
+#[cfg(any(unix, windows))]
+pub use native_thread::on_native_thread;
+
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,

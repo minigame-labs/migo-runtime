@@ -122,6 +122,8 @@ mod audio_context_close_tests {
 
     #[test]
     fn close_reaches_the_closed_state_and_sends_one_command() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let closes = Arc::new(AtomicUsize::new(0));
         let (mut runtime, responder) = boot(Arc::clone(&closes));
         run(
@@ -150,6 +152,8 @@ mod audio_context_close_tests {
 
     #[test]
     fn concurrent_close_calls_share_one_command() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let closes = Arc::new(AtomicUsize::new(0));
         let (mut runtime, responder) = boot(Arc::clone(&closes));
         run(

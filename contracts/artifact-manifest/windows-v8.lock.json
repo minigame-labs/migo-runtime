@@ -1,9 +1,16 @@
 {
   "cargo_features": {
+    "simdutf": true,
+    "v8_enable_pointer_compression": true,
     "use_custom_libcxx": true
   },
   "component_kind": "shared_library",
   "gn_args": {
+    "icu_use_data_file": true,
+    "icu_use_stub_data": true,
+    "icu_copy_icudata_to_root_build_dir": true,
+    "v8_depend_on_icu_data_file": true,
+    "rusty_v8_enable_simdutf": true,
     "use_allocator_shim": false,
     "use_partition_alloc_as_malloc": false,
     "v8_enable_i18n_support": true,
@@ -13,6 +20,11 @@
   },
   "notes": "V8 is built as a shared library (rusty_v8.dll + import lib) WITH its own bundled libc++ -- use_custom_libcxx stays on. An earlier plan set it false so V8 and Skia would share the MSVC STL, and this lock recorded that; it was measured infeasible on 2026-07-24 (clang-cl crashes on 32 torque-generated translation units, preceded by 78 -Wctad-maybe-unsupported errors, because Chromium compiles them with -D_HAS_EXCEPTIONS=0 and /std:c++23preview, which Microsoft's STL does not support). The Skia/V8 std::terminate collision is instead answered by the shared-library form keeping V8's libc++ internal. Note use_custom_libcxx is a cargo feature, not a GN argument: build.rs derives the GN value from CARGO_FEATURE_USE_CUSTOM_LIBCXX and overrides EXTRA_GN_ARGS, so it is recorded under cargo_features. component_kind, gn_args and cargo_features are Windows-specific extensions to the migo-v8-build-lock/v1 shape used by android-v8.lock.json.",
   "required_patches": [
+    {
+      "id": "bindgen-clang22-lock",
+      "file": "0010-bindgen-clang22-lock.patch",
+      "notes": "Use bindgen 0.72.1's Clang 22+ declaration cursor fix."
+    },
     {
       "file": "0005-*.patch",
       "id": "0005-windows-host-callback-registration",
@@ -34,12 +46,12 @@
       "notes": "Copies rusty_v8.dll.lib to gn_out/obj/rusty_v8.lib after the ninja build. The shared_library GN target from 0006 never produces a plain static archive, but build.rs's print_link_flags() still requests `static=rusty_v8` unconditionally (MSVC resolves both the static and dylib -l kinds to the same NAME.lib naming convention regardless, so that directive did not need to change). Discovered building aarch64-pc-windows-msvc from a genuinely clean target dir for the first time: every prior Windows build here had silently relied on a stale rusty_v8.lib left over from 2026-07-24, predating 0006's shared-library refactor -- CI never exercises this path, since release.yml only fetches the already-built archive."
     }
   ],
-  "rusty_v8_revision": "0b8cfc5ae9d2507031076df2acdf61b0742a4c4e",
-  "rusty_v8_version": "145.0.0",
+  "rusty_v8_revision": "5c15a6995c9bb4bacd3e341b59fff32c909c80bf",
+  "rusty_v8_version": "150.4.0",
   "schema": "migo-v8-build-lock/v1",
   "sources": {
-    "rusty_v8": "https://github.com/denoland/rusty_v8/tree/0b8cfc5ae9d2507031076df2acdf61b0742a4c4e",
-    "v8": "https://chromium.googlesource.com/v8/v8/+/8defb67673c5483ae56258a2de01b07e947dc921"
+    "rusty_v8": "https://github.com/denoland/rusty_v8/tree/5c15a6995c9bb4bacd3e341b59fff32c909c80bf",
+    "v8": "https://chromium.googlesource.com/v8/v8/+/ac1e23989121713ca642f6650b34deff7b686896"
   },
   "targets": {
     "x86_64": {
@@ -58,5 +70,5 @@
       "triple": "aarch64-pc-windows-msvc"
     }
   },
-  "v8_revision": "8defb67673c5483ae56258a2de01b07e947dc921"
+  "v8_revision": "ac1e23989121713ca642f6650b34deff7b686896"
 }

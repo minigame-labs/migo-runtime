@@ -48,6 +48,8 @@ const SURFACE_CHANGED: &str =
 /// for the reference expects -- and a test waiting for the next resize took that call for it.
 #[test]
 fn a_listener_hears_changes_after_it_was_added_and_only_changes() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let window = Window(Arc::new(Mutex::new((400, 800))));
     let mut runtime = boot_with_services(
         Some(Arc::new(Device(window.clone())) as Arc<dyn DeviceServices>),

@@ -39,8 +39,9 @@ use tracing::info;
 ///
 /// ## Implementation
 ///
-/// 1. `AudioService::new()` creates the channel, wakeup, and a policy-capturing
-///    HTTP factory closure. It does not build an HTTP client, pool or thread.
+/// 1. `AudioService::new()` creates the channel and wakeup, and captures the
+///    scheduler owner and policy-specific HTTP factory. Its shared pool handle
+///    registers this host without starting workers or an HTTP connection pool.
 /// 2. `sender()` returns an [`AudioSender`] backed by the channel.
 /// 3. A successful pre-start command notifies the Host event loop, which calls
 ///    `check_and_start()`. It drains queued commands and, upon the first *real*
@@ -76,6 +77,8 @@ pub(crate) struct AudioService {
     /// Per-host factory. The audio thread invokes it only on the first remote
     /// cache miss, then keeps the resulting connection pool for its lifetime.
     http_client_factory: audio::streaming::StreamingHttpClientFactory,
+    /// Owns close; CPU handles and HTTP share this audio host registration.
+    io: migo_io::scheduler::IoScheduler,
 }
 
 /// The client used for streamed audio (`InnerAudioContext.src = "https://..."`)
@@ -86,6 +89,7 @@ pub(crate) struct AudioService {
 #[cfg(feature = "host-audio")]
 pub(crate) fn streaming_http_client_factory(
     network_policy: shared::network_policy::NetworkPolicy,
+    pools: migo_io::pools::IoPools,
 ) -> audio::streaming::StreamingHttpClientFactory {
     Arc::new(move || {
         migo_services::network::client::create_policy_http_client(
@@ -93,6 +97,7 @@ pub(crate) fn streaming_http_client_factory(
             true,
             &network_policy,
             "audio",
+            pools.clone(),
         )
         .map_err(|error| {
             EngineError::from_detail(
@@ -191,9 +196,10 @@ impl AudioService {
     pub(crate) fn new(
         host_tx: HostTx,
         http_client_factory: audio::streaming::StreamingHttpClientFactory,
+        io: migo_io::scheduler::IoScheduler,
     ) -> Self {
         let (tx, rx) = shared::audio_channel::channel();
-        let wakeup = ThreadWakeup::new();
+        let wakeup = ThreadWakeup::new_audio();
         Self {
             tx,
             wakeup,
@@ -205,6 +211,7 @@ impl AudioService {
             host_start: AudioHostStartSignal::new(),
             resources: AudioResourceRegistry::new(),
             http_client_factory,
+            io,
         }
     }
 
@@ -291,6 +298,7 @@ impl AudioService {
             self.wakeup.clone(),
             self.host_tx.clone(),
             self.http_client_factory.clone(),
+            self.io.audio_cpu(),
         )?;
 
         self.thread = Some(thread);
@@ -368,9 +376,17 @@ impl AudioService {
     }
 
     pub(crate) fn shutdown(&mut self) {
+        self.io.close();
         if let Some(ref mut thread) = self.thread {
             thread.shutdown();
         }
+    }
+}
+
+#[cfg(feature = "host-audio")]
+impl Drop for AudioService {
+    fn drop(&mut self) {
+        self.io.close();
     }
 }
 
@@ -593,9 +609,14 @@ mod tests {
 
     fn service() -> AudioService {
         let (host_tx, _critical_host_tx, _host_rx) = shared::host_channel::channel(1);
+        let io = migo_io::scheduler::IoScheduler::new(0);
         AudioService::new(
             host_tx,
-            streaming_http_client_factory(shared::network_policy::NetworkPolicy::default()),
+            streaming_http_client_factory(
+                shared::network_policy::NetworkPolicy::default(),
+                io.pools().clone(),
+            ),
+            io,
         )
     }
 
@@ -605,6 +626,19 @@ mod tests {
             frames: 1,
             sample_rate: 48_000,
         }
+    }
+
+    #[test]
+    fn real_audio_service_selects_callback_capable_wake_without_starting_a_thread() {
+        let service = service();
+        assert!(
+            service.wakeup.audio_notifier().is_some(),
+            "the device notifier must not silently retain the condvar/poll-only path"
+        );
+        assert!(service.thread.is_none());
+        assert!(service.rx.is_some());
+        // Producers can publish before the lazy receiver exists.
+        service.wakeup.notify();
     }
 
     #[test]

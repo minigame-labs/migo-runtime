@@ -1,0 +1,42 @@
+--- a/CertificateVerifier.kt
++++ b/CertificateVerifier.kt
+@@ -97,7 +97,11 @@
+ 
+ 
+ 
+-    private val certFactory: CertificateFactory = CertificateFactory.getInstance("X.509")
++    // CertificateFactory has no thread-safety guarantee. Reuse one per bounded
++    // executor worker, without serializing network-bound revocation checks.
++    private val certFactory: ThreadLocal<CertificateFactory> = ThreadLocal.withInitial {
++        CertificateFactory.getInstance("X.509")
++    }
+ 
+     private var systemTrustAnchorCache = hashSetOf<Pair<X500Principal, PublicKey>>()
+ 
+@@ -131,7 +135,7 @@
+         val certificateChain = mutableListOf<X509Certificate>()
+         certChain.forEach { certBytes ->
+             val certificate = try {
+-                certFactory.generateCertificate(ByteArrayInputStream(certBytes))
++                certFactory.get().generateCertificate(ByteArrayInputStream(certBytes))
+             } catch (e: CertificateException) {
+                 return VerificationResult(StatusCode.InvalidEncoding)
+             }
+@@ -248,7 +252,7 @@
+ 
+             // Validate the revocation status of the end entity certificate.
+             try {
+-                validator.validate(certFactory.generateCertPath(validChain), parameters)
++                validator.validate(certFactory.get().generateCertPath(validChain), parameters)
+             } catch (e: CertPathValidatorException) {
+                 return VerificationResult(StatusCode.Revoked, e.toString())
+             }
+@@ -299,6 +303,8 @@
+     // Known means installed in root CA store, either a preset public CA or a custom one installed by an enterprise/user.
+     //
+     // Ref: https://source.chromium.org/chromium/chromium/src/+/main:net/android/java/src/org/chromium/net/X509Util.java;l=351
++    // Protect the shared cache and keystore operations, not the whole handshake.
++    @Synchronized
+     fun isKnownRoot(root: X509Certificate): Boolean {
+         // System keystore and cert directory must be non-null to perform checking
+         systemKeystore?.let { loadedSystemKeystore ->

@@ -119,6 +119,8 @@ fn run(
 
 #[test]
 fn a_recording_answers_in_the_reference_s_terms() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let asked = Arc::new(Asked::default());
     let (mut runtime, reactor, renderer) = boot(Arc::clone(&asked));
     let heard = run(

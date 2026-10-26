@@ -39,6 +39,8 @@ mod console_namespace_tests {
 
     #[test]
     fn every_member_of_the_namespace_is_a_function() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let found = lines(
             9_501,
             r#"console.log(["assert", "clear", "count", "countReset", "debug", "dir", "dirxml", "error", "group",
@@ -50,6 +52,8 @@ mod console_namespace_tests {
 
     #[test]
     fn assert_writes_an_error_only_when_it_fails() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let found = lines(
             9_502,
             r#"console.assert(true, "never"); console.assert(false); console.assert(0, "lost", 3);
@@ -67,6 +71,8 @@ mod console_namespace_tests {
 
     #[test]
     fn count_counts_per_label_and_resets() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let found = lines(
             9_503,
             r#"console.count(); console.count(); console.count("a"); console.countReset();
@@ -86,6 +92,8 @@ mod console_namespace_tests {
 
     #[test]
     fn timers_report_their_label_and_end_once() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let found = lines(
             9_504,
             r#"console.time("t"); console.time("t"); console.timeLog("t", "midway"); console.timeEnd("t");
@@ -107,6 +115,8 @@ mod console_namespace_tests {
 
     #[test]
     fn a_string_first_argument_is_formatted_as_the_standard_says() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let found = lines(
             9_506,
             r#"console.log("%s is %d years, %f%%", "Ann", "42.9", "1.5");
@@ -144,6 +154,8 @@ mod console_namespace_tests {
 
     #[test]
     fn members_need_no_receiver_and_a_trace_survives_its_stack() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let found = lines(
             9_507,
             r#"var g = console.groupCollapsed, l = console.log, e = console.groupEnd;
@@ -169,6 +181,8 @@ mod console_namespace_tests {
 
     #[test]
     fn clear_empties_the_group_stack() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let found = lines(
             9_508,
             r#"console.group("g"); console.log("in"); console.clear(); console.log("out");"#,
@@ -185,6 +199,8 @@ mod console_namespace_tests {
 
     #[test]
     fn the_rest_write_what_they_were_given() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let found = lines(
             9_505,
             r#"console.dir({ a: 1 }); console.dirxml("x", 2); console.table([1, 2]); console.clear();

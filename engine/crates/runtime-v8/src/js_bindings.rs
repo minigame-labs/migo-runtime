@@ -1244,6 +1244,8 @@ mod tests {
     /// plus exact bytes, ArrayBuffer type/length, camera id, width, height.
     #[test]
     fn camera_frame_arraybuffer_adopts_vec_allocation_without_copy() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = JsRuntime::new(RuntimeOptions::default());
         let mut bindings = JsBindings::new(&mut rt, 1);
 
@@ -1352,6 +1354,8 @@ mod tests {
     /// different address. It passes only when V8 has adopted the original allocation.
     #[test]
     fn recorder_frame_arraybuffer_adopts_vec_allocation_without_copy() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         // ── Case 1: normal frame (len == cap) ────────────────────────────────
         {
             let mut rt = JsRuntime::new(RuntimeOptions::default());

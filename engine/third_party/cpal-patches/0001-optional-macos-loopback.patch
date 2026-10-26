@@ -1,0 +1,154 @@
+--- cpal-0.18.2/Cargo.toml
++++ cpal-0.18.2/Cargo.toml
+@@ -82,7 +82,8 @@
+     "web-sys/AudioWorkletNodeOptions",
+ ]
+ custom = []
+-default = []
++default = ["macos-loopback"]
++macos-loopback = ["objc2-core-audio/objc2", "objc2-core-audio/objc2-foundation"]
+ jack = ["dep:jack"]
+ pipewire = ["dep:pipewire"]
+ pulseaudio = [
+@@ -340,8 +341,6 @@
+     "std",
+     "AudioHardware",
+     "AudioHardwareDeprecated",
+-    "objc2",
+-    "objc2-foundation",
+ ]
+ default-features = false
+ 
+--- cpal-0.18.2/Cargo.toml.orig
++++ cpal-0.18.2/Cargo.toml.orig
+@@ -14,7 +14,8 @@
+ maintenance = { status = "actively-developed" }
+ 
+ [features]
+-default = []
++default = ["macos-loopback"]
++macos-loopback = ["objc2-core-audio/objc2", "objc2-core-audio/objc2-foundation"]
+ 
+ # Real-time audio thread scheduling
+ # Applies platform-specific real-time scheduling and performance modes to audio threads.
+@@ -144,8 +145,6 @@
+     "std",
+     "AudioHardware",
+     "AudioHardwareDeprecated",
+-    "objc2",
+-    "objc2-foundation",
+ ] }
+ objc2-audio-toolbox = { version = "0.3", default-features = false, features = [
+     "std",
+--- cpal-0.18.2/src/host/coreaudio/macos/device.rs
++++ cpal-0.18.2/src/host/coreaudio/macos/device.rs
+@@ -45,7 +45,7 @@
+ };
+ use crate::{
+     host::{
+-        coreaudio::macos::{loopback::LoopbackDevice, StreamInner},
++        coreaudio::macos::StreamInner,
+         equilibrium::fill_equilibrium,
+         frames_to_duration, try_emit_error, ErrorCallbackArc,
+     },
+@@ -55,6 +55,9 @@
+     OutputCallbackInfo, OutputStreamTimestamp, ResultExt, SampleFormat, SampleRate, StreamConfig,
+     StreamInstant, SupportedBufferSize, SupportedStreamConfig, SupportedStreamConfigRange,
+ };
++
++#[cfg(feature = "macos-loopback")]
++use super::loopback::LoopbackDevice;
+ 
+ /// Try to find a matching physical stream format on the device and apply it.
+ ///
+@@ -710,6 +713,13 @@
+ 
+         // Input is not automatically rerouted, so its buffer depth is constant and its timestamp monotonic.
+ 
++        // Without the optional system-capture feature, refuse an output-only
++        // device before changing its physical format or opening any AudioUnit.
++        #[cfg(not(feature = "macos-loopback"))]
++        if !self.supports_input() {
++            return Err(Error::new(ErrorKind::UnsupportedOperation));
++        }
++
+         // Set the physical stream format (bit depth + sample rate) on the hardware device.
+         // This avoids unnecessary format conversions, which is especially important on aggregate
+         // devices. Falls back to sample-rate-only if no matching physical format is available.
+@@ -724,7 +734,9 @@
+             set_sample_rate(self.audio_device_id, config.sample_rate, timeout)?;
+         }
+ 
++        #[cfg(feature = "macos-loopback")]
+         let mut loopback_aggregate: Option<LoopbackDevice> = None;
++        #[cfg(feature = "macos-loopback")]
+         let mut audio_unit = if self.supports_input() {
+             audio_unit_from_device(self, AudioUnitMode::Input)?
+         } else {
+@@ -734,16 +746,21 @@
+                 AudioUnitMode::Input,
+             )?
+         };
++        #[cfg(not(feature = "macos-loopback"))]
++        let mut audio_unit = audio_unit_from_device(self, AudioUnitMode::Input)?;
+ 
+         // The scope and element for working with a device's input stream.
+         let scope = Scope::Output;
+         let element = Element::Input;
+ 
+         // Configure stream format and buffer size for predictable callback behavior.
++        #[cfg(feature = "macos-loopback")]
+         let effective_device_id = loopback_aggregate
+             .as_ref()
+             .map(|l| l.aggregate_device.audio_device_id)
+             .unwrap_or(self.audio_device_id);
++        #[cfg(not(feature = "macos-loopback"))]
++        let effective_device_id = self.audio_device_id;
+         configure_stream_format_and_buffer(
+             &mut audio_unit,
+             config,
+@@ -803,6 +820,7 @@
+             playing: false,
+             audio_unit,
+             _device_id: self.audio_device_id,
++            #[cfg(feature = "macos-loopback")]
+             _loopback_device: loopback_aggregate,
+         }));
+         let weak_inner = Arc::downgrade(&inner_arc);
+@@ -933,6 +951,7 @@
+             playing: false,
+             audio_unit,
+             _device_id: self.audio_device_id,
++            #[cfg(feature = "macos-loopback")]
+             _loopback_device: None,
+         }));
+         let weak_inner = Arc::downgrade(&inner_arc);
+--- cpal-0.18.2/src/host/coreaudio/macos/mod.rs
++++ cpal-0.18.2/src/host/coreaudio/macos/mod.rs
+@@ -15,14 +15,17 @@
+ pub use self::enumerate::{default_input_device, default_output_device, Devices};
+ use super::{asbd_from_config, check_os_status, host_time_to_stream_instant, OSStatus};
+ use crate::{
+-    host::{coreaudio::macos::loopback::LoopbackDevice, emit_error, latch::Latch, try_emit_error},
++    host::{emit_error, latch::Latch, try_emit_error},
+     traits::{HostTrait, StreamTrait},
+     Error, ErrorKind, FrameCount, ResultExt, StreamInstant,
+ };
+ 
+ mod device;
+ pub mod enumerate;
++#[cfg(feature = "macos-loopback")]
+ mod loopback;
++#[cfg(feature = "macos-loopback")]
++use loopback::LoopbackDevice;
+ mod property_listener;
+ pub use device::Device;
+ 
+@@ -377,6 +380,7 @@
+     // Track the device with which the audio unit was spawned
+     _device_id: AudioDeviceID,
+     /// Manage the lifetime of the aggregate device used for loopback recording
++    #[cfg(feature = "macos-loopback")]
+     _loopback_device: Option<LoopbackDevice>,
+ }
+ 

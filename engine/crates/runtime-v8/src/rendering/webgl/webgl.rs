@@ -168,6 +168,8 @@ pub(super) mod tests {
 
     #[test]
     fn read_pixels_checks_native_view_brand_and_length() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime.exec_script("read_pixels_view_validation.js", r#"
             const ctx = new WebGLRenderingContext({ _rid: 23, width: 2, height: 2 }, {});
@@ -212,6 +214,8 @@ pub(super) mod tests {
     /// nothing, and must not touch any JS memory.
     #[test]
     fn read_pixels_buffer_overload_sends_the_offset_and_returns_no_pixels() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         let responder = std::thread::spawn(move || {
             let mut offsets = Vec::new();
@@ -261,6 +265,8 @@ pub(super) mod tests {
     /// The stencil masks are answered as set, GLuint, and a refused call leaves them.
     #[test]
     fn state_setters_refuse_what_webgl_refuses_and_stencil_masks_are_answered_as_set() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, _render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -319,6 +325,8 @@ pub(super) mod tests {
     /// as booleans; COMPRESSED_TEXTURE_FORMATS the formats of the compressed-texture extensions enabled.
     #[test]
     fn get_parameter_answers_its_versions_parameters_as_webgl_types_them() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         let responder = std::thread::spawn(move || {
             let mut asked = Vec::new();
@@ -402,6 +410,8 @@ pub(super) mod tests {
     /// the textarget and, in WebGL 2, the level, and gives the driver TEXTURE_2D's level 0.
     #[test]
     fn the_calls_a_browser_refuses_are_refused() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -497,6 +507,8 @@ pub(super) mod tests {
     /// `isProgram` / `isShader` answer false; another context's is INVALID_OPERATION; null is a TypeError.
     #[test]
     fn programs_and_shaders_go_when_nothing_uses_them() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -612,6 +624,8 @@ pub(super) mod tests {
     /// blit taken reaches the renderer.
     #[test]
     fn blit_framebuffer_refuses_what_a_browser_refuses() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -705,6 +719,8 @@ pub(super) mod tests {
     /// extension is enabled the parameter is INVALID_ENUM and null.
     #[test]
     fn completion_status_is_polled_without_waiting_and_kept_once_done() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         let responder = std::thread::spawn(move || {
             let mut program_polls = 0;
@@ -774,6 +790,8 @@ pub(super) mod tests {
     /// the Uint16Array it was given.
     #[test]
     fn a_webgl1_half_float_read_reaches_the_renderer_as_half_float() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         let responder = std::thread::spawn(move || {
             loop {
@@ -825,6 +843,8 @@ pub(super) mod tests {
     /// normalized.
     #[test]
     fn a_read_outside_the_buffers_own_pair_is_held_to_the_drivers() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         let responder = std::thread::spawn(move || {
             let mut seen = Vec::new();
@@ -876,6 +896,8 @@ pub(super) mod tests {
 
     #[test]
     fn read_pixels_dst_offset_is_in_view_elements_and_adds_to_pack_skips() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         let responder = std::thread::spawn(move || {
             loop {
@@ -928,6 +950,8 @@ pub(super) mod tests {
 
     #[test]
     fn read_pixels_dst_offset_public_source_scenarios() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         let responder = super::read_pixels_responder::spawn(render_rx);
         let result = runtime.exec_script(
@@ -973,6 +997,8 @@ pub(super) mod tests {
 
     #[test]
     fn read_pixels_dst_offset_pack_rejection_keeps_the_whole_view_unchanged() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         let responder = std::thread::spawn(move || {
             loop {
@@ -1014,6 +1040,8 @@ pub(super) mod tests {
 
     #[test]
     fn read_pixels_scatters_rows_without_overwriting_padding_or_subview_edges() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         let responder = std::thread::spawn(move || {
             for _ in 0..2 {
@@ -1069,6 +1097,8 @@ pub(super) mod tests {
 
     #[test]
     fn read_pixels_accepts_bgra_packed_short_views() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         let responder = std::thread::spawn(move || {
             for expected_type in [0x8365, 0x8366] {
@@ -1167,6 +1197,8 @@ pub(super) mod tests {
 
     #[test]
     fn read_pixels_does_not_invoke_typed_array_species() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         assert_read_pixels_ignores_typed_array_hook(
             r#"
             Object.defineProperty(Uint8Array.prototype, 'constructor', {
@@ -1180,6 +1212,8 @@ pub(super) mod tests {
 
     #[test]
     fn read_pixels_does_not_invoke_typed_array_length_getter() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         assert_read_pixels_ignores_typed_array_hook(
             r#"
             Object.defineProperty(Uint8Array.prototype, 'length', {
@@ -1192,6 +1226,8 @@ pub(super) mod tests {
 
     #[test]
     fn read_pixels_renderer_rejection_preserves_destination_and_records_error() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         let responder = std::thread::spawn(move || {
             loop {
@@ -1888,6 +1924,8 @@ pub(super) mod tests {
 
     #[test]
     fn plain_float_uniform_sequence_preserves_values() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -1913,6 +1951,8 @@ pub(super) mod tests {
     /// without a `normalized`.
     #[test]
     fn vertex_attrib_calls_become_the_commands_the_specification_describes() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -1997,6 +2037,8 @@ pub(super) mod tests {
     /// for what `srcOffset` / `srcLength` ask -- is INVALID_VALUE and no command at all.
     #[test]
     fn unsigned_and_non_square_uniforms_become_the_commands_the_specification_describes() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -2060,6 +2102,8 @@ pub(super) mod tests {
     /// `getError` reads, and no command reaches the renderer.
     #[test]
     fn a_malformed_unsigned_or_matrix_uniform_list_is_refused_and_nothing_is_sent() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -2105,6 +2149,8 @@ pub(super) mod tests {
     /// another type is read as the sequence WebIDL makes of it, and `drawRangeElements` is the `drawElements` it hints.
     #[test]
     fn clear_buffer_and_draw_range_calls_become_the_commands_the_specification_describes() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -2198,6 +2244,8 @@ pub(super) mod tests {
     /// converts the arguments before the call runs.
     #[test]
     fn a_malformed_clear_buffer_or_draw_range_call_is_the_specified_error_and_nothing_is_sent() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -2252,6 +2300,8 @@ pub(super) mod tests {
     /// a device with 8 is not held to 4 for the rest of the context's life by one call made while it was lost.
     #[test]
     fn the_draw_buffer_limit_is_kept_only_once_the_context_answers() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -2332,6 +2382,8 @@ pub(super) mod tests {
     /// attachment points.
     #[test]
     fn copy_and_framebuffer_layer_calls_become_the_commands_the_specification_describes() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -2478,6 +2530,8 @@ pub(super) mod tests {
     /// layer or level (INVALID_VALUE). None reaches the renderer; the call whose list is not a list throws.
     #[test]
     fn a_malformed_copy_or_invalidation_is_the_specified_error_and_nothing_is_sent() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -2577,6 +2631,8 @@ pub(super) mod tests {
     /// form sends the view whole. `waitSync` sends its sync once its flags and timeout are the one legal pair.
     #[test]
     fn compressed_uploads_and_wait_sync_become_the_commands_the_specification_describes() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -2666,6 +2722,8 @@ pub(super) mod tests {
     /// (INVALID_OPERATION, WebGL 2.0 3.7.6).
     #[test]
     fn a_malformed_compressed_upload_or_sync_call_is_the_specified_error_and_nothing_is_sent() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -2740,6 +2798,8 @@ pub(super) mod tests {
     /// and the answer kept only once the context gives one: a lost context's non-answer is not cached as the limit.
     #[test]
     fn the_vertex_attribute_limit_is_asked_only_past_the_minimum_and_kept_once_answered() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, _render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -2769,6 +2829,8 @@ pub(super) mod tests {
     /// of a type that is not one is INVALID_ENUM and null. `validateProgram` drops the cached VALIDATE_STATUS.
     #[test]
     fn shader_attachment_is_answered_from_what_the_calls_did() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -2844,6 +2906,8 @@ pub(super) mod tests {
     /// nearest integer, and a deleted sampler is INVALID_OPERATION to use or bind.
     #[test]
     fn sampler_parameters_are_answered_from_what_the_calls_set() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, _render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -2885,6 +2949,8 @@ pub(super) mod tests {
     /// task that made it a fence is unsignalled without a question to the render side.
     #[test]
     fn indexed_bindings_and_sync_parameters_are_answered_from_what_the_calls_set() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -2956,6 +3022,8 @@ pub(super) mod tests {
     /// the fence reaches the GPU though nothing presents that context; the next task sees the fence as the GPU does.
     #[test]
     fn a_fence_s_task_ends_by_flushing_the_contexts_that_made_one() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -3068,6 +3136,8 @@ pub(super) mod tests {
     /// name the location was looked up by, and only for a location of this program since its last link. `getFragDataLocation` asks by name. A name WebGL refuses or reserves never reaches GL.
     #[test]
     fn get_uniform_and_get_frag_data_location_ask_the_driver_and_type_its_answer() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         let responder = spawn_program_query_responder(render_rx);
         runtime
@@ -3160,6 +3230,8 @@ pub(super) mod tests {
     /// leaves the bindings of this context and of the objects bound, and keeps the one of an object not bound.
     #[test]
     fn buffer_state_is_kept_for_every_target_and_checked_before_anything_is_sent() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -3335,6 +3407,8 @@ pub(super) mod tests {
     /// and writes the answer there; everything the specification refuses is refused before anything is asked.
     #[test]
     fn get_buffer_sub_data_reads_the_bound_buffer_into_the_destination_range() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         let responder = std::thread::spawn(move || {
             let mut asked = Vec::new();
@@ -3415,6 +3489,8 @@ pub(super) mod tests {
     /// (INVALID_OPERATION). Errors of two kinds are both held.
     #[test]
     fn calls_the_specification_refuses_are_refused_before_anything_is_sent() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -3502,6 +3578,8 @@ pub(super) mod tests {
     /// is exactly the bytes the upload reads.
     #[test]
     fn uploads_are_checked_against_their_formats_views_and_the_pixel_store() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -3665,6 +3743,8 @@ pub(super) mod tests {
     /// renderbuffer takes WebGL 1's six formats (RGB565 among them) and needs one bound.
     #[test]
     fn webgl1_texture_images_judge_the_calls_that_depend_on_them() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -3752,6 +3832,8 @@ pub(super) mod tests {
     /// and it is no 3D texture's. The parameters are read back as set, the LODs as floats.
     #[test]
     fn webgl2_and_compressed_texture_images_judge_the_calls_that_depend_on_them() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -3895,6 +3977,8 @@ pub(super) mod tests {
     /// are judged before they are recorded.
     #[test]
     fn framebuffer_completeness_is_judged_from_what_the_facade_recorded() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -4023,6 +4107,8 @@ pub(super) mod tests {
     /// TypeError, and WebGL 1 takes one in the 6- and 7-argument forms only.
     #[test]
     fn tex_image_source_uploads_are_judged_against_their_own_table_and_name_their_source() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -4202,6 +4288,8 @@ pub(super) mod tests {
     #[test]
     fn draw_buffers_are_judged_and_recorded_per_framebuffer_and_float_blending_needs_the_renderer()
     {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -4327,6 +4415,8 @@ pub(super) mod tests {
     /// The base level is the one judged; enabling the extension, deleting a sampler or changing a filter judges again.
     #[test]
     fn float_textures_sample_as_incomplete_with_a_linear_filter_until_their_extension_is_enabled() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -4433,6 +4523,8 @@ pub(super) mod tests {
     /// driver's maximum; EXT_color_buffer_half_float makes the 16-bit floats, and only those, colour-renderable.
     #[test]
     fn extensions_are_the_table_s_and_each_does_what_it_says() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, _render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -4540,6 +4632,8 @@ pub(super) mod tests {
     /// mipmap, MIN and MAX, and the derivative hint. WebGL 2's enums are not WebGL 1's.
     #[test]
     fn webgl1_texture_extensions_take_what_their_specifications_add() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -4815,6 +4909,8 @@ pub(super) mod tests {
     /// filterable, so not mipmapped, and a copy takes only a float source of its own sizes.
     #[test]
     fn a_float_colour_buffer_is_renderable_once_ext_color_buffer_float_is_enabled() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -4913,6 +5009,8 @@ pub(super) mod tests {
     /// index past MAX_VERTEX_ATTRIBS is INVALID_VALUE, in WebGL 1's extension and WebGL 2 alike.
     #[test]
     fn an_angle_instanced_draw_needs_an_array_at_divisor_zero() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -4959,6 +5057,8 @@ pub(super) mod tests {
     /// every time it is asked there. An object of another kind is a TypeError.
     #[test]
     fn webgl2_samplers_transform_feedbacks_and_queries_are_the_facades() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -5059,6 +5159,8 @@ pub(super) mod tests {
     /// what the buffer has: those, with antialiasing off, since the drawing buffer is single-sampled.
     #[test]
     fn a_context_declares_the_drawing_buffer_its_attributes_ask_for() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -5124,6 +5226,8 @@ pub(super) mod tests {
     /// false, and `useProgram` refuses it.
     #[test]
     fn link_status_brings_the_attribute_locations_a_program_consumes() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         let responder = std::thread::spawn(move || {
             let mut asked = Vec::new();
@@ -5188,6 +5292,8 @@ pub(super) mod tests {
     /// in a browser's order; in WebGL 2 the primitive-restart index reads no vertex. Only accepted draws are sent.
     #[test]
     fn draws_read_no_vertex_outside_the_buffers_of_the_attributes_consumed() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -5318,6 +5424,8 @@ pub(super) mod tests {
     /// its own.
     #[test]
     fn webgl1_draws_sample_no_incomplete_npot_texture() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -5435,6 +5543,8 @@ pub(super) mod tests {
     /// only is not a view.
     #[test]
     fn uploads_from_an_unpack_buffer_offset_and_the_unpack_flags() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -5515,6 +5625,8 @@ pub(super) mod tests {
     /// texture needs one bound (INVALID_OPERATION) to a target the call takes (INVALID_ENUM). Nothing refused is sent.
     #[test]
     fn texture_bindings_are_kept_and_a_call_on_a_texture_needs_one_bound() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -5640,6 +5752,8 @@ pub(super) mod tests {
     /// it), per vertex array object, and an error and `null` for what it cannot answer.
     #[test]
     fn get_vertex_attrib_answers_from_what_the_calls_set() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, _render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -5721,6 +5835,8 @@ pub(super) mod tests {
 
     #[test]
     fn uniform_array_is_copied_when_the_op_is_called() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -5745,6 +5861,8 @@ pub(super) mod tests {
 
     #[test]
     fn integer_uniform_typed_sequence_is_converted_numerically() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -5810,6 +5928,8 @@ pub(super) mod tests {
     /// since another agent could write it during the borrow; one thread cannot observe that copy.)
     #[test]
     fn texture_uploads_are_held_to_the_ceiling_and_copied_from_shared_memory_at_the_call() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -5847,6 +5967,8 @@ pub(super) mod tests {
 
     #[test]
     fn shared_uniform_source_preserves_call_time_values() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -5871,6 +5993,8 @@ pub(super) mod tests {
 
     #[test]
     fn plain_matrix3_uniform_sequence_is_accepted() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -5899,6 +6023,8 @@ pub(super) mod tests {
 
     #[test]
     fn float_uniform_ignores_shadowed_typed_array_metadata() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -5924,6 +6050,8 @@ pub(super) mod tests {
 
     #[test]
     fn inline_uniform_stream_auto_flushes_at_soft_budget_without_explicit_flush() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         use crate::rendering::webgl::frame_collector::AUTO_FLUSH_SOFT_BUDGET_BYTES;
 
         let (mut runtime, render_rx) = new_webgl_runtime();
@@ -6032,6 +6160,8 @@ pub(super) mod tests {
 
     #[test]
     fn small_inline_uniform_sequence_does_not_auto_flush() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -6058,6 +6188,8 @@ pub(super) mod tests {
     // document RAB-unavailable instead of asserting fabricated behavior.
     #[test]
     fn resizable_arraybuffer_uniform_source_copies_at_call_time() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -6121,6 +6253,8 @@ pub(super) mod tests {
 
     #[test]
     fn webgl2_query_registry_matches_lifecycle_semantics() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, _render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -6144,6 +6278,8 @@ pub(super) mod tests {
 
     #[test]
     fn webgl2_transform_feedback_delete_active_queues_invalid_operation() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, _render_rx) = new_webgl_runtime();
         runtime
             .exec_script(
@@ -6169,6 +6305,8 @@ pub(super) mod tests {
 
     #[test]
     fn webgl2_get_transform_feedback_varying_parses_sync_result() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         let responder = spawn_tf_varying_responder(render_rx);
         runtime
@@ -7151,6 +7289,8 @@ pub(super) mod tests {
     // The decoded GLCmd sequence must match issue order (viewport first, draw last).
     #[test]
     fn task5_200_mixed_calls_one_submit_strict_order() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         // drawElements reads its indices from a bound ELEMENT_ARRAY_BUFFER: three UNSIGNED_INTs. Set up, sent and
         // drained before the count starts.
@@ -7275,6 +7415,8 @@ pub(super) mod tests {
     // fallback conditions.
     #[test]
     fn task5_special_f32_values_route_through_stream() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
 
         crate::rendering::webgl::submit_test_counter::reset();
@@ -7340,6 +7482,8 @@ pub(super) mod tests {
     // is an ordered raw op, not an encodable hot op).
     #[test]
     fn task5_ordered_raw_op_flushes_pending_stream_first() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
 
         crate::rendering::webgl::submit_test_counter::reset();
@@ -7388,6 +7532,8 @@ pub(super) mod tests {
     // 513-word uniform vector: must flush any pending stream, then run exactly one raw op.
     #[test]
     fn task5_oversized_uniform_flushes_pending_then_raw() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
 
         crate::rendering::webgl::submit_test_counter::reset();
@@ -7458,6 +7604,8 @@ pub(super) mod tests {
     //   (c) The decoder's (from the stream) comes out second.
     #[test]
     fn task5_get_error_flushes_stream_before_drain() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, _render_rx) = new_webgl_runtime();
 
         crate::rendering::webgl::submit_test_counter::reset();
@@ -7519,6 +7667,8 @@ pub(super) mod tests {
     // This is the copy-at-call-time invariant for vector uniforms via the stream path.
     #[test]
     fn task5_mutate_after_call_does_not_affect_stream_command() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
 
         runtime
@@ -7618,6 +7768,8 @@ pub(super) mod tests {
     // `op_frame_end_unified()`, which builds a FramePacket containing the GlBatch.
     #[test]
     fn task6_gl_stream_then_fill_rect_gl_batch_before_canvas_batch() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         // Reset counter at start so we measure only this test's submits.
         crate::rendering::webgl::submit_test_counter::reset();
 
@@ -7688,6 +7840,8 @@ pub(super) mod tests {
     // GREEN (after Task 6): frame-end flushes the stream first → GlBatch is in the packet.
     #[test]
     fn task6_2d_then_gl_then_frame_end_produces_canvas_materialize_gl_present() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         // Reset so we measure only this test's submits.
         crate::rendering::webgl::submit_test_counter::reset();
 
@@ -7748,6 +7902,8 @@ pub(super) mod tests {
     // pending GL stream then canvas width/height resize → GL segment precedes ResizeCanvas.
     #[test]
     fn task6_pending_gl_stream_before_resize_flushes_gl_first() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
 
         crate::rendering::webgl::submit_test_counter::reset();
@@ -7800,6 +7956,8 @@ pub(super) mod tests {
     // Context-lost discards the GL stream: submit counter unchanged, cursor reset.
     #[test]
     fn task6_webglcontextlost_discards_stream_no_submit() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, _render_rx) = new_webgl_runtime();
 
         crate::rendering::webgl::submit_test_counter::reset();
@@ -7855,6 +8013,8 @@ pub(super) mod tests {
     // Two separate runtimes must not leak GL stream commands between them.
     #[test]
     fn task6_two_runtimes_do_not_leak_gl_commands() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         // Runtime 1: encode a GL command, do NOT flush.
         let (mut runtime1, _render_rx1) = new_webgl_runtime();
         crate::rendering::webgl::submit_test_counter::reset();
@@ -7923,6 +8083,8 @@ pub(super) mod tests {
     // the kind changes, and the number of batches is the number of changes.
     #[test]
     fn task6_mid_frame_gl_2d_gl_2d_preserves_program_order() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         use shared::protocol::render_cmd::CanvasCmd;
 
         let (mut runtime, render_rx) = new_webgl_runtime();
@@ -8135,6 +8297,8 @@ pub(super) mod tests {
     /// the interesting half of this on its own.
     #[test]
     fn a_2d_frame_crosses_the_boundary_once() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         crate::rendering::webgl::submit_test_counter::reset();
 
         let ops = run_2d_frame(
@@ -8166,6 +8330,8 @@ pub(super) mod tests {
     /// refused, and the second half of the frame does not draw.
     #[test]
     fn a_frame_that_outgrows_the_buffer_still_names_its_canvas() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         crate::rendering::webgl::submit_test_counter::reset();
 
         // The buffer is 8192 words; a fillRect is five and the selection two, so
@@ -8200,6 +8366,8 @@ pub(super) mod tests {
     /// passed them.
     #[test]
     fn the_commands_arrive_in_issue_order_with_their_arguments() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let ops = run_2d_frame(
             "canvas2d_order_and_values.js",
             r#"
@@ -8280,6 +8448,8 @@ pub(super) mod tests {
     /// every platform; this is the fast one, and the one that names each case.
     #[test]
     fn colour_strings_read_as_the_specification_has_them() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         // (assigned, what fillStyle reads back or None when the assignment is ignored)
         let cases: &[(&str, Option<&str>)] = &[
             ("red", Some("#ff0000")),
@@ -8342,6 +8512,8 @@ pub(super) mod tests {
     /// An invalid colour sends nothing, a valid one sends the colour, and a repeat sends nothing again.
     #[test]
     fn an_assignment_reaches_the_renderer_only_as_a_new_colour() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let script = r#"
             const ctx = createCanvas().getContext('2d');
             ctx.fillStyle = 'rgb(10 20 30 / 50%)';
@@ -8394,6 +8566,8 @@ pub(super) mod tests {
     /// `canvas2d-spec/font-*` asks the same through every platform.
     #[test]
     fn font_shorthands_read_as_chrome_reads_them() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         // (assigned, what `font` reads back, or None when the assignment is ignored)
         let cases: &[(&str, Option<&str>)] = &[
             ("10px sans-serif", Some("10px sans-serif")),
@@ -8589,6 +8763,8 @@ pub(super) mod tests {
     /// string sends nothing, and neither does one that reads as the font already set.
     #[test]
     fn a_font_reaches_the_renderer_as_what_the_facade_read() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let script = r#"
             const ctx = createCanvas().getContext('2d');
             ctx.font = "italic bold 12pt 'Noto Sans', serif";
@@ -8627,6 +8803,8 @@ pub(super) mod tests {
     /// family list included, and a font that is not one changes nothing it is handed.
     #[test]
     fn a_measurement_is_of_the_font_the_facade_read() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         use shared::protocol::render_cmd::{CanvasCmd, TextMetrics};
         use shared::text_measurer::TextMeasurer;
 
@@ -8743,6 +8921,8 @@ pub(super) mod tests {
     /// comment says otherwise; migo-conformance's `canvas2d-spec/image-data-*` asks the same through every platform.
     #[test]
     fn image_data_is_the_interface_the_specification_has() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let script = r#"
             const ctx = createCanvas().getContext('2d');
             const outcome = (f) => { try { const v = f(); return v instanceof ImageData ? [v.width, v.height, v.data.length, v.colorSpace].join() : String(v); } catch (e) { return 'threw ' + e.name; } };
@@ -8827,6 +9007,8 @@ pub(super) mod tests {
     /// one in sRGB as it is. The numbers are Chrome's for an unpremultiplied opaque pixel.
     #[test]
     fn put_image_data_converts_display_p3_to_the_canvas_srgb() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let script = r#"
             const ctx = createCanvas().getContext('2d');
             ctx.putImageData(new ImageData(new Uint8ClampedArray([128, 64, 32, 255, 255, 0, 0, 255]), 2, 1, { colorSpace: 'display-p3' }), 1, 2);
@@ -8859,6 +9041,8 @@ pub(super) mod tests {
     /// space; in sRGB it is the snapshot the renderer took, an ImageData too. The numbers are Chrome's.
     #[test]
     fn get_image_data_converts_to_display_p3_when_asked() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         use shared::protocol::render_cmd::CanvasCmd;
 
         let (mut runtime, render_rx) = new_webgl_runtime();
@@ -8901,6 +9085,8 @@ pub(super) mod tests {
     /// `measureText` answers a `TextMetrics`: read-only, a new object each call, its members on the prototype.
     #[test]
     fn a_measurement_is_a_text_metrics() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let script = r#"
             'use strict';
             const ctx = createCanvas().getContext('2d');
@@ -8944,6 +9130,8 @@ pub(super) mod tests {
     /// comment says otherwise; migo-conformance's `canvas2d-spec/arguments-*` asks the same through every platform.
     #[test]
     fn canvas2d_arguments_are_converted_as_webidl_has_them() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let script = r#"
             const ctx = createCanvas().getContext('2d');
             // Canvases as the context reads one -- a renderer id and a size -- without a render thread to make them.
@@ -9068,6 +9256,8 @@ pub(super) mod tests {
     /// it drew nothing.)
     #[test]
     fn an_image_bitmap_is_drawn() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let script = r#"
             const ctx = createCanvas().getContext('2d');
             const image = migo.createImage();
@@ -9115,6 +9305,8 @@ pub(super) mod tests {
     /// looks exactly like one that did not, from anywhere except here.
     #[test]
     fn the_boundary_counter_separates_a_batched_frame_from_an_op_per_call_one() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         use shared::protocol::render_cmd::CanvasCmd;
 
         fn crossings_for(name: &'static str, body: &str) -> (u64, u64) {
@@ -9200,6 +9392,8 @@ pub(super) mod tests {
 
     #[test]
     fn r2_scalar_routing_preserves_baseline_type_acceptance() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         fn accepts(name: &'static str, source: &'static str) -> bool {
             let (mut runtime, _render_rx) = new_webgl_runtime();
             runtime.exec_script(name, source).is_ok()
@@ -9368,6 +9562,8 @@ pub(super) mod tests {
 
     #[test]
     fn r2_mid_frame_path_command_flushes_pending_gl_before_line_to() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         let (handle, packet_rx) = spawn_canvas_frame_responder(render_rx);
 
@@ -9412,6 +9608,8 @@ pub(super) mod tests {
 
     #[test]
     fn r2_get_image_data_snapshot_flushes_pending_gl_first() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         let (handle, packet_rx) = spawn_canvas_frame_responder(render_rx);
 
@@ -9515,6 +9713,8 @@ pub(super) mod tests {
     /// InvalidStateError, and a canvas the facade cannot reach as a canvas is not a pattern source.
     #[test]
     fn create_pattern_from_a_canvas_copies_it_under_an_id_the_fill_names() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         use shared::protocol::render_cmd::{Canvas2DCmd, CanvasCmd};
 
         let (mut runtime, render_rx) = new_webgl_runtime();
@@ -9616,6 +9816,8 @@ pub(super) mod tests {
     /// readback a browser does at the call is taken at frame end instead.
     #[test]
     fn an_unread_image_data_is_read_back_before_its_frame_ends() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         let (handle, events_rx) = spawn_snapshot_responder(render_rx, (4, 4));
 
@@ -9653,6 +9855,8 @@ pub(super) mod tests {
     /// costs no readback at frame end.
     #[test]
     fn a_spent_image_data_is_not_read_back_at_frame_end() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         let (handle, events_rx) = spawn_snapshot_responder(render_rx, (4, 4));
 
@@ -9699,6 +9903,8 @@ pub(super) mod tests {
     /// than captured into a pool that would refuse it and leave the `ImageData` all zeros.
     #[test]
     fn past_the_snapshot_byte_budget_get_image_data_reads_eagerly() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         let (handle, events_rx) = spawn_snapshot_responder(render_rx, (4096, 4096));
 
@@ -9736,6 +9942,8 @@ pub(super) mod tests {
 
     #[test]
     fn r2_text_cache_consume_flushes_pending_gl_before_capture_and_upload() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         let (handle, packet_rx) = spawn_canvas_frame_responder(render_rx);
 
@@ -9780,6 +9988,8 @@ pub(super) mod tests {
 
     #[test]
     fn r2_context_loss_without_main_canvas_discards_offscreen_stream() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (host_state, _render_rx) = new_test_host_state();
         let context_lost = Arc::clone(&host_state.context_lost);
         let mut runtime = HostJsRuntime::new(
@@ -9828,6 +10038,8 @@ pub(super) mod tests {
 
     #[test]
     fn r2_create_context_flushes_pending_gl_barrier_first() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         use shared::protocol::render_cmd::{Canvas2DCmd, CanvasCmd};
 
         let (mut runtime, render_rx) = new_webgl_runtime();
@@ -9886,6 +10098,8 @@ pub(super) mod tests {
 
     #[test]
     fn r2_canvas_info_flushes_pending_gl_barrier_first() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         use shared::protocol::render_cmd::CanvasCmd;
 
         let (mut runtime, render_rx) = new_webgl_runtime();
@@ -9940,6 +10154,8 @@ pub(super) mod tests {
 
     #[test]
     fn r2_offscreen_registration_flushes_pending_gl_barrier_first() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         use shared::protocol::render_cmd::CanvasCmd;
 
         let (mut runtime, render_rx) = new_webgl_runtime();
@@ -10004,6 +10220,8 @@ pub(super) mod tests {
 
     #[test]
     fn r2_measure_text_flushes_pending_gl_barrier_first() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         use shared::protocol::render_cmd::{Canvas2DCmd, CanvasCmd, TextMetrics};
 
         let (mut runtime, render_rx) = new_webgl_runtime();
@@ -10078,6 +10296,8 @@ pub(super) mod tests {
 
     #[test]
     fn r2_direct_gradient_apply_flushes_pending_gl_first() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, render_rx) = new_webgl_runtime();
         let (handle, packet_rx) = spawn_canvas_frame_responder(render_rx);
 

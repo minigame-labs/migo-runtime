@@ -37,6 +37,8 @@ members = [
 # `#[global_allocator]`, which is unique per binary, so it must never be reachable
 # from a shipped crate's `[dependencies]`; being a separate crate consumed only
 # through `[dev-dependencies]` is what makes that cargo's rule instead of a promise.
+# Not tools/snapshot-gen: its runtime-v8 takes `all-extension-js`, and a default build that includes it
+# unifies that feature into the shipped library, which then carries JS its snapshot already holds.
 default-members = [
  "crates/android-jni",
  "crates/audio",
@@ -54,7 +56,6 @@ default-members = [
  "testing/alloc-probe",
  "testing/contention-probe",
  "testing/executor-probe",
- "tools/snapshot-gen",
 ]
 
 # Mirrors `release/VERSION`, which is the repository's single release-version
@@ -66,17 +67,15 @@ version = "0.9.19"
 license = "BSL-1.1"
 
 [workspace.dependencies]
-# Tokio runtime - avoid "full" feature, use only what's needed
+ada-url = { version = "=4.0.0", default-features = false, features = ["bundled", "std"] }
+# Select the features each Migo crate needs. deno_core additionally requests
+# Tokio's `full` set in embedded-V8 products; feature unification is additive.
 tokio = { version = "1.46.1", default-features = false }
 futures = "0.3.31"
 serde = { version = "1.0.219", features = ["rc"] }
 serde_json = "1.0.148"
-# HTTP is the engine's own client (crates/services/src/network/http), on hyper with
-# rustls and the webpki root set (~100KB Mozilla root cert list).
-# On Android, native root-store discovery may fail in some environments, causing
-# WebSocket TLS handshake errors such as "no native root CA certificates found".
-# Use webpki roots for tokio-tungstenite as well for deterministic behavior.
-tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+# Protocol framing only. HTTPS/WSS trust is configured by migo-services.
+tokio-tungstenite = { version = "0.30.0", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 thiserror = "2.0.12"
 http = "1.0"
 data-url = "=0.3.1"
@@ -162,9 +161,9 @@ tracing-subscriber = { version = "0.3.20", default-features = false, features = 
 # Windows-specific.
 smallvec = { version = "1.15.1", features = ["const_generics"] }
 bytemuck = { version = "1.23.2", features = ["extern_crate_alloc"] }
-deno_core = {version = "0.385.0", default-features = false}
+deno_core = { version = "=0.413.0", default-features = false, features = ["v8", "reactor-tokio"] }
 zstd = { version = "0.13", default-features = false }
-deno_error = "=0.7.3"
+deno_error = "=0.7.1"
 
 
 # =============================================================================
@@ -317,6 +316,22 @@ opt-level = 3
 
 [profile.release-hot3.package.migo-runtime-v8]
 opt-level = 3
+
+# Skia's ICU calls resolve against V8's on Android instead of a second, bundled ICU (1.36 MB of
+# libmigo.so and a second Unicode version). Inert unless SKIA_EXTERNAL_ICU_INCLUDE_DIRS is set; the
+# copy is the published crate plus engine/third_party/skia-bindings-patches, which
+# scripts/test-skia-bindings-vendor-contract.sh proves byte for byte.
+[patch.crates-io]
+# Exclude unused macOS process-tap capture from the mini-game output product.
+cpal = { path = "third_party/cpal-0.18.2" }
+tungstenite = { path = "third_party/tungstenite-0.30.0" }
+# Keep Ada C++ on the embedding product CRT rather than forcing /MT.
+ada-url = { path = "third_party/ada-url-4.0.0" }
+skia-bindings = { path = "third_party/skia-bindings-0.93.1" }
+# Preserve HTML zero-delay tasks using core's scheduler, without copying its heap.
+deno_core = { path = "third_party/deno_core-0.413.0" }
+# The native Windows DLL and its actual Rust consumer share callback registration.
+v8 = { path = "third_party/v8-150.4.0" }
 
 # =============================================================================
 # Dev Profile - Faster compilation for development

@@ -59,7 +59,7 @@ def extensions(root: pathlib.Path) -> dict[str, Extension]:
             continue
         original = path.read_text(encoding="utf-8")
         masked = runtime_ops.mask_rust(original)
-        excluded = runtime_ops.cfg_test_spans(masked)
+        excluded = runtime_ops.not_declared_spans(masked)
         for match in runtime_ops.EXTENSION_OPEN.finditer(masked):
             if any(start <= match.start() < end for start, end in excluded):
                 continue

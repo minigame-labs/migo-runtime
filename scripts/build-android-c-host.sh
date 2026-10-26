@@ -16,6 +16,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/lib/v8-materialise.sh
 source "$SCRIPT_DIR/lib/v8-materialise.sh"
+# shellcheck source=scripts/lib/skia-external-icu.sh
+source "$SCRIPT_DIR/lib/skia-external-icu.sh"
 # shellcheck source=scripts/lib/cargo-target-dir.sh
 source "$SCRIPT_DIR/lib/cargo-target-dir.sh"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -80,6 +82,7 @@ V8_DIR="$ENGINE_DIR/third_party/rusty_v8/$TARGET"
 # one here would be dead code shaped like a guard.
 v8_materialise "$V8_DIR" "$ENGINE_DIR/target/v8-materialised" || exit 1
 
+skia_external_icu_export "$ENGINE_DIR" "$TARGET" || exit 1
 info "building capi staticlib for $TARGET"
 # Built from inside engine/ so engine/rust-toolchain.toml applies -- it is
 # resolved from the working directory, not from --manifest-path, so building

@@ -41,6 +41,8 @@ impl SystemUtilServices for Platform {}
 /// on -- turned on while the game runs -- and nothing before or after.
 #[test]
 fn the_aids_reach_the_host_and_the_console_records_while_they_are_on() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     // The support state's session id; nothing else in these tests records
     // under it.
     let host_id = 1;
@@ -84,6 +86,8 @@ fn the_aids_reach_the_host_and_the_console_records_while_they_are_on() {
 /// words, and nothing is recorded.
 #[test]
 fn without_aids_the_call_fails_and_nothing_is_recorded() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let services: Arc<dyn DeviceServices> = Arc::new(Platform(None));
     let mut runtime = boot_with_services(Some(services), None);
     let heard = run_to_idle(

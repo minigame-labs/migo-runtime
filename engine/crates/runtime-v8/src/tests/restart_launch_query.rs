@@ -12,6 +12,8 @@ mod restart_tests {
     /// with. The synchronous form takes the same options.
     #[test]
     fn a_restart_carries_the_query_its_path_names() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (host_tx, _critical, mut host_rx) = shared::host_channel::channel(8);
         let mut state = test_host_state();
         state.host_tx = host_tx;

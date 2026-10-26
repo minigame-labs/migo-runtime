@@ -27,6 +27,8 @@ mod intl_tests {
 
     #[test]
     fn numbers_format_with_grouping() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         eval_bool("return new Intl.NumberFormat('en-US').format(1234567.891) === '1,234,567.891';");
         eval_bool("return (1234.5).toLocaleString('en-US') === '1,234.5';");
         eval_bool(
@@ -36,6 +38,8 @@ mod intl_tests {
 
     #[test]
     fn dates_format_in_a_named_zone() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         eval_bool(
             "return new Intl.DateTimeFormat('en-US', { timeZone: 'UTC' }).format(new Date(0)) === '1/1/1970';",
         );
@@ -46,6 +50,8 @@ mod intl_tests {
 
     #[test]
     fn strings_compare_and_normalise() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         eval_bool("return 'a'.localeCompare('b') < 0 && 'b'.localeCompare('a') > 0;");
         eval_bool(
             "return ['b', 'a', 'C'].sort(new Intl.Collator('en').compare).join() === 'a,b,C';",
@@ -56,6 +62,8 @@ mod intl_tests {
 
     #[test]
     fn the_other_intl_constructors_work() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         eval_bool("return new Intl.PluralRules('en').select(1) === 'one';");
         eval_bool("return new Intl.RelativeTimeFormat('en').format(1, 'day') === 'in 1 day';");
         eval_bool("return new Intl.ListFormat('en').format(['a', 'b', 'c']) === 'a, b, and c';");
@@ -68,6 +76,8 @@ mod intl_tests {
     /// the policy should have kept shows up here, not in a game.
     #[test]
     fn each_part_of_the_filtered_data_still_does_its_job() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         // The core data of every locale, kept for all of them: a German player's number is not an English one.
         eval_bool("return new Intl.NumberFormat('de-DE').format(1234.5) === '1.234,5';");
         eval_bool("return new Intl.NumberFormat('hi-IN').format(1234567) === '12,34,567';");
@@ -111,6 +121,8 @@ mod intl_tests {
     /// Text layout libraries (Pixi, many others) split text into user-perceived characters with it.
     #[test]
     fn a_segmenter_splits_into_graphemes_and_words() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         eval_bool(
             "const s = new Intl.Segmenter('en', { granularity: 'grapheme' }); \
              return Array.from(s.segment('a\\u0301bc')).length === 3;",

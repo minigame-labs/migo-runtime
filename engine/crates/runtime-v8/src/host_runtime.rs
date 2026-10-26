@@ -453,6 +453,29 @@ impl HostJsRuntime {
         f(&mut self.rt, &mut self.bindings)
     }
 
+    /// A host message or script is one logical task. End it before admitting
+    /// the next message, after callback scopes/OpState borrows have unwound.
+    /// Keep the checkpoint under the same watchdog as the synchronous body.
+    fn run_js_task<R>(
+        &mut self,
+        f: impl FnOnce(&mut JsRuntime, &mut JsBindings) -> Result<R, Box<deno_core::error::JsError>>,
+    ) -> Result<R, Box<deno_core::error::JsError>> {
+        self.with_v8(|rt, bindings| {
+            let result = f(rt, bindings);
+            let checkpoint = rt.perform_microtask_checkpoint();
+            result.and_then(|value| checkpoint.map(|()| value))
+        })
+    }
+
+    fn dispatch_task(&mut self, f: impl FnOnce(&mut JsRuntime, &mut JsBindings)) {
+        if let Err(error) = self.run_js_task(|rt, bindings| {
+            f(rt, bindings);
+            Ok(())
+        }) {
+            tracing::error!(host_id = self.host_id, %error, "host task checkpoint failed");
+        }
+    }
+
     /// The op state, for cases that read a counter the runtime keeps there.
     #[cfg(test)]
     pub(crate) fn op_state_for_test(&self) -> std::rc::Rc<std::cell::RefCell<deno_core::OpState>> {
@@ -568,7 +591,7 @@ impl HostJsRuntime {
         timestamp_ms: i64,
     ) {
         let host_id = self.host_id;
-        self.with_v8(|rt, bindings| {
+        self.dispatch_task(|rt, bindings| {
             bindings.dispatch_touch(rt, host_id, touch_type, points, timestamp_ms)
         });
     }
@@ -582,22 +605,22 @@ impl HostJsRuntime {
     /// is reachable from content because `Symbol.for` reads the global symbol
     /// registry. Dispatching through a retained handle needs no name.
     pub fn invoke_host_hook(&mut self, hook: &str, args_json: &str) {
-        self.with_v8(|rt, bindings| bindings.invoke_host_hook(rt, hook, args_json));
+        self.dispatch_task(|rt, bindings| bindings.invoke_host_hook(rt, hook, args_json));
     }
 
     pub fn dispatch_webgl_context_event(&mut self, kind: &str) {
-        self.with_v8(|rt, bindings| bindings.dispatch_webgl_context_event(rt, kind));
+        self.dispatch_task(|rt, bindings| bindings.dispatch_webgl_context_event(rt, kind));
     }
 
     /// Forward host focus without conflating it with app visibility or
     /// render/audio pause state.
     pub fn dispatch_focus_changed(&mut self, focused: bool) {
-        self.with_v8(|rt, bindings| bindings.dispatch_focus_changed(rt, focused));
+        self.dispatch_task(|rt, bindings| bindings.dispatch_focus_changed(rt, focused));
     }
 
     pub fn dispatch_inner_audio_event(&mut self, id: u32, event_type: &str, current_time: f64) {
         let host_id = self.host_id;
-        self.with_v8(|rt, bindings| {
+        self.dispatch_task(|rt, bindings| {
             bindings.dispatch_inner_audio_event(rt, host_id, id, event_type, current_time)
         });
     }
@@ -606,32 +629,32 @@ impl HostJsRuntime {
 
     #[inline]
     pub fn dispatch_device_motion(&mut self, alpha: f64, beta: f64, gamma: f64) {
-        self.with_v8(|rt, bindings| bindings.dispatch_device_motion(rt, alpha, beta, gamma));
+        self.dispatch_task(|rt, bindings| bindings.dispatch_device_motion(rt, alpha, beta, gamma));
     }
 
     #[inline]
     pub fn dispatch_gyroscope(&mut self, x: f64, y: f64, z: f64) {
-        self.with_v8(|rt, bindings| bindings.dispatch_gyroscope(rt, x, y, z));
+        self.dispatch_task(|rt, bindings| bindings.dispatch_gyroscope(rt, x, y, z));
     }
 
     #[inline]
     pub fn dispatch_accelerometer(&mut self, x: f64, y: f64, z: f64) {
-        self.with_v8(|rt, bindings| bindings.dispatch_accelerometer(rt, x, y, z));
+        self.dispatch_task(|rt, bindings| bindings.dispatch_accelerometer(rt, x, y, z));
     }
 
     #[inline]
     pub fn dispatch_compass(&mut self, direction: f64, accuracy: &str) {
-        self.with_v8(|rt, bindings| bindings.dispatch_compass(rt, direction, accuracy));
+        self.dispatch_task(|rt, bindings| bindings.dispatch_compass(rt, direction, accuracy));
     }
 
     #[inline]
     pub fn dispatch_device_orientation(&mut self, value: &str) {
-        self.with_v8(|rt, bindings| bindings.dispatch_device_orientation(rt, value));
+        self.dispatch_task(|rt, bindings| bindings.dispatch_device_orientation(rt, value));
     }
 
     #[inline]
     pub fn dispatch_network_status(&mut self, is_connected: bool, network_type: &str) {
-        self.with_v8(|rt, bindings| {
+        self.dispatch_task(|rt, bindings| {
             bindings.dispatch_network_status(rt, is_connected, network_type)
         });
     }
@@ -645,7 +668,7 @@ impl HostJsRuntime {
         is_last_frame: bool,
     ) {
         let host_id = self.host_id;
-        self.with_v8(|rt, bindings| {
+        self.dispatch_task(|rt, bindings| {
             bindings.dispatch_recorder_frame_data(rt, host_id, recording_id, data, is_last_frame)
         });
     }
@@ -660,7 +683,7 @@ impl HostJsRuntime {
         height: u32,
     ) {
         let host_id = self.host_id;
-        self.with_v8(|rt, bindings| {
+        self.dispatch_task(|rt, bindings| {
             bindings.dispatch_camera_frame_data(rt, host_id, camera_id, data, width, height)
         });
     }
@@ -669,24 +692,26 @@ impl HostJsRuntime {
 
     #[inline]
     pub fn dispatch_bluetooth_adapter_state_change(&mut self, available: bool, discovering: bool) {
-        self.with_v8(|rt, bindings| {
+        self.dispatch_task(|rt, bindings| {
             bindings.dispatch_bluetooth_adapter_state_change(rt, available, discovering)
         });
     }
 
     #[inline]
     pub fn dispatch_bluetooth_device_found(&mut self, devices_json: &str) {
-        self.with_v8(|rt, bindings| bindings.dispatch_bluetooth_device_found(rt, devices_json));
+        self.dispatch_task(|rt, bindings| {
+            bindings.dispatch_bluetooth_device_found(rt, devices_json)
+        });
     }
 
     #[inline]
     pub fn dispatch_beacon_update(&mut self, beacons_json: &str) {
-        self.with_v8(|rt, bindings| bindings.dispatch_beacon_update(rt, beacons_json));
+        self.dispatch_task(|rt, bindings| bindings.dispatch_beacon_update(rt, beacons_json));
     }
 
     #[inline]
     pub fn dispatch_beacon_service_change(&mut self, available: bool, discovering: bool) {
-        self.with_v8(|rt, bindings| {
+        self.dispatch_task(|rt, bindings| {
             bindings.dispatch_beacon_service_change(rt, available, discovering)
         });
     }
@@ -695,7 +720,7 @@ impl HostJsRuntime {
 
     #[inline]
     pub fn dispatch_ble_connection_state_change(&mut self, device_id: &str, connected: bool) {
-        self.with_v8(|rt, bindings| {
+        self.dispatch_task(|rt, bindings| {
             bindings.dispatch_ble_connection_state_change(rt, device_id, connected)
         });
     }
@@ -708,7 +733,7 @@ impl HostJsRuntime {
         characteristic_id: &str,
         value: &[u8],
     ) {
-        self.with_v8(|rt, bindings| {
+        self.dispatch_task(|rt, bindings| {
             bindings.dispatch_ble_characteristic_value_change(
                 rt,
                 device_id,
@@ -721,49 +746,49 @@ impl HostJsRuntime {
 
     #[inline]
     pub fn dispatch_ble_mtu_change(&mut self, device_id: &str, mtu: u32) {
-        self.with_v8(|rt, bindings| bindings.dispatch_ble_mtu_change(rt, device_id, mtu));
+        self.dispatch_task(|rt, bindings| bindings.dispatch_ble_mtu_change(rt, device_id, mtu));
     }
 
     // ---- Memory warning dispatch ----
 
     #[inline]
     pub fn dispatch_memory_warning(&mut self, level: i32) {
-        self.with_v8(|rt, bindings| bindings.dispatch_memory_warning(rt, level));
+        self.dispatch_task(|rt, bindings| bindings.dispatch_memory_warning(rt, level));
     }
 
     // ---- Keyboard event dispatch ----
 
     #[inline]
     pub fn dispatch_keyboard_input(&mut self, value: &str) {
-        self.with_v8(|rt, bindings| bindings.dispatch_keyboard_input(rt, value));
+        self.dispatch_task(|rt, bindings| bindings.dispatch_keyboard_input(rt, value));
     }
 
     #[inline]
     pub fn dispatch_keyboard_height_change(&mut self, height: f64) {
-        self.with_v8(|rt, bindings| bindings.dispatch_keyboard_height_change(rt, height));
+        self.dispatch_task(|rt, bindings| bindings.dispatch_keyboard_height_change(rt, height));
     }
 
     #[inline]
     pub fn dispatch_keyboard_confirm(&mut self, value: &str) {
-        self.with_v8(|rt, bindings| bindings.dispatch_keyboard_confirm(rt, value));
+        self.dispatch_task(|rt, bindings| bindings.dispatch_keyboard_confirm(rt, value));
     }
 
     #[inline]
     pub fn dispatch_keyboard_complete(&mut self, value: &str) {
-        self.with_v8(|rt, bindings| bindings.dispatch_keyboard_complete(rt, value));
+        self.dispatch_task(|rt, bindings| bindings.dispatch_keyboard_complete(rt, value));
     }
 
     #[inline]
     pub fn dispatch_composition_start(&mut self, data: &str) {
-        self.with_v8(|rt, bindings| bindings.dispatch_composition_start(rt, data));
+        self.dispatch_task(|rt, bindings| bindings.dispatch_composition_start(rt, data));
     }
 
     pub fn dispatch_composition_update(&mut self, data: &str) {
-        self.with_v8(|rt, bindings| bindings.dispatch_composition_update(rt, data));
+        self.dispatch_task(|rt, bindings| bindings.dispatch_composition_update(rt, data));
     }
 
     pub fn dispatch_composition_end(&mut self, data: &str) {
-        self.with_v8(|rt, bindings| bindings.dispatch_composition_end(rt, data));
+        self.dispatch_task(|rt, bindings| bindings.dispatch_composition_end(rt, data));
     }
 
     pub fn dispatch_gamepad_connected(
@@ -775,7 +800,7 @@ impl HostJsRuntime {
         button_count: u8,
         haptics: u8,
     ) {
-        self.with_v8(|rt, bindings| {
+        self.dispatch_task(|rt, bindings| {
             bindings.dispatch_gamepad_connected(
                 rt,
                 index,
@@ -789,11 +814,11 @@ impl HostJsRuntime {
     }
 
     pub fn dispatch_gamepad_disconnected(&mut self, index: u32) {
-        self.with_v8(|rt, bindings| bindings.dispatch_gamepad_disconnected(rt, index));
+        self.dispatch_task(|rt, bindings| bindings.dispatch_gamepad_disconnected(rt, index));
     }
 
     pub fn dispatch_gamepad_state(&mut self, state: &shared::protocol::host_cmd::GamepadState) {
-        self.with_v8(|rt, bindings| bindings.dispatch_gamepad_state(rt, state));
+        self.dispatch_task(|rt, bindings| bindings.dispatch_gamepad_state(rt, state));
     }
 
     pub fn dispatch_key_down(
@@ -804,7 +829,7 @@ impl HostJsRuntime {
         modifiers: u32,
         repeat: bool,
     ) {
-        self.with_v8(|rt, bindings| {
+        self.dispatch_task(|rt, bindings| {
             bindings.dispatch_key_down(rt, key, code, timestamp_ms, modifiers, repeat)
         });
     }
@@ -818,7 +843,7 @@ impl HostJsRuntime {
         modifiers: u32,
         repeat: bool,
     ) {
-        self.with_v8(|rt, bindings| {
+        self.dispatch_task(|rt, bindings| {
             bindings.dispatch_key_up(rt, key, code, timestamp_ms, modifiers, repeat)
         });
     }
@@ -827,17 +852,23 @@ impl HostJsRuntime {
 
     #[inline]
     pub fn dispatch_mouse_down(&mut self, x: f32, y: f32, button: u32, timestamp_ms: f64) {
-        self.with_v8(|rt, bindings| bindings.dispatch_mouse_down(rt, x, y, button, timestamp_ms));
+        self.dispatch_task(|rt, bindings| {
+            bindings.dispatch_mouse_down(rt, x, y, button, timestamp_ms)
+        });
     }
 
     #[inline]
     pub fn dispatch_mouse_move(&mut self, x: f32, y: f32, button: u32, timestamp_ms: f64) {
-        self.with_v8(|rt, bindings| bindings.dispatch_mouse_move(rt, x, y, button, timestamp_ms));
+        self.dispatch_task(|rt, bindings| {
+            bindings.dispatch_mouse_move(rt, x, y, button, timestamp_ms)
+        });
     }
 
     #[inline]
     pub fn dispatch_mouse_up(&mut self, x: f32, y: f32, button: u32, timestamp_ms: f64) {
-        self.with_v8(|rt, bindings| bindings.dispatch_mouse_up(rt, x, y, button, timestamp_ms));
+        self.dispatch_task(|rt, bindings| {
+            bindings.dispatch_mouse_up(rt, x, y, button, timestamp_ms)
+        });
     }
 
     #[inline]
@@ -849,7 +880,7 @@ impl HostJsRuntime {
         delta_mode: u32,
         timestamp_ms: f64,
     ) {
-        self.with_v8(|rt, bindings| {
+        self.dispatch_task(|rt, bindings| {
             bindings.dispatch_wheel(rt, delta_x, delta_y, delta_z, delta_mode, timestamp_ms)
         });
     }
@@ -864,7 +895,7 @@ impl HostJsRuntime {
     /// loop, handling any resulting microtasks, promises, or timers.
     pub fn exec_script(&mut self, name: &'static str, source: &str) -> EngineResult<()> {
         let source = deno_core::FastString::from(source.to_string());
-        self.with_v8(|rt, _bindings| rt.execute_script(name, source))
+        self.run_js_task(|rt, _bindings| rt.execute_script(name, source))
             .map_err(|e| {
                 EngineError::new(ErrorCode::JsException)
                     .with_msg(name)
@@ -882,7 +913,7 @@ impl HostJsRuntime {
     pub fn exec_script_owned(&mut self, name: String, source: &str) -> EngineResult<()> {
         let source = deno_core::FastString::from(source.to_string());
         let name_for_err = name.clone();
-        self.with_v8(|rt, _bindings| rt.execute_script(name, source))
+        self.run_js_task(|rt, _bindings| rt.execute_script(name, source))
             .map_err(|e| {
                 EngineError::new(ErrorCode::JsException)
                     .with_msg(name_for_err)

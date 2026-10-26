@@ -11,8 +11,8 @@
 
 use std::time::Duration;
 
+use crate::network::url::Url;
 use tracing::debug;
-use url::Url;
 
 use shared::network_policy::NetworkPolicy;
 
