@@ -40,8 +40,9 @@ Then the notes:
 | unverified | The platform answers it, but conformance testing has not verified it there yet. |
 | no default | The host app implements it itself (the entry points are in the "Takes from the host" column); the platform has no default. |
 | check fails | A conformance check of it fails. |
+| not in the reference here | The common mini-game platform itself does not offer it on this kind of client: most of the API is on its phones only, a few calls on its desktops only (as its pages say). A game written for that client does not rely on it, so nothing here is owed to compatibility and it counts as ready; where Migo answers it anyway, the cell still says who answers. |
 
-A "host" cell with no note is one whose remaining part is the host app's own by nature (its ads, payments, accounts, consent); the platform wires the rest. "Ready" in the summary means wired and verified, deliberately not offered, or left to the host app by nature.
+A "host" cell with no note is one whose remaining part is the host app's own by nature (its ads, payments, accounts, consent); the platform wires the rest. "Ready" in the summary means wired and verified, deliberately not offered, left to the host app by nature, or not offered by the reference itself on that kind of client (the "not in the reference here" row counts those).
 
 The "Takes from the host" column lists what each API takes from the host:
 
