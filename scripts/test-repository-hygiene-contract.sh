@@ -107,6 +107,29 @@ PY
     expect_fail "tracked private signing material is rejected" "$fixture"
     git -C "$fixture" rm -q --cached secret.pem
 
+    # An upstream tree vendored byte for byte carries upstream's test vectors
+    # and archives: the machine-local rules do not hold it, and only it. Every
+    # other rule still does -- a key in a vendored tree is still a key.
+    mkdir -p "$fixture/vendor/upstream" "$fixture/authored"
+    printf '/vendor/** linguist-vendored\n' > "$fixture/.gitattributes"
+    git -C "$fixture" add .gitattributes
+    cp "$fixture/path.md" "$fixture/vendor/upstream/urltest.md"
+    printf 'fixture archive\n' > "$fixture/vendor/upstream/verifier.aar"
+    git -C "$fixture" add vendor/upstream/urltest.md vendor/upstream/verifier.aar
+    expect_pass "a vendored tree's home-path vector and archive are upstream's bytes" "$fixture"
+    cp "$fixture/secret.pem" "$fixture/vendor/upstream/key.pem"
+    git -C "$fixture" add vendor/upstream/key.pem
+    expect_fail "private signing material is rejected inside a vendored tree too" "$fixture"
+    git -C "$fixture" rm -q --cached vendor/upstream/key.pem
+    cp "$fixture/path.md" "$fixture/authored/urltest.md"
+    git -C "$fixture" add authored/urltest.md
+    expect_fail "the same home path outside the vendored tree is rejected" "$fixture"
+    git -C "$fixture" rm -q --cached authored/urltest.md
+    printf 'fixture archive\n' > "$fixture/authored/build.aar"
+    git -C "$fixture" add authored/build.aar
+    expect_fail "an archive outside the vendored tree is a build product" "$fixture"
+    git -C "$fixture" rm -q --cached authored/build.aar vendor/upstream/urltest.md vendor/upstream/verifier.aar .gitattributes
+
     mkdir -p "$fixture/.agents"
     printf 'local state\n' > "$fixture/.agents/state.json"
     git -C "$fixture" add -f .agents/state.json
