@@ -1028,6 +1028,11 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
         /// The text content last heard, so a change that ends where it began
         /// (a stripped newline, a truncated paste) is not reported twice.
         private var reported = ""
+        /// Whether the keyboard content opened is still to be heard leaving:
+        /// set when content's field opens, cleared once the keyboard's height
+        /// has been reported back to 0 -- which happens after the field is
+        /// closed (confirm, hideKeyboard), as the keyboard animates away.
+        private var reportsHeight = false
         private var observers: [NSObjectProtocol] = []
 
         init(owner: MigoGameView) {
@@ -1048,8 +1053,9 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             observers.append(
                 center.addObserver(forName: UIResponder.keyboardWillHideNotification, object: nil, queue: .main) {
                     [weak self] _ in
-                    guard self?.request != nil else { return }
-                    self?.owner?.keyboardInput(.heightChange(0))
+                    guard let self, self.reportsHeight else { return }
+                    self.reportsHeight = false
+                    self.owner?.keyboardInput(.heightChange(0))
                 })
         }
 
@@ -1061,6 +1067,7 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             field.returnKeyType = Self.returnKey(request.confirmType)
             field.text = request.defaultValue
             reported = request.defaultValue
+            reportsHeight = true
             if field.isFirstResponder {
                 field.reloadInputViews()
             } else {
@@ -1098,8 +1105,8 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             var text = textView.text ?? ""
             let confirmed = !request.multiline && text.contains("\n")
             if confirmed { text = text.replacingOccurrences(of: "\n", with: "") }
-            if request.maxLength > 0, text.count > request.maxLength {
-                text = String(text.prefix(request.maxLength))
+            if request.maxLength > 0, text.utf16.count > request.maxLength {
+                text = Self.prefix(of: text, utf16Units: request.maxLength)
             }
             if text != textView.text { textView.text = text }
             if text != reported {
@@ -1120,14 +1127,31 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             hide()
         }
 
+        /// The longest whole-character prefix of `text` that is at most `limit`
+        /// UTF-16 units: maxLength counts what a JavaScript string's length
+        /// does, as on every other platform, and a character is never cut.
+        static func prefix(of text: String, utf16Units limit: Int) -> String {
+            var units = 0
+            var end = text.startIndex
+            for character in text {
+                units += character.utf16.count
+                if units > limit { break }
+                end = text.index(after: end)
+            }
+            return String(text[..<end])
+        }
+
         private func keyboardFrameChanged(_ note: Notification) {
-            guard request != nil, let owner, let window = owner.window,
+            guard reportsHeight, let owner, let window = owner.window,
                 let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect
             else { return }
             // Points are CSS pixels here; the overlap with this view is what
             // content lays itself out around.
             let overlap = owner.convert(owner.bounds, to: window).intersection(window.convert(frame, from: nil))
-            owner.keyboardInput(.heightChange(overlap.isNull ? 0 : Double(overlap.height)))
+            let height = overlap.isNull ? 0 : Double(overlap.height)
+            owner.keyboardInput(.heightChange(height))
+            // Gone: the hide notice that follows has nothing more to say.
+            if height == 0, request == nil { reportsHeight = false }
         }
 
         private static func returnKey(_ type: MigoKeyboardConfirmType) -> UIReturnKeyType {
