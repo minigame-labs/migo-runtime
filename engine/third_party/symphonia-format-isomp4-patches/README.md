@@ -48,3 +48,19 @@ also avoids a debug-build overflow for valid large sample indices and rejects
 an aggregate sample count exceeding the u32 index domain while parsing.
 Three executable boundary contracts include exact u32 limits and actual atom
 parsing. This patch does not implement incremental M4A, HTTP Range or fallback.
+
+`0004-borrowed-aac-streaming-index.patch` provides an optional, default-disabled
+streaming feature for bounded complete moov parsing and borrowed AAC-LC sample
+descriptors. TrackState presentation/cursor logic is shared with the existing
+pull reader. Sample timing keeps a reusable table cursor; sequential traversal
+is linear in samples plus rows, without extra prefix arrays or per-packet
+allocation. Backward lookup and segment changes reset the cursor. Chunk-start
+offsets remain authoritative even in non-monotonic layouts.
+
+The selected index profile is one nonfragmented AAC-LC mono/stereo track.
+Defaults bound the encoded moov to 2MiB and each packet to 64KiB; complete atom
+parsing is a bounded cold operation, not claimed to be a 4KiB parsing step.
+Unused metadata is skipped before value allocation. Index descriptors preserve
+absolute u64 offsets and optional object bounds, but callers must still validate
+them against real mdat extents. The interface performs no IO, HTTP Range or
+fallback, and is not yet a product decoder switch or streaming-playback claim.

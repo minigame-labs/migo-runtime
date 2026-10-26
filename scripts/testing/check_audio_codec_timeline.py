@@ -266,8 +266,8 @@ def mutations(cohort: Path, output: Path, env: dict, *, sample_tables_only: bool
          "if entry.first_sample <= sample_num {", "if entry.first_sample < sample_num {",
          "streaming_index_boundary_contracts::chunk_groups_include_their_first_sample", True),
         ("time-table-offset-overflow", "symphonia-format-isomp4", "src/atoms/stts.rs",
-         "let entry_sample_offset = sample_num - (next_entry_first_sample - entry.sample_count);",
-         "let entry_sample_offset = sample_num + entry.sample_count - next_entry_first_sample;",
+         "let offset = u64::from(sample_num - cursor.first_sample);",
+         "let offset = u64::from(sample_num + entry.sample_count - end);",
          "streaming_index_boundary_contracts::time_table_arithmetic_handles_valid_large_sample_indices", True),
         ("time-table-count-overflow", "symphonia-format-isomp4", "src/atoms/stts.rs",
          '            total_samples = match total_samples.checked_add(sample_count) {\n'
@@ -331,7 +331,7 @@ def main(cohort: Path, output: Path, target: Path, *, run_controls: bool = True,
     unit_directory.mkdir()
     units = executable_tests(cohort / "probe", unit_directory, env, library=True)
     codecs.run([str(units)], unit_directory / "tests.log", cwd=output, env=env)
-    assert "11 passed; 0 failed" in (unit_directory / "tests.log").read_text(), \
+    assert "12 passed; 0 failed" in (unit_directory / "tests.log").read_text(), \
         "sample-table boundary contracts must execute with the timing suite"
     core_directory = output / "packet-core-tests"
     core_directory.mkdir()
@@ -340,7 +340,7 @@ def main(cohort: Path, output: Path, target: Path, *, run_controls: bool = True,
     controls = mutations(cohort, output, env, sample_tables_only=sample_tables_only) if run_controls else 0
     assert (ROOT / "engine/Cargo.lock").read_bytes() == lock, "production lock changed"
     summary = {"positive_container_cases": positive, "unsupported_or_malformed_cases": negative,
-               "library_unit_tests": 11, "actual_decoder_contract_tests": 6,
+               "library_unit_tests": 12, "actual_decoder_contract_tests": 6,
                "packet_builder_boundary_tests": 2,
                "compiled_library_mutants": controls, "mutation_controls_executed": run_controls,
                "mutation_control_scope": "sample-tables-only" if sample_tables_only else "all" if run_controls else "none",
