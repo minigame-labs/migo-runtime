@@ -14,7 +14,10 @@ ships, one status:
   unsupported  deliberately not offered there (api-platform-decisions.json).
 
 A cell is *ready* when it is engine, default or unsupported, or host where every
-need is the host's by nature (its adverts, payments, accounts). The matrix is
+need is the host's by nature (its adverts, payments, accounts). A cell the
+reference itself does not offer on that kind of client (minigame-api-spec.json's
+clients: most of the API is phones-only, a few calls desktop-only) is *outside*:
+nothing there is owed to compatibility, whatever Migo happens to provide. The matrix is
 derived, not written: what an API needs comes from calling it
 (minigame-api-reach.json: the ops it dispatched, the host services it asked
 for); what a platform provides comes from its sources, by the FACTS below; only
@@ -40,6 +43,18 @@ PLATFORMS = ("android", "ios", "macos", "linux", "windows", "ohos")
 RANK = ("missing", "host", "default", "engine")
 
 REFERENCE = "contracts/runtime/minigame-api.json"
+SPEC = "contracts/runtime/minigame-api-spec.json"
+# Which of the reference's clients each platform is held to. Its phones offer every API but the few its pages say are
+# desktop-only (clients.mobile false); its Windows, Mac and HarmonyOS clients offer what their notes say. There is no
+# Linux client: a Linux desktop is held to what the reference offers on a desktop, either one.
+REFERENCE_CLIENTS = {
+    "android": ("mobile",),
+    "ios": ("mobile",),
+    "macos": ("mac",),
+    "linux": ("mac", "windows"),
+    "windows": ("windows",),
+    "ohos": ("harmony",),
+}
 REACH = "contracts/runtime/minigame-api-reach.json"
 DECISIONS = "contracts/runtime/api-platform-decisions.json"
 # What migo-conformance's api-spec bundle measured on each platform (scripts/import-api-conformance.py); absent for a
@@ -132,7 +147,9 @@ COMMENT = [
     "nature. verified: migo-conformance's api-spec bundle exercised it on the platform and every check passed",
     "(api-conformance-<platform>.json). ready: wired, and verified -- or deliberately unsupported, or the host app's to",
     "answer. not_ready: the platforms where the cell is not ready. summary counts each status and the wired, verified",
-    "and ready cells per platform.",
+    "and ready cells per platform. outside: the platforms whose reference client does not offer the API",
+    "(minigame-api-spec.json's clients; android/ios: the phones, macos: Mac, windows: Windows, linux: either desktop,",
+    "ohos: HarmonyOS) -- nothing there is owed to compatibility, so they are not in not_ready and are counted ready.",
 ]
 
 
@@ -638,8 +655,23 @@ def owned(need: str, host_owned: set[str]) -> bool:
     return False
 
 
+def offered(clients: dict | None, platform: str) -> bool:
+    """Whether the reference offers an API on the kind of client `platform` is held to."""
+    clients = clients or {}
+    for client in REFERENCE_CLIENTS[platform]:
+        if client == "mobile":
+            if clients.get("mobile", True) is not False:
+                return True
+        elif clients.get(client, False) not in (False, None):
+            return True
+    return False
+
+
 def generate(root: pathlib.Path) -> str:
     reference = load(root, REFERENCE)["apis"]
+    spec = load(root, SPEC)["apis"]
+    if set(spec) != set(reference):
+        raise Fail("minigame-api-spec.json does not cover the reference's list; regenerate it")
     reach = load(root, REACH)["apis"]
     decisions = load(root, DECISIONS)
     boundary = load(root, OP_BOUNDARY)
@@ -704,6 +736,7 @@ def generate(root: pathlib.Path) -> str:
         statuses = {}
         verified = []
         not_ready = []
+        outside = []
         decided = [
             decision for decision in (decisions["gaps"].get(name), decisions["unsupported"].get(name))
             if decision is not None
@@ -779,6 +812,10 @@ def generate(root: pathlib.Path) -> str:
                 verified.append(platform)
                 summary[platform]["verified"] += 1
             ready = wired and (is_verified or status in ("unsupported", "host"))
+            if not offered(spec[name].get("clients"), platform):
+                outside.append(platform)
+                summary[platform]["outside"] += 1
+                ready = True
             summary[platform][status] += 1
             if wired:
                 summary[platform]["wired"] += 1
@@ -789,6 +826,8 @@ def generate(root: pathlib.Path) -> str:
         row.update(statuses)
         if verified:
             row["verified"] = verified
+        if outside:
+            row["outside"] = outside
         if not_ready:
             row["not_ready"] = not_ready
         rows[name] = row
@@ -823,7 +862,7 @@ def render(rows, summary, total) -> str:
     for index, platform in enumerate(PLATFORMS):
         counts = {
             key: summary[platform][key]
-            for key in ("engine", "default", "host", "missing", "unsupported", "wired", "verified", "ready")
+            for key in ("engine", "default", "host", "missing", "unsupported", "wired", "verified", "outside", "ready")
         }
         out.append(f'    "{platform}": {json.dumps(counts)}' + ("," if index + 1 < len(PLATFORMS) else ""))
     out.append("  },")
@@ -855,7 +894,10 @@ def main(argv: list[str]) -> int:
         counts = data["summary"][platform]
         print(
             f"{platform:8} ready {counts['ready']:3}/{data['total']}  "
-            + "  ".join(f"{k} {counts[k]}" for k in ("wired", "verified", "engine", "default", "host", "missing", "unsupported"))
+            + "  ".join(
+                f"{k} {counts[k]}"
+                for k in ("wired", "verified", "outside", "engine", "default", "host", "missing", "unsupported")
+            )
         )
     return 0
 
