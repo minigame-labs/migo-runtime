@@ -35,8 +35,9 @@ pub fn create_policy_http_client(
     enable_http2: bool,
     net_policy: &NetworkPolicy,
     operation: &'static str,
+    pools: migo_io::pools::IoPools,
 ) -> EngineResult<HttpClient> {
-    policy_client_builder(user_agent, enable_http2, net_policy, operation)
+    policy_client_builder(user_agent, enable_http2, net_policy, operation, pools)
         .build()
         .map_err(|error| {
             EngineError::from_detail(
@@ -53,8 +54,9 @@ pub(crate) fn policy_client_builder(
     enable_http2: bool,
     net_policy: &NetworkPolicy,
     operation: &'static str,
+    pools: migo_io::pools::IoPools,
 ) -> HttpClientBuilder {
-    HttpClientBuilder::new(user_agent, enable_http2, net_policy, operation)
+    HttpClientBuilder::new(user_agent, enable_http2, net_policy, operation, pools)
 }
 
 pub(crate) fn redirect_reject_message(kind: GateKind, reject: &GateReject) -> String {
@@ -89,7 +91,13 @@ mod tests {
     /// for.
     #[test]
     fn a_policy_client_is_built_without_a_runtime() {
-        create_policy_http_client("migo", true, &NetworkPolicy::default(), "audio")
-            .expect("client construction must not require a runtime");
+        create_policy_http_client(
+            "migo",
+            true,
+            &NetworkPolicy::default(),
+            "audio",
+            migo_io::pools::IoPools::new(0),
+        )
+        .expect("client construction must not require a runtime");
     }
 }

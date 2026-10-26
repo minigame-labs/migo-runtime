@@ -1,0 +1,53 @@
+--- symphonia-format-riff-0.6.1/src/wave/mod.rs
++++ symphonia-format-riff-0.6.1/src/wave/mod.rs
+@@ -7,10 +7,10 @@
+ 
+ use std::io::{Seek, SeekFrom};
+ 
++use symphonia_core::codecs::audio::AudioCodecParameters;
+ use symphonia_core::codecs::CodecParameters;
+-use symphonia_core::codecs::audio::AudioCodecParameters;
++use symphonia_core::errors::{decode_error, seek_error, unsupported_error};
+ use symphonia_core::errors::{Error, Result, SeekErrorKind};
+-use symphonia_core::errors::{decode_error, seek_error, unsupported_error};
+ use symphonia_core::formats::prelude::*;
+ use symphonia_core::formats::probe::{ProbeFormatData, ProbeableFormat, Score, Scoreable};
+ use symphonia_core::formats::well_known::FORMAT_ID_WAVE;
+@@ -22,7 +22,7 @@
+ use log::{debug, error};
+ 
+ use crate::common::{
+-    ByteOrder, ChunksReader, PacketInfo, append_data_params, append_format_params, next_packet,
++    append_data_params, append_format_params, next_packet, ByteOrder, ChunksReader, PacketInfo,
+ };
+ mod chunks;
+ use chunks::*;
+@@ -94,7 +94,7 @@
+             ChunksReader::<RiffWaveChunks>::new(riff_data_len, ByteOrder::LittleEndian);
+ 
+         let mut codec_params = AudioCodecParameters::new();
+-        let mut metadata: MetadataLog = Default::default();
++        let mut metadata = opts.external_data.metadata.unwrap_or_default();
+         let mut packet_info = None;
+         let mut fact = None;
+ 
+@@ -133,7 +133,9 @@
+                     // Riff Lists can have many different forms, but WavReader only supports Info
+                     // lists.
+                     match &list.form {
+-                        b"INFO" => metadata.push(read_info_chunk(&mut mss, list.len)?),
++                        b"INFO" if !opts.metadata_options.is_disabled() => {
++                            metadata.push(read_info_chunk(&mut mss, list.len)?)
++                        }
+                         _ => list.skip(&mut mss)?,
+                     }
+                 }
+@@ -170,7 +172,7 @@
+                         media_info: MediaInfo::from_track(&track),
+                         tracks: vec![track],
+                         chapters: opts.external_data.chapters,
+-                        metadata: opts.external_data.metadata.unwrap_or_default(),
++                        metadata,
+                         packet_info,
+                         data_start_pos,
+                         data_end_pos,

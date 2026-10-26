@@ -41,6 +41,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+python3 "$ROOT/scripts/lib/test_cargo_product_graph.py"
 cd "$ROOT/engine"
 
 PRODUCT_ARGS=(-p migo-capi --no-default-features --features external-frames)
@@ -85,10 +86,27 @@ EXEMPT=(
     "alsa=cpal's Linux backend; the Apple resolution reaches the device through CoreAudio instead"
     "alsa-sys=alsa's bindings, for the same reason"
     "coreaudio-rs=cpal's Apple backend, where Linux uses ALSA"
-    "coreaudio-sys=coreaudio-rs's bindings, for the same reason"
-    "core-foundation-sys=coreaudio-sys's, for the CoreFoundation types its API takes"
+    "objc2=CPAL/CoreAudio and AVAudioSession use Apple's Objective-C runtime instead of ALSA"
+    "objc2-encode=type encodings required by the same Objective-C bindings"
+    "objc2-audio-toolbox=CoreAudio/AudioUnit bindings used by CPAL0.18/coreaudio-rs0.14"
+    "objc2-avf-audio=CPAL's iOS AVAudioSession route/interruption handling"
+    "objc2-core-audio=CoreAudio device bindings used by CPAL0.18/coreaudio-rs0.14"
+    "objc2-core-audio-types=the same backend's CoreAudio PCM/time/layout types"
+    "objc2-core-foundation=CoreFoundation values used by the CoreAudio backend"
+    "objc2-foundation=AVAudioSession notifications and Foundation values"
+    "block2=Objective-C notification blocks owned by the iOS route/interruption backend"
+    "dispatch2=dispatch queues used by the Apple Objective-C bindings"
     "mach2=coreaudio-rs's, for the Mach timebase its render callbacks are timed against"
     "bitflags=the CoreAudio crates take it with its default feature; the Linux graph has it without"
+    # Explicit platform TLS trust from W07: Apple uses Security.framework;
+    # Linux loads host certificates. These are different implementations of
+    # the same selected platform-trust policy, not alternative trust fallbacks.
+    "core-foundation=Security.framework's Rust CoreFoundation values for native TLS trust"
+    "core-foundation-sys=the same Security.framework trust backend's C bindings"
+    "security-framework=Apple native certificate verification selected by platform TLS trust"
+    "security-framework-sys=Security.framework verifier's native bindings"
+    "rustls-native-certs=Linux platform verifier's host trust-store loader"
+    "openssl-probe=Linux host certificate path discovery; it does not add OpenSSL TLS"
     # Content signing. The Performance+ session verifies signed packages before
     # it mounts them (migo-services' code-signing), so ed25519-dalek is in both
     # graphs; curve25519-dalek then takes this proc macro only on x86_64, where
@@ -116,10 +134,7 @@ notes=()
 # variable, so the flag is passed rather than the escapes stripped.
 resolve() {
     cargo tree ${PRODUCT_ARGS[@]+"${PRODUCT_ARGS[@]}"} --target "$1" -e normal --prefix none \
-        --color never --format '{p}|{f}' 2>/dev/null \
-        | sed -e 's/ (\*)$//' -e 's/ v[0-9][^|]*|/|/' -e 's/ ([^)]*)|/|/' \
-        | awk -F'|' 'NF {print $1 "\t" $2}' \
-        | sort -u
+        --color never --format '{p}|{f}' --locked
 }
 
 apple="$(resolve "$APPLE_TARGET")"
@@ -130,34 +145,17 @@ if [[ -z "$apple" || -z "$reference" ]]; then
     exit 1
 fi
 
+# Keep versions distinct: the old name-only dictionary silently overwrote
+# one version's missing feature with another version's feature set.
 compare() {
-    python3 - "$1" "$2" <<'PY'
-import sys
-
-def load(text):
-    out = {}
-    for line in text.splitlines():
-        if not line.strip():
-            continue
-        name, _, feats = line.partition("\t")
-        out[name] = tuple(sorted(f for f in feats.split(",") if f))
-    return out
-
-left, right = load(sys.argv[1]), load(sys.argv[2])
-for name in sorted(set(left) | set(right)):
-    if name not in right:
-        print(f"{name}\tonly in the Apple resolution")
-    elif name not in left:
-        print(f"{name}\tonly in the reference resolution")
-    elif left[name] != right[name]:
-        a = set(left[name]); b = set(right[name])
-        print(f"{name}\tfeatures differ: apple-only={sorted(a - b)} reference-only={sorted(b - a)}")
-PY
+    python3 "$ROOT/scripts/lib/cargo_product_graph.py" compare "$1" "$2"
 }
 
-mapfile -t differences < <(compare "$apple" "$reference")
-apple_packages="$(printf '%s\n' "$apple" | wc -l)"
-notes+=("$APPLE_TARGET and $REFERENCE_TARGET each resolve $apple_packages package(s) for the Performance+ product")
+comparison="$(compare "$apple" "$reference")" || exit 1
+mapfile -t differences < <(printf '%s' "$comparison")
+apple_packages="$(python3 "$ROOT/scripts/lib/cargo_product_graph.py" count "$apple")"
+reference_packages="$(python3 "$ROOT/scripts/lib/cargo_product_graph.py" count "$reference")"
+notes+=("$APPLE_TARGET resolves $apple_packages package versions; $REFERENCE_TARGET resolves $reference_packages for the Performance+ product")
 
 for difference in ${differences[@]+"${differences[@]}"}; do
     [[ -n "$difference" ]] || continue
@@ -198,7 +196,8 @@ control="$(resolve x86_64-pc-windows-msvc)"
 if [[ -z "$control" ]]; then
     problems+=("the control target did not resolve, so the comparison is unverified")
 else
-    mapfile -t control_differences < <(compare "$apple" "$control")
+    control_comparison="$(compare "$apple" "$control")" || exit 1
+    mapfile -t control_differences < <(printf '%s' "$control_comparison")
     if (( ${#control_differences[@]} == 0 )); then
         problems+=("the comparison found no difference between $APPLE_TARGET and
       x86_64-pc-windows-msvc, which resolve different platform crates. The

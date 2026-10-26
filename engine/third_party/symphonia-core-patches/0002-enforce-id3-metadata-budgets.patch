@@ -1,0 +1,362 @@
+--- symphonia-core-0.6.1/src/formats/probe.rs
++++ symphonia-core-0.6.1/src/formats/probe.rs
+@@ -460,7 +460,7 @@
+                 // push it onto the metadata log.
+                 ProbeMatch::Metadata { factory, .. } => {
+                     let mut reader = factory(mss, meta_opts)?;
+-                    read_and_append_metadata(&mut reader, &mut fmt_opts)?;
++                    read_and_append_metadata(&mut reader, &mut fmt_opts, meta_opts)?;
+                     mss = reader.into_inner();
+                 }
+             }
+@@ -520,7 +520,7 @@
+                     // When reading anchored metadata fails it is reasonable to just ignore the
+                     // error and continue because the MSS will be repositioned immediately after
+                     // anyways.
+-                    let is_ok = read_and_append_metadata(&mut reader, fmt_opts).is_ok();
++                    let is_ok = read_and_append_metadata(&mut reader, fmt_opts, meta_opts).is_ok();
+ 
+                     if !is_ok {
+                         warn!(
+@@ -640,9 +640,15 @@
+ fn read_and_append_metadata<'s>(
+     reader: &mut Box<dyn MetadataReader + 's>,
+     fmt_opts: &mut FormatOptions,
++    meta_opts: MetadataOptions,
+ ) -> Result<()> {
+     // Read all metadata and get a metdata revision.
+     let metadata = reader.read_all()?;
++    // A disabled external metadata stream must not retain empty revisions or
++    // chapter side data either. Read/skip still advances to the media boundary.
++    if matches!(meta_opts.limit_total_bytes, crate::common::Limit::Maximum(0)) {
++        return Ok(());
++    }
+ 
+     debug!("appending '{}' metadata", reader.metadata_info().short_name);
+ 
+--- symphonia-core-0.6.1/src/meta.rs
++++ symphonia-core-0.6.1/src/meta.rs
+@@ -114,9 +114,30 @@
+     ///
+     /// Default: `Limit::Default` (a reasonable limit chosen by the reader)
+     pub limit_visual_bytes: Limit,
++    /// Maximum conservative retained storage in one metadata revision.
++    /// Readers skip metadata that would exceed this budget. Allocator overhead
++    /// is excluded and shared storage may be charged more than once.
++    pub limit_total_bytes: Limit,
++    /// Maximum encoded metadata frame or comment buffer before decoding.
++    /// An oversized optional frame is skipped without allocating its body.
++    pub limit_frame_bytes: Limit,
++    /// Maximum nested metadata frame/group depth. Top-level frames have depth 0.
++    pub limit_nesting_depth: Limit,
+ }
+ 
+ impl MetadataOptions {
++    pub fn limit_total_bytes(mut self, limit: Limit) -> Self {
++        self.limit_total_bytes = limit;
++        self
++    }
++    pub fn limit_frame_bytes(mut self, limit: Limit) -> Self {
++        self.limit_frame_bytes = limit;
++        self
++    }
++    pub fn limit_nesting_depth(mut self, limit: Limit) -> Self {
++        self.limit_nesting_depth = limit;
++        self
++    }
+     /// The maximum size in bytes that a tag may occupy in memory once decoded. Tags exceeding this
+     /// limit will be skipped by the demuxer. Take note that tags in memory are stored as UTF-8 and
+     /// therefore may occupy more than one byte per character.
+@@ -946,3 +967,292 @@
+     /// ISOMP4 tags
+     pub const METADATA_ID_ISOMP4: MetadataId = MetadataId(0x404);
+ }
++
++impl StandardTag {
++    fn heap_size_upper_bound(&self, raw: &RawValue) -> usize {
++        match self {
++            Self::AccurateRipCount(value)
++            | Self::AccurateRipCountAllOffsets(value)
++            | Self::AccurateRipCountWithOffset(value)
++            | Self::AccurateRipCrc(value)
++            | Self::AccurateRipDiscId(value)
++            | Self::AccurateRipId(value)
++            | Self::AccurateRipOffset(value)
++            | Self::AccurateRipResult(value)
++            | Self::AccurateRipTotal(value)
++            | Self::AcoustIdFingerprint(value)
++            | Self::AcoustIdId(value)
++            | Self::Actor(value)
++            | Self::Album(value)
++            | Self::AlbumArtist(value)
++            | Self::Arranger(value)
++            | Self::ArtDirector(value)
++            | Self::Artist(value)
++            | Self::AssistantDirector(value)
++            | Self::Author(value)
++            | Self::CdToc(value)
++            | Self::ChapterTitle(value)
++            | Self::Choregrapher(value)
++            | Self::Cinematographer(value)
++            | Self::CollectionTitle(value)
++            | Self::Comment(value)
++            | Self::Composer(value)
++            | Self::Conductor(value)
++            | Self::ContentRating(value)
++            | Self::ContentType(value)
++            | Self::Coproducer(value)
++            | Self::Copyright(value)
++            | Self::CostumeDesigner(value)
++            | Self::CueToolsDbDiscConfidence(value)
++            | Self::CueToolsDbTrackConfidence(value)
++            | Self::Description(value)
++            | Self::DigitizedDate(value)
++            | Self::Director(value)
++            | Self::DiscSubtitle(value)
++            | Self::Distributor(value)
++            | Self::EditedBy(value)
++            | Self::EditionTitle(value)
++            | Self::EncodedBy(value)
++            | Self::Encoder(value)
++            | Self::EncoderSettings(value)
++            | Self::EncodingDate(value)
++            | Self::Engineer(value)
++            | Self::Ensemble(value)
++            | Self::ExecutiveProducer(value)
++            | Self::Genre(value)
++            | Self::Grouping(value)
++            | Self::IdentAsin(value)
++            | Self::IdentBarcode(value)
++            | Self::IdentCatalogNumber(value)
++            | Self::IdentEanUpn(value)
++            | Self::IdentIsbn(value)
++            | Self::IdentIsrc(value)
++            | Self::IdentLccn(value)
++            | Self::IdentPn(value)
++            | Self::IdentPodcast(value)
++            | Self::IdentUpc(value)
++            | Self::ImdbTitleId(value)
++            | Self::InitialKey(value)
++            | Self::InternetRadioName(value)
++            | Self::InternetRadioOwner(value)
++            | Self::Keywords(value)
++            | Self::Label(value)
++            | Self::LabelCode(value)
++            | Self::Language(value)
++            | Self::License(value)
++            | Self::Lyricist(value)
++            | Self::Lyrics(value)
++            | Self::Measure(value)
++            | Self::MediaFormat(value)
++            | Self::MixDj(value)
++            | Self::MixEngineer(value)
++            | Self::Mood(value)
++            | Self::MovementName(value)
++            | Self::MovieTitle(value)
++            | Self::Mp3GainAlbumMinMax(value)
++            | Self::Mp3GainMinMax(value)
++            | Self::Mp3GainUndo(value)
++            | Self::MusicBrainzAlbumArtistId(value)
++            | Self::MusicBrainzAlbumId(value)
++            | Self::MusicBrainzArtistId(value)
++            | Self::MusicBrainzDiscId(value)
++            | Self::MusicBrainzGenreId(value)
++            | Self::MusicBrainzLabelId(value)
++            | Self::MusicBrainzOriginalAlbumId(value)
++            | Self::MusicBrainzOriginalArtistId(value)
++            | Self::MusicBrainzRecordingId(value)
++            | Self::MusicBrainzReleaseGroupId(value)
++            | Self::MusicBrainzReleaseStatus(value)
++            | Self::MusicBrainzReleaseTrackId(value)
++            | Self::MusicBrainzReleaseType(value)
++            | Self::MusicBrainzTrackId(value)
++            | Self::MusicBrainzTrmId(value)
++            | Self::MusicBrainzWorkId(value)
++            | Self::Narrator(value)
++            | Self::Opus(value)
++            | Self::OriginalAlbum(value)
++            | Self::OriginalArtist(value)
++            | Self::OriginalFile(value)
++            | Self::OriginalLyricist(value)
++            | Self::OriginalRecordingDate(value)
++            | Self::OriginalRecordingTime(value)
++            | Self::OriginalReleaseDate(value)
++            | Self::OriginalReleaseTime(value)
++            | Self::OriginalWriter(value)
++            | Self::Owner(value)
++            | Self::Part(value)
++            | Self::PartTitle(value)
++            | Self::Performer(value)
++            | Self::Period(value)
++            | Self::PodcastCategory(value)
++            | Self::PodcastDescription(value)
++            | Self::PodcastKeywords(value)
++            | Self::Producer(value)
++            | Self::ProductionCopyright(value)
++            | Self::ProductionDesigner(value)
++            | Self::ProductionStudio(value)
++            | Self::PurchaseDate(value)
++            | Self::RecordingDate(value)
++            | Self::RecordingLocation(value)
++            | Self::RecordingTime(value)
++            | Self::ReleaseCountry(value)
++            | Self::ReleaseDate(value)
++            | Self::ReleaseTime(value)
++            | Self::Remixer(value)
++            | Self::ReplayGainAlbumGain(value)
++            | Self::ReplayGainAlbumPeak(value)
++            | Self::ReplayGainAlbumRange(value)
++            | Self::ReplayGainReferenceLoudness(value)
++            | Self::ReplayGainTrackGain(value)
++            | Self::ReplayGainTrackPeak(value)
++            | Self::ReplayGainTrackRange(value)
++            | Self::ScreenplayAuthor(value)
++            | Self::Script(value)
++            | Self::Soloist(value)
++            | Self::SortAlbum(value)
++            | Self::SortAlbumArtist(value)
++            | Self::SortArtist(value)
++            | Self::SortCollectionTitle(value)
++            | Self::SortComposer(value)
++            | Self::SortEditionTitle(value)
++            | Self::SortMovieTitle(value)
++            | Self::SortOpusTitle(value)
++            | Self::SortPartTitle(value)
++            | Self::SortTrackTitle(value)
++            | Self::SortTvEpisodeTitle(value)
++            | Self::SortTvSeasonTitle(value)
++            | Self::SortTvSeriesTitle(value)
++            | Self::SortVolumeTitle(value)
++            | Self::Subject(value)
++            | Self::Summary(value)
++            | Self::Synopsis(value)
++            | Self::TaggingDate(value)
++            | Self::TermsOfUse(value)
++            | Self::Thanks(value)
++            | Self::TmdbMovieId(value)
++            | Self::TmdbSeriesId(value)
++            | Self::TrackSubtitle(value)
++            | Self::TrackTitle(value)
++            | Self::Tuning(value)
++            | Self::TvdbEpisodeId(value)
++            | Self::TvdbMovieId(value)
++            | Self::TvdbSeriesId(value)
++            | Self::TvEpisodeTitle(value)
++            | Self::TvNetwork(value)
++            | Self::TvSeasonTitle(value)
++            | Self::TvSeriesTitle(value)
++            | Self::Url(value)
++            | Self::UrlArtist(value)
++            | Self::UrlCopyright(value)
++            | Self::UrlInternetRadio(value)
++            | Self::UrlLabel(value)
++            | Self::UrlOfficial(value)
++            | Self::UrlPayment(value)
++            | Self::UrlPodcast(value)
++            | Self::UrlPurchase(value)
++            | Self::UrlSource(value)
++            | Self::Version(value)
++            | Self::VolumeTitle(value)
++            | Self::Work(value)
++            | Self::Writer(value)
++            | Self::WrittenDate(value) => {
++                if matches!(raw, RawValue::String(other) if Arc::ptr_eq(value, other)) {
++                    0
++                } else {
++                    2 * std::mem::size_of::<usize>()
++                        + std::mem::size_of::<String>()
++                        + value.capacity()
++                }
++            }
++            Self::Bpm(_)
++            | Self::CdTrackIndex(_)
++            | Self::CompilationFlag(_)
++            | Self::ContentAdvisory(_)
++            | Self::DiscNumber(_)
++            | Self::DiscTotal(_)
++            | Self::MovementNumber(_)
++            | Self::MovementTotal(_)
++            | Self::OpusNumber(_)
++            | Self::OriginalRecordingYear(_)
++            | Self::OriginalReleaseYear(_)
++            | Self::PartNumber(_)
++            | Self::PartTotal(_)
++            | Self::PlayCounter(_)
++            | Self::PodcastFlag(_)
++            | Self::Rating(_)
++            | Self::RecordingYear(_)
++            | Self::ReleaseYear(_)
++            | Self::TrackNumber(_)
++            | Self::TrackTotal(_)
++            | Self::TvEpisodeNumber(_)
++            | Self::TvEpisodeTotal(_)
++            | Self::TvSeasonNumber(_)
++            | Self::TvSeasonTotal(_)
++            | Self::VolumeNumber(_)
++            | Self::VolumeTotal(_) => 0,
++        }
++    }
++}
++
++impl RawValue {
++    /// Conservative heap storage reachable through this value. Scalar storage
++    /// is inline in Tag; allocator overhead is not represented here.
++    pub fn heap_size_upper_bound(&self) -> usize {
++        let arc = 2 * std::mem::size_of::<usize>();
++        match self {
++            Self::Binary(bytes) => arc + std::mem::size_of::<Box<[u8]>>() + bytes.len(),
++            Self::String(value) => arc + std::mem::size_of::<String>() + value.capacity(),
++            Self::StringList(values) => values.iter().fold(
++                arc + std::mem::size_of::<Vec<String>>()
++                    + values.capacity() * std::mem::size_of::<String>(),
++                |size, value| size.saturating_add(value.capacity()),
++            ),
++            Self::Boolean(_)
++            | Self::Flag
++            | Self::Float(_)
++            | Self::SignedInt(_)
++            | Self::UnsignedInt(_) => 0,
++        }
++    }
++}
++
++impl Tag {
++    /// Includes the inline Tag, owned capacities and Arc payloads. The raw and
++    /// standard value's identical String Arc is charged once; other shared
++    /// allocations may be conservatively charged repeatedly.
++    pub fn storage_size_upper_bound(&self) -> usize {
++        let mut size = std::mem::size_of::<Self>()
++            .saturating_add(self.raw.key.capacity())
++            .saturating_add(self.raw.value.heap_size_upper_bound());
++        if let Some(fields) = &self.raw.sub_fields {
++            size = size.saturating_add(fields.len() * std::mem::size_of::<RawTagSubField>());
++            for field in fields.iter() {
++                size = size
++                    .saturating_add(field.field.capacity())
++                    .saturating_add(field.value.heap_size_upper_bound());
++            }
++        }
++        if let Some(value) = &self.std {
++            size = size.saturating_add(value.heap_size_upper_bound(&self.raw.value));
++        }
++        size
++    }
++}
++
++impl Visual {
++    /// Includes owned data and tag vector capacity, excluding allocator overhead.
++    pub fn storage_size_upper_bound(&self) -> usize {
++        self.tags.iter().fold(
++            std::mem::size_of::<Self>()
++                + self.data.len()
++                + self.media_type.as_ref().map_or(0, String::capacity)
++                + self.tags.capacity() * std::mem::size_of::<Tag>(),
++            |size, tag| {
++                size.saturating_add(
++                    tag.storage_size_upper_bound()
++                        .saturating_sub(std::mem::size_of::<Tag>()),
++                )
++            },
++        )
++    }
++}

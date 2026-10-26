@@ -134,6 +134,8 @@ mod deferred_api_tests {
     /// `fail`/`complete` and the pending entry leaks.
     #[test]
     fn v07_timer_full_rolls_back_and_calls_fail_complete() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot();
         exec(
             &mut rt,
@@ -173,6 +175,8 @@ mod deferred_api_tests {
     /// Before the fix: executor rollback exists but `api.pendingCount()` does not.
     #[test]
     fn executor_throw_rolls_back_pending_entry() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot();
         exec(
             &mut rt,
@@ -210,6 +214,8 @@ mod deferred_api_tests {
     /// waiting for its result.
     #[test]
     fn an_asynchronous_executor_that_rejects_fails_the_call_once() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot();
         exec(
             &mut rt,
@@ -248,6 +254,8 @@ mod deferred_api_tests {
     /// Before the fix: correct behaviour, but `api.pendingCount()` does not exist.
     #[test]
     fn timeout_settles_exactly_once_and_empties_pending() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot();
         exec(
             &mut rt,
@@ -300,6 +308,8 @@ mod deferred_api_tests {
     /// Before the fix: correct behaviour, but `api.pendingCount()` does not exist.
     #[test]
     fn normal_completion_settles_once() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot();
         exec(
             &mut rt,
@@ -348,6 +358,8 @@ mod deferred_api_tests {
     /// Before the fix: correct discard behaviour, but `api.pendingCount()` absent.
     #[test]
     fn late_callback_after_timeout_is_discarded() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot();
         exec(
             &mut rt,
@@ -404,6 +416,8 @@ mod deferred_api_tests {
     /// completion for that request id.
     #[test]
     fn cancel_settles_once_and_discards_late_callback() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot();
         exec(
             &mut rt,
@@ -445,6 +459,8 @@ mod deferred_api_tests {
     /// Before the fix: `_MAX_PENDING` and the cap check do not exist.
     #[test]
     fn max_pending_cap_rejects_without_adding_to_pending() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot();
         // Fill to 256 with timeout disabled so no timers are consumed.
         exec(

@@ -26,13 +26,15 @@ hound = "3.5"        # WAV, Apache-2.0
 # Thread-safe audio buffer
 ringbuf = "0.5"
 
+# Shared CPU executor and host-domain cancellation, already in the service closure.
+migo-io = { path = "../io", default-features = false }
+
 # Async
 tokio = { workspace = true, features = ["sync", "rt", "rt-multi-thread", "time", "macros"] }
 
 # The engine's HTTP client, for streaming a remote `src`: the same client, address
 # policy and redirect gate every other outbound request uses.
 migo-services = { path = "../services", default-features = false }
-url = "2.5"
 futures-util = "0.3"
 
 # Shared
@@ -44,24 +46,31 @@ futures-util = "0.3"
 shared = { package = "migo-shared", path = "../shared", default-features = false, features = ["vfs"] }
 tracing = { workspace = true }
 
-# Every platform except OpenHarmony reaches a device through cpal. OpenHarmony's
+# Desktop/Apple use cpal. Android uses a narrow C ABI to pinned Oboe sources,
+# without the old Rust binding's inline C++ builder layout. OpenHarmony's
 # userspace is musl with no ALSA, and cpal has no OHAudio backend, so pulling cpal there
 # drags in alsa-sys and pkg-config for a library that does not exist on the device -- which
 # is why the OpenHarmony package had to be built with profile-slim and shipped no audio at
 # all. src/output_ohaudio.rs is the backend that replaces it.
-[target.'cfg(not(all(target_os = "linux", target_env = "ohos")))'.dependencies]
-cpal = "0.15"
+[target.'cfg(not(any(target_os = "android", all(target_os = "linux", target_env = "ohos"))))'.dependencies]
+cpal = { version = "=0.18.2", default-features = false }
+# Already used by the engine; safely exchange Copy error kinds without a mutex
+# or an unsafe integer/enum conversion in the device callback.
+crossbeam-utils = "0.8"
 
-# Android specific: use oboe backend + shared C++ STL.
-# V8 is built with use_custom_libcxx=false (system shared STL).
-# Both V8 and oboe share a single libc++_shared.so at runtime,
-# following Android NDK best practice (one STL per process).
-[target.'cfg(target_os = "android")'.dependencies.cpal]
-version = "0.15"
-features = ["oboe-shared-stdcxx"]
+# WASAPI workers own scoped MMCSS registration. This uses CPAL's existing
+# Windows bindings, without enabling cross-platform realtime/D-Bus capabilities.
+[target.'cfg(target_os = "windows")'.dependencies]
+cpal = { version = "=0.18.2", default-features = false, features = ["wasapi-mmcss"] }
 
-[target.'cfg(target_os = "android")'.dependencies]
-ndk-context = "0.1"
+# Already in the iOS CPAL closure. Reuse typed session/category/input ownership
+# instead of handwritten Objective-C ABI casts; no capture/default frameworks.
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2-avf-audio = { version = "=0.3.2", default-features = false, features = ["std", "AVAudioSession", "AVAudioSessionRoute", "AVAudioSessionTypes"] }
+
+[build-dependencies]
+# Build-only. All native Android consumers use the same NDK libc++_shared.
+cc = "1"
 
 [dev-dependencies]
 # Occupies the shared streaming worker and requires a co-tenant task to run anyway.

@@ -558,42 +558,20 @@ for f in "$SCRIPT_DIR"/build-v8-*.sh "$SCRIPT_DIR"/build-gn.sh "$SCRIPT_DIR"/lib
     fi
 done
 
-info "every V8 patch stage routes through the shared library"
+info "every V8 patch stage uses the shared application/provenance machinery"
 for s in "$SCRIPT_DIR"/build-v8-*.sh; do
     name="$(basename "$s")"
-    # Two scripts are exempt for two different reasons, and NEITHER exemption is
-    # taken on trust. A skip list that only names files is a rule that stops
-    # being true silently: the moment an exempt script starts patching, it routes
-    # patching around the one place that decides applied-ness and the gate says
-    # nothing. So each exemption asserts the fact it rests on.
     case "$name" in
-        build-v8-linux.sh)
-            # It drives patching through rusty_v8's own `--patch` argument and
-            # decides applied-ness with `git apply --reverse --check`. If it ever
-            # stops passing --patch, the reason for this exemption is gone.
-            if grep -qE -- '[-]-patch ' "$s"; then
-                pass "$name still delegates patching to rusty_v8's --patch"
-            else
-                fail "$name no longer passes --patch, so the reason it is exempt from the shared library no longer holds"
-            fi
-            continue
-            ;;
         build-v8-apple.sh)
-            # It applies no patches at all. That is not an oversight -- the
-            # header records that darwin needed none of the workarounds the other
-            # four platforms carry, measured by apple-v8-probe.yml before the
-            # script existed. A script that patches nothing cannot route patching
-            # anywhere, so requiring it to source the library would be requiring
-            # an import it has no use for.
-            #
-            # This blanket rule was written before that script existed and went
-            # red the day it landed, on a gate no workflow ran. Both halves are
-            # fixed here.
-            if offenders="$(grep -nE 'git apply|patch -p[0-9]|[-]-patch |v8_require_patch' "$s")"; then
-                fail "$name now applies patches, so it can no longer be exempt from the shared library:"
-                echo "$offenders" >&2
+            # macOS bash 3.2 cannot source the Bash 4 tree-audit helper. This
+            # top-level-only path uses Git's transaction and Python replay proof.
+            if grep -qE '^[[:space:]]*python3 .*apply-v8-source-lock.py' "$s"; then
+                pass "$name invokes the portable locked-patch applier"
             else
-                pass "$name applies no patches, which is what its exemption rests on"
+                fail "$name does not invoke the portable locked-patch applier"
+            fi
+            if grep -q 'source .*lib/v8-patch-apply.sh' "$s"; then
+                fail "$name sources a Bash 4 audit helper on macOS"
             fi
             continue
             ;;

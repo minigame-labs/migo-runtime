@@ -1,0 +1,84 @@
+--- symphonia-core-0.6.1/src/packet.rs
++++ symphonia-core-0.6.1/src/packet.rs
+@@ -322,22 +322,19 @@
+         ) -> PacketBuilder<T, HasPts, HasDur, B> {
+             let Self { track_id, pts, buf, dts, .. } = self;
+ 
+-            // All frames with a negative PTS must be trimmed first. This duration may exceed the
+-            // number of decoded frames.
+-            let negative = pts.0.duration_to(Timestamp::ZERO).unwrap_or(Duration::ZERO);
+-
+-            // Cap to the number of decoded frames.
+-            let trim_start = negative.min(block_dur);
+-            let mut trim_end = Duration::ZERO;
+-
+-            // It is only possible to trim the end of a packet if the end PTS is known.
+-            if let Some(end_pts) = end_pts {
+-                if let Some(pkt_end_pts) = pts.0.checked_add(block_dur) {
+-                    trim_end = pkt_end_pts.duration_from(end_pts).unwrap_or(Duration::ZERO);
+-                }
+-            }
+-
+-            let dur = block_dur.saturating_sub(self.trim_start).saturating_sub(self.trim_end);
++            // i128 represents every i64 PTS plus u64 block duration exactly.
++            // Intersect with [0, end_pts), without overflowing Timestamp or
++            // double-counting a block that lies entirely outside the window.
++            let block_start = i128::from(pts.0.get());
++            let block_len = i128::from(block_dur.get());
++            let start = (-block_start).max(0).min(block_len);
++            let end = end_pts.map_or(0, |end_pts| {
++                (block_start + block_len - i128::from(end_pts.get()))
++                    .max(0).min(block_len - start)
++            });
++            let trim_start = Duration::new(start as u64);
++            let trim_end = Duration::new(end as u64);
++            let dur = block_dur.saturating_sub(trim_start).saturating_sub(trim_end);
+ 
+             PacketBuilder { track_id, pts, dur: HasDur(dur), buf, dts, trim_start, trim_end }
+         }
+@@ -416,6 +413,45 @@
+     use crate::units::{Duration, Timestamp};
+ 
+     #[test]
++    fn trimmed_duration_is_valid_frames_for_both_owned_and_borrowed_packets() {
++        let cases = [
++            // PTS, block duration, stream end, expected valid/start/end.
++            (-5, 10, None, (5, 5, 0)),
++            (-5, 10, Some(3), (3, 5, 2)),
++            (-20, 10, Some(3), (0, 10, 0)),
++            (2, 10, Some(5), (3, 0, 7)),
++            (8, 4, Some(5), (0, 0, 4)),
++            (-5, 0, Some(3), (0, 0, 0)),
++            (i64::MIN, 10, None, (0, 10, 0)),
++            (i64::MAX - 2, 10, Some(i64::MAX), (2, 0, 8)),
++            (i64::MIN, u64::MAX, Some(i64::MAX), (i64::MAX as u64, 1 << 63, 0)),
++            (i64::MAX, u64::MAX, Some(i64::MAX), (0, 0, u64::MAX)),
++            (0, u64::MAX, None, (u64::MAX, 0, 0)),
++        ];
++        for (pts, block, end, expected) in cases {
++            let end = end.map(Timestamp::new);
++            let owned = PacketBuilder::new().track_id(0).pts(Timestamp::new(pts))
++                .trimmed_dur(Duration::new(block), end).data(Vec::new()).build();
++            let borrowed = PacketBuilder::new().track_id(0).pts(Timestamp::new(pts))
++                .trimmed_dur(Duration::new(block), end).data_by_ref(&[]).build_packet_ref();
++            for (dur, start, tail) in [(owned.dur, owned.trim_start, owned.trim_end),
++                (borrowed.dur, borrowed.trim_start, borrowed.trim_end)] {
++                assert_eq!((dur.get(), start.get(), tail.get()), expected, "PTS={pts}, block={block}");
++                assert_eq!(dur.checked_add(start).unwrap().checked_add(tail).unwrap().get(), block);
++            }
++        }
++    }
++
++    #[test]
++    fn calculated_trim_replaces_previously_supplied_trim_fields() {
++        let packet = PacketBuilder::new().track_id(0).pts(Timestamp::new(-5))
++            .trim_start(Duration::new(99)).trim_end(Duration::new(99))
++            .trimmed_dur(Duration::new(10), Some(Timestamp::new(3)))
++            .data_by_ref(&[]).build_packet_ref();
++        assert_eq!((packet.dur.get(), packet.trim_start.get(), packet.trim_end.get()), (3, 5, 2));
++    }
++
++    #[test]
+     fn verify_packet_ref_creation() {
+         let data: &[u8] = &[1, 2, 3, 4];
+ 

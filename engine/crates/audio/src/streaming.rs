@@ -12,23 +12,23 @@ use std::time::Duration;
 
 use shared::error::{EngineError, EngineResult, ErrorCode};
 use tokio::sync::{Notify, mpsc};
-use tracing::debug;
 
 use crate::decoder::mp3::{
     MAX_SAMPLES_PER_FRAME, Mp3FrameDecoder, Mp3Step, STREAM_LOOKAHEAD_BYTES, append_as_f32,
     first_frame_at_front,
 };
+#[cfg(test)]
 use crate::off_worker::OffWorker;
 
 /// Keep only a small number of decoded chunks ahead of the audio thread.
 /// When the app is backgrounded and stops polling, async sends apply
 /// backpressure to both decoding and the network response body.
-const STREAM_CHANNEL_CAPACITY: usize = 4;
+pub(crate) const STREAM_CHANNEL_CAPACITY: usize = 4;
 
 /// Bound a server that accepts a connection but never produces headers.
-const RESPONSE_HEADER_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const RESPONSE_HEADER_TIMEOUT: Duration = Duration::from_secs(30);
 /// Per-chunk inactivity bound. This deliberately does not cap track duration.
-const BODY_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const BODY_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The engine's HTTP client, as streaming holds it.
 pub type HttpClient = migo_services::network::http::HttpClient;
@@ -63,7 +63,7 @@ impl LazyStreamingClient {
     }
 }
 
-fn stream_channel() -> (mpsc::Sender<StreamMsg>, mpsc::Receiver<StreamMsg>) {
+pub(crate) fn stream_channel() -> (mpsc::Sender<StreamMsg>, mpsc::Receiver<StreamMsg>) {
     mpsc::channel(STREAM_CHANNEL_CAPACITY)
 }
 
@@ -192,7 +192,7 @@ impl StreamingState {
     /// Wait without polling. Registering before the second level check closes
     /// the check-to-sleep race with `notify_waiters`, which does not retain a
     /// permit for future waiters.
-    async fn cancelled(&self) {
+    pub(crate) async fn cancelled(&self) {
         loop {
             let notified = self.cancel_notify.notified();
             tokio::pin!(notified);
@@ -218,7 +218,7 @@ impl Default for StreamingState {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum NetworkWait<T> {
+pub(crate) enum NetworkWait<T> {
     Ready(T),
     Cancelled,
     TimedOut,
@@ -227,7 +227,7 @@ enum NetworkWait<T> {
 /// Race one network await against the event-driven cancellation edge and an
 /// inactivity deadline. Generic/monomorphized so the production path allocates
 /// no boxed future or polling task.
-async fn wait_for_network<T, F>(
+pub(crate) async fn wait_for_network<T, F>(
     state: &StreamingState,
     timeout: Duration,
     operation: F,
@@ -262,6 +262,7 @@ fn get_stream_runtime() -> &'static tokio::runtime::Runtime {
 /// Start streaming download and decode
 /// Returns a receiver for decoded audio chunks
 pub fn start_streaming_download(
+    cpu: migo_io::audio_cpu::AudioCpu,
     client: HttpClient,
     url: String,
     state: Arc<StreamingState>,
@@ -269,14 +270,14 @@ pub fn start_streaming_download(
 ) -> mpsc::Receiver<StreamMsg> {
     let (tx, rx) = stream_channel();
 
-    // Spawn download task on the shared runtime
-    get_stream_runtime().spawn(async move {
-        if let Err(e) =
-            streaming_download_task(client, url, tx.clone(), state, target_sample_rate).await
-        {
-            let _ = tx.send(StreamMsg::Error(e.to_string())).await;
-        }
-    });
+    get_stream_runtime().spawn(crate::streaming_transport::run(
+        cpu,
+        client,
+        url,
+        tx,
+        state,
+        move || Mp3StreamDecoder::new(target_sample_rate),
+    ));
 
     rx
 }
@@ -287,23 +288,32 @@ pub fn start_streaming_download(
 /// this path shared by body decoding and EOF flush prevents a short stream from
 /// publishing Samples before Ready (or omitting Ready when flush finds the first
 /// frame).
-async fn publish_stream_chunk(
+pub(crate) async fn publish_stream_chunk(
     tx: &mpsc::Sender<StreamMsg>,
+    state: &StreamingState,
     pcm: PcmChunk,
     sample_rate: u32,
     channels: u32,
     ready_sent: &mut bool,
-    total_decoded_samples: &mut usize,
+    total_decoded_samples: &mut u64,
 ) -> EngineResult<bool> {
     let has_format = sample_rate > 0 && channels > 0;
+    if !pcm.is_empty() && (!has_format || !pcm.len().is_multiple_of(channels as usize)) {
+        return Err(EngineError::from_detail(
+            ErrorCode::Internal,
+            "decoded audio samples had no complete PCM format",
+        ));
+    }
     if !*ready_sent && has_format {
-        if tx
-            .send(StreamMsg::Ready {
+        if !crate::streaming_transport::send(
+            tx,
+            state,
+            StreamMsg::Ready {
                 sample_rate,
                 channels,
-            })
-            .await
-            .is_err()
+            },
+        )
+        .await
         {
             return Ok(false);
         }
@@ -317,203 +327,16 @@ async fn publish_stream_chunk(
                 "decoded audio samples had no format",
             ));
         }
-        *total_decoded_samples += pcm.len();
-        if tx.send(StreamMsg::Samples(pcm)).await.is_err() {
+        *total_decoded_samples = total_decoded_samples
+            .checked_add(pcm.len() as u64)
+            .ok_or_else(|| {
+                EngineError::from_detail(ErrorCode::Internal, "stream PCM counter overflow")
+            })?;
+        if !crate::streaming_transport::send(tx, state, StreamMsg::Samples(pcm)).await {
             return Ok(false);
         }
     }
     Ok(true)
-}
-
-async fn streaming_download_task(
-    client: HttpClient,
-    url: String,
-    tx: mpsc::Sender<StreamMsg>,
-    state: Arc<StreamingState>,
-    target_sample_rate: u32,
-) -> EngineResult<()> {
-    debug!("Starting streaming download: {}", url);
-
-    if state.is_cancelled() {
-        return Ok(());
-    }
-
-    let parsed = url::Url::parse(&url).map_err(|error| {
-        EngineError::from_detail(
-            ErrorCode::InvalidArgument,
-            format!("invalid audio URL {url}: {error}"),
-        )
-    })?;
-    let response = match wait_for_network(
-        &state,
-        RESPONSE_HEADER_TIMEOUT,
-        client
-            .get(migo_services::network::gate::GateKind::AudioStream, parsed)
-            .send(),
-    )
-    .await
-    {
-        NetworkWait::Cancelled => return Ok(()),
-        NetworkWait::TimedOut => {
-            return Err(EngineError::from_detail(
-                ErrorCode::Timeout,
-                "audio response header timeout",
-            ));
-        }
-        NetworkWait::Ready(Ok(response)) => response,
-        NetworkWait::Ready(Err(error)) => {
-            tracing::error!("HTTP request failed for {}: {}", url, error);
-            return Err(EngineError::from_detail(
-                ErrorCode::IoError,
-                format!("HTTP request failed: {error}"),
-            ));
-        }
-    };
-
-    if !response.status().is_success() {
-        tracing::error!("HTTP error for {}: {}", url, response.status());
-        return Err(EngineError::from_detail(
-            ErrorCode::IoError,
-            format!("HTTP error: {}", response.status()),
-        ));
-    }
-
-    // Get content length if available
-    if let Some(len) = response.content_length() {
-        state.bytes_total.store(len, Ordering::Relaxed);
-        tracing::trace!("Content-Length: {} bytes", len);
-    } else {
-        tracing::trace!("Content-Length not available (chunked transfer)");
-    }
-
-    // Stream the response body
-    let mut stream = response.bytes_stream();
-    let mut decoder = OffWorker::new(Mp3StreamDecoder::new(target_sample_rate));
-    let mut pcm_pool = PcmPool::new();
-    let mut ready_sent = false;
-
-    use futures_util::StreamExt;
-
-    let mut chunk_count = 0u32;
-    let mut total_decoded_samples = 0usize;
-
-    loop {
-        let next_chunk = match wait_for_network(&state, BODY_IDLE_TIMEOUT, stream.next()).await {
-            NetworkWait::Cancelled => {
-                debug!("Streaming download cancelled");
-                return Ok(());
-            }
-            NetworkWait::TimedOut => {
-                return Err(EngineError::from_detail(
-                    ErrorCode::Timeout,
-                    "audio response body idle timeout",
-                ));
-            }
-            NetworkWait::Ready(chunk) => chunk,
-        };
-
-        let Some(chunk_result) = next_chunk else {
-            break;
-        };
-
-        let chunk = chunk_result.map_err(|e| {
-            tracing::error!("Stream chunk error: {}", e);
-            EngineError::from_detail(ErrorCode::IoError, format!("Stream error: {}", e))
-        })?;
-
-        chunk_count += 1;
-        let chunk_len = chunk.len();
-
-        // Update progress
-        let downloaded = state
-            .bytes_downloaded
-            .fetch_add(chunk_len as u64, Ordering::Relaxed)
-            + chunk_len as u64;
-
-        // Log progress every 10 chunks or every 100KB
-        if chunk_count % 10 == 0 || chunk_count == 1 {
-            let total = state.bytes_total.load(Ordering::Relaxed);
-            if total > 0 {
-                let percent = (downloaded as f64 / total as f64 * 100.0) as u32;
-                tracing::trace!(
-                    "Download progress: {}% ({}/{} bytes, {} chunks)",
-                    percent,
-                    downloaded,
-                    total,
-                    chunk_count
-                );
-            } else {
-                tracing::trace!(
-                    "Download progress: {} bytes, {} chunks",
-                    downloaded,
-                    chunk_count
-                );
-            }
-        }
-
-        // Feed the chunk to the decoder and take whatever frames it completed. Both
-        // are CPU-bound and this task's worker is shared with every other session's
-        // download, so the step runs where the worker is not waiting for it.
-        //
-        // The buffer it decodes into is on loan from the pool: whatever the player
-        // finished with is what this chunk is written into.
-        let mut pcm = pcm_pool.take();
-        let (rest, (pcm, sample_rate, channels)) = decoder
-            .with(move |decoder| {
-                decoder.push_data(&chunk);
-                let (sample_rate, channels) = decoder.decode_into(pcm.buffer_mut());
-                (pcm, sample_rate, channels)
-            })
-            .await?;
-        decoder = rest;
-
-        if !publish_stream_chunk(
-            &tx,
-            pcm,
-            sample_rate,
-            channels,
-            &mut ready_sent,
-            &mut total_decoded_samples,
-        )
-        .await?
-        {
-            return Ok(());
-        }
-    }
-
-    // Flush remaining data through the same publication path as body chunks.
-    let mut final_pcm = pcm_pool.take();
-    let (_decoder, (final_pcm, flush_rate, flush_channels)) = decoder
-        .with(move |decoder| {
-            let (sample_rate, channels) = decoder.flush_into(final_pcm.buffer_mut());
-            (final_pcm, sample_rate, channels)
-        })
-        .await?;
-
-    if !publish_stream_chunk(
-        &tx,
-        final_pcm,
-        flush_rate,
-        flush_channels,
-        &mut ready_sent,
-        &mut total_decoded_samples,
-    )
-    .await?
-    {
-        return Ok(());
-    }
-
-    state.download_complete.store(true, Ordering::Release);
-    if tx.send(StreamMsg::Done).await.is_err() {
-        return Ok(());
-    }
-
-    let downloaded = state.bytes_downloaded.load(Ordering::Relaxed);
-    debug!(
-        "Streaming download complete: {} bytes, {} total samples decoded",
-        downloaded, total_decoded_samples
-    );
-    Ok(())
 }
 
 /// Bytes of undecoded MP3 the receive buffer starts out able to hold.
@@ -544,6 +367,49 @@ struct Mp3StreamDecoder {
     /// One frame as `f32`, reused. Only the resampling path needs it; without a
     /// resampler a frame goes straight into the caller's buffer.
     scratch: Vec<f32>,
+}
+
+impl crate::streaming_transport::Decoder for Mp3StreamDecoder {
+    fn step(
+        &mut self,
+        input: &[u8],
+        eof: bool,
+        pcm: &mut Vec<f32>,
+        cancel: &AtomicBool,
+    ) -> EngineResult<crate::streaming_transport::Step> {
+        use crate::streaming_transport::{Progress, Step};
+        if cancel.load(Ordering::Acquire) {
+            return Ok(Step {
+                consumed: 0,
+                progress: Progress::Cancelled,
+                sample_rate: 0,
+                channels: 0,
+            });
+        }
+        // Bound the legacy fallback too. A single HTTP chunk may contain an
+        // entire file; its size must not determine a blocking-pool quantum or
+        // grow retained encoded bytes without limit.
+        let consumed = input
+            .len()
+            .min(4096)
+            .min(RECEIVE_BUFFER_BYTES - self.buffer.len());
+        self.push_data(&input[..consumed]);
+        let (sample_rate, channels) = if eof {
+            self.flush_into(pcm)
+        } else {
+            self.decode_into(pcm)
+        };
+        Ok(Step {
+            consumed,
+            progress: if eof {
+                Progress::Finished
+            } else {
+                Progress::NeedInput
+            },
+            sample_rate,
+            channels,
+        })
+    }
 }
 
 impl Mp3StreamDecoder {
@@ -742,6 +608,7 @@ mod tests {
         // `STREAM_RUNTIME` is process-wide and single-worker, so a decode that ran on
         // it would stall every other session's download for as long as the decode
         // took -- which is as long as the chunk is, not as long as anyone budgeted.
+        let owner = migo_io::scheduler::IoScheduler::new(0);
         let buffered = assert_leaves_the_executor_free(
             SharedExecutor {
                 step: "streaming MP3 decode",
@@ -750,15 +617,16 @@ mod tests {
             },
             get_stream_runtime(),
             |cpu| async move {
-                let (_decoder, buffered) = OffWorker::new(Mp3StreamDecoder::new(48_000))
-                    .with(move |decoder| {
-                        cpu.occupy();
-                        decoder.push_data(A_CHUNK);
-                        decoder.decode_into(&mut Vec::new());
-                        decoder.buffer.len()
-                    })
-                    .await
-                    .expect("the decode step must complete");
+                let (_decoder, buffered) =
+                    OffWorker::new(Mp3StreamDecoder::new(48_000), owner.audio_cpu())
+                        .with(move |decoder| {
+                            cpu.occupy();
+                            decoder.push_data(A_CHUNK);
+                            decoder.decode_into(&mut Vec::new());
+                            decoder.buffer.len()
+                        })
+                        .await
+                        .expect("the decode step must complete");
                 buffered
             },
         );
@@ -1035,6 +903,7 @@ mod tests {
                 false,
                 &shared::network_policy::NetworkPolicy::default(),
                 "audio",
+                migo_io::pools::IoPools::new(0),
             )
         })
     }
@@ -1193,19 +1062,20 @@ mod tests {
             let (tx, mut rx) = stream_channel();
             let mut pool = PcmPool::new();
             let mut ready_sent = false;
+            let state = StreamingState::new();
             let mut total = 0;
 
             let mut first = pool.take();
             first.buffer_mut().extend_from_slice(&[0.1, 0.2]);
             assert!(
-                publish_stream_chunk(&tx, first, 48_000, 1, &mut ready_sent, &mut total)
+                publish_stream_chunk(&tx, &state, first, 48_000, 1, &mut ready_sent, &mut total)
                     .await
                     .unwrap()
             );
             let mut second = pool.take();
             second.buffer_mut().extend_from_slice(&[0.3]);
             assert!(
-                publish_stream_chunk(&tx, second, 48_000, 1, &mut ready_sent, &mut total)
+                publish_stream_chunk(&tx, &state, second, 48_000, 1, &mut ready_sent, &mut total)
                     .await
                     .unwrap()
             );
@@ -1224,7 +1094,7 @@ mod tests {
 
             let empty = pool.take();
             assert!(
-                publish_stream_chunk(&tx, empty, 0, 0, &mut ready_sent, &mut total)
+                publish_stream_chunk(&tx, &state, empty, 0, 0, &mut ready_sent, &mut total)
                     .await
                     .unwrap()
             );

@@ -151,7 +151,10 @@ if(MIGO_LINUX_HOST_KIT_BUILD_QT6_X11)
         src/qt6/managed_session.cpp
         # Internal, not installed: content's setKeepScreenOn, the battery, the
         # network and the memory warnings the system reports, over Qt's D-Bus,
-        # and the gamepads (evdev, found through udev).
+        # the gamepads (evdev, found through udev), and the text field
+        # content's showKeyboard opens.
+        src/qt6/keyboard_field.hpp
+        src/qt6/keyboard_field.cpp
         src/qt6/screen_awake.hpp
         src/qt6/screen_awake.cpp
         src/qt6/system_reports.hpp

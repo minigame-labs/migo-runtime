@@ -73,11 +73,18 @@ struct CompositionRecord {
     std::string data;
 };
 
+struct KeyboardRecord {
+    MigoKeyboardEventType event_type = 0;
+    std::string value;
+    double height_css_px = 0.0;
+};
+
 const std::vector<TouchRecord> &touches() noexcept;
 const std::vector<PointerRecord> &pointers() noexcept;
 const std::vector<WheelRecord> &wheels() noexcept;
 const std::vector<KeyRecord> &keys() noexcept;
 const std::vector<CompositionRecord> &compositions() noexcept;
+const std::vector<KeyboardRecord> &keyboard_events() noexcept;
 const std::vector<uint8_t> &focus_changes() noexcept;
 const std::vector<int64_t> &vsyncs() noexcept;
 
@@ -205,6 +212,12 @@ void deliver_ready_from_engine_thread() noexcept;
 void deliver_error_from_engine_thread(MigoResult code, const char *message) noexcept;
 void deliver_frame_request_from_engine_thread() noexcept;
 void deliver_keep_screen_on_from_engine_thread(bool keep_on) noexcept;
+/// Content's showKeyboard, hideKeyboard and updateKeyboard, as the engine
+/// delivers them; the options' default value is `default_value`.
+void deliver_show_keyboard_from_engine_thread(const MigoKeyboardShowOptions &options,
+                                              const std::string &default_value) noexcept;
+void deliver_hide_keyboard_from_engine_thread() noexcept;
+void deliver_update_keyboard_from_engine_thread(const std::string &value) noexcept;
 
 void reset() noexcept;
 

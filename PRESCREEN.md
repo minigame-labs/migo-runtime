@@ -116,28 +116,40 @@ carries a host you can install as-is:
 
 ```sh
 git clone https://github.com/minigame-labs/migo-examples
-cd migo-examples/android-java
-./gradlew :app:installDebug
+cd migo-examples
+bash scripts/resolve-migo-artifact.sh android-aar android-java/libs/migo.aar
+cd android-java && ./gradlew :app:installDebug
 
 cd /path/to/migo
 bash scripts/prescreen-run.sh /path/to/your/bundle \
     --package com.minigame.androiddemo \
     --activity .PrescreenProbeActivity \
+    --adapter /path/to/migo-wx-adapter.bundle.js --record \
     --device <adb serial> --secs 20 --out run-report.md
 ```
 
 `PrescreenProbeActivity` exists **only in the debug build** and is the one
-activity there that adb is allowed to start. That boundary is deliberate:
+game activity there that adb is allowed to start. That boundary is deliberate:
 `android:exported="false"` is the right default for a game activity, and this
 example keeps teaching it rather than opening a surface any app on the phone
 could call. Deploying a bundle needs `run-as`, which needs a debuggable build
 anyway, so a probe that exists only in debug builds is present in exactly the
 situations where this half can work at all.
 
-It adds no behaviour of its own — config, host handlers and logging are all
-inherited from the example's own game activity, so what the probe runs is what a
-host built from the example runs. A probe that behaved differently would be
-measuring itself.
+It runs the example's own configuration, host handlers and logging, all inherited
+from the example's game activity, so what the probe runs is what a host built from
+the example runs. It adds only what the script hands it:
+
+- `--adapter`: the adapter your content is written against, injected before the
+  game. wx content needs [migo-wx-adapter](https://github.com/minigame-labs/migo-wx-adapter)'s
+  bundle; without it the run stops on `wx is not defined`, which says nothing about
+  your bundle. Content written against `migo.*` needs none.
+- `--record`: this checkout's compatibility recorder, after the adapter, with the
+  log at INFO -- section 4 below.
+
+The probe logs each one it injected with its sha256, and the report calls a prelude
+injected only when that line is in the log. A host that ignores the request runs
+without it, and the report says so instead of judging your bundle by its absence.
 
 **Unlock the phone first.** An activity launched on a sleeping device pauses
 before it ever gets a surface, and a report written from that would say "no
@@ -151,6 +163,10 @@ the adapter, and log at `RuntimeConfig.LogLevel.INFO` or lower (a release engine
 and the recorder writes at INFO). The run report then adds a fourth section: what the game
 reached for on the device, judged the way section 3 below judges it -- and on a device, unlike
 the Linux player, a call the host answers "not supported" is the host's real answer.
+
+To take `--adapter` and `--record` the way the probe does, read `adapter.js` and `recorder.js`
+from `<files>/migo-prescreen/` when the boolean extras `migo_prescreen_adapter` /
+`migo_prescreen_record` are set, and log `injected <name> sha256=<hex>` for each.
 
 ### What it will and will not claim
 

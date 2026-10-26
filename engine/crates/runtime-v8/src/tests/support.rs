@@ -18,6 +18,22 @@ use shared::{
     vfs::{GamePaths, VirtualFS},
 };
 
+/// Core's lazy ops use deno_unsync: the executor MUST be current-thread, even
+/// in synchronous tests. Keep its ownership outside the isolate and its enter
+/// guard; never drive non-Send isolate work on a background executor.
+/// Tests already in Tokio (including paused-clock tests) retain their driver.
+pub(crate) fn v8_test_executor() -> Option<tokio::runtime::Runtime> {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        return None;
+    }
+    Some(
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("V8 test foreground task driver"),
+    )
+}
+
 pub(super) fn test_host_state() -> HostOpState {
     test_host_state_with_audio(shared::audio_channel::disconnected())
 }

@@ -1,0 +1,68 @@
+--- symphonia-format-isomp4-0.6.1/src/atoms/meta.rs
++++ symphonia-format-isomp4-0.6.1/src/atoms/meta.rs
+@@ -34,6 +34,9 @@
+ impl Atom for MetaAtom {
+     #[allow(clippy::single_match)]
+     fn read<R: ReadAtom>(it: &mut AtomIterator<R>, _header: &AtomHeader) -> Result<Self> {
++        if it.metadata_options().is_disabled() {
++            return Ok(MetaAtom { metadata: None });
++        }
+         let (_, _) = it.read_extended_header()?;
+ 
+         let mut metadata = None;
+--- symphonia-format-isomp4-0.6.1/src/atoms/mod.rs
++++ symphonia-format-isomp4-0.6.1/src/atoms/mod.rs
+@@ -606,13 +606,32 @@
+     pending: Option<AtomHeader>,
+     /// The length of the container, if known.
+     len: Option<u64>,
++    metadata_options: symphonia_core::meta::MetadataOptions,
+ }
+ 
+ impl<R: ReadAtom> AtomIterator<R> {
+     /// Instantiate a new atom iterator.
+     pub(crate) fn new(reader: R, len: Option<u64>) -> Self {
+         let stack = Vec::with_capacity(MAX_ITERATION_DEPTH);
+-        AtomIterator { reader, stack, pending: None, len }
++        AtomIterator {
++            reader,
++            stack,
++            pending: None,
++            len,
++            metadata_options: Default::default(),
++        }
++    }
++
++    pub(crate) fn with_metadata_options(
++        mut self,
++        options: symphonia_core::meta::MetadataOptions,
++    ) -> Self {
++        self.metadata_options = options;
++        self
++    }
++
++    pub(crate) fn metadata_options(&self) -> symphonia_core::meta::MetadataOptions {
++        self.metadata_options
+     }
+ 
+     /// Consume the iterator and return the inner reader.
+--- symphonia-format-isomp4-0.6.1/src/demuxer.rs
++++ symphonia-format-isomp4-0.6.1/src/demuxer.rs
+@@ -9,7 +9,7 @@
+ use symphonia_core::support_format;
+ 
+ use symphonia_core::errors::{
+-    Error, Result, SeekErrorKind, decode_error, seek_error, unsupported_error,
++    decode_error, seek_error, unsupported_error, Error, Result, SeekErrorKind,
+ };
+ use symphonia_core::formats::prelude::*;
+ use symphonia_core::formats::probe::{ProbeFormatData, ProbeableFormat, Score, Scoreable};
+@@ -227,7 +227,7 @@
+         let mut metadata = opts.external_data.metadata.unwrap_or_default();
+ 
+         // Parse all atoms if the stream is seekable, otherwise parse all atoms up-to the mdat atom.
+-        let mut it = AtomIterator::new(mss, total_len);
++        let mut it = AtomIterator::new(mss, total_len).with_metadata_options(opts.metadata_options);
+         // Maps each track id to its cumulative duration (TimeSpan) as parsed from the segment
+         // index.
+         let mut sidx_timespans: HashMap<u32, TimeSpan> = HashMap::new();

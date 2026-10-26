@@ -212,8 +212,14 @@ snapshot_require_materialized_snapshot() {
 # $1 = repo root
 snapshot_js_hash() {
   local root="$1"
-  ( cd "$root" && \
-    find engine/crates/runtime-v8 -type f -name '*.js' \
+  ( set -o pipefail; cd "$root" && \
+    { find engine/crates/runtime-v8 -type f -name '*.js' || exit 1; \
+      if [[ -f engine/Cargo.toml ]]; then \
+        local core_name core_version core_sha; \
+        read -r core_name core_version core_sha < engine/third_party/deno-core-patches/UPSTREAM || exit 1; \
+        [[ "$core_name" == deno_core && "$core_version" =~ ^[0-9.]+$ ]] || exit 1; \
+        find "engine/third_party/$core_name-$core_version" -type f -name '*.js' || exit 1; \
+      fi; } \
       | LC_ALL=C sort \
       | xargs -r -d '\n' sha256sum \
       | sha256sum | awk '{print $1}' )
@@ -221,13 +227,31 @@ snapshot_js_hash() {
 
 snapshot_runtime_hash() {
   local root="$1"
-  ( cd "$root" && \
+  ( set -o pipefail; cd "$root" && \
     { find engine/crates/runtime-v8 engine/tools/snapshot-gen \
         -type f -name '*.rs' || exit 1; \
       printf '%s\n' \
         engine/crates/runtime-v8/Cargo.toml \
         engine/tools/snapshot-gen/Cargo.toml \
-        engine/Cargo.lock || exit 1; } \
+        engine/Cargo.lock || exit 1; \
+      if [[ -f engine/Cargo.toml ]]; then \
+        local core_name core_version core_sha; \
+        read -r core_name core_version core_sha < engine/third_party/deno-core-patches/UPSTREAM || exit 1; \
+        [[ "$core_name" == deno_core && "$core_version" =~ ^[0-9.]+$ ]] || exit 1; \
+        find "engine/third_party/$core_name-$core_version" -type f -name '*.rs' || exit 1; \
+        find engine/third_party/deno-core-patches -type f -name '*.patch' || exit 1; \
+        printf '%s\n' engine/Cargo.toml "engine/third_party/$core_name-$core_version/Cargo.toml" \
+          engine/third_party/deno-core-patches/UPSTREAM || exit 1; \
+        local v8_name v8_version v8_sha; \
+        read -r v8_name v8_version v8_sha < engine/third_party/rusty-v8-rust-patches/UPSTREAM || exit 1; \
+        [[ "$v8_name" == v8 && "$v8_version" =~ ^[0-9.]+$ ]] || exit 1; \
+        find "engine/third_party/$v8_name-$v8_version/src" \
+          "engine/third_party/$v8_name-$v8_version/gen" -type f -name '*.rs' || exit 1; \
+        find engine/third_party/rusty-v8-rust-patches -type f -name '*.patch' || exit 1; \
+        printf '%s\n' "engine/third_party/$v8_name-$v8_version/Cargo.toml" \
+          "engine/third_party/$v8_name-$v8_version/build.rs" \
+          engine/third_party/rusty-v8-rust-patches/UPSTREAM || exit 1; \
+      fi; } \
       | LC_ALL=C sort \
       | xargs -r -d '\n' sha256sum \
       | sha256sum | awk '{print $1}' )

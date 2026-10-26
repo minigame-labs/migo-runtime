@@ -24,6 +24,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::network::url::Url;
 use bytes::Bytes;
 use http::HeaderMap;
 use http::HeaderName;
@@ -34,7 +35,6 @@ use http::header::{ACCEPT_ENCODING, CACHE_CONTROL, CONTENT_LENGTH, HOST, PRAGMA,
 use migo_io::pools::{ByteTicket, IoPools};
 use shared::network_policy::NetworkPolicy;
 use tokio::sync::Mutex;
-use url::Url;
 
 use super::gate::{GateKind, enforce};
 use super::http::{HttpClient as Client, HttpError, RequestBuilder, Response};

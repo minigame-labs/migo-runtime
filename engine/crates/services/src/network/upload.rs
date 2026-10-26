@@ -15,12 +15,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::network::url::Url;
 use bytes::Bytes;
 use futures::Stream;
 use http::HeaderMap;
 use http::header::{CONTENT_LENGTH, CONTENT_TYPE, HOST, HeaderName, HeaderValue};
 use tracing::debug;
-use url::Url;
 
 use shared::network_policy::NetworkPolicy;
 

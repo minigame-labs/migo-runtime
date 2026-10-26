@@ -68,6 +68,8 @@ mod input_clock_tests {
     /// on its own clock, never in the future and never negative.
     #[test]
     fn a_host_epoch_does_not_reach_content() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (executor, mut runtime) = boot();
         run(&executor, &mut runtime, SETUP);
         run(&executor, &mut runtime, &touch("62067560000"));
@@ -80,17 +82,23 @@ mod input_clock_tests {
     }
 
     /// Inside a burst the host's spacing is what content sees, not the spacing of when the game read them.
+    ///
+    /// The host's 20 ms against a read 40 ms and more later: the read gap is never shorter than the host's, which
+    /// would put the second stamp after `performance.now()`, and stays far inside the quarter second that ends a
+    /// burst. With 100 ms against 120 a shared runner read them 257 ms apart, a new burst.
     #[test]
     fn the_spacing_inside_a_burst_is_the_hosts() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (executor, mut runtime) = boot();
         run(&executor, &mut runtime, SETUP);
         run(&executor, &mut runtime, &touch("62067560000"));
-        std::thread::sleep(Duration::from_millis(120));
-        run(&executor, &mut runtime, &touch("62067560100"));
+        std::thread::sleep(Duration::from_millis(40));
+        run(&executor, &mut runtime, &touch("62067560020"));
         check(
             &executor,
             &mut runtime,
-            "__stamps.length === 2 && Math.abs((__stamps[1] - __stamps[0]) - 100) < 0.001",
+            "__stamps.length === 2 && Math.abs((__stamps[1] - __stamps[0]) - 20) < 0.001",
         );
     }
 
@@ -98,6 +106,8 @@ mod input_clock_tests {
     /// tick through a sleep (or one that was never the page's rate) cannot walk away from the page's.
     #[test]
     fn a_pause_anchors_the_clocks_again() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (executor, mut runtime) = boot();
         run(&executor, &mut runtime, SETUP);
         run(&executor, &mut runtime, &touch("62067560000"));
@@ -115,6 +125,8 @@ mod input_clock_tests {
     /// A stamp that is not a number is the moment it was read, not NaN in content's hands.
     #[test]
     fn a_stamp_that_is_not_a_number_is_now() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (executor, mut runtime) = boot();
         run(&executor, &mut runtime, SETUP);
         run(&executor, &mut runtime, &touch("NaN"));
@@ -129,6 +141,8 @@ mod input_clock_tests {
     /// Keys, the mouse and the wheel are on the same clock as touches.
     #[test]
     fn keys_mouse_and_wheel_share_the_clock() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (executor, mut runtime) = boot();
         run(
             &executor,

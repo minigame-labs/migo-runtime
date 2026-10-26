@@ -46,8 +46,17 @@ pub async fn resolve_first(
     addr: &str,
     blocked: impl Fn(&SocketAddr) -> bool,
 ) -> Result<SocketAddr, std::io::Error> {
+    Ok(resolve_all(addr, blocked).await?[0])
+}
+
+/// Resolve once and vet the entire answer set before a stream connector can
+/// race addresses. Datagram callers keep `resolve_first` and its old selection.
+pub(crate) async fn resolve_all(
+    addr: &str,
+    blocked: impl Fn(&SocketAddr) -> bool,
+) -> Result<Vec<SocketAddr>, std::io::Error> {
     let addrs: Vec<SocketAddr> = tokio::net::lookup_host(addr).await?.collect();
-    let first = *addrs.first().ok_or_else(|| {
+    addrs.first().ok_or_else(|| {
         std::io::Error::new(
             std::io::ErrorKind::AddrNotAvailable,
             format!("could not resolve '{}'", addr),
@@ -64,7 +73,7 @@ pub async fn resolve_first(
             ));
         }
     }
-    Ok(first)
+    Ok(addrs)
 }
 
 /// Return "IPv4" or "IPv6" for a SocketAddr as a `&'static str`, so callers

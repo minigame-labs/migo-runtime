@@ -35,6 +35,14 @@ fail() { echo -e "\033[0;31m$TAG FAIL $*\033[0m" >&2; failures=$((failures + 1))
 info() { echo -e "\033[0;36m$TAG $*\033[0m"; }
 failures=0
 
+# Exercise the CI entry as well as local resolvers: the action once kept a
+# separate r23 default while native consumers needed the updated build lock.
+if python3 "$SCRIPT_DIR/ci/tests/test_setup_android_ndk.py"; then
+    pass "CI installation and all four consumer variables follow the build lock"
+else
+    fail "CI installation no longer follows the native build lock"
+fi
+
 [[ -f "$LIB" ]]  || { echo "$TAG missing library: $LIB" >&2; exit 1; }
 [[ -f "$LOCK" ]] || { echo "$TAG missing lock: $LOCK" >&2; exit 1; }
 

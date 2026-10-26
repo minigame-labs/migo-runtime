@@ -7,9 +7,9 @@
 
 use std::time::Duration;
 
+use crate::network::url::Url;
 use shared::error::{EngineError, EngineResult, ErrorCode};
 use shared::network_policy::NetworkPolicy;
-use url::Url;
 
 use super::gate::{self, GateKind};
 use super::http::HttpClient as Client;

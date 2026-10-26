@@ -19,13 +19,19 @@
 # different bytes are a different path, so cargo's own staleness rule is correct, and the
 # stamp and the clean are gone rather than maintained.
 #
-# **A CI cache that keeps build-script fingerprints must not keep this crate's
+# **Historical upstream cache failure, before the component-consumer patch.**
+# Migo's 0003-component-consumer.patch now links this verified directory
+# directly and watches the archive/binding files. It no longer makes the copy
+# or gn_out output described below. Existing CI target-cache settings remain
+# unchanged until their platform warm-cache validation is performed.
+#
+# **A CI cache that kept upstream build-script fingerprints could not keep its
 # build-script outputs.** Stated here because it is a property of what the `v8`
 # crate does, and until now it was stated only in comments on three workflow
 # jobs -- which is why a fourth job was written without it and failed exactly the
 # way those comments describe.
 #
-# Given `RUSTY_V8_ARCHIVE`, rusty_v8's build script COPIES the archive to
+# Given `RUSTY_V8_ARCHIVE`, the previous upstream build script COPIED the archive to
 # `target/<triple>/<profile>/gn_out/obj/librusty_v8.a` and records
 # `cargo:rustc-link-search` pointing there. `Swatinem/rust-cache` prunes large
 # files out of build-script output directories to shrink the cache while keeping
@@ -34,7 +40,7 @@
 # "could not find native static library `rusty_v8`" -- reliably on the SECOND
 # run, which is why it reads as flakiness rather than as a configuration error.
 #
-# So a job that links V8 either does not cache the target directory, or it is
+# With that upstream consumer, a job either did not cache the target directory, or was
 # broken on every warm run. `pr-ci.yml`'s Android build, `release.yml`'s Android
 # build, `build-snapshot.yml` and `apple-sdk.yml`'s `macos-v8` row all say so at
 # their cache step; if you are adding a fifth, this is the reason.
@@ -52,6 +58,14 @@
 # name the same directory for every way this file is actually sourced.
 # shellcheck source=scripts/lib/python-cmd.sh
 source "${BASH_SOURCE[0]%/*}/python-cmd.sh"
+_V8_MATERIALISE_LIB_DIR="$(cd "${BASH_SOURCE[0]%/*}" && pwd)"
+
+# Correct hashes did not stop a 145 archive being offered to the 150 Rust
+# consumer. Check the selected cohort and tagged-pointer ABI before staging.
+_v8_mat_cohort() {
+    "$(python_cmd)" "$_V8_MATERIALISE_LIB_DIR/v8_cohort.py" \
+        "$_V8_MATERIALISE_LIB_DIR/../.." "$1"
+}
 
 _v8_mat_err() { printf '  ✗ %s\n' "$*" >&2; }
 
@@ -95,6 +109,8 @@ v8_materialise() {
         _v8_mat_err "a target with no committed manifest cannot be verified, so it is not built against"
         return 1
     fi
+
+    _v8_mat_cohort "$manifest" || return 1
 
     local want_archive want_binding got_archive got_binding
     want_archive="$(_v8_mat_recorded "$manifest" archive)" || {
@@ -200,6 +216,8 @@ v8_materialise_windows() {
         _v8_mat_err "a target with no committed manifest cannot be verified, so it is not built against"
         return 1
     fi
+
+    _v8_mat_cohort "$manifest" || return 1
 
     local want_archive want_binding got_archive got_binding
     want_archive="$(_v8_mat_recorded "$manifest" archive)" || {

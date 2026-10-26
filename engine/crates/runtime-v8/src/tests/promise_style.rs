@@ -45,6 +45,8 @@ mod promise_style_tests {
     /// platform.
     #[test]
     fn a_failure_of_an_api_without_a_promise_style_is_not_an_unhandled_rejection() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         run(
             r#"
             migo.onUnhandledRejection((event) => log.push("unhandled " + (event.reason && event.reason.errMsg)));
@@ -67,6 +69,8 @@ mod promise_style_tests {
     #[cfg(feature = "api-connectivity")]
     #[test]
     fn a_failure_checked_before_the_call_leaves_is_not_an_unhandled_rejection_either() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         run(
             r#"
             migo.onUnhandledRejection((event) => log.push("unhandled " + (event.reason && event.reason.errMsg)));

@@ -1,0 +1,303 @@
+--- cpal-0.18.2/Cargo.toml
++++ cpal-0.18.2/Cargo.toml
+@@ -91,6 +91,10 @@
+     "dep:futures",
+     "dep:portable-atomic",
+ ]
++# WASAPI-only scoped MMCSS using the existing Windows API bindings.
++# No audio_thread_priority / D-Bus dependency or TIME_CRITICAL fallback.
++wasapi-mmcss = []
++
+ realtime = [
+     "dep:audio_thread_priority",
+     "dep:alsa-sys",
+--- cpal-0.18.2/Cargo.toml.orig
++++ cpal-0.18.2/Cargo.toml.orig
+@@ -20,6 +20,10 @@
+ # Real-time audio thread scheduling
+ # Applies platform-specific real-time scheduling and performance modes to audio threads.
+ # Platform: Android, Windows (see `realtime-dbus` for Linux)
++# WASAPI-only scoped MMCSS using the existing Windows API bindings.
++# No audio_thread_priority / D-Bus dependency or TIME_CRITICAL fallback.
++wasapi-mmcss = []
++
+ realtime = ["dep:audio_thread_priority", "dep:alsa-sys"]
+ 
+ # Enables `realtime` and adds D-Bus/rtkit support, for RT scheduling on Linux desktop systems
+--- cpal-0.18.2/src/host/wasapi/stream.rs
++++ cpal-0.18.2/src/host/wasapi/stream.rs
+@@ -26,6 +26,10 @@
+     OutputCallbackInfo, OutputStreamTimestamp, ResultExt, SampleFormat, SampleRate, StreamConfig,
+     StreamInstant,
+ };
++
++#[cfg(feature = "wasapi-mmcss")]
++#[path = "mmcss.rs"]
++mod mmcss;
+ 
+ /// Returns the current default audio endpoint for `flow`, or `None` if none exists.
+ ///
+@@ -613,7 +617,7 @@
+     data_callback: &mut dyn FnMut(&Data, &InputCallbackInfo),
+     error_callback: &ErrorCallbackArc,
+ ) {
+-    #[cfg(feature = "realtime")]
++    #[cfg(all(feature = "realtime", not(feature = "wasapi-mmcss")))]
+     if let Err(err) = boost_current_thread_priority(
+         run_ctxt.stream.period_frames,
+         run_ctxt.stream.config.sample_rate,
+@@ -629,6 +633,18 @@
+         0 // Vec::with_capacity(0) does not allocate.
+     };
+     let mut scratch_buffer = vec![0; scratch_len].into_boxed_slice();
++
++    // Registration belongs to this native worker, after setup/allocation and
++    // before data callbacks. Retain it through the entire loop and restore on
++    // every exit/unwind. Refusal keeps the stream at its normal priority.
++    #[cfg(feature = "wasapi-mmcss")]
++    let _mmcss_registration = match mmcss::register() {
++        Ok(guard) => Some(guard),
++        Err(error) => {
++            emit_error(error_callback, error);
++            None
++        }
++    };
+ 
+     loop {
+         match process_commands_and_await_signal(&mut run_ctxt, error_callback) {
+@@ -658,7 +674,7 @@
+     data_callback: &mut dyn FnMut(&mut Data, &OutputCallbackInfo),
+     error_callback: &ErrorCallbackArc,
+ ) {
+-    #[cfg(feature = "realtime")]
++    #[cfg(all(feature = "realtime", not(feature = "wasapi-mmcss")))]
+     if let Err(err) = boost_current_thread_priority(
+         run_ctxt.stream.period_frames,
+         run_ctxt.stream.config.sample_rate,
+@@ -688,6 +704,18 @@
+     };
+     let mut frames_written: u64 = 0;
+ 
++    // Registration belongs to this native worker, after setup/allocation and
++    // before data callbacks. Retain it through the entire loop and restore on
++    // every exit/unwind. Refusal keeps the stream at its normal priority.
++    #[cfg(feature = "wasapi-mmcss")]
++    let _mmcss_registration = match mmcss::register() {
++        Ok(guard) => Some(guard),
++        Err(error) => {
++            emit_error(error_callback, error);
++            None
++        }
++    };
++
+     loop {
+         match process_commands_and_await_signal(&mut run_ctxt, error_callback) {
+             ControlFlow::Break(()) => break,
+@@ -712,7 +740,7 @@
+ }
+ 
+ /// Attempts to elevate the current thread to real-time or high-priority scheduling.
+-#[cfg(feature = "realtime")]
++#[cfg(all(feature = "realtime", not(feature = "wasapi-mmcss")))]
+ fn boost_current_thread_priority(
+     period_frames: FrameCount,
+     sample_rate: SampleRate,
+--- /dev/null
++++ cpal-0.18.2/src/host/wasapi/mmcss.rs
+@@ -0,0 +1,81 @@
++//! A scoped WASAPI worker registration using the Windows bindings CPAL already
++//! depends on. Refusal is nonfatal; no TIME_CRITICAL fallback is requested.
++use windows::{
++    core::w,
++    Win32::{Foundation::HANDLE, System::Threading},
++};
++
++use crate::{Error, ErrorKind};
++
++#[path = "mmcss_scope.rs"]
++mod scope;
++
++pub(super) struct MmcssGuard {
++    _registration: scope::Registration<HANDLE>,
++}
++
++fn release(handle: HANDLE) {
++    // SAFETY: the unique registration came from this worker, and the !Send/
++    // !Sync scope cannot leave that thread. The API consumes its registration,
++    // not a kernel handle for CloseHandle. Drop must not unwind on OS refusal.
++    let result = unsafe { Threading::AvRevertMmThreadCharacteristics(handle) };
++    #[cfg(test)]
++    RESTORED.with(|state| state.set(Some(result.is_ok())));
++    let _ = result;
++}
++
++pub(super) fn register() -> Result<MmcssGuard, Error> {
++    let registration = scope::Registration::acquire(
++        || {
++            let mut task_index = 0;
++            // SAFETY: a static, null-terminated Windows task name and a live
++            // writable index. Registration and release occur on this thread.
++            unsafe { Threading::AvSetMmThreadCharacteristicsW(w!("Pro Audio"), &mut task_index) }
++                .map_err(|_| {
++                    Error::with_message(ErrorKind::RealtimeDenied, "MMCSS registration denied")
++                })
++        },
++        |handle| {
++            // SAFETY: the handle belongs to the live, same-thread scope. An
++            // error rolls back registration before it reaches the caller.
++            unsafe { Threading::AvSetMmThreadPriority(*handle, Threading::AVRT_PRIORITY_HIGH) }
++                .map_err(|_| {
++                    Error::with_message(ErrorKind::RealtimeDenied, "MMCSS high priority denied")
++                })
++        },
++        release,
++    )?;
++    Ok(MmcssGuard {
++        _registration: registration,
++    })
++}
++
++#[cfg(test)]
++thread_local! {
++    static RESTORED: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn actual_windows_registration_is_reverted_or_denied_without_a_fatal_error() {
++        RESTORED.with(|state| state.set(None));
++        match register() {
++            Ok(guard) => {
++                assert_eq!(RESTORED.with(|state| state.get()), None);
++                drop(guard);
++                assert_eq!(RESTORED.with(|state| state.get()), Some(true));
++                println!("MMCSS_NATIVE registered-high-and-reverted-on-owner");
++            }
++            Err(error) => {
++                assert_eq!(error.kind(), ErrorKind::RealtimeDenied);
++                // Failed priority configuration may already have reverted an
++                // acquired registration; failed acquisition has none to undo.
++                assert_ne!(RESTORED.with(|state| state.get()), Some(false));
++                println!("MMCSS_NATIVE denied-fallback-normal; no native-promotion proof");
++            }
++        }
++    }
++}
+--- /dev/null
++++ cpal-0.18.2/src/host/wasapi/mmcss_scope.rs
+@@ -0,0 +1,112 @@
++//! Thread-local registration ownership. Keep native setup/rollback outside
++//! device callbacks and retain the registration for the worker's whole loop.
++use std::{marker::PhantomData, rc::Rc};
++
++pub(super) struct Registration<H> {
++    handle: Option<H>,
++    release: fn(H),
++    // MMCSS must be reverted on the same thread that registered it. This
++    // remains enforced even for a future handle representation that is Send.
++    _thread: PhantomData<Rc<()>>,
++}
++
++impl<H> Registration<H> {
++    pub(super) fn acquire<E>(
++        acquire: impl FnOnce() -> Result<H, E>,
++        configure: impl FnOnce(&H) -> Result<(), E>,
++        release: fn(H),
++    ) -> Result<Self, E> {
++        let guard = Self {
++            handle: Some(acquire()?),
++            release,
++            _thread: PhantomData,
++        };
++        // A rejected configuration or an unwind releases an acquired handle.
++        // On success the caller owns the guard until its worker loop exits.
++        configure(guard.handle.as_ref().expect("new registration"))?;
++        Ok(guard)
++    }
++}
++
++impl<H> Drop for Registration<H> {
++    fn drop(&mut self) {
++        if let Some(handle) = self.handle.take() {
++            (self.release)(handle);
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::cell::RefCell;
++
++    type History = Rc<RefCell<Vec<&'static str>>>;
++
++    fn release(history: History) {
++        history.borrow_mut().push("release");
++    }
++
++    #[test]
++    fn successful_registration_lives_until_its_worker_scope_exits() {
++        let history = History::default();
++        let guard = Registration::acquire(
++            || {
++                history.borrow_mut().push("acquire");
++                Ok::<_, ()>(history.clone())
++            },
++            |history| {
++                history.borrow_mut().push("configure");
++                Ok(())
++            },
++            release,
++        )
++        .unwrap();
++        assert_eq!(&*history.borrow(), &["acquire", "configure"]);
++        history.borrow_mut().push("callback");
++        drop(guard);
++        assert_eq!(
++            &*history.borrow(),
++            &["acquire", "configure", "callback", "release"]
++        );
++    }
++
++    #[test]
++    fn denied_acquisition_does_not_configure_or_release_a_handle() {
++        let result = Registration::acquire(
++            || Err::<(), _>("denied"),
++            |_| panic!("cannot configure an unacquired handle"),
++            |_| panic!("cannot release an unacquired handle"),
++        );
++        assert_eq!(result.err(), Some("denied"));
++    }
++
++    #[test]
++    fn denied_configuration_reverts_once_before_returning_the_error() {
++        let history = History::default();
++        let result = Registration::acquire(
++            || Ok(history.clone()),
++            |history| {
++                history.borrow_mut().push("configure");
++                Err("denied")
++            },
++            release,
++        );
++        assert_eq!(result.err(), Some("denied"));
++        assert_eq!(&*history.borrow(), &["configure", "release"]);
++    }
++
++    #[test]
++    fn configuration_unwind_also_reverts_once() {
++        let history = History::default();
++        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++            Registration::acquire::<()>(
++                || Ok(history.clone()),
++                |_| panic!("configuration unwound"),
++                release,
++            )
++        }));
++        assert!(result.is_err());
++        assert_eq!(&*history.borrow(), &["release"]);
++    }
++}

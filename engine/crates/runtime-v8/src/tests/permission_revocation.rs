@@ -359,6 +359,8 @@ fn run(runtime: &mut JsRuntime, source: &'static str) {
 
 #[test]
 fn denied_camera_can_release_but_cannot_acquire_or_use() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let bundle = Bundle::new(true);
     let mut runtime = boot(bundle.clone());
     run(&mut runtime, "globalThis.__camera = migo.createCamera({});");
@@ -384,6 +386,8 @@ fn denied_camera_can_release_but_cannot_acquire_or_use() {
 
 #[test]
 fn denied_recorder_can_stop_but_not_start_pause_or_resume() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let bundle = Bundle::new(true);
     let mut runtime = boot(bundle.clone());
     run(
@@ -406,6 +410,8 @@ fn denied_recorder_can_stop_but_not_start_pause_or_resume() {
 
 #[test]
 fn denied_bluetooth_can_close_and_stop_but_not_acquire_query_or_write() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let bundle = Bundle::new(true);
     let mut runtime = boot(bundle.clone());
     run(&mut runtime, "migo.openBluetoothAdapter({ fail() {} });");
@@ -431,6 +437,8 @@ fn denied_bluetooth_can_close_and_stop_but_not_acquire_query_or_write() {
 
 #[test]
 fn album_write_and_shared_user_info_op_require_their_scopes() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let sandbox = Sandbox::new("album");
     std::fs::write(sandbox.paths.temp_dir().join("image.png"), b"png").unwrap();
 
@@ -466,6 +474,8 @@ fn album_write_and_shared_user_info_op_require_their_scopes() {
 /// named, under a policy that granted nothing at all.
 #[test]
 fn a_content_path_reaches_the_host_as_the_sandbox_file_and_nothing_else_does() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let sandbox = Sandbox::new("paths");
     let image = sandbox.paths.user_data_dir().join("shot.png");
     std::fs::write(&image, b"png").unwrap();

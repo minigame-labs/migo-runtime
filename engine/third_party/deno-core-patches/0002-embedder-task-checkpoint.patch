@@ -1,0 +1,24 @@
+--- deno_core-0.413.0/runtime/jsruntime.rs
++++ deno_core-0.413.0/runtime/jsruntime.rs
+@@ -2046,6 +2046,21 @@
+     )
+   }
+ 
++  /// Finish an embedder-owned logical task without dispatching another task.
++  /// Drain promise jobs, next ticks and rejection reporting using the same
++  /// machinery as the event loop. Call only after releasing op-state borrows
++  /// and returning from all JavaScript callbacks for the current task.
++  pub fn perform_microtask_checkpoint(&mut self) -> Result<(), Box<JsError>> {
++    let context_state = self.inner.main_realm.0.context_state.clone();
++    scope!(scope, self);
++    Self::drain_next_tick_and_macrotasks(scope, &context_state)?;
++    if scope.is_execution_terminating() {
++      let undefined = v8::undefined(scope);
++      return exception_to_err_result(scope, undefined.into(), false, true);
++    }
++    context_state.exception_state.check_exception_condition(scope)
++  }
++
+   /// Call a function and return a future resolving with the return value of the
+   /// function. If the function returns a promise, the future will resolve only once the
+   /// event loop resolves the underlying promise. If the future rejects, the future will

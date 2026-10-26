@@ -19,6 +19,7 @@ extension!(
     ],
     esm = [
         dir "src/web",
+        "01_task_context.js",
         "02_timers.js",
         "03_canvas.js",
         "04_image_encode.js",

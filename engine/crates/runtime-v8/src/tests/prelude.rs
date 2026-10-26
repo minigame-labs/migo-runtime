@@ -38,6 +38,8 @@ mod prelude_tests {
     /// when running prelude before EvaluateModule.
     #[test]
     fn owned_name_prelude_globals_persist() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = JsRuntime::new(RuntimeOptions::default());
 
         // Mimic exec_script_owned: build name from a runtime String, pass
@@ -71,6 +73,8 @@ mod prelude_tests {
     /// independent execute_script calls.
     #[test]
     fn multiple_preludes_run_in_order() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = JsRuntime::new(RuntimeOptions::default());
 
         let scripts: Vec<(String, &str)> = vec![
@@ -100,6 +104,8 @@ mod prelude_tests {
     /// only surfaces during the event loop).
     #[test]
     fn prelude_syntax_error_fails_fast() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = JsRuntime::new(RuntimeOptions::default());
         let name = String::from("<prelude:broken>");
         let result = rt.execute_script(name, FastString::from_static("this is not valid js (("));

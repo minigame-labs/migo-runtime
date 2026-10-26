@@ -39,6 +39,7 @@ import sys
 import time
 import zipfile
 from xml.sax.saxutils import escape
+from lib.android_runtime_deps import load as runtime_dependencies
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 GROUP = "com.minigame-labs"
@@ -123,8 +124,11 @@ an IDE shows inline, and the developer guide:
 
 
 def pom(artifact: str, version: str, name: str, description: str) -> bytes:
-    # The library has no shipping dependencies, so the POM declares none:
-    # test-maven-publication-contract.sh fails the day the library gains one.
+    dependencies = "\n".join(
+        f"    <dependency><groupId>{d['group']}</groupId><artifactId>{d['artifact']}</artifactId>"
+        f"<version>{d['version']}</version><scope>runtime</scope></dependency>"
+        for d in runtime_dependencies()["maven_runtime"]
+    )
     text = f"""<?xml version="1.0" encoding="UTF-8"?>
 <project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
@@ -132,6 +136,9 @@ def pom(artifact: str, version: str, name: str, description: str) -> bytes:
   <artifactId>{artifact}</artifactId>
   <version>{escape(version)}</version>
   <packaging>aar</packaging>
+  <dependencies>
+{dependencies}
+  </dependencies>
   <name>{escape(name)}</name>
   <description>{escape(description)}</description>
   <url>{REPOSITORY_URL}</url>

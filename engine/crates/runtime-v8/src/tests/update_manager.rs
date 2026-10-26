@@ -80,6 +80,8 @@ const ARM: &str = r#"
 
 #[test]
 fn without_a_host_there_is_no_update_and_nothing_can_announce_one() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let mut runtime = boot(None);
     let heard = run(
         &mut runtime,
@@ -110,6 +112,8 @@ fn without_a_host_there_is_no_update_and_nothing_can_announce_one() {
 
 #[test]
 fn the_hosts_steps_reach_listeners_before_and_after_them_and_apply_reaches_the_host() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let host = Arc::new(FakeUpdates::default());
     let mut runtime = boot(Some(host.clone()));
 
@@ -155,6 +159,8 @@ fn the_hosts_steps_reach_listeners_before_and_after_them_and_apply_reaches_the_h
 
 #[test]
 fn a_failed_download_is_heard_and_applies_nothing() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let host = Arc::new(FakeUpdates::default());
     let mut runtime = boot(Some(host.clone()));
     let heard = run(

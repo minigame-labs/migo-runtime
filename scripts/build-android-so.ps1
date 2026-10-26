@@ -211,6 +211,29 @@ function Build-Platform {
     $env:RUSTY_V8_SRC_BINDING_PATH = $v8.Binding
     Print-Info "RUSTY_V8_SRC_BINDING_PATH = $($v8.Binding)"
 
+    # Skia links V8's ICU instead of bundling a second one: the same headers and the same variable
+    # as scripts/lib/skia-external-icu.sh, which explains why.
+    Push-Location $paths.Engine
+    try {
+        $metadata = cargo metadata --format-version 1 --filter-platform $targetTriple --locked | ConvertFrom-Json
+    } finally {
+        Pop-Location
+    }
+    $v8Crate = $metadata.packages | Where-Object { $_.name -eq "v8" } | Select-Object -First 1
+    if (-not $v8Crate) {
+        Print-Error "cannot locate the v8 crate through cargo metadata"
+        exit 1
+    }
+    $icuRoot = Join-Path (Split-Path $v8Crate.manifest_path -Parent) "third_party/icu/source"
+    $icuCommon = Join-Path $icuRoot "common"
+    $icuI18n = Join-Path $icuRoot "i18n"
+    if (-not (Test-Path (Join-Path $icuCommon "unicode/uvernum.h")) -or -not (Test-Path (Join-Path $icuI18n "unicode/ucol.h"))) {
+        Print-Error "no ICU headers under $icuRoot"
+        exit 1
+    }
+    $env:SKIA_EXTERNAL_ICU_INCLUDE_DIRS = "$icuCommon$([System.IO.Path]::PathSeparator)$icuI18n"
+    Print-Info "SKIA_EXTERNAL_ICU_INCLUDE_DIRS = $($env:SKIA_EXTERNAL_ICU_INCLUDE_DIRS)"
+
     # --------------------------------------------------------
     # RUSTFLAGS (arm64 builtins)
     # --------------------------------------------------------

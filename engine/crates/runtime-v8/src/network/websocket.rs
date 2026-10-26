@@ -107,11 +107,43 @@ pub async fn op_ws_create(
     // timeout: deno coerces a missing `Option` smi to `None`, where a missing
     // required smi throws.
     #[smi] timeout_ms: Option<u32>,
+    tcp_no_delay: bool,
+    per_message_deflate: bool,
+    #[smi] cancel_handle_rid: Option<ResourceId>,
 ) -> Result<WsCreateResult, JsErrorBox> {
     let (resources, policy) = session(&state);
-    let handshake = service_ws::create(&policy, &resources, &url, &protocols, &headers, timeout_ms)
-        .await
-        .map_err(service_error)?;
+    let cancel_rid = cancel_handle_rid
+        .map(|rid| {
+            state
+                .borrow()
+                .resource_table
+                .get::<ServiceHandle>(rid)
+                .map(|handle| handle.id)
+                .map_err(|_| JsErrorBox::generic("WebSocket connect cancel handle is not open"))
+        })
+        .transpose()?;
+    let pools = state
+        .borrow()
+        .borrow::<crate::io_state::IoSchedulerState>()
+        .0
+        .pools()
+        .clone();
+    let handshake = service_ws::create(
+        &policy,
+        &resources,
+        &url,
+        &protocols,
+        &headers,
+        service_ws::ConnectOptions {
+            timeout_ms,
+            tcp_no_delay,
+            per_message_deflate,
+            cancel_rid,
+        },
+        pools,
+    )
+    .await
+    .map_err(service_error)?;
 
     // The id content holds is this runtime's, naming the service's.
     let rid = state.borrow_mut().resource_table.add(ServiceHandle::new(
@@ -167,7 +199,16 @@ pub async fn op_ws_send(
     #[buffer] data_buf: Option<JsBuffer>,
 ) -> Result<(), JsErrorBox> {
     let (resources, id) = connection(&state, rid)?;
-    let bytes = data_buf.map(|buffer| buffer.to_vec());
+    let bytes = if data_str.is_some() {
+        None
+    } else if let Some(buffer) = data_buf {
+        if buffer.len() > service_ws::WS_MAX_MESSAGE_BYTES {
+            return Err(JsErrorBox::generic("WebSocket message exceeds 8 MiB"));
+        }
+        Some(buffer.to_vec())
+    } else {
+        None
+    };
     service_ws::send(&resources, id, data_str, bytes)
         .await
         .map_err(service_error)
@@ -196,6 +237,8 @@ mod tests {
     /// error and a close.
     #[test]
     fn an_event_serializes_as_the_facade_reads_it() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut runtime = JsRuntime::new(RuntimeOptions::default());
         deno_core::scope!(scope, runtime);
         let mut rendered = |event: WsEvent| {

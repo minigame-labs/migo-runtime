@@ -11,6 +11,8 @@
 #include <QDBusMessage>
 #include <QDeadlineTimer>
 #include <QDBusObjectPath>
+#include <QLineEdit>
+#include <QPlainTextEdit>
 #include <QVariantMap>
 #include <QVBoxLayout>
 #include <QSignalSpy>
@@ -173,6 +175,45 @@ struct ReleasedOnExit {
     }
 };
 
+/// What content asked for when it opened the keyboard.
+MigoKeyboardShowOptions keyboardOptions(MigoKeyboardFlags flags = MIGO_KEYBOARD_FLAG_NONE, std::uint32_t max_length = 0,
+                                        MigoKeyboardType type = MIGO_KEYBOARD_TYPE_TEXT,
+                                        MigoKeyboardConfirmType confirm = MIGO_KEYBOARD_CONFIRM_DONE) {
+    MigoKeyboardShowOptions options{};
+    options.struct_size = static_cast<std::uint32_t>(sizeof(options));
+    options.abi_version = MIGO_ABI_VERSION_1;
+    options.flags = flags;
+    options.max_length = max_length;
+    options.confirm_type = confirm;
+    options.keyboard_type = type;
+    return options;
+}
+
+/// The keyboard's field, over the game's window: null once it is put away.
+QWidget *keyboardField(QWidget &container) {
+    return container.findChild<QWidget *>(QStringLiteral("migoKeyboardField"), Qt::FindDirectChildrenOnly);
+}
+
+/// What the Session was told of the keyboard, from the `from`th event: each event and its text.
+std::vector<std::pair<MigoKeyboardEventType, std::string>> said(std::size_t from = 0) {
+    std::vector<std::pair<MigoKeyboardEventType, std::string>> told;
+    const std::vector<fake_migo::KeyboardRecord> &events = fake_migo::keyboard_events();
+    for (std::size_t index = from; index < events.size(); ++index) {
+        told.emplace_back(events[index].event_type, events[index].value);
+    }
+    return told;
+}
+
+/// The game on screen, its view attached.
+void showGame(QWidget &container, MigoManagedSession &managed) {
+    auto *layout = new QVBoxLayout(&container);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->addWidget(managed.view());
+    container.resize(320, 200);
+    container.show();
+    QTRY_COMPARE(fake_migo::calls().attach, 1);
+}
+
 bool require_xcb(const char *why, const char *file, int line) {
     if (QGuiApplication::platformName() == QStringLiteral("xcb")) return true;
     QTest::qSkip(why, file, line);
@@ -203,15 +244,8 @@ private slots:
         QVERIFY(managed.isClosed());
     }
 
-    /// The soft keyboard is not claimed, and not claimed in part.
-    ///
-    /// The three callbacks install together or not at all. This wrapper cannot
-    /// honour them -- the common mini-game platform's model needs the host to own a text field and report
-    /// its whole current value, and a desktop host has a physical keyboard
-    /// whose input already reaches content as key and composition events. So
-    /// content's `migo.showKeyboard` correctly reports failure rather than
-    /// opening a keyboard that reports nothing back.
-    void the_soft_keyboard_capability_is_declined_whole() {
+    /// The soft keyboard is claimed whole: the three callbacks install together.
+    void the_soft_keyboard_is_claimed_whole() {
         QWidget container;
         MigoManagedSession managed(*fake_migo::engine(), container);
         QVERIFY(managed.isValid());
@@ -219,15 +253,190 @@ private slots:
         const MigoHostCallbacks &installed = fake_migo::installed_callbacks();
         // Compared as booleans: QCOMPARE cannot take a function pointer, and
         // the assertion is about presence, not identity.
-        QVERIFY(installed.on_show_keyboard == nullptr);
-        QVERIFY(installed.on_hide_keyboard == nullptr);
-        QVERIFY(installed.on_update_keyboard == nullptr);
-        // But the capabilities it does claim are there.
-        QVERIFY(installed.dispatch != nullptr);
-        QVERIFY(installed.on_ready != nullptr);
-        QVERIFY(installed.on_request_frame != nullptr);
+        QVERIFY(installed.on_show_keyboard != nullptr);
+        QVERIFY(installed.on_hide_keyboard != nullptr);
+        QVERIFY(installed.on_update_keyboard != nullptr);
 
         QCOMPARE(managed.close(), MIGO_OK);
+    }
+
+    /// Content's showKeyboard opens a field along the bottom of the game, the
+    /// height content is told; each edit reports the whole text, content's own
+    /// correction is not reported back, and Enter confirms and closes it,
+    /// telling content the height 0 and the text it was left with.
+    void content_types_into_a_field_along_the_bottom_of_the_game() {
+        if (!require_xcb("xcb-only: the field takes the keyboard's focus", __FILE__, __LINE__)) return;
+        QWidget container;
+        MigoManagedSession managed(*fake_migo::engine(), container);
+        const ReleasedOnExit released{managed};
+        showGame(container, managed);
+
+        fake_migo::deliver_show_keyboard_from_engine_thread(keyboardOptions(), "ab");
+        QWidget *field = keyboardField(container);
+        QVERIFY(field != nullptr);
+        QTRY_VERIFY(field->isVisible());
+        auto *line = field->findChild<QLineEdit *>();
+        QVERIFY(line != nullptr && line->isVisible());
+        QCOMPARE(line->text(), QStringLiteral("ab"));
+        QTRY_VERIFY(line->hasFocus());
+        const QRect game(managed.view()->mapToGlobal(QPoint(0, 0)), managed.view()->size());
+        QCOMPARE(field->geometry().left(), game.left());
+        QCOMPARE(field->geometry().width(), game.width());
+        QCOMPARE(field->geometry().bottom(), game.bottom());
+        using Said = std::vector<std::pair<MigoKeyboardEventType, std::string>>;
+        QCOMPARE(said(), (Said{{MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE, ""}}));
+        QVERIFY(field->height() > 0);
+        QCOMPARE(fake_migo::keyboard_events()[0].height_css_px, static_cast<double>(field->height()));
+
+        QTest::keyClicks(line, QStringLiteral("cd"));
+        fake_migo::deliver_update_keyboard_from_engine_thread("xyz");
+        QTRY_COMPARE(line->text(), QStringLiteral("xyz"));
+        QTest::keyClick(line, Qt::Key_Return);
+        QCOMPARE(said(), (Said{{MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE, ""},
+                               {MIGO_KEYBOARD_EVENT_INPUT, "abc"},
+                               {MIGO_KEYBOARD_EVENT_INPUT, "abcd"},
+                               {MIGO_KEYBOARD_EVENT_CONFIRM, "xyz"},
+                               {MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE, ""},
+                               {MIGO_KEYBOARD_EVENT_COMPLETE, "xyz"}}));
+        QCOMPARE(fake_migo::keyboard_events()[4].height_css_px, 0.0);
+        QVERIFY(!field->isVisible());
+    }
+
+    /// A confirm content asked to hold leaves the field up; content's
+    /// hideKeyboard closes it, as the player's going would.
+    void a_held_confirm_keeps_the_field_until_content_hides_it() {
+        if (!require_xcb("xcb-only: the field takes the keyboard's focus", __FILE__, __LINE__)) return;
+        QWidget container;
+        MigoManagedSession managed(*fake_migo::engine(), container);
+        const ReleasedOnExit released{managed};
+        showGame(container, managed);
+
+        fake_migo::deliver_show_keyboard_from_engine_thread(keyboardOptions(MIGO_KEYBOARD_FLAG_CONFIRM_HOLD), "go");
+        QWidget *field = keyboardField(container);
+        QTRY_VERIFY(field->isVisible());
+        auto *line = field->findChild<QLineEdit *>();
+        QTest::keyClick(line, Qt::Key_Return);
+        QVERIFY(field->isVisible());
+        fake_migo::deliver_hide_keyboard_from_engine_thread();
+        QTRY_VERIFY(!field->isVisible());
+        using Said = std::vector<std::pair<MigoKeyboardEventType, std::string>>;
+        QCOMPARE(said(), (Said{{MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE, ""},
+                               {MIGO_KEYBOARD_EVENT_CONFIRM, "go"},
+                               {MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE, ""},
+                               {MIGO_KEYBOARD_EVENT_COMPLETE, "go"}}));
+        // A keyboard that is not up is not hidden again.
+        fake_migo::deliver_hide_keyboard_from_engine_thread();
+        QTest::qWait(50);
+        QCOMPARE(fake_migo::keyboard_events().size(), std::size_t{4});
+    }
+
+    /// What content asked of the keyboard: a length the text keeps to, digits
+    /// for a number keyboard -- and an input method told so -- the confirm key
+    /// it named, and several lines, in which Enter is a new line.
+    void the_field_is_the_keyboard_content_asked_for() {
+        if (!require_xcb("xcb-only: the field takes the keyboard's focus", __FILE__, __LINE__)) return;
+        QWidget container;
+        MigoManagedSession managed(*fake_migo::engine(), container);
+        const ReleasedOnExit released{managed};
+        showGame(container, managed);
+        QWidget *field = nullptr;
+
+        fake_migo::deliver_show_keyboard_from_engine_thread(keyboardOptions(MIGO_KEYBOARD_FLAG_NONE, 3), "");
+        field = keyboardField(container);
+        QTRY_VERIFY(field->isVisible());
+        auto *line = field->findChild<QLineEdit *>();
+        QTest::keyClicks(line, QStringLiteral("abcdef"));
+        QCOMPARE(line->text(), QStringLiteral("abc"));
+        fake_migo::deliver_hide_keyboard_from_engine_thread();
+        QTRY_VERIFY(!field->isVisible());
+
+        fake_migo::deliver_show_keyboard_from_engine_thread(
+            keyboardOptions(MIGO_KEYBOARD_FLAG_NONE, 0, MIGO_KEYBOARD_TYPE_NUMBER, MIGO_KEYBOARD_CONFIRM_SEND), "");
+        QTRY_VERIFY(field->isVisible());
+        QTest::keyClicks(line, QStringLiteral("1a2"));
+        QCOMPARE(line->text(), QStringLiteral("12"));
+        QVERIFY(line->inputMethodHints().testFlag(Qt::ImhDigitsOnly));
+        QCOMPARE(line->inputMethodQuery(Qt::ImEnterKeyType).toInt(), static_cast<int>(Qt::EnterKeySend));
+        fake_migo::deliver_hide_keyboard_from_engine_thread();
+        QTRY_VERIFY(!field->isVisible());
+
+        // Text again: the digits and the confirm key were that request's.
+        fake_migo::deliver_show_keyboard_from_engine_thread(keyboardOptions(), "");
+        QTRY_VERIFY(field->isVisible());
+        QTest::keyClicks(line, QStringLiteral("x1"));
+        QCOMPARE(line->text(), QStringLiteral("x1"));
+        QCOMPARE(line->inputMethodQuery(Qt::ImEnterKeyType).toInt(), static_cast<int>(Qt::EnterKeyDone));
+        fake_migo::deliver_hide_keyboard_from_engine_thread();
+        QTRY_VERIFY(!field->isVisible());
+        const int one_line = field->height();
+
+        const std::size_t before = fake_migo::keyboard_events().size();
+        fake_migo::deliver_show_keyboard_from_engine_thread(keyboardOptions(MIGO_KEYBOARD_FLAG_MULTIPLE, 4), "");
+        QTRY_VERIFY(field->isVisible());
+        auto *lines = field->findChild<QPlainTextEdit *>();
+        QVERIFY(lines != nullptr && lines->isVisible() && !line->isVisible());
+        QVERIFY(field->height() > one_line);
+        QTest::keyClicks(lines, QStringLiteral("a"));
+        QTest::keyClick(lines, Qt::Key_Return);
+        QTest::keyClicks(lines, QStringLiteral("bcd"));
+        QCOMPARE(lines->toPlainText(), QStringLiteral("a\nbc"));
+        using Said = std::vector<std::pair<MigoKeyboardEventType, std::string>>;
+        QCOMPARE(said(before), (Said{{MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE, ""},
+                               {MIGO_KEYBOARD_EVENT_INPUT, "a"},
+                               {MIGO_KEYBOARD_EVENT_INPUT, "a\n"},
+                               {MIGO_KEYBOARD_EVENT_INPUT, "a\nb"},
+                               {MIGO_KEYBOARD_EVENT_INPUT, "a\nbc"},
+                               {MIGO_KEYBOARD_EVENT_INPUT, "a\nbc"}}));
+    }
+
+    /// The player closes the field with Esc, or by turning to the game:
+    /// content is told the keyboard went, with the text it was left with.
+    void escape_or_turning_away_closes_the_field() {
+        if (!require_xcb("xcb-only: the field takes the keyboard's focus", __FILE__, __LINE__)) return;
+        QWidget container;
+        MigoManagedSession managed(*fake_migo::engine(), container);
+        const ReleasedOnExit released{managed};
+        showGame(container, managed);
+
+        fake_migo::deliver_show_keyboard_from_engine_thread(keyboardOptions(), "esc");
+        QWidget *field = keyboardField(container);
+        QTRY_VERIFY(field->isVisible());
+        auto *line = field->findChild<QLineEdit *>();
+        QTRY_VERIFY(line->hasFocus());
+        QTest::keyClick(line, Qt::Key_Escape);
+        QVERIFY(!field->isVisible());
+        // The keys are the game's again.
+        QTRY_VERIFY(managed.view()->hasFocus());
+
+        fake_migo::deliver_show_keyboard_from_engine_thread(keyboardOptions(), "away");
+        QTRY_VERIFY(field->isVisible());
+        QTRY_VERIFY(line->hasFocus());
+        container.activateWindow();
+        QTRY_VERIFY(!field->isVisible());
+        using Said = std::vector<std::pair<MigoKeyboardEventType, std::string>>;
+        QCOMPARE(said(), (Said{{MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE, ""},
+                               {MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE, ""},
+                               {MIGO_KEYBOARD_EVENT_COMPLETE, "esc"},
+                               {MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE, ""},
+                               {MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE, ""},
+                               {MIGO_KEYBOARD_EVENT_COMPLETE, "away"}}));
+    }
+
+    /// A Session that closes takes the field with it, telling content nothing:
+    /// it is going.
+    void closing_puts_the_field_away_unreported() {
+        if (!require_xcb("xcb-only: the field takes the keyboard's focus", __FILE__, __LINE__)) return;
+        QWidget container;
+        MigoManagedSession managed(*fake_migo::engine(), container);
+        showGame(container, managed);
+        fake_migo::deliver_show_keyboard_from_engine_thread(keyboardOptions(), "left");
+        QTRY_VERIFY(keyboardField(container) != nullptr && keyboardField(container)->isVisible());
+
+        QCOMPARE(managed.close(), MIGO_OK);
+        QVERIFY(keyboardField(container) == nullptr);
+        fake_migo::set_release_status(managed.view()->generation(), MIGO_SURFACE_RELEASE_RELEASED);
+        QTRY_VERIFY(managed.isClosed());
+        QCOMPARE(fake_migo::keyboard_events().size(), std::size_t{1});
     }
 
     /// The display is kept awake through the desktop portal's Inhibit, for the

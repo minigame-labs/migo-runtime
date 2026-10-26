@@ -75,6 +75,57 @@ class SourceProofTest(unittest.TestCase):
                     capture_output=True,
                 )
 
+    def test_portable_top_level_application_is_idempotent_and_verified(self):
+        with tempfile.TemporaryDirectory() as directory:
+            _, tree, patches = self.build_tree(directory)
+            selected = [("top", patches[0])]
+            proof.apply_locked_top_level_patches(tree, selected)
+            before = (tree / "top.txt").read_bytes()
+            proof.apply_locked_top_level_patches(tree, selected)
+            self.assertEqual((tree / "top.txt").read_bytes(), before)
+            identities = proof.verified_patch_identities(tree, selected)
+            self.assertEqual(identities[0]["id"], "top")
+            self.assertEqual(len(identities[0]["sha256"]), 64)
+
+    def test_portable_applier_refuses_submodule_patches_without_mutation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            _, tree, patches = self.build_tree(directory)
+            before = (tree / "top.txt").read_bytes()
+            with self.assertRaisesRegex(proof.SourceProofError, "cannot patch a submodule"):
+                proof.apply_locked_top_level_patches(tree, list(zip(["top", "sub"], patches)))
+            self.assertEqual((tree / "top.txt").read_bytes(), before)
+
+    def test_portable_applier_refuses_partial_and_unexplained_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, tree, patches = self.build_tree(directory)
+            second = root / "second.diff"
+            second.write_text("--- a/top.txt\n+++ b/top.txt\n@@ -1,2 +1,2 @@\n-top-one\n+TOP-ONE\n TOP-TWO\n")
+            self.apply_all(tree, patches[:1])
+            before = (tree / "top.txt").read_bytes()
+            with self.assertRaises(proof.SourceProofError):
+                proof.apply_locked_top_level_patches(tree, [("top", patches[0]), ("second", second)])
+            self.assertEqual((tree / "top.txt").read_bytes(), before)
+            (tree / "stray.txt").write_text("unexplained\n")
+            with self.assertRaisesRegex(proof.SourceProofError, "stray"):
+                proof.apply_locked_top_level_patches(tree, [("top", patches[0])])
+
+    def test_lock_resolution_refuses_missing_ambiguous_and_duplicate_entries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            import json
+            root = pathlib.Path(directory)
+            lock = root / "lock.json"
+            for entries in [
+                [],
+                [{"id": "x", "file": "missing.patch"}],
+                [{"id": "x", "file": "*.patch"}],
+                [{"id": "x", "file": "one.patch"}, {"id": "x", "file": "two.patch"}],
+            ]:
+                (root / "one.patch").write_text("one\n")
+                (root / "two.patch").write_text("two\n")
+                lock.write_text(json.dumps({"required_patches": entries}))
+                with self.assertRaises(proof.SourceProofError):
+                    proof.locked_patches(lock, root)
+
     def test_an_exactly_patched_tree_including_a_submodule_is_accepted(self):
         with tempfile.TemporaryDirectory() as directory:
             _, tree, patches = self.build_tree(directory)

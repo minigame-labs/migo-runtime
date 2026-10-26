@@ -43,6 +43,8 @@ mod api_failure_tests {
     /// ReferenceError.
     #[test]
     fn the_permission_checks_answer_from_the_hosts_state() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         run(
             r#"
             for (const name of ["checkUserLocation", "checkWritePhotosAlbum"]) {
@@ -68,6 +70,8 @@ mod api_failure_tests {
     /// and answers under its own name.
     #[test]
     fn getwritephotosalbum_asks_the_host_and_answers_under_its_own_name() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         run(
             r#"
             migo.getWritePhotosAlbum({
@@ -90,6 +94,8 @@ mod api_failure_tests {
     /// An API a host does not serve names itself once in its failure.
     #[test]
     fn an_unsupported_api_names_itself_once_in_its_failure() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         run(
             r#"
             for (const name of ["getClipboardData", "vibrateShort", "showToast", "getNetworkType"]) {

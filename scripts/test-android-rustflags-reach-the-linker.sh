@@ -28,6 +28,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+python3 "$SCRIPT_DIR/testing/test_android_jni_link_scope.py"
 CONFIG="$REPO_ROOT/engine/.cargo/config.toml"
 BUILD_SCRIPT="$REPO_ROOT/scripts/build-android-so.sh"
 

@@ -1,0 +1,998 @@
+--- symphonia-format-ogg-0.6.1/Cargo.toml
++++ symphonia-format-ogg-0.6.1/Cargo.toml
+@@ -64,3 +64,6 @@
+ level = "warn"
+ priority = 0
+ check-cfg = ["cfg(fuzzing)"]
++
++[features]
++streaming=[]
+--- symphonia-format-ogg-0.6.1/Cargo.toml.orig
++++ symphonia-format-ogg-0.6.1/Cargo.toml.orig
+@@ -26,3 +26,6 @@
+ 
+ [lints]
+ workspace = true
++
++[features]
++streaming=[]
+--- symphonia-format-ogg-0.6.1/src/lib.rs
++++ symphonia-format-ogg-0.6.1/src/lib.rs
+@@ -22,3 +22,6 @@
+ mod physical;
+ 
+ pub use demuxer::OggReader;
++
++#[cfg(feature = "streaming")]
++pub mod streaming;
+--- symphonia-format-ogg-0.6.1/src/logical.rs
++++ symphonia-format-ogg-0.6.1/src/logical.rs
+@@ -216,90 +216,10 @@
+                 .expect("prev_page_info unconditionally assigned above");
+             prev_page.end_ts = Some(page_end_ts);
+ 
+-            // Compute the page's start timestamp.
+-            let page_start_ts = if let Some(ts) = prev_page_info.and_then(|prev| prev.end_ts) {
+-                // The previous page is known and it has a valid end timestamp. Use it as this
+-                // page's start timestamp.
+-                ts
+-            }
+-            else {
+-                let is_single_page_stream =
+-                    page.header.is_last_page && (is_init_page || self.is_single_page_stream());
+-
+-                // The lower-bound for the page's start timestamp.
+-                let page_start_ts_raw = page_end_ts.saturating_sub(total_pkt_dur);
+-
+-                if is_single_page_stream {
+-                    // In a single-page stream that begins at t = 0, the page end timestamp is the
+-                    // exact length of valid (no delay or padding) frames. Therefore, the page start
+-                    // timestamp is known to be equal to -delay frames. All additional frames are
+-                    // padding.
+-                    //
+-                    // If the stream does not start at t = 0, then it is not possible to determine
+-                    // whether frames should be discarded from the start or the end of the stream.
+-                    // Therefore, we assume t = 0 for the remainder.
+-                    let total_dur_no_padding =
+-                        match total_pkt_discard.checked_add((page_end_ts.get() as u64).into()) {
+-                            Some(v) => v,
+-                            None => return decode_error("ogg: duration overflow"),
+-                        };
+-
+-                    if total_pkt_dur >= total_dur_no_padding {
+-                        // The total packet duration is >= delay + valid (assuming t = 0) frames,
+-                        // the extra frames must be padding.
+-                        //
+-                        // If the assumption the stream begins at t = 0 is false, then the following
+-                        // misbehaviour will occur:
+-                        //
+-                        // If the encoder set t < 0 to discard additional frames at the start of the
+-                        // stream, then the additional frames will be discard from the end, not the
+-                        // beginning.
+-                        //
+-                        // If the encoder set t > 0 to indicate the media begins later, then no
+-                        // padding frames will get discarded.
+-                        Timestamp::from(-(total_pkt_discard.get() as i64))
+-                    }
+-                    else {
+-                        // Stream starts at t > 0.
+-                        page_start_ts_raw
+-                    }
+-                }
+-                else {
+-                    // In a multi-page stream, all pages other than the last have no padding.
+-                    // Therefore, the naive calculation is always valid because the total packet
+-                    // duration would only include valid or discarded frames.
+-                    //
+-                    // For the last page, this calculation fails because the total packet duration
+-                    // includes the padding and it is not possible to know how many frames are
+-                    // valid. If the end bound is known, the correct page start timestamp can be
+-                    // found.
+-                    page_start_ts_raw
+-                }
+-            };
+-
+-            let mut next_pkt_pts = page_start_ts;
+-
+-            for packet in self.packets.iter_mut().skip(num_prev_packets) {
+-                packet.pts = next_pkt_pts;
+-
+-                // The packet's duration is populated with the packet's decoded duration (includes
+-                // delay and padding). Calculate the next packet's PTS. This is also the end PTS of
+-                // the current packet.
+-                next_pkt_pts = next_pkt_pts.saturating_add(packet.dur);
+-
+-                // Remove the start trim from the packet's duration. The start trim was populated
+-                // earlier.
+-                packet.dur = packet.dur.saturating_sub(packet.trim_start);
+-
+-                // If the end of the current packet exceeds the page end, trim the end. Don't trim
+-                // more frames than available.
+-                if next_pkt_pts > page_end_ts {
+-                    packet.trim_end = page_end_ts.abs_delta(next_pkt_pts).min(packet.dur);
+-                }
+-
+-                // Remove the end trim from the packet's duration.
+-                packet.dur = packet.dur.saturating_sub(packet.trim_end);
+-            }
++            let is_single_page_stream = page.header.is_last_page && (is_init_page || self.is_single_page_stream());
++            stamp_page_packets(self.packets.iter_mut().skip(num_prev_packets),
++                prev_page_info.and_then(|prev| prev.end_ts), page_end_ts, is_single_page_stream,
++                total_pkt_dur, total_pkt_discard)?;
+         }
+ 
+         Ok(side_data)
+@@ -618,3 +538,92 @@
+         Ok(())
+     }
+ }
++
++/// Apply the existing granule/priming/padding policy to packet metadata.
++/// Payload ownership does not change the audio timeline.
++pub(crate) fn stamp_page_packets<'a>(packets: impl IntoIterator<Item = &'a mut Packet>,
++    prev_end_ts: Option<Timestamp>, page_end_ts: Timestamp, is_single_page_stream: bool,
++    total_pkt_dur: Duration, total_pkt_discard: Duration) -> Result<()> {
++    // Compute the page's start timestamp.
++    let page_start_ts = if let Some(ts) = prev_end_ts {
++        // The previous page is known and it has a valid end timestamp. Use it as this
++        // page's start timestamp.
++        ts
++    }
++    else {
++        // The lower-bound for the page's start timestamp.
++        let page_start_ts_raw = page_end_ts.saturating_sub(total_pkt_dur);
++
++        if is_single_page_stream {
++            // In a single-page stream that begins at t = 0, the page end timestamp is the
++            // exact length of valid (no delay or padding) frames. Therefore, the page start
++            // timestamp is known to be equal to -delay frames. All additional frames are
++            // padding.
++            //
++            // If the stream does not start at t = 0, then it is not possible to determine
++            // whether frames should be discarded from the start or the end of the stream.
++            // Therefore, we assume t = 0 for the remainder.
++            let total_dur_no_padding =
++                match total_pkt_discard.checked_add((page_end_ts.get() as u64).into()) {
++                    Some(v) => v,
++                    None => return decode_error("ogg: duration overflow"),
++                };
++
++            if total_pkt_dur >= total_dur_no_padding {
++                // The total packet duration is >= delay + valid (assuming t = 0) frames,
++                // the extra frames must be padding.
++                //
++                // If the assumption the stream begins at t = 0 is false, then the following
++                // misbehaviour will occur:
++                //
++                // If the encoder set t < 0 to discard additional frames at the start of the
++                // stream, then the additional frames will be discard from the end, not the
++                // beginning.
++                //
++                // If the encoder set t > 0 to indicate the media begins later, then no
++                // padding frames will get discarded.
++                Timestamp::from(-(total_pkt_discard.get() as i64))
++            }
++            else {
++                // Stream starts at t > 0.
++                page_start_ts_raw
++            }
++        }
++        else {
++            // In a multi-page stream, all pages other than the last have no padding.
++            // Therefore, the naive calculation is always valid because the total packet
++            // duration would only include valid or discarded frames.
++            //
++            // For the last page, this calculation fails because the total packet duration
++            // includes the padding and it is not possible to know how many frames are
++            // valid. If the end bound is known, the correct page start timestamp can be
++            // found.
++            page_start_ts_raw
++        }
++    };
++
++    let mut next_pkt_pts = page_start_ts;
++
++    for packet in packets {
++        packet.pts = next_pkt_pts;
++
++        // The packet's duration is populated with the packet's decoded duration (includes
++        // delay and padding). Calculate the next packet's PTS. This is also the end PTS of
++        // the current packet.
++        next_pkt_pts = next_pkt_pts.saturating_add(packet.dur);
++
++        // Remove the start trim from the packet's duration. The start trim was populated
++        // earlier.
++        packet.dur = packet.dur.saturating_sub(packet.trim_start);
++
++        // If the end of the current packet exceeds the page end, trim the end. Don't trim
++        // more frames than available.
++        if next_pkt_pts > page_end_ts {
++            packet.trim_end = page_end_ts.abs_delta(next_pkt_pts).min(packet.dur);
++        }
++
++        // Remove the end trim from the packet's duration.
++        packet.dur = packet.dur.saturating_sub(packet.trim_end);
++    }
++    Ok(())
++}
+--- symphonia-format-ogg-0.6.1/src/mappings/mod.rs
++++ symphonia-format-ogg-0.6.1/src/mappings/mod.rs
+@@ -52,6 +52,9 @@
+ 
+ /// A `Mapper` implements packet-handling for a specific `Codec`.
+ pub trait Mapper: Send + Sync {
++    #[cfg(feature = "streaming")]
++    fn is_discardable_prefix(&self, _packet: &[u8]) -> bool { false }
++
+     /// Set once before mapping packets. Audio packets carry no metadata options.
+     fn set_metadata_options(&mut self, options: symphonia_core::meta::MetadataOptions);
+ 
+@@ -141,3 +144,15 @@
+         (Duration::ZERO, Duration::ZERO)
+     }
+ }
++
++#[cfg(feature = "streaming")]
++pub(crate) fn detect_vorbis(serial: u32, packet: &[u8]) -> Result<Option<VorbisMapper>> {
++    let mut mapper = vorbis::detect_typed(serial, packet)?;
++    if let Some(mapper) = mapper.as_mut() {
++        mapper.set_metadata_options(symphonia_core::meta::MetadataOptions::default().limit_total_bytes(symphonia_core::common::Limit::Maximum(0)));
++    }
++    Ok(mapper)
++}
++
++#[cfg(feature="streaming")]
++pub(crate) use vorbis::VorbisMapper;
+--- symphonia-format-ogg-0.6.1/src/mappings/vorbis.rs
++++ symphonia-format-ogg-0.6.1/src/mappings/vorbis.rs
+@@ -108,6 +108,10 @@
+ }
+ 
+ pub fn detect(serial: u32, buf: &[u8]) -> Result<Option<Box<dyn Mapper>>> {
++    Ok(detect_typed(serial, buf)?.map(|mapper| Box::new(mapper) as Box<dyn Mapper>))
++}
++
++pub(crate) fn detect_typed(serial: u32, buf: &[u8]) -> Result<Option<VorbisMapper>> {
+     // The identification header packet must be the correct size.
+     if buf.len() != VORBIS_IDENTIFICATION_HEADER_SIZE {
+         return Ok(None);
+@@ -136,19 +140,21 @@
+ 
+     track.with_codec_params(CodecParameters::Audio(codec_params));
+ 
++    track.with_time_base(symphonia_core::units::TimeBase::from_recip(std::num::NonZero::new(ident.sample_rate).expect("ident sample rate is nonzero")));
++
+     // Instantiate the Vorbis mapper.
+-    let mapper = Box::new(VorbisMapper {
++    let mapper = VorbisMapper {
+         metadata_options: Default::default(),
+         track,
+         ident,
+         parser: None,
+         has_setup_header: false,
+-    });
++    };
+ 
+     Ok(Some(mapper))
+ }
+ 
+-struct VorbisMapper {
++pub(crate) struct VorbisMapper {
+     metadata_options: symphonia_core::meta::MetadataOptions,
+     track: Track,
+     ident: IdentHeader,
+@@ -157,6 +163,12 @@
+ }
+ 
+ impl Mapper for VorbisMapper {
++    #[cfg(feature = "streaming")]
++    fn is_discardable_prefix(&self, packet: &[u8]) -> bool {
++        self.metadata_options.is_disabled() && packet.len() >= 7
++            && packet[0] == VORBIS_PACKET_TYPE_COMMENT && &packet[1..7] == VORBIS_HEADER_PACKET_SIGNATURE
++    }
++
+     fn set_metadata_options(&mut self, options: symphonia_core::meta::MetadataOptions) {
+         self.metadata_options = options;
+     }
+@@ -260,6 +272,8 @@
+                         .audio_mut()
+                         .expect("codec params are always audio if mapper is instantiated");
+ 
++                    audio_codec_params.with_max_frames_per_packet((1_u64 << self.ident.bs0_exp.max(self.ident.bs1_exp)) >> 1);
++
+                     // Take the extra to extend it with the additional setup header.
+                     let mut extra_data = audio_codec_params
+                         .extra_data
+--- symphonia-format-ogg-0.6.1/src/page.rs
++++ symphonia-format-ogg-0.6.1/src/page.rs
+@@ -211,27 +211,8 @@
+         // The remainder of the page will be checksummed as it is read.
+         let mut crc32_reader = MonitorStream::new(reader, crc32);
+ 
+-        // Read segment table.
+-        let mut page_body_len = 0;
+-        let mut packet_len = 0;
+-
+-        // TODO: Can this be transactional? A corrupt page causes the PageReader's state not
+-        // to change.
+-        self.packet_lens.clear();
+-
+-        for _ in 0..header.n_segments {
+-            let seg_len = crc32_reader.read_byte()?;
+-
+-            page_body_len += usize::from(seg_len);
+-            packet_len += u16::from(seg_len);
+-
+-            // A segment with a length < 255 indicates that the segment is the end of a packet.
+-            // Push the packet length into the packet queue for the stream.
+-            if seg_len < 255 {
+-                self.packet_lens.push(packet_len);
+-                packet_len = 0;
+-            }
+-        }
++        // Both pull and borrowed pages share segment/packet boundaries.
++        let page_body_len = read_lacing_table(&mut crc32_reader, header.n_segments, &mut self.packet_lens)?;
+ 
+         self.read_page_body(&mut crc32_reader, page_body_len)?;
+ 
+@@ -329,3 +310,40 @@
+         Ok(())
+     }
+ }
++
++/// Parse the existing Ogg lacing representation, sharing complete/partial
++/// packet boundaries between streaming and ordinary readers.
++fn read_lacing_table<B: ReadBytes>(reader: &mut B, count: u8, packet_lens: &mut Vec<u16>) -> Result<usize> {
++    packet_lens.clear();
++    let (mut body_len, mut packet_len) = (0, 0_u16);
++    for _ in 0..count {
++        let segment = reader.read_byte()?;
++        body_len += usize::from(segment);
++        packet_len += u16::from(segment);
++        if segment < 255 {
++            packet_lens.push(packet_len);
++            packet_len = 0;
++        }
++    }
++    Ok(body_len)
++}
++
++/// Borrow one complete verified page. Partial input changes no retained state.
++#[cfg(feature = "streaming")]
++pub(crate) fn read_page_slice<'a>(input: &'a [u8], packet_lens: &'a mut Vec<u16>) -> Result<Option<(usize, Page<'a>)>> {
++    if input.len() < OGG_PAGE_HEADER_SIZE { return Ok(None); }
++    let header = read_page_header(&mut BufReader::new(input))?;
++    let table_end = OGG_PAGE_HEADER_SIZE + usize::from(header.n_segments);
++    if input.len() < table_end { return Ok(None); }
++    let body_len: usize = input[OGG_PAGE_HEADER_SIZE..table_end].iter().map(|v| usize::from(*v)).sum();
++    let end = table_end + body_len;
++    if input.len() < end { return Ok(None); }
++    let mut crc = Crc32::new(0);
++    crc.process_buf_bytes(&input[..22]);
++    crc.process_buf_bytes(&[0; 4]);
++    crc.process_buf_bytes(&input[26..end]);
++    if header.crc != crc.crc() { return decode_error("ogg: crc mismatch"); }
++    let parsed_len = read_lacing_table(&mut BufReader::new(&input[OGG_PAGE_HEADER_SIZE..table_end]), header.n_segments, packet_lens)?;
++    debug_assert_eq!(parsed_len, body_len);
++    Ok(Some((end, Page { header, packet_lens, page_buf: &input[table_end..end] })))
++}
+--- symphonia-format-ogg-0.6.1/src/streaming/vorbis.rs
++++ symphonia-format-ogg-0.6.1/src/streaming/vorbis.rs
+@@ -0,0 +1,383 @@
++// Symphonia
++// Copyright (c) 2019-2026 The Project Symphonia Developers.
++//
++// This Source Code Form is subject to the terms of the Mozilla Public
++// License, v. 2.0. If a copy of the MPL was not distributed with this
++// file, You can obtain one at https://mozilla.org/MPL/2.0/.
++
++//! Single logical Vorbis stream. Complete packets borrow their page. Only
++//! packets crossing a page use the two reusable assembly buffers. Large unused
++//! comments are counted/skipped through CRC-verified pages without assembly.
++use crate::{
++    logical::stamp_page_packets,
++    mappings::{self, MapResult, Mapper},
++    page::PageHeader,
++};
++use std::ops::Range;
++use symphonia_core::{
++    errors::{Result, decode_error, unsupported_error},
++    formats::Track,
++    packet::{Packet, PacketRef},
++    units::{Duration, Timestamp},
++};
++
++pub enum PacketStep {
++    NeedMore,
++    Discard(usize),
++    // The caller retains input until consumed. Borrow packet() before advancing
++    // again; it may refer to input or the reusable cross-page packet storage.
++    Packet { consumed: usize },
++    End,
++}
++#[derive(Clone, Copy)]
++pub struct PacketizerOptions {
++    pub max_setup_bytes: usize,
++    pub max_packet_bytes: usize,
++    pub max_metadata_bytes: u64,
++}
++impl Default for PacketizerOptions {
++    fn default() -> Self {
++        Self {
++            max_setup_bytes: 1024 * 1024,
++            max_packet_bytes: 64 * 1024,
++            max_metadata_bytes: 4 * 1024 * 1024,
++        }
++    }
++}
++enum Location {
++    Input(Range<usize>),
++    Completed,
++}
++pub struct VorbisPacketizer {
++    options: PacketizerOptions,
++    mapper: Option<mappings::VorbisMapper>,
++    serial: Option<u32>,
++    sequence: u32,
++    lens: Vec<u16>,
++    ranges: Vec<Range<usize>>,
++    packets: Vec<Packet>,
++    locations: Vec<Location>,
++    assembly: Vec<u8>,
++    completed: Vec<u8>,
++    incomplete: bool,
++    skipping_metadata: bool,
++    metadata_bytes: u64,
++    current: usize,
++    pending_page: usize,
++    prev_end: Option<Timestamp>,
++    eos: bool,
++    failed: bool,
++}
++impl VorbisPacketizer {
++    pub fn new(options: PacketizerOptions) -> Self {
++        Self {
++            options,
++            mapper: None,
++            serial: None,
++            sequence: 0,
++            lens: Vec::with_capacity(255),
++            ranges: Vec::with_capacity(255),
++            packets: Vec::with_capacity(255),
++            locations: Vec::with_capacity(255),
++            assembly: Vec::new(),
++            completed: Vec::new(),
++            incomplete: false,
++            skipping_metadata: false,
++            metadata_bytes: 0,
++            current: 0,
++            pending_page: 0,
++            prev_end: None,
++            eos: false,
++            failed: false,
++        }
++    }
++    pub fn track(&self) -> Option<&Track> {
++        self.mapper
++            .as_ref()
++            .filter(|mapper| mapper.is_ready())
++            .map(|mapper| mapper.track())
++    }
++    pub fn packet<'a>(&'a self, input: &'a [u8]) -> Option<PacketRef<'a>> {
++        if self.pending_page == 0 || self.current >= self.packets.len() {
++            return None;
++        }
++        let mut packet = self.packets[self.current].as_packet_ref();
++        packet.data = match &self.locations[self.current] {
++            Location::Input(range) => input.get(range.clone())?,
++            Location::Completed => &self.completed,
++        };
++        Some(packet)
++    }
++    pub fn next(&mut self, input: &[u8], eof: bool) -> Result<PacketStep> {
++        if self.failed {
++            return decode_error("ogg: Vorbis packetizer previously failed");
++        }
++        let result = self.next_inner(input, eof);
++        if result.is_err() {
++            self.failed = true;
++        }
++        result
++    }
++    fn charge_metadata(&mut self, len: usize) -> Result<()> {
++        self.metadata_bytes = self
++            .metadata_bytes
++            .checked_add(len as u64)
++            .filter(|n| *n <= self.options.max_metadata_bytes)
++            .ok_or(symphonia_core::errors::Error::LimitError(
++                "ogg: metadata byte budget exceeded",
++            ))?;
++        Ok(())
++    }
++    fn append_partial(&mut self, bytes: &[u8]) -> Result<()> {
++        let limit = if self.mapper.as_ref().is_some_and(|m| m.is_ready()) {
++            self.options.max_packet_bytes
++        } else {
++            self.options.max_setup_bytes
++        };
++        let len = self
++            .assembly
++            .len()
++            .checked_add(bytes.len())
++            .filter(|n| *n <= limit)
++            .ok_or(symphonia_core::errors::Error::LimitError(
++                "ogg: packet assembly working set exceeded",
++            ))?;
++        if self.assembly.capacity() < len {
++            self.assembly
++                .try_reserve_exact(len - self.assembly.len())
++                .map_err(|_| {
++                    symphonia_core::errors::Error::LimitError(
++                        "ogg: packet assembly allocation refused",
++                    )
++                })?;
++        }
++        self.assembly.extend_from_slice(bytes);
++        Ok(())
++    }
++    fn complete_packet(
++        &mut self,
++        input: &[u8],
++        range: Range<usize>,
++        continued: bool,
++    ) -> Result<()> {
++        if continued && self.skipping_metadata {
++            self.charge_metadata(range.len())?;
++            self.incomplete = false;
++            self.skipping_metadata = false;
++            return Ok(());
++        }
++        let location = if continued {
++            self.append_partial(&input[range])?;
++            std::mem::swap(&mut self.assembly, &mut self.completed);
++            self.assembly.clear();
++            self.incomplete = false;
++            Location::Completed
++        } else {
++            if self
++                .mapper
++                .as_ref()
++                .expect("identified mapper")
++                .is_discardable_prefix(&input[range.clone()])
++            {
++                self.charge_metadata(range.len())?;
++                self.mapper
++                    .as_mut()
++                    .unwrap()
++                    .map_packet(&input[range.start..range.start + 7])?;
++                return Ok(());
++            }
++            let limit = if self.mapper.as_ref().unwrap().is_ready() {
++                self.options.max_packet_bytes
++            } else {
++                self.options.max_setup_bytes
++            };
++            if range.len() > limit {
++                return Err(symphonia_core::errors::Error::LimitError(
++                    "ogg: complete packet working set exceeded",
++                ));
++            }
++            Location::Input(range)
++        };
++        let bytes = match &location {
++            Location::Input(range) => &input[range.clone()],
++            Location::Completed => &self.completed,
++        };
++        let mapper = self.mapper.as_mut().expect("identified mapper");
++        match mapper.map_packet(bytes)? {
++            MapResult::StreamData { dur, discard } => {
++                if !mapper.is_ready() {
++                    return decode_error("ogg: audio before complete Vorbis setup");
++                }
++                let mut packet = Packet::new(
++                    self.serial.unwrap(),
++                    Timestamp::ZERO,
++                    dur,
++                    Box::<[u8]>::default(),
++                );
++                packet.trim_start = discard;
++                self.packets.push(packet);
++                self.locations.push(location);
++            }
++            MapResult::Setup | MapResult::SideData { .. } => {}
++            MapResult::Unknown => return unsupported_error("ogg: unsupported Vorbis packet"),
++        }
++        Ok(())
++    }
++    fn save_partial(&mut self, input: &[u8], range: Range<usize>) -> Result<()> {
++        if self.skipping_metadata {
++            self.charge_metadata(range.len())?;
++            return Ok(());
++        }
++        if !self.incomplete
++            && self
++                .mapper
++                .as_ref()
++                .unwrap()
++                .is_discardable_prefix(&input[range.clone()])
++        {
++            self.charge_metadata(range.len())?;
++            self.mapper
++                .as_mut()
++                .unwrap()
++                .map_packet(&input[range.start..range.start + 7])?;
++            self.skipping_metadata = true;
++            self.incomplete = true;
++            return Ok(());
++        }
++        self.append_partial(&input[range])?;
++        self.incomplete = true;
++        Ok(())
++    }
++    fn ready_packet(&self) -> PacketStep {
++        PacketStep::Packet {
++            consumed: if self.current + 1 == self.packets.len() {
++                self.pending_page
++            } else {
++                0
++            },
++        }
++    }
++    fn next_inner(&mut self, input: &[u8], eof: bool) -> Result<PacketStep> {
++        if self.options.max_setup_bytes < 30 || self.options.max_packet_bytes == 0 {
++            return unsupported_error("ogg: invalid packet working-set policy");
++        }
++        if self.pending_page != 0 {
++            if self.current + 1 < self.packets.len() {
++                self.current += 1;
++                return Ok(self.ready_packet());
++            }
++            self.pending_page = 0;
++        }
++        if self.eos {
++            if !input.is_empty() {
++                return unsupported_error(
++                    "ogg: chained or trailing logical streams are unsupported",
++                );
++            }
++            return Ok(if eof {
++                PacketStep::End
++            } else {
++                PacketStep::NeedMore
++            });
++        }
++        if input.is_empty() {
++            return if eof {
++                decode_error("ogg: missing final Vorbis page")
++            } else {
++                Ok(PacketStep::NeedMore)
++            };
++        }
++        self.packets.clear();
++        self.locations.clear();
++        self.completed.clear();
++        self.ranges.clear();
++        let Some((consumed, page)) = crate::page::read_page_slice(input, &mut self.lens)? else {
++            return if eof {
++                decode_error("ogg: truncated Vorbis page")
++            } else {
++                Ok(PacketStep::NeedMore)
++            };
++        };
++        let header: PageHeader = page.header;
++        for packet in page.packets() {
++            let start = packet.as_ptr().addr() - input.as_ptr().addr();
++            self.ranges.push(start..start + packet.len());
++        }
++        let partial = page.packets().partial_packet().map(|part| {
++            let start = part.as_ptr().addr() - input.as_ptr().addr();
++            start..start + part.len()
++        });
++        if self.mapper.is_none() {
++            if !header.is_first_page
++                || header.is_continuation
++                || header.sequence != 0
++                || self.ranges.len() != 1
++                || partial.is_some()
++                || header.is_last_page
++            {
++                return decode_error("ogg: malformed Vorbis identification page");
++            }
++            self.mapper = mappings::detect_vorbis(header.serial, &input[self.ranges[0].clone()])?;
++            if self.mapper.is_none() {
++                return unsupported_error("ogg: streaming profile requires Vorbis");
++            }
++            self.serial = Some(header.serial);
++            self.sequence = header.sequence;
++            return Ok(PacketStep::Discard(consumed));
++        }
++        if Some(header.serial) != self.serial || header.is_first_page {
++            return unsupported_error("ogg: multiplexed or chained Vorbis is unsupported");
++        }
++        if header.sequence != self.sequence.wrapping_add(1) {
++            return decode_error("ogg: page sequence discontinuity");
++        }
++        if header.is_continuation != self.incomplete {
++            return decode_error("ogg: packet continuation mismatch");
++        }
++        self.sequence = header.sequence;
++        for index in 0..self.ranges.len() {
++            let range = self.ranges[index].clone();
++            self.complete_packet(input, range, index == 0 && header.is_continuation)?;
++        }
++        if let Some(range) = partial {
++            self.save_partial(input, range)?;
++        }
++        if header.is_last_page && self.incomplete {
++            return decode_error("ogg: final page ends in a partial packet");
++        }
++        if !self.packets.is_empty() {
++            if header.absgp > i64::MAX as u64 {
++                return decode_error("ogg: missing valid audio granule");
++            }
++            let page_end = self.mapper.as_ref().unwrap().absgp_to_ts(header.absgp);
++            if self.prev_end.is_some_and(|prev| page_end < prev) {
++                return decode_error("ogg: non-monotonic audio granule");
++            }
++            let (mut dur, mut discard) = (Duration::ZERO, Duration::ZERO);
++            for packet in &self.packets {
++                dur = dur.checked_add(packet.dur).ok_or(
++                    symphonia_core::errors::Error::DecodeError("ogg: duration overflow"),
++                )?;
++                discard = discard.checked_add(packet.trim_start).ok_or(
++                    symphonia_core::errors::Error::DecodeError("ogg: discard overflow"),
++                )?;
++            }
++            stamp_page_packets(
++                &mut self.packets,
++                self.prev_end,
++                page_end,
++                header.is_last_page && self.prev_end.is_none(),
++                dur,
++                discard,
++            )?;
++            self.prev_end = Some(page_end);
++        }
++        self.eos = header.is_last_page;
++        if self.packets.is_empty() {
++            return Ok(PacketStep::Discard(consumed));
++        }
++        self.current = 0;
++        self.pending_page = consumed;
++        Ok(self.ready_packet())
++    }
++}
+--- symphonia-format-ogg-0.6.1/src/streaming.rs
++++ symphonia-format-ogg-0.6.1/src/streaming.rs
+@@ -0,0 +1,231 @@
++// Symphonia
++// Copyright (c) 2019-2026 The Project Symphonia Developers.
++//
++// This Source Code Form is subject to the terms of the Mozilla Public
++// License, v. 2.0. If a copy of the MPL was not distributed with this
++// file, You can obtain one at https://mozilla.org/MPL/2.0/.
++
++//! Incremental, verified Ogg pages borrowing caller input. Logical-stream
++//! identification, packet assembly and audio EOS are separate responsibilities.
++pub use crate::page::{OGG_PAGE_MAX_SIZE, Page, PageHeader};
++use symphonia_core::errors::{Result, decode_error};
++
++pub enum PageStep<'a> {
++    NeedMore,
++    Page { consumed: usize, page: Page<'a> },
++    End,
++}
++
++pub struct PagePacketizer {
++    packet_lens: Vec<u16>,
++    failed: bool,
++    finished: bool,
++}
++impl Default for PagePacketizer {
++    fn default() -> Self {
++        Self::new()
++    }
++}
++impl PagePacketizer {
++    pub fn new() -> Self {
++        Self {
++            packet_lens: Vec::with_capacity(255),
++            failed: false,
++            finished: false,
++        }
++    }
++    pub fn next<'a>(&'a mut self, input: &'a [u8], eof: bool) -> Result<PageStep<'a>> {
++        if self.failed {
++            return decode_error("ogg: page packetizer previously failed");
++        }
++        if self.finished {
++            if input.is_empty() && eof {
++                return Ok(PageStep::End);
++            }
++            self.failed = true;
++            return decode_error("ogg: input after page stream end");
++        }
++        if input.is_empty() {
++            if !eof {
++                return Ok(PageStep::NeedMore);
++            }
++            self.finished = true;
++            return Ok(PageStep::End);
++        }
++        match crate::page::read_page_slice(input, &mut self.packet_lens) {
++            Ok(Some((consumed, page))) => Ok(PageStep::Page { consumed, page }),
++            Ok(None) if !eof => Ok(PageStep::NeedMore),
++            Ok(None) => {
++                self.failed = true;
++                decode_error("ogg: truncated page")
++            }
++            Err(error) => {
++                self.failed = true;
++                Err(error)
++            }
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::page::PageReader;
++    use std::io::Cursor;
++    use symphonia_core::io::MediaSourceStream;
++
++    // Fixture-only independent bitwise checksum; production uses core Crc32.
++    fn checksum(input: &[u8]) -> u32 {
++        let mut crc = 0_u32;
++        for (i, &byte) in input.iter().enumerate() {
++            crc ^= u32::from(if (22..26).contains(&i) { 0 } else { byte }) << 24;
++            for _ in 0..8 {
++                crc = if crc & 0x80000000 != 0 {
++                    (crc << 1) ^ 0x04c11db7
++                } else {
++                    crc << 1
++                };
++            }
++        }
++        crc
++    }
++    fn fixture(lacing: &[u8], flags: u8) -> Vec<u8> {
++        assert!(lacing.len() <= 255);
++        let mut file = b"OggS\0".to_vec();
++        file.push(flags);
++        file.extend_from_slice(&12345_u64.to_le_bytes());
++        file.extend_from_slice(&0x12345678_u32.to_le_bytes());
++        file.extend_from_slice(&7_u32.to_le_bytes());
++        file.extend_from_slice(&0_u32.to_le_bytes());
++        file.push(lacing.len() as u8);
++        file.extend_from_slice(lacing);
++        let n = lacing.iter().map(|v| usize::from(*v)).sum::<usize>();
++        file.extend((0..n).map(|i| (i % 251) as u8));
++        let crc = checksum(&file);
++        file[22..26].copy_from_slice(&crc.to_le_bytes());
++        file
++    }
++    #[test]
++    fn complete_page_is_borrowed_and_matches_existing_pull_boundaries() {
++        for lacing in [
++            vec![],
++            vec![3, 255, 255, 4, 0, 255],
++            vec![0; 255],
++            vec![255; 255],
++            vec![254; 255],
++        ] {
++            let file = fixture(&lacing, 3);
++            let mut source =
++                MediaSourceStream::new(Box::new(Cursor::new(file.clone())), Default::default());
++            let pull = PageReader::try_new(&mut source).unwrap();
++            let expected = pull.page();
++            let mut parser = PagePacketizer::new();
++            let PageStep::Page { consumed, page } = parser.next(&file, false).unwrap() else {
++                panic!("waited for future input");
++            };
++            assert_eq!(consumed, file.len());
++            assert!(consumed <= OGG_PAGE_MAX_SIZE);
++            assert_eq!(
++                (
++                    page.header.serial,
++                    page.header.sequence,
++                    page.header.absgp,
++                    page.header.is_continuation,
++                    page.header.is_first_page,
++                    page.header.is_last_page
++                ),
++                (
++                    expected.header.serial,
++                    expected.header.sequence,
++                    expected.header.absgp,
++                    expected.header.is_continuation,
++                    expected.header.is_first_page,
++                    expected.header.is_last_page
++                )
++            );
++            assert_eq!(
++                page.packets().collect::<Vec<_>>(),
++                expected.packets().collect::<Vec<_>>()
++            );
++            assert_eq!(
++                page.packets().partial_packet(),
++                expected.packets().partial_packet()
++            );
++            if let Some(first) = page.packets().next() {
++                assert_eq!(first.as_ptr(), file[27 + lacing.len()..].as_ptr());
++            }
++        }
++    }
++    #[test]
++    fn partial_input_is_transactional_and_never_touches_missing_fields() {
++        let file = fixture(&[3, 255, 255, 4, 0, 255], 2);
++        let mut parser = PagePacketizer::new();
++        parser.next(&file, false).unwrap();
++        let before = parser.packet_lens.clone();
++        for end in 0..file.len() {
++            assert!(matches!(
++                parser.next(&file[..end], false).unwrap(),
++                PageStep::NeedMore
++            ));
++            assert_eq!(
++                parser.packet_lens, before,
++                "partial input changed descriptors"
++            );
++        }
++        assert!(matches!(
++            parser.next(&file, false).unwrap(),
++            PageStep::Page { .. }
++        ));
++    }
++    #[test]
++    fn truncated_corrupt_reserved_and_invalid_pages_fail_stickily() {
++        let good = fixture(&[3, 255, 1], 4);
++        let mut invalid = Vec::new();
++        for n in [1, 26, 27, 28, good.len() - 1] {
++            invalid.push(good[..n].to_vec());
++        }
++        for (position, byte) in [
++            (0, b'X'),
++            (4, 1),
++            (5, 8),
++            (22, 0xff),
++            (good.len() - 1, 0xff),
++        ] {
++            let mut bad = good.clone();
++            bad[position] = byte;
++            invalid.push(bad);
++        }
++        for bad in invalid {
++            let mut parser = PagePacketizer::new();
++            assert!(parser.next(&bad, true).is_err());
++            assert!(parser.next(&good, true).is_err(), "failure was not sticky");
++        }
++    }
++    #[test]
++    fn page_extents_and_transport_eof_are_distinct() {
++        let a = fixture(&[3], 2);
++        let b = fixture(&[1], 4);
++        let mut body = a.clone();
++        body.extend_from_slice(&b);
++        let mut parser = PagePacketizer::new();
++        let PageStep::Page { consumed, .. } = parser.next(&body, false).unwrap() else {
++            panic!()
++        };
++        assert_eq!(consumed, a.len());
++        let PageStep::Page { consumed, .. } = parser.next(&body[a.len()..], false).unwrap() else {
++            panic!()
++        };
++        assert_eq!(consumed, b.len());
++        assert!(matches!(
++            parser.next(&[], false).unwrap(),
++            PageStep::NeedMore
++        ));
++        assert!(matches!(parser.next(&[], true).unwrap(), PageStep::End));
++        assert!(matches!(parser.next(&[], true).unwrap(), PageStep::End));
++        assert!(parser.next(&a, false).is_err());
++    }
++}
++
++#[path = "streaming/vorbis.rs"]
++mod vorbis;
++pub use vorbis::{VorbisPacketizer, PacketStep, PacketizerOptions};

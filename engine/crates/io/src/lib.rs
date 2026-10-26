@@ -10,6 +10,7 @@ static COUNTING_ALLOCATOR: migo_alloc_probe::CountingAllocator =
 
 pub mod astc;
 pub mod atomic_write;
+pub mod audio_cpu;
 pub mod cost;
 pub mod count_min_sketch;
 pub mod derived_cache;
@@ -29,6 +30,7 @@ pub mod mipmap;
 pub mod mmap_reader;
 #[cfg(feature = "zip-extract")]
 pub mod package_ingest;
+pub mod polling;
 pub mod pools;
 pub mod scheduler;
 pub mod storage_ops;

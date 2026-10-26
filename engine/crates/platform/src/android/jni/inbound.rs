@@ -337,6 +337,10 @@ pub(crate) extern "system" fn init(
     options: JObject<'_>,
 ) -> jint {
     jni_safe!("init", -1, {
+        if let Err(error) = super::tls::init(&mut env) {
+            error!("init failed: {error}");
+            return -1;
+        }
         // A null Surface is a warm start, not a failure: the caller is creating
         // the session before its window exists so that GPU bring-up overlaps the
         // host application's own layout. `updateSurface` delivers the Surface

@@ -27,6 +27,7 @@ import subprocess
 import sys
 import xml.etree.ElementTree as ET
 import zipfile
+from android_runtime_deps import load as runtime_dependencies
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 GROUP = "com.minigame-labs"
@@ -58,6 +59,14 @@ def check_pom(path: pathlib.Path, artifact: str, version: str) -> list[str]:
     for field in REQUIRED_POM:
         if not text_at(project, field):
             errors.append(f"{path.name}: {field} is missing, which Central requires")
+    expected = [(d["group"], d["artifact"], d["version"], "runtime")
+                for d in runtime_dependencies()["maven_runtime"]]
+    nodes = project.findall(f"{POM_NS}dependencies/{POM_NS}dependency")
+    actual = [tuple(text_at(node, field) for field in ("groupId", "artifactId", "version", "scope"))
+              for node in nodes]
+    allowed = {POM_NS + field for field in ("groupId", "artifactId", "version", "scope")}
+    if actual != expected or any(len(node) != 4 or {child.tag for child in node} != allowed for node in nodes):
+        errors.append(f"{path.name}: runtime dependencies differ from canonical Android dependency list")
     return errors
 
 

@@ -123,6 +123,8 @@ mod code_cache_dir_tests {
     /// ever targets that path.  Restore `&code_cache_dir` to go green again.
     #[test]
     fn bytecode_lands_in_configured_dir_not_in_ordinary_cache() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let pid = std::process::id();
         let ordinary_dir = std::env::temp_dir().join(format!("migo_ccdir_ordinary_{pid}"));
         let code_cache_dir = std::env::temp_dir().join(format!("migo_ccdir_cc_{pid}"));

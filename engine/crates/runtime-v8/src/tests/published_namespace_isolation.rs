@@ -140,6 +140,8 @@ mod published_namespace_isolation_tests {
     /// The invariant: no published namespace reaches the op table.
     #[test]
     fn content_cannot_reach_the_op_table_through_any_published_namespace() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot();
         rt.execute_script("<test:helper>", FastString::from_static(FIND_OP_TABLE))
             .expect("helper");
@@ -163,6 +165,8 @@ mod published_namespace_isolation_tests {
     /// an external adapter might add.
     #[test]
     fn the_op_table_search_finds_a_planted_one() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot();
         rt.execute_script("<test:helper>", FastString::from_static(FIND_OP_TABLE))
             .expect("helper");
@@ -181,6 +185,8 @@ mod published_namespace_isolation_tests {
     /// regression reads as what it is instead of as an anonymous shape hit.
     #[test]
     fn deno_is_absent_from_the_global_and_from_the_migo_mirror() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot();
         assert_js(
             &mut rt,
@@ -194,6 +200,8 @@ mod published_namespace_isolation_tests {
 
     #[test]
     fn bootstrap_is_absent_from_the_global_and_from_the_migo_mirror() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot();
         assert_js(
             &mut rt,
@@ -208,6 +216,8 @@ mod published_namespace_isolation_tests {
     /// The mirror must keep working: this fix removes internals, not APIs.
     #[test]
     fn the_migo_namespace_still_publishes_content_apis() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         // Profile-dependent, and asserting the Full number unconditionally
         // would assert the product profile instead of the publication. Slim
         // cfg-deletes whole capability extensions -- it published 127
@@ -238,6 +248,8 @@ mod published_namespace_isolation_tests {
     /// publishes it like every other name.
     #[test]
     fn gamepad_capabilities_are_published_on_migo() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot();
         assert_js(
             &mut rt,

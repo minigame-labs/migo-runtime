@@ -1496,7 +1496,7 @@ pub fn op_inner_audio_load_url(
     let sources = InnerAudioSources {
         code_dir,
         vfs,
-        admit_remote: move |url: &deno_core::url::Url| {
+        admit_remote: move |url: &migo_services::network::url::Url| {
             let st = state.borrow();
             crate::network::gate::enforce_from_state(
                 url,

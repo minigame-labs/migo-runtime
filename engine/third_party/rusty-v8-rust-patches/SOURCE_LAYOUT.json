@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "crate": "v8",
+  "version": "150.4.0",
+  "mode": "migo-native-component-consumer",
+  "retained_roots": [
+    "gen",
+    "src"
+  ],
+  "retained_files": [
+    ".cargo_vcs_info.json",
+    "Cargo.lock",
+    "Cargo.toml",
+    "Cargo.toml.orig",
+    "README.md",
+    "build.rs",
+    "third_party/highway/src/debian/copyright"
+  ],
+  "authored_files": [
+    ".gitignore"
+  ],
+  "reason": "Only Rust consumer and FFI sources ship here. Native V8 uses separately pinned, patched source builds and verified materialised components; this dependency cannot build or download a native runtime.",
+  "published_inventory": {
+    "retained_files": 118,
+    "omitted_files": 14828,
+    "omitted_bytes": 168515953
+  }
+}

@@ -52,6 +52,7 @@ fn client() -> Client {
         false,
         &NetworkPolicy::default(),
         "fetch",
+        migo_io::pools::IoPools::new(0),
     )
     .expect("a client")
 }

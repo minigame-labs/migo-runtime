@@ -477,7 +477,14 @@ def build(root: pathlib.Path, out: pathlib.Path, with_producer: bool) -> dict:
         source = modules[specifier].read_text(encoding="utf-8")
         if not source.isascii():
             raise BuildError(f"{specifier} is not ASCII; the engine's embedded JavaScript must be")
-        stripped = runtime_ops.strip_js_comments(source)
+        analysis_source = source
+        if specifier == "ext:host_v8_web/01_task_context.js":
+            analysis_source = (root / PRODUCER_SRC / "timer-task-context.mjs").read_text(encoding="utf-8")
+        if specifier == "ext:host_v8_worker_codec/00_worker_serialize.js":
+            analysis_source = (root / PRODUCER_SRC / "worker-clone.mjs").read_text(encoding="utf-8")
+        if specifier == "ext:host_v8_url/00_url_backend.js":
+            analysis_source = (root / PRODUCER_SRC / "url-native.mjs").read_text(encoding="utf-8")
+        stripped = runtime_ops.strip_js_comments(analysis_source)
         for match in PRIMORDIAL_DESTRUCTURE.finditer(stripped):
             for item in match.group(1).split(","):
                 name = item.split(":")[0].strip()
@@ -497,7 +504,26 @@ def build(root: pathlib.Path, out: pathlib.Path, with_producer: bool) -> dict:
         extension, _, file = specifier[len("ext:") :].partition("/")
         target = engine / extension / file
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(rewrite(source, specifier), encoding="utf-8")
+        if specifier == "ext:host_v8_web/01_task_context.js":
+            # V8's Explicit checkpoint and WebKit's native checkpoint need
+            # different task lifetimes; the timer policy itself stays shared.
+            target.write_text(
+                GENERATED + 'export { getTimerDepth, runTimerTask } from "../../timer-task-context.mjs";\n',
+                encoding="utf-8",
+            )
+        elif specifier == "ext:host_v8_worker_codec/00_worker_serialize.js":
+            # A WebKit isolate cannot decode V8's private serialization format.
+            target.write_text(
+                GENERATED + 'export { encodeMessage, decodeMessage, wireBytes } from "../../worker-clone.mjs";\n',
+                encoding="utf-8",
+            )
+        elif specifier == "ext:host_v8_url/00_url_backend.js":
+            target.write_text(
+                GENERATED + 'export { op_url_parse, op_url_parts, op_url_set, op_url_search_parse, op_url_search_serialize, toWellFormed } from "../../url-native.mjs";\n',
+                encoding="utf-8",
+            )
+        else:
+            target.write_text(rewrite(source, specifier), encoding="utf-8")
 
     unclassified = sorted(ops_needed - set(lanes))
     if unclassified:

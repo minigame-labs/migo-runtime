@@ -1,0 +1,272 @@
+--- symphonia-format-ogg-0.6.1/src/demuxer.rs
++++ symphonia-format-ogg-0.6.1/src/demuxer.rs
+@@ -8,8 +8,8 @@
+ use std::collections::BTreeMap;
+ use std::io::{Seek, SeekFrom};
+ 
++use symphonia_core::errors::{decode_error, reset_error, seek_error, unsupported_error};
+ use symphonia_core::errors::{Error, Result, SeekErrorKind};
+-use symphonia_core::errors::{decode_error, reset_error, seek_error, unsupported_error};
+ use symphonia_core::formats::prelude::*;
+ use symphonia_core::formats::probe::{ProbeFormatData, ProbeableFormat, Score, Scoreable};
+ use symphonia_core::formats::well_known::FORMAT_ID_OGG;
+@@ -37,6 +37,7 @@
+     tracks: Vec<Track>,
+     chapters: Option<ChapterGroup>,
+     metadata: MetadataLog,
++    metadata_options: symphonia_core::meta::MetadataOptions,
+     /// The page reader.
+     pages: PageReader,
+     /// `LogicalStream` for each serial.
+@@ -64,6 +65,7 @@
+             tracks: Default::default(),
+             chapters: opts.external_data.chapters,
+             metadata: opts.external_data.metadata.unwrap_or_default(),
++            metadata_options: opts.metadata_options,
+             streams: Default::default(),
+             pages,
+             phys_byte_range_start: 0,
+@@ -332,7 +334,7 @@
+             // There should only be a single packet, the identification packet, in the first page.
+             if let Some(pkt) = self.pages.first_packet() {
+                 // If a stream mapper has been detected, create a logical stream with it.
+-                if let Some(mapper) = mappings::detect(header.serial, pkt)? {
++                if let Some(mapper) = mappings::detect(header.serial, pkt, self.metadata_options)? {
+                     info!(
+                         "selected {} mapper for stream with serial={:#x}",
+                         mapper.name(),
+--- symphonia-format-ogg-0.6.1/src/mappings/flac.rs
++++ symphonia-format-ogg-0.6.1/src/mappings/flac.rs
+@@ -11,16 +11,16 @@
+ 
+ use symphonia_common::xiph::audio::flac::{MetadataBlockHeader, MetadataBlockType, StreamInfo};
+ use symphonia_core::checksum::Crc8Ccitt;
+-use symphonia_core::codecs::CodecParameters;
+ use symphonia_core::codecs::audio::well_known::CODEC_ID_FLAC;
+ use symphonia_core::codecs::audio::{AudioCodecParameters, VerificationCheck};
+-use symphonia_core::errors::{Result, decode_error};
++use symphonia_core::codecs::CodecParameters;
++use symphonia_core::errors::{decode_error, Result};
+ use symphonia_core::formats::Track;
+ use symphonia_core::io::{BufReader, MonitorStream, ReadBytes};
+ use symphonia_core::meta::MetadataBuilder;
+ use symphonia_core::units::Duration;
+ use symphonia_metadata::embedded::flac::{
+-    FLAC_METADATA_INFO, read_flac_comment_block, read_flac_picture_block,
++    read_flac_comment_block, read_flac_picture_block, FLAC_METADATA_INFO,
+ };
+ 
+ use log::warn;
+@@ -119,7 +119,10 @@
+     track.with_codec_params(CodecParameters::Audio(codec_params));
+ 
+     // Instantiate the FLAC mapper.
+-    let mapper = Box::new(FlacMapper { track });
++    let mapper = Box::new(FlacMapper {
++        metadata_options: Default::default(),
++        track,
++    });
+ 
+     Ok(Some(mapper))
+ }
+@@ -272,10 +275,15 @@
+ }
+ 
+ struct FlacMapper {
++    metadata_options: symphonia_core::meta::MetadataOptions,
+     track: Track,
+ }
+ 
+ impl Mapper for FlacMapper {
++    fn set_metadata_options(&mut self, options: symphonia_core::meta::MetadataOptions) {
++        self.metadata_options = options;
++    }
++
+     fn name(&self) -> &'static str {
+         "flac"
+     }
+@@ -320,6 +328,14 @@
+             // Packet types in the range 0x01 thru 0x7f, and 0x81 thru 0xfe are metadata blocks.
+             let header = MetadataBlockHeader::read(&mut reader)?;
+ 
++            if self.metadata_options.is_disabled()
++                && matches!(
++                    header.block_type,
++                    MetadataBlockType::VorbisComment | MetadataBlockType::Picture
++                )
++            {
++                return Ok(MapResult::Setup);
++            }
+             match header.block_type {
+                 MetadataBlockType::VorbisComment => {
+                     let mut builder = MetadataBuilder::new(FLAC_METADATA_INFO);
+--- symphonia-format-ogg-0.6.1/src/mappings/mod.rs
++++ symphonia-format-ogg-0.6.1/src/mappings/mod.rs
+@@ -16,12 +16,19 @@
+ mod vorbis;
+ 
+ /// Detect a `Mapper` for a logical stream given the identification packet of the stream.
+-pub fn detect(serial: u32, buf: &[u8]) -> Result<Option<Box<dyn Mapper>>> {
+-    let mapper = flac::detect(serial, buf)?
++pub fn detect(
++    serial: u32,
++    buf: &[u8],
++    metadata_options: symphonia_core::meta::MetadataOptions,
++) -> Result<Option<Box<dyn Mapper>>> {
++    let mut mapper = flac::detect(serial, buf)?
+         .or(vorbis::detect(serial, buf)?)
+         .or(opus::detect(serial, buf)?)
+         .or_else(make_null_mapper);
+ 
++    if let Some(mapper) = mapper.as_mut() {
++        mapper.set_metadata_options(metadata_options);
++    }
+     Ok(mapper)
+ }
+ 
+@@ -45,6 +52,9 @@
+ 
+ /// A `Mapper` implements packet-handling for a specific `Codec`.
+ pub trait Mapper: Send + Sync {
++    /// Set once before mapping packets. Audio packets carry no metadata options.
++    fn set_metadata_options(&mut self, options: symphonia_core::meta::MetadataOptions);
++
+     /// Gets the name of the mapper.
+     fn name(&self) -> &'static str;
+ 
+@@ -97,6 +107,8 @@
+ }
+ 
+ impl Mapper for NullMapper {
++    fn set_metadata_options(&mut self, _: symphonia_core::meta::MetadataOptions) {}
++
+     fn name(&self) -> &'static str {
+         "null"
+     }
+--- symphonia-format-ogg-0.6.1/src/mappings/opus.rs
++++ symphonia-format-ogg-0.6.1/src/mappings/opus.rs
+@@ -10,9 +10,9 @@
+ use super::{MapResult, Mapper, PacketParser};
+ 
+ use symphonia_common::xiph::audio::opus;
++use symphonia_core::codecs::audio::well_known::CODEC_ID_OPUS;
++use symphonia_core::codecs::audio::AudioCodecParameters;
+ use symphonia_core::codecs::CodecParameters;
+-use symphonia_core::codecs::audio::AudioCodecParameters;
+-use symphonia_core::codecs::audio::well_known::CODEC_ID_OPUS;
+ use symphonia_core::errors::Result;
+ use symphonia_core::formats::Track;
+ use symphonia_core::io::{BufReader, ReadBytes};
+@@ -62,7 +62,11 @@
+         .with_delay(u32::from(opus_head.pre_skip));
+ 
+     // Instantiate the Opus mapper.
+-    let mapper = Box::new(OpusMapper { track, need_comment: true });
++    let mapper = Box::new(OpusMapper {
++        metadata_options: Default::default(),
++        track,
++        need_comment: true,
++    });
+ 
+     Ok(Some(mapper))
+ }
+@@ -131,11 +135,16 @@
+ }
+ 
+ struct OpusMapper {
++    metadata_options: symphonia_core::meta::MetadataOptions,
+     track: Track,
+     need_comment: bool,
+ }
+ 
+ impl Mapper for OpusMapper {
++    fn set_metadata_options(&mut self, options: symphonia_core::meta::MetadataOptions) {
++        self.metadata_options = options;
++    }
++
+     fn name(&self) -> &'static str {
+         "opus"
+     }
+@@ -173,7 +182,16 @@
+                 let mut builder = MetadataBuilder::new(VORBIS_COMMENT_METADATA_INFO);
+                 let mut side_data = Default::default();
+ 
+-                vorbis::read_vorbis_comment(&mut reader, &mut builder, &mut side_data)?;
++                if self.metadata_options.is_disabled() {
++                    self.need_comment = false;
++                    return Ok(MapResult::Setup);
++                }
++                vorbis::read_vorbis_comment_with_options(
++                    &mut reader,
++                    &mut builder,
++                    &mut side_data,
++                    self.metadata_options,
++                )?;
+ 
+                 let rev = builder.build();
+ 
+--- symphonia-format-ogg-0.6.1/src/mappings/vorbis.rs
++++ symphonia-format-ogg-0.6.1/src/mappings/vorbis.rs
+@@ -9,10 +9,10 @@
+ use crate::common::SideData;
+ 
+ use symphonia_common::xiph::audio::vorbis::*;
++use symphonia_core::codecs::audio::well_known::CODEC_ID_VORBIS;
++use symphonia_core::codecs::audio::AudioCodecParameters;
+ use symphonia_core::codecs::CodecParameters;
+-use symphonia_core::codecs::audio::AudioCodecParameters;
+-use symphonia_core::codecs::audio::well_known::CODEC_ID_VORBIS;
+-use symphonia_core::errors::{Result, decode_error, unsupported_error};
++use symphonia_core::errors::{decode_error, unsupported_error, Result};
+ use symphonia_core::formats::Track;
+ use symphonia_core::io::{BitReaderRtl, BufReader, ReadBitsRtl, ReadBytes};
+ use symphonia_core::meta::MetadataBuilder;
+@@ -137,12 +137,19 @@
+     track.with_codec_params(CodecParameters::Audio(codec_params));
+ 
+     // Instantiate the Vorbis mapper.
+-    let mapper = Box::new(VorbisMapper { track, ident, parser: None, has_setup_header: false });
++    let mapper = Box::new(VorbisMapper {
++        metadata_options: Default::default(),
++        track,
++        ident,
++        parser: None,
++        has_setup_header: false,
++    });
+ 
+     Ok(Some(mapper))
+ }
+ 
+ struct VorbisMapper {
++    metadata_options: symphonia_core::meta::MetadataOptions,
+     track: Track,
+     ident: IdentHeader,
+     parser: Option<VorbisPacketParser>,
+@@ -150,6 +157,10 @@
+ }
+ 
+ impl Mapper for VorbisMapper {
++    fn set_metadata_options(&mut self, options: symphonia_core::meta::MetadataOptions) {
++        self.metadata_options = options;
++    }
++
+     fn name(&self) -> &'static str {
+         "vorbis"
+     }
+@@ -224,7 +235,15 @@
+                     let mut builder = MetadataBuilder::new(VORBIS_COMMENT_METADATA_INFO);
+                     let mut side_data = Default::default();
+ 
+-                    read_vorbis_comment(&mut reader, &mut builder, &mut side_data)?;
++                    if self.metadata_options.is_disabled() {
++                        return Ok(MapResult::Setup);
++                    }
++                    read_vorbis_comment_with_options(
++                        &mut reader,
++                        &mut builder,
++                        &mut side_data,
++                        self.metadata_options,
++                    )?;
+ 
+                     let rev = builder.build();
+ 
