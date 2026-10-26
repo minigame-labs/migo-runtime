@@ -25,7 +25,7 @@ jobs:
         # No LFS download: freshness reads committed pointer oid/size identities.
 
       - name: Setup Python for contract gates
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.11"
 
@@ -92,6 +92,9 @@ jobs:
         working-directory: engine
         run: cargo fetch --locked
 
+      - name: Prepare verified host V8
+        uses: ./.github/actions/prepare-host-v8
+
       - name: Install the pinned RustSec scanner
         run: cargo install cargo-audit --version 0.22.2 --locked
 
@@ -130,8 +133,9 @@ jobs:
               | "$1" -m32 -ffreestanding -std=c11 -c -x c - -o /dev/null 2>/dev/null
           }
           install_multilib() {
-            timeout 90 sudo apt-get update -qq || return 1
-            timeout 150 sudo apt-get install -y -qq gcc-multilib || return 1
+            timeout 90 sudo apt-get update -qq \
+              || echo "apt-get update incomplete; continuing on the image's indexes" >&2
+            sudo apt-get install -y -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -qq gcc-multilib || return 1
           }
           if ! can_target_m32 gcc || ! can_target_m32 clang; then
             install_multilib || {
@@ -146,7 +150,7 @@ jobs:
         # ripgrep is not preinstalled on the runners, and the contract needs it
         # for its multiline patterns.
         run: |
-          command -v rg >/dev/null 2>&1 || sudo apt-get install -y ripgrep
+          command -v rg >/dev/null 2>&1 || sudo apt-get install -y -o Acquire::Retries=5 -o Acquire::http::Timeout=30 ripgrep
           bash scripts/test-surface-attachment-contract.sh
           bash scripts/test-x11-owned-connection-contract.sh
 
@@ -307,6 +311,19 @@ jobs:
           bash scripts/test-v8-gn-pin-contract.sh
           bash scripts/test-apple-frame-channel-contract.sh
           bash scripts/test-v8-patch-application-contract.sh
+          bash scripts/test-skia-bindings-vendor-contract.sh
+          bash scripts/test-gitignore-contract.sh
+          bash scripts/test-deno-core-vendor-contract.sh
+          bash scripts/test-ada-url-vendor-contract.sh
+          bash scripts/test-android-tls-vendor-contract.sh
+          bash scripts/test-rusty-v8-vendor-contract.sh
+          bash scripts/test-websocket-deflate-contract.sh
+
+      - name: Verify Oboe native sources and callback ownership
+        run: bash scripts/test-oboe-backend-contract.sh
+
+      - name: Verify CPAL source and output product features
+        run: bash scripts/test-cpal-backend-contract.sh
 
       - name: Every contract gate is invoked by something
         run: bash scripts/test-every-gate-is-invoked.sh
@@ -652,8 +669,9 @@ jobs:
       - name: Install the libraries the host engine links
         run: |
           install_libs() {
-            timeout 90 sudo apt-get update -qq || return 1
-            timeout 150 sudo apt-get install -y -qq \
+            timeout 90 sudo apt-get update -qq \
+              || echo "apt-get update incomplete; continuing on the image's indexes" >&2
+            sudo apt-get install -y -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -qq \
               libgl-dev libegl-dev libfontconfig1-dev libfreetype-dev \
               libasound2-dev || return 1
           }
@@ -871,6 +889,14 @@ jobs:
       # gate (shared/tests/frame_cycle_allocation.rs) and both snapshot round-trips,
       # so the tag gate was narrower than the PR gate on the binaries that exist
       # because a property belongs to a binary rather than to a lib.
+      - name: Shared audio CPU admission and cancellation contracts
+        timeout-minutes: 10
+        run: |
+          cargo fetch --locked --manifest-path engine/Cargo.toml
+          python3 scripts/testing/check_audio_cpu_admission.py \
+            --output "${RUNNER_TEMP}/migo-audio-cpu-contract" \
+            --target-dir "${RUNNER_TEMP}/migo-audio-cpu-target"
+
       - name: Run Rust tests (host-buildable crates)
         working-directory: engine
         run: |
@@ -901,6 +927,12 @@ jobs:
           cargo test -p migo-executor-probe
         env:
           RUST_BACKTRACE: 1
+
+      - name: Official host snapshot IO contract
+        working-directory: engine
+        run: |
+          bash ../scripts/check-snapshot-freshness.sh --os linux --snapshot-kind host --product-profile full x86_64
+          cargo test --locked --offline -p migo-runtime-v8 --test read_pixels_snapshot --test file_byob_snapshot -- --ignored
 
       # The Maven repository a host resolves the SDK from holds the release's AARs,
       # signed, and nothing else. Run here over fixture AARs, which proves the
@@ -991,7 +1023,7 @@ jobs:
           # The install is the real gate: if the packages cannot be had, the
           # contract below cannot run, so this one fails the step.
           install_pkgs() {
-            timeout 300 sudo apt-get install -y \
+            sudo apt-get install -y -o Acquire::Retries=5 -o Acquire::http::Timeout=30 \
               cmake ninja-build g++ ripgrep xvfb xauth \
               qt6-base-dev qt6-base-dev-tools qt6-qpa-plugins \
               libx11-dev libxkbcommon-x11-dev libxcb-cursor0 \
@@ -1040,7 +1072,7 @@ jobs:
       # on an unrelated PR. quality-gate and build already cache the same
       # workspace; this job was the one longest-pole job left without it.
       - name: Rust cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: engine -> target
           cache-on-failure: true
@@ -1055,12 +1087,12 @@ jobs:
           timeout 180 sudo apt-get update -qq \
             || echo "apt-get update incomplete; continuing on the image's indexes" >&2
           install_pkgs() {
-            timeout 300 sudo apt-get install -y -qq \
+            sudo apt-get install -y -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -qq \
               ninja-build \
               libgl-dev libegl-dev libgles-dev \
               libgl1-mesa-dri libegl-mesa0 \
               libfontconfig1-dev libfreetype-dev \
-              libasound2-dev \
+              libasound2-dev strace \
               gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav || return 1
           }
           install_pkgs || {
@@ -1085,6 +1117,9 @@ jobs:
       # deliberate -- it cannot answer the question, and reporting that as
       # success is how a check stops being one -- and it means this step is also
       # the thing that tells us if a runner image regresses.
+      - name: Prepare verified host V8
+        uses: ./.github/actions/prepare-host-v8
+
       - name: ASTC encoder round trip
         run: bash scripts/test-astc-encoder.sh
 
@@ -1094,6 +1129,11 @@ jobs:
 
       # The player is the conformance suite's reference runner; pr-ci.yml's copy
       # of this step says why it is tested here.
+      - name: Native audio callback allocator and syscall contract
+        run: |
+          rustup component add rust-src
+          bash scripts/test-audio-realtime-contract.sh
+
       - name: Run Rust tests (graphics, core, capi, platform, audio, player)
         working-directory: engine
         run: |
@@ -1138,7 +1178,7 @@ jobs:
           java-version: "17"
 
       - name: Setup Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.11"
 
@@ -1167,6 +1207,13 @@ jobs:
       # must point at it, not just ANDROID_NDK_HOME).
       - name: Install Android NDK + cargo-ndk
         uses: ./.github/actions/setup-android-ndk
+
+      - name: Reproduce Android platform TLS helper from patched source
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          sdkmanager --install "platforms;android-36"
+          bash scripts/test-android-tls-source-contract.sh
 
       # Layout-only compatibility check; official Android release slices stay
       # arm64-v8a/x86_64 until an ARMv7 artifact profile is explicitly added.
@@ -1216,7 +1263,9 @@ jobs:
       # Migo claims to support. Checks every strong import against the NDK's
       # API-26 stub libraries; see scripts/test-android-symbol-floor.sh.
       - name: Android minimum-API symbol floor
-        run: bash scripts/test-android-symbol-floor.sh
+        run: |
+          bash scripts/test-android-symbol-floor.sh --self-test
+          bash scripts/test-android-symbol-floor.sh
 
       # Android 15 brought 16 KB memory pages and Android 16 requires targeting
       # apps to have 16 KB-aligned native libraries to install on such a device.
@@ -1400,7 +1449,7 @@ jobs:
           lfs: false
 
       - name: Setup Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.11"
 
@@ -1480,7 +1529,7 @@ jobs:
           lfs: false
 
       - name: Setup Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.11"
 
@@ -1494,7 +1543,7 @@ jobs:
       # -- but failing 40 minutes into a release is worse than installing it here.
       - name: Install the linker the SDK links with
         run: |
-          command -v lld >/dev/null 2>&1 || sudo apt-get install -y lld
+          command -v lld >/dev/null 2>&1 || sudo apt-get install -y -o Acquire::Retries=5 -o Acquire::http::Timeout=30 lld
 
       # The sysroot each V8 archive was built against, verified by sha256. The SDK
       # build refuses when the engine's sysroot identity and the archive's disagree,
@@ -1564,7 +1613,7 @@ jobs:
           lfs: false
 
       - name: Setup Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.11"
 
@@ -1654,6 +1703,11 @@ jobs:
         working-directory: engine
         run: cargo test -p migo-shared -p migo-io --lib --locked
 
+      - name: Native WASAPI scheduling lifecycle
+        shell: bash
+        run: |
+          python scripts/testing/check_cpal_scheduling.py "$PWD" "$RUNNER_TEMP/migo-wasapi-scheduling" --native
+
   release-windows:
     needs: [quality-gate, host-engine-tests, windows-unit-tests]
     runs-on: windows-latest
@@ -1666,7 +1720,7 @@ jobs:
           lfs: false
 
       - name: Setup Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.11"
 
@@ -1764,7 +1818,7 @@ jobs:
           lfs: false
 
       - name: Setup Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.11"
 
@@ -2000,7 +2054,7 @@ jobs:
           lfs: false
 
       - name: Setup Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.11"
 
@@ -2179,7 +2233,7 @@ jobs:
           lfs: false
 
       - name: Setup Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.11"
 

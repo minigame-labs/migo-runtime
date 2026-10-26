@@ -1,0 +1,815 @@
+--- cpal-0.18.2/src/host/coreaudio/ios/mod.rs
++++ cpal-0.18.2/src/host/coreaudio/ios/mod.rs
+@@ -36,6 +36,9 @@
+ };
+ 
+ pub mod enumerate;
++mod interruption_hub;
++pub use interruption_hub::{InterruptionEvent, InterruptionObserver};
++pub use session_event_manager::observe_audio_session_interruptions;
+ mod session_event_manager;
+ use session_event_manager::SessionEventManager;
+ 
+@@ -138,37 +141,48 @@
+     }
+ }
+ 
+-#[derive(Clone, Copy, Default, PartialEq, Eq)]
+-enum PlaybackState {
+-    #[default]
+-    Stopped,
+-    Playing,
+-    Interrupted,
+-}
++mod playback_state;
++use playback_state::PlaybackState;
+ 
+ struct StreamInner {
+     state: PlaybackState,
+     audio_unit: AudioUnit,
+ }
+ 
++/// AVAudioSession is inactive after an interruption. Activate and start under
++/// the same StreamInner lock so a concurrent explicit pause cannot be undone.
++fn activate_and_start(audio_unit: &mut AudioUnit) -> Result<(), Error> {
++    let session = unsafe { AVAudioSession::sharedInstance() };
++    unsafe { session.setActive_error(true) }.map_err(|error| {
++        Error::with_message(
++            ErrorKind::DeviceNotAvailable,
++            format!("Failed to activate audio session: {error}"),
++        )
++    })?;
++    audio_unit.start().context("Failed to start audio unit")
++}
++
+ impl StreamInner {
++    fn play(&mut self) -> Result<(), Error> {
++        // A stream may be opened after Began, including recovery from silence.
++        // It must inherit the process state before attempting activation.
++        if session_event_manager::interruption_hub().is_interrupted() {
++            self.stop_for_interruption();
++        }
++        let Self { state, audio_unit } = self;
++        state.play(|| activate_and_start(audio_unit))
++    }
++
+     fn stop_for_interruption(&mut self) {
+-        if self.state != PlaybackState::Playing {
+-            return;
+-        }
+-        // Unlike pause(), the OS is the one that actually halted the unit here; this
+-        // call only resyncs AudioUnit's own bookkeeping, so its result carries nothing.
+-        let _ = self.audio_unit.stop();
+-        self.state = PlaybackState::Interrupted;
+-    }
+-
+-    fn resume_after_interruption(&mut self) {
+-        if self.state != PlaybackState::Interrupted {
+-            return;
+-        }
+-        if self.audio_unit.start().is_ok() {
+-            self.state = PlaybackState::Playing;
+-        }
++        let Self { state, audio_unit } = self;
++        state.begin(|| {
++            let _ = audio_unit.stop();
++        });
++    }
++
++    fn end_interruption(&mut self, should_resume: bool) -> Result<(), Error> {
++        let Self { state, audio_unit } = self;
++        state.end(should_resume, || activate_and_start(audio_unit))
+     }
+ }
+ 
+@@ -323,6 +337,19 @@
+ }
+ 
+ impl Stream {
++    /// Apply a new explicit playback request only if a completed interruption
++    /// left this stream waiting for it. This never overrides a later pause,
++    /// activates an idle stream, or starts during an ongoing interruption.
++    pub fn resume_after_interruption(&self) -> Result<(), Error> {
++        let mut stream = self.inner.lock().map_err(|_| {
++            Error::with_message(ErrorKind::StreamInvalidated, "Stream lock poisoned")
++        })?;
++        if stream.state.requires_resume() {
++            stream.play()?;
++        }
++        Ok(())
++    }
++
+     fn signal_ready(&self) {
+         self.session_manager.signal_ready();
+     }
+@@ -340,28 +367,15 @@
+         let mut stream = self.inner.lock().map_err(|_| {
+             Error::with_message(ErrorKind::StreamInvalidated, "Stream lock poisoned")
+         })?;
+-        if stream.state != PlaybackState::Playing {
+-            stream
+-                .audio_unit
+-                .start()
+-                .context("Failed to start audio unit")?;
+-            stream.state = PlaybackState::Playing;
+-        }
+-        Ok(())
++        stream.play()
+     }
+ 
+     fn pause(&self) -> Result<(), Error> {
+         let mut stream = self.inner.lock().map_err(|_| {
+             Error::with_message(ErrorKind::StreamInvalidated, "Stream lock poisoned")
+         })?;
+-        if stream.state == PlaybackState::Playing {
+-            stream
+-                .audio_unit
+-                .stop()
+-                .context("Failed to stop audio unit")?;
+-        }
+-        stream.state = PlaybackState::Stopped;
+-        Ok(())
++        let StreamInner { state, audio_unit } = &mut *stream;
++        state.pause(|| audio_unit.stop().context("Failed to stop audio unit"))
+     }
+ 
+     fn now(&self) -> StreamInstant {
+--- cpal-0.18.2/src/host/coreaudio/ios/session_event_manager.rs
++++ cpal-0.18.2/src/host/coreaudio/ios/session_event_manager.rs
+@@ -5,13 +5,13 @@
+     ptr::NonNull,
+     sync::{
+         atomic::{AtomicUsize, Ordering},
+-        Arc, Mutex, Weak,
++        Arc, Mutex, OnceLock, Weak,
+     },
+ };
+ 
+ use block2::RcBlock;
+ use objc2_avf_audio::{
+-    AVAudioSession, AVAudioSessionInterruptionNotification, AVAudioSessionInterruptionOptionKey,
++    AVAudioSessionInterruptionNotification, AVAudioSessionInterruptionOptionKey,
+     AVAudioSessionInterruptionOptions, AVAudioSessionInterruptionType,
+     AVAudioSessionInterruptionTypeKey, AVAudioSessionMediaServicesWereLostNotification,
+     AVAudioSessionMediaServicesWereResetNotification, AVAudioSessionRouteChangeNotification,
+@@ -19,6 +19,7 @@
+ };
+ use objc2_foundation::{NSNotification, NSNotificationCenter, NSNumber, NSString};
+ 
++use super::interruption_hub::{InterruptionEvent, InterruptionHub, InterruptionObserver};
+ use super::{input_latency_frames, output_latency_frames, StreamInner};
+ use crate::{
+     host::{emit_error, latch::Latch, ErrorCallbackArc},
+@@ -70,8 +71,74 @@
+     }
+ }
+ 
++pub(super) fn interruption_hub() -> &'static InterruptionHub {
++    static HUB: OnceLock<InterruptionHub> = OnceLock::new();
++    HUB.get_or_init(InterruptionHub::default)
++}
++
++fn install_interruption_observer() {
++    // Process-lifetime registration, shared by native streams and device-free
++    // subscribers. Store the opaque token exactly as the per-stream manager
++    // does; NSNotificationCenter registration/removal is thread-safe on iOS.
++    struct Observer {
++        _token: objc2::rc::Retained<
++            objc2::runtime::ProtocolObject<dyn objc2::runtime::NSObjectProtocol>,
++        >,
++    }
++    unsafe impl Send for Observer {}
++    unsafe impl Sync for Observer {}
++    static OBSERVER: OnceLock<Option<Observer>> = OnceLock::new();
++    OBSERVER.get_or_init(|| {
++        let block = RcBlock::new(move |notif: NonNull<NSNotification>| {
++            let notif = unsafe { notif.as_ref() };
++            let Some(kind) = user_info_number(notif, unsafe { AVAudioSessionInterruptionTypeKey })
++            else {
++                return;
++            };
++            let event = match AVAudioSessionInterruptionType(kind) {
++                AVAudioSessionInterruptionType::Began => InterruptionEvent::Began,
++                AVAudioSessionInterruptionType::Ended => {
++                    let options = AVAudioSessionInterruptionOptions(
++                        user_info_number(notif, unsafe { AVAudioSessionInterruptionOptionKey })
++                            .unwrap_or(0),
++                    );
++                    InterruptionEvent::Ended {
++                        should_resume: options
++                            .contains(AVAudioSessionInterruptionOptions::ShouldResume),
++                    }
++                }
++                _ => return,
++            };
++            interruption_hub().deliver(event);
++        });
++        unsafe { AVAudioSessionInterruptionNotification }.map(|name| Observer {
++            _token: unsafe {
++                NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
++                    Some(name),
++                    None,
++                    None,
++                    &block,
++                )
++            },
++        })
++    });
++}
++
++/// Observe the process session after CPAL has applied each interruption to all
++/// registered streams. Available with no open audio device. Keep the returned
++/// guard for the subscription lifetime. Callbacks run outside registry/stream
++/// locks and must not panic; they are never invoked by the render callback.
++pub fn observe_audio_session_interruptions(
++    handler: impl Fn(InterruptionEvent) + Send + Sync + 'static,
++) -> InterruptionObserver {
++    let observer = interruption_hub().observe(false, handler);
++    install_interruption_observer();
++    observer
++}
++
+ pub(super) struct SessionEventManager {
+     latch: Latch,
++    _interruption: InterruptionObserver,
+     observers: Vec<
+         objc2::rc::Retained<objc2::runtime::ProtocolObject<dyn objc2::runtime::NSObjectProtocol>>,
+     >,
+@@ -93,42 +160,26 @@
+         let mut observers = Vec::new();
+         let waiter = latch.waiter();
+ 
+-        // The OS stops the unit itself, and the session it stops is inactive on the way back.
+-        {
+-            let w = waiter.clone();
+-            let stream = stream.clone();
+-            let block = RcBlock::new(move |notif: NonNull<NSNotification>| {
+-                if !w.is_released() {
+-                    return;
+-                }
+-                let notif = unsafe { notif.as_ref() };
+-                let interruption_type_key = unsafe { AVAudioSessionInterruptionTypeKey };
+-                let Some(kind) = user_info_number(notif, interruption_type_key) else {
+-                    return;
+-                };
+-                if AVAudioSessionInterruptionType(kind) == AVAudioSessionInterruptionType::Began {
+-                    with_stream(&stream, StreamInner::stop_for_interruption);
+-                    return;
+-                }
+-                let interruption_option_key = unsafe { AVAudioSessionInterruptionOptionKey };
+-                let options = AVAudioSessionInterruptionOptions(
+-                    user_info_number(notif, interruption_option_key).unwrap_or(0),
+-                );
+-                if !options.contains(AVAudioSessionInterruptionOptions::ShouldResume) {
+-                    return;
+-                }
+-                let session = unsafe { AVAudioSession::sharedInstance() };
+-                if unsafe { session.setActive_error(true) }.is_ok() {
+-                    with_stream(&stream, StreamInner::resume_after_interruption);
+-                }
+-            });
+-            if let Some(name) = unsafe { AVAudioSessionInterruptionNotification } {
+-                let observer = unsafe {
+-                    nc.addObserverForName_object_queue_usingBlock(Some(name), None, None, &block)
+-                };
+-                observers.push(observer);
+-            }
+-        }
++        let w = waiter.clone();
++        let cb = error_callback.clone();
++        let interruption = interruption_hub().observe(true, move |event| {
++            if !w.is_released() {
++                return;
++            }
++            let mut result = Ok(());
++            with_stream(&stream, |inner| match event {
++                InterruptionEvent::Began => inner.stop_for_interruption(),
++                InterruptionEvent::Ended { should_resume } => {
++                    result = inner.end_interruption(should_resume)
++                }
++            });
++            // Native state is committed before public listeners run. Client
++            // error code is likewise never called with StreamInner locked.
++            if let Err(error) = result {
++                emit_error(&cb, error);
++            }
++        });
++        install_interruption_observer();
+ 
+         {
+             let cb = error_callback.clone();
+@@ -203,7 +254,11 @@
+             }
+         }
+ 
+-        Self { latch, observers }
++        Self {
++            latch,
++            _interruption: interruption,
++            observers,
++        }
+     }
+ 
+     pub(super) fn signal_ready(&self) {
+--- /dev/null
++++ cpal-0.18.2/src/host/coreaudio/ios/playback_state.rs
+@@ -0,0 +1,214 @@
++//! Requested playback and system interruption are independent. Native operations run
++//! under StreamInner's lock; callbacks are passed in so this policy is testable
++//! without an Apple SDK. No operation here is on the render callback.
++
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
++enum State {
++    #[default]
++    Stopped,
++    Playing,
++    Interrupted,
++}
++
++#[derive(Default)]
++pub(super) struct PlaybackState {
++    state: State,
++    interruption_in_progress: bool,
++}
++
++impl PlaybackState {
++    pub(super) fn play<E>(&mut self, start: impl FnOnce() -> Result<(), E>) -> Result<(), E> {
++        if self.interruption_in_progress {
++            // Record explicit play intent, but never activate/start while the
++            // system holds the session. End still has to grant ShouldResume.
++            self.state = State::Interrupted;
++        } else if self.state != State::Playing {
++            start()?;
++            self.state = State::Playing;
++        }
++        Ok(())
++    }
++
++    pub(super) fn pause<E>(&mut self, stop: impl FnOnce() -> Result<(), E>) -> Result<(), E> {
++        if self.state == State::Playing {
++            stop()?;
++        }
++        // A background/idle pause revokes automatic resume, including a pause
++        // issued while the OS has already stopped the unit.
++        self.state = State::Stopped;
++        Ok(())
++    }
++
++    pub(super) fn begin(&mut self, stop: impl FnOnce()) {
++        self.interruption_in_progress = true;
++        if self.state == State::Playing {
++            stop();
++            self.state = State::Interrupted;
++        }
++    }
++
++    pub(super) fn end<E>(
++        &mut self,
++        should_resume: bool,
++        start: impl FnOnce() -> Result<(), E>,
++    ) -> Result<(), E> {
++        if !self.interruption_in_progress {
++            return Ok(());
++        }
++        self.interruption_in_progress = false;
++        if should_resume && self.state == State::Interrupted {
++            self.play(start)?;
++        }
++        Ok(())
++    }
++
++    pub(super) fn requires_resume(&self) -> bool {
++        !self.interruption_in_progress && self.state == State::Interrupted
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::cell::Cell;
++
++    fn playing() -> PlaybackState {
++        let mut state = PlaybackState::default();
++        state.play(|| Ok::<_, ()>(())).unwrap();
++        state
++    }
++
++    #[test]
++    fn allowed_end_resumes_once_and_duplicate_events_are_idempotent() {
++        let mut state = playing();
++        let stops = Cell::new(0);
++        let starts = Cell::new(0);
++        for _ in 0..2 {
++            state.begin(|| stops.set(stops.get() + 1));
++        }
++        for _ in 0..2 {
++            state
++                .end(true, || {
++                    starts.set(starts.get() + 1);
++                    Ok::<_, ()>(())
++                })
++                .unwrap();
++        }
++        assert_eq!((stops.get(), starts.get()), (1, 1));
++        assert!(!state.requires_resume());
++    }
++
++    #[test]
++    fn denied_end_waits_for_a_new_play_request() {
++        let mut state = playing();
++        state.begin(|| {});
++        state
++            .end(false, || -> Result<(), ()> { panic!("denied auto resume") })
++            .unwrap();
++        assert!(state.requires_resume());
++        state.play(|| Ok::<_, ()>(())).unwrap();
++        assert!(!state.requires_resume());
++    }
++
++    #[test]
++    fn stale_end_cannot_override_a_completed_denial() {
++        let mut state = playing();
++        state.begin(|| {});
++        state.end(false, || Ok::<_, ()>(())).unwrap();
++        state
++            .end(true, || -> Result<(), ()> {
++                panic!("stale end resumed denied audio")
++            })
++            .unwrap();
++        assert!(state.requires_resume());
++    }
++
++    #[test]
++    fn pause_during_interruption_revokes_automatic_resume() {
++        let mut state = playing();
++        state.begin(|| {});
++        state
++            .pause(|| -> Result<(), ()> { panic!("the OS already stopped it") })
++            .unwrap();
++        state
++            .end(true, || -> Result<(), ()> { panic!("paused app resumed") })
++            .unwrap();
++        assert_eq!(state.state, State::Stopped);
++        assert!(!state.requires_resume());
++    }
++
++    #[test]
++    fn play_during_interruption_is_deferred_and_does_not_override_denial() {
++        let mut state = PlaybackState::default();
++        state.begin(|| panic!("idle unit stopped"));
++        state
++            .play(|| -> Result<(), ()> { panic!("started during interruption") })
++            .unwrap();
++        assert!(!state.requires_resume());
++        state
++            .end(false, || -> Result<(), ()> { panic!("denied auto resume") })
++            .unwrap();
++        assert!(state.requires_resume());
++    }
++
++    #[test]
++    fn paused_idle_and_background_streams_do_not_reactivate_the_session() {
++        for initial_playing in [false, true] {
++            let mut state = if initial_playing {
++                playing()
++            } else {
++                PlaybackState::default()
++            };
++            state.pause(|| Ok::<_, ()>(())).unwrap();
++            state.begin(|| panic!("paused unit stopped"));
++            state
++                .end(true, || -> Result<(), ()> {
++                    panic!("idle session activated")
++                })
++                .unwrap();
++            assert_eq!(state.state, State::Stopped);
++            state.play(|| Ok::<_, ()>(())).unwrap();
++            assert_eq!(state.state, State::Playing);
++        }
++    }
++
++    #[test]
++    fn native_failures_do_not_commit_a_successful_transition() {
++        let mut state = playing();
++        assert!(state.pause(|| Err(())).is_err());
++        assert_eq!(state.state, State::Playing);
++        state.begin(|| {});
++        assert!(state.end(true, || Err(())).is_err());
++        assert!(state.requires_resume());
++        assert!(state.play(|| Err(())).is_err());
++        assert!(state.requires_resume());
++        state.play(|| Ok::<_, ()>(())).unwrap();
++        assert!(!state.requires_resume());
++    }
++
++    #[test]
++    fn permitted_end_defers_to_the_latest_play_or_pause_intent() {
++        let mut state = playing();
++        for _ in 0..64 {
++            state.begin(|| {});
++            state.pause(|| Ok::<_, ()>(())).unwrap();
++            state
++                .play(|| -> Result<(), ()> { panic!("system holds session") })
++                .unwrap();
++            state.end(true, || Ok::<_, ()>(())).unwrap();
++            assert_eq!(state.state, State::Playing);
++            state.begin(|| {});
++            state
++                .play(|| -> Result<(), ()> { panic!("system holds session") })
++                .unwrap();
++            state.pause(|| Ok::<_, ()>(())).unwrap();
++            state
++                .end(true, || -> Result<(), ()> {
++                    panic!("latest intent was pause")
++                })
++                .unwrap();
++            assert_eq!(state.state, State::Stopped);
++            state.play(|| Ok::<_, ()>(())).unwrap();
++        }
++    }
++}
+--- /dev/null
++++ cpal-0.18.2/src/host/coreaudio/ios/interruption_hub.rs
+@@ -0,0 +1,257 @@
++//! Process-wide interruption ordering. Native stream handlers always run before
++//! public listeners, including listeners registered while there is no device.
++//! None of this runs on the render callback. Reentrant notifications are queued
++//! rather than calling user code under a registry/dispatcher lock.
++
++use std::{
++    collections::VecDeque,
++    sync::{
++        atomic::{AtomicBool, Ordering},
++        Arc, Mutex, Weak,
++    },
++};
++
++/// A process audio-session interruption, after native streams have handled it.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum InterruptionEvent {
++    Began,
++    Ended { should_resume: bool },
++}
++
++type Handler = dyn Fn(InterruptionEvent) + Send + Sync;
++
++/// Retains a subscription. Dropping it unregisters future events. An event
++/// already being dispatched may retain its callback until dispatch completes.
++pub struct InterruptionObserver {
++    _handler: Arc<Handler>,
++}
++
++#[derive(Default)]
++struct Registry {
++    streams: Vec<Weak<Handler>>,
++    listeners: Vec<Weak<Handler>>,
++}
++
++#[derive(Default)]
++struct Dispatch {
++    pending: VecDeque<InterruptionEvent>,
++    running: bool,
++}
++
++#[derive(Default)]
++pub(super) struct InterruptionHub {
++    registry: Mutex<Registry>,
++    dispatch: Mutex<Dispatch>,
++    interrupted: AtomicBool,
++}
++
++impl InterruptionHub {
++    pub(super) fn is_interrupted(&self) -> bool {
++        self.interrupted.load(Ordering::Acquire)
++    }
++
++    pub(super) fn observe(
++        &self,
++        native_stream: bool,
++        handler: impl Fn(InterruptionEvent) + Send + Sync + 'static,
++    ) -> InterruptionObserver {
++        let handler: Arc<Handler> = Arc::new(handler);
++        let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
++        let entries = if native_stream {
++            &mut registry.streams
++        } else {
++            &mut registry.listeners
++        };
++        entries.retain(|entry| entry.strong_count() != 0);
++        entries.push(Arc::downgrade(&handler));
++        InterruptionObserver { _handler: handler }
++    }
++
++    fn handlers(&self) -> (Vec<Arc<Handler>>, Vec<Arc<Handler>>) {
++        let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
++        fn live(entries: &mut Vec<Weak<Handler>>) -> Vec<Arc<Handler>> {
++            let mut handlers = Vec::with_capacity(entries.len());
++            entries.retain(|entry| {
++                if let Some(handler) = entry.upgrade() {
++                    handlers.push(handler);
++                    true
++                } else {
++                    false
++                }
++            });
++            handlers
++        }
++        (live(&mut registry.streams), live(&mut registry.listeners))
++    }
++
++    pub(super) fn deliver(&self, event: InterruptionEvent) {
++        {
++            let mut dispatch = self.dispatch.lock().unwrap_or_else(|e| e.into_inner());
++            dispatch.pending.push_back(event);
++            if dispatch.running {
++                return;
++            }
++            dispatch.running = true;
++        }
++        // Restore drain ownership if a Rust client panics. A later notification
++        // can drain queued events; no registry/dispatch lock crosses user code.
++        struct Drain<'a>(&'a Mutex<Dispatch>, bool);
++        impl Drop for Drain<'_> {
++            fn drop(&mut self) {
++                if self.1 {
++                    self.0.lock().unwrap_or_else(|e| e.into_inner()).running = false;
++                }
++            }
++        }
++        let mut drain = Drain(&self.dispatch, true);
++        loop {
++            let event = {
++                let mut dispatch = self.dispatch.lock().unwrap_or_else(|e| e.into_inner());
++                match dispatch.pending.pop_front() {
++                    Some(event) => event,
++                    None => {
++                        dispatch.running = false;
++                        drain.1 = false;
++                        return;
++                    }
++                }
++            };
++            self.interrupted
++                .store(event == InterruptionEvent::Began, Ordering::Release);
++            let (streams, listeners) = self.handlers();
++            for handler in streams.iter().chain(listeners.iter()) {
++                handler(event);
++            }
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
++
++    #[test]
++    fn all_native_handlers_finish_before_any_public_listener() {
++        let hub = InterruptionHub::default();
++        let completed = Arc::new(AtomicUsize::new(0));
++        // Public registration first must not change delivery order.
++        let seen = completed.clone();
++        let _listener = hub.observe(false, move |_| assert_eq!(seen.load(Ordering::SeqCst), 2));
++        let mut guards = Vec::new();
++        for _ in 0..2 {
++            let completed = completed.clone();
++            guards.push(hub.observe(true, move |_| {
++                completed.fetch_add(1, Ordering::SeqCst);
++            }));
++        }
++        hub.deliver(InterruptionEvent::Ended {
++            should_resume: false,
++        });
++    }
++
++    #[test]
++    fn silent_sessions_still_receive_events_and_drop_unregisters() {
++        let hub = InterruptionHub::default();
++        let count = Arc::new(AtomicUsize::new(0));
++        let seen = count.clone();
++        let observer = hub.observe(false, move |_| {
++            seen.fetch_add(1, Ordering::SeqCst);
++        });
++        hub.deliver(InterruptionEvent::Began);
++        drop(observer);
++        hub.deliver(InterruptionEvent::Ended {
++            should_resume: true,
++        });
++        assert_eq!(count.load(Ordering::SeqCst), 1);
++        assert!(hub.registry.lock().unwrap().listeners.is_empty());
++    }
++
++    #[test]
++    fn reentrant_events_do_not_overtake_the_current_public_event() {
++        let hub = Arc::new(InterruptionHub::default());
++        let order = Arc::new(Mutex::new(Vec::new()));
++        let native_order = order.clone();
++        let _stream = hub.observe(true, move |event| {
++            native_order.lock().unwrap().push((true, event))
++        });
++        let public_order = order.clone();
++        let nested = hub.clone();
++        let _listener = hub.observe(false, move |event| {
++            public_order.lock().unwrap().push((false, event));
++            if event == InterruptionEvent::Began {
++                nested.deliver(InterruptionEvent::Ended {
++                    should_resume: false,
++                });
++                // Register/drop while dispatching: no registry lock is held.
++                drop(nested.observe(false, |_| {}));
++            }
++        });
++        hub.deliver(InterruptionEvent::Began);
++        assert_eq!(
++            *order.lock().unwrap(),
++            vec![
++                (true, InterruptionEvent::Began),
++                (false, InterruptionEvent::Began),
++                (
++                    true,
++                    InterruptionEvent::Ended {
++                        should_resume: false
++                    }
++                ),
++                (
++                    false,
++                    InterruptionEvent::Ended {
++                        should_resume: false
++                    }
++                ),
++            ]
++        );
++    }
++
++    #[test]
++    fn process_state_is_visible_before_listeners_and_survives_device_free_begin() {
++        let hub = Arc::new(InterruptionHub::default());
++        assert!(!hub.is_interrupted());
++        hub.deliver(InterruptionEvent::Began);
++        assert!(hub.is_interrupted());
++        let observed = hub.clone();
++        let _listener = hub.observe(false, move |event| {
++            assert_eq!(observed.is_interrupted(), event == InterruptionEvent::Began);
++        });
++        hub.deliver(InterruptionEvent::Ended {
++            should_resume: false,
++        });
++        assert!(!hub.is_interrupted());
++    }
++
++    #[test]
++    fn competing_threads_cannot_overlap_native_and_public_dispatch() {
++        let hub = Arc::new(InterruptionHub::default());
++        let active = Arc::new(AtomicBool::new(false));
++        let entered = active.clone();
++        let _native = hub.observe(true, move |_| {
++            assert!(!entered.swap(true, Ordering::SeqCst));
++            std::thread::yield_now();
++        });
++        let exited = active.clone();
++        let count = Arc::new(AtomicUsize::new(0));
++        let seen = count.clone();
++        let _listener = hub.observe(false, move |_| {
++            assert!(exited.swap(false, Ordering::SeqCst));
++            seen.fetch_add(1, Ordering::SeqCst);
++        });
++        std::thread::scope(|scope| {
++            for _ in 0..4 {
++                let hub = hub.clone();
++                scope.spawn(move || {
++                    for _ in 0..256 {
++                        hub.deliver(InterruptionEvent::Began);
++                    }
++                });
++            }
++        });
++        assert_eq!(count.load(Ordering::SeqCst), 1024);
++        assert!(!active.load(Ordering::SeqCst));
++    }
++}
+--- cpal-0.18.2/src/host/coreaudio/mod.rs
++++ cpal-0.18.2/src/host/coreaudio/mod.rs
+@@ -20,7 +20,7 @@
+ #[allow(unused_imports)]
+ pub use self::ios::{
+     enumerate::{Devices, SupportedInputConfigs, SupportedOutputConfigs},
+-    Device, Host, Stream,
++    observe_audio_session_interruptions, Device, Host, InterruptionEvent, InterruptionObserver, Stream,
+ };
+ #[cfg(target_os = "macos")]
+ pub use self::macos::{Host, Stream};
+--- cpal-0.18.2/src/platform/mod.rs
++++ cpal-0.18.2/src/platform/mod.rs
+@@ -34,6 +34,11 @@
+ 
+ #[cfg(feature = "custom")]
+ pub use crate::host::custom::{Device as CustomDevice, Host as CustomHost, Stream as CustomStream};
++
++#[cfg(all(target_vendor = "apple", not(target_os = "macos")))]
++pub use crate::host::coreaudio::{
++    observe_audio_session_interruptions, InterruptionEvent, InterruptionObserver,
++};
+ 
+ /// A macro to assist with implementing a platform's dynamically dispatched [`Host`] type.
+ ///

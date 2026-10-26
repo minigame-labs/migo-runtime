@@ -14,6 +14,8 @@ fn report(json: &str) -> String {
 
 #[test]
 fn the_status_is_the_hosts_last_report_and_unknown_before_one() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let mut runtime = boot_with_services(None, None);
     runtime
         .execute_script("<test:splash-setup>", FastString::from_static(SETTLE))

@@ -9,43 +9,15 @@ inputs:
   ndk-version:
     description: Exact NDK revision (sdkmanager package version) to install and pin.
     required: false
-    default: "23.2.8568313"
 
 runs:
   using: composite
   steps:
     - name: Install and pin the NDK
       shell: bash
-      run: |
-        set -euo pipefail
-        version='${{ inputs.ndk-version }}'
-        sdkmanager "ndk;${version}"
-        ndk="$ANDROID_HOME/ndk/${version}"
-        toolchain="$ndk/toolchains/llvm/prebuilt/linux-x86_64"
-
-        # Fail closed. sdkmanager no-ops silently on an unknown package name, and
-        # a pin that points at a directory that does not exist is worse than no
-        # pin: cargo-ndk and skia-bindings then fall back to whatever NDK the
-        # runner ships. Assert the toolchain the pin names actually exists.
-        if [[ ! -x "$toolchain/bin/clang" ]]; then
-          echo "::error::pinned NDK $version is not installed at $ndk (sdkmanager produced no toolchain)"
-          exit 1
-        fi
-
-        # Export EVERY NDK variable the Android build reads, all pointing at the
-        # one pinned NDK. This is the whole reason the action exists: pinning
-        # ANDROID_NDK_HOME alone is not enough. cargo-ndk honours it, but
-        # skia-bindings resolves its own NDK from ANDROID_NDK, and cargo-ndk also
-        # consults ANDROID_NDK_ROOT / ANDROID_NDK_LATEST_HOME. GitHub runners
-        # pre-install a newer NDK and point all of those at it, so with only
-        # ANDROID_NDK_HOME pinned, skia-bindings compiles Skia's headers against
-        # the newer NDK's libc++ (which needs Clang 16+) using this NDK's older
-        # clang and dies with "expected identifier" across <__verbose_abort>,
-        # <cstddef>, <stdint.h>, etc. Leave none of them pointing elsewhere.
-        for var in ANDROID_NDK ANDROID_NDK_HOME ANDROID_NDK_ROOT ANDROID_NDK_LATEST_HOME; do
-          echo "$var=$ndk" >> "$GITHUB_ENV"
-        done
-        echo "$toolchain/bin" >> "$GITHUB_PATH"
+      env:
+        MIGO_REQUESTED_NDK_REVISION: ${{ inputs.ndk-version }}
+      run: bash scripts/ci/setup-android-ndk.sh
 
     - name: Install cargo-ndk
       shell: bash

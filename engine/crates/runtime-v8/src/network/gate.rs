@@ -7,8 +7,8 @@
 //! answer a refusal as the error class op call sites bubble up with `?`.
 
 use deno_core::OpState;
-use deno_core::url::Url;
 use deno_error::JsErrorBox;
+use migo_services::network::url::Url;
 
 // Re-exported so this runtime's call sites name one gate: the rules and their
 // vocabulary are the service's, and only the adaptor below is here.

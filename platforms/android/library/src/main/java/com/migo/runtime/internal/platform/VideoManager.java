@@ -355,7 +355,7 @@ public class VideoManager implements RuntimeScoped {
             MediaPlayer.OnPreparedListener, MediaPlayer.OnCompletionListener,
             MediaPlayer.OnErrorListener, MediaPlayer.OnBufferingUpdateListener,
             MediaPlayer.OnInfoListener, MediaPlayer.OnSeekCompleteListener,
-            MediaPlayer.OnVideoSizeChangedListener {
+            MediaPlayer.OnVideoSizeChangedListener, VideoControls.Player {
 
         final int videoId;
         /** The reference's options as content last set them. */
@@ -365,6 +365,8 @@ public class VideoManager implements RuntimeScoped {
         FrameLayout container;
         TextureView textureView;
         ImageView posterView;
+        /** The player's own controls, as content's options ask. */
+        VideoControls controls;
         GameViewOverlay overlay;
         Surface surface;
         MediaPlayer mediaPlayer;
@@ -408,6 +410,10 @@ public class VideoManager implements RuntimeScoped {
             posterView = new ImageView(activity);
             posterView.setScaleType(ImageView.ScaleType.FIT_CENTER);
             container.addView(posterView, new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+            controls = new VideoControls(activity, this);
+            controls.configure(options);
+            container.addView(controls, new FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
             overlay = new GameViewOverlay(activity, gameView, container);
             place();
@@ -559,12 +565,19 @@ public class VideoManager implements RuntimeScoped {
             for (Integer requestId : pendingPlays) answer(METHOD_PLAY, requestId, null);
             pendingPlays.clear();
             fireEvent(videoId, EVENT_PLAY, new JSONObject());
+            refreshControls();
         }
 
         void pause(int requestId, JSONObject request) {
             // A play waiting for the player never plays: it is overtaken.
             playWanted = false;
             failPlays("paused before it played");
+            pauseNow();
+            answer(METHOD_PAUSE, requestId, null);
+        }
+
+        /** Pause, as content's call or the player's own control does. */
+        void pauseNow() {
             if (playing) {
                 mediaPlayer.pause();
                 playing = false;
@@ -572,7 +585,63 @@ public class VideoManager implements RuntimeScoped {
                 fireEvent(videoId, EVENT_PAUSE, new JSONObject());
             }
             resumeAfterLifecyclePause = false;
-            answer(METHOD_PAUSE, requestId, null);
+            refreshControls();
+        }
+
+        void refreshControls() {
+            if (controls != null) controls.refresh();
+        }
+
+        // ---- the player's own controls ----
+
+        @Override
+        public boolean isPlaying() {
+            return playing;
+        }
+
+        @Override
+        public double position() {
+            return prepared ? mediaPlayer.getCurrentPosition() / 1000.0 : 0;
+        }
+
+        @Override
+        public double duration() {
+            return prepared ? Math.max(0, mediaPlayer.getDuration()) / 1000.0 : 0;
+        }
+
+        @Override
+        public void togglePlay() {
+            if (released || mediaPlayer == null) return;
+            if (playing) {
+                playWanted = false;
+                pauseNow();
+            } else {
+                playWanted = true;
+                if (prepared && !lifecycleSuspended) start();
+            }
+        }
+
+        @Override
+        public void seekTo(double seconds) {
+            if (released || !prepared) return;
+            mediaPlayer.seekTo((long) (seconds * 1000), MediaPlayer.SEEK_CLOSEST);
+            refreshControls();
+        }
+
+        @Override
+        public boolean isFullScreen() {
+            return fullScreen;
+        }
+
+        @Override
+        public void toggleFullScreen() {
+            if (released) return;
+            fullScreen = !fullScreen;
+            // A landscape picture turns the screen a quarter, as content's
+            // requestFullScreen with direction 90 does.
+            fullScreenDirection = fullScreen && videoWidth > videoHeight ? 90 : 0;
+            place();
+            refreshControls();
         }
 
         void stop(int requestId, JSONObject request) {
@@ -589,6 +658,7 @@ public class VideoManager implements RuntimeScoped {
             } else {
                 startAt = 0;
             }
+            refreshControls();
             answer(METHOD_STOP, requestId, null);
         }
 
@@ -606,6 +676,7 @@ public class VideoManager implements RuntimeScoped {
             fullScreenDirection = request.optInt("direction", 0);
             fullScreen = true;
             place();
+            refreshControls();
             // Answered once laid out at its new size.
             container.post(() -> answer(METHOD_REQUEST_FULL_SCREEN, requestId, null));
         }
@@ -614,6 +685,7 @@ public class VideoManager implements RuntimeScoped {
             fullScreen = false;
             fullScreenDirection = 0;
             place();
+            refreshControls();
             container.post(() -> answer(METHOD_EXIT_FULL_SCREEN, requestId, null));
         }
 
@@ -641,6 +713,11 @@ public class VideoManager implements RuntimeScoped {
             if (changed.has("objectFit")) fit();
             if (changed.has("backgroundColor")) container.setBackgroundColor(backgroundColor());
             if (changed.has("muted") || changed.has("loop")) applyAudio();
+            if (changed.has("controls") || changed.has("showProgress")
+                    || changed.has("showProgressInControlMode") || changed.has("showCenterPlayBtn")
+                    || changed.has("enablePlayGesture") || changed.has("enableProgressGesture")) {
+                controls.configure(options);
+            }
             if (changed.has("playbackRate")) applyRate();
             if (poster) loadPoster();
             if (source) {
@@ -684,6 +761,7 @@ public class VideoManager implements RuntimeScoped {
             playing = false;
             stopTimeUpdates();
             resumeAfterLifecyclePause = true;
+            refreshControls();
         }
 
         void resumeForLifecycle() {
@@ -715,6 +793,7 @@ public class VideoManager implements RuntimeScoped {
                 // Numbers always fit.
             }
             fireEvent(videoId, EVENT_TIME_UPDATE, payload);
+            refreshControls();
             mainHandler.postDelayed(timeUpdate, TIME_UPDATE_MS);
         }
 
@@ -761,6 +840,7 @@ public class VideoManager implements RuntimeScoped {
                 pendingSeeks.clear();
             }
             if (playWanted && !lifecycleSuspended) start();
+            refreshControls();
         }
 
         @Override
@@ -768,6 +848,7 @@ public class VideoManager implements RuntimeScoped {
             if (released || player != mediaPlayer) return;
             for (Integer requestId : pendingSeeks) answer(METHOD_SEEK, requestId, null);
             pendingSeeks.clear();
+            refreshControls();
         }
 
         @Override
@@ -777,6 +858,7 @@ public class VideoManager implements RuntimeScoped {
             playWanted = false;
             stopTimeUpdates();
             fireEvent(videoId, EVENT_ENDED, new JSONObject());
+            refreshControls();
         }
 
         @Override
@@ -788,6 +870,7 @@ public class VideoManager implements RuntimeScoped {
             playWanted = false;
             stopTimeUpdates();
             fireEvent(videoId, EVENT_ERROR, error("video:fail " + reason));
+            refreshControls();
             return true;
         }
 

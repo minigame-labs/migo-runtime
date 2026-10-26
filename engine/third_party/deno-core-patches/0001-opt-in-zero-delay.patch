@@ -1,0 +1,30 @@
+--- deno_core-0.413.0/02_timers.js
++++ deno_core-0.413.0/02_timers.js
+@@ -312,7 +312,7 @@
+         reportException(e);
+       } finally {
+         if (
+-          timer._repeat && timer._idleTimeout !== -1 &&
++          timer._repeat && !timer._destroyed && timer._idleTimeout !== -1 &&
+           !timer._idlePrev && !timer._idleNext
+         ) {
+           timer._idleTimeout = timer._repeat;
+@@ -336,13 +336,16 @@
+ 
+   // Timer item constructor (internal). Callers (web timers, node timers)
+   // wrap this with their own validation and async context handling.
+-  function createTimer(callback, after, args, isRepeat, isRefed, isSystem) {
++  function createTimer(callback, after, args, isRepeat, isRefed, isSystem, allowZero = false) {
+     if (after === undefined) {
+       after = 1;
+     } else {
+       after *= 1;
+     }
+-    if (!(after >= 1 && after <= TIMEOUT_MAX)) {
++    // Embedders may opt into HTML zero-delay one-shot tasks. Node callers and
++    // repeating timers retain the upstream one-millisecond minimum.
++    const minimum = allowZero && !isRepeat ? 0 : 1;
++    if (!(after >= minimum && after <= TIMEOUT_MAX)) {
+       after = 1;
+     }
+ 

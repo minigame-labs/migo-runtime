@@ -643,6 +643,80 @@ fn remote_audio_url_classification_is_case_insensitive_and_exact() {
 }
 
 #[test]
+fn shared_url_contract_queues_the_exact_canonical_audio_url_that_was_admitted() {
+    let (tx, rx) = hosted();
+    let rt = runtime();
+    let load = rt.spawn(inner_audio_load_url(
+        tx,
+        InnerAudioSources {
+            code_dir: None,
+            vfs: None,
+            admit_remote: |url: &Url| {
+                assert_eq!(url.as_str(), "https://media.example/audio%5Egame.mp3");
+                Ok(())
+            },
+        },
+        5,
+        " \tHTTPS://MEDIA.example:443/audio^game.mp3 ".to_owned(),
+    ));
+    let command = rt.block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if let Ok(command) = rx.try_recv() {
+                    break command;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("the admitted audio command reaches its queue")
+    });
+    let AudioCmd::InnerAudioLoadUrl { url, resp, .. } = command else {
+        panic!("expected remote audio load");
+    };
+    resp.send(Ok(())).unwrap();
+    rt.block_on(load).unwrap().unwrap();
+    assert_eq!(url, "https://media.example/audio%5Egame.mp3");
+}
+
+#[test]
+fn shared_url_contract_bounds_the_canonical_audio_command_before_enqueue() {
+    let src = format!(
+        "https://media.example/{}",
+        "雪".repeat(MAX_AUDIO_CONTROL_STRING_BYTES / 4)
+    );
+    assert!(
+        prepare_inner_audio_src(&src).is_ok(),
+        "the original input fits"
+    );
+    assert!(Url::parse(&src).unwrap().as_str().len() > MAX_AUDIO_CONTROL_STRING_BYTES);
+    let (tx, rx) = hosted();
+    let error = runtime().block_on(async {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            inner_audio_load_url(
+                tx,
+                InnerAudioSources {
+                    code_dir: None,
+                    vfs: None,
+                    admit_remote: |_: &Url| Ok(()),
+                },
+                5,
+                src,
+            ),
+        )
+        .await
+        .expect("an oversized canonical command cannot reach the response wait")
+        .unwrap_err()
+    });
+    assert!(error.message.contains("InputSaturated"));
+    assert!(
+        rx.try_recv().is_err(),
+        "the canonical string is bounded before queue admission"
+    );
+}
+
+#[test]
 fn a_remote_source_is_admitted_before_it_reaches_the_queue() {
     let source = include_str!("audio.rs");
     let body = section(source, "pub async fn inner_audio_load_url", "\n}\n");
@@ -656,7 +730,7 @@ fn a_remote_source_is_admitted_before_it_reaches_the_queue() {
         InnerAudioSources {
             code_dir: None,
             vfs: None,
-            admit_remote: |_: &url::Url| Err(audio_error("not on the allow list")),
+            admit_remote: |_: &Url| Err(audio_error("not on the allow list")),
         },
         1,
         "https://media.example/a.mp3".to_owned(),
@@ -674,7 +748,7 @@ fn a_remote_source_is_admitted_before_it_reaches_the_queue() {
         InnerAudioSources {
             code_dir: None,
             vfs: None,
-            admit_remote: |_: &url::Url| -> Result<(), ServiceError> { unreachable!() },
+            admit_remote: |_: &Url| -> Result<(), ServiceError> { unreachable!() },
         },
         1,
         "https://".to_owned(),
@@ -708,7 +782,7 @@ fn a_packaged_sound_is_read_through_the_sandbox_and_loaded() {
         InnerAudioSources {
             code_dir: Some(code.to_string_lossy().into_owned()),
             vfs: Some(vfs),
-            admit_remote: |_: &url::Url| -> Result<(), ServiceError> {
+            admit_remote: |_: &Url| -> Result<(), ServiceError> {
                 panic!("a packaged sound is not remote")
             },
         },
@@ -754,7 +828,7 @@ fn a_packaged_sound_the_decoder_refuses_is_a_format_error() {
             InnerAudioSources {
                 code_dir: Some(code_dir.to_string_lossy().into_owned()),
                 vfs: Some(vfs),
-                admit_remote: |_: &url::Url| -> Result<(), ServiceError> { unreachable!() },
+                admit_remote: |_: &Url| -> Result<(), ServiceError> { unreachable!() },
             },
             4,
             "clip.mp3".to_owned(),

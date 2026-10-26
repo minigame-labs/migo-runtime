@@ -24,12 +24,76 @@ writes through the umask and loses the recorded mode.
 from __future__ import annotations
 
 import pathlib
+import hashlib
+import json
 import subprocess
 import tempfile
 
 
 class SourceProofError(RuntimeError):
     """A checkout does not match its declared patches, or cannot be inspected."""
+
+
+def locked_patches(lock: pathlib.Path, patch_dir: pathlib.Path) -> list[tuple[str, pathlib.Path]]:
+    entries = json.loads(lock.read_text())["required_patches"]
+    if not isinstance(entries, list) or not entries:
+        raise SourceProofError("source lock declares no required patches")
+    selected = []
+    ids = set()
+    for entry in entries:
+        patch_id, pattern = entry["id"], entry["file"]
+        if not patch_id or patch_id in ids or pathlib.Path(pattern).is_absolute() or ".." in pathlib.Path(pattern).parts:
+            raise SourceProofError("invalid or duplicate patch declaration")
+        matches = sorted(patch_dir.glob(pattern))
+        if len(matches) != 1 or not matches[0].is_file():
+            raise SourceProofError(f"patch declaration must resolve exactly once: {pattern}")
+        ids.add(patch_id)
+        selected.append((patch_id, matches[0].resolve()))
+    return selected
+
+
+def verified_patch_identities(
+    tree: pathlib.Path, patches: list[tuple[str, pathlib.Path]]
+) -> list[dict]:
+    assert_tree_is_exactly_patched(tree, [path for _, path in patches])
+    return sorted(
+        [{"id": patch_id, "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+         for patch_id, path in patches],
+        key=lambda entry: entry["id"],
+    )
+
+
+def apply_locked_top_level_patches(
+    tree: pathlib.Path, patches: list[tuple[str, pathlib.Path]]
+) -> None:
+    """Portable atomic Git applier for patches that stay outside submodules.
+
+    macOS's default bash cannot source the Bash 4 tree-audit helper. Use Git's
+    all-hunk transaction and the same Python provenance proof instead. Refuse
+    a partly patched tree; never repair it by applying its missing prefix.
+    """
+    submodules = submodule_paths(tree)
+    for _, patch in patches:
+        for path in patch_target_paths(patch):
+            if any(path == submodule or path.startswith(submodule + "/") for submodule in submodules):
+                raise SourceProofError("top-level Git applier cannot patch a submodule")
+    try:
+        verified_patch_identities(tree, patches)
+        return
+    except SourceProofError as patched_error:
+        try:
+            assert_tree_is_exactly_patched(tree, [])
+        except SourceProofError as pristine_error:
+            raise SourceProofError(
+                f"source is neither pristine nor fully patched: {patched_error}; {pristine_error}"
+            ) from pristine_error
+    patch_bytes = b"\n".join(path.read_bytes() for _, path in patches)
+    command = ["git", "-c", f"safe.directory={tree.resolve()}", "-C", str(tree), "apply"]
+    for extra in [["--check"], []]:
+        result = subprocess.run(command + extra, input=patch_bytes, capture_output=True)
+        if result.returncode:
+            raise SourceProofError(f"locked patches do not apply cleanly: {result.stderr.decode(errors='replace')}")
+    verified_patch_identities(tree, patches)
 
 
 def _git(tree: pathlib.Path, *arguments: str) -> subprocess.CompletedProcess[bytes]:

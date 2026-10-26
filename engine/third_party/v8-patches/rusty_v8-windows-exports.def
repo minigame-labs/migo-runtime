@@ -31,8 +31,99 @@ EXPORTS
     cppgc__initialize_process
     cppgc__make_garbage_collectable
     cppgc__shutdown_process
+    crdtp__CreateErrorNotification
+    crdtp__CreateErrorResponse
+    crdtp__CreateNotification
+    crdtp__CreateResponse
+    crdtp__DispatchResponse__DELETE
+    crdtp__DispatchResponse__FallThrough
+    crdtp__DispatchResponse__InvalidParams
+    crdtp__DispatchResponse__InvalidRequest
+    crdtp__DispatchResponse__MethodNotFound
+    crdtp__DispatchResponse__ParseError
+    crdtp__DispatchResponse__ServerError
+    crdtp__DispatchResponse__Success
+    crdtp__DispatchResponse__code
+    crdtp__DispatchResponse__isError
+    crdtp__DispatchResponse__isFallThrough
+    crdtp__DispatchResponse__isSuccess
+    crdtp__DispatchResponse__messageCopy
+    crdtp__DispatchResponse__messageLen
+    crdtp__DispatchResult__DELETE
+    crdtp__DispatchResult__MethodFound
+    crdtp__DispatchResult__Run
+    crdtp__Dispatchable__DELETE
+    crdtp__Dispatchable__callId
+    crdtp__Dispatchable__hasCallId
+    crdtp__Dispatchable__methodCopy
+    crdtp__Dispatchable__methodLen
+    crdtp__Dispatchable__new
+    crdtp__Dispatchable__ok
+    crdtp__Dispatchable__paramsCopy
+    crdtp__Dispatchable__paramsLen
+    crdtp__Dispatchable__sessionIdCopy
+    crdtp__Dispatchable__sessionIdLen
+    crdtp__DomainDispatcher__new
+    crdtp__DomainDispatcher__sendResponse
+    crdtp__FrontendChannel__BASE__CONSTRUCT
+    crdtp__Serializable__AppendSerialized
+    crdtp__Serializable__DELETE
+    crdtp__UberDispatcher__DELETE
+    crdtp__UberDispatcher__Dispatch
+    crdtp__UberDispatcher__WireBackend
+    crdtp__UberDispatcher__channel
+    crdtp__UberDispatcher__new
+    crdtp__json__ConvertCBORToJSON
+    crdtp__json__ConvertJSONToCBOR
+    crdtp__vec_u8__DELETE
+    crdtp__vec_u8__copy
+    crdtp__vec_u8__new
+    crdtp__vec_u8__size
     icu_get_default_locale
     icu_set_default_locale
+    simdutf__base64_length_from_binary
+    simdutf__base64_to_binary
+    simdutf__binary_to_base64
+    simdutf__convert_latin1_to_utf16le
+    simdutf__convert_latin1_to_utf8
+    simdutf__convert_utf16be_to_utf8
+    simdutf__convert_utf16le_to_latin1
+    simdutf__convert_utf16le_to_utf8
+    simdutf__convert_utf16le_to_utf8_with_errors
+    simdutf__convert_utf32_to_utf8
+    simdutf__convert_utf8_to_latin1
+    simdutf__convert_utf8_to_latin1_with_errors
+    simdutf__convert_utf8_to_utf16be
+    simdutf__convert_utf8_to_utf16le
+    simdutf__convert_utf8_to_utf16le_with_errors
+    simdutf__convert_utf8_to_utf32
+    simdutf__convert_valid_utf16le_to_utf8
+    simdutf__convert_valid_utf8_to_latin1
+    simdutf__convert_valid_utf8_to_utf16le
+    simdutf__count_utf16be
+    simdutf__count_utf16le
+    simdutf__count_utf8
+    simdutf__detect_encodings
+    simdutf__latin1_length_from_utf8
+    simdutf__maximal_binary_length_from_base64
+    simdutf__utf16_length_from_utf32
+    simdutf__utf16_length_from_utf8
+    simdutf__utf32_length_from_utf16le
+    simdutf__utf32_length_from_utf8
+    simdutf__utf8_length_from_latin1
+    simdutf__utf8_length_from_utf16be
+    simdutf__utf8_length_from_utf16le
+    simdutf__utf8_length_from_utf32
+    simdutf__validate_ascii
+    simdutf__validate_ascii_with_errors
+    simdutf__validate_utf16be
+    simdutf__validate_utf16be_with_errors
+    simdutf__validate_utf16le
+    simdutf__validate_utf16le_with_errors
+    simdutf__validate_utf32
+    simdutf__validate_utf32_with_errors
+    simdutf__validate_utf8
+    simdutf__validate_utf8_with_errors
     std__shared_ptr__v8__ArrayBuffer__Allocator__CONVERT__std__unique_ptr
     std__shared_ptr__v8__ArrayBuffer__Allocator__COPY
     std__shared_ptr__v8__ArrayBuffer__Allocator__get
@@ -118,6 +209,8 @@ EXPORTS
     v8__CppHeap__Create
     v8__CppHeap__DELETE
     v8__CppHeap__Terminate
+    v8__CpuProfiler__CollectSample
+    v8__CpuProfiler__UseDetailedSourcePositionsForProfiling
     v8__DataView__New
     v8__Data__EQ
     v8__Data__IsBigInt
@@ -165,6 +258,7 @@ EXPORTS
     v8__FunctionCallbackInfo__Data
     v8__FunctionCallbackInfo__Get
     v8__FunctionCallbackInfo__GetIsolate
+    v8__FunctionCallbackInfo__GetParts
     v8__FunctionCallbackInfo__GetReturnValue
     v8__FunctionCallbackInfo__IsConstructCall
     v8__FunctionCallbackInfo__Length
@@ -177,6 +271,7 @@ EXPORTS
     v8__FunctionTemplate__PrototypeTemplate
     v8__FunctionTemplate__ReadOnlyPrototype
     v8__FunctionTemplate__RemovePrototype
+    v8__FunctionTemplate__SetAccessorProperty
     v8__FunctionTemplate__SetClassName
     v8__Function__Call
     v8__Function__CreateCodeCache
@@ -194,6 +289,8 @@ EXPORTS
     v8__HandleScope__CONSTRUCT
     v8__HandleScope__DESTRUCT
     v8__HeapProfiler__TakeHeapSnapshot
+    v8__IdleTask__DELETE
+    v8__IdleTask__Run
     v8__Int16Array__New
     v8__Int32Array__New
     v8__Int32__Value
@@ -223,6 +320,7 @@ EXPORTS
     v8__Isolate__GetData
     v8__Isolate__GetDataFromSnapshotOnce
     v8__Isolate__GetEnteredOrMicrotaskContext
+    v8__Isolate__GetHeapCodeAndMetadataStatistics
     v8__Isolate__GetHeapSpaceStatistics
     v8__Isolate__GetHeapStatistics
     v8__Isolate__GetMicrotasksPolicy
@@ -247,6 +345,7 @@ EXPORTS
     v8__Isolate__SetHostImportModuleDynamicallyCallback
     v8__Isolate__SetHostImportModuleWithPhaseDynamicallyCallback
     v8__Isolate__SetHostInitializeImportMetaObjectCallback
+    v8__Isolate__SetIdle
     v8__Isolate__SetMicrotasksPolicy
     v8__Isolate__SetOOMErrorHandler
     v8__Isolate__SetPrepareStackTraceCallback
@@ -289,15 +388,19 @@ EXPORTS
     v8__MicrotaskQueue__IsRunningMicrotasks
     v8__MicrotaskQueue__New
     v8__MicrotaskQueue__PerformCheckpoint
+    v8__ModuleCachingInterface__GetWireBytes
+    v8__ModuleCachingInterface__SetCachedCompiledModuleBytes
     v8__ModuleRequest__GetImportAttributes
     v8__ModuleRequest__GetPhase
     v8__ModuleRequest__GetSourceOffset
     v8__ModuleRequest__GetSpecifier
     v8__Module__CreateSyntheticModule
     v8__Module__Evaluate
+    v8__Module__EvaluateForImportDefer
     v8__Module__GetException
     v8__Module__GetIdentityHash
     v8__Module__GetModuleNamespace
+    v8__Module__GetModuleNamespace2
     v8__Module__GetModuleRequests
     v8__Module__GetStalledTopLevelAwaitMessage
     v8__Module__GetStatus
@@ -360,12 +463,14 @@ EXPORTS
     v8__Object__SetIndex
     v8__Object__SetIntegrityLevel
     v8__Object__SetInternalField
+    v8__Object__SetLazyDataProperty
     v8__Object__SetPrivate
     v8__Object__SetPrototype
     v8__Object__SetWithReceiver
     v8__Object__Unwrap
     v8__Object__Wrap
     v8__Platform__DELETE
+    v8__Platform__NewCustomPlatform
     v8__Platform__NewDefaultPlatform
     v8__Platform__NewSingleThreadedDefaultPlatform
     v8__Platform__NewUnprotectedDefaultPlatform
@@ -384,6 +489,7 @@ EXPORTS
     v8__PromiseRejectMessage__GetValue
     v8__Promise__Catch
     v8__Promise__HasHandler
+    v8__Promise__MarkAsHandled
     v8__Promise__Resolver__GetPromise
     v8__Promise__Resolver__New
     v8__Promise__Resolver__Reject
@@ -397,7 +503,6 @@ EXPORTS
     v8__PropertyCallbackInfo__GetReturnValue
     v8__PropertyCallbackInfo__Holder
     v8__PropertyCallbackInfo__ShouldThrowOnError
-    v8__PropertyCallbackInfo__This
     v8__PropertyDescriptor__CONSTRUCT
     v8__PropertyDescriptor__CONSTRUCT__Get_Set
     v8__PropertyDescriptor__CONSTRUCT__Value
@@ -427,6 +532,18 @@ EXPORTS
     v8__RegExp__New
     v8__ResourceConstraints__ConfigureDefaults
     v8__ResourceConstraints__ConfigureDefaultsFromHeapSize
+    v8__ResourceConstraints__code_range_size_in_bytes
+    v8__ResourceConstraints__initial_old_generation_size_in_bytes
+    v8__ResourceConstraints__initial_young_generation_size_in_bytes
+    v8__ResourceConstraints__max_old_generation_size_in_bytes
+    v8__ResourceConstraints__max_young_generation_size_in_bytes
+    v8__ResourceConstraints__set_code_range_size_in_bytes
+    v8__ResourceConstraints__set_initial_old_generation_size_in_bytes
+    v8__ResourceConstraints__set_initial_young_generation_size_in_bytes
+    v8__ResourceConstraints__set_max_old_generation_size_in_bytes
+    v8__ResourceConstraints__set_max_young_generation_size_in_bytes
+    v8__ResourceConstraints__set_stack_limit
+    v8__ResourceConstraints__stack_limit
     v8__ReturnValue__Value__Get
     v8__ReturnValue__Value__Set
     v8__ReturnValue__Value__SetEmptyString
@@ -496,6 +613,7 @@ EXPORTS
     v8__StartupData__CanBeRehashed
     v8__StartupData__IsValid
     v8__StartupData__data__DELETE
+    v8__String__Concat
     v8__String__ContainsOnlyOneByte
     v8__String__Empty
     v8__String__GetExternalStringResource
@@ -508,6 +626,7 @@ EXPORTS
     v8__String__NewExternalOneByte
     v8__String__NewExternalOneByteConst
     v8__String__NewExternalOneByteStatic
+    v8__String__NewExternalTwoByte
     v8__String__NewExternalTwoByteStatic
     v8__String__NewFromOneByte
     v8__String__NewFromTwoByte
@@ -515,9 +634,6 @@ EXPORTS
     v8__String__Utf8Length
     v8__String__ValueView__CONSTRUCT
     v8__String__ValueView__DESTRUCT
-    v8__String__ValueView__data
-    v8__String__ValueView__is_one_byte
-    v8__String__ValueView__length
     v8__String__WriteOneByte_v2
     v8__String__WriteUtf8_v2
     v8__String__Write_v2
@@ -536,6 +652,8 @@ EXPORTS
     v8__Symbol__GetToStringTag
     v8__Symbol__GetUnscopables
     v8__Symbol__New
+    v8__Task__DELETE
+    v8__Task__Run
     v8__Template__Set
     v8__Template__SetIntrinsicDataProperty
     v8__TracedReference__CONSTRUCT
@@ -571,6 +689,7 @@ EXPORTS
     v8__Undefined
     v8__V8__Dispose
     v8__V8__DisposePlatform
+    v8__V8__EnableWebAssemblyTrapHandler
     v8__V8__GetVersion
     v8__V8__Initialize
     v8__V8__InitializePlatform
@@ -682,12 +801,21 @@ EXPORTS
     v8__Value__TypeOf
     v8__Value__Uint32Value
     v8__WasmMemoryObject__Buffer
+    v8__WasmModuleCompilation__Abort
+    v8__WasmModuleCompilation__DELETE
+    v8__WasmModuleCompilation__Finish
+    v8__WasmModuleCompilation__NEW
+    v8__WasmModuleCompilation__OnBytesReceived
+    v8__WasmModuleCompilation__SetHasCompiledModuleBytes
+    v8__WasmModuleCompilation__SetMoreFunctionsCanBeSerializedCallback
+    v8__WasmModuleCompilation__SetUrl
     v8__WasmModuleObject__Compile
     v8__WasmModuleObject__FromCompiledModule
     v8__WasmModuleObject__GetCompiledModule
     v8__WasmStreaming__Abort
     v8__WasmStreaming__Finish
     v8__WasmStreaming__OnBytesReceived
+    v8__WasmStreaming__SetHasCompiledModuleBytes
     v8__WasmStreaming__SetUrl
     v8__WasmStreaming__Unpack
     v8__WasmStreaming__shared_ptr_DESTRUCT
@@ -705,6 +833,7 @@ EXPORTS
     v8_inspector__V8InspectorClient__runMessageLoopOnPause
     v8_inspector__V8InspectorSession__DELETE
     v8_inspector__V8InspectorSession__canDispatchMethod
+    v8_inspector__V8InspectorSession__cancelPauseOnNextStatement
     v8_inspector__V8InspectorSession__dispatchProtocolMessage
     v8_inspector__V8InspectorSession__schedulePauseOnNextStatement
     v8_inspector__V8Inspector__Channel__BASE__CONSTRUCT
@@ -712,12 +841,19 @@ EXPORTS
     v8_inspector__V8Inspector__Channel__sendNotification
     v8_inspector__V8Inspector__Channel__sendResponse
     v8_inspector__V8Inspector__DELETE
+    v8_inspector__V8Inspector__allAsyncTasksCanceled
+    v8_inspector__V8Inspector__asyncTaskCanceled
+    v8_inspector__V8Inspector__asyncTaskFinished
+    v8_inspector__V8Inspector__asyncTaskScheduled
+    v8_inspector__V8Inspector__asyncTaskStarted
     v8_inspector__V8Inspector__connect
     v8_inspector__V8Inspector__contextCreated
     v8_inspector__V8Inspector__contextDestroyed
     v8_inspector__V8Inspector__create
     v8_inspector__V8Inspector__createStackTrace
     v8_inspector__V8Inspector__exceptionThrown
+    v8_inspector__V8Inspector__idleFinished
+    v8_inspector__V8Inspector__idleStarted
     v8_inspector__V8StackTrace__DELETE
     v8__register_host_callback
     v8__host_callbacks_ready

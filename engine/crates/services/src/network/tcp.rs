@@ -28,7 +28,7 @@ use crate::ServiceError;
 use super::gate::{self, Transport};
 use super::resources::{CancelFlag, ResourceId, ResourceTable};
 use super::sockets::{
-    AddrMeta, BACKGROUND_THROTTLE, ReceiveScratch, checked_port, join_host_port, resolve_first,
+    AddrMeta, BACKGROUND_THROTTLE, ReceiveScratch, checked_port, join_host_port, resolve_all,
 };
 
 /// The largest single read. 64 KiB balances the syscall against the scratch
@@ -185,12 +185,12 @@ pub async fn connect(
     let address =
         gate::enforce_host(address, port, policy, Transport::Tcp).map_err(ServiceError::generic)?;
 
-    let deadline = Duration::from_secs(u64::from(seconds));
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(u64::from(seconds));
     let target = join_host_port(&address, port);
     let lan = gate::lan_access(policy, NetworkChannel::Tcp);
-    let resolved = tokio::time::timeout(
+    let resolved = tokio::time::timeout_at(
         deadline,
-        resolve_first(&target, |resolved| {
+        resolve_all(&target, |resolved| {
             super::address_filter::is_blocked_address(resolved, lan)
         }),
     )
@@ -198,14 +198,25 @@ pub async fn connect(
     .map_err(|_| generic(format!("connect:fail timeout after {seconds}s")))?
     .map_err(|error| generic(format!("connect:fail resolve error: {error}")))?;
 
-    let stream = tokio::time::timeout(deadline, TcpStream::connect(resolved))
+    let fallback_remote = resolved[0];
+    let stream = super::http::connect_vetted_tcp(resolved, &address, port, deadline)
         .await
-        .map_err(|_| generic(format!("connect:fail timeout after {seconds}s")))?
-        .map_err(|error| generic(format!("connect:fail {error}")))?;
+        .map_err(|error| {
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::TimedOut)
+            {
+                generic(format!("connect:fail timeout after {seconds}s"))
+            } else {
+                generic(format!("connect:fail {error}"))
+            }
+        })?;
     // Lower latency, which is what a game socket is for.
-    let _ = stream.set_nodelay(true);
+    stream
+        .set_nodelay(true)
+        .map_err(|error| generic(format!("connect:fail TCP_NODELAY: {error}")))?;
 
-    let connection = TcpConn::over(stream, WRITE_TIMEOUT, resolved);
+    let connection = TcpConn::over(stream, WRITE_TIMEOUT, fallback_remote);
     let endpoints = connection.endpoints();
     let rid = resources.add_tcp(Arc::new(connection));
     debug!(

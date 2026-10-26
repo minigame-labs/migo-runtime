@@ -113,6 +113,7 @@ pub fn worker_lazy_extensions() -> Vec<Extension> {
 /// Used for both snapshot creation and snapshot-based runtime startup.
 /// The order MUST match [`extension_args()`] and [`super::main_extensions()`].
 pub fn lazy_extensions() -> Vec<Extension> {
+    crate::icu::install_icu_data();
     let mut exts: Vec<Extension> = Vec::new();
 
     // ---- CORE extensions (always loaded) ----
@@ -228,6 +229,8 @@ pub fn extension_args(host: HostOpState) -> Vec<ExtensionArguments> {
     args.push(audio::host_v8_audio::args());
 
     // ---- OPTIONAL: api-system (continued) ----
+    #[cfg(feature = "api-system")]
+    args.push(worker::host_v8_worker_codec::args());
     #[cfg(feature = "api-system")]
     args.push(worker::host_v8_worker::args());
 

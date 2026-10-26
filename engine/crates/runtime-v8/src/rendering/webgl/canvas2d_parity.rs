@@ -79,6 +79,8 @@ fn batch_commands(batch: &CanvasBatchPayload) -> Vec<String> {
 #[test]
 #[ignore = "needs the producer's packets from node; run through scripts/test-performance-plus-engine-contract.sh"]
 fn the_producer_s_text_records_decode_to_the_commands_the_ops_build() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     compare_fixture("MIGO_CANVAS2D_PARITY_DIR", "canvas2d-text-calls.js", 18);
 }
 
@@ -92,6 +94,8 @@ fn the_producer_s_text_records_decode_to_the_commands_the_ops_build() {
 #[test]
 #[ignore = "needs the producer's packets from node; run through scripts/test-performance-plus-engine-contract.sh"]
 fn the_producer_s_style_records_decode_to_the_commands_the_ops_build() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     compare_fixture(
         "MIGO_CANVAS2D_STYLE_PARITY_DIR",
         "canvas2d-style-calls.js",
@@ -109,6 +113,8 @@ fn the_producer_s_style_records_decode_to_the_commands_the_ops_build() {
 #[test]
 #[ignore = "needs the producer's packets from node; run through scripts/test-performance-plus-engine-contract.sh"]
 fn the_producer_s_snapshot_records_decode_to_the_commands_the_ops_build() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     compare_fixture(
         "MIGO_CANVAS2D_SNAPSHOT_PARITY_DIR",
         "canvas2d-snapshot-calls.js",
@@ -123,6 +129,8 @@ fn the_producer_s_snapshot_records_decode_to_the_commands_the_ops_build() {
 #[test]
 #[ignore = "needs the producer's packets from node; run through scripts/test-performance-plus-engine-contract.sh"]
 fn the_producer_s_path_records_decode_to_the_commands_the_ops_build() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     compare_fixture(
         "MIGO_CANVAS2D_PATH_PARITY_DIR",
         "canvas2d-path-calls.js",

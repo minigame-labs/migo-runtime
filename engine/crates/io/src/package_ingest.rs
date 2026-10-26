@@ -56,6 +56,9 @@ fn package_ingest_request_for(zip_path: &Path) -> IoRequest {
 impl From<PoolError> for PackageError {
     fn from(err: PoolError) -> Self {
         match err {
+            PoolError::AudioQueueLimit { .. } => {
+                PackageError::Io(std::io::Error::other(err.to_string()))
+            }
             PoolError::Closed => PackageError::Io(std::io::Error::other("IO worker pool closed")),
             PoolError::ByteLimitExceeded {
                 requested,

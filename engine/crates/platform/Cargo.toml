@@ -79,5 +79,6 @@ libc = "0.2"
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"
+migo-services = { path = "../services", default-features = false }
 ndk-context = "0.1"
 tracing-android = { workspace = true }

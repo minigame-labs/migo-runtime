@@ -1,4 +1,4 @@
-//! The cpal device backend: oboe on Android, ALSA on Linux, CoreAudio on Apple.
+//! The cpal device backend: ALSA on Linux, WASAPI on Windows, CoreAudio on Apple.
 //!
 //! Only the device half lives here. The ring buffer, the watermarks and the real-time
 //! render logic are in the parent module, shared with the OpenHarmony backend.
@@ -6,17 +6,16 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crossbeam_utils::atomic::AtomicCell;
+
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, SampleFormat, Stream, StreamConfig};
 use ringbuf::traits::{Observer, Producer, Split};
 use ringbuf::{HeapCons, HeapProd, HeapRb};
 use shared::error::{EngineError, EngineResult, ErrorCode};
-use tracing::{error, info};
+use tracing::info;
 
-use super::{
-    AudioSync, FromNormalizedF32, HIGH_WATERMARK_FRAMES, LOW_WATERMARK_FRAMES, OutputCallback,
-    RING_BUFFER_FRAMES,
-};
+use super::{AudioSync, FromNormalizedF32, OutputCallback, RING_BUFFER_FRAMES};
 
 /// Audio output handle
 pub struct AudioOutput {
@@ -25,17 +24,14 @@ pub struct AudioOutput {
     sample_rate: u32,
     channels: u32,
     sync: AudioSync,
-    low_watermark_samples: usize,
-    high_watermark_samples: usize,
-    stream_error: Arc<AtomicBool>,
+    stream_errors: Arc<StreamErrors>,
 }
 
 impl AudioOutput {
     /// Create a new audio output
     pub fn new() -> EngineResult<Self> {
-        // iOS plays through the process's audio session, and a unit opened
-        // before it has a category and is active is silent or refuses to
-        // start. Nothing else on this lane sets it up.
+        // Migo supplies the mini-game category; CPAL activates the session
+        // when starting and owns subsequent system interruption recovery.
         #[cfg(target_os = "ios")]
         crate::apple_session::ensure_configured();
 
@@ -45,7 +41,7 @@ impl AudioOutput {
             EngineError::from_detail(ErrorCode::NotFound, "No audio output device found")
         })?;
 
-        info!("Audio output device: {:?}", device.name());
+        info!("Audio output device: {:?}", device.description());
 
         let config = device.default_output_config().map_err(|e| {
             EngineError::from_detail(
@@ -54,7 +50,7 @@ impl AudioOutput {
             )
         })?;
 
-        let sample_rate = config.sample_rate().0;
+        let sample_rate = config.sample_rate();
         let channels = config.channels() as u32;
 
         info!(
@@ -69,34 +65,29 @@ impl AudioOutput {
         let (producer, consumer) = ring.split();
 
         let sync = AudioSync::new();
-        let low_watermark_samples = LOW_WATERMARK_FRAMES * channels as usize;
-        let high_watermark_samples = HIGH_WATERMARK_FRAMES * channels as usize;
-        let stream_error = Arc::new(AtomicBool::new(false));
+        let stream_errors = Arc::new(StreamErrors::new()?);
 
         let stream = match config.sample_format() {
             SampleFormat::F32 => build_stream_f32(
                 &device,
-                &config.into(),
+                config.into(),
                 consumer,
                 sync.clone(),
-                low_watermark_samples,
-                stream_error.clone(),
+                stream_errors.clone(),
             )?,
             SampleFormat::I16 => build_stream_converted::<i16>(
                 &device,
-                &config.into(),
+                config.into(),
                 consumer,
                 sync.clone(),
-                low_watermark_samples,
-                stream_error.clone(),
+                stream_errors.clone(),
             )?,
             SampleFormat::U16 => build_stream_converted::<u16>(
                 &device,
-                &config.into(),
+                config.into(),
                 consumer,
                 sync.clone(),
-                low_watermark_samples,
-                stream_error.clone(),
+                stream_errors.clone(),
             )?,
             format => {
                 return Err(EngineError::from_detail(
@@ -105,6 +96,11 @@ impl AudioOutput {
                 ));
             }
         };
+
+        sync.configure_device(
+            channels as usize,
+            stream.buffer_size().unwrap_or(0) as usize,
+        );
 
         stream.play().map_err(|e| {
             EngineError::from_detail(
@@ -119,9 +115,7 @@ impl AudioOutput {
             sample_rate,
             channels,
             sync,
-            low_watermark_samples,
-            high_watermark_samples,
-            stream_error,
+            stream_errors,
         })
     }
 
@@ -158,22 +152,16 @@ impl AudioOutput {
         self.producer.occupied_len()
     }
 
-    /// Refill target depth in samples: fill up to here, not the whole ring.
-    ///
-    /// Never below twice the largest observed device callback, so a device that
-    /// requests large blocks can always hold a full callback (otherwise every
-    /// callback would partially underrun). The fill loop's `available() >=
-    /// buffer_size` check still bounds this to the ring capacity.
+    /// Device-derived, quantum-aligned software target, bounded by the ring.
     #[inline]
     pub fn high_watermark(&self) -> usize {
-        self.high_watermark_samples
-            .max(self.sync.max_callback().saturating_mul(2))
+        self.sync.device_high_watermark()
     }
 
     /// Check if buffer needs more data
     #[inline]
     pub fn needs_data(&self) -> bool {
-        self.sync.buffer_level() < self.low_watermark_samples
+        self.buffered() <= self.sync.low_watermark(0)
     }
 
     /// Get sync handle for checking callback signals
@@ -182,10 +170,31 @@ impl AudioOutput {
         &self.sync
     }
 
-    /// Check if the audio stream is still alive (no errors reported).
+    /// Drain coalesced diagnostics on the owner thread and test stream health.
     #[inline]
     pub fn is_alive(&self) -> bool {
-        !self.stream_error.load(Ordering::Acquire)
+        if let Some(kind) = self.stream_errors.pending.swap(None) {
+            if kind == cpal::ErrorKind::Xrun {
+                // Do not turn sustained underruns into warning-level IO on
+                // the producer that must refill the queue.
+                tracing::debug!("Audio output xrun");
+            } else {
+                tracing::warn!(?kind, "Audio output event");
+            }
+        }
+        !self.stream_errors.failed.load(Ordering::Acquire)
+    }
+
+    /// A new explicit playback API request may resume a completed interruption
+    /// even if the power gate still records requested playback. CPAL makes the
+    /// conditional transition under its own lock, independent of notification
+    /// ordering with Migo's host-event observer.
+    #[cfg(target_os = "ios")]
+    pub fn resume_interrupted_stream(&self) {
+        let cpal::platform::StreamInner::CoreAudio(stream) = self.stream.as_inner();
+        if let Err(error) = stream.resume_after_interruption() {
+            self.stream_errors.record(error.kind());
+        }
     }
 
     /// Pause the audio stream (stops the hardware callback).
@@ -206,7 +215,7 @@ impl AudioOutput {
             Ok(()) => true,
             Err(e) => {
                 tracing::warn!("Failed to resume audio stream: {}", e);
-                self.stream_error.store(true, Ordering::Release);
+                self.stream_errors.failed.store(true, Ordering::Release);
                 false
             }
         }
@@ -215,39 +224,37 @@ impl AudioOutput {
 
 fn build_stream_f32(
     device: &Device,
-    config: &StreamConfig,
+    config: StreamConfig,
     consumer: HeapCons<f32>,
     sync: AudioSync,
-    low_watermark: usize,
-    stream_error: Arc<AtomicBool>,
+    stream_errors: Arc<StreamErrors>,
 ) -> EngineResult<Stream> {
-    let mut callback = OutputCallback::new(consumer, sync, low_watermark);
-    build_stream(device, config, stream_error, move |data: &mut [f32]| {
+    let mut callback = OutputCallback::new(consumer, sync, 0);
+    build_stream(device, config, stream_errors, move |data: &mut [f32]| {
         callback.render_native(data)
     })
 }
 
 fn build_stream_converted<T>(
     device: &Device,
-    config: &StreamConfig,
+    config: StreamConfig,
     consumer: HeapCons<f32>,
     sync: AudioSync,
-    low_watermark: usize,
-    stream_error: Arc<AtomicBool>,
+    stream_errors: Arc<StreamErrors>,
 ) -> EngineResult<Stream>
 where
     T: cpal::SizedSample + FromNormalizedF32 + 'static,
 {
-    let mut callback = OutputCallback::new(consumer, sync, low_watermark);
-    build_stream(device, config, stream_error, move |data: &mut [T]| {
+    let mut callback = OutputCallback::new(consumer, sync, 0);
+    build_stream(device, config, stream_errors, move |data: &mut [T]| {
         callback.render_converted(data)
     })
 }
 
 fn build_stream<T, F>(
     device: &Device,
-    config: &StreamConfig,
-    stream_error: Arc<AtomicBool>,
+    config: StreamConfig,
+    stream_errors: Arc<StreamErrors>,
     mut render: F,
 ) -> EngineResult<Stream>
 where
@@ -259,8 +266,7 @@ where
             config,
             move |data: &mut [T], _: &cpal::OutputCallbackInfo| render(data),
             move |err| {
-                error!("Audio output error: {}", err);
-                stream_error.store(true, Ordering::Release);
+                stream_errors.record(err.kind());
             },
             None,
         )
@@ -270,4 +276,101 @@ where
                 format!("Failed to build audio stream: {}", e),
             )
         })
+}
+
+/// Coalesce diagnostics for the non-real-time owner. The device/error callback
+/// only stores Copy values; it never formats a message or calls a subscriber.
+struct StreamErrors {
+    failed: AtomicBool,
+    pending: AtomicCell<Option<cpal::ErrorKind>>,
+}
+
+impl StreamErrors {
+    fn new() -> EngineResult<Self> {
+        if !AtomicCell::<Option<cpal::ErrorKind>>::is_lock_free() {
+            return Err(EngineError::from_detail(
+                ErrorCode::Unsupported,
+                "CPAL error exchange must be lock-free",
+            ));
+        }
+        Ok(Self {
+            failed: AtomicBool::new(false),
+            pending: AtomicCell::new(None),
+        })
+    }
+
+    fn record(&self, kind: cpal::ErrorKind) {
+        if !matches!(
+            kind,
+            cpal::ErrorKind::Xrun
+                | cpal::ErrorKind::DeviceChanged
+                | cpal::ErrorKind::RealtimeDenied
+        ) {
+            self.failed.store(true, Ordering::Release);
+        }
+        self.pending.store(Some(kind));
+    }
+}
+
+#[cfg(test)]
+mod error_tests {
+    use super::*;
+
+    #[test]
+    fn first_cpal_error_notifications_do_not_format_or_allocate() {
+        use migo_alloc_probe::{Burst, assert_no_steady_state_allocation};
+        let fleet: Vec<_> = (0..65).map(|_| StreamErrors::new().unwrap()).collect();
+        assert_no_steady_state_allocation(
+            Burst {
+                path: "CPAL first error-kind exchange",
+                warmup: 1,
+                measured: 64,
+            },
+            |index| {
+                for kind in [
+                    cpal::ErrorKind::Xrun,
+                    cpal::ErrorKind::DeviceChanged,
+                    cpal::ErrorKind::RealtimeDenied,
+                    cpal::ErrorKind::StreamInvalidated,
+                ] {
+                    fleet[index].record(kind);
+                }
+                fleet[index].pending.swap(None)
+            },
+        );
+    }
+
+    #[test]
+    fn cpal_recoverable_notifications_keep_the_live_stream() {
+        for kind in [
+            cpal::ErrorKind::Xrun,
+            cpal::ErrorKind::DeviceChanged,
+            cpal::ErrorKind::RealtimeDenied,
+        ] {
+            let errors = StreamErrors::new().unwrap();
+            errors.record(kind);
+            assert!(
+                !errors.failed.load(Ordering::Acquire),
+                "{kind:?} must not reopen an active stream"
+            );
+            assert_eq!(errors.pending.swap(None), Some(kind));
+            assert_eq!(errors.pending.swap(None), None);
+        }
+    }
+
+    #[test]
+    fn cpal_fatal_notifications_require_a_replacement_stream() {
+        for kind in [
+            cpal::ErrorKind::DeviceNotAvailable,
+            cpal::ErrorKind::StreamInvalidated,
+            cpal::ErrorKind::BackendError,
+        ] {
+            let errors = StreamErrors::new().unwrap();
+            errors.record(kind);
+            assert!(errors.failed.load(Ordering::Acquire));
+            // A later recoverable event must never resurrect a dead stream.
+            errors.record(cpal::ErrorKind::Xrun);
+            assert!(errors.failed.load(Ordering::Acquire));
+        }
+    }
 }

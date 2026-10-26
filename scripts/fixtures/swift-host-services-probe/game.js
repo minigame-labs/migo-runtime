@@ -16,6 +16,24 @@ function expect(condition, step, value) {
   if (!condition) throw new Error("migo-swift-host-probe: " + step + " got " + JSON.stringify(value));
 }
 
+// A scope follows the system's grant: granted where the system already allows
+// the app, and refused without a prompt where it does not -- this app declares
+// no purpose for any of these, so it never asks. Which one depends on the
+// machine: a runner had already allowed Bluetooth, and a check that assumed a
+// refusal failed there. Resolves to what it was: "granted" or "refused".
+async function follows(scope, grant, label) {
+  let refusal = null;
+  try {
+    await call("authorize", { scope: scope });
+  } catch (e) {
+    refusal = e;
+  }
+  const granted = grant === "authorized";
+  expect(granted ? refusal === null : refusal !== null && refusal.errMsg === "authorize:fail auth deny",
+    "authorize " + label, { grant: grant, refusal: refusal });
+  return granted ? "granted" : "refused";
+}
+
 async function run() {
   const set = await call("setClipboardData", { data: "migo-swift-host" });
   expect(set.errMsg === "setClipboardData:ok", "setClipboardData", set);
@@ -125,36 +143,18 @@ async function run() {
   // purpose for location, never shows: the scope is refused without asking.
   expect(words.indexOf(grants.locationAuthorized) >= 0, "locationAuthorized", grants);
   expect(typeof system.locationEnabled === "boolean", "locationEnabled", system);
-  let located = null;
-  try {
-    await call("authorize", { scope: "scope.userLocation" });
-  } catch (e) {
-    located = e;
-  }
-  expect(located !== null && located.errMsg === "authorize:fail auth deny", "authorize location", located);
-  console.error("migo-swift-host-probe: location=" + grants.locationAuthorized + " scope=refused");
+  const locationScope = await follows("scope.userLocation", grants.locationAuthorized, "location");
+  console.error("migo-swift-host-probe: location=" + grants.locationAuthorized + " scope=" + locationScope);
   // The photo library the app linked: its grant reported, and its scope refused
   // without a prompt in an app declaring no purpose for it.
   expect(words.indexOf(grants.albumAuthorized) >= 0, "albumAuthorized", grants);
-  let album = null;
-  try {
-    await call("authorize", { scope: "scope.writePhotosAlbum" });
-  } catch (e) {
-    album = e;
-  }
-  expect(album !== null && album.errMsg === "authorize:fail auth deny", "authorize album", album);
-  console.error("migo-swift-host-probe: album=" + grants.albumAuthorized + " scope=refused");
+  const albumScope = await follows("scope.writePhotosAlbum", grants.albumAuthorized, "album");
+  console.error("migo-swift-host-probe: album=" + grants.albumAuthorized + " scope=" + albumScope);
   // Bluetooth, the same way: its grant reported, its scope refused without a
   // prompt in an app declaring no purpose for it.
   expect(words.indexOf(grants.bluetoothAuthorized) >= 0, "bluetoothAuthorized", grants);
-  let radio = null;
-  try {
-    await call("authorize", { scope: "scope.bluetooth" });
-  } catch (e) {
-    radio = e;
-  }
-  expect(radio !== null && radio.errMsg === "authorize:fail auth deny", "authorize bluetooth", radio);
-  console.error("migo-swift-host-probe: bluetooth=" + grants.bluetoothAuthorized + " scope=refused");
+  const bluetoothScope = await follows("scope.bluetooth", grants.bluetoothAuthorized, "bluetooth");
+  console.error("migo-swift-host-probe: bluetooth=" + grants.bluetoothAuthorized + " scope=" + bluetoothScope);
   // The SDK's image service compresses with the system's encoder: a 64 x 32
   // PNG of the game's, scaled to 16 wide, handed back as a file of the game's.
   const canvas = migo.createCanvas();

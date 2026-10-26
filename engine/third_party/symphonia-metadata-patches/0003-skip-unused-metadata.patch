@@ -1,0 +1,373 @@
+--- symphonia-metadata-0.6.1/src/ape.rs
++++ symphonia-metadata-0.6.1/src/ape.rs
+@@ -12,11 +12,11 @@
+ use std::io::{Seek, SeekFrom};
+ use std::sync::Arc;
+ 
+-use symphonia_core::errors::{Result, decode_error, unsupported_error};
++use symphonia_core::errors::{decode_error, unsupported_error, Result};
+ use symphonia_core::formats::probe::{
+     Anchors, ProbeMetadataData, ProbeableMetadata, Score, Scoreable,
+ };
+-use symphonia_core::io::{MediaSourceStream, ReadBytes, ScopedStream, SeekBuffered};
++use symphonia_core::io::{FiniteStream, MediaSourceStream, ReadBytes, ScopedStream, SeekBuffered};
+ use symphonia_core::meta::well_known::{METADATA_ID_APEV1, METADATA_ID_APEV2};
+ use symphonia_core::meta::{
+     MetadataBuffer, MetadataBuilder, MetadataInfo, MetadataOptions, MetadataReader, RawTag,
+@@ -27,7 +27,7 @@
+ use lazy_static::lazy_static;
+ use symphonia_core::util::text;
+ 
+-use crate::utils::images::{ImageInfo, try_get_image_info};
++use crate::utils::images::{try_get_image_info, ImageInfo};
+ use crate::utils::std_tag::*;
+ 
+ lazy_static! {
+@@ -219,7 +219,7 @@
+             }
+             ApeVersion::V2 => {
+                 let has_header = flags & 0x8000_0000 != 0;
+-                let has_footer = flags & 0x4000_0000 != 0;
++                let has_footer = flags & 0x4000_0000 == 0;
+                 let is_header = flags & 0x2000_0000 != 0;
+ 
+                 // The header size is not included in the size written to the tag.
+@@ -286,15 +286,20 @@
+ pub struct ApeReader<'s> {
+     reader: MediaSourceStream<'s>,
+     version: ApeVersion,
++    options: MetadataOptions,
+ }
+ 
+ impl<'s> ApeReader<'s> {
+-    pub fn try_new(mut mss: MediaSourceStream<'s>, _opts: MetadataOptions) -> Result<Self> {
++    pub fn try_new(mut mss: MediaSourceStream<'s>, opts: MetadataOptions) -> Result<Self> {
+         // Read and verify the APE tag preamble and version.
+         let version = ApeHeader::read_identity(&mut mss)?;
+         mss.seek_buffered_rel(-12);
+ 
+-        Ok(Self { reader: mss, version })
++        Ok(Self {
++            reader: mss,
++            version,
++            options: opts,
++        })
+     }
+ }
+ 
+@@ -359,6 +364,17 @@
+         // Read the tag header. This may actually be the header OR the footer.
+         let header = ApeHeader::read(&mut self.reader)?;
+ 
++        if header.is_header && !header.has_header || !header.is_header && !header.has_footer {
++            return decode_error("ape: inconsistent header/footer flags");
++        }
++        let item_bytes = header
++            .size
++            .checked_sub(if header.has_header { 32 } else { 0 })
++            .and_then(|size| size.checked_sub(if header.has_footer { 32 } else { 0 }))
++            .ok_or(symphonia_core::errors::Error::DecodeError(
++                "ape: tag size smaller than header/footer",
++            ))?;
++
+         // If the header was actually a footer. Seek to the start of the APE tag.
+         if !header.is_header {
+             // The current position is the first byte after the APE footer. After the seek, the
+@@ -382,70 +398,85 @@
+             }
+         }
+ 
+-        // Read APE tag items.
+-        for _ in 0..header.num_items {
+-            let item = ApeItem::read(&mut self.reader, &header)?;
+-
+-            let key_lower = item.key.to_ascii_lowercase();
+-
+-            // If the APE tag key can be mapped to a standard visual key, and the value is binary
+-            // data, then consider the tag to be a visual.
+-            if let Some(std_key) = APE_VISUAL_TAG_MAP.get(key_lower.as_str()).copied() {
+-                if let ApeItemValue::Binary(data) = item.value {
+-                    let mut tags = vec![];
+-
+-                    // Try to parse the image data to obtain information about the image. This may
+-                    // alter the image buffer if extra information was attached to it.
+-                    let (data, image_info) = try_parse_image_data(data, &mut tags);
+-
+-                    builder.add_visual(Visual {
+-                        media_type: image_info.as_ref().map(|info| info.media_type.clone()),
+-                        dimensions: image_info.as_ref().map(|info| info.dimensions),
+-                        color_mode: image_info.as_ref().map(|info| info.color_mode),
+-                        usage: Some(std_key),
+-                        tags,
+-                        data,
+-                    });
+-
+-                    continue;
+-                }
+-            }
+-
+-            // Map APE tag item values to raw values.
+-            let value = match item.value {
+-                ApeItemValue::String(value) | ApeItemValue::Locator(value) => {
+-                    // If the value contains a null-terminator, then the value is actually a list.
+-                    if value.contains('\0') {
+-                        let items = value.split_terminator('\0').map(|s| s.to_string()).collect();
+-                        RawValue::StringList(Arc::new(items))
+-                    }
+-                    else {
+-                        RawValue::from(value)
++        let mut items = ScopedStream::new(&mut self.reader, item_bytes);
++        if !self.options.is_disabled() {
++            // Read APE tag items.
++            for _ in 0..header.num_items {
++                let item = ApeItem::read(&mut items, &header)?;
++
++                let key_lower = item.key.to_ascii_lowercase();
++
++                // If the APE tag key can be mapped to a standard visual key, and the value is binary
++                // data, then consider the tag to be a visual.
++                if let Some(std_key) = APE_VISUAL_TAG_MAP.get(key_lower.as_str()).copied() {
++                    if let ApeItemValue::Binary(data) = item.value {
++                        let mut tags = vec![];
++
++                        // Try to parse the image data to obtain information about the image. This may
++                        // alter the image buffer if extra information was attached to it.
++                        let (data, image_info) = try_parse_image_data(data, &mut tags);
++
++                        builder.add_visual(Visual {
++                            media_type: image_info.as_ref().map(|info| info.media_type.clone()),
++                            dimensions: image_info.as_ref().map(|info| info.dimensions),
++                            color_mode: image_info.as_ref().map(|info| info.color_mode),
++                            usage: Some(std_key),
++                            tags,
++                            data,
++                        });
++
++                        continue;
+                     }
+                 }
+-                ApeItemValue::Binary(value) => RawValue::from(value),
+-            };
+-
+-            builder.add_mapped_tags(RawTag::new(item.key, value), &APE_TAG_MAP);
+-        }
+-
+-        // Read the footer.
+-        let footer = ApeHeader::read(&mut self.reader)?;
+-
+-        // If the initial header was the actual header, then this checks the entire APE tag was
+-        // read, and the footer matches the header. If the initial header was actually the footer,
+-        // or there was no header, then this only checks the entire tag APE tag was read. However,
+-        // if there was a header, then the header and footer was checked to match earlier above.
+-        if header.has_footer != footer.has_footer
+-            || header.has_header != footer.has_header
+-            || header.num_items != footer.num_items
+-            || header.size != footer.size
+-            || header.version != footer.version
+-        {
+-            return decode_error("ape: header and footer mismatch");
+-        }
+-
+-        Ok(MetadataBuffer { revision: builder.build(), side_data: Vec::new() })
++
++                // Map APE tag item values to raw values.
++                let value = match item.value {
++                    ApeItemValue::String(value) | ApeItemValue::Locator(value) => {
++                        // If the value contains a null-terminator, then the value is actually a list.
++                        if value.contains('\0') {
++                            let items = value
++                                .split_terminator('\0')
++                                .map(|s| s.to_string())
++                                .collect();
++                            RawValue::StringList(Arc::new(items))
++                        } else {
++                            RawValue::from(value)
++                        }
++                    }
++                    ApeItemValue::Binary(value) => RawValue::from(value),
++                };
++
++                builder.add_mapped_tags(RawTag::new(item.key, value), &APE_TAG_MAP);
++            }
++            if items.bytes_available() != 0 {
++                return decode_error("ape: unparsed bytes after declared items");
++            }
++        }
++        items.ignore()?;
++
++        if header.has_footer {
++            // Read the footer.
++            let footer = ApeHeader::read(&mut self.reader)?;
++
++            // If the initial header was the actual header, then this checks the entire APE tag was
++            // read, and the footer matches the header. If the initial header was actually the footer,
++            // or there was no header, then this only checks the entire tag APE tag was read. However,
++            // if there was a header, then the header and footer was checked to match earlier above.
++            if footer.is_header
++                || header.has_footer != footer.has_footer
++                || header.has_header != footer.has_header
++                || header.num_items != footer.num_items
++                || header.size != footer.size
++                || header.version != footer.version
++            {
++                return decode_error("ape: header and footer mismatch");
++            }
++        }
++
++        Ok(MetadataBuffer {
++            revision: builder.build(),
++            side_data: Vec::new(),
++        })
+     }
+ 
+     fn into_inner<'s>(self: Box<Self>) -> MediaSourceStream<'s>
+--- symphonia-metadata-0.6.1/src/embedded/vorbis.rs
++++ symphonia-metadata-0.6.1/src/embedded/vorbis.rs
+@@ -13,7 +13,7 @@
+ use lazy_static::lazy_static;
+ use log::warn;
+ 
+-use symphonia_core::errors::{Error, Result, decode_error};
++use symphonia_core::errors::{decode_error, Error, Result};
+ use symphonia_core::io::{BufReader, ReadBytes};
+ use symphonia_core::meta::well_known::METADATA_ID_VORBIS_COMMENT;
+ use symphonia_core::meta::{
+@@ -218,9 +218,9 @@
+         else {
+             buf.bytes()
+                 .try_fold(0u32, |num, digit| match digit {
+-                    b'0'..=b'9' => {
+-                        num.checked_mul(10).and_then(|num| num.checked_add(u32::from(digit - b'0')))
+-                    }
++                    b'0'..=b'9' => num
++                        .checked_mul(10)
++                        .and_then(|num| num.checked_add(u32::from(digit - b'0'))),
+                     _ => None,
+                 })
+                 .map(|num| (num, buf.len() as u8))
+@@ -371,6 +371,18 @@
+     builder: &mut MetadataBuilder,
+     side_data: &mut Vec<MetadataSideData>,
+ ) -> Result<()> {
++    read_vorbis_comment_with_options(reader, builder, side_data, Default::default())
++}
++
++/// Read comments with explicit retention policy. Length fields are consumed and
++/// checked even when the values are unused; no comment/base64/chapter decoding
++/// takes place in zero-retention mode.
++pub fn read_vorbis_comment_with_options<B: ReadBytes>(
++    reader: &mut B,
++    builder: &mut MetadataBuilder,
++    side_data: &mut Vec<MetadataSideData>,
++    options: symphonia_core::meta::MetadataOptions,
++) -> Result<()> {
+     // Read the vendor string length in bytes.
+     let vendor_len = reader.read_u32()?;
+ 
+@@ -388,8 +400,11 @@
+         // Read the comment string length in bytes.
+         let comment_length = reader.read_u32()?;
+ 
+-        // Read the comment string.
+-        // TODO: Apply a limit.
++        if options.is_disabled() {
++            reader.ignore_bytes(u64::from(comment_length))?;
++            continue;
++        }
++        // Read the comment string. Nonzero-retention limits remain separate.
+         let comment_data = reader.read_boxed_slice_exact(comment_length as usize)?;
+ 
+         // Parse the Vorbis comment and handle the parsed output.
+--- symphonia-metadata-0.6.1/src/id3v1.rs
++++ symphonia-metadata-0.6.1/src/id3v1.rs
+@@ -9,7 +9,7 @@
+ 
+ use std::sync::Arc;
+ 
+-use symphonia_core::errors::{Result, unsupported_error};
++use symphonia_core::errors::{unsupported_error, Result};
+ use symphonia_core::formats::probe::{
+     Anchors, ProbeMetadataData, ProbeableMetadata, Score, Scoreable,
+ };
+@@ -104,11 +104,15 @@
+ /// ID3v1 tag reader.
+ pub struct Id3v1Reader<'s> {
+     reader: MediaSourceStream<'s>,
++    options: MetadataOptions,
+ }
+ 
+ impl<'s> Id3v1Reader<'s> {
+-    pub fn try_new(mss: MediaSourceStream<'s>, _opts: MetadataOptions) -> Result<Self> {
+-        Ok(Self { reader: mss })
++    pub fn try_new(mss: MediaSourceStream<'s>, opts: MetadataOptions) -> Result<Self> {
++        Ok(Self {
++            reader: mss,
++            options: opts,
++        })
+     }
+ }
+ 
+@@ -141,8 +145,18 @@
+ 
+     fn read_all(&mut self) -> Result<MetadataBuffer> {
+         let mut builder = MetadataBuilder::new(ID3V1_METADATA_INFO);
+-        read_id3v1(&mut self.reader, &mut builder)?;
+-        Ok(MetadataBuffer { revision: builder.build(), side_data: Vec::new() })
++        if self.options.is_disabled() {
++            if self.reader.read_triple_bytes()? != *b"TAG" {
++                return unsupported_error("id3v1: Not an ID3v1 tag");
++            }
++            self.reader.ignore_bytes(125)?;
++        } else {
++            read_id3v1(&mut self.reader, &mut builder)?;
++        }
++        Ok(MetadataBuffer {
++            revision: builder.build(),
++            side_data: Vec::new(),
++        })
+     }
+ 
+     fn into_inner<'s>(self: Box<Self>) -> MediaSourceStream<'s>
+--- symphonia-metadata-0.6.1/src/id3v2/mod.rs
++++ symphonia-metadata-0.6.1/src/id3v2/mod.rs
+@@ -76,6 +76,7 @@
+     has_extended_header: bool,
+     experimental: bool,
+     has_footer: bool,
++    is_compressed: bool,
+ }
+ 
+ #[derive(Debug)]
+@@ -122,6 +123,7 @@
+         has_extended_header: false,
+         experimental: false,
+         has_footer: false,
++        is_compressed: major_version == 2 && flags & 0x40 != 0,
+     };
+ 
+     // Major and minor version numbers should never equal 0xff as per the specification.
+@@ -133,14 +135,6 @@
+     // specification.
+     if major_version < 2 || major_version > 4 {
+         return unsupported_error("id3v2: unsupported ID3v2 version");
+-    }
+-
+-    // Version 2.2 of the standard specifies a compression flag bit, but does not specify a
+-    // compression standard. Future versions of the standard remove this feature and repurpose this
+-    // bit for other features. Since there is no way to know how to handle the remaining tag data,
+-    // return an unsupported error.
+-    if major_version == 2 && (flags & 0x40) != 0 {
+-        return unsupported_error("id3v2: ID3v2.2 compression is not supported");
+     }
+ 
+     // With the exception of the compression flag in version 2.2, flags were added sequentially each
+@@ -289,6 +283,9 @@
+ ) -> Result<()> {
+     if limits.total == Some(0) {
+         return Ok(());
++    }
++    if header.is_compressed {
++        return unsupported_error("id3v2: ID3v2.2 compression is not supported");
+     }
+     let mut retained = Retention::new(*limits);
+     // If there is an extended header, read and parse it based on the major version of the tag.

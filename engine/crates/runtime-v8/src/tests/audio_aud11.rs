@@ -111,6 +111,8 @@ mod audio_aud11_tests {
 
     #[test]
     fn unsupported_audio_operations_warn_once_without_throwing() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, responder) = boot();
         run(
             &mut runtime,

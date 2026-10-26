@@ -33,7 +33,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Setup Python for contract gates
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.11"
 
@@ -82,6 +82,9 @@ jobs:
         working-directory: engine
         run: cargo fetch --locked
 
+      - name: Prepare verified host V8
+        uses: ./.github/actions/prepare-host-v8
+
       - name: Install the pinned RustSec scanner
         run: cargo install cargo-audit --version 0.22.2 --locked
 
@@ -116,8 +119,10 @@ jobs:
         # job hit its 20-minute ceiling several steps later, which reads as
         # "the contract hung" rather than "apt hung". So probe for what the
         # lane actually needs -- a compiler that can target -m32 -- and only
-        # reach for the network when it is missing, with every attempt bounded
-        # so a slow mirror fails quickly instead of eating the whole budget.
+        # reach for the network when it is missing. A transfer that stalls is
+        # given up after 30 s and retried (Acquire::*); the install itself is
+        # not capped, because a cap cannot tell a hung mirror from a slow one
+        # that is getting there, and the slow one is the common day.
         # A probe that guesses wrong cannot hide anything: the required-ILP32
         # invocations below turn a skipped lane into a failure either way.
         run: |
@@ -126,8 +131,9 @@ jobs:
               | "$1" -m32 -ffreestanding -std=c11 -c -x c - -o /dev/null 2>/dev/null
           }
           install_multilib() {
-            timeout 90 sudo apt-get update -qq || return 1
-            timeout 150 sudo apt-get install -y -qq gcc-multilib || return 1
+            timeout 90 sudo apt-get update -qq \
+              || echo "apt-get update incomplete; continuing on the image's indexes" >&2
+            sudo apt-get install -y -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -qq gcc-multilib || return 1
           }
           if ! can_target_m32 gcc || ! can_target_m32 clang; then
             install_multilib || {
@@ -142,7 +148,7 @@ jobs:
         # ripgrep is not preinstalled on the runners, and the contract needs it
         # for its multiline patterns.
         run: |
-          command -v rg >/dev/null 2>&1 || sudo apt-get install -y ripgrep
+          command -v rg >/dev/null 2>&1 || sudo apt-get install -y -o Acquire::Retries=5 -o Acquire::http::Timeout=30 ripgrep
           bash scripts/test-surface-attachment-contract.sh
           bash scripts/test-x11-owned-connection-contract.sh
 
@@ -333,6 +339,19 @@ jobs:
           bash scripts/test-v8-gn-pin-contract.sh
           bash scripts/test-apple-frame-channel-contract.sh
           bash scripts/test-v8-patch-application-contract.sh
+          bash scripts/test-skia-bindings-vendor-contract.sh
+          bash scripts/test-gitignore-contract.sh
+          bash scripts/test-deno-core-vendor-contract.sh
+          bash scripts/test-ada-url-vendor-contract.sh
+          bash scripts/test-android-tls-vendor-contract.sh
+          bash scripts/test-rusty-v8-vendor-contract.sh
+          bash scripts/test-websocket-deflate-contract.sh
+
+      - name: Verify Oboe native sources and callback ownership
+        run: bash scripts/test-oboe-backend-contract.sh
+
+      - name: Verify CPAL source and output product features
+        run: bash scripts/test-cpal-backend-contract.sh
 
       # And the rule itself, so the list above cannot grow again in silence.
       - name: Every contract gate is invoked by something
@@ -689,8 +708,9 @@ jobs:
       - name: Install the libraries the host engine links
         run: |
           install_libs() {
-            timeout 90 sudo apt-get update -qq || return 1
-            timeout 150 sudo apt-get install -y -qq \
+            timeout 90 sudo apt-get update -qq \
+              || echo "apt-get update incomplete; continuing on the image's indexes" >&2
+            sudo apt-get install -y -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -qq \
               libgl-dev libegl-dev libfontconfig1-dev libfreetype-dev \
               libasound2-dev || return 1
           }
@@ -972,6 +992,14 @@ jobs:
       # `scripts/test-local-verification-contract.sh` now audits these commands
       # with the same parser the local gate uses, so narrowing one back to `--lib`
       # fails that contract instead of quietly dropping a binary.
+      - name: Shared audio CPU admission and cancellation contracts
+        timeout-minutes: 10
+        run: |
+          cargo fetch --locked --manifest-path engine/Cargo.toml
+          python3 scripts/testing/check_audio_cpu_admission.py \
+            --output "${RUNNER_TEMP}/migo-audio-cpu-contract" \
+            --target-dir "${RUNNER_TEMP}/migo-audio-cpu-target"
+
       - name: Run Rust tests (host-buildable crates)
         working-directory: engine
         run: |
@@ -1002,6 +1030,12 @@ jobs:
           cargo test -p migo-executor-probe
         env:
           RUST_BACKTRACE: 1
+
+      - name: Official host snapshot IO contract
+        working-directory: engine
+        run: |
+          bash ../scripts/check-snapshot-freshness.sh --os linux --snapshot-kind host --product-profile full x86_64
+          cargo test --locked --offline -p migo-runtime-v8 --test read_pixels_snapshot --test file_byob_snapshot -- --ignored
 
       # The Maven repository a host resolves the SDK from holds the release's AARs,
       # signed, and nothing else. Run here over fixture AARs, which proves the
@@ -1079,9 +1113,17 @@ jobs:
           timeout 180 sudo apt-get update \
             || echo "apt-get update incomplete; continuing on the image's indexes" >&2
           # The install is the real gate: if the packages cannot be had, the
-          # contract below cannot run, so this one fails the step.
+          # contract below cannot run, so this one fails the step. A transfer
+          # that stalls is given up after 30 s and retried (Acquire::*): the
+          # mirror stalling on one package -- libcodec2, 9 MB -- used the whole
+          # 300 s twice over, failed the job, and with it skipped the AAR build.
+          # The install is not capped as a whole: on 2026-10-23 the mirror ran
+          # at about 200 KB/s, every package arriving, and a 300 s cap killed
+          # the install and its retry at exactly 300 s each. Stalls are what a
+          # bound is for, and Acquire::http::Timeout bounds them; the job's
+          # ceiling bounds the rest.
           install_pkgs() {
-            timeout 300 sudo apt-get install -y \
+            sudo apt-get install -y -o Acquire::Retries=5 -o Acquire::http::Timeout=30 \
               cmake ninja-build g++ ripgrep xvfb xauth \
               qt6-base-dev qt6-base-dev-tools qt6-qpa-plugins \
               libx11-dev libxkbcommon-x11-dev libxcb-cursor0 \
@@ -1135,7 +1177,7 @@ jobs:
           java-version: "17"
 
       - name: Setup Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.11"
 
@@ -1169,6 +1211,13 @@ jobs:
       # must point at it, not just ANDROID_NDK_HOME).
       - name: Install Android NDK + cargo-ndk
         uses: ./.github/actions/setup-android-ndk
+
+      - name: Reproduce Android platform TLS helper from patched source
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          sdkmanager --install "platforms;android-36"
+          bash scripts/test-android-tls-source-contract.sh
 
       # Runs here, not in the contract job, because here the NDK exists. The gate
       # skips its resolution check on a machine without one, and a gate that
@@ -1229,7 +1278,9 @@ jobs:
       # the NDK's own API-26 stub libraries, so it needs the freshly built .so
       # (both ABIs land under engine/jniLibs/ from the step above).
       - name: Android minimum-API symbol floor
-        run: bash scripts/test-android-symbol-floor.sh
+        run: |
+          bash scripts/test-android-symbol-floor.sh --self-test
+          bash scripts/test-android-symbol-floor.sh
 
       # Android 15 brought 16 KB memory pages and Android 16 requires targeting
       # apps to have 16 KB-aligned native libraries to install on such a device.
@@ -1338,7 +1389,7 @@ jobs:
           timeout 180 sudo apt-get update -qq \
             || echo "apt-get update incomplete; continuing on the image's indexes" >&2
           install_pkgs() {
-            timeout 300 sudo apt-get install -y -qq \
+            sudo apt-get install -y -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -qq \
               clang ninja-build \
               libgl-dev libegl-dev libgles-dev \
               libgl1-mesa-dri libegl-mesa0 \
@@ -1403,6 +1454,11 @@ jobs:
       - name: Sandbox filesystem and atomic writer tests on Windows
         working-directory: engine
         run: cargo test -p migo-shared -p migo-io --lib --locked
+
+      - name: Native WASAPI scheduling lifecycle
+        shell: bash
+        run: |
+          python scripts/testing/check_cpal_scheduling.py "$PWD" "$RUNNER_TEMP/migo-wasapi-scheduling" --native
 
   host-engine-tests:
     runs-on: ubuntu-latest
@@ -1471,12 +1527,12 @@ jobs:
           timeout 180 sudo apt-get update -qq \
             || echo "apt-get update incomplete; continuing on the image's indexes" >&2
           install_pkgs() {
-            timeout 300 sudo apt-get install -y -qq \
+            sudo apt-get install -y -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -qq \
               ninja-build \
               libgl-dev libegl-dev libgles-dev \
               libgl1-mesa-dri libegl-mesa0 \
               libfontconfig1-dev libfreetype-dev \
-              libasound2-dev \
+              libasound2-dev strace \
               gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav || return 1
           }
           install_pkgs || {
@@ -1515,12 +1571,20 @@ jobs:
       # deliberate -- it cannot answer the question, and reporting that as
       # success is how a check stops being one -- and it means this step is also
       # the thing that tells us if a runner image regresses.
+      - name: Prepare verified host V8
+        uses: ./.github/actions/prepare-host-v8
+
       - name: ASTC encoder round trip
         run: bash scripts/test-astc-encoder.sh
 
       - name: Run clippy lints (crates needing host system packages)
         working-directory: engine
         run: cargo clippy -p migo-graphics -p migo-core -p migo-capi -p migo-platform -p migo-audio -p migo-player --all-targets
+
+      - name: Native audio callback allocator and syscall contract
+        run: |
+          rustup component add rust-src
+          bash scripts/test-audio-realtime-contract.sh
 
       - name: Run Rust tests (graphics, core, capi, platform, audio, player)
         working-directory: engine

@@ -93,6 +93,9 @@ fn run(runtime: &mut JsRuntime, source: &str, check: &str) -> String {
     runtime
         .execute_script("<test:run>", FastString::from(source.to_owned()))
         .expect("test script");
+    runtime
+        .perform_microtask_checkpoint()
+        .expect("host task checkpoint");
     let value = runtime
         .execute_script("<test:check>", FastString::from(check.to_owned()))
         .expect("test check");
@@ -110,6 +113,8 @@ fn dispatch(hook: &str, fields: &str) -> String {
 
 #[test]
 fn a_server_is_described_in_the_references_terms_and_hears_its_centrals() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let peripheral = Arc::new(FakePeripheral::default());
     let mut runtime = boot(peripheral.clone());
     run(

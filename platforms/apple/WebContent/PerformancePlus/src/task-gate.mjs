@@ -39,6 +39,18 @@ let depth = 0;
 const queue = [];
 let posted = false;
 let port = null;
+const taskStartListeners = [];
+
+// Engine policies whose state lasts through the native microtask checkpoint
+// reset at the next owned task, rather than when its JS callback returns.
+export function onTaskStart(listener) {
+  taskStartListeners.push(listener);
+}
+
+function enterTask(task) {
+  for (let i = 0; i < taskStartListeners.length; i++) taskStartListeners[i]();
+  task();
+}
 
 function post() {
   if (posted || depth > 0 || queue.length === 0) return;
@@ -62,7 +74,7 @@ function runNext() {
   const task = queue.shift();
   if (task === undefined) return;
   try {
-    task();
+    enterTask(task);
   } finally {
     post();
   }
@@ -76,7 +88,7 @@ function runNext() {
  */
 export function runTask(task) {
   if (depth === 0 && queue.length === 0) {
-    task();
+    enterTask(task);
     return;
   }
   queue.push(task);

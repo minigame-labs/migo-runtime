@@ -180,6 +180,26 @@ impl DomainPolicy {
     }
 }
 
+/// Certificate trust is a host decision, fixed before the first connection.
+/// A verification failure never switches modes or disables hostname checks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TlsTrust {
+    Platform,
+    Mozilla,
+}
+
+impl Default for TlsTrust {
+    fn default() -> Self {
+        // OHOS has no supported platform-verifier integration. Android native
+        // C ABI hosts without a JVM explicitly choose Mozilla in their policy.
+        if cfg!(target_env = "ohos") {
+            Self::Mozilla
+        } else {
+            Self::Platform
+        }
+    }
+}
+
 /// The network a session's content may reach. Immutable for the session's life.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NetworkPolicy {
@@ -194,6 +214,7 @@ pub struct NetworkPolicy {
     /// The other devices on the device's own networks, whatever their addresses' range, for the socket, TCP
     /// and UDP channels only -- a request, download or upload never reaches one. Off by default.
     pub lan: bool,
+    pub tls_trust: TlsTrust,
 }
 
 impl NetworkPolicy {
@@ -208,6 +229,7 @@ impl NetworkPolicy {
             udp: DomainPolicy::Unrestricted,
             allow_plain_http: false,
             lan: false,
+            tls_trust: TlsTrust::default(),
         }
     }
 
@@ -253,6 +275,18 @@ impl NetworkPolicy {
     fn from_fields(fields: Map<String, Value>) -> Result<Self, NetworkPolicyError> {
         let mut policy = Self::default();
         for (key, value) in fields {
+            if key == "tlsTrust" {
+                policy.tls_trust = match value.as_str() {
+                    Some("platform") => TlsTrust::Platform,
+                    Some("mozilla") => TlsTrust::Mozilla,
+                    _ => {
+                        return Err(NetworkPolicyError(
+                            "'tlsTrust' must be \"platform\" or \"mozilla\"".into(),
+                        ));
+                    }
+                };
+                continue;
+            }
             if let Some(channel) = NetworkChannel::ALL.into_iter().find(|c| c.name() == key) {
                 *policy.channel_mut(channel) = parse_channel(channel, value)?;
                 continue;
@@ -264,7 +298,7 @@ impl NetworkPolicy {
                     let channels: Vec<&str> =
                         NetworkChannel::ALL.iter().map(|c| c.name()).collect();
                     return Err(NetworkPolicyError(format!(
-                        "unknown key '{key}'; the keys are {}, allowPlainHttp and lan",
+                        "unknown key '{key}'; the keys are {}, allowPlainHttp, lan and tlsTrust",
                         channels.join(", ")
                     )));
                 }
@@ -332,6 +366,30 @@ mod tests {
         assert!(!policy.allow_plain_http);
         assert!(!policy.lan);
         assert_eq!(NetworkPolicy::from_json("{}"), Ok(NetworkPolicy::default()));
+    }
+
+    #[test]
+    fn tls_trust_is_explicit_and_never_an_insecure_mode() {
+        assert_eq!(
+            NetworkPolicy::from_json(r#"{"tlsTrust":"mozilla"}"#)
+                .unwrap()
+                .tls_trust,
+            TlsTrust::Mozilla
+        );
+        assert_eq!(
+            NetworkPolicy::from_json(r#"{"tlsTrust":"platform"}"#)
+                .unwrap()
+                .tls_trust,
+            TlsTrust::Platform
+        );
+        for value in [r#""insecure""#, r#""Platform""#, "true", "null", "[]"] {
+            assert!(
+                NetworkPolicy::from_json(&format!(r#"{{"tlsTrust":{value}}}"#))
+                    .unwrap_err()
+                    .0
+                    .contains("tlsTrust")
+            );
+        }
     }
 
     #[test]

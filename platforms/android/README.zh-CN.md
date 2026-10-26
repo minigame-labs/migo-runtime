@@ -45,14 +45,14 @@ android {
 }
 ```
 
-打包进 APK 的原生库就是 17 MB；发 App Bundle 则由 Play 按设备分发，`x86_64`
+原生库给下载量增加约 19 MB（安装后约 45 MB）；发 App Bundle 则由 Play 按设备分发，`x86_64`
 对终端用户的下载量贡献为零。
 
 Maven 仓库尚未发布，暂时只能用本地 AAR。
 
 ## 按需下发引擎
 
-`libmigo.so` 单 ABI 约占 17 MB 商店下载、45 MB 安装体积。如果小游戏只是你 App 的次要功能，
+`libmigo.so` 单 ABI 约占 19 MB 商店下载、45 MB 安装体积。如果小游戏只是你 App 的次要功能，
 可以发一个不含它的 APK，等用户第一次打开小游戏时再取——从不打开的用户就永远不用为它付费。
 
 依赖 `migo-<version>-android-nojni.aar` 而不是 `migo-<version>-android.aar`，

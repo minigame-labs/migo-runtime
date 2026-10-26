@@ -39,6 +39,8 @@ mod inner_audio_error_codes_tests {
 
     #[test]
     fn a_source_that_will_not_load_says_why() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let undecodable = std::env::temp_dir().join(format!(
             "migo-inner-audio-undecodable-{}.mp3",
             std::process::id()

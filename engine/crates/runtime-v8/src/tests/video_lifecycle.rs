@@ -100,6 +100,8 @@ fn event(hook: &str, id: &serde_json::Value, fields: &str) -> String {
 
 #[test]
 fn a_players_promises_settle_when_done_and_its_events_reach_it_by_id() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let video = Arc::new(FakeVideo::default());
     let mut runtime = boot(video.clone());
     run(

@@ -95,15 +95,12 @@ mod global_surface_tests {
     /// `Deno` leak survived exactly that: the exclusion list was correct for the
     /// names on it. A whole-surface baseline has no list to be incomplete.
     ///
-    /// **What this pins is the source-booted surface.** A shipped session boots
-    /// from the V8 startup snapshot instead, and the two differ: snapshot boot
-    /// does not publish `migo.Temporal` or `migo.Float16Array`, because `migo` is
-    /// built by mirroring globalThis during bootstrap and is therefore frozen at
-    /// snapshot-generation time. Pinning source boot is deliberate -- it needs no
-    /// device, no GL and no CI plumbing, and it still catches every API added,
-    /// removed or renamed, and every internal newly leaked onto either object.
-    /// It is not a substitute for checking the shipped surface; see
-    /// `scripts/dump-api-surface.sh`, which runs the real player.
+    /// This pins source boot; snapshot_roundtrip also compares the restored
+    /// namespace against this same record. Temporal and Float16Array are
+    /// standard globals, excluded from migo in both paths. They previously
+    /// appeared only in the source namespace because V8 initializes them at a
+    /// different point during snapshot creation/restoration. Device/player
+    /// checks remain necessary; see scripts/dump-api-surface.sh.
     ///
     /// To change the surface on purpose:
     ///   MIGO_UPDATE_SURFACE_BASELINE=1 cargo test -p migo-runtime-v8 --lib \
@@ -113,6 +110,8 @@ mod global_surface_tests {
     /// and commit both profile-specific baselines with the change.
     #[test]
     fn published_surface_matches_the_committed_baseline() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         #[cfg(feature = "profile-full")]
         let (baseline, baseline_name) = (
             include_str!("published_surface_full_v0.txt"),
@@ -190,11 +189,32 @@ mod global_surface_tests {
         }
     }
 
+    #[test]
+    fn new_standard_intrinsics_stay_global_instead_of_becoming_migo_apis() {
+        let executor = crate::tests::support::v8_test_executor();
+        let _enter = executor.as_ref().map(|rt| rt.enter());
+        let mut runtime = JsRuntime::new(RuntimeOptions {
+            extensions: crate::main_extensions(test_host_state()),
+            ..Default::default()
+        });
+        crate::harden_global_scope(&mut runtime);
+        runtime.execute_script("standard-intrinsics", r#"
+            for (const name of ['Temporal', 'Float16Array']) {
+                if (typeof globalThis[name] === 'undefined') throw new Error('missing global ' + name);
+                if (Object.hasOwn(migo, name)) throw new Error('standard builtin leaked into migo: ' + name);
+            }
+            if (new Float16Array([1.5])[0] !== 1.5) throw new Error('Float16Array support');
+            if (Temporal.PlainDate.from('2026-10-25').add({days:1}).toString() !== '2026-10-26') throw new Error('Temporal support');
+        "#).unwrap();
+    }
+
     /// A security audit dumps own property names of the global. After P0
     /// cleanup, none of the deno_core internals or host-bridge hooks may be
     /// reachable by string key.
     #[test]
     fn audit_dump_hides_internals() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot_runtime();
         assert_js(
             &mut rt,
@@ -212,6 +232,8 @@ mod global_surface_tests {
     /// so both delivery channels (js_bindings lookup + eval) can reach them.
     #[test]
     fn host_bridge_holder_reachable() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot_runtime();
         let optional_hooks = if cfg!(feature = "api-connectivity") && cfg!(feature = "api-commerce")
         {
@@ -237,6 +259,8 @@ mod global_surface_tests {
     /// compile time while retaining the same core game surface.
     #[test]
     fn product_profile_surface_matches_features() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot_runtime();
         assert_js(
             &mut rt,
@@ -274,6 +298,8 @@ mod global_surface_tests {
     /// `migo`, with the native bridge internals kept off the public global.
     #[test]
     fn gamepad_transport_is_migo_only_and_native_hooks_remain_private() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot_runtime();
         assert_js(
             &mut rt,
@@ -291,6 +317,8 @@ mod global_surface_tests {
 
     #[test]
     fn gamepad_views_are_live_but_web_read_only() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot_runtime();
         assert_js(
             &mut rt,
@@ -318,6 +346,8 @@ mod global_surface_tests {
     /// contract's `null` for those slots.
     #[test]
     fn gamepad_slots_before_a_nonzero_index_are_explicitly_null() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot_runtime();
         assert_js(
             &mut rt,
@@ -332,6 +362,8 @@ mod global_surface_tests {
 
     #[test]
     fn gamepad_listener_mutation_does_not_change_the_current_dispatch_set() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot_runtime();
         assert_js(
             &mut rt,
@@ -348,6 +380,8 @@ mod global_surface_tests {
 
     #[test]
     fn gamepad_listener_and_overridden_logger_failures_are_isolated() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot_runtime();
         assert_js(
             &mut rt,
@@ -368,6 +402,8 @@ mod global_surface_tests {
     /// as `{}`: a failing game reported that it failed and nothing else.
     #[test]
     fn console_writes_an_error_as_its_message_and_stack() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let host_id = 9_401;
         let buffer = shared::console_log::register_console_log(host_id, true);
         crate::console::bind_thread_console(host_id);
@@ -398,6 +434,8 @@ mod global_surface_tests {
     /// GC APIs (03_gc.js) must work after switching off global `Deno.core`.
     #[test]
     fn gc_apis_work_without_global_deno() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot_runtime();
         assert_js(
             &mut rt,

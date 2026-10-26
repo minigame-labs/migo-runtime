@@ -1,6 +1,42 @@
 --- a/src/binding.cc
 +++ b/src/binding.cc
-@@ -3040,6 +3040,25 @@
+@@ -3086,6 +3086,27 @@
+ // Task ownership is transferred to Rust — Rust is responsible for calling
+ // Run() and deleting the task.
+ extern "C" {
++#if defined(_WIN32)
++void (*p_v8__Platform__CustomPlatform__BASE__PostTask)(void* context, void* isolate,
++                                                  v8::Task* task);
++void (*p_v8__Platform__CustomPlatform__BASE__PostNonNestableTask)(void* context,
++                                                             void* isolate,
++                                                             v8::Task* task);
++void (*p_v8__Platform__CustomPlatform__BASE__PostDelayedTask)(
++    void* context, void* isolate, v8::Task* task, double delay_in_seconds);
++void (*p_v8__Platform__CustomPlatform__BASE__PostNonNestableDelayedTask)(
++    void* context, void* isolate, v8::Task* task, double delay_in_seconds);
++void (*p_v8__Platform__CustomPlatform__BASE__PostIdleTask)(void* context,
++                                                      void* isolate,
++                                                      v8::IdleTask* task);
++void (*p_v8__Platform__CustomPlatform__BASE__DROP)(void* context);
++#define v8__Platform__CustomPlatform__BASE__PostTask p_v8__Platform__CustomPlatform__BASE__PostTask
++#define v8__Platform__CustomPlatform__BASE__PostNonNestableTask p_v8__Platform__CustomPlatform__BASE__PostNonNestableTask
++#define v8__Platform__CustomPlatform__BASE__PostDelayedTask p_v8__Platform__CustomPlatform__BASE__PostDelayedTask
++#define v8__Platform__CustomPlatform__BASE__PostNonNestableDelayedTask p_v8__Platform__CustomPlatform__BASE__PostNonNestableDelayedTask
++#define v8__Platform__CustomPlatform__BASE__PostIdleTask p_v8__Platform__CustomPlatform__BASE__PostIdleTask
++#define v8__Platform__CustomPlatform__BASE__DROP p_v8__Platform__CustomPlatform__BASE__DROP
++#else
+ void v8__Platform__CustomPlatform__BASE__PostTask(void* context, void* isolate,
+                                                   v8::Task* task);
+ void v8__Platform__CustomPlatform__BASE__PostNonNestableTask(void* context,
+@@ -3099,6 +3120,7 @@
+                                                       void* isolate,
+                                                       v8::IdleTask* task);
+ void v8__Platform__CustomPlatform__BASE__DROP(void* context);
++#endif
+ }
+ 
+ // FFI functions for running and deleting V8 tasks from Rust.
+@@ -3342,6 +3364,25 @@
    return ptr.use_count();
  }
  
@@ -26,7 +62,7 @@
  void v8_inspector__V8Inspector__Channel__BASE__sendResponse(
      v8_inspector::V8Inspector::Channel* self, int callId,
      v8_inspector::StringBuffer* message);
-@@ -3048,6 +3067,7 @@
+@@ -3350,6 +3391,7 @@
      v8_inspector::StringBuffer* message);
  void v8_inspector__V8Inspector__Channel__BASE__flushProtocolNotifications(
      v8_inspector::V8Inspector::Channel* self);
@@ -34,7 +70,7 @@
  
  void v8_inspector__V8Inspector__DELETE(v8_inspector::V8Inspector* self) {
    delete self;
-@@ -3174,6 +3194,45 @@
+@@ -3515,6 +3557,45 @@
    self->flushProtocolNotifications();
  }
  
@@ -80,7 +116,7 @@
  int64_t v8_inspector__V8InspectorClient__BASE__generateUniqueId(
      v8_inspector::V8InspectorClient* self);
  void v8_inspector__V8InspectorClient__BASE__runMessageLoopOnPause(
-@@ -3194,6 +3253,7 @@
+@@ -3535,6 +3616,7 @@
  v8_inspector__V8InspectorClient__BASE__resourceNameToUrl(
      v8_inspector::V8InspectorClient* self,
      const v8_inspector::StringView& resource_name_view);
@@ -88,7 +124,7 @@
  
  }  // extern "C"
  
-@@ -3500,6 +3560,71 @@
+@@ -3886,6 +3968,71 @@
  
  // v8::ValueSerializer::Delegate
  
@@ -160,7 +196,7 @@
  extern "C" {
  void v8__ValueSerializer__Delegate__ThrowDataCloneError(
      v8::ValueSerializer::Delegate* self, v8::Local<v8::String> message);
-@@ -3530,6 +3655,7 @@
+@@ -3916,6 +4063,7 @@
  void v8__ValueSerializer__Delegate__FreeBufferMemory(
      v8::ValueSerializer::Delegate* self, void* buffer);
  }
@@ -168,7 +204,7 @@
  
  struct v8__ValueSerializer__Delegate : public v8::ValueSerializer::Delegate {
    void ThrowDataCloneError(v8::Local<v8::String> message) override {
-@@ -3659,6 +3785,29 @@
+@@ -4045,6 +4193,29 @@
  
  // v8::ValueDeserializer::Delegate
  
@@ -198,7 +234,7 @@
  extern "C" {
  v8::Object* v8__ValueDeserializer__Delegate__ReadHostObject(
      v8::ValueDeserializer::Delegate* self, v8::Isolate* isolate);
-@@ -3672,6 +3821,7 @@
+@@ -4058,6 +4229,7 @@
      v8::ValueDeserializer::Delegate* self, v8::Isolate* isolate,
      uint32_t clone_id);
  }
@@ -206,7 +242,7 @@
  
  struct v8__ValueDeserializer__Delegate
      : public v8::ValueDeserializer::Delegate {
-@@ -3935,9 +4085,20 @@
+@@ -4395,9 +4567,20 @@
  
  extern "C" {
  
@@ -227,12 +263,33 @@
  
  RustObj::~RustObj() { rusty_v8_RustObj_drop(this); }
  
-@@ -4094,3 +4255,113 @@
- }
- 
+@@ -4803,3 +4986,146 @@
  }  // extern "C"
+ 
+ #endif  // RUSTY_V8_ENABLE_SIMDUTF
++
 +
 +#if defined(_WIN32)
++#include "v8/third_party/inspector_protocol/crdtp/dispatch.h"
++#include "v8/third_party/inspector_protocol/crdtp/frontend_channel.h"
++
++extern "C" {
++extern void (*p_crdtp__FrontendChannel__BASE__sendProtocolResponse)(v8_crdtp::FrontendChannel* self,
++                                                        int call_id,
++                                                        v8_crdtp::Serializable* message);
++extern void (*p_crdtp__FrontendChannel__BASE__sendProtocolNotification)(
++    v8_crdtp::FrontendChannel* self, v8_crdtp::Serializable* message);
++extern void (*p_crdtp__FrontendChannel__BASE__fallThrough)(
++    v8_crdtp::FrontendChannel* self, int call_id, const uint8_t* method_data,
++    size_t method_len, const uint8_t* message_data, size_t message_len);
++extern void (*p_crdtp__FrontendChannel__BASE__flushProtocolNotifications)(
++    v8_crdtp::FrontendChannel* self);
++extern bool (*p_crdtp__DomainDispatcher__BASE__Dispatch)(void* rust_dispatcher,
++                                             const uint8_t* command_data,
++                                             size_t command_len,
++                                             const v8_crdtp::Dispatchable* dispatchable);
++extern void (*p_crdtp__DomainDispatcher__BASE__Drop)(void* rust_dispatcher);
++}
 +
 +// Included here rather than with the headers at the top of the file so that
 +// nothing about the non-Windows translation unit changes.
@@ -265,6 +322,18 @@
 +};
 +
 +const HostCallbackSlot kHostCallbackSlots[] = {
++    {"crdtp__FrontendChannel__BASE__sendProtocolResponse", &p_crdtp__FrontendChannel__BASE__sendProtocolResponse},
++    {"crdtp__FrontendChannel__BASE__sendProtocolNotification", &p_crdtp__FrontendChannel__BASE__sendProtocolNotification},
++    {"crdtp__FrontendChannel__BASE__fallThrough", &p_crdtp__FrontendChannel__BASE__fallThrough},
++    {"crdtp__FrontendChannel__BASE__flushProtocolNotifications", &p_crdtp__FrontendChannel__BASE__flushProtocolNotifications},
++    {"crdtp__DomainDispatcher__BASE__Dispatch", &p_crdtp__DomainDispatcher__BASE__Dispatch},
++    {"crdtp__DomainDispatcher__BASE__Drop", &p_crdtp__DomainDispatcher__BASE__Drop},
++    {"v8__Platform__CustomPlatform__BASE__PostTask", &p_v8__Platform__CustomPlatform__BASE__PostTask},
++    {"v8__Platform__CustomPlatform__BASE__PostNonNestableTask", &p_v8__Platform__CustomPlatform__BASE__PostNonNestableTask},
++    {"v8__Platform__CustomPlatform__BASE__PostDelayedTask", &p_v8__Platform__CustomPlatform__BASE__PostDelayedTask},
++    {"v8__Platform__CustomPlatform__BASE__PostNonNestableDelayedTask", &p_v8__Platform__CustomPlatform__BASE__PostNonNestableDelayedTask},
++    {"v8__Platform__CustomPlatform__BASE__PostIdleTask", &p_v8__Platform__CustomPlatform__BASE__PostIdleTask},
++    {"v8__Platform__CustomPlatform__BASE__DROP", &p_v8__Platform__CustomPlatform__BASE__DROP},
 +    {"v8__ValueSerializer__Delegate__ThrowDataCloneError",
 +     &p_v8__ValueSerializer__Delegate__ThrowDataCloneError},
 +    {"v8__ValueSerializer__Delegate__HasCustomHostObject",
@@ -341,3 +410,74 @@
 +}
 +
 +#endif  // defined(_WIN32)
+--- a/src/crdtp_binding.cc
++++ b/src/crdtp_binding.cc
+@@ -11,16 +11,42 @@
+ using namespace v8_crdtp;
+ 
+ extern "C" {
++#if defined(_WIN32)
++void (*p_crdtp__FrontendChannel__BASE__sendProtocolResponse)(FrontendChannel* self,
++                                                        int call_id,
++                                                        Serializable* message);
++#define crdtp__FrontendChannel__BASE__sendProtocolResponse p_crdtp__FrontendChannel__BASE__sendProtocolResponse
++#else
+ void crdtp__FrontendChannel__BASE__sendProtocolResponse(FrontendChannel* self,
+                                                         int call_id,
+                                                         Serializable* message);
++#endif
++#if defined(_WIN32)
++void (*p_crdtp__FrontendChannel__BASE__sendProtocolNotification)(
++    FrontendChannel* self, Serializable* message);
++#define crdtp__FrontendChannel__BASE__sendProtocolNotification p_crdtp__FrontendChannel__BASE__sendProtocolNotification
++#else
+ void crdtp__FrontendChannel__BASE__sendProtocolNotification(
+     FrontendChannel* self, Serializable* message);
++#endif
++#if defined(_WIN32)
++void (*p_crdtp__FrontendChannel__BASE__fallThrough)(
++    FrontendChannel* self, int call_id, const uint8_t* method_data,
++    size_t method_len, const uint8_t* message_data, size_t message_len);
++#define crdtp__FrontendChannel__BASE__fallThrough p_crdtp__FrontendChannel__BASE__fallThrough
++#else
+ void crdtp__FrontendChannel__BASE__fallThrough(
+     FrontendChannel* self, int call_id, const uint8_t* method_data,
+     size_t method_len, const uint8_t* message_data, size_t message_len);
++#endif
++#if defined(_WIN32)
++void (*p_crdtp__FrontendChannel__BASE__flushProtocolNotifications)(
++    FrontendChannel* self);
++#define crdtp__FrontendChannel__BASE__flushProtocolNotifications p_crdtp__FrontendChannel__BASE__flushProtocolNotifications
++#else
+ void crdtp__FrontendChannel__BASE__flushProtocolNotifications(
+     FrontendChannel* self);
++#endif
+ }  // extern "C"
+ 
+ struct crdtp__FrontendChannel__BASE : public FrontendChannel {
+@@ -311,12 +337,25 @@
+ // returns a bool indicating if the command was found. If found, the
+ // dispatcher should handle the dispatchable when
+ // crdtp__DomainDispatcher__BASE__Run is called.
++#if defined(_WIN32)
++bool (*p_crdtp__DomainDispatcher__BASE__Dispatch)(void* rust_dispatcher,
++                                             const uint8_t* command_data,
++                                             size_t command_len,
++                                             const Dispatchable* dispatchable);
++#define crdtp__DomainDispatcher__BASE__Dispatch p_crdtp__DomainDispatcher__BASE__Dispatch
++#else
+ bool crdtp__DomainDispatcher__BASE__Dispatch(void* rust_dispatcher,
+                                              const uint8_t* command_data,
+                                              size_t command_len,
+                                              const Dispatchable* dispatchable);
++#endif
+ // Rust callback: destroy the Rust DomainDispatcher when C++ side is destroyed.
++#if defined(_WIN32)
++void (*p_crdtp__DomainDispatcher__BASE__Drop)(void* rust_dispatcher);
++#define crdtp__DomainDispatcher__BASE__Drop p_crdtp__DomainDispatcher__BASE__Drop
++#else
+ void crdtp__DomainDispatcher__BASE__Drop(void* rust_dispatcher);
++#endif
+ }
+ 
+ struct crdtp__DomainDispatcher__BASE : public DomainDispatcher {

@@ -2,6 +2,11 @@ plugins {
     id 'com.android.library'
 }
 
+// Shared with the standalone Maven stager/checker. JNI-only verifier bytecode
+// is bundled; its Kotlin runtime is a normal, resolvable Maven dependency.
+def migoRuntimeDependencies = new groovy.json.JsonSlurper().parse(
+        rootProject.file('../../contracts/android-runtime-dependencies.json'))
+
 def supportedMigoAbis = ['arm64-v8a', 'x86_64']
 def supportedMigoTargets = [
         'arm64-v8a': [arch: 'aarch64', triple: 'aarch64-linux-android'],
@@ -196,6 +201,7 @@ android {
 
     sourceSets {
         main {
+            resources.srcDir rootProject.file('../../engine/third_party/rustls-platform-verifier-android-0.2.0/notice')
             jniLibs.srcDirs = []
             // Artifact manifests are generated only after `gradle clean` by
             // scripts/build-aar.sh. Keeping them under build/ prevents stale
@@ -451,9 +457,14 @@ tasks.configureEach { task ->
 preBuild.dependsOn generateBuildInfo
 
 dependencies {
-
-    // Zero *shipping* dependencies - no AndroidX required.
-    // All annotations are replaced with JavaDoc comments.
+    migoRuntimeDependencies.maven_runtime.each { dependency ->
+        implementation "${dependency.group}:${dependency.artifact}:${dependency.version}"
+    }
+    migoRuntimeDependencies.bundled_jars.each { jar ->
+        implementation files(rootProject.file("../../${jar}"))
+    }
+    // Only the upstream verifier's classes, not its application-wide manifest
+    // or networkSecurityConfig, enter the SDK. No Kotlin compiler or AndroidX.
     //
     // JUnit is `testImplementation`, so it is on the unit-test compile/runtime
     // classpath only and never enters the published AAR. The host-JVM state

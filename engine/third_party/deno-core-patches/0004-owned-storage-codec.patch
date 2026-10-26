@@ -1,0 +1,95 @@
+--- deno_core-0.413.0/lib.rs
++++ deno_core-0.413.0/lib.rs
+@@ -173,6 +173,7 @@
+ pub use crate::ops_builtin::op_void_sync;
+ pub use crate::ops_builtin_v8::deserialize_broadcast;
+ pub use crate::ops_builtin_v8::serialize_broadcast;
++pub use crate::ops_builtin_v8::{serialize_for_storage, deserialize_for_storage};
+ pub use crate::ops_metrics::OpMetricsEvent;
+ pub use crate::ops_metrics::OpMetricsFactoryFn;
+ pub use crate::ops_metrics::OpMetricsFn;
+--- deno_core-0.413.0/ops_builtin_v8.rs
++++ deno_core-0.413.0/ops_builtin_v8.rs
+@@ -866,6 +866,20 @@
+   error_callback: Option<v8::Local<'s, v8::Value>>,
+   #[smi] max_serialized_bytes: Option<u32>,
+ ) -> Result<Uint8Array, JsErrorBox> {
++  serialize_value(scope, value, host_objects, transferred_array_buffers,
++    for_storage, error_callback, max_serialized_bytes)
++}
++
++// The JS op and Rust embedder helper share the exact delegate and validation.
++fn serialize_value<'s, 'i>(
++  scope: &mut v8::PinScope<'s, 'i>,
++  value: v8::Local<'s, v8::Value>,
++  host_objects: Option<v8::Local<'s, v8::Value>>,
++  transferred_array_buffers: Option<v8::Local<'s, v8::Value>>,
++  for_storage: bool,
++  error_callback: Option<v8::Local<'s, v8::Value>>,
++  max_serialized_bytes: Option<u32>,
++) -> Result<Uint8Array, JsErrorBox> {
+   let max_serialized_bytes = match max_serialized_bytes {
+     Some(limit) if limit == 0 || limit > i32::MAX as u32 => {
+       return Err(JsErrorBox::range_error(
+@@ -1001,6 +1015,18 @@
+   deserializers: Option<v8::Local<'s, v8::Value>>,
+   for_storage: bool,
+ ) -> Result<v8::Local<'s, v8::Value>, JsErrorBox> {
++  deserialize_value(scope, &zero_copy, host_objects, transferred_array_buffers,
++    deserializers, for_storage)
++}
++
++fn deserialize_value<'s, 'i>(
++  scope: &mut v8::PinScope<'s, 'i>,
++  zero_copy: &[u8],
++  host_objects: Option<v8::Local<'s, v8::Value>>,
++  transferred_array_buffers: Option<v8::Local<'s, v8::Value>>,
++  deserializers: Option<v8::Local<'s, v8::Value>>,
++  for_storage: bool,
++) -> Result<v8::Local<'s, v8::Value>, JsErrorBox> {
+   let host_objects = match host_objects {
+     Some(value) => Some(
+       v8::Local::<v8::Array>::try_from(value)
+@@ -1038,7 +1064,7 @@
+     broadcast_shared_array_buffers: None,
+   });
+   let value_deserializer =
+-    v8::ValueDeserializer::new(scope, serialize_deserialize, &zero_copy);
++    v8::ValueDeserializer::new(scope, serialize_deserialize, zero_copy);
+   let parsed_header = value_deserializer
+     .read_header(scope.get_current_context())
+     .unwrap_or_default();
+@@ -1084,6 +1110,33 @@
+   }
+ }
+ 
++/// Serialize a copied storage-profile value directly into owned Rust bytes.
++/// Uses the same delegate, allocation cap and type policy as `core.serialize`.
++/// `None` means V8 has rethrown an exception/termination: the caller must return
++/// immediately without publishing a message. No transfer/store ids are created.
++pub fn serialize_for_storage<'s, 'i>(
++  scope: &mut v8::PinScope<'s, 'i>,
++  value: v8::Local<'s, v8::Value>,
++  max_bytes: u32,
++  error_callback: Option<v8::Local<'s, v8::Function>>,
++) -> Result<Option<Box<[u8]>>, JsErrorBox> {
++  let bytes = serialize_value(scope, value, None, None, true,
++    error_callback.map(Into::into), Some(max_bytes))?.0;
++  // Valid V8 wire always contains a header; only the pending-exception branch
++  // returns the empty placeholder required by the JS op's return convention.
++  Ok((!bytes.is_empty()).then_some(bytes))
++}
++
++/// Decode owned storage wire without first allocating a JS ArrayBuffer for it.
++/// The input is borrowed only for the synchronous read; copied values retain no
++/// reference to it. Host deserializers and out-of-band stores are disabled.
++pub fn deserialize_for_storage<'s, 'i>(
++  scope: &mut v8::PinScope<'s, 'i>,
++  bytes: &[u8],
++) -> Result<v8::Local<'s, v8::Value>, JsErrorBox> {
++  deserialize_value(scope, bytes, None, None, None, true)
++}
++
+ /// Serializes `value` for delivery over a `BroadcastChannel`. Any
+ /// `SharedArrayBuffer` it contains is collected out-of-band into the returned
+ /// list (its index in the list is written as the transfer id in the bytes),

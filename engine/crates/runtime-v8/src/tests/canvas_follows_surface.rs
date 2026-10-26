@@ -69,8 +69,9 @@ mod canvas_follows_surface_tests {
         size: SurfaceSize,
     ) -> std::thread::JoinHandle<()> {
         std::thread::spawn(move || {
-            let timeout = std::time::Duration::from_millis(500);
-            while let Ok(cmd) = rx.recv_timeout(timeout) {
+            // Isolate bootstrap is not bounded by a half-second wall clock.
+            // Stay available until the runtime drops its command sender.
+            while let Ok(cmd) = rx.recv() {
                 match cmd {
                     RenderCommand::Canvas(CanvasCmd::GetInfo { resp, .. }) => {
                         resp.ok(size.get());
@@ -155,6 +156,8 @@ mod canvas_follows_surface_tests {
 
     #[test]
     fn a_canvas_the_content_never_sized_follows_the_surface() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let size = SurfaceSize::new(360, 745);
         let (mut rt, _stub) = boot_runtime(size.clone());
 
@@ -182,6 +185,8 @@ mod canvas_follows_surface_tests {
     /// every call would look identical.
     #[test]
     fn a_resize_that_did_not_change_the_surface_changes_nothing() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let size = SurfaceSize::new(360, 745);
         let (mut rt, _stub) = boot_runtime(size.clone());
 
@@ -204,6 +209,8 @@ mod canvas_follows_surface_tests {
     /// because the window did.
     #[test]
     fn a_canvas_the_content_sized_is_never_overwritten() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let size = SurfaceSize::new(360, 745);
         let (mut rt, _stub) = boot_runtime(size.clone());
 
@@ -230,6 +237,8 @@ mod canvas_follows_surface_tests {
     /// height still tracked the surface would be a shape nobody can reason about.
     #[test]
     fn setting_one_dimension_claims_the_whole_canvas() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let size = SurfaceSize::new(360, 745);
         let (mut rt, _stub) = boot_runtime(size.clone());
 
@@ -253,6 +262,8 @@ mod canvas_follows_surface_tests {
     /// a surface change must not touch them.
     #[test]
     fn offscreen_canvases_do_not_follow_the_surface() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let size = SurfaceSize::new(360, 745);
         let (mut rt, _stub) = boot_runtime(size.clone());
 
@@ -281,6 +292,8 @@ mod canvas_follows_surface_tests {
     /// effects, and a resize is not a request for it.
     #[test]
     fn a_surface_change_does_not_create_a_canvas_nobody_asked_for() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let size = SurfaceSize::new(360, 745);
         let (mut rt, _stub) = boot_runtime(size.clone());
 

@@ -67,6 +67,8 @@ fn canonical(path: &Value) -> std::path::PathBuf {
 
 #[test]
 fn a_share_carries_what_content_set_and_its_image_through_the_sandbox() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let sandbox = Sandbox::new("share");
     let image = sandbox.paths.user_data_dir().join("card.png");
     std::fs::write(&image, b"png").unwrap();
@@ -135,6 +137,8 @@ fn a_share_carries_what_content_set_and_its_image_through_the_sandbox() {
 
 #[test]
 fn a_friend_share_carries_its_query_and_its_outcome_reaches_the_game() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let host = Arc::new(FakeShare::default());
     let mut runtime = boot_with_services(
         Some(Arc::new(Host(host.clone())) as Arc<dyn DeviceServices>),
@@ -182,6 +186,8 @@ fn a_friend_share_carries_its_query_and_its_outcome_reaches_the_game() {
 
 #[test]
 fn without_a_host_a_friend_share_fails_and_the_game_hears_it() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let mut runtime = boot_with_services(None, None);
     let checked = run_to_idle(
         &mut runtime,
@@ -200,6 +206,8 @@ fn without_a_host_a_friend_share_fails_and_the_game_hears_it() {
 
 #[test]
 fn the_host_s_menu_follows_what_content_shows_and_hides() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let host = Arc::new(FakeShare::default());
     let mut runtime = boot_with_services(
         Some(Arc::new(Host(host.clone())) as Arc<dyn DeviceServices>),
@@ -241,6 +249,8 @@ fn the_host_s_menu_follows_what_content_shows_and_hides() {
 
 #[test]
 fn a_menu_share_is_answered_by_the_game_with_its_images_through_the_sandbox() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let sandbox = Sandbox::new("menu-share");
     let image = sandbox.paths.user_data_dir().join("card.png");
     std::fs::write(&image, b"png").unwrap();

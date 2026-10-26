@@ -6,6 +6,7 @@ mod inbound;
 pub(crate) mod outbound;
 mod registration;
 mod safe;
+mod tls;
 mod utils;
 
 pub use env::{init_jni_env, with_env};

@@ -304,8 +304,6 @@ export function makeCore(ops, coreStream) {
   const encoder = new TextEncoder();
   const decoder = new TextDecoder();
   const timers = new Map();
-  let nextTimerId = 1;
-  let timerDepth = 0;
 
   // deno keeps this in V8's continuation-preserved embedder data, which follows
   // promise jobs. The engine only saves and restores it around timer callbacks,
@@ -328,50 +326,44 @@ export function makeCore(ops, coreStream) {
     encode: (text) => encoder.encode(text),
     decode: (bytes) => decoder.decode(bytes),
 
-    // Timers ride the Worker's own. `depth` is the nesting the engine computed;
-    // it is reported back by getTimerDepth while that timer's task runs, which
-    // is how the engine applies the HTML nesting clamp itself.
-    //
+    // The same opaque-handle API as core 0.413, with Migo's opt-in zero delay.
+    // Nesting and lifecycle policy live in the shared timer module.
     // A timer that comes due during a synchronous call runs after it
     // (task-gate.mjs), and one cancelled in between does not run at all. An
     // interval that comes due again while its run is still waiting is not
     // queued twice: a browser runs an interval once for however many periods a
     // busy loop kept it waiting.
-    queueUserTimer(depth, repeat, timeout, task) {
-      const id = nextTimerId++;
+    createTimer(task, timeout, args, repeat, _refed, _system, allowZero = false) {
+      timeout = Number(timeout);
+      const minimum = allowZero && !repeat ? 0 : 1;
+      if (!(timeout >= minimum && timeout <= 0x7fffffff)) timeout = 1;
+      const timer = { repeat, native: null };
       let waiting = false;
       const run = () => {
         waiting = false;
-        if (!timers.has(id)) return;
-        const outer = timerDepth;
-        timerDepth = depth;
-        try {
-          task();
-        } finally {
-          timerDepth = outer;
-          if (!repeat) timers.delete(id);
-        }
+        if (!timers.has(timer)) return;
+        if (!repeat) timers.delete(timer);
+        if (args === undefined) task();
+        else ReflectApply(task, undefined, args);
       };
       const due = () => {
         if (waiting) return;
         waiting = true;
         runTask(run);
       };
-      timers.set(id, { repeat, handle: repeat ? platform.setInterval(due, timeout) : platform.setTimeout(due, timeout) });
-      return id;
+      timers.set(timer, timer);
+      timer.native = repeat ? platform.setInterval(due, timeout) : platform.setTimeout(due, timeout);
+      return timer;
     },
-    cancelTimer(id) {
-      const timer = timers.get(id);
-      if (!timer) return;
-      timers.delete(id);
-      if (timer.repeat) platform.clearInterval(timer.handle);
-      else platform.clearTimeout(timer.handle);
+    cancelTimer(timer) {
+      if (!timers.delete(timer)) return;
+      if (timer.repeat) platform.clearInterval(timer.native);
+      else platform.clearTimeout(timer.native);
     },
     // A Worker has no event loop to keep alive or let exit: every timer is
     // "referenced" for as long as the Worker lives.
     refTimer() {},
     unrefTimer() {},
-    getTimerDepth: () => timerDepth,
     getAsyncContext: () => asyncContext,
     setAsyncContext(context) {
       asyncContext = context;

@@ -34,6 +34,7 @@ import { core } from "ext:core/mod.js";
 const WindowGlobalScope = {
     alert: core.propWritable(alert.alert),
     URL: core.propNonEnumerable(url.URL),
+    URLSearchParams: core.propNonEnumerable(url.URLSearchParams),
     createCanvas: core.propNonEnumerable(canvas.createCanvas),
     // Host hook: 99_main.js relocates `_internal*` onto the Symbol-keyed host
     // bridge, from where js_bindings resolves it to fire webglcontextlost/

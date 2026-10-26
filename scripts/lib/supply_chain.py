@@ -377,7 +377,16 @@ def validate_metadata(
         if isinstance(package, dict)
         and (package_ids is None or str(package.get("id", "")) in package_ids)
     }
-    for key in sorted(set(file_exceptions) & considered_keys - used_file_exceptions):
+    # A complete graph can prove an exact approval is obsolete even when the
+    # package (or just that version) has disappeared. Intersecting with the
+    # graph first silently kept those records forever. A product-only scan
+    # cannot make that claim about approvals used by other products.
+    approval_scope = (
+        set(file_exceptions)
+        if package_ids is None
+        else set(file_exceptions) & considered_keys
+    )
+    for key in sorted(approval_scope - used_file_exceptions):
         errors.append(f"{key[0]}@{key[1]}: license-file approval is stale or was not exercised")
     return license_by_id, errors
 

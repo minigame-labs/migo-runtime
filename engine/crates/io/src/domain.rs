@@ -18,6 +18,7 @@ use crate::fs_ops::{FdIo, FileTable};
 pub struct IoDomain {
     state: Mutex<DomainState>,
     closed: AtomicBool,
+    closed_notify: tokio::sync::Notify,
     #[cfg(test)]
     register_temp_file_hook: Mutex<Option<RegisterTempFileHook>>,
 }
@@ -43,6 +44,7 @@ impl IoDomain {
                 temp_files: HashSet::new(),
             }),
             closed: AtomicBool::new(false),
+            closed_notify: tokio::sync::Notify::new(),
             #[cfg(test)]
             register_temp_file_hook: Mutex::new(None),
         }
@@ -201,6 +203,16 @@ impl IoDomain {
         self.closed.load(Ordering::Acquire)
     }
 
+    /// Registers before checking the level so concurrent close cannot lose a wake.
+    pub async fn closed(&self) {
+        let notified = self.closed_notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if !self.is_closed() {
+            notified.await;
+        }
+    }
+
     fn ensure_open(&self) -> Result<(), DomainError> {
         if self.is_closed() {
             Err(DomainError::Closed)
@@ -213,6 +225,7 @@ impl IoDomain {
         if self.closed.swap(true, Ordering::AcqRel) {
             return;
         }
+        self.closed_notify.notify_waiters();
 
         let temp_files = {
             let mut state = self.state.lock();

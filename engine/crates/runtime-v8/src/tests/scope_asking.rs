@@ -135,6 +135,8 @@ fn scope_of(request: &str) -> String {
 
 #[test]
 fn an_undecided_scope_is_asked_for_and_the_call_goes_ahead_once_granted() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let host = Arc::new(Host::default());
     let mut runtime = boot(&host, true);
     // Two calls while the player is asked: one question.
@@ -187,6 +189,8 @@ fn an_undecided_scope_is_asked_for_and_the_call_goes_ahead_once_granted() {
 
 #[test]
 fn a_refusal_refuses_the_call_and_is_not_asked_again() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let host = Arc::new(Host::default());
     let mut runtime = boot(&host, true);
     run(
@@ -226,6 +230,8 @@ fn a_refusal_refuses_the_call_and_is_not_asked_again() {
 
 #[test]
 fn the_players_answer_is_not_the_calls_time() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let host = Arc::new(Host::default());
     let mut runtime = boot(&host, true);
     // The event loop runs until nothing is left to wait for: a timer still
@@ -255,6 +261,8 @@ fn the_players_answer_is_not_the_calls_time() {
 
 #[test]
 fn with_nobody_to_ask_the_call_refuses_as_it_did() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let host = Arc::new(Host::default());
     let mut runtime = boot(&host, false);
     let result = run(
@@ -271,6 +279,8 @@ fn with_nobody_to_ask_the_call_refuses_as_it_did() {
 
 #[test]
 fn a_call_outside_the_deferred_apis_asks_too() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let host = Arc::new(Host::default());
     let mut runtime = boot(&host, true);
     run(
@@ -298,6 +308,8 @@ fn a_call_outside_the_deferred_apis_asks_too() {
 
 #[test]
 fn user_info_is_never_asked_this_way() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let host = Arc::new(Host::default());
     let mut runtime = boot(&host, true);
     run(

@@ -1,0 +1,42 @@
+--- symphonia-codec-vorbis-0.6.1/src/floor.rs
++++ symphonia-codec-vorbis-0.6.1/src/floor.rs
+@@ -89,10 +89,10 @@
+     ($expr:expr) => {
+         match $expr {
+             Ok(val) => val,
+-            // An end-of-bitstream error is classified under ErrorKind::Other. This condition
++            // An end-of-bitstream error is classified under ErrorKind::UnexpectedEof. This condition
+             // should not be treated as an error, rather, it should return from the function
+             // immediately without error.
+-            Err(ref e) if e.kind() == std::io::ErrorKind::Other => return Ok(()),
++            Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
+             Err(e) => return Err(e.into()),
+         }
+     };
+@@ -102,10 +102,10 @@
+     ($expr:expr) => {
+         match $expr {
+             Ok(val) => val,
+-            // An end-of-bitstream error is classified under ErrorKind::Other. This condition
++            // An end-of-bitstream error is classified under ErrorKind::UnexpectedEof. This condition
+             // should not be treated as an error, rather, it should return from the function
+             // immediately without error.
+-            Err(Error::IoError(ref e)) if e.kind() == std::io::ErrorKind::Other => return Ok(()),
++            Err(Error::IoError(ref e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
+             Err(e) => return Err(e),
+         }
+     };
+--- symphonia-codec-vorbis-0.6.1/src/residue.rs
++++ symphonia-codec-vorbis-0.6.1/src/residue.rs
+@@ -157,9 +157,9 @@
+         // Read the residue, and ignore end-of-bitstream errors which are legal.
+         match result {
+             Ok(_) => (),
+-            // An end-of-bitstream error is classified under ErrorKind::Other. This condition
++            // An end-of-bitstream error is classified under ErrorKind::UnexpectedEof. This condition
+             // should not be treated as an error.
+-            Err(Error::IoError(ref e)) if e.kind() == io::ErrorKind::Other => (),
++            Err(Error::IoError(ref e)) if e.kind() == io::ErrorKind::UnexpectedEof => (),
+             Err(e) => return Err(e),
+         };
+ 

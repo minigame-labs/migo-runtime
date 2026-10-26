@@ -33,12 +33,12 @@
     "argument list, which is the whole reason the probe ran before this file grew a",
     "recipe. See `measured` below for the numbers."
   ],
-  "rusty_v8_version": "145.0.0",
-  "rusty_v8_revision": "e6a88b35dd3d7f2849a0df33a71d338701c55316",
-  "v8_revision": "8defb67673c5483ae56258a2de01b07e947dc921",
+  "rusty_v8_version": "150.4.0",
+  "rusty_v8_revision": "5c15a6995c9bb4bacd3e341b59fff32c909c80bf",
+  "v8_revision": "ac1e23989121713ca642f6650b34deff7b686896",
   "sources": {
-    "rusty_v8": "https://github.com/denoland/rusty_v8/tree/e6a88b35dd3d7f2849a0df33a71d338701c55316",
-    "v8": "https://chromium.googlesource.com/v8/v8/+/8defb67673c5483ae56258a2de01b07e947dc921"
+    "rusty_v8": "https://github.com/denoland/rusty_v8/tree/5c15a6995c9bb4bacd3e341b59fff32c909c80bf",
+    "v8": "https://chromium.googlesource.com/v8/v8/+/ac1e23989121713ca642f6650b34deff7b686896"
   },
   "gn": {
     "version": "2502",
@@ -60,7 +60,13 @@
       "this is the same gn is."
     ]
   },
-  "required_patches": [],
+  "required_patches": [
+    {
+      "id": "bindgen-clang22-lock",
+      "file": "0010-bindgen-clang22-lock.patch",
+      "notes": "Use bindgen 0.72.1's Clang 22+ cursor fix. The recipe applies this top-level Cargo.lock patch and proves the complete source tree before and after compilation."
+    }
+  ],
   "macos": {
     "deployment_target": "11.0",
     "notes": [
@@ -107,7 +113,7 @@
     "emitted, and nothing has compiled it yet. Raising a baseline is a claim about",
     "bytes; it belongs in the same change as the bytes."
   ],
-  "measured": {
+  "historical_145_measured": {
     "probe_run": "https://github.com/minigame-labs/migo-runtime/actions/runs/34299937361",
     "measured_on": "2026-09-09",
     "runner": "macos-15, Apple silicon",

@@ -62,6 +62,8 @@ fn boot(host: Arc<FakeHost>) -> deno_core::JsRuntime {
 
 #[test]
 fn realtime_logs_reach_the_host_s_game_log_with_their_filters() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let host = Arc::new(FakeHost::default());
     let mut runtime = boot(host.clone());
     run_to_idle(
@@ -95,6 +97,8 @@ fn realtime_logs_reach_the_host_s_game_log_with_their_filters() {
 
 #[test]
 fn a_game_log_manager_answers_once_it_is_returned_and_keeps_its_state_to_itself() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let host = Arc::new(FakeHost::default());
     let mut runtime = boot(host);
     // The reference's own example uses what the call returns; its callbacks
@@ -121,6 +125,8 @@ fn a_game_log_manager_answers_once_it_is_returned_and_keeps_its_state_to_itself(
 
 #[test]
 fn a_game_s_logs_are_limited_per_run_and_by_the_bytes_they_weigh() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let host = Arc::new(FakeHost::default());
     let mut runtime = boot(host.clone());
     let said = run_to_idle(
@@ -145,6 +151,8 @@ fn a_game_s_logs_are_limited_per_run_and_by_the_bytes_they_weigh() {
 
 #[test]
 fn analytics_reach_the_host_and_a_scene_is_checked_and_reported_once() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let host = Arc::new(FakeHost::default());
     let mut runtime = boot(host.clone());
     runtime
@@ -192,6 +200,8 @@ fn analytics_reach_the_host_and_a_scene_is_checked_and_reported_once() {
 
 #[test]
 fn random_values_are_the_os_s_and_as_many_as_asked_for() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let mut runtime = boot_with_services(None, None);
     runtime
         .execute_script("<test:settle>", deno_core::FastString::from_static(SETTLE))

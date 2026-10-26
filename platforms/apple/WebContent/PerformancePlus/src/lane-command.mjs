@@ -22,7 +22,7 @@ import { engineHost } from "./engine-host.mjs";
 import { servicesOf } from "./lane-async.mjs";
 import { f32BitsOf, optionalBytesOf, optionalStringOf, smiU32, stringOf, toBool, toF64, toI32, toU8 } from "./op-args.mjs";
 import { SERVICE_OP } from "./service-ops.mjs";
-import { postToWorkerAttempt, terminateWorkerAttempt } from "./worker-relay-channel.mjs";
+import { terminateWorkerAttempt } from "./worker-relay-channel.mjs";
 
 /// A console line, for the host's log.
 ///
@@ -791,13 +791,8 @@ export const op_write_ble_characteristic_value = hostRequest(SERVICE_OP.op_write
 
 // ---- content's migo.createWorker (the fire-and-forget half) -----------------
 //
-// `op_worker_post_message` and `op_worker_terminate` are synchronous, non-async functions in Rust, so they belong
-// here rather than in `lane-async.mjs` with the other three ops `01_worker.js` imports; `worker-relay-channel.mjs`
-// (that file's own header explains why) is the shared state both files need.
-export function op_worker_post_message(jsonMessage) {
-  postToWorkerAttempt(stringOf(jsonMessage, "json_message"));
-}
-
+// Termination crosses the page control port. Message admission/commit are local
+// producer operations in lane-local.mjs; payloads use the direct private port.
 export function op_worker_terminate() {
   terminateWorkerAttempt();
 }

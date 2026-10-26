@@ -61,6 +61,8 @@ fn answer(request: &serde_json::Value, fields: &str) -> String {
 
 #[test]
 fn the_host_is_handed_the_real_file_and_its_answer_settles_the_call() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let sandbox = Sandbox::new("save-file-to-disk");
     let file = sandbox.paths.user_data_dir().join("save.txt");
     std::fs::write(&file, b"saved").unwrap();
@@ -124,6 +126,8 @@ fn the_host_is_handed_the_real_file_and_its_answer_settles_the_call() {
 
 #[test]
 fn without_a_host_there_is_no_save_dialog() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let sandbox = Sandbox::new("save-file-no-host");
     std::fs::write(sandbox.paths.user_data_dir().join("save.txt"), b"saved").unwrap();
     let mut runtime = boot(None, Some(sandbox.vfs()));

@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `getBatteryInfo` and `getBatteryInfoSync` on a Mac laptop: the Apple SDK reports the internal battery among IOKit's
+  power sources (its charge, and whether it is charging or full on the charger) and Low Power Mode from macOS 12, at
+  each change. A Mac without a battery still answers "not supported".
+- The Linux Host Kit's `MigoManagedSession` supplies the soft keyboard: content's `showKeyboard` opens a text field
+  along the bottom of the game, which holds the keyboard's focus while it shows and whose height content is told. Each
+  edit reports the whole text, Enter confirms a one-line field (closing it unless content asked to hold it), Esc or
+  turning away closes it with the text it was left with, a number keyboard takes digits, and an on-screen keyboard
+  that follows the focused field opens for it with the confirm key content named. It used to decline the capability,
+  so a game could not be typed into on Linux.
 - Videos in the Linux Host Kit's image service, through the optional `migo::qt6-media` component (GStreamer):
   `chooseMedia` picks videos -- described by their length, their size as shown and their first frame as the cover --
   and `previewMedia` plays them in the viewer, with their poster, sound and controls. An App opts in by building the
@@ -152,6 +161,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scope before the game's entry, in the order given -- as an Android or Apple host injects an adapter. Content written
   against `wx` or the browser could not run there at all: `migo-examples`' `wx-adapter-demo` stopped on
   `ReferenceError: wx is not defined` and presented nothing; with the wx adapter bundle as a prelude it runs.
+- `scripts/prescreen-run.sh` takes `--adapter FILE` and `--record`: the host is handed the adapter the content is
+  written against and this checkout's compatibility recorder, and the run report calls each injected only when the
+  host's log names its sha256 -- a host that ignores the request is said to, rather than its absence being charged to
+  the bundle. `migo-examples`' debug-only `PrescreenProbeActivity`, which `PRESCREEN.md` sends a stranger to, reads
+  both; wx content through it no longer stops on `wx is not defined`.
 - `scripts/prescreen-game.sh` reads `game.json` and counts the plugins it declares, which the mini-game platform serves
   to `requirePlugin(...)` and Migo cannot. A bundle that also calls `requirePlugin` does not start as built, and no name
   scan saw it; one that only declares a plugin is told the declaration may be unused. Cocos Creator's "Separate Engine"

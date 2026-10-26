@@ -82,6 +82,8 @@ fn settled(runtime: &mut JsRuntime, script: &str) -> String {
 
 #[test]
 fn every_pad_has_one_actuator_listing_the_effects_its_host_declared() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let mut runtime = boot(Some(Arc::default()));
     let shape = run_to_idle(
         &mut runtime,
@@ -104,6 +106,8 @@ fn every_pad_has_one_actuator_listing_the_effects_its_host_declared() {
 
 #[test]
 fn an_effect_plays_on_the_host_s_motors_and_completes_when_its_time_is_up() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let motors = Arc::new(Motors::default());
     let mut runtime = boot(Some(Arc::clone(&motors)));
     let outcome = settled(
@@ -128,6 +132,8 @@ fn an_effect_plays_on_the_host_s_motors_and_completes_when_its_time_is_up() {
 
 #[test]
 fn the_next_effect_preempts_the_one_playing_and_reset_stops_it() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let motors = Arc::new(Motors::default());
     let mut runtime = boot(Some(Arc::clone(&motors)));
     let outcome = settled(
@@ -158,6 +164,8 @@ fn the_next_effect_preempts_the_one_playing_and_reset_stops_it() {
 
 #[test]
 fn a_start_delay_is_silent_and_the_whole_effect_fits_the_limit() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let motors = Arc::new(Motors::default());
     let mut runtime = boot(Some(Arc::clone(&motors)));
     let outcome = settled(
@@ -206,6 +214,8 @@ fn a_start_delay_is_silent_and_the_whole_effect_fits_the_limit() {
 
 #[test]
 fn invalid_effects_reject_as_the_standard_says_and_reach_no_motor() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let motors = Arc::new(Motors::default());
     let mut runtime = boot(Some(Arc::clone(&motors)));
     let outcome = settled(
@@ -239,6 +249,8 @@ fn invalid_effects_reject_as_the_standard_says_and_reach_no_motor() {
 
 #[test]
 fn a_silent_effect_reaches_no_motor_that_is_already_still() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let motors = Arc::new(Motors::default());
     let mut runtime = boot(Some(Arc::clone(&motors)));
     let outcome = settled(
@@ -255,6 +267,8 @@ fn a_silent_effect_reaches_no_motor_that_is_already_still() {
 
 #[test]
 fn going_to_the_background_preempts_and_stops_and_effects_wait_for_the_foreground() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let motors = Arc::new(Motors::default());
     let mut runtime = boot(Some(Arc::clone(&motors)));
     let outcome = settled(
@@ -290,6 +304,8 @@ fn going_to_the_background_preempts_and_stops_and_effects_wait_for_the_foregroun
 
 #[test]
 fn a_pad_that_goes_away_ends_its_effect_and_its_actuator_plays_no_more() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let motors = Arc::new(Motors::default());
     let mut runtime = boot(Some(Arc::clone(&motors)));
     let outcome = settled(
@@ -312,6 +328,8 @@ fn a_pad_that_goes_away_ends_its_effect_and_its_actuator_plays_no_more() {
 
 #[test]
 fn an_effect_the_host_cannot_take_rejects() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let mut runtime = boot(None);
     let outcome = settled(
         &mut runtime,
