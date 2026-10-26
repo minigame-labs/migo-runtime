@@ -57,7 +57,18 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck source=scripts/lib/python-cmd.sh
 source "$SCRIPT_DIR/lib/python-cmd.sh"
 V8_DIR="$ROOT/engine/third_party/rusty_v8"
-TAG="${MIGO_V8_ARCHIVE_TAG:-v8-archives-e6a88b3}"
+# The release is named after the rusty_v8 revision the native locks pin -- the
+# four agree, and scripts/lib/v8_cohort.py holds them to it -- so moving the
+# cohort moves the release with it. A tag written here instead stayed on 145's
+# release when the locks moved to 150.4, and every archive fetched was a 145 one
+# failing its 150 manifest's hash.
+cohort_release() {
+    "$(python_cmd)" -c '
+import json, sys
+print("v8-archives-" + json.load(open(sys.argv[1]))["rusty_v8_revision"][:7])
+' "$ROOT/contracts/artifact-manifest/android-v8.lock.json"
+}
+TAG="${MIGO_V8_ARCHIVE_TAG:-$(cohort_release)}"
 # Overridable so the archives can be served from somewhere else (a mirror, or a
 # fork's own release) without editing this script.
 BASE_URL="${MIGO_V8_ARCHIVE_BASE_URL:-https://github.com/minigame-labs/migo/releases/download/$TAG}"
