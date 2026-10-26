@@ -83,6 +83,8 @@ fn record(sandbox: &Sandbox) -> std::path::PathBuf {
 
 #[test]
 fn a_shared_recording_is_the_engine_s_file_with_the_options_content_set() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let sandbox = Sandbox::new("recorder-share");
     let host = Arc::new(FakeShare::default());
     let mut runtime = boot_sharing(&sandbox, &host);
@@ -172,6 +174,8 @@ fn a_shared_recording_is_the_engine_s_file_with_the_options_content_set() {
 
 #[test]
 fn the_share_button_shares_on_a_tap_and_its_listeners_hear_a_failed_share() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let sandbox = Sandbox::new("recorder-share-button");
     let host = Arc::new(FakeShare::default());
     let mut runtime = boot_sharing(&sandbox, &host);
