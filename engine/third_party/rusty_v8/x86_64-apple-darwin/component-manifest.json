@@ -1,6 +1,6 @@
 {
   "schema": "migo-v8-component-manifest/v1",
-  "component_id": "7485aee77ee895422143649d9b8440fce34407ab817318a4761e041faa7d2f5a",
+  "component_id": "de9d33d096b79f0b17a135f6498ad6d786ba5e6352e4f76b3323d8661cff4a46",
   "target": {
     "triple": "x86_64-apple-darwin",
     "os": "macos",
@@ -23,30 +23,40 @@
   },
   "runtime": {
     "backend": "v8",
-    "rusty_v8_version": "145.0.0",
-    "rusty_v8_revision": "e6a88b35dd3d7f2849a0df33a71d338701c55316",
-    "v8_revision": "8defb67673c5483ae56258a2de01b07e947dc921",
+    "rusty_v8_version": "150.4.0",
+    "rusty_v8_revision": "5c15a6995c9bb4bacd3e341b59fff32c909c80bf",
+    "v8_revision": "ac1e23989121713ca642f6650b34deff7b686896",
     "normalized_gn_args": [
       "host_cpu=\"arm64\"",
+      "icu_copy_icudata_to_root_build_dir=true",
+      "icu_use_data_file=true",
+      "icu_use_stub_data=true",
       "is_debug=false",
       "mac_deployment_target=\"11.0\"",
+      "rusty_v8_enable_simdutf=true",
       "target_cpu=\"x64\"",
       "use_custom_libcxx=true",
+      "v8_depend_on_icu_data_file=true",
       "v8_enable_pointer_compression=false",
       "v8_enable_sandbox=false",
       "v8_enable_v8_checks=false",
       "v8_target_cpu=\"x64\""
     ],
-    "patches": []
+    "patches": [
+      {
+        "id": "bindgen-clang22-lock",
+        "sha256": "c886d224043ffd4c033dbee9269c2cc9134974d1070636f9f075aac8a5eb0bea"
+      }
+    ]
   },
   "hashes": {
-    "archive": "ab86ce89176cad1d1fa316709c4f3e963ce48d5914d85d1c3ede644b0a0ed12c",
-    "rust_binding": "299bb6913bef836cd8beb097908f62765006660a3213d2016faeede0a1222e05"
+    "archive": "9ab08e9ef7284cd8a14c2280b87ac0c69a11972adfc09c93f4f815188f06e693",
+    "rust_binding": "40139dd0b412395abf9e0be43a801049dd72440ddabe262ef6564c60b53c8c9d"
   },
   "provenance": {
-    "source_revision": "e6a88b35dd3d7f2849a0df33a71d338701c55316",
+    "source_revision": "5c15a6995c9bb4bacd3e341b59fff32c909c80bf",
     "build_recipe": "scripts/build-v8-apple.sh",
-    "build_recipe_sha256": "748cf078d9d78782652f724df7c2e6e099999029ff95a3a76fbc7c78932f0eac",
+    "build_recipe_sha256": "b0fb399df327f0a8789d931dd55c51fab5d90d48fe1ba452dd03cfe29d1258ce",
     "licenses": [
       "BSD-3-Clause",
       "MIT"
