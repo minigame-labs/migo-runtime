@@ -46,7 +46,8 @@ COMMENT = [
     "returns: the type the signature names, or null. params: the signature's parameters. promise: whether",
     "Promise-style calls are supported, null where the page does not say. scope: the authorization scope the call",
     "needs, by the engine's name for it. clients: what the page says of the reference's Windows, Mac and HarmonyOS",
-    "clients -- true, false, or {\"from\": version} -- absent when it says nothing. options: the options object's fields other than the",
+    "clients -- true, false, or {\"from\": version} -- absent when it says nothing; mobile: false where it says the API",
+    "is offered on its desktop clients only (its phones offer every API otherwise). options: the options object's fields other than the",
     "callbacks. success / result / listener: the fields of the success callback's argument, of the returned object,",
     "of the listener's argument. A field is [name, type] or [name, type, since], then an object with what else the page",
     "says of it: \"fields\", the fields of an Object it details; \"when\", that it is there only sometimes -- plugin,",
@@ -273,6 +274,15 @@ def spec_of(markdown: str, namespace: str, name: str, scopes: list[str]) -> dict
         found = re.match(r"^\S+ (Windows|Mac|鸿蒙 OS) 版：(.*)$", note)
         if found:
             clients[CLIENTS[found.group(1)]] = client_support(plain(found.group(2)))
+    # "仅在 Windows、Mac 端支持", "仅在 PC 端支持", "仅支持 PC 平台", "仅适用于 PC 平台": the reference offers it on its
+    # desktop clients and not on its phones, which the client notes above cannot say (they only ever add a client to
+    # the phones). Said of the API in its prose, not of a field in a table ("仅在 PC 端存在该值").
+    if any(
+        not line.lstrip().startswith("|")
+        and re.search(r"仅(在 ?(Windows、Mac 端|PC 端|PC 平台)支持|支持 ?PC 平台|适用于 ?PC 平台)", line)
+        for line in lines
+    ):
+        clients["mobile"] = False
 
     options: list[list] = []
     callbacks = False

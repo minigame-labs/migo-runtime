@@ -35,6 +35,7 @@ trap 'rm -rf "$TMP"' EXIT
 # Every file the generator reads, copied where it expects it.
 inputs=(
     contracts/runtime/minigame-api.json
+    contracts/runtime/minigame-api-spec.json
     contracts/runtime/minigame-api-reach.json
     contracts/runtime/api-platform-decisions.json
     contracts/runtime/api-platform-matrix.json
@@ -102,6 +103,12 @@ red "a host layer that stops installing a callback" platforms/apple/Sources/Migo
     'text.replace("callbacks.on_keep_screen_on = ", "// ", 1)'
 red "a channel method moving to another op" contracts/runtime/host-services.json \
     'text.replace("\"op\": \"op_set_clipboard_data\"", "\"op\": \"op_set_clipboard_data_moved\"", 1)'
+# What is owed is what the reference offers on each kind of client: a desktop-only call that a page stops calling
+# desktop-only is owed on the phones, and a phones-only one a desktop client starts offering is owed there.
+red "a desktop-only call the reference starts offering on its phones" contracts/runtime/minigame-api-spec.json \
+    'text.replace("\"mobile\": false", "\"mobile\": true", 1)'
+red "a phones-only call the reference's Windows client starts offering" contracts/runtime/minigame-api-spec.json \
+    'text.replace("\"createVideoDecoder\": {", "\"createVideoDecoder\": {\"clients\": {\"windows\": true}, ", 1)'
 # Ready is verified, not wired: a measured API that regresses is no longer ready, and a record that does not measure
 # the platform's API list, or says what no run can, is refused.
 if [[ -e "$ROOT/contracts/runtime/api-conformance-macos.json" ]]; then
