@@ -107,6 +107,15 @@ impl HostJsRuntime {
         #[cfg(feature = "code-signing")] code_signing_enabled: bool,
         #[cfg(feature = "code-signing")] code_signing_pubkey: Option<&str>,
     ) -> Self {
+        // V8 hands each delayed task it posts to the tokio runtime that is
+        // current when the isolate is created, and deno_core aborts the process
+        // at the first one if there was none: later, from inside V8, saying
+        // nothing of where the isolate came from. A session thread that built
+        // its Host before its runtime aborted that way on macOS. Said here.
+        assert!(
+            tokio::runtime::Handle::try_current().is_ok(),
+            "HostJsRuntime::new must run inside its session's tokio runtime"
+        );
         // V8's locale data, before anything that can start V8 (a runtime cannot be handed it later).
         crate::icu::install_icu_data();
 

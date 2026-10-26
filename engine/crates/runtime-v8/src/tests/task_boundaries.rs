@@ -180,3 +180,12 @@ async fn checkpoint_work_is_covered_by_the_script_watchdog() {
     assert!(runtime.watchdog_timed_out());
     assert!(start.elapsed() < Duration::from_secs(5));
 }
+
+/// An isolate made outside a tokio runtime has nowhere for V8's delayed tasks
+/// to go, and deno_core aborts the process at the first one -- later, from
+/// inside V8. The Host's runtime refuses to be made there instead, and says why.
+#[test]
+#[should_panic(expected = "HostJsRuntime::new must run inside its session's tokio runtime")]
+fn the_host_s_runtime_is_made_inside_a_tokio_runtime_or_not_at_all() {
+    let _ = boot();
+}
