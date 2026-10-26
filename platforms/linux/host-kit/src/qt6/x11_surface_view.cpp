@@ -56,6 +56,21 @@ struct XcbFree {
 template <typename T>
 using XcbReply = std::unique_ptr<T, XcbFree>;
 
+/// `view`'s native window's size as the X server has it, in physical pixels;
+/// none where there is no X server to ask or no window yet. Asked on Qt's own
+/// connection, after every resize Qt has sent on it, so the answer is the size
+/// the last of them gave the window.
+std::optional<QSize> serverSize(const QWidget &view) {
+    auto *native = qGuiApp->nativeInterface<QNativeInterface::QX11Application>();
+    xcb_connection_t *connection = native != nullptr ? native->connection() : nullptr;
+    const WId window = view.internalWinId();
+    if (connection == nullptr || window == 0) return std::nullopt;
+    const XcbReply<xcb_get_geometry_reply_t> geometry(xcb_get_geometry_reply(
+        connection, xcb_get_geometry(connection, static_cast<xcb_drawable_t>(window)), nullptr));
+    if (geometry == nullptr) return std::nullopt;
+    return QSize(geometry->width, geometry->height);
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -240,8 +255,15 @@ QPaintEngine *MigoQtX11SurfaceView::paintEngine() const { return nullptr; }
 MigoResult MigoQtX11SurfaceView::currentMetrics(SurfaceMetrics *metrics) const noexcept {
     if (metrics == nullptr) return MIGO_ERROR_INVALID_ARGUMENT;
     const double scale = devicePixelRatioF();
-    const double physical_width = static_cast<double>(width()) * scale;
-    const double physical_height = static_cast<double>(height()) * scale;
+    // The window's size from the X server, not from Qt: the server echoes each
+    // resize Qt asked of it, and Qt takes every echo as the size, so after a
+    // burst of resizes Qt says, for a while, a size the window no longer has.
+    double physical_width = static_cast<double>(width()) * scale;
+    double physical_height = static_cast<double>(height()) * scale;
+    if (const std::optional<QSize> server = serverSize(*this)) {
+        physical_width = server->width();
+        physical_height = server->height();
+    }
     constexpr double kMaxDimension =
         static_cast<double>(std::numeric_limits<std::uint32_t>::max());
     if (!std::isfinite(scale) || scale <= 0.0 || physical_width < 1.0 ||
@@ -425,6 +447,12 @@ void MigoQtX11SurfaceView::showEvent(QShowEvent *event) {
 
 void MigoQtX11SurfaceView::resizeEvent(QResizeEvent *event) {
     QWidget::resizeEvent(event);
+    // The view's size is set through Qt, by the App's layout: those resizes
+    // are Qt's own. What the window system says of the size afterwards is the
+    // X server echoing them, one notify at a time -- three quick resizes came
+    // back as 480x270 after 640x360 had been reported, and the Session was told
+    // a size the window had already left. An echo says nothing new.
+    if (event->spontaneous()) return;
     scheduleMetricsUpdate();
 }
 
