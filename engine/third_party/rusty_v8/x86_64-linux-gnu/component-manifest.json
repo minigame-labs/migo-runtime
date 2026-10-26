@@ -1,6 +1,6 @@
 {
   "schema": "migo-v8-component-manifest/v1",
-  "component_id": "26fcb7ccb48972875329b0def52f1ee574fb511b36cf54b24713ea8e6061d7f8",
+  "component_id": "61c10fd2a33fb2a8ea2e07102dc21c65886414d23a170bc0510b099bb1a1569b",
   "target": {
     "triple": "x86_64-unknown-linux-gnu",
     "os": "linux",
@@ -17,27 +17,33 @@
     }
   },
   "toolchain": {
-    "rustc": "rustc 1.89.0 (29483883e 2025-08-04) | binary: rustc | commit-hash: 29483883eed69d5fb4db01964cdf2af4d86e9cb2 | commit-date: 2025-08-04 | host: x86_64-unknown-linux-gnu | release: 1.89.0 | LLVM version: 20.1.7",
-    "compiler": "Android (8481493, based on r416183c2) clang version 12.0.9 (https://android.googlesource.com/toolchain/llvm-project c935d99d7cf2016289302412d708641d52d2f7ee) | Target: x86_64-unknown-linux-gnu | Thread model: posix | InstalledDir: ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin",
-    "sdk": "Debian bullseye amd64 sysroot; sysroots.json sha256=fad7d0037e5f1da91f66f28fb666522e4d2884322e3c89db8387dad2b275291d",
-    "linker": "Ubuntu LLD 18.1.3 (compatible with GNU linkers)"
+    "rustc": "rustc 1.95.0 (59807616e 2026-04-14) | binary: rustc | commit-hash: 59807616e1fa2540724bfbac14d7976d7e4a3860 | commit-date: 2026-04-14 | host: x86_64-unknown-linux-gnu | release: 1.95.0 | LLVM version: 22.1.2",
+    "compiler": "clang version 23.0.0git (https://chromium.googlesource.com/a/external/github.com/llvm/llvm-project 20b6ec66967ac2a8f932863c1abf251e5b17a843) | Target: x86_64-unknown-linux-gnu | Thread model: posix | InstalledDir: /tmp/migo-rusty-v8-150.4.0/target/x86_64-unknown-linux-gnu/release/clang/bin",
+    "sdk": "Debian bullseye amd64 sysroot; sysroots.json sha256=57caf9c36ba1c6273a3b53cad89733c304fd41a2cdaf3629113cb28e278db632",
+    "linker": "LLD 23.0.0 (https://chromium.googlesource.com/a/external/github.com/llvm/llvm-project 20b6ec66967ac2a8f932863c1abf251e5b17a843) (compatible with GNU linkers)"
   },
   "runtime": {
     "backend": "v8",
-    "rusty_v8_version": "145.0.0",
-    "rusty_v8_revision": "e6a88b35dd3d7f2849a0df33a71d338701c55316",
-    "v8_revision": "8defb67673c5483ae56258a2de01b07e947dc921",
+    "rusty_v8_version": "150.4.0",
+    "rusty_v8_revision": "5c15a6995c9bb4bacd3e341b59fff32c909c80bf",
+    "v8_revision": "ac1e23989121713ca642f6650b34deff7b686896",
     "normalized_gn_args": [
       "chrome_pgo_phase=0",
       "exclude_unwind_tables=true",
+      "icu_copy_icudata_to_root_build_dir=true",
+      "icu_use_data_file=true",
+      "icu_use_stub_data=true",
       "is_cfi=false",
       "is_official_build=true",
+      "rusty_v8_enable_simdutf=true",
       "symbol_level=0",
+      "target_cpu=x64",
       "use_allocator_shim=false",
       "use_glib=false",
       "use_partition_alloc_as_malloc=false",
       "use_sysroot=true",
       "use_thin_lto=false",
+      "v8_depend_on_icu_data_file=true",
       "v8_enable_i18n_support=true",
       "v8_enable_pointer_compression=true",
       "v8_enable_sandbox=false",
@@ -48,19 +54,19 @@
     ],
     "patches": [
       {
-        "id": "migo-build-rs-prebuilt-binding",
-        "sha256": "3e4686943815a35044d6b40aa5e84b3cb27ccf2676c6062d3de0d6d6ec9c99f6"
+        "id": "bindgen-clang22-lock",
+        "sha256": "c886d224043ffd4c033dbee9269c2cc9134974d1070636f9f075aac8a5eb0bea"
       }
     ]
   },
   "hashes": {
-    "archive": "57cb3d0a0e195738d8ecd366cccbd3c2dd89839e1b9461a9fc43725aac79e911",
-    "rust_binding": "47369bfb3ee9a7e6e0f451ae20242595d5a7f0b3afcc0b9447e4f99ff174686a"
+    "archive": "b1ce666ca85bf193330bc180b5c3bc3f51820d6218ebff75242f462308086e14",
+    "rust_binding": "4077e0b8c79fb932c2cc6223602cb69af562a9b2a9cd6c49e241032ff606ff8c"
   },
   "provenance": {
-    "source_revision": "e6a88b35dd3d7f2849a0df33a71d338701c55316",
+    "source_revision": "5c15a6995c9bb4bacd3e341b59fff32c909c80bf",
     "build_recipe": "scripts/build-v8-linux.sh",
-    "build_recipe_sha256": "8b5fa5040ff29c59069801791ec4cb28a9f981efa141a036d0b6ada09da6786e",
+    "build_recipe_sha256": "c2babcd66cdfed6d14af4466840d7adc7e5ac51d66b8f1f9042486d9ba108e0c",
     "licenses": [
       "BSD-3-Clause",
       "MIT"

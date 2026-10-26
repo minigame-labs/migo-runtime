@@ -674,6 +674,9 @@ collect_outputs() {
         print_error "Expected AAR not found: $aar"
         exit 1
     fi
+    # Local JNI file dependencies bypass Maven metadata; check the actual
+    # derived helper, licenses and host policy before copying/attesting it.
+    python3 "$SCRIPT_DIR/lib/android_tls_vendor.py" --aar "$aar"
     # The published artifact has one name. Gradle's <profile><buildType> name is an
     # internal detail that was reaching consumers as migo-full-release.aar, telling them
     # about a product profile they cannot choose and a build type they do not need. Only

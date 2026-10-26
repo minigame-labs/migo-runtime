@@ -1,0 +1,14 @@
+--- a/CertificateVerifier.kt
++++ b/CertificateVerifier.kt
+@@ -63,7 +63,10 @@
+         // This can never throw since the default algorithm is used.
+         val factory = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm())
+ 
+-        factory.init(keystore)
++        // An explicit AndroidCAStore selects a new standalone trust config.
++        // Let Android select the host application's CA/pinning/CT policy for
++        // production; keep explicitly supplied fixture stores for tests.
++        factory.init(if (keystore === systemKeystore) null else keystore)
+ 
+         val availableTrustManagers = try {
+             factory.trustManagers

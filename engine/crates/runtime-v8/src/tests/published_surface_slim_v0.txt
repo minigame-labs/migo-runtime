@@ -57,6 +57,7 @@ TextMetrics
 TypeError
 URIError
 URL
+URLSearchParams
 Uint16Array
 Uint32Array
 Uint8Array
@@ -210,13 +211,12 @@ uploadFile
 CanvasGradient
 CanvasPattern
 CanvasRenderingContext2D
-Float16Array
 ImageBitmap
 ImageData
 Path2D
-Temporal
 TextMetrics
 URL
+URLSearchParams
 WebGL2RenderingContext
 WebGLRenderingContext
 alert

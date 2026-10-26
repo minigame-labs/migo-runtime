@@ -94,6 +94,8 @@ mod binary_helper_tests {
 
     #[test]
     fn full_window_typed_view_returns_backing_buffer_by_identity() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot_runtime_with_binary_helper();
         // Every ToJsBuffer arrives as a full-window Uint8Array (offset 0,
         // length == backing length) → the backing ArrayBuffer is handed back
@@ -110,6 +112,8 @@ mod binary_helper_tests {
 
     #[test]
     fn zero_length_full_view_returns_backing_by_identity() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot_runtime_with_binary_helper();
         assert_js(
             &mut rt,
@@ -123,6 +127,8 @@ mod binary_helper_tests {
 
     #[test]
     fn partial_window_typed_view_returns_exact_slice_copy() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot_runtime_with_binary_helper();
         // A sub-window view (offset 1, length 3 of a 6-byte buffer) is NOT the
         // full backing, so the helper returns an exact 3-byte slice — a new
@@ -143,6 +149,8 @@ mod binary_helper_tests {
 
     #[test]
     fn shadowed_typed_array_metadata_cannot_redirect_result() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot_runtime_with_binary_helper();
         // Own-property shadows on .buffer/.byteOffset/.byteLength must be
         // ignored: the helper reads V8 internal slots via primordials, so the
@@ -164,6 +172,8 @@ mod binary_helper_tests {
 
     #[test]
     fn legacy_numeric_array_is_converted_to_exact_backing() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot_runtime_with_binary_helper();
         // Backward compatibility with an un-regenerated snapshot whose event
         // shape is still a numeric Array: convert through primordial Uint8Array.

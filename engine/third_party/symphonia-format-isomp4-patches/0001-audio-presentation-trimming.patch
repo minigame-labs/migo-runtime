@@ -1,0 +1,612 @@
+--- symphonia-format-isomp4-0.6.1/src/atoms/elst.rs
++++ symphonia-format-isomp4-0.6.1/src/atoms/elst.rs
+@@ -11,20 +11,18 @@
+ use crate::atoms::{decode_error, limits::*};
+ 
+ /// Edit list entry.
+-#[allow(dead_code)]
+ #[derive(Debug)]
+ pub struct ElstEntry {
+-    segment_duration: u64,
+-    media_time: i64,
+-    media_rate_int: i16,
+-    media_rate_frac: i16,
++    pub(crate) segment_duration: u64,
++    pub(crate) media_time: i64,
++    pub(crate) media_rate_int: i16,
++    pub(crate) media_rate_frac: i16,
+ }
+ 
+ /// Edit list atom.
+-#[allow(dead_code)]
+ #[derive(Debug)]
+ pub struct ElstAtom {
+-    entries: Vec<ElstEntry>,
++    pub(crate) entries: Vec<ElstEntry>,
+ }
+ 
+ impl Atom for ElstAtom {
+@@ -32,7 +30,7 @@
+         let (version, _) = it.read_extended_header()?;
+ 
+         if version > 1 {
+-            return decode_error("isomp4 (elst): invalid tkhd version");
++            return decode_error("isomp4 (elst): invalid elst version");
+         }
+ 
+         let entry_count = it.read_u32()?;
+--- /dev/null
++++ symphonia-format-isomp4-0.6.1/src/audio_timeline.rs
+@@ -0,0 +1,266 @@
++// Symphonia
++// Copyright (c) 2019-2026 The Project Symphonia Developers.
++//
++// This Source Code Form is subject to the terms of the Mozilla Public
++// License, v. 2.0. If a copy of the MPL was not distributed with this
++// file, You can obtain one at https://mozilla.org/MPL/2.0/.
++
++//! AAC-LC presentation windows, using the already parsed MP4 timing tables.
++//! Packet and public track timing are normalized to PCM frames so decoder trim
++//! fields have the same units as other Symphonia audio demuxers. No encoded
++//! priming packets are skipped: the decoder still needs their overlap state.
++use std::num::NonZero;
++
++use symphonia_core::errors::{Error, Result, decode_error, unsupported_error};
++use symphonia_core::units::{Duration, Timestamp};
++
++use crate::atoms::ElstAtom;
++
++#[derive(Debug)]
++pub(crate) struct AudioTimeline {
++    media_scale: NonZero<u32>,
++    pub rate: NonZero<u32>,
++    block_frames: u64,
++    media_frames: u64,
++    start: u64,
++    end: u64,
++}
++
++#[derive(Debug)]
++pub(crate) struct PacketTiming {
++    pub pts: Timestamp,
++    pub dur: Duration,
++    pub trim_start: Duration,
++    pub trim_end: Duration,
++}
++
++// u128 holds every u64 * u32 product without overflow. Conversion back to u64
++// is checked; do not round through floating point or saturate corrupt timing.
++fn scale(value: u64, from: NonZero<u32>, to: NonZero<u32>, exact: bool) -> Result<u64> {
++    let numerator = u128::from(value) * u128::from(to.get());
++    let denominator = u128::from(from.get());
++    if exact && numerator % denominator != 0 {
++        return unsupported_error("isomp4: AAC media timing is not sample aligned");
++    }
++    u64::try_from(numerator / denominator)
++        .map_err(|_| Error::DecodeError("isomp4: audio time conversion overflow"))
++}
++
++impl AudioTimeline {
++    pub fn new(
++        media_scale: NonZero<u32>,
++        rate: NonZero<u32>,
++        movie_scale: NonZero<u32>,
++        media_duration: u64,
++        block_frames: u64,
++        edits: Option<&ElstAtom>,
++    ) -> Result<Self> {
++        if block_frames == 0 {
++            return decode_error("isomp4: zero AAC block duration");
++        }
++        let media_frames = scale(media_duration, media_scale, rate, true)?;
++        let mut start = 0;
++        let mut end = media_frames;
++        if let Some(edits) = edits.filter(|edits| !edits.entries.is_empty()) {
++            if edits.entries.len() != 1 {
++                return unsupported_error("isomp4: multiple audio edits are not supported");
++            }
++            let edit = &edits.entries[0];
++            if edit.media_time == -1 {
++                return unsupported_error("isomp4: empty audio edits are not supported");
++            }
++            if edit.media_time < 0 {
++                return decode_error("isomp4: invalid negative audio edit media time");
++            }
++            if edit.media_rate_int != 1 || edit.media_rate_frac != 0 {
++                return unsupported_error("isomp4: audio edit rate must be one");
++            }
++            start = scale(edit.media_time as u64, media_scale, rate, true)?;
++            // Movie timescales are often coarse. Keep complete PCM frames in
++            // the edit, and clamp to authoritative media sample-table duration.
++            let duration = scale(edit.segment_duration, movie_scale, rate, false)?;
++            end = start
++                .checked_add(duration)
++                .ok_or(Error::DecodeError("isomp4: audio edit end overflow"))?
++                .min(media_frames);
++        }
++        if start >= end || end > i64::MAX as u64 || media_frames > i64::MAX as u64 {
++            return decode_error("isomp4: invalid or empty audio presentation window");
++        }
++        Ok(Self { media_scale, rate, block_frames, media_frames, start, end })
++    }
++
++    pub fn frames(&self) -> u64 {
++        self.end - self.start
++    }
++
++    pub fn delay(&self) -> Option<u32> {
++        self.start.try_into().ok()
++    }
++
++    pub fn packet(&self, media_ts: u64, media_dur: u64) -> Result<PacketTiming> {
++        let ts = scale(media_ts, self.media_scale, self.rate, true)?;
++        let dur = scale(media_dur, self.media_scale, self.rate, true)?;
++        if dur == 0
++            || dur > self.block_frames
++            || ts.checked_add(dur).is_none_or(|end| end > self.media_frames)
++        {
++            return decode_error("isomp4: inconsistent AAC sample duration");
++        }
++        // Intersect this packet's valid media with the edit. Remaining codec
++        // block frames are padding even when stts describes a short last sample.
++        let trim_start = self.start.saturating_sub(ts).min(dur);
++        let valid_end = self.end.saturating_sub(ts).min(dur).max(trim_start);
++        let valid = valid_end - trim_start;
++        let trim_end = self.block_frames - trim_start - valid;
++        let pts = i64::try_from(ts)
++            .ok()
++            .and_then(|ts| ts.checked_sub(self.start as i64))
++            .ok_or(Error::DecodeError("isomp4: audio packet timestamp overflow"))?;
++        Ok(PacketTiming {
++            pts: Timestamp::new(pts),
++            dur: Duration::new(valid),
++            trim_start: Duration::new(trim_start),
++            trim_end: Duration::new(trim_end),
++        })
++    }
++
++    /// Convert a presentation seek to media ticks with one AAC block of preroll.
++    /// The caller resets the decoder, decodes preroll, and discards output before
++    /// required_ts, as with a coarse seek in other Symphonia demuxers.
++    pub fn seek_media_ts(&self, presentation_ts: Timestamp) -> Result<Timestamp> {
++        let ts = u64::try_from(presentation_ts.get())
++            .map_err(|_| Error::SeekError(symphonia_core::errors::SeekErrorKind::OutOfRange))?;
++        if ts >= self.frames() {
++            return Err(Error::SeekError(symphonia_core::errors::SeekErrorKind::OutOfRange));
++        }
++        let media_frame = (self.start + ts).saturating_sub(self.block_frames);
++        let media_ts = scale(media_frame, self.rate, self.media_scale, false)?;
++        Timestamp::try_from(media_ts)
++            .map_err(|_| Error::DecodeError("isomp4: audio seek timestamp overflow"))
++    }
++
++    pub fn presentation_ts(&self, media_ts: u64) -> Result<Timestamp> {
++        let frame = scale(media_ts, self.media_scale, self.rate, true)?;
++        let ts = i64::try_from(frame)
++            .ok()
++            .and_then(|frame| frame.checked_sub(self.start as i64))
++            .ok_or(Error::DecodeError("isomp4: audio seek timestamp overflow"))?;
++        Ok(Timestamp::new(ts))
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::atoms::elst::ElstEntry;
++
++    fn nz(v: u32) -> NonZero<u32> {
++        NonZero::new(v).unwrap()
++    }
++    fn edit(duration: u64, start: i64) -> ElstAtom {
++        ElstAtom {
++            entries: vec![ElstEntry {
++                segment_duration: duration,
++                media_time: start,
++                media_rate_int: 1,
++                media_rate_frac: 0,
++            }],
++        }
++    }
++    fn timeline(edits: Option<&ElstAtom>) -> Result<AudioTimeline> {
++        AudioTimeline::new(nz(44100), nz(44100), nz(1000), 9981, 1024, edits)
++    }
++
++    #[test]
++    fn delay_and_short_last_packet_come_from_container() {
++        let t = timeline(Some(&edit(204, 1024))).unwrap();
++        assert_eq!(t.frames(), 8957);
++        let first = t.packet(0, 1024).unwrap();
++        assert_eq!((first.pts.get(), first.dur.get(), first.trim_start.get()), (-1024, 0, 1024));
++        let last = t.packet(9216, 765).unwrap();
++        assert_eq!((last.dur.get(), last.trim_end.get()), (765, 259));
++    }
++
++    #[test]
++    fn nonstandard_delay_partial_packet_and_edit_end() {
++        let t = timeline(Some(&edit(100, 211))).unwrap();
++        assert_eq!(t.frames(), 4410);
++        let first = t.packet(0, 1024).unwrap();
++        assert_eq!((first.trim_start.get(), first.dur.get()), (211, 813));
++        let last = t.packet(4096, 1024).unwrap();
++        assert_eq!((last.dur.get(), last.trim_end.get()), (525, 499));
++        let after = t.packet(5120, 1024).unwrap();
++        assert_eq!((after.dur.get(), after.trim_end.get()), (0, 1024));
++    }
++
++    #[test]
++    fn no_edit_still_discards_short_packet_codec_padding() {
++        let t = timeline(None).unwrap();
++        assert_eq!(t.frames(), 9981);
++        let last = t.packet(9216, 765).unwrap();
++        assert_eq!((last.dur.get(), last.trim_start.get(), last.trim_end.get()), (765, 0, 259));
++    }
++
++    #[test]
++    fn exact_different_media_timebase_is_normalized_to_samples() {
++        let t = AudioTimeline::new(
++            nz(24000),
++            nz(48000),
++            nz(90000),
++            5500,
++            1024,
++            Some(&edit(18000, 512)),
++        )
++        .unwrap();
++        assert_eq!(t.frames(), 9600);
++        let first = t.packet(0, 512).unwrap();
++        assert_eq!((first.pts.get(), first.trim_start.get(), first.dur.get()), (-1024, 1024, 0));
++        assert_eq!(t.seek_media_ts(Timestamp::new(1024)).unwrap().get(), 512);
++        assert_eq!(t.presentation_ts(512).unwrap(), Timestamp::ZERO);
++    }
++
++    #[test]
++    fn fractional_movie_duration_keeps_complete_frames() {
++        let t = timeline(Some(&edit(1, 0))).unwrap();
++        assert_eq!(t.frames(), 44);
++    }
++
++    #[test]
++    fn seek_uses_edit_offset_and_preroll_and_rejects_eof() {
++        let t = timeline(Some(&edit(204, 1024))).unwrap();
++        assert_eq!(t.seek_media_ts(Timestamp::ZERO).unwrap(), Timestamp::ZERO);
++        assert_eq!(t.seek_media_ts(Timestamp::new(3000)).unwrap().get(), 3000);
++        assert!(t.seek_media_ts(Timestamp::new(-1)).is_err());
++        assert!(t.seek_media_ts(Timestamp::new(8957)).is_err());
++    }
++
++    #[test]
++    fn unsupported_or_invalid_edits_fail_explicitly() {
++        for start in [-2, -1, 9981, i64::MAX] {
++            assert!(timeline(Some(&edit(204, start))).is_err());
++        }
++        assert!(timeline(Some(&edit(0, 0))).is_err());
++        let mut edits = edit(204, 0);
++        edits.entries[0].media_rate_int = 0;
++        assert!(timeline(Some(&edits)).is_err());
++        edits.entries[0].media_rate_int = 1;
++        edits.entries[0].media_rate_frac = 1;
++        assert!(timeline(Some(&edits)).is_err());
++        edits.entries[0].media_rate_frac = 0;
++        edits.entries.push(edit(1, 0).entries.remove(0));
++        assert!(timeline(Some(&edits)).is_err());
++        assert!(timeline(Some(&ElstAtom { entries: vec![] })).is_ok());
++    }
++
++    #[test]
++    fn overflow_fractional_media_and_inconsistent_blocks_are_errors() {
++        assert!(timeline(Some(&edit(u64::MAX, 0))).is_err());
++        assert!(AudioTimeline::new(nz(1), nz(u32::MAX), nz(1), u64::MAX, 1024, None).is_err());
++        assert!(AudioTimeline::new(nz(48000), nz(44100), nz(1000), 1, 1024, None).is_err());
++        let t = timeline(None).unwrap();
++        for (ts, dur) in [(0, 0), (0, 1025), (9980, 2), (u64::MAX, 1)] {
++            assert!(t.packet(ts, dur).is_err());
++        }
++    }
++}
+--- symphonia-format-isomp4-0.6.1/src/demuxer.rs
++++ symphonia-format-isomp4-0.6.1/src/demuxer.rs
+@@ -25,7 +25,10 @@
+ 
+ use crate::atoms::{AtomError, AtomIterator, AtomType, ReadAtom};
+ use crate::atoms::{FtypAtom, MetaAtom, MoofAtom, MoovAtom, SidxAtom, TrakAtom};
++use crate::audio_timeline::AudioTimeline;
+ use crate::stream::*;
++use symphonia_common::mpeg::audio::{AudioObjectType, AudioSpecificConfig};
++use symphonia_core::codecs::audio::well_known::CODEC_ID_AAC;
+ 
+ use log::{debug, info, trace, warn};
+ 
+@@ -46,10 +49,17 @@
+     next_sample: u32,
+     /// The current sample byte position relative to the start of the track.
+     next_sample_pos: u64,
++    audio_timeline: Option<AudioTimeline>,
+ }
+ 
+ impl TrackState {
+-    pub fn make(track_num: usize, trak: &TrakAtom, timespan: &TimeSpan) -> (Self, Track) {
++    pub fn make(
++        track_num: usize,
++        trak: &TrakAtom,
++        timespan: &TimeSpan,
++        movie_scale: NonZero<u32>,
++        fragmented: bool,
++    ) -> Result<(Self, Track)> {
+         let mut track = Track::new(trak.tkhd.id);
+ 
+         // Create the codec parameters using the sample description atom.
+@@ -74,15 +84,59 @@
+             }
+         }
+ 
++        let edits = trak.edts.as_ref().and_then(|edts| edts.elst.as_ref());
++        let audio_timeline = match track.codec_params.as_mut() {
++            Some(CodecParameters::Audio(audio)) if audio.codec == CODEC_ID_AAC => {
++                if fragmented {
++                    return unsupported_error(
++                        "isomp4: fragmented AAC presentation timing is not supported",
++                    );
++                }
++                let asc =
++                    AudioSpecificConfig::read(audio.extra_data.as_deref().ok_or(
++                        Error::DecodeError("isomp4: AAC requires audio specific config"),
++                    )?)?;
++                if asc.object_type != AudioObjectType::Lc || asc.sbr_present {
++                    return unsupported_error(
++                        "isomp4: only AAC-LC presentation timing is supported",
++                    );
++                }
++                let rate = NonZero::new(asc.sample_rate)
++                    .ok_or(Error::DecodeError("isomp4: zero AAC sample rate"))?;
++                let timeline = AudioTimeline::new(
++                    trak.mdia.mdhd.timescale,
++                    rate,
++                    movie_scale,
++                    trak.mdia.minf.stbl.stts.total_duration,
++                    asc.samples as u64,
++                    edits,
++                )?;
++                audio.with_sample_rate(rate.get()).with_max_frames_per_packet(asc.samples as u64);
++                track
++                    .with_time_base(TimeBase::from_recip(rate))
++                    .with_duration(Duration::new(timeline.frames()))
++                    .with_num_frames(timeline.frames());
++                if let Some(delay) = timeline.delay() {
++                    track.with_delay(delay);
++                }
++                Some(timeline)
++            }
++            _ if edits.is_some_and(|edits| !edits.entries.is_empty()) => {
++                return unsupported_error("isomp4: edits for this codec are not supported");
++            }
++            _ => None,
++        };
++
+         let state = Self {
+             track_num,
+             track_id: trak.tkhd.id,
+             cur_seg: 0,
+             next_sample: 0,
+             next_sample_pos: 0,
+-        };
+-
+-        (state, track)
++            audio_timeline,
++        };
++
++        Ok((state, track))
+     }
+ }
+ 
+@@ -99,6 +153,8 @@
+     time: Time,
+     /// The duration of the next sample.
+     dur: Duration,
++    trim_start: Duration,
++    trim_end: Duration,
+     /// The segment containing the next sample.
+     seg_idx: usize,
+ }
+@@ -164,8 +220,7 @@
+             mss.seek(SeekFrom::Start(pos))?;
+             info!("stream is seekable with len={len} bytes.");
+             Some(len)
+-        }
+-        else {
++        } else {
+             None
+         };
+ 
+@@ -278,8 +333,7 @@
+         if moov.is_fragmented() {
+             if !sidx_timespans.is_empty() {
+                 info!("stream is segmented with a segment index.");
+-            }
+-            else {
++            } else {
+                 info!("stream is segmented without a segment index.");
+             }
+         }
+@@ -303,19 +357,16 @@
+                     .unwrap_or_else(|| {
+                         TimeSpan::new(trak.mdia.mdhd.timescale, trak.mdia.mdhd.duration.into())
+                     })
+-            }
+-            else {
+-                // If non-fragmented, use the total duration (media timescale) from the track's
+-                // stts atom. Since edits are not currently supported, this is the duration of all
+-                // samples that will be yielded.
+-                //
+-                // TODO: Support edits. Once supported, prefer the tkhd duration.
++            } else {
++                // The media sample table bounds the available media. AAC presentation
++                // timing and a supported edit are applied in TrackState::make below.
+                 let duration = Duration::from(trak.mdia.minf.stbl.stts.total_duration);
+ 
+                 TimeSpan::new(trak.mdia.mdhd.timescale, duration)
+             };
+ 
+-            let (track_state, track) = TrackState::make(t, trak, &timespan);
++            let (track_state, track) =
++                TrackState::make(t, trak, &timespan, moov.mvhd.timescale, moov.is_fragmented())?;
+ 
+             tracks.push(track);
+             track_states.push(track_state);
+@@ -359,13 +410,18 @@
+                 // Try to get the timestamp for the next sample of the track from the segment.
+                 if let Some(timing) = seg.sample_timing(state.track_num, state.next_sample)? {
+                     // Calculate the presentation time using the timestamp.
+-                    let Some(ts) = timing.ts.try_into().ok()
+-                    else {
+-                        return Ok(None);
++                    let (ts, dur, trim_start, trim_end) = if let Some(timeline) =
++                        &state.audio_timeline
++                    {
++                        let packet = timeline.packet(timing.ts, u64::from(timing.dur))?;
++                        (packet.pts, packet.dur, packet.trim_start, packet.trim_end)
++                    } else {
++                        let ts = Timestamp::try_from(timing.ts)
++                            .map_err(|_| Error::DecodeError("isomp4: sample timestamp overflow"))?;
++                        (ts, Duration::from(timing.dur), Duration::ZERO, Duration::ZERO)
+                     };
+ 
+-                    let Some(sample_time) = tb.calc_time(ts)
+-                    else {
++                    let Some(sample_time) = tb.calc_time(ts) else {
+                         return Ok(None);
+                     };
+ 
+@@ -384,7 +440,9 @@
+                                 track_id: state.track_id,
+                                 ts,
+                                 time: sample_time,
+-                                dur: Duration::from(timing.dur),
++                                dur,
++                                trim_start,
++                                trim_end,
+                                 seg_idx: seg_idx_delta + state.cur_seg,
+                             });
+                         }
+@@ -417,8 +475,7 @@
+         // then the base position is the position of current the sample.
+         let pos = if sample_data_desc.base_pos > track.next_sample_pos {
+             sample_data_desc.base_pos
+-        }
+-        else {
++        } else {
+             track.next_sample_pos
+         };
+ 
+@@ -482,8 +539,7 @@
+ 
+                         // Push the segment.
+                         self.segs.push(Box::new(seg));
+-                    }
+-                    else {
++                    } else {
+                         return decode_error("isomp4: moof atom present without mvex atom");
+                     }
+                 }
+@@ -503,8 +559,7 @@
+             let tb = track.time_base.expect("track always created with a timebase");
+             let ts = tb.calc_timestamp(time).ok_or(Error::SeekError(SeekErrorKind::OutOfRange))?;
+             self.seek_track_by_ts(track_num, ts)
+-        }
+-        else {
++        } else {
+             seek_error(SeekErrorKind::Unseekable)
+         }
+     }
+@@ -522,6 +577,12 @@
+             return seek_error(SeekErrorKind::OutOfRange);
+         }
+ 
++        let required_ts = ts;
++        let ts = if let Some(timeline) = &self.track_states[track_num].audio_timeline {
++            timeline.seek_media_ts(ts)?
++        } else {
++            ts
++        };
+         let mut seg_skip = 0;
+ 
+         let seek_loc = 'locate: loop {
+@@ -551,9 +612,13 @@
+         };
+ 
+         // Try to convert the sample timing to a timestamp.
+-        let actual_ts = match Timestamp::try_from(timing.ts) {
+-            Ok(ts) => ts,
+-            _ => return seek_error(SeekErrorKind::OutOfRange),
++        let actual_ts = if let Some(timeline) = &self.track_states[track_num].audio_timeline {
++            timeline.presentation_ts(timing.ts)?
++        } else {
++            match Timestamp::try_from(timing.ts) {
++                Ok(ts) => ts,
++                _ => return seek_error(SeekErrorKind::OutOfRange),
++            }
+         };
+ 
+         // Get the sample information.
+@@ -578,7 +643,7 @@
+             actual_ts.saturating_delta(ts),
+         );
+ 
+-        Ok(SeekedTo { track_id: track.track_id, required_ts: ts, actual_ts })
++        Ok(SeekedTo { track_id: track.track_id, required_ts, actual_ts })
+     }
+ }
+ 
+@@ -621,8 +686,12 @@
+             // Using the current set of segments, try to get the next sample info.
+             if let Some(info) = self.next_sample_info()? {
+                 break info;
+-            }
+-            else {
++            } else {
++                // Preserve the raw-read anchor at terminal EOF. Consuming the
++                // pending mdat here made a later backward seek fail to read.
++                if self.segs.last().is_some_and(|seg| seg.all_tracks_ended()) {
++                    return Ok(None);
++                }
+                 // The inner reader of the atom iterator has been used/seeked around to read
+                 // packets, so resync the reader and iterator by seeking to the end of the current
+                 // pending atom. Under regular circumstances, no actual expensive seek operation is
+@@ -652,12 +721,11 @@
+         let data =
+             self.iter.read_raw_boxed_slice_exact(sample_info.pos, sample_info.len as usize)?;
+ 
+-        Ok(Some(Packet::new(
+-            next_sample_info.track_id,
+-            next_sample_info.ts,
+-            next_sample_info.dur,
+-            data,
+-        )))
++        let mut packet =
++            Packet::new(next_sample_info.track_id, next_sample_info.ts, next_sample_info.dur, data);
++        packet.trim_start = next_sample_info.trim_start;
++        packet.trim_end = next_sample_info.trim_end;
++        Ok(Some(packet))
+     }
+ 
+     fn metadata(&mut self) -> Metadata<'_> {
+@@ -698,8 +766,7 @@
+ 
+                     // Seek the primary track and return the result.
+                     self.seek_track_by_ts(track_num, ts)
+-                }
+-                else {
++                } else {
+                     seek_error(SeekErrorKind::InvalidTrack)
+                 }
+             }
+--- symphonia-format-isomp4-0.6.1/src/lib.rs
++++ symphonia-format-isomp4-0.6.1/src/lib.rs
+@@ -14,6 +14,7 @@
+ #![allow(clippy::manual_range_contains)]
+ 
+ mod atoms;
++mod audio_timeline;
+ mod demuxer;
+ mod fp;
+ mod stream;

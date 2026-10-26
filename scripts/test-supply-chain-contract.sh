@@ -52,6 +52,9 @@ expect_fail() {
 CHECKER="$ROOT/scripts/check-supply-chain.py"
 SBOM="$ROOT/scripts/generate-sbom.py"
 
+expect_pass "exact license approvals expire when packages leave the full graph, without breaking product scans" \
+    python3 "$ROOT/scripts/testing/test_supply_chain_license_exceptions.py"
+
 [[ -f "$CHECKER" ]] || fail "supply-chain checker exists"
 [[ -f "$SBOM" ]] || fail "artifact-bound SBOM generator exists"
 

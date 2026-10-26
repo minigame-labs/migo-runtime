@@ -685,8 +685,8 @@ mod tests {
     /// If it degrades to a plain array of numbers, the whole point of moving
     /// off base64 is lost and the JS shim would silently produce garbage. This
     /// runs the real serializer through a real isolate and asks JS.
-    #[test]
-    fn zip_entry_bytes_reach_js_as_a_uint8array() {
+    #[tokio::test]
+    async fn zip_entry_bytes_reach_js_as_a_uint8array() {
         use deno_core::{FastString, JsRuntime, RuntimeOptions, op2};
 
         #[op2]
@@ -762,8 +762,8 @@ mod tests {
     /// into the `{entries: {...}}` object callers actually see. Driven through
     /// the real ESM export in a live runtime, so it is the shipped function
     /// under test rather than a copy of it.
-    #[test]
-    fn zip_entries_shim_maps_bytes_text_and_failures() {
+    #[tokio::test]
+    async fn zip_entries_shim_maps_bytes_text_and_failures() {
         use deno_core::{FastString, JsRuntime, RuntimeOptions};
 
         deno_core::extension!(

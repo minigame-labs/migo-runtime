@@ -47,6 +47,8 @@ mod network_events_tests {
 
     #[test]
     fn each_listener_hears_only_the_change_that_is_its_own() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let host = Arc::new(Report::default());
         *host.0.lock().unwrap() = report("wifi", true, false);
         let mut state = test_host_state();

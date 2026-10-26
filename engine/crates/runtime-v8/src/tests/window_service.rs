@@ -90,6 +90,8 @@ fn eval_bool(runtime: &mut JsRuntime, source: &'static str) -> bool {
 #[cfg(feature = "api-system")]
 #[test]
 fn set_cursor_hands_the_host_a_keyword_or_the_sandbox_file_and_nothing_else() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let sandbox = Sandbox::new();
     let cursor = sandbox.paths.user_data_dir().join("aim.cur");
     std::fs::write(&cursor, b"cur").unwrap();
@@ -130,6 +132,8 @@ fn set_cursor_hands_the_host_a_keyword_or_the_sandbox_file_and_nothing_else() {
 #[cfg(feature = "api-system")]
 #[test]
 fn without_a_window_the_cursor_is_refused_and_pointer_lock_is_never_taken() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let mut runtime = boot(None, None);
     assert!(!eval_bool(&mut runtime, "migo.setCursor('default')"));
     assert!(eval_bool(
@@ -141,6 +145,8 @@ fn without_a_window_the_cursor_is_refused_and_pointer_lock_is_never_taken() {
 #[cfg(feature = "api-system")]
 #[test]
 fn the_pointer_is_locked_exactly_while_the_host_says_so() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let mut runtime = boot(Some(Arc::new(Desktop(Arc::default()))), None);
     assert!(eval_bool(
         &mut runtime,
@@ -157,6 +163,8 @@ fn the_pointer_is_locked_exactly_while_the_host_says_so() {
 
 #[test]
 fn create_path2d_makes_a_path2d() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let mut runtime = boot(None, None);
     assert!(eval_bool(
         &mut runtime,

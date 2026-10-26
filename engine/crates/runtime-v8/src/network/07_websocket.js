@@ -1,6 +1,7 @@
 import { core } from "ext:core/mod.js";
 import {
     op_ws_create, op_ws_next_event, op_ws_send, op_ws_close,
+    op_fetch_upload_cancel_handle,
 } from "ext:core/ops";
 import { createListenerGroup, failMessage } from "ext:host_v8_base/02_async.js";
 import { toExactArrayBuffer } from "ext:host_v8_network/00_binary.js";
@@ -11,6 +12,7 @@ class SocketTask {
     constructor(rid) {
         this._rid = rid;
         this._closed = false;
+        this._connectCancelRid = -1;
         this._openListeners = createListenerGroup('SocketTask onOpen');
         this._messageListeners = createListenerGroup('SocketTask onMessage');
         this._errorListeners = createListenerGroup('SocketTask onError');
@@ -63,10 +65,13 @@ class SocketTask {
         }
 
         if (this._rid < 0) {
-            // Handshake has not produced a rid yet. Mark closed so the
-            // pending connect (connectSocket) tears down the socket it is
-            // about to create, instead of leaving a live ghost connection.
             this._closed = true;
+            // Reuse the network cancellation resource: no socket id exists
+            // yet, but DNS, TCP and the handshake already need to stop.
+            if (this._connectCancelRid >= 0) {
+                core.tryClose(this._connectCancelRid);
+                this._connectCancelRid = -1;
+            }
             const res = { errMsg: "closeSocket:ok" };
             if (typeof success === 'function') success(res);
             if (typeof complete === 'function') complete(res);
@@ -174,7 +179,9 @@ function connectSocket(options = {}) {
         url,
         header = {},
         protocols = [],
-        tcpNoDelay = false,
+        // Preserve the host's historical low-latency default; allow an
+        // explicit false to opt into TCP buffering.
+        tcpNoDelay = true,
         perMessageDeflate = false,
         timeout = 60000,
         success,
@@ -219,7 +226,17 @@ function connectSocket(options = {}) {
     // Async connection
     (async () => {
         try {
-            const result = await op_ws_create(url, protocols, headerList, timeout);
+            let result;
+            try {
+                task._connectCancelRid = op_fetch_upload_cancel_handle();
+                result = await op_ws_create(url, protocols, headerList, timeout,
+                    !!tcpNoDelay, !!perMessageDeflate, task._connectCancelRid);
+            } finally {
+                if (task._connectCancelRid >= 0) {
+                    core.tryClose(task._connectCancelRid);
+                    task._connectCancelRid = -1;
+                }
+            }
             task._rid = result.rid;
 
             // close() may have run while the handshake was in flight; if so,

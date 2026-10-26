@@ -7,6 +7,7 @@
 
 mod body;
 mod connector;
+mod decode;
 pub mod multipart;
 mod tcp_info;
 #[cfg(test)]
@@ -17,24 +18,27 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use crate::network::url::Url;
 use bytes::Bytes;
 use futures::Stream;
 use http::header::{
-    AUTHORIZATION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, HOST, LOCATION,
-    PROXY_AUTHORIZATION, REFERER, TRANSFER_ENCODING, USER_AGENT, WWW_AUTHENTICATE,
+    ACCEPT_ENCODING, AUTHORIZATION, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, HOST,
+    LOCATION, PROXY_AUTHORIZATION, RANGE, REFERER, TRANSFER_ENCODING, USER_AGENT, WWW_AUTHENTICATE,
 };
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Version};
 use http_body_util::BodyExt;
 use hyper_util::client::legacy::Client;
 use hyper_util::client::proxy::matcher::Matcher;
 use hyper_util::rt::{TokioExecutor, TokioTimer};
+use migo_io::pools::IoPools;
 use shared::network_policy::NetworkPolicy;
-use url::Url;
 
 pub use body::Body;
 use body::{SendProgress, SentBody};
+pub(super) use connector::connect_vetted_tcp;
 use connector::{AddressRule, BoxError, Connector, ConnectorConfig};
 pub use multipart::{Form, Part};
 pub use trace::{ConnectionTrace, RequestTiming, Span};
@@ -53,6 +57,7 @@ pub struct HttpClientBuilder {
     proxies: Option<Matcher>,
     rule: AddressRule,
     extra_roots: Vec<rustls::pki_types::CertificateDer<'static>>,
+    pools: IoPools,
 }
 
 impl HttpClientBuilder {
@@ -63,6 +68,7 @@ impl HttpClientBuilder {
         enable_http2: bool,
         policy: &NetworkPolicy,
         operation: &'static str,
+        pools: IoPools,
     ) -> Self {
         Self {
             user_agent: user_agent.to_string(),
@@ -72,6 +78,7 @@ impl HttpClientBuilder {
             proxies: None,
             rule: AddressRule::Public { operation },
             extra_roots: Vec::new(),
+            pools,
         }
     }
 
@@ -93,7 +100,7 @@ impl HttpClientBuilder {
         self
     }
 
-    /// Trust `root` as well as the Mozilla set: for tests that serve TLS with their own authority.
+    /// Add `root` to the selected trust profile, for local TLS fixtures.
     #[cfg(test)]
     pub(crate) fn add_root(mut self, root: rustls::pki_types::CertificateDer<'static>) -> Self {
         self.extra_roots.push(root);
@@ -101,8 +108,12 @@ impl HttpClientBuilder {
     }
 
     pub fn build(self) -> Result<HttpClient, HttpError> {
-        let tls = connector::tls_config(self.enable_http2, &self.extra_roots)
-            .map_err(HttpError::builder)?;
+        let tls = super::tls::ClientTls::new(
+            self.policy.tls_trust,
+            self.enable_http2,
+            self.extra_roots,
+            self.pools.clone(),
+        );
         // The machine's proxies: the environment's (and the system's, where the HTTP stack is built to read them).
         // A proxy is the machine owner's egress, not something content names.
         let proxies = Arc::new(self.proxies.unwrap_or_else(Matcher::from_system));
@@ -139,6 +150,7 @@ impl HttpClientBuilder {
                 user_agent,
                 policy: self.policy,
                 operation: self.operation,
+                pools: self.pools,
             }),
         })
     }
@@ -156,6 +168,7 @@ struct ClientInner {
     user_agent: HeaderValue,
     policy: NetworkPolicy,
     operation: &'static str,
+    pools: IoPools,
 }
 
 impl fmt::Debug for HttpClient {
@@ -284,6 +297,17 @@ impl RequestBuilder {
         if !headers.contains_key(USER_AGENT) {
             headers.insert(USER_AGENT, inner.user_agent.clone());
         }
+        let range_request = headers.contains_key(RANGE);
+        if !headers.contains_key(ACCEPT_ENCODING) {
+            headers.insert(
+                ACCEPT_ENCODING,
+                HeaderValue::from_static(if range_request {
+                    "identity"
+                } else {
+                    "gzip, br"
+                }),
+            );
+        }
 
         loop {
             let replay = body.try_clone();
@@ -372,7 +396,7 @@ impl RequestBuilder {
                 }
             }
 
-            let (parts, incoming) = response.into_parts();
+            let (mut parts, incoming) = response.into_parts();
             let connection = parts.extensions.get::<Arc<ConnectionTrace>>().cloned();
             let socket_reused = connection.as_ref().is_some_and(|trace| !trace.claim());
             let request_start = match &connection {
@@ -380,6 +404,7 @@ impl RequestBuilder {
                 _ => sent_at,
             };
             let request_end = progress.ended().unwrap_or(request_start).max(request_start);
+            let received_head_bytes = response_head_bytes(parts.status, &parts.headers);
             let timing = RequestTiming {
                 fetch_start,
                 redirect: redirect.filter(|_| same_host),
@@ -390,15 +415,31 @@ impl RequestBuilder {
                 response_start,
                 response_end: None,
                 bytes_sent: head_bytes + progress.bytes(),
-                bytes_received: response_head_bytes(parts.status, &parts.headers),
+                bytes_received: received_head_bytes,
                 version: parts.version,
+            };
+            let plan = decode::codings(&method, range_request, parts.status, &parts.headers)
+                .map_err(|error| HttpError::body(url.clone(), error))?;
+            let (body, wire_counter) = if let Some(plan) = plan {
+                let body = decode::DecodedBody::new(incoming, plan, inner.pools.clone())
+                    .map_err(|error| HttpError::body(url.clone(), error))?;
+                let wire_counter = Some(body.wire_bytes.clone());
+                parts.headers.remove(CONTENT_ENCODING);
+                parts.headers.remove(CONTENT_LENGTH);
+                (ResponseBody::Decoded(body), wire_counter)
+            } else {
+                (ResponseBody::Incoming(incoming), None)
             };
             return Ok(Response {
                 status: parts.status,
                 version: parts.version,
                 headers: parts.headers,
                 url,
-                body: ResponseBody::Incoming(incoming),
+                body,
+                wire_counter,
+                head_bytes: received_head_bytes,
+                wire_bytes: 0,
+                decoded_bytes: 0,
                 timing,
                 deadline,
             });
@@ -505,11 +546,40 @@ pub struct Response {
     body: ResponseBody,
     timing: RequestTiming,
     deadline: Option<tokio::time::Instant>,
+    wire_counter: Option<Arc<AtomicU64>>,
+    head_bytes: u64,
+    wire_bytes: u64,
+    decoded_bytes: u64,
 }
 
 enum ResponseBody {
     Incoming(hyper::body::Incoming),
+    Decoded(decode::DecodedBody),
     Local(Option<Bytes>),
+    Ended,
+}
+
+impl ResponseBody {
+    async fn next(&mut self) -> std::io::Result<Option<Bytes>> {
+        match self {
+            Self::Ended => Ok(None),
+            Self::Local(bytes) => Ok(bytes.take().filter(|bytes| !bytes.is_empty())),
+            Self::Decoded(body) => body.chunk().await,
+            Self::Incoming(incoming) => loop {
+                match incoming.frame().await {
+                    None => return Ok(None),
+                    Some(Err(error)) => return Err(std::io::Error::other(error)),
+                    Some(Ok(frame)) => {
+                        if let Ok(bytes) = frame.into_data()
+                            && !bytes.is_empty()
+                        {
+                            return Ok(Some(bytes));
+                        }
+                    }
+                }
+            },
+        }
+    }
 }
 
 impl fmt::Debug for Response {
@@ -532,9 +602,13 @@ impl Response {
             version: parts.version,
             headers: parts.headers,
             url,
-            timing: RequestTiming::local(now, head + body.len() as u64),
+            timing: RequestTiming::local(now, head),
             body: ResponseBody::Local(Some(Bytes::from(body))),
             deadline: None,
+            wire_counter: None,
+            head_bytes: head,
+            wire_bytes: 0,
+            decoded_bytes: 0,
         }
     }
 
@@ -562,6 +636,8 @@ impl Response {
             ResponseBody::Local(bytes) => {
                 Some(bytes.as_ref().map_or(0, |bytes| bytes.len() as u64))
             }
+            ResponseBody::Decoded(_) => None,
+            ResponseBody::Ended => Some(0),
         }
     }
 
@@ -574,53 +650,65 @@ impl Response {
         &self.timing
     }
 
+    /// HTTP body bytes received, before Content-Encoding decoding (no headers).
+    pub fn wire_body_bytes(&self) -> u64 {
+        self.wire_bytes
+    }
+
+    /// Bytes delivered to the caller after Content-Encoding decoding.
+    pub fn decoded_body_bytes(&self) -> u64 {
+        self.decoded_bytes
+    }
+
     /// The body's next chunk, or `None` at its end -- within the request's timeout.
     pub async fn chunk(&mut self) -> Result<Option<Bytes>, HttpError> {
-        loop {
-            let next = match &mut self.body {
-                ResponseBody::Local(bytes) => bytes.take().filter(|bytes| !bytes.is_empty()),
-                ResponseBody::Incoming(incoming) => {
-                    let frame = match self.deadline {
-                        Some(deadline) => tokio::time::timeout_at(deadline, incoming.frame())
-                            .await
-                            .map_err(|_| HttpError::timeout(self.url.clone()))?,
-                        None => incoming.frame().await,
-                    };
-                    match frame {
-                        None => None,
-                        Some(Err(error)) => return Err(HttpError::body(self.url.clone(), error)),
-                        Some(Ok(frame)) => match frame.into_data() {
-                            Ok(data) if !data.is_empty() => Some(data),
-                            // Trailers, or an empty frame: nothing for the reader.
-                            _ => continue,
-                        },
-                    }
+        if matches!(self.body, ResponseBody::Ended) {
+            return Ok(None);
+        }
+        let read = self.body.next();
+        let next = match self.deadline {
+            Some(deadline) => match tokio::time::timeout_at(deadline, read).await {
+                Ok(next) => next.map_err(|error| HttpError::body(self.url.clone(), error)),
+                Err(_) => Err(HttpError::timeout(self.url.clone())),
+            },
+            None => read
+                .await
+                .map_err(|error| HttpError::body(self.url.clone(), error)),
+        };
+        if let Some(counter) = &self.wire_counter {
+            self.wire_bytes = counter.load(Ordering::Relaxed);
+        } else if let Ok(Some(bytes)) = &next {
+            self.wire_bytes += bytes.len() as u64;
+        }
+        self.timing.bytes_received = self.head_bytes + self.wire_bytes;
+        match next {
+            Ok(Some(bytes)) => {
+                self.decoded_bytes += bytes.len() as u64;
+                Ok(Some(bytes))
+            }
+            Ok(None) => {
+                self.body = ResponseBody::Ended;
+                if self.timing.response_end.is_none() {
+                    self.timing.response_end = Some(Instant::now());
+                    super::quality::estimator().lock().record(&self.timing);
                 }
-            };
-            match next {
-                Some(bytes) => {
-                    self.timing.bytes_received += bytes.len() as u64;
-                    return Ok(Some(bytes));
-                }
-                None => {
-                    if self.timing.response_end.is_none() {
-                        self.timing.response_end = Some(Instant::now());
-                        // A whole response is a sample of the network, whoever asked for it.
-                        super::quality::estimator().lock().record(&self.timing);
-                    }
-                    return Ok(None);
-                }
+                Ok(None)
+            }
+            Err(error) => {
+                self.body = ResponseBody::Ended;
+                Err(error)
             }
         }
     }
 
     /// The body as a stream of chunks.
     pub fn bytes_stream(self) -> Pin<Box<dyn Stream<Item = Result<Bytes, HttpError>> + Send>> {
-        Box::pin(futures::stream::unfold(self, |mut response| async move {
+        Box::pin(futures::stream::unfold(Some(self), |response| async move {
+            let mut response = response?;
             match response.chunk().await {
-                Ok(Some(bytes)) => Some((Ok(bytes), response)),
+                Ok(Some(bytes)) => Some((Ok(bytes), Some(response))),
                 Ok(None) => None,
-                Err(error) => Some((Err(error), response)),
+                Err(error) => Some((Err(error), None)),
             }
         }))
     }

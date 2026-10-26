@@ -119,6 +119,11 @@ impl IoScheduler {
         &self.pools
     }
 
+    /// A narrow host-domain handle. It does not keep the scheduler owner alive.
+    pub fn audio_cpu(&self) -> crate::audio_cpu::AudioCpu {
+        crate::audio_cpu::AudioCpu::new(self.pools.clone(), Arc::clone(&self.domain))
+    }
+
     pub fn domain(&self) -> Arc<IoDomain> {
         Arc::clone(&self.domain)
     }
@@ -710,13 +715,14 @@ mod tests {
         assert_eq!(scheduler_a.pending_work_for_test(), 1);
         scheduler_a.close();
 
-        let pack_req = IoRequest::ReadFile {
-            backend: BackendKind::Pack,
+        // The second worker is reserved for IO while archive CPU work is active.
+        let fs_req = IoRequest::ReadFile {
+            backend: BackendKind::Filesystem,
             request: RequestKind::Sync,
             priority: PriorityClass::ForegroundBlocking,
             estimated_bytes: 256 * 1024,
         };
-        assert_eq!(scheduler_b.run_sync(&pack_req, || 3_u32).unwrap(), 3);
+        assert_eq!(scheduler_b.run_sync(&fs_req, || 3_u32).unwrap(), 3);
 
         first_release.wait();
         assert_eq!(first.join().unwrap().unwrap(), 1);

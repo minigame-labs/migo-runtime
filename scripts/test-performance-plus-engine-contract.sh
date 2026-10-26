@@ -76,6 +76,20 @@ awk '/const postToPage = self.postMessage.bind\(self\);/ { taken = NR } /import\
 python3 scripts/gen-performance-plus-engine.py --out "$STAGED" --with-producer \
     || fail "the engine could not be staged for the producer"
 
+node platforms/apple/WebContent/PerformancePlus/test/timer-tasks.test.mjs "$STAGED" \
+    || fail "the shared timer policy did not preserve WebKit task semantics"
+
+node platforms/apple/WebContent/PerformancePlus/test/url-policy.test.mjs "$STAGED" \
+    engine/crates/runtime-v8/testdata/url-wpt || fail "shared URL/query policy regressed"
+MIGO_TEST_LEGACY_URL_USV=1 node platforms/apple/WebContent/PerformancePlus/test/url-policy.test.mjs \
+    "$STAGED" engine/crates/runtime-v8/testdata/url-wpt \
+    || fail "URL/query policy regressed without String#toWellFormed"
+
+node platforms/apple/WebContent/PerformancePlus/test/worker-transport.test.mjs "$STAGED" \
+    || fail "structured Worker messages, queue credits or restart isolation regressed"
+MIGO_TEST_LEGACY_WORKER_CLONE=1 node platforms/apple/WebContent/PerformancePlus/test/worker-transport.test.mjs "$STAGED" \
+    || fail "Worker clone regressed without structuredClone (iOS 15.0-15.3 path)"
+
 output="$(node platforms/apple/WebContent/PerformancePlus/test/engine-bundle.test.mjs "$STAGED" "$FRAMES" 2>&1)" \
     || { printf '%s\n' "$output" >&2; fail "the staged engine did not draw the frames it was asked for"; }
 printf '%s\n' "$output" | grep -E "wrote [0-9]+ engine frames|PASS" || true

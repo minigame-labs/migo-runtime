@@ -1,55 +1,53 @@
-// The entry script for a real, nested WKWebView Worker the page constructs on content's behalf (see
-// `worker-relay.mjs` and `page-entry.mjs`). Loaded as a classic (non-module) worker, because the script it runs --
-// content's own, the same file the in-process lane runs under `02_worker_inner.js` -- is authored without
-// import/export and uses `importScripts`, which only a classic worker has.
-//
-// This worker has no document and no `window`, so it needs none of `98_global_scope_worker.js`'s retirement of
-// Window-only names: it is already the environment the in-process lane spends a whole file producing. What it does
-// not have natively is the `worker.postMessage` / `worker.onMessage` shape `02_worker_inner.js` gives content -- the
-// engine's own API, not the platform's `self.postMessage` / `self.onmessage` -- so that shape is built here, over
-// this worker's own native primitives, with no Rust and no page relay involved: a message to or from content's
-// script never needs to leave this thread.
-//
-// The user script's path arrives as this worker's own query string, not a message, so it can `importScripts`
-// synchronously on its very first turn -- before anything content sends could possibly be lost. A throw out of it
-// is left uncaught: a classic worker's uncaught throw is what the host Worker object's own `onerror` is for, and
-// catching it here would only hide it from that.
+// Classic Worker: retain importScripts for existing mini-game Worker scripts.
+// The init event carries a private data port. Content never receives this port
+// or the admission protocol, and global postMessage cannot forge its credits.
+(() => {
 const scriptPath = new URLSearchParams(self.location.search).get("script");
-
+const importClassic = self.importScripts.bind(self);
+importClassic(new URL("./worker-clone.js", self.location.href).href);
+const { encodeMessage, createBudget } = self.__migoWorkerCloneBackend;
+delete self.__migoWorkerCloneBackend;
+const pushListener = Function.prototype.call.bind(Array.prototype.push);
+const ErrorClass = Error;
+let dataPort = null;
+let post = null;
 const messageListeners = [];
+const budget = createBudget();
 
 self.worker = {
-    postMessage(message) {
-        self.postMessage(JSON.stringify(message));
-    },
-    onMessage(listener) {
-        if (typeof listener !== "function") {
-            throw new TypeError("listener must be a function");
-        }
-        messageListeners.push(listener);
-    },
+  postMessage(message) {
+    const { ticket, maxBytes } = budget.reserve(16 * 1024 * 1024);
+    try {
+      const wire = encodeMessage(message, maxBytes);
+      budget.commit(ticket, wire);
+      try { post({ k: "msg", seq: ticket, data: wire.value, bytes: wire.bytes }, wire.transfers); }
+      catch (error) { budget.acknowledge(ticket); throw error; }
+    } finally { budget.abort(ticket); }
+  },
+  onMessage(listener) {
+    if (typeof listener !== "function") throw new TypeError("listener must be a function");
+    pushListener(messageListeners, listener);
+  },
 };
 
 self.onmessage = (event) => {
-    const json = event.data;
-    let message;
-    try {
-        message = JSON.parse(json);
-    } catch (_) {
-        message = json;
+  if (dataPort !== null || event.data?.k !== "migo-worker-init" || !event.data.port) return;
+  dataPort = event.data.port;
+  post = dataPort.postMessage.bind(dataPort);
+  self.onmessage = null;
+  dataPort.onmessage = (event) => {
+    const envelope = event.data;
+    if (envelope.k === "ack") { budget.acknowledge(envelope.seq); return; }
+    if (envelope.k !== "post") return;
+    // Native MessagePort dequeue is the release boundary, before user code.
+    post({ k: "ack", seq: envelope.seq });
+    for (let index = 0; index < messageListeners.length; index++) {
+      try { messageListeners[index]({ message: envelope.data }); }
+      catch (error) { console.error("[Worker-JS] onMessage listener error: " + String(error?.stack || error)); }
     }
-    for (const listener of messageListeners) {
-        try {
-            listener({ message });
-        } catch (error) {
-            // Logged and swallowed, as `02_worker_inner.js`'s own listener group has it (`createListenerGroup`):
-            // one listener's throw must not stop the others, and must not read as the worker itself crashing.
-            console.error("[Worker-JS] onMessage listener error: " + String((error && error.stack) || error));
-        }
-    }
+  };
+  dataPort.start();
+  if (!scriptPath) throw new ErrorClass("this worker's query string names no script to run");
+  importClassic(scriptPath);
 };
-
-if (!scriptPath) {
-    throw new Error("this worker's query string names no script to run");
-}
-importScripts(scriptPath);
+})();

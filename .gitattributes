@@ -1,3 +1,9 @@
+# Authored text must have the same input hashes on Linux and Windows, even
+# with core.autocrlf=true. Raw upstream/fixture inputs override this below.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
 # Nothing is routed through Git LFS any more.
 #
 # The repository used to keep the two Android V8 archives (~247 MB together) in
@@ -21,3 +27,21 @@
 # The V8 archives themselves are git-ignored build products; see .gitignore.
 # If a large binary genuinely needs tracking here again, prefer a release asset
 # plus a checksum in a manifest over reintroducing LFS.
+
+# Published vendor archives, ordered patches and generated FFI bindings are
+# checked byte for byte. core.autocrlf on a Windows checkout must not rewrite
+# source/license inputs after their hashes have been verified.
+# Their whitespace is data too (for example unified-diff blank context and
+# published Markdown line breaks). Source-replay/hash gates verify those bytes;
+# keep ordinary whitespace checks on authored engine/SDK code.
+/engine/third_party/deno_core-*/** -text -whitespace
+/engine/third_party/v8-*/** -text -whitespace
+/engine/third_party/ada-url-*/** -text -whitespace
+/engine/third_party/tungstenite-*/** -text -whitespace
+/engine/third_party/oboe-*/** -text -whitespace
+/engine/third_party/cpal-*/** -text -whitespace
+/engine/third_party/skia-bindings-*/** -text -whitespace
+/engine/third_party/rustls-platform-verifier-android-*/** -text -whitespace
+/engine/third_party/*-patches/** -text -whitespace
+/engine/third_party/rusty_v8/*/src_binding.rs -text -whitespace
+/engine/crates/runtime-v8/testdata/** -text -whitespace

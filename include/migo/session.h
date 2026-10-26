@@ -124,6 +124,10 @@ typedef struct MigoSessionConfig {
      * internationalised name in its xn-- form) -- or "unrestricted".
      * A channel left out is refused. allowPlainHttp permits http:// and ws://;
      * lan lets socket, tcp and udp reach other devices on the local network.
+     * tlsTrust is "platform" (default, except OHOS) or "mozilla"; HTTPS and
+     * WSS use the selected verifier without fallback. OHOS defaults to Mozilla.
+     * Android C ABI hosts without an initialized Java SDK/JVM must explicitly
+     * select "tlsTrust":"mozilla". Platform trust honors the host's CA policy.
      * Anything else -- an unknown key, a malformed entry -- makes
      * migo_session_create fail with MIGO_ERROR_INVALID_ARGUMENT.
      *

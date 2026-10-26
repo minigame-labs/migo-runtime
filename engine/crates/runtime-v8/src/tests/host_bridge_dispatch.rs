@@ -108,6 +108,8 @@ mod host_bridge_dispatch_tests {
     /// Shape 1: no arguments -- `_internalTriggerOnHide()` and friends.
     #[test]
     fn dispatches_a_hook_with_no_arguments() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot();
         exec(&mut rt, PROBE);
         dispatch(&mut rt, "_internalProbe", "[]");
@@ -125,6 +127,8 @@ mod host_bridge_dispatch_tests {
     /// handed.
     #[test]
     fn dispatches_a_hook_with_one_json_string() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot();
         exec(&mut rt, PROBE);
         dispatch(&mut rt, "_internalProbe", r#"["{\"code\":\"abc\"}"]"#);
@@ -140,6 +144,8 @@ mod host_bridge_dispatch_tests {
     /// Shape 3: one parsed object -- `_internalTriggerOnShow(JSON.parse(...))`.
     #[test]
     fn dispatches_a_hook_with_a_parsed_object() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot();
         exec(&mut rt, PROBE);
         dispatch(&mut rt, "_internalProbe", r#"[{"scene":1001,"query":{}}]"#);
@@ -154,6 +160,8 @@ mod host_bridge_dispatch_tests {
     /// Shape 4: plain numbers -- `_internalOnModalResult(requestId, confirm, cancel)`.
     #[test]
     fn dispatches_a_hook_with_numeric_arguments() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot();
         exec(&mut rt, PROBE);
         dispatch(&mut rt, "_internalProbe", "[1,0]");
@@ -172,6 +180,8 @@ mod host_bridge_dispatch_tests {
     /// payment promise with nonsense.
     #[test]
     fn a_malformed_payload_calls_nothing() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot();
         exec(&mut rt, PROBE);
         for payload in ["", "not json", "{\"not\":\"an array\"}", "42"] {
@@ -188,6 +198,8 @@ mod host_bridge_dispatch_tests {
     /// hooks from Rust, and a typo there should not take down the game.
     #[test]
     fn an_unknown_hook_is_ignored() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot();
         exec(&mut rt, PROBE);
         dispatch(&mut rt, "_internalNoSuchHook", "[1]");
@@ -202,6 +214,8 @@ mod host_bridge_dispatch_tests {
     /// migration is a change of route rather than of behaviour.
     #[test]
     fn the_dispatcher_and_the_eval_channel_reach_the_same_hook() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot();
         exec(&mut rt, PROBE);
 
@@ -229,6 +243,8 @@ mod host_bridge_dispatch_tests {
     /// them anyway.
     #[test]
     fn the_holder_name_is_retired_once_the_runtime_holds_its_handle() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot();
         assert_js(
             &mut rt,
@@ -252,6 +268,8 @@ mod host_bridge_dispatch_tests {
     /// would reach nothing while every other signal stayed green.
     #[test]
     fn the_dispatcher_still_delivers_after_the_name_is_retired() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot();
         exec(&mut rt, PROBE);
 
@@ -268,6 +286,8 @@ mod host_bridge_dispatch_tests {
 
     #[test]
     fn poisoned_function_apply_cannot_recover_the_retired_holder() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot();
         exec(&mut rt, PROBE);
         let bindings = JsBindings::new(&mut rt, 1);
@@ -293,6 +313,8 @@ mod host_bridge_dispatch_tests {
 
     #[test]
     fn poisoned_json_and_array_intrinsics_cannot_block_host_dispatch() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot();
         exec(&mut rt, PROBE);
         let bindings = JsBindings::new(&mut rt, 1);
@@ -320,6 +342,8 @@ mod host_bridge_dispatch_tests {
     /// nothing reporting a failure.
     #[test]
     fn a_reload_does_not_depend_on_the_retired_name() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot();
         exec(&mut rt, PROBE);
 
@@ -341,6 +365,8 @@ mod host_bridge_dispatch_tests {
     /// holder rather than as an error.
     #[test]
     fn the_holder_property_is_configurable() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot();
         assert_js(
             &mut rt,

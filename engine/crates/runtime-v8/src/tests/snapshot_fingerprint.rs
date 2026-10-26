@@ -572,6 +572,72 @@ fn runtime_fingerprint_changes_when_an_op_source_changes() {
 }
 
 #[test]
+fn path_patched_core_sources_invalidate_snapshots_without_a_version_change() {
+    let root = unique_tmp_dir("core-path-source");
+    let engine = root.join("engine");
+    let jsr = engine.join("crates/runtime-v8");
+    let generator = engine.join("tools/snapshot-gen");
+    let core = engine.join("third_party/deno_core-0.413.0");
+    write_file(&engine.join("Cargo.toml"), b"[workspace]\n");
+    write_file(&engine.join("Cargo.lock"), b"version = 4\n");
+    write_file(
+        &engine.join("third_party/deno-core-patches/UPSTREAM"),
+        b"deno_core 0.413.0 unused-test-checksum\n",
+    );
+    write_file(&jsr.join("Cargo.toml"), b"[package]\n");
+    write_file(&jsr.join("src/lib.rs"), b"fn extension() {}\n");
+    write_file(&generator.join("Cargo.toml"), b"[package]\n");
+    write_file(&generator.join("src/main.rs"), b"fn main() {}\n");
+    write_file(&core.join("Cargo.toml"), b"[package]\n");
+    write_file(&core.join("01_core.js"), b"const core = {};\n");
+    write_file(&core.join("runtime/jsruntime.rs"), b"fn checkpoint() {}\n");
+    let v8 = engine.join("third_party/v8-150.4.0");
+    write_file(
+        &engine.join("third_party/rusty-v8-rust-patches/UPSTREAM"),
+        b"v8 150.4.0 unused-test-checksum\n",
+    );
+    write_file(&v8.join("Cargo.toml"), b"[package]\n");
+    write_file(&v8.join("build.rs"), b"fn main() {}\n");
+    write_file(&v8.join("src/platform.rs"), b"fn register() {}\n");
+    write_file(&v8.join("gen/binding.rs"), b"struct Binding;\n");
+    let js_files = collect_js_files(&jsr).unwrap();
+    let rust_files = collect_rust_files(&jsr).unwrap();
+    let js_before = snapshot_js_hash(&root, &js_files).unwrap();
+    let rust_before = snapshot_runtime_hash(&root, &rust_files).unwrap();
+    write_file(&core.join("01_core.js"), b"const core = {changed: true};\n");
+    write_file(
+        &core.join("runtime/jsruntime.rs"),
+        b"fn checkpoint() { changed(); }\n",
+    );
+    assert_ne!(js_before, snapshot_js_hash(&root, &js_files).unwrap());
+    assert_ne!(
+        rust_before,
+        snapshot_runtime_hash(&root, &rust_files).unwrap()
+    );
+    let patched_hash = snapshot_runtime_hash(&root, &rust_files).unwrap();
+    write_file(
+        &v8.join("src/platform.rs"),
+        b"fn register() { changed(); }\n",
+    );
+    assert_ne!(
+        patched_hash,
+        snapshot_runtime_hash(&root, &rust_files).unwrap()
+    );
+    std::fs::remove_dir_all(&v8).unwrap();
+    assert!(
+        collect_rust_files(&jsr).is_err(),
+        "missing Rust V8 ABI source must fail closed"
+    );
+    std::fs::remove_dir_all(&core).unwrap();
+    assert!(
+        collect_js_files(&jsr).is_err(),
+        "missing patched source must fail closed"
+    );
+    assert!(collect_rust_files(&jsr).is_err());
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn legacy_or_mismatched_snapshot_identity_is_rejected() {
     let expected = SnapshotIdentity {
         schema_version: SNAPSHOT_SCHEMA_VERSION,

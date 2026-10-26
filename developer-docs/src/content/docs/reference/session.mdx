@@ -46,6 +46,8 @@ typedef struct MigoSessionConfig {
 
 `request`、`download`(含远程图片、音频流、资源预取)、`upload`、`socket`、`tcp`、`udp` 各自是一个域名数组或 `"unrestricted"`;没写的通道全部拒绝。`example.com` 只匹配它本身,`*.example.com` 只匹配子域,不能写 IP 地址。`allowPlainHttp` 才允许 `http://`/`ws://`;`lan` 让 socket、tcp、udp 能访问局域网的其他设备,request、download、upload 无论如何都到不了局域网。未知的键或写错的条目让 `migo_session_create` 返回 `MIGO_ERROR_INVALID_ARGUMENT`。这个字段同样是追加的:传旧版结构体的宿主得到 NULL,即没有网络。
 
+`tlsTrust` 固定 HTTPS/WSS 的证书信任方式：`"platform"` 使用平台验证器，`"mozilla"` 使用引擎附带的 Mozilla 根证书。默认是平台模式，OHOS 默认 Mozilla；验证失败不会切换信任库。**Android C ABI 宿主没有初始化 Java SDK/JVM 时，必须显式写 `"tlsTrust":"mozilla"`。** Android Java SDK 默认使用宿主的 CA 与 `networkSecurityConfig`，也可通过 `NetworkPolicy.Builder.setTlsTrust` 选择模式。引擎不覆盖宿主应用的网络配置。
+
 `launch_options_json_utf8` 是游戏的启动参数,NUL 结尾的 UTF-8 JSON,只在 `migo_session_create` 调用期间借用;NULL 即引擎默认值(场景 1001、空 query)。
 
 ```json

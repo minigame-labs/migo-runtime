@@ -62,7 +62,8 @@ pub fn get_or_create_client_from_state(
                 .borrow::<shared::op_state::HostOpState>()
                 .network_policy
                 .clone();
-            let client = create_http_client(&user_agent, true, &policy)?;
+            let pools = state.borrow::<IoSchedulerState>().0.pools().clone();
+            let client = create_http_client(&user_agent, true, &policy, pools)?;
             state.put::<Http2Client>(Http2Client(client.clone()));
             Ok(client)
         }
@@ -76,7 +77,8 @@ pub fn get_or_create_client_from_state(
                 .borrow::<shared::op_state::HostOpState>()
                 .network_policy
                 .clone();
-            let client = create_http_client(&user_agent, false, &policy)?;
+            let pools = state.borrow::<IoSchedulerState>().0.pools().clone();
+            let client = create_http_client(&user_agent, false, &policy, pools)?;
             state.put::<Http1Client>(Http1Client(client.clone()));
             Ok(client)
         }
@@ -124,7 +126,8 @@ impl Resource for ServiceHandle {
             let chunk = service_net::fetch::read(&self.resources, self.id, limit)
                 .await
                 .map_err(|error| JsErrorBox::generic(error.message))?;
-            Ok(BufView::from(chunk.to_vec()))
+            // Core BufView owns Bytes directly; BYOB performs only its final copy.
+            Ok(BufView::from(chunk))
         })
     }
 
@@ -336,25 +339,16 @@ pub fn create_http_client(
     user_agent: &str,
     enable_http2: bool,
     net_policy: &shared::network_policy::NetworkPolicy,
+    pools: migo_io::pools::IoPools,
 ) -> Result<Client, AnyError> {
     migo_services::network::client::create_policy_http_client(
         user_agent,
         enable_http2,
         net_policy,
         "fetch",
+        pools,
     )
     .map_err(|error| AnyError::from(std::io::Error::other(error.to_string())))
-}
-
-/// Build the per-host client used by streamed audio. Construction is lazy at
-/// the audio-service boundary; this function only centralizes the same TLS,
-/// resolver, redirect, and pool configuration used by fetch.
-#[cfg(feature = "api-media")]
-pub fn create_audio_http_client(
-    net_policy: &shared::network_policy::NetworkPolicy,
-) -> Result<Client, AnyError> {
-    migo_services::network::client::create_policy_http_client("migo", true, net_policy, "audio")
-        .map_err(|error| AnyError::from(std::io::Error::other(error.to_string())))
 }
 
 // -- Upload --
@@ -554,6 +548,8 @@ mod js_regression_tests {
     ///   once (closed in the success path, not re-closed by the late abort).
     #[test]
     fn net01_abort_closes_response_rid_exactly_once() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let dl = strip_module_declarations(include_str!("05_download.js"));
         // The real task module (the settler is what delivers every callback), inlined beside the module
         // under test; both destructure `TypeError` from the one stub `primordials`.
@@ -757,6 +753,8 @@ mod js_regression_tests {
     /// covers the path-uniqueness contract.
     #[test]
     fn net02_concurrent_downloads_use_distinct_temp_paths() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let dl = strip_module_declarations(include_str!("05_download.js"));
         // The real task module (the settler is what delivers every callback), inlined beside the module
         // under test; both destructure `TypeError` from the one stub `primordials`.
@@ -861,6 +859,8 @@ mod js_regression_tests {
     /// and the `finally`-block release path.
     #[test]
     fn net04_buffered_pull_ceiling_and_prompt_rid_release() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let req = strip_module_declarations(include_str!("04_request.js"));
         // The real task module (the settler is what delivers every callback), inlined beside the module
         // under test; both destructure `TypeError` from the one stub `primordials`.

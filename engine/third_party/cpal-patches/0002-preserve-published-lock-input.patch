@@ -1,0 +1,9 @@
+--- cpal-0.18.2/.gitignore
++++ cpal-0.18.2/.gitignore
+@@ -1,5 +1,5 @@
+ /target
+-Cargo.lock
++!Cargo.lock
+ .cargo/
+ .DS_Store
+ recorded.wav

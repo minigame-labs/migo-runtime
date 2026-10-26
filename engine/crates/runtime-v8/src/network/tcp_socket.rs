@@ -206,6 +206,8 @@ mod tests {
     /// Fails on `Vec<u8>` (serde_v8 serializes it as a numeric `Array`).
     #[test]
     fn tcp_message_data_serializes_as_exact_uint8array() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = JsRuntime::new(RuntimeOptions::default());
         let main_context = rt.main_context();
         let isolate = rt.v8_isolate();
@@ -266,6 +268,8 @@ mod tests {
     /// exercises the actual class rather than a copied state-machine model.
     #[test]
     fn fnet01_connect_generation_discards_stale_result_and_closes_orphan() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let source = include_str!("08_tcp_socket.js")
             .split("// -- TCPSocket class --")
             .nth(1)

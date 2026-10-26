@@ -21,9 +21,7 @@ use ringbuf::{HeapProd, HeapRb};
 use shared::error::{EngineError, EngineResult, ErrorCode};
 use tracing::{error, info};
 
-use super::{
-    AudioSync, HIGH_WATERMARK_FRAMES, LOW_WATERMARK_FRAMES, OutputCallback, RING_BUFFER_FRAMES,
-};
+use super::{AudioSync, OutputCallback, RING_BUFFER_FRAMES};
 
 /// What this stream asks the device for.
 ///
@@ -218,8 +216,6 @@ pub struct AudioOutput {
     sample_rate: u32,
     channels: u32,
     sync: AudioSync,
-    low_watermark_samples: usize,
-    high_watermark_samples: usize,
     stream_error: Arc<AtomicBool>,
 }
 
@@ -233,12 +229,10 @@ impl AudioOutput {
         let ring_size = RING_BUFFER_FRAMES * OHOS_CHANNELS as usize;
         let (producer, consumer) = HeapRb::<f32>::new(ring_size).split();
         let sync = AudioSync::new();
-        let low_watermark_samples = LOW_WATERMARK_FRAMES * OHOS_CHANNELS as usize;
-        let high_watermark_samples = HIGH_WATERMARK_FRAMES * OHOS_CHANNELS as usize;
         let stream_error = Arc::new(AtomicBool::new(false));
 
         let state = Box::into_raw(Box::new(CallbackState {
-            render: OutputCallback::new(consumer, sync.clone(), low_watermark_samples),
+            render: OutputCallback::new(consumer, sync.clone(), 0),
             stream_error: stream_error.clone(),
         }));
 
@@ -246,17 +240,18 @@ impl AudioOutput {
         // function and this one owns the cleanup. A `?` in the middle of the builder
         // sequence is how a leak of the ring's consumer half gets written by accident.
         match unsafe { build_renderer(state) } {
-            Ok(renderer) => Ok(Self {
-                renderer,
-                state,
-                producer,
-                sample_rate: OHOS_SAMPLE_RATE,
-                channels: OHOS_CHANNELS,
-                sync,
-                low_watermark_samples,
-                high_watermark_samples,
-                stream_error,
-            }),
+            Ok(renderer) => {
+                sync.configure_device(OHOS_CHANNELS as usize, 0);
+                Ok(Self {
+                    renderer,
+                    state,
+                    producer,
+                    sample_rate: OHOS_SAMPLE_RATE,
+                    channels: OHOS_CHANNELS,
+                    sync,
+                    stream_error,
+                })
+            }
             Err(error) => {
                 // SAFETY: no renderer was produced, so nothing can reach `state`.
                 drop(unsafe { Box::from_raw(state) });
@@ -299,14 +294,13 @@ impl AudioOutput {
     /// Refill target depth in samples: fill up to here, not the whole ring.
     #[inline]
     pub fn high_watermark(&self) -> usize {
-        self.high_watermark_samples
-            .max(self.sync.max_callback().saturating_mul(2))
+        self.sync.device_high_watermark()
     }
 
     /// Check if buffer needs more data
     #[inline]
     pub fn needs_data(&self) -> bool {
-        self.sync.buffer_level() < self.low_watermark_samples
+        self.buffered() <= self.sync.low_watermark(0)
     }
 
     /// Get sync handle for checking callback signals

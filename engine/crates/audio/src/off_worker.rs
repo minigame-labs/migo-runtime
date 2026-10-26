@@ -13,49 +13,40 @@
 //! error rather than a convention someone has to remember, which is the same
 //! instrument `LiveContextCount` uses for the Skia budget.
 //!
-//! The value moves in and out rather than being borrowed, so nothing is queued and
-//! nothing is buffered: the caller's backpressure is exactly what it was, one step at
-//! a time in the order the chunks arrived. A step that panics takes the value with
-//! it, which is why [`OffWorker::with`] hands `Self` back only on success — a
-//! poisoned wrapper is not a state a caller can reach.
+//! One caller submits one bounded step at a time. Process/host admission and
+//! scheduling belong to the shared audio CPU lane; dropping a queued operation
+//! releases its captured value without running it.
 
-use shared::error::{EngineError, EngineResult, ErrorCode};
+use migo_io::audio_cpu::AudioCpu;
+use shared::error::EngineResult;
 
 /// A value whose work is CPU-bound, reachable only from a blocking thread.
 pub(crate) struct OffWorker<T> {
     value: T,
+    cpu: AudioCpu,
 }
 
 impl<T: Send + 'static> OffWorker<T> {
-    pub(crate) fn new(value: T) -> Self {
-        Self { value }
+    pub(crate) fn new(value: T, cpu: AudioCpu) -> Self {
+        Self { value, cpu }
     }
 
     /// Run `step` against the value on a thread the async executor is not waiting
     /// for, and hand back the value along with what the step produced.
     ///
-    /// Requires a tokio runtime context, which is where CPU-bound work would
-    /// otherwise be a problem.
+    /// Uses the shared, bounded executor and the owning host's close signal.
     pub(crate) async fn with<R: Send + 'static>(
         self,
         step: impl FnOnce(&mut T) -> R + Send + 'static,
     ) -> EngineResult<(Self, R)> {
-        let mut value = self.value;
-        match tokio::task::spawn_blocking(move || {
-            let outcome = step(&mut value);
-            (value, outcome)
-        })
-        .await
-        {
-            Ok((value, outcome)) => Ok((Self { value }, outcome)),
-            // The step panicked, or the runtime is shutting down. Either way the
-            // value is gone, so the caller gets an error instead of a wrapper it
-            // could ask again.
-            Err(joined) => Err(EngineError::from_detail(
-                ErrorCode::Internal,
-                format!("a step off the worker did not finish: {joined}"),
-            )),
-        }
+        let Self { mut value, cpu } = self;
+        let (value, outcome) = cpu
+            .run(move || {
+                let outcome = step(&mut value);
+                (value, outcome)
+            })
+            .await?;
+        Ok((Self { value, cpu }, outcome))
     }
 }
 
@@ -83,8 +74,9 @@ mod tests {
         // The value crosses two thread boundaries per step. A `with` that handed back
         // anything but the value the step mutated would restart the decoder's buffer
         // on every chunk, which is a wrong answer rather than a slow one.
+        let owner = migo_io::scheduler::IoScheduler::new(0);
         let counted = executor().block_on(async {
-            let (value, first) = OffWorker::new(Vec::new())
+            let (value, first) = OffWorker::new(Vec::new(), owner.audio_cpu())
                 .with(|log: &mut Vec<&str>| {
                     log.push("first");
                     log.len()
@@ -106,8 +98,9 @@ mod tests {
 
     #[test]
     fn a_step_that_panics_takes_the_value_with_it_and_reports() {
+        let owner = migo_io::scheduler::IoScheduler::new(0);
         let outcome = executor().block_on(async {
-            OffWorker::new(())
+            OffWorker::new((), owner.audio_cpu())
                 .with(|_value| panic!("the step's own failure"))
                 .await
                 .map(|_| ())

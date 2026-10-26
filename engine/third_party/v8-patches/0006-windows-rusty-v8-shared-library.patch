@@ -1,66 +1,31 @@
 --- a/BUILD.gn
 +++ b/BUILD.gn
-@@ -1,20 +1,50 @@
- # Copyright 2018-2019 the Deno authors. All rights reserved. MIT license.
- import("//build/config/host_byteorder.gni")
+@@ -5,8 +5,16 @@
+   rusty_v8_enable_simdutf = false
+ }
  
 -static_library("rusty_v8") {
 -  complete_static_lib = true
--  sources = [ "src/binding.cc" ]
--  deps = [
--    "//build/config:shared_library_deps",
--    "//v8:v8",
--    "//v8:v8_libbase",
--    "//v8:v8_libplatform",
--  ]
--  configs -= [
--    "//build/config/compiler:default_init_stack_vars",
--    "//build/config/compiler:thin_archive",
--  ]
--  configs += [ ":rusty_v8_config" ]
-+# MIGO: on Windows rusty_v8 is built as a DLL instead of a static library.
-+#
-+# Skia and V8 each bundle their own C++ runtime and both define std::terminate.
-+# The copy inside V8's libc++ carries COMDAT "pick no duplicates", so the second
-+# definition is required to be a link error -- neither /OPT:REF nor swapping
-+# import libraries can drop it, and aligning the two on MSVC's STL is a dead end
-+# (V8 does not compile against it under Chromium's -D_HAS_EXCEPTIONS=0). A shared
-+# library keeps its runtime internal: V8's libc++ never takes part in the host's
-+# symbol resolution, so the collision cannot occur. Chromium ships V8 inside
-+# chrome.dll for the same reason.
-+#
-+# Only the C surface is exported, via the generated rusty_v8.def, which keeps the
-+# DLL's export list to the bindings rather than every reachable V8 symbol.
-+# Every other target keeps the original static library unchanged.
++# MIGO: Windows isolates V8's bundled C++ runtime inside the DLL.
++# Preserve the entire upstream binding graph, including crdtp and simdutf.
++_rusty_v8_library_type = "static_library"
 +if (is_win) {
-+  shared_library("rusty_v8") {
-+    sources = [ "src/binding.cc" ]
-+    deps = [
-+      "//build/config:shared_library_deps",
-+      "//v8:v8",
-+      "//v8:v8_libbase",
-+      "//v8:v8_libplatform",
-+    ]
-+    configs -= [ "//build/config/compiler:default_init_stack_vars" ]
-+    configs += [ ":rusty_v8_config" ]
++  _rusty_v8_library_type = "shared_library"
++}
++target(_rusty_v8_library_type, "rusty_v8") {
++  if (!is_win) {
++    complete_static_lib = true
++  }
+   sources = [
+     "src/binding.cc",
+     "src/crdtp_binding.cc",
+@@ -27,6 +35,10 @@
+     "//build/config/compiler:thin_archive",
+   ]
+   configs += [ ":rusty_v8_config" ]
++  if (is_win) {
 +    inputs = [ "rusty_v8.def" ]
 +    ldflags = [ "/DEF:" + rebase_path("rusty_v8.def", root_build_dir) ]
-+  }
-+} else {
-+  static_library("rusty_v8") {
-+    complete_static_lib = true
-+    sources = [ "src/binding.cc" ]
-+    deps = [
-+      "//build/config:shared_library_deps",
-+      "//v8:v8",
-+      "//v8:v8_libbase",
-+      "//v8:v8_libplatform",
-+    ]
-+    configs -= [
-+      "//build/config/compiler:default_init_stack_vars",
-+      "//build/config/compiler:thin_archive",
-+    ]
-+    configs += [ ":rusty_v8_config" ]
 +  }
  }
  

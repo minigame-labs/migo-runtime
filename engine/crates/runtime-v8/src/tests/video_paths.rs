@@ -62,6 +62,8 @@ fn canonical(path: &Value) -> std::path::PathBuf {
 /// file or the URL the download allowlist let through, and nothing else.
 #[test]
 fn a_video_player_is_handed_the_sandbox_file_or_the_checked_url_and_nothing_else() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let sandbox = Sandbox::new("video");
     let clip = sandbox.paths.user_data_dir().join("clip.mp4");
     std::fs::write(&clip, b"mp4").unwrap();

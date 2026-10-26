@@ -69,6 +69,8 @@ fn read(runtime: &mut JsRuntime) -> serde_json::Value {
 
 #[test]
 fn what_the_host_reports_is_what_content_reads_everywhere_it_is_asked() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let sandbox = Sandbox::new("app-info-host");
     let mut runtime = boot(
         &sandbox,
@@ -144,6 +146,8 @@ fn what_the_host_reports_is_what_content_reads_everywhere_it_is_asked() {
 
 #[test]
 fn a_host_that_says_nothing_is_told_unknown_never_a_constant() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let sandbox = Sandbox::new("app-info-silent");
     let mut runtime = boot(&sandbox, None);
     let read = read(&mut runtime);
@@ -172,6 +176,8 @@ fn a_host_that_says_nothing_is_told_unknown_never_a_constant() {
 
 #[test]
 fn a_build_that_is_not_a_release_has_no_version() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let sandbox = Sandbox::new("app-info-trial");
     let mut runtime = boot(
         &sandbox,

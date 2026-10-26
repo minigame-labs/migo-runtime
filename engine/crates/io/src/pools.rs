@@ -129,7 +129,7 @@ impl<T> FairLane<T> {
     }
 }
 
-const POOL_COUNT: usize = 5;
+const POOL_COUNT: usize = 7;
 const PRIORITY_COUNT: usize = 3;
 const LANE_COUNT: usize = POOL_COUNT * PRIORITY_COUNT;
 
@@ -140,6 +140,8 @@ const fn pool_index(pool: PoolKind) -> usize {
         PoolKind::Image => 2,
         PoolKind::Archive => 3,
         PoolKind::Ingest => 4,
+        PoolKind::Tls => 5,
+        PoolKind::Audio => 6,
     }
 }
 
@@ -150,6 +152,8 @@ const fn pool_from_index(index: usize) -> PoolKind {
         2 => PoolKind::Image,
         3 => PoolKind::Archive,
         4 => PoolKind::Ingest,
+        5 => PoolKind::Tls,
+        6 => PoolKind::Audio,
         _ => panic!("invalid pool index"),
     }
 }
@@ -173,6 +177,10 @@ struct ExecutorConfig {
     host_cap_when_contended: usize,
     aging_interval: u64,
     process_byte_limit: u64,
+    // Reserve one executor slot for non-CPU IO when there is more than one.
+    cpu_bound_cap: usize,
+    audio_process_limit: usize,
+    audio_host_limit: usize,
 }
 
 impl ExecutorConfig {
@@ -181,7 +189,7 @@ impl ExecutorConfig {
         let cpu_heavy_cap = worker_count.saturating_sub(1).clamp(1, 2);
         Self {
             worker_count,
-            // Fs, Pack, Image, Archive, Ingest.
+            // Fs, Pack, Image, Archive, Ingest, TLS, Audio.
             //
             // Archive gets the CPU-heavy cap rather than 1: extraction is
             // inflate-bound with bounded streaming buffers, not a retained
@@ -196,10 +204,23 @@ impl ExecutorConfig {
             // thread affinity to this pool cap. No separate reason for the
             // ceiling is recorded; raising it therefore needs device
             // frame-pacing evidence, not this host throughput benchmark.
-            class_caps: [worker_count, cpu_heavy_cap, cpu_heavy_cap, cpu_heavy_cap, 1],
+            class_caps: [
+                worker_count,
+                cpu_heavy_cap,
+                cpu_heavy_cap,
+                cpu_heavy_cap,
+                1,
+                cpu_heavy_cap,
+                cpu_heavy_cap,
+            ],
             host_cap_when_contended: worker_count.div_ceil(2),
             aging_interval: 16,
             process_byte_limit: 256 * 1024 * 1024,
+            cpu_bound_cap: worker_count.saturating_sub(1).max(1),
+            // These are operation limits, independent of the byte budget. A
+            // cancelled queued job keeps a slot until its placeholder drains.
+            audio_process_limit: worker_count.saturating_mul(4),
+            audio_host_limit: worker_count.saturating_mul(2),
         }
     }
 
@@ -239,6 +260,9 @@ struct QueueState<T> {
     lanes: [FairLane<T>; LANE_COUNT],
     class_cursor: [usize; PRIORITY_COUNT],
     active_by_class: [usize; POOL_COUNT],
+    audio_by_host: HashMap<HostToken, usize>,
+    audio_in_flight: usize,
+    active_cpu_bound: usize,
     active_by_host: HashMap<HostToken, usize>,
     pending_by_host: HashMap<HostToken, usize>,
     retired_hosts: HashSet<HostToken>,
@@ -259,6 +283,9 @@ impl<T> Default for QueueState<T> {
             lanes: std::array::from_fn(|_| FairLane::default()),
             class_cursor: [0; PRIORITY_COUNT],
             active_by_class: [0; POOL_COUNT],
+            audio_by_host: HashMap::new(),
+            audio_in_flight: 0,
+            active_cpu_bound: 0,
             active_by_host: HashMap::new(),
             pending_by_host: HashMap::new(),
             retired_hosts: HashSet::new(),
@@ -275,6 +302,30 @@ impl<T> Default for QueueState<T> {
     }
 }
 impl<T> QueueState<T> {
+    fn audio_admission(
+        &self,
+        host: HostToken,
+        pool: PoolKind,
+        config: &ExecutorConfig,
+    ) -> Result<(), PoolError> {
+        if pool != PoolKind::Audio {
+            return Ok(());
+        }
+        if self.audio_by_host.get(&host).copied().unwrap_or(0) >= config.audio_host_limit {
+            return Err(PoolError::AudioQueueLimit {
+                limit: config.audio_host_limit,
+                per_host: true,
+            });
+        }
+        if self.audio_in_flight >= config.audio_process_limit {
+            return Err(PoolError::AudioQueueLimit {
+                limit: config.audio_process_limit,
+                per_host: false,
+            });
+        }
+        Ok(())
+    }
+
     fn push(&mut self, host: HostToken, pool: PoolKind, priority: PriorityClass, value: T) {
         self.push_with_bytes(host, pool, priority, value, 0);
     }
@@ -293,6 +344,10 @@ impl<T> QueueState<T> {
         }
         self.lanes[lane_index(priority, pool)].push_with_bytes(host, value, byte_count);
         self.pending_total += 1;
+        if pool == PoolKind::Audio {
+            *self.audio_by_host.entry(host).or_default() += 1;
+            self.audio_in_flight += 1;
+        }
         self.queued_bytes += byte_count;
         *self.pending_by_host.entry(host).or_default() += 1;
     }
@@ -376,6 +431,9 @@ impl<T> QueueState<T> {
                 continue;
             }
             let pool = pool_from_index(class_idx);
+            if pool.is_cpu_bound() && self.active_cpu_bound >= config.cpu_bound_cap {
+                continue;
+            }
             let popped = self.lanes[lane_index(priority, pool)].pop_where_with_bytes(|host| {
                 !host_contended || active_by_host.get(&host).copied().unwrap_or(0) < host_cap
             });
@@ -403,6 +461,9 @@ impl<T> QueueState<T> {
             self.active_total += 1;
             self.active_bytes += byte_count;
             self.active_by_class[class_idx] += 1;
+            if pool.is_cpu_bound() {
+                self.active_cpu_bound += 1;
+            }
             *self.active_by_host.entry(host).or_default() += 1;
             self.dispatch_count = self.dispatch_count.wrapping_add(1);
             return Some(Dispatched { host, pool, value });
@@ -416,7 +477,28 @@ impl<T> QueueState<T> {
     /// production stops a future caller from releasing bytes twice.
     #[cfg(test)]
     fn complete(&mut self, host: HostToken, pool: PoolKind) {
+        self.release_audio_slot(host, pool);
         self.complete_with_bytes(host, pool, 0);
+    }
+
+    // Admission credits must be reusable before a result is observable, even
+    // while the dispatch accounting still considers this worker active.
+    fn release_audio_slot(&mut self, host: HostToken, pool: PoolKind) {
+        if pool != PoolKind::Audio {
+            return;
+        }
+        self.audio_in_flight = self
+            .audio_in_flight
+            .checked_sub(1)
+            .expect("admitted audio job");
+        let count = self
+            .audio_by_host
+            .get_mut(&host)
+            .expect("admitted audio host");
+        *count -= 1;
+        if *count == 0 {
+            self.audio_by_host.remove(&host);
+        }
     }
 
     fn complete_with_bytes(&mut self, host: HostToken, pool: PoolKind, byte_count: u64) {
@@ -439,6 +521,9 @@ impl<T> QueueState<T> {
         *active -= 1;
         if *active == 0 {
             self.active_by_host.remove(&host);
+        }
+        if pool.is_cpu_bound() {
+            self.active_cpu_bound -= 1;
         }
         self.cleanup_retired_host(host);
     }
@@ -474,8 +559,25 @@ impl<T> QueueState<T> {
 
 type Job = Box<dyn FnOnce() + Send + 'static>;
 
+// Audio owns its typed closure, cancellation and reply in one Arc allocation.
+// Other classes keep their existing boxed closure/result API.
+enum ExecutorJob {
+    Closure(Job),
+    Audio(Arc<dyn crate::audio_cpu::CpuJob>),
+}
+impl<F: FnOnce() + Send + 'static> From<Box<F>> for ExecutorJob {
+    fn from(job: Box<F>) -> Self {
+        Self::Closure(job)
+    }
+}
+impl From<Job> for ExecutorJob {
+    fn from(job: Job) -> Self {
+        Self::Closure(job)
+    }
+}
+
 struct ExecutorShared {
-    state: Mutex<QueueState<Job>>,
+    state: Mutex<QueueState<ExecutorJob>>,
     condvar: ParkingCondvar,
     config: ExecutorConfig,
 }
@@ -490,13 +592,17 @@ impl ExecutorShared {
         host: HostToken,
         pool: PoolKind,
         priority: PriorityClass,
-        job: Job,
+        job: impl Into<ExecutorJob>,
     ) -> Result<(), PoolError> {
         let mut state = self.state.lock();
         if state.closed {
             return Err(PoolError::Closed);
         }
-        state.push(host, pool, priority, job);
+        if let Err(error) = state.audio_admission(host, pool, &self.config) {
+            state.refusals = state.refusals.saturating_add(1);
+            return Err(error);
+        }
+        state.push(host, pool, priority, job.into());
         self.condvar.notify_one();
         Ok(())
     }
@@ -518,6 +624,10 @@ impl ExecutorShared {
             .saturating_add(state.active_bytes)
             .saturating_add(state.reserved_bytes);
         let available = self.config.process_byte_limit.saturating_sub(used);
+        if let Err(error) = state.audio_admission(host, pool, &self.config) {
+            state.refusals = state.refusals.saturating_add(1);
+            return Err(error.into());
+        }
         if byte_count > available {
             state.refusals = state.refusals.saturating_add(1);
             return Err(ByteAdmitError::BytesExhausted {
@@ -525,7 +635,7 @@ impl ExecutorShared {
                 available,
             });
         }
-        state.push_with_bytes(host, pool, priority, job, byte_count);
+        state.push_with_bytes(host, pool, priority, ExecutorJob::Closure(job), byte_count);
         self.condvar.notify_one();
         Ok(())
     }
@@ -559,6 +669,12 @@ impl ExecutorShared {
             .expect("released reservation must be reserved");
     }
 
+    fn release_audio_slot(&self, host: HostToken, pool: PoolKind) {
+        if pool == PoolKind::Audio {
+            self.state.lock().release_audio_slot(host, pool);
+        }
+    }
+
     fn release_active_bytes(&self, byte_count: u64) {
         let mut state = self.state.lock();
         state.active_bytes = state
@@ -579,12 +695,19 @@ impl ExecutorShared {
         if state.closed {
             return Err(ByteAdmitError::Closed);
         }
-        state.push_reserved(host, pool, priority, job, byte_count);
+        if let Err(error) = state.audio_admission(host, pool, &self.config) {
+            state.refusals = state.refusals.saturating_add(1);
+            return Err(error.into());
+        }
+        state.push_reserved(host, pool, priority, ExecutorJob::Closure(job), byte_count);
         self.condvar.notify_one();
         Ok(())
     }
 
-    fn next_job(&self, completed: Option<(HostToken, PoolKind, u64)>) -> Option<Dispatched<Job>> {
+    fn next_job(
+        &self,
+        completed: Option<(HostToken, PoolKind, u64)>,
+    ) -> Option<Dispatched<ExecutorJob>> {
         let mut state = self.state.lock();
         if let Some((host, pool, byte_count)) = completed {
             state.complete_with_bytes(host, pool, byte_count);
@@ -692,12 +815,15 @@ impl ProcessIoExecutor {
         }
         self.ensure_started();
         let (result_tx, result_rx) = mpsc::sync_channel(1);
+        let release_shared = Arc::clone(&self.shared);
+        let host = registration.token;
         self.shared.enqueue(
             registration.token,
             pool,
             priority,
             Box::new(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+                release_shared.release_audio_slot(host, pool);
                 let _ = result_tx.send(result);
             }),
         )?;
@@ -719,6 +845,7 @@ impl ProcessIoExecutor {
         debug_assert!(std::ptr::eq(self, Arc::as_ptr(&registration.executor)));
         let (result_tx, result_rx) = mpsc::sync_channel(1);
         let release_shared = Arc::clone(&self.shared);
+        let host = registration.token;
         self.shared.enqueue_with_bytes(
             registration.token,
             pool,
@@ -727,6 +854,7 @@ impl ProcessIoExecutor {
             Box::new(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
                 release_shared.release_active_bytes(byte_count);
+                release_shared.release_audio_slot(host, pool);
                 let _ = result_tx.send(result);
             }),
         )?;
@@ -749,6 +877,7 @@ impl ProcessIoExecutor {
         debug_assert!(std::ptr::eq(self, Arc::as_ptr(&registration.executor)));
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
         let release_shared = Arc::clone(&self.shared);
+        let host = registration.token;
         self.shared.enqueue_with_bytes(
             registration.token,
             pool,
@@ -757,6 +886,7 @@ impl ProcessIoExecutor {
             Box::new(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
                 release_shared.release_active_bytes(byte_count);
+                release_shared.release_audio_slot(host, pool);
                 let _ = result_tx.send(result);
             }),
         )?;
@@ -781,12 +911,15 @@ impl ProcessIoExecutor {
         }
         self.ensure_started();
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let release_shared = Arc::clone(&self.shared);
+        let host = registration.token;
         self.shared.enqueue(
             registration.token,
             pool,
             priority,
             Box::new(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+                release_shared.release_audio_slot(host, pool);
                 let _ = result_tx.send(result);
             }),
         )?;
@@ -807,7 +940,14 @@ fn worker_main(shared: Arc<ExecutorShared>) {
     while let Some(job) = shared.next_job(completed.take()) {
         let host = job.host;
         let pool = job.pool;
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job.value));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match job.value {
+            ExecutorJob::Closure(job) => job(),
+            ExecutorJob::Audio(task) => {
+                task.execute();
+                shared.release_audio_slot(host, pool);
+                task.publish();
+            }
+        }));
         if result.is_err() {
             tracing::error!("process IO executor job wrapper panicked");
         }
@@ -841,12 +981,18 @@ impl Drop for ProcessIoExecutor {
 pub enum ByteAdmitError {
     Closed,
     BytesExhausted { requested: u64, available: u64 },
+    AudioQueueLimit { limit: usize, per_host: bool },
 }
 
 impl fmt::Display for ByteAdmitError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Closed => f.write_str("IO worker pool closed"),
+            Self::AudioQueueLimit { limit, per_host } => write!(
+                f,
+                "audio CPU {} operation limit ({limit}) exhausted",
+                if *per_host { "host" } else { "process" }
+            ),
             Self::BytesExhausted {
                 requested,
                 available,
@@ -857,6 +1003,7 @@ impl fmt::Display for ByteAdmitError {
         }
     }
 }
+impl std::error::Error for ByteAdmitError {}
 pub struct ByteTicket {
     shared: Arc<ExecutorShared>,
     byte_count: u64,
@@ -882,12 +1029,18 @@ impl Drop for ByteTicket {
 pub enum PoolError {
     Closed,
     ByteLimitExceeded { requested: u64, available: u64 },
+    AudioQueueLimit { limit: usize, per_host: bool },
 }
 
 impl fmt::Display for PoolError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             PoolError::Closed => f.write_str("IO worker pool closed"),
+            PoolError::AudioQueueLimit { limit, per_host } => write!(
+                f,
+                "audio CPU {} operation limit ({limit}) exhausted",
+                if *per_host { "host" } else { "process" }
+            ),
             PoolError::ByteLimitExceeded {
                 requested,
                 available,
@@ -903,6 +1056,9 @@ impl From<ByteAdmitError> for PoolError {
     fn from(err: ByteAdmitError) -> Self {
         match err {
             ByteAdmitError::Closed => Self::Closed,
+            ByteAdmitError::AudioQueueLimit { limit, per_host } => {
+                Self::AudioQueueLimit { limit, per_host }
+            }
             ByteAdmitError::BytesExhausted {
                 requested,
                 available,
@@ -914,9 +1070,28 @@ impl From<ByteAdmitError> for PoolError {
     }
 }
 
+impl From<PoolError> for ByteAdmitError {
+    fn from(err: PoolError) -> Self {
+        match err {
+            PoolError::Closed => Self::Closed,
+            PoolError::AudioQueueLimit { limit, per_host } => {
+                Self::AudioQueueLimit { limit, per_host }
+            }
+            PoolError::ByteLimitExceeded {
+                requested,
+                available,
+            } => Self::BytesExhausted {
+                requested,
+                available,
+            },
+        }
+    }
+}
+
 impl From<PoolError> for EngineError {
     fn from(err: PoolError) -> Self {
         match err {
+            PoolError::AudioQueueLimit { .. } => EngineError::from_detail(ErrorCode::InputSaturated, err.to_string()),
             PoolError::Closed => {
                 EngineError::new(ErrorCode::IoError).with_detail("IO worker pool closed")
             }
@@ -967,6 +1142,20 @@ pub struct IoPools {
 impl IoPools {
     pub fn new(host_id: i32) -> Self {
         Self::with_executor(host_id, process_io_executor())
+    }
+
+    pub(crate) fn submit_audio(
+        &self,
+        task: Arc<dyn crate::audio_cpu::CpuJob>,
+    ) -> Result<(), PoolError> {
+        self.registration.executor.shared.enqueue(
+            self.registration.token,
+            PoolKind::Audio,
+            PriorityClass::ForegroundAsync,
+            ExecutorJob::Audio(task),
+        )?;
+        self.registration.executor.ensure_started();
+        Ok(())
     }
 
     pub fn run<T, F>(&self, pool: PoolKind, priority: PriorityClass, job: F) -> Result<T, PoolError>
@@ -1052,6 +1241,7 @@ impl IoPools {
         let (shared, byte_count) = ticket.into_parts();
         let (result_tx, result_rx) = mpsc::sync_channel(1);
         let release_shared = Arc::clone(&shared);
+        let host = self.registration.token;
         let result = shared.enqueue_reserved(
             self.registration.token,
             pool,
@@ -1060,6 +1250,7 @@ impl IoPools {
             Box::new(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
                 release_shared.release_active_bytes(byte_count);
+                release_shared.release_audio_slot(host, pool);
                 let _ = result_tx.send(result);
             }),
         );
@@ -2384,5 +2575,257 @@ mod r5_byte_credit_tests {
             "byte credit must be returned after a panicking job"
         );
         followup.unwrap().join().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod audio_admission_tests {
+    use super::*;
+    const P: PriorityClass = PriorityClass::ForegroundAsync;
+
+    #[test]
+    fn audio_admission_bounds_both_host_and_process() {
+        let config = ExecutorConfig::for_workers(1);
+        let mut state = QueueState::default();
+        for host in [HostToken(1), HostToken(2)] {
+            for _ in 0..2 {
+                state
+                    .audio_admission(host, PoolKind::Audio, &config)
+                    .unwrap();
+                state.push(host, PoolKind::Audio, P, ());
+            }
+            assert!(matches!(
+                state.audio_admission(host, PoolKind::Audio, &config),
+                Err(PoolError::AudioQueueLimit { per_host: true, .. })
+            ));
+        }
+        assert!(matches!(
+            state.audio_admission(HostToken(3), PoolKind::Audio, &config),
+            Err(PoolError::AudioQueueLimit {
+                per_host: false,
+                ..
+            })
+        ));
+        assert!(
+            state
+                .audio_admission(HostToken(1), PoolKind::Fs, &config)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn audio_credit_is_reusable_before_worker_dispatch_completion() {
+        let config = ExecutorConfig::for_workers(1);
+        let mut state = QueueState::default();
+        for host in [HostToken(1), HostToken(2)] {
+            for _ in 0..2 {
+                state.push(host, PoolKind::Audio, P, ());
+            }
+        }
+        let active = state.pop_next(&config).unwrap();
+        assert!(
+            state
+                .audio_admission(active.host, PoolKind::Audio, &config)
+                .is_err()
+        );
+        state.release_audio_slot(active.host, PoolKind::Audio);
+        assert_eq!(
+            state.active_total, 1,
+            "dispatch accounting is deliberately still active"
+        );
+        assert!(
+            state
+                .audio_admission(active.host, PoolKind::Audio, &config)
+                .is_ok(),
+            "host credit must be returned before publishing"
+        );
+        assert!(
+            state
+                .audio_admission(HostToken(3), PoolKind::Audio, &config)
+                .is_ok(),
+            "process credit must be returned before publishing"
+        );
+        state.complete_with_bytes(active.host, active.pool, 0);
+    }
+
+    #[test]
+    fn aggregate_cpu_work_preserves_an_io_slot_across_classes() {
+        let config = ExecutorConfig::for_workers(3);
+        let mut state = QueueState::default();
+        for pool in [PoolKind::Audio, PoolKind::Pack, PoolKind::Archive] {
+            state.push(HostToken(1), pool, P, pool);
+        }
+        for _ in 0..2 {
+            assert!(state.pop_next(&config).unwrap().pool.is_cpu_bound());
+        }
+        assert!(
+            state.pop_next(&config).is_none(),
+            "third CPU class must respect aggregate cap"
+        );
+        state.push(HostToken(2), PoolKind::Fs, P, PoolKind::Fs);
+        assert_eq!(state.pop_next(&config).unwrap().pool, PoolKind::Fs);
+    }
+
+    #[test]
+    fn single_worker_audio_and_host_round_robin_make_progress() {
+        let config = ExecutorConfig::for_workers(1);
+        let mut state = QueueState::default();
+        for host in [HostToken(1), HostToken(1), HostToken(2)] {
+            state.push(host, PoolKind::Audio, P, ());
+        }
+        for expected in [HostToken(1), HostToken(2), HostToken(1)] {
+            let active = state
+                .pop_next(&config)
+                .expect("single worker audio starved");
+            assert_eq!(active.host, expected);
+            state.complete(active.host, active.pool);
+        }
+        assert_eq!(state.audio_in_flight, 0);
+        assert!(state.audio_by_host.is_empty());
+    }
+
+    #[test]
+    fn audio_result_drop_can_reenter_admission_before_dispatch_completion() {
+        struct Reenter {
+            shared: Arc<ExecutorShared>,
+            host: HostToken,
+            checked: mpsc::Sender<bool>,
+        }
+        impl Drop for Reenter {
+            fn drop(&mut self) {
+                let state = self.shared.state.lock();
+                let admitted = state
+                    .audio_admission(self.host, PoolKind::Audio, &self.shared.config)
+                    .is_ok();
+                let _ = self.checked.send(admitted);
+            }
+        }
+        for variant in 0..5 {
+            let mut config = ExecutorConfig::for_workers(1);
+            config.audio_host_limit = 1;
+            config.audio_process_limit = 1;
+            let executor = ProcessIoExecutor::new(config);
+            let pools = IoPools::with_executor(601, executor.clone());
+            let (release, wait) = mpsc::channel::<()>();
+            let (checked, observed) = mpsc::channel();
+            let result = Reenter {
+                shared: executor.shared.clone(),
+                host: pools.registration.token,
+                checked,
+            };
+            let job = move || {
+                let _ = wait.recv();
+                result
+            };
+            // Drop each receiver while the job is blocked. Publishing to a closed
+            // receiver drops T in the worker, before dispatch completion. Its
+            // destructor probes actual admission, so result/release reordering
+            // is detected deterministically across all five submission APIs.
+            match variant {
+                0 => drop(
+                    executor
+                        .submit(&pools.registration, PoolKind::Audio, P, job)
+                        .unwrap(),
+                ),
+                1 => drop(
+                    executor
+                        .submit_bytes(&pools.registration, PoolKind::Audio, P, 1, job)
+                        .unwrap(),
+                ),
+                2 => drop(
+                    executor
+                        .submit_async(&pools.registration, PoolKind::Audio, P, job)
+                        .unwrap(),
+                ),
+                3 => drop(
+                    executor
+                        .submit_async_bytes(&pools.registration, PoolKind::Audio, P, 1, job)
+                        .unwrap(),
+                ),
+                4 => drop(
+                    pools
+                        .submit_reserved(pools.reserve_bytes(1).unwrap(), PoolKind::Audio, P, job)
+                        .unwrap(),
+                ),
+                _ => unreachable!(),
+            }
+            drop(release);
+            assert!(
+                observed
+                    .recv_timeout(std::time::Duration::from_secs(2))
+                    .expect("result was not released"),
+                "variant {variant} published before admission release"
+            );
+        }
+    }
+
+    #[test]
+    fn typed_audio_task_returns_credit_before_publishing() {
+        struct Probe {
+            shared: Arc<ExecutorShared>,
+            host: HostToken,
+            published: mpsc::Sender<bool>,
+        }
+        impl crate::audio_cpu::CpuJob for Probe {
+            fn execute(&self) {}
+            fn publish(&self) {
+                let admitted = self
+                    .shared
+                    .state
+                    .lock()
+                    .audio_admission(self.host, PoolKind::Audio, &self.shared.config)
+                    .is_ok();
+                let _ = self.published.send(admitted);
+            }
+        }
+        let mut config = ExecutorConfig::for_workers(1);
+        config.audio_host_limit = 1;
+        config.audio_process_limit = 1;
+        let executor = ProcessIoExecutor::new(config);
+        let pools = IoPools::with_executor(602, executor.clone());
+        let (published, observed) = mpsc::channel();
+        pools
+            .submit_audio(Arc::new(Probe {
+                shared: executor.shared.clone(),
+                host: pools.registration.token,
+                published,
+            }))
+            .unwrap();
+        assert!(
+            observed
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("typed audio was not published"),
+            "typed task published before returning admission credit"
+        );
+    }
+
+    #[test]
+    fn all_enqueue_forms_enforce_audio_operation_limits() {
+        let executor = ProcessIoExecutor::new(ExecutorConfig::for_workers(1));
+        let shared = &executor.shared;
+        let host = HostToken(1);
+        // Queue without starting workers so all API variants see the same full host quota.
+        shared
+            .enqueue(host, PoolKind::Audio, P, Box::new(|| ()))
+            .unwrap();
+        shared
+            .enqueue_with_bytes(host, PoolKind::Audio, P, 0, Box::new(|| ()))
+            .unwrap();
+        assert!(matches!(
+            shared.enqueue(host, PoolKind::Audio, P, Box::new(|| ())),
+            Err(PoolError::AudioQueueLimit { .. })
+        ));
+        assert!(matches!(
+            shared.enqueue_with_bytes(host, PoolKind::Audio, P, 1, Box::new(|| ())),
+            Err(ByteAdmitError::AudioQueueLimit { .. })
+        ));
+        let ticket = shared.reserve_bytes(1).unwrap();
+        assert!(matches!(
+            shared.enqueue_reserved(host, PoolKind::Audio, P, 1, Box::new(|| ())),
+            Err(ByteAdmitError::AudioQueueLimit { .. })
+        ));
+        drop(ticket);
+        assert_eq!(shared.state.lock().pending_total, 2);
+        assert_eq!(shared.state.lock().reserved_bytes, 0);
     }
 }

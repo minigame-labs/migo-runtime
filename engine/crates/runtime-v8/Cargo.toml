@@ -64,6 +64,8 @@ migo-icu-data = { path = "../icu-data", default-features = false }
 # a second copy would be two decoders that have to agree.
 frame-decode = { package = "migo-frame-decode", path = "../frame-decode", default-features = false }
 deno_core.workspace=true
+# WPT-backed WHATWG URL parser; no DOM, CSS, HTTP or URLPattern surface.
+ada-url.workspace = true
 # Only enable tokio features actually needed (not "full")
 tokio = { workspace = true, features = ["rt", "sync", "time", "macros", "rt-multi-thread", "net", "fs", "io-util"] }
 tracing = { workspace = true }
@@ -98,6 +100,13 @@ tokio-tungstenite.workspace = true
 # aws-lc-rs, runtime handshake panics on provider auto-detection.
 rustls = { version = "0.23.37", default-features = false, features = ["ring", "std", "tls12"] }
 futures.workspace = true
+
+# These native recipes enable pointer compression. Rust's tagged-pointer
+# representation and generated binding selection must use the same mode;
+# overriding only GN produces an ABI-incompatible Rust consumer.
+# Apple and OHOS retain their separately pinned uncompressed recipe.
+[target.'cfg(all(target_pointer_width = "64", not(target_env = "ohos"), any(target_os = "android", target_os = "linux", target_os = "windows")))'.dependencies]
+deno_core = { workspace = true, features = ["v8_enable_pointer_compression"] }
 
 [dev-dependencies]
 # Tests boot from source and build snapshots, so they need every extension's JS even when a valid

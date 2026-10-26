@@ -1,0 +1,17 @@
+--- symphonia-metadata-0.6.1/src/id3v2/mod.rs
++++ symphonia-metadata-0.6.1/src/id3v2/mod.rs
+@@ -554,6 +554,14 @@
+ }
+ 
+ impl<'s> Id3v2Reader<'s> {
++    /// Read the total encoded tag length, including header and optional footer.
++    /// This uses the same header parser as metadata decoding, without buffering
++    /// or decoding the tag body. Useful for bounded, incremental audio inputs.
++    pub fn total_tag_len(header: &[u8; 10]) -> Result<u32> {
++        let header = read_id3v2_header(&mut BufReader::new(header))?;
++        Ok(header.size + 10 + if header.has_footer { 10 } else { 0 })
++    }
++
+     pub fn try_new(mss: MediaSourceStream<'s>, _opts: MetadataOptions) -> Result<Self> {
+         Ok(Self { reader: mss })
+     }

@@ -39,6 +39,8 @@ fn boot() -> (JsRuntime, std::thread::JoinHandle<()>) {
 /// the callback form fails with it, and neither has a promise form.
 #[test]
 fn an_empty_file_or_region_is_refused_in_the_api_s_words() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let (mut runtime, renderer) = boot();
     let checked = run_to_idle(
         &mut runtime,

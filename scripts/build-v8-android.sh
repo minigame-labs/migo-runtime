@@ -71,6 +71,7 @@ esac
 [[ -d "$PATCH_DIR" ]]           || { err "patch dir not found: $PATCH_DIR"; exit 1; }
 [[ -f "$V8_COMPONENT_WRITER" ]] || { err "component writer not found: $V8_COMPONENT_WRITER"; exit 1; }
 [[ -f "$V8_BUILD_LOCK" ]]       || { err "V8 source lock not found: $V8_BUILD_LOCK"; exit 1; }
+python3 "$SCRIPT_DIR/verify-v8-source-cohort.py" "$PROJECT_ROOT" "$RUSTY_V8_SRC"
 [[ "$ANDROID_API" == "26" ]]    || { err "verified Android V8 builds require ANDROID_API=26"; exit 1; }
 
 # The NDK supplies the target compiler, sysroot and linker, all recorded in the
@@ -108,9 +109,10 @@ source "$SCRIPT_DIR/lib/v8-patch-apply.sh"
 #
 # The lock's own notes explain each entry. Deliberately not declared, and therefore
 # refused by the drift gate if they ever appear in the tree:
-#   0004 allow-custom-ndk - already upstreamed in V8 14.5
-#   0101/0102/0103 jumbo  - build-speed only, hunks don't align on
-#     14.5.201 (regexp/sandbox/v8.gni drift)
+# 0004 is required again on 150.4: without its declare_args entries, GN ignores
+# the custom NDK root/version and the manifest would identify the wrong SDK.
+# Historical jumbo patches were never selected by a shipping recipe and have
+# been removed. The build uses the upstream translation-unit graph.
 # Via a command substitution, not `mapfile < <(...)`: a process substitution's exit
 # status is not what `||` sees, so a parser that printed a valid prefix and then
 # failed on a malformed entry would leave a truncated declaration behind and pass
@@ -194,9 +196,11 @@ NDK_VER="$(awk -F= '/^Pkg\.Revision/{gsub(/[[:space:]]/, "", $2); split($2, part
 GN_ARGS="android_ndk_api_level=$ANDROID_API"
 GN_ARGS+=" android_ndk_root=\"$ANDROID_NDK_HOME\""
 GN_ARGS+=" android_ndk_version=\"r${NDK_VER}\""
-# (jumbo intentionally not set: we skip the jumbo patches on 14.5.201,
-# and use_jumbo_build isn't a declared arg without them.)
+# use_jumbo_build is not an upstream declared argument in this source cohort.
 GN_ARGS+=" v8_enable_webassembly=true"
+GN_ARGS+=" rusty_v8_enable_simdutf=true"
+GN_ARGS+=" icu_use_data_file=true icu_use_stub_data=true"
+GN_ARGS+=" icu_copy_icudata_to_root_build_dir=true v8_depend_on_icu_data_file=true"
 GN_ARGS+=" v8_enable_pointer_compression=true"
 
 # i18n: rusty_v8's src/binding.cc UNCONDITIONALLY includes
@@ -458,8 +462,8 @@ libclang_resource_dir() {
 
 LIBCLANG_DIR="${V8_LIBCLANG_PATH:-}"
 if [[ -z "$LIBCLANG_DIR" ]]; then
-    # prefer an NDK that ships clang >= 19
-    for cand in "$HOME/Android/android-ndk-r28c" "$HOME/Android/android-ndk-r29"; do
+    # Prefer the same pinned NDK used for target objects and builtin headers.
+    for cand in "$ANDROID_NDK_HOME"; do
         if [[ -f "$cand/toolchains/llvm/prebuilt/$NDK_HOST/lib/libclang.so" ]]; then
             LIBCLANG_DIR="$cand/toolchains/llvm/prebuilt/$NDK_HOST/lib"
             break
@@ -516,7 +520,9 @@ pushd "$RUSTY_V8_SRC" >/dev/null
 
 BUILD_LOG="${TMPDIR:-/tmp}/migo-v8-build-${ARCH}.$$.log"
 set +e
-cargo build --release --target "$TARGET" -vv 2>&1 | tee "$BUILD_LOG" | \
+# This standalone native checkout owns its GN output. Do not let an SDK
+# caller's Cargo target override send the build away from the paths below.
+cargo build --target-dir "$RUSTY_V8_SRC/target" --release --target "$TARGET" --features simdutf,v8_enable_pointer_compression -vv 2>&1 | tee "$BUILD_LOG" | \
     grep --line-buffered -iE "error|warning: |Compiling v8|Finished|gn gen|ninja|downloading|cloning" | tail -100
 RC=${PIPESTATUS[0]}
 set -e

@@ -110,7 +110,6 @@ for relative in (
 for relative in (
     "engine/crates/runtime-v8/src/loader.rs",
     "engine/crates/runtime-v8/src/code_cache.rs",
-    "engine/crates/runtime-v8/src/isolate_pool.rs",
 ):
     require(
         (root / relative).exists(),

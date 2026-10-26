@@ -48,6 +48,7 @@ use build_snapshot::{
     ManifestIdentity, SNAPSHOT_SCHEMA_VERSION, SnapshotIdentity, collect_js_files,
     collect_rust_files, require_materialized_size, sha256_file, snapshot_feature_hash,
     snapshot_js_hash, snapshot_profile_features, snapshot_runtime_hash, validate_snapshot_identity,
+    vendored_core_dir, vendored_v8_dir,
 };
 
 fn main() {
@@ -121,6 +122,29 @@ fn main() {
         worker_snapshot_manifest.display()
     );
     println!("cargo:rerun-if-changed={}", cargo_lock.display());
+    let engine_dir = repo_root.join("engine");
+    println!(
+        "cargo:rerun-if-changed={}",
+        engine_dir.join("Cargo.toml").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        engine_dir.join("third_party/deno-core-patches").display()
+    );
+    if let Ok(Some(core)) = vendored_core_dir(&engine_dir) {
+        println!("cargo:rerun-if-changed={}", core.display());
+    }
+    println!(
+        "cargo:rerun-if-changed={}",
+        engine_dir
+            .join("third_party/rusty-v8-rust-patches")
+            .display()
+    );
+    if let Ok(Some(v8)) = vendored_v8_dir(&engine_dir) {
+        for child in ["src", "gen", "Cargo.toml", "build.rs"] {
+            println!("cargo:rerun-if-changed={}", v8.join(child).display());
+        }
+    }
     println!("cargo:rerun-if-changed={}", v8_archive.display());
 
     // Enumerate extension JS. On ANY error, fail safe: a partial set could

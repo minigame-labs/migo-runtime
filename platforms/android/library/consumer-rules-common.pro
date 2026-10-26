@@ -13,4 +13,10 @@
 }
 -keepnames class com.migo.runtime.internal.NativeBridge
 -keepnames class com.migo.runtime.internal.NativeExports
+# Native session initialization obtains the application Context for TLS.
+-keep class com.migo.runtime.internal.AppContext {
+    public static android.content.Context getOrNull();
+}
+# rustls calls these three upstream classes/members by JNI names.
+-keep class org.rustls.platformverifier.** { *; }
 -keepattributes *Annotation*,Signature,InnerClasses,EnclosingMethod

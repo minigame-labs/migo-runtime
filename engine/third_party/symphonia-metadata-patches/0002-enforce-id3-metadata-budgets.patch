@@ -1,0 +1,666 @@
+--- symphonia-metadata-0.6.1/src/embedded/riff.rs
++++ symphonia-metadata-0.6.1/src/embedded/riff.rs
+@@ -16,7 +16,7 @@
+ 
+     use lazy_static::lazy_static;
+ 
+-    use symphonia_core::errors::{Result, decode_error};
++    use symphonia_core::errors::{decode_error, Result};
+     use symphonia_core::meta::{MetadataBuilder, RawTag};
+ 
+     use crate::utils::std_tag::*;
+@@ -104,7 +104,12 @@
+         side_data: &mut Vec<MetadataSideData>,
+     ) -> Result<MetadataRevision> {
+         let mut builder = MetadataBuilder::new(crate::id3v2::ID3V2_METADATA_INFO);
+-        crate::id3v2::read_id3v2(reader, &mut builder, side_data)?;
++        crate::id3v2::read_id3v2(
++            reader,
++            &mut builder,
++            side_data,
++            &crate::id3v2::limits::Limits::new(Default::default()),
++        )?;
+         Ok(builder.build())
+     }
+ }
+--- symphonia-metadata-0.6.1/src/id3v2/frames/readers.rs
++++ symphonia-metadata-0.6.1/src/id3v2/frames/readers.rs
+@@ -13,7 +13,7 @@
+ use std::str;
+ use std::sync::Arc;
+ 
+-use symphonia_core::errors::{Result, decode_error, unsupported_error};
++use symphonia_core::errors::{decode_error, unsupported_error, Result};
+ use symphonia_core::io::{BufReader, FiniteStream, ReadBytes};
+ use symphonia_core::meta::RawTag;
+ use symphonia_core::meta::RawTagSubField;
+@@ -23,7 +23,7 @@
+ 
+ use lazy_static::lazy_static;
+ use log::debug;
+-use smallvec::{SmallVec, smallvec};
++use smallvec::{smallvec, SmallVec};
+ 
+ use crate::id3v2::frames::{FrameResult, Id3v2Chapter, Id3v2TableOfContents};
+ use crate::id3v2::sub_fields::*;
+@@ -46,6 +46,8 @@
+     major_version: u8,
+     /// An optional raw tag parser to be applied if the frame is generic.
+     raw_tag_parser: Option<RawTagParser>,
++    limits: &'a crate::id3v2::Limits,
++    depth: usize,
+ }
+ 
+ impl<'a> FrameInfo<'a> {
+@@ -53,11 +55,19 @@
+     /// raw tag parser.
+     ///
+     /// Panics if the frame ID is invalid.
+-    pub fn new(id: &'a [u8], major_version: u8, raw_tag_parser: Option<RawTagParser>) -> Self {
++    pub fn new(
++        id: &'a [u8],
++        major_version: u8,
++        raw_tag_parser: Option<RawTagParser>,
++        limits: &'a crate::id3v2::Limits,
++        depth: usize,
++    ) -> Self {
+         FrameInfo {
+             id: std::str::from_utf8(id).expect("validated frame id bytes"),
+             major_version,
+             raw_tag_parser,
++            limits,
++            depth,
+         }
+     }
+ }
+@@ -414,9 +424,9 @@
+ 
+     while reader.bytes_available() >= min_frame_size(frame.major_version) {
+         let frame = match frame.major_version {
+-            2 => read_id3v2p2_frame(&mut reader),
+-            3 => read_id3v2p3_frame(&mut reader),
+-            4 => read_id3v2p4_frame(&mut reader),
++            2 => read_id3v2p2_frame(&mut reader, frame.limits, frame.depth + 1),
++            3 => read_id3v2p3_frame(&mut reader, frame.limits, frame.depth + 1),
++            4 => read_id3v2p4_frame(&mut reader, frame.limits, frame.depth + 1),
+             _ => break,
+         }?;
+ 
+@@ -587,9 +597,9 @@
+ 
+     while reader.bytes_available() >= min_frame_size(frame.major_version) {
+         let frame = match frame.major_version {
+-            2 => read_id3v2p2_frame(&mut reader),
+-            3 => read_id3v2p3_frame(&mut reader),
+-            4 => read_id3v2p4_frame(&mut reader),
++            2 => read_id3v2p2_frame(&mut reader, frame.limits, frame.depth + 1),
++            3 => read_id3v2p3_frame(&mut reader, frame.limits, frame.depth + 1),
++            4 => read_id3v2p4_frame(&mut reader, frame.limits, frame.depth + 1),
+             _ => break,
+         }?;
+ 
+@@ -838,9 +848,9 @@
+     // Pre-validate these conditions to prevent doing extra work in the case all conditions do not
+     // match.
+     let is_parseable = match text {
+-        RawValue::StringList(ref list) if list.len() % 2 == 0 => {
+-            list.chunks_exact(2).all(|pair| TIPL_FUNC_PARSERS.contains_key(pair[0].as_str()))
+-        }
++        RawValue::StringList(ref list) if list.len() % 2 == 0 => list
++            .chunks_exact(2)
++            .all(|pair| TIPL_FUNC_PARSERS.contains_key(pair[0].as_str())),
+         _ => false,
+     };
+ 
+--- symphonia-metadata-0.6.1/src/id3v2/frames.rs
++++ symphonia-metadata-0.6.1/src/id3v2/frames.rs
+@@ -10,7 +10,7 @@
+ use std::collections::HashMap;
+ use std::str;
+ 
+-use symphonia_core::errors::{Result, decode_error};
++use symphonia_core::errors::{decode_error, Result};
+ use symphonia_core::io::{BufReader, FiniteStream, ReadBytes};
+ use symphonia_core::meta::RawTagSubField;
+ use symphonia_core::meta::{Chapter, RawValue, Tag, Visual};
+@@ -446,8 +446,22 @@
+     }
+ }
+ 
++// UnsyncStream uses ReadBytes' generic allocator rather than ScopedStream's
++// pre-allocation check. Encoded bytes remaining are an upper bound on decoded
++// bytes; reject impossible declarations before either implementation allocates.
++fn read_frame_body<B: ReadBytes + FiniteStream>(reader: &mut B, size: usize) -> Result<Box<[u8]>> {
++    if size as u64 > reader.bytes_available() {
++        return decode_error("id3v2: frame exceeds tag extent");
++    }
++    Ok(reader.read_boxed_slice_exact(size)?)
++}
++
+ /// Read an ID3v2.2 frame.
+-pub fn read_id3v2p2_frame<B: ReadBytes>(reader: &mut B) -> Result<FrameResult> {
++pub fn read_id3v2p2_frame<B: ReadBytes + FiniteStream>(
++    reader: &mut B,
++    limits: &super::Limits,
++    depth: usize,
++) -> Result<FrameResult> {
+     let id = reader.read_triple_bytes()?;
+ 
+     // Check if the frame id contains valid characters. If it does not, then assume the rest of the
+@@ -474,15 +488,19 @@
+         return Ok(FrameResult::Skipped);
+     }
+ 
++    if !limits.allow_frame(size, id == *b"PIC", depth) {
++        reader.ignore_bytes(size)?;
++        return Ok(FrameResult::Skipped);
++    }
+     // Read the frame body into a frame buffer.
+-    let data = reader.read_boxed_slice_exact(size as usize)?;
++    let data = read_frame_body(reader, size as usize)?;
+ 
+     // Prepare frame information for the frame reader.
+-    let info = FrameInfo::new(&id, 2, raw_tag_parser);
++    let info = FrameInfo::new(&id, 2, raw_tag_parser, limits, depth);
+ 
+     // An error while reading the frame from the frame buffer is not fatal.
+     match read_frame(BufReader::new(&data), &info) {
+-        Ok(result) => Ok(result),
++        Ok(result) => Ok(limits.filter(result)),
+         Err(err) => {
+             // On error, skip the frame.
+             warn!("{err}");
+@@ -492,7 +510,11 @@
+ }
+ 
+ /// Read an ID3v2.3 frame.
+-pub fn read_id3v2p3_frame<B: ReadBytes>(reader: &mut B) -> Result<FrameResult> {
++pub fn read_id3v2p3_frame<B: ReadBytes + FiniteStream>(
++    reader: &mut B,
++    limits: &super::Limits,
++    depth: usize,
++) -> Result<FrameResult> {
+     let id = reader.read_quad_bytes()?;
+ 
+     // Check if the frame id contains valid characters. If it does not, then assume the rest of the
+@@ -563,8 +585,12 @@
+         return Ok(FrameResult::Skipped);
+     }
+ 
++    if !limits.allow_frame(u64::from(data_size), !is_encrypted && id == *b"APIC", depth) {
++        reader.ignore_bytes(u64::from(data_size))?;
++        return Ok(FrameResult::Skipped);
++    }
+     // Read the frame body into a frame buffer.
+-    let data = reader.read_boxed_slice_exact(data_size as usize)?;
++    let data = read_frame_body(reader, data_size as usize)?;
+ 
+     // Find a reader for the frame. If the frame is encrypted, then the frame is provided as a
+     // binary buffer.
+@@ -572,7 +598,7 @@
+         if !is_encrypted { find_frame_reader(id) } else { null_frame_reader() };
+ 
+     // Prepare frame information for the frame reader.
+-    let info = FrameInfo::new(&id, 3, raw_tag_parser);
++    let info = FrameInfo::new(&id, 3, raw_tag_parser, limits, depth);
+ 
+     // Read the frame from the frame buffer. An error here is not fatal.
+     match read_frame(BufReader::new(&data), &info) {
+@@ -581,7 +607,7 @@
+             if is_grouped || is_encrypted {
+                 append_tag_sub_fields(&mut result, group_id, encryption_id);
+             }
+-            Ok(result)
++            Ok(limits.filter(result))
+         }
+         Err(err) => {
+             // On error, skip the frame.
+@@ -592,7 +618,11 @@
+ }
+ 
+ /// Read an ID3v2.4 frame.
+-pub fn read_id3v2p4_frame<B: ReadBytes + FiniteStream>(reader: &mut B) -> Result<FrameResult> {
++pub fn read_id3v2p4_frame<B: ReadBytes + FiniteStream>(
++    reader: &mut B,
++    limits: &super::Limits,
++    depth: usize,
++) -> Result<FrameResult> {
+     let id = reader.read_quad_bytes()?;
+ 
+     // Check if the frame id contains valid characters. If it does not, then assume the rest of the
+@@ -675,8 +705,12 @@
+         return Ok(FrameResult::Skipped);
+     }
+ 
++    if !limits.allow_frame(u64::from(data_size), !is_encrypted && id == *b"APIC", depth) {
++        reader.ignore_bytes(u64::from(data_size))?;
++        return Ok(FrameResult::Skipped);
++    }
+     // Read the frame body into a frame buffer.
+-    let mut data = reader.read_boxed_slice_exact(data_size as usize)?;
++    let mut data = read_frame_body(reader, data_size as usize)?;
+ 
+     // Find a reader for the frame. If the frame is encrypted, then the frame is provided as a
+     // binary buffer.
+@@ -684,7 +718,7 @@
+         if !is_encrypted { find_frame_reader(id) } else { null_frame_reader() };
+ 
+     // Prepare frame information for the frame reader.
+-    let info = FrameInfo::new(&id, 4, raw_tag_parser);
++    let info = FrameInfo::new(&id, 4, raw_tag_parser, limits, depth);
+ 
+     // Read the frame.
+     let result = if is_unsynchronised {
+@@ -706,7 +740,7 @@
+             if is_grouped || is_encrypted {
+                 append_tag_sub_fields(&mut result, group_id, encryption_id);
+             }
+-            Ok(result)
++            Ok(limits.filter(result))
+         }
+         Err(err) => {
+             // On error, skip the frame.
+--- /dev/null
++++ symphonia-metadata-0.6.1/src/id3v2/limits.rs
+@@ -0,0 +1,161 @@
++// Symphonia
++// Copyright (c) 2019-2026 The Project Symphonia Developers.
++// This Source Code Form is subject to the terms of the Mozilla Public
++// License, v. 2.0. If a copy of the MPL was not distributed with this
++// file, You can obtain one at https://mozilla.org/MPL/2.0/.
++
++use super::frames::{FrameResult, Id3v2Chapter, Id3v2TableOfContents};
++use std::mem::size_of;
++use symphonia_core::meta::{ChapterGroupItem, MetadataOptions, Tag, Visual};
++
++/// Independent decoded-value, retained-revision, encoded-scratch and depth limits.
++#[derive(Clone, Copy)]
++pub(crate) struct Limits {
++    tag: Option<usize>,
++    visual: Option<usize>,
++    pub total: Option<usize>,
++    frame: Option<usize>,
++    pub depth: Option<usize>,
++}
++impl Limits {
++    pub fn new(options: MetadataOptions) -> Self {
++        Self {
++            tag: options.limit_tag_bytes.limit_or_default(64 * 1024),
++            visual: options.limit_visual_bytes.limit_or_default(1024 * 1024),
++            total: options.limit_total_bytes.limit_or_default(4 * 1024 * 1024),
++            frame: options.limit_frame_bytes.limit_or_default(1024 * 1024),
++            depth: options.limit_nesting_depth.limit_or_default(8),
++        }
++    }
++    pub fn allow_frame(&self, size: u64, picture: bool, depth: usize) -> bool {
++        self.total != Some(0)
++            && !self.depth.is_some_and(|limit| depth > limit)
++            && !self.frame.is_some_and(|limit| size > limit as u64)
++            && if picture {
++                self.visual != Some(0)
++            } else {
++                self.tag != Some(0)
++            }
++    }
++    fn tag_allowed(&self, tag: &Tag) -> bool {
++        !self
++            .tag
++            .is_some_and(|limit| tag.storage_size_upper_bound() > limit)
++    }
++    fn visual_allowed(&self, visual: &mut Visual) -> bool {
++        if self.visual.is_some_and(|limit| visual.data.len() > limit) {
++            return false;
++        }
++        visual.tags.retain(|tag| self.tag_allowed(tag));
++        true
++    }
++    pub fn filter(&self, result: FrameResult) -> FrameResult {
++        match result {
++            FrameResult::Tag(tag) if !self.tag_allowed(&tag) => FrameResult::Skipped,
++            FrameResult::MultipleTags(mut tags) => {
++                tags.retain(|tag| self.tag_allowed(tag));
++                FrameResult::MultipleTags(tags)
++            }
++            FrameResult::Visual(mut visual) => {
++                if self.visual_allowed(&mut visual) {
++                    FrameResult::Visual(visual)
++                } else {
++                    FrameResult::Skipped
++                }
++            }
++            FrameResult::Chapter(mut value) => {
++                value.chapter.tags.retain(|tag| self.tag_allowed(tag));
++                value
++                    .chapter
++                    .visuals
++                    .retain_mut(|visual| self.visual_allowed(visual));
++                FrameResult::Chapter(value)
++            }
++            FrameResult::TableOfContents(mut value) => {
++                value.tags.retain(|tag| self.tag_allowed(tag));
++                value
++                    .visuals
++                    .retain_mut(|visual| self.visual_allowed(visual));
++                FrameResult::TableOfContents(value)
++            }
++            other => other,
++        }
++    }
++}
++
++/// Charge conservative storage before adding it to the revision or chapter index.
++/// Vec pushes may have up to four initial slots and geometric spare capacity;
++/// charging four inline slots per entry covers that without changing containers.
++pub(super) struct Retention {
++    remaining: Option<usize>,
++}
++impl Retention {
++    pub fn new(limits: Limits) -> Self {
++        Self {
++            remaining: limits.total,
++        }
++    }
++    pub fn admit(&mut self, size: usize) -> bool {
++        match self.remaining {
++            Some(left) if size > left => false,
++            Some(left) => {
++                self.remaining = Some(left - size);
++                true
++            }
++            None => true,
++        }
++    }
++    pub fn tag(&mut self, value: &Tag) -> bool {
++        self.admit(
++            value
++                .storage_size_upper_bound()
++                .saturating_add(3 * size_of::<Tag>()),
++        )
++    }
++    pub fn visual(&mut self, value: &Visual) -> bool {
++        self.admit(
++            value
++                .storage_size_upper_bound()
++                .saturating_add(3 * size_of::<Visual>()),
++        )
++    }
++    pub fn chapter(&mut self, value: &Id3v2Chapter) -> bool {
++        let size = container(&value.chapter.tags, &value.chapter.visuals)
++            .saturating_add(4 * size_of::<Id3v2Chapter>() + 4 * size_of::<String>() + 32)
++            .saturating_add(value.id.capacity().saturating_mul(2));
++        self.admit(size)
++    }
++    pub fn toc(&mut self, value: &Id3v2TableOfContents) -> bool {
++        let size = value.items.iter().fold(
++            container(&value.tags, &value.visuals)
++                .saturating_add(value.items.capacity() * (size_of::<String>() + size_of::<ChapterGroupItem>()))
++                .saturating_add(
++                    4 * size_of::<Id3v2TableOfContents>() + 4 * size_of::<String>() + 32,
++                )
++                .saturating_add(value.id.capacity().saturating_mul(3)),
++            |size, item| size.saturating_add(item.capacity()),
++        );
++        self.admit(size)
++    }
++}
++fn container(tags: &Vec<Tag>, visuals: &Vec<Visual>) -> usize {
++    let size = tags
++        .iter()
++        .fold(tags.capacity() * size_of::<Tag>(), |size, value| {
++            size.saturating_add(
++                value
++                    .storage_size_upper_bound()
++                    .saturating_sub(size_of::<Tag>()),
++            )
++        });
++    visuals.iter().fold(
++        size.saturating_add(visuals.capacity() * size_of::<Visual>()),
++        |size, value| {
++            size.saturating_add(
++                value
++                    .storage_size_upper_bound()
++                    .saturating_sub(size_of::<Visual>()),
++            )
++        },
++    )
++}
+--- symphonia-metadata-0.6.1/src/id3v2/mod.rs
++++ symphonia-metadata-0.6.1/src/id3v2/mod.rs
+@@ -9,7 +9,7 @@
+ 
+ use std::collections::HashMap;
+ 
+-use symphonia_core::errors::{Result, decode_error, unsupported_error};
++use symphonia_core::errors::{decode_error, unsupported_error, Result};
+ use symphonia_core::formats::probe::{ProbeMetadataData, ProbeableMetadata, Score, Scoreable};
+ use symphonia_core::io::*;
+ use symphonia_core::meta::well_known::METADATA_ID_ID3V2;
+@@ -22,10 +22,12 @@
+ use log::{debug, trace, warn};
+ 
+ mod frames;
++pub(crate) mod limits;
+ mod unsync;
+ 
+ use frames::*;
+-use unsync::{UnsyncStream, read_syncsafe_leq32};
++use limits::{Limits, Retention};
++use unsync::{read_syncsafe_leq32, UnsyncStream};
+ 
+ #[derive(Debug)]
+ #[allow(clippy::enum_variant_names)]
+@@ -64,7 +66,7 @@
+     Exactly64x64,
+ }
+ 
+-#[derive(Debug)]
++#[derive(Debug, PartialEq)]
+ #[allow(dead_code)]
+ struct Header {
+     major_version: u8,
+@@ -283,7 +285,12 @@
+     header: &Header,
+     metadata: &mut MetadataBuilder,
+     side_data: &mut Vec<MetadataSideData>,
++    limits: &Limits,
+ ) -> Result<()> {
++    if limits.total == Some(0) {
++        return Ok(());
++    }
++    let mut retained = Retention::new(*limits);
+     // If there is an extended header, read and parse it based on the major version of the tag.
+     if header.has_extended_header {
+         let extended = match header.major_version {
+@@ -301,9 +308,9 @@
+     loop {
+         // Read frames based on the major version of the tag.
+         let frame = match header.major_version {
+-            2 => read_id3v2p2_frame(reader),
+-            3 => read_id3v2p3_frame(reader),
+-            4 => read_id3v2p4_frame(reader),
++            2 => read_id3v2p2_frame(reader, limits, 0),
++            3 => read_id3v2p3_frame(reader, limits, 0),
++            4 => read_id3v2p4_frame(reader, limits, 0),
+             _ => break,
+         };
+ 
+@@ -314,25 +321,35 @@
+             Ok(FrameResult::Padding) => break,
+             // A frame was parsed into a tag, add it to the tag collection.
+             Ok(FrameResult::Tag(tag)) => {
+-                metadata.add_tag(tag);
++                if retained.tag(&tag) {
++                    metadata.add_tag(tag);
++                }
+             }
+             // A frame was parsed into multiple tags, add them all to the tag collection.
+             Ok(FrameResult::MultipleTags(tags)) => {
+                 for tag in tags {
+-                    metadata.add_tag(tag);
++                    if retained.tag(&tag) {
++                        metadata.add_tag(tag);
++                    }
+                 }
+             }
+             // A frame was parsed into a visual, add it to the visual collection.
+             Ok(FrameResult::Visual(visual)) => {
+-                metadata.add_visual(visual);
++                if retained.visual(&visual) {
++                    metadata.add_visual(visual);
++                }
+             }
+             // A chapter was encountered, save it for post-processing.
+             Ok(FrameResult::Chapter(chap)) => {
+-                chap_builder.add_chapter(chap);
++                if retained.chapter(&chap) {
++                    chap_builder.add_chapter(chap);
++                }
+             }
+             // A table of contents was encountered, save it for post-processing.
+             Ok(FrameResult::TableOfContents(toc)) => {
+-                chap_builder.add_toc(toc);
++                if retained.toc(&toc) {
++                    chap_builder.add_toc(toc);
++                }
+             }
+             Err(_) => {
+                 // The read frame functions suppress any errors that occur while reading the content
+@@ -351,7 +368,7 @@
+     }
+ 
+     // Compile table of contents and chapter frames into a set of Cues.
+-    if let Some(chapters) = chap_builder.build() {
++    if let Some(chapters) = chap_builder.build(limits.depth) {
+         side_data.push(MetadataSideData::Chapters(chapters));
+     }
+ 
+@@ -362,6 +379,7 @@
+     reader: &mut B,
+     metadata: &mut MetadataBuilder,
+     side_data: &mut Vec<MetadataSideData>,
++    limits: &Limits,
+ ) -> Result<()> {
+     // Read the (sorta) version agnostic tag header.
+     let header = read_id3v2_header(reader)?;
+@@ -371,7 +389,7 @@
+     let mut scoped = if header.unsynchronisation && header.major_version < 4 {
+         let mut unsync = UnsyncStream::new(ScopedStream::new(reader, u64::from(header.size)));
+ 
+-        read_id3v2_body(&mut unsync, &header, metadata, side_data)?;
++        read_id3v2_body(&mut unsync, &header, metadata, side_data, limits)?;
+ 
+         unsync.into_inner()
+     }
+@@ -380,14 +398,24 @@
+     else {
+         let mut scoped = ScopedStream::new(reader, u64::from(header.size));
+ 
+-        read_id3v2_body(&mut scoped, &header, metadata, side_data)?;
++        read_id3v2_body(&mut scoped, &header, metadata, side_data, limits)?;
+ 
+         scoped
+     };
+ 
+     // Ignore any remaining data in the tag.
+     scoped.ignore()?;
+-
++    if header.has_footer {
++        let mut footer = [0; 10];
++        scoped.into_inner().read_buf_exact(&mut footer)?;
++        if &footer[..3] != b"3DI" {
++            return decode_error("id3v2: invalid footer signature");
++        }
++        footer[..3].copy_from_slice(b"ID3");
++        if read_id3v2_header(&mut BufReader::new(&footer))? != header {
++            return decode_error("id3v2: footer does not match header");
++        }
++    }
+     Ok(())
+ }
+ 
+@@ -460,15 +488,20 @@
+     }
+ 
+     /// Build a chapter group from the added ID3v2 table of contents and chapters.
+-    fn build(mut self) -> Option<ChapterGroup> {
++    fn build(mut self, limit_depth: Option<usize>) -> Option<ChapterGroup> {
+         /// Depth-first traversal of TOC elements to build the chapter hierarchy.
+         fn dfs(
+             id: &str,
+             tocs: &mut HashMap<String, Id3v2TableOfContents>,
+             chaps: &mut HashMap<String, Id3v2Chapter>,
++            depth: usize,
++            limit_depth: Option<usize>,
+         ) -> Option<ChapterGroup> {
+             // Attempt to remove the TOC with the provided TOC ID. If it was removed, create a
+             // chapter group from it.
++            if limit_depth.is_some_and(|limit| depth > limit) {
++                return None;
++            }
+             tocs.remove(id).map(|toc| {
+                 let mut parent = ChapterGroup {
+                     items: Vec::with_capacity(toc.items.len()),
+@@ -480,8 +513,8 @@
+                     if let Some(chap) = chaps.remove(&child_id) {
+                         // Item is a chapter.
+                         parent.items.push(ChapterGroupItem::Chapter(chap.chapter));
+-                    }
+-                    else if let Some(child) = dfs(&child_id, tocs, chaps) {
++                    } else if let Some(child) = dfs(&child_id, tocs, chaps, depth + 1, limit_depth)
++                    {
+                         // Item is a TOC.
+                         parent.items.push(ChapterGroupItem::Group(child));
+                     }
+@@ -501,7 +534,9 @@
+         }
+ 
+         // Build a chapter group starting at top-level table of contents (TOC), if one exists.
+-        let top = self.root_toc_id.and_then(|toc_id| dfs(&toc_id, &mut self.tocs, &mut self.chaps));
++        let top = self
++            .root_toc_id
++            .and_then(|toc_id| dfs(&toc_id, &mut self.tocs, &mut self.chaps, 0, limit_depth));
+ 
+         // After building the chapter group from the top-level TOC, any remaining TOC elements are
+         // unreferenced. The behaviour in this case is not specified by the standard. Therefore,
+@@ -551,6 +586,7 @@
+ /// ID3v2 tag reader.
+ pub struct Id3v2Reader<'s> {
+     reader: MediaSourceStream<'s>,
++    limits: Limits,
+ }
+ 
+ impl<'s> Id3v2Reader<'s> {
+@@ -562,8 +598,11 @@
+         Ok(header.size + 10 + if header.has_footer { 10 } else { 0 })
+     }
+ 
+-    pub fn try_new(mss: MediaSourceStream<'s>, _opts: MetadataOptions) -> Result<Self> {
+-        Ok(Self { reader: mss })
++    pub fn try_new(mss: MediaSourceStream<'s>, opts: MetadataOptions) -> Result<Self> {
++        Ok(Self {
++            reader: mss,
++            limits: Limits::new(opts),
++        })
+     }
+ }
+ 
+@@ -598,7 +637,7 @@
+         let mut builder = MetadataBuilder::new(ID3V2_METADATA_INFO);
+         let mut side_data = Vec::new();
+ 
+-        read_id3v2(&mut self.reader, &mut builder, &mut side_data)?;
++        read_id3v2(&mut self.reader, &mut builder, &mut side_data, &self.limits)?;
+ 
+         Ok(MetadataBuffer { revision: builder.build(), side_data })
+     }
+--- symphonia-metadata-0.6.1/src/id3v2/unsync.rs
++++ symphonia-metadata-0.6.1/src/id3v2/unsync.rs
+@@ -173,7 +173,7 @@
+ 
+     fn ignore_bytes(&mut self, count: u64) -> io::Result<()> {
+         for _ in 0..count {
+-            self.inner.read_byte()?;
++            self.read_byte()?;
+         }
+         Ok(())
+     }

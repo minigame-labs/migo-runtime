@@ -80,6 +80,8 @@ fn boot(camera: Arc<FakeCamera>) -> JsRuntime {
 
 #[test]
 fn a_camera_that_did_not_open_is_destroyed_and_refuses_what_follows() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let camera = Arc::new(FakeCamera::default());
     let mut runtime = boot(camera.clone());
     run(

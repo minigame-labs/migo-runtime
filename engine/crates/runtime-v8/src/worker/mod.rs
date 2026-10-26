@@ -11,6 +11,13 @@ use shared::op_state::HostOpState;
 
 use crate::watchdog::{DeadlineWatchdog, DeadlineWatchdogConfig};
 
+mod wire;
+use wire::WorkerWire;
+#[cfg(test)]
+mod wire_bench_tests;
+#[cfg(test)]
+mod wire_tests;
+
 /// Maximum size for a single worker message payload (16 MB).
 /// Prevents large messages from bypassing V8 heap limits.
 const MAX_WORKER_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
@@ -90,6 +97,16 @@ impl WorkerQueueUsage {
 struct WorkerQueuePermit {
     usage: Arc<WorkerQueueUsage>,
     bytes: usize,
+}
+
+impl WorkerQueuePermit {
+    fn shrink(&mut self, bytes: usize) {
+        assert!(bytes <= self.bytes);
+        self.usage
+            .bytes
+            .fetch_sub(self.bytes - bytes, std::sync::atomic::Ordering::AcqRel);
+        self.bytes = bytes;
+    }
 }
 
 impl Drop for WorkerQueuePermit {
@@ -215,12 +232,13 @@ impl<T: WorkerQueuePayload> WorkerQueueSender<T> {
     fn send_reserved(
         &self,
         value: T,
-        permit: WorkerQueuePermit,
+        mut permit: WorkerQueuePermit,
     ) -> Result<(), WorkerQueueSendError<T>> {
         if value.queued_bytes() > permit.bytes {
             drop(permit);
             return Err(WorkerQueueSendError::ByteLimit(value));
         }
+        permit.shrink(value.queued_bytes());
         let entry = WorkerQueueEntry {
             value,
             _permit: Some(permit),
@@ -242,6 +260,14 @@ impl<T: WorkerQueuePayload> WorkerQueueSender<T> {
 }
 
 impl<T> WorkerQueueReceiver<T> {
+    fn close_and_drain(&mut self) {
+        self.usage
+            .closed
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.rx.close();
+        while self.rx.try_recv().is_ok() {}
+    }
+
     async fn recv(&mut self) -> Option<T> {
         self.rx.recv().await.map(WorkerQueueEntry::into_value)
     }
@@ -360,7 +386,10 @@ fn worker_message_channel() -> (WorkerMessageSender, WorkerMessageReceiver) {
     )
 }
 
-fn worker_outbound_channel() -> (WorkerQueueSender<String>, WorkerQueueReceiver<String>) {
+fn worker_outbound_channel() -> (
+    WorkerQueueSender<WorkerWire>,
+    WorkerQueueReceiver<WorkerWire>,
+) {
     worker_queue(WORKER_MESSAGE_QUEUE_CAPACITY, MAX_WORKER_QUEUED_BYTES)
 }
 
@@ -389,10 +418,8 @@ fn worker_lifecycle_channel() -> (WorkerLifecycleSender, WorkerLifecycleReceiver
 /// Messages flowing from the main thread to the worker thread.
 #[derive(Debug)]
 pub(crate) enum WorkerMessage {
-    /// A postMessage payload (JSON-serialized string).
-    Message(String),
-    /// A binary payload copied from the sender's ArrayBuffer backing store.
-    Binary(Vec<u8>),
+    /// A copied structured-clone value in a private, owned wire backing store.
+    Message(WorkerWire),
     /// Terminate the worker.
     Terminate,
 }
@@ -400,10 +427,7 @@ pub(crate) enum WorkerMessage {
 impl WorkerQueuePayload for WorkerMessage {
     fn queued_bytes(&self) -> usize {
         match self {
-            WorkerMessage::Message(message) => message.len(),
-            WorkerMessage::Binary(data) => {
-                data.len().saturating_add(base64_encoded_len(data.len()))
-            }
+            WorkerMessage::Message(message) => message.queued_bytes(),
             WorkerMessage::Terminate => 0,
         }
     }
@@ -469,6 +493,7 @@ impl WorkerLifecycleSender {
     }
 }
 
+#[derive(Clone)]
 struct WorkerLifecycleReceiver {
     rx: tokio::sync::watch::Receiver<Option<WorkerTimerLifecycleSnapshot>>,
     delivered_background: Duration,
@@ -602,18 +627,55 @@ impl WorkerQueuePayload for String {
     }
 }
 
-/// Typed events delivered only to the worker's internal message pump.
-#[derive(Debug, PartialEq, Eq, serde::Serialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
+/// Private receive events. Values are wrapped apart from lifecycle controls.
+#[derive(Debug)]
+#[cfg_attr(test, derive(PartialEq, Eq))]
 pub(crate) enum WorkerInbound {
     Message {
-        data: String,
+        data: WorkerWire,
     },
     Lifecycle {
         backgrounded: bool,
-        #[serde(rename = "elapsedMicros")]
         elapsed_micros: u64,
     },
+}
+
+impl<'a> deno_core::ToV8<'a> for WorkerInbound {
+    type Error = WorkerError;
+
+    fn to_v8<'i>(
+        self,
+        scope: &mut v8::PinScope<'a, 'i>,
+    ) -> Result<v8::Local<'a, v8::Value>, Self::Error> {
+        match self {
+            Self::Message { data } => {
+                let value = data
+                    .decode(scope)
+                    .map_err(|error| WorkerError::Message(error.to_string()))?;
+                // One native construction, no per-message property names. A
+                // present element distinguishes undefined/null data from EOF.
+                Ok(v8::Array::new_with_elements(scope, &[value]).into())
+            }
+            Self::Lifecycle {
+                backgrounded,
+                elapsed_micros,
+            } => {
+                let object = v8::Object::new(scope);
+                // Data properties bypass game-owned prototype setters.
+                // Keep elapsed time a JS number, as in the former serde envelope.
+                let kind = v8::String::new(scope, "lifecycle").unwrap();
+                let key = v8::String::new(scope, "type").unwrap();
+                object.create_data_property(scope, key.into(), kind.into());
+                let value = v8::Boolean::new(scope, backgrounded);
+                let key = v8::String::new(scope, "backgrounded").unwrap();
+                object.create_data_property(scope, key.into(), value.into());
+                let value = v8::Number::new(scope, elapsed_micros as f64);
+                let key = v8::String::new(scope, "elapsedMicros").unwrap();
+                object.create_data_property(scope, key.into(), value.into());
+                Ok(object.into())
+            }
+        }
+    }
 }
 
 /// How long `createWorker()` waits for a terminated worker's thread to finish before it refuses the new
@@ -642,7 +704,7 @@ fn wait_until_finished(handle: &WorkerHandle, limit: std::time::Duration) -> boo
 /// Stored in the **main** thread's `OpState` when a worker is active.
 pub(crate) struct WorkerHandle {
     tx_to_worker: WorkerMessageSender,
-    rx_from_worker: Arc<tokio::sync::Mutex<WorkerQueueReceiver<String>>>,
+    rx_from_worker: Arc<tokio::sync::Mutex<WorkerQueueReceiver<WorkerWire>>>,
     rx_errors: Arc<tokio::sync::Mutex<WorkerQueueReceiver<String>>>,
     timer_backgrounded_tx: WorkerLifecycleSender,
     join_handle: Option<std::thread::JoinHandle<()>>,
@@ -672,6 +734,15 @@ impl WorkerHandle {
         // that it was asked for.
         self.terminate_requested
             .store(true, std::sync::atomic::Ordering::SeqCst);
+        // A retained terminated handle must not retain its buffered payloads.
+        // A pending receive owns this lock; that receive drains on its stop
+        // fence below instead. Neither branch waits on a mutex on the JS task.
+        if let Ok(mut receiver) = self.rx_from_worker.try_lock() {
+            receiver.close_and_drain();
+        }
+        if let Ok(mut receiver) = self.rx_errors.try_lock() {
+            receiver.close_and_drain();
+        }
         if let Ok(guard) = self.isolate_handle.lock() {
             if let Some(h) = guard.as_ref() {
                 h.terminate_execution();
@@ -698,10 +769,14 @@ impl Drop for WorkerHandle {
 
 /// Stored in the **worker** thread's `OpState`.
 pub(crate) struct WorkerCtx {
-    tx_to_main: WorkerQueueSender<String>,
+    tx_to_main: WorkerQueueSender<WorkerWire>,
     tx_errors: WorkerQueueSender<String>,
     rx_from_main: Arc<tokio::sync::Mutex<WorkerMessageReceiver>>,
     timer_backgrounded_rx: Arc<tokio::sync::Mutex<WorkerLifecycleReceiver>>,
+    // Independent cursor: an async receive may already own the first edge
+    // while core dispatches an expired timer before resolving that receive.
+    timer_prelude_rx: Arc<std::sync::Mutex<WorkerLifecycleReceiver>>,
+    terminate_requested: Arc<std::sync::atomic::AtomicBool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -741,143 +816,9 @@ fn worker_reserve_error(error: WorkerReserveError) -> WorkerError {
     WorkerError::Message(message)
 }
 
-// ---------------------------------------------------------------------------
-// Module loader (reuse the same logic from core::runtime::loader)
-// ---------------------------------------------------------------------------
-
-/// Lightweight module loader for the worker thread.
-/// Mirrors `MyModuleLoader` from `core::runtime::loader` — auto-adds `.js`,
-/// patches AMD `define` modules, and enforces the `/code` sandbox via
-/// the mount table (same security boundary as the main thread loader).
-struct WorkerModuleLoader {
-    inner: FsModuleLoader,
-    mount_table: Option<Arc<shared::vfs::MountTable>>,
-}
-
-impl WorkerModuleLoader {
-    /// Validate that a resolved module URL is within the /code sandbox.
-    fn validate_sandbox(
-        &self,
-        url: &deno_core::ModuleSpecifier,
-    ) -> Result<(), deno_core::error::ModuleLoaderError> {
-        crate::loader::validate_content_module_url(
-            url,
-            self.mount_table.as_deref(),
-            "Worker content",
-        )
-    }
-}
-
-impl deno_core::ModuleLoader for WorkerModuleLoader {
-    fn resolve(
-        &self,
-        specifier: &str,
-        referrer: &str,
-        kind: deno_core::ResolutionKind,
-    ) -> Result<deno_core::ModuleSpecifier, deno_core::error::ModuleLoaderError> {
-        let spec = normalize_specifier(specifier, &kind);
-        let url = self.inner.resolve(spec.as_ref(), referrer, kind)?;
-        self.validate_sandbox(&url)?;
-        Ok(url)
-    }
-
-    fn load(
-        &self,
-        module_specifier: &deno_core::ModuleSpecifier,
-        maybe_referrer: Option<&deno_core::ModuleLoadReferrer>,
-        options: deno_core::ModuleLoadOptions,
-    ) -> deno_core::ModuleLoadResponse {
-        // Defense in depth: validate on load too.
-        if let Err(e) = self.validate_sandbox(module_specifier) {
-            return deno_core::ModuleLoadResponse::Sync(Err(e));
-        }
-        let resp = self.inner.load(module_specifier, maybe_referrer, options);
-        match resp {
-            deno_core::ModuleLoadResponse::Sync(result) => {
-                deno_core::ModuleLoadResponse::Sync(result.and_then(patch_amd))
-            }
-            deno_core::ModuleLoadResponse::Async(fut) => {
-                let fut = async move {
-                    let source = fut.await?;
-                    patch_amd(source)
-                };
-                deno_core::ModuleLoadResponse::Async(Box::pin(fut))
-            }
-        }
-    }
-
-    fn prepare_load(
-        &self,
-        module_specifier: &deno_core::ModuleSpecifier,
-        maybe_referrer: Option<String>,
-        maybe_content: Option<String>,
-        options: deno_core::ModuleLoadOptions,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<(), deno_core::error::ModuleLoaderError>>>,
-    > {
-        self.inner
-            .prepare_load(module_specifier, maybe_referrer, maybe_content, options)
-    }
-
-    fn finish_load(&self) {}
-
-    fn code_cache_ready(
-        &self,
-        module_specifier: deno_core::ModuleSpecifier,
-        hash: u64,
-        code_cache: &[u8],
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()>>> {
-        self.inner
-            .code_cache_ready(module_specifier, hash, code_cache)
-    }
-}
-
-fn normalize_specifier<'a>(
-    specifier: &'a str,
-    kind: &deno_core::ResolutionKind,
-) -> std::borrow::Cow<'a, str> {
-    use std::borrow::Cow;
-
-    let mut s: Cow<'a, str> = if *kind != deno_core::ResolutionKind::MainModule {
-        if specifier.starts_with("./") || specifier.starts_with("../") || specifier.contains(':') {
-            Cow::Borrowed(specifier)
-        } else {
-            Cow::Owned(format!("./{specifier}"))
-        }
-    } else {
-        Cow::Borrowed(specifier)
-    };
-
-    let (path_part, suffix_part) = match s.find(['?', '#']) {
-        Some(i) => (&s.as_ref()[..i], &s.as_ref()[i..]),
-        None => (s.as_ref(), ""),
-    };
-
-    let has_js_like_ext =
-        path_part.ends_with(".js") || path_part.ends_with(".mjs") || path_part.ends_with(".cjs");
-
-    if !has_js_like_ext {
-        let new_path = format!("{path_part}.js{suffix_part}");
-        s = Cow::Owned(new_path);
-    }
-
-    s
-}
-
-fn patch_amd(
-    mut source: deno_core::ModuleSource,
-) -> Result<deno_core::ModuleSource, deno_core::error::ModuleLoaderError> {
-    let code = String::from_utf8_lossy(source.code.as_bytes());
-    if code.contains("define.amd") || code.contains("typeof define") {
-        let mut patched = code.into_owned();
-        patched.push_str("\nexport default globalThis._lastDefinedModule;\n");
-        source.code = deno_core::ModuleSourceCode::String(patched.into());
-    } else if shared::cjs_compat::is_cjs(&code) {
-        let patched = shared::cjs_compat::wrap_cjs(&code);
-        source.code = deno_core::ModuleSourceCode::String(patched.into());
-    }
-    Ok(source)
-}
+// Worker and main modules share sandboxing, mounted generations, module
+// types, bounded IO, CJS policy and code-cache eligibility. No second loader.
+use crate::loader::MyModuleLoader as WorkerModuleLoader;
 
 #[cfg(test)]
 mod module_loader_security_tests {
@@ -887,10 +828,12 @@ mod module_loader_security_tests {
     #[test]
     fn worker_content_loader_rejects_internal_schemes_for_all_import_kinds() {
         let root = std::env::temp_dir().join("migo-worker-loader-sandbox");
-        let loader = WorkerModuleLoader {
-            inner: FsModuleLoader,
-            mount_table: Some(Arc::new(shared::vfs::MountTable::new(root))),
-        };
+        let loader = WorkerModuleLoader::new(
+            None,
+            Rc::new(RefCell::new(Some(Arc::new(shared::vfs::MountTable::new(
+                root,
+            ))))),
+        );
         let referrer = "file:///tmp/migo-worker-loader-sandbox/main.js";
 
         for kind in [ResolutionKind::Import, ResolutionKind::DynamicImport] {
@@ -928,7 +871,7 @@ fn inherited_correlation(
 }
 
 /// Create and spawn a worker thread. Only one worker can exist at a time.
-#[op2(async(lazy), fast)]
+#[op2]
 async fn op_worker_create(
     state: Rc<RefCell<OpState>>,
     #[string] script_path: String,
@@ -984,7 +927,7 @@ async fn op_worker_create(
 
         // Fail-closed sandbox: refuse to spawn a worker before the /code mount
         // table exists, so the worker module loader always has a sandbox to
-        // enforce (see WorkerModuleLoader::validate_sandbox).
+        // enforce (see the shared content module loader).
         if host.mount_table.is_none() {
             return Err(WorkerError::Message(
                 "No /code mount table set (game not fully loaded yet)".into(),
@@ -1041,11 +984,15 @@ async fn op_worker_create(
     let (tx_worker_errors, rx_worker_errors) = worker_error_channel();
     let (timer_backgrounded_tx, timer_backgrounded_rx) = worker_lifecycle_channel();
 
+    let terminate_requested = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let timer_prelude_rx = Arc::new(std::sync::Mutex::new(timer_backgrounded_rx.clone()));
     let worker_ctx = WorkerCtx {
         tx_to_main: tx_worker_to_main,
         tx_errors: tx_worker_errors,
         rx_from_main: Arc::new(tokio::sync::Mutex::new(rx_main_to_worker)),
         timer_backgrounded_rx: Arc::new(tokio::sync::Mutex::new(timer_backgrounded_rx)),
+        timer_prelude_rx,
+        terminate_requested: terminate_requested.clone(),
     };
 
     // Shared slot the worker thread fills with its isolate handle once its
@@ -1053,7 +1000,6 @@ async fn op_worker_create(
     // worker (see WorkerHandle::force_terminate).
     let isolate_handle: Arc<std::sync::Mutex<Option<v8::IsolateHandle>>> =
         Arc::new(std::sync::Mutex::new(None));
-    let terminate_requested = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
     // Spawn worker thread
     info!(
@@ -1087,71 +1033,221 @@ async fn op_worker_create(
     Ok(())
 }
 
-/// Send a message from the main thread to the worker.
-#[op2(fast)]
-fn op_worker_post_message(
-    state: &mut OpState,
-    #[string] json_message: &str,
-) -> Result<(), WorkerError> {
-    if json_message.len() > MAX_WORKER_MESSAGE_BYTES {
-        return Err(WorkerError::Message(format!(
-            "Worker message too large: {} bytes (max {} bytes)",
-            json_message.len(),
-            MAX_WORKER_MESSAGE_BYTES
-        )));
+enum WorkerDestination {
+    Main(WorkerQueueSender<WorkerWire>),
+    Worker(WorkerMessageSender),
+}
+
+struct WorkerSendReservation {
+    destination: WorkerDestination,
+    permit: WorkerQueuePermit,
+    stopped: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[derive(Default)]
+struct WorkerReservations {
+    next: u32,
+    pending: std::collections::HashMap<u32, WorkerSendReservation>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkerReservationTicket {
+    ticket: u32,
+    max_bytes: u32,
+}
+
+fn reserve_worker_send(
+    state: &OpState,
+    max_bytes: u32,
+) -> Result<(WorkerSendReservation, u32), WorkerError> {
+    if max_bytes == 0 || max_bytes as usize > MAX_WORKER_MESSAGE_BYTES {
+        return Err(WorkerError::Message(
+            "Invalid Worker message size limit".into(),
+        ));
     }
-
-    let handle = state
-        .try_borrow::<WorkerHandle>()
-        .ok_or_else(|| WorkerError::Message("No active worker".into()))?;
-
-    if handle.terminated {
+    let (destination, stopped, usage) = if let Some(ctx) = state.try_borrow::<WorkerCtx>() {
+        (
+            WorkerDestination::Main(ctx.tx_to_main.clone()),
+            ctx.terminate_requested.clone(),
+            ctx.tx_to_main.usage.clone(),
+        )
+    } else {
+        let handle = state
+            .try_borrow::<WorkerHandle>()
+            .ok_or_else(|| WorkerError::Message("No active worker".into()))?;
+        (
+            WorkerDestination::Worker(handle.tx_to_worker.clone()),
+            handle.terminate_requested.clone(),
+            handle.tx_to_worker.data.usage.clone(),
+        )
+    };
+    if stopped.load(std::sync::atomic::Ordering::Acquire) {
         return Err(WorkerError::Message("Worker has been terminated".into()));
     }
+    let available = usage
+        .max_bytes
+        .saturating_sub(usage.bytes.load(std::sync::atomic::Ordering::Acquire));
+    let max_bytes = available.min(max_bytes as usize);
+    if max_bytes == 0 {
+        return Err(worker_reserve_error(WorkerReserveError::ByteLimit));
+    }
+    let permit = match &destination {
+        WorkerDestination::Main(sender) => sender.try_reserve(max_bytes),
+        WorkerDestination::Worker(sender) => sender.try_reserve(max_bytes),
+    }
+    .map_err(worker_reserve_error)?;
+    Ok((
+        WorkerSendReservation {
+            destination,
+            permit,
+            stopped,
+        },
+        max_bytes as u32,
+    ))
+}
 
-    let permit = handle
-        .tx_to_worker
-        .try_reserve(json_message.len())
-        .map_err(worker_reserve_error)?;
-    let json_message = json_message.to_owned();
-    handle
-        .tx_to_worker
-        .send_reserved(WorkerMessage::Message(json_message), permit)
-        .map_err(|error| worker_queue_error(error, "Worker channel closed"))
+impl WorkerSendReservation {
+    fn commit(self, wire: WorkerWire) -> Result<(), WorkerError> {
+        if self.stopped.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(WorkerError::Message("Worker has been terminated".into()));
+        }
+        match self.destination {
+            WorkerDestination::Main(sender) => sender
+                .send_reserved(wire, self.permit)
+                .map_err(|error| worker_queue_error(error, "Main thread channel closed")),
+            WorkerDestination::Worker(sender) => sender
+                .send_reserved(WorkerMessage::Message(wire), self.permit)
+                .map_err(|error| worker_queue_error(error, "Worker channel closed")),
+        }
+    }
+}
+
+/// Ready sends use the core delegate directly. No JS wire buffer is created,
+/// and the permit stays on the Rust stack across getter reentry/termination.
+#[op2(nofast, reentrant)]
+fn op_worker_post_message<'s, 'i>(
+    scope: &mut v8::PinScope<'s, 'i>,
+    state: Rc<RefCell<OpState>>,
+    value: v8::Local<'s, v8::Value>,
+    error_callback: v8::Local<'s, v8::Function>,
+) -> Result<(), deno_error::JsErrorBox> {
+    let worker_error =
+        |error: WorkerError| deno_error::JsErrorBox::new("WorkerError", error.to_string());
+    let (reservation, max_bytes) = {
+        let state = state.borrow();
+        reserve_worker_send(&state, MAX_WORKER_MESSAGE_BYTES as u32).map_err(worker_error)?
+    };
+    // No OpState borrow may survive this call: serialize can execute getters.
+    let Some(bytes) =
+        deno_core::serialize_for_storage(scope, value, max_bytes, Some(error_callback))?
+    else {
+        return Ok(()); // pending V8 exception; reservation drops, nothing sent
+    };
+    let wire = WorkerWire::from_owned(bytes).map_err(worker_error)?;
+    reservation.commit(wire).map_err(worker_error)
+}
+
+/// Explicit tickets are needed only while flushing pre-ready private wire.
+#[op2]
+#[serde]
+fn op_worker_reserve_message(
+    state: &mut OpState,
+    #[smi] max_bytes: u32,
+) -> Result<WorkerReservationTicket, WorkerError> {
+    let (reservation, max_bytes) = reserve_worker_send(state, max_bytes)?;
+    let reservations = state.borrow_mut::<WorkerReservations>();
+    loop {
+        reservations.next = reservations.next.wrapping_add(1);
+        if reservations.next != 0 && !reservations.pending.contains_key(&reservations.next) {
+            break;
+        }
+    }
+    let ticket = reservations.next;
+    reservations.pending.insert(ticket, reservation);
+    Ok(WorkerReservationTicket {
+        ticket,
+        max_bytes: max_bytes as u32,
+    })
+}
+
+/// Adopt and detach only the private serializer output, never game buffers.
+#[op2(nofast)]
+fn op_worker_commit_message<'s, 'i>(
+    scope: &mut v8::PinScope<'s, 'i>,
+    state: &mut OpState,
+    #[smi] ticket: u32,
+    data: v8::Local<'s, v8::Uint8Array>,
+) -> Result<(), WorkerError> {
+    let reservation = state
+        .borrow_mut::<WorkerReservations>()
+        .pending
+        .remove(&ticket)
+        .ok_or_else(|| WorkerError::Message("Worker send reservation expired".into()))?;
+    let buffer = data
+        .buffer(scope)
+        .ok_or_else(|| WorkerError::Message("Missing Worker wire buffer".into()))?;
+    let borrowed = deno_core::serde_v8::from_v8::<JsBuffer>(scope, data.into())
+        .map_err(|error| WorkerError::Message(error.to_string()))?;
+    let wire = WorkerWire::from_private_buffer(borrowed)?;
+    if !buffer.is_detachable() || buffer.detach(None) != Some(true) {
+        return Err(WorkerError::Message("Worker wire is not detachable".into()));
+    }
+    reservation.commit(wire)
+}
+
+#[op2(fast)]
+fn op_worker_abort_message(state: &mut OpState, #[smi] ticket: u32) {
+    state
+        .borrow_mut::<WorkerReservations>()
+        .pending
+        .remove(&ticket);
 }
 
 /// Async op: wait for a message from the worker. Returns null when worker exits.
 #[op2(async(lazy), fast)]
-#[string]
 async fn op_worker_recv_message(
     state: Rc<RefCell<OpState>>,
-) -> Result<Option<String>, WorkerError> {
-    let rx = {
+) -> Result<Option<WorkerInbound>, WorkerError> {
+    let (rx, stopped) = {
         let st = state.borrow();
         let handle = st
             .try_borrow::<WorkerHandle>()
             .ok_or_else(|| WorkerError::Message("No active worker".into()))?;
-        handle.rx_from_worker.clone()
+        (
+            handle.rx_from_worker.clone(),
+            handle.terminate_requested.clone(),
+        )
     };
 
     let mut guard = rx.lock().await;
-    Ok(guard.recv().await)
+    let value = guard.recv().await;
+    if stopped.load(std::sync::atomic::Ordering::Acquire) {
+        guard.close_and_drain();
+        return Ok(None);
+    }
+    Ok(value.map(|data| WorkerInbound::Message { data }))
 }
 
 /// Async op: wait for an error from the worker. Returns null when worker exits.
 #[op2(async(lazy), fast)]
 #[string]
 async fn op_worker_recv_error(state: Rc<RefCell<OpState>>) -> Result<Option<String>, WorkerError> {
-    let rx = {
+    let (rx, stopped) = {
         let st = state.borrow();
         let handle = st
             .try_borrow::<WorkerHandle>()
             .ok_or_else(|| WorkerError::Message("No active worker".into()))?;
-        handle.rx_errors.clone()
+        (handle.rx_errors.clone(), handle.terminate_requested.clone())
     };
 
     let mut guard = rx.lock().await;
-    Ok(guard.recv().await)
+    let value = guard.recv().await;
+    if stopped.load(std::sync::atomic::Ordering::Acquire) {
+        guard.close_and_drain();
+        return Ok(None);
+    }
+    Ok(value)
 }
 
 /// Terminate the active worker.
@@ -1171,93 +1267,15 @@ fn op_worker_terminate(state: &mut OpState) -> Result<(), WorkerError> {
     // `join_handle.is_finished()`, so a freshly created worker can never coexist
     // with an old one that is still winding down (e.g. briefly stuck in a native
     // op after the JS-loop interrupt).
+    if let Some(reservations) = state.try_borrow_mut::<WorkerReservations>() {
+        reservations.pending.clear();
+    }
     Ok(())
-}
-
-/// Send binary data from the main thread to the worker.
-///
-/// NOTE: This currently copies the buffer (deno_core limitation — true zero-copy
-/// transfer requires V8 ArrayBuffer::Detach + BackingStore sharing which is not
-/// yet wired). The JS-side ArrayBuffer is NOT detached/neutered.
-/// Still faster than JSON-serializing large typed arrays.
-#[op2]
-fn op_worker_transfer_buffer(
-    state: &mut OpState,
-    #[buffer] data: JsBuffer,
-) -> Result<(), WorkerError> {
-    if data.len() > MAX_WORKER_MESSAGE_BYTES {
-        return Err(WorkerError::Message(format!(
-            "Transfer buffer too large: {} bytes (max {} bytes)",
-            data.len(),
-            MAX_WORKER_MESSAGE_BYTES
-        )));
-    }
-
-    let handle = state
-        .try_borrow::<WorkerHandle>()
-        .ok_or_else(|| WorkerError::Message("No active worker".into()))?;
-
-    if handle.terminated {
-        return Err(WorkerError::Message("Worker has been terminated".into()));
-    }
-
-    // Admission is intentionally before `to_vec`: `[buffer]` borrows V8's
-    // backing store for this synchronous op, so a saturated Worker queue does
-    // not allocate a Rust copy or base64 staging input only to reject it.
-    let queued_bytes = data.len().saturating_add(base64_encoded_len(data.len()));
-    let permit = handle
-        .tx_to_worker
-        .try_reserve(queued_bytes)
-        .map_err(worker_reserve_error)?;
-    handle
-        .tx_to_worker
-        .send_reserved(WorkerMessage::Binary(data.to_vec()), permit)
-        .map_err(|error| worker_queue_error(error, "Worker channel closed"))
-}
-
-// ---------------------------------------------------------------------------
-// Worker-thread ops (registered in `host_v8_worker_inner`)
-// ---------------------------------------------------------------------------
-
-/// Send a message from the worker to the main thread.
-#[op2(fast)]
-fn op_worker_inner_post_message(
-    state: &mut OpState,
-    #[string] json_message: &str,
-) -> Result<(), WorkerError> {
-    if json_message.len() > MAX_WORKER_MESSAGE_BYTES {
-        return Err(WorkerError::Message(format!(
-            "Worker message too large: {} bytes (max {} bytes)",
-            json_message.len(),
-            MAX_WORKER_MESSAGE_BYTES
-        )));
-    }
-
-    let ctx = state.borrow::<WorkerCtx>();
-    let permit = ctx
-        .tx_to_main
-        .try_reserve(json_message.len())
-        .map_err(worker_reserve_error)?;
-    let json_message = json_message.to_owned();
-    ctx.tx_to_main
-        .send_reserved(json_message, permit)
-        .map_err(|error| worker_queue_error(error, "Main thread channel closed"))
 }
 
 fn worker_message_to_inbound(message: Option<WorkerMessage>) -> Option<WorkerInbound> {
     match message {
-        Some(WorkerMessage::Message(json)) => Some(WorkerInbound::Message { data: json }),
-        Some(WorkerMessage::Binary(data)) => {
-            // Encode binary as JSON with base64 payload so JS can reconstruct
-            let encoded = deno_core::serde_json::json!({
-                "__binary": true,
-                "base64": base64_encode(&data),
-                "byteLength": data.len()
-            });
-            Some(WorkerInbound::Message {
-                data: encoded.to_string(),
-            })
-        }
+        Some(WorkerMessage::Message(data)) => Some(WorkerInbound::Message { data }),
         // Terminate, or the channel closed: the pump ends.
         Some(WorkerMessage::Terminate) | None => None,
     }
@@ -1291,10 +1309,27 @@ fn worker_lifecycle_to_inbound(transition: WorkerTimerLifecycleTransition) -> Wo
     }
 }
 
+/// Consume lifecycle state before dispatching a ready user timer. The watch
+/// snapshot coalesces arbitrarily many host transitions in constant space.
+#[op2]
+fn op_worker_inner_poll_lifecycle(state: &mut OpState) -> Option<Vec<WorkerInbound>> {
+    let mut receiver = state.borrow::<WorkerCtx>().timer_prelude_rx.lock().unwrap();
+    let first = receiver.try_recv()?;
+    let mut transitions = vec![worker_lifecycle_to_inbound(first)];
+    // One coalesced snapshot reconstructs at most three edges. Bound work even
+    // if the host publishes more transitions concurrently with this callback.
+    for _ in 0..2 {
+        let Some(transition) = receiver.try_recv() else {
+            break;
+        };
+        transitions.push(worker_lifecycle_to_inbound(transition));
+    }
+    Some(transitions)
+}
+
 /// Async op: wait for an internal lifecycle event or a user message.
 /// Returns `None` when a Terminate signal is received.
 #[op2(async(lazy), fast)]
-#[serde]
 async fn op_worker_inner_recv_message(
     state: Rc<RefCell<OpState>>,
 ) -> Result<Option<WorkerInbound>, WorkerError> {
@@ -1306,6 +1341,8 @@ async fn op_worker_inner_recv_message(
             tx_errors: ctx.tx_errors.clone(),
             rx_from_main: ctx.rx_from_main.clone(),
             timer_backgrounded_rx: ctx.timer_backgrounded_rx.clone(),
+            timer_prelude_rx: ctx.timer_prelude_rx.clone(),
+            terminate_requested: ctx.terminate_requested.clone(),
         }
     };
 
@@ -1316,49 +1353,22 @@ async fn op_worker_inner_recv_message(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Simple base64 encoder (no external dependency).
-fn base64_encode(data: &[u8]) -> String {
-    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
-    for chunk in data.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
-        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
-        let triple = (b0 << 16) | (b1 << 8) | b2;
-        out.push(CHARS[((triple >> 18) & 0x3F) as usize] as char);
-        out.push(CHARS[((triple >> 12) & 0x3F) as usize] as char);
-        if chunk.len() > 1 {
-            out.push(CHARS[((triple >> 6) & 0x3F) as usize] as char);
-        } else {
-            out.push('=');
-        }
-        if chunk.len() > 2 {
-            out.push(CHARS[(triple & 0x3F) as usize] as char);
-        } else {
-            out.push('=');
-        }
-    }
-    out
-}
-
-fn base64_encoded_len(len: usize) -> usize {
-    len.checked_add(2)
-        .and_then(|value| value.checked_div(3))
-        .and_then(|value| value.checked_mul(4))
-        .unwrap_or(usize::MAX)
-}
-
 // ---------------------------------------------------------------------------
 // Extension declarations
 // ---------------------------------------------------------------------------
 
 deno_core::extension!(
+    host_v8_worker_codec,
+    ops = [op_worker_post_message, op_worker_reserve_message, op_worker_commit_message, op_worker_abort_message],
+    esm = [dir "src/worker", "00_worker_codec.js", "00_worker_serialize.js"],
+    state = |state| { state.put(WorkerReservations::default()); },
+);
+
+deno_core::extension!(
     host_v8_worker,
-    deps = [host_v8_base],
+    deps = [host_v8_base, host_v8_worker_codec],
     ops = [
         op_worker_create,
-        op_worker_post_message,
-        op_worker_transfer_buffer,
         op_worker_recv_message,
         op_worker_recv_error,
         op_worker_terminate,
@@ -1373,9 +1383,10 @@ deno_core::extension!(
 
 deno_core::extension!(
     host_v8_worker_inner,
+    deps = [host_v8_worker_codec],
     ops = [
-        op_worker_inner_post_message,
         op_worker_inner_recv_message,
+        op_worker_inner_poll_lifecycle,
     ],
     esm = [
         dir "src/worker",
@@ -1394,15 +1405,21 @@ deno_core::extension!(
 // ---------------------------------------------------------------------------
 
 pub fn worker_extensions() -> Vec<Extension> {
-    vec![host_v8_worker::init()]
+    vec![host_v8_worker_codec::init(), host_v8_worker::init()]
 }
 
 pub fn worker_lazy_extensions() -> Vec<Extension> {
-    vec![host_v8_worker::lazy_init()]
+    vec![
+        host_v8_worker_codec::lazy_init(),
+        host_v8_worker::lazy_init(),
+    ]
 }
 
 pub fn worker_inner_extensions(ctx: WorkerCtx) -> Vec<Extension> {
-    vec![host_v8_worker_inner::init(ctx)]
+    vec![
+        host_v8_worker_codec::init(),
+        host_v8_worker_inner::init(ctx),
+    ]
 }
 
 pub(crate) fn set_timer_backgrounded(state: &mut OpState, backgrounded: bool) {
@@ -1423,6 +1440,7 @@ pub(crate) fn set_timer_backgrounded(state: &mut OpState, backgrounded: bool) {
 /// base, console, event, utility, file, rendering (webgl/image), web, url, network.
 /// This gives workers the same shared APIs as the main thread.
 pub fn create_worker_runtime_extensions(ctx: WorkerCtx, host_state: HostOpState) -> Vec<Extension> {
+    crate::icu::install_icu_data();
     use crate::{
         base, console, env, event, file, io_state, lifecycle, network, rendering, url, utility,
         web, worker_runtime,
@@ -1460,6 +1478,7 @@ pub fn create_worker_runtime_extensions(ctx: WorkerCtx, host_state: HostOpState)
 /// creation/restoration. Keep this order byte-identical to
 /// [`create_worker_runtime_extensions`] and [`create_worker_runtime_extension_args`].
 pub(crate) fn create_worker_runtime_lazy_extensions() -> Vec<Extension> {
+    crate::icu::install_icu_data();
     use crate::{
         base, console, env, event, file, io_state, lifecycle, network, rendering, url, utility,
         web, worker_runtime,
@@ -1485,6 +1504,7 @@ pub(crate) fn create_worker_runtime_lazy_extensions() -> Vec<Extension> {
     }
 
     exts.push(env::host_v8_env::lazy_init());
+    exts.push(host_v8_worker_codec::lazy_init());
     exts.push(host_v8_worker_inner::lazy_init());
     exts.push(worker_runtime::lazy_init());
     exts
@@ -1521,6 +1541,7 @@ pub(crate) fn create_worker_runtime_extension_args(
     }
 
     args.push(env::host_v8_env::args());
+    args.push(host_v8_worker_codec::args());
     args.push(host_v8_worker_inner::args(ctx));
     args.push(worker_runtime::args());
     args
@@ -1716,10 +1737,9 @@ fn spawn_worker_thread(
                     };
 
                     let module_loader: Option<Rc<dyn ModuleLoader>> =
-                        Some(Rc::new(WorkerModuleLoader {
-                            inner: FsModuleLoader,
-                            mount_table: worker_mount_table,
-                        }));
+                        Some(Rc::new(WorkerModuleLoader::new(None,
+                            Rc::new(RefCell::new(worker_mount_table)),
+                        )));
 
                     // Apply the same V8 heap limits as the main thread to prevent
                     // worker code from OOM-ing the entire process.
@@ -2172,146 +2192,6 @@ mod worker_queue_boundary_tests {
     }
 
     #[test]
-    fn binary_admission_charges_raw_and_projected_base64_bytes() {
-        let message = WorkerMessage::Binary(vec![1, 2, 3]);
-        assert_eq!(message.queued_bytes(), 3 + 4);
-    }
-
-    #[test]
-    fn binary_reservation_accepts_the_byte_limit_and_refuses_limit_plus_one() {
-        let (tx, _rx) = worker_queue::<WorkerMessage>(2, 7);
-        let payload = vec![1, 2, 3]; // 3 raw bytes + 4 projected base64 bytes.
-        let permit = tx
-            .try_reserve(7)
-            .expect("the aggregate byte limit is inclusive");
-        tx.send_reserved(WorkerMessage::Binary(payload), permit)
-            .expect("the admitted payload must be queued");
-
-        assert!(matches!(
-            tx.try_reserve(1),
-            Err(WorkerReserveError::ByteLimit)
-        ));
-        assert_eq!(tx.usage.items.load(std::sync::atomic::Ordering::Acquire), 1);
-        assert_eq!(tx.usage.bytes.load(std::sync::atomic::Ordering::Acquire), 7);
-    }
-
-    #[test]
-    fn binary_transfer_reserves_queue_capacity_before_copying_the_v8_buffer() {
-        let source = include_str!("mod.rs");
-        let start = source
-            .find("fn op_worker_transfer_buffer")
-            .expect("binary Worker op");
-        let body = &source[start..source[start..]
-            .find("// ---------------------------------------------------------------------------\n// Worker-thread ops")
-            .map(|offset| start + offset)
-            .expect("end of binary Worker op")];
-
-        let reserve = body
-            .find("try_reserve")
-            .expect("binary payload must reserve queue capacity");
-        let copy = body
-            .find("data.to_vec()")
-            .expect("binary payload must be copied only after admission");
-        assert!(
-            reserve < copy,
-            "Worker admission must happen before copying the V8 buffer"
-        );
-        assert!(
-            !body.contains("#[buffer(copy)]"),
-            "#[buffer(copy)] copies the V8 buffer before the op can reserve queue capacity"
-        );
-    }
-
-    #[test]
-    fn worker_string_ops_borrow_then_reserve_before_copying() {
-        let source = include_str!("mod.rs");
-        for (name, end_marker) in [
-            (
-                "fn op_worker_post_message",
-                "/// Async op: wait for a message",
-            ),
-            (
-                "fn op_worker_inner_post_message",
-                "fn worker_message_to_inbound",
-            ),
-        ] {
-            let start = source.find(name).expect("Worker string op");
-            let end = source[start..]
-                .find(end_marker)
-                .map(|offset| start + offset)
-                .expect("end of Worker string op");
-            let body = &source[start..end];
-
-            assert!(
-                body.contains("#[string] json_message: &str"),
-                "{name} must borrow the V8 string"
-            );
-            let reserve = body.find("try_reserve").expect("queue admission");
-            let copy = body.find("json_message.to_owned()").expect("owned payload");
-            assert!(reserve < copy, "{name} must reserve before copying");
-            assert!(body.contains("send_reserved"));
-        }
-    }
-
-    #[test]
-    fn pre_ready_js_messages_have_the_same_count_and_byte_bounds_as_rust() {
-        let source = include_str!("01_worker.js");
-
-        assert!(source.contains("const MAX_PENDING_MESSAGES = 4096"));
-        assert!(source.contains("const MAX_PENDING_MESSAGE_BYTES = 64 * 1024 * 1024"));
-        assert!(source.contains("const MAX_WORKER_MESSAGE_BYTES = 16 * 1024 * 1024"));
-        assert!(source.contains("#pendingMessageBytes = 0"));
-        assert!(source.contains("utf8ByteLength(json)"));
-
-        let queue_branch = source
-            .split("if (!this.#ready)")
-            .nth(1)
-            .expect("pre-ready queue branch");
-        let push = queue_branch
-            .find("ArrayPrototypePush(this.#pendingMessages, json)")
-            .expect("pending queue insertion");
-        for guard in [
-            "MAX_WORKER_MESSAGE_BYTES",
-            "MAX_PENDING_MESSAGES",
-            "MAX_PENDING_MESSAGE_BYTES",
-        ] {
-            assert!(
-                queue_branch.find(guard).is_some_and(|offset| offset < push),
-                "{guard} must be enforced before retaining a pending message"
-            );
-        }
-    }
-
-    #[test]
-    fn pre_ready_js_byte_accounting_matches_utf8() {
-        let source = include_str!("01_worker.js");
-        let start = source
-            .find("function utf8ByteLength")
-            .expect("UTF-8 byte counter");
-        let end = source[start..]
-            .find("\n\nlet currentWorker")
-            .map(|offset| start + offset)
-            .expect("end of byte counter");
-        let helper = &source[start..end];
-        let script = format!(
-            r#"const StringPrototypeCharCodeAt = Function.prototype.call.bind(String.prototype.charCodeAt);
-{helper}
-const cases = [["a", 1], ["é", 2], ["水", 3], ["😀", 4], ["aé水😀", 10]];
-for (const [value, expected] of cases) {{
-    const actual = utf8ByteLength(value);
-    if (actual !== expected) throw new Error(`${{value}}: ${{actual}} !== ${{expected}}`);
-}}"#
-        );
-        let mut runtime = JsRuntime::new(RuntimeOptions::default());
-        runtime
-            .execute_script(
-                "<test:worker-pending-utf8>",
-                deno_core::FastString::from(script),
-            )
-            .expect("UTF-8 byte accounting must execute and match Rust string bytes");
-    }
-
-    #[test]
     fn error_queue_rejections_are_counted() {
         let (tx, _rx) = worker_queue::<String>(1, 4);
         tx.send("err!".into()).unwrap();
@@ -2407,11 +2287,14 @@ mod timer_lifecycle_tests {
     ) -> WorkerCtx {
         let (tx_to_main, _rx_to_main) = worker_outbound_channel();
         let (tx_errors, _rx_errors) = worker_error_channel();
+        let timer_prelude_rx = Arc::new(std::sync::Mutex::new(timer_backgrounded_rx.clone()));
         WorkerCtx {
             tx_to_main,
             tx_errors,
             rx_from_main: Arc::new(tokio::sync::Mutex::new(rx_from_main)),
             timer_backgrounded_rx: Arc::new(tokio::sync::Mutex::new(timer_backgrounded_rx)),
+            timer_prelude_rx,
+            terminate_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -2666,27 +2549,6 @@ mod timer_lifecycle_tests {
     }
 
     #[test]
-    fn inbound_events_have_non_user_control_shapes() {
-        let lifecycle = deno_core::serde_json::to_value(WorkerInbound::Lifecycle {
-            backgrounded: true,
-            elapsed_micros: 2500,
-        })
-        .unwrap();
-        assert_eq!(lifecycle["type"], "lifecycle");
-        assert_eq!(lifecycle["backgrounded"], true);
-        assert_eq!(lifecycle["elapsedMicros"], 2500);
-        assert!(lifecycle.get("data").is_none());
-
-        let message = deno_core::serde_json::to_value(WorkerInbound::Message {
-            data: "payload".into(),
-        })
-        .unwrap();
-        assert_eq!(message["type"], "message");
-        assert_eq!(message["data"], "payload");
-        assert!(message.get("backgrounded").is_none());
-    }
-
-    #[test]
     fn worker_initialization_errors_are_valid_json() {
         let encoded = worker_initialization_error("runtime bootstrap", &"bad \"hook\"");
         let decoded: deno_core::serde_json::Value =
@@ -2726,6 +2588,43 @@ mod timer_lifecycle_tests {
 
         assert_eq!(lazy_names, eager_names);
         assert_eq!(argument_names, eager_names);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn user_messages_remain_data_when_array_prototype_claims_a_control_type() {
+        let (message_tx, message_rx) = worker_message_channel();
+        let (_lifecycle_tx, lifecycle_rx) = worker_lifecycle_channel();
+        let mut rt = JsRuntime::new(RuntimeOptions {
+            extensions: create_worker_runtime_extensions(
+                test_worker_ctx(message_rx, lifecycle_rx),
+                test_host_state(Arc::new(AtomicBool::new(false))),
+            ),
+            ..Default::default()
+        });
+        initialize_worker_runtime(&mut rt).expect("worker bootstrap");
+        exec(
+            &mut rt,
+            "Array.prototype.type = 'lifecycle'; worker.onMessage(({message}) => globalThis.__received = message);",
+        );
+        let value = rt
+            .execute_script(
+                "user-control-lookalike",
+                "({type:'lifecycle', payload:'user data'})",
+            )
+            .unwrap();
+        let wire = {
+            deno_core::scope!(scope, rt);
+            let value = v8::Local::new(scope, value);
+            WorkerWire::from_owned(
+                deno_core::serialize_for_storage(scope, value, 4096, None)
+                    .unwrap()
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        message_tx.send(WorkerMessage::Message(wire)).unwrap();
+        drain_ready(&mut rt).await;
+        assert_js(&mut rt, "globalThis.__received?.payload === 'user data'");
     }
 
     #[tokio::test(start_paused = true)]
@@ -2941,11 +2840,14 @@ mod watchdog_worker_tests {
         let (_ltx, lifecycle_rx) = worker_lifecycle_channel();
         let (tx_to_main, _rx_to_main) = worker_outbound_channel();
         let (tx_errors, _rx_errors) = worker_error_channel();
+        let timer_prelude_rx = Arc::new(std::sync::Mutex::new(lifecycle_rx.clone()));
         let ctx = WorkerCtx {
             tx_to_main,
             tx_errors,
             rx_from_main: Arc::new(tokio::sync::Mutex::new(rx_from_main)),
             timer_backgrounded_rx: Arc::new(tokio::sync::Mutex::new(lifecycle_rx)),
+            timer_prelude_rx,
+            terminate_requested: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         let mut rt = JsRuntime::new(RuntimeOptions {
             module_loader: loader,

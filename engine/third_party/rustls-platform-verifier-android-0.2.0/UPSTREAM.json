@@ -1,0 +1,54 @@
+{
+  "schema": 2,
+  "crate": "rustls-platform-verifier-android",
+  "version": "0.2.0",
+  "verifier_version": "0.7.1",
+  "source_revision": "252e25161a91af476cbea620e29d277592d27ec7",
+  "maven_revision": "1aa691352a5e0c215210dfc9a3c2f2078639dc91",
+  "maven_url": "https://raw.githubusercontent.com/rustls/rustls-platform-verifier/1aa691352a5e0c215210dfc9a3c2f2078639dc91/android-release-support/maven/org/rustls/rustls-platform-verifier/0.2.0/rustls-platform-verifier-0.2.0.aar",
+  "files": {
+    "CertificateVerifier.kt": "251031aec27214398328c4755744cd3274c54e9d51e10952712bcd5ba64bc4ed",
+    "classes.jar": "250ee9dc90489e6bc830091c1f947aaeaa8e7685562d91b4c76e0e720573e7dc",
+    "rustls-platform-verifier-0.2.0.aar": "aa021794230fbc2f0be355999e2cf67398dd563de066a2e17001ffbd0b69101b",
+    "notice/META-INF/migo-rustls-platform-verifier/LICENSE-APACHE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    "notice/META-INF/migo-rustls-platform-verifier/LICENSE-MIT": "1c7cf76689c837a68ed8d704994e52a0f2940c087958f860d17f3186afbdcc0c"
+  },
+  "integration": "Source-derived release JNI classes. Original AAR and source remain pristine; ordered patches select default Android host trust configuration remove upstream test-only code, and isolate non-thread-safe certificate factories per executor worker. Deterministic classes.jar is rebuilt twice in a networkless bounded sandbox. AAR manifest/resources are not merged; Kotlin runtime is declared separately.",
+  "upstream_classes_sha256": "9e0d1b8f7bedb96eaa77ddbcca910a72deb81933ee1f3bdb515343729744c9c6",
+  "patches": [
+    {
+      "path": "patches/0001-use-host-trust-policy.patch",
+      "sha256": "867c62375e7e9322aad1f748aa7aee9540cdd20e8460b95600543fc32905f9c5"
+    },
+    {
+      "path": "patches/0002-prune-release-test-code.patch",
+      "sha256": "ed8627d44d2262296c1981e56d208b65ad79990d1f3da53cd304628c963b2f0c"
+    },
+    {
+      "path": "patches/0003-isolate-concurrent-certificate-factories.patch",
+      "sha256": "605c0ed512497ba6d76ca36aee7b2bbb581f3e8c01fb051cb235df24209bd5eb"
+    }
+  ],
+  "build": {
+    "kotlin_compiler": "2.0.21",
+    "jvm_target": "1.8",
+    "module_name": "migo_platform_tls",
+    "lambdas": "indy",
+    "jdk": "17",
+    "android_api": 36,
+    "toolchain_inputs": {
+      "android.jar": "d9eb9da824d9e247a352f570f01e1169e725b2954bca9e283a71786c59b59f9a",
+      "compiler-annotations.jar": "ace2a10dc8e2d5fd34925ecac03e4988b2c0f851650c94b8cef49ba1bd111478",
+      "compiler-coroutines.jar": "c24c8bb27bb320c4a93871501a7e5e0c61607638907b197aef675513d4c820be",
+      "compiler-reflect.jar": "3ad2fcad0c09ddc0922debab4444d612144b7b465b75a8bb7587e20ddfafd799",
+      "compiler-stdlib.jar": "f31cc53f105a7e48c093683bbd5437561d1233920513774b470805641bedbc09",
+      "compiler-trove.jar": "c5fd725bffab51846bf3c77db1383c60aaaebfe1b7fe2f00d23fe1b7df0a439d",
+      "compiler.jar": "9fa8cdd1de0dccffe154c997d423ec6b5f53cd6d9177e3a77a9b0de03fb1bc81",
+      "kotlin-stdlib.jar": "bd8250210584cb659847dce9cda660f8e9906e5def7fbebcea93dc6dcb6a88a3"
+    },
+    "patched_source_sha256": "4e71c148fc495bb3ffe4ab589add85696a9c634d047b3da9219e3d155efaecf6",
+    "builder_sha256": "7078ca982a66487603bb23df05ce273f438e69779cd82bb3bd8a75df394042f3",
+    "sandbox_sha256": "222648ec9e10c2526dbea980ae040d049f7f5a68f21cf14fca6c90114ffbc99f",
+    "patch_replay_sha256": "b17856af2129d41c36acbcce211645cf77ee2a8c1f1f4f17adbe6506482609cf"
+  }
+}
