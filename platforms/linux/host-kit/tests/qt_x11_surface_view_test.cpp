@@ -238,14 +238,19 @@ private slots:
         view.resize(480, 270);
         view.resize(640, 360);
         QTRY_COMPARE(fake_migo::calls().update, updates_before_resize + 1);
-        QTest::qWait(20);
+        // The X server's notifies of the three come back after that, one at a
+        // time on a loaded machine, and Qt takes each as the size until the
+        // last arrives. They are echoes: nothing more is said, and what was
+        // said is the size the window has.
+        QTRY_COMPARE(view.size(), QSize(640, 360));
+        QTest::qWait(50);
         QCOMPARE(fake_migo::calls().update, updates_before_resize + 1);
         QCOMPARE(fake_migo::calls().attach, 1);
         QCOMPARE(fake_migo::last_metrics().generation, view.generation());
         QCOMPARE(fake_migo::last_metrics().width_pixels,
-                 static_cast<uint32_t>(qRound(view.width() * view.devicePixelRatioF())));
+                 static_cast<uint32_t>(qRound(640 * view.devicePixelRatioF())));
         QCOMPARE(fake_migo::last_metrics().height_pixels,
-                 static_cast<uint32_t>(qRound(view.height() * view.devicePixelRatioF())));
+                 static_cast<uint32_t>(qRound(360 * view.devicePixelRatioF())));
 
         retire(view);
     }
