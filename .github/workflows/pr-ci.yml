@@ -1087,8 +1087,9 @@ jobs:
   # ── Job 2: Linux Qt Host Kit (isolated source contract; no V8/LFS) ──
   linux-qt-host-kit:
     runs-on: ubuntu-24.04
-    # Normally 1-2 min. The ceiling is headroom for the bounded apt retries
-    # above, so a slow mirror costs a retry rather than the whole job.
+    # Normally a few minutes. The ceiling is headroom for the bounded apt
+    # retries, so a slow mirror costs a retry rather than the whole job; with
+    # the .deb files cached it only costs that when the archive's versions move.
     timeout-minutes: 25
 
     steps:
@@ -1097,44 +1098,22 @@ jobs:
         with:
           lfs: false
 
+      # The largest apt list in PR CI, so the one a slow mirror hurts most: at
+      # ~200 KB/s its download alone outlasted the job's 25 minutes (#618, #626).
+      # The .deb files come from the Actions cache, keyed by exactly what apt
+      # would download; a hit downloads nothing and the action checks that it
+      # did not.
       - name: Install Qt/X11 Host Kit dependencies
-        # Bounded and retried like the other apt steps. This is the list most
-        # exposed to a slow mirror -- it is the largest, and this job's ceiling
-        # is 15 minutes, so an unbounded install can spend the entire budget
-        # before the contract it exists to run has started.
-        run: |
-          # `update` is advisory. Against a mirror that is down, apt retries
-          # internally and reports `Ign:` per index, then falls back to the
-          # indexes already on the image -- from which these packages still
-          # install. Bounding it and treating that as fatal turned a survivable
-          # mirror outage into a failed job, which is what happened here when
-          # azure.archive.ubuntu.com went dark. Still bounded, so a hung mirror
-          # cannot sit on the runner.
-          timeout 180 sudo apt-get update \
-            || echo "apt-get update incomplete; continuing on the image's indexes" >&2
-          # The install is the real gate: if the packages cannot be had, the
-          # contract below cannot run, so this one fails the step. A transfer
-          # that stalls is given up after 30 s and retried (Acquire::*): the
-          # mirror stalling on one package -- libcodec2, 9 MB -- used the whole
-          # 300 s twice over, failed the job, and with it skipped the AAR build.
-          # The install is not capped as a whole: on 2026-10-23 the mirror ran
-          # at about 200 KB/s, every package arriving, and a 300 s cap killed
-          # the install and its retry at exactly 300 s each. Stalls are what a
-          # bound is for, and Acquire::http::Timeout bounds them; the job's
-          # ceiling bounds the rest.
-          install_pkgs() {
-            sudo apt-get install -y -o Acquire::Retries=5 -o Acquire::http::Timeout=30 \
-              cmake ninja-build g++ ripgrep xvfb xauth \
-              qt6-base-dev qt6-base-dev-tools qt6-qpa-plugins \
-              libx11-dev libxkbcommon-x11-dev libxcb-cursor0 \
-              pkg-config libxcb-xinput-dev libxtst-dev libudev-dev dbus \
-              libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-              gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav || return 1
-          }
-          install_pkgs || {
-            echo "Qt/X11 package install failed; retrying once" >&2
-            install_pkgs
-          }
+        uses: ./.github/actions/apt-install-cached
+        with:
+          cache-name: qt-host-kit
+          packages: >-
+            cmake ninja-build g++ ripgrep xvfb xauth
+            qt6-base-dev qt6-base-dev-tools qt6-qpa-plugins
+            libx11-dev libxkbcommon-x11-dev libxcb-cursor0
+            pkg-config libxcb-xinput-dev libxtst-dev libudev-dev dbus
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav
 
       # --sanitize reruns the same binaries under ASan/UBSan. Enforced here
       # rather than left to a developer's machine: the input tests count
