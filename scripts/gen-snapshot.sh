@@ -128,6 +128,7 @@ if [[ "$SNAPSHOT_KIND" == "host" ]]; then
 else
   OUT="$OUT_DIR/SNAPSHOT-worker-$PRODUCT_PROFILE-$OS-$RUST_ARCH.bin"
 fi
+TARGET_DIR="$(cargo_target_dir "$ENGINE")"
 
 if [[ "$OS" == "linux" ]]; then
   [[ "$RUST_ARCH" == "x86_64" ]] || die "no linux V8 archive exists for arch '$RUST_ARCH' (x86_64 only)"
@@ -141,7 +142,7 @@ if [[ "$OS" == "linux" ]]; then
   # test-artifact-manifest-contract.sh's shipping-consumer enumeration).
   # shellcheck source=scripts/lib/v8-materialise.sh
   source "$(dirname "${BASH_SOURCE[0]}")/lib/v8-materialise.sh"
-  if ! v8_materialise "$ENGINE/third_party/rusty_v8/$V8_DIR" "$ENGINE/target/v8-materialised"; then
+  if ! v8_materialise "$ENGINE/third_party/rusty_v8/$V8_DIR" "$TARGET_DIR/v8-materialised"; then
     die "cannot use the linux V8 archive for $V8_DIR (run: bash scripts/fetch-v8-archives.sh x86_64-linux-gnu)"
   fi
   c_info "V8 archive verified: ${V8_MATERIALISED_ARCHIVE#"$ROOT"/}"
@@ -153,7 +154,7 @@ if [[ "$OS" == "linux" ]]; then
     cargo build -p migo-snapshot-gen \
       --no-default-features --features "profile-$PRODUCT_PROFILE" --locked )
 
-  BIN="$(cargo_target_dir "$ENGINE")/debug/migo-snapshot-gen"
+  BIN="$TARGET_DIR/debug/migo-snapshot-gen"
   [[ -f "$BIN" ]] || die "build produced no binary at $BIN"
 
   c_info "generating snapshot natively ..."
@@ -197,7 +198,7 @@ NDK="$ANDROID_NDK_HOME"
 # plus "larger than a megabyte", a heuristic for an unresolved LFS pointer, which cannot
 # tell one real archive from another. The hash subsumes it: a stub fails the comparison
 # for the same reason a wrong archive does.
-if ! v8_materialise "$ENGINE/third_party/rusty_v8/$V8_DIR" "$ENGINE/target/v8-materialised"; then
+if ! v8_materialise "$ENGINE/third_party/rusty_v8/$V8_DIR" "$TARGET_DIR/v8-materialised"; then
     die "cannot use the android V8 archive for $V8_DIR (run: bash scripts/fetch-v8-archives.sh)"
 fi
 c_info "V8 archive verified: ${V8_MATERIALISED_ARCHIVE#"$ROOT"/}"
@@ -237,7 +238,7 @@ c_info "cross-compiling migo-snapshot-gen for $TRIPLE ..."
   cargo ndk -t "$NDK_TARGET" --platform 26 build -p migo-snapshot-gen \
     --no-default-features --features "profile-$PRODUCT_PROFILE" --locked )
 
-BIN="$(cargo_target_dir "$ENGINE")/$TRIPLE/debug/migo-snapshot-gen"
+BIN="$TARGET_DIR/$TRIPLE/debug/migo-snapshot-gen"
 [[ -f "$BIN" ]] || die "build produced no binary at $BIN"
 
 # ---- 2. run on device -------------------------------------------------------

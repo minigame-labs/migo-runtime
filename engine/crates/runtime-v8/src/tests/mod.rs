@@ -77,6 +77,7 @@ mod request_through_the_engine;
 mod restart_launch_query;
 mod runtime_restart_boundary;
 mod save_file_to_disk;
+mod websocket_connect;
 // Location from `api-sensors`, the recorder from `api-media`, authorize from
 // `api-connectivity`.
 mod codec_paths;

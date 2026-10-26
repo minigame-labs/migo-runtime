@@ -20,8 +20,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use futures::stream::{SplitSink, SplitStream};
-use futures::{SinkExt, StreamExt};
+use futures::StreamExt;
 use http::HeaderValue;
 use http::header::HeaderName;
 use tokio::sync::Mutex;
@@ -37,8 +36,10 @@ use crate::ServiceError;
 use super::gate::{self, GateKind};
 use super::resources::{CancelFlag, ResourceId, ResourceTable};
 use super::sockets::{BACKGROUND_THROTTLE, join_host_port};
+use super::websocket_deflate;
+use super::websocket_transport::{ReadStep, Receiver, Sender};
 
-type WsStream = tokio_tungstenite::WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
+type WsTransport = MaybeTlsStream<tokio::net::TcpStream>;
 
 /// Per-connection limits.
 ///
@@ -55,6 +56,27 @@ const WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// The connect deadline when content named none.
 const DEFAULT_CONNECT_TIMEOUT_MS: u32 = 60_000;
+
+#[derive(Clone, Copy, Debug)]
+pub struct ConnectOptions {
+    pub timeout_ms: Option<u32>,
+    pub tcp_no_delay: bool,
+    pub per_message_deflate: bool,
+    /// A network cancel handle issued before starting the async connection.
+    /// Closing it stops DNS/TCP/handshake waits before a socket id exists.
+    pub cancel_rid: Option<ResourceId>,
+}
+
+impl Default for ConnectOptions {
+    fn default() -> Self {
+        Self {
+            timeout_ms: None,
+            tcp_no_delay: true,
+            per_message_deflate: false,
+            cancel_rid: None,
+        }
+    }
+}
 
 fn ws_config() -> WebSocketConfig {
     WebSocketConfig::default()
@@ -123,11 +145,10 @@ fn is_reserved_header(name: &HeaderName) -> bool {
 /// that is parked waiting for the server's next message, which is the normal
 /// state of a connection content is listening on.
 pub struct WebSocketConn {
-    tx: Mutex<SplitSink<WsStream, Message>>,
-    rx: Mutex<SplitStream<WsStream>>,
+    tx: Mutex<Sender<WsTransport>>,
+    rx: Mutex<Receiver<WsTransport>>,
     cancel: Arc<CancelFlag>,
-    /// The connection's place among the five that may be open at once, given back when it is gone.
-    _slot: tokio::sync::OwnedSemaphorePermit,
+    pools: migo_io::pools::IoPools,
 }
 
 impl WebSocketConn {
@@ -167,7 +188,35 @@ pub async fn create(
     url: &str,
     protocols: &[String],
     headers: &[(String, String)],
-    timeout_ms: Option<u32>,
+    options: ConnectOptions,
+    pools: migo_io::pools::IoPools,
+) -> Result<WsHandshake, ServiceError> {
+    let cancel = options
+        .cancel_rid
+        .map(|rid| {
+            resources
+                .cancel_flag(rid)
+                .ok_or_else(|| generic("WebSocket connect cancel handle is not open"))
+        })
+        .transpose()?;
+    let connecting = create_inner(policy, resources, url, protocols, headers, options, pools);
+    if let Some(cancel) = cancel {
+        cancel
+            .until_cancelled(connecting)
+            .await
+            .ok_or_else(|| generic("WebSocket connect cancelled"))?
+    } else {
+        connecting.await
+    }
+}
+
+async fn create_inner(
+    policy: &NetworkPolicy,
+    resources: &ResourceTable,
+    url: &str,
+    protocols: &[String],
+    headers: &[(String, String)],
+    options: ConnectOptions,
     pools: migo_io::pools::IoPools,
 ) -> Result<WsHandshake, ServiceError> {
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -176,14 +225,18 @@ pub async fn create(
     debug!("WebSocket connect: {url}");
 
     let deadline = tokio::time::Instant::now()
-        + std::time::Duration::from_millis(u64::from(match timeout_ms {
+        + std::time::Duration::from_millis(u64::from(match options.timeout_ms {
             Some(ms) if ms > 0 => ms,
             _ => DEFAULT_CONNECT_TIMEOUT_MS,
         }));
 
-    let parsed = url::Url::parse(url)
+    let parsed = super::url::Url::parse(url)
         .map_err(|error| type_error(format!("Invalid WebSocket URL: {error}")))?;
     gate::enforce(&parsed, policy, GateKind::WebSocket).map_err(ServiceError::generic)?;
+    // RFC6455 section 3 also excludes an explicitly empty fragment.
+    if parsed.fragment().is_some() {
+        return Err(type_error("WebSocket URL must not contain a fragment"));
+    }
     // The reference lets five WebSocket connections exist at once; one still
     // opening is one of them.
     let slot = resources.web_socket_slot().ok_or_else(|| {
@@ -209,7 +262,7 @@ pub async fn create(
         .port_u16()
         .unwrap_or(if scheme == "wss" { 443 } else { 80 });
     let tls = if scheme == "wss" {
-        let config = super::tls::ClientTls::new(policy.tls_trust, false, Vec::new(), pools.clone());
+        let config = resources.web_socket_tls(policy.tls_trust, pools.clone());
         let config = tokio::time::timeout_at(deadline, config.config())
             .await
             .map_err(|_| generic("WebSocket TLS configuration timeout"))?
@@ -247,14 +300,40 @@ pub async fn create(
     {
         request_headers.insert("Sec-WebSocket-Protocol", value);
     }
+    if options.per_message_deflate {
+        request_headers.insert(
+            "Sec-WebSocket-Extensions",
+            HeaderValue::from_static(websocket_deflate::OFFER),
+        );
+    }
 
-    let stream = connect(&addresses, deadline).await?;
-    let _ = stream.set_nodelay(true);
+    let stream = super::http::connect_vetted_tcp(addresses, &host, port, deadline)
+        .await
+        .map_err(|error| generic(format!("WebSocket TCP connect failed: {error}")))?;
+    stream
+        .set_nodelay(options.tcp_no_delay)
+        .map_err(|error| generic(format!("WebSocket TCP_NODELAY failed: {error}")))?;
 
+    let config = ws_config()
+        .external_deflate(options.per_message_deflate)
+        .external_deflate_max_wire_size(Some(websocket_deflate::encoded_limit(
+            WS_MAX_MESSAGE_BYTES,
+        )));
     let handshake =
-        tokio_tungstenite::client_async_tls_with_config(request, stream, Some(ws_config()), tls);
+        tokio_tungstenite::client_async_tls_with_config(request, stream, Some(config), tls);
     let ((stream, response), slot) =
-        finish_handshake(handshake, scheme == "wss", slot, pools, deadline).await?;
+        finish_handshake(handshake, scheme == "wss", slot, pools.clone(), deadline).await?;
+
+    let values: Result<Vec<_>, _> = response
+        .headers()
+        .get_all("Sec-WebSocket-Extensions")
+        .iter()
+        .map(|value| value.to_str())
+        .collect();
+    let values = values.map_err(|_| generic("Invalid WebSocket extension response"))?;
+    let parameters =
+        websocket_deflate::negotiate(options.per_message_deflate, values.iter().copied())
+            .map_err(|error| generic(error.to_string()))?;
 
     let header = |name: &str| {
         response
@@ -270,11 +349,12 @@ pub async fn create(
     );
 
     let (tx, rx) = stream.split();
+    let slot = Arc::new(slot);
     let rid = resources.add_web_socket(Arc::new(WebSocketConn {
-        tx: Mutex::new(tx),
-        rx: Mutex::new(rx),
+        pools: pools.clone(),
+        tx: Mutex::new(Sender::new(tx, parameters, pools.clone(), slot.clone())),
+        rx: Mutex::new(Receiver::new(rx, parameters, pools, slot)),
         cancel: Arc::new(CancelFlag::default()),
-        _slot: slot,
     }));
 
     shared::stats::io_metrics_global()
@@ -298,47 +378,21 @@ async fn resolve(
     deadline: tokio::time::Instant,
 ) -> Result<Vec<std::net::SocketAddr>, ServiceError> {
     let target = join_host_port(host, port);
-    let addresses: Vec<std::net::SocketAddr> =
-        tokio::time::timeout_at(deadline, tokio::net::lookup_host(&target))
-            .await
-            .map_err(|_| generic("WebSocket DNS resolve timeout"))?
-            .map_err(|error| generic(format!("WebSocket DNS resolve failed: {error}")))?
-            .collect();
-    if addresses.is_empty() {
-        return Err(generic("WebSocket DNS resolve returned no addresses"));
-    }
-    for address in &addresses {
-        if super::address_filter::is_blocked_address(address, lan) {
-            return Err(generic(format!(
-                "WebSocket connection to {} is not allowed (private/loopback address)",
-                address.ip()
-            )));
+    tokio::time::timeout_at(
+        deadline,
+        super::sockets::resolve_all(&target, |address| {
+            super::address_filter::is_blocked_address(address, lan)
+        }),
+    )
+    .await
+    .map_err(|_| generic("WebSocket DNS resolve timeout"))?
+    .map_err(|error| {
+        if error.kind() == std::io::ErrorKind::PermissionDenied {
+            generic(format!("WebSocket {error}"))
+        } else {
+            generic(format!("WebSocket DNS resolve failed: {error}"))
         }
-    }
-    Ok(addresses)
-}
-
-/// Connect to the first address that answers, within the deadline.
-///
-/// A dual-stack host may list a dead address first -- an unreachable IPv6 is
-/// the common one -- and connecting only to the first would fail where a later
-/// one works.
-async fn connect(
-    addresses: &[std::net::SocketAddr],
-    deadline: tokio::time::Instant,
-) -> Result<tokio::net::TcpStream, ServiceError> {
-    let mut last = String::from("no address");
-    for address in addresses {
-        match tokio::time::timeout_at(deadline, tokio::net::TcpStream::connect(*address)).await {
-            Ok(Ok(stream)) => return Ok(stream),
-            Ok(Err(error)) => last = error.to_string(),
-            Err(_) => {
-                last = "timeout".to_string();
-                break;
-            }
-        }
-    }
-    Err(generic(format!("WebSocket TCP connect failed: {last}")))
+    })
 }
 
 /// The next event content has not seen yet.
@@ -355,37 +409,29 @@ pub async fn next_event(
     let cancel = Arc::clone(&connection.cancel);
     let event = async {
         let mut rx = connection.rx.lock().await;
+        let mut throttle = true;
         loop {
-            if backgrounded.load(Ordering::Relaxed) {
+            if throttle && backgrounded.load(Ordering::Relaxed) {
                 tokio::time::sleep(BACKGROUND_THROTTLE).await;
             }
-            match rx.next().await {
-                Some(Ok(Message::Text(text))) => return WsEvent::Text(text.to_string()),
-                // `Vec::<u8>::from(Bytes)` takes the allocation when the
-                // `Bytes` is uniquely owned and full length, and copies
-                // otherwise: opportunistic, not guaranteed.
-                Some(Ok(Message::Binary(data))) => return WsEvent::Binary(Vec::from(data)),
-                Some(Ok(Message::Ping(_) | Message::Pong(_) | Message::Frame(_))) => continue,
-                Some(Ok(Message::Close(frame))) => {
-                    let (code, reason) = frame
-                        .map(|frame| (frame.code.into(), frame.reason.to_string()))
-                        .unwrap_or((1005, String::new()));
-                    return WsEvent::Close { code, reason };
+            match rx.next().await? {
+                ReadStep::Event(event) => return Ok(event),
+                ReadStep::Control => {
+                    throttle = true;
+                    tokio::task::yield_now().await;
                 }
-                Some(Err(error)) => return WsEvent::Error(error.to_string()),
-                None => {
-                    return WsEvent::Close {
-                        code: 1006,
-                        reason: String::new(),
-                    };
-                }
+                ReadStep::Fragment => throttle = false,
             }
         }
     };
-    cancel
+    let result = cancel
         .until_cancelled(event)
         .await
-        .ok_or_else(|| generic("WebSocket closed"))
+        .ok_or_else(|| generic("WebSocket closed"))?;
+    if result.is_err() {
+        connection.cancel();
+    }
+    result
 }
 
 /// Send text or bytes. One of the two, as the facade's `send` passes one.
@@ -400,6 +446,9 @@ pub async fn send(
         (None, Some(bytes)) => Message::Binary(bytes.into()),
         (None, None) => return Err(type_error("No data provided")),
     };
+    if message.len() > WS_MAX_MESSAGE_BYTES {
+        return Err(generic("WebSocket message exceeds 8 MiB"));
+    }
     write(resources, rid, message, "send").await
 }
 
@@ -426,15 +475,33 @@ async fn write(
 ) -> Result<(), ServiceError> {
     let connection = resources.web_socket(rid)?;
     let cancel = Arc::clone(&connection.cancel);
+    let deadline = tokio::time::Instant::now() + WRITE_TIMEOUT;
+    // Admit queued payloads before they wait for the writer, and transfer the
+    // ticket with an offloaded message if its caller abandons the wait.
+    let payload = connection
+        .pools
+        .reserve_bytes(message.len() as u64)
+        .map_err(|error| generic(format!("WebSocket send budget: {error}")))?;
     let written = async {
-        match tokio::time::timeout(WRITE_TIMEOUT, async {
-            connection.tx.lock().await.send(message).await
+        match tokio::time::timeout_at(deadline, async {
+            let mut sender = connection.tx.lock().await;
+            let result = sender.send_admitted(message, deadline, payload).await;
+            if result.is_err() && sender.is_closed() {
+                connection.cancel();
+            }
+            result
         })
         .await
         {
             Ok(Ok(())) => Ok(()),
-            Ok(Err(error)) => Err(generic(format!("WebSocket {what} failed: {error}"))),
-            Err(_) => Err(generic(format!("WebSocket {what} timeout"))),
+            Ok(Err(error)) => Err(generic(format!(
+                "WebSocket {what} failed: {}",
+                error.message
+            ))),
+            Err(_) => {
+                connection.cancel();
+                Err(generic(format!("WebSocket {what} timeout")))
+            }
         }
     };
     cancel

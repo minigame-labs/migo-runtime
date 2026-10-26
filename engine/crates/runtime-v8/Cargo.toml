@@ -65,7 +65,7 @@ migo-icu-data = { path = "../icu-data", default-features = false }
 frame-decode = { package = "migo-frame-decode", path = "../frame-decode", default-features = false }
 deno_core.workspace=true
 # WPT-backed WHATWG URL parser; no DOM, CSS, HTTP or URLPattern surface.
-ada-url = { version = "=4.0.0", default-features = false, features = ["bundled", "std"] }
+ada-url.workspace = true
 # Only enable tokio features actually needed (not "full")
 tokio = { workspace = true, features = ["rt", "sync", "time", "macros", "rt-multi-thread", "net", "fs", "io-util"] }
 tracing = { workspace = true }

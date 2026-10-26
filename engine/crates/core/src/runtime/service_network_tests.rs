@@ -111,6 +111,104 @@ fn array(value: &OwnedValue) -> &[OwnedValue] {
     }
 }
 
+#[test]
+fn websocket_options_accept_the_new_wire_shape_and_preserve_the_legacy_shape() {
+    let mut configured = policy(&["allowed.example"], true);
+    configured.socket = configured.request.clone();
+    let session = Session::new(configured);
+    let legacy = vec![
+        OwnedValue::Str("wss://blocked.example/game".into()),
+        OwnedValue::Array(Vec::new()),
+        OwnedValue::Array(Vec::new()),
+        OwnedValue::U32(1234),
+    ];
+    let baseline = session
+        .call_async(id::op_ws_create, legacy.clone())
+        .unwrap_err();
+    assert!(baseline.message.contains("blocked.example"));
+    for (no_delay, deflate) in [(false, false), (true, true), (true, false)] {
+        let mut args = legacy.clone();
+        args.extend([OwnedValue::Bool(no_delay), OwnedValue::Bool(deflate)]);
+        let refused = session
+            .call_async(id::op_ws_create, args.clone())
+            .unwrap_err();
+        assert_eq!(
+            refused.message, baseline.message,
+            "options must reach the same policy gate"
+        );
+        let mut cancellable = args.clone();
+        cancellable.push(OwnedValue::Null);
+        assert_eq!(
+            session
+                .call_async(id::op_ws_create, cancellable)
+                .unwrap_err()
+                .message,
+            baseline.message,
+            "an omitted cancel resource keeps the same policy"
+        );
+        for index in [4, 5] {
+            let mut malformed = args.clone();
+            malformed[index] = OwnedValue::U32(1);
+            let refused = session.call_async(id::op_ws_create, malformed).unwrap_err();
+            assert_ne!(
+                refused.message, baseline.message,
+                "wire booleans must be validated"
+            );
+        }
+    }
+    let mut incomplete = legacy;
+    incomplete.push(OwnedValue::Bool(true));
+    assert_ne!(
+        session
+            .call_async(id::op_ws_create, incomplete)
+            .unwrap_err()
+            .message,
+        baseline.message
+    );
+    assert!(session.network.resources.is_empty());
+}
+
+#[test]
+fn websocket_connect_uses_the_existing_network_cancel_resource() {
+    let session = Session::new(policy(&[], true));
+    let cancel = call_sync(
+        &session.network,
+        &session.scheduler,
+        id::op_fetch_upload_cancel_handle,
+        vec![],
+    )
+    .unwrap();
+    let OwnedValue::U32(rid) = cancel else {
+        panic!("the cancellation op must issue a resource id");
+    };
+    session.network.resources.cancel_flag(rid).unwrap().cancel();
+    let args = vec![
+        OwnedValue::Str("wss://not-resolved.invalid/game".into()),
+        OwnedValue::Array(vec![]),
+        OwnedValue::Array(vec![]),
+        OwnedValue::U32(60_000),
+        OwnedValue::Bool(true),
+        OwnedValue::Bool(true),
+        OwnedValue::U32(rid),
+    ];
+    assert_eq!(
+        session
+            .call_async(id::op_ws_create, args.clone())
+            .unwrap_err()
+            .message,
+        "WebSocket connect cancelled"
+    );
+    session.network.resources.close(rid);
+    assert!(
+        session
+            .call_async(id::op_ws_create, args)
+            .unwrap_err()
+            .message
+            .contains("cancel handle is not open")
+    );
+    assert!(session.network.resources.is_empty());
+}
+
 fn u32_at(value: &OwnedValue, index: usize) -> u32 {
     match &array(value)[index] {
         OwnedValue::U32(number) => *number,

@@ -56,6 +56,12 @@ CLEAN_CLOSURES=(
     "migo-core:external-frames"
 )
 
+# A host-only resolution cannot detect an engine introduced by an iOS-specific
+# dependency. The source half audits the actual shipping target; the positive
+# control deliberately uses a supported embedded-V8 target.
+APPLE_TARGET=aarch64-apple-ios
+POSITIVE_CONTROL_TARGET=x86_64-unknown-linux-gnu
+
 # And the control. `migo-core` built the ordinary way *does* embed V8, so this
 # gate must be able to see it there.
 #
@@ -87,8 +93,10 @@ notes=()
 # gate wrong in the direction that gets gates disabled.
 resolve() {
     local package="${1%%:*}" features="${1#*:}"
+    local platform="${2:-$APPLE_TARGET}"
     (cd engine && cargo tree \
         -p "$package" \
+        --target "$platform" \
         --no-default-features \
         --features "$features" \
         -e normal \
@@ -155,7 +163,7 @@ $(printf '%s\n' "$tree" | sed 's/^/      /')")
         continue
     fi
     count="$(package_count "$tree")"
-    notes+=("$target resolves $count packages")
+    notes+=("$target resolves $count package names for $APPLE_TARGET")
     if (( count < 20 )); then
         problems+=("$target resolved only $count packages; an almost-empty closure is not a clean one")
     fi
@@ -163,6 +171,7 @@ $(printf '%s\n' "$tree" | sed 's/^/      /')")
     for banned in ${found[@]+"${found[@]}"}; do
         [[ -n "$banned" ]] || continue
         why="$(cd engine && cargo tree \
+            --target "$APPLE_TARGET" \
             -p "${target%%:*}" --no-default-features \
             --features "${target#*:}" -e normal \
             --invert "$banned" 2>/dev/null | head -20 || true)"
@@ -175,7 +184,7 @@ done
 # engine, BY THE DETECTOR ABOVE. If it is not, either the detector broke or the
 # embedded product stopped embedding, and both are things to learn from a
 # failure here rather than from a clean run that means nothing.
-if ! control_tree="$(resolve "$POSITIVE_CONTROL")"; then
+if ! control_tree="$(resolve "$POSITIVE_CONTROL" "$POSITIVE_CONTROL_TARGET")"; then
     problems+=("the positive control $POSITIVE_CONTROL does not resolve, so the detector is unverified:
 $(printf '%s\n' "$control_tree" | sed 's/^/      /')")
 else

@@ -345,6 +345,13 @@ jobs:
           bash scripts/test-ada-url-vendor-contract.sh
           bash scripts/test-android-tls-vendor-contract.sh
           bash scripts/test-rusty-v8-vendor-contract.sh
+          bash scripts/test-websocket-deflate-contract.sh
+
+      - name: Verify Oboe native sources and callback ownership
+        run: bash scripts/test-oboe-backend-contract.sh
+
+      - name: Verify CPAL source and output product features
+        run: bash scripts/test-cpal-backend-contract.sh
 
       # And the rule itself, so the list above cannot grow again in silence.
       - name: Every contract gate is invoked by something
@@ -985,6 +992,14 @@ jobs:
       # `scripts/test-local-verification-contract.sh` now audits these commands
       # with the same parser the local gate uses, so narrowing one back to `--lib`
       # fails that contract instead of quietly dropping a binary.
+      - name: Shared audio CPU admission and cancellation contracts
+        timeout-minutes: 10
+        run: |
+          cargo fetch --locked --manifest-path engine/Cargo.toml
+          python3 scripts/testing/check_audio_cpu_admission.py \
+            --output "${RUNNER_TEMP}/migo-audio-cpu-contract" \
+            --target-dir "${RUNNER_TEMP}/migo-audio-cpu-target"
+
       - name: Run Rust tests (host-buildable crates)
         working-directory: engine
         run: |
@@ -1263,7 +1278,9 @@ jobs:
       # the NDK's own API-26 stub libraries, so it needs the freshly built .so
       # (both ABIs land under engine/jniLibs/ from the step above).
       - name: Android minimum-API symbol floor
-        run: bash scripts/test-android-symbol-floor.sh
+        run: |
+          bash scripts/test-android-symbol-floor.sh --self-test
+          bash scripts/test-android-symbol-floor.sh
 
       # Android 15 brought 16 KB memory pages and Android 16 requires targeting
       # apps to have 16 KB-aligned native libraries to install on such a device.
@@ -1438,6 +1455,11 @@ jobs:
         working-directory: engine
         run: cargo test -p migo-shared -p migo-io --lib --locked
 
+      - name: Native WASAPI scheduling lifecycle
+        shell: bash
+        run: |
+          python scripts/testing/check_cpal_scheduling.py "$PWD" "$RUNNER_TEMP/migo-wasapi-scheduling" --native
+
   host-engine-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -1510,7 +1532,7 @@ jobs:
               libgl-dev libegl-dev libgles-dev \
               libgl1-mesa-dri libegl-mesa0 \
               libfontconfig1-dev libfreetype-dev \
-              libasound2-dev \
+              libasound2-dev strace \
               gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav || return 1
           }
           install_pkgs || {
@@ -1558,6 +1580,11 @@ jobs:
       - name: Run clippy lints (crates needing host system packages)
         working-directory: engine
         run: cargo clippy -p migo-graphics -p migo-core -p migo-capi -p migo-platform -p migo-audio -p migo-player --all-targets
+
+      - name: Native audio callback allocator and syscall contract
+        run: |
+          rustup component add rust-src
+          bash scripts/test-audio-realtime-contract.sh
 
       - name: Run Rust tests (graphics, core, capi, platform, audio, player)
         working-directory: engine

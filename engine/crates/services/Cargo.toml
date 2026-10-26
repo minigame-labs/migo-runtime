@@ -56,18 +56,18 @@ async-compression = { version = "=0.4.51", default-features = false, features = 
 tokio-util = { version = "0.7.20", default-features = false, features = ["io"] }
 # `data:` URLs, which `fetch` answers without a connection.
 data-url.workspace = true
-# Also the network policy's URL rules, which is the same parser the engine's
-# own `fetch` uses.
-# Classifies an InnerAudioContext `src` exactly as the embedded runtime always
-# has -- WHATWG parsing, so " HTTP://x" is remote -- and names the URL a
-# caller's network policy admits. Already in the build through `deno_core`
-# and the network stack; this is the same version, not a second copy.
-url = "2.5"
+# The same WHATWG parser as public URL. Policy, request targets and redirects
+# must not disagree over a host or fall back to another parser on rejection.
+ada-url.workspace = true
 tracing = { workspace = true }
 parking_lot = { workspace = true }
 # Content's WebSocket: the connection, its limits and its handshake, held here
 # so both executions open the same socket under the same policy.
 tokio-tungstenite.workspace = true
+# RFC7692 uses the existing miniz encoder, and a dictionary-capable inflater.
+# The latter also restores takeover after valid BFINAL blocks; no C backend.
+flate2 = { version = "=1.1.10", default-features = false, features = ["rust_backend"] }
+zlib-rs = { version = "=0.6.8", default-features = false, features = ["std"] }
 # `prefetchDns` takes its hostnames as a JSON array, which is the shape the
 # engine's JavaScript has always passed; parsed here so both executions refuse
 # a malformed list with the same words.
@@ -82,6 +82,7 @@ sha2 = "0.10"
 hex = "0.4"
 
 [dev-dependencies]
+miniz_oxide = "=0.8.9"
 tokio = { workspace = true, features = ["rt", "sync", "macros", "time", "test-util"] }
 # Servers the HTTP client's tests run in-process (HTTP/1.1 and HTTP/2, over TCP and TLS), and the certificate
 # authority their TLS is signed by.

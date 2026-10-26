@@ -5,13 +5,15 @@
   "v8_revision": "ac1e23989121713ca642f6650b34deff7b686896",
   "android_api": 26,
   "ndk": {
-    "version": "23.2.8568313",
-    "notes": "The NDK supplies the target compiler, sysroot and linker, all three of which the component manifest records, so it is part of the artifact's identity. This is the NDK that produced both verified archives (aarch64 681aaa39... and x86_64 ce14223a...), so it is pinned to what is proven rather than to the newest available. Resolved by scripts/lib/android-ndk.sh, which searches the standard SDK layouts for an NDK whose own Pkg.Revision equals this value; seven scripts previously defaulted ANDROID_NDK_HOME to $HOME/Android/Ndk, a path that exists on none of the machines used here, so every build silently depended on the environment already being right."
+    "version": "30.0.16248370",
+    "notes": "NDK r30 is the stable/LTS cohort selected for the runtime modernization. Ada 4 requires C++20 <ranges>; the previous r23 failed the actual API26 services compile. The NDK supplies the compiler, sysroot, libc++_shared and linker for V8, Skia, Oboe and Rust consumers. Keep API26; regenerate native components with this toolchain instead of relabeling existing r23 artifacts. Shell, PowerShell and CI read this exact revision and check source.properties. Official release: https://github.com/android/ndk/releases/tag/r30"
   },
   "gn": {
     "version": "2502",
     "revision": "17b0057970fa2b07a20cbb4289ab78cf93565f35",
-    "required_patches": ["0001-suppress-gcc-multiline-comment-warning"],
+    "required_patches": [
+      "0001-suppress-gcc-multiline-comment-warning"
+    ],
     "source": "https://gn.googlesource.com/gn",
     "notes": "gn generates the entire build graph, so it is part of the artifact's provenance. V8 14.5 needs path_exists(), added in gn 2315; skia's bundled gn 2175 is too old. The exact version pin above already refuses everything older, so there is no separate minimum. gn's version is a commit position and is unchanged by local modifications, so the revision is pinned as well. Built by scripts/build-gn.sh with the one required patch, which adds -Wno-comment to gn's existing gcc-only suppression list because header_checker.h ends an ASCII-art comment line with a backslash that only gcc reports and gn compiles with -Werror."
   },
@@ -19,12 +21,17 @@
     "aarch64": {
       "triple": "aarch64-linux-android",
       "cpu_baseline": "armv8-a",
-      "required_cpu_features": ["neon"]
+      "required_cpu_features": [
+        "neon"
+      ]
     },
     "x86_64": {
       "triple": "x86_64-linux-android",
       "cpu_baseline": "x86-64-v1",
-      "required_cpu_features": ["cmov", "sse2"]
+      "required_cpu_features": [
+        "cmov",
+        "sse2"
+      ]
     }
   },
   "required_patches": [

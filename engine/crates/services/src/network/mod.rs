@@ -23,7 +23,10 @@ pub mod tcp;
 pub mod tls;
 pub mod udp;
 pub mod upload;
+pub mod url;
 pub mod websocket;
+mod websocket_deflate;
+mod websocket_transport;
 
 /// The WebSocket implementation behind content's sockets, for the engine's one
 /// other WebSocket: the server end of the Performance+ frame endpoint

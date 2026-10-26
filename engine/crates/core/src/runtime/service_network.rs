@@ -335,6 +335,24 @@ pub(crate) fn call_async(
             })
         }
         id::op_ws_create => {
+            let mut args = args;
+            let cancel_rid = if args.len() == 7 {
+                match args.pop().unwrap() {
+                    OwnedValue::Null => None,
+                    value => Some(u32_of(op, 6, value)?),
+                }
+            } else {
+                None
+            };
+            // Four-argument producers predate the explicit options; their
+            // transport enabled TCP_NODELAY and offered no compression.
+            let (tcp_no_delay, per_message_deflate) = if args.len() == 6 {
+                let deflate = boolean(op, 5, args.pop().unwrap())?;
+                let no_delay = boolean(op, 4, args.pop().unwrap())?;
+                (no_delay, deflate)
+            } else {
+                (true, false)
+            };
             let [url, protocols, headers, timeout_ms] = exactly(op, args)?;
             let url = string(op, 0, url)?;
             let protocols = strings(op, 1, protocols)?;
@@ -347,7 +365,18 @@ pub(crate) fn call_async(
             let pools = network.pools.clone();
             Box::pin(async move {
                 websocket::create(
-                    &policy, &resources, &url, &protocols, &headers, timeout_ms, pools,
+                    &policy,
+                    &resources,
+                    &url,
+                    &protocols,
+                    &headers,
+                    websocket::ConnectOptions {
+                        timeout_ms,
+                        tcp_no_delay,
+                        per_message_deflate,
+                        cancel_rid,
+                    },
+                    pools,
                 )
                 .await
                 // `WsCreateResult`, in its field order: rid, protocol,

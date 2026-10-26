@@ -35,7 +35,7 @@
 //! carries the kind the request was made as and evaluates each hop under it,
 //! so a download that is redirected is still held to the download allowlist.
 
-use url::Url;
+use crate::network::url::Url;
 
 use super::address_filter::{LanAccess, Reach, datagram_reach, stream_reach};
 use shared::network_policy::{NetworkChannel, NetworkPolicy};
@@ -341,9 +341,8 @@ pub fn enforce_host(
     // 8.8.8.8, and this parser reads them the same way, so a numeric spelling
     // meets the IP-literal rule the dotted one does. It also lowercases and
     // IDNA-encodes a name, as every `http://` host already is.
-    let canonical = url::Host::parse(&bracketed)
-        .map_err(|e| format!("{}:fail invalid host '{}': {}", kind.label(), host, e))?
-        .to_string();
+    let canonical = super::url::canonical_host(&bracketed)
+        .map_err(|e| format!("{}:fail invalid host '{}': {}", kind.label(), host, e))?;
     let synthetic = format!("{scheme}://{canonical}:{port}/");
     let url = Url::parse(&synthetic)
         .map_err(|e| format!("{}:fail invalid host '{}': {}", kind.label(), host, e))?;

@@ -7,6 +7,48 @@ from gitignore_policy import check, tracked_ignored
 
 
 class GitignorePolicy(unittest.TestCase):
+    def test_raw_patch_whitespace_is_data_but_authored_code_still_fails(self):
+        repository = Path(__file__).resolve().parents[2]
+        attributes = (repository / '.gitattributes').read_bytes()
+        patch = 'engine/third_party/cpal-patches/0003-ios-interruption-ownership.patch'
+        upstream = 'engine/third_party/cpal-0.18.2/SECURITY.md'
+        authored = 'engine/crates/audio/src/owned.rs'
+        fixtures = {
+            patch: (repository / patch).read_bytes(),
+            upstream: (repository / upstream).read_bytes(),
+            authored: b'// authored code must reject this trailing space \n',
+        }
+        # Removing only the data exception must reproduce both real false
+        # positives. No commits or main-worktree/index mutations are involved.
+        for protected in [False, True]:
+            with self.subTest(protected=protected), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                subprocess.run(['git', 'init', '--quiet', '--template=', str(root)], check=True)
+                (root / '.gitattributes').write_bytes(attributes if protected else
+                    attributes.replace(b'-text -whitespace', b'-text'))
+                for name, data in fixtures.items():
+                    file = root / name
+                    file.parent.mkdir(parents=True, exist_ok=True)
+                    file.write_bytes(data)
+                subprocess.run(['git', '-C', str(root), 'add', '--', '.gitattributes', *fixtures],
+                               check=True, capture_output=True)
+                for name in [patch, upstream]:
+                    result = subprocess.run(['git', '-C', str(root), 'diff', '--cached', '--check',
+                                             '--', name], capture_output=True, text=True)
+                    if protected:
+                        self.assertEqual(result.returncode, 0, result.stdout)
+                    else:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn('trailing whitespace', result.stdout)
+                    stored = subprocess.run(['git', '-C', str(root), 'show', ':' + name],
+                                            check=True, capture_output=True).stdout
+                    self.assertEqual(stored, fixtures[name])
+                owned = subprocess.run(['git', '-C', str(root), 'diff', '--cached', '--check',
+                                        '--', authored], capture_output=True, text=True)
+                self.assertNotEqual(owned.returncode, 0)
+                self.assertIn(authored, owned.stdout)
+                self.assertIn('trailing whitespace', owned.stdout)
+
     def test_authored_lf_and_raw_vendor_crlf_survive_windows_checkout(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

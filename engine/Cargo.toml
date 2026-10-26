@@ -67,6 +67,7 @@ version = "0.9.19"
 license = "BSL-1.1"
 
 [workspace.dependencies]
+ada-url = { version = "=4.0.0", default-features = false, features = ["bundled", "std"] }
 # Select the features each Migo crate needs. deno_core additionally requests
 # Tokio's `full` set in embedded-V8 products; feature unification is additive.
 tokio = { version = "1.46.1", default-features = false }
@@ -321,6 +322,9 @@ opt-level = 3
 # copy is the published crate plus engine/third_party/skia-bindings-patches, which
 # scripts/test-skia-bindings-vendor-contract.sh proves byte for byte.
 [patch.crates-io]
+# Exclude unused macOS process-tap capture from the mini-game output product.
+cpal = { path = "third_party/cpal-0.18.2" }
+tungstenite = { path = "third_party/tungstenite-0.30.0" }
 # Keep Ada C++ on the embedding product CRT rather than forcing /MT.
 ada-url = { path = "third_party/ada-url-4.0.0" }
 skia-bindings = { path = "third_party/skia-bindings-0.93.1" }

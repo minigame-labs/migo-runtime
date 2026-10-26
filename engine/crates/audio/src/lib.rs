@@ -63,7 +63,7 @@
 //!
 //! ## Platform Support
 //!
-//! - **Android**: Uses Oboe (AAudio/OpenSL ES) via cpal
+//! - **Android**: Uses Oboe (AAudio/OpenSL ES) through a narrow C ABI
 //! - **Linux**: Uses ALSA via cpal
 //! - **macOS/iOS**: Uses CoreAudio via cpal
 //! - **OpenHarmony**: Uses OHAudio via a hand-declared backend (`output_ohaudio.rs`)
@@ -89,6 +89,8 @@ static COUNTING_ALLOCATOR: migo_alloc_probe::CountingAllocator =
 /// nothing else on this lane configures it (see the module).
 #[cfg(target_os = "ios")]
 pub mod apple_session;
+#[cfg(any(target_os = "ios", test))]
+mod apple_session_policy;
 mod audio_thread;
 pub mod cache;
 mod context;
@@ -107,6 +109,7 @@ pub mod platform;
 pub mod power_manager;
 mod resampler;
 pub mod streaming;
+mod streaming_transport;
 
 pub use audio_thread::*;
 pub use cache::GlobalAudioCache;

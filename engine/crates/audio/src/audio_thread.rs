@@ -588,6 +588,10 @@ impl DecodePool {
             let handle = thread::Builder::new()
                 .name(format!("audio-decode-{}", i))
                 .spawn(move || {
+                    // Decoding is not on the producer's refill deadline.
+                    shared::thread_priority::set_current_thread_priority(
+                        shared::thread_priority::Priority::Background,
+                    );
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         decode_worker(rx, tx, in_flight, sr, wake);
                     }));
@@ -775,6 +779,74 @@ use crate::power_manager::{
     AudioWaitMode, audio_wait_mode,
 };
 use crate::streaming::{self, LazyStreamingClient, StreamingHttpClientFactory, StreamingState};
+
+// At most one explicit playback request is recorded per drained command.
+// Keep the final targets so a later pause/release in the same command batch
+// cannot resume an unrelated, previously interrupted sound. This fixed owner-
+// thread scratch space never allocates, and is absent on non-iOS products.
+#[cfg(any(target_os = "ios", test))]
+#[derive(Clone, Copy)]
+enum PlaybackIntent {
+    None,
+    All,
+    Context(AudioContextId),
+    Source(AudioContextId, AudioNodeId),
+    Inner(InnerAudioId),
+    Media(u32),
+}
+
+#[cfg(any(target_os = "ios", test))]
+struct PlaybackIntents {
+    targets: [PlaybackIntent; AUDIO_COMMANDS_PER_DRAIN],
+    len: usize,
+}
+
+#[cfg(any(target_os = "ios", test))]
+impl PlaybackIntents {
+    fn new() -> Self {
+        Self {
+            targets: [PlaybackIntent::None; AUDIO_COMMANDS_PER_DRAIN],
+            len: 0,
+        }
+    }
+
+    fn clear(&mut self) {
+        self.len = 0;
+    }
+
+    fn push(&mut self, target: PlaybackIntent) {
+        // The drain cap is also this array's capacity.
+        self.targets[self.len] = target;
+        self.len += 1;
+    }
+
+    fn has_active_target(
+        &self,
+        contexts: &HashMap<AudioContextId, AudioContext>,
+        players: &HashMap<InnerAudioId, InnerAudioPlayer>,
+        media_players: &HashMap<u32, Vec<InnerAudioId>>,
+    ) -> bool {
+        self.targets[..self.len].iter().any(|target| match *target {
+            PlaybackIntent::None => false,
+            PlaybackIntent::All => {
+                contexts.values().any(AudioContext::has_active_sources)
+                    || players.values().any(InnerAudioPlayer::is_active)
+            }
+            PlaybackIntent::Context(id) => contexts
+                .get(&id)
+                .is_some_and(AudioContext::has_active_sources),
+            PlaybackIntent::Source(ctx, node) => contexts
+                .get(&ctx)
+                .is_some_and(|ctx| ctx.has_active_source(node)),
+            PlaybackIntent::Inner(id) => players.get(&id).is_some_and(InnerAudioPlayer::is_active),
+            PlaybackIntent::Media(id) => media_players.get(&id).is_some_and(|sources| {
+                sources
+                    .iter()
+                    .any(|id| players.get(id).is_some_and(InnerAudioPlayer::is_active))
+            }),
+        })
+    }
+}
 
 /// Reverse lookup from node_id to context_id for O(1) access.
 /// This avoids iterating all contexts when looking up a node.
@@ -1062,21 +1134,19 @@ impl AudioThread {
         wakeup: ThreadWakeup,
         host_tx: HostTx,
         http_client_factory: StreamingHttpClientFactory,
+        cpu: migo_io::audio_cpu::AudioCpu,
     ) -> EngineResult<Self> {
         let wakeup_for_thread = wakeup.clone();
-        // What the system does to this process's audio -- a call, Siri, another
-        // app -- reaches content as an interruption, and reaches the stream
-        // gate below as the reason not to restart the unit until it ends.
-        #[cfg(target_os = "ios")]
-        crate::apple_session::watch_interruptions(host_tx.clone());
-
         let handle = thread::Builder::new()
             .name("Migo-AudioThread".into())
             .spawn(move || {
                 shared::thread_priority::set_current_thread_priority(
-                    shared::thread_priority::Priority::Background,
+                    shared::thread_priority::Priority::Default,
                 );
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    wakeup_for_thread.bind_audio_thread();
+                    #[cfg(target_os = "ios")]
+                    let _interruptions = crate::apple_session::watch_interruptions(host_tx.clone());
                     // A device, or silence until one appears: never no output, so a
                     // game's audio runs on a machine that cannot play it.
                     let output = AudioOutput::new();
@@ -1089,6 +1159,7 @@ impl AudioThread {
                         host_tx,
                         wakeup_for_thread,
                         http_client_factory,
+                        cpu,
                     );
                     info!("AudioThread (lazy) stopped");
                 })); // end catch_unwind
@@ -1152,20 +1223,13 @@ impl Drop for AudioThread {
 /// `stop(when)` and k-rate automation take effect. Kept separate from the ring
 /// block size below, which is about how often the ring is pushed to, not about
 /// scheduling accuracy.
-pub(crate) const RENDER_QUANTUM_FRAMES: usize = 128;
+pub(crate) use crate::output::RENDER_QUANTUM_FRAMES;
 
-/// Calculate optimal process buffer size based on sample rate.
-/// Higher sample rates need larger buffers for the same latency.
+/// Push one render quantum at a time. Device burst/reserve controls how
+/// many quanta to refill; sample rate must not create a 21ms submission block.
 #[inline]
-fn calculate_process_frames(sample_rate: u32) -> usize {
-    // Target ~21ms of audio data
-    // 48kHz * 0.021 ≈ 1008 frames, round to 1024 for alignment
-    // 44.1kHz * 0.021 ≈ 926 frames, round to 1024
-    // Higher rates like 96kHz would use 2048
-    let target_ms = 21.0;
-    let frames = (sample_rate as f32 * target_ms / 1000.0) as usize;
-    // Round up to nearest power of 2 for better cache alignment
-    frames.next_power_of_two().max(512).min(4096)
+fn calculate_process_frames(_sample_rate: u32) -> usize {
+    RENDER_QUANTUM_FRAMES
 }
 
 /// Step 3 of one audio-thread tick: service every player once — drain what the
@@ -1323,7 +1387,10 @@ fn run_audio_thread(
     host_tx: HostTx,
     wakeup: ThreadWakeup,
     http_client_factory: StreamingHttpClientFactory,
+    cpu: migo_io::audio_cpu::AudioCpu,
 ) {
+    wakeup.bind_audio_thread();
+    output.bind_wakeup(&wakeup);
     // Consumed ahead of the channel in the drain below, so the commands the
     // service buffered before this thread existed keep their place in the order.
     let mut startup_backlog = startup_backlog.into_iter();
@@ -1357,7 +1424,7 @@ fn run_audio_thread(
     // its two workers persist for the audio thread's lifetime.
     let mut decode_pool = LazyDecodePool::new(decode_tx, sample_rate, wakeup.clone());
 
-    // Audio processing buffer - dynamically sized based on sample rate
+    // One render quantum, resized only when device channel layout changes.
     let mut process_frames = calculate_process_frames(sample_rate);
     let mut buffer_size = process_frames * channels as usize;
     let mut process_buffer = vec![0.0f32; buffer_size];
@@ -1379,6 +1446,9 @@ fn run_audio_thread(
     // While the mix plays into silence, when to look for a device next.
     let mut device_search = DeviceSearch::new(Instant::now());
 
+    #[cfg(any(target_os = "ios", test))]
+    let mut playback_intents = PlaybackIntents::new();
+
     loop {
         // -----------------------------------------------------------------
         // 1. Drain pending commands (non-blocking, rate-limited).
@@ -1386,6 +1456,23 @@ fn run_audio_thread(
         //    when JS fires rapid bursts (automation, game SFX).  Remaining
         //    commands are picked up on the next iteration (~5ms in Active).
         // -----------------------------------------------------------------
+        #[cfg(any(target_os = "ios", test))]
+        playback_intents.clear();
+        // On other targets this macro expands to nothing, including its input.
+        macro_rules! request_playback_resume {
+            ($condition:expr => $target:expr) => {
+                #[cfg(any(target_os = "ios", test))]
+                if $condition {
+                    playback_intents.push($target);
+                }
+            };
+            ($target:expr) => {
+                #[cfg(any(target_os = "ios", test))]
+                {
+                    playback_intents.push($target);
+                }
+            };
+        }
         let mut cmd_count = 0usize;
         while cmd_count < AUDIO_COMMANDS_PER_DRAIN {
             let cmd = match next_command(&mut startup_backlog, &rx) {
@@ -1411,6 +1498,7 @@ fn run_audio_thread(
                 AudioCmd::ResumeAll => {
                     if paused {
                         paused = false;
+                        request_playback_resume!(PlaybackIntent::All);
                         for ctx in contexts.values_mut() {
                             ctx.resume_clock_after_background();
                         }
@@ -1466,6 +1554,7 @@ fn run_audio_thread(
                 AudioCmd::ResumeContext { ctx_id, resp } => {
                     if let Some(ctx) = contexts.get_mut(&ctx_id) {
                         ctx.resume();
+                        request_playback_resume!(PlaybackIntent::Context(ctx_id));
                         let _ = resp.send(Ok(()));
                     } else {
                         let _ = resp.send(Err(EngineError::from_detail(
@@ -1559,7 +1648,7 @@ fn run_audio_thread(
                     offset,
                     duration,
                 } => {
-                    if !start_buffer_scoped(
+                    let started = start_buffer_scoped(
                         &mut contexts,
                         &node_index,
                         ctx_id,
@@ -1568,9 +1657,11 @@ fn run_audio_thread(
                         when,
                         offset,
                         duration,
-                    ) {
+                    );
+                    if !started {
                         warn!("StartBuffer rejected: context {ctx_id} does not own node {node_id}");
                     }
+                    request_playback_resume!(started => PlaybackIntent::Source(ctx_id, node_id));
                 }
 
                 AudioCmd::Start {
@@ -1588,6 +1679,10 @@ fn run_audio_thread(
                         .unwrap_or(false);
 
                     if found {
+                        #[cfg(any(target_os = "ios", test))]
+                        if let Some(ctx_id) = node_index.get_context(node_id) {
+                            request_playback_resume!(PlaybackIntent::Source(ctx_id, node_id));
+                        }
                         let _ = resp.send(Ok(()));
                     } else {
                         let _ = resp.send(Err(EngineError::from_detail(
@@ -1760,9 +1855,11 @@ fn run_audio_thread(
                 AudioCmd::StartOscillator { node_id, when } => {
                     if let Some(ctx_id) = node_index.get_context(node_id) {
                         if let Some(ctx) = contexts.get_mut(&ctx_id) {
-                            ctx.with_node_typed::<OscillatorNode, _>(node_id, |osc| {
-                                osc.start(when);
-                            });
+                            let _started =
+                                ctx.with_node_typed::<OscillatorNode, _>(node_id, |osc| {
+                                    osc.start(when);
+                                });
+                            request_playback_resume!(_started.is_some() => PlaybackIntent::Source(ctx_id, node_id));
                         }
                     }
                 }
@@ -2019,9 +2116,11 @@ fn run_audio_thread(
                 AudioCmd::StartConstantSource { node_id, when } => {
                     if let Some(ctx_id) = node_index.get_context(node_id) {
                         if let Some(ctx) = contexts.get_mut(&ctx_id) {
-                            ctx.with_node_typed::<ConstantSourceNode, _>(node_id, |cs| {
-                                cs.start(when);
-                            });
+                            let _started =
+                                ctx.with_node_typed::<ConstantSourceNode, _>(node_id, |cs| {
+                                    cs.start(when);
+                                });
+                            request_playback_resume!(_started.is_some() => PlaybackIntent::Source(ctx_id, node_id));
                         }
                     }
                 }
@@ -2381,6 +2480,7 @@ fn run_audio_thread(
 
                 AudioCmd::MediaAudioPlayerStart { player_id } => {
                     if let Some(sources) = media_players.get(&player_id) {
+                        request_playback_resume!(PlaybackIntent::Media(player_id));
                         for &source_id in sources {
                             if let Some(player) = inner_players.get_mut(&source_id) {
                                 player.play();
@@ -2441,6 +2541,7 @@ fn run_audio_thread(
                                 Ok(client) => {
                                     let state = StreamingState::new();
                                     let rx = streaming::start_streaming_download(
+                                        cpu.clone(),
                                         client,
                                         url.clone(),
                                         state.clone(),
@@ -2476,6 +2577,7 @@ fn run_audio_thread(
                     tracing::trace!("InnerAudioPlay command: id={}", id);
                     if let Some(player) = inner_players.get_mut(&id) {
                         player.play();
+                        request_playback_resume!(PlaybackIntent::Inner(id));
                     } else {
                         tracing::warn!("InnerAudioPlay: player {} not found", id);
                     }
@@ -2618,6 +2720,7 @@ fn run_audio_thread(
         //    explicit command. A failed pause retains a bounded retry tick.
         // -----------------------------------------------------------------
         if paused {
+            sync.set_callback_wakeup_enabled(false);
             if !output.is_alive() {
                 stream_gate.mark_stopped();
             }
@@ -2685,7 +2788,7 @@ fn run_audio_thread(
             if p.is_active() {
                 has_active_inner = true;
             }
-            if p.is_streaming() {
+            if p.needs_stream_poll() {
                 has_active_streaming = true;
             }
             if has_active_inner && has_active_streaming {
@@ -2725,6 +2828,8 @@ fn run_audio_thread(
                 None
             };
             if let Some(new_output) = replacement {
+                sync.set_callback_wakeup_enabled(false);
+                new_output.bind_wakeup(&wakeup);
                 if new_output.is_silent() {
                     device_search = DeviceSearch::new(now);
                 } else {
@@ -2753,15 +2858,14 @@ fn run_audio_thread(
             }
         }
 
-        // While the system holds the audio -- a call, Siri, another app -- the
-        // unit is stopped and starting it again fails, so the gate is told the
-        // same thing a backgrounded app tells it. The end of the interruption
-        // is what lets it resume, on the tick after it arrives.
-        #[cfg(target_os = "ios")]
-        let interrupted = crate::apple_session::interruption_state().is_interrupted();
-        #[cfg(not(target_os = "ios"))]
-        let interrupted = false;
-        let stream_action = stream_gate.next_action(interrupted, output_power_state);
+        // CPAL owns system interruptions. This gate records Migo's requested
+        // background/idle state; a system begin must never be translated into
+        // pause(), which would revoke CPAL's permitted automatic recovery.
+        sync.set_callback_wakeup_enabled(output_is_active);
+        let stream_action = stream_gate.next_action(false, output_power_state);
+        #[cfg(any(target_os = "ios", test))]
+        let explicitly_resume_interruption =
+            playback_intents.has_active_target(&contexts, &inner_players, &media_players);
         if stream_action == Some(AudioStreamAction::Pause) && output.pause_stream() {
             stream_gate.commit(AudioStreamAction::Pause);
             info!("AudioThread entered idle sleep (stream paused)");
@@ -2771,6 +2875,7 @@ fn run_audio_thread(
         // Silence consumes the time since the last pass, as a device's callback
         // would have; a device consumes on its own.
         output.pump();
+        sync.refresh_device_policy();
 
         // -----------------------------------------------------------------
         // 7. Audio processing (only with audible work). A resume forces one
@@ -2792,13 +2897,9 @@ fn run_audio_thread(
 
                     // Render the block one **render quantum** at a time.
                     //
-                    // The block handed to the ring is ~21 ms, sized for one
-                    // efficient ring push. Rendering it in one call would make
-                    // that the scheduling grain too: `start(when)` and
-                    // `stop(when)` are compared against the block's start time,
-                    // so a sound could land up to 21 ms from where it was asked
-                    // for, and every k-rate parameter would step once per 21 ms
-                    // instead of gliding. Web Audio's quantum is 128 frames, and
+                    // One quantum is submitted per push. Device burst and
+                    // software reserve determine how many pushes are needed;
+                    // graph scheduling remains at the 128-frame boundary. Web Audio's quantum is 128 frames, and
                     // slicing here buys that 2.67 ms grain for the cost of eight
                     // call setups per block -- the per-sample work is identical.
                     let quantum_samples = RENDER_QUANTUM_FRAMES * channels as usize;
@@ -2839,8 +2940,15 @@ fn run_audio_thread(
             info!("AudioThread resumed active output after refill");
         }
 
+        #[cfg(all(test, not(target_os = "ios")))]
+        let _ = explicitly_resume_interruption;
+        #[cfg(target_os = "ios")]
+        if !resume_after_refill && explicitly_resume_interruption {
+            output.resume_interrupted_stream();
+        }
+
         // -----------------------------------------------------------------
-        // 8. Sleep on the condvar. Stable idle is event-driven only after the
+        // 8. Sleep on the command/device wakeup. Stable idle is event-driven only after the
         //    output is confirmed paused; pause failures retain a retry tick.
         //
         //    Active:    5 ms — low-latency mixing
@@ -2873,6 +2981,96 @@ mod tests {
     /// The limiter must not introduce an edge of its own. The previous curve left
     /// `1.0` untouched and sent `1.0 + eps` to `0.5`: a 6 dB discontinuity right
     /// where signals cross it, heard as a click on every overshoot.
+    #[test]
+    fn interruption_resume_intents_follow_the_final_target_state() {
+        let mut contexts = HashMap::new();
+        let mut ctx = AudioContext::new(1, 48_000, 2);
+        let mut oscillator = OscillatorNode::new(3, 48_000);
+        oscillator.start(0.0);
+        ctx.add_node(Box::new(oscillator));
+        ctx.resume();
+        contexts.insert(1, ctx);
+        let players = HashMap::new();
+        let media = HashMap::new();
+        let mut intents = PlaybackIntents::new();
+        intents.push(PlaybackIntent::Source(1, 99));
+        intents.push(PlaybackIntent::Context(99));
+        intents.push(PlaybackIntent::Inner(99));
+        intents.push(PlaybackIntent::Media(99));
+        assert!(
+            !intents.has_active_target(&contexts, &players, &media),
+            "invalid targets must not resume unrelated audio"
+        );
+        intents.push(PlaybackIntent::Source(1, 3));
+        assert!(intents.has_active_target(&contexts, &players, &media));
+        contexts.get_mut(&1).unwrap().suspend();
+        assert!(
+            !intents.has_active_target(&contexts, &players, &media),
+            "a later suspend revokes the source's resume intent"
+        );
+        contexts.get_mut(&1).unwrap().resume();
+        contexts.remove(&1);
+        assert!(!intents.has_active_target(&contexts, &players, &media));
+        intents.clear();
+        intents.push(PlaybackIntent::All);
+        assert!(
+            !intents.has_active_target(&contexts, &players, &media),
+            "foregrounding an idle app must not activate the stream"
+        );
+    }
+
+    #[test]
+    fn interruption_inner_and_media_intents_cannot_resume_a_later_paused_target() {
+        let contexts = HashMap::new();
+        let mut players = HashMap::new();
+        for id in [1, 2] {
+            let mut player = InnerAudioPlayer::new(id, 2);
+            player.shared.set_loaded(true);
+            player.play();
+            players.insert(id, player);
+        }
+        let mut media = HashMap::from([(10, vec![1])]);
+        let mut intents = PlaybackIntents::new();
+        intents.push(PlaybackIntent::Inner(1));
+        assert!(intents.has_active_target(&contexts, &players, &media));
+        players.get_mut(&1).unwrap().pause();
+        assert!(
+            !intents.has_active_target(&contexts, &players, &media),
+            "the still-active old player 2 is unrelated to this request"
+        );
+        intents.clear();
+        intents.push(PlaybackIntent::Media(10));
+        assert!(!intents.has_active_target(&contexts, &players, &media));
+        media.get_mut(&10).unwrap().push(2);
+        assert!(intents.has_active_target(&contexts, &players, &media));
+        media.remove(&10);
+        assert!(!intents.has_active_target(&contexts, &players, &media));
+        intents.clear();
+        assert!(!intents.has_active_target(&contexts, &players, &media));
+    }
+
+    #[test]
+    fn interruption_resume_intents_are_bounded_and_do_not_allocate() {
+        let contexts = HashMap::new();
+        let players = HashMap::new();
+        let media = HashMap::new();
+        let mut intents = PlaybackIntents::new();
+        assert_no_steady_state_allocation(
+            Burst {
+                path: "bounded iOS playback intents",
+                warmup: 1,
+                measured: 64,
+            },
+            |_| {
+                intents.clear();
+                for _ in 0..AUDIO_COMMANDS_PER_DRAIN {
+                    intents.push(PlaybackIntent::Context(123));
+                }
+                assert!(!intents.has_active_target(&contexts, &players, &media));
+            },
+        );
+    }
+
     #[test]
     fn the_soft_limit_is_continuous_and_bounded() {
         let mut probe: Vec<f32> = (0..4_000).map(|i| i as f32 * 0.005 - 10.0).collect();
@@ -3678,6 +3876,8 @@ mod tests {
         });
         let mut silence = crate::output::SilentOutput::new();
         silence.resume_stream();
+        let owner = migo_io::scheduler::IoScheduler::new(0);
+        let cpu = owner.audio_cpu();
         let thread_wakeup = wakeup.clone();
         let audio = std::thread::spawn(move || {
             run_audio_thread(
@@ -3687,6 +3887,7 @@ mod tests {
                 host_tx,
                 thread_wakeup,
                 factory,
+                cpu,
             )
         });
         let send = |command: AudioCmd| {

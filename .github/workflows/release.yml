@@ -317,6 +317,13 @@ jobs:
           bash scripts/test-ada-url-vendor-contract.sh
           bash scripts/test-android-tls-vendor-contract.sh
           bash scripts/test-rusty-v8-vendor-contract.sh
+          bash scripts/test-websocket-deflate-contract.sh
+
+      - name: Verify Oboe native sources and callback ownership
+        run: bash scripts/test-oboe-backend-contract.sh
+
+      - name: Verify CPAL source and output product features
+        run: bash scripts/test-cpal-backend-contract.sh
 
       - name: Every contract gate is invoked by something
         run: bash scripts/test-every-gate-is-invoked.sh
@@ -882,6 +889,14 @@ jobs:
       # gate (shared/tests/frame_cycle_allocation.rs) and both snapshot round-trips,
       # so the tag gate was narrower than the PR gate on the binaries that exist
       # because a property belongs to a binary rather than to a lib.
+      - name: Shared audio CPU admission and cancellation contracts
+        timeout-minutes: 10
+        run: |
+          cargo fetch --locked --manifest-path engine/Cargo.toml
+          python3 scripts/testing/check_audio_cpu_admission.py \
+            --output "${RUNNER_TEMP}/migo-audio-cpu-contract" \
+            --target-dir "${RUNNER_TEMP}/migo-audio-cpu-target"
+
       - name: Run Rust tests (host-buildable crates)
         working-directory: engine
         run: |
@@ -1077,7 +1092,7 @@ jobs:
               libgl-dev libegl-dev libgles-dev \
               libgl1-mesa-dri libegl-mesa0 \
               libfontconfig1-dev libfreetype-dev \
-              libasound2-dev \
+              libasound2-dev strace \
               gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav || return 1
           }
           install_pkgs || {
@@ -1114,6 +1129,11 @@ jobs:
 
       # The player is the conformance suite's reference runner; pr-ci.yml's copy
       # of this step says why it is tested here.
+      - name: Native audio callback allocator and syscall contract
+        run: |
+          rustup component add rust-src
+          bash scripts/test-audio-realtime-contract.sh
+
       - name: Run Rust tests (graphics, core, capi, platform, audio, player)
         working-directory: engine
         run: |
@@ -1243,7 +1263,9 @@ jobs:
       # Migo claims to support. Checks every strong import against the NDK's
       # API-26 stub libraries; see scripts/test-android-symbol-floor.sh.
       - name: Android minimum-API symbol floor
-        run: bash scripts/test-android-symbol-floor.sh
+        run: |
+          bash scripts/test-android-symbol-floor.sh --self-test
+          bash scripts/test-android-symbol-floor.sh
 
       # Android 15 brought 16 KB memory pages and Android 16 requires targeting
       # apps to have 16 KB-aligned native libraries to install on such a device.
@@ -1680,6 +1702,11 @@ jobs:
       - name: Sandbox filesystem and atomic writer tests on Windows
         working-directory: engine
         run: cargo test -p migo-shared -p migo-io --lib --locked
+
+      - name: Native WASAPI scheduling lifecycle
+        shell: bash
+        run: |
+          python scripts/testing/check_cpal_scheduling.py "$PWD" "$RUNNER_TEMP/migo-wasapi-scheduling" --native
 
   release-windows:
     needs: [quality-gate, host-engine-tests, windows-unit-tests]

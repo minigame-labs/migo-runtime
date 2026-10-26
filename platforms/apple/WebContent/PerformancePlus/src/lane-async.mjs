@@ -560,9 +560,12 @@ export function op_fetch_profile(rid) {
 ///
 /// `protocols` and `headers` are `#[serde]`, which the conversion gate exempts;
 /// network.mjs restates serde's rule for them.
-export function op_ws_create(url, protocols, headers, timeoutMs) {
+export function op_ws_create(url, protocols, headers, timeoutMs, tcpNoDelay, perMessageDeflate, cancelHandleRid) {
   const target = stringOf(url, "url");
   const timeout = optionalSmiU32(timeoutMs, "timeout_ms");
+  const noDelay = toBool(tcpNoDelay, "tcp_no_delay");
+  const deflate = toBool(perMessageDeflate, "per_message_deflate");
+  const cancel = optionalSmiU32(cancelHandleRid, "cancel_handle_rid");
   return servicesOf(engineHost())
     .request(SERVICE_OP.op_ws_create, (w) => {
       w.str(target);
@@ -570,6 +573,10 @@ export function op_ws_create(url, protocols, headers, timeoutMs) {
       writeStringPairs(w, headers);
       if (timeout === null) w.null();
       else w.u32(timeout);
+      w.bool(noDelay);
+      w.bool(deflate);
+      if (cancel === null) w.null();
+      else w.u32(cancel);
     })
     .then(wsHandshake);
 }

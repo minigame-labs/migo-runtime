@@ -221,16 +221,92 @@ async fn resolve(
 /// The TCP connector every connection is made with: happy eyeballs across the resolved addresses, TCP_NODELAY, keep
 /// alive probing, the connect timeout.
 fn tcp_connector<R>(resolver: R) -> HttpConnector<R> {
-    let mut tcp = HttpConnector::new_with_resolver(resolver);
-    tcp.enforce_http(false);
-    tcp.set_nodelay(true);
-    tcp.set_connect_timeout(Some(CONNECT_TIMEOUT));
+    let mut tcp = base_tcp_connector(resolver, CONNECT_TIMEOUT);
     tcp.set_keepalive(Some(Duration::from_secs(15)));
     tcp.set_keepalive_interval(Some(Duration::from_secs(15)));
     tcp.set_keepalive_retries(Some(3));
     #[cfg(any(target_os = "android", target_os = "linux"))]
     tcp.set_tcp_user_timeout(Some(Duration::from_secs(30)));
     tcp
+}
+
+fn base_tcp_connector<R>(resolver: R, timeout: Duration) -> HttpConnector<R> {
+    let mut tcp = HttpConnector::new_with_resolver(resolver);
+    tcp.enforce_http(false);
+    tcp.set_nodelay(true);
+    tcp.set_connect_timeout(Some(timeout));
+    tcp
+}
+
+/// Reuse hyper-util's happy-eyeballs driver after the caller has checked
+/// every DNS answer. The static resolver cannot resolve the name again.
+/// WSS keeps its original deadline and does not inherit HTTP's idle probes.
+pub(in crate::network) async fn connect_vetted_tcp(
+    addresses: Vec<SocketAddr>,
+    host: &str,
+    port: u16,
+    deadline: tokio::time::Instant,
+) -> Result<TcpStream, BoxError> {
+    let remaining = deadline
+        .checked_duration_since(tokio::time::Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "TCP connect deadline expired"))?;
+    if addresses.is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "no vetted TCP addresses").into());
+    }
+    let target = Uri::builder()
+        .scheme("http")
+        .authority(crate::network::sockets::join_host_port(host, port))
+        .path_and_query("/")
+        .build()?;
+    let connecting =
+        base_tcp_connector(StaticAddresses(Arc::new(addresses)), remaining).call_async_uri(target);
+    tokio::time::timeout_at(deadline, connecting)
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "TCP connect timed out"))?
+}
+
+#[cfg(test)]
+mod vetted_tcp_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn an_unreachable_answer_does_not_hide_a_later_vetted_address() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let live = listener.local_addr().unwrap();
+        let dead = SocketAddr::new("127.0.0.2".parse().unwrap(), live.port());
+        let socket = connect_vetted_tcp(
+            vec![dead, live],
+            // This name cannot use public DNS; all answers are the exact
+            // test-vetted addresses above, as on the production WSS path.
+            "already-vetted.invalid",
+            live.port(),
+            tokio::time::Instant::now() + Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        assert_eq!(socket.peer_addr().unwrap(), live);
+        assert!(socket.nodelay().unwrap());
+    }
+
+    #[tokio::test]
+    async fn an_expired_deadline_cannot_start_another_connection() {
+        let result = connect_vetted_tcp(
+            vec!["127.0.0.1:1".parse().unwrap()],
+            "already-vetted.invalid",
+            1,
+            tokio::time::Instant::now() - Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(
+            result
+                .unwrap_err()
+                .downcast_ref::<io::Error>()
+                .unwrap()
+                .kind(),
+            io::ErrorKind::TimedOut
+        );
+    }
 }
 
 trait CallUri {

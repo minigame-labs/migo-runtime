@@ -5,6 +5,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::network::url::Url;
 use bytes::Bytes;
 use futures::StreamExt;
 use http::{HeaderValue, Method, Request, StatusCode, Version};
@@ -16,7 +17,6 @@ use hyper_util::rt::{TokioExecutor, TokioIo};
 use shared::network_policy::NetworkPolicy;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use url::Url;
 
 use super::*;
 use crate::network::gate::GateKind;
@@ -44,6 +44,22 @@ async fn route(request: Request<Incoming>) -> http::Response<ServerBody> {
     let path = request.uri().path().to_string();
     let query = request.uri().query().unwrap_or("").to_string();
     let headers = request.headers().clone();
+    let request_target = request
+        .uri()
+        .path_and_query()
+        .map(|target| target.as_str().to_owned())
+        .unwrap_or_default();
+    let authority = request
+        .uri()
+        .authority()
+        .map(|authority| authority.as_str().to_owned())
+        .or_else(|| {
+            headers
+                .get("host")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned)
+        })
+        .unwrap_or_default();
     let body = request.into_body().collect().await.unwrap().to_bytes();
     let header = |name: &str| {
         headers
@@ -51,7 +67,13 @@ async fn route(request: Request<Incoming>) -> http::Response<ServerBody> {
             .map_or_else(String::new, |value| value.to_str().unwrap().to_string())
     };
     match path.as_str() {
+        "/redirect-extra-slashes" => redirect(
+            StatusCode::FOUND,
+            &format!("///{authority}/target^asset?query=^"),
+        ),
+        "/target%5Easset" => text(StatusCode::OK, request_target),
         "/accept-encoding" => text(StatusCode::OK, header("accept-encoding")),
+        "/conditional-asset" => conditional_asset(&headers).await,
         path if path.starts_with("/encoded/") => encoded_reply(path).await,
         "/hello" => text(StatusCode::OK, "hello"),
         "/echo" => text(
@@ -122,6 +144,167 @@ async fn encode_body(coding: &str, input: &[u8]) -> Vec<u8> {
         _ => unreachable!(),
     }
     output
+}
+
+#[tokio::test]
+async fn http_targets_and_redirects_use_the_same_url_as_policy_for_h1_and_h2() {
+    for h2 in [false, true] {
+        let (config, root) = tls_pair(h2);
+        let server = serve(Some(config)).await;
+        let client = HttpClientBuilder::new(
+            "migo-test",
+            h2,
+            &policy(),
+            "fetch",
+            migo_io::pools::IoPools::new(0),
+        )
+        .no_proxy()
+        .any_address()
+        .add_root(root)
+        .build()
+        .unwrap();
+        for path in [
+            "/target^asset?query=^",
+            "/target^asset?query=^#private",
+            "/redirect-extra-slashes",
+        ] {
+            let target = Url::parse(&format!("https://localhost:{}{path}", server.port())).unwrap();
+            let response = client
+                .get(GateKind::Download, target)
+                .timeout(Duration::from_secs(2))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                response.version(),
+                if h2 {
+                    Version::HTTP_2
+                } else {
+                    Version::HTTP_11
+                }
+            );
+            assert_eq!(response.url().path(), "/target%5Easset");
+            assert_eq!(response.url().query(), Some("query=^"));
+            assert_eq!(body_of(response).await.0, "/target%5Easset?query=^");
+        }
+    }
+}
+
+async fn conditional_asset(headers: &HeaderMap) -> http::Response<ServerBody> {
+    let plain = b"mini-game-asset-v1";
+    let encoded = headers
+        .get(ACCEPT_ENCODING)
+        .is_some_and(|value| value.to_str().unwrap().contains("gzip"));
+    let etag = if encoded {
+        "\"gzip-v1\""
+    } else {
+        "\"identity-v1\""
+    };
+    let unchanged = headers
+        .get("if-none-match")
+        .is_some_and(|value| value == etag);
+    let partial = headers.get(RANGE).is_some_and(|value| value == "bytes=5-8")
+        && headers.get("if-range").is_none_or(|value| value == etag);
+    let bytes = if encoded {
+        encode_body("gzip", plain).await
+    } else if partial {
+        plain[5..9].to_vec()
+    } else {
+        plain.to_vec()
+    };
+    let mut response = text(
+        if unchanged {
+            StatusCode::NOT_MODIFIED
+        } else if partial {
+            StatusCode::PARTIAL_CONTENT
+        } else {
+            StatusCode::OK
+        },
+        if unchanged { vec![] } else { bytes },
+    );
+    response
+        .headers_mut()
+        .insert("etag", HeaderValue::from_static(etag));
+    response
+        .headers_mut()
+        .insert("vary", HeaderValue::from_static("Accept-Encoding"));
+    response
+        .headers_mut()
+        .append("vary", HeaderValue::from_static("Origin"));
+    response
+        .headers_mut()
+        .insert("cache-control", HeaderValue::from_static("max-age=60"));
+    if encoded {
+        response
+            .headers_mut()
+            .insert(CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+    }
+    if partial {
+        response
+            .headers_mut()
+            .insert("content-range", HeaderValue::from_static("bytes 5-8/18"));
+    }
+    response
+}
+
+#[tokio::test]
+async fn decoded_responses_preserve_validators_and_range_keeps_original_coordinates() {
+    let server = serve(None).await;
+    let client = client(false);
+    let request = || client.get(GateKind::Download, url(server, "/conditional-asset"));
+    let response = request().send().await.unwrap();
+    assert_eq!(response.headers()["etag"], "\"gzip-v1\"");
+    assert_eq!(response.headers()["cache-control"], "max-age=60");
+    assert_eq!(response.headers().get_all("vary").iter().count(), 2);
+    assert!(!response.headers().contains_key(CONTENT_ENCODING));
+    assert!(!response.headers().contains_key(CONTENT_LENGTH));
+    assert_eq!(body_of(response).await.0, "mini-game-asset-v1");
+
+    // A validator identifies the server's selected representation even when
+    // its delivered payload has been decoded for content.
+    let response = request()
+        .header(
+            http::header::IF_NONE_MATCH,
+            HeaderValue::from_static("\"gzip-v1\""),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+    assert_eq!(response.headers()["etag"], "\"gzip-v1\"");
+    assert_eq!(response.headers()[CONTENT_ENCODING], "gzip");
+    assert!(body_of(response).await.0.is_empty());
+
+    // Range negotiates identity. An encoded representation's validator does
+    // not authorize appending identity bytes: the full 200 response survives.
+    let response = request()
+        .header(RANGE, HeaderValue::from_static("bytes=5-8"))
+        .header(
+            http::header::IF_RANGE,
+            HeaderValue::from_static("\"gzip-v1\""),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["etag"], "\"identity-v1\"");
+    assert!(!response.headers().contains_key("content-range"));
+    assert_eq!(body_of(response).await.0, "mini-game-asset-v1");
+
+    let response = request()
+        .header(RANGE, HeaderValue::from_static("bytes=5-8"))
+        .header(
+            http::header::IF_RANGE,
+            HeaderValue::from_static("\"identity-v1\""),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(response.headers()["content-range"], "bytes 5-8/18");
+    assert_eq!(response.content_length(), Some(4));
+    assert_eq!(body_of(response).await.0, "game");
 }
 
 async fn encoded_reply(path: &str) -> http::Response<ServerBody> {
@@ -277,6 +460,66 @@ async fn negotiation_range_unknown_and_bodyless_headers_keep_their_meaning() {
         .unwrap();
     assert_eq!(response.headers()["content-encoding"], "gzip");
     assert!(response.chunk().await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn a_stalled_h2_stream_does_not_block_or_poison_the_shared_connection() {
+    let (config, root) = tls_pair(true);
+    let server = serve(Some(config)).await;
+    let client = HttpClientBuilder::new(
+        "migo-test",
+        true,
+        &policy(),
+        "fetch",
+        migo_io::pools::IoPools::new(0),
+    )
+    .no_proxy()
+    .any_address()
+    .add_root(root)
+    .build()
+    .unwrap();
+    let target = |path| Url::parse(&format!("https://localhost:{}{path}", server.port())).unwrap();
+    let mut stalled = client
+        .get(GateKind::Fetch, target("/slow-body"))
+        .timeout(Duration::from_millis(300))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(stalled.version(), Version::HTTP_2);
+    assert_eq!(stalled.chunk().await.unwrap().unwrap(), "first");
+    let connection = stalled.timing().connection.clone().unwrap();
+    // The first response still owns an unfinished stream. A co-tenant gets
+    // its complete response through this exact same H2 connection, not just
+    // the same origin or another pooled socket.
+    let other = client
+        .clone()
+        .get(GateKind::Download, target("/hello"))
+        .timeout(Duration::from_secs(1))
+        .send()
+        .await
+        .unwrap();
+    assert!(other.timing().socket_reused);
+    assert!(Arc::ptr_eq(
+        other.timing().connection.as_ref().unwrap(),
+        &connection
+    ));
+    assert_eq!(body_of(other).await.0, "hello");
+    assert!(stalled.chunk().await.unwrap_err().is_timeout());
+    assert!(
+        stalled.chunk().await.unwrap().is_none(),
+        "a failed stream is terminal"
+    );
+    let after_cancel = client
+        .get(GateKind::Fetch, target("/hello"))
+        .timeout(Duration::from_secs(1))
+        .send()
+        .await
+        .unwrap();
+    assert!(Arc::ptr_eq(
+        after_cancel.timing().connection.as_ref().unwrap(),
+        &connection
+    ));
+    assert_eq!(body_of(after_cancel).await.0, "hello");
 }
 
 #[tokio::test]

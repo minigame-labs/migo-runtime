@@ -44,6 +44,7 @@ trap 'rm -rf "$elsewhere"' EXIT
     || fail "the helper does not follow CARGO_BUILD_TARGET_DIR"
 
 # --- 2. no literal profile directory ------------------------------------------
+python3 "$ROOT/scripts/testing/test_snapshot_target_dir.py"
 literals="$(python3 - "$ROOT" <<'PY'
 import hashlib, json, pathlib, re, sys
 root = pathlib.Path(sys.argv[1])

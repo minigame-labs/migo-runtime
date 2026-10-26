@@ -83,7 +83,9 @@ def check(root: Path, patch_set: str = "deno-core-patches") -> None:
                 'unused V8 source is not ignored by the recorded consumer layout'
         assert actual != vendor_layout.project(original, layout), \
             "negative control: withholding the patches compared equal"
-        edited_file = {"v8": "src/platform.rs", "deno_core": "02_timers.js", "ada-url": "build.rs"}[name]
+        edited_file = {"v8": "src/platform.rs", "deno_core": "02_timers.js", "ada-url": "build.rs",
+                       "tungstenite": "src/protocol/mod.rs",
+                       "cpal": "src/host/coreaudio/macos/mod.rs"}[name]
         with (pristine / edited_file).open("a") as changed:
             changed.write("\n// unrecorded drift\n")
         assert tree(pristine, layout) != actual, "negative control: an unrecorded edit compared equal"

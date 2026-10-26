@@ -15,6 +15,8 @@ Cargo.lock
 !engine/third_party/deno_core-0.413.0/Cargo.lock
 !engine/third_party/v8-150.4.0/Cargo.lock
 !engine/third_party/ada-url-4.0.0/Cargo.lock
+!engine/third_party/tungstenite-0.30.0/Cargo.lock
+!engine/third_party/cpal-0.18.2/Cargo.lock
 
 # Build outputs
 *.aar
@@ -50,6 +52,12 @@ skills-lock.json
 # Local agent/tool output and mutation reports are never source inputs.
 **/mutants.out*/
 **/.mutants.out*/
+# Assertion/crash outputs from host/native probes. Keep these anchored so the
+# real engine/crates/core sources remain visible.
+/core
+/core.[0-9]*
+/engine/core
+/engine/core.[0-9]*
 
 # Credentials, signing material, device captures and detached debug output.
 *.pem
@@ -101,6 +109,8 @@ local.properties
 !engine/third_party/deno_core-0.413.0/Cargo.toml.orig
 !engine/third_party/v8-150.4.0/Cargo.toml.orig
 !engine/third_party/ada-url-4.0.0/Cargo.toml.orig
+!engine/third_party/tungstenite-0.30.0/Cargo.toml.orig
+!engine/third_party/cpal-0.18.2/Cargo.toml.orig
 !engine/third_party/skia-bindings-*/Cargo.toml.orig
 AI_PROJECT_OVERVIEW.md
 

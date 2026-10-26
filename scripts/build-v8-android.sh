@@ -462,8 +462,8 @@ libclang_resource_dir() {
 
 LIBCLANG_DIR="${V8_LIBCLANG_PATH:-}"
 if [[ -z "$LIBCLANG_DIR" ]]; then
-    # prefer an NDK that ships clang >= 19
-    for cand in "$HOME/Android/android-ndk-r28c" "$HOME/Android/android-ndk-r29"; do
+    # Prefer the same pinned NDK used for target objects and builtin headers.
+    for cand in "$ANDROID_NDK_HOME"; do
         if [[ -f "$cand/toolchains/llvm/prebuilt/$NDK_HOST/lib/libclang.so" ]]; then
             LIBCLANG_DIR="$cand/toolchains/llvm/prebuilt/$NDK_HOST/lib"
             break
@@ -520,7 +520,9 @@ pushd "$RUSTY_V8_SRC" >/dev/null
 
 BUILD_LOG="${TMPDIR:-/tmp}/migo-v8-build-${ARCH}.$$.log"
 set +e
-cargo build --release --target "$TARGET" --features simdutf,v8_enable_pointer_compression -vv 2>&1 | tee "$BUILD_LOG" | \
+# This standalone native checkout owns its GN output. Do not let an SDK
+# caller's Cargo target override send the build away from the paths below.
+cargo build --target-dir "$RUSTY_V8_SRC/target" --release --target "$TARGET" --features simdutf,v8_enable_pointer_compression -vv 2>&1 | tee "$BUILD_LOG" | \
     grep --line-buffered -iE "error|warning: |Compiling v8|Finished|gn gen|ninja|downloading|cloning" | tail -100
 RC=${PIPESTATUS[0]}
 set -e

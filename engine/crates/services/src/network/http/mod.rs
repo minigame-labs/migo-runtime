@@ -21,6 +21,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use crate::network::url::Url;
 use bytes::Bytes;
 use futures::Stream;
 use http::header::{
@@ -34,10 +35,10 @@ use hyper_util::client::proxy::matcher::Matcher;
 use hyper_util::rt::{TokioExecutor, TokioTimer};
 use migo_io::pools::IoPools;
 use shared::network_policy::NetworkPolicy;
-use url::Url;
 
 pub use body::Body;
 use body::{SendProgress, SentBody};
+pub(super) use connector::connect_vetted_tcp;
 use connector::{AddressRule, BoxError, Connector, ConnectorConfig};
 pub use multipart::{Form, Part};
 pub use trace::{ConnectionTrace, RequestTiming, Span};

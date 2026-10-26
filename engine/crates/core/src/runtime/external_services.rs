@@ -3545,6 +3545,12 @@ mod tests {
         /// them: `op_fetch` gives the request and what aborts it, and
         /// `op_fetch_send` gives the body's.
         fn handles_of(name: &str, value: &OwnedValue) -> Vec<u32> {
+            if name == "op_fetch_upload_cancel_handle" {
+                let OwnedValue::U32(id) = value else {
+                    panic!("the cancellation op must issue one resource id");
+                };
+                return vec![*id];
+            }
             let OwnedValue::Array(fields) = value else {
                 return Vec::new();
             };
@@ -3602,6 +3608,14 @@ mod tests {
                 };
                 args[0] = OwnedValue::U32(*host_of.get(&recorded).unwrap_or_else(|| {
                     panic!("{name} names handle {recorded}, which no answer gave out")
+                }));
+            }
+            if name == "op_ws_create" && args.len() == 7 {
+                let OwnedValue::U32(recorded) = args[6] else {
+                    panic!("the WSS cancellation fixture must name its cancel resource");
+                };
+                args[6] = OwnedValue::U32(*host_of.get(&recorded).unwrap_or_else(|| {
+                    panic!("op_ws_create names unissued cancel handle {recorded}")
                 }));
             }
             let outcome = match call["shape"].as_str() {
