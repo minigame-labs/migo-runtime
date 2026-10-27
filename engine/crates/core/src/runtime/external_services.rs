@@ -2826,8 +2826,7 @@ mod tests {
             }
         }
 
-        let root =
-            std::env::temp_dir().join(format!("migo-external-video-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("migo-external-video-{}", std::process::id()));
         let files = root.join("files");
         let cache = root.join("cache");
         let installed = shared::vfs::GamePaths::new(&files, &cache, "g", 1).unwrap();
@@ -2857,7 +2856,11 @@ mod tests {
         assert!(!refused.message.is_empty());
         let real = installed.code_dir().join("clip.mp4");
         let heard = video.0.lock().clone();
-        assert_eq!(heard.len(), 1, "the refused change never reached the app: {heard:?}");
+        assert_eq!(
+            heard.len(),
+            1,
+            "the refused change never reached the app: {heard:?}"
+        );
         let (method, json) = &heard[0];
         let json: serde_json::Value = serde_json::from_str(json).unwrap();
         assert_eq!(*method, "create");
@@ -2868,8 +2871,12 @@ mod tests {
         let none = ServiceContext::new(files, cache);
         none.bind_session(2);
         none.bind_device(None);
-        let refused = call(&none, id::op_video_create, serde_json::json!({ "videoId": 1 }))
-            .expect_err("no players");
+        let refused = call(
+            &none,
+            id::op_video_create,
+            serde_json::json!({ "videoId": 1 }),
+        )
+        .expect_err("no players");
         assert_eq!(refused.message, "createVideo:fail not supported");
         let refused = call(&none, id::op_video_set, serde_json::json!({ "videoId": 1 }))
             .expect_err("no players");
