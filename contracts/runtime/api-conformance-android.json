@@ -16,7 +16,7 @@
   ],
   "platform": "android",
   "measured": [
-    {"date": "2026-10-28", "runner": "android-emulator", "bundles": ["api-spec", "audio-spec", "babylon", "ble-peripheral-spec", "camera-spec", "canvas2d", "device-spec", "easeljs", "egret", "font-generics", "fs-sandbox", "fs-spec", "game-recorder-share-spec", "game-recorder-spec", "geometry", "howler", "image", "inner-audio-spec", "intl-spec", "io-spec", "keyboard-spec", "lan-spec", "lifecycle", "lifecycle-exit", "lifecycle-launch-options", "lifecycle-restart", "location-spec", "media-spec", "network-spec", "offscreen-readback", "p5", "phaser", "phaser-canvas", "phaser-loader", "pixi", "playcanvas", "readback", "recorder-spec", "resize", "robustness", "screen-fill", "screen-fill-webgl", "screen-fill-webgl2-read-none", "sensor-spec", "smoothing", "spec", "state", "storage-spec", "system-info-spec", "text", "three", "three-adv", "three-loaders", "timers-spec", "ui-spec", "video-controls-spec", "video-spec", "wasm", "webgl", "webgl-buffer", "webgl-buffer-presented", "webgl-buffer-presented-stencil", "webgl-buffer-preserved", "webgl-spec", "webgl-zero-size", "worker-spec"], "runtime": "707bf15e2eff69ee172586b4fafd17fb26664a37", "conformance": "93780b231268072c57b99cce9d2cdc599a308dd8"}
+    {"date": "2026-10-28", "runner": "android-emulator", "bundles": ["api-spec", "audio-spec", "babylon", "ble-peripheral-spec", "camera-spec", "canvas2d", "device-spec", "easeljs", "egret", "font-generics", "fs-sandbox", "fs-spec", "game-recorder-share-spec", "game-recorder-spec", "geometry", "howler", "image", "inner-audio-spec", "intl-spec", "io-spec", "keyboard-spec", "lan-spec", "lifecycle", "lifecycle-exit", "lifecycle-launch-options", "lifecycle-restart", "location-spec", "media-spec", "network-spec", "offscreen-readback", "p5", "phaser", "phaser-canvas", "phaser-loader", "picker-spec", "pixi", "playcanvas", "readback", "recorder-spec", "resize", "robustness", "screen-fill", "screen-fill-webgl", "screen-fill-webgl2-read-none", "sensor-spec", "smoothing", "spec", "state", "storage-spec", "system-info-spec", "text", "three", "three-adv", "three-loaders", "timers-spec", "ui-spec", "video-controls-spec", "video-spec", "wasm", "webgl", "webgl-buffer", "webgl-buffer-presented", "webgl-buffer-presented-stencil", "webgl-buffer-preserved", "webgl-spec", "webgl-zero-size", "worker-spec"], "runtime": "de550fbe2f17810b10bc98c60a90b10f01c3fa94", "conformance": "22323403cbee10d9fcc8f196ba1dcf750de3023b"}
   ],
   "apis": {
     "addCard": {"status": "present"},
@@ -27,8 +27,8 @@
     "checkIsSupportFacialRecognition": {"status": "present"},
     "checkIsSupportMidasPayment": {"status": "present"},
     "checkSession": {"status": "present"},
-    "chooseImage": {"status": "present"},
-    "chooseMedia": {"status": "present"},
+    "chooseImage": {"status": "verified"},
+    "chooseMedia": {"status": "verified"},
     "chooseMessageFile": {"status": "present"},
     "clearStorage": {"status": "verified"},
     "clearStorageSync": {"status": "verified"},
@@ -315,8 +315,8 @@
     "openSystemBluetoothSetting": {"status": "present"},
     "operateGameRecorderVideo": {"status": "verified"},
     "preDownloadSubpackage": {"status": "verified"},
-    "previewImage": {"status": "present"},
-    "previewMedia": {"status": "present"},
+    "previewImage": {"status": "verified"},
+    "previewMedia": {"status": "verified"},
     "readBLECharacteristicValue": {"status": "present"},
     "removeStorage": {"status": "verified"},
     "removeStorageSync": {"status": "verified"},
