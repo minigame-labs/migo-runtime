@@ -25,7 +25,7 @@ def build(work,env,label):
     assert len(rows)==1 and not rows[0]['fresh']
     binary=work/f'{label}-tests';shutil.copy2(rows[0]['executable'],binary);return binary
 
-def main(work,target,positive_only):
+def prepare(work,target,extra_inputs=()):
     assert not work.exists();work.mkdir(parents=True);package=work/'engine/crates/shared';package.mkdir(parents=True)
     original=ROOT/'engine/crates/shared';shutil.copytree(original/'src',package/'src')
     external=['contracts/runtime/domain-patterns.json','contracts/runtime/minigame-api.json','platforms/android/library/src/main/java/com/migo/runtime/ErrorCode.java']
@@ -52,15 +52,16 @@ def main(work,target,positive_only):
         if row.get('source')is None and directory.is_relative_to(ROOT):
             inputs.add(directory/'Cargo.toml');inputs.update(p for p in(directory/'src').rglob('*')if p.is_file())
             if(directory/'build.rs').is_file():inputs.add(directory/'build.rs')
+    inputs.update(extra_inputs)
     frozen={str(p.relative_to(ROOT)):sha(p)for p in sorted(inputs)}
     (work/'source-inputs.json').write_text(json.dumps(frozen,indent=2)+'\n')
     for rel in frozen:
         to=work/'source-inputs'/rel;to.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(ROOT/rel,to)
     retained={str(p.relative_to(package)):sha(p)for p in(package/'src').rglob('*')if p.is_file()}
-    binary=build(work,env,'positive')
-    assert helper.run([str(binary),'--nocapture','--test-threads=1'],work/'positive.log',package,env)==0
-    positive=(work/'positive.log').read_text();match=re.search(r'test result: ok\. (\d+) passed; 0 failed; (\d+) ignored;',positive);assert match
-    assert positive.count('test vfs::package::entry_reader::tests::')==11
+    return env,frozen,retained
+
+def controls(work,env):
+    package=work/'engine/crates/shared'
     base='vfs::package::entry_reader::tests::'
     declarations=[
         ('package-path-reopened','package/entry_reader.rs','read_exact_at(&self.inner.file, compressed, chunk.data_offset)?;','read_exact_at(&std::fs::File::open(&self.inner.path)?, compressed, chunk.data_offset)?;','path_replacement_keeps_ranges_digest_and_crc_on_the_open_file'),
@@ -78,19 +79,28 @@ def main(work,target,positive_only):
         ('whole-file-default-fallback','mount.rs','        Err(io::Error::new(\n            io::ErrorKind::Unsupported,\n            "backend has no bounded package reader",','        let _ = self.read(_relative_path)?;\n        Err(io::Error::new(\n            io::ErrorKind::Unsupported,\n            "backend has no bounded package reader",','admitted_package_backend_survives_mount_replacement_and_rejects_stale_admission'),
         ('package-offset-truncated-u32','file_io.rs','file.read_exact_at(buffer, offset)','file.read_exact_at(buffer, u64::from(offset as u32))','package_chunk_offsets_above_u32_are_read_without_truncation'),
     ]
-    if not positive_only:
-        for name,file,before,after,test in declarations:
-            path=package/'src/vfs'/file;source=path.read_text();assert source.count(before)==1,(name,'anchor drift')
-            path.write_text(source.replace(before,after))
-            try:
-                mutant=build(work,env,name);log=work/f'{name}-test.log'
-                status=helper.run([str(mutant),'--exact',base+test,'--nocapture'],log,package,env,timeout=30)
-                observed=log.read_text();assert status==101 and 'panicked at'in observed and '1 failed'in observed,(name,'must reject executed assertion',status)
-            finally:path.write_text(source)
-            print('actual package fault',name,': executed assertion rejected',flush=True)
+    for name,file,before,after,test in declarations:
+        path=package/'src/vfs'/file;source=path.read_text();assert source.count(before)==1,(name,'anchor drift')
+        path.write_text(source.replace(before,after))
+        try:
+            mutant=build(work,env,name);log=work/f'{name}-test.log'
+            status=helper.run([str(mutant),'--exact',base+test,'--nocapture'],log,package,env,timeout=30)
+            observed=log.read_text();assert status==101 and 'panicked at'in observed and '1 failed'in observed,(name,'must reject executed assertion',status)
+        finally:path.write_text(source)
+        print('actual package fault',name,': executed assertion rejected',flush=True)
+    return len(declarations)
+
+def main(work,target,positive_only):
+    env,frozen,retained=prepare(work,target)
+    package=work/'engine/crates/shared'
+    binary=build(work,env,'positive')
+    assert helper.run([str(binary),'--nocapture','--test-threads=1'],work/'positive.log',package,env)==0
+    positive=(work/'positive.log').read_text();match=re.search(r'test result: ok\. (\d+) passed; 0 failed; (\d+) ignored;',positive);assert match
+    assert positive.count('test vfs::package::entry_reader::tests::')==11
+    negative=0 if positive_only else controls(work,env)
     assert all(sha(ROOT/p)==h for p,h in frozen.items()),'Root changed'
     assert all(sha(package/p)==h for p,h in retained.items()),'copy not restored'
-    summary={'passed':int(match[1]),'ignored':int(match[2]),'new_package_tests':11,'compiled_controls':0 if positive_only else len(declarations),'positive_only':positive_only,'binary_sha256':sha(binary),'root_inputs_unchanged':True,'source_copies_restored':True,'existing_dependency_versions_preserved':True,'root_lock_sha256':sha(ROOT/'engine/Cargo.lock'),'scope':'Host package positioned ranges, pinned mounts and persistent Rust scratch; not audio Pack-class integration, spool, native-device or whole-pipeline performance acceptance'}
+    summary={'passed':int(match[1]),'ignored':int(match[2]),'new_package_tests':11,'compiled_controls':negative,'positive_only':positive_only,'binary_sha256':sha(binary),'root_inputs_unchanged':True,'source_copies_restored':True,'existing_dependency_versions_preserved':True,'root_lock_sha256':sha(ROOT/'engine/Cargo.lock'),'scope':'Host package positioned ranges, pinned mounts and persistent Rust scratch; not audio Pack-class integration, spool, native-device or whole-pipeline performance acceptance'}
     (work/'summary.json').write_text(json.dumps(summary,indent=2)+'\n');print(json.dumps(summary,indent=2),flush=True)
 if __name__=='__main__':
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--output',type=Path,required=True);p.add_argument('--target-dir',type=Path,required=True);p.add_argument('--positive-only',action='store_true');a=p.parse_args();main(a.output.resolve(),a.target_dir.resolve(),a.positive_only)

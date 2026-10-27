@@ -1,4 +1,4 @@
-//! Anchored immutable-file/package source. IO uses existing Fs/Pack classes;
+//! Anchored immutable-file/directory/package source. IO uses existing Fs/Pack classes;
 //! the same IndexSource owns MP4 discovery, CPU parsing and decoder resumes.
 use crate::{
     isomp4_source::{self, IndexSource, Limits, MediaRead, Reader},
@@ -136,6 +136,17 @@ impl FileReader {
                 vfs.open_regular_for_read(&path)
                     .map_err(std::io::Error::other)
             },
+        )
+        .await
+    }
+    pub async fn open_directory(
+        pin: shared::vfs::mount::PinnedDirectoryRead,
+        scheduler: &migo_io::scheduler::IoScheduler,
+    ) -> EngineResult<Self> {
+        Self::build(
+            scheduler,
+            Instant::now() + RESPONSE_HEADER_TIMEOUT,
+            move || pin.open(),
         )
         .await
     }

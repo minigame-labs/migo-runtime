@@ -6,6 +6,8 @@ use migo_io::scheduler::IoScheduler;
 use shared::vfs::VirtualFS;
 use std::fs::File;
 
+#[path = "isomp4_directory_contracts.rs"]
+mod directory;
 #[path = "isomp4_package_contracts.rs"]
 mod package;
 

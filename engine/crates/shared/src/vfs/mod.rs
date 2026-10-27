@@ -52,6 +52,7 @@ pub mod game_paths;
 pub mod integrity;
 pub mod mount;
 pub mod package;
+pub mod read_root;
 
 #[cfg(unix)]
 mod unix;

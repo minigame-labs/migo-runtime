@@ -22,6 +22,8 @@ def controls(work,env):
         ('file-queued-control-ignores-deadline','isomp4_file.rs','// Do not rely on the receiver polling its timeout promptly.\n                    check_deadline(deadline)?;','// Deadline check deliberately removed.','expired_queued_control_skips_disk_even_without_polling_timeout'),
         ('file-late-control-completion-accepted','isomp4_file.rs','fn check_deadline(deadline: Instant) -> std::io::Result<()> {\n    if Instant::now() >= deadline {','fn check_deadline(deadline: Instant) -> std::io::Result<()> {\n    if false {','late_control_completion_is_rejected_without_polling_timeout'),
         ('file-requires-no-code-namespace','isomp4_file.rs','if !path.starts_with("/code/") {','if false {','local_source_admission_uses_vfs_anchored_readonly_code_handles'),
+        ('directory-setup-uses-pack','isomp4_file.rs','            PoolKind::Fs,\n            FILE_CHUNK_BYTES as u64,','            PoolKind::Pack,\n            FILE_CHUNK_BYTES as u64,','directory::directory_setup_and_media_use_fs_when_pack_is_full'),
+        ('directory-media-uses-pack','isomp4_file.rs','Self::File(_) => PoolKind::Fs,','Self::File(_) => PoolKind::Pack,','directory::directory_setup_and_media_use_fs_when_pack_is_full'),
         ('package-setup-bypasses-pack-cap','isomp4_file.rs','            PoolKind::Pack,\n            0,','            PoolKind::Fs,\n            0,','package::package_setup_and_media_obey_the_actual_pack_class_cap'),
         ('package-media-bypasses-pack-cap','isomp4_file.rs','Self::Package(_) => PoolKind::Pack,','Self::Package(_) => PoolKind::Fs,','package::package_setup_and_media_obey_the_actual_pack_class_cap'),
         ('package-media-credit-charged-twice','isomp4_file.rs','Self::Package(_) => 0,','Self::Package(_) => FILE_CHUNK_BYTES as u64,','package::package_media_uses_reserved_credit_but_controls_need_transient_credit'),
@@ -53,7 +55,7 @@ def controls(work,env):
 
 def main(work,target,rubato,positive_only):
     env,frozen,_,libraries,new=dsp.prepare(work,target,rubato);package=work/'probe';files=ROOT/'scripts/testing/fixtures/audio-codec-probe'
-    for name in ['isomp4_file.rs','isomp4_file_contracts.rs','isomp4_package_contracts.rs']:shutil.copy2(files/name,work/'source'/name)
+    for name in ['isomp4_file.rs','isomp4_file_contracts.rs','isomp4_package_contracts.rs','isomp4_directory_contracts.rs']:shutil.copy2(files/name,work/'source'/name)
     lib=package/'src/lib.rs';lib.write_text(lib.read_text()+f'\n#[path={json.dumps(str(work/"source/isomp4_file.rs"))}] mod isomp4_file;\n')
     manifest=(package/'Cargo.toml').read_text().replace('"m4a-transport-probe"]','"m4a-transport-probe","m4a-file-probe"]\nm4a-file-probe=[]',1);(package/'Cargo.toml').write_text(manifest)
     for name in ['user','cache','tmp']:(work/'sandbox'/name).mkdir(parents=True)
@@ -71,9 +73,9 @@ def main(work,target,rubato,positive_only):
     assert all(row['name']not in locked or row['version']in locked[row['name']]for row in selected),'existing dependency version drift'
     codecs.run(['cargo','check','--offline','--locked','--lib'],work/'normal-library-check.log',cwd=package,env=env)
     positive=dsp.source.build(work,env,'positive')
-    for label,prefix,count in [('local','isomp4_source_contracts::transport::local::',11),('package','isomp4_source_contracts::transport::local::package::',8),('setup','isomp4_file::tests::',1),('http','isomp4_source_contracts::transport::',11),('source','isomp4_source_contracts::',25),('range','network::http::range::tests::',18),('common','streaming_transport::tests::',3)]:
+    for label,prefix,count in [('local','isomp4_source_contracts::transport::local::',11),('package','isomp4_source_contracts::transport::local::package::',8),('directory','isomp4_source_contracts::transport::local::directory::',5),('setup','isomp4_file::tests::',1),('http','isomp4_source_contracts::transport::',11),('source','isomp4_source_contracts::',25),('range','network::http::range::tests::',18),('common','streaming_transport::tests::',3)]:
         args=[str(positive),prefix,'--nocapture','--test-threads=1']
-        if label=='local':args+=['--skip','isomp4_source_contracts::transport::local::package::']
+        if label=='local':args+=['--skip','isomp4_source_contracts::transport::local::package::','--skip','isomp4_source_contracts::transport::local::directory::']
         if label=='http':args+=['--skip','isomp4_source_contracts::transport::local::']
         if label=='source':args+=['--skip','isomp4_source_contracts::transport::']
         log=work/f'positive-{label}.log';codecs.run(args,log,cwd=package,env=env);assert f'{count} passed; 0 failed'in log.read_text(),label
@@ -84,7 +86,7 @@ def main(work,target,rubato,positive_only):
     rows=json.loads((work/'library-source-provenance.json').read_text())
     for row in rows:assert dsp.source.index_gate.timeline.source_tree(libraries[row['crate']])==row['source_files']
     for name,row in new.items():assert all(codecs.sha(work/'resampling-vendor'/f"{name}-{row['version']}"/p)==h for p,h in row['source_files'].items())
-    summary={'local_tests':11,'file_setup_tests':1,'package_tests':8,'package_pcm_comparisons':36,'package_player_cases':5,'local_pcm_comparisons':34,'local_player_cases':5,'http_dsp_tests':11,'http_dsp_pcm_comparisons':61,'legacy_source_tests':25,'range_tests':18,'common_transport_tests':3,'local_compiled_controls':negative,'http_compiled_controls':http_controls,'positive_only':positive_only,'binary_sha256':codecs.sha(positive),'libraries':len(rows),'patches':sum(len(r['patches'])for r in rows),'root_inputs_unchanged':True,'source_copies_restored':True,'existing_dependency_versions_preserved':True,'root_lock_sha256':codecs.sha(ROOT/'engine/Cargo.lock'),'scope':'Host immutable anchored file/package and HTTP candidates through shared codec/index/DSP/player; no directory-overlay/writable-file spool/product/native/device or performance acceptance'}
+    summary={'local_tests':11,'file_setup_tests':1,'directory_tests':5,'directory_pcm_comparisons':34,'directory_player_cases':4,'package_tests':8,'package_pcm_comparisons':36,'package_player_cases':5,'local_pcm_comparisons':34,'local_player_cases':5,'http_dsp_tests':11,'http_dsp_pcm_comparisons':61,'legacy_source_tests':25,'range_tests':18,'common_transport_tests':3,'local_compiled_controls':negative,'http_compiled_controls':http_controls,'positive_only':positive_only,'binary_sha256':codecs.sha(positive),'libraries':len(rows),'patches':sum(len(r['patches'])for r in rows),'root_inputs_unchanged':True,'source_copies_restored':True,'existing_dependency_versions_preserved':True,'root_lock_sha256':codecs.sha(ROOT/'engine/Cargo.lock'),'scope':'Host immutable anchored file/directory/package and HTTP candidates through shared codec/index/DSP/player; no writable-file spool/product/native/device or performance acceptance'}
     (work/'summary.json').write_text(json.dumps(summary,indent=2)+'\n');print(json.dumps(summary,indent=2),flush=True)
 if __name__=='__main__':
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--output',type=Path,required=True);p.add_argument('--target-dir',type=Path,required=True);p.add_argument('--rubato-cargo-home',type=Path,required=True);p.add_argument('--positive-only',action='store_true');a=p.parse_args()

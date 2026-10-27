@@ -16,8 +16,9 @@ use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::Storage::FileSystem::{
     BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
     FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_SEQUENTIAL_SCAN,
-    FILE_NAME_NORMALIZED, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TYPE_DISK,
-    GetFileInformationByHandle, GetFileType, GetFinalPathNameByHandleW, VOLUME_NAME_NT,
+    FILE_ID_INFO, FILE_NAME_NORMALIZED, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    FILE_TYPE_DISK, FileIdInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
+    GetFileType, GetFinalPathNameByHandleW, VOLUME_NAME_DOS, VOLUME_NAME_NT,
 };
 
 use crate::vfs::VfsOpenError;
@@ -49,6 +50,14 @@ pub(super) fn open_regular_for_read(
     base: &Path,
     relative: &Path,
 ) -> Result<File, VfsOpenError> {
+    open_regular_impl(root, base, relative, false)
+}
+fn open_regular_impl(
+    root: &File,
+    base: &Path,
+    relative: &Path,
+    share_delete_final: bool,
+) -> Result<File, VfsOpenError> {
     let components = relative_components(relative)?;
 
     let mut parent_handles = Vec::with_capacity(components.len());
@@ -76,7 +85,7 @@ pub(super) fn open_regular_for_read(
     }
 
     current.push(last);
-    let file = open_final_file(&current)?;
+    let file = open_final_file(&current, share_delete_final)?;
     validate_regular_file(&file)?;
 
     let expected_final = expected_child_path(&expected, last);
@@ -134,11 +143,69 @@ pub(super) fn pin_root(path: &Path) -> Result<File, VfsOpenError> {
     Ok(root)
 }
 
-fn open_final_file(path: &Path) -> Result<File, VfsOpenError> {
+/// A mount may be atomically renamed while old generations still hold it.
+/// Do not retain a no-delete namespace lock for the mount's entire lifetime.
+pub(super) fn pin_movable_root(path: &Path) -> Result<File, VfsOpenError> {
+    let root = OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(verbatim_path(path)?)
+        .map_err(map_open_error)?;
+    validate_directory(&root)?;
+    file_identity(&root)?;
+    Ok(root)
+}
+pub(super) fn open_regular_from_movable_root(
+    root: &File,
+    relative: &Path,
+) -> Result<File, VfsOpenError> {
+    open_regular_from_movable_root_with_hook(root, relative, |_| {})
+}
+pub(super) fn open_regular_from_movable_root_with_hook(
+    root: &File,
+    relative: &Path,
+    before_guard: impl FnOnce(&Path),
+) -> Result<File, VfsOpenError> {
+    // Query the handle's current path, then hold that namespace without delete
+    // sharing for this traversal. Identity validation closes the query/open race.
+    let path = PathBuf::from(OsString::from_wide(&final_path_flags(
+        root,
+        FILE_NAME_NORMALIZED | VOLUME_NAME_DOS,
+    )?));
+    before_guard(&path);
+    let guard = open_directory(&path)?;
+    validate_directory(&guard)?;
+    if file_identity(root)? != file_identity(&guard)? {
+        return Err(VfsOpenError::UnsafePath);
+    }
+    open_regular_impl(&guard, &path, relative, true)
+}
+fn file_identity(file: &File) -> Result<(u64, [u8; 16]), VfsOpenError> {
+    let mut info = FILE_ID_INFO::default();
+    // SAFETY: `info` is a correctly sized/aligned output object for FileIdInfo;
+    // only a successful API result is inspected. The borrowed handle is live.
+    if unsafe {
+        GetFileInformationByHandleEx(
+            handle(file),
+            FileIdInfo,
+            (&mut info as *mut FILE_ID_INFO).cast(),
+            std::mem::size_of::<FILE_ID_INFO>() as u32,
+        )
+    } == 0
+    {
+        return Err(VfsOpenError::OpenFailed);
+    }
+    Ok((info.VolumeSerialNumber, info.FileId.Identifier))
+}
+
+fn open_final_file(path: &Path, share_delete: bool) -> Result<File, VfsOpenError> {
     let path = verbatim_path(path)?;
     OpenOptions::new()
         .read(true)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .share_mode(
+            FILE_SHARE_READ | FILE_SHARE_WRITE | if share_delete { FILE_SHARE_DELETE } else { 0 },
+        )
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN)
         .open(path)
         .map_err(map_open_error)
@@ -284,7 +351,9 @@ fn file_information(file: &File) -> Result<BY_HANDLE_FILE_INFORMATION, VfsOpenEr
 }
 
 fn final_path(file: &File) -> Result<Vec<u16>, VfsOpenError> {
-    let flags = FILE_NAME_NORMALIZED | VOLUME_NAME_NT;
+    final_path_flags(file, FILE_NAME_NORMALIZED | VOLUME_NAME_NT)
+}
+fn final_path_flags(file: &File, flags: u32) -> Result<Vec<u16>, VfsOpenError> {
     let mut buffer = vec![0_u16; 512];
 
     loop {

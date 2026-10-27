@@ -295,7 +295,7 @@ async fn package_admission_keeps_the_selected_mount_through_real_decode() {
     }
 }
 
-struct Release(Arc<(Mutex<bool>, Condvar)>);
+pub(super) struct Release(Arc<(Mutex<bool>, Condvar)>);
 impl Drop for Release {
     fn drop(&mut self) {
         let (lock, cv) = &*self.0;
@@ -303,7 +303,7 @@ impl Drop for Release {
         cv.notify_all();
     }
 }
-async fn block_pack(owner: &IoScheduler) -> Release {
+pub(super) async fn block_pack(owner: &IoScheduler) -> Release {
     let gate = Arc::new((Mutex::new(false), Condvar::new()));
     let started = Arc::new(tokio::sync::Notify::new());
     let release = Release(gate.clone());
