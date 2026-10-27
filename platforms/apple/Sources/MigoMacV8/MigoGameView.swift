@@ -179,6 +179,8 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
         /// The window service for the game that runs: the cursor content
         /// asked for, the pointer lock.
         private var windowService: MigoWindowService?
+        /// `createVideo`'s players, over the game in this view.
+        private var videos: MigoVideoPlayers?
         /// An Esc that released the pointer lock is the player's, not the
         /// game's: its key-up is held back too.
         private var escapeReleasedLock = false
@@ -280,6 +282,7 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
         public override func setFrameSize(_ newSize: NSSize) {
             super.setFrameSize(newSize)
             surfaceChanged()
+            videos?.stageChanged()
         }
 
         public override func viewDidChangeBackingProperties() {
@@ -339,12 +342,18 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
                     self?.engine?.postHostServiceEvent(service, event: event, json: json)
                 }
                 self.windowService = windowService
+                let videos = MigoVideoPlayers(stage: self) { [weak self] event, object in
+                    guard let json = try? JSONSerialization.data(withJSONObject: object) else { return }
+                    self?.engine?.postHostServiceEvent(.video, event: event, json: json)
+                }
+                self.videos = videos
                 // The app's services, then what only this view can answer;
                 // the session adds the SDK's own behind them.
                 let engine = try MigoEngineSession(
                     directories: configuration.directories, contentSigning: configuration.contentSigning,
                     preferredFramesPerSecond: configuration.preferredFramesPerSecond,
-                    hostServices: MigoGameViewHostServices(app: configuration.hostServices, window: windowService),
+                    hostServices: MigoGameViewHostServices(
+                        app: configuration.hostServices, window: windowService, video: videos),
                     capabilities: configuration.capabilities, networkPolicyJSON: configuration.networkPolicyJSON,
                     launchOptionsJSON: configuration.launchOptionsJSON)
                 self.engine = engine
@@ -372,6 +381,8 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             mouseDown = false
             windowService?.close()
             windowService = nil
+            videos?.close()
+            videos = nil
             escapeReleasedLock = false
             showDebugPanel(false)
             deviceStatus?.stop()
@@ -517,6 +528,8 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             let running = !window.isMiniaturized && !NSApp.isHidden
             engine.setFocused(window.isKeyWindow)
             engine.setVisible(running && window.occlusionState.contains(.visible))
+            // A covered window's game runs on, and so do its videos.
+            videos?.setRunning(running)
             engine.setRunning(running)
             if running { engine.startFrames(view: self) } else { engine.stopFrames() }
         }

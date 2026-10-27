@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `createVideo` on iOS and macOS without the app supplying players: the game views answer the video service themselves
+  (`MigoVideoPlayers`), each player an `AVPlayer` over the game where content put it, with its poster until it plays,
+  `objectFit`, `backgroundColor`, `autoplay`, `loop`, `muted`, `playbackRate` and `initialTime`, and the Android SDK's
+  controls as its options ask -- the bar, the progress line, the centre play button, the double-tap and drag gestures --
+  with the buttons labelled for VoiceOver. Calls settle once done and the events follow the C ABI's video service, as
+  the Android SDK's players do; full screen fills the screen, turned a quarter for a direction of 90 or -90 on iOS, and
+  fills the window on a Mac. Players hold still while the game is paused and play on after. A network poster is read
+  only up to 8 MiB. An app that answers the video service itself still does.
 - `MigoHostCallbacks.on_console` (C ABI): each line content writes to its console, at its level, in order with
   everything else content does -- a line written before `exitMiniProgram` reaches the host before
   `on_exit_requested` -- whether content runs in the engine or in an external-frame session. Until now a C ABI host
