@@ -16,13 +16,14 @@
 mod encoder;
 
 use std::{
+    collections::VecDeque,
     ffi::c_void,
     path::{Path, PathBuf},
     sync::Arc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
-use crossbeam_channel::{Receiver, Sender, TryRecvError};
+use crossbeam_channel::{Receiver, Sender, TryRecvError, TrySendError};
 use glow::HasContext;
 use shared::{
     error::{EngineError, EngineResult, ErrorCode},
@@ -39,6 +40,9 @@ pub trait VideoEncoderFactory: Send + Sync + std::fmt::Debug {
     /// Whether this device has an encoder to record with.
     fn available(&self) -> bool;
 
+    /// How its encoders take their frames.
+    fn input(&self) -> FrameInput;
+
     /// An encoder of `config`, writing a complete MP4 to `path` when finished.
     fn create(&self, config: &EncoderConfig, path: &Path) -> EngineResult<Box<dyn VideoEncoder>>;
 }
@@ -54,17 +58,26 @@ pub struct EncoderConfig {
     pub key_frame_interval: u32,
 }
 
-/// How an encoder takes the frames drawn for it.
-#[derive(Clone, Copy, Debug)]
-pub enum EncoderInput {
-    /// A window (`EGLNativeWindowType`): each frame is drawn into an EGL window
-    /// surface on it and swapped, stamped with `EGL_ANDROID_presentation_time`
-    /// where the EGL has it. A codec's input surface.
-    Window(*mut c_void),
+/// How an encoder takes the frames drawn for it -- the same for every encoder a
+/// factory makes, and known before one is made.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FrameInput {
+    /// A window ([`VideoEncoder::window`]): each frame is drawn into an EGL
+    /// window surface on it and swapped, stamped with
+    /// `EGL_ANDROID_presentation_time` where the EGL has it. A codec's input
+    /// surface. Drawn on the encoder thread, in the render context's share
+    /// group.
+    Window,
     /// Buffers it lends one frame at a time ([`VideoEncoder::lend`]): each is
     /// drawn into as an EGL client buffer bound to a texture, and handed back
-    /// ([`VideoEncoder::submit`]) once the GPU has finished with it.
+    /// ([`VideoEncoder::submit`]) once the GPU has finished with it. Drawn on
+    /// the encoder thread, in the render context's share group.
     ClientBuffers,
+    /// Frames in memory ([`VideoEncoder::submit_pixels`]): the render thread
+    /// reads each one back without waiting for it, and the encoder thread
+    /// makes no context -- so it records where a second context in the share
+    /// group may not be made.
+    Memory,
 }
 
 /// A buffer an encoder lends for one frame, and how EGL takes it.
@@ -87,14 +100,18 @@ pub struct ClientBuffer {
     pub top_row_first: bool,
 }
 
-/// One encoder, driven from the encoder thread alone.
+/// One encoder, driven from the encoder thread alone. What it is asked
+/// depends on its factory's [`FrameInput`].
 pub trait VideoEncoder: Send {
-    /// How it takes its frames.
-    fn input(&self) -> EncoderInput;
+    /// The window its frames are drawn into: an `EGLNativeWindowType`. Only
+    /// asked of an encoder whose input is [`FrameInput::Window`].
+    fn window(&self) -> *mut c_void {
+        std::ptr::null_mut()
+    }
 
     /// A buffer to draw the next frame into, or none when the encoder is not
     /// ready for another frame now: that frame is not recorded. Only asked of
-    /// an encoder whose input is [`EncoderInput::ClientBuffers`].
+    /// an encoder whose input is [`FrameInput::ClientBuffers`].
     fn lend(&mut self) -> EngineResult<Option<ClientBuffer>> {
         Err(not_lending())
     }
@@ -103,6 +120,15 @@ pub trait VideoEncoder: Send {
     fn submit(&mut self, buffer: ClientBuffer, pts_ns: i64) -> EngineResult<()> {
         let _ = (buffer, pts_ns);
         Err(not_lending())
+    }
+
+    /// A frame in memory, shown at `pts_ns`: RGBA, `width * height * 4` bytes,
+    /// rows top first. Only asked of an encoder whose input is
+    /// [`FrameInput::Memory`]; it may block while the encoder is behind.
+    fn submit_pixels(&mut self, rgba: &[u8], pts_ns: i64) -> EngineResult<()> {
+        let _ = (rgba, pts_ns);
+        Err(EngineError::new(ErrorCode::RenderBackendError)
+            .with_msg("this encoder does not take frames from memory"))
     }
 
     /// Write what has been encoded so far to the file, waiting for nothing.
@@ -132,6 +158,10 @@ const ALIGN: u32 = 16;
 const SLOTS: usize = 3;
 /// How often a recording says how far it has got, in recorded milliseconds.
 const TIME_REPORT_MS: f64 = 250.0;
+/// How long a frame's read back may take once a recording is stopped and its
+/// last frames are waited for: far past any frame's, so only a lost GPU
+/// reaches it.
+const READ_BACK_WITHIN: Duration = Duration::from_secs(2);
 
 /// The size a recording of content `width` x `height` is encoded at: content's
 /// shape within the encoder's limits, in whole macroblocks.
@@ -236,6 +266,8 @@ pub(super) enum ToEncoder {
         ready: SyncHandle,
         pts_ns: i64,
     },
+    /// A frame read back into memory, shown at `pts_ns`: RGBA, rows top first.
+    Pixels { rgba: Vec<u8>, pts_ns: i64 },
     /// No more frames: complete the file and answer with `duration_ms`.
     Finish {
         duration_ms: u64,
@@ -251,6 +283,8 @@ pub(super) enum FromEncoder {
     Ready,
     /// Slot `slot` may be copied into once `released` signals.
     Released { slot: usize, released: SyncHandle },
+    /// The memory a frame was read back into, for the next one.
+    Spent(Vec<u8>),
     /// The recording failed; content has been told.
     Failed,
 }
@@ -269,6 +303,9 @@ struct Slot {
     texture: glow::NativeTexture,
     /// The render thread's framebuffer over it (framebuffers are per context).
     framebuffer: glow::NativeFramebuffer,
+    /// For an encoder that takes frames from memory: the buffer the texture is
+    /// read back into, without waiting.
+    pack: Option<glow::NativeBuffer>,
     /// Signals when the encoder thread is done reading it.
     released: Option<SyncHandle>,
     /// Where content's frame went in it last time: what is outside is black,
@@ -284,6 +321,11 @@ pub(crate) struct Recording {
     interval_ms: f64,
     slots: Vec<Slot>,
     free: Vec<usize>,
+    /// Frames being read back into their slots' buffers, in the order taken:
+    /// the slot, the fence after its read, the frame's time.
+    reading: VecDeque<(usize, SyncHandle, i64)>,
+    /// Memory a frame was read back into, back from the encoder thread.
+    spare: Vec<Vec<u8>>,
     to_encoder: Sender<ToEncoder>,
     from_encoder: Receiver<FromEncoder>,
     ready: bool,
@@ -332,9 +374,10 @@ impl Recording {
             bitrate_bps: params.bitrate_kbps.saturating_mul(1000),
             key_frame_interval: params.gop,
         };
+        let memory = cx.factory.input() == FrameInput::Memory;
         let mut slots = Vec::with_capacity(SLOTS);
         for _ in 0..SLOTS {
-            match unsafe { Slot::new(cx.gl, size) } {
+            match unsafe { Slot::new(cx.gl, size, memory) } {
                 Ok(slot) => slots.push(slot),
                 Err(e) => {
                     for slot in slots {
@@ -383,6 +426,8 @@ impl Recording {
             interval_ms: 1000.0 / params.fps as f64,
             free: (0..SLOTS).collect(),
             slots,
+            reading: VecDeque::with_capacity(SLOTS),
+            spare: Vec::with_capacity(SLOTS),
             to_encoder,
             from_encoder,
             ready: false,
@@ -411,6 +456,11 @@ impl Recording {
                     self.slots[slot].released = Some(released);
                     self.free.push(slot);
                 }
+                Ok(FromEncoder::Spent(rgba)) => {
+                    if self.spare.len() < SLOTS {
+                        self.spare.push(rgba);
+                    }
+                }
                 Ok(FromEncoder::Failed) | Err(TryRecvError::Disconnected) => {
                     return Err(Ended::Failed);
                 }
@@ -435,6 +485,7 @@ impl Recording {
         if !self.ready {
             return Ok(());
         }
+        self.collect(gl, false)?;
         let now = self.clock.now(at);
         if now >= self.next_report_ms {
             self.events.time(now as u64);
@@ -471,6 +522,12 @@ impl Recording {
             return Ok(());
         };
         let pts_ns = (now * 1_000_000.0) as i64;
+        self.last_frame_ms = Some(now);
+        if slot.pack.is_some() {
+            // Read back on a later present, once the GPU has written it.
+            self.reading.push_back((index, ready, pts_ns));
+            return Ok(());
+        }
         if self
             .to_encoder
             .send(ToEncoder::Frame {
@@ -482,7 +539,56 @@ impl Recording {
         {
             return Err(Ended::Failed);
         }
-        self.last_frame_ms = Some(now);
+        Ok(())
+    }
+
+    /// Hand the encoder thread the frames whose read back is done, in the
+    /// order taken. Waits for none unless `last`: a stopped recording's final
+    /// frames are waited for and handed over whatever the encoder's pace.
+    /// While the encoder thread is behind, a frame is not handed over and its
+    /// memory is kept for the next.
+    fn collect(&mut self, gl: &glow::Context, last: bool) -> Result<(), Ended> {
+        let bytes = self.size.0 as usize * self.size.1 as usize * 4;
+        let row = self.size.0 as usize * 4;
+        while let Some(&(index, SyncHandle(read), pts_ns)) = self.reading.front() {
+            let within = if last {
+                READ_BACK_WITHIN.as_nanos() as i32
+            } else {
+                0
+            };
+            let waited = unsafe { gl.client_wait_sync(read, 0, within) };
+            if waited == glow::TIMEOUT_EXPIRED && !last {
+                return Ok(());
+            }
+            self.reading.pop_front();
+            unsafe { gl.delete_sync(read) };
+            if waited == glow::TIMEOUT_EXPIRED || waited == glow::WAIT_FAILED {
+                warn!("game recorder: a frame was not read back");
+                return Err(Ended::Failed);
+            }
+            let mut rgba = self.spare.pop().unwrap_or_default();
+            rgba.resize(bytes, 0);
+            let copied = unsafe { self.slots[index].read_back(gl, &mut rgba, row) };
+            self.free.push(index);
+            if !copied {
+                warn!("game recorder: a frame's read back could not be mapped");
+                return Err(Ended::Failed);
+            }
+            let frame = ToEncoder::Pixels { rgba, pts_ns };
+            let sent = if last {
+                self.to_encoder
+                    .send(frame)
+                    .map_err(|e| TrySendError::Disconnected(e.0))
+            } else {
+                self.to_encoder.try_send(frame)
+            };
+            match sent {
+                Ok(()) => {}
+                // Behind: this frame is not recorded.
+                Err(TrySendError::Full(ToEncoder::Pixels { rgba, .. })) => self.spare.push(rgba),
+                Err(_) => return Err(Ended::Failed),
+            }
+        }
         Ok(())
     }
 
@@ -520,6 +626,10 @@ impl Recording {
                 let _ = self.take(gl, framebuffer, reads_none, width, height, duration);
             }
         }
+        if self.collect(gl, true).is_err() {
+            resp.err(recording_failed());
+            return self.release(gl);
+        }
         let duration_ms = duration as u64;
         if let Err(crossbeam_channel::SendError(ToEncoder::Finish { resp, .. })) = self
             .to_encoder
@@ -551,6 +661,9 @@ impl Recording {
     /// The render thread's own objects. The textures are the encoder thread's
     /// to delete once it has read them for the last time.
     fn release(self, gl: &glow::Context) -> Finishing {
+        for (_, SyncHandle(read), _) in self.reading {
+            unsafe { gl.delete_sync(read) };
+        }
         for slot in self.slots {
             unsafe { slot.delete(gl) };
         }
@@ -579,8 +692,10 @@ fn recording_failed() -> EngineError {
 }
 
 impl Slot {
-    /// A black texture of `size` and the render thread's framebuffer over it.
-    unsafe fn new(gl: &glow::Context, size: (u32, u32)) -> EngineResult<Self> {
+    /// A black texture of `size` and the render thread's framebuffer over it,
+    /// and for an encoder that takes frames from `memory`, the buffer it is
+    /// read back into.
+    unsafe fn new(gl: &glow::Context, size: (u32, u32), memory: bool) -> EngineResult<Self> {
         unsafe {
             let texture = gl.create_texture().map_err(gl_error)?;
             let previous = gl.get_parameter_texture(glow::TEXTURE_BINDING_2D);
@@ -610,9 +725,32 @@ impl Slot {
                     return Err(gl_error(e));
                 }
             };
+            let pack = if memory {
+                match gl.create_buffer() {
+                    Ok(pack) => {
+                        let previous = gl.get_parameter_buffer(glow::PIXEL_PACK_BUFFER_BINDING);
+                        gl.bind_buffer(glow::PIXEL_PACK_BUFFER, Some(pack));
+                        gl.buffer_data_size(
+                            glow::PIXEL_PACK_BUFFER,
+                            (size.0 * size.1 * 4) as i32,
+                            glow::STREAM_READ,
+                        );
+                        gl.bind_buffer(glow::PIXEL_PACK_BUFFER, previous);
+                        Some(pack)
+                    }
+                    Err(e) => {
+                        gl.delete_framebuffer(framebuffer);
+                        gl.delete_texture(texture);
+                        return Err(gl_error(e));
+                    }
+                }
+            } else {
+                None
+            };
             Ok(Self {
                 texture,
                 framebuffer,
+                pack,
                 released: None,
                 fitted: None,
             })
@@ -675,6 +813,22 @@ impl Slot {
             if reads_none {
                 gl.read_buffer(glow::NONE);
             }
+            if let Some(pack) = self.pack {
+                // Started now, read on a later present: nothing waits here.
+                let packing = SavedPackState::save(gl);
+                gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(self.framebuffer));
+                gl.bind_buffer(glow::PIXEL_PACK_BUFFER, Some(pack));
+                gl.read_pixels(
+                    0,
+                    0,
+                    size.0 as i32,
+                    size.1 as i32,
+                    glow::RGBA,
+                    glow::UNSIGNED_BYTE,
+                    glow::PixelPackData::BufferOffset(0),
+                );
+                packing.restore(gl);
+            }
             saved.restore(gl);
             let fence = gl.fence_sync(glow::SYNC_GPU_COMMANDS_COMPLETE, 0).ok()?;
             // A fence another context waits on has to have reached the GPU.
@@ -683,10 +837,41 @@ impl Slot {
         }
     }
 
+    /// The frame read back into this slot's buffer, copied into `rgba` top row
+    /// first -- GL's first row is the bottom one. Its read must be complete.
+    unsafe fn read_back(&self, gl: &glow::Context, rgba: &mut [u8], row: usize) -> bool {
+        let Some(pack) = self.pack else {
+            return false;
+        };
+        unsafe {
+            let previous = gl.get_parameter_buffer(glow::PIXEL_PACK_BUFFER_BINDING);
+            gl.bind_buffer(glow::PIXEL_PACK_BUFFER, Some(pack));
+            let mapped = gl.map_buffer_range(
+                glow::PIXEL_PACK_BUFFER,
+                0,
+                rgba.len() as i32,
+                glow::MAP_READ_BIT,
+            );
+            let copied = !mapped.is_null();
+            if copied {
+                let read = std::slice::from_raw_parts(mapped, rgba.len());
+                for (into, from) in rgba.chunks_exact_mut(row).zip(read.chunks_exact(row).rev()) {
+                    into.copy_from_slice(from);
+                }
+                gl.unmap_buffer(glow::PIXEL_PACK_BUFFER);
+            }
+            gl.bind_buffer(glow::PIXEL_PACK_BUFFER, previous);
+            copied
+        }
+    }
+
     unsafe fn delete(self, gl: &glow::Context) {
         unsafe {
             if let Some(SyncHandle(released)) = self.released {
                 gl.delete_sync(released);
+            }
+            if let Some(pack) = self.pack {
+                gl.delete_buffer(pack);
             }
             gl.delete_framebuffer(self.framebuffer);
         }
@@ -739,6 +924,46 @@ impl SavedCopyState {
             gl.color_mask(r, g, b, a);
             let [r, g, b, a] = self.clear_color;
             gl.clear_color(r, g, b, a);
+        }
+    }
+}
+
+/// How content left pixel packing, put back after a frame is read back:
+/// the buffer packed into, and how rows are laid out in it.
+struct SavedPackState {
+    buffer: Option<glow::NativeBuffer>,
+    alignment: i32,
+    row_length: i32,
+    skip_rows: i32,
+    skip_pixels: i32,
+}
+
+impl SavedPackState {
+    /// Content's packing, saved, and the tight packing a frame is read with set.
+    unsafe fn save(gl: &glow::Context) -> Self {
+        unsafe {
+            let saved = Self {
+                buffer: gl.get_parameter_buffer(glow::PIXEL_PACK_BUFFER_BINDING),
+                alignment: gl.get_parameter_i32(glow::PACK_ALIGNMENT),
+                row_length: gl.get_parameter_i32(glow::PACK_ROW_LENGTH),
+                skip_rows: gl.get_parameter_i32(glow::PACK_SKIP_ROWS),
+                skip_pixels: gl.get_parameter_i32(glow::PACK_SKIP_PIXELS),
+            };
+            gl.pixel_store_i32(glow::PACK_ALIGNMENT, 4);
+            gl.pixel_store_i32(glow::PACK_ROW_LENGTH, 0);
+            gl.pixel_store_i32(glow::PACK_SKIP_ROWS, 0);
+            gl.pixel_store_i32(glow::PACK_SKIP_PIXELS, 0);
+            saved
+        }
+    }
+
+    unsafe fn restore(self, gl: &glow::Context) {
+        unsafe {
+            gl.pixel_store_i32(glow::PACK_ALIGNMENT, self.alignment);
+            gl.pixel_store_i32(glow::PACK_ROW_LENGTH, self.row_length);
+            gl.pixel_store_i32(glow::PACK_SKIP_ROWS, self.skip_rows);
+            gl.pixel_store_i32(glow::PACK_SKIP_PIXELS, self.skip_pixels);
+            gl.bind_buffer(glow::PIXEL_PACK_BUFFER, self.buffer);
         }
     }
 }

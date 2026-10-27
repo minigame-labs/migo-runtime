@@ -153,6 +153,12 @@ impl HostNotifier for LinuxPlatform {
         }
     }
 
+    fn notify_restart(&self, host_id: i32, launch_options_json: &str) {
+        if let Some(notifier) = &self.notifier {
+            notifier.notify_restart(host_id, launch_options_json);
+        }
+    }
+
     fn notify_error(&self, host_id: i32, error_code: u16, message: &str, detail: &str) {
         if let Some(notifier) = &self.notifier {
             notifier.notify_error(host_id, error_code, message, detail);
@@ -210,6 +216,12 @@ mod tests {
         fn notify_exit(&self, host_id: i32) {
             self.0.lock().unwrap().push(format!("exit {host_id}"));
         }
+        fn notify_restart(&self, host_id: i32, launch_options_json: &str) {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("restart {host_id} {launch_options_json}"));
+        }
         fn notify_error(&self, host_id: i32, code: u16, message: &str, detail: &str) {
             self.0
                 .lock()
@@ -244,6 +256,7 @@ mod tests {
         platform.notify_game_ready(3);
         platform.notify_game_failed(3, 11, "module evaluation failed", "Error: x");
         platform.notify_exit(3);
+        platform.notify_restart(3, r#"{"scene":1007}"#);
         platform.notify_error(3, 12, "render command failed", "GL_INVALID_OPERATION");
         platform.notify_surface_lost(
             3,
@@ -257,6 +270,7 @@ mod tests {
                 "ready 3",
                 "failed 3 11 module evaluation failed Error: x",
                 "exit 3",
+                r#"restart 3 {"scene":1007}"#,
                 "error 3 12 render command failed GL_INVALID_OPERATION",
                 "lost 3 5 DeviceLost",
                 "message 3 {}",

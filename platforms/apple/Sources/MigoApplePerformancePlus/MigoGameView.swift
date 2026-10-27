@@ -218,7 +218,9 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
         private var metalView = MetalView()
         /// Layers a session never released. Kept, never reused: see `tearDown`.
         private var abandonedLayers: [MetalView] = []
-        private var game: (id: String, entry: String)?
+        /// The game this view runs, and what it is launched with: the
+        /// configuration's options, or a restart's.
+        private var game: (id: String, entry: String, launchOptionsJSON: String?)?
         // Readable by `@testable` tests, which report device changes through it.
         private(set) var engine: MigoEngineSession?
         private var host: MigoPerformancePlusHost?
@@ -304,7 +306,7 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
         public func loadGame(id: String, entry: String = "game.js") {
             precondition(Thread.isMainThread, "MigoGameView is main-thread only")
             stop()
-            game = (id, entry)
+            game = (id, entry, configuration.launchOptionsJSON)
             startIfPossible()
         }
 
@@ -436,7 +438,7 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
         private func startIfPossible() {
             guard let game, !isRunning, closing == 0, let window, bounds.width >= 1, bounds.height >= 1 else { return }
             do {
-                try start(id: game.id, entry: game.entry, in: window)
+                try start(id: game.id, entry: game.entry, launchOptionsJSON: game.launchOptionsJSON, in: window)
             } catch {
                 tearDown(then: nil)
                 self.game = nil
@@ -444,7 +446,7 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             }
         }
 
-        private func start(id: String, entry: String, in window: UIWindow) throws {
+        private func start(id: String, entry: String, launchOptionsJSON: String?, in window: UIWindow) throws {
             let started = layout(in: window)
             let size = started.size
             metalView.configure(scale: window.screen.scale)
@@ -462,7 +464,7 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
                 preferredFramesPerSecond: configuration.preferredFramesPerSecond,
                 hostServices: MigoGameViewHostServices(app: configuration.hostServices, window: windowService),
                 capabilities: configuration.capabilities, networkPolicyJSON: configuration.networkPolicyJSON,
-                launchOptionsJSON: configuration.launchOptionsJSON)
+                launchOptionsJSON: launchOptionsJSON)
             self.engine = engine
             engine.onEvent = { [weak self] event in self?.engineEvent(event) }
             for (name, json) in ecosystemValues { engine.setEcosystemValue(name, json: json) }
@@ -482,7 +484,7 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
                     engineSession: .init(
                         launchNonce: engine.launchNonce, surfaceGeneration: engine.surfaceGeneration,
                         surfaceWidthPixels: Int(size.widthPixels), surfaceHeightPixels: Int(size.heightPixels),
-                        device: device, launchOptionsJSON: configuration.launchOptionsJSON)),
+                        device: device, launchOptionsJSON: launchOptionsJSON)),
                 channel: MigoFrameChannel(session: engine.session))
             self.host = host
             host.onReport = { [weak self] report in self?.producerReport(report) }
@@ -573,6 +575,20 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             }
         }
 
+        /// Content asked to be launched again (`restartMiniProgram`). Its session
+        /// cannot replace content running in WebKit's process, so the game starts
+        /// over in a new one, launched with what the engine says: the options it
+        /// was last shown with, its query the one the restart named. Content's
+        /// own doing, so neither a recovery nor `.restarted`.
+        private func relaunch(launchOptionsJSON: String) {
+            guard let current = game else { return }
+            game = (current.id, current.entry, launchOptionsJSON)
+            tearDown { [weak self] in
+                guard let self, self.game?.id == current.id else { return }
+                self.startIfPossible()
+            }
+        }
+
         // MARK: - what the engine and the producer say
 
         private func engineEvent(_ event: MigoEngineSession.Event) {
@@ -582,6 +598,8 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             case .exitRequested:
                 stop()
                 onEvent?(.exitRequested)
+            case .restartRequested(let launchOptionsJSON):
+                relaunch(launchOptionsJSON: launchOptionsJSON)
             case .error(let code, let message, let recoverable):
                 onEvent?(.error(code: code, message: message, recoverable: recoverable))
             case .surfaceLost:
@@ -1028,6 +1046,11 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
         /// The text content last heard, so a change that ends where it began
         /// (a stripped newline, a truncated paste) is not reported twice.
         private var reported = ""
+        /// Whether the keyboard content opened is still to be heard leaving:
+        /// set when content's field opens, cleared once the keyboard's height
+        /// has been reported back to 0 -- which happens after the field is
+        /// closed (confirm, hideKeyboard), as the keyboard animates away.
+        private var reportsHeight = false
         private var observers: [NSObjectProtocol] = []
 
         init(owner: MigoGameView) {
@@ -1048,8 +1071,9 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             observers.append(
                 center.addObserver(forName: UIResponder.keyboardWillHideNotification, object: nil, queue: .main) {
                     [weak self] _ in
-                    guard self?.request != nil else { return }
-                    self?.owner?.keyboardInput(.heightChange(0))
+                    guard let self, self.reportsHeight else { return }
+                    self.reportsHeight = false
+                    self.owner?.keyboardInput(.heightChange(0))
                 })
         }
 
@@ -1061,6 +1085,7 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             field.returnKeyType = Self.returnKey(request.confirmType)
             field.text = request.defaultValue
             reported = request.defaultValue
+            reportsHeight = true
             if field.isFirstResponder {
                 field.reloadInputViews()
             } else {
@@ -1098,8 +1123,8 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             var text = textView.text ?? ""
             let confirmed = !request.multiline && text.contains("\n")
             if confirmed { text = text.replacingOccurrences(of: "\n", with: "") }
-            if request.maxLength > 0, text.count > request.maxLength {
-                text = String(text.prefix(request.maxLength))
+            if request.maxLength > 0, text.utf16.count > request.maxLength {
+                text = Self.prefix(of: text, utf16Units: request.maxLength)
             }
             if text != textView.text { textView.text = text }
             if text != reported {
@@ -1120,14 +1145,31 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             hide()
         }
 
+        /// The longest whole-character prefix of `text` that is at most `limit`
+        /// UTF-16 units: maxLength counts what a JavaScript string's length
+        /// does, as on every other platform, and a character is never cut.
+        static func prefix(of text: String, utf16Units limit: Int) -> String {
+            var units = 0
+            var end = text.startIndex
+            for character in text {
+                units += character.utf16.count
+                if units > limit { break }
+                end = text.index(after: end)
+            }
+            return String(text[..<end])
+        }
+
         private func keyboardFrameChanged(_ note: Notification) {
-            guard request != nil, let owner, let window = owner.window,
+            guard reportsHeight, let owner, let window = owner.window,
                 let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect
             else { return }
             // Points are CSS pixels here; the overlap with this view is what
             // content lays itself out around.
             let overlap = owner.convert(owner.bounds, to: window).intersection(window.convert(frame, from: nil))
-            owner.keyboardInput(.heightChange(overlap.isNull ? 0 : Double(overlap.height)))
+            let height = overlap.isNull ? 0 : Double(overlap.height)
+            owner.keyboardInput(.heightChange(height))
+            // Gone: the hide notice that follows has nothing more to say.
+            if height == 0, request == nil { reportsHeight = false }
         }
 
         private static func returnKey(_ type: MigoKeyboardConfirmType) -> UIReturnKeyType {

@@ -3210,6 +3210,12 @@ impl Lifecycle {
         self.pending_show = Some(self.options.show(options_json));
     }
 
+    /// What the game is launched with when a restart starts it again in a new
+    /// session.
+    fn relaunch_json(&mut self, launch_query: Option<String>) -> String {
+        self.options.relaunch_json(launch_query)
+    }
+
     /// A surface is live and the app is not hidden.
     fn entered_foreground(&mut self, sink: &ServiceEventSink<'_>) {
         // The frame loop self-stops after a few idle frames while hidden, and
@@ -3273,6 +3279,16 @@ fn handle_command(
 
     match command {
         HostCommand::Shutdown => return false,
+
+        // Content's `restartMiniProgram`. This session cannot replace its content
+        // in place -- the content runs outside the engine, and the session has the
+        // one runtime generation -- so the host is asked to start the game again in
+        // a new session, launched as a restart launches it: with the options it was
+        // last shown with, its query the one the restart named.
+        HostCommand::Restart { launch_query } => {
+            let launch_options = lifecycle.relaunch_json(launch_query);
+            platform.notify_restart(id, &launch_options);
+        }
 
         HostCommand::UpdateSurface { lease, pixel_ratio } => {
             // The surface generation advances *before* the renderer is told, so
