@@ -696,6 +696,7 @@ pub fn apple_graphics_platform() -> EngineResult<GraphicsPlatform> {
         Arc::new(AppleEglProvider::new(None)),
         Arc::new(AppleEglSurfaceFactory::offscreen()),
     )
+    .map(with_recorder)
 }
 
 /// Onscreen Apple graphics platform rendering into a host-owned `CAMetalLayer`,
@@ -711,6 +712,16 @@ pub fn apple_metal_layer_graphics_platform(
         Arc::new(AppleEglProvider::new(device)),
         Arc::new(AppleEglSurfaceFactory::metal_layer(device)),
     )
+    .map(with_recorder)
+}
+
+/// The platform with what records the game: AVFoundation's encoder. This
+/// module also builds for Linux tests, which have none.
+fn with_recorder(platform: GraphicsPlatform) -> GraphicsPlatform {
+    #[cfg(target_vendor = "apple")]
+    let platform =
+        platform.with_video_encoder(Arc::new(super::game_recorder::AppleVideoEncoderFactory));
+    platform
 }
 
 #[cfg(test)]

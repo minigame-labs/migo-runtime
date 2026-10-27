@@ -2,7 +2,7 @@
 //! encoder's input, on a context in the render thread's share group, so an
 //! encoder that falls behind blocks this thread and never the game's.
 
-use std::{path::PathBuf, sync::Arc};
+use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
 
 use crossbeam_channel::{Receiver, Sender};
 use glow::HasContext;
@@ -13,7 +13,10 @@ use shared::{
 };
 use tracing::{info, warn};
 
-use super::{EncoderConfig, FromEncoder, SyncHandle, ToEncoder, VideoEncoder, VideoEncoderFactory};
+use super::{
+    ClientBuffer, EncoderConfig, EncoderInput, FromEncoder, SyncHandle, ToEncoder, VideoEncoder,
+    VideoEncoderFactory,
+};
 use crate::egl_platform::{EglInstance, EglProvider, GraphicsBackendId};
 
 /// `EGL_RECORDABLE_ANDROID`: a config whose window surfaces an encoder's input
@@ -100,16 +103,45 @@ fn failure(what: &'static str, detail: impl std::fmt::Display) -> EngineError {
         .with_detail(detail.to_string())
 }
 
-/// The thread's EGL and GL, and the encoder it feeds.
+/// How long a frame drawn into a lent buffer may take on the GPU before the
+/// encoder is given it: far past any frame's time, so only a lost GPU reaches it.
+const BUFFER_DRAWN_WITHIN: Duration = Duration::from_secs(2);
+
+/// The thread's EGL and GL, and where it draws the frames.
 struct Session {
     egl: EglInstance,
     display: khronos_egl::Display,
     context: khronos_egl::Context,
-    surface: khronos_egl::Surface,
+    target: Target,
     gl: glow::Context,
-    presentation_time: Option<PresentationTime>,
+    /// One per shared texture, to read it.
     framebuffers: Vec<glow::NativeFramebuffer>,
     size: (i32, i32),
+}
+
+/// Where a frame is drawn, as the encoder takes its input.
+enum Target {
+    /// The encoder's window: drawn into and swapped.
+    Window {
+        surface: khronos_egl::Surface,
+        presentation_time: Option<PresentationTime>,
+    },
+    /// The buffers the encoder lends.
+    Buffers {
+        /// Current while the context draws into no window: a 1x1 pbuffer, or
+        /// none where the EGL makes a context current without a surface.
+        placeholder: Option<khronos_egl::Surface>,
+        /// What was made for each buffer, by its key.
+        bound: HashMap<u64, Bound>,
+    },
+}
+
+/// One of the encoder's buffers, as this context draws into it.
+struct Bound {
+    pbuffer: khronos_egl::Surface,
+    texture: glow::NativeTexture,
+    target: u32,
+    framebuffer: glow::NativeFramebuffer,
 }
 
 fn run(carried: Carried, start: RenderCmdResp<()>) {
@@ -207,6 +239,21 @@ fn open(
     let display = unsafe { khronos_egl::Display::from_ptr(display as *mut _) };
     let render_config = unsafe { khronos_egl::Config::from_ptr(render_config as *mut _) };
     let share = unsafe { khronos_egl::Context::from_ptr(share as *mut _) };
+    let size = (encoding.width as i32, encoding.height as i32);
+    let window = match encoder.input() {
+        EncoderInput::Window(window) => window,
+        EncoderInput::ClientBuffers => {
+            return open_for_buffers(
+                egl,
+                display,
+                render_config,
+                share,
+                context_attribs,
+                textures,
+                size,
+            );
+        }
+    };
 
     // The encoder's config first, the render one if the driver has none.
     let recordable = [
@@ -232,7 +279,6 @@ fn open(
         .flatten()
         .into_iter()
         .chain([render_config]);
-    let window = encoder.input_window();
     let mut last = None;
     for config in configs {
         let context = match egl.create_context(display, config, Some(share), context_attribs) {
@@ -256,46 +302,115 @@ fn open(
             last = Some(e);
             continue;
         }
-        let gl = unsafe {
-            glow::Context::from_loader_function(|name| {
-                egl.get_proc_address(name)
-                    .map_or(std::ptr::null(), |f| f as *const std::ffi::c_void)
-            })
-        };
+        let gl = load_gl(&egl);
         let presentation_time = egl
             .get_proc_address("eglPresentationTimeANDROID")
             .map(|f| unsafe { std::mem::transmute::<extern "system" fn(), PresentationTime>(f) });
-        let mut framebuffers = Vec::with_capacity(textures.len());
-        for &texture in textures {
-            let framebuffer = unsafe { gl.create_framebuffer() }
-                .map_err(|e| failure("a recording framebuffer", e))?;
-            unsafe {
-                gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(framebuffer));
-                gl.framebuffer_texture_2d(
-                    glow::READ_FRAMEBUFFER,
-                    glow::COLOR_ATTACHMENT0,
-                    glow::TEXTURE_2D,
-                    Some(texture),
-                    0,
-                );
-            }
-            framebuffers.push(framebuffer);
-        }
+        let framebuffers = read_framebuffers(&gl, textures)?;
         return Ok(Session {
             egl,
             display,
             context,
-            surface,
+            target: Target::Window {
+                surface,
+                presentation_time,
+            },
             gl,
-            presentation_time,
             framebuffers,
-            size: (encoding.width as i32, encoding.height as i32),
+            size,
         });
     }
     Err(failure(
         "the encoder's input could not be drawn into",
         format!("{last:?}"),
     ))
+}
+
+/// A context for an encoder that lends buffers: current on a 1x1 pbuffer, or
+/// on no surface where the render config has no pbuffers, as the upload
+/// thread's is. Every frame is drawn into a buffer bound to a texture.
+fn open_for_buffers(
+    egl: EglInstance,
+    display: khronos_egl::Display,
+    config: khronos_egl::Config,
+    share: khronos_egl::Context,
+    context_attribs: &[khronos_egl::Int],
+    textures: &[glow::NativeTexture],
+    size: (i32, i32),
+) -> EngineResult<Session> {
+    let context = egl
+        .create_context(display, config, Some(share), context_attribs)
+        .map_err(|e| failure("the recording's context", e))?;
+    let placeholder = egl
+        .create_pbuffer_surface(
+            display,
+            config,
+            &[
+                khronos_egl::WIDTH,
+                1,
+                khronos_egl::HEIGHT,
+                1,
+                khronos_egl::NONE,
+            ],
+        )
+        .ok();
+    if let Err(e) = egl.make_current(display, placeholder, placeholder, Some(context)) {
+        if let Some(placeholder) = placeholder {
+            let _ = egl.destroy_surface(display, placeholder);
+        }
+        let _ = egl.destroy_context(display, context);
+        return Err(failure(
+            "the recording's context could not be made current",
+            e,
+        ));
+    }
+    let gl = load_gl(&egl);
+    let framebuffers = read_framebuffers(&gl, textures)?;
+    Ok(Session {
+        egl,
+        display,
+        context,
+        target: Target::Buffers {
+            placeholder,
+            bound: HashMap::new(),
+        },
+        gl,
+        framebuffers,
+        size,
+    })
+}
+
+fn load_gl(egl: &EglInstance) -> glow::Context {
+    unsafe {
+        glow::Context::from_loader_function(|name| {
+            egl.get_proc_address(name)
+                .map_or(std::ptr::null(), |f| f as *const std::ffi::c_void)
+        })
+    }
+}
+
+/// A framebuffer of this context reading each shared texture.
+fn read_framebuffers(
+    gl: &glow::Context,
+    textures: &[glow::NativeTexture],
+) -> EngineResult<Vec<glow::NativeFramebuffer>> {
+    let mut framebuffers = Vec::with_capacity(textures.len());
+    for &texture in textures {
+        let framebuffer = unsafe { gl.create_framebuffer() }
+            .map_err(|e| failure("a recording framebuffer", e))?;
+        unsafe {
+            gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(framebuffer));
+            gl.framebuffer_texture_2d(
+                glow::READ_FRAMEBUFFER,
+                glow::COLOR_ATTACHMENT0,
+                glow::TEXTURE_2D,
+                Some(texture),
+                0,
+            );
+        }
+        framebuffers.push(framebuffer);
+    }
+    Ok(framebuffers)
 }
 
 /// Draw every frame the render thread sends into the encoder's input until it
@@ -311,7 +426,7 @@ fn encode(
     rx: &Receiver<ToEncoder>,
     tx: &Sender<FromEncoder>,
 ) {
-    let gl = &session.gl;
+    let mut session = session;
     let outcome = loop {
         let Ok(message) = rx.recv() else {
             // The render thread is gone without a word: the session ended.
@@ -324,46 +439,18 @@ fn encode(
                 pts_ns,
             } => {
                 let _autorelease_frame = shared::objc_autorelease::autorelease_scope();
-                let released = unsafe {
-                    gl.wait_sync(ready, 0, glow::TIMEOUT_IGNORED);
-                    gl.delete_sync(ready);
-                    gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(session.framebuffers[slot]));
-                    gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, None);
-                    let (w, h) = session.size;
-                    gl.blit_framebuffer(
-                        0,
-                        0,
-                        w,
-                        h,
-                        0,
-                        0,
-                        w,
-                        h,
-                        glow::COLOR_BUFFER_BIT,
-                        glow::NEAREST,
-                    );
-                    gl.fence_sync(glow::SYNC_GPU_COMMANDS_COMPLETE, 0)
-                };
-                if let Some(presentation_time) = session.presentation_time {
-                    unsafe {
-                        presentation_time(
-                            session.display.as_ptr(),
-                            session.surface.as_ptr(),
-                            pts_ns,
-                        )
-                    };
+                unsafe {
+                    session.gl.wait_sync(ready, 0, glow::TIMEOUT_IGNORED);
+                    session.gl.delete_sync(ready);
                 }
-                if let Err(e) = session.egl.swap_buffers(session.display, session.surface) {
-                    break End::Failed(format!("the encoder's input refused a frame: {e:?}"));
-                }
-                match released {
+                match draw(&mut session, &mut *encoder, slot, pts_ns) {
                     Ok(released) => {
                         let _ = tx.send(FromEncoder::Released {
                             slot,
                             released: SyncHandle(released),
                         });
                     }
-                    Err(e) => break End::Failed(format!("a frame could not be fenced: {e}")),
+                    Err(reason) => break End::Failed(reason),
                 }
                 if let Err(e) = encoder.drain() {
                     break End::Failed(e.to_string());
@@ -382,7 +469,7 @@ fn encode(
             ..
         }) = rx.try_recv()
         {
-            unsafe { gl.delete_sync(ready) };
+            unsafe { session.gl.delete_sync(ready) };
         }
     }
     close(session, textures);
@@ -436,14 +523,173 @@ enum End {
     Failed(String),
 }
 
+/// Draw the frame in `slot` into the encoder's input, as of `pts_ns`: the
+/// fence after which the shared texture may be written again.
+fn draw(
+    session: &mut Session,
+    encoder: &mut dyn VideoEncoder,
+    slot: usize,
+    pts_ns: i64,
+) -> Result<glow::NativeFence, String> {
+    let Session {
+        egl,
+        display,
+        target,
+        gl,
+        framebuffers,
+        size: (w, h),
+        ..
+    } = session;
+    let (w, h) = (*w, *h);
+    let fenced = |gl: &glow::Context| unsafe {
+        gl.fence_sync(glow::SYNC_GPU_COMMANDS_COMPLETE, 0)
+            .map_err(|e| format!("a frame could not be fenced: {e}"))
+    };
+    match target {
+        Target::Window {
+            surface,
+            presentation_time,
+        } => {
+            let released = unsafe {
+                gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(framebuffers[slot]));
+                gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, None);
+                gl.blit_framebuffer(
+                    0,
+                    0,
+                    w,
+                    h,
+                    0,
+                    0,
+                    w,
+                    h,
+                    glow::COLOR_BUFFER_BIT,
+                    glow::NEAREST,
+                );
+                fenced(gl)?
+            };
+            if let Some(presentation_time) = presentation_time {
+                unsafe { presentation_time(display.as_ptr(), surface.as_ptr(), pts_ns) };
+            }
+            egl.swap_buffers(*display, *surface)
+                .map_err(|e| format!("the encoder's input refused a frame: {e:?}"))?;
+            Ok(released)
+        }
+        Target::Buffers { bound, .. } => {
+            let Some(buffer) = encoder.lend().map_err(|e| e.to_string())? else {
+                // The encoder is not ready for another frame: this one is not
+                // recorded, and its texture is free at once.
+                return fenced(gl);
+            };
+            let into = match bound.entry(buffer.key) {
+                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(bind(egl, *display, gl, &buffer)?)
+                }
+            };
+            unsafe {
+                gl.bind_texture(into.target, Some(into.texture));
+                egl.bind_tex_image(*display, into.pbuffer, khronos_egl::BACK_BUFFER)
+                    .map_err(|e| format!("the encoder's buffer could not be bound: {e:?}"))?;
+                gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(into.framebuffer));
+                gl.framebuffer_texture_2d(
+                    glow::DRAW_FRAMEBUFFER,
+                    glow::COLOR_ATTACHMENT0,
+                    into.target,
+                    Some(into.texture),
+                    0,
+                );
+                gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(framebuffers[slot]));
+                let (y0, y1) = if buffer.top_row_first { (h, 0) } else { (0, h) };
+                gl.blit_framebuffer(
+                    0,
+                    0,
+                    w,
+                    h,
+                    0,
+                    y0,
+                    w,
+                    y1,
+                    glow::COLOR_BUFFER_BIT,
+                    glow::NEAREST,
+                );
+            }
+            let released = fenced(gl)?;
+            // The encoder reads the buffer outside GL: it is handed over only
+            // once the GPU has written it.
+            let drawn = fenced(gl)?;
+            let waited = unsafe {
+                gl.client_wait_sync(
+                    drawn,
+                    glow::SYNC_FLUSH_COMMANDS_BIT,
+                    BUFFER_DRAWN_WITHIN.as_nanos() as i32,
+                )
+            };
+            unsafe { gl.delete_sync(drawn) };
+            let _ = egl.release_tex_image(*display, into.pbuffer, khronos_egl::BACK_BUFFER);
+            if waited == glow::TIMEOUT_EXPIRED || waited == glow::WAIT_FAILED {
+                unsafe { gl.delete_sync(released) };
+                return Err("a frame was not drawn into the encoder's buffer in time".into());
+            }
+            if let Err(e) = encoder.submit(buffer, pts_ns) {
+                unsafe { gl.delete_sync(released) };
+                return Err(e.to_string());
+            }
+            Ok(released)
+        }
+    }
+}
+
+/// A pbuffer on one of the encoder's buffers, and a texture and framebuffer
+/// of this context to draw into it.
+fn bind(
+    egl: &EglInstance,
+    display: khronos_egl::Display,
+    gl: &glow::Context,
+    buffer: &ClientBuffer,
+) -> Result<Bound, String> {
+    let mut config_attribs = buffer.config_attribs.clone();
+    config_attribs.push(khronos_egl::NONE);
+    let config = egl
+        .choose_first_config(display, &config_attribs)
+        .map_err(|e| format!("no EGL config takes the encoder's buffers: {e:?}"))?
+        .ok_or_else(|| "no EGL config takes the encoder's buffers".to_string())?;
+    let mut attribs = buffer.attribs.clone();
+    attribs.push(khronos_egl::NONE);
+    let pbuffer = egl
+        .create_pbuffer_from_client_buffer(
+            display,
+            buffer.buffer_type,
+            unsafe { khronos_egl::ClientBuffer::from_ptr(buffer.handle) },
+            config,
+            &attribs,
+        )
+        .map_err(|e| format!("the encoder's buffer could not be wrapped: {e:?}"))?;
+    let made = unsafe {
+        gl.create_texture()
+            .and_then(|t| gl.create_framebuffer().map(|f| (t, f)))
+    };
+    match made {
+        Ok((texture, framebuffer)) => Ok(Bound {
+            pbuffer,
+            texture,
+            target: buffer.texture_target,
+            framebuffer,
+        }),
+        Err(e) => {
+            let _ = egl.destroy_surface(display, pbuffer);
+            Err(format!("a texture for the encoder's buffer: {e}"))
+        }
+    }
+}
+
 /// This thread's GL objects, the textures it read for the last time, its
-/// surface and its context. The encoder's input is no longer drawn into after.
+/// surfaces and its context. The encoder's input is no longer drawn into after.
 fn close(session: Session, textures: Vec<glow::NativeTexture>) {
     let Session {
         egl,
         display,
         context,
-        surface,
+        target,
         gl,
         framebuffers,
         ..
@@ -455,9 +701,25 @@ fn close(session: Session, textures: Vec<glow::NativeTexture>) {
         for texture in textures {
             gl.delete_texture(texture);
         }
-        gl.finish();
     }
+    let surfaces = match target {
+        Target::Window { surface, .. } => vec![surface],
+        Target::Buffers { placeholder, bound } => {
+            let mut surfaces: Vec<_> = placeholder.into_iter().collect();
+            for (_, bound) in bound {
+                unsafe {
+                    gl.delete_framebuffer(bound.framebuffer);
+                    gl.delete_texture(bound.texture);
+                }
+                surfaces.push(bound.pbuffer);
+            }
+            surfaces
+        }
+    };
+    unsafe { gl.finish() };
     let _ = egl.make_current(display, None, None, None);
-    let _ = egl.destroy_surface(display, surface);
+    for surface in surfaces {
+        let _ = egl.destroy_surface(display, surface);
+    }
     let _ = egl.destroy_context(display, context);
 }

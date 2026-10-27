@@ -14,7 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use graphics::game_recorder::{EncoderConfig, VideoEncoder, VideoEncoderFactory};
+use graphics::game_recorder::{EncoderConfig, EncoderInput, VideoEncoder, VideoEncoderFactory};
 use shared::error::{EngineError, EngineResult, ErrorCode};
 
 use crate::android::{
@@ -38,6 +38,13 @@ struct AMediaMuxer(c_void);
 const AMEDIAMUXER_OUTPUT_FORMAT_MPEG_4: i32 = 0;
 /// `MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface`.
 const COLOR_FORMAT_SURFACE: i32 = 0x7F00_0789;
+/// `MediaFormat.COLOR_STANDARD_BT709`, `COLOR_TRANSFER_SDR_VIDEO` and
+/// `COLOR_RANGE_LIMITED`: the game draws sRGB, which is BT.709, and the stream
+/// says so -- untagged, every player guesses the matrix, and one that guesses
+/// BT.601 shows the game's red as a darker red.
+const COLOR_STANDARD_BT709: i32 = 1;
+const COLOR_TRANSFER_SDR_VIDEO: i32 = 3;
+const COLOR_RANGE_LIMITED: i32 = 2;
 const MIME: &CStr = c"video/avc";
 /// How long the last of the stream may take to come out once input has ended.
 const FINISH: Duration = Duration::from_secs(3);
@@ -108,6 +115,9 @@ impl AndroidVideoEncoder {
             AMediaFormat_setInt32(format, key(c"width"), config.width as i32);
             AMediaFormat_setInt32(format, key(c"height"), config.height as i32);
             AMediaFormat_setInt32(format, key(c"color-format"), COLOR_FORMAT_SURFACE);
+            AMediaFormat_setInt32(format, key(c"color-standard"), COLOR_STANDARD_BT709);
+            AMediaFormat_setInt32(format, key(c"color-transfer"), COLOR_TRANSFER_SDR_VIDEO);
+            AMediaFormat_setInt32(format, key(c"color-range"), COLOR_RANGE_LIMITED);
             AMediaFormat_setInt32(format, key(c"bitrate"), config.bitrate_bps as i32);
             AMediaFormat_setInt32(format, key(c"frame-rate"), config.fps as i32);
             // In seconds; fractional from API 25.
@@ -235,8 +245,8 @@ impl AndroidVideoEncoder {
 }
 
 impl VideoEncoder for AndroidVideoEncoder {
-    fn input_window(&self) -> *mut c_void {
-        self.window.cast()
+    fn input(&self) -> EncoderInput {
+        EncoderInput::Window(self.window.cast())
     }
 
     fn drain(&mut self) -> EngineResult<()> {
