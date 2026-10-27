@@ -478,6 +478,21 @@ typedef void(MIGO_CALL *MigoOnRestartRequestedFn)(void *user_data, MigoSession *
                                                   uint32_t launch_options_length);
 
 /*
+ * One line content wrote to its console (console.log, info, warn, error,
+ * debug), at the engine's level -- 0 debug, 1 log and info, 2 warn, 3 error --
+ * as length-delimited UTF-8 borrowed for the call. Every line, in the order
+ * content wrote them, and in order with everything else content does: a line
+ * written before exitMiniProgram reaches the host before on_exit_requested.
+ * Whether the content runs in the engine or outside it (an external-frame
+ * session, migo/external_frames.h). Optional: with none installed, content's
+ * console reaches only the engine's own log (MIGO_CAPI_LOG) and, while the
+ * debugging aids are on, migo_session_copy_console_logs, which is the
+ * pre-existing behaviour.
+ */
+typedef void(MIGO_CALL *MigoOnConsoleFn)(void *user_data, MigoSession *session, uint32_t level,
+                                         const char *message_utf8, uint32_t message_length);
+
+/*
  * The implementation copies known fields covered by struct_size. A non-null
  * callback requires a non-null dispatcher. User callbacks run without Migo
  * engine/session/attachment locks and may re-enter detach or destroy. Callback
@@ -528,12 +543,15 @@ typedef struct MigoHostCallbacks {
      * above). A host built before it does not restart such content, which is
      * the pre-existing behaviour. */
     MigoOnRestartRequestedFn on_restart_requested;
+    /* Appended: content's console (see above). A host built before it hears
+     * none, which is the pre-existing behaviour. */
+    MigoOnConsoleFn on_console;
 } MigoHostCallbacks;
 
 MIGO_STATIC_ASSERT(offsetof(MigoHostCallbacks, struct_size) == 0,
                    "every versioned struct must begin with struct_size");
 #if MIGO_LP64
-MIGO_STATIC_ASSERT(sizeof(MigoHostCallbacks) == 160, "MigoHostCallbacks LP64 size changed");
+MIGO_STATIC_ASSERT(sizeof(MigoHostCallbacks) == 168, "MigoHostCallbacks LP64 size changed");
 MIGO_STATIC_ASSERT(offsetof(MigoHostCallbacks, dispatch) == 24, "MigoHostCallbacks.dispatch moved");
 MIGO_STATIC_ASSERT(offsetof(MigoHostCallbacks, on_request_frame) == 64,
                    "MigoHostCallbacks.on_request_frame moved");
@@ -551,6 +569,8 @@ MIGO_STATIC_ASSERT(offsetof(MigoHostCallbacks, on_gamepad_rumble) == 144,
                    "MigoHostCallbacks.on_gamepad_rumble moved");
 MIGO_STATIC_ASSERT(offsetof(MigoHostCallbacks, on_restart_requested) == 152,
                    "MigoHostCallbacks.on_restart_requested moved");
+MIGO_STATIC_ASSERT(offsetof(MigoHostCallbacks, on_console) == 160,
+                   "MigoHostCallbacks.on_console moved");
 #endif
 
 /*

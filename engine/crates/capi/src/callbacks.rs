@@ -98,6 +98,10 @@ enum Event {
     RestartRequested {
         launch_options_json: String,
     },
+    Console {
+        level: u8,
+        message: String,
+    },
     GamepadRumble(GamepadRumble),
     HostServiceCall {
         call_id: u64,
@@ -237,6 +241,20 @@ fn invoke_task(task: &Task) {
                     on_game_log(
                         user_data,
                         session,
+                        bytes.as_ptr() as *const c_char,
+                        bytes.len() as u32,
+                    )
+                };
+            }
+        }
+        Event::Console { level, message } => {
+            if let Some(on_console) = task.callbacks.on_console {
+                let bytes = message.as_bytes();
+                unsafe {
+                    on_console(
+                        user_data,
+                        session,
+                        u32::from(*level),
                         bytes.as_ptr() as *const c_char,
                         bytes.len() as u32,
                     )
@@ -418,6 +436,19 @@ impl Notifier {
 
     pub fn game_log(&self, entry_json: String) -> bool {
         self.post(Event::GameLog { entry_json })
+    }
+
+    /// One line content wrote to its console. Silent when the host installed no
+    /// console callback: nothing is copied for a host that would drop it. Through
+    /// the same dispatcher as every other event, so a line written before content
+    /// exits reaches the host before the exit does.
+    pub fn console(&self, level: u8, message: &str) {
+        if self.callbacks.on_console.is_some() {
+            let _ = self.post(Event::Console {
+                level,
+                message: message.to_owned(),
+            });
+        }
     }
 
     /// Content asked to be launched again, with these options, in a session that
@@ -690,6 +721,7 @@ mod tests {
             host_services: 0,
             on_gamepad_rumble: None,
             on_restart_requested: None,
+            on_console: None,
         }
     }
 
@@ -757,6 +789,7 @@ mod tests {
             host_services: 0,
             on_gamepad_rumble: None,
             on_restart_requested: None,
+            on_console: None,
         }
     }
 
@@ -784,6 +817,7 @@ mod tests {
             host_services: 0,
             on_gamepad_rumble: None,
             on_restart_requested: None,
+            on_console: None,
         };
         test_notifier(callbacks)
     }
@@ -1024,6 +1058,61 @@ mod tests {
         assert_eq!(
             *RESTART_OPTIONS.lock().unwrap_or_else(|e| e.into_inner()),
             options
+        );
+    }
+
+    /// What the host heard, in the order it heard it.
+    static HEARD: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+    unsafe extern "C" fn recording_console(
+        _user: *mut c_void,
+        _session: *mut c_void,
+        level: u32,
+        message: *const c_char,
+        length: u32,
+    ) {
+        let bytes = unsafe { std::slice::from_raw_parts(message.cast::<u8>(), length as usize) };
+        let text = String::from_utf8(bytes.to_vec()).expect("the line is UTF-8");
+        HEARD
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(format!("console {level} {text}"));
+    }
+
+    unsafe extern "C" fn recording_exit(_user: *mut c_void, _session: *mut c_void) {
+        HEARD
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push("exit".to_owned());
+    }
+
+    /// Content's console reaches the host through its dispatcher, as every other
+    /// event does, so a line written before content exits is heard before the
+    /// exit; and a host that installed no console callback is sent nothing.
+    #[test]
+    fn console_lines_reach_the_host_in_order_with_the_exit() {
+        let _guard = COUNTER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        HEARD.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        let mut with_console = callbacks(inline_dispatch);
+        with_console.on_console = Some(recording_console);
+        with_console.on_exit_requested = Some(recording_exit);
+        let listening = test_notifier(with_console);
+
+        listening.console(1, "first");
+        listening.console(3, "last words \u{2713}");
+        listening.exit_requested();
+        assert_eq!(
+            *HEARD.lock().unwrap_or_else(|e| e.into_inner()),
+            ["console 1 first", "console 3 last words \u{2713}", "exit"]
+        );
+
+        DISPATCH_CALLS.store(0, Ordering::SeqCst);
+        let deaf = notifier(counting_inline_dispatch);
+        deaf.console(1, "nobody listens");
+        assert_eq!(
+            DISPATCH_CALLS.load(Ordering::SeqCst),
+            0,
+            "nothing is dispatched to a host with no console callback"
         );
     }
 

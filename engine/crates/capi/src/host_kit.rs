@@ -543,6 +543,13 @@ impl HostNotifier for CapiHostKit {
         }
     }
 
+    fn notify_console(&self, host_id: i32, level: u8, message: &str) {
+        let _ = host_id;
+        if let Some(notifier) = &self.notifier {
+            notifier.console(level, message);
+        }
+    }
+
     fn notify_error(&self, host_id: i32, code: u16, msg: &str, detail: &str) {
         let _ = host_id;
         if let Some(notifier) = &self.notifier {
@@ -722,6 +729,7 @@ mod tests {
             host_services: 0,
             on_gamepad_rumble: None,
             on_restart_requested: None,
+            on_console: None,
         };
         let session = callback_session_pin();
         let notifier = Arc::new(Notifier::new(

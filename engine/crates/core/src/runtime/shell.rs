@@ -117,6 +117,20 @@ impl Drop for HostStartupGuard {
     }
 }
 
+/// Content's console as the host hears it: each line, as it is written, through
+/// the platform's [`notify_console`](crate::services::HostNotifier::notify_console).
+/// One forwarder for both execution modes, because both write the same buffer.
+struct HostConsole {
+    platform: Arc<dyn PlatformServices>,
+    id: HostId,
+}
+
+impl shared::console_log::ConsoleForward for HostConsole {
+    fn line(&self, level: u8, message: &str) {
+        self.platform.notify_console(self.id, level, message);
+    }
+}
+
 /// Everything a session owns that does not depend on where its JavaScript runs.
 ///
 /// Fields rather than accessors: both execution modes destructure this once at
@@ -330,10 +344,19 @@ impl SessionShell {
         let backgrounded = Arc::new(AtomicBool::new(false));
         let timer_backgrounded = Arc::new(AtomicBool::new(false));
 
-        // ---- Console log, for the debugging aids: every session has one, so
-        // they can be turned on while a game runs (`setEnableDebug`); it
-        // records from the start only when they start on. ----
-        shared::console_log::register_console_log(id, init_options.debug_enabled());
+        // ---- Console log: every line goes to the host as content writes it,
+        // and to the debugging aids' buffer while they are on. Every session
+        // has one, so they can be turned on while a game runs
+        // (`setEnableDebug`); it records from the start only when they start
+        // on. ----
+        shared::console_log::register_console_log(
+            id,
+            init_options.debug_enabled(),
+            Some(Arc::new(HostConsole {
+                platform: Arc::clone(platform),
+                id,
+            })),
+        );
         startup_guard.mark_console_registered();
 
         info!(

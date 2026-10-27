@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `MigoHostCallbacks.on_console` (C ABI): each line content writes to its console, at its level, in order with
+  everything else content does -- a line written before `exitMiniProgram` reaches the host before
+  `on_exit_requested` -- whether content runs in the engine or in an external-frame session. Until now a C ABI host
+  heard content's console only through the engine's own log or, with the debugging aids on,
+  `migo_session_copy_console_logs`. The Apple SDK delivers it as `MigoEngineSession.Event.console`, writes it to the
+  platform log (`dev.migo`, `content`), and the macOS `MigoGameView` gains the `.console` event the iOS one had.
 - `createVideo` on iOS (Performance+): the players are the host app's, as on every other platform (the video service,
   `migo/host_services.h`). The producer makes a player, or changes what it plays, through the host's synchronous
   endpoint -- answered at once, its `src` and `poster` exported through the game's sandbox as the embedded ops export
@@ -905,6 +911,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- On iOS (Performance+) content's console reaches the app in order with everything else the game does. It travelled
+  the page's message channel, which nothing orders with the service stream, so an `exitMiniProgram` or a restart on
+  the stream overtook the lines written just before it and the view was gone before they arrived. It is now the
+  command the op-boundary contract always said it was (`op_console`, 311): the host logs it as the embedded op does,
+  keeps it for the debugging aids, and hands it on through `on_console`. A line too long for one service record is
+  cut, and a line written after the channel broke is dropped, rather than either throwing from `console`. And
+  `exitMiniProgram` and `restartMiniProgram` are sent once the task that asked has ended, as the embedded runtime
+  acts on them only between tasks: the call's own success and complete, and whatever they log or save, now happen
+  before the session goes, where the host acted on the command as it read it and closed the game first.
 - On iOS and macOS the clipboard is read and written off the main thread. Reading what another app put there asks
   the player first (iOS 16, macOS 15.4) and blocks the reading thread until they answer: on the main thread
   `getClipboardData` froze the game -- its frames, its touches, every other answer -- for as long as the prompt was

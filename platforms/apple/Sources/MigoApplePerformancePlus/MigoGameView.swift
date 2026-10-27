@@ -172,7 +172,9 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             /// in memory does not.
             case restarted
             /// A line the game wrote to `console`: the engine's level (1 info,
-            /// 2 warn, 3 error, anything else debug) and the text.
+            /// 2 warn, 3 error, anything else debug) and the text, in order with
+            /// everything else the game does. The lane's own warnings about what
+            /// the game asked of it arrive this way too.
             case console(level: Int, message: String)
             /// An entry from the game's log (`getGameLogManager().log`), as the
             /// JSON object the engine merged -- level, key, value, commonInfo --
@@ -495,10 +497,9 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
                 channel: MigoFrameChannel(session: engine.session))
             self.host = host
             host.onReport = { [weak self] report in self?.producerReport(report) }
-            host.onConsole = { [weak self] level, message in
-                self?.debugPanel?.append(level: level, message: message)
-                self?.onEvent?(.console(level: level, message: message))
-            }
+            // The producer's own warnings; content's console comes from the
+            // engine session, in order with the rest of what content does.
+            host.onConsole = { [weak self] level, message in self?.console(level: level, message: message) }
 
             // Off the window's left edge and the full window's size: attached
             // (an unattached web view is killed), neither hidden nor zero-sized
@@ -626,9 +627,16 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
                 keepScreenOn(on)
             case .gameLog(let entry):
                 onEvent?(.gameLog(entry))
+            case .console(let level, let message):
+                console(level: level, message: message)
             case .debugAids(let on):
                 showDebugPanel(on)
             }
+        }
+
+        private func console(level: Int, message: String) {
+            debugPanel?.append(level: level, message: message)
+            onEvent?(.console(level: level, message: message))
         }
 
         /// The debugging panel over the top of the game, from the moment the

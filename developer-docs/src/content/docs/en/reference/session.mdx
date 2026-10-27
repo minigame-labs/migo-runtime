@@ -135,6 +135,7 @@ typedef struct MigoHostCallbacks {
     uint64_t                host_services;         /* the services the host supplies, one bit each */
     MigoOnGamepadRumbleFn   on_gamepad_rumble;     /* gamepad motors; required by pads with haptics */
     MigoOnRestartRequestedFn on_restart_requested; /* optional: an external-frame session's restart */
+    MigoOnConsoleFn         on_console;            /* optional: content's console, line by line */
 } MigoHostCallbacks;
 ```
 
@@ -163,6 +164,7 @@ Fields:
 | `host_services` | `uint64_t` | as above | The services the host supplies, one bit per `MIGO_HOST_SERVICE_*`; a bit this header does not define returns `MIGO_ERROR_INVALID_ARGUMENT` |
 | `on_gamepad_rumble` | `MigoOnGamepadRumbleFn` | when any pad is announced with haptics | Set a gamepad's motors for its `vibrationActuator`; see [Gamepad motors](#gamepad-motors) |
 | `on_restart_requested` | `MigoOnRestartRequestedFn` | — | Content's `restartMiniProgram` in a session whose content runs outside the engine: start the game again in a new session with the launch options it carries |
+| `on_console` | `MigoOnConsoleFn` | — | Each line content writes to its console, at its level, in order with everything else content does |
 
 ### MigoDispatchFn
 
@@ -306,6 +308,15 @@ device without that hardware. Like every callback they arrive through
   UTF-8, borrowed for the call. A session whose content runs in the engine
   restarts in place and never calls it; with none installed, such content's
   restart does nothing.
+- `on_console`: one line content wrote to its console (`console.log`, `info`,
+  `warn`, `error`, `debug`), at the engine's level -- `0` debug, `1` log and
+  info, `2` warn, `3` error -- length-delimited UTF-8 borrowed for the call.
+  Every line, in the order content wrote them, and in order with everything
+  else content does: a line written before `exitMiniProgram` reaches the host
+  before `on_exit_requested`. Whether content runs in the engine or outside it
+  (an external-frame session). With none installed, content's console reaches
+  only the engine's own log (`MIGO_CAPI_LOG`) and, while the debugging aids are
+  on, `migo_session_copy_console_logs`.
 
 ### Gamepad motors
 

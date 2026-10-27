@@ -135,6 +135,10 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             /// JSON object the engine merged -- level, key, value, commonInfo --
             /// for the app to keep or upload.
             case gameLog(String)
+            /// A line the game wrote to `console`: the engine's level (1 info,
+            /// 2 warn, 3 error, anything else debug) and the text, in order with
+            /// everything else the game does.
+            case console(level: Int, message: String)
         }
 
         public var onEvent: ((Event) -> Void)?
@@ -434,6 +438,8 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
                 keepDisplayAwake(on)
             case .gameLog(let entry):
                 onEvent?(.gameLog(entry))
+            case .console(let level, let message):
+                onEvent?(.console(level: level, message: message))
             case .debugAids(let on):
                 showDebugPanel(on)
             }

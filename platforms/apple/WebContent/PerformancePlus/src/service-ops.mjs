@@ -318,4 +318,5 @@ export const SERVICE_OP = Object.freeze({
   op_recorder_pause: 308,
   op_recorder_resume: 309,
   op_recorder_stop: 310,
+  op_console: 311,
 });

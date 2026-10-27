@@ -44,6 +44,17 @@ public final class MigoFrameHarness {
     public let session: OpaquePointer
     public let sizePixels: Int
 
+    /// Content's console, as the session hands it on (`on_console`): each
+    /// line's level and text, on the main queue, in the order content wrote
+    /// them. Where a test watches a game the way a game reports -- through
+    /// `console`.
+    public var onConsole: ((_ level: Int, _ message: String) -> Void)? {
+        get { console.takeUnretainedValue().handler }
+        set { console.takeUnretainedValue().handler = newValue }
+    }
+    /// The session holds its address until it is destroyed; see `shutDown`.
+    private let console: Unmanaged<ConsoleRelay>
+
     private let root: URL
     private let engine: OpaquePointer
     private var attachment: OpaquePointer?
@@ -103,6 +114,20 @@ public final class MigoFrameHarness {
             throw Failure.nothingProduced("migo_session_create")
         }
         self.session = session
+
+        // Before the surface: a session takes its callbacks only until then.
+        let console = Unmanaged.passRetained(ConsoleRelay())
+        self.console = console
+        var callbacks = MigoHostCallbacks()
+        callbacks.struct_size = UInt32(MemoryLayout<MigoHostCallbacks>.size)
+        callbacks.abi_version = MIGO_ABI_VERSION_CURRENT
+        callbacks.user_data = console.toOpaque()
+        callbacks.dispatch = harnessDispatchToMain
+        callbacks.on_console = harnessOnConsole
+        let installed = migo_session_set_host_callbacks(session, &callbacks)
+        guard installed == MIGO_OK else {
+            throw Failure.call("migo_session_set_host_callbacks", installed)
+        }
 
         let layer = CAMetalLayer()
         layer.frame = CGRect(x: 0, y: 0, width: sizePixels, height: sizePixels)
@@ -168,6 +193,11 @@ public final class MigoFrameHarness {
         }
         _ = migo_session_destroy(session)
         _ = migo_engine_destroy(engine)
+        // Tasks already queued on the main queue were cancelled by the destroy,
+        // but they still run, carrying the relay's address: one more turn of
+        // the queue and they have.
+        let console = self.console
+        DispatchQueue.main.async { console.release() }
         retainedLayer = nil
         try? FileManager.default.removeItem(at: root)
         return released
@@ -274,4 +304,24 @@ extension MigoFrameHarness {
         }
         return try Data(contentsOf: url)
     }
+}
+
+/// What `onConsole` is set to, at an address the session holds.
+private final class ConsoleRelay {
+    var handler: ((_ level: Int, _ message: String) -> Void)?
+}
+
+/// Every task onto the main queue, exactly once, as the ABI requires.
+private let harnessDispatchToMain: MigoDispatchFn = { _, task, context in
+    guard let task else { return MIGO_ERROR_DISPATCH_REJECTED }
+    let address = UInt(bitPattern: context)
+    DispatchQueue.main.async { task(UnsafeMutableRawPointer(bitPattern: address)) }
+    return MIGO_OK
+}
+
+private let harnessOnConsole: MigoOnConsoleFn = { userData, _, level, message, length in
+    guard let userData else { return }
+    let text =
+        message.map { String(decoding: UnsafeRawBufferPointer(start: $0, count: Int(length)), as: UTF8.self) } ?? ""
+    Unmanaged<ConsoleRelay>.fromOpaque(userData).takeUnretainedValue().handler?(Int(level), text)
 }
