@@ -16,7 +16,7 @@
   ],
   "platform": "ios",
   "measured": [
-    {"date": "2026-10-27", "runner": "ios-simulator", "bundles": ["api-spec", "audio-spec", "babylon", "ble-peripheral-spec", "canvas2d", "device-spec", "easeljs", "egret", "font-generics", "fs-sandbox", "fs-spec", "game-recorder-share-spec", "game-recorder-spec", "geometry", "howler", "image", "inner-audio-spec", "intl-spec", "io-spec", "keyboard-spec", "lifecycle-exit", "lifecycle-launch-options", "lifecycle-restart", "media-spec", "network-spec", "offscreen-readback", "p5", "phaser", "phaser-canvas", "phaser-loader", "pixi", "playcanvas", "readback", "recorder-spec", "resize", "robustness", "screen-fill", "screen-fill-webgl", "screen-fill-webgl2-read-none", "smoothing", "spec", "state", "storage-spec", "system-info-spec", "text", "three", "three-adv", "three-loaders", "timers-spec", "ui-spec", "video-spec", "wasm", "webgl", "webgl-buffer", "webgl-buffer-presented", "webgl-buffer-presented-stencil", "webgl-buffer-preserved", "webgl-spec", "webgl-zero-size", "worker-spec"], "runtime": "3c74dd72692ddb65c0bfb2f06ec396527de48357", "conformance": "b8d15a4531d62b27efa0aab455b0053124c12a0a"}
+    {"date": "2026-10-28", "runner": "ios-simulator", "bundles": ["api-spec", "audio-spec", "babylon", "ble-peripheral-spec", "canvas2d", "device-spec", "easeljs", "egret", "font-generics", "fs-sandbox", "fs-spec", "game-recorder-share-spec", "game-recorder-spec", "geometry", "howler", "image", "inner-audio-spec", "intl-spec", "io-spec", "keyboard-spec", "lan-spec", "lifecycle-exit", "lifecycle-launch-options", "lifecycle-restart", "media-spec", "network-spec", "offscreen-readback", "p5", "phaser", "phaser-canvas", "phaser-loader", "pixi", "playcanvas", "readback", "recorder-spec", "resize", "robustness", "screen-fill", "screen-fill-webgl", "screen-fill-webgl2-read-none", "smoothing", "spec", "state", "storage-spec", "system-info-spec", "text", "three", "three-adv", "three-loaders", "timers-spec", "ui-spec", "video-spec", "wasm", "webgl", "webgl-buffer", "webgl-buffer-presented", "webgl-buffer-presented-stencil", "webgl-buffer-preserved", "webgl-spec", "webgl-zero-size", "worker-spec"], "runtime": "01ce3c818b41d28897ef7a37fabda9b6029f8101", "conformance": "3d881faa8a0d72a7399ea628a347ac050df3f710"}
   ],
   "apis": {
     "addCard": {"status": "present"},
@@ -34,9 +34,9 @@
     "clearStorageSync": {"status": "verified"},
     "closeBLEConnection": {"status": "present"},
     "closeBluetoothAdapter": {"status": "present"},
-    "closeSocket": {"status": "present"},
+    "closeSocket": {"status": "verified"},
     "compressImage": {"status": "verified"},
-    "connectSocket": {"status": "present"},
+    "connectSocket": {"status": "verified"},
     "createAdSkipCard": {"status": "present"},
     "createBLEConnection": {"status": "present"},
     "createBLEPeripheralServer": {"status": "verified"},
@@ -344,7 +344,7 @@
     "scanCode": {"status": "present"},
     "selectGroupMembers": {"status": "present"},
     "sendGiftToFriend": {"status": "present"},
-    "sendSocketMessage": {"status": "present"},
+    "sendSocketMessage": {"status": "verified"},
     "setBLEMTU": {"status": "present"},
     "setBackgroundFetchToken": {"status": "present"},
     "setClipboardData": {"status": "verified"},
@@ -397,7 +397,7 @@
     "updateKeyboard": {"status": "verified"},
     "updateShareMenu": {"status": "present"},
     "updateVoIPChatMuteConfig": {"status": "present"},
-    "uploadFile": {"status": "present"},
+    "uploadFile": {"status": "verified"},
     "vibrateLong": {"status": "verified"},
     "vibrateShort": {"status": "verified"},
     "writeBLECharacteristicValue": {"status": "present"}
