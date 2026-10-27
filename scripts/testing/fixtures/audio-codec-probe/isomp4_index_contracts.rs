@@ -13,7 +13,7 @@ use symphonia_format_isomp4::{
 };
 #[global_allocator]
 static ALLOC: migo_alloc_probe::CountingAllocator = migo_alloc_probe::CountingAllocator::system();
-fn file(name: &str) -> Vec<u8> {
+pub(crate) fn file(name: &str) -> Vec<u8> {
     std::fs::read(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../fixtures")
@@ -21,7 +21,7 @@ fn file(name: &str) -> Vec<u8> {
     )
     .unwrap()
 }
-fn moov(data: &[u8]) -> &[u8] {
+pub(crate) fn moov(data: &[u8]) -> &[u8] {
     let mut offset = 0;
     while offset < data.len() {
         let span = AtomSpan::read(&data[offset..], offset as u64, Some(data.len() as u64))
@@ -38,7 +38,7 @@ fn moov(data: &[u8]) -> &[u8] {
     }
     panic!("no moov")
 }
-fn index(data: &[u8]) -> AudioIndex {
+pub(crate) fn index(data: &[u8]) -> AudioIndex {
     AudioIndex::from_moov(
         moov(data),
         IndexOptions {
@@ -48,7 +48,7 @@ fn index(data: &[u8]) -> AudioIndex {
     )
     .unwrap()
 }
-fn pull(data: &[u8]) -> IsoMp4Reader<'static> {
+pub(crate) fn pull(data: &[u8]) -> IsoMp4Reader<'static> {
     let mut opts = FormatOptions::default();
     opts.metadata_options = MetadataOptions::default().limit_total_bytes(Limit::Maximum(0));
     IsoMp4Reader::try_new(
@@ -57,7 +57,7 @@ fn pull(data: &[u8]) -> IsoMp4Reader<'static> {
     )
     .unwrap()
 }
-fn codec(index: &AudioIndex) -> AacDecoder {
+pub(crate) fn codec(index: &AudioIndex) -> AacDecoder {
     AacDecoder::try_new(
         index
             .track()

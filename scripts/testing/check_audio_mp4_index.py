@@ -102,14 +102,14 @@ def fixtures(directory: Path) -> None:
 
 
 def build(work: Path, output: Path, env: dict, name: str, package: str,
-          mutated: str | None = None) -> Path:
+          mutated: str | None = None, *, test_target: str = "index") -> Path:
     for i, selected in enumerate(dict.fromkeys([mutated or package, package])):
         codecs.run(["cargo", "clean", "--offline", "--locked", "-p", selected],
                    output / f"{name}-clean-{i}.log", cwd=work, env=env)
     command = ["cargo", "test", "--offline", "--locked", "--release", "--no-run",
                "--message-format=json", "-p", package]
     if package == "migo-mp4-index-probe":
-        command += ["--test", "index"]
+        command += ["--test", test_target]
     else:
         command += ["--lib"]
         if package == "symphonia-format-isomp4":

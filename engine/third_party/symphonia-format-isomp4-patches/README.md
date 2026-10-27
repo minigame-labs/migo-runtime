@@ -64,3 +64,14 @@ Unused metadata is skipped before value allocation. Index descriptors preserve
 absolute u64 offsets and optional object bounds, but callers must still validate
 them against real mdat extents. The interface performs no IO, HTTP Range or
 fallback, and is not yet a product decoder switch or streaming-playback claim.
+
+`0005-borrowed-sequential-aac-packets.patch` adds bounded sequential delivery
+over caller-owned input. Faststart movies collect only the bounded index;
+packets borrow the input directly. NeedIndex and ReadAt are explicit requests
+to the IO owner, not hidden blocking reads or an implemented HTTP client. The
+caller must pin/verify the representation and actual mdat range before resuming.
+Metadata skips are limited per call and cumulatively; the cold encoded index
+buffer is released before packet playback. Object EOF and complete samples
+remain distinct, including a known but unreceived non-audio tail.
+The library protocol/codec gate is separate from common Migo/HTTP/Range/fallback
+acceptance. The product still has no M4A codec/DSP switch.
