@@ -226,34 +226,42 @@ async fn directory_player_preserves_pause_pcm_and_exact_ended() {
             };
             if cached {
                 consume_player::<true>(
-                    name,
-                    format!("directory://{name}"),
-                    target,
-                    true,
-                    false,
-                    expected,
-                    channels,
-                    frames,
-                    state,
-                    steps,
-                    task,
-                    rx,
+                    crate::streaming_player_contracts::PlaybackCase {
+                        name,
+                        source_name: format!("directory://{name}"),
+                        target,
+                        pause: true,
+                        long: false,
+                        expected,
+                        channels,
+                        frames,
+                    },
+                    crate::streaming_player_contracts::StreamInput {
+                        state,
+                        steps,
+                        task,
+                        rx,
+                    },
                 )
                 .await;
             } else {
                 consume_player::<false>(
-                    name,
-                    format!("directory://{name}"),
-                    target,
-                    true,
-                    false,
-                    expected,
-                    channels,
-                    frames,
-                    state,
-                    steps,
-                    task,
-                    rx,
+                    crate::streaming_player_contracts::PlaybackCase {
+                        name,
+                        source_name: format!("directory://{name}"),
+                        target,
+                        pause: true,
+                        long: false,
+                        expected,
+                        channels,
+                        frames,
+                    },
+                    crate::streaming_player_contracts::StreamInput {
+                        state,
+                        steps,
+                        task,
+                        rx,
+                    },
                 )
                 .await;
             }

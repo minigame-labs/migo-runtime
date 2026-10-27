@@ -196,34 +196,42 @@ async fn package_player_preserves_pause_pcm_and_exact_ended() {
             };
             if cached {
                 consume_player::<true>(
-                    name,
-                    format!("package://{name}"),
-                    target,
-                    true,
-                    false,
-                    expected,
-                    channels,
-                    frames,
-                    state,
-                    steps,
-                    task,
-                    rx,
+                    crate::streaming_player_contracts::PlaybackCase {
+                        name,
+                        source_name: format!("package://{name}"),
+                        target,
+                        pause: true,
+                        long: false,
+                        expected,
+                        channels,
+                        frames,
+                    },
+                    crate::streaming_player_contracts::StreamInput {
+                        state,
+                        steps,
+                        task,
+                        rx,
+                    },
                 )
                 .await;
             } else {
                 consume_player::<false>(
-                    name,
-                    format!("package://{name}"),
-                    target,
-                    true,
-                    false,
-                    expected,
-                    channels,
-                    frames,
-                    state,
-                    steps,
-                    task,
-                    rx,
+                    crate::streaming_player_contracts::PlaybackCase {
+                        name,
+                        source_name: format!("package://{name}"),
+                        target,
+                        pause: true,
+                        long: false,
+                        expected,
+                        channels,
+                        frames,
+                    },
+                    crate::streaming_player_contracts::StreamInput {
+                        state,
+                        steps,
+                        task,
+                        rx,
+                    },
                 )
                 .await;
             }
@@ -245,18 +253,22 @@ async fn package_long_player_exceeds_cache_quota_without_accumulating_pcm() {
         Arc::new(AtomicUsize::new(0)),
     ));
     consume_player::<true>(
-        "long-front.m4a",
-        "package://long-front.m4a".into(),
-        target,
-        true,
-        true,
-        Vec::new(),
-        1,
-        35_225_600,
-        state,
-        steps,
-        task,
-        rx,
+        crate::streaming_player_contracts::PlaybackCase {
+            name: "long-front.m4a",
+            source_name: "package://long-front.m4a".into(),
+            target,
+            pause: true,
+            long: true,
+            expected: Vec::new(),
+            channels: 1,
+            frames: 35_225_600,
+        },
+        crate::streaming_player_contracts::StreamInput {
+            state,
+            steps,
+            task,
+            rx,
+        },
     )
     .await;
 }

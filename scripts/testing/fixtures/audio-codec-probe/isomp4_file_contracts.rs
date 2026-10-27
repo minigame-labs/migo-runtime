@@ -1,7 +1,6 @@
 //! Anchored /code files use the same codec/index/DSP/player as HTTP.
 use super::*;
 use crate::isomp4_file::{FileReader, IndexedFile};
-use crate::isomp4_source::Reader;
 use migo_io::scheduler::IoScheduler;
 use shared::vfs::VirtualFS;
 use std::fs::File;
@@ -322,34 +321,42 @@ async fn local_player_keeps_pause_backpressure_pcm_and_exact_ended() {
             };
             if cached {
                 consume_player::<true>(
-                    name,
-                    format!("/code/{name}"),
-                    target,
-                    true,
-                    false,
-                    expected,
-                    channels,
-                    frames,
-                    state,
-                    steps,
-                    task,
-                    rx,
+                    crate::streaming_player_contracts::PlaybackCase {
+                        name,
+                        source_name: format!("/code/{name}"),
+                        target,
+                        pause: true,
+                        long: false,
+                        expected,
+                        channels,
+                        frames,
+                    },
+                    crate::streaming_player_contracts::StreamInput {
+                        state,
+                        steps,
+                        task,
+                        rx,
+                    },
                 )
                 .await;
             } else {
                 consume_player::<false>(
-                    name,
-                    format!("/code/{name}"),
-                    target,
-                    true,
-                    false,
-                    expected,
-                    channels,
-                    frames,
-                    state,
-                    steps,
-                    task,
-                    rx,
+                    crate::streaming_player_contracts::PlaybackCase {
+                        name,
+                        source_name: format!("/code/{name}"),
+                        target,
+                        pause: true,
+                        long: false,
+                        expected,
+                        channels,
+                        frames,
+                    },
+                    crate::streaming_player_contracts::StreamInput {
+                        state,
+                        steps,
+                        task,
+                        rx,
+                    },
                 )
                 .await;
             }
@@ -371,18 +378,22 @@ async fn local_long_player_exceeds_cache_quota_without_accumulating_pcm() {
         Arc::new(AtomicUsize::new(0)),
     ));
     consume_player::<true>(
-        "long-front.m4a",
-        "/code/long-front.m4a".into(),
-        target,
-        true,
-        true,
-        Vec::new(),
-        1,
-        35_225_600,
-        state,
-        steps,
-        task,
-        rx,
+        crate::streaming_player_contracts::PlaybackCase {
+            name: "long-front.m4a",
+            source_name: "/code/long-front.m4a".into(),
+            target,
+            pause: true,
+            long: true,
+            expected: Vec::new(),
+            channels: 1,
+            frames: 35_225_600,
+        },
+        crate::streaming_player_contracts::StreamInput {
+            state,
+            steps,
+            task,
+            rx,
+        },
     )
     .await;
 }

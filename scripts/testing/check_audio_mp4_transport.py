@@ -80,6 +80,8 @@ def prepare(work,target,rubato_home):
         file=name+'.rs';shutil.copy2(ROOT/'scripts/testing/fixtures/audio-codec-probe'/file,work/'source'/file)
         text+=f'#[path={json.dumps(str(work/"source"/file))}] mod {name};\n'
     shutil.copy2(ROOT/'scripts/testing/fixtures/audio-codec-probe/isomp4_transport_contracts.rs',work/'source/isomp4_transport_contracts.rs')
+    shutil.copy2(ROOT/'scripts/testing/fixtures/audio-codec-probe/streaming_player_contracts.rs',work/'source/streaming_player_contracts.rs')
+    text+=f'\n#[cfg(test)] #[path={json.dumps(str(work/"source/streaming_player_contracts.rs"))}] mod streaming_player_contracts;\n'
     lib.write_text(text)
     extra=[Path(__file__).resolve(),ROOT/'scripts/testing/check_audio_mp4_source.py',ROOT/'scripts/testing/check_audio_streaming_transport.py']
     frozen.update({str(p.relative_to(ROOT)):codecs.sha(p)for p in extra})

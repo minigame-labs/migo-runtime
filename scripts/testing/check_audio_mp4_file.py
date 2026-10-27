@@ -15,22 +15,22 @@ codecs=dsp.codecs
 
 def controls(work,env):
     declarations=[
-        ('cancelled-file-reader-reused','isomp4_file.rs','if self.failed || self.domain.is_closed() {','if self.domain.is_closed() {','cancelled_file_wait_leaves_io_worker_free_and_reader_failed'),
-        ('file-io-runs-inline','isomp4_file.rs','        let position = self.position;','        std::thread::sleep(self.delay);\n        let position = self.position;','cancelled_file_wait_leaves_io_worker_free_and_reader_failed'),
-        ('file-drop-does-not-cancel-queued-read','isomp4_file.rs','self.0.store(false, Ordering::Release);','self.0.store(true, Ordering::Release);','cancelled_file_wait_leaves_io_worker_free_and_reader_failed'),
-        ('file-expired-deadline-still-submits','isomp4_file.rs','self.failed = true;\n        if Instant::now() >= deadline {','self.failed = true;\n        if false {','one_absolute_file_deadline_and_closed_domain_reject_new_and_queued_io'),
-        ('file-queued-control-ignores-deadline','isomp4_file.rs','// Do not rely on the receiver polling its timeout promptly.\n                    check_deadline(deadline)?;','// Deadline check deliberately removed.','expired_queued_control_skips_disk_even_without_polling_timeout'),
-        ('file-late-control-completion-accepted','isomp4_file.rs','fn check_deadline(deadline: Instant) -> std::io::Result<()> {\n    if Instant::now() >= deadline {','fn check_deadline(deadline: Instant) -> std::io::Result<()> {\n    if false {','late_control_completion_is_rejected_without_polling_timeout'),
-        ('file-requires-no-code-namespace','isomp4_file.rs','if !path.starts_with("/code/") {','if false {','local_source_admission_uses_vfs_anchored_readonly_code_handles'),
-        ('directory-setup-uses-pack','isomp4_file.rs','            PoolKind::Fs,\n            FILE_CHUNK_BYTES as u64,','            PoolKind::Pack,\n            FILE_CHUNK_BYTES as u64,','directory::directory_setup_and_media_use_fs_when_pack_is_full'),
-        ('directory-media-uses-pack','isomp4_file.rs','Self::File(_) => PoolKind::Fs,','Self::File(_) => PoolKind::Pack,','directory::directory_setup_and_media_use_fs_when_pack_is_full'),
-        ('package-setup-bypasses-pack-cap','isomp4_file.rs','            PoolKind::Pack,\n            0,','            PoolKind::Fs,\n            0,','package::package_setup_and_media_obey_the_actual_pack_class_cap'),
-        ('package-media-bypasses-pack-cap','isomp4_file.rs','Self::Package(_) => PoolKind::Pack,','Self::Package(_) => PoolKind::Fs,','package::package_setup_and_media_obey_the_actual_pack_class_cap'),
-        ('package-media-credit-charged-twice','isomp4_file.rs','Self::Package(_) => 0,','Self::Package(_) => FILE_CHUNK_BYTES as u64,','package::package_media_uses_reserved_credit_but_controls_need_transient_credit'),
-        ('package-control-transient-credit-bypassed','isomp4_file.rs','                self.file.kind(),\n                PriorityClass::ForegroundAsync,\n                len as u64,','                self.file.kind(),\n                PriorityClass::ForegroundAsync,\n                0,','package::package_media_uses_reserved_credit_but_controls_need_transient_credit'),
+        ('cancelled-file-reader-reused','local_source.rs','if self.failed || self.domain.is_closed() {','if self.domain.is_closed() {','cancelled_file_wait_leaves_io_worker_free_and_reader_failed'),
+        ('file-io-runs-inline','local_source.rs','        let position = self.position;','        std::thread::sleep(self.delay);\n        let position = self.position;','cancelled_file_wait_leaves_io_worker_free_and_reader_failed'),
+        ('file-drop-does-not-cancel-queued-read','local_source.rs','self.0.store(false, Ordering::Release);','self.0.store(true, Ordering::Release);','cancelled_file_wait_leaves_io_worker_free_and_reader_failed'),
+        ('file-expired-deadline-still-submits','local_source.rs','self.failed = true;\n        if Instant::now() >= deadline {','self.failed = true;\n        if false {','one_absolute_file_deadline_and_closed_domain_reject_new_and_queued_io'),
+        ('file-queued-control-ignores-deadline','local_source.rs','// Do not rely on the receiver polling its timeout promptly.\n                    check_deadline(deadline)?;','// Deadline check deliberately removed.','expired_queued_control_skips_disk_even_without_polling_timeout'),
+        ('file-late-control-completion-accepted','local_source.rs','fn check_deadline(deadline: Instant) -> std::io::Result<()> {\n    if Instant::now() >= deadline {','fn check_deadline(deadline: Instant) -> std::io::Result<()> {\n    if false {','late_control_completion_is_rejected_without_polling_timeout'),
+        ('file-requires-no-code-namespace','local_source.rs','if !path.starts_with("/code/") {','if false {','local_source_admission_uses_vfs_anchored_readonly_code_handles'),
+        ('directory-setup-uses-pack','local_source.rs','            PoolKind::Fs,\n            FILE_CHUNK_BYTES as u64,','            PoolKind::Pack,\n            FILE_CHUNK_BYTES as u64,','directory::directory_setup_and_media_use_fs_when_pack_is_full'),
+        ('directory-media-uses-pack','local_source.rs','Self::File(_) => PoolKind::Fs,','Self::File(_) => PoolKind::Pack,','directory::directory_setup_and_media_use_fs_when_pack_is_full'),
+        ('package-setup-bypasses-pack-cap','local_source.rs','            PoolKind::Pack,\n            0,','            PoolKind::Fs,\n            0,','package::package_setup_and_media_obey_the_actual_pack_class_cap'),
+        ('package-media-bypasses-pack-cap','local_source.rs','Self::Package(_) => PoolKind::Pack,','Self::Package(_) => PoolKind::Fs,','package::package_setup_and_media_obey_the_actual_pack_class_cap'),
+        ('package-media-credit-charged-twice','local_source.rs','Self::Package(_) => 0,','Self::Package(_) => FILE_CHUNK_BYTES as u64,','package::package_media_uses_reserved_credit_but_controls_need_transient_credit'),
+        ('package-control-transient-credit-bypassed','local_source.rs','                self.file.kind(),\n                PriorityClass::ForegroundAsync,\n                len as u64,','                self.file.kind(),\n                PriorityClass::ForegroundAsync,\n                0,','package::package_media_uses_reserved_credit_but_controls_need_transient_credit'),
     ]
     declarations += [
-        ('file-closed-domain-data-published','isomp4_file.rs','                    let result = file.chunk_at(position, len);\n                    #[cfg(test)]\n                    if let Some(hook) = after_io {\n                        hook();\n                    }\n                    if domain.is_closed() || !read_active.load(Ordering::Acquire) {','                    let result = file.chunk_at(position, len);\n                    #[cfg(test)]\n                    if let Some(hook) = after_io {\n                        hook();\n                    }\n                    if false {','domain_close_after_disk_read_discards_late_data'),
+        ('file-closed-domain-data-published','local_source.rs','                    let result = file.chunk_at(position, len);\n                    #[cfg(test)]\n                    if let Some(hook) = after_io {\n                        hook();\n                    }\n                    if domain.is_closed() || !read_active.load(Ordering::Acquire) {','                    let result = file.chunk_at(position, len);\n                    #[cfg(test)]\n                    if let Some(hook) = after_io {\n                        hook();\n                    }\n                    if false {','domain_close_after_disk_read_discards_late_data'),
     ]
     for name,file,before,after,test in declarations:
         path=work/'source'/file;original=path.read_text();assert original.count(before)==1,(name,'anchor changed')
@@ -41,39 +41,45 @@ def controls(work,env):
             observed=log.read_text();assert r.returncode==101 and 'panicked at' in observed and '1 failed' in observed,(name,'must fail an executed assertion')
         finally:path.write_text(original)
         print('actual local source fault',name,': executable assertion rejected',flush=True)
-    path=work/'source/isomp4_file.rs';original=path.read_text()
+    path=work/'source/local_source.rs';original=path.read_text()
     before='let file = tokio::time::timeout_at(deadline, task)\n            .await\n            .map_err(|_| error("file setup deadline exceeded"))?'
     assert original.count(before)==1
     path.write_text(original.replace(before,'let file = task.await'))
     try:
         name='file-setup-ignores-timeout';binary=dsp.source.build(work,env,name);log=work/f'{name}-test.log'
-        with log.open('w')as out:r=subprocess.run([str(binary),'--exact','isomp4_file::tests::file_setup_timeout_does_not_block_async_worker','--nocapture'],cwd=work/'probe',env=env,stdout=out,stderr=subprocess.STDOUT,timeout=30)
+        with log.open('w')as out:r=subprocess.run([str(binary),'--exact','local_source::tests::file_setup_timeout_does_not_block_async_worker','--nocapture'],cwd=work/'probe',env=env,stdout=out,stderr=subprocess.STDOUT,timeout=30)
         observed=log.read_text();assert r.returncode==101 and 'panicked at' in observed and '1 failed' in observed,(name,'must fail an executed assertion')
     finally:path.write_text(original)
     print('actual local source fault',name,': executable assertion rejected',flush=True)
     return len(declarations)+1
 
-def main(work,target,rubato,positive_only):
+def prepare(work,target,rubato,extra_inputs=()):
     env,frozen,_,libraries,new=dsp.prepare(work,target,rubato);package=work/'probe';files=ROOT/'scripts/testing/fixtures/audio-codec-probe'
-    for name in ['isomp4_file.rs','isomp4_file_contracts.rs','isomp4_package_contracts.rs','isomp4_directory_contracts.rs']:shutil.copy2(files/name,work/'source'/name)
-    lib=package/'src/lib.rs';lib.write_text(lib.read_text()+f'\n#[path={json.dumps(str(work/"source/isomp4_file.rs"))}] mod isomp4_file;\n')
+    for name in ['local_source.rs','isomp4_file.rs','isomp4_file_contracts.rs','isomp4_package_contracts.rs','isomp4_directory_contracts.rs']:shutil.copy2(files/name,work/'source'/name)
+    lib=package/'src/lib.rs';lib.write_text(lib.read_text()+''.join(f'\n#[path={json.dumps(str(work/"source"/(name+".rs")))}] mod {name};\n'for name in ['local_source','isomp4_file']))
     manifest=(package/'Cargo.toml').read_text().replace('"m4a-transport-probe"]','"m4a-transport-probe","m4a-file-probe"]\nm4a-file-probe=[]',1);(package/'Cargo.toml').write_text(manifest)
     for name in ['user','cache','tmp']:(work/'sandbox'/name).mkdir(parents=True)
     (work/'sandbox/user/clip.m4a').write_bytes((work/'fixtures/1-tail.m4a').read_bytes())
     frozen[str(Path(__file__).relative_to(ROOT))]=codecs.sha(Path(__file__))
     for rel in ['scripts/testing/check_audio_mp4_transport.py','engine/crates/io/Cargo.toml']:
         frozen[rel]=codecs.sha(ROOT/rel)
+    frozen.update({str(p.relative_to(ROOT)):codecs.sha(p)for p in extra_inputs})
     (work/'source-inputs.json').write_text(json.dumps(frozen,indent=2)+'\n')
     for rel in frozen:
         to=work/'source-inputs'/rel;to.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(ROOT/rel,to)
     retained={str(p.relative_to(work)):codecs.sha(p)for tree in [package/'src',work/'source']for p in tree.rglob('*.rs')}
+    return env,frozen,retained,libraries,new
+
+def main(work,target,rubato,positive_only):
+    env,frozen,retained,libraries,new=prepare(work,target,rubato)
+    package=work/'probe'
     codecs.run(['cargo','metadata','--offline','--format-version','1'],work/'candidate-metadata.jsonl',cwd=package,env=env)
     selected=json.loads(next(x for x in (work/'candidate-metadata.jsonl').read_text().splitlines()if x.startswith('{"packages"')))['packages'];locked={}
     for row in tomllib.loads((ROOT/'engine/Cargo.lock').read_text())['package']:locked.setdefault(row['name'],set()).add(row['version'])
     assert all(row['name']not in locked or row['version']in locked[row['name']]for row in selected),'existing dependency version drift'
     codecs.run(['cargo','check','--offline','--locked','--lib'],work/'normal-library-check.log',cwd=package,env=env)
     positive=dsp.source.build(work,env,'positive')
-    for label,prefix,count in [('local','isomp4_source_contracts::transport::local::',11),('package','isomp4_source_contracts::transport::local::package::',8),('directory','isomp4_source_contracts::transport::local::directory::',5),('setup','isomp4_file::tests::',1),('http','isomp4_source_contracts::transport::',11),('source','isomp4_source_contracts::',25),('range','network::http::range::tests::',18),('common','streaming_transport::tests::',3)]:
+    for label,prefix,count in [('local','isomp4_source_contracts::transport::local::',11),('package','isomp4_source_contracts::transport::local::package::',8),('directory','isomp4_source_contracts::transport::local::directory::',5),('setup','local_source::tests::',1),('http','isomp4_source_contracts::transport::',11),('source','isomp4_source_contracts::',25),('range','network::http::range::tests::',18),('common','streaming_transport::tests::',3)]:
         args=[str(positive),prefix,'--nocapture','--test-threads=1']
         if label=='local':args+=['--skip','isomp4_source_contracts::transport::local::package::','--skip','isomp4_source_contracts::transport::local::directory::']
         if label=='http':args+=['--skip','isomp4_source_contracts::transport::local::']
