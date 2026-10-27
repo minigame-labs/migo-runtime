@@ -898,6 +898,38 @@ impl ServiceContext {
                     window.set_cursor(&request).is_ok()
                 })))
             }
+            // A video player made, or what it plays changed: answered at once, as
+            // the embedded ops answer, with its src and poster exported through
+            // the game's sandbox as they export them, and refused in their words.
+            id::op_video_create | id::op_video_set => {
+                let [request] = exactly(op, args)?;
+                let request = string(op, 0, request)?;
+                let unsupported = if op == id::op_video_create {
+                    "createVideo:fail not supported"
+                } else {
+                    "video:fail not supported"
+                };
+                let Some(video) = self
+                    .device
+                    .get()
+                    .and_then(Option::as_deref)
+                    .and_then(|device| device.video())
+                else {
+                    return Err(ServiceError::generic(unsupported));
+                };
+                let request = migo_services::host_paths::export_json_now(
+                    &self.sandbox()?,
+                    &request,
+                    migo_services::host_paths::VIDEO,
+                )?;
+                if op == id::op_video_create {
+                    video.create(&request)
+                } else {
+                    video.set(&request)
+                }
+                .map_err(device_error)?;
+                Ok(OwnedValue::Null)
+            }
             // Whether the host app answers ecosystem calls, and the values it
             // last reported for the synchronous getters: asked of its service,
             // as the embedded ops ask; a platform with none has no ecosystem.
@@ -2760,6 +2792,88 @@ mod tests {
         none.bind_session(2);
         none.bind_device(None);
         assert!(!set(&none, "pointer", 0.0, 0.0));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A video player made or changed on this lane reaches the host app as the
+    /// embedded ops make it reach it: its src and poster the files the app can
+    /// open, an empty one passed on as it is -- and a request naming a file that
+    /// is not the game's, or a platform with no players, is refused in the
+    /// embedded ops' words before the app hears of it.
+    #[test]
+    fn video_players_reach_the_host_with_their_files_as_the_embedded_ops_export_them() {
+        use shared::services::{ServiceError as DeviceError, VideoService};
+        #[derive(Default)]
+        struct Video(parking_lot::Mutex<Vec<(&'static str, String)>>);
+        impl VideoService for Video {
+            fn create(&self, json: &str) -> Result<(), DeviceError> {
+                self.0.lock().push(("create", json.to_owned()));
+                Ok(())
+            }
+            fn set(&self, json: &str) -> Result<(), DeviceError> {
+                self.0.lock().push(("set", json.to_owned()));
+                Ok(())
+            }
+        }
+        struct Platform(Arc<Video>);
+        impl shared::services::SensorServices for Platform {}
+        impl shared::services::ConnectivityServices for Platform {}
+        impl shared::services::CommerceServices for Platform {}
+        impl shared::services::SystemUtilServices for Platform {}
+        impl shared::services::MediaServices for Platform {
+            fn video(&self) -> Option<Arc<dyn VideoService>> {
+                Some(Arc::clone(&self.0) as Arc<dyn VideoService>)
+            }
+        }
+
+        let root =
+            std::env::temp_dir().join(format!("migo-external-video-{}", std::process::id()));
+        let files = root.join("files");
+        let cache = root.join("cache");
+        let installed = shared::vfs::GamePaths::new(&files, &cache, "g", 1).unwrap();
+        std::fs::create_dir_all(installed.code_dir()).unwrap();
+        std::fs::write(installed.code_dir().join("clip.mp4"), b"mp4").unwrap();
+        let video = Arc::new(Video::default());
+        let context = ServiceContext::new(files.clone(), cache.clone());
+        context.bind_session(1);
+        context.bind_device(Some(Arc::new(Platform(Arc::clone(&video)))));
+        context.load_content("g", "game.js").expect("mounts");
+        let call = |context: &ServiceContext, op: u32, request: serde_json::Value| {
+            context.call_sync(op, vec![OwnedValue::Str(request.to_string())])
+        };
+
+        let made = call(
+            &context,
+            id::op_video_create,
+            serde_json::json!({ "videoId": 7, "src": "clip.mp4", "poster": "" }),
+        );
+        assert!(matches!(made, Ok(OwnedValue::Null)), "{made:?}");
+        let refused = call(
+            &context,
+            id::op_video_set,
+            serde_json::json!({ "videoId": 7, "src": "/etc/hosts" }),
+        )
+        .expect_err("a file that is not the game's");
+        assert!(!refused.message.is_empty());
+        let real = installed.code_dir().join("clip.mp4");
+        let heard = video.0.lock().clone();
+        assert_eq!(heard.len(), 1, "the refused change never reached the app: {heard:?}");
+        let (method, json) = &heard[0];
+        let json: serde_json::Value = serde_json::from_str(json).unwrap();
+        assert_eq!(*method, "create");
+        assert_eq!(json["videoId"], 7);
+        assert_eq!(json["src"], real.to_str().unwrap());
+        assert_eq!(json["poster"], "", "an empty poster names nothing");
+
+        let none = ServiceContext::new(files, cache);
+        none.bind_session(2);
+        none.bind_device(None);
+        let refused = call(&none, id::op_video_create, serde_json::json!({ "videoId": 1 }))
+            .expect_err("no players");
+        assert_eq!(refused.message, "createVideo:fail not supported");
+        let refused = call(&none, id::op_video_set, serde_json::json!({ "videoId": 1 }))
+            .expect_err("no players");
+        assert_eq!(refused.message, "video:fail not supported");
         let _ = std::fs::remove_dir_all(&root);
     }
 

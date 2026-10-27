@@ -940,6 +940,19 @@ export function op_set_cursor(path, x, y) {
   });
 }
 
+/// createVideo's player made, or what it plays changed: answered at once, as
+/// the embedded ops answer. The host exports its src and poster through the
+/// game's sandbox, as they do, and its refusal is thrown here in their words.
+export function op_video_create(requestJson) {
+  const request = stringOf(requestJson, "request_json");
+  callService(SERVICE_OP.op_video_create, (w) => w.str(request));
+}
+
+export function op_video_set(requestJson) {
+  const request = stringOf(requestJson, "request_json");
+  callService(SERVICE_OP.op_video_set, (w) => w.str(request));
+}
+
 /// Whether the host app answers ecosystem calls at all, and the JSON it last
 /// reported for a synchronous getter (`getExtConfigSync`, `isChatTool`, ...) or
 /// `null`: the host's, as the embedded ops read them -- this producer has no

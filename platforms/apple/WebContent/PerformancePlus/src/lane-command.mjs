@@ -787,6 +787,13 @@ export const op_stop_compass = hostCommand(SERVICE_OP.op_stop_compass);
 export const op_stop_device_motion = hostCommand(SERVICE_OP.op_stop_device_motion);
 export const op_stop_gyroscope = hostCommand(SERVICE_OP.op_stop_gyroscope);
 export const op_stop_screen_recording_observer = hostCommand(SERVICE_OP.op_stop_screen_recording_observer);
+export const op_video_destroy = hostRequest(SERVICE_OP.op_video_destroy);
+export const op_video_exit_full_screen = hostRequest(SERVICE_OP.op_video_exit_full_screen);
+export const op_video_pause = hostRequest(SERVICE_OP.op_video_pause);
+export const op_video_play = hostRequest(SERVICE_OP.op_video_play);
+export const op_video_request_full_screen = hostRequest(SERVICE_OP.op_video_request_full_screen);
+export const op_video_seek = hostRequest(SERVICE_OP.op_video_seek);
+export const op_video_stop = hostRequest(SERVICE_OP.op_video_stop);
 export const op_write_ble_characteristic_value = hostRequest(SERVICE_OP.op_write_ble_characteristic_value);
 
 // ---- content's migo.createWorker (the fire-and-forget half) -----------------

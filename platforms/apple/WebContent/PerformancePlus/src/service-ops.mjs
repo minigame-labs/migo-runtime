@@ -299,4 +299,13 @@ export const SERVICE_OP = Object.freeze({
   op_game_recorder_stop: 289,
   op_game_recorder_next_event: 290,
   op_share_game_recording: 291,
+  op_video_create: 292,
+  op_video_destroy: 293,
+  op_video_set: 294,
+  op_video_play: 295,
+  op_video_pause: 296,
+  op_video_stop: 297,
+  op_video_seek: 298,
+  op_video_request_full_screen: 299,
+  op_video_exit_full_screen: 300,
 });
