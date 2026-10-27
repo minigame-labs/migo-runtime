@@ -84,6 +84,8 @@ extension MigoHostServiceID {
         public static let setShareMenu: UInt32 = 3
         /// `menu_share_reply`: a command, unanswered.
         public static let menuShareReply: UInt32 = 4
+        /// `share_game_recording`: a call, answered once.
+        public static let shareGameRecording: UInt32 = 5
 
         /// The service's events, for `postHostServiceEvent`.
         public enum Event {

@@ -99,12 +99,12 @@ use migo_capi_abi::{
         MIGO_SCREEN_STOP_RECORDING_OBSERVER, MIGO_SETTING_OPEN_APP_AUTHORIZE_SETTING,
         MIGO_SETTING_OPEN_SETTING, MIGO_SETTING_OPEN_SYSTEM_BLUETOOTH_SETTING,
         MIGO_SHARE_EVENT_MENU_SHARE, MIGO_SHARE_MENU_SHARE_REPLY, MIGO_SHARE_SET_SHARE_MENU,
-        MIGO_SHARE_SHARE_APP_MESSAGE, MIGO_SHARE_SHARE_MESSAGE_TO_FRIEND,
-        MIGO_SHARE_SHOW_SHARE_IMAGE_MENU, MIGO_SUBPACKAGE_DOWNLOAD, MIGO_UPDATE_APPLY_UPDATE,
-        MIGO_UPDATE_EVENT_STATE, MIGO_WINDOW_EVENT_POINTER_LOCK_CHANGE,
-        MIGO_WINDOW_EVENT_WINDOW_STATE_CHANGE, MIGO_WINDOW_EXIT_POINTER_LOCK,
-        MIGO_WINDOW_REQUEST_POINTER_LOCK, MIGO_WINDOW_SET_CURSOR, MIGO_WINDOW_SET_WINDOW_SIZE,
-        MigoHostServiceResult, copy_bounded,
+        MIGO_SHARE_SHARE_APP_MESSAGE, MIGO_SHARE_SHARE_GAME_RECORDING,
+        MIGO_SHARE_SHARE_MESSAGE_TO_FRIEND, MIGO_SHARE_SHOW_SHARE_IMAGE_MENU,
+        MIGO_SUBPACKAGE_DOWNLOAD, MIGO_UPDATE_APPLY_UPDATE, MIGO_UPDATE_EVENT_STATE,
+        MIGO_WINDOW_EVENT_POINTER_LOCK_CHANGE, MIGO_WINDOW_EVENT_WINDOW_STATE_CHANGE,
+        MIGO_WINDOW_EXIT_POINTER_LOCK, MIGO_WINDOW_REQUEST_POINTER_LOCK, MIGO_WINDOW_SET_CURSOR,
+        MIGO_WINDOW_SET_WINDOW_SIZE, MigoHostServiceResult, copy_bounded,
     },
 };
 use migo_core::services::{
@@ -242,6 +242,14 @@ const SHOW_SHARE_IMAGE_MENU: Call = Call {
     service: MIGO_HOST_SERVICE_SHARE,
     method: MIGO_SHARE_SHOW_SHARE_IMAGE_MENU,
     hook: "_internalOnShowShareImageMenuResult",
+    error_code_field: Some("errCode"),
+    progress_hook: None,
+    delivery: Delivery::HostFiles(&HostFiles::NONE),
+};
+const SHARE_GAME_RECORDING: Call = Call {
+    service: MIGO_HOST_SERVICE_SHARE,
+    method: MIGO_SHARE_SHARE_GAME_RECORDING,
+    hook: "_internalOnShareGameRecordingResult",
     error_code_field: Some("errCode"),
     progress_hook: None,
     delivery: Delivery::HostFiles(&HostFiles::NONE),
@@ -634,6 +642,7 @@ const CALLS: &[&Call] = &[
     &SHARE_APP_MESSAGE,
     &SHARE_MESSAGE_TO_FRIEND,
     &SHOW_SHARE_IMAGE_MENU,
+    &SHARE_GAME_RECORDING,
     &NAVIGATE_TO_MINI_PROGRAM,
     &SUBPACKAGE_DOWNLOAD,
     &REQUEST_SCOPE,
@@ -1582,6 +1591,9 @@ impl ShareService for CapiHostServices {
     }
     fn show_share_image_menu(&self, options_json: &str) -> Result<(), ServiceError> {
         self.call(&SHOW_SHARE_IMAGE_MENU, options_json)
+    }
+    fn share_game_recording(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&SHARE_GAME_RECORDING, request_json)
     }
     fn set_share_menu(&self, json: &str) -> Result<(), ServiceError> {
         self.command(MIGO_HOST_SERVICE_SHARE, MIGO_SHARE_SET_SHARE_MENU, json)

@@ -130,7 +130,10 @@ fn run(carried: Carried, start: RenderCmdResp<()>) {
         tx,
     } = carried;
 
-    let encoder = match factory.create(&config_e, &path) {
+    // Written beside the video it will become, and moved over it only once
+    // complete: the last finished recording stays whole while the next is made.
+    let part = in_progress(&path);
+    let encoder = match factory.create(&config_e, &part) {
         Ok(encoder) => encoder,
         Err(e) => {
             start.err(e);
@@ -152,7 +155,7 @@ fn run(carried: Carried, start: RenderCmdResp<()>) {
         Ok(session) => session,
         Err(e) => {
             encoder.discard();
-            let _ = std::fs::remove_file(&path);
+            let _ = std::fs::remove_file(&part);
             start.err(e);
             let _ = tx.send(FromEncoder::Failed);
             return;
@@ -166,7 +169,18 @@ fn run(carried: Carried, start: RenderCmdResp<()>) {
     );
     let _ = tx.send(FromEncoder::Ready);
     start.ok(());
-    encode(session, encoder, textures, &path, &events, &rx, &tx);
+    encode(session, encoder, textures, &part, &path, &events, &rx, &tx);
+}
+
+/// Where a recording is written until it is complete: beside the video it
+/// becomes, which keeps the last finished one until then.
+fn in_progress(path: &std::path::Path) -> PathBuf {
+    let mut name = path
+        .file_name()
+        .map(|name| name.to_os_string())
+        .unwrap_or_default();
+    name.push(".part");
+    path.with_file_name(name)
 }
 
 /// Make this thread's context and the encoder's input surface, and wrap each
@@ -286,10 +300,12 @@ fn open(
 
 /// Draw every frame the render thread sends into the encoder's input until it
 /// says to finish or to discard, or the encoder fails.
+#[allow(clippy::too_many_arguments)]
 fn encode(
     session: Session,
     mut encoder: Box<dyn VideoEncoder>,
     textures: Vec<glow::NativeTexture>,
+    part: &std::path::Path,
     path: &std::path::Path,
     events: &RecorderEvents,
     rx: &Receiver<ToEncoder>,
@@ -371,20 +387,26 @@ fn encode(
     }
     close(session, textures);
     match outcome {
-        End::Finish(duration_ms, resp) => match encoder.finish() {
-            Ok(()) => {
-                events.close();
-                resp.ok(duration_ms);
+        End::Finish(duration_ms, resp) => {
+            let finished = encoder.finish().and_then(|()| {
+                std::fs::rename(part, path)
+                    .map_err(|e| failure("completing the recording's file", e))
+            });
+            match finished {
+                Ok(()) => {
+                    events.close();
+                    resp.ok(duration_ms);
+                }
+                Err(e) => {
+                    let _ = std::fs::remove_file(part);
+                    events.fail(e.to_string());
+                    resp.err(e);
+                }
             }
-            Err(e) => {
-                let _ = std::fs::remove_file(path);
-                events.fail(e.to_string());
-                resp.err(e);
-            }
-        },
+        }
         End::Discard(resp) => {
             encoder.discard();
-            let _ = std::fs::remove_file(path);
+            let _ = std::fs::remove_file(part);
             events.close();
             if let Some(resp) = resp {
                 resp.ok(());
@@ -393,7 +415,7 @@ fn encode(
         End::Failed(reason) => {
             warn!("game recorder: {reason}");
             encoder.discard();
-            let _ = std::fs::remove_file(path);
+            let _ = std::fs::remove_file(part);
             events.fail(reason);
             // What the render thread asks before it hears is answered here:
             // a stop as failed, an abort as done.

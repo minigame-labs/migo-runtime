@@ -1,5 +1,6 @@
 package com.migo.runtime.internal;
 
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
@@ -85,6 +86,7 @@ public final class HostDelegationTest {
         for (String api : Arrays.asList(
                 "openSetting",
                 "shareAppMessage",
+                "operateGameRecorderVideo",
                 "navigateToMiniProgram",
                 "requestMidasPayment",
                 "requestMidasPaymentGameItem")) {
@@ -101,6 +103,9 @@ public final class HostDelegationTest {
         defaults.put("shareAppMessage", () -> shareDefaults.shareAppMessage(
                 HostDelegation.shareRequest(new JSONObject()),
                 HostDelegation.shareSink(settlement(channels.get("shareAppMessage")))));
+        defaults.put("operateGameRecorderVideo", () -> shareDefaults.shareGameRecording(
+                HostDelegation.recordingShareRequest(new JSONObject()),
+                HostDelegation.shareSink(settlement(channels.get("operateGameRecorderVideo")))));
         defaults.put("navigateToMiniProgram", () -> navigationDefaults.navigateToMiniProgram(
                 HostDelegation.navigateRequest(new JSONObject()),
                 HostDelegation.navigationSink(
@@ -202,6 +207,48 @@ public final class HostDelegationTest {
         assertEquals("/data/x/card.png", request.path);
         assertTrue(request.needShowEntrance);
         assertEquals("", request.entrancePath);
+    }
+
+    @Test
+    public void aRecordingShareCarriesItsRangesAndSettings() {
+        ShareHandler.RecordingShareRequest request =
+                HostDelegation.recordingShareRequest(HostDelegation.options(
+                        "{\"requestId\":5,\"video\":\"/data/x/replay.mp4\",\"title\":\"best run\","
+                                + "\"bgm\":\"/data/x/bgm.mp3\",\"timeRange\":[[1000,3000],[4000,5000]],"
+                                + "\"volume\":0.5,\"atempo\":2,\"audioMix\":true}"));
+        assertEquals("/data/x/replay.mp4", request.video);
+        assertEquals("best run", request.title);
+        assertEquals("", request.desc);
+        assertEquals("/data/x/bgm.mp3", request.bgm);
+        assertArrayEquals(new long[][] {{1000, 3000}, {4000, 5000}}, request.timeRange);
+        assertEquals(0.5, request.volume, 0);
+        assertEquals(2, request.atempo, 0);
+        assertTrue(request.audioMix);
+    }
+
+    @Test
+    public void aRecordingShareWithNothingSetIsTheWholeVideoAsRecorded() {
+        ShareHandler.RecordingShareRequest request =
+                HostDelegation.recordingShareRequest(HostDelegation.options(
+                        "{\"requestId\":5,\"video\":\"/data/x/replay.mp4\"}"));
+        assertEquals(0, request.timeRange.length);
+        assertEquals("", request.bgm);
+        assertEquals(1, request.volume, 0);
+        assertEquals(1, request.atempo, 0);
+        assertFalse(request.audioMix);
+    }
+
+    @Test
+    public void aRecordingShareTellsContentWhatReachedTheGameCenter() throws Exception {
+        RecordingChannel channel = new RecordingChannel();
+        HostDelegation.shareSink(settlement(channel)).settleSharedToGameCenter(3, "not signed in");
+
+        JSONObject result = new JSONObject(channel.only());
+        assertEquals(REQUEST_ID, result.getInt("requestId"));
+        assertFalse(result.has("error"));
+        JSONObject status = result.getJSONObject("shareToGameCenter");
+        assertEquals(3, status.getInt("errCode"));
+        assertEquals("not signed in", status.getString("errMsg"));
     }
 
     @Test

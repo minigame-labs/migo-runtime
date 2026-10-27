@@ -10,8 +10,9 @@ package com.migo.runtime.callback;
  * SDK and holds no social graph.
  *
  * <h2>Without a handler</h2>
- * {@code migo.shareAppMessage()}, {@code migo.shareMessageToFriend()} and
- * {@code migo.showShareImageMenu()} fail with {@code <api>:fail not supported}
+ * {@code migo.shareAppMessage()}, {@code migo.shareMessageToFriend()},
+ * {@code migo.showShareImageMenu()} and {@code migo.operateGameRecorderVideo()}
+ * fail with {@code <api>:fail not supported}
  * and code {@code -2}. They settle rather than stay silent: content commonly
  * awaits a share before resuming, so a dropped request is a paused game.
  *
@@ -59,6 +60,24 @@ public interface ShareHandler {
      */
     default void showShareImageMenu(ImageShareRequest request, ShareSink sink) {
         sink.fail(-2, "showShareImageMenu:fail not supported");
+    }
+
+    /**
+     * Share the game's last finished recording, for one
+     * {@code migo.operateGameRecorderVideo()} call or a tap on the game's
+     * recording share button. Cutting it to the request's time ranges, setting
+     * it to its music and playing it at its speed are your share surface's.
+     * <p>
+     * Settle a share the player called off with
+     * {@code sink.fail(-1, "operateGameRecorderVideo:fail cancel")}: the share
+     * button's tap listeners hear every other failure. Settle one that reached
+     * your game center with {@link ShareSink#settleSharedToGameCenter}.
+     *
+     * @param request the recording and how content asked to share it
+     * @param sink    channel to settle this request on
+     */
+    default void shareGameRecording(RecordingShareRequest request, ShareSink sink) {
+        sink.fail(-2, "operateGameRecorderVideo:fail not supported");
     }
 
     /**
@@ -193,6 +212,47 @@ public interface ShareHandler {
             this.path = path;
             this.needShowEntrance = needShowEntrance;
             this.entrancePath = entrancePath;
+        }
+    }
+
+    /** The game's last finished recording, and how content asked to share it. */
+    final class RecordingShareRequest {
+        /** The recording: an H.264 MP4 of the engine's, readable for the rest of the session. */
+        public final String video;
+        /** Title of the shared recording, empty when content set none. */
+        public final String title;
+        /** Its description, empty when content set none. */
+        public final String desc;
+        /** Query the game opens with from the shared recording, empty for none. */
+        public final String query;
+        /** Path the game opens at from the shared recording, empty for its default. */
+        public final String path;
+        /** Music to set the recording to: a real file path resolved inside the game's sandbox, or empty. */
+        public final String bgm;
+        /**
+         * The parts of the recording to share, {@code [from, to]} in milliseconds
+         * of it, in order and at most 60 seconds in all; empty for the whole of it.
+         */
+        public final long[][] timeRange;
+        /** The recording's volume, 0 to 1. */
+        public final double volume;
+        /** Its playback speed: 0.3, 0.5, 1, 1.5, 2, 2.5 or 3. */
+        public final double atempo;
+        /** Whether {@link #bgm} is mixed with the recording's own sound rather than replacing it. */
+        public final boolean audioMix;
+
+        public RecordingShareRequest(String video, String title, String desc, String query, String path,
+                String bgm, long[][] timeRange, double volume, double atempo, boolean audioMix) {
+            this.video = video;
+            this.title = title;
+            this.desc = desc;
+            this.query = query;
+            this.path = path;
+            this.bgm = bgm;
+            this.timeRange = timeRange;
+            this.volume = volume;
+            this.atempo = atempo;
+            this.audioMix = audioMix;
         }
     }
 }

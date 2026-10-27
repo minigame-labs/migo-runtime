@@ -2,7 +2,7 @@
 title: Share
 sidebar:
   order: 4
-description: The three share requests content makes (shareAppMessage / shareMessageToFriend / showShareImageMenu) on the Android ShareHandler and the C ABI share service — request fields, image paths resolved through the sandbox, ShareSink settle semantics, and the fallback with no host.
+description: The four share requests content makes (shareAppMessage / shareMessageToFriend / showShareImageMenu / operateGameRecorderVideo) on the Android ShareHandler and the C ABI share service — request fields, image paths resolved through the sandbox, ShareSink settle semantics, and the fallback with no host.
 audience: host-integrator
 platforms:
   - android
@@ -17,9 +17,10 @@ sourcePaths:
   - platforms/android/library/src/main/java/com/migo/runtime/GameSession.java
   - include/migo/host_services.h
   - engine/crates/runtime-v8/src/share/01_share.js
+  - engine/crates/runtime-v8/src/media/05_game_recorder.js
 ---
 
-## Three requests
+## Four requests
 
 Every share content starts is a request the host answers, each through its own method:
 
@@ -28,6 +29,7 @@ Every share content starts is a request the host answers, each through its own m
 | `migo.shareAppMessage(options)` | `shareAppMessage(ShareRequest, ShareSink)` | `SHARE_APP_MESSAGE` 0 |
 | `migo.shareMessageToFriend(options)` | `shareMessageToFriend(FriendShareRequest, ShareSink)` | `SHARE_MESSAGE_TO_FRIEND` 1 |
 | `migo.showShareImageMenu(options)` | `showShareImageMenu(ImageShareRequest, ShareSink)` | `SHOW_SHARE_IMAGE_MENU` 2 |
+| `migo.operateGameRecorderVideo(options)`, a tap on `migo.createGameRecorderShareButton()` | `shareGameRecording(RecordingShareRequest, ShareSink)` | `SHARE_GAME_RECORDING` 5 |
 
 On Android, register with `GameSession#setShareHandler(ShareHandler)`. A C ABI host declares `MIGO_HOST_SERVICE_SHARE` in
 its `host_services` and answers by method number in `on_host_service_call`.
@@ -44,6 +46,18 @@ Each request names at most one image — `imageUrl` for `shareAppMessage` and `s
 settles. It is never content's own string, so content cannot have the host read a file outside the sandbox; a path
 outside it, or one with no file, fails before the request leaves the engine. Only `shareAppMessage`'s `imageUrl` may
 be an http(s) URL, which reaches the host as is; the other two refuse network images.
+
+## The game's recording
+
+`SHARE_GAME_RECORDING` shares the last recording `migo.getGameRecorder()` finished. `video` is the engine's own file
+(an H.264 MP4 under the session's cache), never a path content named, and it stays readable for the rest of the
+session; `bgm` is a real file resolved through the sandbox, as images are, and never a URL. The engine judges the
+options before the host is asked, failing with the reference's codes: 22603 no recorded video, 22613 bgm not found,
+22623 time range invalid, 22633 duration out of limit (more than 60 s in all), 22643 time range too short (under 2 s).
+Cutting the video to `timeRange`, setting it to `bgm`, its volume and its speed are the host's share surface's.
+
+The share button settles the same request. Its tap listeners hear only a share that failed for a reason other than the
+player cancelling, so settle a cancelled share with `fail(-1, "operateGameRecorderVideo:fail cancel")`.
 
 ## Request fields
 
@@ -75,6 +89,19 @@ be an http(s) URL, which reaches the host as is; the other two refuse network im
 | `needShowEntrance` | Whether the image's message carries an entry into the game |
 | `entrancePath` | Where that entry opens the game; empty for its default |
 
+`RecordingShareRequest` (`SHARE_GAME_RECORDING`):
+
+| Field | Meaning |
+| --- | --- |
+| `video` | The recording, the engine's own file; never empty |
+| `title` / `desc` | Title and description of the shared recording; empty when unset |
+| `query` / `path` | Query and subpackage path the game opens with from the shared recording; empty when unset |
+| `bgm` | Music to set the recording to, a real file path; empty when unset |
+| `timeRange` | The parts to share, `[from, to]` in milliseconds of the recording, at most 60 s in all; empty (absent on the C ABI) for the whole of it |
+| `volume` | 0 to 1, default 1 |
+| `atempo` | Playback speed: 0.3, 0.5, 1, 1.5, 2, 2.5 or 3; default 1 |
+| `audioMix` | Whether `bgm` is mixed with the recording's own sound rather than replacing it |
+
 ## Answering
 
 Settle each request exactly once through its `ShareSink` (on the C ABI, `migo_session_complete_host_service_call`):
@@ -82,6 +109,7 @@ Settle each request exactly once through its `ShareSink` (on the C ABI, `migo_se
 | Method | Meaning |
 | --- | --- |
 | `settleShared()` | The share flow finished; it does not mean the user actually sent a message |
+| `settleSharedToGameCenter(int, String)` | A recording's share finished, with what came of sharing it to your game center; content reads it as `shareToGameCenter` `{errCode, errMsg}`. `SHARE_GAME_RECORDING` only |
 | `fail(int errCode, String errMsg)` | Failure; `errMsg` is passed to content verbatim |
 
 A share waits on the player for as long as they take; the runtime sets no deadline. Calls arrive on the runtime's host
@@ -111,7 +139,7 @@ content turns them on with `showShareMenu`:
 
 ## Without a host
 
-With no handler (or a C ABI host that did not declare the share service), all three fail with
+With no handler (or a C ABI host that did not declare the share service), all four fail with
 `<api>:fail not supported` and code `-2`. They settle rather than stay silent: content commonly awaits a share before
 resuming, so a dropped request is a paused game.
 

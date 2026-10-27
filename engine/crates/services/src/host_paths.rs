@@ -88,6 +88,12 @@ pub const SHOW_SHARE_IMAGE_MENU: Files = Files {
     fields: &[&[Step::Key("path")]],
     remote: Remote::Refused,
 };
+/// The music a shared recording is set to (`operateGameRecorderVideo`, the
+/// recorder's share button): a file of the game's, never a URL.
+pub const SHARE_GAME_RECORDING: Files = Files {
+    fields: &[&[Step::Key("bgm")]],
+    remote: Remote::Refused,
+};
 /// The images a menu share's content may name, network images included. Each
 /// is exported on its own: one that is not content's file is dropped, and the
 /// host shares with its own default.
