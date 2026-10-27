@@ -253,6 +253,8 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
         /// The window service for the game that runs: the pointer's look, the
         /// pointer lock, the window's state. Readable by `@testable` tests.
         private(set) var windowService: MigoWindowService?
+        /// `createVideo`'s players, over the game in this view.
+        private var videos: MigoVideoPlayers?
         /// The debugging panel while the debugging aids are on
         /// (`migo.setEnableDebug`). Readable by `@testable` tests.
         private(set) var debugPanel: MigoDebugPanel?
@@ -381,6 +383,7 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             followLayout()
             // A scene resized beside another app lays this view out again.
             windowService?.reportState()
+            videos?.stageChanged()
         }
 
         /// The surface and the device as this view and its window are now: the
@@ -466,12 +469,18 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             }
             windowService.onLockChange = { [weak self] locked in self?.followMice(locked) }
             self.windowService = windowService
+            let videos = MigoVideoPlayers(stage: self) { [weak self] event, object in
+                guard let json = try? JSONSerialization.data(withJSONObject: object) else { return }
+                self?.engine?.postHostServiceEvent(.video, event: event, json: json)
+            }
+            self.videos = videos
             // The app's services, then what only this view can answer; the
             // session adds the SDK's own behind them.
             let engine = try MigoEngineSession(
                 directories: configuration.directories, contentSigning: configuration.contentSigning,
                 preferredFramesPerSecond: configuration.preferredFramesPerSecond,
-                hostServices: MigoGameViewHostServices(app: configuration.hostServices, window: windowService),
+                hostServices: MigoGameViewHostServices(
+                    app: configuration.hostServices, window: windowService, video: videos),
                 capabilities: configuration.capabilities, networkPolicyJSON: configuration.networkPolicyJSON,
                 launchOptionsJSON: launchOptionsJSON)
             self.engine = engine
@@ -538,6 +547,8 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             followMice(false)
             windowService?.close()
             windowService = nil
+            videos?.close()
+            videos = nil
             showDebugPanel(false)
             deviceStatus?.stop()
             deviceStatus = nil
@@ -739,6 +750,7 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             let running = !pausedByApp && !pausedByAudio
             engine.setFocused(!pausedByApp)
             engine.setVisible(!pausedByApp)
+            videos?.setRunning(!pausedByApp)
             engine.setRunning(running)
             if running { engine.startFrames() } else { engine.stopFrames() }
         }

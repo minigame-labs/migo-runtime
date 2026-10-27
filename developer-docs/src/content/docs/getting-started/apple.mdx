@@ -145,6 +145,7 @@ view 可以接着载入下一个游戏。
 | `onDeviceOrientationChange` | 界面方向（横屏 Home 键一侧在右为 `landscape`，在左为 `landscapeReverse`；两个横屏互转从 iOS 16 起） | 游戏的形状在横竖之间变化 |
 | `setDeviceOrientation` | 请场景转到所要的形状（iOS 16 起）；view controller 不支持时失败 | 把窗口转成所要的形状；全屏时失败 |
 | `getGameLogManager().log` | 以 `onEvent(.gameLog(json))` 交给 App | 同左 |
+| `createVideo` | 用 `AVPlayer` 叠在游戏上内容指定的位置，播放前显示封面，控件按选项提供、与 Android SDK 一致（按钮带 VoiceOver 标签）；`requestFullScreen` 铺满屏幕，方向为 90 或 -90 时转四分之一圈；App 在后台时播放器暂停 | 同左；全屏铺满窗口、不旋转；窗口在程序坞里或 App 被隐藏时暂停 |
 
 以下接口**明确拒绝，不伪造结果**：iOS 上的 `getHeapStatistics`（内容运行在 WebKit 的
 JavaScriptCore 中，它不暴露堆数据），以及启用签名校验时的动态下载分包。
