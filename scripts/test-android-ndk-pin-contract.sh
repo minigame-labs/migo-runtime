@@ -60,12 +60,13 @@ fi
 info "resolution is driven by the NDK's own Pkg.Revision, not by its path"
 # A fake SDK layout, so the fixtures do not depend on which NDKs this machine has.
 w="$(mktemp -d)"
-make_ndk() { # dir, revision-in-source.properties
-    mkdir -p "$1"
+make_ndk() { # dir, revision-in-source.properties -- with the libclang every NDK ships
+    mkdir -p "$1/toolchains/llvm/prebuilt/fixture-host/lib"
     printf 'Pkg.Desc = Android NDK\nPkg.Revision = %s\n' "$2" > "$1/source.properties"
+    : > "$1/toolchains/llvm/prebuilt/fixture-host/lib/libclang.so"
 }
-resolve_in() { # sdk-root, [explicit ANDROID_NDK_HOME]
-    local sdk="$1" explicit="${2:-}"
+resolve_in() { # sdk-root, [explicit ANDROID_NDK_HOME], [variable to print]
+    local sdk="$1" explicit="${2:-}" print="${3:-ANDROID_NDK_HOME}"
     (
         unset ANDROID_NDK_ROOT
         if [[ -n "$explicit" ]]; then export ANDROID_NDK_HOME="$explicit"; else unset ANDROID_NDK_HOME; fi
@@ -73,7 +74,7 @@ resolve_in() { # sdk-root, [explicit ANDROID_NDK_HOME]
         source "$LIB"
         ANDROID_NDK_PIN="$ANDROID_NDK_PIN"
         android_ndk_resolve >/dev/null 2>&1 || exit 1
-        printf '%s' "$ANDROID_NDK_HOME"
+        printf '%s' "${!print}"
     )
 }
 
@@ -120,6 +121,23 @@ if got="$(resolve_in "$w/sdk-absent" "$w/explicit-right")" \
     pass "an override pointing at the pinned NDK is honoured"
 else
     fail "an override pointing at the pinned NDK was ignored (got '${got:-<none>}')"
+fi
+# bindgen parses the NDK's headers for an Android target, so its libclang is the
+# NDK's: ubuntu-24.04's libclang 18 cannot read r30's libc++, and an inherited
+# LIBCLANG_PATH is how that one arrives.
+if got="$(LIBCLANG_PATH="$w/system-llvm/lib" resolve_in "$w/sdk-good" "" LIBCLANG_PATH)" \
+   && [[ "$got" == "$w/sdk-good/ndk/$ANDROID_NDK_PIN/toolchains/llvm/prebuilt/fixture-host/lib" ]]; then
+    pass "resolution points bindgen at the pinned NDK's libclang, over an inherited one"
+else
+    fail "bindgen's libclang is not the pinned NDK's (got '${got:-<none>}')"
+fi
+mkdir -p "$w/sdk-noclang/ndk/$ANDROID_NDK_PIN"
+printf 'Pkg.Desc = Android NDK\nPkg.Revision = %s\n' "$ANDROID_NDK_PIN" \
+    > "$w/sdk-noclang/ndk/$ANDROID_NDK_PIN/source.properties"
+if resolve_in "$w/sdk-noclang" >/dev/null 2>&1; then
+    fail "an NDK with no libclang was accepted, leaving bindgen to find another"
+else
+    pass "an NDK with no libclang is refused"
 fi
 rm -rf "$w"
 

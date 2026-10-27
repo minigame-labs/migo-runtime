@@ -43,7 +43,17 @@ PY
 )" || { _android_ndk_err "cannot read the ndk pin from $lock"; return 1; }
 }
 
-# Sets ANDROID_NDK_HOME to an NDK whose own Pkg.Revision equals the pin.
+# Sets ANDROID_NDK_HOME to an NDK whose own Pkg.Revision equals the pin, and
+# LIBCLANG_PATH to that NDK's libclang.
+#
+# The second is part of the same toolchain. bindgen (clang-sys) parses the NDK's
+# libc++ and bionic headers when it generates a binding for an Android target --
+# Skia's, compiled by every Android build -- and those headers are written for the
+# NDK's own clang: r30's libc++ uses __builtin_clzg/__builtin_ctzg (clang 19). Left
+# to find one, clang-sys took ubuntu-24.04's libclang 18 on CI, and the binding
+# failed there while a Mac, whose Xcode libclang is newer, built. A LIBCLANG_PATH
+# already in the environment is not kept: an inherited one is how a mismatched
+# parser arrives. (build-v8-android.sh still takes V8_LIBCLANG_PATH for V8's.)
 # android_ndk_read_pin must have run.
 android_ndk_resolve() {
     local -a candidates=()
@@ -62,6 +72,7 @@ android_ndk_resolve() {
         if [[ "$revision" == "$ANDROID_NDK_PIN" ]]; then
             ANDROID_NDK_HOME="$candidate"
             export ANDROID_NDK_HOME
+            android_ndk_libclang || return 1
             return 0
         fi
         _android_ndk_err "$candidate is NDK $revision, the lock pins $ANDROID_NDK_PIN"
@@ -70,6 +81,22 @@ android_ndk_resolve() {
     _android_ndk_err "looked at: ${candidates[*]:-(nothing)}"
     _android_ndk_err "install it with: sdkmanager 'ndk;$ANDROID_NDK_PIN'"
     _android_ndk_err "or set ANDROID_NDK_HOME to that NDK"
+    return 1
+}
+
+# Exports LIBCLANG_PATH as the resolved NDK's lib directory, the one holding its
+# libclang (.so on Linux, .dylib on macOS) beside lib/clang/<major>/include, the
+# builtin headers libclang finds relative to itself.
+android_ndk_libclang() {
+    local lib
+    for lib in "$ANDROID_NDK_HOME"/toolchains/llvm/prebuilt/*/lib; do
+        if [[ -f "$lib/libclang.so" || -f "$lib/libclang.dylib" ]]; then
+            LIBCLANG_PATH="$lib"
+            export LIBCLANG_PATH
+            return 0
+        fi
+    done
+    _android_ndk_err "the NDK at $ANDROID_NDK_HOME has no libclang for bindgen"
     return 1
 }
 
