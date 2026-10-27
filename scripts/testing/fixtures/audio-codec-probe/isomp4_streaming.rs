@@ -88,9 +88,22 @@ impl Decoder<M4a> {
     /// Supply an index parsed off-worker from the same pinned representation.
     /// The original unconsumed mdat prefix remains in the common input buffer.
     pub fn install_index(&mut self, index: AudioIndex) -> Result<(), String> {
+        self.install_index_with_length(index, None)
+    }
+
+    pub fn install_index_with_length(
+        &mut self,
+        index: AudioIndex,
+        length: Option<u64>,
+    ) -> Result<(), String> {
         self.resume_source(false, |p| {
             if !matches!(p.request, Some(SourceRequest::Index(_))) {
                 return Err("M4A decoder is not awaiting an index".into());
+            }
+            if let Some(length) = length {
+                p.packets
+                    .bind_object_len(length)
+                    .map_err(|e| e.to_string())?;
             }
             p.packets.install_index(index).map_err(|e| e.to_string())?;
             p.request = None;

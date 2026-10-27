@@ -60,7 +60,7 @@ pub(crate) async fn send(
     }
 }
 
-async fn while_active<T>(
+pub(crate) async fn while_active<T>(
     tx: &mpsc::Sender<StreamMsg>,
     state: &StreamingState,
     operation: impl Future<Output = T>,

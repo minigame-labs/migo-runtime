@@ -101,7 +101,7 @@ def controls(work: Path, env: dict) -> int:
     return len(declarations)
 
 
-def main(work: Path, target: Path) -> None:
+def prepare(work: Path, target: Path) -> tuple[dict, dict, dict, dict]:
     assert not work.exists(), "use a fresh HTTP range result directory"
     work.mkdir(parents=True)
     package = work / "probe"
@@ -139,6 +139,12 @@ def main(work: Path, target: Path) -> None:
     for row in selected["packages"]:
         if row["name"] != "migo-range-source-probe":
             assert (row["name"],row["version"],row.get("source")) in identities, (row["name"], "unplanned dependency")
+    return env, frozen, retained, selected
+
+
+def main(work: Path, target: Path) -> None:
+    env, frozen, retained, selected = prepare(work, target)
+    package = work / "probe"
     positive = build(work, env, "positive")
     codecs.run([str(positive), "network::http::range::tests::", "--nocapture", "--test-threads=1"],
                work / "positive-tests.log", cwd=package, env=env)

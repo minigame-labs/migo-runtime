@@ -1,0 +1,54 @@
+--- symphonia-format-isomp4-0.6.1/src/streaming/sequential.rs
++++ symphonia-format-isomp4-0.6.1/src/streaming/sequential.rs
+@@ -105,6 +105,32 @@
+         self.index = Some(index);
+         self.external_index = true;
+         self.stage = Stage::Header;
++        Ok(())
++    }
++
++    /// Bind a length learned from the same pinned representation. Only an
++    /// unresolved tail-index request may learn a previously unknown length;
++    /// this does not consume input, install an index or resume packet delivery.
++    pub fn bind_object_len(&mut self, len: u64) -> Result<()> {
++        let valid = !self.failed
++            && self
++                .options
++                .index
++                .object_len
++                .is_none_or(|known| known == len)
++            && self.position <= len
++            && match self.stage {
++                Stage::AwaitIndex(request) => {
++                    request.media.body_offset <= len
++                        && request.media.end.is_some_and(|end| end <= len)
++                }
++                _ => false,
++            };
++        if !valid {
++            self.failed = true;
++            return decode_error("isomp4: invalid pinned object length");
++        }
++        self.options.index.object_len = Some(len);
+         Ok(())
+     }
+ 
+@@ -266,6 +292,7 @@
+                 Stage::Header => {
+                     if input.is_empty() && eof {
+                         if !self.file_type_seen
++                            || !self.movie_seen
+                             || self.index.is_none()
+                             || self.pending()?.is_some()
+                             || self
+@@ -310,7 +337,9 @@
+                             self.stage = Stage::Skip { end };
+                         }
+                         AtomKind::Fragmented => {
+-                            return unsupported_error("isomp4: fragmented streaming is unsupported");
++                            return unsupported_error(
++                                "isomp4: fragmented streaming is unsupported",
++                            );
+                         }
+                         AtomKind::MediaData => {
+                             if !self.file_type_seen {
