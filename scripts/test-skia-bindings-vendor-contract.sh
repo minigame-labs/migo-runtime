@@ -102,8 +102,12 @@ fi
 # The comparison must be able to fail.
 tampered="$scratch/tampered"
 # The edit goes into the file the patch itself changes, the one place an exclusion could hide it.
-mkdir -p "$tampered" && (cd "$VENDORED" && tar cf - --exclude=./skia --exclude=./depot_tools .) \
-    | (cd "$tampered" && tar xf -) && printf '\n' >> "$tampered/build_support/skia/env.rs"
+# The copy takes tree_manifest's file list: bsdtar's `--exclude=./skia` also drops
+# build_support/skia/, and a copy missing the file under test is refused for the wrong reason.
+mkdir -p "$tampered" && (cd "$VENDORED" && find . \( -path ./skia -o -path ./depot_tools \) -prune \
+    -o -type f -print | tar cf - -T -) | (cd "$tampered" && tar xf -) \
+    && printf '\n' >> "$tampered/build_support/skia/env.rs" \
+    || { echo "$TAG cannot build the tampered copy" >&2; exit 1; }
 if pristine_plus_patches_is "$tampered" "${patches[@]}"; then
     fail "self-test: a copy with an unpatched edit compared equal"
 else
