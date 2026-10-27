@@ -43,6 +43,21 @@ pub trait ShareService: Send + Sync {
         ))
     }
 
+    /// Share the game's last finished recording (Mode C, async), for its share
+    /// button or operateGameRecorderVideo.
+    ///
+    /// JSON fields (input): `requestId`, `video` (the engine's own file,
+    /// readable for the rest of the session), and the share options content
+    /// set: `title`, `desc`, `query`, `path`, `bgm` (a real path resolved
+    /// through the sandbox), `timeRange` (`[[from, to], ...]` in ms), `volume`,
+    /// `atempo`, `audioMix`. What is cut and mixed is the host's. Result
+    /// delivered via `_internalOnShareGameRecordingResult`.
+    fn share_game_recording(&self, _request_json: &str) -> Result<(), ServiceError> {
+        Err(ServiceError::not_supported(
+            "operateGameRecorderVideo:fail not supported",
+        ))
+    }
+
     /// The share menu's whole state after content changed it, a command:
     /// `{"menus": ["shareAppMessage", "shareTimeline"] (those shown),
     /// "withShareTicket", ...the updateShareMenu fields content set}`.

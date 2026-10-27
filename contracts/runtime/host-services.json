@@ -177,6 +177,13 @@
           "id": 4,
           "kind": "command",
           "op": "op_share_menu_reply"
+        },
+        "share_game_recording": {
+          "id": 5,
+          "kind": "call",
+          "op": "op_share_game_recording",
+          "hook": "_internalOnShareGameRecordingResult",
+          "error_code_field": "errCode"
         }
       },
       "events": {

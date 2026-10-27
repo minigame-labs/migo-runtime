@@ -1,0 +1,63 @@
+--- skia-bindings-0.93.1/build_support/platform/android.rs
++++ skia-bindings-0.93.1/build_support/platform/android.rs
+@@ -26,23 +26,20 @@
+             .arg("skia_enable_fontmgr_android", yes());
+ 
+         let major = ndk_major_version(Path::new(&ndk));
+-        let mut extra_skia_cflags = extra_skia_cflags();
+ 
+         // Version 23 is the first version using llvm 12
+         // https://github.com/android/ndk/wiki/Changelog-r23#r23b
+         // https://releases.llvm.org/12.0.0/tools/clang/docs/ReleaseNotes.html#new-compiler-flags
+         if major >= 23 && arch == "aarch64" {
+-            extra_skia_cflags.push("-mno-outline-atomics".to_string());
++            builder.cflag("-mno-outline-atomics");
+         }
+ 
+-        builder.cflags(extra_skia_cflags);
++        builder.target(clang_target(&config.target));
+     }
+ 
+     fn bindgen_args(&self, target: &Target, builder: &mut BindgenArgsBuilder) {
+-        builder.args(additional_clang_args(
+-            &target.to_string(),
+-            &target.architecture,
+-        ));
++        builder.args(additional_clang_args(&target.architecture));
++        builder.override_target(&clang_target(target));
+     }
+ 
+     fn link_libraries(&self, features: &Features) -> Vec<String> {
+@@ -102,7 +99,7 @@
+     captures[1].parse().expect("could not parse major version")
+ }
+ 
+-pub fn additional_clang_args(target: &str, target_arch: &str) -> Vec<String> {
++pub fn additional_clang_args(target_arch: &str) -> Vec<String> {
+     let mut args: Vec<String> = Vec::new();
+ 
+     match target_arch {
+@@ -127,14 +124,18 @@
+         args.push(format!("--sysroot={host_toolchain}/sysroot"));
+     };
+     args.push(format!("-I{ndk}/sources/android/cpufeatures"));
+-
+-    args.push(format!("--target={target}"));
+-    args.extend(extra_skia_cflags());
+     args
+ }
+ 
+-pub fn extra_skia_cflags() -> Vec<String> {
+-    vec![format!("-D__ANDROID_API__={API_LEVEL}")]
++/// The triple clang compiles for, carrying the API level: clang derives `__ANDROID_API__` from
++/// it, and the NDK's headers refuse a triple without one ("Unversioned target triples are not
++/// supported!"). It names the CPU the way the NDK does, which for 32-bit ARM is not Cargo's way.
++fn clang_target(target: &Target) -> String {
++    let triple = match target.architecture.as_str() {
++        "arm" | "armv7" | "thumbv7neon" => "armv7a-linux-androideabi".to_string(),
++        _ => target.to_string(),
++    };
++    format!("{triple}{API_LEVEL}")
+ }
+ 
+ pub fn link_libraries(features: &Features) -> Vec<&str> {

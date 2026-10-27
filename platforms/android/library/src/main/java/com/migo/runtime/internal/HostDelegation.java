@@ -180,6 +180,14 @@ final class HostDelegation {
             }
 
             @Override
+            public void settleSharedToGameCenter(int gameCenterErrCode, String gameCenterErrMsg) {
+                Map<String, Object> status = new LinkedHashMap<>();
+                status.put("errCode", gameCenterErrCode);
+                status.put("errMsg", gameCenterErrMsg == null ? "" : gameCenterErrMsg);
+                settlement.succeed(Collections.singletonMap("shareToGameCenter", status));
+            }
+
+            @Override
             public void fail(int errCode, String errMsg) {
                 settlement.fail(errCode, errMsg);
             }
@@ -292,6 +300,27 @@ final class HostDelegation {
                 options.optString("path", ""),
                 options.optBoolean("needShowEntrance", false),
                 options.optString("entrancePath", ""));
+    }
+
+    /** A recording's share as the engine judged it: its time ranges well formed, its numbers in range. */
+    static ShareHandler.RecordingShareRequest recordingShareRequest(JSONObject options) {
+        JSONArray ranges = options.optJSONArray("timeRange");
+        long[][] timeRange = new long[ranges == null ? 0 : ranges.length()][];
+        for (int i = 0; i < timeRange.length; i++) {
+            JSONArray range = ranges.optJSONArray(i);
+            timeRange[i] = new long[] {range.optLong(0), range.optLong(1)};
+        }
+        return new ShareHandler.RecordingShareRequest(
+                options.optString("video", ""),
+                options.optString("title", ""),
+                options.optString("desc", ""),
+                options.optString("query", ""),
+                options.optString("path", ""),
+                options.optString("bgm", ""),
+                timeRange,
+                options.optDouble("volume", 1),
+                options.optDouble("atempo", 1),
+                options.optBoolean("audioMix", false));
     }
 
     static NavigationHandler.NavigateRequest navigateRequest(JSONObject options) {

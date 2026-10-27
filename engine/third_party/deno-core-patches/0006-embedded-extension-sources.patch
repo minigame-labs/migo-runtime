@@ -1,0 +1,24 @@
+--- deno_core-0.413.0/extensions.rs
++++ deno_core-0.413.0/extensions.rs
+@@ -1019,15 +1019,15 @@
+   };
+ }
+ 
+-/// Source files declared on an extension are recorded by absolute path; their
+-/// bytes are read from disk during snapshot creation and never embedded in the
+-/// final binary. With a startup snapshot, the source is reachable via the
+-/// snapshot bytes (for `esm`/`js`) or the residual lazy table emitted by the
+-/// snapshot build (for `lazy_loaded_*`).
++/// Source files declared on an extension's `esm`/`js` are embedded in the
++/// binary. A runtime that boots from source reads them wherever it runs: the
++/// snapshot generator on the device it targets, and any runtime the snapshot
++/// does not hold. An embedder that boots only from a snapshot leaves the
++/// sources off the extension instead of loading them from the build machine.
+ #[doc(hidden)]
+ #[macro_export]
+ macro_rules! __extension_include_js_files_detect {
+-  ($($rest:tt)*) => { $crate::__extension_include_js_files_inner!(mode=loaded, $($rest)*) };
++  ($($rest:tt)*) => { $crate::__extension_include_js_files_inner!(mode=included, $($rest)*) };
+ }
+ 
+ /// This is the core of the [`include_js_files!`] and [`include_lazy_loaded_js_files`] macros. The first

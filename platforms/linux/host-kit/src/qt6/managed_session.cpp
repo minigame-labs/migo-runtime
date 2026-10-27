@@ -593,7 +593,9 @@ MigoManagedSession::MigoManagedSession(MigoEngine &engine, QWidget &parent, cons
         QDBusConnection::systemBus(), [impl](const NetworkReport::State &state) {
             if (impl->session == nullptr || impl->closing) return;
             (void)migo_session_set_network_status(impl->session, state.type, state.connected ? 1U : 0U);
-            impl->setSystemSetting(MIGO_SYSTEM_SETTING_FLAG_WIFI_ENABLED, state.wifi_enabled);
+            if (state.wifi_enabled.has_value()) {
+                impl->setSystemSetting(MIGO_SYSTEM_SETTING_FLAG_WIFI_ENABLED, *state.wifi_enabled);
+            }
         });
 
     // What the system grants the App. An App outside a sandbox is granted all

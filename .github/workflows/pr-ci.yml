@@ -1125,8 +1125,11 @@ jobs:
   # ── Job 4: Android AAR build — the real "does the whole project compile,
   # link, and embed the profile/ABI snapshot" gate (cross-compiles graphics/audio
   # via the NDK, where skia/alsa deps are handled). ───────────────────
+  # It waits on no other job. It used to wait on quality-gate and the Qt job, and
+  # used nothing they produce: while the snapshot freshness gate was red by design,
+  # every PR skipped this job, and master stopped building an Android libmigo.so
+  # (V8 components, Skia's triple, deno_core's errno) with no check reporting it.
   build:
-    needs: [quality-gate, linux-qt-host-kit]
     runs-on: ubuntu-latest
     timeout-minutes: 90
 
@@ -1191,10 +1194,11 @@ jobs:
       - name: Install Android NDK + cargo-ndk
         uses: ./.github/actions/setup-android-ndk
 
+      - name: Setup bubblewrap
+        uses: ./.github/actions/setup-bubblewrap
+
       - name: Reproduce Android platform TLS helper from patched source
         run: |
-          sudo apt-get update
-          sudo apt-get install -y bubblewrap
           sdkmanager --install "platforms;android-36"
           bash scripts/test-android-tls-source-contract.sh
 
@@ -1204,6 +1208,11 @@ jobs:
       # costume -- an ILP32 ABI lane skipped in CI that way for weeks.
       - name: Android NDK pin contract
         run: bash scripts/test-android-ndk-pin-contract.sh
+
+      # The Rust side declares the NDK constants it uses by hand; the pinned NDK's
+      # headers are compiled against each value.
+      - name: Android NDK constants contract
+        run: bash scripts/test-android-ndk-constants-contract.sh
 
       # Layout-only compatibility check. This does not publish or claim an
       # armeabi-v7a artifact; it exercises the 8-byte uint64_t alignment used

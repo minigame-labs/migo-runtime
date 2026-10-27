@@ -88,13 +88,22 @@ if (( ${#SHIPPED_SOURCES[@]} == 0 )); then
     exit 1
 fi
 
+# The engine the producer runs is staged into the producer's own ./engine/ by
+# scripts/gen-performance-plus-engine.py and ships with it, so a module that needs
+# the engine's own `core` -- one object, the one every engine module holds -- imports
+# it from there. Inside ./engine/ and nowhere above it: a `..` is still out.
 for shipped in ${SHIPPED_SOURCES[@]+"${SHIPPED_SOURCES[@]}"}; do
     outside="$(grep -nE "^\s*(import|export)\b.*\bfrom\s+[\"']" "$shipped" \
-        | grep -vE "from\s+[\"']\./[A-Za-z0-9_.-]+\.mjs[\"']" || true)"
+        | grep -vE "from\s+[\"']\./([A-Za-z0-9_.-]+|engine(/[A-Za-z0-9_-][A-Za-z0-9_.-]*)+)\.mjs[\"']" \
+        || true)"
+    if [[ -z "$outside" ]] && grep -nE "^\s*(import|export)\b.*\bfrom\s+[\"']\./engine/" "$shipped" \
+        | grep -qE "/\.\.?/"; then
+        outside="$(grep -nE "^\s*(import|export)\b.*\bfrom\s+[\"']\./engine/.*/\.\.?/" "$shipped")"
+    fi
     if [[ -n "$outside" ]]; then
         echo "FAIL: $shipped imports from outside the producer. It runs in WebContent" >&2
-        echo "      beside untrusted content; only ./sibling.mjs is allowed, and the test" >&2
-        echo "      harness does the I/O." >&2
+        echo "      beside untrusted content; only ./sibling.mjs and the staged ./engine/" >&2
+        echo "      are allowed, and the test harness does the I/O." >&2
         printf '%s\n' "$outside" >&2
         exit 1
     fi
@@ -721,6 +730,13 @@ RAN_TESTS+=("$TEST_DIR/engine-bundle.test.mjs")
 # The same for `host-events.test.mjs`: it delivers events the Rust host encodes
 # to the staged engine's bridge, so the engine contract runs it with both.
 RAN_TESTS+=("$TEST_DIR/host-events.test.mjs")
+# And the three that hold the staged engine's own modules to their policies --
+# the timer task context, the URL query policy against the unchanged WPT, and
+# structured Worker messages -- each taking the staged engine as its argument;
+# the engine contract runs them with it, and with their legacy-runtime variants.
+RAN_TESTS+=("$TEST_DIR/timer-tasks.test.mjs")
+RAN_TESTS+=("$TEST_DIR/url-policy.test.mjs")
+RAN_TESTS+=("$TEST_DIR/worker-transport.test.mjs")
 
 # --- the producer's own suites: run the named ones, then prove that was all ---
 #

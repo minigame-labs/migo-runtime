@@ -1374,6 +1374,13 @@ public final class NativeMethods {
         }
     }
 
+    /** Callback for a game recording's share result. */
+    public static void onShareGameRecordingResult(int sessionId, String resultJson) {
+        if (sessionId >= 0 && resultJson != null) {
+            NativeBridge.onShareGameRecordingResult(sessionId, resultJson);
+        }
+    }
+
     // ==================== Navigate Callback ====================
 
     /**
