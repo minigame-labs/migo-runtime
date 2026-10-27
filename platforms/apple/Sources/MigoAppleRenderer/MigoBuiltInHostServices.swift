@@ -158,8 +158,20 @@ final class MigoComposedHostServices: MigoHostServiceProvider {
 
 /// The system pasteboard: `setClipboardData` writes plain text to it,
 /// `getClipboardData` reads it back.
+///
+/// Off the main thread, on one serial queue. Reading what another app put on
+/// the pasteboard asks the player first (iOS 16, macOS 15.4) and blocks the
+/// reading thread until they answer; on the main thread that would hold the
+/// game's frames, its touches and every other answer for as long as the prompt
+/// is up. One queue for both methods keeps a read after a write reading it.
 enum MigoSystemClipboard {
+    private static let queue = DispatchQueue(label: "dev.migo.clipboard", qos: .userInitiated)
+
     static func handle(_ request: MigoHostServiceRequest) {
+        queue.async { answer(request) }
+    }
+
+    private static func answer(_ request: MigoHostServiceRequest) {
         switch request.method {
         case MigoHostServiceID.Clipboard.setClipboardData:
             guard let text = request.object["data"] as? String else {
@@ -175,7 +187,7 @@ enum MigoSystemClipboard {
         }
     }
 
-    static func write(_ text: String) {
+    private static func write(_ text: String) {
         #if os(iOS)
             UIPasteboard.general.string = text
         #elseif os(macOS)
@@ -185,7 +197,7 @@ enum MigoSystemClipboard {
         #endif
     }
 
-    static func read() -> String {
+    private static func read() -> String {
         #if os(iOS)
             return UIPasteboard.general.string ?? ""
         #elseif os(macOS)
