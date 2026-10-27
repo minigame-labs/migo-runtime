@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every other platform (the ble_peripheral service). Each of the server's requests is a command the host makes the
   embedded op's scope check and service call for, answered through the method's result hook; what centrals do
   reaches content as the service's events.
+- `getRecorderManager` on iOS (Performance+): the microphone is the host app's, as on every other platform (the
+  recorder service). Starting, pausing, resuming and stopping are answered at once, as the embedded ops answer:
+  scope.record checked where they check it and a refusal thrown in their words, which is what has the player asked.
+  The frames the host records reach `onFrameRecorded` through the same host-bridge call the embedded runtime makes,
+  decided for both executions in one place (`input_route`). The Apple SDK hands an app's frames on with
+  `MigoGameView.postRecorderFrame`.
 - `getBatteryInfo` and `getBatteryInfoSync` on a Mac laptop: the Apple SDK reports the internal battery among IOKit's
   power sources (its charge, and whether it is charging or full on the charger) and Low Power Mode from macOS 12, at
   each change. A Mac without a battery still answers "not supported".

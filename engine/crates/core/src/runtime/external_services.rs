@@ -898,6 +898,37 @@ impl ServiceContext {
                     window.set_cursor(&request).is_ok()
                 })))
             }
+            // The microphone's recording: answered at once, as the embedded ops
+            // answer -- scope.record checked first where they check it (stopping
+            // releases, and is not), then the host's recorder asked -- and
+            // refused in their words, which is what has the player asked for
+            // the scope (base/02_async.js) and what the facade reports.
+            id::op_recorder_start
+            | id::op_recorder_pause
+            | id::op_recorder_resume
+            | id::op_recorder_stop => {
+                let [request] = exactly(op, args)?;
+                let request = string(op, 0, request)?;
+                let device = self.device.get().and_then(Option::as_deref);
+                let name = super::service_ops::name_of(op).unwrap_or_default();
+                if let Some(refusal) = service_channel::scope_refusal(device, name) {
+                    return Err(ServiceError::generic(refusal));
+                }
+                let method = name.trim_start_matches("op_recorder_");
+                let Some(recorder) = device.and_then(|device| device.recorder()) else {
+                    return Err(ServiceError::generic(format!(
+                        "recorderManager.{method}:fail not supported"
+                    )));
+                };
+                match op {
+                    id::op_recorder_start => recorder.start(&request),
+                    id::op_recorder_pause => recorder.pause(&request),
+                    id::op_recorder_resume => recorder.resume(&request),
+                    _ => recorder.stop(&request),
+                }
+                .map_err(device_error)?;
+                Ok(OwnedValue::Null)
+            }
             // A video player made, or what it plays changed: answered at once, as
             // the embedded ops answer, with its src and poster exported through
             // the game's sandbox as they export them, and refused in their words.
@@ -2792,6 +2823,99 @@ mod tests {
         none.bind_session(2);
         none.bind_device(None);
         assert!(!set(&none, "pointer", 0.0, 0.0));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The microphone on this lane answers as the embedded ops do: starting,
+    /// pausing and resuming need scope.record and are refused in their words
+    /// until it is granted -- which is what has the player asked -- stopping
+    /// releases and is not, and a platform with no recorder says so in each
+    /// method's own words.
+    #[test]
+    fn the_recorder_answers_at_once_as_the_embedded_ops_answer() {
+        use shared::services::{
+            PermissionService, RecorderService, Scope, ScopeState, ServiceError as DeviceError,
+        };
+        #[derive(Default)]
+        struct Microphone {
+            heard: parking_lot::Mutex<Vec<String>>,
+            granted: std::sync::atomic::AtomicBool,
+        }
+        impl RecorderService for Microphone {
+            fn start(&self, json: &str) -> Result<(), DeviceError> {
+                self.heard.lock().push(format!("start {json}"));
+                Ok(())
+            }
+            fn pause(&self, json: &str) -> Result<(), DeviceError> {
+                self.heard.lock().push(format!("pause {json}"));
+                Ok(())
+            }
+            fn stop(&self, json: &str) -> Result<(), DeviceError> {
+                self.heard.lock().push(format!("stop {json}"));
+                Ok(())
+            }
+        }
+        impl PermissionService for Microphone {
+            fn scope_state(&self, scope: Scope) -> ScopeState {
+                let granted = self.granted.load(std::sync::atomic::Ordering::SeqCst);
+                if scope == Scope::Record && granted {
+                    ScopeState::Granted
+                } else {
+                    ScopeState::Unknown
+                }
+            }
+        }
+        struct Platform(Arc<Microphone>);
+        impl shared::services::SensorServices for Platform {}
+        impl shared::services::ConnectivityServices for Platform {}
+        impl shared::services::CommerceServices for Platform {}
+        impl shared::services::SystemUtilServices for Platform {
+            fn permission(&self) -> Option<Arc<dyn PermissionService>> {
+                Some(Arc::clone(&self.0) as Arc<dyn PermissionService>)
+            }
+        }
+        impl shared::services::MediaServices for Platform {
+            fn recorder(&self) -> Option<Arc<dyn RecorderService>> {
+                Some(Arc::clone(&self.0) as Arc<dyn RecorderService>)
+            }
+        }
+
+        let root = std::env::temp_dir().join(format!("migo-external-mic-{}", std::process::id()));
+        let microphone = Arc::new(Microphone::default());
+        let context = ServiceContext::new(root.join("files"), root.join("cache"));
+        context.bind_session(1);
+        context.bind_device(Some(Arc::new(Platform(Arc::clone(&microphone)))));
+        let call = |context: &ServiceContext, op: u32| {
+            context.call_sync(op, vec![OwnedValue::Str(r#"{"recordingId":3}"#.into())])
+        };
+
+        let refused = call(&context, id::op_recorder_start).expect_err("not granted");
+        assert_eq!(refused.message, "auth deny: scope.record is not granted");
+        assert!(
+            call(&context, id::op_recorder_stop).is_ok(),
+            "stopping releases"
+        );
+        microphone
+            .granted
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(call(&context, id::op_recorder_start).is_ok());
+        assert!(call(&context, id::op_recorder_pause).is_ok());
+        let refused = call(&context, id::op_recorder_resume).expect_err("the app's own refusal");
+        assert!(!refused.message.is_empty());
+        assert_eq!(
+            *microphone.heard.lock(),
+            [
+                r#"stop {"recordingId":3}"#,
+                r#"start {"recordingId":3}"#,
+                r#"pause {"recordingId":3}"#,
+            ]
+        );
+
+        let none = ServiceContext::new(root.join("files"), root.join("cache"));
+        none.bind_session(2);
+        none.bind_device(None);
+        let refused = call(&none, id::op_recorder_stop).expect_err("no microphone");
+        assert_eq!(refused.message, "recorderManager.stop:fail not supported");
         let _ = std::fs::remove_dir_all(&root);
     }
 

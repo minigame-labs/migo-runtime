@@ -48,6 +48,7 @@ export const HOST_EVENT = Object.freeze({
   _internalTriggerBLEConnectionStateChange: 30,
   _internalTriggerBLECharacteristicValueChange: 31,
   _internalTriggerBLEMTUChange: 32,
+  _internalOnRecorderFrameData: 33,
 });
 
 /** event number → the bridge function it calls, once the engine is bound. */

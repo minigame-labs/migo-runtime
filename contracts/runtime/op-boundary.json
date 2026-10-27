@@ -45,7 +45,7 @@
       }
     },
     "host_v8_audio": {
-      "reason": "Audio plays on the host (PCM never crosses the process boundary; control messages do). A decode is adopted on the host as the AudioBuffer's PCM, so its samples cross only when content reads its channels (materialize, synchronous) or starts a buffer it wrote. Graph edits and parameter changes are ordered commands; analyser reads and decodes are awaited; creation that can fail in a way content catches is synchronous, and so is setInnerAudioOption, whose refusal is what its facade reports as fail. Recording needs the microphone, which the profile does not grant.",
+      "reason": "Audio plays on the host (PCM never crosses the process boundary; control messages do). A decode is adopted on the host as the AudioBuffer's PCM, so its samples cross only when content reads its channels (materialize, synchronous) or starts a buffer it wrote. Graph edits and parameter changes are ordered commands; analyser reads and decodes are awaited; creation that can fail in a way content catches is synchronous, and so is setInnerAudioOption, whose refusal is what its facade reports as fail. Recording is the host app's microphone, as embedded (the recorder service): starting, pausing, resuming and stopping are answered at once, because a refusal -- scope.record not granted, no recorder -- is what the facade reports and what has the player asked, as the embedded ops throw it; the frames the host records reach content as the host-bridge call the embedded runtime makes (_internalOnRecorderFrameData), and its events as every host-service event.",
       "ops": {
         "op_audio_abort_buffer": "command",
         "op_audio_analyser_byte_frequency": "async",
@@ -124,10 +124,10 @@
         "op_media_audio_player_remove_source": "command",
         "op_media_audio_player_start": "command",
         "op_media_audio_player_stop": "command",
-        "op_recorder_pause": "unsupported",
-        "op_recorder_resume": "unsupported",
-        "op_recorder_start": "unsupported",
-        "op_recorder_stop": "unsupported"
+        "op_recorder_pause": "sync",
+        "op_recorder_resume": "sync",
+        "op_recorder_start": "sync",
+        "op_recorder_stop": "sync"
       }
     },
     "host_v8_base": {

@@ -327,6 +327,10 @@ service_ops! {
     op_ble_peripheral_start_advertising = 304,
     op_ble_peripheral_stop_advertising = 305,
     op_ble_peripheral_write_characteristic_value = 306,
+    op_recorder_start = 307,
+    op_recorder_pause = 308,
+    op_recorder_resume = 309,
+    op_recorder_stop = 310,
 }
 
 /// The op's name, for a refusal a person will read.

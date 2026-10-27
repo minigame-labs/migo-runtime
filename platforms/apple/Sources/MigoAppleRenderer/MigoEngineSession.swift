@@ -745,6 +745,28 @@ public final class MigoEngineSession {
 
     // MARK: - input
 
+    /// One frame of recording `recordingId`, as the recorder service's START
+    /// asked for with `frameSize` (`migo_session_post_recorder_frame`):
+    /// content's `onFrameRecorded` hears it, `isLastFrame` on the frame that
+    /// ends the recording. The bytes are copied in the call. A frame content
+    /// has fallen behind on is dropped; the last one never is. Main thread.
+    public func postRecorderFrame(recordingId: UInt32, data: Data, isLastFrame: Bool) {
+        guard !isClosed else { return }
+        let result = data.withUnsafeBytes { bytes -> MigoResult in
+            var frame = MigoRecorderFrame()
+            frame.struct_size = UInt32(MemoryLayout<MigoRecorderFrame>.size)
+            frame.abi_version = MIGO_ABI_VERSION_CURRENT
+            frame.recording_id = recordingId
+            frame.is_last_frame = isLastFrame ? 1 : 0
+            frame.data = bytes.bindMemory(to: UInt8.self).baseAddress
+            frame.length = UInt32(bytes.count)
+            return migo_session_post_recorder_frame(session, &frame)
+        }
+        if result != MIGO_OK, result != MIGO_ERROR_WOULD_BLOCK {
+            NSLog("MigoEngineSession: migo_session_post_recorder_frame returned \(result)")
+        }
+    }
+
     /// One BLE characteristic value, typed: the ids as the requests named
     /// them, the bytes copied by the engine during the call. Main thread.
     func postBleCharacteristicValue(deviceId: String, serviceId: String, characteristicId: String, value: Data) {

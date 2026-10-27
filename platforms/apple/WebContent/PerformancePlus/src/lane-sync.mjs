@@ -953,6 +953,22 @@ export function op_video_set(requestJson) {
   callService(SERVICE_OP.op_video_set, (w) => w.str(request));
 }
 
+/// getRecorderManager's microphone: each request answered at once, as the
+/// embedded ops answer. The host checks scope.record where they check it and
+/// asks its recorder; its refusal is thrown here in their words, which is what
+/// has the player asked for the scope and what the facade reports.
+function recorderRequest(op) {
+  return (requestJson) => {
+    const request = stringOf(requestJson, "request_json");
+    callService(op, (w) => w.str(request));
+  };
+}
+
+export const op_recorder_start = recorderRequest(SERVICE_OP.op_recorder_start);
+export const op_recorder_pause = recorderRequest(SERVICE_OP.op_recorder_pause);
+export const op_recorder_resume = recorderRequest(SERVICE_OP.op_recorder_resume);
+export const op_recorder_stop = recorderRequest(SERVICE_OP.op_recorder_stop);
+
 /// Whether the host app answers ecosystem calls at all, and the JSON it last
 /// reported for a synchronous getter (`getExtConfigSync`, `isChatTool`, ...) or
 /// `null`: the host's, as the embedded ops read them -- this producer has no

@@ -235,6 +235,13 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             engine?.setScopeState(scope, state)
         }
 
+        /// One frame of recording `recordingId` the app's recorder made, for
+        /// content's `onFrameRecorded` (`MigoEngineSession.postRecorderFrame`).
+        /// Main thread.
+        public func postRecorderFrame(recordingId: UInt32, data: Data, isLastFrame: Bool) {
+            engine?.postRecorderFrame(recordingId: recordingId, data: data, isLastFrame: isLastFrame)
+        }
+
         /// Report the value a synchronous ecosystem getter answers with --
         /// `name` one of the contract's values (`getExtConfigSync`,
         /// `isChatTool`, ...), `json` what the API returns -- whenever it
