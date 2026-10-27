@@ -8,24 +8,33 @@
 
 #include <QApplication>
 #include <QDBusConnection>
+#include <QDBusContext>
 #include <QDBusMessage>
 #include <QDeadlineTimer>
 #include <QDBusObjectPath>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QVariantMap>
 #include <QVBoxLayout>
 #include <QSignalSpy>
+#include <QTemporaryDir>
 #include <QThread>
 #include <QtTest>
 
 #include <linux/input.h>
+#include <linux/rfkill.h>
 
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <memory>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 using migo::linux_host::SurfaceState;
@@ -128,6 +137,88 @@ public:
     QString primary = QStringLiteral("802-11-wireless");
     bool wireless = true;
     bool radio = true;
+};
+
+/// systemd-networkd's manager: its state, and its account of its links.
+class FakeNetworkd final : public QObject, protected QDBusContext {
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.freedesktop.network1.Manager")
+    Q_PROPERTY(QString OperationalState MEMBER operational)
+
+public:
+    QString operational = QStringLiteral("routable");
+    /// Describe's answer; none is a networkd before 248, which has no Describe.
+    std::optional<QString> described;
+
+public slots:
+    QString Describe() {
+        if (!described.has_value()) {
+            sendErrorReply(QDBusError::UnknownMethod, QStringLiteral("no Describe before systemd 248"));
+            return {};
+        }
+        return *described;
+    }
+};
+
+/// What networkd's Describe says of links that each have a default route in
+/// the main table, as (Type, metric); a negative metric is a link without one.
+QString networkdLinks(const std::vector<std::pair<QString, int>> &links) {
+    QJsonArray interfaces;
+    int index = 1;
+    for (const auto &[type, metric] : links) {
+        QJsonArray routes;
+        if (metric >= 0) {
+            routes.append(QJsonObject{{QStringLiteral("Family"), 2},
+                                      {QStringLiteral("Destination"), QJsonArray{0, 0, 0, 0}},
+                                      {QStringLiteral("DestinationPrefixLength"), 0},
+                                      {QStringLiteral("Priority"), metric},
+                                      {QStringLiteral("Table"), 254}});
+        }
+        // A route of the same link to its own subnet is not the way out.
+        routes.append(QJsonObject{{QStringLiteral("Family"), 2},
+                                  {QStringLiteral("Destination"), QJsonArray{10, 0, index, 0}},
+                                  {QStringLiteral("DestinationPrefixLength"), 24},
+                                  {QStringLiteral("Priority"), 0},
+                                  {QStringLiteral("Table"), 254}});
+        interfaces.append(QJsonObject{{QStringLiteral("Index"), index},
+                                      {QStringLiteral("Name"), QStringLiteral("link%1").arg(index)},
+                                      {QStringLiteral("Type"), type},
+                                      {QStringLiteral("Routes"), routes}});
+        ++index;
+    }
+    return QString::fromUtf8(QJsonDocument(QJsonObject{{QStringLiteral("Interfaces"), interfaces}}).toJson());
+}
+
+/// The kernel's rfkill device, played through a FIFO: what it says of a radio
+/// as `rfkill_event`s, in the size a reader that asks for them gets.
+class FakeRfkill {
+public:
+    FakeRfkill() : path_(dir_.filePath(QStringLiteral("rfkill"))) {
+        valid_ = ::mkfifo(path_.toLocal8Bit().constData(), 0600) == 0;
+        // Held open for writing, so the reader never sees the end of it.
+        if (valid_) writer_ = ::open(path_.toLocal8Bit().constData(), O_RDWR | O_CLOEXEC);
+        valid_ = valid_ && writer_ >= 0;
+    }
+    ~FakeRfkill() {
+        if (writer_ >= 0) ::close(writer_);
+    }
+    [[nodiscard]] bool valid() const { return valid_; }
+    [[nodiscard]] QString path() const { return path_; }
+    void say(std::uint32_t radio, std::uint8_t op, std::uint8_t type, bool soft, bool hard) const {
+        rfkill_event event{};
+        event.idx = radio;
+        event.op = op;
+        event.type = type;
+        event.soft = soft ? 1 : 0;
+        event.hard = hard ? 1 : 0;
+        QCOMPARE(::write(writer_, &event, sizeof(event)), static_cast<ssize_t>(sizeof(event)));
+    }
+
+private:
+    QTemporaryDir dir_;
+    QString path_;
+    int writer_ = -1;
+    bool valid_ = false;
 };
 
 /// Say, as a D-Bus object does, that its properties of `interface` changed.
@@ -586,14 +677,16 @@ private slots:
         OnTheBus networkmanager(manager, interface, path);
         QVERIFY(networkmanager.registered());
         std::vector<NetworkReport::State> reports;
-        NetworkReport report(QDBusConnection::sessionBus(),
-                             [&reports](const NetworkReport::State &state) { reports.push_back(state); });
+        NetworkReport report(
+            QDBusConnection::sessionBus(),
+            [&reports](const NetworkReport::State &state) { reports.push_back(state); }, nullptr,
+            QStringLiteral("/nonexistent/rfkill"));
         const auto last = [&reports] { return reports.back(); };
 
         QTRY_COMPARE(reports.size(), std::size_t{1});
         QCOMPARE(last().type, MigoNetworkType{MIGO_NETWORK_WIFI});
         QVERIFY(last().connected);
-        QVERIFY(last().wifi_enabled);
+        QVERIFY(last().wifi_enabled == std::optional<bool>(true));
         manager.primary = QStringLiteral("802-3-ethernet");
         manager.radio = false;  // the radio's own switch: Wi-Fi is off
         manager.connectivity = 3;  // limited: no internet
@@ -601,7 +694,7 @@ private slots:
         QTRY_COMPARE(reports.size(), std::size_t{2});
         QCOMPARE(last().type, MigoNetworkType{MIGO_NETWORK_WIFI});
         QVERIFY(!last().connected);
-        QVERIFY(!last().wifi_enabled);
+        QVERIFY(last().wifi_enabled == std::optional<bool>(false));
         manager.connectivity = 0;  // not checked: the state says
         announce(path, interface);
         QTRY_COMPARE(reports.size(), std::size_t{3});
@@ -616,6 +709,96 @@ private slots:
         QTRY_COMPARE(reports.size(), std::size_t{5});
         QCOMPARE(last().type, MigoNetworkType{MIGO_NETWORK_NONE});
         QVERIFY(!last().connected);
+    }
+
+    /// Without NetworkManager the network is systemd-networkd's: the kind of
+    /// the link with the preferred default route, wired as Wi-Fi and a modem
+    /// unknown; connected while networkd says the machine is routable; none
+    /// once no link routes anywhere. Wi-Fi is on by the kernel's rfkill switch.
+    void the_network_is_networkd_s_where_networkmanager_does_not_run() {
+        QVERIFY2(QDBusConnection::sessionBus().isConnected(),
+                 "no session bus: run this test under dbus-run-session, as scripts/test-linux-qt-host-kit.sh does");
+        const QString path = QStringLiteral("/org/freedesktop/network1");
+        const QString interface = QStringLiteral("org.freedesktop.network1.Manager");
+        FakeNetworkd networkd;
+        // Ethernet's metric is lower, so it is the way out over the modem.
+        networkd.described = networkdLinks({{QStringLiteral("wwan"), 700}, {QStringLiteral("ether"), 100}});
+        OnTheBus on_the_bus(networkd, QStringLiteral("org.freedesktop.network1"), path);
+        QVERIFY(on_the_bus.registered());
+        FakeRfkill rfkill;
+        QVERIFY(rfkill.valid());
+        rfkill.say(0, RFKILL_OP_ADD, RFKILL_TYPE_BLUETOOTH, false, false);
+        rfkill.say(1, RFKILL_OP_ADD, RFKILL_TYPE_WLAN, false, false);
+        std::vector<NetworkReport::State> reports;
+        NetworkReport report(
+            QDBusConnection::sessionBus(), [&reports](const NetworkReport::State &state) { reports.push_back(state); },
+            nullptr, rfkill.path());
+        const auto last = [&reports] { return reports.back(); };
+
+        QTRY_VERIFY(!reports.empty() && last().type == MIGO_NETWORK_WIFI);
+        QVERIFY(last().connected);
+        QVERIFY(last().wifi_enabled == std::optional<bool>(true));
+
+        const std::size_t before_switch = reports.size();
+        rfkill.say(1, RFKILL_OP_CHANGE, RFKILL_TYPE_WLAN, true, false);  // switched off
+        QTRY_COMPARE(reports.size(), before_switch + 1);
+        QVERIFY(last().wifi_enabled == std::optional<bool>(false));
+        rfkill.say(1, RFKILL_OP_CHANGE, RFKILL_TYPE_WLAN, false, true);  // the radio's own switch
+        QTest::qWait(100);
+        QCOMPARE(reports.size(), before_switch + 1);  // still off: nothing new to say
+        rfkill.say(1, RFKILL_OP_CHANGE, RFKILL_TYPE_WLAN, false, false);
+        QTRY_COMPARE(reports.size(), before_switch + 2);
+        QVERIFY(last().wifi_enabled == std::optional<bool>(true));
+
+        // The modem now has the lower metric: the internet goes out through it.
+        networkd.described = networkdLinks({{QStringLiteral("wwan"), 50}, {QStringLiteral("ether"), 100}});
+        announce(path, interface);
+        QTRY_COMPARE(last().type, MigoNetworkType{MIGO_NETWORK_UNKNOWN});
+        QVERIFY(last().connected);
+
+        // An address on the link but none the internet answers: not connected.
+        networkd.operational = QStringLiteral("degraded");
+        announce(path, interface);
+        QTRY_VERIFY(!last().connected);
+        QCOMPARE(last().type, MigoNetworkType{MIGO_NETWORK_UNKNOWN});
+
+        // No link routes anywhere: no network.
+        networkd.operational = QStringLiteral("carrier");
+        networkd.described = networkdLinks({{QStringLiteral("wlan"), -1}, {QStringLiteral("ether"), -1}});
+        announce(path, interface);
+        QTRY_COMPARE(last().type, MigoNetworkType{MIGO_NETWORK_NONE});
+        QVERIFY(!last().connected);
+
+        // A networkd before Describe: routable, through a link it cannot name.
+        networkd.operational = QStringLiteral("routable");
+        networkd.described.reset();
+        announce(path, interface);
+        QTRY_COMPARE(last().type, MigoNetworkType{MIGO_NETWORK_UNKNOWN});
+        QVERIFY(last().connected);
+    }
+
+    /// Where NetworkManager runs it is the one that says, beside networkd; and
+    /// without an rfkill device to read nothing is said of the Wi-Fi switch,
+    /// rather than that it is off.
+    void networkmanager_comes_first_and_an_unknown_switch_is_not_off() {
+        const QString networkd_path = QStringLiteral("/org/freedesktop/network1");
+        FakeNetworkd networkd;
+        networkd.described = networkdLinks({{QStringLiteral("wwan"), 100}});
+        OnTheBus networkd_on_the_bus(networkd, QStringLiteral("org.freedesktop.network1"), networkd_path);
+        QVERIFY(networkd_on_the_bus.registered());
+        std::vector<NetworkReport::State> reports;
+        NetworkReport report(
+            QDBusConnection::sessionBus(), [&reports](const NetworkReport::State &state) { reports.push_back(state); },
+            nullptr, QStringLiteral("/nonexistent/rfkill"));
+        QTRY_VERIFY(!reports.empty() && reports.back().type == MIGO_NETWORK_UNKNOWN);
+        QVERIFY(!reports.back().wifi_enabled.has_value());
+
+        FakeNetworkManager manager;  // Wi-Fi, connected, switched on
+        OnTheBus networkmanager(manager, QStringLiteral("org.freedesktop.NetworkManager"),
+                                QStringLiteral("/org/freedesktop/NetworkManager"));
+        QVERIFY(networkmanager.registered());
+        QTRY_COMPARE(reports.back().type, MigoNetworkType{MIGO_NETWORK_WIFI});
+        QVERIFY(reports.back().wifi_enabled == std::optional<bool>(true));
     }
 
     /// Content runs while its window is shown and not minimized, and is told

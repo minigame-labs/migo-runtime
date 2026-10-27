@@ -1,0 +1,45 @@
+name: Install the engine's host build dependencies
+description: >
+  The system packages the host engine's crates need to build, link and test on
+  Linux. Shared by the host-engine-tests jobs.
+
+# Each package answers a link or include request the build actually makes,
+# confirmed against the build script output rather than guessed:
+#   ninja-build          Skia's GN/ninja source build
+#   libgl-dev            KHR/khrplatform.h, which the EGL and GLES headers include
+#   libegl-dev           EGL/*, for Skia's GL interface
+#   libgles-dev          GLES2/*, GLES3/*
+#   libfontconfig1-dev   skia-bindings emits `cargo:rustc-link-lib=fontconfig`
+#   libfreetype-dev      skia-bindings emits `cargo:rustc-link-lib=freetype`
+#   libasound2-dev       alsa-sys emits `cargo:rustc-link-lib=asound`
+# The last three are needed at link time even though the finished binaries do
+# not end up depending on them: `-l` has to resolve before `--as-needed` can
+# drop it.
+# And one the tests need at run time, not build time: the Linux video
+# decoder loads GStreamer, so its tests want it present, with its base,
+# good and libav plugins -- playbin and videoconvert, the MP4 demuxer, the
+# H.264 decoder the fixture clip needs -- and the game recorder's tests
+# want an H.264 encoder to record with, x264's from the ugly plugins:
+#   gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav
+#   gstreamer1.0-plugins-ugly
+
+runs:
+  using: composite
+  steps:
+    # Through the .deb cache: a stalled mirror once spent 26 of this job's
+    # minutes on this one step, and a hit downloads nothing (checked, not
+    # assumed; scripts/ci/apt-install-cached.sh). Its `update` and download
+    # are bounded and retried, so one slow mirror still costs a bounded
+    # retry, not the budget the cold Skia build needs.
+    - name: Install the packages
+      uses: ./.github/actions/apt-install-cached
+      with:
+        cache-name: host-engine
+        packages: >-
+          ninja-build
+          libgl-dev libegl-dev libgles-dev
+          libgl1-mesa-dri libegl-mesa0
+          libfontconfig1-dev libfreetype-dev
+          libasound2-dev strace
+          gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav
+          gstreamer1.0-plugins-ugly

@@ -1,6 +1,6 @@
 {
   "schema": "migo-v8-component-manifest/v1",
-  "component_id": "80128f86517805db4b916365d8fdbb765e56dac427034cd6b40676efb1ccb40c",
+  "component_id": "fc63306b074ee9a10ee7bb9ec6c37a03d43e0f543cae73f4c0caa536dfd21613",
   "target": {
     "triple": "aarch64-linux-android",
     "os": "android",
@@ -15,31 +15,44 @@
     }
   },
   "toolchain": {
-    "rustc": "rustc 1.89.0 (29483883e 2025-08-04) | binary: rustc | commit-hash: 29483883eed69d5fb4db01964cdf2af4d86e9cb2 | commit-date: 2025-08-04 | host: x86_64-unknown-linux-gnu | release: 1.89.0 | LLVM version: 20.1.7",
-    "compiler": "Android (8481493, based on r416183c2) clang version 12.0.9 (https://android.googlesource.com/toolchain/llvm-project c935d99d7cf2016289302412d708641d52d2f7ee) | Target: aarch64-unknown-linux-android26 | Thread model: posix | InstalledDir: ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin",
-    "sdk": "Android NDK 23.2.8568313; API 26 sysroot; source.properties sha256=db78b6fa43a79ad75699e147ef90b6996e423f577ce5bd9cbdeff2ab98bdf798",
-    "linker": "LLD 12.0.9 (/buildbot/src/android/llvm-r416183/out/llvm-project/lld c935d99d7cf2016289302412d708641d52d2f7ee) (compatible with GNU linkers)"
+    "rustc": "rustc 1.91.0 (f8297e351 2025-10-28) | binary: rustc | commit-hash: f8297e351a40c1439a467bbbb6879088047f50b3 | commit-date: 2025-10-28 | host: x86_64-unknown-linux-gnu | release: 1.91.0 | LLVM version: 21.1.2",
+    "compiler": "Android (16134705, +pgo, +bolt, +lto, +mlgo, based on r574158c) clang version 21.0.0 (https://android.googlesource.com/toolchain/llvm-project 9f872551d3c681d06fd303b36f16ed5c274735eb) | Target: aarch64-unknown-linux-android26 | Thread model: posix | InstalledDir: ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin",
+    "sdk": "Android NDK 30.0.16248370; API 26 sysroot; source.properties sha256=e73b7dc557cea2da9212c09ee1795434957d62e63b7550eef69fd1887a355d94",
+    "linker": "LLD 21.0.0 (/mnt/disks/build-disk/src/googleplex-android/llvm-r574158-release/out/llvm-project/llvm 9f872551d3c681d06fd303b36f16ed5c274735eb) (compatible with GNU linkers)"
   },
   "runtime": {
     "backend": "v8",
-    "rusty_v8_version": "145.0.0",
-    "rusty_v8_revision": "e6a88b35dd3d7f2849a0df33a71d338701c55316",
-    "v8_revision": "8defb67673c5483ae56258a2de01b07e947dc921",
+    "rusty_v8_version": "150.4.0",
+    "rusty_v8_revision": "5c15a6995c9bb4bacd3e341b59fff32c909c80bf",
+    "v8_revision": "ac1e23989121713ca642f6650b34deff7b686896",
     "normalized_gn_args": [
       "android_ndk_api_level=26",
       "android_ndk_root=${ANDROID_NDK_HOME}",
-      "android_ndk_version=r23",
+      "android_ndk_version=r30",
       "chrome_pgo_phase=0",
       "exclude_unwind_tables=true",
+      "icu_copy_icudata_to_root_build_dir=true",
+      "icu_use_data_file=true",
+      "icu_use_stub_data=true",
       "is_official_build=true",
+      "rusty_v8_enable_simdutf=true",
       "symbol_level=0",
       "use_thin_lto=false",
+      "v8_depend_on_icu_data_file=true",
       "v8_enable_i18n_support=true",
       "v8_enable_pointer_compression=true",
       "v8_enable_sandbox=false",
       "v8_enable_webassembly=true"
     ],
     "patches": [
+      {
+        "id": "0004-custom-ndk-arguments",
+        "sha256": "c83a47ceda4a888394ffef406435ceca9c7adfe3581d6ac60faf0540eee551bc"
+      },
+      {
+        "id": "bindgen-clang22-lock",
+        "sha256": "c886d224043ffd4c033dbee9269c2cc9134974d1070636f9f075aac8a5eb0bea"
+      },
       {
         "id": "0001-unset-bindgen-extra-clang-args",
         "sha256": "21a5e151cc831c8a9cda655d458fa7669f402ae1d3b96d29ade788ca20b45063"
@@ -59,13 +72,13 @@
     ]
   },
   "hashes": {
-    "archive": "681aaa39367a9aa35ab7e584ddd4b36273acbc0ccb4177648c43b9b55b7eb273",
-    "rust_binding": "47369bfb3ee9a7e6e0f451ae20242595d5a7f0b3afcc0b9447e4f99ff174686a"
+    "archive": "c5f76621d621340343e240b70fc1fa14ff623e797c04c47b0b06154715595f6f",
+    "rust_binding": "4077e0b8c79fb932c2cc6223602cb69af562a9b2a9cd6c49e241032ff606ff8c"
   },
   "provenance": {
-    "source_revision": "e6a88b35dd3d7f2849a0df33a71d338701c55316",
+    "source_revision": "5c15a6995c9bb4bacd3e341b59fff32c909c80bf",
     "build_recipe": "scripts/build-v8-android.sh",
-    "build_recipe_sha256": "828cba8c49eb3daf5ae5baedcd3e756e42f15a6aeaafdc3d4c0455a84cbf955e",
+    "build_recipe_sha256": "08ce0ba7dde022a0c3835bef3c97f3c2dfdededba051c5265d6f4ef28f9a66cd",
     "licenses": [
       "BSD-3-Clause",
       "MIT"

@@ -10,15 +10,34 @@ const fixtures = resolve(process.argv[3]);
 if (process.env.MIGO_TEST_LEGACY_URL_USV === "1") String.prototype.toWellFormed = undefined;
 const facade = await import(pathToFileURL(resolve(staged, "engine/host_v8_url/03_url.js")));
 
+// Two cases test the backend's parser, which the facade hands every URL to, not the shared query policy: an opaque
+// path keeps its trailing spaces, the last one escaped, once its query goes (a 2025 change to the URL Standard). They
+// apply where the backend parses that way -- WebKit's and Node's versions differ on it -- and are left out where it
+// does not, as the two DOM cases are everywhere.
+const BACKEND_PARSER_CASES = new Set([
+  "Changing the query of a URL with an opaque path with trailing spaces",
+  "Changing the query of a URL with an opaque path with trailing spaces and a fragment",
+]);
+const backendKeepsOpaqueSpaces = (() => {
+  const url = new URL("data:space    ?test");
+  url.search = "";
+  return url.pathname === "space   %20";
+})();
+
 test("shared URL query policy passes applicable unchanged WPT on native browser backend", () => {
   globalThis.URL = facade.URL;
   globalThis.URLSearchParams = facade.URLSearchParams;
   vm.runInThisContext(readFileSync(resolve(fixtures, "harness.js"), "utf8"));
+  if (!backendKeepsOpaqueSpaces) {
+    const run = globalThis.test;
+    globalThis.test = (callback, name) =>
+      BACKEND_PARSER_CASES.has(name) ? void __wpt.excluded.push(name) : run(callback, name);
+  }
   const files = readdirSync(fixtures).filter(name => name.startsWith("urlsearchparams-")).sort();
   assert.equal(files.length, 10);
   for (const name of files) vm.runInThisContext(`(() => {\n${readFileSync(resolve(fixtures, name), "utf8")}\n})()`);
-  assert.equal(__wpt.excluded.length, 2);
-  assert.equal(__wpt.passed, 84);
+  assert.equal(__wpt.excluded.length, backendKeepsOpaqueSpaces ? 2 : 4);
+  assert.equal(__wpt.passed, backendKeepsOpaqueSpaces ? 84 : 82);
   assert.deepEqual(__wpt.failures, []);
 });
 

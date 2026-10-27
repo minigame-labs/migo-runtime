@@ -8,7 +8,10 @@
 
 #include <QDBusConnection>
 #include <QDBusServiceWatcher>
+#include <QHash>
+#include <QJsonObject>
 #include <QObject>
+#include <QSocketNotifier>
 #include <QString>
 #include <QTimer>
 #include <QVariantMap>
@@ -72,31 +75,73 @@ private:
     WatchedProperties legacy_power_profiles_;
 };
 
-/// The network as NetworkManager shows it: the primary connection's kind,
-/// whether it reaches the internet, and whether Wi-Fi is switched on. A machine
-/// NetworkManager does not run on has none to report.
+/// The radios' switches as the kernel's rfkill device tells them: every radio
+/// as it is added, and again each time a switch moves. Wi-Fi is on when a
+/// wireless radio is blocked by neither its soft switch nor its hard one.
+class RadioSwitches final : public QObject {
+public:
+    /// `device` is the rfkill device (`/dev/rfkill`); `changed` is called with
+    /// whether Wi-Fi is on, once the radios the kernel has are known and each
+    /// time that changes. A device that cannot be opened says nothing: then
+    /// nothing is known of the switch, which is not the same as its being off.
+    RadioSwitches(const QString &device, std::function<void(bool wifi_on)> changed, QObject *parent = nullptr);
+    ~RadioSwitches() override;
+
+private:
+    void read();
+
+    struct Radio {
+        bool wireless = false;
+        bool blocked = false;
+    };
+    int fd_ = -1;
+    std::function<void(bool)> changed_;
+    QHash<std::uint32_t, Radio> radios_;
+    std::optional<bool> reported_;
+    QSocketNotifier *notifier_ = nullptr;
+};
+
+/// The network as the system's network manager shows it: the primary
+/// connection's kind, whether it reaches the internet, and whether Wi-Fi is
+/// switched on. NetworkManager where it runs; otherwise systemd-networkd, the
+/// manager of machines without a desktop's, whose Wi-Fi switch is the kernel's
+/// rfkill. A machine neither runs on has no network to report.
 class NetworkReport final : public QObject {
 public:
     struct State {
         MigoNetworkType type = MIGO_NETWORK_NONE;
         bool connected = false;
-        /// Wi-Fi is on, by its switch and its radio's (getSystemSetting's wifiEnabled).
-        bool wifi_enabled = false;
+        /// Wi-Fi is on, by its switch and its radio's (getSystemSetting's
+        /// wifiEnabled); none when nothing says.
+        std::optional<bool> wifi_enabled;
         bool operator==(const State &other) const noexcept {
             return type == other.type && connected == other.connected && wifi_enabled == other.wifi_enabled;
         }
     };
 
-    /// `bus` is where NetworkManager answers: the system's. `report` is called
-    /// with the network each time it changes.
-    NetworkReport(QDBusConnection bus, std::function<void(const State &)> report, QObject *parent = nullptr);
+    /// `bus` is where NetworkManager and systemd-networkd answer: the system's.
+    /// `radios` is the rfkill device. `report` is called with the network each
+    /// time it changes.
+    NetworkReport(QDBusConnection bus, std::function<void(const State &)> report, QObject *parent = nullptr,
+                  const QString &radios = QStringLiteral("/dev/rfkill"));
 
 private:
-    void update(const std::optional<QVariantMap> &manager);
+    void update();
+    void describeNetworkd();
 
+    QDBusConnection bus_;
     std::function<void(const State &)> report_;
     std::optional<State> reported_;
-    WatchedProperties manager_;
+    std::optional<QVariantMap> networkmanager_;
+    std::optional<QVariantMap> networkd_;
+    /// networkd's own account of its links (Manager.Describe), read again
+    /// whenever any of its objects says something changed.
+    std::optional<QJsonObject> networkd_links_;
+    std::optional<bool> wifi_switch_;
+    QTimer redescribe_;
+    WatchedProperties networkmanager_manager_;
+    WatchedProperties networkd_manager_;
+    RadioSwitches radios_;
 };
 
 }  // namespace migo::linux_host::qt6

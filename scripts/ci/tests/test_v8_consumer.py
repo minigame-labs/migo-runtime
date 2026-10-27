@@ -16,7 +16,9 @@ class V8Consumer(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.scratch = tempfile.TemporaryDirectory(prefix='migo-v8-consumer-gate-')
-        cls.base = Path(cls.scratch.name)
+        # The build script names the archive's directory canonically, and a macOS temp path is a
+        # symlink (/var -> /private/var): compare against the canonical one.
+        cls.base = Path(cls.scratch.name).resolve()
         cls.builder = cls.base / 'builder'
         subprocess.run(['rustc', '--edition', '2024',
                         str(ROOT / 'engine/third_party/v8-150.4.0/build.rs'),
