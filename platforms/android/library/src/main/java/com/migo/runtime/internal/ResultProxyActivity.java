@@ -5,6 +5,8 @@ import android.content.Context;
 import android.content.Intent;
 import android.os.Bundle;
 
+import java.util.concurrent.atomic.AtomicBoolean;
+
 /**
  * A transparent proxy Activity that handles {@code startActivityForResult} internally,
  * so the host Activity does not need to override {@code onActivityResult}.
@@ -15,6 +17,12 @@ import android.os.Bundle;
  * Activity lifecycle callbacks all arrive on the main thread, which is what
  * makes a plain field enough to hold that ownership.
  *
+ * <p>Read access a result grants to its content URIs belongs to the Activity
+ * that receives it, and the system takes it back when that Activity is
+ * destroyed. A caller that reads them after the result arrives launches with a
+ * {@link LentResultCallback}, and this proxy stays -- transparent, showing
+ * nothing -- until it is released.
+ *
  * @hide
  */
 public class ResultProxyActivity extends Activity {
@@ -24,6 +32,15 @@ public class ResultProxyActivity extends Activity {
      */
     public interface ResultCallback {
         void onResult(int requestCode, int resultCode, Intent data);
+    }
+
+    /**
+     * Callback for a result whose content URIs the caller reads after it
+     * arrives. The URIs stay readable until {@code release} runs; it may run on
+     * any thread, and must run once the caller has opened what it reads.
+     */
+    public interface LentResultCallback {
+        void onResult(int requestCode, int resultCode, Intent data, Runnable release);
     }
 
     /**
@@ -41,9 +58,9 @@ public class ResultProxyActivity extends Activity {
     private static final class PendingRequest {
         final Intent intent;
         final int requestCode;
-        final ResultCallback callback;
+        final LentResultCallback callback;
 
-        PendingRequest(Intent intent, int requestCode, ResultCallback callback) {
+        PendingRequest(Intent intent, int requestCode, LentResultCallback callback) {
             this.intent = intent;
             this.requestCode = requestCode;
             this.callback = callback;
@@ -66,6 +83,19 @@ public class ResultProxyActivity extends Activity {
      */
     public static void launch(Context context, Intent targetIntent, int requestCode,
                               ResultCallback callback) {
+        launch(context, targetIntent, requestCode, callback == null ? null
+                : (LentResultCallback) (code, resultCode, data, release) -> {
+                    callback.onResult(code, resultCode, data);
+                    release.run();
+                });
+    }
+
+    /**
+     * As {@link #launch(Context, Intent, int, ResultCallback)}, keeping the
+     * result's URIs readable until the callback releases them.
+     */
+    public static void launch(Context context, Intent targetIntent, int requestCode,
+                              LentResultCallback callback) {
         long token = sPending.register(new PendingRequest(targetIntent, requestCode, callback));
         Intent proxy = new Intent(context, ResultProxyActivity.class);
         proxy.putExtra(EXTRA_TOKEN, token);
@@ -102,19 +132,13 @@ public class ResultProxyActivity extends Activity {
             startActivityForResult(request.intent, request.requestCode);
         } catch (RuntimeException notStarted) {
             deliver(request.requestCode, Activity.RESULT_CANCELED, null);
-            finish();
-            overridePendingTransition(0, 0);
         }
     }
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-
         deliver(requestCode, resultCode, data);
-
-        finish();
-        overridePendingTransition(0, 0);
     }
 
     @Override
@@ -128,13 +152,27 @@ public class ResultProxyActivity extends Activity {
         }
     }
 
-    /** Answers the owned request, if it has not been answered already. */
+    /**
+     * Answers the owned request, if it has not been answered already, and
+     * finishes once the answer is released.
+     */
     private void deliver(int requestCode, int resultCode, Intent data) {
         PendingRequest request = owned;
         if (request == null) return;
         owned = null;
+        AtomicBoolean released = new AtomicBoolean();
+        Runnable release = () -> {
+            if (released.compareAndSet(false, true)) {
+                runOnUiThread(() -> {
+                    finish();
+                    overridePendingTransition(0, 0);
+                });
+            }
+        };
         if (request.callback != null) {
-            request.callback.onResult(requestCode, resultCode, data);
+            request.callback.onResult(requestCode, resultCode, data, release);
+        } else {
+            release.run();
         }
     }
 }

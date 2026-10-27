@@ -7,6 +7,7 @@ import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
+import android.content.res.AssetFileDescriptor;
 import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -30,6 +31,7 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.io.Closeable;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -205,6 +207,38 @@ public class ImageApiManager {
         }
     }
 
+    /**
+     * A picked item, opened while the picker's grant to read it held: the
+     * descriptor reads on after the grant is taken back.
+     */
+    private static final class Picked implements Closeable {
+        final AssetFileDescriptor content;
+        /** The provider's MIME type, or null when it does not say. */
+        final String mime;
+        /** The extension the staged copy takes, with its dot. */
+        final String extension;
+        /** {@code chooseMessageFile}'s display name and size; -1 when the provider does not say. */
+        final String name;
+        final long size;
+
+        Picked(AssetFileDescriptor content, String mime, String extension, String name, long size) {
+            this.content = content;
+            this.mime = mime;
+            this.extension = extension;
+            this.name = name;
+            this.size = size;
+        }
+
+        boolean isVideo() {
+            return mime != null && mime.startsWith("video/");
+        }
+
+        @Override
+        public void close() throws IOException {
+            content.close();
+        }
+    }
+
     private static final class PendingCompression {
         final int requestId;
         final AtomicBoolean settled = new AtomicBoolean(false);
@@ -237,8 +271,8 @@ public class ImageApiManager {
         api.answer(sessionId, doneJson(requestId));
     }
 
-    /** Run {@code work} off the main thread, or answer that it could not be queued. */
-    private void submit(Api api, int requestId, Runnable work) {
+    /** Run {@code work} off the main thread, or answer that it could not be queued and return false. */
+    private boolean submit(Api api, int requestId, Runnable work) {
         try {
             IMAGE_WORKERS.execute(() -> {
                 try {
@@ -248,8 +282,10 @@ public class ImageApiManager {
                     fail(api, requestId, String.valueOf(unexpected.getMessage()));
                 }
             });
+            return true;
         } catch (RejectedExecutionException busy) {
             fail(api, requestId, "busy");
+            return false;
         }
     }
 
@@ -684,7 +720,8 @@ public class ImageApiManager {
             }
             try {
                 ResultProxyActivity.launch(activity, chooser, requestCode,
-                        (code, resultCode, data) -> onPicked(request, resultCode, data));
+                        (code, resultCode, data, release) ->
+                                onPicked(request, resultCode, data, release));
             } catch (RuntimeException e) {
                 Log.e(TAG, request.api.apiName + ": picker not launched", e);
                 fail(request.api, request.requestId, String.valueOf(e.getMessage()));
@@ -746,8 +783,14 @@ public class ImageApiManager {
 
     // ==================== Results ====================
 
-    private void onPicked(PickerRequest request, int resultCode, Intent data) {
+    /**
+     * The picker lends what it returns to the proxy that received it, until the
+     * proxy finishes: each item is opened on a worker before {@code release},
+     * then copied from its descriptor after.
+     */
+    private void onPicked(PickerRequest request, int resultCode, Intent data, Runnable release) {
         if (resultCode != Activity.RESULT_OK || data == null) {
+            release.run();
             fail(request.api, request.requestId, "cancel");
             return;
         }
@@ -761,7 +804,28 @@ public class ImageApiManager {
         } else if (data.getData() != null) {
             uris.add(data.getData());
         }
-        submit(request.api, request.requestId, () -> answerPicked(request, uris));
+        boolean queued = submit(request.api, request.requestId, () -> {
+            List<Picked> picked = new ArrayList<>();
+            try {
+                try {
+                    open(request, uris, picked);
+                } finally {
+                    release.run();
+                }
+                answerPicked(request, picked);
+            } catch (IOException | JSONException e) {
+                fail(request.api, request.requestId, e.getMessage());
+            } finally {
+                for (Picked item : picked) {
+                    try {
+                        item.close();
+                    } catch (IOException ignored) {
+                        // Closing what was read to its end is not a failure of the request.
+                    }
+                }
+            }
+        });
+        if (!queued) release.run();
     }
 
     private void onCaptured(PickerRequest request, boolean video, int resultCode) {
@@ -797,26 +861,81 @@ public class ImageApiManager {
         });
     }
 
-    private void answerPicked(PickerRequest request, List<Uri> uris) {
+    /**
+     * Opens the items {@code request} accepts, up to its count, into {@code picked}:
+     * an image for {@code chooseImage}, the kinds {@code chooseMedia} asked for,
+     * a file with one of {@code chooseMessageFile}'s extensions.
+     */
+    private void open(PickerRequest request, List<Uri> uris, List<Picked> picked)
+            throws IOException {
         ContentResolver resolver = appContext.getContentResolver();
+        for (Uri uri : uris) {
+            if (picked.size() == request.count) break;
+            String mime = resolver.getType(uri);
+            boolean image = mime != null && mime.startsWith("image/");
+            boolean video = mime != null && mime.startsWith("video/");
+            String name = null;
+            long size = -1;
+            String extension;
+            switch (request.api) {
+                case CHOOSE_IMAGE:
+                    if (mime != null && !image) continue;
+                    extension = extensionFor(mime, ".jpg");
+                    break;
+                case CHOOSE_MEDIA:
+                    if (!(video && request.videos) && !(image && request.images)) continue;
+                    extension = extensionFor(mime, video ? ".mp4" : ".jpg");
+                    break;
+                case CHOOSE_MESSAGE_FILE: {
+                    name = "file";
+                    try (Cursor cursor = resolver.query(uri, null, null, null, null)) {
+                        if (cursor != null && cursor.moveToFirst()) {
+                            int nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
+                            int sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE);
+                            if (nameIdx >= 0 && cursor.getString(nameIdx) != null) {
+                                name = cursor.getString(nameIdx);
+                            }
+                            if (sizeIdx >= 0 && !cursor.isNull(sizeIdx)) size = cursor.getLong(sizeIdx);
+                        }
+                    }
+                    int dot = name.lastIndexOf('.');
+                    extension = dot > 0 ? name.substring(dot).toLowerCase(Locale.ROOT)
+                            : extensionFor(mime, "");
+                    if (!request.extensions.isEmpty() && !request.extensions.contains(
+                            extension.startsWith(".") ? extension.substring(1) : extension)) {
+                        continue;
+                    }
+                    break;
+                }
+                default:
+                    throw new IOException("not a picker request");
+            }
+            AssetFileDescriptor content = resolver.openAssetFileDescriptor(uri, "r");
+            if (content == null) {
+                throw new IOException("cannot read " + uri);
+            }
+            picked.add(new Picked(content, mime, extension, name, size));
+        }
+    }
+
+    private void answerPicked(PickerRequest request, List<Picked> picked)
+            throws IOException, JSONException {
+        if (picked.isEmpty()) {
+            fail(request.api, request.requestId, request.api == Api.CHOOSE_IMAGE ? "no image selected"
+                    : request.api == Api.CHOOSE_MEDIA ? "nothing selected" : "no file selected");
+            return;
+        }
         List<File> staged = new ArrayList<>();
         try {
             switch (request.api) {
                 case CHOOSE_IMAGE: {
                     List<String> paths = new ArrayList<>();
                     List<Long> sizes = new ArrayList<>();
-                    for (Uri uri : uris) {
-                        if (paths.size() == request.count) break;
-                        String mime = resolver.getType(uri);
-                        if (mime != null && !mime.startsWith("image/")) continue;
-                        File file = stage(uri, "image", extensionFor(mime, ".jpg"));
+                    for (Picked item : picked) {
+                        File file = stage(item, "image");
                         staged.add(file);
                         paths.add(file.getAbsolutePath());
                         sizes.add(file.length());
-                    }
-                    if (paths.isEmpty()) {
-                        fail(request.api, request.requestId, "no image selected");
-                        return;
                     }
                     request.api.answer(sessionId,
                             chooseImageResultJson(request.requestId, paths, sizes));
@@ -824,14 +943,19 @@ public class ImageApiManager {
                 }
                 case CHOOSE_MESSAGE_FILE: {
                     List<JSONObject> files = new ArrayList<>();
-                    for (Uri uri : uris) {
-                        if (files.size() == request.count) break;
-                        JSONObject info = stageMessageFile(request, resolver, uri, staged);
-                        if (info != null) files.add(info);
-                    }
-                    if (files.isEmpty()) {
-                        fail(request.api, request.requestId, "no file selected");
-                        return;
+                    for (Picked item : picked) {
+                        File file = stage(item, "file");
+                        staged.add(file);
+                        String fileType = "file";
+                        if (item.mime != null && item.mime.startsWith("image/")) fileType = "image";
+                        else if (item.isVideo()) fileType = "video";
+                        JSONObject info = new JSONObject();
+                        info.put("path", file.getAbsolutePath());
+                        info.put("size", item.size >= 0 ? item.size : file.length());
+                        info.put("name", item.name);
+                        info.put("type", fileType);
+                        info.put("time", System.currentTimeMillis() / 1000);
+                        files.add(info);
                     }
                     request.api.answer(sessionId,
                             chooseMessageFileResultJson(request.requestId, files));
@@ -839,24 +963,14 @@ public class ImageApiManager {
                 }
                 case CHOOSE_MEDIA: {
                     List<JSONObject> items = new ArrayList<>();
-                    for (Uri uri : uris) {
-                        if (items.size() == request.count) break;
-                        String mime = resolver.getType(uri);
-                        boolean video = mime != null && mime.startsWith("video/");
-                        boolean image = mime != null && mime.startsWith("image/");
-                        if (!(video && request.videos) && !(image && request.images)) continue;
-                        File file = stage(uri, video ? "video" : "image",
-                                extensionFor(mime, video ? ".mp4" : ".jpg"));
+                    for (Picked item : picked) {
+                        File file = stage(item, item.isVideo() ? "video" : "image");
                         staged.add(file);
-                        JSONObject item = video ? describeVideo(file) : describeImage(file);
-                        if (item.has("thumbTempFilePath")) {
-                            staged.add(new File(item.getString("thumbTempFilePath")));
+                        JSONObject described = item.isVideo() ? describeVideo(file) : describeImage(file);
+                        if (described.has("thumbTempFilePath")) {
+                            staged.add(new File(described.getString("thumbTempFilePath")));
                         }
-                        items.add(item);
-                    }
-                    if (items.isEmpty()) {
-                        fail(request.api, request.requestId, "nothing selected");
-                        return;
+                        items.add(described);
                     }
                     request.api.answer(sessionId, chooseMediaResultJson(request.requestId, items));
                     break;
@@ -864,47 +978,14 @@ public class ImageApiManager {
                 default:
                     fail(request.api, request.requestId, "not a picker request");
             }
-        } catch (IOException | JSONException e) {
+        } catch (IOException | JSONException | RuntimeException e) {
             // Nothing was handed over, so what was staged is still this SDK's.
             for (File file : staged) {
                 //noinspection ResultOfMethodCallIgnored
                 file.delete();
             }
-            fail(request.api, request.requestId, e.getMessage());
+            throw e;
         }
-    }
-
-    private JSONObject stageMessageFile(PickerRequest request, ContentResolver resolver, Uri uri,
-                                        List<File> staged) throws IOException, JSONException {
-        String name = "file";
-        long size = -1;
-        try (Cursor cursor = resolver.query(uri, null, null, null, null)) {
-            if (cursor != null && cursor.moveToFirst()) {
-                int nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME);
-                int sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE);
-                if (nameIdx >= 0 && cursor.getString(nameIdx) != null) name = cursor.getString(nameIdx);
-                if (sizeIdx >= 0 && !cursor.isNull(sizeIdx)) size = cursor.getLong(sizeIdx);
-            }
-        }
-        String mime = resolver.getType(uri);
-        int dot = name.lastIndexOf('.');
-        String ext = dot > 0 ? name.substring(dot).toLowerCase(Locale.ROOT) : extensionFor(mime, "");
-        if (!request.extensions.isEmpty()
-                && !request.extensions.contains(ext.startsWith(".") ? ext.substring(1) : ext)) {
-            return null;
-        }
-        File file = stage(uri, "file", ext);
-        staged.add(file);
-        String fileType = "file";
-        if (mime != null && mime.startsWith("image/")) fileType = "image";
-        else if (mime != null && mime.startsWith("video/")) fileType = "video";
-        JSONObject info = new JSONObject();
-        info.put("path", file.getAbsolutePath());
-        info.put("size", size >= 0 ? size : file.length());
-        info.put("name", name);
-        info.put("type", fileType);
-        info.put("time", System.currentTimeMillis() / 1000);
-        return info;
     }
 
     /** {@code width}/{@code height} and the rest of a {@code chooseMedia} image item. */
@@ -1018,13 +1099,11 @@ public class ImageApiManager {
     }
 
     /** Copy what {@code uri} names into a new staging file. */
-    private File stage(Uri uri, String prefix, String extension) throws IOException {
-        File file = stagingFile(prefix, extension);
-        try (InputStream in = appContext.getContentResolver().openInputStream(uri);
+    /** Copies a picked item into a staging file of its own, reading its descriptor to the end. */
+    private File stage(Picked item, String prefix) throws IOException {
+        File file = stagingFile(prefix, item.extension);
+        try (InputStream in = item.content.createInputStream();
              OutputStream out = new FileOutputStream(file)) {
-            if (in == null) {
-                throw new IOException("cannot read " + uri);
-            }
             copy(in, out);
         } catch (IOException | RuntimeException e) {
             //noinspection ResultOfMethodCallIgnored
