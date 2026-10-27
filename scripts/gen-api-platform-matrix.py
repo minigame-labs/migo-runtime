@@ -117,7 +117,8 @@ INPUT = {
 }
 
 # A service the Java SDK leaves to the host app: its handler interface. Every
-# other service the Android SDK implements itself.
+# other service the Android SDK implements itself, but for the calls it hands to
+# one of these handlers (ANDROID_DELEGATE).
 ANDROID_HANDLER = {
     "ad": "AdHandler",
     "auth": "AuthHandler",
@@ -125,6 +126,7 @@ ANDROID_HANDLER = {
     "navigate": "NavigationHandler",
     "payment": "PaymentHandler",
     "permission": "PermissionHandler",
+    "setting": "SettingHandler",
     "share": "ShareHandler",
     "subpackage": "SubpackageHandler",
     "update": "UpdateHandler",
@@ -453,8 +455,15 @@ def lane_facts(root: pathlib.Path) -> dict[str, dict[str, set[str]]]:
     return facts
 
 
-def android_facts(root: pathlib.Path) -> tuple[set[str], set[str], set[str]]:
-    """(services the Android SDK implements, services left to a handler, input natives it calls)."""
+# Where the Java SDK hands a call to the host app's handler. A call can reach the
+# SDK through a service the SDK answers itself and be the handler's all the same:
+# openSetting arrives through system_info and goes to the SettingHandler.
+ANDROID_DELEGATE = re.compile(r'\bdelegate\(\s*\w+,\s*s(\w+)Handlers,\s*"(\w+)"')
+
+
+def android_facts(root: pathlib.Path) -> tuple[set[str], set[str], set[str], dict[str, str]]:
+    """(services the Android SDK implements, services left to a handler, input natives it calls,
+    the API each call it hands to a handler is -> that handler's service)."""
     services_src = read(root, ANDROID_SERVICES)
     implemented: set[str] = set()
     for block in re.finditer(r"impl \w+ for AndroidDeviceServices \{", services_src):
@@ -474,7 +483,13 @@ def android_facts(root: pathlib.Path) -> tuple[set[str], set[str], set[str]]:
             r"\bNative(?:Methods|Bridge)(?:\.(on\w+)\s*\(|::(on\w+)\b)", path.read_text(encoding="utf-8")
         ):
             natives.add(call or reference)
-    return implemented, handlers, found("Android input natives", natives)
+    by_interface = {interface: service for service, interface in ANDROID_HANDLER.items()}
+    delegated = {}
+    for handler, api in ANDROID_DELEGATE.findall(read(root, f"{ANDROID_JAVA}/com/migo/runtime/internal/NativeExports.java")):
+        if f"{handler}Handler" not in by_interface:
+            raise Fail(f"Android delegates {api} to {handler}Handler, which ANDROID_HANDLER does not name")
+        delegated[api] = by_interface[f"{handler}Handler"]
+    return implemented, handlers, found("Android input natives", natives), found("Android delegated calls", delegated)
 
 
 # ---- what each API needs -------------------------------------------------------
@@ -602,7 +617,7 @@ def worst(statuses) -> str:
 
 def need_status(need: str, platform: str, lanes, entries, android) -> str:
     kind, _, detail = need.partition(":")
-    implemented, handlers, natives = android
+    implemented, handlers, natives, _ = android
     if platform == "android":
         if kind == "input" and INPUT[detail][1] is not None:
             return "default" if INPUT[detail][1] in natives else "missing"
@@ -709,7 +724,14 @@ def generate(root: pathlib.Path) -> str:
     entries = c_entry_points(root)
     lanes = lane_facts(root)
     android = android_facts(root)
-    implemented, handlers, natives = android
+    implemented, handlers, natives, delegated = android
+    # An op of a call the SDK hands to a handler -> that handler's service.
+    handed_ops = {}
+    for api, service in delegated.items():
+        if reach.get(api) is None:
+            raise Fail(f"Android delegates {api}, which is not a published API")
+        for op in reach[api]["ops"]:
+            handed_ops[op] = service
     # The input table names real entry points: one it misspells reads as no
     # platform feeding that input, which is how touch was missing everywhere.
     bridge = (root / ANDROID_JAVA / "com/migo/runtime/internal/NativeMethods.java").read_text(encoding="utf-8")
@@ -751,6 +773,11 @@ def generate(root: pathlib.Path) -> str:
         else:
             needs = needs_of(name, reach, reference, decisions, channel, capi, memo)
             row["needs"] = sorted(needs)
+        handed = (
+            {handed_ops[op] for op in ops_of(name, reach, reference, decisions) if op in handed_ops}
+            if reach[name] is not None
+            else set()
+        )
         for platform in PLATFORMS:
             unsupported = decisions["unsupported"].get(name)
             gap = decisions["gaps"].get(name)
@@ -767,6 +794,8 @@ def generate(root: pathlib.Path) -> str:
                         parts.append("host")
                     else:
                         parts.append("default")
+                if handed:
+                    parts.append("host")
                 for need in needs:
                     status = (
                         need_status(need, platform, lanes, entries, android)
@@ -800,7 +829,7 @@ def generate(root: pathlib.Path) -> str:
                     platform != "android"
                     or all(
                         accessor not in handlers or accessor in host_owned
-                        for accessor in accessors_of(name, reach, reference, decisions)
+                        for accessor in accessors_of(name, reach, reference, decisions) | handed
                     )
                 )
             )
