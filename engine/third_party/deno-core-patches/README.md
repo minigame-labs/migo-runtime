@@ -47,3 +47,15 @@ must publish nothing and immediately return, releasing their reservation.
 `__errno()`. Upstream covers macOS and glibc/musl Linux only and refuses to
 compile anywhere else, which stopped every Android build of the crate. Rust
 only: no core JS changes.
+
+0006-embedded-extension-sources.patch embeds the `esm`/`js` sources an
+extension declares, as deno_core did before 0.4: `include_js_files!` takes its
+`included` mode instead of `loaded`. Upstream records each file by its absolute
+path on the build machine and reads it when a runtime boots from source, which
+only works on that machine. Off it, every Worker (the release ships no Worker
+snapshot), any build whose host snapshot is stale, and the snapshot generator
+running on its target device aborted with "Failed to initialize a JsRuntime: No
+such file or directory". A snapshot build still carries none of the main
+runtime's JS: Migo leaves those sources off the extension
+(`main_runtime_extension!`). Rust only: no core JS changes.
+`runtime-v8`'s `tests::extension_sources` fails without it.
