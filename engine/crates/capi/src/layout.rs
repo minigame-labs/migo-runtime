@@ -210,7 +210,7 @@ mod lp64 {
     // Function pointers are `Option<fn>` on the Rust side, which is a plain
     // nullable pointer with no discriminant. Pinning the offsets is what keeps
     // that niche optimisation from being an assumption.
-    const _: () = assert!(size_of::<MigoHostCallbacks>() == 160);
+    const _: () = assert!(size_of::<MigoHostCallbacks>() == 168);
     const _: () = assert!(offset_of!(MigoHostCallbacks, user_data) == 8);
     const _: () = assert!(offset_of!(MigoHostCallbacks, dispatcher_data) == 16);
     const _: () = assert!(offset_of!(MigoHostCallbacks, dispatch) == 24);
@@ -230,6 +230,7 @@ mod lp64 {
     const _: () = assert!(offset_of!(MigoHostCallbacks, host_services) == 136);
     const _: () = assert!(offset_of!(MigoHostCallbacks, on_gamepad_rumble) == 144);
     const _: () = assert!(offset_of!(MigoHostCallbacks, on_restart_requested) == 152);
+    const _: () = assert!(offset_of!(MigoHostCallbacks, on_console) == 160);
 
     const _: () = assert!(size_of::<MigoHostServiceCall>() == 40);
     const _: () = assert!(offset_of!(MigoHostServiceCall, call_id) == 8);

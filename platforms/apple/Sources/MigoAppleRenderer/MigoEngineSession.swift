@@ -3,6 +3,7 @@ import MigoAppleCore
 import MigoEngine
 import QuartzCore
 import Security
+import os
 
 #if os(macOS)
     import AppKit
@@ -101,6 +102,13 @@ public final class MigoEngineSession {
         /// One game-log entry (`migo.getGameLogManager().log`), as the JSON
         /// object the engine merged: level, key, value, commonInfo.
         case gameLog(String)
+        /// One line content wrote to its console (`console.log`, `warn`, ...):
+        /// the engine's level -- 0 debug, 1 log and info, 2 warn, 3 error --
+        /// and the text. In order with everything else content does, wherever
+        /// it runs: a line written before it exits arrives before
+        /// `.exitRequested`. It is in the platform log too (subsystem
+        /// `dev.migo`, category `content`).
+        case console(level: Int, message: String)
         /// The debugging aids were turned on or off (`migo.setEnableDebug`):
         /// a game view shows or hides its panel. See `debugAids`.
         case debugAids(Bool)
@@ -371,6 +379,7 @@ public final class MigoEngineSession {
         callbacks.on_error = migoOnError
         callbacks.on_exit_requested = migoOnExitRequested
         callbacks.on_restart_requested = migoOnRestartRequested
+        callbacks.on_console = migoOnConsole
         callbacks.on_surface_lost = migoOnSurfaceLost
         callbacks.on_request_frame = migoOnRequestFrame
         callbacks.on_surface_released = migoOnSurfaceReleased
@@ -1199,6 +1208,23 @@ private let migoOnKeepScreenOn: MigoOnKeepScreenOnFn = { userData, _, keepOn in
 private let migoOnGamepadRumble: MigoOnGamepadRumbleFn = { userData, _, rumble in
     guard let rumble else { return }
     relay(userData)?.owner?.gamepads.rumble(rumble.pointee)
+}
+
+/// Content's console in the platform log. The message keeps the log's default
+/// privacy: content's console can carry a player's data, and the log redacts
+/// dynamic strings unless a debugger is attached.
+private let contentLog = Logger(subsystem: "dev.migo", category: "content")
+
+private let migoOnConsole: MigoOnConsoleFn = { userData, _, level, message, length in
+    let text =
+        message.map { String(decoding: UnsafeRawBufferPointer(start: $0, count: Int(length)), as: UTF8.self) } ?? ""
+    switch level {
+    case 1: contentLog.info("\(text)")
+    case 2: contentLog.warning("\(text)")
+    case 3: contentLog.error("\(text)")
+    default: contentLog.debug("\(text)")
+    }
+    relay(userData)?.owner?.deliver(.console(level: Int(level), message: text))
 }
 
 private let migoOnGameLog: MigoOnGameLogFn = { userData, _, entry, length in

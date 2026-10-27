@@ -157,6 +157,12 @@ impl HostNotifier for WindowsPlatform {
         }
     }
 
+    fn notify_console(&self, host_id: i32, level: u8, message: &str) {
+        if let Some(notifier) = &self.notifier {
+            notifier.notify_console(host_id, level, message);
+        }
+    }
+
     fn notify_error(&self, host_id: i32, error_code: u16, message: &str, detail: &str) {
         if let Some(notifier) = &self.notifier {
             notifier.notify_error(host_id, error_code, message, detail);

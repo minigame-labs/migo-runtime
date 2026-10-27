@@ -26,7 +26,7 @@ mod console_namespace_tests {
 
     /// The (level, message) lines `source` writes. Levels: 0 debug, 1 log, 2 warn, 3 error.
     fn lines(host_id: i32, source: &'static str) -> Vec<(u8, String)> {
-        let buffer = shared::console_log::register_console_log(host_id, true);
+        let buffer = shared::console_log::register_console_log(host_id, true, None);
         let _session = Session(host_id);
         crate::console::bind_thread_console(host_id);
         let mut runtime = boot(test_host_state());

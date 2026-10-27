@@ -22,16 +22,28 @@ import { engineHost } from "./engine-host.mjs";
 import { servicesOf } from "./lane-async.mjs";
 import { f32BitsOf, optionalBytesOf, optionalStringOf, smiU32, stringOf, toBool, toF64, toI32, toU8 } from "./op-args.mjs";
 import { SERVICE_OP } from "./service-ops.mjs";
+import { MAX_SERVICE_MESSAGE_BYTES, RECORD_HEADER_BYTES, SERVICE_HEADER_BYTES } from "./service.mjs";
 import { terminateWorkerAttempt } from "./worker-relay-channel.mjs";
 
-/// A console line, for the host's log.
+/// The longest console line one service record carries, in UTF-16 code units:
+/// a code unit is at most three UTF-8 bytes, and the record's framing and the
+/// note on a cut line fit in what is left.
+const MAX_CONSOLE_UNITS = Math.floor(
+  (MAX_SERVICE_MESSAGE_BYTES - SERVICE_HEADER_BYTES - RECORD_HEADER_BYTES - 256) / 3,
+);
+
+/// A console line, for the host: a command, so it reaches the host in order
+/// with everything content did before and after it -- a line written before
+/// `exitMiniProgram` is heard before the exit -- and the host logs it and hands
+/// it to the app as the embedded op's line is (level 1 info, 2 warn, 3 error,
+/// anything else debug).
 ///
-/// The embedded op writes it to the engine's log at the level given (1 info,
-/// 2 warn, 3 error, anything else debug) and nothing else; the host maps the
-/// same numbers onto its platform log. The message is the value's ToString,
-/// and a value whose ToString throws is logged as `<invalid value>` -- the Rust
-/// op's answer -- rather than turning a log call into an exception, which
-/// would make a failing `toString` fatal to whatever was being reported.
+/// The message is the value's ToString, and a value whose ToString throws is
+/// logged as `<invalid value>` -- the Rust op's answer -- rather than turning a
+/// log call into an exception, which would make a failing `toString` fatal to
+/// whatever was being reported. For the same reason a line too long for one
+/// service record is cut, and a line written after the channel broke is
+/// dropped: nobody is left to hear it.
 export function op_console(value, level) {
   const severity = toU8(level, "level");
   let message;
@@ -40,7 +52,25 @@ export function op_console(value, level) {
   } catch {
     message = "<invalid value>";
   }
-  engineHost().report({ type: "console", level: severity, message });
+  if (message.length > MAX_CONSOLE_UNITS) {
+    // Not between the halves of a surrogate pair.
+    const end = isLeadSurrogate(message.charCodeAt(MAX_CONSOLE_UNITS - 1))
+      ? MAX_CONSOLE_UNITS - 1
+      : MAX_CONSOLE_UNITS;
+    message = `${message.slice(0, end)} [cut: the line was ${message.length} characters]`;
+  }
+  try {
+    servicesOf(engineHost()).command(SERVICE_OP.op_console, (w) => {
+      w.str(message);
+      w.u32(severity);
+    });
+  } catch {
+    // The channel is gone, and the host with it.
+  }
+}
+
+function isLeadSurrogate(unit) {
+  return unit >= 0xd800 && unit <= 0xdbff;
 }
 
 // ---- images ------------------------------------------------------------------

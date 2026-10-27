@@ -283,6 +283,11 @@ pub(crate) struct ServiceContext {
     /// host; see `spawn_external_frame_session`.
     scheduler: OnceLock<Arc<IoScheduler>>,
     session_id: OnceLock<i32>,
+    /// The session's console, looked up on content's first line and held from
+    /// then: the registry is shared with every other session, and a line is a
+    /// per-event path (the embedded op resolves it once at bring-up for the same
+    /// reason).
+    console: OnceLock<Arc<shared::console_log::ConsoleLog>>,
     content: RwLock<Option<MountedContent>>,
     /// The mounted content's `/tmp`: emptied when content mounts and removed
     /// when the session ends, and where files the host app hands over in a
@@ -340,6 +345,7 @@ impl ServiceContext {
             cache_dir,
             scheduler: OnceLock::new(),
             session_id: OnceLock::new(),
+            console: OnceLock::new(),
             content: RwLock::new(None),
             temp: OnceLock::new(),
             aliases: Arc::new(parking_lot::Mutex::new(ImageCache::new())),
@@ -359,6 +365,15 @@ impl ServiceContext {
         // Set before the session is handed out; zero only in a test that never
         // started one, where no image is loaded either.
         self.session_id.get().copied().unwrap_or(0)
+    }
+
+    /// The session's console, once its shell registered it.
+    fn console(&self) -> Option<&Arc<shared::console_log::ConsoleLog>> {
+        if let Some(console) = self.console.get() {
+            return Some(console);
+        }
+        let console = shared::console_log::get_console_log(self.session())?;
+        Some(self.console.get_or_init(|| console))
     }
 
     /// Where a loaded image's pixels are, for the frame decoder's upload of it:
@@ -1338,6 +1353,26 @@ impl ServiceContext {
         render: &RenderHandles,
     ) -> Result<(), ServiceError> {
         match op {
+            // A line content wrote to its console, as the embedded op takes it:
+            // logged at its level, then handed to the session's console -- the
+            // host and the debugging aids. A command, so it reaches them in
+            // order with everything content did before and after it.
+            id::op_console => {
+                let [message, level] = exactly(op, args)?;
+                let message = string(op, 0, message)?;
+                // Anything but the four levels is debug, as the embedded op logs it.
+                let level = u8::try_from(u32_of(op, 1, level)?).unwrap_or(0);
+                match level {
+                    1 => info!("{}", message),
+                    2 => warn!("{}", message),
+                    3 => tracing::error!("{}", message),
+                    _ => tracing::debug!("{}", message),
+                }
+                if let Some(console) = self.console() {
+                    console.record(level, message);
+                }
+                Ok(())
+            }
             id::op_destroy_image => {
                 let [image_id] = exactly(op, args)?;
                 migo_services::image::destroy_image(
@@ -3510,6 +3545,64 @@ mod tests {
             type_errors.join("\n  ")
         );
         println!("ran {} producer file calls on the host", answers.len());
+    }
+
+    /// A line content wrote to its console reaches the session's console as the
+    /// embedded op's line does: handed to the host at its level whether or not
+    /// the debugging aids keep it, and kept while they are on. A level the
+    /// console does not know is debug's.
+    #[test]
+    fn a_console_line_reaches_the_session_s_console_as_the_embedded_op_s_does() {
+        #[derive(Default)]
+        struct Host(Mutex<Vec<(u8, String)>>);
+        impl shared::console_log::ConsoleForward for Host {
+            fn line(&self, level: u8, message: &str) {
+                self.0.lock().push((level, message.to_owned()));
+            }
+        }
+        let session = 97_311;
+        let host = Arc::new(Host::default());
+        let console = shared::console_log::register_console_log(
+            session,
+            false,
+            Some(Arc::clone(&host) as Arc<dyn shared::console_log::ConsoleForward>),
+        );
+        let root = std::env::temp_dir().join(format!("migo-console-{}", std::process::id()));
+        let context = ServiceContext::new(root.join("files"), root.join("cache"));
+        context.bind_session(session);
+        let (sender, _commands) = shared::render_command_sender::CommandSender::new();
+        let render = RenderHandles {
+            canvas: shared::op_state::CanvasOpState::for_host(sender, 1),
+            gpu_caps: shared::device::gpu_caps::GpuCaps::new(),
+        };
+        let line = |message: &str, level: u32| {
+            context
+                .command(
+                    id::op_console,
+                    vec![OwnedValue::Str(message.into()), OwnedValue::U32(level)],
+                    &render,
+                )
+                .expect("a console line");
+        };
+
+        line("off", 1);
+        console.set_recording(true);
+        line("on", 2);
+        line("odd", 400);
+        assert_eq!(
+            *host.0.lock(),
+            [
+                (1, "off".to_owned()),
+                (2, "on".to_owned()),
+                (0, "odd".to_owned())
+            ]
+        );
+        assert_eq!(
+            console.read_since(0).0.len(),
+            2,
+            "kept only while the aids are on"
+        );
+        shared::console_log::unregister_console_log(session);
     }
 
     /// The two calls content makes about the session itself reach the host's

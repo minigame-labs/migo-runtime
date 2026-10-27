@@ -388,11 +388,13 @@ import os
         /// Called on the main queue for every report the producer makes.
         public var onReport: ((Report) -> Void)?
 
-        /// Called on the main queue for every line content writes to its
-        /// `console`, after it is written to the platform log: the engine's
-        /// `op_console` level (1 info, 2 warn, 3 error, anything else debug) and
-        /// the text. For an app that keeps its own log, and for a test that
-        /// watches a game the way a game reports -- through `console`.
+        /// Called on the main queue for every warning the producer itself
+        /// writes about what content asked of it -- an upload or a record past
+        /// its bound, refused -- after it is written to the platform log, at the
+        /// engine's console levels (1 info, 2 warn, 3 error, anything else
+        /// debug). Content's own `console` is not here: it travels the service
+        /// stream, in order with the rest of what content does, and arrives as
+        /// the engine session's `.console` event.
         public var onConsole: ((_ level: Int, _ message: String) -> Void)?
 
         private let configuration: Configuration

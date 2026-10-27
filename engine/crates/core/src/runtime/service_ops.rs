@@ -331,6 +331,7 @@ service_ops! {
     op_recorder_pause = 308,
     op_recorder_resume = 309,
     op_recorder_stop = 310,
+    op_console = 311,
 }
 
 /// The op's name, for a refusal a person will read.

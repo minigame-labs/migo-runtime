@@ -46,7 +46,7 @@ fn the_aids_reach_the_host_and_the_console_records_while_they_are_on() {
     // The support state's session id; nothing else in these tests records
     // under it.
     let host_id = 1;
-    let console = shared::console_log::register_console_log(host_id, false);
+    let console = shared::console_log::register_console_log(host_id, false, None);
     crate::console::bind_thread_console(host_id);
     let screen = Arc::new(Screen::default());
     let services: Arc<dyn DeviceServices> = Arc::new(Platform(Some(Arc::clone(&screen))));

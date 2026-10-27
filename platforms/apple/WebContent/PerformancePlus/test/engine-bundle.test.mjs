@@ -120,7 +120,24 @@ const session = new FrameSession({
   },
 });
 const reports = [];
-bindEngineHost({ session, identity, socketCeilingBytes: 64 * 1024, report: (message) => reports.push(message) });
+// The service stream, as far as this test listens to it: each command, decoded.
+const { ValueWriter, readValues } = await import(`${root}/service-value.mjs`);
+const { SERVICE_OP } = await import(`${root}/service-ops.mjs`);
+const commands = [];
+const services = {
+  command(op, writeArgs) {
+    const writer = new ValueWriter(64);
+    writeArgs?.(writer);
+    commands.push({ op, args: readValues(writer.finish()) });
+  },
+};
+bindEngineHost({
+  session,
+  identity,
+  socketCeilingBytes: 64 * 1024,
+  services,
+  report: (message) => reports.push(message),
+});
 
 log("The engine's API layer on the producer");
 
@@ -133,19 +150,24 @@ const missing = manifest.core_members.filter((member) => !(member in core));
 check(missing.length === 0, `core provides every member the engine uses (${manifest.core_members.length})`);
 if (missing.length) log(`       missing: ${missing.join(", ")}`);
 
-// The engine's console is the engine's op, and it reaches the host as a report
-// at the level the embedded op logs at -- including for a value whose ToString
-// throws, which the Rust op logs as "<invalid value>" rather than raising.
+// The engine's console is the engine's op, and it reaches the host as a command
+// on the service stream -- in order with everything else content does -- at the
+// level the embedded op logs at, including for a value whose ToString throws,
+// which the Rust op logs as "<invalid value>" rather than raising. Not as a page
+// report: that channel is not ordered with the stream, and an exit on the stream
+// would overtake the lines written before it.
 console.warn("careful", 3);
 console.error({ toString() { throw new Error("no"); } });
+const lines = commands.filter((command) => command.op === SERVICE_OP.op_console).map((command) => command.args);
 check(
-  reports.some((r) => r.type === "console" && r.level === 2 && r.message.includes("careful")),
+  lines.some(([message, level]) => level === 2 && message.includes("careful")),
   "console.warn reached the host at warn level",
 );
 check(
-  reports.some((r) => r.type === "console" && r.level === 3),
+  lines.some(([, level]) => level === 3),
   "console.error with a throwing value still reached the host",
 );
+check(!reports.some((r) => r.type === "console"), "content's console is not a page report");
 
 const canvas = migo.createCanvas();
 check(canvas.width === 64 && canvas.height === 48, "the main canvas has the surface's size");
