@@ -14,7 +14,78 @@ struct BufferState {
     slots: [Option<Vec<u8>>; 2],
     allocated: usize,
 }
-struct Buffers(Mutex<BufferState>);
+struct Buffers {
+    state: Mutex<BufferState>,
+    _lease: Option<crate::pools::ByteTicket>,
+}
+pub(crate) struct ChunkPool(Arc<Buffers>);
+impl ChunkPool {
+    pub(crate) fn new(lease: Option<crate::pools::ByteTicket>) -> Self {
+        Self(Arc::new(Buffers {
+            state: Mutex::new(BufferState {
+                slots: [Some(vec![0; FILE_CHUNK_BYTES]), None],
+                allocated: 1,
+            }),
+            _lease: lease,
+        }))
+    }
+    pub(crate) fn fill(
+        &self,
+        len: usize,
+        fill: impl FnOnce(&mut [u8]) -> io::Result<()>,
+    ) -> io::Result<FileChunk> {
+        if len > FILE_CHUNK_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "media chunk exceeds bound",
+            ));
+        }
+        let data = {
+            let mut state = self.0.state.lock();
+            if let Some(slot) = state.slots.iter_mut().find(|slot| slot.is_some()) {
+                slot.take().unwrap()
+            } else if state.allocated < 2 {
+                state.allocated += 1;
+                drop(state);
+                vec![0; FILE_CHUNK_BYTES]
+            } else {
+                return Err(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    "both file chunks are still in flight",
+                ));
+            }
+        };
+        let mut chunk = FileChunk {
+            data,
+            filled: len,
+            pool: self.0.clone(),
+        };
+        fill(&mut chunk.data[..len])?;
+        Ok(chunk)
+    }
+}
+pub(crate) fn control_limit(limit: usize) -> io::Result<()> {
+    if limit == 0 || limit as u64 > shared::protocol::io_cmd::MAX_READ_LENGTH {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid file control limit",
+        ));
+    }
+    Ok(())
+}
+pub(crate) fn check_extent(object_len: u64, offset: u64, len: usize, cap: usize) -> io::Result<()> {
+    if len > cap
+        || offset
+            .checked_add(len as u64)
+            .is_none_or(|end| end > object_len)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "file read extent exceeds limit",
+        ));
+    }
+    Ok(())
+}
 pub struct FileChunk {
     data: Vec<u8>,
     filled: usize,
@@ -27,7 +98,7 @@ impl AsRef<[u8]> for FileChunk {
 }
 impl Drop for FileChunk {
     fn drop(&mut self) {
-        let mut state = self.pool.0.lock();
+        let mut state = self.pool.state.lock();
         if let Some(slot) = state.slots.iter_mut().find(|slot| slot.is_none()) {
             *slot = Some(std::mem::take(&mut self.data));
         }
@@ -37,7 +108,7 @@ pub struct ReadAtFile {
     file: File,
     stamp: Stamp,
     max_control_bytes: usize,
-    pool: Arc<Buffers>,
+    pool: ChunkPool,
     #[cfg(test)]
     reads: std::sync::atomic::AtomicUsize,
     #[cfg(test)]
@@ -46,14 +117,7 @@ pub struct ReadAtFile {
 impl ReadAtFile {
     /// Construct on the bounded FS executor: metadata is a disk operation.
     pub fn new(file: File, max_control_bytes: usize) -> io::Result<Self> {
-        if max_control_bytes == 0
-            || max_control_bytes as u64 > shared::protocol::io_cmd::MAX_READ_LENGTH
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "invalid file control limit",
-            ));
-        }
+        control_limit(max_control_bytes)?;
         let stamp = Stamp::of(file.metadata()?)?;
         Ok(Self {
             file,
@@ -63,10 +127,7 @@ impl ReadAtFile {
             reads: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(test)]
             after_read: Mutex::new(None),
-            pool: Arc::new(Buffers(Mutex::new(BufferState {
-                slots: [Some(vec![0; FILE_CHUNK_BYTES]), None],
-                allocated: 1,
-            }))),
+            pool: ChunkPool::new(None),
         })
     }
     pub fn len(&self) -> u64 {
@@ -76,26 +137,10 @@ impl ReadAtFile {
         self.stamp.len == 0
     }
     pub fn verify(&self) -> io::Result<()> {
-        if Stamp::of(self.file.metadata()?)? != self.stamp {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "file representation changed",
-            ));
-        }
-        Ok(())
+        self.stamp.verify(&self.file)
     }
     fn extent(&self, offset: u64, len: usize, cap: usize) -> io::Result<()> {
-        if len > cap
-            || offset
-                .checked_add(len as u64)
-                .is_none_or(|end| end > self.stamp.len)
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "file read extent exceeds limit",
-            ));
-        }
-        Ok(())
+        check_extent(self.stamp.len, offset, len, cap)
     }
     fn fill(&self, offset: u64, buffer: &mut [u8]) -> io::Result<()> {
         self.verify()?;
@@ -122,28 +167,7 @@ impl ReadAtFile {
     /// old input is still in flight. A third retained chunk is rejected.
     pub fn chunk_at(&self, offset: u64, len: usize) -> io::Result<FileChunk> {
         self.extent(offset, len, FILE_CHUNK_BYTES)?;
-        let data = {
-            let mut state = self.pool.0.lock();
-            if let Some(slot) = state.slots.iter_mut().find(|slot| slot.is_some()) {
-                slot.take().unwrap()
-            } else if state.allocated < 2 {
-                state.allocated += 1;
-                drop(state);
-                vec![0; FILE_CHUNK_BYTES]
-            } else {
-                return Err(io::Error::new(
-                    io::ErrorKind::WouldBlock,
-                    "both file chunks are still in flight",
-                ));
-            }
-        };
-        let mut chunk = FileChunk {
-            data,
-            filled: len,
-            pool: self.pool.clone(),
-        };
-        self.fill(offset, &mut chunk.data[..len])?;
-        Ok(chunk)
+        self.pool.fill(len, |buffer| self.fill(offset, buffer))
     }
 }
 
@@ -218,7 +242,7 @@ mod tests {
         assert_eq!(b.as_ref(), &data[1024..1056]);
         assert_eq!(b.as_ref().len(), 32);
         drop(b);
-        let state = source.pool.0.lock();
+        let state = source.pool.0.state.lock();
         let storage = state.slots.iter().find_map(Option::as_ref).unwrap();
         assert_eq!(storage.len(), FILE_CHUNK_BYTES);
         assert_eq!(

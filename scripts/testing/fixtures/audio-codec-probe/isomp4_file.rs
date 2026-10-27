@@ -1,4 +1,4 @@
-//! Anchored immutable-file source. Disk operations use the existing FS class;
+//! Anchored immutable-file/package source. IO uses existing Fs/Pack classes;
 //! the same IndexSource owns MP4 discovery, CPU parsing and decoder resumes.
 use crate::{
     isomp4_source::{self, IndexSource, Limits, MediaRead, Reader},
@@ -10,6 +10,7 @@ use crate::{
 use migo_io::{
     pools::IoPools,
     read_at_file::{FILE_CHUNK_BYTES, FileChunk, ReadAtFile},
+    read_at_package::ReadAtPackage,
     task::{PoolKind, PriorityClass},
 };
 use shared::error::{EngineError, EngineResult, ErrorCode};
@@ -44,8 +45,48 @@ impl Drop for ReadActive {
     }
 }
 
+enum Backing {
+    File(ReadAtFile),
+    Package(ReadAtPackage),
+}
+impl Backing {
+    fn len(&self) -> u64 {
+        match self {
+            Self::File(v) => v.len(),
+            Self::Package(v) => v.len(),
+        }
+    }
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    fn kind(&self) -> PoolKind {
+        match self {
+            Self::File(_) => PoolKind::Fs,
+            Self::Package(_) => PoolKind::Pack,
+        }
+    }
+    fn media_bytes(&self) -> u64 {
+        match self {
+            Self::File(_) => FILE_CHUNK_BYTES as u64,
+            Self::Package(_) => 0,
+        }
+    }
+    fn read_exact_at(&self, offset: u64, len: usize) -> std::io::Result<Vec<u8>> {
+        match self {
+            Self::File(v) => v.read_exact_at(offset, len),
+            Self::Package(v) => v.read_exact_at(offset, len),
+        }
+    }
+    fn chunk_at(&self, offset: u64, len: usize) -> std::io::Result<FileChunk> {
+        match self {
+            Self::File(v) => v.chunk_at(offset, len),
+            Self::Package(v) => v.chunk_at(offset, len),
+        }
+    }
+}
+
 pub struct FileReader {
-    file: Arc<ReadAtFile>,
+    file: Arc<Backing>,
     pools: IoPools,
     domain: Arc<migo_io::domain::IoDomain>,
     position: u64,
@@ -98,10 +139,45 @@ impl FileReader {
         )
         .await
     }
+    pub async fn open_package(
+        pin: shared::vfs::mount::PinnedPackRead,
+        scheduler: &migo_io::scheduler::IoScheduler,
+    ) -> EngineResult<Self> {
+        let pools = scheduler.pools().clone();
+        Self::build_source(
+            scheduler,
+            PoolKind::Pack,
+            0,
+            Instant::now() + RESPONSE_HEADER_TIMEOUT,
+            move || {
+                ReadAtPackage::new(pin, &pools, Limits::default().index.max_index_bytes)
+                    .map(Backing::Package)
+            },
+        )
+        .await
+    }
     async fn build(
         scheduler: &migo_io::scheduler::IoScheduler,
         deadline: Instant,
         open: impl FnOnce() -> std::io::Result<File> + Send + 'static,
+    ) -> EngineResult<Self> {
+        Self::build_source(
+            scheduler,
+            PoolKind::Fs,
+            FILE_CHUNK_BYTES as u64,
+            deadline,
+            move || {
+                ReadAtFile::new(open()?, Limits::default().index.max_index_bytes).map(Backing::File)
+            },
+        )
+        .await
+    }
+    async fn build_source(
+        scheduler: &migo_io::scheduler::IoScheduler,
+        kind: PoolKind,
+        setup_bytes: u64,
+        deadline: Instant,
+        open: impl FnOnce() -> std::io::Result<Backing> + Send + 'static,
     ) -> EngineResult<Self> {
         scheduler.ensure_open().map_err(error)?;
         check_deadline(deadline).map_err(error)?;
@@ -114,15 +190,15 @@ impl FileReader {
         let max_control_bytes = Limits::default().index.max_index_bytes;
         let task = pools
             .submit_async_bytes(
-                PoolKind::Fs,
+                kind,
                 PriorityClass::ForegroundAsync,
-                FILE_CHUNK_BYTES as u64,
+                setup_bytes,
                 move || {
                     if check.is_closed() || !active.load(Ordering::Acquire) {
                         return Err(std::io::Error::other("file domain closed"));
                     }
                     check_deadline(deadline)?;
-                    let file = ReadAtFile::new(open()?, max_control_bytes)?;
+                    let file = open()?;
                     if check.is_closed() || !active.load(Ordering::Acquire) {
                         return Err(std::io::Error::other("file domain closed"));
                     }
@@ -239,7 +315,7 @@ impl Reader for FileReader {
         let task = self
             .pools
             .submit_async_bytes(
-                PoolKind::Fs,
+                self.file.kind(),
                 PriorityClass::ForegroundAsync,
                 len as u64,
                 move || {
@@ -313,9 +389,9 @@ impl Reader for FileReader {
         let task = self
             .pools
             .submit_async_bytes(
-                PoolKind::Fs,
+                self.file.kind(),
                 PriorityClass::ForegroundAsync,
-                FILE_CHUNK_BYTES as u64,
+                self.file.media_bytes(),
                 move || {
                     #[cfg(test)]
                     std::thread::sleep(delay);

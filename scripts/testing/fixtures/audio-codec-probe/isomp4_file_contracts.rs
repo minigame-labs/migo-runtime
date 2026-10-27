@@ -6,6 +6,9 @@ use migo_io::scheduler::IoScheduler;
 use shared::vfs::VirtualFS;
 use std::fs::File;
 
+#[path = "isomp4_package_contracts.rs"]
+mod package;
+
 fn vfs() -> Arc<VirtualFS> {
     let code = std::path::PathBuf::from(std::env::var_os("W09_M4A_FIXTURES").unwrap());
     let base = code.parent().unwrap().join("sandbox");
