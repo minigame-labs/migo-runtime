@@ -177,7 +177,7 @@ def controls(package: Path, output: Path, env: dict, features: str = "") -> int:
     return len(declarations)
 
 
-def validate(output: Path, env: dict) -> None:
+def validate(output: Path, env: dict, positive_only: bool = False) -> None:
     package = output / "probe"
     checksums = json.loads((output / "source-inputs.json").read_text())
     assert all(codecs.sha(ROOT / path) == checksum for path, checksum in checksums.items()), "Root sources changed"
@@ -189,11 +189,11 @@ def validate(output: Path, env: dict) -> None:
     codecs.run([str(binary), "transport_contracts::", "--nocapture", "--test-threads=1"],
                output / "tests-validated.log", cwd=package, env=env)
     assert f"{expected_tests} passed" in (output / "tests-validated.log").read_text()
-    negative = controls(package, output, env, settings.get("features", ""))
+    negative = 0 if positive_only else controls(package, output, env, settings.get("features", ""))
     assert all(codecs.sha(ROOT / path) == checksum for path, checksum in checksums.items()), "Root sources changed during tests"
     assert all(codecs.sha(output / path) == checksum for path, checksum in retained_sources.items()), "mutation was not restored"
     summary = {"tests": expected_tests, "actual_http_codec_cases": 24,
-               "actual_http_resampling_cases": settings.get("resampling_cases", 0), "compiled_negative_controls": negative,
+               "actual_http_resampling_cases": settings.get("resampling_cases", 0), "compiled_negative_controls": negative, "positive_only": positive_only,
                "actual_http_wave_cases": settings.get("wave_cases", 0),
                "actual_wave_player_cases": settings.get("wave_player_cases", 0),
                "actual_http_adts_cases": settings.get("adts_cases", 0),
@@ -208,7 +208,8 @@ def validate(output: Path, env: dict) -> None:
 
 
 def main(output: Path, target: Path, fixtures: Path, rubato_home: Path | None = None,
-         wave_streaming: bool = False, adts_streaming: bool = False, vorbis_streaming: bool = False) -> None:
+         wave_streaming: bool = False, adts_streaming: bool = False, vorbis_streaming: bool = False,
+         positive_only: bool = False) -> None:
     assert not (wave_streaming or adts_streaming or vorbis_streaming) or rubato_home is not None, "codec composition requires Rubato candidates"
     assert not output.exists(), "use a fresh result directory"
     output.mkdir(parents=True)
@@ -393,7 +394,7 @@ def main(output: Path, target: Path, fixtures: Path, rubato_home: Path | None = 
         settings["vorbis_player_cases"] = 12
     (output / "build-settings.json").write_text(json.dumps(settings, indent=2) + '\n')
     build(package, output, env, "positive", settings["features"])
-    validate(output, env)
+    validate(output, env, positive_only)
 
 
 if __name__ == "__main__":
@@ -401,6 +402,8 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--target-dir", type=Path, required=True)
     parser.add_argument("--fixtures", type=Path, required=True)
+    parser.add_argument("--positive-only", action="store_true",
+                        help="run all positive regressions, explicitly recording zero compiled controls")
     parser.add_argument("--resume-validation", action="store_true",
                         help="reuse a compiled positive cohort after sandbox denied loopback execution")
     parser.add_argument("--rubato-cargo-home", type=Path,
@@ -419,8 +422,8 @@ if __name__ == "__main__":
                    W09_ADTS_FIXTURES=str(args.output.resolve() / "adts-fixtures"),
                    W09_OGG_FIXTURES=str(args.output.resolve() / "vorbis-input/fixtures"),
                    CC="/usr/bin/clang", CXX="/usr/bin/clang++")
-        validate(args.output.resolve(), env)
+        validate(args.output.resolve(), env, args.positive_only)
     else:
         main(args.output.resolve(), args.target_dir.resolve(), args.fixtures.resolve(),
              args.rubato_cargo_home.resolve() if args.rubato_cargo_home else None,
-             args.wave_streaming, args.adts_streaming, args.vorbis_streaming)
+             args.wave_streaming, args.adts_streaming, args.vorbis_streaming, args.positive_only)

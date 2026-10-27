@@ -32,6 +32,8 @@ pub type WaveResampled = Batched<16, push_decoder::Wave>;
 pub type AdtsResampled = Batched<16, push_decoder::Adts>;
 #[cfg(feature = "vorbis-streaming-probe")]
 pub type VorbisResampled = Batched<16, push_decoder::Vorbis>;
+#[cfg(feature = "m4a-streaming-probe")]
+pub type M4aResampled = Batched<16, push_decoder::M4a<true>>;
 
 pub struct Batched<
     const QUANTA: usize,
@@ -43,6 +45,8 @@ pub struct Batched<
     position: usize,
     target_rate: u32,
     input_ended: bool,
+    #[cfg(feature = "m4a-streaming-probe")]
+    source_waiting: bool,
     decoder_done: bool,
     stopped: bool,
     failed: bool,
@@ -50,14 +54,23 @@ pub struct Batched<
 
 impl<const QUANTA: usize, P: push_decoder::incremental::Packetizer> Batched<QUANTA, P> {
     pub fn new(target_rate: u32) -> Self {
+        Self::with_decoder(
+            target_rate,
+            push_decoder::incremental::Decoder::<P>::new(None),
+        )
+    }
+
+    fn with_decoder(target_rate: u32, decoder: push_decoder::incremental::Decoder<P>) -> Self {
         assert!((1..=32).contains(&QUANTA));
         Self {
-            decoder: push_decoder::incremental::Decoder::<P>::new(None),
+            decoder,
             resampler: None,
             decoded: Vec::with_capacity(P::OUTPUT_SAMPLES_PER_STEP),
             position: 0,
             target_rate,
             input_ended: false,
+            #[cfg(feature = "m4a-streaming-probe")]
+            source_waiting: false,
             decoder_done: false,
             stopped: false,
             failed: false,
@@ -141,6 +154,10 @@ impl<const QUANTA: usize, P: push_decoder::incremental::Packetizer> Batched<QUAN
             }
             return Ok(self.outcome(0, progress));
         }
+        #[cfg(feature = "m4a-streaming-probe")]
+        if self.source_waiting {
+            return Ok(self.outcome(0, Progress::NeedSource));
+        }
         let consumed = if eof {
             if !self.input_ended {
                 self.decoder.finish_input();
@@ -172,6 +189,10 @@ impl<const QUANTA: usize, P: push_decoder::incremental::Packetizer> Batched<QUAN
             self.stopped = true;
             return Ok(self.outcome(consumed, Progress::Cancelled));
         }
+        #[cfg(feature = "m4a-streaming-probe")]
+        if progress == push_decoder::Progress::NeedSource {
+            self.source_waiting = true;
+        }
         if self.target_rate == self.decoder.rate {
             // Same-rate playback goes directly to the publication buffer; no
             // filter, PCM copy, resampler construction or extra drain cycle.
@@ -181,12 +202,18 @@ impl<const QUANTA: usize, P: push_decoder::incremental::Packetizer> Batched<QUAN
                 match progress {
                     push_decoder::Progress::Finished => Progress::Finished,
                     push_decoder::Progress::NeedInput => Progress::NeedInput,
+                    #[cfg(feature = "m4a-streaming-probe")]
+                    push_decoder::Progress::NeedSource => Progress::NeedSource,
                     push_decoder::Progress::Yield => Progress::Yield,
                     push_decoder::Progress::Cancelled => unreachable!(),
                 },
             ));
         }
         self.decoder_done = progress == push_decoder::Progress::Finished;
+        #[cfg(feature = "m4a-streaming-probe")]
+        if self.source_waiting && self.decoded.is_empty() {
+            return Ok(self.outcome(consumed, Progress::NeedSource));
+        }
         let progress = if self.decoder_done
             || !self.decoded.is_empty()
             || progress == push_decoder::Progress::Yield
@@ -217,5 +244,65 @@ impl<const QUANTA: usize, P: push_decoder::incremental::Packetizer> Decoder for 
             pcm.clear();
         }
         result
+    }
+}
+
+#[cfg(feature = "m4a-streaming-probe")]
+impl<const Q: usize, const BUFFERED: bool> Batched<Q, push_decoder::M4a<BUFFERED>> {
+    pub fn with_object_len(target_rate: u32, object_len: Option<u64>) -> Self {
+        Self::with_decoder(
+            target_rate,
+            push_decoder::M4aDecoderMode::<BUFFERED>::with_object_len(None, object_len),
+        )
+    }
+
+    fn source_resume(
+        &mut self,
+        reposition: bool,
+        operation: impl FnOnce(&mut push_decoder::M4aDecoderMode<BUFFERED>) -> Result<(), String>,
+    ) -> Result<(), String> {
+        if self.failed || self.stopped || !self.source_waiting || self.position < self.decoded.len()
+        {
+            self.failed = true;
+            return Err("composed decoder has no drained source request".into());
+        }
+        if let Err(error) = operation(&mut self.decoder) {
+            self.failed = true;
+            return Err(error);
+        }
+        self.source_waiting = false;
+        if reposition {
+            self.input_ended = false;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "m4a-streaming-probe")]
+impl<const Q: usize, const BUFFERED: bool> push_decoder::M4aSourceDecoder
+    for Batched<Q, push_decoder::M4a<BUFFERED>>
+{
+    fn source_request(&self) -> Option<push_decoder::M4aSourceRequest> {
+        if self.failed || self.stopped || !self.source_waiting || self.position < self.decoded.len()
+        {
+            return None;
+        }
+        self.decoder.source_request()
+    }
+    fn install_index_with_length(
+        &mut self,
+        index: symphonia_format_isomp4::streaming::AudioIndex,
+        length: Option<u64>,
+    ) -> Result<(), String> {
+        self.source_resume(false, |decoder| {
+            decoder.install_index_with_length(index, length)
+        })
+    }
+    fn resume_at(
+        &mut self,
+        media: symphonia_format_isomp4::streaming::AtomSpan,
+        offset: u64,
+    ) -> Result<(), String> {
+        self.source_resume(true, |decoder| decoder.resume_at(media, offset))
     }
 }

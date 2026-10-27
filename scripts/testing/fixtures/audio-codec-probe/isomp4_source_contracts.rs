@@ -1247,3 +1247,7 @@ fn learned_library_length_is_monotonic_and_only_binds_pending_index() {
 
 #[path = "isomp4_buffered_contracts.rs"]
 mod buffered;
+
+#[cfg(feature = "m4a-transport-probe")]
+#[path = "isomp4_transport_contracts.rs"]
+mod transport;

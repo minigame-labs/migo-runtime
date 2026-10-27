@@ -222,7 +222,7 @@ def buffered_fixtures(directory):
     (directory/'buffered-layouts.json').write_text(json.dumps({'layouts':made,'ffmpeg_pcm_identical':True},indent=2)+'\n')
     print('Generated4bounded-history/compaction/missfixtures;FFmpegPCMidentical',flush=True)
 
-def main(work,target,positive_only=False):
+def prepare(work,target):
     env,frozen,_,_=range_gate.prepare(work,target)
     package=work/'probe';source=work/'source';source.mkdir()
     fixtures=ROOT/'scripts/testing/fixtures/audio-codec-probe'
@@ -243,7 +243,7 @@ symphonia-format-isomp4={version="=0.6.1",features=["streaming"]}
     manifest=manifest.replace('\n[dev-dependencies]\n','\n[dev-dependencies]\n'+dev,1)
     manifest=manifest.replace('\n[features]\n','\n[features]\ndefault=["m4a-streaming-probe","metadata-budgets"]\nm4a-streaming-probe=[]\nmetadata-budgets=[]\n',1)
     for name,path in libraries.items():manifest+=f'{name}={{path={json.dumps(str(path))}}}\n'
-    known='cfg(feature, values("wave-streaming-probe", "adts-streaming-probe", "vorbis-streaming-probe", "phase-probe"))'
+    known='cfg(feature, values("wave-streaming-probe", "adts-streaming-probe", "vorbis-streaming-probe", "phase-probe", "m4a-transport-probe"))'
     manifest+='\n[lints.rust]\nunexpected_cfgs={level="warn",check-cfg=['+json.dumps(known)+']}\n'
     (package/'Cargo.toml').write_text(manifest)
     root=package/'src/lib.rs';text=root.read_text()+'\nextern crate self as migo_services;\n'
@@ -274,6 +274,11 @@ symphonia-format-isomp4={version="=0.6.1",features=["streaming"]}
         dst=work/'source-inputs'/rel;dst.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(ROOT/rel,dst)
     retained={str(p.relative_to(work)):codecs.sha(p)for tree in [package/'src',source]for p in tree.rglob('*.rs')}
     index_gate.fixtures(work/'fixtures');source_fixtures(work/'fixtures');buffered_fixtures(work/'fixtures');env['W09_M4A_FIXTURES']=str(work/'fixtures')
+    return env,frozen,retained,libraries
+
+def main(work,target,positive_only=False):
+    env,frozen,retained,libraries=prepare(work,target)
+    package=work/'probe'
     codecs.run(['cargo','metadata','--offline','--format-version','1'],work/'candidate-metadata.jsonl',cwd=package,env=env)
     codecs.run(['cargo','check','--offline','--locked','--lib'],work/'normal-library-check.log',cwd=package,env=env)
     positive=build(work,env,'positive')

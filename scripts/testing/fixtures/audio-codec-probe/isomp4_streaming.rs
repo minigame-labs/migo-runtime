@@ -194,3 +194,25 @@ impl<const BUFFERED: bool> M4aSourceDecoder for Decoder<M4a<BUFFERED>> {
         Decoder::<M4a<BUFFERED>>::resume_at(self, media, offset)
     }
 }
+
+// The transport creates the decoder in its first CPU step. Resolving a source
+// request keeps that same optional owner, without a second initialization job.
+impl<D: M4aSourceDecoder> M4aSourceDecoder for Option<D> {
+    fn source_request(&self) -> Option<SourceRequest> {
+        self.as_ref().and_then(M4aSourceDecoder::source_request)
+    }
+    fn install_index_with_length(
+        &mut self,
+        index: AudioIndex,
+        length: Option<u64>,
+    ) -> Result<(), String> {
+        self.as_mut()
+            .ok_or_else(|| "source request before decoder initialization".to_owned())?
+            .install_index_with_length(index, length)
+    }
+    fn resume_at(&mut self, media: AtomSpan, offset: u64) -> Result<(), String> {
+        self.as_mut()
+            .ok_or_else(|| "source request before decoder initialization".to_owned())?
+            .resume_at(media, offset)
+    }
+}
