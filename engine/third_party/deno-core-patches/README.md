@@ -42,3 +42,8 @@ reserve its queue, serialize directly to owned Rust bytes, and decode those byte
 at the receiver without intermediate JS wire buffers waiting for GC. The
 serializer returns None when V8 has rethrown an exception/termination; callers
 must publish nothing and immediately return, releasing their reservation.
+
+0005-android-errno.patch gives uv_compat's tty module bionic's errno accessor,
+`__errno()`. Upstream covers macOS and glibc/musl Linux only and refuses to
+compile anywhere else, which stopped every Android build of the crate. Rust
+only: no core JS changes.
