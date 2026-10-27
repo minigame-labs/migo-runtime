@@ -7,7 +7,7 @@ use crate::network::{
 };
 use crate::{
     candidate,
-    isomp4_source::{IndexSource, Limits},
+    isomp4_source::{IndexSource, Limits, MediaRead},
     off_worker::OffWorker,
     push_decoder::{M4aDecoder, M4aSourceRequest, Progress, SAMPLES_PER_STEP},
     streaming::{StreamMsg, StreamingState, stream_channel},
@@ -70,6 +70,7 @@ enum Fault {
     HangHeaders,
     HangBody,
     Slow,
+    BodyShort,
 }
 #[derive(Clone, Default)]
 struct Config {
@@ -79,12 +80,17 @@ struct Config {
     cut: Option<usize>,
     hold: Option<usize>,
     fault: Fault,
+    media_fault: Fault,
+    short_media: Option<u64>,
+    hold_media_after: Option<usize>,
 }
 struct Server {
     url: Url,
     task: tokio::task::JoinHandle<()>,
     ranges: Arc<Mutex<Vec<(u64, u64)>>>,
     index_arrived: Arc<Notify>,
+    media_arrived: Arc<Notify>,
+    media_held: Arc<Notify>,
     release: Arc<Notify>,
 }
 impl Drop for Server {
@@ -99,11 +105,16 @@ async fn start_server(data: Vec<u8>, config: Config) -> Server {
         listener.local_addr().unwrap().port()
     ))
     .unwrap();
+    let media_span = atom(&data, AtomKind::MediaData);
     let data = Arc::new(data);
     let ranges = Arc::new(Mutex::new(Vec::new()));
     let observed = ranges.clone();
     let index_arrived = Arc::new(Notify::new());
     let signal = index_arrived.clone();
+    let media_arrived = Arc::new(Notify::new());
+    let media_signal = media_arrived.clone();
+    let media_held = Arc::new(Notify::new());
+    let held_signal = media_held.clone();
     let release = Arc::new(Notify::new());
     let gate = release.clone();
     let task = tokio::spawn(async move {
@@ -114,6 +125,8 @@ async fn start_server(data: Vec<u8>, config: Config) -> Server {
             let config = config.clone();
             let observed = observed.clone();
             let signal = signal.clone();
+            let media_signal = media_signal.clone();
+            let held_signal = held_signal.clone();
             let gate = gate.clone();
             children.spawn(async move {
                 let mut raw=Vec::new();
@@ -128,23 +141,41 @@ async fn start_server(data: Vec<u8>, config: Config) -> Server {
                 if let Some(range)=range {
                     assert!(request.contains("if-range: \"asset-v1\"\r\n"));
                     let (a,b)=range.trim().split_once('-').unwrap();
-                    let a=a.parse::<u64>().unwrap();let b=b.parse::<u64>().unwrap();
+                    let a=a.parse::<u64>().unwrap();let mut b=b.parse::<u64>().unwrap();
+                    let media = a >= media_span.body_offset && a < media_span.end.unwrap() && b == data.len() as u64 - 1;
+                    let fault = if media && !matches!(config.media_fault,Fault::None) { config.media_fault } else { config.fault };
+                    if media {
+                        if let Some(limit) = config.short_media { b=b.min(a+limit-1); }
+                        media_signal.notify_one();
+                    }
                     observed.lock().unwrap().push((a,b));signal.notify_one();
-                    if matches!(config.fault,Fault::HangHeaders) { std::future::pending::<()>().await; }
-                    if matches!(config.fault,Fault::Slow) { tokio::time::sleep(Duration::from_millis(30)).await; }
-                    if matches!(config.fault,Fault::IgnoredRange) {
+                    let hold = if media && observed.lock().unwrap().iter().filter(|(a,b)| *a>=media_span.body_offset && *a<media_span.end.unwrap() && *b==data.len() as u64-1).count()==1 { config.hold_media_after } else { None };
+                    if matches!(fault,Fault::HangHeaders) { std::future::pending::<()>().await; }
+                    if matches!(fault,Fault::Slow) { tokio::time::sleep(Duration::from_millis(30)).await; }
+                    if matches!(fault,Fault::IgnoredRange) {
                         let _=socket.write_all(format!("HTTP/1.1 200 OK\r\n{tag}Content-Length: {}\r\nConnection: close\r\n\r\n",data.len()).as_bytes()).await;
                         std::future::pending::<()>().await;
                     }
-                    let tag=if matches!(config.fault,Fault::ChangedTag) {"ETag: \"asset-v2\"\r\n"} else {tag};
+                    let tag=if matches!(fault,Fault::ChangedTag) {"ETag: \"asset-v2\"\r\n"} else {tag};
                     let total=if config.unknown_range_total {"*".to_owned()} else {data.len().to_string()};
-                    let head=format!("HTTP/1.1 206 Partial Content\r\n{tag}Content-Range: bytes {a}-{b}/{total}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",b-a+1);
+                    let chunked=matches!(fault,Fault::BodyShort) || (media && config.hold_media_after.is_some());
+                    let framing=if chunked { "Transfer-Encoding: chunked\r\n".to_owned() } else { format!("Content-Length: {}\r\n",b-a+1) };
+                    let head=format!("HTTP/1.1 206 Partial Content\r\n{tag}Content-Range: bytes {a}-{b}/{total}\r\n{framing}Connection: close\r\n\r\n");
                     if socket.write_all(head.as_bytes()).await.is_err() { return; }
-                    if matches!(config.fault,Fault::HangBody) { std::future::pending::<()>().await; }
+                    if matches!(fault,Fault::HangBody) { std::future::pending::<()>().await; }
                     if b as usize>=data.len() { return; }
-                    for bytes in data[a as usize..=b as usize].chunks(137) {
-                        if socket.write_all(bytes).await.is_err() { return; }
+                    let end=b as usize + 1 - usize::from(matches!(fault,Fault::BodyShort));
+                    let mut at=a as usize;
+                    while at<end {
+                        let until=(at+137).min(end).min(if media { hold.map(|n|a as usize+n).filter(|n|*n>at).unwrap_or(end) } else { end });
+                        let bytes=&data[at..until];
+                        if chunked && socket.write_all(format!("{:x}\r\n",bytes.len()).as_bytes()).await.is_err(){return;}
+                        if socket.write_all(bytes).await.is_err(){return;}
+                        if chunked && socket.write_all(b"\r\n").await.is_err(){return;}
+                        at=until;
+                        if media && hold==Some(at-a as usize) { held_signal.notify_one(); gate.notified().await; }
                     }
+                    if chunked { let _=socket.write_all(b"0\r\n\r\n").await; }
                 } else {
                     let cut=config.cut.unwrap_or(data.len());
                     let framing=if config.chunked {"Transfer-Encoding: chunked\r\n".to_owned()} else {format!("Content-Length: {}\r\n",data.len())};
@@ -170,6 +201,8 @@ async fn start_server(data: Vec<u8>, config: Config) -> Server {
         task,
         ranges,
         index_arrived,
+        media_arrived,
+        media_held,
         release,
     }
 }
@@ -178,6 +211,9 @@ struct Decoded {
     pcm: Vec<f32>,
     indexes: usize,
     index_bytes: u64,
+    resumes: u32,
+    media_requests: u64,
+    media_bytes: u64,
 }
 async fn decode(
     client: HttpClient,
@@ -203,7 +239,7 @@ async fn decode(
     else {
         return Ok(None);
     };
-    let mut response = response.map_err(|e| e.to_string())?;
+    let response = response.map_err(|e| e.to_string())?;
     let length = response.content_length();
     let mut identity = Some(range::Identity::capture(&response));
     limits.index.object_len = length;
@@ -213,11 +249,31 @@ async fn decode(
     let mut scratch = Vec::with_capacity(SAMPLES_PER_STEP);
     let mut indexes = 0;
     let mut eof_sent = false;
-    loop {
-        let Some(chunk) = while_active(&tx, &state, response.chunk()).await else {
-            return Ok(None);
+    let mut response = Some(response);
+    let mut using_media = false;
+    let mut pending_chunk = None;
+    'download: loop {
+        let chunk = if let Some(bytes) = pending_chunk.take() {
+            Some(bytes)
+        } else if using_media {
+            match source
+                .as_mut()
+                .unwrap()
+                .media_chunk(&tx, &state)
+                .await
+                .map_err(|e| e.to_string())?
+            {
+                MediaRead::Data(bytes) => Some(bytes),
+                MediaRead::End => None,
+                MediaRead::Cancelled => return Ok(None),
+            }
+        } else {
+            let Some(chunk) = while_active(&tx, &state, response.as_mut().unwrap().chunk()).await
+            else {
+                return Ok(None);
+            };
+            chunk.map_err(|e| e.to_string())?
         };
-        let chunk = chunk.map_err(|e| e.to_string())?;
         let eof = chunk.is_none();
         let mut offset = 0;
         loop {
@@ -260,9 +316,6 @@ async fn decode(
             pcm.extend_from_slice(&scratch);
             match progress {
                 Progress::NeedSource => {
-                    let Some(M4aSourceRequest::Index(request)) = request else {
-                        return Err("ReadAt streaming source is not connected yet".into());
-                    };
                     if source.is_none() {
                         let pin = identity.take().unwrap().map_err(|e| e.to_string())?;
                         source = Some(IndexSource::new(
@@ -275,27 +328,58 @@ async fn decode(
                             limits,
                         ));
                     }
-                    let result = source
-                        .as_mut()
-                        .unwrap()
-                        .resolve(
-                            request,
-                            decoder,
-                            &tx,
-                            &state,
-                            Instant::now() + index_timeout,
-                        )
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    let Some(result) = result else {
-                        return Ok(None);
-                    };
-                    assert_ne!(
-                        result.parse_thread, io_thread,
-                        "full moov parsing ran on the IO thread"
-                    );
-                    decoder = result.decoder;
-                    indexes += 1;
+                    match request.ok_or("missing source request")? {
+                        M4aSourceRequest::Index(request) => {
+                            let result = source
+                                .as_mut()
+                                .unwrap()
+                                .resolve(
+                                    request,
+                                    decoder,
+                                    &tx,
+                                    &state,
+                                    Instant::now() + index_timeout,
+                                )
+                                .await
+                                .map_err(|e| e.to_string())?;
+                            let Some(result) = result else {
+                                return Ok(None);
+                            };
+                            assert_ne!(
+                                result.parse_thread, io_thread,
+                                "full moov parsing ran on the IO thread"
+                            );
+                            decoder = result.decoder;
+                            indexes += 1;
+                        }
+                        M4aSourceRequest::ReadAt(packet) => {
+                            let result = source
+                                .as_mut()
+                                .unwrap()
+                                .read_at(
+                                    packet,
+                                    decoder,
+                                    &tx,
+                                    &state,
+                                    Instant::now() + index_timeout,
+                                )
+                                .await
+                                .map_err(|e| e.to_string())?;
+                            let Some(result) = result else {
+                                return Ok(None);
+                            };
+                            assert_ne!(
+                                result.resume_thread, io_thread,
+                                "decoder resume ran on the IO thread"
+                            );
+                            decoder = result.decoder;
+                            pending_chunk = Some(result.first);
+                            using_media = true;
+                            response.take();
+                            eof_sent = false;
+                            continue 'download;
+                        }
+                    }
                 }
                 Progress::Yield => {}
                 Progress::NeedInput => {
@@ -314,6 +398,9 @@ async fn decode(
                         pcm,
                         indexes,
                         index_bytes: source.as_ref().map_or(0, IndexSource::bytes_received),
+                        resumes: source.as_ref().map_or(0, IndexSource::resumes),
+                        media_requests: source.as_ref().map_or(0, IndexSource::media_requests),
+                        media_bytes: source.as_ref().map_or(0, IndexSource::media_bytes_received),
                     }));
                 }
                 Progress::Cancelled => return Ok(None),
@@ -339,6 +426,422 @@ async fn run(server: &Server, fragment: usize, limits: Limits) -> Result<Decoded
     .await
     .expect("index/HTTP decode must finish")
     .map(|r| r.expect("unexpected cancellation"))
+}
+
+async fn pinned(server: &Server, limits: Limits) -> IndexSource {
+    let client = client();
+    let response = client
+        .get(GateKind::AudioStream, server.url.clone())
+        .header(ACCEPT_ENCODING, HeaderValue::from_static("identity"))
+        .send()
+        .await
+        .unwrap();
+    let identity = range::Identity::capture(&response).unwrap();
+    IndexSource::new(
+        range::Reader::new(
+            client,
+            GateKind::AudioStream,
+            identity,
+            range::Limits::default(),
+        ),
+        limits,
+    )
+}
+
+async fn pending(
+    data: Vec<u8>,
+    owner: &migo_io::scheduler::IoScheduler,
+) -> (
+    OffWorker<M4aDecoder>,
+    symphonia_format_isomp4::streaming::IndexedPacket,
+) {
+    let decoder = OffWorker::new(
+        M4aDecoder::with_object_len(None, Some(data.len() as u64)),
+        owner.audio_cpu(),
+    );
+    let (decoder, packet) = decoder
+        .with(move |value| {
+            let mut at = 0;
+            let mut out = Vec::with_capacity(SAMPLES_PER_STEP);
+            loop {
+                if at < data.len() {
+                    at += value.push(&data[at..]).unwrap();
+                } else {
+                    value.finish_input();
+                }
+                out.clear();
+                match value
+                    .drain(&mut out, &std::sync::atomic::AtomicBool::new(false))
+                    .unwrap()
+                {
+                    Progress::NeedSource => match value.source_request().unwrap() {
+                        M4aSourceRequest::ReadAt(packet) => return packet,
+                        M4aSourceRequest::Index(_) => panic!("helper requires a front movie"),
+                    },
+                    Progress::Finished => panic!("fixture never requested a reposition"),
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .unwrap();
+    (decoder, packet)
+}
+
+#[tokio::test]
+async fn actual_read_at_reuses_media_extents_and_preserves_aac_and_container_end() {
+    let mut count = 0;
+    for name in [
+        "1-reorder.m4a",
+        "2-reorder.m4a",
+        "2-reverse.m4a",
+        "2-multi.m4a",
+        "2-tail-reverse.m4a",
+        "2-tail-multi.m4a",
+    ] {
+        let mut data = fixture(name);
+        data.extend_from_slice(&1032_u32.to_be_bytes());
+        data.extend_from_slice(b"free");
+        data.extend(std::iter::repeat_n(0x5a, 1024));
+        let expected = candidate::decode(&data, 16_777_216).unwrap().samples;
+        for chunked in [false, true] {
+            for fragment in [137, 8192] {
+                let server = start_server(
+                    data.clone(),
+                    Config {
+                        chunked,
+                        ..Config::default()
+                    },
+                )
+                .await;
+                let result = run(&server, fragment, Limits::default()).await.unwrap();
+                assert_eq!(result.pcm, expected, "{name}/{chunked}/{fragment}");
+                let resumes = if name.contains("reorder") { 1 } else { 2 };
+                assert_eq!(result.resumes, resumes);
+                assert_eq!(result.media_requests, u64::from(resumes));
+                assert!(result.media_bytes > 0);
+                let control: Vec<_> = server
+                    .ranges
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .copied()
+                    .filter(|(_, b)| *b != data.len() as u64 - 1)
+                    .collect();
+                // Front layouts discover at most five headers once. Both
+                // earlier mdats are then cached even across two backwards reads.
+                if !name.contains("tail") {
+                    assert!(
+                        control.len() <= 5,
+                        "media headers were rediscovered: {control:?}"
+                    );
+                }
+                count += 1;
+            }
+        }
+    }
+    assert_eq!(count, 24);
+    println!("W09_M4A_HTTP_READ_AT {count} exact PCM comparisons");
+}
+
+#[tokio::test]
+async fn actual_read_at_short_ranges_and_held_body_deliver_before_tail_release() {
+    let data = fixture("2-reverse.m4a");
+    let expected = candidate::decode(&data, 16_777_216).unwrap().samples;
+    let server = start_server(
+        data.clone(),
+        Config {
+            short_media: Some(4096),
+            ..Config::default()
+        },
+    )
+    .await;
+    let result = run(&server, 137, Limits::default()).await.unwrap();
+    assert_eq!(result.pcm, expected);
+    assert!(result.media_requests > u64::from(result.resumes));
+    let owner = migo_io::scheduler::IoScheduler::new(0);
+    let (_, packet) = pending(data.clone(), &owner).await;
+    assert!(u64::from(packet.size) < data.len() as u64 - packet.offset);
+    let server = start_server(
+        data,
+        Config {
+            hold_media_after: Some(packet.size as usize),
+            ..Config::default()
+        },
+    )
+    .await;
+    let (tx, _rx) = stream_channel();
+    let first = Arc::new(Notify::new());
+    let job = decode(
+        client(),
+        server.url.clone(),
+        137,
+        Limits::default(),
+        tx,
+        StreamingState::new(),
+        first.clone(),
+        Duration::from_secs(2),
+    );
+    tokio::pin!(job);
+    tokio::select! {result=&mut job=>panic!("held media completed early: {}",result.is_ok()),
+    _=first.notified()=>{}, _=tokio::time::sleep(Duration::from_secs(3))=>panic!("firstPCM waited for mediaEOF")}
+    tokio::time::timeout(Duration::from_millis(500), server.media_held.notified())
+        .await
+        .expect("server must have entered the actual media hold before firstPCM");
+    server.release.notify_one();
+    let result = job.await.unwrap().unwrap();
+    assert_eq!(result.pcm, expected);
+}
+
+#[tokio::test]
+async fn read_at_rejects_nonmedia_packets_limits_and_unknown_complete_lengths() {
+    let data = fixture("2-reverse.m4a");
+    let owner = migo_io::scheduler::IoScheduler::new(0);
+    for bad in [0, 1, 2, 3, 4, 5] {
+        let server = start_server(data.clone(), Config::default()).await;
+        let limits = match bad {
+            2 => Limits {
+                max_resumes: 0,
+                ..Limits::default()
+            },
+            3 => Limits {
+                max_atoms: 1,
+                ..Limits::default()
+            },
+            _ => Limits::default(),
+        };
+        let mut source = pinned(&server, limits).await;
+        let (decoder, mut packet) = pending(data.clone(), &owner).await;
+        if bad == 0 {
+            packet.offset = 8;
+            packet.size = 1;
+        }
+        if bad == 4 {
+            packet.offset = atom(&data, AtomKind::MediaData).offset + 1;
+            packet.size = 1;
+        }
+        if bad == 5 {
+            packet.size = 0;
+        }
+        if bad == 1 {
+            packet.size = data.len() as u32;
+        }
+        let (tx, _rx) = stream_channel();
+        assert!(
+            source
+                .read_at(
+                    packet,
+                    decoder,
+                    &tx,
+                    &StreamingState::new(),
+                    Instant::now() + Duration::from_secs(2)
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            server
+                .ranges
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|(a, b)| b - a + 1 <= 16),
+            "bad packet triggered a media body fetch"
+        );
+    }
+    let server = start_server(
+        data,
+        Config {
+            chunked: true,
+            unknown_range_total: true,
+            ..Config::default()
+        },
+    )
+    .await;
+    let result = run(&server, 8192, Limits::default()).await;
+    assert!(result.err().is_some_and(|e| e.contains("UnknownLength")));
+    let server = start_server(
+        fixture("2-reverse.m4a"),
+        Config {
+            no_tag: true,
+            ..Config::default()
+        },
+    )
+    .await;
+    assert!(
+        run(&server, 137, Limits::default())
+            .await
+            .err()
+            .is_some_and(|e| e.contains("NoStrongValidator"))
+    );
+    assert!(server.ranges.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn read_at_cannot_resume_a_different_pending_command() {
+    let data = fixture("2-reverse.m4a");
+    let server = start_server(data.clone(), Config::default()).await;
+    let owner = migo_io::scheduler::IoScheduler::new(0);
+    let (decoder, mut packet) = pending(data, &owner).await;
+    packet.track_id ^= 0x8000_0000;
+    let mut source = pinned(&server, Limits::default()).await;
+    let (tx, _rx) = stream_channel();
+    let result = source
+        .read_at(
+            packet,
+            decoder,
+            &tx,
+            &StreamingState::new(),
+            Instant::now() + Duration::from_secs(2),
+        )
+        .await;
+    assert!(result.err().is_some_and(|e| matches!(
+        e,
+        crate::isomp4_source::Error::Invalid("pending packet request changed")
+    )));
+}
+
+#[tokio::test]
+async fn read_at_version_errors_and_truncated_media_never_finish_successfully() {
+    for (fault, expected) in [
+        (Fault::ChangedTag, "RepresentationChanged"),
+        (Fault::IgnoredRange, "RangeUnsupported"),
+        (Fault::BodyShort, "truncated"),
+    ] {
+        let mut data = fixture("2-tail-multi.m4a");
+        data.extend_from_slice(&1032_u32.to_be_bytes());
+        data.extend_from_slice(b"free");
+        data.extend(std::iter::repeat_n(0x5a, 1024));
+        let server = start_server(
+            data,
+            Config {
+                media_fault: fault,
+                ..Config::default()
+            },
+        )
+        .await;
+        let result = run(&server, 8192, Limits::default()).await;
+        assert!(
+            result.err().is_some_and(|e| e.contains(expected)),
+            "{expected}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn read_at_cancellation_and_receiver_exit_interrupt_real_media_waits() {
+    for fault in [Fault::HangHeaders, Fault::HangBody] {
+        for receiver_exit in [false, true] {
+            let server = start_server(
+                fixture("2-reverse.m4a"),
+                Config {
+                    media_fault: fault,
+                    ..Config::default()
+                },
+            )
+            .await;
+            let (tx, rx) = stream_channel();
+            let state = StreamingState::new();
+            let job = decode(
+                client(),
+                server.url.clone(),
+                137,
+                Limits::default(),
+                tx,
+                state.clone(),
+                Arc::new(Notify::new()),
+                Duration::from_secs(2),
+            );
+            tokio::pin!(job);
+            tokio::select! {result=&mut job=>panic!("media wait completed: {}",result.is_ok()),
+            _=server.media_arrived.notified()=>{}}
+            if receiver_exit {
+                drop(rx);
+            } else {
+                state.cancel();
+            }
+            assert!(
+                tokio::time::timeout(Duration::from_millis(500), &mut job)
+                    .await
+                    .expect("media cancellation must release IO")
+                    .unwrap()
+                    .is_none()
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn read_at_cpu_resume_wait_shares_the_source_deadline() {
+    let data = fixture("2-reverse.m4a");
+    let server = start_server(data.clone(), Config::default()).await;
+    let owner = migo_io::scheduler::IoScheduler::new(0);
+    let (decoder, packet) = pending(data, &owner).await;
+    let mut source = pinned(
+        &server,
+        Limits {
+            resume_delay: Duration::from_millis(750),
+            ..Limits::default()
+        },
+    )
+    .await;
+    let (tx, _rx) = stream_channel();
+    let start = Instant::now();
+    let result = source
+        .read_at(
+            packet,
+            decoder,
+            &tx,
+            &StreamingState::new(),
+            start + Duration::from_millis(100),
+        )
+        .await;
+    assert!(
+        result.err().is_some_and(|e| matches!(
+            e,
+            crate::isomp4_source::Error::Range(range::Error::Timeout)
+        ))
+    );
+    assert!(
+        start.elapsed() < Duration::from_millis(500),
+        "IO waited for a late CPU job"
+    );
+}
+
+#[tokio::test]
+async fn read_at_pending_media_uses_the_absolute_setup_deadline() {
+    for fault in [Fault::HangHeaders, Fault::HangBody] {
+        let data = fixture("2-reverse.m4a");
+        let server = start_server(
+            data.clone(),
+            Config {
+                media_fault: fault,
+                ..Config::default()
+            },
+        )
+        .await;
+        let owner = migo_io::scheduler::IoScheduler::new(0);
+        let (decoder, packet) = pending(data, &owner).await;
+        let mut source = pinned(&server, Limits::default()).await;
+        let (tx, _rx) = stream_channel();
+        let start = Instant::now();
+        let result = tokio::time::timeout(
+            Duration::from_millis(500),
+            source.read_at(
+                packet,
+                decoder,
+                &tx,
+                &StreamingState::new(),
+                start + Duration::from_millis(70),
+            ),
+        )
+        .await
+        .expect("source setup must not wait for the media idle timeout");
+        assert!(result.err().is_some_and(|e| matches!(
+            e,
+            crate::isomp4_source::Error::Range(range::Error::Timeout)
+        )));
+    }
 }
 fn with_padding(mut data: Vec<u8>, count: usize, body: usize, extended: bool) -> Vec<u8> {
     let at = atom(&data, AtomKind::Movie).offset as usize;

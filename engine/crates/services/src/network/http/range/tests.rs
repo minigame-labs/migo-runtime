@@ -521,7 +521,9 @@ async fn cancellation_and_one_absolute_deadline_end_pending_headers_body_and_par
     }
 }
 
-async fn drain(stream: &mut Stream<'_>) -> Result<u64, Error> {
+async fn drain<R: std::borrow::BorrowMut<Reader>>(
+    stream: &mut super::stream::MediaStream<R>,
+) -> Result<u64, Error> {
     let mut count = 0;
     loop {
         let position = stream.position();
@@ -825,4 +827,69 @@ async fn media_header_idle_and_cancel_deadlines_are_separate_from_duration() {
         start.elapsed() > Duration::from_millis(100),
         "header timeout must not become whole-media timeout"
     );
+}
+
+#[tokio::test]
+async fn owned_media_returns_the_same_pinned_reader_and_its_control_budget() {
+    let server = start_server(Reply::Chunked, 512, true).await;
+    let mut source = reader(
+        &server,
+        Limits {
+            max_read_bytes: 8,
+            max_total_bytes: 16,
+            max_requests: 2,
+        },
+    )
+    .await;
+    source.read_exact_at(7, 8, deadline()).await.unwrap();
+    assert_eq!(source.length(), Some(512));
+    let mut stream = source
+        .into_stream_at(37, 61, StreamLimits::default())
+        .unwrap();
+    assert_eq!(drain(&mut stream).await.unwrap(), 61);
+    assert_eq!(stream.reader().bytes_received(), 8);
+    assert_eq!(stream.reader().requests(), 1);
+    let mut source = stream.into_reader();
+    assert_eq!(source.length(), Some(512));
+    assert_eq!(
+        source.read_exact_at(9, 8, deadline()).await.unwrap(),
+        payload(9, 8)
+    );
+    let mut stream = source
+        .into_stream_at(10, 32, StreamLimits::default())
+        .unwrap();
+    assert_eq!(drain(&mut stream).await.unwrap(), 32);
+    let mut source = stream.into_reader();
+    assert_eq!(
+        source.read_exact_at(9, 1, deadline()).await,
+        Err(Error::Limit)
+    );
+}
+
+#[tokio::test]
+async fn cancelled_owned_media_returns_a_failed_reader_without_retrying_io() {
+    for mode in [Reply::HangHeaders, Reply::HangBody] {
+        let server = start_server(mode, 512, false).await;
+        let source = reader(&server, Limits::default()).await;
+        let mut stream = source
+            .into_stream_at(7, 16, StreamLimits::default())
+            .unwrap();
+        {
+            let read = stream.chunk();
+            tokio::pin!(read);
+            tokio::select! {result = &mut read => panic!("pending media completed: {result:?}"),
+            _ = server.arrived.notified() => {} }
+        }
+        let requests = server.requests.lock().unwrap().len();
+        let mut source = stream.into_reader();
+        assert_eq!(
+            source.read_exact_at(7, 16, deadline()).await,
+            Err(Error::PreviouslyFailed)
+        );
+        assert!(matches!(
+            source.into_stream_at(7, 16, StreamLimits::default()),
+            Err(Error::PreviouslyFailed)
+        ));
+        assert_eq!(server.requests.lock().unwrap().len(), requests);
+    }
 }

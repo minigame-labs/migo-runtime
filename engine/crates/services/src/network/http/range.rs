@@ -328,7 +328,7 @@ impl Segment {
 }
 
 mod stream;
-pub use stream::{Stream, StreamLimits};
+pub use stream::{OwnedStream, Stream, StreamLimits};
 
 fn single<'a>(headers: &'a HeaderMap, name: &str) -> Result<Option<&'a HeaderValue>, Error> {
     let mut values = headers.get_all(name).iter();

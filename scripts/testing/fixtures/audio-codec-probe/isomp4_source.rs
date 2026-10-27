@@ -1,16 +1,17 @@
-//! Resolve the library's pending tail index through the shared pinned source.
+//! Resolve library indexes and media repositions through one pinned source.
 //! Only bounded 8/16-byte atom framing runs inline. Full moov parsing and
-//! installation run in the decoder's existing CPU lane; no waiting CPU worker.
+//! decoder resume use the existing CPU lane; no waiting CPU worker.
 use crate::{
     off_worker::OffWorker,
     push_decoder::{M4aDecoder, M4aSourceRequest},
     streaming::{StreamMsg, StreamingState},
     streaming_transport::while_active,
 };
+use bytes::Bytes;
 use migo_services::network::http::range;
 use std::sync::Arc;
 use symphonia_format_isomp4::streaming::{
-    AtomKind, AtomSpan, AudioIndex, IndexOptions, IndexRequest,
+    AtomKind, AtomSpan, AudioIndex, IndexOptions, IndexRequest, IndexedPacket,
 };
 use tokio::{sync::mpsc, time::Instant};
 
@@ -19,8 +20,12 @@ pub struct Limits {
     pub max_atoms: u32,
     pub max_skipped_bytes: u64,
     pub index: IndexOptions,
+    pub max_resumes: u32,
+    pub media: range::StreamLimits,
     #[cfg(test)]
     pub parse_delay: std::time::Duration,
+    #[cfg(test)]
+    pub resume_delay: std::time::Duration,
 }
 impl Default for Limits {
     fn default() -> Self {
@@ -28,8 +33,12 @@ impl Default for Limits {
             max_atoms: 32,
             max_skipped_bytes: 4 * 1024 * 1024,
             index: IndexOptions::default(),
+            max_resumes: 64,
+            media: range::StreamLimits::default(),
             #[cfg(test)]
             parse_delay: std::time::Duration::ZERO,
+            #[cfg(test)]
+            resume_delay: std::time::Duration::ZERO,
         }
     }
 }
@@ -38,6 +47,7 @@ impl Default for Limits {
 pub enum Error {
     Range(range::Error),
     Invalid(&'static str),
+    UnknownLength,
     Format(String),
     Cpu(shared::error::EngineError),
 }
@@ -67,13 +77,134 @@ fn parse_movie(bytes: &[u8], options: IndexOptions) -> Result<Parsed, Error> {
     })
 }
 
+/// Own the exact reader while its long-media response is active. Neither
+/// identity nor counters are copied when a new source request interrupts it.
+enum ReaderOwner {
+    Control(range::Reader),
+    Media(range::OwnedStream),
+    Failed,
+}
+struct SourceReader {
+    owner: ReaderOwner,
+    completed_media_requests: u64,
+    completed_media_bytes: u64,
+}
+impl SourceReader {
+    fn new(reader: range::Reader) -> Self {
+        Self {
+            owner: ReaderOwner::Control(reader),
+            completed_media_requests: 0,
+            completed_media_bytes: 0,
+        }
+    }
+    fn reader(&self) -> Option<&range::Reader> {
+        match &self.owner {
+            ReaderOwner::Control(reader) => Some(reader),
+            ReaderOwner::Media(stream) => Some(stream.reader()),
+            ReaderOwner::Failed => None,
+        }
+    }
+    fn length(&self) -> Option<u64> {
+        self.reader().and_then(range::Reader::length)
+    }
+    fn requests(&self) -> u32 {
+        self.reader().map_or(0, range::Reader::requests)
+    }
+    fn bytes_received(&self) -> u64 {
+        self.reader().map_or(0, range::Reader::bytes_received)
+    }
+    fn suspend(&mut self) {
+        self.owner = match std::mem::replace(&mut self.owner, ReaderOwner::Failed) {
+            ReaderOwner::Media(stream) => {
+                self.completed_media_requests = self
+                    .completed_media_requests
+                    .saturating_add(u64::from(stream.requests()));
+                self.completed_media_bytes = self
+                    .completed_media_bytes
+                    .saturating_add(stream.bytes_received());
+                ReaderOwner::Control(stream.into_reader())
+            }
+            owner => owner,
+        };
+    }
+    async fn read_exact_at(
+        &mut self,
+        offset: u64,
+        len: usize,
+        deadline: Instant,
+    ) -> Result<Vec<u8>, range::Error> {
+        self.suspend();
+        match &mut self.owner {
+            ReaderOwner::Control(reader) => reader.read_exact_at(offset, len, deadline).await,
+            _ => Err(range::Error::PreviouslyFailed),
+        }
+    }
+    fn start(
+        &mut self,
+        offset: u64,
+        len: u64,
+        limits: range::StreamLimits,
+    ) -> Result<(), range::Error> {
+        self.suspend();
+        let ReaderOwner::Control(reader) = std::mem::replace(&mut self.owner, ReaderOwner::Failed)
+        else {
+            return Err(range::Error::PreviouslyFailed);
+        };
+        self.owner = ReaderOwner::Media(reader.into_stream_at(offset, len, limits)?);
+        Ok(())
+    }
+    async fn chunk(&mut self) -> Result<Option<Bytes>, range::Error> {
+        match &mut self.owner {
+            ReaderOwner::Media(stream) => stream.chunk().await,
+            _ => Err(range::Error::PreviouslyFailed),
+        }
+    }
+    fn media_requests(&self) -> u64 {
+        self.completed_media_requests
+            .saturating_add(match &self.owner {
+                ReaderOwner::Media(s) => u64::from(s.requests()),
+                _ => 0,
+            })
+    }
+    fn media_bytes(&self) -> u64 {
+        self.completed_media_bytes
+            .saturating_add(match &self.owner {
+                ReaderOwner::Media(s) => s.bytes_received(),
+                _ => 0,
+            })
+    }
+}
+
+pub struct Repositioned {
+    pub decoder: OffWorker<M4aDecoder>,
+    pub first: Bytes,
+    #[cfg(test)]
+    pub resume_thread: std::thread::ThreadId,
+}
+pub enum MediaRead {
+    Data(Bytes),
+    End,
+    Cancelled,
+}
+
 pub struct IndexSource {
-    reader: range::Reader,
+    reader: SourceReader,
     limits: Limits,
+    media_spans: Vec<AtomSpan>,
+    scan_position: u64,
+    discovery_atoms: u32,
+    resumes: u32,
 }
 impl IndexSource {
     pub fn new(reader: range::Reader, limits: Limits) -> Self {
-        Self { reader, limits }
+        Self {
+            reader: SourceReader::new(reader),
+            limits,
+            media_spans: Vec::new(),
+            scan_position: 0,
+            discovery_atoms: 0,
+            resumes: 0,
+        }
     }
     pub fn requests(&self) -> u32 {
         self.reader.requests()
@@ -202,11 +333,15 @@ impl IndexSource {
                 #[cfg(not(test))]
                 parsed?;
                 decoder = returned;
+                self.remember_media(request.media)?;
                 return Ok(Some(Resolved {
                     decoder,
                     #[cfg(test)]
                     parse_thread,
                 }));
+            }
+            if span.kind == AtomKind::MediaData {
+                self.remember_media(span)?;
             }
             if span.kind != AtomKind::MediaData {
                 skipped = skipped
@@ -215,6 +350,192 @@ impl IndexSource {
                     .ok_or(Error::Invalid("skipped tail metadata budget exceeded"))?;
             }
             position = end;
+        }
+    }
+    pub fn media_requests(&self) -> u64 {
+        self.reader.media_requests()
+    }
+    pub fn media_bytes_received(&self) -> u64 {
+        self.reader.media_bytes()
+    }
+    pub fn resumes(&self) -> u32 {
+        self.resumes
+    }
+
+    fn remember_media(&mut self, span: AtomSpan) -> Result<(), Error> {
+        if !self.media_spans.contains(&span) {
+            if self.media_spans.len() >= self.limits.max_atoms as usize {
+                return Err(Error::Invalid("media extent cache budget exceeded"));
+            }
+            self.media_spans.push(span);
+        }
+        Ok(())
+    }
+
+    async fn find_media(
+        &mut self,
+        packet: IndexedPacket,
+        tx: &mpsc::Sender<StreamMsg>,
+        state: &Arc<StreamingState>,
+        deadline: Instant,
+    ) -> Result<Option<AtomSpan>, Error> {
+        let end = packet
+            .offset
+            .checked_add(u64::from(packet.size))
+            .filter(|end| *end > packet.offset)
+            .ok_or(Error::Invalid("invalid requested packet extent"))?;
+        if let Some(span) = self.media_spans.iter().find(|span| {
+            span.body_offset <= packet.offset && span.end.is_some_and(|limit| end <= limit)
+        }) {
+            return Ok(Some(*span));
+        }
+        loop {
+            self.discovery_atoms = self
+                .discovery_atoms
+                .checked_add(1)
+                .filter(|count| *count <= self.limits.max_atoms)
+                .ok_or(Error::Invalid("media discovery atom budget exceeded"))?;
+            let position = self.scan_position;
+            if self
+                .reader
+                .length()
+                .is_some_and(|len| len.saturating_sub(position) < 8)
+            {
+                return Err(Error::Invalid("packet is not in a media atom"));
+            }
+            let Some(header) = self.read(position, 8, deadline, tx, state).await? else {
+                return Ok(None);
+            };
+            let span = match AtomSpan::read(&header, position, self.reader.length())
+                .map_err(|e| Error::Format(e.to_string()))?
+            {
+                Some(span) => span,
+                None => {
+                    let Some(header) = self.read(position, 16, deadline, tx, state).await? else {
+                        return Ok(None);
+                    };
+                    AtomSpan::read(&header, position, self.reader.length())
+                        .map_err(|e| Error::Format(e.to_string()))?
+                        .ok_or(Error::Invalid("incomplete media atom header"))?
+                }
+            };
+            if span.kind == AtomKind::Fragmented {
+                return Err(Error::Invalid(
+                    "fragmented MP4 is outside the selected profile",
+                ));
+            }
+            let limit = span.end.ok_or(Error::UnknownLength)?;
+            self.scan_position = limit;
+            if span.kind == AtomKind::MediaData {
+                self.remember_media(span)?;
+            }
+            if span.offset <= packet.offset && packet.offset < limit {
+                if span.kind != AtomKind::MediaData
+                    || packet.offset < span.body_offset
+                    || end > limit
+                {
+                    return Err(Error::Invalid("packet does not fit actual media extent"));
+                }
+                return Ok(Some(span));
+            }
+        }
+    }
+
+    /// Validate the new body before clearing prefetch or resuming the decoder.
+    /// The first chunk and CPU queue wait share the discovery's absolute deadline;
+    /// subsequent media uses independent header/idle limits and no duration cap.
+    pub async fn read_at(
+        &mut self,
+        packet: IndexedPacket,
+        mut decoder: OffWorker<M4aDecoder>,
+        tx: &mpsc::Sender<StreamMsg>,
+        state: &Arc<StreamingState>,
+        deadline: Instant,
+    ) -> Result<Option<Repositioned>, Error> {
+        self.resumes = self
+            .resumes
+            .checked_add(1)
+            .filter(|n| *n <= self.limits.max_resumes)
+            .ok_or(Error::Invalid("source reposition budget exceeded"))?;
+        self.reader.suspend();
+        let Some(media) = self.find_media(packet, tx, state, deadline).await? else {
+            return Ok(None);
+        };
+        // Completing a finite mdat is not proof of a complete container. Resume
+        // through the object's actual end, including a physical tail moov.
+        let length = self.reader.length().ok_or(Error::UnknownLength)?;
+        let len = length
+            .checked_sub(packet.offset)
+            .filter(|n| *n > 0)
+            .ok_or(Error::Invalid("packet outside pinned object"))?;
+        self.reader
+            .start(packet.offset, len, self.limits.media)
+            .map_err(Error::Range)?;
+        let first_read = tokio::time::timeout_at(deadline, self.reader.chunk());
+        let Some(first) = while_active(tx, state, first_read).await else {
+            return Ok(None);
+        };
+        let first = first
+            .map_err(|_| Error::Range(range::Error::Timeout))?
+            .map_err(Error::Range)?
+            .ok_or(Error::Invalid("empty reposition response"))?;
+        let active = state.clone();
+        #[cfg(test)]
+        let resume_delay = self.limits.resume_delay;
+        let resume = decoder.with(move |value| {
+            #[cfg(test)]
+            std::thread::sleep(resume_delay);
+            if active.is_cancelled() {
+                return Err(Error::Invalid("cancelled before source resume"));
+            }
+            if Instant::now() >= deadline {
+                return Err(Error::Range(range::Error::Timeout));
+            }
+            if value.source_request() != Some(M4aSourceRequest::ReadAt(packet)) {
+                return Err(Error::Invalid("pending packet request changed"));
+            }
+            value
+                .resume_at(media, packet.offset)
+                .map_err(Error::Format)?;
+            #[cfg(test)]
+            {
+                Ok(std::thread::current().id())
+            }
+            #[cfg(not(test))]
+            {
+                Ok(())
+            }
+        });
+        let resume_wait = tokio::time::timeout_at(deadline, resume);
+        let Some(result) = while_active(tx, state, resume_wait).await else {
+            return Ok(None);
+        };
+        let (returned, resumed) = result
+            .map_err(|_| Error::Range(range::Error::Timeout))?
+            .map_err(Error::Cpu)?;
+        #[cfg(test)]
+        let resume_thread = resumed?;
+        #[cfg(not(test))]
+        resumed?;
+        decoder = returned;
+        Ok(Some(Repositioned {
+            decoder,
+            first,
+            #[cfg(test)]
+            resume_thread,
+        }))
+    }
+
+    pub async fn media_chunk(
+        &mut self,
+        tx: &mpsc::Sender<StreamMsg>,
+        state: &Arc<StreamingState>,
+    ) -> Result<MediaRead, Error> {
+        match while_active(tx, state, self.reader.chunk()).await {
+            None => Ok(MediaRead::Cancelled),
+            Some(Err(error)) => Err(Error::Range(error)),
+            Some(Ok(Some(bytes))) => Ok(MediaRead::Data(bytes)),
+            Some(Ok(None)) => Ok(MediaRead::End),
         }
     }
 }

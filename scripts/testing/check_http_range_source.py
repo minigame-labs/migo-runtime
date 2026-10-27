@@ -111,7 +111,7 @@ def stream_controls(work: Path, env: dict) -> int:
     budget = "media_request_count_extent_and_timeout_limits_fail_without_unbounded_requests"
     declarations = [
         ("media-request-cap-removed", ".filter(|n| *n <= self.limits.max_requests)", ".filter(|_| true)", budget),
-        ("media-cancel-not-sticky", "        self.reader.failed = true;", "        self.reader.failed = false;", timers),
+        ("media-cancel-not-sticky", "        self.reader.borrow_mut().failed = true;", "        self.reader.borrow_mut().failed = false;", timers),
         ("media-error-not-sticky", "        if result.is_ok() {", "        if true {", broken),
         ("media-whole-exchange-timeout", ".open_range(self.position, self.end, deadline, false)", ".open_range(self.position, self.end, deadline, true)", timers),
         ("media-header-timeout-removed", ".checked_add(self.limits.header_timeout)", ".checked_add(Duration::from_secs(2))", timers),
@@ -119,8 +119,11 @@ def stream_controls(work: Path, env: dict) -> int:
         ("media-eof-before-response-end", "        loop {", "        loop {\n            if self.position == self.end { return Ok(None); }", broken),
         ("media-short-range-overlap", ".open_range(self.position, self.end, deadline, false)", ".open_range(self.position.saturating_sub(1), self.end, deadline, false)", short),
         ("media-short-range-as-eof", "                self.segment = None;", "                return Ok(None);", short),
-        ("media-uses-control-byte-budget", "                    self.position += chunk.len() as u64;", "                    if self.bytes + chunk.len() as u64 > self.reader.limits.max_total_bytes { return Err(Error::Limit); }\n                    self.position += chunk.len() as u64;", "media_stream_exceeds_control_budgets_without_collecting_or_truncating_positions"),
-        ("media-known-length-cap-removed", "self.identity.length.is_some_and(|n| end > n)", "false", budget),
+        ("media-uses-control-byte-budget", "                    self.position += chunk.len() as u64;", "                    if self.bytes + chunk.len() as u64 > self.reader.borrow().limits.max_total_bytes { return Err(Error::Limit); }\n                    self.position += chunk.len() as u64;", "media_stream_exceeds_control_budgets_without_collecting_or_truncating_positions"),
+        ("media-known-length-cap-removed", "reader.identity.length.is_some_and(|n| end > n)", "false", budget),
+        ("owned-media-clears-cancel-latch", "    pub fn into_reader(self) -> Reader {\n        self.reader\n    }", "    pub fn into_reader(mut self) -> Reader {\n        self.reader.failed = false;\n        self.reader\n    }", "cancelled_owned_media_returns_a_failed_reader_without_retrying_io"),
+        ("owned-media-resets-control-quotas", "    pub fn into_reader(self) -> Reader {\n        self.reader\n    }", "    pub fn into_reader(mut self) -> Reader {\n        self.reader.requests = 0; self.reader.bytes = 0;\n        self.reader\n    }", "owned_media_returns_the_same_pinned_reader_and_its_control_budget"),
+        ("owned-media-forgets-pinned-length", "    pub fn into_reader(self) -> Reader {\n        self.reader\n    }", "    pub fn into_reader(mut self) -> Reader {\n        self.reader.identity.length = None;\n        self.reader\n    }", "owned_media_returns_the_same_pinned_reader_and_its_control_budget"),
     ]
     for name, before, after, test in declarations:
         assert source.count(before) == 1, (name, "mutation anchor changed")
@@ -187,12 +190,12 @@ def main(work: Path, target: Path) -> None:
     positive = build(work, env, "positive")
     codecs.run([str(positive), "network::http::range::tests::", "--nocapture", "--test-threads=1"],
                work / "positive-tests.log", cwd=package, env=env)
-    assert "16 passed; 0 failed" in (work / "positive-tests.log").read_text()
+    assert "18 passed; 0 failed" in (work / "positive-tests.log").read_text()
     negative = controls(work, env)
     media_negative = stream_controls(work, env)
     assert all(codecs.sha(ROOT / path) == checksum for path,checksum in frozen.items()), "Root inputs changed"
     assert all(codecs.sha(package / path) == checksum for path,checksum in retained.items()), "service copy not restored"
-    summary = {"positive_tests":16,"compiled_controls":negative,"compiled_media_controls":media_negative,"binary_sha256":codecs.sha(positive),
+    summary = {"positive_tests":18,"compiled_controls":negative,"compiled_media_controls":media_negative,"binary_sha256":codecs.sha(positive),
                "selected_identities":len(selected["packages"]),"new_dependency_identities":0,
                "source_copy_restored":True,"root_inputs_unchanged":True,"root_lock_sha256":codecs.sha(ROOT / "engine/Cargo.lock"),
                "scope":"Real host loopback control/media HTTP range source: 6 MiB actual media at virtual >16 GiB position, without whole-object collection; no M4A transport/DSP/player/fallback or native-device/performance acceptance"}

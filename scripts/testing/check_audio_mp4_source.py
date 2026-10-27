@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Resolve real M4A tail indexes through pinned HTTP and the common CPU lane.
+"""Resolve M4A indexes and indexed media through pinned HTTP and the common CPU lane.
 
 Clone the existing services probe, replay published codec patches, and exercise
-actual initial-body/index exchanges. The test PCM collector is not a product
-cache or acceptance of DSP/player/ReadAt/disk fallback.
+actual initial-body/index/reposition exchanges. The test PCM collector is not a
+product cache or acceptance of DSP/player/disk fallback.
 """
 from __future__ import annotations
 import argparse
@@ -63,6 +63,24 @@ def controls(work,env):
         ('index-install-discards-prefetched-input',common,[('        if reset_input {','        if true {')],pcm,None),
         ('cpu-index-wait-deadline-renewed',source,[('tokio::time::timeout_at(deadline, operation)','tokio::time::timeout_at(deadline + std::time::Duration::from_secs(2), operation)')],'cpu_index_wait_obeys_the_same_deadline_without_waiting_for_the_job',None),
     ]
+    real = 'actual_read_at_reuses_media_extents_and_preserves_aac_and_container_end'
+    bad = 'read_at_rejects_nonmedia_packets_limits_and_unknown_complete_lengths'
+    declarations += [
+        ('read-at-forgets-verified-media-cache',source,[('self.media_spans.iter().find(|span| {','self.media_spans.iter().find(|span| { false &&')],real,None),
+        ('read-at-accepts-nonmedia-span',source,[('span.kind != AtomKind::MediaData\n                    || packet.offset','false\n                    || packet.offset')],bad,None),
+        ('read-at-packet-crosses-media-end',source,[('                    || end > limit','                    || false')],bad,None),
+        ('read-at-packet-in-media-header',source,[('                    || packet.offset < span.body_offset','                    || false')],bad,None),
+        ('read-at-empty-packet-accepted',source,[('.filter(|end| *end > packet.offset)','.filter(|_| true)')],bad,None),
+        ('read-at-discovery-budget-removed',source,[('.filter(|count| *count <= self.limits.max_atoms)','.filter(|_| true)')],bad,None),
+        ('read-at-reposition-budget-removed',source,[('.filter(|n| *n <= self.limits.max_resumes)','.filter(|_| true)')],bad,None),
+        ('read-at-pending-command-unchecked',source,[('value.source_request() != Some(M4aSourceRequest::ReadAt(packet))','false')],'read_at_cannot_resume_a_different_pending_command',None),
+        ('read-at-retains-old-prefetched-input',work/'source/isomp4_streaming.rs',[('self.resume_source(true, |p| {','self.resume_source(false, |p| {')],real,None),
+        ('read-at-resets-aac-state',common,[('        if reset_input {','        if reset_input {\n            self.decoder = None;')],real,None),
+        ('read-at-finishes-at-mdat-not-object',source,[('let length = self.reader.length().ok_or(Error::UnknownLength)?;','let length = media.end.ok_or(Error::UnknownLength)?;')],real,None),
+        ('read-at-renews-cpu-deadline',source,[('tokio::time::timeout_at(deadline, resume)','tokio::time::timeout_at(deadline + std::time::Duration::from_secs(2), resume)')],'read_at_cpu_resume_wait_shares_the_source_deadline',None),
+        ('read-at-renews-media-setup-deadline',source,[('tokio::time::timeout_at(deadline, self.reader.chunk())','tokio::time::timeout_at(deadline + std::time::Duration::from_secs(2), self.reader.chunk())')],'read_at_pending_media_uses_the_absolute_setup_deadline',None),
+        ('read-at-collects-complete-media-body',source,[('ReaderOwner::Media(stream) => stream.chunk().await,','ReaderOwner::Media(stream) => { let mut all = Vec::new(); while let Some(bytes) = stream.chunk().await? { all.extend_from_slice(&bytes); } Ok((!all.is_empty()).then(|| bytes::Bytes::from(all))) },')],'actual_read_at_short_ranges_and_held_body_deliver_before_tail_release',None),
+    ]
     for label,path,changes,test,library in declarations:
         original=path.read_bytes();text=original.decode()
         for before,after in changes:
@@ -80,7 +98,53 @@ def controls(work,env):
         print('actual M4A HTTP source mutation',label,': executable assertion rejected',flush=True)
     return len(declarations)
 
-def main(work,target):
+def source_fixtures(directory):
+    # Test-only layout surgery; independently require FFmpeg to preserve PCM.
+    import struct
+    U=lambda n:struct.pack('>I',n)
+    atom=lambda kind,body:U(8+len(body))+kind+body
+    src=(directory/'2-reorder.m4a').read_bytes()
+    path=(b'moov',b'trak',b'mdia',b'minf',b'stbl')
+    sizes=index_gate.timeline.payloads(src,path+(b'stsz',))[0][12:]
+    sizes=list(struct.unpack('>'+str(len(sizes)//4)+'I',sizes))
+    a=sizes[0];b=sum(sizes[1:4]);c=sum(sizes[4:])
+    def top(data):
+        rows=[];pos=0
+        while pos<len(data):
+            size=int.from_bytes(data[pos:pos+4],'big');assert size>=8
+            rows.append((data[pos+4:pos+8],data[pos:pos+size]));pos+=size
+        assert pos==len(data);return rows
+    rows=top(src);ftyp=next(d for k,d in rows if k==b'ftyp');movie=next(d for k,d in rows if k==b'moov')
+    media=next(d[8:]for k,d in rows if k==b'mdat');assert len(media)==a+b+c
+    first=media[:c];second=media[c:c+a];third=media[c+a:]
+    made=[]
+    for multi in [False,True]:
+        for tail in [False,True]:
+            prefix=len(ftyp)+(0 if tail else len(movie))
+            if multi:
+                gap=atom(b'free',b'x'*32)
+                md1=atom(b'mdat',first);md2=atom(b'mdat',third+second)
+                start=prefix+len(md1)+len(gap)+8
+                offsets=[start+b,start,prefix+8]
+                payload=md1+gap+md2
+            else:
+                start=prefix+8;offsets=[start+c+b,start+c,start]
+                payload=atom(b'mdat',first+third+second)
+            table=U(0)+U(3)+b''.join(U(n)for n in offsets)
+            changed=index_gate.timeline.rewrite(src,{path+(b'stco',):table})
+            movie2=next(d for k,d in top(changed)if k==b'moov');assert len(movie2)==len(movie)
+            result=ftyp+(b''if tail else movie2)+payload+(movie2 if tail else b'')
+            name='2-'+('tail-'if tail else '')+('multi'if multi else'reverse')+'.m4a'
+            (directory/name).write_bytes(result);made.append(name)
+    oracle=[]
+    for name in ['2-front.m4a']+made:
+        result=subprocess.run(['ffmpeg','-nostdin','-hide_banner','-loglevel','error','-i',str(directory/name),'-f','f32le','-'],check=True,timeout=30,stdout=subprocess.PIPE)
+        oracle.append(result.stdout)
+    assert all(p==oracle[0]for p in oracle)
+    (directory/'source-layouts.json').write_text(json.dumps({'layouts':made,'ffmpeg_pcm_identical':True},indent=2)+'\n')
+    print('Generated4reverse/multi-mdat/front+tailfixtures;FFmpegPCMidentical',flush=True)
+
+def main(work,target,positive_only=False):
     env,frozen,_,_=range_gate.prepare(work,target)
     package=work/'probe';source=work/'source';source.mkdir()
     fixtures=ROOT/'scripts/testing/fixtures/audio-codec-probe'
@@ -131,25 +195,25 @@ symphonia-format-isomp4={version="=0.6.1",features=["streaming"]}
     for rel in frozen:
         dst=work/'source-inputs'/rel;dst.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(ROOT/rel,dst)
     retained={str(p.relative_to(work)):codecs.sha(p)for tree in [package/'src',source]for p in tree.rglob('*.rs')}
-    index_gate.fixtures(work/'fixtures');env['W09_M4A_FIXTURES']=str(work/'fixtures')
+    index_gate.fixtures(work/'fixtures');source_fixtures(work/'fixtures');env['W09_M4A_FIXTURES']=str(work/'fixtures')
     codecs.run(['cargo','metadata','--offline','--format-version','1'],work/'candidate-metadata.jsonl',cwd=package,env=env)
     codecs.run(['cargo','check','--offline','--locked','--lib'],work/'normal-library-check.log',cwd=package,env=env)
     positive=build(work,env,'positive')
-    for label,selected,count in [('source','isomp4_source_contracts::',9),('range','network::http::range::tests::',16)]:
+    for label,selected,count in [('source','isomp4_source_contracts::',17),('range','network::http::range::tests::',18)]:
         log=work/f'positive-{label}.log'
         codecs.run([str(positive),selected,'--nocapture','--test-threads=1'],log,cwd=package,env=env)
         assert f'{count} passed; 0 failed'in log.read_text(),label
-    negative=controls(work,env)
+    negative=0 if positive_only else controls(work,env)
     assert all(codecs.sha(ROOT/rel)==h for rel,h in frozen.items()),'Root inputs changed'
     assert all(codecs.sha(work/rel)==h for rel,h in retained.items()),'source copy not restored'
     rows=json.loads((work/'library-source-provenance.json').read_text())
     for row in rows:assert index_gate.timeline.source_tree(libraries[row['crate']])==row['source_files'],row['crate']
-    summary={'source_tests':9,'http_range_regression_tests':16,'http_pcm_comparisons':16,'compiled_controls':negative,
+    summary={'source_tests':17,'http_range_regression_tests':18,'http_pcm_comparisons':42,'compiled_controls':negative,
              'binary_sha256':codecs.sha(positive),'libraries':len(rows),'patches':sum(len(r['patches'])for r in rows),
              'root_inputs_unchanged':True,'source_copies_restored':True,'root_lock_sha256':codecs.sha(ROOT/'engine/Cargo.lock'),
-             'scope':'Actual HTTP tail-index/common decoder/CPU lane only; test PCM collection is an oracle. No ReadAt/DSP/player/disk fallback/product/native/device/performance acceptance.'}
+             'positive_only':positive_only,'scope':'Actual HTTP tail-index and ReadAt/common decoder/CPU lane; PCM collection is an oracle. No DSP/player/disk fallback/product/native/device/performance acceptance.'}
     (work/'summary.json').write_text(json.dumps(summary,indent=2)+'\n');print(json.dumps(summary,indent=2),flush=True)
 
 if __name__=='__main__':
-    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--output',type=Path,required=True);parser.add_argument('--target-dir',type=Path,required=True)
-    args=parser.parse_args();main(args.output.resolve(),args.target_dir.resolve())
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('--output',type=Path,required=True);parser.add_argument('--target-dir',type=Path,required=True);parser.add_argument('--positive-only',action='store_true')
+    args=parser.parse_args();main(args.output.resolve(),args.target_dir.resolve(),args.positive_only)
