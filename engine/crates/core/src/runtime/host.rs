@@ -844,17 +844,6 @@ impl Host {
             // is the only place that may act on it: a handler comparing it again
             // would be a second decision point that could disagree with the one
             // that already let this command through. Hence `_` here and below.
-            HostCommand::RecorderFrameData {
-                recording_id,
-                data,
-                is_last_frame,
-                credit: _credit,
-            } => {
-                self.js
-                    .dispatch_recorder_frame_data(recording_id, data, is_last_frame);
-                Ok(())
-            }
-
             HostCommand::CameraFrameData {
                 camera_id,
                 credit: _credit,
@@ -1568,6 +1557,9 @@ impl InputSink for HostJsRuntime {
     }
     fn ble_mtu_change(&mut self, device_id: &str, mtu: u32) {
         self.dispatch_ble_mtu_change(device_id, mtu);
+    }
+    fn recorder_frame(&mut self, recording_id: u32, data: Vec<u8>, is_last_frame: bool) {
+        self.dispatch_recorder_frame_data(recording_id, data, is_last_frame);
     }
 }
 

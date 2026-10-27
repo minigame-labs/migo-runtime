@@ -64,6 +64,7 @@ host_events! {
     _internalTriggerBLEConnectionStateChange = 30,
     _internalTriggerBLECharacteristicValueChange = 31,
     _internalTriggerBLEMTUChange = 32,
+    _internalOnRecorderFrameData = 33,
 }
 
 /// The size of one `MigoTouchPoint` record, as `01_touch.js` reads it.
@@ -397,6 +398,16 @@ impl InputSink for ServiceEventSink<'_> {
         self.send(
             event::_internalTriggerBLEMTUChange,
             vec![OwnedValue::Str(device_id.to_owned()), OwnedValue::U32(mtu)],
+        );
+    }
+    fn recorder_frame(&mut self, recording_id: u32, data: Vec<u8>, is_last_frame: bool) {
+        self.send(
+            event::_internalOnRecorderFrameData,
+            vec![
+                OwnedValue::U32(recording_id),
+                OwnedValue::Bytes(data),
+                OwnedValue::Bool(is_last_frame),
+            ],
         );
     }
 }

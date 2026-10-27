@@ -97,14 +97,20 @@ fn analyser_data(data: AnalyserData) -> OwnedValue {
     }
 }
 
-/// Whether `op` is a synchronous audio op the platform's audio settings answer
-/// rather than the audio thread: `setInnerAudioOption` and
-/// `getAvailableAudioSources`, which the service context answers from the
-/// platform's device services, as the embedded ops do.
+/// Whether `op` is a synchronous audio op the platform answers rather than the
+/// audio thread: `setInnerAudioOption` and `getAvailableAudioSources`, from its
+/// audio settings, and the recorder's requests, from the host app's microphone
+/// -- each answered by the service context from the platform's device
+/// services, as the embedded ops answer.
 pub(crate) fn is_platform(op: u32) -> bool {
     matches!(
         op,
-        id::op_audio_set_inner_audio_option | id::op_audio_get_available_audio_sources
+        id::op_audio_set_inner_audio_option
+            | id::op_audio_get_available_audio_sources
+            | id::op_recorder_start
+            | id::op_recorder_pause
+            | id::op_recorder_resume
+            | id::op_recorder_stop
     )
 }
 

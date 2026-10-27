@@ -70,7 +70,7 @@ fn forward<S: ?Sized>(
 
 /// The embedded ops' scope check: a gated op reaches the host only with its
 /// scope granted, and is refused in the words they throw.
-fn scope_refusal(device: Option<&dyn DeviceServices>, op: &str) -> Option<String> {
+pub(crate) fn scope_refusal(device: Option<&dyn DeviceServices>, op: &str) -> Option<String> {
     let scope = op_scope(op)?;
     let state = device
         .and_then(|device| device.permission())

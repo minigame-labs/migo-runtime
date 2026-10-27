@@ -25,7 +25,7 @@
   "total": 382,
   "summary": {
     "android": {"engine": 62, "default": 125, "host": 185, "missing": 0, "unsupported": 10, "wired": 382, "verified": 221, "outside": 10, "ready": 360},
-    "ios": {"engine": 72, "default": 110, "host": 182, "missing": 3, "unsupported": 15, "wired": 374, "verified": 198, "outside": 10, "ready": 337},
+    "ios": {"engine": 72, "default": 110, "host": 183, "missing": 2, "unsupported": 15, "wired": 374, "verified": 198, "outside": 10, "ready": 337},
     "macos": {"engine": 72, "default": 88, "host": 178, "missing": 0, "unsupported": 44, "wired": 375, "verified": 201, "outside": 235, "ready": 364},
     "linux": {"engine": 72, "default": 138, "host": 156, "missing": 0, "unsupported": 16, "wired": 375, "verified": 214, "outside": 225, "ready": 363},
     "windows": {"engine": 71, "default": 2, "host": 295, "missing": 4, "unsupported": 10, "wired": 232, "verified": 0, "outside": 227, "ready": 285},
@@ -150,7 +150,7 @@
     "getPrivacySetting": {"category": "open-api/privacy", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "host", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "verified": ["android", "ios", "macos", "linux"], "not_ready": ["ohos"]},
     "getRankManager": {"category": "open-api/game-component", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "host", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "outside": ["macos", "linux", "windows", "ohos"]},
     "getRealtimeLogManager": {"category": "base/debug", "needs": ["callback:on_game_log"], "android": "default", "ios": "default", "macos": "default", "linux": "host", "windows": "host", "ohos": "missing", "verified": ["android", "ios", "macos", "linux"], "not_ready": ["ohos"]},
-    "getRecorderManager": {"category": "media/recorder", "needs": ["channel:permission", "channel:recorder.pause", "channel:recorder.resume", "channel:recorder.start", "channel:recorder.stop"], "android": "host", "ios": "missing", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "verified": ["android", "ios", "macos", "linux"], "not_ready": ["ios", "macos", "linux", "windows", "ohos"]},
+    "getRecorderManager": {"category": "media/recorder", "needs": ["channel:permission", "channel:recorder.pause", "channel:recorder.resume", "channel:recorder.start", "channel:recorder.stop"], "android": "host", "ios": "host", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "verified": ["android", "ios", "macos", "linux"], "not_ready": ["ios", "macos", "linux", "windows", "ohos"]},
     "getRelationFriendList": {"category": "open-api/data", "needs": ["channel:ecosystem.call"], "android": "host", "ios": "host", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "outside": ["macos", "linux", "windows"], "not_ready": ["ohos"]},
     "getScenePerformanceManager": {"category": "data-analysis", "needs": ["channel:ecosystem"], "android": "host", "ios": "host", "macos": "host", "linux": "host", "windows": "host", "ohos": "missing", "outside": ["ohos"]},
     "getScreenBrightness": {"category": "device/screen", "needs": ["channel:screen.get_brightness"], "android": "default", "ios": "default", "macos": "unsupported", "linux": "default", "windows": "host", "ohos": "missing", "verified": ["android", "ios"], "not_ready": ["linux", "windows", "ohos"]},

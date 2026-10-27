@@ -101,6 +101,9 @@ pub(crate) trait InputSink {
     );
     /// `_internalTriggerBLEMTUChange(deviceId, mtu)`.
     fn ble_mtu_change(&mut self, device_id: &str, mtu: u32);
+    /// `_internalOnRecorderFrameData(recordingId, frameBuffer, isLastFrame)`,
+    /// the frame as its ArrayBuffer.
+    fn recorder_frame(&mut self, recording_id: u32, data: Vec<u8>, is_last_frame: bool);
 }
 
 /// Deliver `command` to `sink` if it is input, and answer with it back if it
@@ -259,6 +262,14 @@ pub(crate) fn route(
             ble.value(),
         ),
         HostCommand::OnBLEMTUChange { device_id, mtu } => sink.ble_mtu_change(&device_id, mtu),
+        // The frame's byte reservation is released once the frame is handed
+        // on, whichever execution takes it.
+        HostCommand::RecorderFrameData {
+            recording_id,
+            data,
+            is_last_frame,
+            credit: _credit,
+        } => sink.recorder_frame(recording_id, data, is_last_frame),
         other => return Some(other),
     }
     None
