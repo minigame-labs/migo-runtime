@@ -40,6 +40,8 @@ mod device_motion;
 mod fetch_through_the_service;
 #[cfg(feature = "api-media")]
 mod game_recorder_lifecycle;
+#[cfg(feature = "api-media")]
+mod game_recorder_share;
 mod gamepad_haptics;
 mod global_surface;
 mod host_bridge_dispatch;
@@ -108,6 +110,7 @@ mod deferred_api;
 #[cfg(feature = "api-connectivity")]
 mod ecosystem;
 mod entry_evaluation;
+mod extension_sources;
 mod namespace_members;
 #[cfg(feature = "api-system")]
 mod update_manager;

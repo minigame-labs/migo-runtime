@@ -2,7 +2,7 @@
 title: 分享
 sidebar:
   order: 4
-description: 三个主动分享请求（shareAppMessage / shareMessageToFriend / showShareImageMenu）在 Android ShareHandler 与 C ABI share 服务上的合同：请求字段、图片路径经沙箱解析、ShareSink 的 settle 语义、无宿主时的降级。
+description: 四个主动分享请求（shareAppMessage / shareMessageToFriend / showShareImageMenu / operateGameRecorderVideo）在 Android ShareHandler 与 C ABI share 服务上的合同：请求字段、图片路径经沙箱解析、ShareSink 的 settle 语义、无宿主时的降级。
 audience: host-integrator
 platforms:
   - android
@@ -17,9 +17,10 @@ sourcePaths:
   - platforms/android/library/src/main/java/com/migo/runtime/GameSession.java
   - include/migo/host_services.h
   - engine/crates/runtime-v8/src/share/01_share.js
+  - engine/crates/runtime-v8/src/media/05_game_recorder.js
 ---
 
-## 三个请求
+## 四个请求
 
 内容主动发起的分享都是宿主作答的请求，各走一个方法：
 
@@ -28,6 +29,7 @@ sourcePaths:
 | `migo.shareAppMessage(options)` | `shareAppMessage(ShareRequest, ShareSink)` | `SHARE_APP_MESSAGE` 0 |
 | `migo.shareMessageToFriend(options)` | `shareMessageToFriend(FriendShareRequest, ShareSink)` | `SHARE_MESSAGE_TO_FRIEND` 1 |
 | `migo.showShareImageMenu(options)` | `showShareImageMenu(ImageShareRequest, ShareSink)` | `SHOW_SHARE_IMAGE_MENU` 2 |
+| `migo.operateGameRecorderVideo(options)`、点击 `migo.createGameRecorderShareButton()` | `shareGameRecording(RecordingShareRequest, ShareSink)` | `SHARE_GAME_RECORDING` 5 |
 
 Android 通过 `GameSession#setShareHandler(ShareHandler)` 注册；C ABI 宿主在 `host_services` 里声明 `MIGO_HOST_SERVICE_SHARE`，
 在 `on_host_service_call` 里按方法号作答。
@@ -41,6 +43,17 @@ Android 通过 `GameSession#setShareHandler(ShareHandler)` 注册；C ABI 宿主
 `path`。宿主收到的是这张图在游戏沙箱里对应的**真实文件路径**（`/user`、`/tmp`、`/cache` 或代码包里的文件；相对路径按代码包根目录解析），
 在请求结束前一直可读；它绝不是内容给的原始字符串，所以内容无法借此让宿主读到沙箱外的文件。沙箱外或不存在的路径在离开引擎前就失败。
 只有 `shareAppMessage` 的 `imageUrl` 可以是 http(s) URL，原样交给宿主；另两个拒绝网络图片。
+
+## 对局回放
+
+`SHARE_GAME_RECORDING` 分享 `migo.getGameRecorder()` 最近一次录制完成的视频。`video` 是引擎自己的文件（会话缓存下的
+H.264 MP4），从不是内容给的路径，会话期内可读；`bgm` 与图片一样是经沙箱解析的真实文件，不接受 URL。Android、macOS 与 iOS
+能录制，其它平台暂时没有可分享的录像。剪辑区间是内容自己的错，在所有平台都最先拒绝：22623 剪辑区间不合法、22633 总时长超限
+（合计超过 60 秒）、22643 剪辑区间太短（不到 2 秒）。随后，没有 share 服务的宿主与其它分享一样答 `not supported`；有的宿主只在
+引擎有录像（否则 22603 没有录制完成的视频）且音乐是游戏自己的文件（否则 22613 bgm 找不到）时才被询问。按 `timeRange` 剪辑、配 `bgm`、音量与倍速，都由宿主的分享界面完成。
+
+分享按钮结算的是同一个请求。它的 tap 监听器只听到非玩家取消导致的失败，所以玩家取消时以
+`fail(-1, "operateGameRecorderVideo:fail cancel")` 结算。
 
 ## 请求字段
 
@@ -72,6 +85,19 @@ Android 通过 `GameSession#setShareHandler(ShareHandler)` 注册；C ABI 宿主
 | `needShowEntrance` | 图片消息是否带进入游戏的入口 |
 | `entrancePath` | 入口打开的路径；为空表示默认 |
 
+`RecordingShareRequest`（`SHARE_GAME_RECORDING`）：
+
+| 字段 | 语义 |
+| --- | --- |
+| `video` | 录制的视频，引擎自己的文件；不为空 |
+| `title` / `desc` | 分享出去的回放的标题与描述；未设置为空 |
+| `query` / `path` | 从分享的回放打开游戏时带的查询与分包路径；未设置为空 |
+| `bgm` | 回放的背景音乐，真实文件路径；未设置为空 |
+| `timeRange` | 要分享的片段，`[from, to]`，单位为回放内的毫秒，合计至多 60 秒；为空（C ABI 里缺省）表示整段 |
+| `volume` | 0 到 1，默认 1 |
+| `atempo` | 播放倍速：0.3、0.5、1、1.5、2、2.5 或 3；默认 1 |
+| `audioMix` | `bgm` 是否与回放原声混音，而不是替换原声 |
+
 ## 怎么作答
 
 每个请求通过 `ShareSink`（C ABI：`migo_session_complete_host_service_call`）恰好 settle 一次：
@@ -79,6 +105,7 @@ Android 通过 `GameSession#setShareHandler(ShareHandler)` 注册；C ABI 宿主
 | 方法 | 语义 |
 | --- | --- |
 | `settleShared()` | 分享流程结束；不代表用户实际发送了消息 |
+| `settleSharedToGameCenter(int, String)` | 回放分享结束，并报告分享到你的游戏中心的结果；内容读到的是 `shareToGameCenter` `{errCode, errMsg}`。仅 `SHARE_GAME_RECORDING` |
 | `fail(int errCode, String errMsg)` | 失败，`errMsg` 原样交给内容 |
 
 分享等的是玩家，玩家用多久就等多久，runtime 不设超时。调用从 runtime 宿主线程到达，不要在其中阻塞；`ShareSink` 可从任意线程调用，
@@ -103,7 +130,7 @@ Android 通过 `GameSession#setShareHandler(ShareHandler)` 注册；C ABI 宿主
 
 ## 不实现会怎样
 
-没有 handler（或 C ABI 宿主没声明 share 服务）时，三个请求都以 `<api>:fail not supported`、错误码 `-2` 失败。它们会 settle 而不是沉默：
+没有 handler（或 C ABI 宿主没声明 share 服务）时，四个请求都以 `<api>:fail not supported`、错误码 `-2` 失败。它们会 settle 而不是沉默：
 内容常常等分享结束才继续，丢掉的请求就是一局暂停的游戏。
 
 `migo.shareAppMessage()` 的成功只表示分享流程结束；与常见小游戏平台一样，内容不会知道用户是否真的发送了消息，凭它发奖励没有事实依据。

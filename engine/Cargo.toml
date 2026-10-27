@@ -162,7 +162,7 @@ tracing-subscriber = { version = "0.3.20", default-features = false, features = 
 smallvec = { version = "1.15.1", features = ["const_generics"] }
 bytemuck = { version = "1.23.2", features = ["extern_crate_alloc"] }
 deno_core = { version = "=0.413.0", default-features = false, features = ["v8", "reactor-tokio"] }
-zstd = { version = "0.13", default-features = false }
+zstd = { version = "0.14.3", default-features = false }
 deno_error = "=0.7.1"
 
 
@@ -318,7 +318,8 @@ opt-level = 3
 opt-level = 3
 
 # Skia's ICU calls resolve against V8's on Android instead of a second, bundled ICU (1.36 MB of
-# libmigo.so and a second Unicode version). Inert unless SKIA_EXTERNAL_ICU_INCLUDE_DIRS is set; the
+# libmigo.so and a second Unicode version). Inert unless SKIA_EXTERNAL_ICU_INCLUDE_DIRS is set. Its
+# Android build also puts the API level in clang's triple, which NDK r30's headers require. The
 # copy is the published crate plus engine/third_party/skia-bindings-patches, which
 # scripts/test-skia-bindings-vendor-contract.sh proves byte for byte.
 [patch.crates-io]

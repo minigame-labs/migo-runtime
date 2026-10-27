@@ -1477,6 +1477,10 @@ impl ShareService for AndroidShare {
         Ok(jni::show_share_image_menu(self.host_id, options_json)?)
     }
 
+    fn share_game_recording(&self, request_json: &str) -> Result<(), ServiceError> {
+        Ok(jni::share_game_recording(self.host_id, request_json)?)
+    }
+
     fn set_share_menu(&self, json: &str) -> Result<(), ServiceError> {
         Ok(jni::share_menu_changed(self.host_id, json)?)
     }

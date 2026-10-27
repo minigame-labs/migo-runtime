@@ -1,0 +1,67 @@
+name: Install apt packages through a .deb cache
+description: >
+  Install apt packages, keeping the .deb files they download in the Actions
+  cache. The key is a digest of exactly what apt would download -- file names
+  carry the versions -- so a hit means nothing to fetch, and that is checked
+  rather than assumed. See scripts/ci/apt-install-cached.sh.
+
+inputs:
+  packages:
+    description: Whitespace-separated apt package names.
+    required: true
+  cache-name:
+    description: Names this package list among the repository's apt caches.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Plan what the install downloads
+      id: plan
+      shell: bash
+      env:
+        MIGO_APT_PACKAGES: ${{ inputs.packages }}
+        MIGO_APT_PLAN: ${{ runner.temp }}/apt-plan-${{ inputs.cache-name }}
+      run: bash scripts/ci/apt-install-cached.sh plan
+
+    # restore-keys brings back the closest older plan's files when this exact
+    # one has never been saved, so a single new version costs one download
+    # rather than the whole list.
+    - name: Restore the cached .deb files
+      id: restore
+      if: steps.plan.outputs.count != '0'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      with:
+        path: /var/cache/apt/archives/*.deb
+        key: apt-debs-${{ inputs.cache-name }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.plan.outputs.key }}
+        restore-keys: apt-debs-${{ inputs.cache-name }}-${{ runner.os }}-${{ runner.arch }}-
+
+    - name: An exact hit leaves nothing to download
+      if: steps.restore.outputs.cache-hit == 'true'
+      shell: bash
+      env:
+        MIGO_APT_PACKAGES: ${{ inputs.packages }}
+        MIGO_APT_PLAN: ${{ runner.temp }}/apt-plan-${{ inputs.cache-name }}
+      run: bash scripts/ci/apt-install-cached.sh check-hit
+
+    - name: Install
+      shell: bash
+      env:
+        MIGO_APT_PACKAGES: ${{ inputs.packages }}
+        MIGO_APT_PLAN: ${{ runner.temp }}/apt-plan-${{ inputs.cache-name }}
+      run: bash scripts/ci/apt-install-cached.sh install
+
+    - name: Keep only the planned .deb files
+      if: steps.plan.outputs.count != '0' && steps.restore.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        MIGO_APT_PACKAGES: ${{ inputs.packages }}
+        MIGO_APT_PLAN: ${{ runner.temp }}/apt-plan-${{ inputs.cache-name }}
+      run: bash scripts/ci/apt-install-cached.sh prune
+
+    - name: Save the .deb files
+      if: steps.plan.outputs.count != '0' && steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      with:
+        path: /var/cache/apt/archives/*.deb
+        key: apt-debs-${{ inputs.cache-name }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.plan.outputs.key }}

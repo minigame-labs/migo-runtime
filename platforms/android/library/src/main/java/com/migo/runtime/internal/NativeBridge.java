@@ -712,6 +712,8 @@ final class NativeBridge {
 
     static native void onShowShareImageMenuResult(int sessionId, String resultJson);
 
+    static native void onShareGameRecordingResult(int sessionId, String resultJson);
+
     // ==================== Navigate Callback ====================
 
     /**

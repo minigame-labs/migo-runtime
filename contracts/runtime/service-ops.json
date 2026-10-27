@@ -304,6 +304,14 @@
     "op_set_enable_debug": 280,
     "op_get_app_info": 281,
     "op_set_device_orientation": 282,
-    "op_fetch_profile": 283
+    "op_fetch_profile": 283,
+    "op_game_recorder_supported": 284,
+    "op_game_recorder_start": 285,
+    "op_game_recorder_pause": 286,
+    "op_game_recorder_resume": 287,
+    "op_game_recorder_abort": 288,
+    "op_game_recorder_stop": 289,
+    "op_game_recorder_next_event": 290,
+    "op_share_game_recording": 291
   }
 }

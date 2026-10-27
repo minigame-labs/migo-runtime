@@ -51,6 +51,8 @@
       "getDirectAdStatusSync": "createRewardedVideoAd",
       "getShowSplashAdStatus": "createRewardedVideoAd",
       "isPointerLocked": "requestPointerLock",
+      "offOfficialComponentsInfoChange": "getOfficialComponentsInfo",
+      "onOfficialComponentsInfoChange": "getOfficialComponentsInfo",
       "preDownloadSubpackage": "loadSubpackage",
       "setMessageToFriendQuery": "shareMessageToFriend"
   },
@@ -92,9 +94,11 @@
     "onDeviceOrientationChange": "screen.device_orientation_change"
   },
   "gaps": {
-    "getGameRecorder": {"platforms": ["ios", "macos", "linux", "windows", "ohos"], "reason": "the engine records the game through a platform encoder, and only Android has one yet: elsewhere isFrameSupported() is false and start reports frame not supported (R1c Apple, R1d Linux, R1e Windows)"},
+    "createGameRecorderShareButton": {"platforms": ["linux", "windows", "ohos"], "reason": "what is shared is getGameRecorder's last recording, which Android, macOS and iOS make and these do not yet: here the share is refused as no recorded video (R1d Linux, R1e Windows, R1f OpenHarmony)"},
+    "getGameRecorder": {"platforms": ["linux", "windows", "ohos"], "reason": "the engine records the game through a platform encoder -- MediaCodec on Android, AVFoundation on macOS and iOS -- and these have none yet: isFrameSupported() is false and start reports frame not supported (R1d Linux, R1e Windows, R1f OpenHarmony)"},
     "onAudioInterruptionBegin": {"platforms": ["ohos"], "reason": "the OpenHarmony audio output does not report interruptions yet"},
-    "onAudioInterruptionEnd": {"platforms": ["ohos"], "reason": "the OpenHarmony audio output does not report interruptions yet"}
+    "onAudioInterruptionEnd": {"platforms": ["ohos"], "reason": "the OpenHarmony audio output does not report interruptions yet"},
+    "operateGameRecorderVideo": {"platforms": ["linux", "windows", "ohos"], "reason": "what is shared is getGameRecorder's last recording, which Android, macOS and iOS make and these do not yet: here the share is refused as no recorded video (R1d Linux, R1e Windows, R1f OpenHarmony)"}
   },
   "unsupported": {
     "createInferenceSession": {"platforms": "*", "reason": "on-device inference needs a model runtime per platform; not offered"},

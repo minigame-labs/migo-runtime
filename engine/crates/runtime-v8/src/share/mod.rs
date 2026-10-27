@@ -75,6 +75,30 @@ pub async fn op_show_share_image_menu(
         .map_err(JsErrorBox::generic)
 }
 
+/// Share the game's last finished recording through the host, with the share
+/// options content set. The video is the engine's own file, never a path
+/// content named; `bgm` is resolved through the sandbox. What it is refused
+/// for before the host is asked (`migo_services::game_recorder`) the
+/// recorder's module (`05_game_recorder.js`) answers in the reference's codes.
+#[op2]
+pub async fn op_share_game_recording(
+    state: Rc<RefCell<OpState>>,
+    #[string] request_json: String,
+) -> Result<(), JsErrorBox> {
+    let service = share_service(&state, "operateGameRecorderVideo:fail not supported")?;
+    let paths = state.borrow().borrow::<HostOpState>().game_paths.clone();
+    let request = migo_services::game_recorder::share_request(
+        &host_paths::sandbox(&state),
+        paths.as_deref(),
+        &request_json,
+    )
+    .await
+    .map_err(|error| JsErrorBox::generic(error.message))?;
+    service
+        .share_game_recording(&request)
+        .map_err(JsErrorBox::generic)
+}
+
 /// Tell the host's menu what it offers now.
 #[op2(fast)]
 pub fn op_share_set_menu(state: &mut OpState, #[string] json: &str) -> Result<(), JsErrorBox> {
@@ -114,6 +138,7 @@ main_runtime_extension!(
             op_share_app_message,
             op_share_message_to_friend,
             op_show_share_image_menu,
+            op_share_game_recording,
             op_share_set_menu,
             op_share_menu_reply,
         ],

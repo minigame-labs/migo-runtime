@@ -25,7 +25,7 @@ jobs:
         # No LFS download: freshness reads committed pointer oid/size identities.
 
       - name: Setup Python for contract gates
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.11"
 
@@ -1072,33 +1072,13 @@ jobs:
       # on an unrelated PR. quality-gate and build already cache the same
       # workspace; this job was the one longest-pole job left without it.
       - name: Rust cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: engine -> target
           cache-on-failure: true
 
       - name: Install the engine's host build dependencies
-        # Bounded and retried like the other apt steps; see pr-ci.yml for the
-        # stall this guards against.
-        run: |
-          # Advisory for the same reason as the Qt job: a mirror that is down
-          # makes `update` report per-index failures, and the packages still
-          # install from the indexes already on the image.
-          timeout 180 sudo apt-get update -qq \
-            || echo "apt-get update incomplete; continuing on the image's indexes" >&2
-          install_pkgs() {
-            sudo apt-get install -y -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -qq \
-              ninja-build \
-              libgl-dev libegl-dev libgles-dev \
-              libgl1-mesa-dri libegl-mesa0 \
-              libfontconfig1-dev libfreetype-dev \
-              libasound2-dev strace \
-              gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav || return 1
-          }
-          install_pkgs || {
-            echo "host build dependency install failed; retrying once" >&2
-            install_pkgs
-          }
+        uses: ./.github/actions/host-engine-deps
 
       # The ASTC encoder, checked by a decoder that is not ours.
       #
@@ -1178,7 +1158,7 @@ jobs:
           java-version: "17"
 
       - name: Setup Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.11"
 
@@ -1208,10 +1188,11 @@ jobs:
       - name: Install Android NDK + cargo-ndk
         uses: ./.github/actions/setup-android-ndk
 
+      - name: Setup bubblewrap
+        uses: ./.github/actions/setup-bubblewrap
+
       - name: Reproduce Android platform TLS helper from patched source
         run: |
-          sudo apt-get update
-          sudo apt-get install -y bubblewrap
           sdkmanager --install "platforms;android-36"
           bash scripts/test-android-tls-source-contract.sh
 
@@ -1449,7 +1430,7 @@ jobs:
           lfs: false
 
       - name: Setup Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.11"
 
@@ -1529,7 +1510,7 @@ jobs:
           lfs: false
 
       - name: Setup Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.11"
 
@@ -1613,7 +1594,7 @@ jobs:
           lfs: false
 
       - name: Setup Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.11"
 
@@ -1720,7 +1701,7 @@ jobs:
           lfs: false
 
       - name: Setup Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.11"
 
@@ -1818,7 +1799,7 @@ jobs:
           lfs: false
 
       - name: Setup Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.11"
 
@@ -2054,7 +2035,7 @@ jobs:
           lfs: false
 
       - name: Setup Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.11"
 
@@ -2233,7 +2214,7 @@ jobs:
           lfs: false
 
       - name: Setup Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: "3.11"
 

@@ -62,6 +62,7 @@
   public abstract void settleOpened(java.util.Map<java.lang.String, java.lang.Boolean>);
   public abstract void settlePaid();
   public abstract void settleShared();
+  public abstract void settleSharedToGameCenter(int, java.lang.String);
   public abstract void succeed(java.util.Map<java.lang.String, ?>);
   public android.view.View getInputView();
   public boolean dispatchGenericMotionEvent(android.view.MotionEvent);
@@ -110,6 +111,7 @@
   public com.migo.runtime.NetworkPolicy$Builder allowUnrestricted(com.migo.runtime.NetworkPolicy$Channel);
   public com.migo.runtime.NetworkPolicy$Builder setAllowLocalNetwork(boolean);
   public com.migo.runtime.NetworkPolicy$Builder setAllowPlainHttp(boolean);
+  public com.migo.runtime.NetworkPolicy$Builder setTlsTrust(com.migo.runtime.NetworkPolicy$TlsTrust);
   public com.migo.runtime.NetworkPolicy$Builder();
   public com.migo.runtime.PerformanceSnapshot getPerformanceSnapshot();
   public com.migo.runtime.PerformanceSnapshot(float, float, int, int, int);
@@ -147,6 +149,7 @@
   public com.migo.runtime.callback.PaymentHandler$PaymentRequest(java.lang.String, int, java.lang.String, java.lang.String, java.lang.String, int, int, java.lang.String);
   public com.migo.runtime.callback.ShareHandler$FriendShareRequest(java.lang.String, java.lang.String, java.lang.String, java.lang.String, java.lang.String, java.lang.Integer);
   public com.migo.runtime.callback.ShareHandler$ImageShareRequest(java.lang.String, boolean, java.lang.String);
+  public com.migo.runtime.callback.ShareHandler$RecordingShareRequest(java.lang.String, java.lang.String, java.lang.String, java.lang.String, java.lang.String, java.lang.String, long[][], double, double, boolean);
   public com.migo.runtime.callback.ShareHandler$ShareMenu(boolean, boolean, boolean, java.util.Map<java.lang.String, java.lang.Object>);
   public com.migo.runtime.callback.ShareHandler$ShareRequest(java.lang.String, java.lang.String, java.lang.String, java.lang.String, boolean, java.lang.String);
   public com.migo.runtime.callback.SubpackageHandler$SubpackageRequest(java.lang.String, java.lang.String);
@@ -173,10 +176,12 @@
   public default void requestMidasPayment(com.migo.runtime.callback.PaymentHandler$PaymentRequest, com.migo.runtime.callback.PaymentSink);
   public default void requestMidasPaymentGameItem(com.migo.runtime.callback.PaymentHandler$GameItemPaymentRequest, com.migo.runtime.callback.PaymentSink);
   public default void shareAppMessage(com.migo.runtime.callback.ShareHandler$ShareRequest, com.migo.runtime.callback.ShareSink);
+  public default void shareGameRecording(com.migo.runtime.callback.ShareHandler$RecordingShareRequest, com.migo.runtime.callback.ShareSink);
   public default void shareMessageToFriend(com.migo.runtime.callback.ShareHandler$FriendShareRequest, com.migo.runtime.callback.ShareSink);
   public default void showAd(int, com.migo.runtime.callback.AdEventSink);
   public default void showShareImageMenu(com.migo.runtime.callback.ShareHandler$ImageShareRequest, com.migo.runtime.callback.ShareSink);
   public default void updateAdStyle(int, java.lang.String, com.migo.runtime.callback.AdEventSink);
+  public final boolean audioMix;
   public final boolean disableForward;
   public final boolean needShowEntrance;
   public final boolean shareAppMessage;
@@ -185,6 +190,8 @@
   public final boolean toCurrentGroup;
   public final boolean toCurrentGroup;
   public final boolean withShareTicket;
+  public final double atempo;
+  public final double volume;
   public final float fps;
   public final float frameTimeMs;
   public final int buyQuantity;
@@ -201,7 +208,9 @@
   public final java.lang.String api;
   public final java.lang.String appId;
   public final java.lang.String artifactId;
+  public final java.lang.String bgm;
   public final java.lang.String currencyType;
+  public final java.lang.String desc;
   public final java.lang.String entrancePath;
   public final java.lang.String envVersion;
   public final java.lang.String imagePreviewUrl;
@@ -221,8 +230,10 @@
   public final java.lang.String path;
   public final java.lang.String path;
   public final java.lang.String path;
+  public final java.lang.String path;
   public final java.lang.String paySig;
   public final java.lang.String platform;
+  public final java.lang.String query;
   public final java.lang.String query;
   public final java.lang.String query;
   public final java.lang.String query;
@@ -238,9 +249,12 @@
   public final java.lang.String title;
   public final java.lang.String title;
   public final java.lang.String title;
+  public final java.lang.String title;
+  public final java.lang.String video;
   public final java.util.Map<java.lang.String, java.lang.Object> extraData;
   public final java.util.Map<java.lang.String, java.lang.Object> options;
   public final java.util.Map<java.lang.String, java.lang.Object> options;
+  public final long[][] timeRange;
   public float getDisplayDensity();
   public int gender;
   public int getActiveSessionCount();
@@ -306,6 +320,8 @@
   public static com.migo.runtime.NetworkPolicy denyAll();
   public static com.migo.runtime.NetworkPolicy$Channel valueOf(java.lang.String);
   public static com.migo.runtime.NetworkPolicy$Channel[] values();
+  public static com.migo.runtime.NetworkPolicy$TlsTrust valueOf(java.lang.String);
+  public static com.migo.runtime.NetworkPolicy$TlsTrust[] values();
   public static com.migo.runtime.RuntimeConfig$ContentEnvironment valueOf(java.lang.String);
   public static com.migo.runtime.RuntimeConfig$ContentEnvironment[] values();
   public static com.migo.runtime.RuntimeConfig$LogLevel valueOf(java.lang.String);
@@ -331,6 +347,8 @@
   public static final com.migo.runtime.NetworkPolicy$Channel TCP;
   public static final com.migo.runtime.NetworkPolicy$Channel UDP;
   public static final com.migo.runtime.NetworkPolicy$Channel UPLOAD;
+  public static final com.migo.runtime.NetworkPolicy$TlsTrust MOZILLA;
+  public static final com.migo.runtime.NetworkPolicy$TlsTrust PLATFORM;
   public static final com.migo.runtime.RuntimeConfig$ContentEnvironment DEVELOP;
   public static final com.migo.runtime.RuntimeConfig$ContentEnvironment RELEASE;
   public static final com.migo.runtime.RuntimeConfig$ContentEnvironment TRIAL;
@@ -494,6 +512,7 @@ public final class com.migo.runtime.MigoRuntime$Result<T> {
 public final class com.migo.runtime.NetworkPolicy {
 public final class com.migo.runtime.NetworkPolicy$Builder {
 public final class com.migo.runtime.NetworkPolicy$Channel extends java.lang.Enum<com.migo.runtime.NetworkPolicy$Channel> {
+public final class com.migo.runtime.NetworkPolicy$TlsTrust extends java.lang.Enum<com.migo.runtime.NetworkPolicy$TlsTrust> {
 public final class com.migo.runtime.PerformanceSnapshot {
 public final class com.migo.runtime.RuntimeConfig {
 public final class com.migo.runtime.RuntimeConfig$Builder {
@@ -510,6 +529,7 @@ public final class com.migo.runtime.callback.PaymentHandler$GameItemPaymentReque
 public final class com.migo.runtime.callback.PaymentHandler$PaymentRequest {
 public final class com.migo.runtime.callback.ShareHandler$FriendShareRequest {
 public final class com.migo.runtime.callback.ShareHandler$ImageShareRequest {
+public final class com.migo.runtime.callback.ShareHandler$RecordingShareRequest {
 public final class com.migo.runtime.callback.ShareHandler$ShareMenu {
 public final class com.migo.runtime.callback.ShareHandler$ShareRequest {
 public final class com.migo.runtime.callback.SubpackageHandler$SubpackageRequest {
@@ -543,6 +563,8 @@ public interface com.migo.runtime.callback.ShareSink {
 public interface com.migo.runtime.callback.SubpackageHandler {
 public interface com.migo.runtime.callback.SubpackageHandler$DownloadCallback {
 public interface com.migo.runtime.callback.UpdateHandler {
+}
+}
 }
 }
 }

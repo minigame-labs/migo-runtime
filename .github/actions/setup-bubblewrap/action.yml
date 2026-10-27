@@ -1,0 +1,24 @@
+name: Setup bubblewrap
+description: >
+  Install bubblewrap and let it build the sandbox the Android TLS helper is
+  reproduced in. Ubuntu 24.04 restricts unprivileged user namespaces through
+  AppArmor (kernel.apparmor_restrict_unprivileged_userns=1): a program AppArmor
+  does not name gets a namespace without capabilities, so bwrap's --unshare-net
+  cannot bring up the sandbox's loopback ("loopback: Failed RTM_NEWADDR:
+  Operation not permitted"). Ubuntu's answer is a profile that grants userns to
+  bwrap alone, which leaves the restriction on for everything else.
+
+runs:
+  using: composite
+  steps:
+    - name: Install bubblewrap and its user-namespace profile
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y bubblewrap
+        printf '%s\n' 'abi <abi/4.0>,' 'include <tunables/global>' \
+          'profile bwrap /usr/bin/bwrap flags=(unconfined) {' '  userns,' '}' \
+          | sudo tee /etc/apparmor.d/bwrap > /dev/null
+        sudo apparmor_parser -r /etc/apparmor.d/bwrap
+        bwrap --unshare-all --die-with-parent --ro-bind /usr /usr --ro-bind /lib /lib \
+          --ro-bind /lib64 /lib64 --proc /proc --dev /dev /usr/bin/true

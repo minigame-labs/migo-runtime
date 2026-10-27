@@ -342,7 +342,7 @@ fn reach<S: ?Sized>(
 
 /// One row of the table below, by the shape of what its op is given.
 macro_rules! file_request_row {
-    (files $files:ident, $sandbox:ident, $device:ident, $op:ident, $args:ident,
+    (files $files:ident, $sandbox:ident, $paths:ident, $device:ident, $op:ident, $args:ident,
         $accessor:ident . $method:ident, $unsupported:literal) => {{
         let [request] = exactly(id::$op, $args)?;
         let request = string(id::$op, 0, request)?;
@@ -360,7 +360,7 @@ macro_rules! file_request_row {
                 .map_err(|error| refused(error.message))
         })
     }};
-    (ecosystem, $sandbox:ident, $device:ident, $op:ident, $args:ident,
+    (ecosystem, $sandbox:ident, $paths:ident, $device:ident, $op:ident, $args:ident,
         $accessor:ident . $method:ident, $unsupported:literal) => {{
         let [api, request] = exactly(id::$op, $args)?;
         let (api, request) = (string(id::$op, 0, api)?, string(id::$op, 1, request)?);
@@ -382,7 +382,7 @@ macro_rules! file_request_row {
                 .map_err(|error| refused(error.message))
         })
     }};
-    (menu_reply, $sandbox:ident, $device:ident, $op:ident, $args:ident,
+    (menu_reply, $sandbox:ident, $paths:ident, $device:ident, $op:ident, $args:ident,
         $accessor:ident . $method:ident, $unsupported:literal) => {{
         let [reply] = exactly(id::$op, $args)?;
         let reply = string(id::$op, 0, reply)?;
@@ -402,6 +402,28 @@ macro_rules! file_request_row {
                 .map_err(|error| refused(error.message))
         })
     }};
+    (recording, $sandbox:ident, $paths:ident, $device:ident, $op:ident, $args:ident,
+        $accessor:ident . $method:ident, $unsupported:literal) => {{
+        let [request] = exactly(id::$op, $args)?;
+        let request = string(id::$op, 0, request)?;
+        let service = reach(
+            $device.as_deref(),
+            stringify!($op),
+            $unsupported,
+            |device| device.$accessor(),
+        )?;
+        Box::pin(async move {
+            // The game's last recording, with its music resolved through the
+            // sandbox: refused, before the host is asked, without either.
+            let request =
+                migo_services::game_recorder::share_request(&$sandbox, $paths.as_deref(), &request)
+                    .await?;
+            service
+                .$method(&request)
+                .map(|()| OwnedValue::Null)
+                .map_err(|error| refused(error.message))
+        })
+    }};
 }
 
 macro_rules! file_requests {
@@ -416,13 +438,14 @@ macro_rules! file_requests {
         /// answer is the host's acceptance, or the refusal.
         pub(crate) fn request_with_files(
             sandbox: Sandbox,
+            paths: Option<Arc<shared::vfs::GamePaths>>,
             device: Option<Arc<dyn DeviceServices>>,
             op: u32,
             args: Vec<OwnedValue>,
         ) -> Result<BoxFuture<'static, Result<OwnedValue, ServiceError>>, ServiceError> {
             Ok(match op {
                 $(id::$op => file_request_row!(
-                    $form $($files)?, sandbox, device, $op, args, $accessor.$method, $unsupported
+                    $form $($files)?, sandbox, paths, device, $op, args, $accessor.$method, $unsupported
                 ),)*
                 other => return Err(not_a(other, "file request")),
             })
@@ -451,6 +474,8 @@ file_requests! {
         image_api.save_image_to_photos_album, "saveImageToPhotosAlbum:fail not supported";
     op_share_app_message(files SHARE_APP_MESSAGE) => share.share_app_message,
         "shareAppMessage:fail not supported";
+    op_share_game_recording(recording) => share.share_game_recording,
+        "operateGameRecorderVideo:fail not supported";
     op_share_menu_reply(menu_reply) => share.menu_share_reply, "share menu: not supported";
     op_share_message_to_friend(files SHARE_MESSAGE_TO_FRIEND) => share.share_message_to_friend,
         "shareMessageToFriend:fail not supported";

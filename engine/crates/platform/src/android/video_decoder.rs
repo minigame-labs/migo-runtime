@@ -59,7 +59,8 @@ struct AImageCropRect {
 }
 
 const AMEDIA_OK: i32 = 0;
-const AMEDIA_IMGREADER_NO_BUFFER_AVAILABLE: i32 = -30000;
+// AMEDIA_IMGREADER_ERROR_BASE - 1: a frame the codec rendered has not reached the reader yet.
+const AMEDIA_IMGREADER_NO_BUFFER_AVAILABLE: i32 = -30001;
 const AMEDIAEXTRACTOR_SEEK_PREVIOUS_SYNC: i32 = 0;
 const AIMAGE_FORMAT_YUV_420_888: i32 = 0x23;
 

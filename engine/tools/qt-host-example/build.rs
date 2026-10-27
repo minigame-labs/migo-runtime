@@ -11,50 +11,37 @@ use std::{
     process::Command,
 };
 
-/// The Host Kit's headers that declare QObjects, which moc reads, each with the
-/// name its source includes it by: a public header through the public include
-/// path, an internal one beside the sources.
-const MOC_HEADERS: [(&str, &str); 7] = [
-    (
-        "include/migo/linux/qt6/x11_surface_view.hpp",
-        "migo/linux/qt6/x11_surface_view.hpp",
-    ),
-    (
-        "include/migo/linux/qt6/host_services.hpp",
-        "migo/linux/qt6/host_services.hpp",
-    ),
-    (
-        "include/migo/linux/qt6/managed_session.hpp",
-        "migo/linux/qt6/managed_session.hpp",
-    ),
-    ("src/qt6/memory_monitor.hpp", "memory_monitor.hpp"),
-    ("src/qt6/geolocation.hpp", "geolocation.hpp"),
-    ("src/qt6/bluetooth.hpp", "bluetooth.hpp"),
-    ("src/qt6/beacons.hpp", "beacons.hpp"),
-];
+/// The Host Kit's files of one kind, as its CMakeLists.txt names them, in its
+/// order: the list an App builds the kit from. This host used to restate it and
+/// fell behind -- keyboard_field.cpp joined the Managed target for showKeyboard,
+/// and the lane's host stopped linking -- so it reads the list instead.
+fn kit_files(cmake: &str, extension: &str) -> Vec<String> {
+    let mut files: Vec<String> = Vec::new();
+    for line in cmake.lines() {
+        let line = line.split('#').next().unwrap_or_default();
+        for token in line.split_whitespace() {
+            let token = token.trim_matches(|c| c == '(' || c == ')' || c == '"');
+            let named = token.starts_with("src/") || token.starts_with("include/");
+            if named && token.ends_with(extension) && !files.iter().any(|file| file == token) {
+                files.push(token.to_owned());
+            }
+        }
+    }
+    assert!(
+        !files.is_empty(),
+        "the Host Kit's CMakeLists.txt names no {extension} file"
+    );
+    files
+}
 
-/// The Host Kit's sources this host links: the surface controller, the Qt view,
-/// the host services, the Managed shape and the videos (`migo::qt6-media`).
-const KIT_SOURCES: [&str; 18] = [
-    "src/surface_host.cpp",
-    "src/qt6/x11_surface_view.cpp",
-    "src/qt6/dom_key_names.cpp",
-    "src/qt6/xi2_raw_motion.cpp",
-    "src/qt6/host_services.cpp",
-    "src/qt6/backlight.cpp",
-    "src/qt6/images.cpp",
-    "src/qt6/media_viewer.cpp",
-    "src/qt6/geolocation.cpp",
-    "src/qt6/motion.cpp",
-    "src/qt6/bluetooth.cpp",
-    "src/qt6/beacons.cpp",
-    "src/qt6/managed_session.cpp",
-    "src/qt6/screen_awake.cpp",
-    "src/qt6/system_reports.cpp",
-    "src/qt6/memory_monitor.cpp",
-    "src/qt6/gamepads.cpp",
-    "src/qt6/media.cpp",
-];
+/// The name a source includes a QObject header by: a public header through the
+/// public include path, an internal one beside the sources.
+fn included_name(header: &str) -> &str {
+    header
+        .strip_prefix("include/")
+        .or_else(|| header.strip_prefix("src/qt6/"))
+        .unwrap_or_else(|| panic!("{header} is on no include path this host passes"))
+}
 
 /// What the videos link: GStreamer, its app sink and its video helpers.
 const GSTREAMER: [&str; 3] = ["gstreamer-1.0", "gstreamer-app-1.0", "gstreamer-video-1.0"];
@@ -84,6 +71,10 @@ fn main() {
     let host = repo.join("tests/qt_host/linux/main.cpp");
     let out = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
 
+    let cmake_lists = kit.join("CMakeLists.txt");
+    let cmake = std::fs::read_to_string(&cmake_lists)
+        .unwrap_or_else(|error| panic!("reading {}: {error}", cmake_lists.display()));
+    println!("cargo:rerun-if-changed={}", cmake_lists.display());
     println!("cargo:rerun-if-changed={}", kit.join("include").display());
     println!("cargo:rerun-if-changed={}", kit.join("src").display());
     println!("cargo:rerun-if-changed={}", host.display());
@@ -120,8 +111,16 @@ fn main() {
     for define in &defines {
         build.define(define, None);
     }
-    for (header, included) in MOC_HEADERS {
-        let input = kit.join(header);
+    // The headers moc reads are the ones that declare a QObject, as CMake's
+    // AUTOMOC decides for an App.
+    for header in kit_files(&cmake, ".hpp") {
+        let input = kit.join(&header);
+        let text = std::fs::read_to_string(&input)
+            .unwrap_or_else(|error| panic!("reading {}: {error}", input.display()));
+        if !text.contains("Q_OBJECT") {
+            continue;
+        }
+        let included = included_name(&header);
         let stem = input
             .file_stem()
             .expect("a header name")
@@ -146,7 +145,7 @@ fn main() {
         assert!(status.success(), "moc failed on {}", input.display());
         build.file(output);
     }
-    for source in KIT_SOURCES {
+    for source in kit_files(&cmake, ".cpp") {
         build.file(kit.join(source));
     }
     build.file(&host);

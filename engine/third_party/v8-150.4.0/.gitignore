@@ -20,3 +20,13 @@
 !/third_party/highway/src/debian/
 /third_party/highway/src/debian/*
 !/third_party/highway/src/debian/copyright
+!/third_party/icu/
+/third_party/icu/*
+!/third_party/icu/source/
+/third_party/icu/source/*
+!/third_party/icu/source/common/
+/third_party/icu/source/common/*
+!/third_party/icu/source/common/unicode/
+!/third_party/icu/source/i18n/
+/third_party/icu/source/i18n/*
+!/third_party/icu/source/i18n/unicode/
