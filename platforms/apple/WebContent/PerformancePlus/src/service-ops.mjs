@@ -308,4 +308,10 @@ export const SERVICE_OP = Object.freeze({
   op_video_seek: 298,
   op_video_request_full_screen: 299,
   op_video_exit_full_screen: 300,
+  op_create_ble_peripheral_server: 301,
+  op_ble_peripheral_add_service: 302,
+  op_ble_peripheral_remove_service: 303,
+  op_ble_peripheral_start_advertising: 304,
+  op_ble_peripheral_stop_advertising: 305,
+  op_ble_peripheral_write_characteristic_value: 306,
 });

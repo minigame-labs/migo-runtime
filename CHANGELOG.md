@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   endpoint -- answered at once, its `src` and `poster` exported through the game's sandbox as the embedded ops export
   them, and refused in their words -- and plays, pauses, stops, seeks and goes full screen as commands the host
   answers through each method's result hook. It was not offered on this lane at all.
+- `createBLEPeripheralServer` on iOS (Performance+): the device as a Bluetooth LE peripheral is the host app's, as on
+  every other platform (the ble_peripheral service). Each of the server's requests is a command the host makes the
+  embedded op's scope check and service call for, answered through the method's result hook; what centrals do
+  reaches content as the service's events.
 - `getBatteryInfo` and `getBatteryInfoSync` on a Mac laptop: the Apple SDK reports the internal battery among IOKit's
   power sources (its charge, and whether it is charging or full on the charger) and Low Power Mode from macOS 12, at
   each change. A Mac without a battery still answers "not supported".
