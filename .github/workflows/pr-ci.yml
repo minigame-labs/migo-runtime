@@ -1194,10 +1194,11 @@ jobs:
       - name: Install Android NDK + cargo-ndk
         uses: ./.github/actions/setup-android-ndk
 
+      - name: Setup bubblewrap
+        uses: ./.github/actions/setup-bubblewrap
+
       - name: Reproduce Android platform TLS helper from patched source
         run: |
-          sudo apt-get update
-          sudo apt-get install -y bubblewrap
           sdkmanager --install "platforms;android-36"
           bash scripts/test-android-tls-source-contract.sh
 
