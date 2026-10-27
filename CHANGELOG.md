@@ -890,6 +890,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- On iOS (Performance+) a call that needs a scope nobody has decided asks the player for it, as it does in process,
+  instead of failing with `auth deny`. The host checks the scope there, after the request has left, and refuses in
+  its answer rather than by a throw; the call now asks for the scope on that answer too, keeps its request pending
+  while the player is asked, and sends it again once decided. Every scope-gated host-channel call was affected:
+  Bluetooth, location, the peripheral server.
 - On iOS (Performance+), `restartMiniProgram` launches the game again: the session asks its host to start the game
   over in a new session, launched as a restart launches it -- with the options it was last shown with, its query the
   one `path` names -- and `MigoGameView` does. It did nothing: the session, whose content runs in WebKit's process,
