@@ -18,8 +18,10 @@ description: >
 # And one the tests need at run time, not build time: the Linux video
 # decoder loads GStreamer, so its tests want it present, with its base,
 # good and libav plugins -- playbin and videoconvert, the MP4 demuxer, the
-# H.264 decoder the fixture clip needs:
+# H.264 decoder the fixture clip needs -- and the game recorder's tests
+# want an H.264 encoder to record with, x264's from the ugly plugins:
 #   gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav
+#   gstreamer1.0-plugins-ugly
 
 runs:
   using: composite
@@ -40,3 +42,4 @@ runs:
           libfontconfig1-dev libfreetype-dev
           libasound2-dev strace
           gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav
+          gstreamer1.0-plugins-ugly

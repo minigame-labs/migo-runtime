@@ -306,6 +306,89 @@ mod deferred_api_tests {
     /// settle for the same `requestId`.
     ///
     /// Before the fix: correct behaviour, but `api.pendingCount()` does not exist.
+    /// A host that checks the scope itself -- the external-frame session's host
+    /// channel, whose request has left before any check -- refuses an undecided
+    /// scope in its answer, not by a throw. The call asks for the scope as it
+    /// does for a throw: its request stays pending while the player is asked
+    /// and is sent again, under the same id, once decided. It asks once: a
+    /// second refusal settles the call as the host answered, and so does any
+    /// other failure, at once.
+    ///
+    /// RED before the fix: the answer settled the call, so the refusal reached
+    /// content and the player was never asked -- every scope-gated host-channel
+    /// call on iOS failed with `auth deny` until content called authorize.
+    #[test]
+    fn a_host_s_scope_refusal_asks_for_the_scope_and_starts_the_request_again() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
+        let mut rt = boot();
+        exec(
+            &mut rt,
+            "<scope_setup>",
+            r#"
+            var REFUSAL = 'auth deny: scope.bluetooth is not granted';
+            var asked = [];
+            setScopeAsker(function (e) {
+                var m = errorMessage(e);
+                if (!/^auth deny: scope\./.test(m)) return null;
+                asked.push(m);
+                return Promise.resolve();
+            });
+            var results = [];
+            function call(api, sent) {
+                api.invoke({
+                    success: function (r) { results.push('ok ' + r.errMsg); },
+                    fail: function (r) { results.push('fail ' + r.errMsg); },
+                }, function (opts, id) { sent.push(id); });
+            }
+            var granted = createDeferredApi('openBluetoothAdapter', 30000), sentGranted = [];
+            call(granted, sentGranted);
+            granted.settle(JSON.stringify({ requestId: sentGranted[0], error: REFUSAL }));
+            "#,
+        );
+        drain(&mut rt);
+        exec(
+            &mut rt,
+            "<scope_asked>",
+            r#"
+            if (asked.length !== 1) throw new Error("asked " + asked.length + " times (expected 1)");
+            if (sentGranted.length !== 2 || sentGranted[1] !== sentGranted[0])
+                throw new Error("sent " + JSON.stringify(sentGranted) + " (expected the same id twice)");
+            if (results.length !== 0) throw new Error("settled while asked: " + JSON.stringify(results));
+            if (granted.pendingCount() !== 1) throw new Error("pending " + granted.pendingCount());
+            granted.settle(JSON.stringify({ requestId: sentGranted[0] }));
+            if (results.length !== 1 || results[0].indexOf('ok ') !== 0)
+                throw new Error("after the grant: " + JSON.stringify(results));
+
+            var denied = createDeferredApi('createBLEPeripheralServer', 30000), sentDenied = [];
+            call(denied, sentDenied);
+            denied.settle(JSON.stringify({ requestId: sentDenied[0], error: REFUSAL }));
+            "#,
+        );
+        drain(&mut rt);
+        exec(
+            &mut rt,
+            "<scope_refused_again>",
+            r#"
+            if (asked.length !== 2 || sentDenied.length !== 2)
+                throw new Error("asked " + asked.length + ", sent " + sentDenied.length);
+            denied.settle(JSON.stringify({ requestId: sentDenied[0], error: REFUSAL }));
+            if (asked.length !== 2) throw new Error("asked again: " + asked.length);
+            if (results.length !== 2 || !/^fail .*auth deny/.test(results[1]))
+                throw new Error("a second refusal: " + JSON.stringify(results));
+            if (denied.pendingCount() !== 0) throw new Error("pending " + denied.pendingCount());
+
+            var other = createDeferredApi('getLocation', 30000), sentOther = [];
+            call(other, sentOther);
+            other.settle(JSON.stringify({ requestId: sentOther[0], error: 'no fix' }));
+            if (asked.length !== 2 || sentOther.length !== 1)
+                throw new Error("another failure asked: " + asked.length + ", sent " + sentOther.length);
+            if (results.length !== 3 || results[2].indexOf('fail ') !== 0)
+                throw new Error("another failure: " + JSON.stringify(results));
+            "#,
+        );
+    }
+
     #[test]
     fn normal_completion_settles_once() {
         let v8_executor = crate::tests::support::v8_test_executor();

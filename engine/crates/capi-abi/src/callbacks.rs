@@ -31,6 +31,8 @@ pub type MigoOnKeepScreenOnFn = unsafe extern "C" fn(*mut c_void, *mut c_void, u
 pub type MigoOnGameLogFn = unsafe extern "C" fn(*mut c_void, *mut c_void, *const c_char, u32);
 pub type MigoOnGamepadRumbleFn =
     unsafe extern "C" fn(*mut c_void, *mut c_void, *const MigoGamepadRumble);
+pub type MigoOnRestartRequestedFn =
+    unsafe extern "C" fn(*mut c_void, *mut c_void, *const c_char, u32);
 
 pub const MIGO_VIBRATION_SHORT_LIGHT: u32 = 0;
 pub const MIGO_VIBRATION_SHORT_MEDIUM: u32 = 1;
@@ -105,6 +107,9 @@ pub struct MigoHostCallbacks {
     pub host_services: u64,
     /// Appended: the motors of the gamepads the host announces with haptics.
     pub on_gamepad_rumble: Option<MigoOnGamepadRumbleFn>,
+    /// Appended: a restart an external-frame session cannot make in place, which
+    /// the host makes by starting the game again in a new session.
+    pub on_restart_requested: Option<MigoOnRestartRequestedFn>,
 }
 
 // SAFETY: the record consists only of integers, raw pointers and nullable C
@@ -153,6 +158,7 @@ pub struct ValidatedHostCallbacks {
     /// Zero exactly when `on_host_service_call` is absent.
     pub host_services: u64,
     pub on_gamepad_rumble: Option<MigoOnGamepadRumbleFn>,
+    pub on_restart_requested: Option<MigoOnRestartRequestedFn>,
 }
 
 // SAFETY: both pointers are opaque host tokens. Migo never dereferences them;
@@ -207,6 +213,7 @@ impl MigoHostCallbacks {
             on_host_service_call: None,
             host_services: 0,
             on_gamepad_rumble: None,
+            on_restart_requested: None,
         }
     }
 
@@ -261,7 +268,8 @@ impl MigoHostCallbacks {
             || self.on_keep_screen_on.is_some()
             || self.on_game_log.is_some()
             || self.on_host_service_call.is_some()
-            || self.on_gamepad_rumble.is_some();
+            || self.on_gamepad_rumble.is_some()
+            || self.on_restart_requested.is_some();
         let Some(dispatch) = self.dispatch else {
             return if has_callback {
                 Err(MIGO_ERROR_INVALID_ARGUMENT)
@@ -289,6 +297,7 @@ impl MigoHostCallbacks {
             on_host_service_call: self.on_host_service_call,
             host_services: self.host_services,
             on_gamepad_rumble: self.on_gamepad_rumble,
+            on_restart_requested: self.on_restart_requested,
         }))
     }
 }
@@ -309,7 +318,7 @@ const _: () = assert!(size_of::<MigoKeyboardShowOptions>() == 40);
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(offset_of!(MigoKeyboardShowOptions, default_value_utf8) == 24);
 #[cfg(target_pointer_width = "64")]
-const _: () = assert!(size_of::<MigoHostCallbacks>() == 152);
+const _: () = assert!(size_of::<MigoHostCallbacks>() == 160);
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(offset_of!(MigoHostCallbacks, dispatch) == 24);
 #[cfg(target_pointer_width = "64")]
@@ -326,6 +335,8 @@ const _: () = assert!(offset_of!(MigoHostCallbacks, on_host_service_call) == 128
 const _: () = assert!(offset_of!(MigoHostCallbacks, host_services) == 136);
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(offset_of!(MigoHostCallbacks, on_gamepad_rumble) == 144);
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(offset_of!(MigoHostCallbacks, on_restart_requested) == 152);
 
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(size_of::<MigoError>() == 28);
@@ -334,18 +345,11 @@ const _: () = assert!(size_of::<MigoKeyboardShowOptions>() == 36);
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(offset_of!(MigoKeyboardShowOptions, default_value_utf8) == 24);
 // 8 bytes of header, fifteen 4-byte pointers, then the u64 service set at 72,
-// which is 8-aligned whatever the target's u64 alignment, then one more pointer
-// at 80. The record ends at 84, rounded up to the u64's alignment: 88 where a
-// u64 is 8-aligned in a struct (ARM, x86 Windows), 84 where it is 4 (x86 SysV).
+// which is 8-aligned whatever the target's u64 alignment, then two more pointers
+// at 80 and 84. The record ends at 88, which is 8-aligned too, so it is 88 where
+// a u64 is 8-aligned in a struct (ARM, x86 Windows) and where it is 4 (x86 SysV).
 #[cfg(target_pointer_width = "32")]
-const _: () = assert!(
-    size_of::<MigoHostCallbacks>()
-        == if std::mem::align_of::<u64>() == 8 {
-            88
-        } else {
-            84
-        }
-);
+const _: () = assert!(size_of::<MigoHostCallbacks>() == 88);
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(offset_of!(MigoHostCallbacks, dispatch) == 16);
 #[cfg(target_pointer_width = "32")]
@@ -362,3 +366,5 @@ const _: () = assert!(offset_of!(MigoHostCallbacks, on_host_service_call) == 68)
 const _: () = assert!(offset_of!(MigoHostCallbacks, host_services) == 72);
 #[cfg(target_pointer_width = "32")]
 const _: () = assert!(offset_of!(MigoHostCallbacks, on_gamepad_rumble) == 80);
+#[cfg(target_pointer_width = "32")]
+const _: () = assert!(offset_of!(MigoHostCallbacks, on_restart_requested) == 84);

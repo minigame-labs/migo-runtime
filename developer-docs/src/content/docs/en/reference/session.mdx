@@ -134,6 +134,7 @@ typedef struct MigoHostCallbacks {
     MigoOnHostServiceCallFn on_host_service_call;  /* optional: the host-service channel, with the next */
     uint64_t                host_services;         /* the services the host supplies, one bit each */
     MigoOnGamepadRumbleFn   on_gamepad_rumble;     /* gamepad motors; required by pads with haptics */
+    MigoOnRestartRequestedFn on_restart_requested; /* optional: an external-frame session's restart */
 } MigoHostCallbacks;
 ```
 
@@ -161,6 +162,7 @@ Fields:
 | `on_host_service_call` | `MigoOnHostServiceCallFn` | both or neither with `host_services` | Content's requests of the host's services (ads, payment, sign-in, sharing, navigation); see [Host-service channel](#host-service-channel) |
 | `host_services` | `uint64_t` | as above | The services the host supplies, one bit per `MIGO_HOST_SERVICE_*`; a bit this header does not define returns `MIGO_ERROR_INVALID_ARGUMENT` |
 | `on_gamepad_rumble` | `MigoOnGamepadRumbleFn` | when any pad is announced with haptics | Set a gamepad's motors for its `vibrationActuator`; see [Gamepad motors](#gamepad-motors) |
+| `on_restart_requested` | `MigoOnRestartRequestedFn` | — | Content's `restartMiniProgram` in a session whose content runs outside the engine: start the game again in a new session with the launch options it carries |
 
 ### MigoDispatchFn
 
@@ -295,6 +297,15 @@ device without that hardware. Like every callback they arrive through
 - `on_game_log`: one entry from content's game log, a JSON object (`level`,
   `key`, `value`, `commonInfo`), length-delimited UTF-8 borrowed for the call.
   It stays JSON because `value` is whatever content logged.
+- `on_restart_requested`: content called `restartMiniProgram` in a session whose
+  content runs outside the engine (an external-frame session), which cannot
+  replace that content in place. The host starts the game again in a new
+  session created with the JSON it carries as
+  `MigoSessionConfig.launch_options_json_utf8`: the options the game was last
+  shown with, with the query the restart's `path` names. Length-delimited
+  UTF-8, borrowed for the call. A session whose content runs in the engine
+  restarts in place and never calls it; with none installed, such content's
+  restart does nothing.
 
 ### Gamepad motors
 
