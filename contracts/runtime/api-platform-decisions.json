@@ -51,6 +51,8 @@
       "getDirectAdStatusSync": "createRewardedVideoAd",
       "getShowSplashAdStatus": "createRewardedVideoAd",
       "isPointerLocked": "requestPointerLock",
+      "offOfficialComponentsInfoChange": "getOfficialComponentsInfo",
+      "onOfficialComponentsInfoChange": "getOfficialComponentsInfo",
       "preDownloadSubpackage": "loadSubpackage",
       "setMessageToFriendQuery": "shareMessageToFriend"
   },
