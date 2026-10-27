@@ -221,12 +221,21 @@ class NativeButton {
 
     // Whether the window point (x, y) is on the shown button.
     _contains(x, y) {
-        if (!this.#visible || this.#destroyed) return false;
-        const style = this.#style;
-        const left = Number(style.left);
-        const top = Number(style.top);
-        return x >= left && x < left + Number(style.width) &&
-            y >= top && y < top + Number(style.height);
+        const bounds = this._paintBounds();
+        return bounds !== null && x >= bounds.left && x < bounds.left + bounds.width &&
+            y >= bounds.top && y < bounds.top + bounds.height;
+    }
+
+    // The button's size in the window's CSS pixels: its style's, unless its
+    // kind lays itself out.
+    _size() {
+        return [_number(this.#style.width, 0), _number(this.#style.height, 0)];
+    }
+
+    // The picture `image` names, once it has loaded; null before.
+    _loadedPicture() {
+        const picture = this.#picture;
+        return picture !== null && picture.complete && picture.width > 0 ? picture : null;
     }
 
     // A press that began on the button; `_pressEnded` when it lifts or is
@@ -253,8 +262,7 @@ class NativeButton {
     _paintBounds() {
         if (!this.#visible || this.#destroyed) return null;
         const style = this.#style;
-        const width = _number(style.width, 0);
-        const height = _number(style.height, 0);
+        const [width, height] = this._size();
         if (!(width > 0 && height > 0)) return null;
         return { left: _number(style.left, 0), top: _number(style.top, 0), width: width, height: height };
     }
@@ -466,6 +474,7 @@ function getMenuButtonBoundingClientRect() {
 }
 
 export {
+    NativeButton,
     createUserInfoButton,
     createOpenSettingButton,
     createGameClubButton,

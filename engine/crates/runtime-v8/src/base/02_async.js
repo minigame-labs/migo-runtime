@@ -439,12 +439,14 @@ function createDeferredApi(apiName, defaultTimeoutMs) {
             _deferredPendingCount++;
 
             // The request failed before the host saw it: whatever the executor
-            // threw, or the rejection of the Promise it returned.
+            // threw, or the rejection of the Promise it returned -- with the
+            // API's code when the error names one.
             function failStart(e) {
                 var entry = removePending(requestId);
                 if (!entry) return;
                 clearTimeout(entry._timer);
                 var res = { errMsg: failMessage(apiName, e) };
+                if (e !== null && typeof e === 'object' && typeof e.errCode === 'number') res.errCode = e.errCode;
                 invokeCallback(apiName, 'fail', entry.fail, res);
                 invokeCallback(apiName, 'complete', entry.complete, res);
                 entry.reject(res);

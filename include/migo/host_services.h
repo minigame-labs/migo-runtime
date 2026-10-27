@@ -124,6 +124,18 @@ typedef uint32_t MigoHostService;
  *                            options.
  *   SHOW_SHARE_IMAGE_MENU {"path", "needShowEntrance", "entrancePath"?} -- the
  *                          share sheet for one image.
+ *   SHARE_GAME_RECORDING {"video", "title"?, "desc"?, "query"?, "path"?, "bgm"?,
+ *                         "timeRange"?, "volume", "atempo", "audioMix"} -- the
+ *                         game's last finished recording (getGameRecorder), for
+ *                         its share button or operateGameRecorderVideo. video is
+ *                         the engine's own file, readable for the rest of the
+ *                         session; bgm a real path resolved through the
+ *                         sandbox; timeRange [[from, to], ...] in ms of the
+ *                         recording, to be cut to, at most 60 s in all; volume
+ *                         0 to 1; atempo one of 0.3, 0.5, 1, 1.5, 2, 2.5, 3;
+ *                         audioMix whether bgm mixes with the recording's own
+ *                         sound. The editing is the host's. The result may carry
+ *                         "shareToGameCenter" {"errCode", "errMsg"}.
  *
  * The share menu is the host's, and two commands keep it in step with content:
  *
@@ -148,6 +160,7 @@ typedef uint32_t MigoHostService;
 #define MIGO_SHARE_SHOW_SHARE_IMAGE_MENU 2U
 #define MIGO_SHARE_SET_SHARE_MENU 3U
 #define MIGO_SHARE_MENU_SHARE_REPLY 4U
+#define MIGO_SHARE_SHARE_GAME_RECORDING 5U
 #define MIGO_SHARE_EVENT_MENU_SHARE 0U
 
 /* Navigation: one call and two commands. */

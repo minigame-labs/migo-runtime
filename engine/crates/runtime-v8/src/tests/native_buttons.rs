@@ -76,7 +76,7 @@ impl SystemUtilServices for Host {
 
 /// `__touch(type, id, x, y, flags)` posts one raw touch the way a host does:
 /// type 0 start, 1 move, 2 end; flags 1 changed, 2 lifted.
-const TOUCH: &str = r#"
+pub(super) const TOUCH: &str = r#"
     globalThis.__touch = function (type, id, x, y, flags) {
         const buffer = new ArrayBuffer(20);
         const view = new DataView(buffer);

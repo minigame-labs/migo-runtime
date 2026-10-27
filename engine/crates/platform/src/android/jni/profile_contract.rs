@@ -156,6 +156,7 @@ const NATIVE_COMMERCE: &[JniMethod] = methods![
     ("onShareAppMessageResult", "(ILjava/lang/String;)V"),
     ("onShareMessageToFriendResult", "(ILjava/lang/String;)V"),
     ("onShowShareImageMenuResult", "(ILjava/lang/String;)V"),
+    ("onShareGameRecordingResult", "(ILjava/lang/String;)V"),
     ("onShareMenuEvent", "(ILjava/lang/String;)V"),
     ("onAdEvent", "(ILjava/lang/String;)V"),
     ("onMidasPaymentResult", "(ILjava/lang/String;)V"),
@@ -329,6 +330,7 @@ const JAVA_COMMERCE: &[JniMethod] = methods![
     ("shareAppMessage", "(ILjava/lang/String;)V"),
     ("shareMessageToFriend", "(ILjava/lang/String;)V"),
     ("showShareImageMenu", "(ILjava/lang/String;)V"),
+    ("shareGameRecording", "(ILjava/lang/String;)V"),
     ("shareMenuChanged", "(ILjava/lang/String;)V"),
     ("shareMenuReply", "(ILjava/lang/String;)V"),
     (
@@ -497,7 +499,9 @@ mod tests {
         // by method number). Video calls answered the same way add +1 native
         // (`onVideoResult`). This device as a BLE peripheral adds +2 native,
         // Connectivity (`onBlePeripheralResult`, `onBlePeripheralEvent`).
-        assert_eq!(native.len(), 91, "full NativeBridge surface changed");
+        // Sharing the game's recording adds +1 native, Commerce
+        // (`onShareGameRecordingResult`).
+        assert_eq!(native.len(), 92, "full NativeBridge surface changed");
         // Runtime-generation fencing adds +2 Java (`beginRuntimeRestart`,
         // `completeRuntimeRestart`), both Core: every profile restarts.
         // Concurrent-session correctness removes -1 Java (`getCacheDirPath`,
@@ -522,8 +526,9 @@ mod tests {
         // Media: what the option leaves the platform is nothing Android does.
         // A camera's properties content may set add +1 Java, Media
         // (`cameraSet`). This device as a BLE peripheral adds +6 Java,
-        // Connectivity (`blePeripheral*`, one per request).
-        assert_eq!(java.len(), 153, "full NativeExports surface changed");
+        // Connectivity (`blePeripheral*`, one per request). Sharing the game's
+        // recording adds +1 Java, Commerce (`shareGameRecording`).
+        assert_eq!(java.len(), 154, "full NativeExports surface changed");
         assert_unique(&native);
         assert_unique(&java);
     }
