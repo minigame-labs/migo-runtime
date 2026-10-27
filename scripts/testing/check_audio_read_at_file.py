@@ -47,7 +47,7 @@ def main(work,target):
                 .is_none_or(|end| end > self.stamp.len)''','offset.wrapping_add(len as u64)>self.stamp.len',bounds),
         ('third-media-slot-allocated','state.allocated < 2','state.allocated < 3',bounds),
         ('media-buffer-not-recycled','slot.take().unwrap()','{drop(slot.take());vec![0;FILE_CHUNK_BYTES]}','recycled_media_reads_have_no_steady_rust_heap_allocation'),
-        ('absolute-offset-truncated-u32','self.file.read_exact_at(buffer, offset)?;','self.file.read_exact_at(buffer, u64::from(offset as u32))?;','large_sparse_offsets_are_u64_and_do_not_read_the_prefix'),
+        ('absolute-offset-truncated-u32','read_exact_at(&self.file, buffer, offset)?;','read_exact_at(&self.file, buffer, u64::from(offset as u32))?;','large_sparse_offsets_are_u64_and_do_not_read_the_prefix'),
     ]
     declarations.append(('media-storage-rezeroed','            *slot = Some(std::mem::take(&mut self.data));','            self.data.fill(0);\n            *slot = Some(std::mem::take(&mut self.data));','short_chunks_hide_retained_bytes_without_rezeroing_storage'))
     original=path.read_text()

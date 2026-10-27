@@ -6,40 +6,10 @@
 //! mutation; they do not turn a writable inode into an immutable snapshot.
 //! Streaming callers must use immutable code assets or a private spool file.
 use parking_lot::Mutex;
-use std::{
-    fs::{File, Metadata},
-    io,
-    sync::Arc,
-    time::SystemTime,
-};
+use shared::vfs::file_io::{FileStamp as Stamp, read_exact_at};
+use std::{fs::File, io, sync::Arc};
 
 pub const FILE_CHUNK_BYTES: usize = 64 * 1024;
-#[derive(PartialEq, Eq)]
-struct Stamp {
-    len: u64,
-    modified: SystemTime,
-    #[cfg(unix)]
-    unix: (u64, u64),
-}
-impl Stamp {
-    fn of(meta: Metadata) -> io::Result<Self> {
-        if !meta.is_file() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "source is not a regular file",
-            ));
-        }
-        Ok(Self {
-            len: meta.len(),
-            modified: meta.modified()?,
-            #[cfg(unix)]
-            unix: {
-                use std::os::unix::fs::MetadataExt;
-                (meta.dev(), meta.ino())
-            },
-        })
-    }
-}
 struct BufferState {
     slots: [Option<Vec<u8>>; 2],
     allocated: usize,
@@ -134,29 +104,7 @@ impl ReadAtFile {
             self.reads
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::FileExt;
-            self.file.read_exact_at(buffer, offset)?;
-        }
-        #[cfg(windows)]
-        {
-            use std::os::windows::fs::FileExt;
-            let mut at = 0;
-            while at < buffer.len() {
-                match self.file.seek_read(&mut buffer[at..], offset + at as u64) {
-                    Ok(0) => {
-                        return Err(io::Error::new(
-                            io::ErrorKind::UnexpectedEof,
-                            "short pinned file read",
-                        ));
-                    }
-                    Ok(n) => at += n,
-                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
-                    Err(e) => return Err(e),
-                }
-            }
-        }
+        read_exact_at(&self.file, buffer, offset)?;
         #[cfg(test)]
         if let Some(hook) = self.after_read.lock().take() {
             hook();

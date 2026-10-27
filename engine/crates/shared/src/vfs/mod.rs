@@ -46,6 +46,7 @@
 //! let real = vfs.resolve("/user/save.json", FileOp::Write)?;
 //! ```
 
+pub mod file_io;
 pub mod game_paths;
 #[cfg(feature = "code-signing")]
 pub mod integrity;

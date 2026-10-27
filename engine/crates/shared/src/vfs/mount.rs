@@ -43,6 +43,18 @@ use parking_lot::{Mutex, RwLock};
 /// All paths passed to methods are **relative** (no leading `/`), e.g.
 /// `"lib/utils.js"` or `"subpackages/stage1/game.js"`.
 pub trait MountBackend: Send + Sync + fmt::Debug {
+    /// Open bounded package scratch on the Pack executor. There is deliberately
+    /// no default whole-file read/slice fallback for streaming callers.
+    fn open_package_entry(
+        &self,
+        _relative_path: &str,
+        _limits: super::package::PackageReadLimits,
+    ) -> io::Result<super::package::PackageEntryReader> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "backend has no bounded package reader",
+        ))
+    }
     /// Read entire file contents.
     fn read(&self, relative_path: &str) -> io::Result<Vec<u8>>;
 
@@ -386,6 +398,13 @@ pub struct PinnedPackRead {
 }
 
 impl PinnedPackRead {
+    /// Keeps the backend selected at admission, even after a mount replacement.
+    pub fn open_reader(
+        &self,
+        limits: super::package::PackageReadLimits,
+    ) -> io::Result<super::package::PackageEntryReader> {
+        self.backend.open_package_entry(&self.relative, limits)
+    }
     pub fn entry_size(&self) -> Option<u64> {
         self.backend.entry_size(&self.relative)
     }
