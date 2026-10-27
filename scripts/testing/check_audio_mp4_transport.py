@@ -53,7 +53,7 @@ def controls(work,env):
         print('actual M4A DSP mutation',name,': executable assertion rejected',flush=True)
     return len(declarations)
 
-def main(work,target,rubato_home,positive_only):
+def prepare(work,target,rubato_home):
     env,frozen,_,libraries=source.prepare(work,target)
     package=work/'probe';manifest=(package/'Cargo.toml').read_text()
     manifest=manifest.replace('\n[dependencies]\n','\n[dependencies]\nrubato={version="=5.0.1",default-features=false}\n',1)
@@ -103,6 +103,11 @@ def main(work,target,rubato_home,positive_only):
     # full Root cohort before adding codecs/DSP so unused existing pins are not
     # silently discarded and upgraded on this second resolution.
     (package/'Cargo.lock').write_bytes((ROOT/'engine/Cargo.lock').read_bytes())
+    return env,frozen,retained,libraries,new
+
+def main(work,target,rubato_home,positive_only):
+    env,frozen,retained,libraries,new=prepare(work,target,rubato_home)
+    package=work/'probe'
     codecs.run(['cargo','metadata','--offline','--format-version','1'],work/'candidate-metadata.jsonl',cwd=package,env=env)
     selected=json.loads(next(line for line in (work/'candidate-metadata.jsonl').read_text().splitlines() if line.startswith('{"packages"')))['packages']
     locked={}

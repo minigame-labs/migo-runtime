@@ -56,7 +56,7 @@ async fn produce<const B: bool>(
 ) {
     produce_from::<B, IndexedHttp>(url, target, tx, state, steps).await;
 }
-async fn produce_from<const B: bool, S: transport::Source<Observed<B>> + 'static>(
+async fn produce_from<const B: bool, S: transport::HttpSource<Observed<B>> + 'static>(
     url: String,
     target: u32,
     tx: mpsc::Sender<StreamMsg>,
@@ -109,7 +109,7 @@ struct Received {
 async fn receive<const B: bool>(server: &Server, target: u32) -> Received {
     receive_from::<B, IndexedHttp>(server, target).await
 }
-async fn receive_from<const B: bool, S: transport::Source<Observed<B>> + 'static>(
+async fn receive_from<const B: bool, S: transport::HttpSource<Observed<B>> + 'static>(
     server: &Server,
     target: u32,
 ) -> Received {
@@ -408,9 +408,6 @@ async fn four_slot_backpressure_stops_m4a_cpu_and_network_until_cancelled() {
 }
 
 async fn play<const B: bool>(name: &str, target: u32, pause: bool, long: bool) {
-    use crate::inner_audio::InnerAudioPlayer;
-    use crate::inner_audio::PlaybackState;
-    use shared::protocol::audio_cmd::InnerAudioEventType;
     let data = fixture(name);
     let (expected, channels) = if long {
         (Vec::new(), 1)
@@ -433,11 +430,44 @@ async fn play<const B: bool>(name: &str, target: u32, pause: bool, long: bool) {
         state.clone(),
         steps.clone(),
     ));
+    consume_player::<B>(
+        name,
+        server.url.as_str().to_owned(),
+        target,
+        pause,
+        long,
+        expected,
+        channels,
+        frames,
+        state,
+        steps,
+        task,
+        rx,
+    )
+    .await;
+}
+
+async fn consume_player<const B: bool>(
+    name: &str,
+    source_name: String,
+    target: u32,
+    pause: bool,
+    long: bool,
+    expected: Vec<f32>,
+    channels: u32,
+    frames: usize,
+    state: Arc<StreamingState>,
+    steps: Arc<AtomicUsize>,
+    task: tokio::task::JoinHandle<()>,
+    rx: mpsc::Receiver<StreamMsg>,
+) {
+    use crate::inner_audio::{InnerAudioPlayer, PlaybackState};
+    use shared::protocol::audio_cmd::InnerAudioEventType;
     let mut player = InnerAudioPlayer::new(1, channels);
     let shared = player.shared.clone();
     shared.set_autoplay(true);
     player
-        .start_streaming(server.url.as_str().to_owned(), rx, state.clone())
+        .start_streaming(source_name, rx, state.clone())
         .unwrap();
     let mut output = vec![0.0; 512 * channels as usize];
     let (mut rendered, mut ended, mut canplay, mut pauses) = (0, 0, 0, 0);
@@ -671,20 +701,6 @@ struct CoalescedFixture {
 }
 impl<D: Decoder + M4aSourceDecoder> transport::Source<D> for CoalescedFixture {
     type Request = M4aSourceRequest;
-    fn request(
-        request: crate::network::http::RequestBuilder,
-    ) -> crate::network::http::RequestBuilder {
-        <IndexedHttp as transport::Source<D>>::request(request)
-    }
-    fn new(
-        client: crate::network::http::HttpClient,
-        response: crate::network::http::Response,
-    ) -> EngineResult<Self> {
-        Ok(Self {
-            inner: <IndexedHttp as transport::Source<D>>::new(client, response)?,
-            first: true,
-        })
-    }
     fn pending(decoder: &D) -> EngineResult<Self::Request> {
         <IndexedHttp as transport::Source<D>>::pending(decoder)
     }
@@ -754,3 +770,24 @@ async fn coalesced_input_preserves_index_suffix_and_replaces_repositioned_suffix
         );
     }
 }
+
+impl<D: Decoder + M4aSourceDecoder> transport::HttpSource<D> for CoalescedFixture {
+    fn request(
+        request: crate::network::http::RequestBuilder,
+    ) -> crate::network::http::RequestBuilder {
+        <IndexedHttp as transport::HttpSource<D>>::request(request)
+    }
+    fn new(
+        client: crate::network::http::HttpClient,
+        response: crate::network::http::Response,
+    ) -> EngineResult<Self> {
+        Ok(Self {
+            inner: <IndexedHttp as transport::HttpSource<D>>::new(client, response)?,
+            first: true,
+        })
+    }
+}
+
+#[cfg(feature = "m4a-file-probe")]
+#[path = "isomp4_file_contracts.rs"]
+mod local;

@@ -32,6 +32,7 @@ pub mod mmap_reader;
 pub mod package_ingest;
 pub mod polling;
 pub mod pools;
+pub mod read_at_file;
 pub mod scheduler;
 pub mod storage_ops;
 pub mod task;

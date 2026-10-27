@@ -5,7 +5,7 @@ use crate::{
     off_worker::OffWorker,
     push_decoder::{M4aSourceDecoder, M4aSourceRequest},
     streaming::{HttpClient, RESPONSE_HEADER_TIMEOUT, StreamMsg, StreamingState},
-    streaming_transport::{Decoder, Source, SourceRead, SourceResume},
+    streaming_transport::{Decoder, HttpSource, Source, SourceRead, SourceResume},
 };
 use bytes::Bytes;
 use http::{HeaderValue, header::ACCEPT_ENCODING};
@@ -30,24 +30,6 @@ fn error(cause: impl std::fmt::Display) -> EngineError {
 }
 impl<D: Decoder + M4aSourceDecoder> Source<D> for IndexedHttp {
     type Request = M4aSourceRequest;
-    fn request(request: RequestBuilder) -> RequestBuilder {
-        request.header(ACCEPT_ENCODING, HeaderValue::from_static("identity"))
-    }
-    fn new(client: HttpClient, response: Response) -> EngineResult<Self> {
-        if response.status() != http::StatusCode::OK {
-            return Err(error("indexed source requires a complete initial response"));
-        }
-        let mut limits = Limits::default();
-        limits.index.object_len = response.content_length();
-        Ok(Self {
-            client,
-            identity: Some(range::Identity::capture(&response)),
-            initial: Some(response),
-            source: None,
-            pending: None,
-            limits,
-        })
-    }
     fn pending(decoder: &D) -> EngineResult<Self::Request> {
         decoder
             .source_request()
@@ -139,5 +121,26 @@ impl<D: Decoder + M4aSourceDecoder> Source<D> for IndexedHttp {
                 }))
             }
         }
+    }
+}
+
+impl<D: Decoder + M4aSourceDecoder> HttpSource<D> for IndexedHttp {
+    fn request(request: RequestBuilder) -> RequestBuilder {
+        request.header(ACCEPT_ENCODING, HeaderValue::from_static("identity"))
+    }
+    fn new(client: HttpClient, response: Response) -> EngineResult<Self> {
+        if response.status() != http::StatusCode::OK {
+            return Err(error("indexed source requires a complete initial response"));
+        }
+        let mut limits = Limits::default();
+        limits.index.object_len = response.content_length();
+        Ok(Self {
+            client,
+            identity: Some(range::Identity::capture(&response)),
+            initial: Some(response),
+            source: None,
+            pending: None,
+            limits,
+        })
     }
 }

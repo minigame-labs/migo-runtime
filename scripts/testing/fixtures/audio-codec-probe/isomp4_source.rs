@@ -50,6 +50,7 @@ pub enum Error {
     UnknownLength,
     Format(String),
     Cpu(shared::error::EngineError),
+    Io(shared::error::EngineError),
 }
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -84,15 +85,17 @@ enum ReaderOwner {
     Media(range::OwnedStream),
     Failed,
 }
-struct SourceReader {
+pub struct HttpReader {
     owner: ReaderOwner,
+    media_limits: range::StreamLimits,
     completed_media_requests: u64,
     completed_media_bytes: u64,
 }
-impl SourceReader {
-    fn new(reader: range::Reader) -> Self {
+impl HttpReader {
+    fn new(reader: range::Reader, media_limits: range::StreamLimits) -> Self {
         Self {
             owner: ReaderOwner::Control(reader),
+            media_limits,
             completed_media_requests: 0,
             completed_media_bytes: 0,
         }
@@ -175,36 +178,102 @@ impl SourceReader {
     }
 }
 
-pub struct Repositioned<D: M4aSourceDecoder = M4aDecoder> {
+/// Static source boundary shared by HTTP and local positional readers.
+pub trait Reader: Send {
+    type Chunk: AsRef<[u8]> + Send + 'static;
+    fn length(&self) -> Option<u64>;
+    fn requests(&self) -> u32;
+    fn bytes_received(&self) -> u64;
+    fn media_requests(&self) -> u64;
+    fn media_bytes(&self) -> u64;
+    fn suspend(&mut self);
+    fn read_exact_at(
+        &mut self,
+        offset: u64,
+        len: usize,
+        deadline: Instant,
+    ) -> impl std::future::Future<Output = Result<Vec<u8>, Error>> + Send;
+    fn start(&mut self, offset: u64, len: u64) -> Result<(), Error>;
+    fn chunk(
+        &mut self,
+    ) -> impl std::future::Future<Output = Result<Option<Self::Chunk>, Error>> + Send;
+}
+impl Reader for HttpReader {
+    type Chunk = Bytes;
+    fn length(&self) -> Option<u64> {
+        HttpReader::length(self)
+    }
+    fn requests(&self) -> u32 {
+        HttpReader::requests(self)
+    }
+    fn bytes_received(&self) -> u64 {
+        HttpReader::bytes_received(self)
+    }
+    fn media_requests(&self) -> u64 {
+        HttpReader::media_requests(self)
+    }
+    fn media_bytes(&self) -> u64 {
+        HttpReader::media_bytes(self)
+    }
+    fn suspend(&mut self) {
+        HttpReader::suspend(self)
+    }
+    async fn read_exact_at(
+        &mut self,
+        offset: u64,
+        len: usize,
+        deadline: Instant,
+    ) -> Result<Vec<u8>, Error> {
+        HttpReader::read_exact_at(self, offset, len, deadline)
+            .await
+            .map_err(Error::Range)
+    }
+    fn start(&mut self, offset: u64, len: u64) -> Result<(), Error> {
+        HttpReader::start(self, offset, len, self.media_limits).map_err(Error::Range)
+    }
+    async fn chunk(&mut self) -> Result<Option<Bytes>, Error> {
+        HttpReader::chunk(self).await.map_err(Error::Range)
+    }
+}
+
+pub struct Repositioned<D: M4aSourceDecoder = M4aDecoder, C = Bytes> {
     pub decoder: OffWorker<D>,
-    pub first: Bytes,
+    pub first: C,
     #[cfg(test)]
     pub resume_thread: std::thread::ThreadId,
 }
-pub enum MediaRead {
-    Data(Bytes),
+pub enum MediaRead<C = Bytes> {
+    Data(C),
     End,
     Cancelled,
 }
 
-pub struct IndexSource {
-    reader: SourceReader,
+pub struct IndexSource<R: Reader = HttpReader> {
+    reader: R,
     limits: Limits,
     media_spans: Vec<AtomSpan>,
     scan_position: u64,
     discovery_atoms: u32,
     resumes: u32,
 }
-impl IndexSource {
+impl IndexSource<HttpReader> {
     pub fn new(reader: range::Reader, limits: Limits) -> Self {
+        Self::with_reader(HttpReader::new(reader, limits.media), limits)
+    }
+}
+impl<R: Reader> IndexSource<R> {
+    pub fn with_reader(reader: R, limits: Limits) -> Self {
         Self {
-            reader: SourceReader::new(reader),
+            reader,
             limits,
             media_spans: Vec::new(),
             scan_position: 0,
             discovery_atoms: 0,
             resumes: 0,
         }
+    }
+    pub fn length(&self) -> Option<u64> {
+        self.reader.length()
     }
     pub fn requests(&self) -> u32 {
         self.reader.requests()
@@ -223,7 +292,7 @@ impl IndexSource {
     ) -> Result<Option<Vec<u8>>, Error> {
         let result =
             while_active(tx, state, self.reader.read_exact_at(offset, len, deadline)).await;
-        result.transpose().map_err(Error::Range)
+        result.transpose()
     }
 
     /// None means cancellation or receiver exit; the decoder is then dropped.
@@ -451,7 +520,7 @@ impl IndexSource {
         tx: &mpsc::Sender<StreamMsg>,
         state: &Arc<StreamingState>,
         deadline: Instant,
-    ) -> Result<Option<Repositioned<D>>, Error> {
+    ) -> Result<Option<Repositioned<D, R::Chunk>>, Error> {
         self.resumes = self
             .resumes
             .checked_add(1)
@@ -468,16 +537,13 @@ impl IndexSource {
             .checked_sub(packet.offset)
             .filter(|n| *n > 0)
             .ok_or(Error::Invalid("packet outside pinned object"))?;
-        self.reader
-            .start(packet.offset, len, self.limits.media)
-            .map_err(Error::Range)?;
+        self.reader.start(packet.offset, len)?;
         let first_read = tokio::time::timeout_at(deadline, self.reader.chunk());
         let Some(first) = while_active(tx, state, first_read).await else {
             return Ok(None);
         };
         let first = first
-            .map_err(|_| Error::Range(range::Error::Timeout))?
-            .map_err(Error::Range)?
+            .map_err(|_| Error::Range(range::Error::Timeout))??
             .ok_or(Error::Invalid("empty reposition response"))?;
         let active = state.clone();
         #[cfg(test)]
@@ -530,10 +596,10 @@ impl IndexSource {
         &mut self,
         tx: &mpsc::Sender<StreamMsg>,
         state: &Arc<StreamingState>,
-    ) -> Result<MediaRead, Error> {
+    ) -> Result<MediaRead<R::Chunk>, Error> {
         match while_active(tx, state, self.reader.chunk()).await {
             None => Ok(MediaRead::Cancelled),
-            Some(Err(error)) => Err(Error::Range(error)),
+            Some(Err(error)) => Err(error),
             Some(Ok(Some(bytes))) => Ok(MediaRead::Data(bytes)),
             Some(Ok(None)) => Ok(MediaRead::End),
         }

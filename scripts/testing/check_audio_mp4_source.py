@@ -243,7 +243,7 @@ symphonia-format-isomp4={version="=0.6.1",features=["streaming"]}
     manifest=manifest.replace('\n[dev-dependencies]\n','\n[dev-dependencies]\n'+dev,1)
     manifest=manifest.replace('\n[features]\n','\n[features]\ndefault=["m4a-streaming-probe","metadata-budgets"]\nm4a-streaming-probe=[]\nmetadata-budgets=[]\n',1)
     for name,path in libraries.items():manifest+=f'{name}={{path={json.dumps(str(path))}}}\n'
-    known='cfg(feature, values("wave-streaming-probe", "adts-streaming-probe", "vorbis-streaming-probe", "phase-probe", "m4a-transport-probe"))'
+    known='cfg(feature, values("wave-streaming-probe", "adts-streaming-probe", "vorbis-streaming-probe", "phase-probe", "m4a-transport-probe", "m4a-file-probe"))'
     manifest+='\n[lints.rust]\nunexpected_cfgs={level="warn",check-cfg=['+json.dumps(known)+']}\n'
     (package/'Cargo.toml').write_text(manifest)
     root=package/'src/lib.rs';text=root.read_text()+'\nextern crate self as migo_services;\n'

@@ -1,8 +1,8 @@
-//! One HTTP / CPU / PCM publication path for streaming codecs.
+//! One source / CPU / PCM publication path for streaming codecs.
 //!
-//! A decoder accepts a prefix of a network chunk and performs a bounded step.
+//! A decoder accepts a prefix of a source chunk and performs a bounded step.
 //! Retrying its suffix and draining Yield before requesting another body chunk
-//! preserves the four-slot channel's backpressure all the way to the socket.
+//! preserves the four-slot channel's backpressure all the way to its IO source.
 
 use std::future::Future;
 use std::sync::Arc;
@@ -52,17 +52,6 @@ pub(crate) trait Decoder: Send + 'static {
 pub(crate) trait Source<D: Decoder>: Send {
     type Request: Send + 'static;
 
-    fn request(
-        request: migo_services::network::http::RequestBuilder,
-    ) -> migo_services::network::http::RequestBuilder {
-        request
-    }
-    fn new(
-        client: HttpClient,
-        response: migo_services::network::http::Response,
-    ) -> EngineResult<Self>
-    where
-        Self: Sized;
     fn pending(decoder: &D) -> EngineResult<Self::Request>;
     fn read(
         &mut self,
@@ -76,6 +65,21 @@ pub(crate) trait Source<D: Decoder>: Send {
         tx: &mpsc::Sender<StreamMsg>,
         state: &Arc<StreamingState>,
     ) -> impl Future<Output = EngineResult<Option<SourceResume<D>>>> + Send;
+}
+
+/// HTTP opening is separate from the source-independent publication loop.
+pub(crate) trait HttpSource<D: Decoder>: Source<D> {
+    fn request(
+        request: migo_services::network::http::RequestBuilder,
+    ) -> migo_services::network::http::RequestBuilder {
+        request
+    }
+    fn new(
+        client: HttpClient,
+        response: migo_services::network::http::Response,
+    ) -> EngineResult<Self>
+    where
+        Self: Sized;
 }
 
 pub(crate) enum SourceRead<C> {
@@ -98,15 +102,6 @@ struct Sequential {
 }
 impl<D: Decoder> Source<D> for Sequential {
     type Request = ();
-    fn new(
-        client: HttpClient,
-        response: migo_services::network::http::Response,
-    ) -> EngineResult<Self> {
-        Ok(Self {
-            response,
-            _client: client,
-        })
-    }
     fn pending(_decoder: &D) -> EngineResult<()> {
         Err(invalid("sequential decoder requested source reposition"))
     }
@@ -132,6 +127,18 @@ impl<D: Decoder> Source<D> for Sequential {
         _state: &Arc<StreamingState>,
     ) -> EngineResult<Option<SourceResume<D>>> {
         Err(invalid("sequential source cannot reposition"))
+    }
+}
+
+impl<D: Decoder> HttpSource<D> for Sequential {
+    fn new(
+        client: HttpClient,
+        response: migo_services::network::http::Response,
+    ) -> EngineResult<Self> {
+        Ok(Self {
+            response,
+            _client: client,
+        })
     }
 }
 
@@ -176,7 +183,7 @@ pub(crate) async fn run<D: Decoder>(
     run_with_source::<D, Sequential>(cpu, client, url, tx, state, move |_| make_decoder()).await;
 }
 
-pub(crate) async fn run_with_source<D: Decoder, S: Source<D>>(
+pub(crate) async fn run_with_source<D: Decoder, S: HttpSource<D>>(
     cpu: migo_io::audio_cpu::AudioCpu,
     client: HttpClient,
     url: String,
@@ -184,16 +191,15 @@ pub(crate) async fn run_with_source<D: Decoder, S: Source<D>>(
     state: Arc<StreamingState>,
     make_decoder: impl FnOnce(Option<u64>) -> D + Send + 'static,
 ) {
-    if let Err(error) = download::<D, S>(cpu, client, url, &tx, &state, make_decoder).await {
-        send(&tx, &state, StreamMsg::Error(error.to_string())).await;
-    }
+    let result = download::<D, S>(cpu, client, url, &tx, &state, make_decoder).await;
+    publish_result(&tx, &state, result).await;
 }
 
 fn invalid(message: &str) -> EngineError {
     EngineError::from_detail(ErrorCode::IoError, message)
 }
 
-async fn download<D: Decoder, S: Source<D>>(
+async fn download<D: Decoder, S: HttpSource<D>>(
     cpu: migo_io::audio_cpu::AudioCpu,
     client: HttpClient,
     url: String,
@@ -245,7 +251,34 @@ async fn download<D: Decoder, S: Source<D>>(
         state.bytes_total.store(length, Ordering::Relaxed);
     }
 
-    let mut source = S::new(client, response)?;
+    let source = S::new(client, response)?;
+    run_source(cpu, source, object_len, tx, state, make_decoder).await
+}
+
+pub(crate) async fn publish_result(
+    tx: &mpsc::Sender<StreamMsg>,
+    state: &StreamingState,
+    result: EngineResult<()>,
+) {
+    if let Err(error) = result {
+        send(tx, state, StreamMsg::Error(error.to_string())).await;
+    }
+}
+
+pub(crate) async fn run_source<D: Decoder, S: Source<D>>(
+    cpu: migo_io::audio_cpu::AudioCpu,
+    mut source: S,
+    object_len: Option<u64>,
+    tx: &mpsc::Sender<StreamMsg>,
+    state: &Arc<StreamingState>,
+    make_decoder: impl FnOnce(Option<u64>) -> D + Send + 'static,
+) -> EngineResult<()> {
+    if state.is_cancelled() || tx.is_closed() {
+        return Ok(());
+    }
+    if let Some(length) = object_len {
+        state.bytes_total.store(length, Ordering::Relaxed);
+    }
     // Construction can initialize codec tables and allocate scratch. Include it
     // in the first off-worker step, with no extra thread-pool round trip.
     let mut decoder = OffWorker::new(None::<D>, cpu);
