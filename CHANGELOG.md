@@ -905,6 +905,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- On iOS and macOS the clipboard is read and written off the main thread. Reading what another app put there asks
+  the player first (iOS 16, macOS 15.4) and blocks the reading thread until they answer: on the main thread
+  `getClipboardData` froze the game -- its frames, its touches, every other answer -- for as long as the prompt was
+  up. Reads and writes share one serial queue, so a read after a write still reads it.
 - On iOS (Performance+) a call that needs a scope nobody has decided asks the player for it, as it does in process,
   instead of failing with `auth deny`. The host checks the scope there, after the request has left, and refuses in
   its answer rather than by a throw; the call now asks for the scope on that answer too, keeps its request pending
