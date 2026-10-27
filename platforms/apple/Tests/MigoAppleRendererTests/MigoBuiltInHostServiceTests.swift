@@ -142,19 +142,36 @@ final class MigoBuiltInHostServiceTests: XCTestCase {
                 if let saved { NSPasteboard.general.setString(saved, forType: .string) }
             }
             let composed = MigoComposedHostServices(app: nil)
-            let recorder = Recorder()
-            composed.handle(
-                request(.clipboard, MigoHostServiceID.Clipboard.setClipboardData, ["data": "migo-built-in"], into: recorder))
+            // Answered off the main thread, in the order asked: a read that asks the player first must not hold
+            // the game's main thread while the prompt is up.
+            final class OffMain: @unchecked Sendable {
+                var outcomes: [MigoHostServiceReply.Outcome] = []
+                var onMain: [Bool] = []
+            }
+            let answered = OffMain()
+            let all = expectation(description: "three answers")
+            all.expectedFulfillmentCount = 3
+            func clipboard(_ method: UInt32, _ object: [String: Any] = [:]) -> MigoHostServiceRequest {
+                MigoHostServiceRequest(
+                    service: .clipboard, method: method, payload: try! JSONSerialization.data(withJSONObject: object),
+                    reply: MigoHostServiceReply {
+                        answered.outcomes.append($0)
+                        answered.onMain.append(Thread.isMainThread)
+                        all.fulfill()
+                    })
+            }
+            composed.handle(clipboard(MigoHostServiceID.Clipboard.setClipboardData, ["data": "migo-built-in"]))
+            composed.handle(clipboard(MigoHostServiceID.Clipboard.getClipboardData))
+            composed.handle(clipboard(MigoHostServiceID.Clipboard.setClipboardData, ["data": 7]))
+            wait(for: [all], timeout: 5)
             XCTAssertEqual(NSPasteboard.general.string(forType: .string), "migo-built-in")
-            composed.handle(request(.clipboard, MigoHostServiceID.Clipboard.getClipboardData, into: recorder))
-            composed.handle(
-                request(.clipboard, MigoHostServiceID.Clipboard.setClipboardData, ["data": 7], into: recorder))
-            XCTAssertEqual(recorder.outcomes.count, 3)
-            XCTAssertEqual(recorder.outcomes[0], .success(json: Data("{}".utf8)))
-            guard case .success(let json) = recorder.outcomes[1] else { return XCTFail("\(recorder.outcomes)") }
+            XCTAssertEqual(answered.onMain, [false, false, false])
+            XCTAssertEqual(answered.outcomes.count, 3)
+            XCTAssertEqual(answered.outcomes[0], .success(json: Data("{}".utf8)))
+            guard case .success(let json) = answered.outcomes[1] else { return XCTFail("\(answered.outcomes)") }
             XCTAssertEqual(
                 (try JSONSerialization.jsonObject(with: json)) as? [String: String], ["data": "migo-built-in"])
-            XCTAssertEqual(recorder.outcomes[2], .failure(message: "data is not a string", code: nil))
+            XCTAssertEqual(answered.outcomes[2], .failure(message: "data is not a string", code: nil))
         }
     #endif
 }
