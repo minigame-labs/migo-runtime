@@ -24,32 +24,19 @@ description: >
 runs:
   using: composite
   steps:
-    # Bounded and retried for the reason the ILP32 lane already is: a
-    # stalled mirror hung this exact step for 90 minutes, producing no
-    # output at all because -qq suppresses progress, until the job's
-    # ceiling cancelled it. Read from the outside that is "the tests hung",
-    # which is the wrong place to look. One slow mirror should cost a
-    # bounded retry, not the whole budget -- and the budget has to stay
-    # large for a cold cache that rebuilds Skia from source, so it cannot
-    # double as the guard against a hung apt.
+    # Through the .deb cache: a stalled mirror once spent 26 of this job's
+    # minutes on this one step, and a hit downloads nothing (checked, not
+    # assumed; scripts/ci/apt-install-cached.sh). Its `update` and download
+    # are bounded and retried, so one slow mirror still costs a bounded
+    # retry, not the budget the cold Skia build needs.
     - name: Install the packages
-      shell: bash
-      run: |
-        # Advisory for the same reason as the Qt job: a mirror that is down
-        # makes `update` report per-index failures, and the packages still
-        # install from the indexes already on the image.
-        timeout 180 sudo apt-get update -qq \
-          || echo "apt-get update incomplete; continuing on the image's indexes" >&2
-        install_pkgs() {
-          sudo apt-get install -y -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -qq \
-            ninja-build \
-            libgl-dev libegl-dev libgles-dev \
-            libgl1-mesa-dri libegl-mesa0 \
-            libfontconfig1-dev libfreetype-dev \
-            libasound2-dev strace \
-            gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav || return 1
-        }
-        install_pkgs || {
-          echo "host build dependency install failed; retrying once" >&2
-          install_pkgs
-        }
+      uses: ./.github/actions/apt-install-cached
+      with:
+        cache-name: host-engine
+        packages: >-
+          ninja-build
+          libgl-dev libegl-dev libgles-dev
+          libgl1-mesa-dri libegl-mesa0
+          libfontconfig1-dev libfreetype-dev
+          libasound2-dev strace
+          gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav
