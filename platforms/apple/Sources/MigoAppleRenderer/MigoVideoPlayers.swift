@@ -213,6 +213,7 @@ final class MigoVideoPlayer: MigoVideoControlled {
     func requestFullScreen(direction: Int, _ reply: MigoHostServiceReply) {
         isFullScreen = true
         self.direction = direction
+        raise()
         place()
         controls.refresh()
         // Answered once laid out at its new size.
@@ -284,6 +285,7 @@ final class MigoVideoPlayer: MigoVideoControlled {
         // with direction 90 does.
         let size = player?.currentItem?.presentationSize ?? .zero
         direction = isFullScreen && size.width > size.height ? 90 : 0
+        if isFullScreen { raise() }
         place()
         controls.refresh()
     }
@@ -313,9 +315,18 @@ final class MigoVideoPlayer: MigoVideoControlled {
             let content = stage.window?.contentView
             view.frame = content.map { stage.convert($0.bounds, from: $0) } ?? stage.bounds
         #endif
-        // On top of whatever else the stage shows while it fills it.
-        view.removeFromSuperview()
-        stage.addSubview(view)
+    }
+
+    /// On top of whatever else the stage shows, as it starts to fill it. Once,
+    /// not at every placing: moving a view among its siblings lays the stage
+    /// out again, and the stage's layout is what places it.
+    private func raise() {
+        guard let stage else { return }
+        #if os(iOS)
+            stage.bringSubviewToFront(view)
+        #elseif os(macOS)
+            stage.addSubview(view, positioned: .above, relativeTo: nil)
+        #endif
     }
 
     private func setTransform(identity: Bool) {
