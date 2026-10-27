@@ -10,6 +10,7 @@ use shared::op_state::HostOpState;
 use shared::protocol::error::ServiceError;
 use shared::services::{CameraService, ImageApiService, Scope, VideoService};
 
+mod game_recorder;
 pub(crate) mod video_decoder;
 
 use crate::file::host_paths::export_paths;
@@ -48,109 +49,117 @@ where
 }
 
 // ==================== Camera Ops ====================
+//
+// Every one is a request the camera service answers -- a call through its
+// result hook (`CAMERA_RESULT_HOOKS`), a command not at all -- carrying
+// content's `cameraId` and options, and a call's `requestId`. Opening, taking
+// and changing what the camera sees needs `scope.camera`; letting it go does
+// not, so a camera the player stopped allowing can still be closed.
 
-/// Create a camera instance. Returns JSON: `{"cameraId": <id>}`.
-#[op2]
-#[string]
+/// Open a camera and show its preview: a call, answered once it shows.
+#[op2(fast)]
 pub fn op_camera_create(
     state: &mut OpState,
-    #[string] options_json: &str,
-) -> Result<String, JsErrorBox> {
+    #[string] request_json: &str,
+) -> Result<(), JsErrorBox> {
     crate::permission::require_scope(state, Scope::Camera)?;
-    with_camera_service(state, "createCamera:fail not supported", |c| {
-        c.create(options_json)
+    with_camera_service(state, "createCamera:fail not supported", |camera| {
+        camera.create(request_json)
     })
 }
 
-/// Destroy a camera instance and release all resources.
+/// Close a camera: a command.
 #[op2(fast)]
-pub fn op_camera_destroy(state: &mut OpState, #[smi] camera_id: u32) -> Result<(), JsErrorBox> {
-    with_camera_service(state, "camera.destroy:fail not supported", |c| {
-        c.destroy(camera_id)
+pub fn op_camera_destroy(
+    state: &mut OpState,
+    #[string] request_json: &str,
+) -> Result<(), JsErrorBox> {
+    with_camera_service(state, "camera.destroy:fail not supported", |camera| {
+        camera.destroy(request_json)
     })
 }
 
-/// Start a photo capture without blocking the V8 isolate.
-///
-/// The returned request id is echoed by the platform's `takePhotoResult`
-/// camera event.  Keeping allocation here, before entering the platform
-/// service, means every accepted request has a unique completion identity.
+/// What content changed on a camera -- where its preview is, which camera, the flash, the frame size: a command.
+#[op2(fast)]
+pub fn op_camera_set(state: &mut OpState, #[string] request_json: &str) -> Result<(), JsErrorBox> {
+    crate::permission::require_scope(state, Scope::Camera)?;
+    with_camera_service(state, "camera:fail not supported", |camera| {
+        camera.set(request_json)
+    })
+}
+
+/// Take a photo: a call, answered with the file.
 #[op2(fast)]
 pub fn op_camera_take_photo(
     state: &mut OpState,
-    #[string] options_json: &str,
-) -> Result<u32, JsErrorBox> {
+    #[string] request_json: &str,
+) -> Result<(), JsErrorBox> {
     crate::permission::require_scope(state, Scope::Camera)?;
-    let request_id = state
-        .borrow::<HostOpState>()
-        .callback_ids
-        .allocate()
-        .map_err(|error| JsErrorBox::generic(error.to_string()))? as u32;
-    with_camera_service(state, "camera.takePhoto:fail not supported", |c| {
-        c.take_photo_async(request_id, options_json)?;
-        Ok(request_id)
+    with_camera_service(state, "camera.takePhoto:fail not supported", |camera| {
+        camera.take_photo(request_json)
     })
 }
 
-/// Start video recording. Options as JSON.
-#[op2]
-#[string]
+/// Start recording video: a call, answered once it records.
+#[op2(fast)]
 pub fn op_camera_start_record(
     state: &mut OpState,
-    #[string] options_json: &str,
-) -> Result<String, JsErrorBox> {
+    #[string] request_json: &str,
+) -> Result<(), JsErrorBox> {
     crate::permission::require_scope(state, Scope::Camera)?;
-    with_camera_service(state, "camera.startRecord:fail not supported", |c| {
-        c.start_record(options_json)
+    with_camera_service(state, "camera.startRecord:fail not supported", |camera| {
+        camera.start_record(request_json)
     })
 }
 
-/// Stop video recording. Returns JSON with tempThumbPath, tempVideoPath.
-#[op2]
-#[string]
+/// Stop recording: a call, answered with the video and its cover once written.
+#[op2(fast)]
 pub fn op_camera_stop_record(
     state: &mut OpState,
-    #[string] options_json: &str,
-) -> Result<String, JsErrorBox> {
-    with_camera_service(state, "camera.stopRecord:fail not supported", |c| {
-        c.stop_record(options_json)
+    #[string] request_json: &str,
+) -> Result<(), JsErrorBox> {
+    with_camera_service(state, "camera.stopRecord:fail not supported", |camera| {
+        camera.stop_record(request_json)
     })
 }
 
-/// Set camera zoom level. Returns JSON with actual zoom applied.
-#[op2]
-#[string]
+/// Zoom: a call, answered with the zoom taken.
+#[op2(fast)]
 pub fn op_camera_set_zoom(
     state: &mut OpState,
-    #[string] options_json: &str,
-) -> Result<String, JsErrorBox> {
+    #[string] request_json: &str,
+) -> Result<(), JsErrorBox> {
     crate::permission::require_scope(state, Scope::Camera)?;
-    with_camera_service(state, "camera.setZoom:fail not supported", |c| {
-        c.set_zoom(options_json)
+    with_camera_service(state, "camera.setZoom:fail not supported", |camera| {
+        camera.set_zoom(request_json)
     })
 }
 
-/// Start listening for camera frame changes (high-frequency streaming).
+/// Start handing content the frames: a command.
 #[op2(fast)]
 pub fn op_camera_listen_frame_change(
     state: &mut OpState,
-    #[smi] camera_id: u32,
+    #[string] request_json: &str,
 ) -> Result<(), JsErrorBox> {
     crate::permission::require_scope(state, Scope::Camera)?;
-    with_camera_service(state, "camera.listenFrameChange:fail not supported", |c| {
-        c.listen_frame_change(camera_id)
-    })
+    with_camera_service(
+        state,
+        "camera.listenFrameChange:fail not supported",
+        |camera| camera.listen_frame_change(request_json),
+    )
 }
 
-/// Stop listening for camera frame changes.
+/// Stop handing content the frames: a command.
 #[op2(fast)]
 pub fn op_camera_close_frame_change(
     state: &mut OpState,
-    #[smi] camera_id: u32,
+    #[string] request_json: &str,
 ) -> Result<(), JsErrorBox> {
-    with_camera_service(state, "camera.closeFrameChange:fail not supported", |c| {
-        c.close_frame_change(camera_id)
-    })
+    with_camera_service(
+        state,
+        "camera.closeFrameChange:fail not supported",
+        |camera| camera.close_frame_change(request_json),
+    )
 }
 
 // ==================== Image API Ops ====================
@@ -265,145 +274,155 @@ pub fn op_choose_media(
 }
 
 // ==================== Video Ops ====================
+//
+// Every one is a request the video service carries out: a call answered
+// through its result hook (`VIDEO_RESULT_HOOKS`) once it has happened -- the
+// reference's promises settle then -- or a command answered by nothing, each
+// with content's `videoId` and a call's `requestId`.
 
-/// Create a video player instance. Returns JSON: `{"videoId": <id>}`.
-///
-/// The player is handed `src` and `poster` as the real file or the checked URL
-/// they name, never content's string: a player that opened it verbatim played
-/// any URL under a policy that granted nothing, and any file the host could read.
-#[op2]
-#[string]
+/// Make a player and show it. Its `src` and `poster` reach the host as the real
+/// file or the checked URL they name, never content's string: a player that
+/// opened it verbatim played any URL under a policy that granted nothing, and
+/// any file the host could read.
+#[op2(fast)]
 pub fn op_video_create(
     state: &mut OpState,
-    #[string] options_json: &str,
-) -> Result<String, JsErrorBox> {
+    #[string] request_json: &str,
+) -> Result<(), JsErrorBox> {
     let sandbox = crate::file::host_paths::sandbox_of(state);
     with_video(state, "createVideo:fail not supported", |v| {
         v.create(
-            &files::export_json_now(&sandbox, options_json, files::VIDEO)
+            &files::export_json_now(&sandbox, request_json, files::VIDEO)
                 .map_err(|e| ServiceError::invalid_param(e.message))?,
         )
     })
 }
 
-/// Start or resume video playback.
+/// Take a player away.
 #[op2(fast)]
-pub fn op_video_play(state: &mut OpState, #[smi] video_id: u32) -> Result<(), JsErrorBox> {
-    with_video(state, "video.play:fail not supported", |v| v.play(video_id))
-}
-
-/// Pause video playback.
-#[op2(fast)]
-pub fn op_video_pause(state: &mut OpState, #[smi] video_id: u32) -> Result<(), JsErrorBox> {
-    with_video(state, "video.pause:fail not supported", |v| {
-        v.pause(video_id)
-    })
-}
-
-/// Stop video playback and reset to beginning.
-#[op2(fast)]
-pub fn op_video_stop(state: &mut OpState, #[smi] video_id: u32) -> Result<(), JsErrorBox> {
-    with_video(state, "video.stop:fail not supported", |v| v.stop(video_id))
-}
-
-/// Seek to a specific position in seconds.
-#[op2(fast)]
-pub fn op_video_seek(
+pub fn op_video_destroy(
     state: &mut OpState,
-    #[smi] video_id: u32,
-    position: f64,
+    #[string] request_json: &str,
 ) -> Result<(), JsErrorBox> {
-    with_video(state, "video.seek:fail not supported", |v| {
-        v.seek(video_id, position)
+    with_video(state, "video.destroy:fail not supported", |v| {
+        v.destroy(request_json)
     })
 }
 
-/// Enter fullscreen mode.
+/// What content changed on a player; a new `src` or `poster` is exported as
+/// `createVideo`'s are.
 #[op2(fast)]
-pub fn op_video_request_fullscreen(
+pub fn op_video_set(state: &mut OpState, #[string] request_json: &str) -> Result<(), JsErrorBox> {
+    let sandbox = crate::file::host_paths::sandbox_of(state);
+    with_video(state, "video:fail not supported", |v| {
+        v.set(
+            &files::export_json_now(&sandbox, request_json, files::VIDEO)
+                .map_err(|e| ServiceError::invalid_param(e.message))?,
+        )
+    })
+}
+
+/// Play: a call, answered once it plays.
+#[op2(fast)]
+pub fn op_video_play(state: &mut OpState, #[string] request_json: &str) -> Result<(), JsErrorBox> {
+    with_video(state, "video.play:fail not supported", |v| {
+        v.play(request_json)
+    })
+}
+
+/// Pause: a call, answered once paused.
+#[op2(fast)]
+pub fn op_video_pause(state: &mut OpState, #[string] request_json: &str) -> Result<(), JsErrorBox> {
+    with_video(state, "video.pause:fail not supported", |v| {
+        v.pause(request_json)
+    })
+}
+
+/// Stop: a call, answered once stopped.
+#[op2(fast)]
+pub fn op_video_stop(state: &mut OpState, #[string] request_json: &str) -> Result<(), JsErrorBox> {
+    with_video(state, "video.stop:fail not supported", |v| {
+        v.stop(request_json)
+    })
+}
+
+/// Seek: a call, answered once there.
+#[op2(fast)]
+pub fn op_video_seek(state: &mut OpState, #[string] request_json: &str) -> Result<(), JsErrorBox> {
+    with_video(state, "video.seek:fail not supported", |v| {
+        v.seek(request_json)
+    })
+}
+
+/// Full screen: a call, answered once it fills the screen.
+#[op2(fast)]
+pub fn op_video_request_full_screen(
     state: &mut OpState,
-    #[smi] video_id: u32,
-    direction: i32,
+    #[string] request_json: &str,
 ) -> Result<(), JsErrorBox> {
     with_video(state, "video.requestFullScreen:fail not supported", |v| {
-        v.request_fullscreen(video_id, direction)
+        v.request_full_screen(request_json)
     })
 }
 
-/// Exit fullscreen mode.
+/// Leave full screen: a call, answered once back where content put it.
 #[op2(fast)]
-pub fn op_video_exit_fullscreen(
+pub fn op_video_exit_full_screen(
     state: &mut OpState,
-    #[smi] video_id: u32,
+    #[string] request_json: &str,
 ) -> Result<(), JsErrorBox> {
     with_video(state, "video.exitFullScreen:fail not supported", |v| {
-        v.exit_fullscreen(video_id)
-    })
-}
-
-/// Set a video property (JSON-encoded key-value pair).
-#[op2(fast)]
-pub fn op_video_set_property(
-    state: &mut OpState,
-    #[smi] video_id: u32,
-    #[string] options_json: &str,
-) -> Result<(), JsErrorBox> {
-    // A new `src` or `poster` is exported as `createVideo`'s are.
-    let sandbox = crate::file::host_paths::sandbox_of(state);
-    with_video(state, "video.setProperty:fail not supported", |v| {
-        v.set_property(
-            video_id,
-            &files::export_json_now(&sandbox, options_json, files::VIDEO)
-                .map_err(|e| ServiceError::invalid_param(e.message))?,
-        )
-    })
-}
-
-/// Destroy a video player instance and release all resources.
-#[op2(fast)]
-pub fn op_video_destroy(state: &mut OpState, #[smi] video_id: u32) -> Result<(), JsErrorBox> {
-    with_video(state, "video.destroy:fail not supported", |v| {
-        v.destroy(video_id)
+        v.exit_full_screen(request_json)
     })
 }
 
 // ==================== Extension Definition ====================
 
-deno_core::extension!(
+main_runtime_extension!(
     host_v8_media,
-    deps = [host_v8_base],
-    ops = [
-        op_camera_create,
-        op_camera_destroy,
-        op_camera_take_photo,
-        op_camera_start_record,
-        op_camera_stop_record,
-        op_camera_set_zoom,
-        op_camera_listen_frame_change,
-        op_camera_close_frame_change,
-        op_save_image_to_photos_album,
-        op_preview_media,
-        op_preview_image,
-        op_compress_image,
-        op_choose_message_file,
-        op_choose_image,
-        op_choose_media,
-        op_video_create,
-        op_video_play,
-        op_video_pause,
-        op_video_stop,
-        op_video_seek,
-        op_video_request_fullscreen,
-        op_video_exit_fullscreen,
-        op_video_set_property,
-        op_video_destroy,
-        video_decoder::op_video_decoder_available,
-        video_decoder::op_video_decoder_start,
-        video_decoder::op_video_decoder_take_frame,
-        video_decoder::op_video_decoder_seek,
-        video_decoder::op_video_decoder_stop,
-        video_decoder::op_video_decoder_remove,
-    ],
+    {
+        deps = [host_v8_base],
+        ops = [
+            op_camera_create,
+            op_camera_destroy,
+            op_camera_set,
+            op_camera_take_photo,
+            op_camera_start_record,
+            op_camera_stop_record,
+            op_camera_set_zoom,
+            op_camera_listen_frame_change,
+            op_camera_close_frame_change,
+            op_save_image_to_photos_album,
+            op_preview_media,
+            op_preview_image,
+            op_compress_image,
+            op_choose_message_file,
+            op_choose_image,
+            op_choose_media,
+            op_video_create,
+            op_video_play,
+            op_video_pause,
+            op_video_stop,
+            op_video_seek,
+            op_video_request_full_screen,
+            op_video_exit_full_screen,
+            op_video_set,
+            op_video_destroy,
+            video_decoder::op_video_decoder_available,
+            video_decoder::op_video_decoder_start,
+            video_decoder::op_video_decoder_take_frame,
+            video_decoder::op_video_decoder_seek,
+            video_decoder::op_video_decoder_stop,
+            video_decoder::op_video_decoder_remove,
+            game_recorder::op_game_recorder_supported,
+            game_recorder::op_game_recorder_start,
+            game_recorder::op_game_recorder_pause,
+            game_recorder::op_game_recorder_resume,
+            game_recorder::op_game_recorder_stop,
+            game_recorder::op_game_recorder_abort,
+            game_recorder::op_game_recorder_next_event,
+        ],
+    },
     esm_entry_point = "ext:host_v8_media/99_global_scope.js",
     esm = [
         dir "src/media",
@@ -411,6 +430,7 @@ deno_core::extension!(
         "02_image_api.js",
         "03_video_decoder.js",
         "04_video.js",
+        "05_game_recorder.js",
         "99_global_scope.js",
     ],
 );

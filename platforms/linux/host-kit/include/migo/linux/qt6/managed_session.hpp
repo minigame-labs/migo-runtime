@@ -1,9 +1,11 @@
 #ifndef MIGO_LINUX_QT6_MANAGED_SESSION_HPP_
 #define MIGO_LINUX_QT6_MANAGED_SESSION_HPP_
 
+#include <migo/linux/qt6/host_services.hpp>
 #include <migo/linux/qt6/x11_surface_view.hpp>
 #include <migo/linux/surface_host.hpp>
 
+#include <QByteArray>
 #include <QObject>
 #include <QString>
 
@@ -41,12 +43,45 @@ class MigoManagedSession final : public QObject {
     Q_OBJECT
 
 public:
+    /// What the Session is created with. Everything here is fixed for the
+    /// Session's life: the C ABI takes it at creation and when the callback
+    /// table is installed, both of which happen in the constructor.
+    struct Options {
+        /// The network content may reach, as `MigoSessionConfig`'s
+        /// `network_policy_json_utf8` takes it. Empty grants none: the engine
+        /// gives content no network a host did not.
+        QByteArray networkPolicyJson;
+        /// What the game is launched with, as `MigoSessionConfig`'s
+        /// `launch_options_json_utf8` takes it. Empty launches it with the
+        /// engine's defaults.
+        QByteArray launchOptionsJson;
+        /// Who the App is, as content reads it (`getAppBaseInfo().host.appId`).
+        /// Empty takes `QGuiApplication::desktopFileName()` -- the name an App
+        /// gives itself on Linux, by convention its reverse-DNS desktop file
+        /// name; with neither, the Session is not told, and content reads none.
+        QString appId;
+        /// The host services the App answers itself -- its adverts, payments,
+        /// sign-in -- or null. The services it names are its, including any
+        /// the Host Kit would answer; the Host Kit answers the rest it can
+        /// with Qt's own (`MigoQtBuiltInHostServices`). It must outlive the
+        /// Session, and is called on the GUI thread.
+        MigoQtHostServiceProvider *appServices = nullptr;
+        /// What describes and plays videos for the image service --
+        /// `MigoQtMedia`, from the `migo::qt6-media` component -- or null,
+        /// which refuses videos.
+        std::shared_ptr<const MigoQtVideoSupport> videos;
+    };
+
     /// Constructs the Session and its view, and installs the callback table.
     ///
     /// The callback table can be installed only once per Session and only
     /// before the first attach, so it happens here rather than being exposed:
     /// a later install would be refused, and a host that could try would have a
     /// window in which queued callbacks observed replaced function pointers.
+    MigoManagedSession(MigoEngine &engine, QWidget &parent, const Options &options,
+                       QObject *object_parent = nullptr);
+    /// The same, with no network, the default launch and no services of the
+    /// App's own.
     MigoManagedSession(MigoEngine &engine, QWidget &parent, QObject *object_parent = nullptr);
     ~MigoManagedSession() override;
 
@@ -65,11 +100,15 @@ public:
 
     /// Start evaluating the named content.
     ///
-    /// Argument and state problems are reported synchronously through the
-    /// return value; a failure raised once the content is running arrives later
-    /// through `contentFailed`, because by then this call's stack is gone. The
-    /// two are deliberately not merged into one signal: a caller can act on the
-    /// first and can only report the second.
+    /// Content needs the view's Surface: the Session has nothing to run it on
+    /// until the view first attaches, which happens once Qt has put its window
+    /// on screen. Called before that, the content is loaded then, and this
+    /// returns MIGO_OK; called after, it is loaded now. Argument and state
+    /// problems found now are reported through the return value; a load the
+    /// library refuses when the view attaches, and a failure raised once the
+    /// content is running, arrive through `contentFailed`, because by then this
+    /// call's stack is gone. A Session loads content once: a second call while
+    /// one is waiting or loaded returns MIGO_ERROR_INVALID_STATE.
     [[nodiscard]] MigoResult loadContent(const QString &content_id, const QString &entry);
 
     /// Begin the asynchronous teardown. Safe to call more than once.
@@ -80,6 +119,19 @@ public:
 
     /// Whether the Session has been destroyed.
     [[nodiscard]] bool isClosed() const noexcept;
+
+    /// Whether the debugging aids are on: content's setEnableDebug turns them,
+    /// and getAppBaseInfo().enableDebug says so. While they are on, a panel
+    /// over the top of the game shows the frames a second the view delivers
+    /// and what content writes to its console from then, and takes no input:
+    /// the game stays playable under it.
+    [[nodiscard]] bool debugAids() const noexcept;
+
+    /// Turn the debugging aids on or off, and tell the Session, which tells
+    /// content. An App that answers the screen service itself turns them here.
+    /// Returns the Session's answer to the report; MIGO_ERROR_INVALID_STATE
+    /// once the Session is closing.
+    [[nodiscard]] MigoResult setDebugAids(bool on);
 
 Q_SIGNALS:
     /// Content finished loading and is running.
@@ -93,6 +145,8 @@ Q_SIGNALS:
     /// A Surface or input call was refused. Forwarded from the view so an App
     /// using the Managed shape does not have to connect to it separately.
     void migoError(MigoResult code);
+    /// The debugging aids were turned on or off.
+    void debugAidsChanged(bool on);
 
 private:
     class Impl;

@@ -163,6 +163,8 @@ fn batch_effects(names: &mut Names, batch: &CanvasBatchPayload, into: &mut Vec<E
 #[test]
 #[ignore = "needs the producer's packets from node; run through scripts/test-performance-plus-engine-contract.sh"]
 fn a_canvas_created_and_resized_has_the_same_effect_on_both_lanes() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let directory = PathBuf::from(
         std::env::var("MIGO_CANVAS_LIFETIME_PARITY_DIR")
             .expect("MIGO_CANVAS_LIFETIME_PARITY_DIR names engine-resource-parity.mjs's output"),

@@ -6,8 +6,9 @@
 //! OpenHarmony needed a second backend only because its userspace is musl with no ALSA
 //! and cpal has no OHAudio support, not because anything about the buffering differs.
 
-use std::sync::Arc;
+use shared::channel::{AudioNotifier, ThreadWakeup};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use ringbuf::HeapCons;
 use ringbuf::traits::{Consumer, Observer};
@@ -18,11 +19,20 @@ use ringbuf::traits::{Consumer, Observer};
 #[cfg(all(target_os = "linux", target_env = "ohos"))]
 #[path = "output_ohaudio.rs"]
 mod backend;
-#[cfg(not(all(target_os = "linux", target_env = "ohos")))]
+#[cfg(target_os = "android")]
+#[path = "output_oboe.rs"]
+mod backend;
+#[cfg(not(any(target_os = "android", all(target_os = "linux", target_env = "ohos"))))]
 #[path = "output_cpal.rs"]
 mod backend;
+#[path = "output_policy.rs"]
+mod policy;
 #[path = "output_silent.rs"]
 mod silent;
+
+#[cfg(all(test, target_os = "linux", not(target_env = "ohos")))]
+#[path = "output_benchmarks.rs"]
+mod benchmarks;
 
 use backend::AudioOutput as DeviceOutput;
 pub use silent::SilentOutput;
@@ -67,6 +77,15 @@ impl AudioOutput {
     /// The default device, and nothing else: what the audio thread tries while it plays into silence.
     pub fn open_device() -> shared::error::EngineResult<Self> {
         DeviceOutput::new().map(Self::Device)
+    }
+
+    /// SilentOutput pumps on this owner thread; attaching a notifier there
+    /// would create a self-wakeup loop. Device recovery calls this again for
+    /// the replacement stream, whose sync state has a fresh lifetime.
+    pub fn bind_wakeup(&self, wakeup: &ThreadWakeup) {
+        if let Self::Device(device) = self {
+            device.sync().bind_wakeup(wakeup);
+        }
     }
 
     #[inline]
@@ -131,6 +150,13 @@ impl AudioOutput {
         }
     }
 
+    #[cfg(target_os = "ios")]
+    pub fn resume_interrupted_stream(&self) {
+        if let Self::Device(device) = self {
+            device.resume_interrupted_stream();
+        }
+    }
+
     pub fn pause_stream(&mut self) -> bool {
         each_output!(self, output => output.pause_stream())
     }
@@ -143,6 +169,10 @@ impl AudioOutput {
 /// Ring buffer size in sample frames (per channel)
 /// 8192 frames at 48kHz = ~170ms buffer
 pub(crate) const RING_BUFFER_FRAMES: usize = 8192;
+
+/// Web Audio graph quantum. Device bursts size the reserve, while submissions
+/// remain aligned to this independent graph scheduling boundary.
+pub(crate) const RENDER_QUANTUM_FRAMES: usize = 128;
 
 /// Low watermark - when buffer falls below this, signal to refill
 /// 2048 frames at 48kHz = ~42ms
@@ -159,7 +189,7 @@ pub(crate) const HIGH_WATERMARK_FRAMES: usize = 4096;
 ///
 /// # Atomic ordering model
 ///
-/// The two atomics serve different synchronization purposes and intentionally
+/// Atomic fields serve different synchronization purposes and intentionally
 /// use different memory orderings:
 ///
 /// - **`needs_data`** (`Release` on store, `AcqRel` on swap): This flag
@@ -183,59 +213,142 @@ pub(crate) const HIGH_WATERMARK_FRAMES: usize = 4096;
 ///   visible to the audio thread checking `is_alive()` with `Acquire`.
 #[derive(Clone)]
 pub struct AudioSync {
-    /// Flag indicating buffer needs data.
-    /// Ordering: Release (store in callback) / AcqRel (swap in audio thread).
-    needs_data: Arc<AtomicBool>,
-    /// Current buffer fill level (in samples).
-    /// Ordering: Relaxed -- advisory hint only, not used for synchronization.
-    buffer_level: Arc<AtomicUsize>,
-    /// Largest hardware callback request seen so far (in samples).
-    /// Ordering: Relaxed -- advisory; lets the refill target cover a full callback.
-    max_callback: Arc<AtomicUsize>,
+    inner: Arc<AudioSyncState>,
+}
+
+struct AudioSyncState {
+    needs_data: AtomicBool,
+    buffer_level: AtomicUsize,
+    max_callback: AtomicUsize,
+    callback_wakeup_enabled: AtomicBool,
+    notifier: OnceLock<AudioNotifier>,
+    policy: OnceLock<policy::RefillPolicy>,
+    software_underrun: AtomicBool,
+    software_underruns: AtomicUsize,
 }
 
 impl AudioSync {
     pub(crate) fn new() -> Self {
         Self {
-            needs_data: Arc::new(AtomicBool::new(false)),
-            buffer_level: Arc::new(AtomicUsize::new(0)),
-            max_callback: Arc::new(AtomicUsize::new(0)),
+            inner: Arc::new(AudioSyncState {
+                needs_data: AtomicBool::new(false),
+                buffer_level: AtomicUsize::new(0),
+                max_callback: AtomicUsize::new(0),
+                callback_wakeup_enabled: AtomicBool::new(false),
+                notifier: OnceLock::new(),
+                policy: OnceLock::new(),
+                software_underrun: AtomicBool::new(false),
+                software_underruns: AtomicUsize::new(0),
+            }),
         }
+    }
+
+    pub(super) fn configure_device(&self, channels: usize, hint_frames: usize) {
+        let policy = policy::RefillPolicy::new(channels, hint_frames, self.max_callback());
+        assert!(
+            self.inner.policy.set(policy).is_ok(),
+            "one policy per device route"
+        );
+    }
+
+    pub(crate) fn refresh_device_policy(&self) {
+        if let Some(policy) = self.inner.policy.get() {
+            let underrun = self.inner.software_underrun.swap(false, Ordering::Acquire);
+            let previous = policy.high();
+            policy.refresh(self.max_callback(), underrun);
+            if underrun && policy.high() > previous {
+                // Repeated misses at the cap do not log. Formatting remains
+                // on the owner, never on the device callback.
+                tracing::debug!(
+                    software_underruns = self.software_underrun_count(),
+                    target_samples = policy.high(),
+                    "audio software ring reserve increased"
+                );
+            }
+        }
+    }
+
+    pub(crate) fn software_underrun_count(&self) -> usize {
+        self.inner.software_underruns.load(Ordering::Relaxed)
+    }
+
+    fn device_high_watermark(&self) -> usize {
+        self.inner
+            .policy
+            .get()
+            .expect("configured device policy")
+            .high()
+    }
+
+    fn low_watermark(&self, fallback: usize) -> usize {
+        self.inner
+            .policy
+            .get()
+            .map_or(fallback, policy::RefillPolicy::low)
+    }
+
+    fn record_underrun(&self) {
+        if self.inner.callback_wakeup_enabled.load(Ordering::Acquire) {
+            self.inner
+                .software_underruns
+                .fetch_add(1, Ordering::Relaxed);
+            self.inner.software_underrun.store(true, Ordering::Release);
+        }
+    }
+
+    /// Install only on device output, on the control thread. A callback that
+    /// ran earlier retained its needs_data hint and never initialized a parker.
+    fn bind_wakeup(&self, wakeup: &ThreadWakeup) {
+        if let Some(notifier) = wakeup.audio_notifier() {
+            let _ = self.inner.notifier.set(notifier);
+        }
+    }
+
+    /// Inactive/silent hardware must not wake the producer on every zero-fill.
+    pub(crate) fn set_callback_wakeup_enabled(&self, enabled: bool) {
+        self.inner
+            .callback_wakeup_enabled
+            .store(enabled, Ordering::Release);
     }
 
     /// Signal that buffer needs data (called from callback)
     #[inline]
     fn signal_need_data(&self) {
-        self.needs_data.store(true, Ordering::Release);
+        self.inner.needs_data.store(true, Ordering::Release);
+        if self.inner.callback_wakeup_enabled.load(Ordering::Acquire)
+            && let Some(notifier) = self.inner.notifier.get()
+        {
+            notifier.notify();
+        }
     }
 
     /// Check and clear the needs_data flag
     #[inline]
     pub fn check_and_clear(&self) -> bool {
-        self.needs_data.swap(false, Ordering::AcqRel)
+        self.inner.needs_data.swap(false, Ordering::AcqRel)
     }
 
     #[inline]
     fn update_level(&self, level: usize) {
-        self.buffer_level.store(level, Ordering::Relaxed);
+        self.inner.buffer_level.store(level, Ordering::Relaxed);
     }
 
     /// Get current buffer fill level
     #[inline]
     pub fn buffer_level(&self) -> usize {
-        self.buffer_level.load(Ordering::Relaxed)
+        self.inner.buffer_level.load(Ordering::Relaxed)
     }
 
     /// Record the sample count of a hardware callback request (running max).
     #[inline]
     fn observe_callback(&self, len: usize) {
-        self.max_callback.fetch_max(len, Ordering::Relaxed);
+        self.inner.max_callback.fetch_max(len, Ordering::Relaxed);
     }
 
     /// Largest hardware callback request seen so far (samples); 0 until the first callback.
     #[inline]
     pub fn max_callback(&self) -> usize {
-        self.max_callback.load(Ordering::Relaxed)
+        self.inner.max_callback.load(Ordering::Relaxed)
     }
 }
 
@@ -305,6 +418,7 @@ impl OutputCallback {
         let read = self.consumer.pop_slice(data);
         if read < data.len() {
             data[read..].fill(0.0);
+            self.sync.record_underrun();
         }
 
         self.report_depth();
@@ -325,15 +439,21 @@ impl OutputCallback {
         self.sync.observe_callback(data.len());
 
         let mut scratch = [0.0f32; CONVERT_CHUNK_SAMPLES];
+        let mut underrun = false;
         for out in data.chunks_mut(CONVERT_CHUNK_SAMPLES) {
             let scratch = &mut scratch[..out.len()];
             let read = self.consumer.pop_slice(scratch);
             if read < scratch.len() {
                 scratch[read..].fill(0.0);
+                underrun = true;
             }
             for (dst, &sample) in out.iter_mut().zip(scratch.iter()) {
                 *dst = T::from_normalized(sample);
             }
+        }
+
+        if underrun {
+            self.sync.record_underrun();
         }
 
         self.report_depth();
@@ -345,7 +465,7 @@ impl OutputCallback {
         let remaining = self.consumer.occupied_len();
         self.sync.update_level(remaining);
 
-        if remaining < self.low_watermark {
+        if remaining <= self.sync.low_watermark(self.low_watermark) {
             self.sync.signal_need_data();
         }
     }
@@ -379,6 +499,234 @@ mod tests {
             producer,
             OutputCallback::new(consumer, AudioSync::new(), ring_samples / 4),
         )
+    }
+
+    #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+    #[test]
+    #[ignore = "explicit LLVM RTSan native callback contract"]
+    fn native_realtime_callback_matrix() {
+        let probe = migo_alloc_probe::RealtimeProbe::load().unwrap();
+        let case = std::env::var("MIGO_RTSAN_CASE").unwrap();
+        let wake = ThreadWakeup::new_audio();
+        let (_producer, mut native) = filled_callback(128);
+        let (_converted_producer, mut converted) = filled_callback(128);
+        native.sync.configure_device(1, 128);
+        converted.sync.configure_device(1, 128);
+        native.sync.bind_wakeup(&wake);
+        converted.sync.bind_wakeup(&wake);
+        native.sync.set_callback_wakeup_enabled(true);
+        converted.sync.set_callback_wakeup_enabled(true);
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let consumer = if case.starts_with("parked-") {
+            let waiter = wake.clone();
+            let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+            let consumer = std::thread::spawn(move || {
+                waiter.bind_audio_thread();
+                ready_tx
+                    .send(std::fs::read_link("/proc/thread-self").unwrap())
+                    .unwrap();
+                waiter.wait();
+                done_tx.send(()).unwrap();
+            });
+            let task = ready_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            // Observe the actual kernel wait instead of guessing how much
+            // sleep suffices on an overloaded CI runner. The independent
+            // trace must additionally observe its FUTEX_WAKE slow path.
+            let wchan = std::path::Path::new("/proc").join(task).join("wchan");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !std::fs::read_to_string(&wchan).unwrap().contains("futex") {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "consumer never parked"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            Some(consumer)
+        } else {
+            assert_eq!(case, "cold-callbacks");
+            wake.bind_audio_thread();
+            None
+        };
+        migo_alloc_probe::on_native_thread(move || {
+            let mut native_out = [0.0f32; 128];
+            let mut converted_out = [0i16; 1025];
+            probe.run_traced(|| {
+                if case == "parked-converted-callback" {
+                    converted.render_converted(&mut converted_out);
+                    converted.render_converted(&mut converted_out);
+                } else {
+                    native.render_native(&mut native_out);
+                    native.render_native(&mut native_out);
+                    converted.render_converted(&mut converted_out);
+                }
+            });
+        })
+        .unwrap();
+        if let Some(consumer) = consumer {
+            done_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            consumer.join().unwrap();
+        } else {
+            assert!(wake.wait_timeout(std::time::Duration::ZERO));
+        }
+    }
+
+    #[test]
+    fn idle_zero_fill_does_not_grow_reserve_and_active_misses_are_coalesced() {
+        let (_producer, mut callback) = filled_callback(256);
+        callback.sync.configure_device(2, 128);
+        let mut out = [0.0f32; 256];
+        callback.render_native(&mut out);
+        for _ in 0..10 {
+            callback.render_native(&mut out);
+            callback.sync.refresh_device_policy();
+        }
+        assert_eq!(callback.sync.device_high_watermark(), 512);
+        assert_eq!(callback.sync.software_underrun_count(), 0);
+        callback.sync.set_callback_wakeup_enabled(true);
+        for _ in 0..10 {
+            callback.render_native(&mut out);
+        }
+        callback.sync.refresh_device_policy();
+        assert_eq!(callback.sync.device_high_watermark(), 768);
+        assert_eq!(callback.sync.software_underrun_count(), 10);
+        callback.sync.refresh_device_policy();
+        assert_eq!(callback.sync.device_high_watermark(), 768);
+    }
+
+    #[test]
+    fn converted_callback_grows_reserve_once_even_across_scratch_chunks() {
+        let (_producer, mut callback) = filled_callback(128);
+        callback.sync.configure_device(1, 1025);
+        callback.sync.set_callback_wakeup_enabled(true);
+        let mut out = [0i16; 1025];
+        callback.render_converted(&mut out);
+        assert_eq!(out[128..], [0; 1025 - 128]);
+        callback.sync.refresh_device_policy();
+        assert_eq!(callback.sync.device_high_watermark(), 3200);
+        assert_eq!(callback.sync.software_underrun_count(), 1);
+    }
+
+    #[test]
+    fn exact_one_burst_remaining_requests_refill_before_ring_is_empty() {
+        let wake = ThreadWakeup::new_audio();
+        wake.bind_audio_thread();
+        let (_producer, mut callback) = filled_callback(512);
+        callback.sync.configure_device(2, 128);
+        callback.sync.bind_wakeup(&wake);
+        callback.sync.set_callback_wakeup_enabled(true);
+        callback.render_native(&mut [0.0; 256]);
+        assert_eq!(callback.sync.buffer_level(), 256);
+        assert!(wake.wait_timeout(std::time::Duration::ZERO));
+    }
+
+    #[test]
+    fn device_callback_wakes_only_for_active_low_watermark_work() {
+        let wake = ThreadWakeup::new_audio();
+        wake.bind_audio_thread();
+        let (mut producer, mut callback) = filled_callback(512);
+        callback.sync.bind_wakeup(&wake);
+        let mut out = [0.0f32; 512];
+        callback.render_native(&mut out); // Disabled during initial/idle output.
+        assert!(callback.sync.check_and_clear());
+        assert!(!wake.wait_timeout(std::time::Duration::ZERO));
+        callback.sync.set_callback_wakeup_enabled(true);
+        producer.push_slice(&out);
+        callback.render_native(&mut out[..128]); // Still above low watermark.
+        assert!(!wake.wait_timeout(std::time::Duration::ZERO));
+        callback.render_native(&mut out);
+        assert!(wake.wait_timeout(std::time::Duration::ZERO));
+        assert!(callback.sync.check_and_clear());
+        callback.sync.set_callback_wakeup_enabled(false);
+        callback.render_native(&mut out);
+        assert!(!wake.wait_timeout(std::time::Duration::ZERO));
+    }
+
+    #[test]
+    fn binding_after_an_early_callback_keeps_the_refill_hint() {
+        let wake = ThreadWakeup::new_audio();
+        wake.bind_audio_thread();
+        let (_producer, mut callback) = filled_callback(128);
+        let mut out = [0.0f32; 128];
+        callback.render_native(&mut out);
+        callback.sync.bind_wakeup(&wake);
+        callback.sync.set_callback_wakeup_enabled(true);
+        assert!(callback.sync.check_and_clear());
+        callback.render_native(&mut out);
+        assert!(wake.wait_timeout(std::time::Duration::ZERO));
+    }
+
+    #[test]
+    fn silent_pumping_does_not_create_a_self_wakeup_loop() {
+        let wake = ThreadWakeup::new_audio();
+        wake.bind_audio_thread();
+        let mut output = AudioOutput::Silent(SilentOutput::new());
+        output.bind_wakeup(&wake);
+        output.sync().set_callback_wakeup_enabled(true);
+        let now = std::time::Instant::now();
+        if let AudioOutput::Silent(silent) = &mut output {
+            silent.resume_at(now);
+            silent.pump_until(now + std::time::Duration::from_millis(10));
+        }
+        assert!(
+            output.sync().check_and_clear(),
+            "the silent render path was exercised"
+        );
+        assert!(
+            !wake.wait_timeout(std::time::Duration::ZERO),
+            "a silent pump already runs on the producer and must not wake itself"
+        );
+    }
+
+    #[test]
+    fn first_native_and_converted_callbacks_with_notification_never_touch_the_heap() {
+        let mut fleet: Vec<_> = (0..WARMUP + MEASURED)
+            .map(|_| {
+                let native_wake = ThreadWakeup::new_audio();
+                let converted_wake = ThreadWakeup::new_audio();
+                native_wake.bind_audio_thread();
+                converted_wake.bind_audio_thread();
+                let (native_producer, native) = filled_callback(CALLBACK_SAMPLES);
+                let (converted_producer, converted) = filled_callback(CALLBACK_SAMPLES);
+                native.sync.bind_wakeup(&native_wake);
+                converted.sync.bind_wakeup(&converted_wake);
+                native.sync.set_callback_wakeup_enabled(true);
+                converted.sync.set_callback_wakeup_enabled(true);
+                (
+                    native_wake,
+                    converted_wake,
+                    native_producer,
+                    converted_producer,
+                    native,
+                    converted,
+                )
+            })
+            .collect();
+        let fleet = migo_alloc_probe::on_native_thread(move || {
+            let mut native_out = vec![0.0f32; CALLBACK_SAMPLES];
+            let mut converted_out = vec![0i16; CALLBACK_SAMPLES];
+            assert_no_steady_state_allocation(
+                Burst {
+                    path: "cold native/converted callback including audio wake notification",
+                    warmup: WARMUP,
+                    measured: MEASURED,
+                },
+                |index| {
+                    fleet[index].4.render_native(&mut native_out);
+                    fleet[index].5.render_converted(&mut converted_out);
+                },
+            );
+            fleet
+        })
+        .unwrap();
+        // Only the registered owner may consume the pending notification.
+        for (native, converted, ..) in &fleet {
+            assert!(native.wait_timeout(std::time::Duration::ZERO));
+            assert!(converted.wait_timeout(std::time::Duration::ZERO));
+        }
     }
 
     /// The steady-state allocation gate, on the hardware callback.

@@ -17,6 +17,8 @@ mod ad_reward_integrity;
 #[cfg(feature = "api-system")]
 mod ad_splash_status;
 mod api_failures;
+// What every API reaches is the full profile's record.
+#[cfg(feature = "profile-full")]
 mod api_reach;
 #[cfg(feature = "api-media")]
 mod audio_aud11;
@@ -25,13 +27,21 @@ mod audio_context_close;
 #[cfg(feature = "api-media")]
 mod audio_source_ended;
 mod binary_helper;
+#[cfg(feature = "api-connectivity")]
+mod ble_peripheral_lifecycle;
 mod callback_isolation;
+#[cfg(feature = "api-media")]
+mod camera_lifecycle;
 mod canvas_follows_surface;
 mod canvas_temp_file;
 mod code_cache_dir;
 #[cfg(feature = "api-sensors")]
 mod device_motion;
 mod fetch_through_the_service;
+#[cfg(feature = "api-media")]
+mod game_recorder_lifecycle;
+#[cfg(feature = "api-media")]
+mod game_recorder_share;
 mod gamepad_haptics;
 mod global_surface;
 mod host_bridge_dispatch;
@@ -55,21 +65,38 @@ mod permission_reporting;
 mod window_resize;
 // Camera and recorder scopes come from `api-media`, bluetooth from
 // `api-connectivity`; all four tests need both.
+mod network_events;
 #[cfg(all(feature = "api-media", feature = "api-connectivity"))]
 mod permission_revocation;
 mod prelude;
+mod promise_style;
 mod published_namespace_isolation;
+#[cfg(feature = "api-media")]
+mod recorder_lifecycle;
 #[cfg(feature = "api-connectivity")]
 mod reporting;
 mod request_through_the_engine;
 mod restart_launch_query;
 mod runtime_restart_boundary;
 mod save_file_to_disk;
+mod websocket_connect;
+// Location from `api-sensors`, the recorder from `api-media`, authorize from
+// `api-connectivity`.
+mod codec_paths;
+#[cfg(all(
+    feature = "api-sensors",
+    feature = "api-media",
+    feature = "api-connectivity"
+))]
+mod scope_asking;
 #[cfg(feature = "api-commerce")]
 mod share;
 mod snapshot_fingerprint;
 mod storage_isolation;
-mod support;
+mod stream_lifecycle;
+mod structured_clone;
+pub(crate) mod support;
+mod task_boundaries;
 mod tcp_socket_rules;
 mod timers;
 mod two_session_identity;
@@ -83,12 +110,15 @@ mod deferred_api;
 #[cfg(feature = "api-connectivity")]
 mod ecosystem;
 mod entry_evaluation;
+mod extension_sources;
 mod namespace_members;
 #[cfg(feature = "api-system")]
 mod update_manager;
 mod v8_limits;
 #[cfg(feature = "api-media")]
 mod video_decoder;
+#[cfg(feature = "api-media")]
+mod video_lifecycle;
 #[cfg(feature = "api-media")]
 mod video_paths;
 mod window_service;

@@ -293,6 +293,11 @@ impl Host {
         vsync_rx: Option<crossbeam_channel::Receiver<f64>>,
         restart_boundary: crate::runtime::restart_boundary::RestartBoundary,
     ) -> EngineResult<Self> {
+        // On Android Skia's text layout reads V8's ICU, and the render thread
+        // the shell starts builds its text context before the JavaScript
+        // runtime below exists. ICU caches a resource bundle it failed to open,
+        // so the data goes in first, not merely "before the first isolate".
+        runtime_v8::install_icu_data();
         // The engine-neutral half: render thread, frame clock, audio, platform
         // services, GPU capabilities, background and context-loss state. It is
         // shared with the external-frame execution, which needs every one of
@@ -839,33 +844,14 @@ impl Host {
             // is the only place that may act on it: a handler comparing it again
             // would be a second decision point that could disagree with the one
             // that already let this command through. Hence `_` here and below.
-            HostCommand::RecorderEvent {
-                event_type,
-                json_payload,
-                runtime_generation: _,
-            } => {
-                self.js.dispatch_recorder_event(&event_type, &json_payload);
-                Ok(())
-            }
-
             HostCommand::RecorderFrameData {
+                recording_id,
                 data,
                 is_last_frame,
-                runtime_generation: _,
                 credit: _credit,
             } => {
-                self.js.dispatch_recorder_frame_data(data, is_last_frame);
-                Ok(())
-            }
-
-            HostCommand::CameraEvent {
-                camera_id,
-                event_type,
-                runtime_generation: _,
-                json_payload,
-            } => {
                 self.js
-                    .dispatch_camera_event(camera_id, &event_type, &json_payload);
+                    .dispatch_recorder_frame_data(recording_id, data, is_last_frame);
                 Ok(())
             }
 
@@ -938,16 +924,6 @@ impl Host {
                     5 | 6 => tracing::error!("Thermal: EMERGENCY/SHUTDOWN ({status})"),
                     _ => tracing::debug!("Thermal: unknown ({status})"),
                 }
-                Ok(())
-            }
-
-            HostCommand::OnVideoStateChange {
-                video_id,
-                event_type,
-                data,
-                runtime_generation: _,
-            } => {
-                self.js.dispatch_video_event(video_id, &event_type, &data);
                 Ok(())
             }
 

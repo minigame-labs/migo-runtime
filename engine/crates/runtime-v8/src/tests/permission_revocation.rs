@@ -31,42 +31,47 @@ struct FakeCamera {
 }
 
 impl CameraService for FakeCamera {
-    fn create(&self, _options_json: &str) -> Result<String, ServiceError> {
-        self.protected_calls.fetch_add(1, Ordering::SeqCst);
-        Ok("{}".to_string())
-    }
-
-    fn take_photo_async(&self, _request_id: u32, _options_json: &str) -> Result<(), ServiceError> {
+    fn create(&self, _request_json: &str) -> Result<(), ServiceError> {
         self.protected_calls.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 
-    fn start_record(&self, _options_json: &str) -> Result<String, ServiceError> {
-        self.protected_calls.fetch_add(1, Ordering::SeqCst);
-        Ok("{}".to_string())
-    }
-
-    fn set_zoom(&self, _options_json: &str) -> Result<String, ServiceError> {
-        self.protected_calls.fetch_add(1, Ordering::SeqCst);
-        Ok("{}".to_string())
-    }
-
-    fn listen_frame_change(&self, _camera_id: u32) -> Result<(), ServiceError> {
+    fn set(&self, _request_json: &str) -> Result<(), ServiceError> {
         self.protected_calls.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 
-    fn destroy(&self, _camera_id: u32) -> Result<(), ServiceError> {
+    fn take_photo(&self, _request_json: &str) -> Result<(), ServiceError> {
+        self.protected_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn start_record(&self, _request_json: &str) -> Result<(), ServiceError> {
+        self.protected_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn set_zoom(&self, _request_json: &str) -> Result<(), ServiceError> {
+        self.protected_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn listen_frame_change(&self, _request_json: &str) -> Result<(), ServiceError> {
+        self.protected_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn destroy(&self, _request_json: &str) -> Result<(), ServiceError> {
         self.cleanup_calls.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 
-    fn stop_record(&self, _options_json: &str) -> Result<String, ServiceError> {
+    fn stop_record(&self, _request_json: &str) -> Result<(), ServiceError> {
         self.cleanup_calls.fetch_add(1, Ordering::SeqCst);
-        Ok("{}".to_string())
+        Ok(())
     }
 
-    fn close_frame_change(&self, _camera_id: u32) -> Result<(), ServiceError> {
+    fn close_frame_change(&self, _request_json: &str) -> Result<(), ServiceError> {
         self.cleanup_calls.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -84,17 +89,17 @@ impl RecorderService for FakeRecorder {
         Ok(())
     }
 
-    fn pause(&self) -> Result<(), ServiceError> {
+    fn pause(&self, _request_json: &str) -> Result<(), ServiceError> {
         self.protected_calls.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 
-    fn resume(&self) -> Result<(), ServiceError> {
+    fn resume(&self, _request_json: &str) -> Result<(), ServiceError> {
         self.protected_calls.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 
-    fn stop(&self) -> Result<(), ServiceError> {
+    fn stop(&self, _request_json: &str) -> Result<(), ServiceError> {
         self.cleanup_calls.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
@@ -354,6 +359,8 @@ fn run(runtime: &mut JsRuntime, source: &'static str) {
 
 #[test]
 fn denied_camera_can_release_but_cannot_acquire_or_use() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let bundle = Bundle::new(true);
     let mut runtime = boot(bundle.clone());
     run(&mut runtime, "globalThis.__camera = migo.createCamera({});");
@@ -362,11 +369,13 @@ fn denied_camera_can_release_but_cannot_acquire_or_use() {
 
     run(
         &mut runtime,
-        "try { __camera.takePhoto({ fail() {} }); } catch (_) {} \
-         __camera.startRecord({ fail() {} }); \
-         __camera.setZoom({ zoom: 2, fail() {} }); \
+        "const ignore = () => {}; \
+         __camera.takePhoto('normal').catch(ignore); \
+         __camera.startRecord().catch(ignore); \
+         __camera.setZoom({ zoom: 2 }).catch(ignore); \
+         __camera.x = 10; \
          __camera.listenFrameChange(); \
-         __camera.stopRecord({ fail() {} }); \
+         __camera.stopRecord(false).catch(ignore); \
          __camera.closeFrameChange(); \
          __camera.destroy();",
     );
@@ -377,6 +386,8 @@ fn denied_camera_can_release_but_cannot_acquire_or_use() {
 
 #[test]
 fn denied_recorder_can_stop_but_not_start_pause_or_resume() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let bundle = Bundle::new(true);
     let mut runtime = boot(bundle.clone());
     run(
@@ -399,6 +410,8 @@ fn denied_recorder_can_stop_but_not_start_pause_or_resume() {
 
 #[test]
 fn denied_bluetooth_can_close_and_stop_but_not_acquire_query_or_write() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let bundle = Bundle::new(true);
     let mut runtime = boot(bundle.clone());
     run(&mut runtime, "migo.openBluetoothAdapter({ fail() {} });");
@@ -424,6 +437,8 @@ fn denied_bluetooth_can_close_and_stop_but_not_acquire_query_or_write() {
 
 #[test]
 fn album_write_and_shared_user_info_op_require_their_scopes() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let sandbox = Sandbox::new("album");
     std::fs::write(sandbox.paths.temp_dir().join("image.png"), b"png").unwrap();
 
@@ -459,6 +474,8 @@ fn album_write_and_shared_user_info_op_require_their_scopes() {
 /// named, under a policy that granted nothing at all.
 #[test]
 fn a_content_path_reaches_the_host_as_the_sandbox_file_and_nothing_else_does() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let sandbox = Sandbox::new("paths");
     let image = sandbox.paths.user_data_dir().join("shot.png");
     std::fs::write(&image, b"png").unwrap();

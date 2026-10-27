@@ -1,6 +1,12 @@
 /*
  * The device services this host supplies through the host-service channel
- * (migo/host_services.h): permission, location and the motion sensors.
+ * (migo/host_services.h): permission, location, the motion sensors and a
+ * camera -- one that makes its own pictures, a gradient that moves, and
+ * photographs (BMP) and records (YUV4MPEG2) them -- and a microphone that hears
+ * a steady 440 Hz tone, recorded as WAV or raw PCM with its frames -- video
+ * players that play any source as a clip two seconds long, with nothing on
+ * screen -- and a BLE peripheral's servers, which only the feed's central
+ * connects to.
  *
  * The host runs on a desktop -- often a VM -- with no motion sensors and no
  * position of its own, so its device is scripted, as its gamepad and keyboard
@@ -11,10 +17,18 @@
  *   SET-SENSOR gyroscope <x>:<y>:<z>               rad/s
  *   SET-SENSOR orientation <azimuth>:<pitch>:<roll>  degrees; the heading is used
  *   SET-LOCATION <latitude> <longitude>            WGS-84 degrees
+ *   BLE-CENTRAL CONNECT <deviceId>                 a central connects to every server
+ *   BLE-CENTRAL SUBSCRIBE <serviceId> <characteristicId>    ... and UNSUBSCRIBE
+ *   BLE-CENTRAL READ <serviceId> <characteristicId>
+ *   BLE-CENTRAL WRITE <serviceId> <characteristicId> <hex>
+ *   BLE-CENTRAL DISCONNECT
  *
  * -- the Android emulator console's sensor names and units, which are what
  * migo-conformance's bundles ask for. Until a line says otherwise the device
- * lies flat and face up, facing north, at rest, with no position fix.
+ * lies flat and face up, facing north, at rest, with no position fix. The
+ * central's requests go to the server serving the service they name; it writes
+ * back what it reads and what it is notified of, so content sees the round
+ * trip.
  *
  * The engine calls services_on_call on its own thread, and nothing is done
  * there: the call is queued, and services_pump, run from the host's loop,
@@ -31,7 +45,11 @@
 #define C_HOST_SERVICES                                                        \
     ((UINT64_C(1) << MIGO_HOST_SERVICE_PERMISSION) |                           \
      (UINT64_C(1) << MIGO_HOST_SERVICE_LOCATION) |                             \
-     (UINT64_C(1) << MIGO_HOST_SERVICE_MOTION))
+     (UINT64_C(1) << MIGO_HOST_SERVICE_MOTION) |                               \
+     (UINT64_C(1) << MIGO_HOST_SERVICE_CAMERA) |                               \
+     (UINT64_C(1) << MIGO_HOST_SERVICE_RECORDER) |                             \
+     (UINT64_C(1) << MIGO_HOST_SERVICE_VIDEO) |                                \
+     (UINT64_C(1) << MIGO_HOST_SERVICE_BLE_PERIPHERAL))
 
 /* Opens the feed, when MIGO_C_HOST_DEVICE_FEED names one. */
 void services_init(void);

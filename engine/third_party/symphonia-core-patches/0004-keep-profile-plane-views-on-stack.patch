@@ -1,0 +1,11 @@
+--- symphonia-core-0.6.1/src/audio/buf.rs
++++ symphonia-core-0.6.1/src/audio/buf.rs
+@@ -21,7 +21,7 @@
+ 
+ /// The maximum number of audio plane slices that will be stored on the stack before storing the
+ /// slices on the heap.
+-const MAX_STACK_PLANE_SLICES: usize = 8; // Upto 7.1 audio.
++const MAX_STACK_PLANE_SLICES: usize = 32; // Embedding profile permits up to 32 channels.
+ 
+ /// A dynamically sized container for multi-channel planar audio for a known sample format.
+ ///

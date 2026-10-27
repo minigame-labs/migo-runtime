@@ -962,8 +962,10 @@ mod tests {
     fn a_wake_sends_the_service_stream_first_then_the_frame_records() {
         let (session, endpoint, _) = start();
         let mut producer = connect(&endpoint);
-        wait_until("the producer is connected", || {
-            session.counters.snapshot().producer_connected
+        // The connection asks for a drain of its own; a wake while that one is
+        // still pending joins it and is not counted, so the wake comes after.
+        wait_until("the connection's drain has ended", || {
+            session.drains.load(Ordering::Relaxed) >= 1
         });
         // The connection drains what waits, and a wake while that drain runs is
         // folded into it rather than counted: queued before it ended, these went

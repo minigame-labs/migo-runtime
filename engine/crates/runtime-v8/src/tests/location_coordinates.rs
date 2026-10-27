@@ -109,6 +109,8 @@ fn assert_near(actual: (f64, f64), expected: (f64, f64)) {
 
 #[test]
 fn the_host_answers_wgs84_and_the_engine_converts_to_gcj02() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let host = Arc::new(FakeLocation::default());
     let mut runtime = boot(host.clone());
     run(
@@ -140,6 +142,8 @@ fn the_host_answers_wgs84_and_the_engine_converts_to_gcj02() {
 
 #[test]
 fn wgs84_and_points_outside_china_are_the_hosts_own() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let host = Arc::new(FakeLocation::default());
     let mut runtime = boot(host.clone());
     run(
@@ -167,6 +171,8 @@ fn wgs84_and_points_outside_china_are_the_hosts_own() {
 
 #[test]
 fn a_fuzzy_position_is_rounded_by_the_engine_then_converted() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let host = Arc::new(FakeLocation::default());
     let mut runtime = boot(host.clone());
     run(
@@ -206,6 +212,8 @@ fn a_fuzzy_position_is_rounded_by_the_engine_then_converted() {
 
 #[test]
 fn a_failure_is_the_hosts_unchanged() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let host = Arc::new(FakeLocation::default());
     let mut runtime = boot(host.clone());
     run(

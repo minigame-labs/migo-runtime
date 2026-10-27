@@ -19,32 +19,29 @@ use std::{
 use shared::{
     protocol::error::ServiceError,
     services::{FrameTiming, VideoDecoderService, VideoFrameSource},
+    yuv::{self, Colour, Matrix, Plane},
 };
 
-use crate::{
-    android::surface::ANativeWindow,
-    yuv::{self, Colour, Matrix, Plane},
+use crate::android::{
+    media_ndk::{
+        AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM, AMEDIACODEC_INFO_OUTPUT_BUFFERS_CHANGED,
+        AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED, AMEDIACODEC_INFO_TRY_AGAIN_LATER, AMediaCodec,
+        AMediaCodec_configure, AMediaCodec_createDecoderByType, AMediaCodec_delete,
+        AMediaCodec_dequeueInputBuffer, AMediaCodec_dequeueOutputBuffer, AMediaCodec_flush,
+        AMediaCodec_getInputBuffer, AMediaCodec_getOutputFormat, AMediaCodec_queueInputBuffer,
+        AMediaCodec_releaseOutputBuffer, AMediaCodec_start, AMediaCodec_stop,
+        AMediaCodecBufferInfo, AMediaFormat, AMediaFormat_delete, AMediaFormat_getInt32,
+        AMediaFormat_getString,
+    },
+    surface::ANativeWindow,
 };
 
 #[repr(C)]
 struct AMediaExtractor(c_void);
 #[repr(C)]
-struct AMediaFormat(c_void);
-#[repr(C)]
-struct AMediaCodec(c_void);
-#[repr(C)]
 struct AImageReader(c_void);
 #[repr(C)]
 struct AImage(c_void);
-
-#[repr(C)]
-#[derive(Default)]
-struct AMediaCodecBufferInfo {
-    offset: i32,
-    size: i32,
-    presentation_time_us: i64,
-    flags: u32,
-}
 
 #[repr(C)]
 struct AImageReaderImageListener {
@@ -61,19 +58,10 @@ struct AImageCropRect {
     bottom: i32,
 }
 
-/// `off_t`, which is 32 bits on the 32-bit ABIs.
-#[cfg(target_pointer_width = "64")]
-type OffT = i64;
-#[cfg(not(target_pointer_width = "64"))]
-type OffT = i32;
-
 const AMEDIA_OK: i32 = 0;
-const AMEDIA_IMGREADER_NO_BUFFER_AVAILABLE: i32 = -30000;
+// AMEDIA_IMGREADER_ERROR_BASE - 1: a frame the codec rendered has not reached the reader yet.
+const AMEDIA_IMGREADER_NO_BUFFER_AVAILABLE: i32 = -30001;
 const AMEDIAEXTRACTOR_SEEK_PREVIOUS_SYNC: i32 = 0;
-const AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM: u32 = 4;
-const AMEDIACODEC_INFO_TRY_AGAIN_LATER: isize = -1;
-const AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED: isize = -2;
-const AMEDIACODEC_INFO_OUTPUT_BUFFERS_CHANGED: isize = -3;
 const AIMAGE_FORMAT_YUV_420_888: i32 = 0x23;
 
 #[link(name = "mediandk")]
@@ -104,49 +92,6 @@ unsafe extern "C" {
     fn AMediaExtractor_getSampleTime(extractor: *mut AMediaExtractor) -> i64;
     fn AMediaExtractor_advance(extractor: *mut AMediaExtractor) -> bool;
     fn AMediaExtractor_seekTo(extractor: *mut AMediaExtractor, position_us: i64, mode: i32) -> i32;
-
-    fn AMediaFormat_delete(format: *mut AMediaFormat) -> i32;
-    fn AMediaFormat_getString(
-        format: *mut AMediaFormat,
-        name: *const c_char,
-        out: *mut *const c_char,
-    ) -> bool;
-    fn AMediaFormat_getInt32(format: *mut AMediaFormat, name: *const c_char, out: *mut i32)
-    -> bool;
-
-    fn AMediaCodec_createDecoderByType(mime: *const c_char) -> *mut AMediaCodec;
-    fn AMediaCodec_configure(
-        codec: *mut AMediaCodec,
-        format: *const AMediaFormat,
-        surface: *mut ANativeWindow,
-        crypto: *mut c_void,
-        flags: u32,
-    ) -> i32;
-    fn AMediaCodec_start(codec: *mut AMediaCodec) -> i32;
-    fn AMediaCodec_stop(codec: *mut AMediaCodec) -> i32;
-    fn AMediaCodec_delete(codec: *mut AMediaCodec) -> i32;
-    fn AMediaCodec_flush(codec: *mut AMediaCodec) -> i32;
-    fn AMediaCodec_dequeueInputBuffer(codec: *mut AMediaCodec, timeout_us: i64) -> isize;
-    fn AMediaCodec_getInputBuffer(
-        codec: *mut AMediaCodec,
-        index: usize,
-        size: *mut usize,
-    ) -> *mut u8;
-    fn AMediaCodec_queueInputBuffer(
-        codec: *mut AMediaCodec,
-        index: usize,
-        offset: OffT,
-        size: usize,
-        time_us: u64,
-        flags: u32,
-    ) -> i32;
-    fn AMediaCodec_dequeueOutputBuffer(
-        codec: *mut AMediaCodec,
-        info: *mut AMediaCodecBufferInfo,
-        timeout_us: i64,
-    ) -> isize;
-    fn AMediaCodec_getOutputFormat(codec: *mut AMediaCodec) -> *mut AMediaFormat;
-    fn AMediaCodec_releaseOutputBuffer(codec: *mut AMediaCodec, index: usize, render: bool) -> i32;
 
     fn AImageReader_new(
         width: i32,

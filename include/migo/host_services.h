@@ -56,6 +56,10 @@ typedef uint32_t MigoHostService;
 #define MIGO_HOST_SERVICE_WINDOW 16U
 #define MIGO_HOST_SERVICE_ECOSYSTEM 17U
 #define MIGO_HOST_SERVICE_UPDATE 18U
+#define MIGO_HOST_SERVICE_CAMERA 19U
+#define MIGO_HOST_SERVICE_RECORDER 20U
+#define MIGO_HOST_SERVICE_VIDEO 21U
+#define MIGO_HOST_SERVICE_BLE_PERIPHERAL 22U
 
 /*
  * Ads. All six are commands addressed to the advert by the adId in their
@@ -120,6 +124,18 @@ typedef uint32_t MigoHostService;
  *                            options.
  *   SHOW_SHARE_IMAGE_MENU {"path", "needShowEntrance", "entrancePath"?} -- the
  *                          share sheet for one image.
+ *   SHARE_GAME_RECORDING {"video", "title"?, "desc"?, "query"?, "path"?, "bgm"?,
+ *                         "timeRange"?, "volume", "atempo", "audioMix"} -- the
+ *                         game's last finished recording (getGameRecorder), for
+ *                         its share button or operateGameRecorderVideo. video is
+ *                         the engine's own file, readable for the rest of the
+ *                         session; bgm a real path resolved through the
+ *                         sandbox; timeRange [[from, to], ...] in ms of the
+ *                         recording, to be cut to, at most 60 s in all; volume
+ *                         0 to 1; atempo one of 0.3, 0.5, 1, 1.5, 2, 2.5, 3;
+ *                         audioMix whether bgm mixes with the recording's own
+ *                         sound. The editing is the host's. The result may carry
+ *                         "shareToGameCenter" {"errCode", "errMsg"}.
  *
  * The share menu is the host's, and two commands keep it in step with content:
  *
@@ -144,6 +160,7 @@ typedef uint32_t MigoHostService;
 #define MIGO_SHARE_SHOW_SHARE_IMAGE_MENU 2U
 #define MIGO_SHARE_SET_SHARE_MENU 3U
 #define MIGO_SHARE_MENU_SHARE_REPLY 4U
+#define MIGO_SHARE_SHARE_GAME_RECORDING 5U
 #define MIGO_SHARE_EVENT_MENU_SHARE 0U
 
 /* Navigation: one call and two commands. */
@@ -439,6 +456,194 @@ typedef uint32_t MigoHostService;
 #define MIGO_UPDATE_EVENT_STATE 0U
 
 /*
+ * The camera: createCamera's preview over the game, its frames, photos, video
+ * and zoom. Every request names its camera by the cameraId content gave CREATE,
+ * and a call is answered once what it asked has happened. scope.camera is the
+ * engine's: no request that opens or uses a camera reaches the host before it is
+ * granted. Requests and answers, in order:
+ *
+ *   CREATE {"cameraId", "x", "y", "width", "height", "devicePosition", "flash", "size"}
+ *       -> {} once the preview shows at x, y, width x height in content's
+ *       coordinates (the logical pixels its touches arrive in, from the game
+ *       surface's top left), covering it, over the game; devicePosition "back" or
+ *       "front", flash "auto", "on" or "off", and frames of size "small",
+ *       "medium" or "large" -- the reference sets no pixel counts; Android's are
+ *       its camera's nearest to 320 x 240, 1280 x 720 and 1920 x 1080.
+ *   DESTROY {"cameraId"}, a command: the camera closed and its preview gone; its
+ *       calls still unanswered fail ("camera destroyed"). It follows a CREATE
+ *       that failed too, so a camera that did not open is let go the one way
+ *       every camera is.
+ *   SET {"cameraId", any of "x", "y", "width", "height", "devicePosition",
+ *       "flash", "size"}, a command: what content changed on it.
+ *   TAKE_PHOTO {"cameraId", "quality"} -> {"tempImagePath", "width", "height"},
+ *       quality "high", "normal" or "low"; the file is handed over.
+ *   START_RECORD {"cameraId"} -> {} once it records.
+ *   STOP_RECORD {"cameraId", "compressed"} -> {"tempThumbPath", "tempVideoPath"}
+ *       once the video and its cover are written; the files are handed over.
+ *   SET_ZOOM {"cameraId", "zoom"} -> {"zoom"}: the zoom the camera took, from 1
+ *       to its largest, to a tenth.
+ *   LISTEN_FRAME_CHANGE {"cameraId"}, a command: from now until
+ *       CLOSE_FRAME_CHANGE {"cameraId"}, each frame goes to
+ *       migo_session_post_camera_frame.
+ *
+ * What happens to a camera on its own is reported with {"cameraId"}: EVENT_STOP
+ * when it stops -- the App went to the background, another App took the device
+ * -- and EVENT_AUTH_CANCEL when the player refuses the system's permission,
+ * which fails CREATE too.
+ */
+#define MIGO_CAMERA_CREATE 0U
+#define MIGO_CAMERA_DESTROY 1U
+#define MIGO_CAMERA_SET 2U
+#define MIGO_CAMERA_TAKE_PHOTO 3U
+#define MIGO_CAMERA_START_RECORD 4U
+#define MIGO_CAMERA_STOP_RECORD 5U
+#define MIGO_CAMERA_SET_ZOOM 6U
+#define MIGO_CAMERA_LISTEN_FRAME_CHANGE 7U
+#define MIGO_CAMERA_CLOSE_FRAME_CHANGE 8U
+#define MIGO_CAMERA_EVENT_STOP 0U
+#define MIGO_CAMERA_EVENT_AUTH_CANCEL 1U
+
+/*
+ * MIGO_HOST_SERVICE_RECORDER: getRecorderManager's microphone, one recording at
+ * a time. Every method is a command -- the reference's recorder is heard through
+ * events -- and scope.record is the engine's: no START reaches the host before
+ * it is granted. Each request carries the recording's "recordingId", and every
+ * event and frame the host reports carries it back: content drops what is not
+ * of the recording it holds.
+ *
+ *   START {"recordingId", "duration", "sampleRate", "numberOfChannels",
+ *       "encodeBitRate", "format", "frameSize"?, "audioSource", "audioMode"}:
+ *       record for at most duration ms (up to 600000), format "mp3", "aac",
+ *       "wav" or "PCM"; with frameSize (KB), hand over frames of about that size
+ *       with migo_session_post_recorder_frame as they are recorded. A recording
+ *       already under way stops first, with no STOP. Reported: EVENT_START once
+ *       it records, or EVENT_ERROR.
+ *   PAUSE, RESUME {"recordingId"}: EVENT_PAUSE, EVENT_RESUME once done; a
+ *       request in the wrong state is ignored.
+ *   STOP {"recordingId"}: EVENT_STOP once the file is written.
+ *
+ * Events, each {"recordingId", ...}: START, PAUSE, RESUME; STOP with
+ * {"tempFilePath", "duration" (ms), "fileSize" (bytes)} -- also when the
+ * duration runs out -- the file handed over as a call result's are; ERROR with
+ * {"errMsg"}; INTERRUPTION_BEGIN and INTERRUPTION_END when the system takes the
+ * microphone away and gives it back.
+ */
+#define MIGO_RECORDER_START 0U
+#define MIGO_RECORDER_PAUSE 1U
+#define MIGO_RECORDER_RESUME 2U
+#define MIGO_RECORDER_STOP 3U
+#define MIGO_RECORDER_EVENT_START 0U
+#define MIGO_RECORDER_EVENT_PAUSE 1U
+#define MIGO_RECORDER_EVENT_RESUME 2U
+#define MIGO_RECORDER_EVENT_STOP 3U
+#define MIGO_RECORDER_EVENT_ERROR 4U
+#define MIGO_RECORDER_EVENT_INTERRUPTION_BEGIN 5U
+#define MIGO_RECORDER_EVENT_INTERRUPTION_END 6U
+
+/*
+ * MIGO_HOST_SERVICE_VIDEO: createVideo's players, each shown where content put
+ * it -- x, y, width x height in content's coordinates (the logical pixels its
+ * touches arrive in, from the game surface's top left) -- over the game, or
+ * under it when underGameView. Every request carries the player's "videoId",
+ * which content takes from the Host id space, and every event names it back: an
+ * event for a player content no longer holds is dropped. A call is answered once
+ * what it asked has happened, as the reference's promises settle.
+ *
+ *   CREATE {"videoId", "x", "y", "width", "height", "src", "poster",
+ *       "initialTime", "playbackRate", "live", "objectFit", "controls",
+ *       "showProgress", "showProgressInControlMode", "backgroundColor",
+ *       "autoplay", "loop", "muted", "obeyMuteSwitch", "enableProgressGesture",
+ *       "enablePlayGesture", "showCenterPlayBtn", "underGameView",
+ *       "autoPauseIfNavigate", "autoPauseIfOpenNative"}, a command: src and
+ *       poster are a file the host can open or a URL the engine allowed.
+ *   DESTROY {"videoId"}, a command: the player gone; its calls still
+ *       unanswered fail ("video destroyed").
+ *   SET {"videoId", any of CREATE's options}, a command: what content changed.
+ *   PLAY, PAUSE, STOP {"videoId"} -> {} once playing, paused, or stopped back
+ *       at the start.
+ *   SEEK {"videoId", "time"} -> {} once at time seconds.
+ *   REQUEST_FULL_SCREEN {"videoId", "direction"} -> {} once it fills the
+ *       screen, direction 0, 90 (counterclockwise) or -90 (clockwise).
+ *   EXIT_FULL_SCREEN {"videoId"} -> {} once back where content put it.
+ *
+ * Events, each {"videoId", ...}: PLAY, PAUSE, ENDED, WAITING; TIME_UPDATE with
+ * {"position", "duration"} in seconds, several a second while it plays; ERROR
+ * with {"errMsg"}; PROGRESS with {"buffered" (percent), "duration"}. TIME_UPDATE
+ * and PROGRESS are readings the next one supersedes: refused with
+ * MIGO_ERROR_WOULD_BLOCK, and dropped, when content falls behind.
+ */
+#define MIGO_VIDEO_CREATE 0U
+#define MIGO_VIDEO_DESTROY 1U
+#define MIGO_VIDEO_SET 2U
+#define MIGO_VIDEO_PLAY 3U
+#define MIGO_VIDEO_PAUSE 4U
+#define MIGO_VIDEO_STOP 5U
+#define MIGO_VIDEO_SEEK 6U
+#define MIGO_VIDEO_REQUEST_FULL_SCREEN 7U
+#define MIGO_VIDEO_EXIT_FULL_SCREEN 8U
+#define MIGO_VIDEO_EVENT_PLAY 0U
+#define MIGO_VIDEO_EVENT_PAUSE 1U
+#define MIGO_VIDEO_EVENT_ENDED 2U
+#define MIGO_VIDEO_EVENT_TIME_UPDATE 3U
+#define MIGO_VIDEO_EVENT_ERROR 4U
+#define MIGO_VIDEO_EVENT_WAITING 5U
+#define MIGO_VIDEO_EVENT_PROGRESS 6U
+
+/*
+ * MIGO_HOST_SERVICE_BLE_PERIPHERAL: createBLEPeripheralServer's GATT servers --
+ * this device as a Bluetooth LE peripheral. Every request carries the server's
+ * "serverId", which content takes from the Host id space, and every event names
+ * it back. Every method is a call, answered once what it asked has happened, or
+ * with {"error", "errCode"} in the central role's Bluetooth codes (10000 the
+ * adapter is not open, 10001 Bluetooth is not available, ...). Binary values
+ * cross as lower-case hex. The host closes a session's servers with it.
+ *
+ *   CREATE_SERVER {"serverId"} -> {} once it serves.
+ *   ADD_SERVICE {"serverId", "service": {"uuid", "characteristics": [{"uuid",
+ *       "properties": {"write", "writeNoResponse", "read", "notify",
+ *       "indicate"}, "permission": {"readable", "writeable",
+ *       "readEncryptionRequired", "writeEncryptionRequired"}, "value",
+ *       "descriptors": [{"uuid", "permission": {"write", "read"},
+ *       "value"}]}]}} -> {} once served; every flag is present.
+ *   REMOVE_SERVICE {"serverId", "serviceId"} -> {} once removed.
+ *   START_ADVERTISING {"serverId", "advertiseRequest": {"connectable",
+ *       "deviceName"?, "serviceUuids"?, "manufacturerData"?:
+ *       [{"manufacturerId" ("0x" and hex), "manufacturerSpecificData"}],
+ *       "beacon"?: {"uuid", "major", "minor", "measuredPower"?}}, "powerLevel"
+ *       ("low", "medium", "high")} -> {} once advertising; it replaces what
+ *       this server advertised. A beacon comes without the other three.
+ *   STOP_ADVERTISING {"serverId"} -> {} once stopped.
+ *   WRITE_CHARACTERISTIC_VALUE {"serverId", "serviceId", "characteristicId",
+ *       "value", "needNotify", "callbackId"?} -> {} once set, and, with
+ *       needNotify, sent to the centrals subscribed to it; with callbackId it
+ *       is also the response to that read or write request, if one waits.
+ *
+ * Events, each {"serverId", ...}: CHARACTERISTIC_READ_REQUEST with
+ * {"serviceId", "characteristicId", "callbackId"} and
+ * CHARACTERISTIC_WRITE_REQUEST with those and "value" -- callbackId a number
+ * the host makes, which content answers with WRITE_CHARACTERISTIC_VALUE. A
+ * request content does not answer gets no response, as the reference says; the
+ * host itself answers only what content never sees: the rest of a long read,
+ * from the value content gave; a long write's parts until it is executed, then
+ * reported whole; descriptors, from their values. CHARACTERISTIC_SUBSCRIBED
+ * and CHARACTERISTIC_UNSUBSCRIBED with {"serviceId", "characteristicId"} as a
+ * central turns its notifications or indications on or off.
+ * CONNECTION_STATE_CHANGED with {"deviceId", "connected"} as a central
+ * connects or disconnects.
+ */
+#define MIGO_BLE_PERIPHERAL_CREATE_SERVER 0U
+#define MIGO_BLE_PERIPHERAL_ADD_SERVICE 1U
+#define MIGO_BLE_PERIPHERAL_REMOVE_SERVICE 2U
+#define MIGO_BLE_PERIPHERAL_START_ADVERTISING 3U
+#define MIGO_BLE_PERIPHERAL_STOP_ADVERTISING 4U
+#define MIGO_BLE_PERIPHERAL_WRITE_CHARACTERISTIC_VALUE 5U
+#define MIGO_BLE_PERIPHERAL_EVENT_CHARACTERISTIC_READ_REQUEST 0U
+#define MIGO_BLE_PERIPHERAL_EVENT_CHARACTERISTIC_WRITE_REQUEST 1U
+#define MIGO_BLE_PERIPHERAL_EVENT_CHARACTERISTIC_SUBSCRIBED 2U
+#define MIGO_BLE_PERIPHERAL_EVENT_CHARACTERISTIC_UNSUBSCRIBED 3U
+#define MIGO_BLE_PERIPHERAL_EVENT_CONNECTION_STATE_CHANGED 4U
+
+/*
  * Content's permission scopes, in migo.getSetting()'s order. The host decides
  * each; until it reports one, content's capability calls that need it fail with
  * "auth deny", and getSetting omits it -- nobody has decided, which content
@@ -618,6 +823,47 @@ typedef struct MigoBleCharacteristicValue {
 MIGO_STATIC_ASSERT(offsetof(MigoBleCharacteristicValue, struct_size) == 0,
                    "every versioned struct must begin with struct_size");
 
+/* How a frame's four-byte pixels are laid out. */
+typedef uint32_t MigoPixelFormat;
+#define MIGO_PIXEL_FORMAT_RGBA8 0U
+#define MIGO_PIXEL_FORMAT_BGRA8 1U
+
+/* One frame of a camera content listens to (MIGO_CAMERA_LISTEN_FRAME_CHANGE):
+ * width x height pixels of format, rows top first, row_stride bytes apart (at
+ * least width * 4). Alpha is not read: content's frames are opaque. */
+typedef struct MigoCameraFrame {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint32_t camera_id;
+    uint32_t width;
+    uint32_t height;
+    uint32_t row_stride;
+    MigoPixelFormat format;
+    uint32_t reserved0;
+    const uint8_t *pixels;
+} MigoCameraFrame;
+
+MIGO_STATIC_ASSERT(offsetof(MigoCameraFrame, struct_size) == 0,
+                   "every versioned struct must begin with struct_size");
+MIGO_STATIC_ASSERT(offsetof(MigoCameraFrame, pixels) == 32, "MigoCameraFrame layout changed");
+
+/* One frame of a recording whose START asked for frames: length bytes of the
+ * recording's format (at most 1 MiB); is_last_frame 1 for the frame that ends
+ * the recording, which may be empty, else 0. */
+typedef struct MigoRecorderFrame {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint32_t recording_id;
+    uint32_t is_last_frame;
+    const uint8_t *data;
+    uint32_t length;
+    uint32_t reserved0;
+} MigoRecorderFrame;
+
+MIGO_STATIC_ASSERT(offsetof(MigoRecorderFrame, struct_size) == 0,
+                   "every versioned struct must begin with struct_size");
+MIGO_STATIC_ASSERT(offsetof(MigoRecorderFrame, data) == 16, "MigoRecorderFrame layout changed");
+
 /*
  * The largest payload or message either direction carries, in bytes. A longer
  * one is refused with MIGO_ERROR_INVALID_ARGUMENT before any byte is read.
@@ -713,9 +959,12 @@ MIGO_API MigoResult MIGO_CALL migo_session_update_host_service_call(
 /*
  * Report one of a declared service's own events, from any thread. payload is a
  * JSON object, length-delimited UTF-8, read during the call. Returns MIGO_OK
- * when the event was accepted or there is no running content to deliver it to,
- * and MIGO_ERROR_INVALID_ARGUMENT for a service the host did not declare, an
- * event that service does not define, or a payload that is not a JSON object.
+ * when the event was accepted or there is no running content to deliver it to;
+ * MIGO_ERROR_WOULD_BLOCK when the event is a reading the next one supersedes
+ * (MIGO_VIDEO_EVENT_TIME_UPDATE, MIGO_VIDEO_EVENT_PROGRESS) and content has
+ * fallen behind -- it is dropped; any other event always arrives; and
+ * MIGO_ERROR_INVALID_ARGUMENT for a service the host did not declare, an event
+ * that service does not define, or a payload that is not a JSON object.
  */
 MIGO_API MigoResult MIGO_CALL migo_session_post_host_service_event(
     MigoSession *session, MigoHostService service, uint32_t event,
@@ -791,6 +1040,34 @@ MIGO_API MigoResult MIGO_CALL migo_session_post_sensor_sample(MigoSession *sessi
  */
 MIGO_API MigoResult MIGO_CALL migo_session_post_ble_characteristic_value(
     MigoSession *session, const MigoBleCharacteristicValue *value);
+
+/*
+ * Deliver one frame of a camera content listens to, from any thread, while a
+ * Surface is attached. Typed because a camera sends thirty a second: the pixels
+ * are read into content's RGBA as the call copies them, so the record is only
+ * borrowed for the call, and only the latest frame waits -- one that arrives
+ * before content took the last replaces it. Returns MIGO_ERROR_INVALID_ARGUMENT
+ * for a NULL or malformed record, a format this header does not define, a width
+ * or height of 0 or over 8192, a row_stride below width * 4, a frame whose RGBA
+ * is over 64 MiB, or when the host did not declare MIGO_HOST_SERVICE_CAMERA;
+ * MIGO_ERROR_INVALID_STATE with no Surface attached.
+ */
+MIGO_API MigoResult MIGO_CALL migo_session_post_camera_frame(MigoSession *session,
+                                                             const MigoCameraFrame *frame);
+
+/*
+ * Deliver one frame of a recording, from any thread, while a Surface is
+ * attached. Typed because a microphone sends many a second: the bytes are copied
+ * as the call reads them, so the record is only borrowed for the call. Frames
+ * share a byte budget content drains; a frame over it is refused with
+ * MIGO_ERROR_WOULD_BLOCK and dropped, the last frame never is. Returns
+ * MIGO_ERROR_INVALID_ARGUMENT for a NULL or malformed record, a recording_id of
+ * 0, an is_last_frame other than 0 or 1, a length over 1 MiB or data NULL with
+ * a length, or when the host did not declare MIGO_HOST_SERVICE_RECORDER;
+ * MIGO_ERROR_INVALID_STATE with no Surface attached.
+ */
+MIGO_API MigoResult MIGO_CALL migo_session_post_recorder_frame(MigoSession *session,
+                                                               const MigoRecorderFrame *frame);
 
 /*
  * Report the value a synchronous ecosystem getter answers with -- name is one of

@@ -512,6 +512,7 @@ if not (scripts / "lib/v8-materialise.sh").is_file():
 # exemption is an error, because one that no longer applies grants more than it needs to.
 EXEMPT = {
     "dev-run-c-host.sh": "runs a local C host; may use a development archive",
+    "dev-run-qt-host.sh": "runs the local Qt host; may use a development archive",
     "dev-run-player.sh": "runs the local player; may use a development archive",
     "dev-test-host.sh": "runs host suites against the local linux-gnu archive",
     "test-capi-platform-contract.sh": "a contract check, not a producer",

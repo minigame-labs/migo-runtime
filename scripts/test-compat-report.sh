@@ -55,7 +55,7 @@ contracts = {
     },
     "decisions": {"unsupported": {"notOffered": {"reason": "needs a vision runtime"}}, "host_owned": ["auth", "ad"]},
     "conformance": {
-        "measured": {"date": "2026-10-15"},
+        "measured": [{"runner": "android", "date": "2026-10-15"}],
         "apis": {
             "breaks": {"status": "failing", "failing": ["api-spec/breaks/succeeds"]},
             "answeredUnverified": {"status": "present"},
@@ -217,7 +217,14 @@ check("every API of the real matrix gets a verdict on android",
 check("and every one the real decisions leave unsupported reads unsupported, with its reason",
       all(verdicts[n] == "unsupported" and cr.judge(n, "android", real).get("reason")
           for n, d in real["decisions"]["unsupported"].items()
-          if n in real["matrix"] and (d["platforms"] == "*" or "android" in d["platforms"])))
+          if n in real["matrix"] and (d["platforms"] == "*" or "android" in d["platforms"])
+          and "android" not in real["matrix"][n].get("outside", [])))
+# A call the reference offers only on its desktop clients is not one a phone game relies on: whatever this platform
+# decided about it, it reads beyond the reference, and blocks nothing.
+desktop_only = [n for n, cell in real["matrix"].items() if "android" in cell.get("outside", [])]
+check("and every desktop-only call reads beyond the reference on a phone, blocking nothing",
+      desktop_only and all(verdicts[n] == "beyond-reference" for n in desktop_only)
+      and "beyond-reference" not in cr.BLOCKING)
 
 print("PASS" if failures == 0 else f"FAIL: {failures} check(s) failed")
 sys.exit(1 if failures else 0)

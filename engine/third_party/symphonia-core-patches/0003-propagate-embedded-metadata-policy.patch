@@ -1,0 +1,80 @@
+--- symphonia-core-0.6.1/src/formats/mod.rs
++++ symphonia-core-0.6.1/src/formats/mod.rs
+@@ -10,11 +10,11 @@
+ 
+ use std::fmt;
+ 
+-use crate::codecs::{CodecParameters, audio, subtitle, video};
++use crate::codecs::{audio, subtitle, video, CodecParameters};
+ use crate::common::FourCc;
+ use crate::errors::Result;
+ use crate::io::MediaSourceStream;
+-use crate::meta::{ChapterGroup, Metadata, MetadataLog};
++use crate::meta::{ChapterGroup, Metadata, MetadataLog, MetadataOptions};
+ use crate::packet::Packet;
+ use crate::units::{Duration, Time, TimeBase, Timestamp};
+ 
+@@ -141,6 +141,9 @@
+     /// External, supplementary, data related to the media container read before the start of the
+     /// container, or provided through some other side-channel.
+     pub external_data: ExternalFormatData,
++    /// Options for metadata embedded in the container. Probe::probe copies its
++    /// explicit MetadataOptions argument here before constructing the reader.
++    pub metadata_options: MetadataOptions,
+ }
+ 
+ /// `ExternalFormatData` contains supplementary data related to the media container that was read
+@@ -162,11 +165,19 @@
+             prebuild_seek_index: false,
+             seek_index_fill_period_ms: 1000,
+             external_data: Default::default(),
++            metadata_options: Default::default(),
+         }
+     }
+ }
+ 
+ impl FormatOptions {
++    /// Configure embedded metadata for direct reader construction. Probe::probe
++    /// uses its explicit metadata argument for both external and embedded data.
++    pub fn metadata_options(mut self, options: MetadataOptions) -> Self {
++        self.metadata_options = options;
++        self
++    }
++
+     /// If a `FormatReader` requires a seek index, but the container does not provide one, build the
+     /// seek index during instantiation instead of building it progressively.
+     ///
+--- symphonia-core-0.6.1/src/formats/probe.rs
++++ symphonia-core-0.6.1/src/formats/probe.rs
+@@ -11,7 +11,7 @@
+ use std::io::{Seek, SeekFrom};
+ 
+ use crate::common::Tier;
+-use crate::errors::{Error, Result, unsupported_error};
++use crate::errors::{unsupported_error, Error, Result};
+ use crate::formats::{FormatInfo, FormatOptions, FormatReader};
+ use crate::io::{MediaSource, MediaSourceStream, ReadBytes, ScopedStream, SeekBuffered};
+ use crate::meta::{MetadataInfo, MetadataOptions, MetadataReader, MetadataSideData};
+@@ -433,6 +433,7 @@
+         mut fmt_opts: FormatOptions,
+         meta_opts: MetadataOptions,
+     ) -> Result<Box<dyn FormatReader + 's>> {
++        fmt_opts.metadata_options = meta_opts;
+         // Probe for trailing metadata only if the media source stream is seekable, and the length
+         // is known.
+         if mss.is_seekable() {
+--- symphonia-core-0.6.1/src/meta.rs
++++ symphonia-core-0.6.1/src/meta.rs
+@@ -126,6 +126,12 @@
+ }
+ 
+ impl MetadataOptions {
++    /// Whether optional metadata retention is disabled. Readers still validate
++    /// encoded extents and preserve the following codec/container data.
++    pub fn is_disabled(&self) -> bool {
++        matches!(self.limit_total_bytes, Limit::Maximum(0))
++    }
++
+     pub fn limit_total_bytes(mut self, limit: Limit) -> Self {
+         self.limit_total_bytes = limit;
+         self

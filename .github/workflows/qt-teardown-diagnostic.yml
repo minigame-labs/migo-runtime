@@ -30,7 +30,10 @@ jobs:
           sudo apt-get install -y \
             cmake ninja-build g++ gdb ripgrep xvfb xauth \
             qt6-base-dev qt6-base-dev-tools qt6-qpa-plugins \
-            libx11-dev libxkbcommon-x11-dev libxcb-cursor0
+            libx11-dev libxkbcommon-x11-dev libxcb-cursor0 \
+            pkg-config libxcb-xinput-dev libxtst-dev libudev-dev dbus \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav
           # Qt debug symbols are best-effort: the ddebs mirror is not always
           # reachable, and a bare libQt backtrace still names the frame.
           sudo apt-get install -y libqt6core6-dbgsym libqt6gui6-dbgsym || true

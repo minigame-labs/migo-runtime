@@ -17,8 +17,8 @@ use shared::protocol::host_cmd::{TouchPoint, TouchType};
 /// - **Host bridge** (1): `dispatch_hook_fn`
 /// - **Touch / Input** (1): `enqueue_touch_event_fn`
 /// - **Audio** (1): `enqueue_inner_audio_event_fn`
-/// - **Recorder** (2): `recorder_event_fn`, `recorder_frame_fn`
-/// - **Camera** (2): `camera_event_fn`, `camera_frame_fn`
+/// - **Recorder** (1): `recorder_frame_fn`
+/// - **Camera** (1): `camera_frame_fn`
 /// - **Sensors** (6): device motion, gyroscope, accelerometer, compass, orientation, network
 /// - **Bluetooth / Beacon** (4): adapter state, device found, beacon update, beacon service
 /// - **BLE GATT** (3): connection state, characteristic value, MTU
@@ -29,7 +29,6 @@ use shared::protocol::host_cmd::{TouchPoint, TouchType};
 /// - **Gamepad** (3): connected, disconnected, state
 /// - **Composition** (3): start, update, end
 /// - **Mouse / Wheel** (4): down, move, up, wheel
-/// - **Video** (1): `video_event_fn`
 pub(crate) struct JsBindings {
     main_js_context: v8::Global<v8::Context>,
 
@@ -58,11 +57,9 @@ pub(crate) struct JsBindings {
     enqueue_inner_audio_event_fn: Option<v8::Global<v8::Function>>,
 
     // ---- Recorder ----
-    recorder_event_fn: Option<v8::Global<v8::Function>>,
     recorder_frame_fn: Option<v8::Global<v8::Function>>,
 
     // ---- Camera ----
-    camera_event_fn: Option<v8::Global<v8::Function>>,
     camera_frame_fn: Option<v8::Global<v8::Function>>,
 
     // ---- Sensors (high-frequency; cached to avoid JS-side name lookup overhead) ----
@@ -110,9 +107,7 @@ pub(crate) struct JsBindings {
     mouse_move_fn: Option<v8::Global<v8::Function>>,
     mouse_up_fn: Option<v8::Global<v8::Function>>,
     wheel_fn: Option<v8::Global<v8::Function>>,
-
     // ---- Video ----
-    video_event_fn: Option<v8::Global<v8::Function>>,
 }
 
 impl JsBindings {
@@ -133,9 +128,7 @@ impl JsBindings {
             bridge_holder: None,
             enqueue_touch_event_fn: None,
             enqueue_inner_audio_event_fn: None,
-            recorder_event_fn: None,
             recorder_frame_fn: None,
-            camera_event_fn: None,
             camera_frame_fn: None,
             sensor_device_motion_fn: None,
             sensor_gyroscope_fn: None,
@@ -169,7 +162,6 @@ impl JsBindings {
             mouse_move_fn: None,
             mouse_up_fn: None,
             wheel_fn: None,
-            video_event_fn: None,
         };
 
         this.reload(rt, host_id);
@@ -242,9 +234,7 @@ impl JsBindings {
             dispatch_hook,
             enqueue_touch,
             enqueue_audio,
-            rec_event,
             rec_frame,
-            cam_event,
             cam_frame,
             dev_motion,
             gyro,
@@ -266,7 +256,6 @@ impl JsBindings {
             kb_complete,
             key_down,
             key_up,
-            video_event,
         ) = self.with_main_context(rt, |scope, _ctx, _global| {
             // Hooks were relocated off the global onto the host-bridge holder
             // (see 99_main.js); look every one of them up there.
@@ -275,9 +264,7 @@ impl JsBindings {
                 get_global_fn(scope, bridge, "_internalDispatch"),
                 get_global_fn(scope, bridge, "_internalEnqueueRawTouchEvent"),
                 get_global_fn(scope, bridge, "_internalEnqueueInnerAudioEvent"),
-                get_global_fn(scope, bridge, "_internalOnRecorderEvent"),
                 get_global_fn(scope, bridge, "_internalOnRecorderFrameData"),
-                get_global_fn(scope, bridge, "_internalOnCameraEvent"),
                 get_global_fn(scope, bridge, "_internalOnCameraFrameData"),
                 get_global_fn(scope, bridge, "_internalTriggerDeviceMotionChange"),
                 get_global_fn(scope, bridge, "_internalTriggerGyroscopeChange"),
@@ -303,16 +290,13 @@ impl JsBindings {
                 get_global_fn(scope, bridge, "_internalTriggerKeyboardComplete"),
                 get_global_fn(scope, bridge, "_internalTriggerKeyDown"),
                 get_global_fn(scope, bridge, "_internalTriggerKeyUp"),
-                get_global_fn(scope, bridge, "_internalTriggerVideoEvent"),
             )
         });
 
         self.dispatch_hook_fn = dispatch_hook;
         self.enqueue_touch_event_fn = enqueue_touch;
         self.enqueue_inner_audio_event_fn = enqueue_audio;
-        self.recorder_event_fn = rec_event;
         self.recorder_frame_fn = rec_frame;
-        self.camera_event_fn = cam_event;
         self.camera_frame_fn = cam_frame;
         self.sensor_device_motion_fn = dev_motion;
         self.sensor_gyroscope_fn = gyro;
@@ -334,7 +318,6 @@ impl JsBindings {
         self.keyboard_complete_fn = kb_complete;
         self.key_down_fn = key_down;
         self.key_up_fn = key_up;
-        self.video_event_fn = video_event;
 
         // Resolved separately to avoid growing the tuple above; init-time only.
         let (
@@ -640,38 +623,12 @@ impl JsBindings {
 
     // ---- Recorder event dispatch ----
 
-    /// Dispatch recorder event (start, pause, resume, stop, error, interruption).
-    pub(crate) fn dispatch_recorder_event(
-        &self,
-        rt: &mut deno_core::JsRuntime,
-        host_id: i32,
-        event_type: &str,
-        json_payload: &str,
-    ) {
-        let Some(func_g) = self.recorder_event_fn.as_ref() else {
-            warn!("[Host {}] recorder event handler not installed", host_id);
-            return;
-        };
-
-        self.with_main_context(rt, |scope, _ctx, global| {
-            let args = [
-                v8::String::new(scope, event_type)
-                    .unwrap_or_else(|| v8::Local::new(scope, &self.empty_string))
-                    .into(),
-                v8::String::new(scope, json_payload)
-                    .unwrap_or_else(|| v8::Local::new(scope, &self.empty_string))
-                    .into(),
-            ];
-            let func = v8::Local::new(scope, func_g);
-            let _ = func.call(scope, global.into(), &args);
-        });
-    }
-
     /// Dispatch recorder frame data (binary audio frame for onFrameRecorded).
     pub(crate) fn dispatch_recorder_frame_data(
         &self,
         rt: &mut deno_core::JsRuntime,
         host_id: i32,
+        recording_id: u32,
         data: Vec<u8>,
         is_last_frame: bool,
     ) {
@@ -685,37 +642,10 @@ impl JsBindings {
             // V8 backing store and copying the entire frame into it.
             let ab = Self::adopt_as_array_buffer(scope, data);
 
-            let args = [ab.into(), v8::Boolean::new(scope, is_last_frame).into()];
-            let func = v8::Local::new(scope, func_g);
-            let _ = func.call(scope, global.into(), &args);
-        });
-    }
-
-    // ---- Camera event dispatch ----
-
-    /// Dispatch camera event (stop, authCancel, error, timeoutCallback).
-    pub(crate) fn dispatch_camera_event(
-        &self,
-        rt: &mut deno_core::JsRuntime,
-        host_id: i32,
-        camera_id: u32,
-        event_type: &str,
-        json_payload: &str,
-    ) {
-        let Some(func_g) = self.camera_event_fn.as_ref() else {
-            warn!("[Host {}] camera event handler not installed", host_id);
-            return;
-        };
-
-        self.with_main_context(rt, |scope, _ctx, global| {
             let args = [
-                v8::Integer::new_from_unsigned(scope, camera_id).into(),
-                v8::String::new(scope, event_type)
-                    .unwrap_or_else(|| v8::Local::new(scope, &self.empty_string))
-                    .into(),
-                v8::String::new(scope, json_payload)
-                    .unwrap_or_else(|| v8::Local::new(scope, &self.empty_string))
-                    .into(),
+                v8::Integer::new_from_unsigned(scope, recording_id).into(),
+                ab.into(),
+                v8::Boolean::new(scope, is_last_frame).into(),
             ];
             let func = v8::Local::new(scope, func_g);
             let _ = func.call(scope, global.into(), &args);
@@ -1266,8 +1196,8 @@ impl JsBindings {
         }
     }
 
-    /// Dispatch camera frame data (raw Y/U/V plane-window bytes concatenated in
-    /// Y, U, V order, for onCameraFrame / listenFrameChange).
+    /// Dispatch camera frame data (straight RGBA, four bytes a pixel, rows top
+    /// first, for onCameraFrame / listenFrameChange).
     pub(crate) fn dispatch_camera_frame_data(
         &self,
         rt: &mut deno_core::JsRuntime,
@@ -1298,34 +1228,6 @@ impl JsBindings {
             let _ = func.call(scope, global.into(), &args);
         });
     }
-
-    // ---- Video event dispatch ----
-
-    /// Dispatch video player event to JS.
-    /// Args: (video_id: u32, event_type: &str, data: &str)
-    pub(crate) fn dispatch_video_event(
-        &self,
-        rt: &mut deno_core::JsRuntime,
-        video_id: u32,
-        event_type: &str,
-        data: &str,
-    ) {
-        if let Some(func_g) = self.video_event_fn.as_ref() {
-            self.with_main_context(rt, |scope, _ctx, global| {
-                let args = [
-                    v8::Integer::new_from_unsigned(scope, video_id).into(),
-                    v8::String::new(scope, event_type)
-                        .unwrap_or_else(|| v8::Local::new(scope, &self.empty_string))
-                        .into(),
-                    v8::String::new(scope, data)
-                        .unwrap_or_else(|| v8::Local::new(scope, &self.empty_string))
-                        .into(),
-                ];
-                let func = v8::Local::new(scope, func_g);
-                let _ = func.call(scope, global.into(), &args);
-            });
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1342,6 +1244,8 @@ mod tests {
     /// plus exact bytes, ArrayBuffer type/length, camera id, width, height.
     #[test]
     fn camera_frame_arraybuffer_adopts_vec_allocation_without_copy() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = JsRuntime::new(RuntimeOptions::default());
         let mut bindings = JsBindings::new(&mut rt, 1);
 
@@ -1450,6 +1354,8 @@ mod tests {
     /// different address. It passes only when V8 has adopted the original allocation.
     #[test]
     fn recorder_frame_arraybuffer_adopts_vec_allocation_without_copy() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         // ── Case 1: normal frame (len == cap) ────────────────────────────────
         {
             let mut rt = JsRuntime::new(RuntimeOptions::default());
@@ -1460,7 +1366,7 @@ mod tests {
                 v8::scope_with_context!(scope, isolate, &ctx);
                 let src = v8::String::new(
                     scope,
-                    "(function(ab, last){ globalThis.__rec = { ab: ab, last: last }; })",
+                    "(function(id, ab, last){ globalThis.__rec = { id: id, ab: ab, last: last }; })",
                 )
                 .unwrap();
                 let script = v8::Script::compile(scope, src, None).unwrap();
@@ -1475,7 +1381,7 @@ mod tests {
             let orig_ptr = data.as_ptr();
 
             // The capture-owned Vec is moved into V8 for backing-store adoption.
-            bindings.dispatch_recorder_frame_data(&mut rt, 1, data, false);
+            bindings.dispatch_recorder_frame_data(&mut rt, 1, 7, data, false);
 
             let ctx = rt.main_context();
             let isolate = rt.v8_isolate();
@@ -1535,7 +1441,7 @@ mod tests {
                 v8::scope_with_context!(scope, isolate, &ctx);
                 let src = v8::String::new(
                     scope,
-                    "(function(ab, last){ globalThis.__rec = { ab: ab, last: last }; })",
+                    "(function(id, ab, last){ globalThis.__rec = { id: id, ab: ab, last: last }; })",
                 )
                 .unwrap();
                 let script = v8::Script::compile(scope, src, None).unwrap();
@@ -1547,7 +1453,7 @@ mod tests {
 
             let data: Vec<u8> = Vec::new();
             // Termination frames are typically empty (is_last_frame == true).
-            bindings.dispatch_recorder_frame_data(&mut rt, 1, data, true);
+            bindings.dispatch_recorder_frame_data(&mut rt, 1, 7, data, true);
 
             let ctx = rt.main_context();
             let isolate = rt.v8_isolate();
@@ -1593,7 +1499,7 @@ mod tests {
                 v8::scope_with_context!(scope, isolate, &ctx);
                 let src = v8::String::new(
                     scope,
-                    "(function(ab, last){ globalThis.__rec = { ab: ab, last: last }; })",
+                    "(function(id, ab, last){ globalThis.__rec = { id: id, ab: ab, last: last }; })",
                 )
                 .unwrap();
                 let script = v8::Script::compile(scope, src, None).unwrap();
@@ -1635,7 +1541,7 @@ mod tests {
             );
             drop(resized);
             let before = migo_alloc_probe::thread_counts();
-            bindings.dispatch_recorder_frame_data(&mut rt, 1, data, false);
+            bindings.dispatch_recorder_frame_data(&mut rt, 1, 7, data, false);
             let during = migo_alloc_probe::thread_counts();
             assert_eq!(
                 during.reallocations - before.reallocations,

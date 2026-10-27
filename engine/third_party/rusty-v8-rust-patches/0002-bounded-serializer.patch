@@ -1,0 +1,52 @@
+--- v8-150.4.0/src/value_serializer.rs
++++ v8-150.4.0/src/value_serializer.rs
+@@ -176,9 +176,14 @@
+ ) -> *mut c_void {
+   let base = unsafe { ValueSerializerHeap::dispatch(this) };
+ 
+-  let buffer_size = base
+-    .buffer_size
+-    .swap(size, std::sync::atomic::Ordering::Release);
++  if size == 0
++    || size > base.value_serializer_impl.max_buffer_capacity()
++    || Layout::from_size_align(size, 1).is_err()
++  {
++    unsafe { *actual_size = 0 };
++    return std::ptr::null_mut();
++  }
++  let buffer_size = base.buffer_size.load(std::sync::atomic::Ordering::Relaxed);
+   let new_buffer = if old_buffer.is_null() {
+     let layout = Layout::from_size_align(size, 1).unwrap();
+     unsafe { alloc(layout) }
+@@ -187,8 +192,15 @@
+     unsafe { realloc(old_buffer as *mut _, old_layout, size) }
+   };
+ 
+-  unsafe {
+-    *actual_size = size;
++  // On failure realloc leaves the old allocation intact. Its destructor must
++  // retain the old layout; recording the requested size before success is UB.
++  if !new_buffer.is_null() {
++    base
++      .buffer_size
++      .store(size, std::sync::atomic::Ordering::Release);
++    unsafe { *actual_size = size };
++  } else {
++    unsafe { *actual_size = 0 };
+   }
+   new_buffer as *mut c_void
+ }
+@@ -274,6 +286,13 @@
+ /// The ValueSerializerImpl trait allows for
+ /// custom callback functions used by v8.
+ pub trait ValueSerializerImpl {
++  /// Maximum allocation capacity, including V8's geometric growth slack.
++  /// Returning null on a larger request lets V8 report a data-clone error.
++  /// This default preserves the existing unbounded serializer contract.
++  fn max_buffer_capacity(&self) -> usize {
++    usize::MAX
++  }
++
+   fn throw_data_clone_error<'s>(
+     &self,
+     scope: &mut PinScope<'s, '_>,

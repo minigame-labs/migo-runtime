@@ -46,16 +46,30 @@ COMMENT = [
     "returns: the type the signature names, or null. params: the signature's parameters. promise: whether",
     "Promise-style calls are supported, null where the page does not say. scope: the authorization scope the call",
     "needs, by the engine's name for it. clients: what the page says of the reference's Windows, Mac and HarmonyOS",
-    "clients -- true, false, or {\"from\": version} -- absent when it says nothing. options: the options object's fields other than the",
+    "clients -- true, false, or {\"from\": version} -- absent when it says nothing; mobile: false where it says the API",
+    "is offered on its desktop clients only (its phones offer every API otherwise). options: the options object's fields other than the",
     "callbacks. success / result / listener: the fields of the success callback's argument, of the returned object,",
     "of the listener's argument. A field is [name, type] or [name, type, since], then an object with what else the page",
     "says of it: \"fields\", the fields of an Object it details; \"when\", that it is there only sometimes -- plugin,",
     "host-app (the game runs inside a third-party app), darkmode, option:<name> (that option was passed),",
-    "without:<name> (it was not), chat (opened from a chat), or only:<ios|android|pc|mobile>. methods: the methods",
-    "the reference documents for the class the API returns. deprecated, since: from the reference's index.",
+    "without:<name> (it was not), chat (opened from a chat), or only:<ios|android|pc|mobile>; \"erratum\", where the",
+    "page contradicts itself about the field: the type is the one its own words give, and this says why. methods: the",
+    "methods the reference documents for the class the API returns. deprecated, since: from the reference's index.",
 ]
 
 CLIENTS = {"Windows": "windows", "Mac": "mac", "鸿蒙 OS": "harmony"}
+
+# Where a page contradicts itself about a field, the reading its own words support: (API, section, field) -> the type
+# the page's table gives, the type it means, and why. Each is held against the page: once the page says something
+# else -- corrected, or changed -- generating fails, rather than an erratum standing over a page that no longer needs
+# it.
+ERRATA = {
+    ("getGamepads", "result", "index"): (
+        "string", "number",
+        "the page types it string, but describes an auto-incrementing integer, in an array it says follows the "
+        "browser standard, whose Gamepad.index is a number",
+    ),
+}
 # The engine's own scope names (`Scope::as_str`): a scope the reference names with its app's prefix is recorded by
 # the engine's name for it.
 SCOPES = "engine/crates/shared/src/services/permission.rs"
@@ -260,6 +274,15 @@ def spec_of(markdown: str, namespace: str, name: str, scopes: list[str]) -> dict
         found = re.match(r"^\S+ (Windows|Mac|鸿蒙 OS) 版：(.*)$", note)
         if found:
             clients[CLIENTS[found.group(1)]] = client_support(plain(found.group(2)))
+    # "仅在 Windows、Mac 端支持", "仅在 PC 端支持", "仅支持 PC 平台", "仅适用于 PC 平台": the reference offers it on its
+    # desktop clients and not on its phones, which the client notes above cannot say (they only ever add a client to
+    # the phones). Said of the API in its prose, not of a field in a table ("仅在 PC 端存在该值").
+    if any(
+        not line.lstrip().startswith("|")
+        and re.search(r"仅(在 ?(Windows、Mac 端|PC 端|PC 平台)支持|支持 ?PC 平台|适用于 ?PC 平台)", line)
+        for line in lines
+    ):
+        clients["mobile"] = False
 
     options: list[list] = []
     callbacks = False
@@ -360,6 +383,12 @@ def generate(root: pathlib.Path) -> str:
         if entry.get("min_base_library"):
             spec["since"] = entry["min_base_library"]
         specs[name] = spec
+    for (name, section, field_name), (says, means, why) in ERRATA.items():
+        field = next((field for field in specs[name].get(section, []) if field[0] == field_name), None)
+        if field is None or field[1] != says:
+            raise Fail(f"{name} {section} {field_name}: the page no longer types it {says}; drop its erratum")
+        field[1] = means
+        details(field)["erratum"] = why
     fetched = re.search(r"\*\*Fetched:\*\* (\S+)", (mirror / "README.md").read_text())
     out = ["{", '  "schema_version": 1,', '  "$comment": [']
     out += [f"    {json.dumps(line, ensure_ascii=False)}," for line in COMMENT[:-1]]

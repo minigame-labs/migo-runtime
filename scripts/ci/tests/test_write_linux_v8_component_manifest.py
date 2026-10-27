@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import pathlib
 import subprocess
 import tempfile
@@ -15,6 +16,40 @@ _spec.loader.exec_module(writer)
 
 
 class LinuxV8ComponentWriterTest(unittest.TestCase):
+    def test_native_tools_follow_the_selected_gn_toolchain(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            gn = root / "gn_out"
+            gn.mkdir()
+            toolchain = root / "pinned-clang/bin"
+            toolchain.mkdir(parents=True)
+            for name in ["clang++", "ld.lld"]:
+                (toolchain / name).write_text("actual selected tool\n")
+            project = {
+                "targets": {"//:rusty_v8": {"toolchain": "target"}},
+                "toolchains": {
+                    "target": {"cxx": {"command": '../pinned-clang/bin/clang++ -c {{source}}'}},
+                    "unrelated": {"cxx": {"command": '/wrong/ndk/clang++ -c {{source}}'}},
+                },
+            }
+            (gn / "project.json").write_text(json.dumps(project))
+            self.assertEqual(writer.native_tools(gn),
+                             ((toolchain / "clang++").resolve(), (toolchain / "ld.lld").resolve()))
+            project["targets"]["//:rusty_v8"]["toolchain"] = "unrelated"
+            (gn / "project.json").write_text(json.dumps(project))
+            with self.assertRaisesRegex(RuntimeError, "tool is missing"):
+                writer.native_tools(gn)
+
+    def test_native_tools_refuse_an_unidentified_wrapper(self):
+        with tempfile.TemporaryDirectory() as directory:
+            gn = pathlib.Path(directory)
+            (gn / "project.json").write_text(json.dumps({
+                "targets": {"//:rusty_v8": {"toolchain": "target"}},
+                "toolchains": {"target": {"cxx": {"command": 'mystery-wrapper clang++ -c source.cc'}}},
+            }))
+            with self.assertRaisesRegex(RuntimeError, "cannot identify"):
+                writer.native_tools(gn)
+
     def test_declared_patch_must_reproduce_the_exact_worktree_bytes(self):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory)

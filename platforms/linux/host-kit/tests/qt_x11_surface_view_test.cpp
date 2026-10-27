@@ -5,8 +5,12 @@
 #include <QApplication>
 #include <QScreen>
 #include <QSignalSpy>
+#include <QVBoxLayout>
 #include <QWindow>
+#include <QtGui/qguiapplication_platform.h>
 #include <QtTest>
+
+#include <X11/Xlib.h>
 
 #include <thread>
 
@@ -30,6 +34,53 @@ private slots:
         QCOMPARE(view.testAttribute(Qt::WA_NativeWindow), true);
         QCOMPARE(view.testAttribute(Qt::WA_DontCreateNativeAncestors), true);
         QCOMPARE(host_container.testAttribute(Qt::WA_NativeWindow), false);
+    }
+
+    /// The engine binds the window as the X server has it, so the view attaches
+    /// once its window is mapped at the widget's size. Qt sends a widget its show
+    /// event before it maps the native window and applies its geometry, and a
+    /// view a layout places -- every Managed Session's -- was bound while its
+    /// window was still unmapped at a child's default 100x30: the game drew into
+    /// a 100x30 canvas behind a full-size view.
+    void attaches_once_its_window_is_mapped_at_its_size() {
+        if (!requirePlatform(QGuiApplication::platformName() == QStringLiteral("xcb"),
+                             "xcb-only test", __FILE__, __LINE__)) {
+            return;
+        }
+
+        SurfaceHost surface_host(fake_migo::session());
+        QWidget container;
+        auto *layout = new QVBoxLayout(&container);
+        layout->setContentsMargins(0, 0, 0, 0);
+        MigoQtX11SurfaceView view(surface_host, container);
+        layout->addWidget(&view);
+        container.resize(320, 180);
+        // Retired on the way out, so a failed assertion reports itself rather
+        // than the view's destroyed-before-RELEASED abort.
+        struct Retire {
+            MigoQtX11SurfaceView &view;
+            ~Retire() {
+                if (view.surfaceState() == SurfaceState::Attached) (void)view.beginDetach();
+                if (view.surfaceState() == SurfaceState::Retiring) {
+                    fake_migo::set_release_status(view.generation(), MIGO_SURFACE_RELEASE_RELEASED);
+                    bool released = false;
+                    (void)view.pollDetach(&released);
+                }
+            }
+        } retire{view};
+
+        XWindowAttributes at_attach{};
+        connect(&view, &MigoQtX11SurfaceView::surfaceAttached, &view, [&](quint64) {
+            auto *x11 = qGuiApp->nativeInterface<QNativeInterface::QX11Application>();
+            XGetWindowAttributes(x11->display(), static_cast<::Window>(view.winId()), &at_attach);
+        });
+        container.show();
+        QTRY_COMPARE(fake_migo::calls().attach, 1);
+
+        const qreal ratio = view.devicePixelRatioF();
+        QCOMPARE(at_attach.width, qRound(view.width() * ratio));
+        QCOMPARE(at_attach.height, qRound(view.height() * ratio));
+        QVERIFY(at_attach.map_state != IsUnmapped);
     }
 
     void public_control_methods_reject_foreign_threads_without_touching_qt_state() {
@@ -187,14 +238,19 @@ private slots:
         view.resize(480, 270);
         view.resize(640, 360);
         QTRY_COMPARE(fake_migo::calls().update, updates_before_resize + 1);
-        QTest::qWait(20);
+        // The X server's notifies of the three come back after that, one at a
+        // time on a loaded machine, and Qt takes each as the size until the
+        // last arrives. They are echoes: nothing more is said, and what was
+        // said is the size the window has.
+        QTRY_COMPARE(view.size(), QSize(640, 360));
+        QTest::qWait(50);
         QCOMPARE(fake_migo::calls().update, updates_before_resize + 1);
         QCOMPARE(fake_migo::calls().attach, 1);
         QCOMPARE(fake_migo::last_metrics().generation, view.generation());
         QCOMPARE(fake_migo::last_metrics().width_pixels,
-                 static_cast<uint32_t>(qRound(view.width() * view.devicePixelRatioF())));
+                 static_cast<uint32_t>(qRound(640 * view.devicePixelRatioF())));
         QCOMPARE(fake_migo::last_metrics().height_pixels,
-                 static_cast<uint32_t>(qRound(view.height() * view.devicePixelRatioF())));
+                 static_cast<uint32_t>(qRound(360 * view.devicePixelRatioF())));
 
         retire(view);
     }

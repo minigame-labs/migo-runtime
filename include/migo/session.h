@@ -124,6 +124,10 @@ typedef struct MigoSessionConfig {
      * internationalised name in its xn-- form) -- or "unrestricted".
      * A channel left out is refused. allowPlainHttp permits http:// and ws://;
      * lan lets socket, tcp and udp reach other devices on the local network.
+     * tlsTrust is "platform" (default, except OHOS) or "mozilla"; HTTPS and
+     * WSS use the selected verifier without fallback. OHOS defaults to Mozilla.
+     * Android C ABI hosts without an initialized Java SDK/JVM must explicitly
+     * select "tlsTrust":"mozilla". Platform trust honors the host's CA policy.
      * Anything else -- an unknown key, a malformed entry -- makes
      * migo_session_create fail with MIGO_ERROR_INVALID_ARGUMENT.
      *
@@ -749,11 +753,54 @@ typedef uint32_t MigoNetworkType;
 #define MIGO_NETWORK_4G 5U
 #define MIGO_NETWORK_5G 6U
 
+typedef uint32_t MigoNetworkFlags;
+#define MIGO_NETWORK_FLAG_NONE 0U
+/* The network reaches the internet. */
+#define MIGO_NETWORK_FLAG_CONNECTED (1U << 0)
+/* The system routes the network through a proxy (getNetworkType's
+ * hasSystemProxy), as the platform's own setting says. */
+#define MIGO_NETWORK_FLAG_SYSTEM_PROXY (1U << 1)
+/* The host judges the network weak (weakNet, onNetworkWeakChange). */
+#define MIGO_NETWORK_FLAG_WEAK (1U << 2)
+
 /*
- * connected is 1 when the network reaches the internet. Returns
- * MIGO_ERROR_INVALID_ARGUMENT for a type above MIGO_NETWORK_5G, a connected
- * value other than 0 or 1, or MIGO_NETWORK_NONE reported as connected. May be
- * called before a Surface is attached; the report is kept.
+ * The network, whole: what getNetworkType answers. signal_strength_dbm is the
+ * received signal in dBm (signalStrength) -- Wi-Fi's RSSI, a cell's signal --
+ * and 0 when the host cannot read it, as on iOS.
+ */
+typedef struct MigoNetworkReport {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    MigoNetworkType type;
+    MigoNetworkFlags flags;
+    int32_t signal_strength_dbm;
+    uint32_t reserved0; /* zero */
+} MigoNetworkReport;
+
+MIGO_STATIC_ASSERT(offsetof(MigoNetworkReport, struct_size) == 0,
+                   "every versioned struct must begin with struct_size");
+MIGO_STATIC_ASSERT(sizeof(MigoNetworkReport) == 24, "MigoNetworkReport size changed");
+MIGO_STATIC_ASSERT(offsetof(MigoNetworkReport, signal_strength_dbm) == 16,
+                   "MigoNetworkReport.signal_strength_dbm moved");
+
+/*
+ * Report the network, now and at each change of anything in the record: content
+ * hears a change of the connection or its type through onNetworkStatusChange,
+ * and one of the host's judgement through onNetworkWeakChange. Returns
+ * MIGO_ERROR_INVALID_ARGUMENT for a type above MIGO_NETWORK_5G, a flag this
+ * header does not define, MIGO_NETWORK_NONE reported as connected or weak, a
+ * positive signal, or a non-zero reserved0. May be called before a Surface is
+ * attached; the report is kept.
+ */
+MIGO_API MigoResult MIGO_CALL migo_session_report_network(MigoSession *session,
+                                                          const MigoNetworkReport *report);
+
+/*
+ * The report with only the type and whether it is connected known: no proxy,
+ * no signal, not weak. connected is 1 when the network reaches the internet.
+ * Returns MIGO_ERROR_INVALID_ARGUMENT for a type above MIGO_NETWORK_5G, a
+ * connected value other than 0 or 1, or MIGO_NETWORK_NONE reported as
+ * connected. May be called before a Surface is attached; the report is kept.
  */
 MIGO_API MigoResult MIGO_CALL migo_session_set_network_status(MigoSession *session,
                                                               MigoNetworkType type,

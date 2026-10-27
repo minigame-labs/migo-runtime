@@ -7,28 +7,34 @@
 //! supplied directly by the versioned Surface descriptor.
 
 use migo_capi_abi::host_services::{
-    MIGO_HOST_SERVICE_AD, MIGO_HOST_SERVICE_AUTH, MIGO_HOST_SERVICE_BLUETOOTH,
-    MIGO_HOST_SERVICE_CLIPBOARD, MIGO_HOST_SERVICE_ECOSYSTEM, MIGO_HOST_SERVICE_IMAGE,
-    MIGO_HOST_SERVICE_INTERACTION, MIGO_HOST_SERVICE_LOCATION, MIGO_HOST_SERVICE_MOTION,
-    MIGO_HOST_SERVICE_NAVIGATE, MIGO_HOST_SERVICE_PAYMENT, MIGO_HOST_SERVICE_PERMISSION,
+    MIGO_HOST_SERVICE_AD, MIGO_HOST_SERVICE_AUTH, MIGO_HOST_SERVICE_BLE_PERIPHERAL,
+    MIGO_HOST_SERVICE_BLUETOOTH, MIGO_HOST_SERVICE_CAMERA, MIGO_HOST_SERVICE_CLIPBOARD,
+    MIGO_HOST_SERVICE_ECOSYSTEM, MIGO_HOST_SERVICE_IMAGE, MIGO_HOST_SERVICE_INTERACTION,
+    MIGO_HOST_SERVICE_LOCATION, MIGO_HOST_SERVICE_MOTION, MIGO_HOST_SERVICE_NAVIGATE,
+    MIGO_HOST_SERVICE_PAYMENT, MIGO_HOST_SERVICE_PERMISSION, MIGO_HOST_SERVICE_RECORDER,
     MIGO_HOST_SERVICE_SCAN_CODE, MIGO_HOST_SERVICE_SCREEN, MIGO_HOST_SERVICE_SHARE,
-    MIGO_HOST_SERVICE_SUBPACKAGE, MIGO_HOST_SERVICE_UPDATE, MIGO_HOST_SERVICE_WINDOW,
+    MIGO_HOST_SERVICE_SUBPACKAGE, MIGO_HOST_SERVICE_UPDATE, MIGO_HOST_SERVICE_VIDEO,
+    MIGO_HOST_SERVICE_WINDOW,
 };
-#[cfg(target_os = "macos")]
+#[cfg(any(
+    target_os = "macos",
+    all(target_os = "linux", not(target_env = "ohos"))
+))]
 use migo_core::services::VideoDecoderService;
 use migo_core::services::{
-    AccelerometerService, AdService, AuthService, BatteryService, BluetoothService,
-    ClipboardService, CommerceServices, CompassService, ConnectivityServices, DeviceMotionService,
-    EcosystemService, GameLogService, GamepadService, GyroscopeService, ImageApiService,
-    InteractionService, KeyboardService, LocationService, MediaServices, NavigateService,
-    NetworkService, PaymentService, PermissionService, ScanCodeService, ScreenService,
-    SensorServices, ShareService, SubpackageService, SystemInfoService, SystemUtilServices,
-    UpdateService, VibrationService, WindowService,
+    AccelerometerService, AdService, AuthService, BatteryService, BlePeripheralService,
+    BluetoothService, CameraService, ClipboardService, CommerceServices, CompassService,
+    ConnectivityServices, DeviceMotionService, EcosystemService, GameLogService, GamepadService,
+    GyroscopeService, ImageApiService, InteractionService, KeyboardService, LocationService,
+    MediaServices, NavigateService, NetworkService, PaymentService, PermissionService,
+    RecorderService, ScanCodeService, ScreenService, SensorServices, ShareService,
+    SubpackageService, SystemInfoService, SystemUtilServices, UpdateService, VibrationService,
+    VideoService, WindowService,
 };
 #[cfg(any(
     target_os = "ios",
     target_os = "macos",
-    target_os = "linux",
+    all(target_os = "linux", not(target_env = "ohos")),
     target_os = "windows"
 ))]
 use migo_core::services::{AudioPlatformService, platform_audio_service};
@@ -283,7 +289,7 @@ impl MediaServices for CapiDeviceServices {
     #[cfg(any(
         target_os = "ios",
         target_os = "macos",
-        target_os = "linux",
+        all(target_os = "linux", not(target_env = "ohos")),
         target_os = "windows"
     ))]
     fn audio_platform(&self) -> Option<Arc<dyn AudioPlatformService>> {
@@ -295,11 +301,33 @@ impl MediaServices for CapiDeviceServices {
             .map(|services| services as Arc<dyn ImageApiService>)
     }
 
+    fn camera(&self) -> Option<Arc<dyn CameraService>> {
+        self.host_service(MIGO_HOST_SERVICE_CAMERA)
+            .map(|services| services as Arc<dyn CameraService>)
+    }
+
+    fn recorder(&self) -> Option<Arc<dyn RecorderService>> {
+        self.host_service(MIGO_HOST_SERVICE_RECORDER)
+            .map(|services| services as Arc<dyn RecorderService>)
+    }
+
+    fn video(&self) -> Option<Arc<dyn VideoService>> {
+        self.host_service(MIGO_HOST_SERVICE_VIDEO)
+            .map(|services| services as Arc<dyn VideoService>)
+    }
+
     /// The platform's own decoders, in the engine: AVFoundation's on macOS.
     /// A platform without one answers `createVideoDecoder` not supported.
     #[cfg(target_os = "macos")]
     fn video_decoder(&self) -> Option<Arc<dyn VideoDecoderService>> {
         Some(Arc::new(platform::apple::video_decoder::AppleVideoDecoder))
+    }
+
+    /// GStreamer's decoders on Linux, when the system has GStreamer.
+    #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+    fn video_decoder(&self) -> Option<Arc<dyn VideoDecoderService>> {
+        platform::linux::video_decoder::GstVideoDecoder::available()
+            .map(|decoder| Arc::new(decoder) as Arc<dyn VideoDecoderService>)
     }
 }
 
@@ -316,6 +344,11 @@ impl ConnectivityServices for CapiDeviceServices {
     fn bluetooth(&self) -> Option<Arc<dyn BluetoothService>> {
         self.host_service(MIGO_HOST_SERVICE_BLUETOOTH)
             .map(|services| services as Arc<dyn BluetoothService>)
+    }
+
+    fn ble_peripheral(&self) -> Option<Arc<dyn BlePeripheralService>> {
+        self.host_service(MIGO_HOST_SERVICE_BLE_PERIPHERAL)
+            .map(|services| services as Arc<dyn BlePeripheralService>)
     }
 }
 
@@ -618,7 +651,7 @@ mod tests {
             .and_then(|services| services.audio_platform())
             .expect("the engine's audio settings, with no host callbacks at all");
         audio
-            .set_inner_audio_option(false, false, false)
+            .set_inner_audio_option(false)
             .expect("the options are accepted");
         let sources = audio
             .get_available_audio_sources()

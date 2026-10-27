@@ -11,7 +11,10 @@
 # resolved against the linking file's own directory. `http(s)://`, `mailto:`,
 # bare `#anchor` fragments, and links whose target is a directory are left
 # alone. Anchors within a target are not verified -- only that the target file
-# is there.
+# is there. A destination may be spelled in angle brackets, `](<path>)`, which
+# CommonMark reads as the same link: the vendored skia-bindings README (#619)
+# writes its URLs so, and read with the brackets on they were "relative" paths
+# that did not exist -- three violations that were https links.
 #
 # THE SECOND THING THIS CHECKS, and the reason it is not enough to ask whether
 # the file exists: existence is asked on the machine running the gate, and this
@@ -50,6 +53,18 @@ if ! md_list="$(git ls-files '*.md' 2>/dev/null)"; then
 fi
 if [[ -z "$md_list" ]]; then
     cannot_run "\`git ls-files '*.md'\` matched nothing, which cannot be right here."
+fi
+# Upstream's own documents, vendored byte for byte (\`linguist-vendored\` in
+# .gitattributes), link into upstream's tree -- oboe's README into its docs/ and
+# samples/, which the vendored projection leaves out -- and their bytes are held
+# to upstream's, so nothing here may correct them. The links this gate answers
+# for are the ones this repository wrote.
+if ! attributes="$(git check-attr --stdin linguist-vendored <<< "$md_list" 2>/dev/null)"; then
+    cannot_run "\`git check-attr\` failed in $ROOT_DIR."
+fi
+md_list="$(awk -F': linguist-vendored: ' '$2 != "set" { print $1 }' <<< "$attributes")"
+if [[ -z "$md_list" ]]; then
+    cannot_run "every tracked Markdown file reads as vendored, which cannot be right here."
 fi
 if ! contract_list="$(git ls-files 'contracts/*' 2>/dev/null)"; then
     cannot_run "\`git ls-files contracts/*\` failed in $ROOT_DIR."
@@ -97,6 +112,10 @@ while IFS= read -r md; do
     while IFS= read -r match; do
         link="${match#](}"
         link="${link%)}"
+        if [[ "$link" == "<"*">" ]]; then
+            link="${link#<}"
+            link="${link%>}"
+        fi
         case "$link" in
             http://*|https://*|mailto:*|"#"*|"") continue ;;
         esac

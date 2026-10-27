@@ -36,6 +36,20 @@ pub enum PoolKind {
     /// asset, over a hundred for a 4096² one. It gets its own class so that
     /// staying serial, which it must, does not also hold extraction back.
     Ingest,
+    /// Platform TLS verification can block in native/JVM certificate APIs.
+    /// Bound this class independently so it cannot occupy every IO worker.
+    Tls,
+    /// Bounded codec/filter steps for active audio streams.
+    Audio,
+}
+
+impl PoolKind {
+    pub(crate) fn is_cpu_bound(self) -> bool {
+        matches!(
+            self,
+            Self::Pack | Self::Image | Self::Archive | Self::Ingest | Self::Audio
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -261,14 +261,28 @@ archive_zh_routes = mdx_routes(docs_root / "0.9")
 current_en_routes = mdx_routes(docs_root / "en", {"0.9"})
 archive_en_routes = mdx_routes(docs_root / "en" / "0.9")
 
-for rel in sorted(current_zh_routes - archive_zh_routes):
+# Pages introduced after the 0.9.7 archive was cut, with the release that
+# introduced each. As with the function sections below, a frozen archive does
+# not gain a page for what 0.9.7 did not have; these are the only pages latest
+# may have and the archive may not, in both languages.
+PAGES_ADDED_AFTER_ARCHIVE = {
+    "capabilities/api-support.mdx": "0.9.20",
+}
+
+for rel in sorted(current_zh_routes - archive_zh_routes - PAGES_ADDED_AFTER_ARCHIVE.keys()):
     error(f"0.9 归档缺中文页面:{rel}")
 for rel in sorted(archive_zh_routes - current_zh_routes):
     error(f"0.9 归档多出过期中文页面:{rel}")
-for rel in sorted(current_en_routes - archive_en_routes):
+for rel in sorted(current_en_routes - archive_en_routes - PAGES_ADDED_AFTER_ARCHIVE.keys()):
     error(f"en/0.9 归档缺英文页面:{rel}")
 for rel in sorted(archive_en_routes - current_en_routes):
     error(f"en/0.9 归档多出过期英文页面:{rel}")
+for archived, prefix in ((archive_zh_routes, "0.9"), (archive_en_routes, "en/0.9")):
+    for rel in sorted(archived & PAGES_ADDED_AFTER_ARCHIVE.keys()):
+        error(f"{prefix} 归档有 {rel},但它 {PAGES_ADDED_AFTER_ARCHIVE[rel]} 才引入")
+for current, prefix in ((current_zh_routes, ""), (current_en_routes, "en/")):
+    for rel in sorted(PAGES_ADDED_AFTER_ARCHIVE.keys() - current):
+        error(f"PAGES_ADDED_AFTER_ARCHIVE 列了 {rel},但 latest 没有 {prefix}{rel}")
 
 archive_link = re.compile(r'(?:href="|\]\()(/docs/[^"\)#\s]*)')
 for locale_dir, required_prefix in (
@@ -310,10 +324,13 @@ ADDED_AFTER_ARCHIVE = {
     "migo_session_set_app_authorize_setting": "0.9.20",
     "migo_session_post_sensor_sample": "0.9.20",
     "migo_session_post_ble_characteristic_value": "0.9.20",
+    "migo_session_post_camera_frame": "0.9.20",
+    "migo_session_post_recorder_frame": "0.9.20",
     "migo_session_set_ecosystem_value": "0.9.20",
     "migo_session_set_host_app_info": "0.9.20",
     "migo_session_post_memory_warning": "0.9.20",
     "migo_session_copy_console_logs": "0.9.20",
+    "migo_session_report_network": "0.9.20",
 }
 
 for page in sorted((docs_root / "reference").glob("*.mdx")):

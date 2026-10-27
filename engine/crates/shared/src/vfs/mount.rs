@@ -378,6 +378,38 @@ pub struct MountTable {
     verify_cache: Mutex<LruCache<(u64, PathBuf), ()>>,
 }
 
+/// One immutable package read, pinned before leaving the isolate thread.
+/// Replacing the mount cannot retarget an admitted module read to new bytes.
+pub struct PinnedPackRead {
+    backend: Arc<dyn MountBackend>,
+    relative: String,
+}
+
+impl PinnedPackRead {
+    pub fn entry_size(&self) -> Option<u64> {
+        self.backend.entry_size(&self.relative)
+    }
+
+    pub fn read_limited(&self, limit: u64) -> io::Result<Vec<u8>> {
+        if self.entry_size().is_some_and(|size| size > limit) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "package module exceeds read limit",
+            ));
+        }
+        let bytes = self
+            .backend
+            .read_range_limited(&self.relative, 0, None, limit)?;
+        if bytes.len() as u64 > limit {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "package module exceeded its read charge",
+            ));
+        }
+        Ok(bytes)
+    }
+}
+
 impl fmt::Debug for MountTable {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let inner = self.inner.read();
@@ -719,6 +751,40 @@ impl MountTable {
         inner.base.backend.read(&normalized)
     }
 
+    /// Pin an existing non-directory package entry at exactly this generation.
+    /// The reader lock makes selecting the backend and checking its generation
+    /// one operation; admitted IO holds the backend Arc, not this lock.
+    pub fn pin_pack_read(
+        &self,
+        relative_path: &str,
+        generation: u64,
+    ) -> io::Result<PinnedPackRead> {
+        let normalized = normalize_relative_path(relative_path).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "path escapes mount root")
+        })?;
+        let inner = self.inner.read();
+        if generation != self.generation.load(Ordering::Acquire) {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "stale package module generation",
+            ));
+        }
+        let (backend, relative) = match highest_matching_overlay(&inner.overlays, &normalized) {
+            Some((entry, sub)) => (&entry.backend, sub),
+            None => (&inner.base.backend, normalized.as_str()),
+        };
+        if backend.real_path(relative).is_some() || !backend.is_file(relative) {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "not a package module file",
+            ));
+        }
+        Ok(PinnedPackRead {
+            backend: Arc::clone(backend),
+            relative: relative.to_owned(),
+        })
+    }
+
     // -------------------------------------------------------------------
     // Sandbox validation
     // -------------------------------------------------------------------
@@ -925,9 +991,9 @@ impl MountTable {
             return false;
         }
 
+        let mut inner = self.inner.write();
         let new_gen = self.generation.fetch_add(1, Ordering::Release) + 1;
         self.invalidate_verify_cache();
-        let mut inner = self.inner.write();
         inner.overlays.retain(|e| e.prefix != normalized_prefix);
         inner.overlays.push(MountEntry {
             name,
@@ -965,9 +1031,9 @@ impl MountTable {
 
     /// Atomically swap the base mount (e.g. hot-update of the main package).
     pub fn swap_base(&self, new_backend: Arc<dyn MountBackend>) {
+        let mut inner = self.inner.write();
         let new_gen = self.generation.fetch_add(1, Ordering::Release) + 1;
         self.invalidate_verify_cache();
-        let mut inner = self.inner.write();
         inner.base = MountEntry {
             name: "base".to_string(),
             prefix: String::new(),

@@ -22,17 +22,21 @@ public final class ShadowNativeBridge {
         }
     }
 
+    /** Event names by number, as AudioRecorderManager.EVENT_* numbers them. */
+    private static final String[] EVENT_NAMES = {
+        "start", "pause", "resume", "stop", "error", "interruptionBegin", "interruptionEnd",
+    };
+
     @Implementation
-    public static void onRecorderEvent(
-            int sessionId, long generation, String eventType, String jsonPayload) {
-        EVENTS.add(new Event(eventType, jsonPayload));
+    public static void onRecorderEvent(int sessionId, int event, String payloadJson) {
+        EVENTS.add(new Event(EVENT_NAMES[event], payloadJson));
     }
 
     @Implementation
     public static void onRecorderFrameData(
-            int sessionId, long generation, byte[] frameData, int frameLength,
+            int sessionId, int recordingId, byte[] frameData, int frameLength,
             boolean isLastFrame) {
-        EVENTS.add(new Event("frame", frameLength + ":" + isLastFrame));
+        EVENTS.add(new Event("frame", recordingId + ":" + frameLength + ":" + isLastFrame));
     }
 
     static void reset() {

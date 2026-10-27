@@ -54,7 +54,7 @@ case "$ARCH" in
     aarch64) TARGET="aarch64-unknown-linux-gnu"; GN_CPU="arm64"; SYSROOT_ARCH="arm64" ;;
     x86_64)  TARGET="x86_64-unknown-linux-gnu";  GN_CPU="x64";   SYSROOT_ARCH="amd64" ;;
 esac
-OUT_DIR="$ENGINE_ROOT/third_party/rusty_v8/$ARCH-linux-gnu"
+OUT_DIR="${MIGO_V8_OUT_ROOT:-$ENGINE_ROOT/third_party/rusty_v8}/$ARCH-linux-gnu"
 
 RUSTY_V8_SRC="${RUSTY_V8_SRC:-$PROJECT_ROOT/../rusty_v8_src}"
 GN_OUT="$RUSTY_V8_SRC/target/$TARGET/release/gn_out"
@@ -80,13 +80,19 @@ $(objdump -r "$archive" 2>/dev/null | grep -cw 'R_X86_64_DTPOFF32' || true)"
             echo "  glibc 2.38 entry points referenced: \
 $(nm --undefined-only "$archive" 2>/dev/null | grep -c '__isoc23_' || true)"
             echo "  TLS relocation types present (informational -- AArch64's dialect is\
- confirmed empirically, not assumed; see the note beside the build-time check below):"
-            objdump -r "$archive" 2>/dev/null | { grep -o 'R_AARCH64_TLS[A-Z_]*' || true; } \
-                | sort -u | sed 's/^/    /'
+ confirmed by readelf and the real whole-archive shared-link probe):"
+            python3 "$SCRIPT_DIR/lib/v8_linux_tls.py" --arch "$ARCH" "$archive"
         fi
     done
     exit 0
 fi
+
+# V8's source tag predates bindgen's Clang 22 cursor fix. A fresh binding is
+# required for this cohort; use the fixed generator rather than editing it.
+python3 "$SCRIPT_DIR/verify-v8-source-cohort.py" "$PROJECT_ROOT" "$RUSTY_V8_SRC"
+source "$SCRIPT_DIR/lib/v8-patch-apply.sh"
+v8_require_patch "$RUSTY_V8_SRC" "$ENGINE_ROOT/third_party/v8-patches" \
+    '0010-bindgen-clang22-lock.patch'
 
 # ------------------------------------------------------------
 # Preserve the existing archive. It is what dev-test-host.sh and the player
@@ -114,9 +120,15 @@ GN_ARGS+=" exclude_unwind_tables=true"
 GN_ARGS+=" v8_enable_sandbox=false"
 GN_ARGS+=" v8_enable_pointer_compression=true"
 GN_ARGS+=" v8_enable_webassembly=true"
+GN_ARGS+=" rusty_v8_enable_simdutf=true"
 # i18n stays on: rusty_v8's binding.cc unconditionally includes
 # <unicode/locid.h>, so disabling it breaks the binding compile.
 GN_ARGS+=" v8_enable_i18n_support=true"
+# Migo supplies its filtered ICU package before the first isolate. Keep the
+# build-time data file for mksnapshot, but omit a second full package from the
+# archive; upstream .gn otherwise forces embedded ICU data.
+GN_ARGS+=" icu_use_data_file=true icu_use_stub_data=true"
+GN_ARGS+=" icu_copy_icudata_to_root_build_dir=true v8_depend_on_icu_data_file=true"
 
 # target_cpu: the host is x86_64, so an aarch64 build is genuine cross-
 # compilation. GN defaults target_cpu to host_cpu when unset, which is
@@ -170,14 +182,9 @@ GN_ARGS+=" use_sysroot=true"
 # -fPIC needs no argument: build/config/compiler/BUILD.gn already adds it for
 # this platform, confirmed by the archive carrying zero absolute relocations.
 #
-# AArch64's TLS relocation vocabulary is not the x86_64 one (R_AARCH64_TLSLE_*
-# for local-exec vs R_AARCH64_TLSDESC_*/R_AARCH64_TLSLD_* for the dynamic
-# forms, not a substring-compatible renaming of the x86_64 names), and which
-# dialect clang emits for "local-dynamic" on this target is a fact about the
-# compiler, not something to assume from the x86_64 result. --check reports
-# every R_AARCH64_TLS* relocation type actually present after this first
-# build so the arm64 verification below can be filled in from what was
-# measured, the same way the x86_64 check above was.
+# The ARM64 archive was observed to use TLSDESC relocations and passed a
+# whole-archive shared-object link. The readelf gate below rejects TLSLE and
+# an empty/wrong-architecture report, independent of host objdump support.
 GN_ARGS+=" v8_monolithic=true"
 GN_ARGS+=" v8_monolithic_for_shared_library=true"
 # Required by v8_monolithic's own assertions.
@@ -201,22 +208,13 @@ GN_ARGS+=" use_partition_alloc_as_malloc=false"
 export EXTRA_GN_ARGS="$GN_ARGS"
 export V8_FROM_SOURCE=1
 
-# Changing any GN argument forces a full rebuild, which re-runs bindgen -- and
-# the local libclang cannot parse V8's vendored libc++ headers. The generated
-# binding describes V8's C++ API surface, which is identical byte-for-byte
-# across every target this repo has ever built (verified: aarch64-linux-
-# android, x86_64-linux-android and x86_64-linux-gnu's src_binding.rs are
-# identical) -- CPU architecture and OS do not change which C++ symbols exist,
-# only how they are compiled, so the x86_64-linux-gnu binding is reused here
-# rather than needing its own aarch64 backup to exist first. (MIGO patch, see
-# engine/third_party/v8-patches.)
-KNOWN_GOOD_BINDING="$ENGINE_ROOT/third_party/rusty_v8/x86_64-linux-gnu/src_binding.rs"
-if [[ -f "$BACKUP_DIR/src_binding.rs" ]]; then
-    export V8_PREBUILT_BINDING="$BACKUP_DIR/src_binding.rs"
-    info "reusing binding: $V8_PREBUILT_BINDING"
-elif [[ -f "$KNOWN_GOOD_BINDING" ]]; then
-    export V8_PREBUILT_BINDING="$KNOWN_GOOD_BINDING"
-    info "reusing binding (arch-independent C++ API surface): $V8_PREBUILT_BINDING"
+# A previous release's binding cannot be carried across a V8 upgrade. Generate
+# from the current C++ headers by default; an explicit prebuilt input must prove
+# its version, source revision and bytes before a patch can make use of it.
+if [[ -n "${V8_PREBUILT_BINDING:-}" ]]; then
+    python3 "$SCRIPT_DIR/verify-v8-prebuilt-binding.py" \
+        --source "$RUSTY_V8_SRC" --binding "$V8_PREBUILT_BINDING" \
+        --manifest "${V8_PREBUILT_BINDING_MANIFEST:-$(dirname "$V8_PREBUILT_BINDING")/component-manifest.json}"
 fi
 
 # ------------------------------------------------------------
@@ -301,10 +299,18 @@ if [[ -f "$GN_OUT/build.ninja" ]]; then
 fi
 
 info "gn args: $GN_ARGS"
-info "building V8 for $ARCH (full rebuild -- every argument change invalidates the cache)"
+info "building V8 for $ARCH"
+
+# Bindgen is a host executable parsing target headers. GN's sysroot arguments
+# do not reach libclang; pass the same pinned target explicitly, scoped so
+# cross arguments cannot leak into Cargo's host build dependencies.
+python3 "$RUSTY_V8_SRC/build/linux/sysroot_scripts/install-sysroot.py" --arch "$SYSROOT_ARCH"
+BINDGEN_TARGET_ARGS="$(python3 "$SCRIPT_DIR/lib/v8_bindgen.py" \
+    --source "$RUSTY_V8_SRC" --target "$TARGET")"
 
 cd "$RUSTY_V8_SRC"
-cargo build --release --target "$TARGET" -p v8
+env "BINDGEN_EXTRA_CLANG_ARGS_${TARGET}=$BINDGEN_TARGET_ARGS" \
+    cargo build --release --target "$TARGET" -p v8 --features simdutf,v8_enable_pointer_compression
 
 ARCHIVE="$GN_OUT/obj/librusty_v8.a"
 [[ -f "$ARCHIVE" ]] || { err "build produced no archive at $ARCHIVE"; exit 1; }
@@ -335,18 +341,8 @@ if [[ "$ARCH" == "x86_64" ]]; then
         exit 1
     fi
     info "TLS verified: 0 local-exec relocations"
-else
-    # AArch64's local-exec relocations (R_AARCH64_TLSLE_*) are not a renamed
-    # copy of x86_64's; a hardcoded check here would be exactly the kind of
-    # unmeasured assumption this file's TLS section warns against. Report
-    # what is actually present -- this line is what scripts/build-v8-linux.sh
-    # aarch64 --check also prints -- so the real relocation-type check can be
-    # written from an observed archive instead of a guess.
-    info "AArch64 TLS relocation types present (fill in the shared-object-safety"
-    info "check above from this output -- see the note beside V8_TLS_USED_IN_LIBRARY):"
-    objdump -r "$ARCHIVE" 2>/dev/null | { grep -o 'R_AARCH64_TLS[A-Z_]*' || true; } \
-        | sort -u | sed 's/^/    /'
 fi
+python3 "$SCRIPT_DIR/lib/v8_linux_tls.py" --arch "$ARCH" "$ARCHIVE"
 
 info "installing to $OUT_DIR"
 mkdir -p "$OUT_DIR"
@@ -362,7 +358,7 @@ V8_SYSROOT="$RUSTY_V8_SRC/build/linux/debian_bullseye_${SYSROOT_ARCH}-sysroot"
     err "the GN build did not materialize its Debian bullseye sysroot at $V8_SYSROOT"
     exit 1
 }
-PATCH_ARGS=()
+PATCH_ARGS=(--patch "bindgen-clang22-lock=$ENGINE_ROOT/third_party/v8-patches/0010-bindgen-clang22-lock.patch")
 PREBUILT_BINDING_PATCH="$ENGINE_ROOT/third_party/v8-patches/migo-build-rs-prebuilt-binding.diff"
 if git -C "$RUSTY_V8_SRC" apply --reverse --check "$PREBUILT_BINDING_PATCH" \
         >/dev/null 2>&1; then

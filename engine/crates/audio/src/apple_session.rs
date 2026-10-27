@@ -7,13 +7,14 @@
 //! crate -- so the engine configures its own session, which is also the only
 //! thing `setInnerAudioOption` can act on:
 //!
-//! - `obeyMuteSwitch` chooses the category: `Ambient` respects the silent
-//!   switch, `Playback` plays through it.
-//! - `mixWithOther` adds `MixWithOthers`, so another app's music keeps playing.
-//! - `speakerOn` is the speaker, which both categories already route to. The
-//!   receiver route needs `PlayAndRecord`, and that asks for the microphone --
-//!   a permission this profile does not grant -- so a `false` is accepted and
-//!   not honoured, as Android's own best-effort `setSpeakerphoneOn` is.
+//! - `obeyMuteSwitch` chooses the category: `SoloAmbient` respects the silent
+//!   switch, `Playback` plays through it. Neither mixes with other apps' audio:
+//!   with the speaker on the reference plays alone whatever `mixWithOther` says,
+//!   and that is decided before this is asked (`migo_services::audio`).
+//! - `speakerOn` is the speaker, which both categories route to. The receiver
+//!   route needs `PlayAndRecord`, and that asks for the microphone -- a
+//!   permission this profile does not grant -- so `false` is answered as not
+//!   supported, before this is asked.
 //!
 //! `getAvailableAudioSources` reads the session's inputs: `auto`, and the
 //! built-in and headset microphones by the names the API gives them.
@@ -22,369 +23,105 @@
 //! another app. That arrives as `AVAudioSessionInterruptionNotification`, and
 //! this delivers it to the host as `OnAudioInterruptionBegin`/`End`, which both
 //! executions hand to content's `onAudioInterruptionBegin` listeners. The
-//! output unit is stopped by the system at a begin and has to be started again
-//! after an end, which the audio thread does through [`InterruptionState`].
+//! hardware stream, session reactivation and ShouldResume policy belong to
+//! CPAL. The subscription only forwards public mini-game events; it never drives
+//! a second hardware pause/resume gate.
 //!
-//! Written against the Objective-C runtime directly, as
-//! `migo-platform`'s Apple presenter is: two `objc_msgSend` casts and a class
-//! built at run time for the notification, against one framework the archive
-//! already links -- rather than a binding crate for four calls.
+//! Category/input queries reuse CPAL's existing typed AVFAudio bindings. Interruptions reuse
+//! CPAL's typed, process-wide observer and native-before-public ordering.
 
 #![cfg(target_os = "ios")]
 
-use std::ffi::{CString, c_char, c_void};
-use std::ptr;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 
+use objc2_avf_audio::{
+    AVAudioSession, AVAudioSessionCategoryOptions, AVAudioSessionCategoryPlayback,
+    AVAudioSessionCategorySoloAmbient, AVAudioSessionPortBuiltInMic, AVAudioSessionPortHeadsetMic,
+};
 use shared::error::{EngineError, EngineResult, ErrorCode};
 use shared::protocol::host_cmd::HostCommand;
 use tracing::{info, warn};
 
-type Object = c_void;
-type Sel = *const c_void;
-type Class = *const c_void;
-type Imp = unsafe extern "C" fn();
+pub use crate::apple_session_policy::AudioSessionOptions;
+use crate::apple_session_policy::{SessionCategory, SessionConfiguration, input_source_names};
 
-#[link(name = "objc")]
-unsafe extern "C" {
-    fn objc_getClass(name: *const c_char) -> Class;
-    fn sel_registerName(name: *const c_char) -> Sel;
-    fn objc_msgSend();
-    fn objc_allocateClassPair(superclass: Class, name: *const c_char, extra: usize) -> Class;
-    fn objc_registerClassPair(class: Class);
-    fn class_addMethod(class: Class, name: Sel, imp: Imp, types: *const c_char) -> bool;
+fn configuration() -> &'static SessionConfiguration {
+    static STATE: OnceLock<SessionConfiguration> = OnceLock::new();
+    STATE.get_or_init(SessionConfiguration::default)
 }
 
-#[link(name = "AVFoundation", kind = "framework")]
-unsafe extern "C" {
-    static AVAudioSessionCategoryAmbient: *const Object;
-    static AVAudioSessionCategoryPlayback: *const Object;
-    static AVAudioSessionInterruptionNotification: *const Object;
-    static AVAudioSessionInterruptionTypeKey: *const Object;
-    static AVAudioSessionPortBuiltInMic: *const Object;
-    static AVAudioSessionPortHeadsetMic: *const Object;
-}
-
-/// `AVAudioSessionCategoryOptionMixWithOthers`.
-const MIX_WITH_OTHERS: u64 = 1;
-/// `AVAudioSessionInterruptionTypeBegan`.
-const INTERRUPTION_BEGAN: u64 = 1;
-
-fn selector(name: &str) -> Sel {
-    let name = CString::new(name).expect("a selector has no interior nul");
-    unsafe { sel_registerName(name.as_ptr()) }
-}
-
-fn class(name: &str) -> Option<Class> {
-    let name = CString::new(name).ok()?;
-    let class = unsafe { objc_getClass(name.as_ptr()) };
-    (!class.is_null()).then_some(class)
-}
-
-/// `[receiver selector]`.
-unsafe fn send(receiver: *const Object, sel: Sel) -> *mut Object {
-    let msg: unsafe extern "C" fn(*const Object, Sel) -> *mut Object =
-        unsafe { std::mem::transmute(objc_msgSend as *const ()) };
-    unsafe { msg(receiver, sel) }
-}
-
-/// What content asked of the session.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct AudioSessionOptions {
-    pub mix_with_other: bool,
-    pub obey_mute_switch: bool,
-    pub speaker_on: bool,
-}
-
-impl Default for AudioSessionOptions {
-    /// The mini-game API's defaults: the silent switch is obeyed and other
-    /// apps' audio keeps playing.
-    fn default() -> Self {
-        Self {
-            mix_with_other: true,
-            obey_mute_switch: true,
-            speaker_on: true,
-        }
-    }
-}
-
-struct SessionState {
-    options: AudioSessionOptions,
-    applied: bool,
-}
-
-fn state() -> &'static Mutex<SessionState> {
-    static STATE: OnceLock<Mutex<SessionState>> = OnceLock::new();
-    STATE.get_or_init(|| {
-        Mutex::new(SessionState {
-            options: AudioSessionOptions::default(),
-            applied: false,
-        })
+/// Subscribe through CPAL's process-session observer, after its native state
+/// transition. The guard is owned by this audio thread, including silent-device
+/// fallback; shutdown unregisters it. No process-wide list retains dead hosts.
+pub fn watch_interruptions(
+    host_tx: shared::host_channel::HostCommandSender,
+) -> cpal::platform::InterruptionObserver {
+    cpal::platform::observe_audio_session_interruptions(move |event| {
+        let command = match event {
+            cpal::platform::InterruptionEvent::Began => HostCommand::OnAudioInterruptionBegin,
+            cpal::platform::InterruptionEvent::Ended { .. } => HostCommand::OnAudioInterruptionEnd,
+        };
+        // Use the existing reserved transition lane. Saturation cannot delete
+        // the subscription: later events still have the same live observer.
+        let _ = host_tx.try_send_reliable(None, command);
     })
 }
 
-/// Whether the system has taken audio away, and who to tell when it does.
-///
-/// Process-wide because the session is: every live session's host channel gets
-/// the interruption, as every one of them is losing its output.
-pub struct InterruptionState {
-    interrupted: AtomicBool,
-    listeners: Mutex<Vec<shared::op_state::HostTx>>,
-}
-
-impl InterruptionState {
-    /// True while the system holds the audio: the output unit is stopped and
-    /// starting it again would fail until an end arrives.
-    pub fn is_interrupted(&self) -> bool {
-        self.interrupted.load(Ordering::Acquire)
-    }
-}
-
-fn interruptions() -> &'static InterruptionState {
-    static STATE: OnceLock<InterruptionState> = OnceLock::new();
-    STATE.get_or_init(|| InterruptionState {
-        interrupted: AtomicBool::new(false),
-        listeners: Mutex::new(Vec::new()),
-    })
-}
-
-/// The process's interruption state, for the audio thread's stream gate.
-pub fn interruption_state() -> &'static InterruptionState {
-    interruptions()
-}
-
-/// Tell this session's host about interruptions from now on.
-///
-/// Idempotent per channel in effect: a session registers once, when its audio
-/// thread starts, and its sender is dropped with the session.
-pub fn watch_interruptions(host_tx: shared::op_state::HostTx) {
-    interruptions()
-        .listeners
-        .lock()
-        .expect("the interruption listeners are never poisoned")
-        .push(host_tx);
-    install_observer();
-}
-
-fn deliver(interrupted: bool) {
-    interruptions()
-        .interrupted
-        .store(interrupted, Ordering::Release);
-    // Built per listener: a host command owns what it carries and is not
-    // cloneable, and these two carry nothing.
-    let command = || {
-        if interrupted {
-            HostCommand::OnAudioInterruptionBegin
-        } else {
-            HostCommand::OnAudioInterruptionEnd
+/// Apply the mini-game category. CPAL owns activation when the stream plays.
+/// Uses the same typed AVFAudio cohort CPAL already needs, including ownership
+/// of the singleton and NSError. No raw objc_msgSend ABI or selector allocation.
+fn apply_category(options: AudioSessionOptions) -> EngineResult<()> {
+    let category = options.category();
+    // SAFETY: AVAudioSession and both categories are available on the selected
+    // iOS15+ product. Retained owns the returned session; no capture is opened.
+    let session = unsafe { AVAudioSession::sharedInstance() };
+    let native_category = unsafe {
+        match category {
+            SessionCategory::SoloAmbient => AVAudioSessionCategorySoloAmbient,
+            SessionCategory::Playback => AVAudioSessionCategoryPlayback,
         }
-    };
-    let mut listeners = interruptions()
-        .listeners
-        .lock()
-        .expect("the interruption listeners are never poisoned");
-    // A host whose session has gone takes nothing more; dropping it here is
-    // how this list stays the live ones.
-    listeners.retain(|host_tx| host_tx.try_send(command()).is_ok());
-}
-
-/// The notification's `AVAudioSessionInterruptionTypeKey`, as a began/ended.
-unsafe extern "C" fn on_interruption(_this: *const Object, _sel: Sel, notification: *const Object) {
-    let user_info = unsafe { send(notification, selector("userInfo")) };
-    if user_info.is_null() {
-        return;
     }
-    let object_for_key: unsafe extern "C" fn(*const Object, Sel, *const Object) -> *mut Object =
-        unsafe { std::mem::transmute(objc_msgSend as *const ()) };
-    let value = unsafe {
-        object_for_key(
-            user_info,
-            selector("objectForKey:"),
-            AVAudioSessionInterruptionTypeKey,
-        )
-    };
-    if value.is_null() {
-        return;
-    }
-    let unsigned_value: unsafe extern "C" fn(*const Object, Sel) -> u64 =
-        unsafe { std::mem::transmute(objc_msgSend as *const ()) };
-    let kind = unsafe { unsigned_value(value, selector("unsignedIntegerValue")) };
-    deliver(kind == INTERRUPTION_BEGAN);
-}
-
-/// Register one observer object for the process, built at run time because the
-/// notification centre calls a selector on an object and this crate has no
-/// Objective-C class of its own.
-fn install_observer() {
-    static INSTALLED: OnceLock<()> = OnceLock::new();
-    INSTALLED.get_or_init(|| {
-        let Some(superclass) = class("NSObject") else {
-            warn!("no NSObject: audio interruptions will not reach content");
-            return;
-        };
-        let name = CString::new("MigoAudioSessionObserver").expect("a class name");
-        let observer_class = unsafe { objc_allocateClassPair(superclass, name.as_ptr(), 0) };
-        if observer_class.is_null() {
-            warn!("could not build the audio interruption observer class");
-            return;
-        }
-        // `v@:@`: returns void, takes self, _cmd and the notification.
-        let types = CString::new("v@:@").expect("a type encoding");
-        let added = unsafe {
-            class_addMethod(
-                observer_class,
-                selector("onInterruption:"),
-                std::mem::transmute::<unsafe extern "C" fn(*const Object, Sel, *const Object), Imp>(
-                    on_interruption,
-                ),
-                types.as_ptr(),
-            )
-        };
-        unsafe { objc_registerClassPair(observer_class) };
-        if !added {
-            warn!("could not add the audio interruption handler");
-            return;
-        }
-        let observer = unsafe { send(send(observer_class, selector("alloc")), selector("init")) };
-        let Some(center_class) = class("NSNotificationCenter") else {
-            return;
-        };
-        let center = unsafe { send(center_class, selector("defaultCenter")) };
-        let add_observer: unsafe extern "C" fn(
-            *const Object,
-            Sel,
-            *const Object,
-            Sel,
-            *const Object,
-            *const Object,
-        ) = unsafe { std::mem::transmute(objc_msgSend as *const ()) };
-        unsafe {
-            add_observer(
-                center,
-                selector("addObserver:selector:name:object:"),
-                observer,
-                selector("onInterruption:"),
-                AVAudioSessionInterruptionNotification,
-                ptr::null(),
-            );
-        }
-        // The observer is deliberately never released: it lives as long as the
-        // process's session does, and an observer freed while registered is a
-        // message to a dead object.
-        info!("audio interruptions are observed");
-    });
-}
-
-/// An `NSError`'s code, for a refusal a person has to act on: the four-letter
-/// OSStatus AVFoundation reports, as a number.
-fn error_code(error: *mut Object) -> String {
-    if error.is_null() {
-        return "no error reported".to_string();
-    }
-    let code: unsafe extern "C" fn(*const Object, Sel) -> isize =
-        unsafe { std::mem::transmute(objc_msgSend as *const ()) };
-    format!("NSError code {}", unsafe { code(error, selector("code")) })
-}
-
-fn shared_session() -> Option<*mut Object> {
-    let session_class = class("AVAudioSession")?;
-    let session = unsafe { send(session_class, selector("sharedInstance")) };
-    (!session.is_null()).then_some(session)
-}
-
-/// Apply `options` to the process's session and activate it.
-///
-/// Called before the output opens and again whenever content sets the option,
-/// because a category set while the unit is running takes effect on the next
-/// route change and both have to end at the same state.
-pub fn configure(options: AudioSessionOptions) -> EngineResult<()> {
-    let session = shared_session().ok_or_else(|| {
+    .ok_or_else(|| {
         EngineError::from_detail(
             ErrorCode::Unsupported,
-            "setInnerAudioOption:fail this process has no AVAudioSession",
+            "setInnerAudioOption:fail this process has no requested audio session category",
         )
     })?;
-    let category = unsafe {
-        if options.obey_mute_switch {
-            AVAudioSessionCategoryAmbient
-        } else {
-            AVAudioSessionCategoryPlayback
-        }
-    };
-    let category_options = if options.mix_with_other {
-        MIX_WITH_OTHERS
-    } else {
-        0
-    };
-    let set_category: unsafe extern "C" fn(
-        *const Object,
-        Sel,
-        *const Object,
-        u64,
-        *mut *mut Object,
-    ) -> bool = unsafe { std::mem::transmute(objc_msgSend as *const ()) };
-    let mut error: *mut Object = ptr::null_mut();
-    let set = unsafe {
-        set_category(
-            session,
-            selector("setCategory:withOptions:error:"),
-            category,
-            category_options,
-            &mut error,
+    // Neither category mixes with other apps. The category options deliberately
+    // stay empty; no receiver/input category or microphone permission is added.
+    unsafe {
+        session
+            .setCategory_withOptions_error(native_category, AVAudioSessionCategoryOptions::empty())
+    }
+    .map_err(|error| {
+        EngineError::from_detail(
+            ErrorCode::Internal,
+            format!(
+                "setInnerAudioOption:fail the audio session refused the category (NSError code {})",
+                error.code()
+            ),
         )
-    };
-    if !set {
-        return Err(EngineError::from_detail(
-            ErrorCode::Internal,
-            format!(
-                "setInnerAudioOption:fail the audio session refused the category ({})",
-                error_code(error)
-            ),
-        ));
-    }
-    let set_active: unsafe extern "C" fn(*const Object, Sel, bool, *mut *mut Object) -> bool =
-        unsafe { std::mem::transmute(objc_msgSend as *const ()) };
-    let mut error: *mut Object = ptr::null_mut();
-    let active = unsafe { set_active(session, selector("setActive:error:"), true, &mut error) };
-    if !active {
-        return Err(EngineError::from_detail(
-            ErrorCode::Internal,
-            format!(
-                "setInnerAudioOption:fail the audio session could not be activated ({})",
-                error_code(error)
-            ),
-        ));
-    }
-    info!(
-        "audio session active: category={}, mixWithOthers={}",
-        if options.obey_mute_switch {
-            "ambient"
-        } else {
-            "playback"
-        },
-        options.mix_with_other
-    );
-    let mut state = state().lock().expect("the session state is never poisoned");
-    state.options = options;
-    state.applied = true;
+    })?;
     Ok(())
 }
 
-/// Make sure the session is configured before the output unit opens: with what
-/// content asked for, or with the defaults if it has not asked.
+pub fn configure(options: AudioSessionOptions) -> EngineResult<()> {
+    configuration().configure(options, apply_category)?;
+    // Subscriber code must not run while category configuration is locked.
+    info!(
+        "audio session configured: category={}",
+        options.category().name()
+    );
+    Ok(())
+}
+
 pub fn ensure_configured() {
-    let options = {
-        let state = state().lock().expect("the session state is never poisoned");
-        if state.applied {
-            return;
-        }
-        state.options
-    };
-    if let Err(error) = configure(options) {
-        // Not fatal: the unit may still open under the process's own session,
-        // and a game without sound is better than a session that will not start.
-        warn!("the audio session was not configured: {error}");
+    match configuration().ensure_configured(apply_category) {
+        Ok(true) => info!("audio session initialized"),
+        Ok(false) => {}
+        // The host may already have a usable category. Device open still has
+        // its normal silent-output fallback and subsequent recovery policy.
+        Err(error) => warn!("the audio session was not configured: {error}"),
     }
 }
 
@@ -396,63 +133,22 @@ pub fn ensure_configured() {
 /// A category that cannot record lists no ports; the session still says
 /// whether any input exists, which is then all `auto` can stand for.
 fn available_sources() -> EngineResult<Vec<String>> {
-    let session = shared_session().ok_or_else(|| {
-        EngineError::from_detail(
-            ErrorCode::Unsupported,
-            "getAvailableAudioSources:fail this process has no AVAudioSession",
-        )
-    })?;
-    let count: unsafe extern "C" fn(*const Object, Sel) -> usize =
-        unsafe { std::mem::transmute(objc_msgSend as *const ()) };
-    let object_at: unsafe extern "C" fn(*const Object, Sel, usize) -> *mut Object =
-        unsafe { std::mem::transmute(objc_msgSend as *const ()) };
-    let equal: unsafe extern "C" fn(*const Object, Sel, *const Object) -> bool =
-        unsafe { std::mem::transmute(objc_msgSend as *const ()) };
-    let flag: unsafe extern "C" fn(*const Object, Sel) -> bool =
-        unsafe { std::mem::transmute(objc_msgSend as *const ()) };
-
+    // SAFETY: these read-only iOS15+ session/port APIs return retained typed
+    // objects. They do not open an input stream or request microphone access.
+    let session = unsafe { AVAudioSession::sharedInstance() };
     let (mut built_in, mut headset, mut any) = (false, false, false);
-    let inputs = unsafe { send(session, selector("availableInputs")) };
-    if !inputs.is_null() {
-        for index in 0..unsafe { count(inputs, selector("count")) } {
-            let port = unsafe { object_at(inputs, selector("objectAtIndex:"), index) };
-            let kind = unsafe { send(port, selector("portType")) };
-            if kind.is_null() {
-                continue;
-            }
+    if let Some(inputs) = unsafe { session.availableInputs() } {
+        for port in inputs.iter() {
+            let kind = unsafe { port.portType() };
             any = true;
-            built_in |= unsafe {
-                equal(
-                    kind,
-                    selector("isEqualToString:"),
-                    AVAudioSessionPortBuiltInMic,
-                )
-            };
-            headset |= unsafe {
-                equal(
-                    kind,
-                    selector("isEqualToString:"),
-                    AVAudioSessionPortHeadsetMic,
-                )
-            };
+            built_in |= unsafe { AVAudioSessionPortBuiltInMic }
+                .is_some_and(|name| kind.isEqualToString(name));
+            headset |= unsafe { AVAudioSessionPortHeadsetMic }
+                .is_some_and(|name| kind.isEqualToString(name));
         }
     }
-    any |= unsafe { flag(session, selector("isInputAvailable")) };
-    Ok(sources(any, built_in, headset))
-}
-
-fn sources(any: bool, built_in: bool, headset: bool) -> Vec<String> {
-    let mut sources = Vec::new();
-    if any || built_in || headset {
-        sources.push(crate::platform::AUTO.to_string());
-    }
-    if built_in {
-        sources.push("buildInMic".to_string());
-    }
-    if headset {
-        sources.push("headsetMic".to_string());
-    }
-    sources
+    any |= unsafe { session.isInputAvailable() };
+    Ok(input_source_names(any, built_in, headset))
 }
 
 /// `setInnerAudioOption` and `getAvailableAudioSources`, as the platform audio
@@ -462,16 +158,9 @@ pub struct AppleAudioPlatform;
 impl shared::services::AudioPlatformService for AppleAudioPlatform {
     fn set_inner_audio_option(
         &self,
-        mix_with_other: bool,
         obey_mute_switch: bool,
-        speaker_on: bool,
     ) -> Result<(), shared::protocol::error::ServiceError> {
-        configure(AudioSessionOptions {
-            mix_with_other,
-            obey_mute_switch,
-            speaker_on,
-        })
-        .map_err(|error| {
+        configure(AudioSessionOptions { obey_mute_switch }).map_err(|error| {
             shared::protocol::error::ServiceError::system(
                 error.detail.unwrap_or_else(|| error.msg.to_string()),
             )
@@ -486,25 +175,6 @@ impl shared::services::AudioPlatformService for AppleAudioPlatform {
                 error.detail.unwrap_or_else(|| error.msg.to_string()),
             )
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::sources;
-
-    /// `auto` leads whenever there is an input; the two microphones iOS names
-    /// follow by name; a session that lists nothing and has no input offers
-    /// nothing.
-    #[test]
-    fn the_inputs_are_named_as_the_api_names_them() {
-        assert_eq!(sources(true, true, false), ["auto", "buildInMic"]);
-        assert_eq!(
-            sources(true, true, true),
-            ["auto", "buildInMic", "headsetMic"]
-        );
-        assert_eq!(sources(true, false, false), ["auto"]);
-        assert!(sources(false, false, false).is_empty());
     }
 }
 

@@ -1,7 +1,3 @@
-This reverts https://github.com/chromium/chromium/commit/8e3c5a8ae87e6834670e4777876e77ecba0046a1
-
-diff --git a/build/config/android/config.gni b/build/config/android/config.gni
-index c91ad3143a2c91..c4b0a6a235a599 100644
 --- a/build/config/android/config.gni
 +++ b/build/config/android/config.gni
 @@ -157,7 +157,12 @@
@@ -27,7 +23,7 @@ index c91ad3143a2c91..c4b0a6a235a599 100644
 +
      android_ndk_api_level = default_min_sdk_version
  
-     if (current_cpu == "riscv64" && default_min_sdk_version < 35) {
+     if (current_cpu == "riscv64" && default_min_sdk_version < 36) {
 --- a/build/config/android/BUILD.gn
 +++ b/build/config/android/BUILD.gn
 @@ -2,6 +2,7 @@

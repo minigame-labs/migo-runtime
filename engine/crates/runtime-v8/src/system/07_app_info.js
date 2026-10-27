@@ -18,8 +18,9 @@ function appInfo() {
 function getAppBaseInfo() {
     const info = op_get_app_info();
     // `theme` is left out: the platform documents it as unavailable to mini
-    // games. `host.appId` is present only when the host names itself.
-    return {
+    // games. `host.appId` is present only when the host names itself, and
+    // `PCKernelVersion` only on a desktop, as the platform has it.
+    const base = {
         SDKVersion: info.SDKVersion,
         enableDebug: info.enableDebug,
         host: info.hostAppId === null ? {} : { appId: info.hostAppId },
@@ -28,6 +29,8 @@ function getAppBaseInfo() {
         fontSizeScaleFactor: info.fontSizeScaleFactor,
         fontSizeSetting: info.fontSizeSetting,
     };
+    if (info.PCKernelVersion !== undefined) base.PCKernelVersion = info.PCKernelVersion;
+    return base;
 }
 
 function getAccountInfoSync() {
@@ -43,9 +46,10 @@ function getAccountInfoSync() {
     };
 }
 
-// Callbacks only: the platform does not offer this one as a promise.
+// Answered as every asynchronous call is; the platform offers it no Promise
+// style, so its Promise's rejection is not reported as unhandled.
 function getDeviceBenchmarkInfo(options) {
-    wrapAsync('getDeviceBenchmarkInfo', function () {
+    return wrapAsync('getDeviceBenchmarkInfo', function () {
         const info = op_get_app_info();
         return { benchmarkLevel: info.benchmarkLevel, modelLevel: info.modelLevel };
     }, options);

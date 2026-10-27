@@ -18,8 +18,9 @@ fn worker_snapshot_roundtrip_keeps_an_unstarted_bootstrap() {
             with_runtime_cb: Some(Box::new(|rt| {
                 rt.execute_script(
                     "worker-snapshot-creation-check",
-                    "if (typeof Deno.core.eventLoopTick !== 'function') throw new Error('Deno.core callbacks missing');\n\
-                     if (typeof globalThis.__migoStartWorkerMessagePump !== 'function') throw new Error('deferred Worker pump hook missing');",
+                    "for (const name of ['__eventLoopTick', '__processTimers', '__drainNextTickAndMacrotasks', '__handleRejections', 'runImmediateCallbacks']) { if (typeof Deno.core[name] !== 'function') throw new Error('Deno.core callback missing: ' + name); }\n\
+                     if (typeof globalThis.__migoStartWorkerMessagePump !== 'function') throw new Error('deferred Worker pump hook missing');\n\
+                     if (new Intl.NumberFormat('en-US').format(1234567.89) !== '1,234,567.89') throw new Error('Worker embedder ICU data missing');",
                 )
                 .expect("Worker bootstrap must be serializable before runtime state exists");
                 let mut context =
@@ -41,6 +42,11 @@ fn worker_snapshot_roundtrip_keeps_an_unstarted_bootstrap() {
     .expect("create Worker snapshot");
 
     let snapshot_bytes: &'static [u8] = Box::leak(output.output);
+    let executor = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let _guard = executor.enter();
     let mut rt = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
         extensions: runtime_v8::snapshot::worker_lazy_extensions(),
         startup_snapshot: Some(snapshot_bytes),
@@ -50,8 +56,9 @@ fn worker_snapshot_roundtrip_keeps_an_unstarted_bootstrap() {
 
     rt.execute_script(
         "worker-snapshot-restore-check",
-        "if (typeof Deno.core.eventLoopTick !== 'function') throw new Error('restored Deno.core callbacks missing');\n\
+        "for (const name of ['__eventLoopTick', '__processTimers', '__drainNextTickAndMacrotasks', '__handleRejections', 'runImmediateCallbacks']) { if (typeof Deno.core[name] !== 'function') throw new Error('restored Deno.core callback missing: ' + name); }\n\
          if (typeof globalThis.__migoStartWorkerMessagePump !== 'function') throw new Error('restored Worker pump hook missing');\n\
+         if (new Intl.NumberFormat('de-DE').format(1234567.89) !== '1.234.567,89') throw new Error('RESTORE: Worker embedder ICU data missing');\n\
          delete globalThis.__migoStartWorkerMessagePump;\n\
          delete globalThis.Deno;\n\
          delete globalThis.__bootstrap;\n\

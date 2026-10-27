@@ -177,6 +177,13 @@
           "id": 4,
           "kind": "command",
           "op": "op_share_menu_reply"
+        },
+        "share_game_recording": {
+          "id": 5,
+          "kind": "call",
+          "op": "op_share_game_recording",
+          "hook": "_internalOnShareGameRecordingResult",
+          "error_code_field": "errCode"
         }
       },
       "events": {
@@ -979,6 +986,304 @@
         "state": {
           "id": 0,
           "hook": "_internalOnUpdateEvent"
+        }
+      }
+    },
+    "camera": {
+      "id": 19,
+      "methods": {
+        "create": {
+          "id": 0,
+          "kind": "call",
+          "op": "op_camera_create",
+          "hook": "_internalOnCreateCameraResult",
+          "error_code_field": null
+        },
+        "destroy": {
+          "id": 1,
+          "kind": "command",
+          "op": "op_camera_destroy"
+        },
+        "set": {
+          "id": 2,
+          "kind": "command",
+          "op": "op_camera_set"
+        },
+        "take_photo": {
+          "id": 3,
+          "kind": "call",
+          "op": "op_camera_take_photo",
+          "hook": "_internalOnCameraTakePhotoResult",
+          "error_code_field": null,
+          "files": [
+            "tempImagePath"
+          ]
+        },
+        "start_record": {
+          "id": 4,
+          "kind": "call",
+          "op": "op_camera_start_record",
+          "hook": "_internalOnCameraStartRecordResult",
+          "error_code_field": null
+        },
+        "stop_record": {
+          "id": 5,
+          "kind": "call",
+          "op": "op_camera_stop_record",
+          "hook": "_internalOnCameraStopRecordResult",
+          "error_code_field": null,
+          "files": [
+            "tempVideoPath",
+            "tempThumbPath"
+          ]
+        },
+        "set_zoom": {
+          "id": 6,
+          "kind": "call",
+          "op": "op_camera_set_zoom",
+          "hook": "_internalOnCameraSetZoomResult",
+          "error_code_field": null
+        },
+        "listen_frame_change": {
+          "id": 7,
+          "kind": "command",
+          "op": "op_camera_listen_frame_change"
+        },
+        "close_frame_change": {
+          "id": 8,
+          "kind": "command",
+          "op": "op_camera_close_frame_change"
+        }
+      },
+      "events": {
+        "stop": {
+          "id": 0,
+          "hook": "_internalOnCameraStopEvent"
+        },
+        "auth_cancel": {
+          "id": 1,
+          "hook": "_internalOnCameraAuthCancelEvent"
+        }
+      }
+    },
+    "recorder": {
+      "id": 20,
+      "methods": {
+        "start": {
+          "id": 0,
+          "kind": "command",
+          "op": "op_recorder_start"
+        },
+        "pause": {
+          "id": 1,
+          "kind": "command",
+          "op": "op_recorder_pause"
+        },
+        "resume": {
+          "id": 2,
+          "kind": "command",
+          "op": "op_recorder_resume"
+        },
+        "stop": {
+          "id": 3,
+          "kind": "command",
+          "op": "op_recorder_stop"
+        }
+      },
+      "events": {
+        "start": {
+          "id": 0,
+          "hook": "_internalOnRecorderStartEvent"
+        },
+        "pause": {
+          "id": 1,
+          "hook": "_internalOnRecorderPauseEvent"
+        },
+        "resume": {
+          "id": 2,
+          "hook": "_internalOnRecorderResumeEvent"
+        },
+        "stop": {
+          "id": 3,
+          "hook": "_internalOnRecorderStopEvent",
+          "files": [
+            "tempFilePath"
+          ]
+        },
+        "error": {
+          "id": 4,
+          "hook": "_internalOnRecorderErrorEvent"
+        },
+        "interruption_begin": {
+          "id": 5,
+          "hook": "_internalOnRecorderInterruptionBeginEvent"
+        },
+        "interruption_end": {
+          "id": 6,
+          "hook": "_internalOnRecorderInterruptionEndEvent"
+        }
+      }
+    },
+    "video": {
+      "id": 21,
+      "methods": {
+        "create": {
+          "id": 0,
+          "kind": "command",
+          "op": "op_video_create"
+        },
+        "destroy": {
+          "id": 1,
+          "kind": "command",
+          "op": "op_video_destroy"
+        },
+        "set": {
+          "id": 2,
+          "kind": "command",
+          "op": "op_video_set"
+        },
+        "play": {
+          "id": 3,
+          "kind": "call",
+          "op": "op_video_play",
+          "hook": "_internalOnVideoPlayResult",
+          "error_code_field": null
+        },
+        "pause": {
+          "id": 4,
+          "kind": "call",
+          "op": "op_video_pause",
+          "hook": "_internalOnVideoPauseResult",
+          "error_code_field": null
+        },
+        "stop": {
+          "id": 5,
+          "kind": "call",
+          "op": "op_video_stop",
+          "hook": "_internalOnVideoStopResult",
+          "error_code_field": null
+        },
+        "seek": {
+          "id": 6,
+          "kind": "call",
+          "op": "op_video_seek",
+          "hook": "_internalOnVideoSeekResult",
+          "error_code_field": null
+        },
+        "request_full_screen": {
+          "id": 7,
+          "kind": "call",
+          "op": "op_video_request_full_screen",
+          "hook": "_internalOnVideoRequestFullScreenResult",
+          "error_code_field": null
+        },
+        "exit_full_screen": {
+          "id": 8,
+          "kind": "call",
+          "op": "op_video_exit_full_screen",
+          "hook": "_internalOnVideoExitFullScreenResult",
+          "error_code_field": null
+        }
+      },
+      "events": {
+        "play": {
+          "id": 0,
+          "hook": "_internalOnVideoPlayEvent"
+        },
+        "pause": {
+          "id": 1,
+          "hook": "_internalOnVideoPauseEvent"
+        },
+        "ended": {
+          "id": 2,
+          "hook": "_internalOnVideoEndedEvent"
+        },
+        "time_update": {
+          "id": 3,
+          "hook": "_internalOnVideoTimeUpdateEvent",
+          "droppable": true
+        },
+        "error": {
+          "id": 4,
+          "hook": "_internalOnVideoErrorEvent"
+        },
+        "waiting": {
+          "id": 5,
+          "hook": "_internalOnVideoWaitingEvent"
+        },
+        "progress": {
+          "id": 6,
+          "hook": "_internalOnVideoProgressEvent",
+          "droppable": true
+        }
+      }
+    },
+    "ble_peripheral": {
+      "id": 22,
+      "methods": {
+        "create_server": {
+          "id": 0,
+          "kind": "call",
+          "op": "op_create_ble_peripheral_server",
+          "hook": "_internalOnCreateBLEPeripheralServerResult",
+          "error_code_field": "errCode"
+        },
+        "add_service": {
+          "id": 1,
+          "kind": "call",
+          "op": "op_ble_peripheral_add_service",
+          "hook": "_internalOnBLEPeripheralAddServiceResult",
+          "error_code_field": "errCode"
+        },
+        "remove_service": {
+          "id": 2,
+          "kind": "call",
+          "op": "op_ble_peripheral_remove_service",
+          "hook": "_internalOnBLEPeripheralRemoveServiceResult",
+          "error_code_field": "errCode"
+        },
+        "start_advertising": {
+          "id": 3,
+          "kind": "call",
+          "op": "op_ble_peripheral_start_advertising",
+          "hook": "_internalOnBLEPeripheralStartAdvertisingResult",
+          "error_code_field": "errCode"
+        },
+        "stop_advertising": {
+          "id": 4,
+          "kind": "call",
+          "op": "op_ble_peripheral_stop_advertising",
+          "hook": "_internalOnBLEPeripheralStopAdvertisingResult",
+          "error_code_field": "errCode"
+        },
+        "write_characteristic_value": {
+          "id": 5,
+          "kind": "call",
+          "op": "op_ble_peripheral_write_characteristic_value",
+          "hook": "_internalOnBLEPeripheralWriteCharacteristicValueResult",
+          "error_code_field": "errCode"
+        }
+      },
+      "events": {
+        "characteristic_read_request": {
+          "id": 0,
+          "hook": "_internalOnBLEPeripheralCharacteristicReadRequestEvent"
+        },
+        "characteristic_write_request": {
+          "id": 1,
+          "hook": "_internalOnBLEPeripheralCharacteristicWriteRequestEvent"
+        },
+        "characteristic_subscribed": {
+          "id": 2,
+          "hook": "_internalOnBLEPeripheralCharacteristicSubscribedEvent"
+        },
+        "characteristic_unsubscribed": {
+          "id": 3,
+          "hook": "_internalOnBLEPeripheralCharacteristicUnsubscribedEvent"
+        },
+        "connection_state_changed": {
+          "id": 4,
+          "hook": "_internalOnBLEPeripheralConnectionStateChangedEvent"
         }
       }
     }

@@ -8,6 +8,138 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `getBatteryInfo` and `getBatteryInfoSync` on a Mac laptop: the Apple SDK reports the internal battery among IOKit's
+  power sources (its charge, and whether it is charging or full on the charger) and Low Power Mode from macOS 12, at
+  each change. A Mac without a battery still answers "not supported".
+- The Linux Host Kit's `MigoManagedSession` supplies the soft keyboard: content's `showKeyboard` opens a text field
+  along the bottom of the game, which holds the keyboard's focus while it shows and whose height content is told. Each
+  edit reports the whole text, Enter confirms a one-line field (closing it unless content asked to hold it), Esc or
+  turning away closes it with the text it was left with, a number keyboard takes digits, and an on-screen keyboard
+  that follows the focused field opens for it with the confirm key content named. It used to decline the capability,
+  so a game could not be typed into on Linux.
+- Videos in the Linux Host Kit's image service, through the optional `migo::qt6-media` component (GStreamer):
+  `chooseMedia` picks videos -- described by their length, their size as shown and their first frame as the cover --
+  and `previewMedia` plays them in the viewer, with their poster, sound and controls. An App opts in by building the
+  component and giving the Session a `MigoQtMedia`; without it, videos are refused as before.
+- `createVideoDecoder` on Linux, through GStreamer: loaded when the system has it, not linked, so a system without it
+  runs every game and only this API answers not supported. Frames come as RGBA converted as the stream's colorimetry
+  says, timed in the video's own time, and a seek lands on the frame shown at the position.
+- The Linux Host Kit reads the gamepads the kernel shows: `MigoManagedSession` finds the evdev joysticks through udev
+  as they come and go, maps a pad following the kernel's gamepad layout onto the W3C standard layout (17 buttons,
+  4 axes, analog triggers, the D-pad's hat) and passes others on as they are, plays `FF_RUMBLE` for
+  `vibrationActuator`, and stamps samples on the clock the view's input uses.
+- The Linux Host Kit hears iBeacons in the BLE advertisements BlueZ reports, on a scan of its own, for the proximity
+  UUIDs asked for, reporting those in range every second (dropped after ten seconds unheard) with the Android SDK's
+  distance estimate. A device scan for some services now reports only devices offering one, whoever else scans.
+- The Linux Host Kit answers Bluetooth as a BLE central through BlueZ: the adapter, scans filtered by service (devices
+  reported as heard, batched by `interval`, once each unless `allowDuplicatesKey`), the connected devices offering a
+  service, connections answered once their services are resolved, services, characteristics, reads, writes,
+  notifications and the MTU, with the common platform's codes; `scope.bluetooth` is granted. A connected device's RSSI,
+  pairing, setting the MTU, the peripheral mode and iBeacons are refused. `MigoQtHostServiceChannel` gains
+  `postBleCharacteristicValue`.
+- The Linux Host Kit reads the device's motion sensors: the accelerometer (in g), gyroscope (rad/s) and magnetometer the
+  kernel shows through IIO, found with libudev and turned into the screen's frame by udev's `ACCEL_MOUNT_MATRIX` or the
+  kernel's `mount_matrix` (a convertible's display accelerometer over its base's), read at the interval content asks
+  for on a thread of their own; the compass heading and the W3C device orientation are worked out from gravity and the
+  field as Android's `SensorManager` does. A sensor the device lacks is refused with what it lacks.
+  `MigoQtHostServiceChannel` gains `postSensorSample`; the Host Kit links libudev (`libudev-dev`).
+- The Linux Host Kit says where the device is and decides the scopes the desktop gates: `getLocation` and
+  `getFuzzyLocation` ask GeoClue on the system bus, or inside Flatpak or Snap the desktop portal's Location (street
+  level, exact with `isHighAccuracy`, city level for the fuzzy position; ten seconds, or `highAccuracyExpireTime`);
+  requests made meanwhile share one client, which stops once they are answered. `scope.userLocation` is GeoClue's to
+  decide -- its agent or the portal asking the player -- and is recorded with `migo_session_set_scope_state`;
+  `scope.writePhotosAlbum` is granted; any other scope is refused for the App to decide. `MigoQtHostServiceChannel`
+  gains `setScopeState`.
+- The Linux Host Kit previews images: `previewImage` and `previewMedia` show a viewer over the game, its window's size --
+  the images one at a time, fitted, from the one content asked for, Left and Right between them, Esc closing it. Each
+  image is held open before the call is answered, so nothing is copied; an http(s) one is downloaded over Qt's network
+  into a file removed as it is made. Videos in `previewMedia` are refused. `migo::qt6-host-services` now links
+  `Qt6::Network`.
+- The Linux Host Kit answers the image service: `compressImage` with Qt's image readers and writers (upright, its EXIF
+  orientation applied, decoded no larger than asked where the format can; a PNG stays a PNG, anything else becomes a
+  JPEG at the quality asked; at most 50 million pixels); `chooseImage`, `chooseMedia` (images) and `chooseMessageFile`
+  through the file dialog -- the desktop's, through its portal, wherever Qt finds one -- giving the game copies, with
+  what content cannot draw written as a PNG or a JPEG; `saveFileToDisk` through the dialog to save; and
+  `saveImageToPhotosAlbum` into the player's Pictures folder as `IMG_<milliseconds>.<suffix>`. A file the game is given
+  is staged in the App's cache until the engine takes it, and removed if it does not. The camera, videos in
+  `chooseMedia` and the previews are refused.
+- The Linux Host Kit passes on the desktop's memory warnings: `MigoManagedSession` hears low-memory-monitor's
+  `LowMemoryWarning` on the system bus, or inside a sandbox the desktop portal's `MemoryMonitor`, and posts each at
+  its level (50 moderate, 100 low, 255 critical) with `migo_session_post_memory_warning`. `tools/qt-host-example`
+  runs moc over the Host Kit's internal QObject headers too.
+- The Linux Host Kit reports the host's inputs a desktop already knows: `MigoManagedSession` tells the Session that
+  content runs while its window is shown and not minimized and shows while that window is also exposed
+  (`migo_session_set_lifecycle`, `migo_session_set_visibility`; only changes, as the game starts shown and running,
+  and a window not yet exposed is coming up, not covered), the Wi-Fi switch from NetworkManager
+  (`migo_session_set_system_settings`), and the App's authorisations -- outside a sandbox, all the system could gate;
+  inside Flatpak or Snap, not determined; location not determined (`migo_session_set_app_authorize_setting`).
+- The Linux Host Kit reports the battery and the network: `MigoManagedSession` reports UPower's display device (level,
+  charging) with power-profiles-daemon's saver as the low-power mode (`migo_session_set_battery_status`), and
+  NetworkManager's primary connection -- Wi-Fi and wired as Wi-Fi, a modem as unknown, none while disconnected --
+  with whether it reaches the internet by NetworkManager's connectivity check, or its state where the check is off
+  (`migo_session_set_network_status`), each time what it reports changes. A machine with no battery, or without
+  NetworkManager, reports none.
+- The Linux Host Kit keeps the display awake for content's `setKeepScreenOn`: `MigoManagedSession` installs
+  `on_keep_screen_on` and holds the desktop's idle off through the XDG desktop portal's `Inhibit` for the game's
+  window, or the freedesktop screen saver's where no portal answers, letting go when content stops asking or the
+  Session ends. `migo::qt6-managed-session` links `Qt6::DBus`; its test answers for both on a session bus of its own.
+- The Linux Host Kit answers the screen's brightness from the backlight: read where the kernel shows it
+  (`/sys/class/backlight`, the firmware's over the platform's over a raw one, as systemd and GNOME pick) and set
+  through logind's `Session.SetBrightness` over Qt's D-Bus, 0 its darkest and still lit; a screen with no backlight is
+  refused. `migo::qt6-host-services` now links `Qt6::DBus`; its test answers for logind on a session bus of its own
+  (`dbus-run-session`, package `dbus`). The Linux brightness gaps in `api-platform-decisions.json` are gone.
+- The Linux Host Kit answers the screen service: the screen's orientation is the game's shape, reported each time its
+  view crosses from one to the other, and `setDeviceOrientation` turns the window to it (refused while full screen, or
+  when the screen cannot hold the window turned); `setEnableDebug` is `MigoQtBuiltInHostServices::debugAidsRequested`,
+  which `MigoManagedSession` answers (`debugAids()`, `setDebugAids()`, `debugAidsChanged`) by reporting
+  `MIGO_HOST_APP_INFO_FLAG_DEBUG` and showing a panel over the game of the frames a second the view delivers
+  (`MigoQtX11SurfaceView::framesDelivered()`) and content's console. Screenshot and recording notices and
+  `setVisualEffectOnCapture` are recorded as not offered on Linux, which offers apps none of them; the backlight is a
+  recorded gap.
+- The Linux Host Kit holds a pointer lock: `MigoQtX11SurfaceView::lockPointer()` / `unlockPointer()` /
+  `isPointerLocked()` and `pointerLockChanged`, which the window service's `requestPointerLock` / `exitPointerLock`
+  now answer with. It is taken only with the player at the game -- the view holding the keyboard, the cursor over the
+  part of it that shows -- and refused, and said to be, otherwise. While it holds, the mouse is grabbed and the cursor
+  hidden, and XInput 2's raw motion on Qt's own xcb connection moves content's pointer from where the cursor stood,
+  past the view's edges too; Esc releases it (that Esc and its release are not the game's), as do the view losing
+  the keyboard and the game ending, and the cursor then stands where it stood. The Qt adapter now links
+  `xcb-xinput` (found through pkg-config); its xcb tests drive the X server through XTest (`libxtst-dev`). The
+  Linux gaps for `requestPointerLock` / `exitPointerLock` in `api-platform-decisions.json` are gone.
+- The Linux Host Kit answers the window service with Qt's own: `setWindowSize` (the game's size in pixels; the window
+  grows or shrinks by what the view must, and is not sized while full screen), `setCursor` (a CSS keyword as Qt's
+  cursor, or an image and its hotspot) and `onWindowStateChange` (minimize, maximize -- full screen included --
+  normalize, each change once). A pointer lock is refused, as a host may, until the Host Kit reads the mouse's raw
+  motion; `api-platform-decisions.json` records that gap. `MigoQtBuiltInHostServices` now takes the view and the
+  Session's host-service channel, which the window's events are reported through.
+- `MigoManagedSession::Options::appId`: who the App is, as content reads it (`getAppBaseInfo().host.appId`);
+  without it, the App's `QGuiApplication::desktopFileName()`.
+- `tests/qt_host/linux`: a whole App on the Linux Host Kit's Managed shape -- an engine, a window, a game with its
+  network policy and launch options -- built and run by `scripts/dev-run-qt-host.sh` (cargo drives the link, as for
+  the C host; `tools/qt-host-example` runs moc over the Host Kit's QObject headers). It is the host of
+  migo-conformance's Host Kit lane, the first to verify what the Linux platform's own host layer answers: the
+  clipboard, toasts, loading indicators, modals and action sheets pass there.
+- The Linux Host Kit answers the host services a desktop already offers: `migo::qt6-host-services`'s
+  `MigoQtBuiltInHostServices` answers the clipboard (`QClipboard`) and the game's toasts, loading indicators,
+  modals and action sheets (one indicator at a time, a mask that keeps the player's input from the game, a
+  window-modal dialog, a menu over the game), and `MigoManagedSession` installs it. `MigoManagedSession::Options`
+  carries what a Managed App could not give before: the network policy -- without one its game had no network,
+  and no way to be granted any -- the launch options, and the App's own services (`MigoQtHostServiceProvider`),
+  which take precedence over the built-in ones. A reply answers once, from any thread, and an answer that
+  arrives after the game has gone reaches nobody (`MigoQtHostServiceChannel`).
+- The developer docs say, for every API of the common mini-game platform and every platform Migo ships, who answers
+  it, whether conformance testing verified it there, and what a host provides for it: Host capabilities > API
+  platform support, in Chinese and English. The page is rendered when the docs are built, from
+  `contracts/runtime/api-platform-matrix.json`, the reasons in `api-platform-decisions.json` and each platform's
+  `api-conformance-<platform>.json`, so it says what the commit it was built from says and cannot fall behind it;
+  it also says how to check each verdict from the public repository.
+- `getNetworkType` answers with every field the reference names -- `signalStrength`, `hasSystemProxy`, `weakNet` with
+  `networkType` and `isConnected` -- on every platform. A C ABI host reports them in one record,
+  `migo_session_report_network` with `MigoNetworkReport` (flags `MIGO_NETWORK_FLAG_CONNECTED`, `_SYSTEM_PROXY`,
+  `_WEAK`, and the signal in dBm, 0 when unknown); `migo_session_set_network_status` is that report with the rest
+  unknown. The Apple SDK reports the system's proxy setting (and the Wi-Fi signal on a Mac). Content's listeners hear
+  only what changed for them: `onNetworkStatusChange` a change of the connection or its type, and
+  `onNetworkWeakChange` a change of the weak-network judgement -- every report reached the first, changed or not, and
+  a change of the judgement alone reached nobody.
 - C ABI hosts launch a game with options of their own: `MigoSessionConfig.launch_options_json_utf8` (appended) is the
   object `getLaunchOptionsSync()` answers -- the scene, the query of the link that opened the game, who referred it --
   and what content is shown with until a show carries options of its own; anything but a JSON object refuses the
@@ -29,6 +161,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scope before the game's entry, in the order given -- as an Android or Apple host injects an adapter. Content written
   against `wx` or the browser could not run there at all: `migo-examples`' `wx-adapter-demo` stopped on
   `ReferenceError: wx is not defined` and presented nothing; with the wx adapter bundle as a prelude it runs.
+- `scripts/prescreen-run.sh` takes `--adapter FILE` and `--record`: the host is handed the adapter the content is
+  written against and this checkout's compatibility recorder, and the run report calls each injected only when the
+  host's log names its sha256 -- a host that ignores the request is said to, rather than its absence being charged to
+  the bundle. `migo-examples`' debug-only `PrescreenProbeActivity`, which `PRESCREEN.md` sends a stranger to, reads
+  both; wx content through it no longer stops on `wx is not defined`.
 - `scripts/prescreen-game.sh` reads `game.json` and counts the plugins it declares, which the mini-game platform serves
   to `requirePlugin(...)` and Migo cannot. A bundle that also calls `requirePlugin` does not start as built, and no name
   scan saw it; one that only declares a plugin is told the declaration may be unused. Cocos Creator's "Separate Engine"
@@ -659,6 +796,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a relink, is INVALID_OPERATION and null, as are a deleted program and one that did not link.
 
 ### Changed
+- A call that needs a scope nobody has decided asks for it, as `authorize` does, and goes ahead once the host has
+  decided: granted, it runs; refused, or with no permission service to ask, it refuses as before (`auth deny: <scope>
+  is not granted`). The reference's `authorize` is how content asks *in advance* -- once granted, later calls do not
+  ask -- so a game that calls `getLocation`, `saveImageToPhotosAlbum`, `openBluetoothAdapter`, `createCamera` or
+  `RecorderManager.start` straight away no longer fails on a question nobody put to the player. Calls made while the
+  player is asked share one question; a decided scope is not asked again; `scope.userInfo` is never asked this way;
+  the call's own timeout stops while the player is asked. `authorize`, `openSetting`, `openSystemBluetoothSetting`,
+  `scanCode` and `navigateToMiniProgram` no longer time out after 30 seconds: a player answers them when they do.
+- `contracts/runtime/minigame-api-spec.json` records where the reference contradicts itself about a field, and reads
+  it as the page's own words support (`erratum`): `getGamepads` returns gamepads whose `index` is a number, as the
+  browser standard the page cites has it and its own description says, though its table types it string. An
+  erratum is held against the page, so once the reference is corrected, regenerating the spec says to drop it.
 - **Content reaches no network until the host grants it.** This changes every host: one that sets nothing now gets no
   network at all. A policy is one domain allowlist per channel -- `request`, `download` (which also covers remote
   images, audio streaming and asset prefetch), `upload`, `socket` (WebSocket), `tcp` and `udp` -- and a channel may
@@ -753,6 +902,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Apple: `MigoEngineSession.close` completes when its surface is released while the session is still running. Its
   polls held the session weakly, and a view lets go of its session as it closes it, so the polls stopped and neither
   the destroy nor the completion ran; a game started again in a new session never started.
+- Android camera frames reach content as the reference defines `onCameraFrame`'s `data`: straight RGBA, four bytes a
+  pixel. They were the camera's three YUV planes concatenated as they lay, row padding and interleaved chroma
+  included -- 1.5 bytes a pixel nobody could read without the strides, which were not given. The planes' strides now
+  cross JNI and the frame is converted once, as camera2 defines its YUV (full-range BT.601).
+- The Linux Host Kit's toasts and loading indicators took the clicks that landed on them: Qt (6.4, xcb) gives an X
+  window created with `Qt::WindowTransparentForInput` no empty input shape. What stands over the game now takes none
+  of its input.
+- The Linux Host Kit's view attaches once Qt has mapped its window at the widget's size. Qt sends a widget its show
+  event before it maps the native window and applies its geometry, and the engine binds the window as the X server
+  has it: a view a layout placed -- every Managed Session's -- was bound while its window was still unmapped at a
+  child's default 100x30, and the game drew into a 100x30 canvas behind a full-size view. `MigoManagedSession`
+  loads content once the view has attached, which is when the Session has something to run it on; asked for
+  earlier, it is loaded then (a refusal at that point arrives as `contentFailed`), where it used to be refused.
+  Both were found by migo-conformance's new Host Kit lane, the first to run real games on the Host Kit.
+- `getGameLogManager` answers its callbacks once it has returned the manager, so a `success` that uses it -- as the
+  reference's example does -- finds it, instead of throwing on a variable not yet assigned (the throw was swallowed
+  and the callback never ran). The run's 999-log limit is the run's, not each manager's, and a log's 16 KB is
+  counted in the bytes it leaves as rather than in UTF-16 units. The manager's state is private: it carried
+  `_commonInfo`, `_debug` and `_logCount` as enumerable properties.
+- A video decoder where the platform has none (iOS, today) answers every call as a decoder that is not decoding:
+  `getFrameData()` is null, `seek()` fails, `stop()` and `remove()` succeed. Only `start()` said "not supported";
+  everything else threw, so a game tidying up after a failed start -- `remove()` -- threw out of its own cleanup.
+- Android: `getNetworkType().hasSystemProxy` is the platform's own default proxy (`ConnectivityManager.getDefaultProxy`),
+  a configuration script included; it read the JVM's `http.proxyHost`, which the framework copies a hand-set proxy
+  into and a configuration script never sets. The cell's `signalStrength` is the dBm the platform reports, or 0,
+  rather than its 0-4 level mapped to a made-up dBm.
+- `getDeviceInfo().memorySize` is the device's memory in MB, as on Android, on every platform: it was empty on macOS,
+  Linux, Windows and OpenHarmony, and absent on iOS (Performance+), though the engine reads the memory for its own
+  budgets.
+- `setInnerAudioOption` follows the reference on every platform. With the speaker on -- the default, and so nearly every
+  call, `{ obeyMuteSwitch: false }` to play through the silent switch among them -- the reference ignores
+  `mixWithOther` and plays alone: on iOS the session took the `Ambient` category, which mixes by its nature, so other
+  apps' music played on under every game; it is now `SoloAmbient` (or `Playback` through the silent switch). On
+  Android the option took a second audio focus with no listener, never given back, ducking other apps for
+  `mixWithOther`, and switched the device's call routing with `setSpeakerphoneOn`; the session's own focus is the
+  game's, and the option asks Android for nothing. `speakerOn: false`, the earpiece, which no platform routes a
+  game's output to, is answered as not supported rather than played through the speaker. Both it and
+  `getAvailableAudioSources` answer callback-style content after returning, and return it nothing.
+- An API the reference gives no Promise style (`reportScene`, `login`, `restartMiniProgram`, `setDeviceOrientation`,
+  71 in all), called without callbacks, still returns a Promise, as every asynchronous API does here, but its failure
+  is no longer reported as an unhandled rejection. Content written for the reference does not look at what such a call
+  returns, and with no rejection listener an unhandled rejection reaches the game's `onError`: each such call that
+  failed arrived there as an error the platform never raises. Content that waits for the Promise still has the
+  rejection. `scripts/test-promise-style-contract.sh` holds the list to the API spec. `saveFileToDisk`,
+  `getShowSplashAdStatus` and `getDeviceBenchmarkInfo`, which each kept a rule of their own and returned nothing
+  without callbacks, return that Promise too.
 - On iOS (Performance+), a show that carries no options shows the game as it was last entered, as the embedded
   execution has since the previous fix: it reset `getEnterOptionsSync()` and `onShow`'s options to the defaults. Both
   executions now follow one rule.

@@ -1,19 +1,21 @@
-//! Camera preview frame packing.
+//! Camera preview frames, as content reads them.
 //!
-//! A `YUV_420_888` camera frame arrives as three separate `Image.Plane`
-//! `ByteBuffer`s (Y, U, V). The JS-visible contract is a single flat
-//! `ArrayBuffer` = each plane's `position..limit` window concatenated in
-//! **Y, U, V** order. This module performs the one unavoidable copy that
-//! flattens the three non-contiguous plane windows into one owned `Vec<u8>`.
+//! The JS-visible contract is the reference's: `onCameraFrame` hands content
+//! `{width, height, data}`, `data` an `ArrayBuffer` of straight RGBA, four
+//! bytes a pixel, rows top first. A `YUV_420_888` frame arrives as three
+//! separate `Image.Plane` `ByteBuffer`s (Y, U, V), each with its own row and
+//! pixel strides -- a separate U and V, or interleaved ones -- and this module
+//! makes the one pass that reads them through those strides and writes the
+//! RGBA content is given.
 //!
 //! It is deliberately safe and free of JNI/V8 dependencies so it is unit
 //! testable on the host: the JNI layer resolves each direct buffer's full
 //! capacity slice and passes it here together with the `(offset, length)`
-//! window (still as signed `jint` values), and this validates the window with
-//! checked arithmetic before copying only the validated sub-slice. Plane
-//! padding / pixel-stride bytes inside a window are copied verbatim — this does
-//! not repack, convert, or reinterpret the layout.
+//! window and the strides (still as signed `jint` values), and this validates
+//! the window, and that it holds every sample the strides reach, with checked
+//! arithmetic before reading a byte.
 
+use crate::yuv;
 use std::{
     collections::HashMap,
     sync::{
@@ -205,15 +207,17 @@ pub fn camera_frame_superseded_count(host_id: i32, camera_id: u32) -> u64 {
 pub const MAX_CAMERA_FRAME_PIXELS: u64 =
     (MAX_CAMERA_FRAME_DIMENSION as u64) * (MAX_CAMERA_FRAME_DIMENSION as u64);
 
-/// Largest synchronously materialized Y/U/V payload. A camera callback copies
-/// its three direct-buffer windows into one owned host message, so it has the
-/// same 64 MiB cap as other synchronous pixel readbacks.
+/// Largest synchronously materialized frame, read or written: a camera
+/// callback reads its three direct-buffer windows and writes one owned RGBA
+/// frame into the host message, each within the same 64 MiB cap as other
+/// synchronous pixel readbacks.
 pub const MAX_CAMERA_FRAME_BYTES: usize = 64 * 1024 * 1024;
 
-/// One plane's contribution: a validated `[offset, offset + len)` window of
-/// `buffer`, where `buffer` is the plane's full direct-buffer capacity slice
-/// and `offset`/`len` are the buffer's `position`/`remaining` (signed, exactly
-/// as they cross JNI).
+/// One plane: a validated `[offset, offset + len)` window of `buffer`, where
+/// `buffer` is the plane's full direct-buffer capacity slice and
+/// `offset`/`len` are the buffer's `position`/`remaining`, with the distance
+/// between its rows and between neighbouring samples (all signed, exactly as
+/// they cross JNI).
 pub struct PlaneWindow<'a> {
     /// The plane's full direct-buffer capacity (index 0..capacity).
     pub buffer: &'a [u8],
@@ -221,6 +225,12 @@ pub struct PlaneWindow<'a> {
     pub offset: i32,
     /// Window length (`ByteBuffer.remaining()`); must be `>= 0`.
     pub len: i32,
+    /// Bytes between the starts of two rows (`Plane.getRowStride()`).
+    pub row_stride: i32,
+    /// Bytes between two neighbouring samples of a row
+    /// (`Plane.getPixelStride()`): 1 for a separate plane, 2 for interleaved
+    /// chroma.
+    pub pixel_stride: i32,
 }
 
 /// Why a camera frame could not be packed. Returned instead of panicking so a
@@ -238,30 +248,141 @@ pub enum CameraFramePackError {
     WindowOutOfBounds,
     /// The summed length of the three windows overflowed `usize`.
     TotalOverflow,
-    /// The summed Y/U/V payload is larger than the synchronous frame budget.
+    /// The summed Y/U/V payload, or the RGBA frame, is larger than the
+    /// synchronous frame budget.
     FrameTooLarge,
+    /// A stride was not positive, or a window does not hold every sample its
+    /// strides reach for the frame's dimensions.
+    StrideOutOfBounds,
     /// Allocation of the exact output buffer failed.
     AllocFailed,
 }
 
-/// Pack the three plane windows into one exactly-reserved `Vec<u8>` in Y/U/V
-/// order. Validates each window (non-negative offset/length, `offset + len`
-/// within capacity, no overflow) with checked arithmetic. Source slices are
-/// never mutated.
-pub fn pack_yuv_planes(planes: [PlaneWindow<'_>; 3]) -> Result<Vec<u8>, CameraFramePackError> {
-    let y = validate_window(&planes[0])?;
-    let u = validate_window(&planes[1])?;
-    let v = validate_window(&planes[2])?;
+/// A camera's YUV: camera2 produces its `YUV_420_888` with the JPEG File
+/// Interchange Format's full-range BT.601 conversion.
+const CAMERA_COLOUR: yuv::Colour = yuv::Colour {
+    matrix: yuv::Matrix::Bt601,
+    full_range: true,
+};
 
-    let total = validate_camera_frame_byte_lengths([y.len(), u.len(), v.len()])?;
+/// The `width` x `height` frame the Y, U and V `planes` hold, as one
+/// exactly-reserved RGBA buffer. Validates each window (non-negative
+/// offset/length, `offset + len` within capacity, no overflow) and that it
+/// reaches every sample its strides address -- the luma plane `width` x
+/// `height`, each chroma plane half that, rounded up -- with checked arithmetic
+/// before reading. Source slices are never mutated.
+pub fn yuv_frame_to_rgba(
+    planes: [PlaneWindow<'_>; 3],
+    width: u32,
+    height: u32,
+) -> Result<Vec<u8>, CameraFramePackError> {
+    if width == 0 || height == 0 {
+        return Err(CameraFramePackError::DimensionsOutOfBounds);
+    }
+    let bytes = camera_frame_rgba_len(width, height)?;
+    let (width, height) = (width as usize, height as usize);
+    let (chroma_width, chroma_height) = (width.div_ceil(2), height.div_ceil(2));
+    let y = strided_plane(&planes[0], width, height)?;
+    let cb = strided_plane(&planes[1], chroma_width, chroma_height)?;
+    let cr = strided_plane(&planes[2], chroma_width, chroma_height)?;
 
-    let mut out = Vec::new();
-    out.try_reserve_exact(total)
+    let mut rgba = Vec::new();
+    rgba.try_reserve_exact(bytes)
         .map_err(|_| CameraFramePackError::AllocFailed)?;
-    out.extend_from_slice(y);
-    out.extend_from_slice(u);
-    out.extend_from_slice(v);
-    Ok(out)
+    rgba.resize(bytes, 0);
+    yuv::to_rgba(&y, &cb, &cr, width, height, CAMERA_COLOUR, &mut rgba);
+    Ok(rgba)
+}
+
+/// The layout of a frame of four-byte pixels a host hands over
+/// (`MIGO_PIXEL_FORMAT_*`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PixelLayout {
+    Rgba,
+    Bgra,
+}
+
+/// The `width` x `height` frame of four-byte `layout` pixels in `pixels`, its
+/// rows `row_stride` bytes apart, as content's RGBA: rows packed, opaque.
+/// Validates the size, the stride and that `pixels` holds every row before
+/// reading. Source slices are never mutated.
+pub fn packed_frame_to_rgba(
+    pixels: &[u8],
+    width: u32,
+    height: u32,
+    row_stride: usize,
+    layout: PixelLayout,
+) -> Result<Vec<u8>, CameraFramePackError> {
+    if width == 0
+        || height == 0
+        || width > MAX_CAMERA_FRAME_DIMENSION
+        || height > MAX_CAMERA_FRAME_DIMENSION
+    {
+        return Err(CameraFramePackError::DimensionsOutOfBounds);
+    }
+    let bytes = camera_frame_rgba_len(width, height)?;
+    let row = width as usize * 4;
+    let reach = (height as usize - 1)
+        .checked_mul(row_stride)
+        .and_then(|start| start.checked_add(row))
+        .ok_or(CameraFramePackError::StrideOutOfBounds)?;
+    if row_stride < row || reach > pixels.len() {
+        return Err(CameraFramePackError::StrideOutOfBounds);
+    }
+    let mut rgba = Vec::new();
+    rgba.try_reserve_exact(bytes)
+        .map_err(|_| CameraFramePackError::AllocFailed)?;
+    for line in pixels.chunks(row_stride).take(height as usize) {
+        for pixel in line[..row].chunks_exact(4) {
+            let (red, blue) = match layout {
+                PixelLayout::Rgba => (pixel[0], pixel[2]),
+                PixelLayout::Bgra => (pixel[2], pixel[0]),
+            };
+            rgba.extend_from_slice(&[red, pixel[1], blue, 255]);
+        }
+    }
+    Ok(rgba)
+}
+
+/// The bytes a `width` x `height` RGBA frame takes, within the frame budget.
+fn camera_frame_rgba_len(width: u32, height: u32) -> Result<usize, CameraFramePackError> {
+    let bytes = u64::from(width)
+        .checked_mul(u64::from(height))
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or(CameraFramePackError::DimensionsOutOfBounds)?;
+    if bytes > MAX_CAMERA_FRAME_BYTES as u64 {
+        return Err(CameraFramePackError::FrameTooLarge);
+    }
+    Ok(bytes as usize)
+}
+
+/// `plane`'s validated window as a plane of `columns` x `rows` samples: one
+/// whose strides are positive and whose last sample lies inside it.
+fn strided_plane<'a>(
+    plane: &PlaneWindow<'a>,
+    columns: usize,
+    rows: usize,
+) -> Result<yuv::Plane<'a>, CameraFramePackError> {
+    let data = validate_window(plane)?;
+    let row_stride =
+        usize::try_from(plane.row_stride).map_err(|_| CameraFramePackError::StrideOutOfBounds)?;
+    let pixel_stride =
+        usize::try_from(plane.pixel_stride).map_err(|_| CameraFramePackError::StrideOutOfBounds)?;
+    if row_stride == 0 || pixel_stride == 0 {
+        return Err(CameraFramePackError::StrideOutOfBounds);
+    }
+    let last = (rows - 1)
+        .checked_mul(row_stride)
+        .and_then(|start| (columns - 1).checked_mul(pixel_stride)?.checked_add(start))
+        .ok_or(CameraFramePackError::StrideOutOfBounds)?;
+    if last >= data.len() {
+        return Err(CameraFramePackError::StrideOutOfBounds);
+    }
+    Ok(yuv::Plane {
+        data,
+        row_stride,
+        pixel_stride,
+    })
 }
 
 /// Validate JNI camera dimensions before they are converted to unsigned
@@ -288,6 +409,8 @@ pub fn validate_camera_frame_dimensions(
     if pixels > MAX_CAMERA_FRAME_PIXELS {
         return Err(CameraFramePackError::DimensionsOutOfBounds);
     }
+    // The RGBA frame it becomes, within the budget too.
+    camera_frame_rgba_len(width, height)?;
 
     Ok((width, height))
 }
@@ -315,9 +438,9 @@ fn validate_camera_frame_byte_lengths(lengths: [usize; 3]) -> Result<usize, Came
 
 /// Checked sum of the three plane window lengths, mapping overflow directly to
 /// [`CameraFramePackError::TotalOverflow`]. Extracted so the exact production
-/// error mapping (`pack_yuv_planes` uses `checked_total(...)?`) is unit-testable
-/// on raw `usize` values without allocating `usize`-sized slices (impossible in
-/// practice — real camera planes are far smaller).
+/// error mapping is unit-testable on raw `usize` values without allocating
+/// `usize`-sized slices (impossible in practice — real camera planes are far
+/// smaller).
 fn checked_total(y_len: usize, u_len: usize, v_len: usize) -> Result<usize, CameraFramePackError> {
     y_len
         .checked_add(u_len)
@@ -353,69 +476,186 @@ fn validate_window<'a>(plane: &PlaneWindow<'a>) -> Result<&'a [u8], CameraFrameP
 mod tests {
     use super::*;
 
-    fn win(buffer: &[u8], offset: i32, len: i32) -> PlaneWindow<'_> {
+    fn strided(
+        buffer: &[u8],
+        offset: i32,
+        len: i32,
+        row_stride: i32,
+        pixel_stride: i32,
+    ) -> PlaneWindow<'_> {
         PlaneWindow {
             buffer,
             offset,
             len,
+            row_stride,
+            pixel_stride,
+        }
+    }
+
+    /// A 4 x 2 frame: the left half red, the right half grey, in full-range
+    /// BT.601 (red is Y 76, Cb 85, Cr 255).
+    const LUMA: [u8; 8] = [76, 76, 128, 128, 76, 76, 128, 128];
+    const CB: [u8; 2] = [85, 128];
+    const CR: [u8; 2] = [255, 128];
+
+    fn near(actual: &[u8], expected: [u8; 4]) -> bool {
+        actual
+            .iter()
+            .zip(expected)
+            .all(|(&value, want)| value.abs_diff(want) <= 2)
+    }
+
+    #[test]
+    fn a_separate_u_and_v_become_rgba() {
+        let rgba = yuv_frame_to_rgba(
+            [
+                strided(&LUMA, 0, 8, 4, 1),
+                strided(&CB, 0, 2, 2, 1),
+                strided(&CR, 0, 2, 2, 1),
+            ],
+            4,
+            2,
+        )
+        .unwrap();
+        assert_eq!(rgba.len(), 4 * 2 * 4, "four bytes a pixel");
+        for row in 0..2 {
+            let line = &rgba[row * 16..(row + 1) * 16];
+            assert!(near(&line[0..4], [254, 0, 0, 255]), "{line:?}");
+            assert!(near(&line[4..8], [254, 0, 0, 255]), "{line:?}");
+            assert!(near(&line[8..12], [128, 128, 128, 255]), "{line:?}");
+            assert!(near(&line[12..16], [128, 128, 128, 255]), "{line:?}");
         }
     }
 
     #[test]
-    fn packs_three_windows_in_yuv_order_from_zero_offsets() {
-        let y = [1u8, 2, 3];
-        let u = [4u8, 5];
-        let v = [6u8];
-        let out = pack_yuv_planes([win(&y, 0, 3), win(&u, 0, 2), win(&v, 0, 1)]).unwrap();
-        assert_eq!(out, [1, 2, 3, 4, 5, 6], "Y then U then V, in order");
+    fn interleaved_chroma_and_padded_rows_are_read_through_their_strides() {
+        // The same frame as a camera's NV21-backed planes: each luma row padded
+        // to 6 bytes, the window starting a byte in; V and U interleaved in one
+        // buffer, U one byte after V, each a pixel stride of 2.
+        let luma = [0xEE, 76, 76, 128, 128, 0xEE, 0xEE, 76, 76, 128, 128, 0xEE];
+        let chroma = [255u8, 85, 128, 128];
+        let rgba = yuv_frame_to_rgba(
+            [
+                strided(&luma, 1, 10, 6, 1),
+                strided(&chroma, 1, 3, 4, 2),
+                strided(&chroma, 0, 3, 4, 2),
+            ],
+            4,
+            2,
+        )
+        .unwrap();
+        let separate = yuv_frame_to_rgba(
+            [
+                strided(&LUMA, 0, 8, 4, 1),
+                strided(&CB, 0, 2, 2, 1),
+                strided(&CR, 0, 2, 2, 1),
+            ],
+            4,
+            2,
+        )
+        .unwrap();
+        assert_eq!(rgba, separate, "the padding and the gaps are never read");
     }
 
     #[test]
-    fn packs_non_zero_offset_windows() {
-        // Each buffer has bytes outside the window that must be excluded.
-        let y = [9u8, 1, 2, 3, 9]; // window [1..4) = [1,2,3]
-        let u = [9u8, 9, 4, 5]; // window [2..4) = [4,5]
-        let v = [6u8, 9]; // window [0..1) = [6]
-        let out = pack_yuv_planes([win(&y, 1, 3), win(&u, 2, 2), win(&v, 0, 1)]).unwrap();
-        assert_eq!(out, [1, 2, 3, 4, 5, 6]);
-    }
-
-    #[test]
-    fn exact_end_window_is_accepted() {
-        // offset + len == capacity is valid (the last byte is included).
-        let y = [1u8, 2, 3, 4];
-        let out = pack_yuv_planes([win(&y, 2, 2), win(&[], 0, 0), win(&[], 0, 0)]).unwrap();
-        assert_eq!(out, [3, 4]);
-    }
-
-    #[test]
-    fn zero_length_windows_yield_empty_contribution() {
-        // A zero-length window at any (in-bounds) offset contributes nothing.
-        let y = [1u8, 2, 3];
-        let out = pack_yuv_planes([win(&y, 0, 0), win(&y, 3, 0), win(&y, 1, 0)]).unwrap();
-        assert!(out.is_empty());
-    }
-
-    #[test]
-    fn rejects_a_frame_larger_than_the_sync_camera_byte_budget_before_copying() {
-        let oversized = vec![0u8; 64 * 1024 * 1024 + 1];
-
+    fn an_odd_frame_reads_the_chroma_its_last_column_and_row_need() {
+        // 3 x 3: the chroma planes are 2 x 2, rounded up.
+        let luma = [128u8; 9];
+        let chroma = [128u8; 4];
+        let rgba = yuv_frame_to_rgba(
+            [
+                strided(&luma, 0, 9, 3, 1),
+                strided(&chroma, 0, 4, 2, 1),
+                strided(&chroma, 0, 4, 2, 1),
+            ],
+            3,
+            3,
+        )
+        .unwrap();
         assert!(
-            pack_yuv_planes([
-                win(&oversized, 0, oversized.len() as i32),
-                win(&[], 0, 0),
-                win(&[], 0, 0),
-            ])
-            .is_err(),
-            "a camera callback must not duplicate more than 64 MiB into the host queue"
+            rgba.chunks_exact(4)
+                .all(|pixel| near(pixel, [128, 128, 128, 255]))
+        );
+        // One chroma sample short: refused, not read past.
+        assert_eq!(
+            yuv_frame_to_rgba(
+                [
+                    strided(&luma, 0, 9, 3, 1),
+                    strided(&chroma, 0, 3, 2, 1),
+                    strided(&chroma, 0, 4, 2, 1),
+                ],
+                3,
+                3,
+            ),
+            Err(CameraFramePackError::StrideOutOfBounds)
+        );
+    }
+
+    #[test]
+    fn strides_that_reach_past_the_window_or_are_not_positive_are_refused() {
+        let frame = |y_row: i32, uv_pixel: i32| {
+            yuv_frame_to_rgba(
+                [
+                    strided(&LUMA, 0, 8, y_row, 1),
+                    strided(&CB, 0, 2, 2, uv_pixel),
+                    strided(&CR, 0, 2, 2, 1),
+                ],
+                4,
+                2,
+            )
+        };
+        assert!(frame(4, 1).is_ok());
+        assert_eq!(frame(5, 1), Err(CameraFramePackError::StrideOutOfBounds));
+        assert_eq!(frame(4, 2), Err(CameraFramePackError::StrideOutOfBounds));
+        assert_eq!(frame(0, 1), Err(CameraFramePackError::StrideOutOfBounds));
+        assert_eq!(frame(4, -1), Err(CameraFramePackError::StrideOutOfBounds));
+        assert_eq!(
+            yuv_frame_to_rgba(
+                [
+                    strided(&LUMA, 0, 8, 4, 1),
+                    strided(&CB, 0, 2, 2, 1),
+                    strided(&CR, 0, 2, 2, 1)
+                ],
+                0,
+                2
+            ),
+            Err(CameraFramePackError::DimensionsOutOfBounds)
+        );
+    }
+
+    #[test]
+    fn rejects_a_frame_larger_than_the_sync_camera_byte_budget_before_reading() {
+        // 4096 x 4097 RGBA is a row over 64 MiB.
+        assert_eq!(
+            yuv_frame_to_rgba(
+                [
+                    strided(&LUMA, 0, 8, 4, 1),
+                    strided(&CB, 0, 2, 2, 1),
+                    strided(&CR, 0, 2, 2, 1)
+                ],
+                4096,
+                4097
+            ),
+            Err(CameraFramePackError::FrameTooLarge),
+            "a camera callback must not write more than 64 MiB into the host queue"
         );
     }
 
     #[test]
     fn rejects_dimensions_or_plane_lengths_outside_camera_limits() {
         assert_eq!(
-            validate_camera_frame_dimensions(8192, 8192),
-            Ok((8192, 8192))
+            validate_camera_frame_dimensions(4096, 4096),
+            Ok((4096, 4096))
+        );
+        assert_eq!(validate_camera_frame_dimensions(8192, 1), Ok((8192, 1)));
+        assert_eq!(
+            validate_camera_frame_dimensions(4096, 4097),
+            Err(CameraFramePackError::FrameTooLarge),
+            "its RGBA would be over the budget"
+        );
+        assert_eq!(
+            validate_camera_frame_dimensions(0, 1),
+            Err(CameraFramePackError::DimensionsOutOfBounds)
         );
         assert_eq!(
             validate_camera_frame_dimensions(8193, 1),
@@ -437,33 +677,62 @@ mod tests {
 
     #[test]
     fn rejects_negative_offset() {
-        let y = [1u8, 2, 3];
         assert_eq!(
-            pack_yuv_planes([win(&y, -1, 1), win(&[], 0, 0), win(&[], 0, 0)]),
+            yuv_frame_to_rgba(
+                [
+                    strided(&LUMA, -1, 8, 4, 1),
+                    strided(&CB, 0, 2, 2, 1),
+                    strided(&CR, 0, 2, 2, 1)
+                ],
+                4,
+                2
+            ),
             Err(CameraFramePackError::NegativeOffset)
         );
     }
 
     #[test]
     fn rejects_negative_length() {
-        let y = [1u8, 2, 3];
         assert_eq!(
-            pack_yuv_planes([win(&y, 0, -1), win(&[], 0, 0), win(&[], 0, 0)]),
+            yuv_frame_to_rgba(
+                [
+                    strided(&LUMA, 0, -1, 4, 1),
+                    strided(&CB, 0, 2, 2, 1),
+                    strided(&CR, 0, 2, 2, 1)
+                ],
+                4,
+                2
+            ),
             Err(CameraFramePackError::NegativeLength)
         );
     }
 
     #[test]
     fn rejects_window_beyond_capacity() {
-        let y = [1u8, 2, 3];
-        // offset + len = 5 > capacity 3
+        // offset + len = 9 > capacity 8
         assert_eq!(
-            pack_yuv_planes([win(&y, 0, 5), win(&[], 0, 0), win(&[], 0, 0)]),
+            yuv_frame_to_rgba(
+                [
+                    strided(&LUMA, 1, 8, 4, 1),
+                    strided(&CB, 0, 2, 2, 1),
+                    strided(&CR, 0, 2, 2, 1)
+                ],
+                4,
+                2
+            ),
             Err(CameraFramePackError::WindowOutOfBounds)
         );
         // offset alone beyond capacity
         assert_eq!(
-            pack_yuv_planes([win(&y, 4, 0), win(&[], 0, 0), win(&[], 0, 0)]),
+            yuv_frame_to_rgba(
+                [
+                    strided(&LUMA, 9, 0, 4, 1),
+                    strided(&CB, 0, 2, 2, 1),
+                    strided(&CR, 0, 2, 2, 1)
+                ],
+                4,
+                2
+            ),
             Err(CameraFramePackError::WindowOutOfBounds)
         );
     }
@@ -472,20 +741,24 @@ mod tests {
     fn rejects_i32_max_window_as_out_of_bounds() {
         // With `i32` inputs on a 64-bit target, `offset + len` (max ~2^32)
         // cannot overflow `usize`, so this hits the out-of-capacity check, not
-        // the `checked_add` guard. The guard is belt-and-suspenders; the real
-        // usize-overflow path is covered by `checked_total_detects_usize_overflow`.
-        let y = [1u8, 2, 3];
+        // the `checked_add` guard.
         assert_eq!(
-            pack_yuv_planes([win(&y, i32::MAX, i32::MAX), win(&[], 0, 0), win(&[], 0, 0)]),
+            yuv_frame_to_rgba(
+                [
+                    strided(&LUMA, i32::MAX, i32::MAX, 4, 1),
+                    strided(&CB, 0, 2, 2, 1),
+                    strided(&CR, 0, 2, 2, 1)
+                ],
+                4,
+                2
+            ),
             Err(CameraFramePackError::WindowOutOfBounds)
         );
     }
 
     #[test]
     fn checked_total_maps_usize_overflow_to_total_overflow_error() {
-        // Exercises the exact production error mapping: `pack_yuv_planes` calls
-        // `checked_total(...)?`, so this asserts the same `TotalOverflow` value
-        // the pack path would return. Unreachable with real camera planes.
+        // Unreachable with real camera planes.
         assert_eq!(checked_total(1, 2, 3), Ok(6));
         assert_eq!(checked_total(usize::MAX, 0, 0), Ok(usize::MAX));
         assert_eq!(
@@ -501,24 +774,61 @@ mod tests {
     }
 
     #[test]
-    fn padding_and_pixel_stride_bytes_are_preserved_verbatim() {
-        // Bytes that look like row padding / pixelStride gaps (0xFF, 0x00) are
-        // inside the window and must be copied as-is, not stripped or repacked.
-        let y = [10u8, 0xFF, 0x00, 11, 0xFF, 12];
-        let out = pack_yuv_planes([win(&y, 0, 6), win(&[], 0, 0), win(&[], 0, 0)]).unwrap();
-        assert_eq!(out, [10, 0xFF, 0x00, 11, 0xFF, 12]);
+    fn a_hosts_rgba_or_bgra_rows_become_packed_opaque_rgba() {
+        // 2 x 2, rows 12 bytes apart (a 4-byte pad each), alpha left at 0.
+        let rgba_rows = [
+            1u8, 2, 3, 0, 4, 5, 6, 0, 0xEE, 0xEE, 0xEE, 0xEE, //
+            7, 8, 9, 0, 10, 11, 12, 0,
+        ];
+        let packed = packed_frame_to_rgba(&rgba_rows, 2, 2, 12, PixelLayout::Rgba).unwrap();
+        assert_eq!(
+            packed,
+            [1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255]
+        );
+        let bgra = packed_frame_to_rgba(&rgba_rows, 2, 2, 12, PixelLayout::Bgra).unwrap();
+        assert_eq!(&bgra[..8], &[3, 2, 1, 255, 6, 5, 4, 255]);
+    }
+
+    #[test]
+    fn a_hosts_frame_short_of_its_rows_or_stride_is_refused() {
+        let rows = [0u8; 20];
+        assert_eq!(
+            packed_frame_to_rgba(&rows, 2, 2, 7, PixelLayout::Rgba),
+            Err(CameraFramePackError::StrideOutOfBounds),
+            "a stride shorter than a row"
+        );
+        assert_eq!(
+            packed_frame_to_rgba(&rows[..19], 2, 2, 12, PixelLayout::Rgba),
+            Err(CameraFramePackError::StrideOutOfBounds),
+            "the last row cut short"
+        );
+        assert!(packed_frame_to_rgba(&rows, 2, 2, 12, PixelLayout::Rgba).is_ok());
+        assert_eq!(
+            packed_frame_to_rgba(&rows, 0, 2, 12, PixelLayout::Rgba),
+            Err(CameraFramePackError::DimensionsOutOfBounds)
+        );
+        assert_eq!(
+            packed_frame_to_rgba(&rows, 4096, 4097, 16384, PixelLayout::Rgba),
+            Err(CameraFramePackError::FrameTooLarge)
+        );
     }
 
     #[test]
     fn source_slices_are_not_mutated() {
-        let y = [1u8, 2, 3];
-        let u = [4u8, 5];
-        let v = [6u8];
-        let _ = pack_yuv_planes([win(&y, 0, 3), win(&u, 0, 2), win(&v, 0, 1)]).unwrap();
-        assert_eq!(y, [1, 2, 3]);
-        assert_eq!(u, [4, 5]);
-        assert_eq!(v, [6]);
+        let (luma, cb, cr) = (LUMA, CB, CR);
+        let _ = yuv_frame_to_rgba(
+            [
+                strided(&luma, 0, 8, 4, 1),
+                strided(&cb, 0, 2, 2, 1),
+                strided(&cr, 0, 2, 2, 1),
+            ],
+            4,
+            2,
+        )
+        .unwrap();
+        assert_eq!((luma, cb, cr), (LUMA, CB, CR));
     }
+
     #[test]
     fn slow_consumer_sees_latest_frame_and_counts_superseded() {
         let host_id = 9701;

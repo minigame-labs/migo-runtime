@@ -46,6 +46,8 @@ typedef struct MigoSessionConfig {
 
 `request`、`download`(含远程图片、音频流、资源预取)、`upload`、`socket`、`tcp`、`udp` 各自是一个域名数组或 `"unrestricted"`;没写的通道全部拒绝。`example.com` 只匹配它本身,`*.example.com` 只匹配子域,不能写 IP 地址。`allowPlainHttp` 才允许 `http://`/`ws://`;`lan` 让 socket、tcp、udp 能访问局域网的其他设备,request、download、upload 无论如何都到不了局域网。未知的键或写错的条目让 `migo_session_create` 返回 `MIGO_ERROR_INVALID_ARGUMENT`。这个字段同样是追加的:传旧版结构体的宿主得到 NULL,即没有网络。
 
+`tlsTrust` 固定 HTTPS/WSS 的证书信任方式：`"platform"` 使用平台验证器，`"mozilla"` 使用引擎附带的 Mozilla 根证书。默认是平台模式，OHOS 默认 Mozilla；验证失败不会切换信任库。**Android C ABI 宿主没有初始化 Java SDK/JVM 时，必须显式写 `"tlsTrust":"mozilla"`。** Android Java SDK 默认使用宿主的 CA 与 `networkSecurityConfig`，也可通过 `NetworkPolicy.Builder.setTlsTrust` 选择模式。引擎不覆盖宿主应用的网络配置。
+
 `launch_options_json_utf8` 是游戏的启动参数,NUL 结尾的 UTF-8 JSON,只在 `migo_session_create` 调用期间借用;NULL 即引擎默认值(场景 1001、空 query)。
 
 ```json
@@ -397,7 +399,7 @@ typedef struct MigoHostServiceCall {
 | `MIGO_HOST_SERVICE_AD` (0) | `CREATE` 0 · `LOAD` 1 · `SHOW` 2 · `HIDE` 3 · `UPDATE_STYLE` 4 · `DESTROY` 5 | 命令；结果走事件 `MIGO_AD_EVENT_LIFECYCLE`；宿主自己的封面广告状态以不带 `adId` 的 `{"event":"splashStatus","status","code"}` 在变化时上报 | `createRewardedVideoAd` 等全部广告；`getShowSplashAdStatus` 回答最近一次上报（之前为 `unknown` / -1） |
 | `MIGO_HOST_SERVICE_PAYMENT` (1) | `REQUEST_MIDAS_PAYMENT` 0 · `REQUEST_MIDAS_PAYMENT_GAME_ITEM` 1 | 调用 | `requestMidasPayment` · `requestMidasPaymentGameItem` |
 | `MIGO_HOST_SERVICE_AUTH` (2) | `LOGIN` 0 · `CHECK_SESSION` 1 · `GET_USER_INFO` 2 · `GET_PHONE_NUMBER` 3 | 调用 | `login` · `checkSession` · `getUserInfo` · `getPhoneNumber` |
-| `MIGO_HOST_SERVICE_SHARE` (3) | `SHARE_APP_MESSAGE` 0 · `SHARE_MESSAGE_TO_FRIEND` 1 · `SHOW_SHARE_IMAGE_MENU` 2（调用）· `SET_SHARE_MENU` 3 · `MENU_SHARE_REPLY` 4（命令）；事件 `EVENT_MENU_SHARE` 0 | 见左；图片路径是经沙箱解析的真实文件（仅 `SHARE_APP_MESSAGE` 可以是 http(s) URL） | `shareAppMessage` · `shareMessageToFriend`（带 `setMessageToFriendQuery` 设的 query；`onShareMessageToFriend` 由其结算派生）· `showShareImageMenu` |
+| `MIGO_HOST_SERVICE_SHARE` (3) | `SHARE_APP_MESSAGE` 0 · `SHARE_MESSAGE_TO_FRIEND` 1 · `SHOW_SHARE_IMAGE_MENU` 2 · `SHARE_GAME_RECORDING` 5（调用）· `SET_SHARE_MENU` 3 · `MENU_SHARE_REPLY` 4（命令）；事件 `EVENT_MENU_SHARE` 0 | 见左；图片路径是经沙箱解析的真实文件（仅 `SHARE_APP_MESSAGE` 可以是 http(s) URL） | `shareAppMessage` · `shareMessageToFriend`（带 `setMessageToFriendQuery` 设的 query；`onShareMessageToFriend` 由其结算派生）· `showShareImageMenu` |
 | `MIGO_HOST_SERVICE_NAVIGATE` (4) | `NAVIGATE_TO_MINI_PROGRAM` 0（调用）· `NAVIGATE_BACK_MINI_PROGRAM` 1 · `OPEN_CUSTOMER_SERVICE_CONVERSATION` 2（命令） | 见左 | `navigateToMiniProgram` · `navigateBackMiniProgram` · `openCustomerServiceConversation` |
 | `MIGO_HOST_SERVICE_SUBPACKAGE` (5) | `DOWNLOAD` 0 | 调用，可报进度 | `loadSubpackage` · `preDownloadSubpackage` |
 | `MIGO_HOST_SERVICE_PERMISSION` (6) | `REQUEST_SCOPE` 0 | 调用；请求 `{"scope","scopeId","desc"}`，`scopeId` 即上报决定用的 `MIGO_SCOPE_*` 编号，宿主无需名字表；平台未定义的作用域不会到达宿主 | `authorize`（及 `getWritePhotosAlbum` 等） |
@@ -766,6 +768,40 @@ MIGO_API MigoResult MIGO_CALL migo_session_copy_console_logs(MigoSession *sessio
 
 线程模型：任意线程。
 
+## migo_session_report_network
+
+```c
+/* 衍生示例:tests/c_host 暂无该路径覆盖;调用形态以头文件为准 */
+typedef struct MigoNetworkReport {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    MigoNetworkType type;
+    MigoNetworkFlags flags;      /* MIGO_NETWORK_FLAG_CONNECTED、_SYSTEM_PROXY、_WEAK */
+    int32_t signal_strength_dbm; /* 不知道时为 0 */
+    uint32_t reserved0;          /* 置零 */
+} MigoNetworkReport;
+
+MIGO_API MigoResult MIGO_CALL migo_session_report_network(MigoSession *session,
+                                                          const MigoNetworkReport *report);
+```
+
+完整的网络，即 `getNetworkType` 的答案。宿主现在报一次，之后其中任何一项变化都再报。连接或其类型的变化，
+内容通过 `onNetworkStatusChange` 得知；宿主判断的变化，通过 `onNetworkWeakChange` 得知。
+
+- `MIGO_NETWORK_FLAG_CONNECTED`：网络能连到互联网。
+- `MIGO_NETWORK_FLAG_SYSTEM_PROXY`（`hasSystemProxy`）：系统按平台自己的设置把网络走代理。游戏用它拒绝在抓包代理下
+  运行，所以它是设备的设置，不是猜测。
+- `MIGO_NETWORK_FLAG_WEAK`（`weakNet`）：宿主判断网络弱。
+- `signal_strength_dbm`（`signalStrength`）：接收信号强度，单位 dBm，即 Wi-Fi 的 RSSI 或蜂窝信号；宿主读不到时为 `0`，
+  iOS 即是如此。
+
+返回：
+
+- `MIGO_OK` — 已保留（内容正在监听且有变化时已转发）
+- `MIGO_ERROR_INVALID_ARGUMENT` — `session` 或 `report` 为 NULL；`type` 超出 `MIGO_NETWORK_5G`；含头文件未定义的
+  标志；`MIGO_NETWORK_NONE` 却报告已连接或弱；信号为正；`reserved0` 非零
+- `MIGO_ERROR_INVALID_STATE` — Session 已销毁
+
 ## migo_session_set_network_status
 
 ```c
@@ -775,7 +811,7 @@ MIGO_API MigoResult MIGO_CALL migo_session_set_network_status(MigoSession *sessi
                                                               uint8_t connected);
 ```
 
-设备当前所在的网络，按内容的 `getNetworkType`/`onNetworkStatusChange` 的口径。宿主现在报一次，
+只知道类型与是否连接的报告：没有代理、没有信号、不弱。设备当前所在的网络，按内容的 `getNetworkType`/`onNetworkStatusChange` 的口径。宿主现在报一次，
 之后每次变化再报；引擎保留最后一次报告，只在内容正在监听时把变化告诉内容。首次报告之前，
 内容的网络调用得到"not supported"。可以在 attach surface 之前调用，报告会被保留。
 
@@ -1049,6 +1085,63 @@ MIGO_API MigoResult MIGO_CALL migo_session_post_ble_characteristic_value(
 - `MIGO_ERROR_INVALID_ARGUMENT` — 记录为 NULL 或格式错误；某个 id 为空、超过 256 字节或不是 UTF-8；值超过 512 字节；
   宿主未声明 `MIGO_HOST_SERVICE_BLUETOOTH`
 - `MIGO_ERROR_INVALID_STATE` — 没有已 attach 的 Surface
+
+## migo_session_post_camera_frame
+
+```c
+typedef uint32_t MigoPixelFormat;
+#define MIGO_PIXEL_FORMAT_RGBA8 0U
+#define MIGO_PIXEL_FORMAT_BGRA8 1U
+
+typedef struct MigoCameraFrame {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint32_t camera_id;
+    uint32_t width;
+    uint32_t height;
+    uint32_t row_stride;
+    MigoPixelFormat format;
+    uint32_t reserved0;
+    const uint8_t *pixels;
+} MigoCameraFrame;
+
+MIGO_API MigoResult MIGO_CALL migo_session_post_camera_frame(MigoSession *session,
+                                                             const MigoCameraFrame *frame);
+```
+
+内容正在监听的相机（`MIGO_CAMERA_LISTEN_FRAME_CHANGE`）的一帧，可在任意线程、Surface 附着期间调用：`width` x `height` 个 `format` 像素，自上而下逐行，行距 `row_stride` 字节。相机每秒三十帧，所以这是类型化记录、只在调用期间借用：像素一次性读成内容的 RGBA——参考文档 `onCameraFrame` 的 data，每像素四字节、不透明——且只有最新一帧等待内容：内容还没取走上一帧时，新来的替换它。
+
+返回：
+
+- `MIGO_OK` — 已交付，或替换了内容尚未取走的那一帧
+- `MIGO_ERROR_INVALID_ARGUMENT` — 记录为 NULL 或格式不对；头文件未定义的 format；宽或高为 0 或超过 8192；`row_stride` 小于 `width * 4`；RGBA 超过 64 MiB；宿主未声明 `MIGO_HOST_SERVICE_CAMERA`
+- `MIGO_ERROR_INVALID_STATE` — 没有附着的 Surface
+
+## migo_session_post_recorder_frame
+
+```c
+typedef struct MigoRecorderFrame {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint32_t recording_id;
+    uint32_t is_last_frame;
+    const uint8_t *data;
+    uint32_t length;
+    uint32_t reserved0;
+} MigoRecorderFrame;
+
+MIGO_API MigoResult MIGO_CALL migo_session_post_recorder_frame(MigoSession *session,
+                                                               const MigoRecorderFrame *frame);
+```
+
+`MIGO_RECORDER_START` 要了帧（`frameSize`）的录音的一帧，可在任意线程、Surface 附着期间调用：录音格式的 `length` 字节（至多 1 MiB），交给内容的 `onFrameRecorded`。结束录音的那一帧 `is_last_frame` 为 1（可以为空），其余为 0。麦克风每秒送很多帧，所以这是类型化记录、只在调用期间借用、拷贝一次。各帧共用一份内容消化的字节额度：超出额度的帧被拒绝并丢弃——跑在内容前面的宿主丢的是帧而不是内存；最后一帧从不丢弃。
+
+返回：
+
+- `MIGO_OK` — 已交付
+- `MIGO_ERROR_WOULD_BLOCK` — 内容还没取走足够多的先前帧，这一帧被丢弃
+- `MIGO_ERROR_INVALID_ARGUMENT` — 记录为 NULL 或格式不对；`recording_id` 为 0；`is_last_frame` 不是 0 或 1；`length` 超过 1 MiB，或有长度但 `data` 为 NULL；宿主未声明 `MIGO_HOST_SERVICE_RECORDER`
+- `MIGO_ERROR_INVALID_STATE` — 没有附着的 Surface
 
 ## migo_session_set_ecosystem_value
 

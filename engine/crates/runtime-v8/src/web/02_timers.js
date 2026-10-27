@@ -1,5 +1,6 @@
 import { core, primordials } from "ext:core/mod.js";
 import { op_now, op_timer_is_backgrounded } from "ext:core/ops";
+import { getTimerDepth, runTimerTask } from "ext:host_v8_web/01_task_context.js";
 
 const {
     MathCeil,
@@ -14,7 +15,6 @@ const {
     Number,
     NumberIsFinite,
     RangeError,
-    ReflectApply,
     SafeMap,
     TypeError,
     TypedArrayPrototypeGetBuffer,
@@ -24,7 +24,6 @@ const {
 
 const {
     getAsyncContext,
-    setAsyncContext,
 } = core;
 
 const MAX_LIVE_TIMERS = 1024;
@@ -41,6 +40,11 @@ let _backgrounded = false;
 let _lifecycleInitialized = false;
 let _liveTimerCount = 0;
 let _nextTimerId = 1;
+let _timerTaskPrelude = null;
+
+function _internalSetTimerTaskPrelude(callback) {
+    _timerTaskPrelude = callback;
+}
 
 function checkThis(thisArg) {
     if (thisArg !== null && thisArg !== undefined && thisArg !== globalThis) {
@@ -54,9 +58,14 @@ function ensureLifecycleInitialized() {
     _lifecycleInitialized = true;
 }
 
-function monotonicNowMs() {
+// Instants and what remains of a delay are whole microseconds: exact, where a
+// millisecond float is not. A deadline `start + 25` less `start` read as
+// milliseconds since the process began can come to 25.0000000002, which the
+// native timer's whole milliseconds round up to 26, and a timer restored the
+// moment its runtime is shown fired a millisecond late.
+function monotonicNowUs() {
     op_now(_clockBytes);
-    return _clockWords[0] * 1000 + _clockWords[1] / 1e6;
+    return _clockWords[0] * 1_000_000 + MathFloor(_clockWords[1] / 1000);
 }
 
 function normalizeDelay(value) {
@@ -80,13 +89,7 @@ function allocateTimerId() {
 }
 
 function invokeEntry(entry) {
-    const oldContext = getAsyncContext();
-    try {
-        setAsyncContext(entry.asyncContext);
-        ReflectApply(entry.callback, globalThis, entry.args);
-    } finally {
-        setAsyncContext(oldContext);
-    }
+    runTimerTask(entry.depth, entry.callback, entry.args, entry.asyncContext);
 }
 
 function isCurrentNative(entry, generation, nativeId) {
@@ -101,33 +104,39 @@ function applyRefState(entry) {
     }
 }
 
-function queueNative(entry, repeat, delayMs, logicalStartMs, onFire) {
+function queueNative(entry, repeat, delayUs, logicalStartUs, onFire) {
     entry.generation++;
     const generation = entry.generation;
-    const deadlineMs = logicalStartMs + delayMs;
-    const nativeDelayMs = MathCeil(MathMax(0, deadlineMs - monotonicNowMs()));
+    const deadlineUs = logicalStartUs + delayUs;
+    const nativeDelayMs = MathCeil(MathMax(0, deadlineUs - monotonicNowUs()) / 1000);
     let nativeId = null;
 
-    nativeId = core.queueUserTimer(
-        entry.depth,
-        repeat,
-        nativeDelayMs,
+    nativeId = core.createTimer(
         () => {
+            // Core 0.413 dispatches timers before resolving ready async ops.
+            // Workers must apply queued host lifecycle edges before an expired
+            // timer can run, including a complete hide/show while unpolled.
+            if (_timerTaskPrelude !== null) _timerTaskPrelude();
             if (!isCurrentNative(entry, generation, nativeId)) return;
             onFire(entry);
         },
+        nativeDelayMs,
+        undefined,
+        repeat,
+        entry.refed,
+        false,
+        true,
     );
 
     entry.nativeId = nativeId;
-    entry.activeSinceMs = logicalStartMs;
-    entry.deadlineMs = deadlineMs;
+    entry.activeSinceUs = logicalStartUs;
+    entry.deadlineUs = deadlineUs;
     applyRefState(entry);
 }
 
-function armTimeout(entry, delayMs, logicalStartMs = monotonicNowMs()) {
-    const scheduledDelay = MathCeil(MathMax(0, delayMs));
-    entry.remainingMs = scheduledDelay;
-    queueNative(entry, false, scheduledDelay, logicalStartMs, (current) => {
+function armTimeout(entry, delayUs, logicalStartUs = monotonicNowUs()) {
+    entry.remainingUs = MathMax(0, delayUs);
+    queueNative(entry, false, entry.remainingUs, logicalStartUs, (current) => {
         current.nativeId = null;
         current.generation++;
         MapPrototypeDelete(_timers, current.id);
@@ -138,25 +147,23 @@ function armTimeout(entry, delayMs, logicalStartMs = monotonicNowMs()) {
 
 function armRepeatingInterval(
     entry,
-    firstDelayMs,
-    logicalStartMs = monotonicNowMs(),
+    firstDelayUs,
+    logicalStartUs = monotonicNowUs(),
 ) {
-    const scheduledDelay = MathCeil(MathMax(0, firstDelayMs));
-    entry.remainingMs = scheduledDelay;
-    queueNative(entry, true, scheduledDelay, logicalStartMs, (current) => {
-        current.remainingMs = current.periodMs;
-        current.activeSinceMs = monotonicNowMs();
-        current.deadlineMs = current.activeSinceMs + current.periodMs;
+    entry.remainingUs = MathMax(0, firstDelayUs);
+    queueNative(entry, true, entry.remainingUs, logicalStartUs, (current) => {
+        current.remainingUs = current.periodMs * 1000;
+        current.activeSinceUs = monotonicNowUs();
+        current.deadlineUs = current.activeSinceUs + current.remainingUs;
         invokeEntry(current);
     });
 }
 
-function armResumedInterval(entry, delayMs, logicalStartMs) {
-    const scheduledDelay = MathCeil(MathMax(0, delayMs));
-    entry.remainingMs = scheduledDelay;
-    queueNative(entry, false, scheduledDelay, logicalStartMs, (current) => {
+function armResumedInterval(entry, delayUs, logicalStartUs) {
+    entry.remainingUs = MathMax(0, delayUs);
+    queueNative(entry, false, entry.remainingUs, logicalStartUs, (current) => {
         current.nativeId = null;
-        armRepeatingInterval(current, current.periodMs);
+        armRepeatingInterval(current, current.periodMs * 1000);
         invokeEntry(current);
     });
 }
@@ -177,8 +184,8 @@ function createTimer(kind, callback, delay, args) {
     // queued lifecycle edge is delivered. Treat either source as authoritative
     // for entering the background; the ordered show edge restores Worker timers.
     const backgrounded = _backgrounded || op_timer_is_backgrounded();
-    const createdAtMs = monotonicNowMs();
-    const depth = core.getTimerDepth() + 1;
+    const createdAtUs = monotonicNowUs();
+    const depth = getTimerDepth() + 1;
     let delayMs = normalizeDelay(delay);
     if (depth > MAX_UNCLAMPED_NESTING_LEVEL && delayMs < MIN_NESTED_DELAY_MS) {
         delayMs = MIN_NESTED_DELAY_MS;
@@ -193,10 +200,10 @@ function createTimer(kind, callback, delay, args) {
         depth,
         delayMs,
         periodMs: kind === "interval" ? MathMax(1, delayMs) : 0,
-        remainingMs: delayMs,
-        createdAtMs,
-        activeSinceMs: createdAtMs,
-        deadlineMs: createdAtMs + delayMs,
+        remainingUs: delayMs * 1000,
+        createdAtUs,
+        activeSinceUs: createdAtUs,
+        deadlineUs: createdAtUs + delayMs * 1000,
         nativeId: null,
         generation: 0,
         refed: true,
@@ -208,9 +215,13 @@ function createTimer(kind, callback, delay, args) {
     if (!backgrounded) {
         try {
             if (kind === "interval") {
-                armRepeatingInterval(entry, delayMs, createdAtMs);
+                if (delayMs === 0) {
+                    armResumedInterval(entry, 0, createdAtUs);
+                } else {
+                    armRepeatingInterval(entry, delayMs * 1000, createdAtUs);
+                }
             } else {
-                armTimeout(entry, delayMs, createdAtMs);
+                armTimeout(entry, delayMs * 1000, createdAtUs);
             }
         } catch (error) {
             cancelNative(entry);
@@ -278,21 +289,21 @@ function refTimer(id) {
     if (entry.nativeId !== null) core.refTimer(entry.nativeId);
 }
 
-function freezeEntry(entry, transitionMs) {
+function freezeEntry(entry, transitionUs) {
     if (entry.nativeId === null) return;
-    if (entry.createdAtMs <= transitionMs && entry.activeSinceMs < transitionMs) {
-        entry.remainingMs = MathMax(0, entry.deadlineMs - transitionMs);
+    if (entry.createdAtUs <= transitionUs && entry.activeSinceUs < transitionUs) {
+        entry.remainingUs = MathMax(0, entry.deadlineUs - transitionUs);
     }
     cancelNative(entry);
 }
 
-function restoreEntry(entry, transitionMs) {
+function restoreEntry(entry, transitionUs) {
     if (entry.nativeId !== null) return;
-    const logicalStartMs = MathMax(entry.createdAtMs, transitionMs);
+    const logicalStartUs = MathMax(entry.createdAtUs, transitionUs);
     if (entry.kind === "interval") {
-        armResumedInterval(entry, entry.remainingMs, logicalStartMs);
+        armResumedInterval(entry, entry.remainingUs, logicalStartUs);
     } else {
-        armTimeout(entry, entry.remainingMs, logicalStartMs);
+        armTimeout(entry, entry.remainingUs, logicalStartUs);
     }
 }
 
@@ -301,22 +312,21 @@ function _internalSetTimerBackgrounded(value, elapsedMicros = 0) {
     _lifecycleInitialized = true;
     if (_backgrounded === next) return;
 
-    const nowMs = monotonicNowMs();
     let elapsed = Number(elapsedMicros);
     if (!NumberIsFinite(elapsed) || elapsed < 0) elapsed = 0;
-    const transitionMs = nowMs - elapsed / 1000;
+    const transitionUs = monotonicNowUs() - MathFloor(elapsed);
 
     _backgrounded = next;
     if (next) {
-        MapPrototypeForEach(_timers, (entry) => freezeEntry(entry, transitionMs));
+        MapPrototypeForEach(_timers, (entry) => freezeEntry(entry, transitionUs));
         return;
     }
 
     try {
-        MapPrototypeForEach(_timers, (entry) => restoreEntry(entry, transitionMs));
+        MapPrototypeForEach(_timers, (entry) => restoreEntry(entry, transitionUs));
     } catch (error) {
         _backgrounded = true;
-        MapPrototypeForEach(_timers, (entry) => freezeEntry(entry, transitionMs));
+        MapPrototypeForEach(_timers, (entry) => freezeEntry(entry, transitionUs));
         throw error;
     }
 }
@@ -330,4 +340,5 @@ export {
     unrefTimer,
     refTimer,
     _internalSetTimerBackgrounded,
+    _internalSetTimerTaskPrelude,
 };

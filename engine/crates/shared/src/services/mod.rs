@@ -14,6 +14,7 @@
 mod ad;
 pub mod app_info;
 mod auth;
+mod ble_peripheral;
 mod camera;
 mod clipboard;
 mod codec;
@@ -29,6 +30,7 @@ mod navigate;
 mod network;
 mod payment;
 mod permission;
+mod recorder;
 mod scan_code;
 mod share;
 mod subpackage;
@@ -40,15 +42,21 @@ mod window;
 
 pub use ad::AdService;
 pub use auth::AuthService;
-pub use camera::CameraService;
+pub use ble_peripheral::{
+    BLE_PERIPHERAL_EVENT_HOOKS, BLE_PERIPHERAL_RESULT_HOOKS, BlePeripheralService,
+    ble_peripheral_event, ble_peripheral_method,
+};
+pub use camera::{
+    CAMERA_EVENT_HOOKS, CAMERA_RESULT_HOOKS, CameraService, camera_method, camera_result_files,
+};
 pub use clipboard::ClipboardService;
 pub use codec::CodecService;
 pub use device::{
     AccelerometerService, AudioPlatformService, BLUETOOTH_RESULT_HOOKS, BatteryService,
     BluetoothService, CommerceServices, CompassService, ConnectivityServices, DeviceMotionService,
     DeviceServices, GAMEPAD_EFFECT_MAX_MS, GamepadRumble, GamepadService, GyroscopeService,
-    KeyboardService, MediaServices, RecorderService, ScreenService, SensorServices,
-    SystemUtilServices, VibrationService,
+    KeyboardService, MediaServices, ScreenService, SensorServices, SystemUtilServices,
+    VibrationService,
 };
 pub use ecosystem::EcosystemService;
 pub use file::FileService;
@@ -63,6 +71,9 @@ pub use permission::{
     PERMISSION_CLEANUP_OPS, PERMISSION_GATED_OPS, PermissionService, Scope, ScopeState,
     auth_setting_json, op_scope,
 };
+pub use recorder::{
+    RECORDER_EVENT_HOOKS, RecorderService, recorder_event, recorder_event_files, recorder_method,
+};
 pub use scan_code::ScanCodeService;
 pub use share::ShareService;
 pub use subpackage::{
@@ -72,7 +83,10 @@ pub use system_info::{
     SystemInfoService, default_device_info_json, host_os_name, host_platform_name,
 };
 pub use update::UpdateService;
-pub use video::VideoService;
+pub use video::{
+    VIDEO_EVENT_HOOKS, VIDEO_RESULT_HOOKS, VideoService, video_event, video_event_droppable,
+    video_method,
+};
 pub use video_decoder::{FrameTiming, VideoDecoderService, VideoFrameSource};
 pub use window::WindowService;
 

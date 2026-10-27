@@ -45,7 +45,7 @@ require_literal() {
     rg --fixed-strings --quiet "$literal" "$path" || fail "$message"
 }
 
-for command in cmake c++ ninja rg xvfb-run; do
+for command in cmake c++ ninja rg xvfb-run dbus-run-session; do
     require_command "$command"
 done
 
@@ -84,9 +84,16 @@ fi
 
 PRODUCTION_PATHS=("$HOST_KIT_ROOT/include" "$HOST_KIT_ROOT/src")
 if rg -n \
-    'Qt[^ >"]+/private/|<private/|qplatformnativeinterface|QQuick|QtQuick|QPainter|glReadPixels|grabFramebuffer|toImage\(|createWindowContainer|fromWinId' \
+    'Qt[^ >"]+/private/|<private/|qplatformnativeinterface|QQuick|QtQuick|glReadPixels|grabFramebuffer|createWindowContainer|fromWinId' \
     "${PRODUCTION_PATHS[@]}"; then
-    fail "private Qt API, Qt Quick overlay, or CPU readback escaped into the X11 adapter"
+    fail "private Qt API, Qt Quick overlay, or GL readback escaped into the Host Kit"
+fi
+# The game's frames never reach the CPU, and nothing paints over the game on it.
+# The one exception is the media component (migo::qt6-media): it paints the
+# videos it decodes -- GStreamer's frames, never the game's -- in a widget of
+# its own, in the preview viewer.
+if rg -n 'QPainter|toImage\(' --glob '!media.cpp' --glob '!media.hpp' "${PRODUCTION_PATHS[@]}"; then
+    fail "CPU painting or readback escaped into the X11 adapter or the services over the game"
 fi
 if rg -n 'QMainWindow|QWidget[[:space:]]*\([[:space:]]*nullptr|new[[:space:]]+QWindow|setParent[[:space:]]*\([[:space:]]*nullptr|setWindowFlags?\(|Qt::Window\b' \
     "${PRODUCTION_PATHS[@]}"; then
@@ -168,6 +175,7 @@ cmake --install "$BUILD_DIR"
 require_file "$BUILD_DIR/prefix/include/migo/linux/surface_host.hpp"
 require_file "$BUILD_DIR/prefix/include/migo/linux/qt6/x11_surface_view.hpp"
 require_file "$BUILD_DIR/prefix/include/migo/linux/qt6/managed_session.hpp"
+require_file "$BUILD_DIR/prefix/include/migo/linux/qt6/media.hpp"
 require_file "$BUILD_DIR/prefix/share/doc/migo-linux-host-kit/README.md"
 require_file "$BUILD_DIR/prefix/lib/cmake/migo-linux-host-kit/migo-linux-host-kit-config.cmake"
 require_file "$BUILD_DIR/prefix/lib/cmake/migo-linux-host-kit/migo-linux-host-kit-targets.cmake"
@@ -186,15 +194,24 @@ require_file "$BUILD_DIR/install-consumer/migo-host-kit-install-consumer"
 "$BUILD_DIR/migo-surface-host-test"
 env QT_QPA_PLATFORM=offscreen "$BUILD_DIR/migo-qt-x11-view-test"
 env QT_QPA_PLATFORM=offscreen "$BUILD_DIR/migo-qt-x11-input-test"
-env QT_QPA_PLATFORM=offscreen "$BUILD_DIR/migo-qt-managed-session-test"
+# The Managed session and the host services ask the desktop and the system over
+# D-Bus; their tests answer for them on a session bus of their own.
+dbus-run-session -- env QT_QPA_PLATFORM=offscreen "$BUILD_DIR/migo-qt-managed-session-test"
+dbus-run-session -- env QT_QPA_PLATFORM=offscreen "$BUILD_DIR/migo-qt-host-services-test"
 # Pin xcb explicitly: developer desktops often export WAYLAND_DISPLAY, while
 # this adapter and its positive-path test intentionally exercise X11 only.
-xvfb-run -a env -u WAYLAND_DISPLAY QT_QPA_PLATFORM=xcb \
+# Each on a session bus of its own too, though they ask nothing of D-Bus: on X,
+# Qt connects to the session bus, and with none named libdbus launches one for
+# the display -- where dbus-x11 is installed, and not where it is not, so the
+# same run differed by machine (LeakSanitizer reporting libdbus mid-read at exit).
+xvfb-run -a dbus-run-session -- env -u WAYLAND_DISPLAY QT_QPA_PLATFORM=xcb \
     "$BUILD_DIR/migo-qt-x11-view-test"
-xvfb-run -a env -u WAYLAND_DISPLAY QT_QPA_PLATFORM=xcb \
+xvfb-run -a dbus-run-session -- env -u WAYLAND_DISPLAY QT_QPA_PLATFORM=xcb \
     "$BUILD_DIR/migo-qt-x11-input-test"
-xvfb-run -a env -u WAYLAND_DISPLAY QT_QPA_PLATFORM=xcb \
+xvfb-run -a dbus-run-session -- env -u WAYLAND_DISPLAY QT_QPA_PLATFORM=xcb \
     "$BUILD_DIR/migo-qt-managed-session-test"
+xvfb-run -a dbus-run-session -- env -u WAYLAND_DISPLAY QT_QPA_PLATFORM=xcb \
+    "$BUILD_DIR/migo-qt-host-services-test"
 
 if [[ "$SANITIZE" == "1" ]]; then
     # -fno-sanitize-recover=all is what makes this a gate rather than a report:
@@ -211,14 +228,23 @@ if [[ "$SANITIZE" == "1" ]]; then
         -DCMAKE_EXE_LINKER_FLAGS="$SANITIZER_FLAGS" \
         -DMIGO_REPOSITORY_ROOT="$SDK_SOURCE_ROOT"
     cmake --build "$BUILD_DIR/sanitize" --parallel
+    # One leak that is not the Host Kit's: the H.264 decoder GStreamer's playbin
+    # plugs on Ubuntu 24.04 (gst-libav 1.24) leaks an AVPacket per frame, which
+    # `LD_PRELOAD=$(gcc -print-file-name=libasan.so) gst-launch-1.0 playbin
+    # uri=file://.../clip.mp4` reports with no Migo code loaded. Nothing here
+    # calls libav, so what libav allocates is the only thing set aside.
+    printf 'leak:av_malloc\n' >"$BUILD_DIR/sanitize/lsan.supp"
+    export LSAN_OPTIONS="suppressions=$BUILD_DIR/sanitize/lsan.supp${LSAN_OPTIONS:+:$LSAN_OPTIONS}"
     "$BUILD_DIR/sanitize/migo-surface-host-test"
     env QT_QPA_PLATFORM=offscreen "$BUILD_DIR/sanitize/migo-qt-x11-view-test"
-    xvfb-run -a env -u WAYLAND_DISPLAY QT_QPA_PLATFORM=xcb \
+    xvfb-run -a dbus-run-session -- env -u WAYLAND_DISPLAY QT_QPA_PLATFORM=xcb \
         "$BUILD_DIR/sanitize/migo-qt-x11-view-test"
-    xvfb-run -a env -u WAYLAND_DISPLAY QT_QPA_PLATFORM=xcb \
+    xvfb-run -a dbus-run-session -- env -u WAYLAND_DISPLAY QT_QPA_PLATFORM=xcb \
         "$BUILD_DIR/sanitize/migo-qt-x11-input-test"
-    xvfb-run -a env -u WAYLAND_DISPLAY QT_QPA_PLATFORM=xcb \
+    xvfb-run -a dbus-run-session -- env -u WAYLAND_DISPLAY QT_QPA_PLATFORM=xcb \
         "$BUILD_DIR/sanitize/migo-qt-managed-session-test"
+    xvfb-run -a dbus-run-session -- env -u WAYLAND_DISPLAY QT_QPA_PLATFORM=xcb \
+        "$BUILD_DIR/sanitize/migo-qt-host-services-test"
     printf 'Linux Qt Host Kit contract: ASan/UBSan PASS\n'
 fi
 

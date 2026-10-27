@@ -70,6 +70,15 @@ red "an API described as a kind of call that does not exist" contracts/runtime/m
 if [[ -d "$ROOT/docs/minigame-reference" ]]; then
     red "a result field edited by hand" contracts/runtime/minigame-api-spec.json \
         'document["apis"]["getWindowInfo"]["result"][0][1] = "string"'
+    # An erratum stands only over a page that still says what it corrects: one that expects the page to say anything
+    # else -- as it will once the page is corrected -- must stop the generation.
+    stage
+    sed 's/^        "string", "number",$/        "boolean", "number",/' "$GEN" > "$TMP/gen.py"
+    cmp -s "$GEN" "$TMP/gen.py" && fail "the erratum injection changed nothing"
+    if out="$(python3 "$TMP/gen.py" --root "$TMP/tree" --check 2>&1)"; then
+        fail "not red: an erratum over a page that no longer says what it corrects"
+    fi
+    echo "  red: an erratum over a page that no longer says what it corrects -- $(echo "$out" | tail -1)"
 else
     echo "  (the reference's mirror is not here: the hand-edit proof needs it)"
 fi

@@ -20,8 +20,11 @@ PROFILE_CONTRACT_RS="$REPO_ROOT/engine/crates/platform/src/android/jni/profile_c
 # The leading `IJ` is (sessionId, runtimeGeneration): a camera that keeps
 # delivering frames into the isolate that replaced the one which opened it is
 # the fence's problem at thirty frames a second, so the stamp rides the frame
-# path as well as the event path.
-EXPECTED='(IJILjava/nio/ByteBuffer;IILjava/nio/ByteBuffer;IILjava/nio/ByteBuffer;IIII)V'
+# path as well as the event path. Each plane is (buffer, offset, length), the
+# luma's with its row stride and the chroma's followed by their shared row and
+# pixel strides: without them the planes cannot be read, and content is given
+# RGBA, as the reference defines onCameraFrame's data.
+EXPECTED='(IJILjava/nio/ByteBuffer;IIILjava/nio/ByteBuffer;IILjava/nio/ByteBuffer;IIIIII)V'
 
 fail() { echo "FAIL: $1" >&2; exit 1; }
 

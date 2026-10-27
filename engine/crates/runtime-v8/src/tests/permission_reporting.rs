@@ -98,6 +98,8 @@ mod permission_reporting_tests {
     }
 
     fn assert_js(rt: &mut JsRuntime, src: &str) {
+        rt.perform_microtask_checkpoint()
+            .expect("permission task checkpoint");
         let wrapped = format!(
             "(()=>{{ {src}; if (!__ok) throw new Error('assertion failed: ' + __msg); }})()"
         );
@@ -108,6 +110,8 @@ mod permission_reporting_tests {
     /// With no host to ask, nothing is granted -- and `getSetting` says so.
     #[test]
     fn with_no_host_nothing_is_reported_as_granted() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot(None);
         assert_js(
             &mut rt,
@@ -136,6 +140,8 @@ mod permission_reporting_tests {
     /// With a host, the report is the host's answer -- neither more nor less.
     #[test]
     fn the_report_is_exactly_what_the_host_decided() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let services: Arc<dyn DeviceServices> = Arc::new(Bundle);
         let mut rt = boot(Some(services));
         rt.execute_script(
@@ -162,6 +168,8 @@ mod permission_reporting_tests {
     /// nobody had asked.
     #[test]
     fn a_refusal_is_false_and_the_undecided_are_absent() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let services: Arc<dyn DeviceServices> = Arc::new(Bundle);
         let mut rt = boot(Some(services));
         rt.execute_script(
@@ -190,6 +198,8 @@ mod permission_reporting_tests {
     /// through it no longer changes what `getSetting` reports.
     #[test]
     fn the_bridge_hook_can_no_longer_write_a_grant() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let services: Arc<dyn DeviceServices> = Arc::new(Bundle);
         let mut rt = boot(Some(services));
         rt.execute_script(

@@ -141,7 +141,7 @@ view 可以接着载入下一个游戏。
 | `setKeepScreenOn` | 空闲计时器；游戏结束时交还 App 原设置 | 电源断言；同左 |
 | `getNetworkType` / `onNetworkStatusChange` | `NWPathMonitor`（有线记为 `wifi`，蜂窝记为 `unknown`，与 Android 一致） | 同左 |
 | `vibrateShort` / `vibrateLong` | Taptic Engine | 回答“不支持” |
-| `getBatteryInfo` | 电量与低电量模式 | 回答“不支持” |
+| `getBatteryInfo` | 电量与低电量模式 | 笔记本的内置电池（IOKit）与低电量模式（macOS 12 起）；没有电池的 Mac 回答“不支持” |
 | `onDeviceOrientationChange` | 界面方向（横屏 Home 键一侧在右为 `landscape`，在左为 `landscapeReverse`；两个横屏互转从 iOS 16 起） | 游戏的形状在横竖之间变化 |
 | `setDeviceOrientation` | 请场景转到所要的形状（iOS 16 起）；view controller 不支持时失败 | 把窗口转成所要的形状；全屏时失败 |
 | `getGameLogManager().log` | 以 `onEvent(.gameLog(json))` 交给 App | 同左 |

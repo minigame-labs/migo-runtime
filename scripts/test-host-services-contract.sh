@@ -144,6 +144,18 @@ for name, service in services.items():
             fail(f"{where}: no hook")
         else:
             hooks[event["hook"]] = where
+        # An event may hand over files as a call's result does: a recording's STOP.
+        files = event.get("files", [])
+        if not isinstance(files, list) or not all(
+            isinstance(f, str) and FILE_FIELD.fullmatch(f) for f in files
+        ):
+            fail(f"{where}: files must list event fields as `a`, `a[]` or `a[].b`")
+        # A reading the next one supersedes travels the bounded lane and may be
+        # refused; any other event must arrive.
+        if "droppable" in event and not isinstance(event["droppable"], bool):
+            fail(f"{where}: droppable is true or absent")
+        if event.get("droppable") and event.get("files"):
+            fail(f"{where}: an event that hands over files must arrive, so it is never droppable")
 
 # Names in the header's MIGO_HOST_SERVICE_ space that are not service numbers.
 NOT_NUMBERING = re.compile(r"MIGO_HOST_SERVICE_(STATUS_|RESULT_FLAG_|PAYLOAD_MAX_BYTES$)")

@@ -26,6 +26,14 @@ pub const API_LIBRARY_LEVEL: &str = "3.17.0";
 /// what runs the content, and what content works around a defect of by number.
 pub const RUNTIME_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Whether this build runs on a desktop: the platform's PC client, whose kernel version it gives
+/// content as `PCKernelVersion` -- "仅在 PC 端存在该值" -- and only there.
+const DESKTOP: bool = cfg!(any(
+    target_os = "macos",
+    target_os = "windows",
+    all(target_os = "linux", not(target_env = "ohos"))
+));
+
 /// The text size, in CSS pixels, that a text scale of 1 means: the web's `medium`.
 const STANDARD_FONT_SIZE_PX: f64 = 16.0;
 
@@ -72,6 +80,10 @@ pub struct AppInfo {
     #[serde(rename = "SDKVersion")]
     pub sdk_version: &'static str,
     pub version: &'static str,
+    /// The version of what runs the content on a desktop -- this engine, which is that kernel -- and
+    /// absent elsewhere, as the platform gives it only on a PC.
+    #[serde(rename = "PCKernelVersion", skip_serializing_if = "Option::is_none")]
+    pub pc_kernel_version: Option<&'static str>,
     /// The content's id: the one identity the host gives it.
     pub app_id: String,
     pub host_app_id: Option<String>,
@@ -108,6 +120,7 @@ impl AppInfo {
         Self {
             sdk_version: API_LIBRARY_LEVEL,
             version: RUNTIME_VERSION,
+            pc_kernel_version: DESKTOP.then_some(RUNTIME_VERSION),
             app_id: app_id.to_owned(),
             host_app_id: host.host_app_id.filter(|id| !id.is_empty()),
             language,

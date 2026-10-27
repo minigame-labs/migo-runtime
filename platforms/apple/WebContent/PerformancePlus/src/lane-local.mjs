@@ -12,6 +12,24 @@ import { platform } from "./engine-core.mjs";
 import { decodeBytes, encodeString } from "./text-codec.mjs";
 import { engineHost } from "./engine-host.mjs";
 import { awaitFrameContent } from "./engine-frames.mjs";
+import { reserveWorkerMessage, commitWorkerMessage, abortWorkerMessage } from "./worker-relay-channel.mjs";
+import { encodeMessage } from "./worker-clone.mjs";
+
+export function op_worker_post_message(value, errorCallback) {
+  const { ticket, maxBytes } = reserveWorkerMessage(16 * 1024 * 1024);
+  try { commitWorkerMessage(ticket, encodeMessage(value, maxBytes)); }
+  finally { abortWorkerMessage(ticket); }
+}
+
+export function op_worker_reserve_message(maxBytes) {
+  return reserveWorkerMessage(smiU32(maxBytes, "max_bytes"));
+}
+export function op_worker_commit_message(ticket, data) {
+  commitWorkerMessage(smiU32(ticket, "ticket"), data);
+}
+export function op_worker_abort_message(ticket) {
+  abortWorkerMessage(smiU32(ticket, "ticket"));
+}
 
 // ---- frames -----------------------------------------------------------------
 

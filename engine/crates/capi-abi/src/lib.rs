@@ -2,6 +2,7 @@
 
 pub mod callbacks;
 pub mod config;
+pub mod device;
 pub mod external_frames;
 mod header;
 pub mod host_services;

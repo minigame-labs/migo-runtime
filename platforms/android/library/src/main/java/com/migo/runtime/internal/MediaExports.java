@@ -69,17 +69,27 @@ public final class MediaExports {
 
     // ==================== Recorder ====================
 
-    public static void recorderStart(int sessionId, String optionsJson) {
+    /** A recording that could not start before any recorder took it. */
+    private static void failRecording(int sessionId, String requestJson, String errMsg) {
+        org.json.JSONObject payload = new org.json.JSONObject();
+        try {
+            payload.put("recordingId", new org.json.JSONObject(requestJson).optInt("recordingId", 0));
+            payload.put("errMsg", errMsg);
+        } catch (org.json.JSONException | NullPointerException ignored) {
+            // A recording that names no id is answered for none.
+        }
+        NativeMethods.onRecorderEvent(sessionId, AudioRecorderManager.EVENT_ERROR, payload.toString());
+    }
+
+    public static void recorderStart(int sessionId, String requestJson) {
         RuntimeContext ctx = RuntimeRegistry.get(sessionId);
         if (ctx == null) {
-            NativeMethods.onRecorderEvent(sessionId, RuntimeGenerationBoundary.UNFENCED, "error",
-                    "{\"errMsg\":\"recorderManager.start:fail no context\"}");
+            failRecording(sessionId, requestJson, "recorderManager.start:fail no context");
             return;
         }
         Activity activity = ctx.getActivity();
         if (activity == null) {
-            NativeMethods.onRecorderEvent(sessionId, RuntimeGenerationBoundary.UNFENCED, "error",
-                    "{\"errMsg\":\"recorderManager.start:fail no activity\"}");
+            failRecording(sessionId, requestJson, "recorderManager.start:fail no activity");
             return;
         }
 
@@ -93,27 +103,27 @@ public final class MediaExports {
                 }
             }
         }
-        mgr.start(optionsJson);
+        mgr.start(requestJson);
     }
 
-    public static void recorderPause(int sessionId) {
+    public static void recorderPause(int sessionId, String requestJson) {
         AudioRecorderManager mgr = liveRecorder(sessionId);
         if (mgr != null) {
-            mgr.pause();
+            mgr.pause(requestJson);
         }
     }
 
-    public static void recorderResume(int sessionId) {
+    public static void recorderResume(int sessionId, String requestJson) {
         AudioRecorderManager mgr = liveRecorder(sessionId);
         if (mgr != null) {
-            mgr.resume();
+            mgr.resume(requestJson);
         }
     }
 
-    public static void recorderStop(int sessionId) {
+    public static void recorderStop(int sessionId, String requestJson) {
         AudioRecorderManager mgr = liveRecorder(sessionId);
         if (mgr != null) {
-            mgr.stop();
+            mgr.stop(requestJson);
         }
     }
 
@@ -186,28 +196,47 @@ public final class MediaExports {
         return manager;
     }
 
-    public static String cameraCreate(int sessionId, String optionsJson) {
-        RuntimeContext ctx = RuntimeRegistry.get(sessionId);
-        if (ctx == null) {
-            return "{\"_error\":{\"errMsg\":\"createCamera:fail no context\"}}";
-        }
-        Activity activity = ctx.getActivity();
-        if (activity == null) {
-            return "{\"_error\":{\"errMsg\":\"createCamera:fail no activity\"}}";
-        }
-
-        int cameraId = 0;
+    /** The request id a camera call carries, or 0. */
+    private static int extractRequestId(String requestJson) {
         try {
-            org.json.JSONObject opts = new org.json.JSONObject(optionsJson);
-            cameraId = opts.optInt("cameraId", 0);
-        } catch (Exception ignored) {}
-
-        String key = cameraKey(sessionId, cameraId);
-        if (NativeExports.isSessionTerminated(sessionId)) {
-            return "{\"_error\":{\"errMsg\":\"createCamera:fail session destroyed\"}}";
+            return new org.json.JSONObject(requestJson).optInt("requestId", 0);
+        } catch (Exception ignored) {
+            return 0;
         }
+    }
+
+    /** Fail camera call {@code method} before any camera could take it. */
+    private static void failCameraCall(int sessionId, int method, String requestJson, String reason) {
+        org.json.JSONObject result = new org.json.JSONObject();
+        try {
+            result.put("requestId", extractRequestId(requestJson));
+            result.put("error", reason);
+        } catch (org.json.JSONException ignored) {
+            // An int and a string always fit.
+        }
+        NativeMethods.onCameraResult(sessionId, method, result.toString());
+    }
+
+    public static void cameraCreate(int sessionId, String requestJson) {
+        RuntimeContext ctx = RuntimeRegistry.get(sessionId);
+        Activity activity = ctx != null ? ctx.getActivity() : null;
+        if (activity == null) {
+            failCameraCall(sessionId, CameraManager.METHOD_CREATE, requestJson, "no activity");
+            return;
+        }
+        if (NativeExports.isSessionTerminated(sessionId)) {
+            failCameraCall(sessionId, CameraManager.METHOD_CREATE, requestJson, "session destroyed");
+            return;
+        }
+        android.view.View gameView = NativeExports.inputViewOf(sessionId);
+        if (gameView == null) {
+            failCameraCall(sessionId, CameraManager.METHOD_CREATE, requestJson, "no game view");
+            return;
+        }
+        int cameraId = extractCameraId(requestJson);
+        String key = cameraKey(sessionId, cameraId);
         boolean suspended = NativeExports.isSessionResourceSuspended(sessionId);
-        CameraManager mgr = new CameraManager(sessionId, cameraId, activity, suspended);
+        CameraManager mgr = new CameraManager(sessionId, cameraId, activity, gameView, suspended);
         sCameraManagers.compute(key, (ignored, existing) -> {
             CameraSlot<CameraManager> retained = existing != null
                     ? existing
@@ -216,77 +245,67 @@ public final class MediaExports {
             return retained;
         });
         syncCameraLifecycle(sessionId, mgr);
-        String result = mgr.create(optionsJson);
+        mgr.create(extractRequestId(requestJson), requestJson);
         syncCameraLifecycle(sessionId, mgr);
-        return result;
     }
 
-    public static void cameraDestroy(int sessionId, int cameraId) {
-        String key = cameraKey(sessionId, cameraId);
+    public static void cameraDestroy(int sessionId, String requestJson) {
+        String key = cameraKey(sessionId, extractCameraId(requestJson));
         sCameraManagers.computeIfPresent(key, (ignored, retained) -> {
             retained.destroy();
             return null;
         });
     }
 
+    public static void cameraSet(int sessionId, String requestJson) {
+        CameraManager mgr = getCameraManager(sessionId, extractCameraId(requestJson));
+        if (mgr != null) mgr.set(requestJson);
+    }
 
-    public static void cameraTakePhotoAsync(
-            int sessionId, int requestId, String optionsJson) {
-        int cameraId = extractCameraId(optionsJson);
-        CameraManager mgr = getCameraManager(sessionId, cameraId);
+    public static void cameraTakePhoto(int sessionId, String requestJson) {
+        CameraManager mgr = getCameraManager(sessionId, extractCameraId(requestJson));
         if (mgr == null) {
-            String payload = "{\"requestId\":" + requestId
-                    + ",\"_error\":{\"errMsg\":\"camera.takePhoto:fail camera not found\"}}";
-            NativeMethods.onCameraEvent(
-                    sessionId,
-                    RuntimeGenerationBoundary.UNFENCED,
-                    cameraId,
-                    "takePhotoResult",
-                    payload);
+            failCameraCall(sessionId, CameraManager.METHOD_TAKE_PHOTO, requestJson, "camera not found");
             return;
         }
-        mgr.takePhotoAsync(requestId, optionsJson);
+        mgr.takePhoto(extractRequestId(requestJson), requestJson);
     }
 
-    public static String cameraStartRecord(int sessionId, String optionsJson) {
-        int cameraId = extractCameraId(optionsJson);
-        CameraManager mgr = getCameraManager(sessionId, cameraId);
+    public static void cameraStartRecord(int sessionId, String requestJson) {
+        CameraManager mgr = getCameraManager(sessionId, extractCameraId(requestJson));
         if (mgr == null) {
-            return "{\"_error\":{\"errMsg\":\"camera.startRecord:fail camera not found\"}}";
+            failCameraCall(sessionId, CameraManager.METHOD_START_RECORD, requestJson, "camera not found");
+            return;
         }
-        return mgr.startRecord(optionsJson);
+        mgr.startRecord(extractRequestId(requestJson));
     }
 
-    public static String cameraStopRecord(int sessionId, String optionsJson) {
-        int cameraId = extractCameraId(optionsJson);
-        CameraManager mgr = getCameraManager(sessionId, cameraId);
+    public static void cameraStopRecord(int sessionId, String requestJson) {
+        CameraManager mgr = getCameraManager(sessionId, extractCameraId(requestJson));
         if (mgr == null) {
-            return "{\"_error\":{\"errMsg\":\"camera.stopRecord:fail camera not found\"}}";
+            failCameraCall(sessionId, CameraManager.METHOD_STOP_RECORD, requestJson, "camera not found");
+            return;
         }
-        return mgr.stopRecord(optionsJson);
+        mgr.stopRecord(extractRequestId(requestJson));
     }
 
-    public static String cameraSetZoom(int sessionId, String optionsJson) {
-        int cameraId = extractCameraId(optionsJson);
-        CameraManager mgr = getCameraManager(sessionId, cameraId);
+    public static void cameraSetZoom(int sessionId, String requestJson) {
+        CameraManager mgr = getCameraManager(sessionId, extractCameraId(requestJson));
         if (mgr == null) {
-            return "{\"_error\":{\"errMsg\":\"camera.setZoom:fail camera not found\"}}";
+            failCameraCall(sessionId, CameraManager.METHOD_SET_ZOOM, requestJson, "camera not found");
+            return;
         }
-        return mgr.setZoom(optionsJson);
+        mgr.setZoom(extractRequestId(requestJson), requestJson);
     }
 
-    public static void cameraListenFrameChange(int sessionId, int cameraId) {
-        CameraManager mgr = getCameraManager(sessionId, cameraId);
-        if (mgr != null) {
-            mgr.listenFrameChange();
-        }
+    public static void cameraListenFrameChange(int sessionId, String requestJson) {
+        CameraManager mgr = getCameraManager(sessionId, extractCameraId(requestJson));
+        if (mgr != null) mgr.listenFrameChange();
     }
 
-    public static void cameraCloseFrameChange(int sessionId, int cameraId) {
-        CameraManager mgr = getCameraManager(sessionId, cameraId);
-        if (mgr != null) {
-            mgr.closeFrameChange();
-        }
+    public static void cameraCloseFrameChange(int sessionId, String requestJson) {
+        CameraManager mgr = getCameraManager(sessionId, extractCameraId(requestJson));
+        if (mgr != null) mgr.closeFrameChange();
     }
 
     public static void destroyCameraManagers(int sessionId) {
@@ -423,65 +442,95 @@ public final class MediaExports {
             Activity activity = ctx.getActivity();
             if (activity == null) return null;
             boolean suspended = NativeExports.isSessionResourceSuspended(sessionId);
-            VideoManager mgr = new VideoManager(sessionId, activity, suspended);
+            VideoManager mgr = new VideoManager(sessionId, activity,
+                    NativeExports.inputViewOf(sessionId), suspended);
             sVideoManagers.put(sessionId, mgr);
             syncVideoLifecycle(sessionId, mgr);
             return mgr;
         }
     }
 
-    public static String videoCreate(int sessionId, String optionsJson) {
-        VideoManager mgr = getOrCreateVideoManager(sessionId);
-        if (mgr == null) throw new RuntimeException("videoCreate:fail no context");
-        return mgr.create(optionsJson);
+    /** A video call no manager could take, answered so content's promise settles. */
+    private static void failVideoCall(int sessionId, int method, String requestJson, String reason) {
+        org.json.JSONObject result = new org.json.JSONObject();
+        try {
+            result.put("requestId", new org.json.JSONObject(requestJson).optInt("requestId", 0));
+            result.put("error", reason);
+        } catch (org.json.JSONException | NullPointerException ignored) {
+            // A call that names no request is answered for none.
+        }
+        NativeMethods.onVideoResult(sessionId, method, result.toString());
     }
 
-    public static void videoPlay(int sessionId, int videoId) {
+    public static void videoCreate(int sessionId, String requestJson) {
         VideoManager mgr = getOrCreateVideoManager(sessionId);
-        if (mgr == null) return;
-        mgr.play(videoId);
+        if (mgr != null) mgr.create(requestJson);
     }
 
-    public static void videoPause(int sessionId, int videoId) {
-        VideoManager mgr = getOrCreateVideoManager(sessionId);
-        if (mgr == null) return;
-        mgr.pause(videoId);
+    public static void videoDestroy(int sessionId, String requestJson) {
+        VideoManager mgr = liveVideoManager(sessionId);
+        if (mgr != null) mgr.destroy(requestJson);
     }
 
-    public static void videoStop(int sessionId, int videoId) {
-        VideoManager mgr = getOrCreateVideoManager(sessionId);
-        if (mgr == null) return;
-        mgr.stop(videoId);
+    public static void videoSet(int sessionId, String requestJson) {
+        VideoManager mgr = liveVideoManager(sessionId);
+        if (mgr != null) mgr.set(requestJson);
     }
 
-    public static void videoSeek(int sessionId, String json) {
-        VideoManager mgr = getOrCreateVideoManager(sessionId);
-        if (mgr == null) return;
-        mgr.seek(json);
+    public static void videoPlay(int sessionId, String requestJson) {
+        VideoManager mgr = liveVideoManager(sessionId);
+        if (mgr == null) {
+            failVideoCall(sessionId, VideoManager.METHOD_PLAY, requestJson, "video not found");
+        } else {
+            mgr.play(requestJson);
+        }
     }
 
-    public static void videoRequestFullscreen(int sessionId, String json) {
-        VideoManager mgr = getOrCreateVideoManager(sessionId);
-        if (mgr == null) return;
-        mgr.requestFullscreen(json);
+    public static void videoPause(int sessionId, String requestJson) {
+        VideoManager mgr = liveVideoManager(sessionId);
+        if (mgr == null) {
+            failVideoCall(sessionId, VideoManager.METHOD_PAUSE, requestJson, "video not found");
+        } else {
+            mgr.pause(requestJson);
+        }
     }
 
-    public static void videoExitFullscreen(int sessionId, int videoId) {
-        VideoManager mgr = getOrCreateVideoManager(sessionId);
-        if (mgr == null) return;
-        mgr.exitFullscreen(videoId);
+    public static void videoStop(int sessionId, String requestJson) {
+        VideoManager mgr = liveVideoManager(sessionId);
+        if (mgr == null) {
+            failVideoCall(sessionId, VideoManager.METHOD_STOP, requestJson, "video not found");
+        } else {
+            mgr.stop(requestJson);
+        }
     }
 
-    public static void videoSetProperty(int sessionId, String json) {
-        VideoManager mgr = getOrCreateVideoManager(sessionId);
-        if (mgr == null) return;
-        mgr.setProperty(json);
+    public static void videoSeek(int sessionId, String requestJson) {
+        VideoManager mgr = liveVideoManager(sessionId);
+        if (mgr == null) {
+            failVideoCall(sessionId, VideoManager.METHOD_SEEK, requestJson, "video not found");
+        } else {
+            mgr.seek(requestJson);
+        }
     }
 
-    public static void videoDestroy(int sessionId, int videoId) {
-        VideoManager mgr = getOrCreateVideoManager(sessionId);
-        if (mgr == null) return;
-        mgr.destroyVideo(videoId);
+    public static void videoRequestFullScreen(int sessionId, String requestJson) {
+        VideoManager mgr = liveVideoManager(sessionId);
+        if (mgr == null) {
+            failVideoCall(sessionId, VideoManager.METHOD_REQUEST_FULL_SCREEN, requestJson,
+                    "video not found");
+        } else {
+            mgr.requestFullScreen(requestJson);
+        }
+    }
+
+    public static void videoExitFullScreen(int sessionId, String requestJson) {
+        VideoManager mgr = liveVideoManager(sessionId);
+        if (mgr == null) {
+            failVideoCall(sessionId, VideoManager.METHOD_EXIT_FULL_SCREEN, requestJson,
+                    "video not found");
+        } else {
+            mgr.exitFullScreen(requestJson);
+        }
     }
 
     public static void destroyVideoManager(int sessionId) {

@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "maven_runtime": [
+    {
+      "group": "org.jetbrains.kotlin",
+      "artifact": "kotlin-stdlib",
+      "version": "2.4.21"
+    }
+  ],
+  "bundled_jars": [
+    "engine/third_party/rustls-platform-verifier-android-0.2.0/classes.jar"
+  ]
+}

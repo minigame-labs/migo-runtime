@@ -163,7 +163,7 @@ def _legacy_brand_exempt(path: str) -> bool:
     return path in _LEGACY_BRAND_EXEMPT_PATHS or path.startswith(_LEGACY_BRAND_EXEMPT_PREFIXES)
 
 
-def _forbidden_path_reason(path: str) -> str | None:
+def _forbidden_path_reason(path: str, vendored: bool = False) -> str | None:
     parts = PurePosixPath(path).parts
     local_state = {".agents", ".codex", ".gradle", ".idea", ".vscode"}
     if any(part in local_state for part in parts):
@@ -186,7 +186,7 @@ def _forbidden_path_reason(path: str) -> str | None:
             ".profraw",
             ".hprof",
         )
-    ):
+    ) and not vendored:
         return "generated build or capture artifact"
     return None
 
@@ -199,6 +199,33 @@ def _tracked_paths(root: Path) -> list[str]:
         stderr=subprocess.PIPE,
     )
     return [os.fsdecode(value) for value in result.stdout.split(b"\0") if value]
+
+
+# The rules about this machine and its builds: a home directory, the hostname, a
+# build product. An upstream tree vendored byte for byte (`linguist-vendored` in
+# .gitattributes) carries upstream's bytes, which no machine of ours wrote -- a
+# URL test vector like `file:///home/me`, an archive the vendor gate verifies by
+# hash -- so those rules do not apply to it. Keys, credentials, the legacy brand
+# and local tool state are rules about what may be published at all, and hold
+# for every tracked file.
+_MACHINE_LOCAL_RULES = frozenset({"user-home absolute path", "machine-specific hostname"})
+
+
+def _vendored_paths(root: Path, paths: list[str]) -> frozenset[str]:
+    result = subprocess.run(
+        ["git", "-C", os.fspath(root), "check-attr", "-z", "--stdin", "linguist-vendored"],
+        input=b"".join(os.fsencode(path) + b"\0" for path in paths),
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    # NUL-separated <path> <attribute> <value> triples, one per path asked.
+    fields = [os.fsdecode(value) for value in result.stdout.split(b"\0")]
+    return frozenset(
+        fields[index]
+        for index in range(0, len(fields) - 2, 3)
+        if fields[index + 2] == "set"
+    )
 
 
 def _read_text(path: Path) -> str | None:
@@ -271,12 +298,14 @@ def check(root: Path) -> tuple[list[Finding], int, int]:
             ),
         )
 
+    vendored = _vendored_paths(root, paths)
     for relative in paths:
         candidate = root / relative
         if not os.path.lexists(candidate):
             # A tracked path removed from the working tree is pending deletion.
             continue
-        reason = _forbidden_path_reason(relative)
+        upstream = relative in vendored
+        reason = _forbidden_path_reason(relative, vendored=upstream)
         if reason is not None:
             findings.append(Finding(relative, 0, reason))
             continue
@@ -286,7 +315,12 @@ def check(root: Path) -> tuple[list[Finding], int, int]:
             continue
         text_files += 1
         brand_rules = tuple(rule for rule in rules if rule.name == "legacy brand namespace")
-        other_rules = tuple(rule for rule in rules if rule.name != "legacy brand namespace")
+        other_rules = tuple(
+            rule
+            for rule in rules
+            if rule.name != "legacy brand namespace"
+            and not (upstream and rule.name in _MACHINE_LOCAL_RULES)
+        )
         applicable_rules = other_rules if _legacy_brand_exempt(relative) else rules
         findings.extend(_scan_text(relative, text, other_rules))
         if not _legacy_brand_exempt(relative):
@@ -294,7 +328,7 @@ def check(root: Path) -> tuple[list[Finding], int, int]:
                 _scan_text(relative, _without_non_brand_tokens(text), brand_rules)
             )
         findings.extend(_scan_text(relative, relative, applicable_rules))
-        if machine_rule is not None:
+        if machine_rule is not None and not upstream:
             findings.extend(_scan_text(relative, text, (machine_rule,)))
 
     return findings, len(paths), text_files

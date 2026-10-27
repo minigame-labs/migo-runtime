@@ -51,7 +51,7 @@ use tokio::sync::oneshot;
 use crate::ServiceError;
 
 /// The URL type a caller's admission check for a streamed source takes.
-pub use url::Url;
+pub use crate::network::url::Url;
 
 /// The class every audio failure is thrown as.
 pub const CLASS_AUDIO_ERROR: &str = "AudioError";
@@ -1207,20 +1207,33 @@ pub fn get_reduction(tx: &AudioSender, node_id: AudioNodeId) -> Result<Pending<f
 // Platform audio options
 // ---------------------------------------------------------------------------
 
-/// `setInnerAudioOption`, through the platform's audio service. Without one the
-/// option cannot be honoured, and saying so is the answer.
+/// `setInnerAudioOption`, as the reference has it, through the platform's audio
+/// service. Without one the option cannot be honoured, and saying so is the answer.
+///
+/// With the speaker on, the reference's client ignores `mixWithOther` and plays
+/// exclusively of other audio -- the case of nearly every call, the speaker being on by
+/// default, including `{ obeyMuteSwitch: false }` to play through the silent switch,
+/// which leaves `mixWithOther` at its default of `true`. Mixing is only asked for with
+/// the earpiece, and no platform routes a game's output there yet: `speakerOn: false` is
+/// answered as not supported rather than played through the speaker.
 pub fn set_inner_audio_option(
     platform: Option<&dyn AudioPlatformService>,
     mix_with_other: bool,
     obey_mute_switch: bool,
     speaker_on: bool,
 ) -> Result<(), ServiceError> {
-    match platform {
-        Some(platform) => platform
-            .set_inner_audio_option(mix_with_other, obey_mute_switch, speaker_on)
-            .map_err(|error| audio_error(error.message)),
-        None => Err(audio_error("setInnerAudioOption:fail not supported")),
+    let _ = mix_with_other;
+    let Some(platform) = platform else {
+        return Err(audio_error("setInnerAudioOption:fail not supported"));
+    };
+    if !speaker_on {
+        return Err(audio_error(
+            "setInnerAudioOption:fail speakerOn: false (the earpiece) is not supported",
+        ));
     }
+    platform
+        .set_inner_audio_option(obey_mute_switch)
+        .map_err(|error| audio_error(error.message))
 }
 
 /// The recorder's input sources, from the platform's audio service.
@@ -1365,13 +1378,20 @@ pub async fn inner_audio_load_url<G>(
     tx: AudioSender,
     sources: InnerAudioSources<G>,
     id: InnerAudioId,
-    src: String,
+    mut src: String,
 ) -> Result<(), ServiceError>
 where
-    G: FnOnce(&url::Url) -> Result<(), ServiceError>,
+    G: FnOnce(&Url) -> Result<(), ServiceError>,
 {
     if let Some(url) = parse_remote_audio_url(&src).map_err(as_network_error)? {
         (sources.admit_remote)(&url).map_err(as_network_error)?;
+        // Queue the exact URL admitted above. Reuse the input allocation when
+        // possible, and enforce the queue's bound after percent-encoding expands it.
+        validate_audio_control_string("audio source URL", url.as_str())?;
+        if src != url.as_str() {
+            src.clear();
+            src.push_str(url.as_str());
+        }
         return request(&tx, |resp| AudioCmd::InnerAudioLoadUrl {
             id,
             url: src,
@@ -1409,24 +1429,8 @@ where
 /// A remote audio URL, without reclassifying ordinary local or VFS paths. URL
 /// schemes are case-insensitive; a malformed string that explicitly claims
 /// HTTP(S) is an error rather than a filesystem path.
-pub fn parse_remote_audio_url(src: &str) -> Result<Option<url::Url>, ServiceError> {
-    match url::Url::parse(src) {
-        Ok(url) if matches!(url.scheme(), "http" | "https") => Ok(Some(url)),
-        Ok(_) => Ok(None),
-        Err(error) => {
-            let is_http = src
-                .get(..7)
-                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("http://"));
-            let is_https = src
-                .get(..8)
-                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"));
-            if is_http || is_https {
-                Err(audio_error(format!("Invalid audio URL: {error}")))
-            } else {
-                Ok(None)
-            }
-        }
-    }
+pub fn parse_remote_audio_url(src: &str) -> Result<Option<Url>, ServiceError> {
+    Url::parse_http(src).map_err(|error| audio_error(format!("Invalid audio URL: {error}")))
 }
 
 /// Resolve a local path against the code directory, for tooling with no VFS.

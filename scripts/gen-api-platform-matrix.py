@@ -14,7 +14,10 @@ ships, one status:
   unsupported  deliberately not offered there (api-platform-decisions.json).
 
 A cell is *ready* when it is engine, default or unsupported, or host where every
-need is the host's by nature (its adverts, payments, accounts). The matrix is
+need is the host's by nature (its adverts, payments, accounts). A cell the
+reference itself does not offer on that kind of client (minigame-api-spec.json's
+clients: most of the API is phones-only, a few calls desktop-only) is *outside*:
+nothing there is owed to compatibility, whatever Migo happens to provide. The matrix is
 derived, not written: what an API needs comes from calling it
 (minigame-api-reach.json: the ops it dispatched, the host services it asked
 for); what a platform provides comes from its sources, by the FACTS below; only
@@ -40,6 +43,18 @@ PLATFORMS = ("android", "ios", "macos", "linux", "windows", "ohos")
 RANK = ("missing", "host", "default", "engine")
 
 REFERENCE = "contracts/runtime/minigame-api.json"
+SPEC = "contracts/runtime/minigame-api-spec.json"
+# Which of the reference's clients each platform is held to. Its phones offer every API but the few its pages say are
+# desktop-only (clients.mobile false); its Windows, Mac and HarmonyOS clients offer what their notes say. There is no
+# Linux client: a Linux desktop is held to what the reference offers on a desktop, either one.
+REFERENCE_CLIENTS = {
+    "android": ("mobile",),
+    "ios": ("mobile",),
+    "macos": ("mac",),
+    "linux": ("mac", "windows"),
+    "windows": ("windows",),
+    "ohos": ("harmony",),
+}
 REACH = "contracts/runtime/minigame-api-reach.json"
 DECISIONS = "contracts/runtime/api-platform-decisions.json"
 # What migo-conformance's api-spec bundle measured on each platform (scripts/import-api-conformance.py); absent for a
@@ -74,7 +89,16 @@ ANDROID_EVENTS = {
 }
 
 # Rust's target_os for the platforms the matrix names.
-TARGET_OS = {"macos": "macos", "ios": "ios", "linux": "linux", "windows": "windows", "android": "android"}
+# What each platform's Rust targets answer to `cfg(...)`: OpenHarmony's are
+# `target_os = "linux"` too, told apart by their environment.
+CFG_FACTS = {
+    "android": {"target_os": "android"},
+    "ios": {"target_os": "ios", "target_vendor": "apple"},
+    "macos": {"target_os": "macos", "target_vendor": "apple"},
+    "linux": {"target_os": "linux", "target_env": "gnu"},
+    "windows": {"target_os": "windows"},
+    "ohos": {"target_os": "linux", "target_env": "ohos"},
+}
 
 # Host input, lifecycle and reported state, by kind: the C ABI entry point a host
 # feeds it through, and the Java SDK's native for the same -- None where the
@@ -123,7 +147,9 @@ COMMENT = [
     "nature. verified: migo-conformance's api-spec bundle exercised it on the platform and every check passed",
     "(api-conformance-<platform>.json). ready: wired, and verified -- or deliberately unsupported, or the host app's to",
     "answer. not_ready: the platforms where the cell is not ready. summary counts each status and the wired, verified",
-    "and ready cells per platform.",
+    "and ready cells per platform. outside: the platforms whose reference client does not offer the API",
+    "(minigame-api-spec.json's clients; android/ios: the phones, macos: Mac, windows: Windows, linux: either desktop,",
+    "ohos: HarmonyOS) -- nothing there is owed to compatibility, so they are not in not_ready and are counted ready.",
 ]
 
 
@@ -147,6 +173,32 @@ def found(what: str, items):
     if not items:
         raise Fail(f"no {what} found; the source it is read from has changed shape")
     return items
+
+
+def cfg_holds(condition: str, facts: dict[str, str]) -> bool:
+    """Whether a `cfg(...)` predicate -- `key = "value"`, `any`, `all`, `not` --
+    holds for a target with these facts. ValueError for one it cannot read."""
+    condition = condition.strip()
+    combinator = re.fullmatch(r"(any|all|not)\((.*)\)", condition, re.S)
+    if combinator:
+        terms, depth, start = [], 0, 0
+        inner = combinator.group(2)
+        for index, char in enumerate(inner):
+            depth += {"(": 1, ")": -1}.get(char, 0)
+            if char == "," and depth == 0:
+                terms.append(inner[start:index])
+                start = index + 1
+        terms = [term for term in terms + [inner[start:]] if term.strip()]
+        held = [cfg_holds(term, facts) for term in terms]
+        if combinator.group(1) == "not":
+            if len(held) != 1:
+                raise ValueError(f"cfg(not({inner})) takes one predicate")
+            return not held[0]
+        return any(held) if combinator.group(1) == "any" else all(held)
+    pair = re.fullmatch(r'(target_os|target_env|target_vendor) = "(\w+)"', condition)
+    if not pair:
+        raise ValueError(f"cfg predicate {condition!r} does not say which platforms")
+    return facts.get(pair.group(1)) == pair.group(2)
 
 
 def braced(text: str, start: int) -> str:
@@ -175,6 +227,24 @@ def channel_ops(root: pathlib.Path) -> dict[str, tuple[str, str]]:
             if "op" in spec:
                 ops[spec["op"]] = (service, method)
     return found("host-service ops", ops)
+
+
+def cfg_before(text: str) -> str | None:
+    """The condition of the `#[cfg(...)]` that `text` ends with -- doc comments
+    and whitespace after it aside -- or None."""
+    tail = re.search(r"\)\]\s*(?:///[^\n]*\n\s*)*$", text)
+    if not tail:
+        return None
+    depth, index = 0, tail.start()
+    while index >= 0:
+        depth += {")": 1, "(": -1}.get(text[index], 0)
+        if depth == 0:
+            break
+        index -= 1
+    head = text[:index]
+    if index < 0 or not head.endswith("#[cfg"):
+        return None
+    return text[index + 1 : tail.start()]
 
 
 def capi_services(root: pathlib.Path) -> dict[str, tuple[str, str | None]]:
@@ -208,17 +278,23 @@ def capi_services(root: pathlib.Path) -> dict[str, tuple[str, str | None]]:
             # The `#[cfg(...)]` attribute right before the function, if any --
             # whole, however rustfmt wrapped it: an attribute too long for one
             # line spans several, and reading only the last would miss it.
-            only = re.search(r"#\[cfg\(((?:[^()]|\([^()]*\))*)\)\]\s*(?:///[^\n]*\n\s*)*$", body[: found_fn.start()])
-            if only:
+            only = cfg_before(body[: found_fn.start()])
+            if only is not None:
                 # One line, as it would be written by hand: whitespace collapsed,
                 # none inside the parentheses, no trailing comma.
-                condition = re.sub(r"\s+", " ", only.group(1)).strip()
+                condition = re.sub(r"\s+", " ", only).strip()
                 condition = re.sub(r"\(\s+", "(", condition)
                 condition = re.sub(r",?\s*\)", ")", condition).rstrip(", ")
-                systems = re.findall(r'target_os = "(\w+)"', condition)
-                if not systems or not re.fullmatch(r'(any\()?target_os = "\w+"(, target_os = "\w+")*\)?', condition):
-                    raise Fail(f"C ABI accessor {name}: cfg({condition}) is not a list of operating systems")
-                kinds[name] = ("native", ",".join(sorted(TARGET_OS[system] for system in systems)))
+                try:
+                    systems = {platform for platform, facts in CFG_FACTS.items() if cfg_holds(condition, facts)}
+                except ValueError as error:
+                    raise Fail(f"C ABI accessor {name}: {error}") from None
+                if not systems:
+                    raise Fail(f"C ABI accessor {name}: cfg({condition}) holds on no platform")
+                # An accessor defined once per platform group: the groups together.
+                if name in kinds and kinds[name][0] == "native":
+                    systems |= set(kinds[name][1].split(","))
+                kinds[name] = ("native", ",".join(sorted(systems)))
                 continue
             channel = re.search(r"MIGO_HOST_SERVICE_(\w+)", accessor)
             typed = re.search(r"self\.device\.(\w+)\(\)", accessor)
@@ -296,17 +372,27 @@ def lane_facts(root: pathlib.Path) -> dict[str, dict[str, set[str]]]:
                 for platform in platform_lines if only is None else [p for p in platform_lines if p in only]:
                     for field in re.findall(r"callbacks\.(on_\w+)\s*=", line):
                         facts[platform]["callbacks"].add(field)
-                    for what in re.findall(r"migo_session_set_(battery|network)_status\s*\(", line):
-                        facts[platform]["reports"].add(what)
+                    # The battery's status, and the network's: its whole report, or the
+                    # status alone that is shorthand for one.
+                    for status, report in re.findall(
+                        r"migo_session_(?:set_(battery|network)_status|report_(network))\s*\(", line
+                    ):
+                        facts[platform]["reports"].add(status or report)
                     facts[platform]["entries"] |= set(re.findall(r"\b(migo_session_\w+)\s*\(", line))
                     if re.search(r"\bhost_services\s*=", line):
                         facts[platform]["services"].add("*")
                     # A service the host layer answers itself when the app does not
                     # (the Swift SDK's MigoBuiltInHostServices, the macOS game view's
                     # MigoGameViewHostServices, an optional capability product's
-                    # services): `builtIn.insert(.name)`.
+                    # services): `builtIn.insert(.name)`; in C++ (the Linux Host
+                    # Kit's MigoQtBuiltInHostServices),
+                    # `builtIn |= hostServiceBit(MIGO_HOST_SERVICE_NAME)`.
                     for name in re.findall(r"\bbuiltIn\.insert\(\.(\w+)\)", line.split("//", 1)[0]):
                         facts[platform]["builtin"].add(re.sub(r"(?<!^)([A-Z])", r"_\1", name).lower())
+                    for name in re.findall(
+                        r"\bbuiltIn\s*\|=\s*hostServiceBit\(MIGO_HOST_SERVICE_([A-Z_]+)\)", line.split("//", 1)[0]
+                    ):
+                        facts[platform]["builtin"].add(name.lower())
                     # A host-service event the host layer posts itself: Swift
                     # names it MigoHostServiceID.<Service>.Event.<event>, C and
                     # C++ MIGO_<SERVICE>_EVENT_<EVENT>.
@@ -569,8 +655,23 @@ def owned(need: str, host_owned: set[str]) -> bool:
     return False
 
 
+def offered(clients: dict | None, platform: str) -> bool:
+    """Whether the reference offers an API on the kind of client `platform` is held to."""
+    clients = clients or {}
+    for client in REFERENCE_CLIENTS[platform]:
+        if client == "mobile":
+            if clients.get("mobile", True) is not False:
+                return True
+        elif clients.get(client, False) not in (False, None):
+            return True
+    return False
+
+
 def generate(root: pathlib.Path) -> str:
     reference = load(root, REFERENCE)["apis"]
+    spec = load(root, SPEC)["apis"]
+    if set(spec) != set(reference):
+        raise Fail("minigame-api-spec.json does not cover the reference's list; regenerate it")
     reach = load(root, REACH)["apis"]
     decisions = load(root, DECISIONS)
     boundary = load(root, OP_BOUNDARY)
@@ -635,6 +736,7 @@ def generate(root: pathlib.Path) -> str:
         statuses = {}
         verified = []
         not_ready = []
+        outside = []
         decided = [
             decision for decision in (decisions["gaps"].get(name), decisions["unsupported"].get(name))
             if decision is not None
@@ -710,6 +812,10 @@ def generate(root: pathlib.Path) -> str:
                 verified.append(platform)
                 summary[platform]["verified"] += 1
             ready = wired and (is_verified or status in ("unsupported", "host"))
+            if not offered(spec[name].get("clients"), platform):
+                outside.append(platform)
+                summary[platform]["outside"] += 1
+                ready = True
             summary[platform][status] += 1
             if wired:
                 summary[platform]["wired"] += 1
@@ -720,6 +826,8 @@ def generate(root: pathlib.Path) -> str:
         row.update(statuses)
         if verified:
             row["verified"] = verified
+        if outside:
+            row["outside"] = outside
         if not_ready:
             row["not_ready"] = not_ready
         rows[name] = row
@@ -754,7 +862,7 @@ def render(rows, summary, total) -> str:
     for index, platform in enumerate(PLATFORMS):
         counts = {
             key: summary[platform][key]
-            for key in ("engine", "default", "host", "missing", "unsupported", "wired", "verified", "ready")
+            for key in ("engine", "default", "host", "missing", "unsupported", "wired", "verified", "outside", "ready")
         }
         out.append(f'    "{platform}": {json.dumps(counts)}' + ("," if index + 1 < len(PLATFORMS) else ""))
     out.append("  },")
@@ -786,7 +894,10 @@ def main(argv: list[str]) -> int:
         counts = data["summary"][platform]
         print(
             f"{platform:8} ready {counts['ready']:3}/{data['total']}  "
-            + "  ".join(f"{k} {counts[k]}" for k in ("wired", "verified", "engine", "default", "host", "missing", "unsupported"))
+            + "  ".join(
+                f"{k} {counts[k]}"
+                for k in ("wired", "verified", "outside", "engine", "default", "host", "missing", "unsupported")
+            )
         )
     return 0
 

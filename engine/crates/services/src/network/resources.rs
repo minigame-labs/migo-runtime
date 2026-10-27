@@ -12,8 +12,8 @@
 //! past its close names nothing, rather than whatever took its place.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use parking_lot::Mutex;
 use tokio::sync::Notify;
@@ -101,6 +101,9 @@ pub struct ResourceTable {
     /// together; more wait their turn) and five WebSocket connections (a sixth fails).
     request_slots: Arc<tokio::sync::Semaphore>,
     web_socket_slots: Arc<tokio::sync::Semaphore>,
+    // Session-local TLS sessions/tickets. A new WSS connection reuses its
+    // selected profile, but another session never inherits its ticket store.
+    web_socket_tls: [OnceLock<super::tls::ClientTls>; 2],
 }
 
 /// Requests in flight at once, by the reference's limit.
@@ -143,6 +146,7 @@ impl ResourceTable {
             entries: Mutex::new(HashMap::new()),
             request_slots: Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_REQUESTS)),
             web_socket_slots: Arc::new(tokio::sync::Semaphore::new(MAX_WEB_SOCKETS)),
+            web_socket_tls: [OnceLock::new(), OnceLock::new()],
         }
     }
 
@@ -159,6 +163,20 @@ impl ResourceTable {
     /// still opening count, until the connection is gone.
     pub(crate) fn web_socket_slot(&self) -> Option<tokio::sync::OwnedSemaphorePermit> {
         Arc::clone(&self.web_socket_slots).try_acquire_owned().ok()
+    }
+
+    pub(crate) fn web_socket_tls(
+        &self,
+        trust: shared::network_policy::TlsTrust,
+        pools: migo_io::pools::IoPools,
+    ) -> super::tls::ClientTls {
+        let index = match trust {
+            shared::network_policy::TlsTrust::Platform => 0,
+            shared::network_policy::TlsTrust::Mozilla => 1,
+        };
+        self.web_socket_tls[index]
+            .get_or_init(|| super::tls::ClientTls::new(trust, false, Vec::new(), pools))
+            .clone()
     }
 
     fn add(&self, entry: Entry) -> ResourceId {

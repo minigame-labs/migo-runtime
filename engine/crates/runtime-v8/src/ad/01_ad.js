@@ -956,10 +956,11 @@ function _reportSplashAdStatus(event) {
   _splashAdStatus = { status: event.status, code: event.code };
 }
 
-// Callbacks only: the platform does not offer this one as a promise.
+// Answered as every asynchronous call is; the platform offers it no Promise
+// style, so its Promise's rejection is not reported as unhandled.
 function getShowSplashAdStatus(obj) {
   const reported = _splashAdStatus;
-  wrapAsync("getShowSplashAdStatus", function () {
+  return wrapAsync("getShowSplashAdStatus", function () {
     return { status: reported.status, code: reported.code };
   }, obj);
 }

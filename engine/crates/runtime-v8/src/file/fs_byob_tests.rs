@@ -17,6 +17,13 @@ struct FileFixture {
 
 impl FileFixture {
     fn new(bytes: &[u8]) -> Self {
+        // Core 0.413 binds V8 delayed foreground work to the executor present
+        // when the isolate is created, rather than at the first async poll.
+        let executor = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let guard = executor.enter();
         let root = std::env::temp_dir().join(format!(
             "migo-file-byob-{}-{}-{}",
             std::process::id(),
@@ -63,10 +70,7 @@ impl FileFixture {
         runtime
             .execute_script("file-fixture", format!("globalThis.fd = {rid};"))
             .unwrap();
-        let executor = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
+        drop(guard);
         Self {
             runtime: Some(runtime),
             scheduler,

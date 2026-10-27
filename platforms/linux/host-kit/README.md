@@ -11,10 +11,57 @@ What is claimed:
 - `migo::qt6-x11-surface-view` is a Qt 6.4+ Widgets adapter for the `xcb`
   platform plugin, using a native child `QWidget`. It carries the Surface
   lifecycle, input, focus, IME composition and the frame request.
+- `migo::qt6-host-services` is the host-service channel for Qt: a reply that
+  answers a call exactly once, from any thread, and reaches nobody once its
+  Session's channel is closed; the provider interface an App answers its own
+  services through; and `MigoQtBuiltInHostServices`, which answers with Qt's own
+  what a desktop already offers -- the clipboard; the game's toasts, loading
+  indicators, modals and action sheets, standing over the game and taking none of
+  its input; the window's size, state, cursor and pointer lock (the cursor hidden,
+  XInput 2's raw motion moving content's pointer, Esc releasing it); and the
+  screen's orientation -- the game's shape, which `setDeviceOrientation` turns the
+  window to -- its brightness -- the backlight's, read from sysfs and set through
+  logind over Qt's D-Bus -- and `setEnableDebug`, which `MigoManagedSession`
+  answers with a panel of the frames a second and content's console over the game;
+  and images: `compressImage` with Qt's image readers and writers, the pickers
+  (`chooseImage`, `chooseMedia`'s images, `chooseMessageFile`) and
+  `saveFileToDisk` through the file dialog -- the desktop's, through its portal,
+  wherever Qt finds one -- and `saveImageToPhotosAlbum` into the player's Pictures
+  folder; the previews in a viewer over the game (http(s) images downloaded over
+  Qt's network). What the game is given is a copy, staged in the App's cache
+  until the engine takes it; the camera is refused, and videos unless the App
+  gives video support (`migo::qt6-media`); where the device is, GeoClue's
+  (through the desktop portal inside a sandbox); and the scopes the desktop
+  decides -- `scope.userLocation` by GeoClue's agent or the portal asking
+  the player, `scope.writePhotosAlbum` granted -- recorded as decided; and the
+  motion sensors the kernel shows through IIO (found with libudev, turned into
+  the screen's frame by udev's or the kernel's mount matrix), the compass and the
+  device's orientation worked out as Android's SensorManager does; and Bluetooth
+  as a BLE central, BlueZ's, answered as the Apple SDK answers it.
 - `migo::qt6-managed-session` is the Managed ownership shape: `MigoManagedSession`
-  owns the Session, its callback table and the view. The Bound shape is the view
-  driven by an App-owned `SurfaceHost`. They are separate targets, so an App that
-  owns its own Session never links a type that creates and destroys Sessions.
+  owns the Session, its callback table and the view, and installs the built-in
+  services; it holds content's `setKeepScreenOn` off the desktop's idle through
+  the XDG desktop portal's Inhibit, or the freedesktop screen saver where no
+  portal answers, and lets go when the game stops asking or ends; and it reports
+  the battery as UPower shows it (with power-profiles-daemon's saver as the
+  low-power mode), the network and the Wi-Fi switch as NetworkManager does, each
+  time they change; content runs while its window is shown and not minimized,
+  and shows while it is also exposed; the App's authorisations -- all the
+  system could gate, outside a sandbox -- are reported once; and the desktop's
+  warnings that memory runs low reach content, heard where GLib hears them; and
+  the gamepads the kernel shows (evdev, found through udev) reach content, in the
+  W3C standard layout where the pad follows the kernel's gamepad layout, with
+  their rumble. Its `Options` carry the network policy, the launch options, the
+  App's own services and its video support; what the App names is its, the
+  built-in services answer the rest. The Bound shape is the view driven by an
+  App-owned `SurfaceHost`. They are separate targets, so an App that owns its own
+  Session never links a type that creates and destroys Sessions.
+- `migo::qt6-media` (optional: `-DMIGO_LINUX_HOST_KIT_BUILD_QT6_MEDIA=ON`) is
+  videos for the image service, through GStreamer: `chooseMedia` picks videos,
+  described by their length, size as shown and cover, and `previewMedia` plays
+  them. An App links it and gives a `MigoQtMedia` to the Session
+  (`MigoManagedSession::Options::videos`); without it, videos are refused and
+  nothing links GStreamer.
 - Qt Wayland, Qt Quick and GTK 4 are not claimed, and the last two are blocked
   on the same thing -- see "Render-path limits".
 
@@ -30,19 +77,27 @@ What is claimed:
 They are two types rather than one type with a flag, because what differs is who
 is responsible for an asynchronous teardown, and a boolean cannot answer that.
 
-`MigoManagedSession` deliberately declines the soft-keyboard capability, and
-declines it whole: the three callbacks install together or not at all, and the
-mini-game input model migo mirrors requires the host to own a text field and
-report its whole current value. A desktop host has a physical keyboard whose
-input already reaches content as key and composition events, so claiming the
-capability and not maintaining a field would be worse than not having it --
-content's `migo.showKeyboard` (or the same call made through a platform-compat
-adapter) correctly reports failure instead.
+`MigoManagedSession` supplies the soft keyboard, whole: the mini-game input
+model migo mirrors has the host own a text field and report its whole current
+value, and the three callbacks install together. A desktop has no soft keyboard
+and content no field of its own -- key and composition events reach it through
+the view, but they are not text a game reads as typed -- so content's
+`migo.showKeyboard` opens a field along the bottom of the game, in a window of
+its own over it, holding the keyboard's focus while it shows; its height is the
+keyboard height content is told. Enter confirms a one-line field, Esc or turning
+away closes it, and an on-screen keyboard that follows the focused field opens
+for it.
 
 Teardown is the C ABI's three steps and cannot be shortened: `close()` begins
 the detach and returns immediately, the view's release observer reports
 `RELEASED`, and only then is the Session destroyed. Destroying the wrapper while
 it is still running terminates, for the same reason the view does.
+
+A whole App on the Managed shape -- an engine, a window, a game with its network
+policy and launch options, closing on the game's exit or the window's -- is
+`tests/qt_host/linux/main.cpp`; `scripts/dev-run-qt-host.sh` builds and runs it
+against a game directory. It is what migo-conformance's Host Kit lane runs, so
+what that lane verifies is this shape as an App uses it.
 
 ## Input, focus and frames
 
@@ -156,12 +211,16 @@ sudo apt-get update
 sudo apt-get install -y \
   cmake ninja-build g++ ripgrep xvfb xauth \
   qt6-base-dev qt6-base-dev-tools qt6-qpa-plugins \
-  libx11-dev libxkbcommon-x11-dev libxcb-cursor0
+  libx11-dev libxkbcommon-x11-dev libxcb-cursor0 \
+  pkg-config libxcb-xinput-dev libxtst-dev dbus
 ```
 
-The adapter's compile-time API uses Qt Core/Gui/Widgets and Xlib. The remaining
-packages supply the xcb platform plugin's runtime dependencies and the isolated
-Xvfb positive-path test. A native Wayland host that consumes only the
+The adapter's compile-time API uses Qt Core/Gui/Widgets/DBus, Xlib and xcb's XInput 2
+(`libxcb-xinput`, found through pkg-config), which a pointer lock reads the mouse's
+raw motion with. The remaining packages supply the xcb platform plugin's runtime
+dependencies and the isolated Xvfb positive-path test, whose mouse and keyboard
+XTest (`libxtst`) drives and whose logind answers on a session bus of its own
+(`dbus-run-session`). A native Wayland host that consumes only the
 toolkit-neutral controller also needs its distribution's Wayland development
 package (on Ubuntu: `libwayland-dev`), but that does not turn the Qt adapter
 into a Wayland implementation. Do not install Qt private-header packages for

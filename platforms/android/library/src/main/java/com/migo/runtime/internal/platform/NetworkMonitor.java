@@ -9,7 +9,6 @@ import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.telephony.TelephonyManager;
-import android.text.TextUtils;
 
 import com.migo.runtime.internal.NativeMethods;
 
@@ -113,18 +112,19 @@ public final class NetworkMonitor {
                     isConnected = capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
                             && capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED);
 
-                    // Calculate signal strength and weak net status
-                    if ("wifi".equals(networkType)) {
-                        signalStrength = getWifiSignalStrength();
-                    } else {
+                    // The received signal in dBm, 0 where the platform does not say.
+                    if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+                        signalStrength = getWifiSignalStrength(capabilities);
+                    } else if (capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
                         signalStrength = getCellularSignalStrength();
                     }
                 }
             }
 
-            // Simple heuristic for weak network based on signal strength
-            // This is a simplified logic, real implementation might be more complex
-            if (isConnected && "wifi".equals(networkType) && signalStrength < -85) {
+            // The SDK's judgement of a weak network: a Wi-Fi signal below -85 dBm, where
+            // throughput falls off on most access points. A signal it could not read is
+            // not judged weak.
+            if (isConnected && "wifi".equals(networkType) && signalStrength != 0 && signalStrength < -85) {
                 weakNet = true;
             }
 
@@ -137,47 +137,61 @@ public final class NetworkMonitor {
         }
     }
 
+    /**
+     * The signal of the cell the device is camped on, in dBm, or 0 where the platform
+     * does not say. Per-cell strengths (API 29) carry a real dBm; a level of 0-4 is all
+     * that is readable before them, and it is not mapped to a made-up dBm.
+     */
     private int getCellularSignalStrength() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return 0;
         try {
             TelephonyManager tm = (TelephonyManager) context.getSystemService(Context.TELEPHONY_SERVICE);
-            if (tm == null) return 0;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                android.telephony.SignalStrength ss = tm.getSignalStrength();
-                if (ss != null) {
-                    // getLevel() returns 0-4; map to approximate dBm range
-                    int level = ss.getLevel();
-                    // Map: 0 → -120, 1 → -105, 2 → -90, 3 → -75, 4 → -60
-                    return -120 + level * 15;
-                }
+            android.telephony.SignalStrength ss = tm != null ? tm.getSignalStrength() : null;
+            if (ss == null) return 0;
+            for (android.telephony.CellSignalStrength cell : ss.getCellSignalStrengths()) {
+                int dbm = cell.getDbm();
+                if (dbm != android.telephony.CellInfo.UNAVAILABLE && dbm < 0) return dbm;
             }
-            // Fallback: no direct API below P without READ_PHONE_STATE permission
-            return 0;
-        } catch (Exception e) {
-            return 0;
-        }
-    }
-
-    private int getWifiSignalStrength() {
-        try {
-            WifiManager wifiManager = (WifiManager) context.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
-            WifiInfo wifiInfo = wifiManager.getConnectionInfo();
-            if (wifiInfo != null) {
-                return wifiInfo.getRssi();
-            }
-        } catch (Exception e) {
-            android.util.Log.e("NetworkMonitor", "getWifiSignalStrength failed", e);
+        } catch (RuntimeException e) {
+            android.util.Log.w("NetworkMonitor", "the cell's signal could not be read", e);
         }
         return 0;
     }
 
-    private boolean checkSystemProxy() {
-        try {
-            String host = System.getProperty("http.proxyHost");
-            String port = System.getProperty("http.proxyPort");
-            return !TextUtils.isEmpty(host) && !TextUtils.isEmpty(port);
-        } catch (Exception e) {
-            return false;
+    /**
+     * The Wi-Fi network's RSSI in dBm, or 0 where the platform does not say: from the
+     * network's own capabilities (API 29), which need no Wi-Fi permission, and from the
+     * Wi-Fi service before them.
+     */
+    @SuppressWarnings("deprecation")
+    private int getWifiSignalStrength(NetworkCapabilities capabilities) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            int rssi = capabilities.getSignalStrength();
+            return rssi != NetworkCapabilities.SIGNAL_STRENGTH_UNSPECIFIED && rssi < 0 ? rssi : 0;
         }
+        try {
+            WifiManager wifiManager = (WifiManager) context.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+            WifiInfo wifiInfo = wifiManager != null ? wifiManager.getConnectionInfo() : null;
+            int rssi = wifiInfo != null ? wifiInfo.getRssi() : 0;
+            return rssi < 0 ? rssi : 0;
+        } catch (RuntimeException e) {
+            android.util.Log.w("NetworkMonitor", "the Wi-Fi signal could not be read", e);
+            return 0;
+        }
+    }
+
+    /**
+     * Whether the system routes the network through a proxy -- one set by hand or a
+     * configuration script -- as getNetworkType's hasSystemProxy says. The JVM's
+     * {@code http.proxyHost}, read before, is the framework's copy of a hand-set proxy,
+     * which a configuration script never sets.
+     */
+    private boolean checkSystemProxy() {
+        android.net.ProxyInfo proxy = connectivityManager.getDefaultProxy();
+        if (proxy == null) return false;
+        String host = proxy.getHost();
+        return (host != null && !host.isEmpty())
+                || !android.net.Uri.EMPTY.equals(proxy.getPacFileUrl());
     }
 
     /**

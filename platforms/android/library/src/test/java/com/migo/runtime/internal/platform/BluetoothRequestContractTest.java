@@ -48,6 +48,27 @@ public final class BluetoothRequestContractTest {
     }
 
     @Test
+    public void every_peripheral_number_is_the_contracts() throws Exception {
+        JSONObject service = new JSONObject(new String(
+                Files.readAllBytes(locateContract()), StandardCharsets.UTF_8))
+                .getJSONObject("services").getJSONObject("ble_peripheral");
+        JSONObject methods = service.getJSONObject("methods");
+        assertEquals("one Method per contract method",
+                methods.length(), BlePeripheral.Method.values().length);
+        for (Iterator<String> names = methods.keys(); names.hasNext(); ) {
+            String name = names.next();
+            BlePeripheral.Method method = BlePeripheral.Method.valueOf(name.toUpperCase(Locale.ROOT));
+            assertEquals(name, methods.getJSONObject(name).getInt("id"), method.ordinal());
+        }
+        JSONObject events = service.getJSONObject("events");
+        for (Iterator<String> names = events.keys(); names.hasNext(); ) {
+            String name = names.next();
+            int number = BlePeripheral.class.getField("EVENT_" + name.toUpperCase(Locale.ROOT)).getInt(null);
+            assertEquals(name, events.getJSONObject(name).getInt("id"), number);
+        }
+    }
+
+    @Test
     public void a_request_is_answered_once_with_its_id_and_code() throws Exception {
         List<String> delivered = new ArrayList<>();
         List<Integer> methods = new ArrayList<>();

@@ -58,6 +58,7 @@ pub mod error;
 pub mod feature_policy;
 pub mod font_registration;
 pub mod frame_rate;
+pub mod game_recorder;
 pub mod host_channel;
 pub mod image_id;
 pub mod js_escape;
@@ -85,6 +86,7 @@ pub mod thread_priority;
 pub mod time_origin;
 #[cfg(feature = "vfs")]
 pub mod vfs;
+pub mod yuv;
 
 #[cfg(test)]
 pub mod test_support;

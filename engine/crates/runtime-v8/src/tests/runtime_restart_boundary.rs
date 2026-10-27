@@ -208,6 +208,8 @@ mod runtime_restart_boundary_tests {
 
     #[test]
     fn a_replacement_runtime_never_reissues_a_retired_runtimes_id() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let callback_ids = Arc::new(CallbackIdAllocator::default());
 
         {
@@ -244,6 +246,8 @@ mod runtime_restart_boundary_tests {
 
     #[test]
     fn a_requestid_that_is_not_an_id_settles_nothing() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot(Arc::new(CallbackIdAllocator::default()));
         exec(&mut rt, "__call('only');");
 
@@ -284,6 +288,8 @@ mod runtime_restart_boundary_tests {
 
     #[test]
     fn an_id_serialised_as_a_string_still_correlates() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         // Tolerated on purpose, and pinned so it is a decision rather than an
         // accident: a platform that echoes the id as text is still echoing the
         // exact id. `true` and `[]` are not, which is why the parser checks the
@@ -301,6 +307,8 @@ mod runtime_restart_boundary_tests {
 
     #[test]
     fn an_id_settles_exactly_its_own_request_and_only_once() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot(Arc::new(CallbackIdAllocator::default()));
         exec(&mut rt, "__call('first'); __call('second');");
 
@@ -326,6 +334,8 @@ mod runtime_restart_boundary_tests {
 
     #[test]
     fn modules_with_their_own_pending_maps_draw_from_the_same_space() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         // login, payment and subpackage each kept a module-local counter that
         // restarted at 1, so two of them handed the platform the same id for
         // different requests and a restart reissued ids it had already used.
@@ -340,7 +350,7 @@ mod runtime_restart_boundary_tests {
             &mut rt,
             r#"
             globalThis.__checked = [];
-            globalThis.__assertTakesOneId = function (name, fn) {
+            globalThis.__assertTakesIds = function (name, fn, wanted) {
                 if (typeof fn !== 'function') return;
                 const before = globalThis.__allocId();
                 try {
@@ -351,12 +361,15 @@ mod runtime_restart_boundary_tests {
                     // listening. Allocation happens first, which is the property.
                 }
                 const after = globalThis.__allocId();
-                if (after - before !== 2) {
+                if (after - before - 1 !== wanted) {
                     throw new Error(
-                        name + ' took ' + (after - before - 1) + ' ids from the Host space, want 1'
+                        name + ' took ' + (after - before - 1) + ' ids from the Host space, want ' + wanted
                     );
                 }
                 globalThis.__checked.push(name);
+            };
+            globalThis.__assertTakesOneId = function (name, fn) {
+                globalThis.__assertTakesIds(name, fn, 1);
             };
 
             __assertTakesOneId('migo.login', migo.login && function () { return migo.login({}); });
@@ -375,7 +388,10 @@ mod runtime_restart_boundary_tests {
             // a module counter restarting at 1 points the retired runtime's
             // events -- camera frames, audio playback, an ad's reward verdict --
             // at the replacement runtime's objects.
-            __assertTakesOneId('migo.createCamera', migo.createCamera && function () { return migo.createCamera({}); });
+            // Three: the camera's, its request's, and that of asking for
+            // scope.camera, which nobody here has decided -- the call asks for
+            // it, as authorize does.
+            __assertTakesIds('migo.createCamera', migo.createCamera && function () { return migo.createCamera({}); }, 3);
             __assertTakesOneId(
                 'migo.createInnerAudioContext',
                 migo.createInnerAudioContext && function () { return migo.createInnerAudioContext(); },
@@ -412,6 +428,8 @@ mod runtime_restart_boundary_tests {
 
     #[test]
     fn two_modals_settle_by_id_even_when_answered_out_of_order() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         // These used to be an array settled by `shift()`, so the first result
         // answered the first call whatever it was actually a result for. A host
         // that answers two dialogs in the order the user dismissed them -- not
@@ -450,6 +468,8 @@ mod runtime_restart_boundary_tests {
 
     #[test]
     fn an_action_sheet_result_reaches_its_own_call_and_an_unknown_id_reaches_none() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot(Arc::new(CallbackIdAllocator::default()));
         exec(
             &mut rt,
@@ -485,6 +505,8 @@ mod runtime_restart_boundary_tests {
 
     #[test]
     fn a_result_carrying_no_id_settles_nothing() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         // A reply without an id names no request. Settling the oldest pending
         // one with it -- the fallback this replaced -- answered the wrong call
         // whenever two were in flight, and every host path now stamps the id,
@@ -512,6 +534,8 @@ mod runtime_restart_boundary_tests {
 
     #[test]
     fn two_deferred_apis_in_one_runtime_do_not_share_a_numbering() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         // Each `createDeferredApi` used to count from 1 independently, so two of
         // them handed the platform the same id for different requests. They now
         // draw from the Host's one space.

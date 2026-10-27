@@ -32,8 +32,13 @@ import XCTest
 
         override func setUp() {
             super.setUp()
+            // Near the top of the screen's visible area, with room below: a window
+            // grown past that area is put back on it (`constrainFrameRect`), and
+            // these tests say its title bar stays where it was. At y = 100 the
+            // grown window reached a runner's Dock and was moved up.
+            let visible = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1280, height: 800)
             window = StateWindow(
-                contentRect: NSRect(x: 100, y: 100, width: 200, height: 100),
+                contentRect: NSRect(x: visible.minX + 100, y: visible.maxY - 300, width: 200, height: 100),
                 styleMask: [.titled, .resizable, .miniaturizable], backing: .buffered, defer: false)
             window.isReleasedWhenClosed = false
             // The game inset by 10 points all round, as an app's layout may put it.

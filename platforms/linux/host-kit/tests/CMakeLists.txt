@@ -28,12 +28,22 @@ set_target_properties(migo::migo PROPERTIES
 )
 
 set(MIGO_LINUX_HOST_KIT_BUILD_QT6_X11 ON CACHE BOOL "" FORCE)
+set(MIGO_LINUX_HOST_KIT_BUILD_QT6_MEDIA ON CACHE BOOL "" FORCE)
 if(NOT DEFINED MIGO_LINUX_HOST_KIT_ENABLE_INSTALL)
     set(MIGO_LINUX_HOST_KIT_ENABLE_INSTALL OFF CACHE BOOL "")
 endif()
 add_subdirectory("${HOST_KIT_ROOT}" "${CMAKE_CURRENT_BINARY_DIR}/host-kit")
 
-find_package(Qt6 6.4 REQUIRED COMPONENTS Test)
+find_package(Qt6 6.4 REQUIRED COMPONENTS Gui Test DBus Network)
+find_package(X11 REQUIRED)
+if(NOT TARGET X11::Xtst)
+    message(FATAL_ERROR "the xcb input tests drive the X server through XTest (libxtst-dev)")
+endif()
+
+# The player's hands on the X server, through XTest: its own unit, because
+# Xlib's macros break Qt's names wherever both are seen.
+add_library(migo_host_kit_x11_player STATIC x11_player.cpp)
+target_link_libraries(migo_host_kit_x11_player PUBLIC Qt6::Gui PRIVATE X11::X11 X11::Xtst)
 
 add_executable(migo-surface-host-test surface_host_test.cpp)
 target_link_libraries(migo-surface-host-test PRIVATE
@@ -51,18 +61,48 @@ target_link_libraries(migo-qt-x11-view-test PRIVATE
 
 add_executable(migo-qt-x11-input-test qt_x11_input_test.cpp)
 set_target_properties(migo-qt-x11-input-test PROPERTIES AUTOMOC ON)
+# The raw-motion reader is internal to the adapter; this test reads it directly.
+target_include_directories(migo-qt-x11-input-test PRIVATE "${HOST_KIT_ROOT}/src/qt6")
 target_link_libraries(migo-qt-x11-input-test PRIVATE
     migo::qt6-x11-surface-view
     migo_host_kit_fake_capi
+    migo_host_kit_x11_player
     Qt6::Test
+)
+
+add_executable(migo-qt-host-services-test qt_host_services_test.cpp)
+set_target_properties(migo-qt-host-services-test PROPERTIES AUTOMOC ON)
+# The backlight is internal to the services; this test reads it directly, and
+# answers for logind on the session bus the script runs it on.
+target_include_directories(migo-qt-host-services-test PRIVATE "${HOST_KIT_ROOT}/src/qt6")
+target_link_libraries(migo-qt-host-services-test PRIVATE
+    migo::qt6-managed-session
+    migo::qt6-media
+    migo_host_kit_fake_capi
+    migo_host_kit_x11_player
+    Qt6::Test
+    Qt6::DBus
+    Qt6::Network
+)
+
+# The videos GStreamer is asked to describe and play: the engine's probe clip,
+# and one turned as a phone records it.
+target_compile_definitions(migo-qt-host-services-test PRIVATE
+    MIGO_TEST_PROBE_CLIP="${MIGO_REPOSITORY_ROOT}/scripts/fixtures/video-decoder-probe/clip.mp4"
+    MIGO_TEST_VIDEOS="${CMAKE_CURRENT_LIST_DIR}/fixtures"
 )
 
 add_executable(migo-qt-managed-session-test qt_managed_session_test.cpp)
 set_target_properties(migo-qt-managed-session-test PROPERTIES AUTOMOC ON)
+# What keeps the display awake is internal to the Managed session; this test
+# reads it directly, and answers for the desktop on the session bus the script
+# runs it on.
+target_include_directories(migo-qt-managed-session-test PRIVATE "${HOST_KIT_ROOT}/src/qt6")
 target_link_libraries(migo-qt-managed-session-test PRIVATE
     migo::qt6-managed-session
     migo_host_kit_fake_capi
     Qt6::Test
+    Qt6::DBus
 )
 
 add_library(migo-gnu-extension-consumer-test STATIC
@@ -80,6 +120,7 @@ target_compile_definitions(migo-gnu-extension-consumer-test PRIVATE
 
 foreach(target
         migo_host_kit_fake_capi
+        migo_host_kit_x11_player
         migo-surface-host-test
         migo-qt-x11-view-test
         migo-qt-x11-input-test
@@ -91,6 +132,7 @@ endforeach()
 target_compile_options(migo_linux_surface_host PRIVATE -Wall -Wextra -Werror)
 target_compile_options(migo_qt6_x11_surface_view PRIVATE -Wall -Wextra -Werror)
 target_compile_options(migo_qt6_managed_session PRIVATE -Wall -Wextra -Werror)
+target_compile_options(migo_qt6_media PRIVATE -Wall -Wextra -Werror)
 
 enable_testing()
 add_test(NAME migo-surface-host COMMAND migo-surface-host-test)

@@ -15,7 +15,7 @@ target_include_directories(migo_install_consumer_fake_capi PUBLIC
 )
 add_library(migo::migo ALIAS migo_install_consumer_fake_capi)
 
-find_package(migo-linux-host-kit CONFIG REQUIRED)
+find_package(migo-linux-host-kit CONFIG REQUIRED COMPONENTS qt6-media)
 
 add_executable(migo-host-kit-install-consumer consumer.cpp)
 set_target_properties(migo-host-kit-install-consumer PROPERTIES
@@ -26,6 +26,7 @@ set_target_properties(migo-host-kit-install-consumer PROPERTIES
 target_link_libraries(migo-host-kit-install-consumer PRIVATE
     migo::qt6-x11-surface-view
     migo::qt6-managed-session
+    migo::qt6-media
 )
 target_compile_definitions(migo-host-kit-install-consumer PRIVATE
     QT_NO_KEYWORDS

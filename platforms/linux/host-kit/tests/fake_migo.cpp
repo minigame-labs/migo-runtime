@@ -1,6 +1,10 @@
 #include "fake_migo.hpp"
 
+#include <cmath>
 #include <cstring>
+#include <map>
+#include <memory>
+#include <mutex>
 #include <thread>
 
 namespace {
@@ -27,6 +31,7 @@ std::vector<fake_migo::PointerRecord> g_pointers;
 std::vector<fake_migo::WheelRecord> g_wheels;
 std::vector<fake_migo::KeyRecord> g_keys;
 std::vector<fake_migo::CompositionRecord> g_compositions;
+std::vector<fake_migo::KeyboardRecord> g_keyboard_events;
 std::vector<uint8_t> g_focus_changes;
 std::vector<int64_t> g_vsyncs;
 MigoHostCallbacks g_callbacks{};
@@ -35,7 +40,37 @@ std::string g_content_id;
 MigoResult g_session_create_result = MIGO_OK;
 MigoResult g_set_callbacks_result = MIGO_OK;
 MigoResult g_load_content_result = MIGO_OK;
+/// Whether the Session has its host: the library makes it on the first attach, and content needs it.
+bool g_has_host = false;
 MigoResult g_session_destroy_result = MIGO_OK;
+std::string g_network_policy;
+std::string g_host_app_id;
+uint32_t g_host_app_flags = 0;
+/// What content wrote to its console, as the library keeps it: each line's
+/// JSON, in order; a line's cursor is its index plus one.
+std::vector<std::string> g_console;
+std::vector<fake_migo::BatteryRecord> g_battery;
+std::vector<fake_migo::NetworkRecord> g_network;
+std::vector<std::string> g_window;
+uint32_t g_system_settings = 0;
+int g_system_settings_reports = 0;
+MigoAppAuthorizeSetting g_app_authorization{};
+std::vector<MigoMemoryWarningLevel> g_memory_warnings;
+/// Recorded from any thread, as the library lets a host.
+std::mutex g_scopes_mutex;
+std::map<MigoScope, MigoScopeState> g_scopes;
+std::vector<MigoSensorSample> g_sensor_samples;
+std::vector<fake_migo::BleValue> g_ble_values;
+std::vector<fake_migo::GamepadAnnouncement> g_gamepad_announcements;
+std::vector<fake_migo::GamepadSample> g_gamepad_samples;
+std::string g_launch_options;
+/// Guards the calls and their answers: the host completes a call from any thread.
+std::mutex g_answers_mutex;
+std::vector<fake_migo::HostServiceAnswer> g_answers;
+std::vector<fake_migo::HostServiceEvent> g_events;
+/// Calls delivered and not yet completed, with the service each is of.
+std::map<uint64_t, MigoHostService> g_open_calls;
+std::function<void(const fake_migo::HostServiceAnswer &)> g_completion;
 constexpr uintptr_t kEngineToken = 0x4040;
 
 constexpr uintptr_t kSessionToken = 0x1010;
@@ -48,6 +83,33 @@ namespace fake_migo {
 
 void reset() noexcept {
     g_calls = {};
+    g_network_policy.clear();
+    g_host_app_id.clear();
+    g_host_app_flags = 0;
+    g_console.clear();
+    g_battery.clear();
+    g_network.clear();
+    g_window.clear();
+    g_system_settings = 0;
+    g_system_settings_reports = 0;
+    g_app_authorization = {};
+    g_memory_warnings.clear();
+    {
+        const std::lock_guard<std::mutex> lock(g_scopes_mutex);
+        g_scopes.clear();
+        g_sensor_samples.clear();
+        g_ble_values.clear();
+        g_gamepad_announcements.clear();
+        g_gamepad_samples.clear();
+    }
+    g_launch_options.clear();
+    {
+        const std::lock_guard<std::mutex> lock(g_answers_mutex);
+        g_answers.clear();
+        g_open_calls.clear();
+        g_completion = nullptr;
+    }
+    g_events.clear();
     g_surface = {};
     g_metrics = {};
     g_release_query = {};
@@ -72,6 +134,7 @@ void reset() noexcept {
     g_wheels.clear();
     g_keys.clear();
     g_compositions.clear();
+    g_keyboard_events.clear();
     g_focus_changes.clear();
     g_vsyncs.clear();
     g_callbacks = {};
@@ -80,6 +143,7 @@ void reset() noexcept {
     g_session_create_result = MIGO_OK;
     g_set_callbacks_result = MIGO_OK;
     g_load_content_result = MIGO_OK;
+    g_has_host = false;
     g_session_destroy_result = MIGO_OK;
     // Reserved, not merely cleared: the allocation test measures the delivery
     // path by differencing a delivered burst against an undelivered one, and a
@@ -92,6 +156,7 @@ void reset() noexcept {
     g_wheels.reserve(kRecordCapacity);
     g_keys.reserve(kRecordCapacity);
     g_compositions.reserve(kRecordCapacity);
+    g_keyboard_events.reserve(kRecordCapacity);
     g_focus_changes.reserve(kRecordCapacity);
     g_vsyncs.reserve(kRecordCapacity);
 }
@@ -147,12 +212,53 @@ const std::vector<PointerRecord> &pointers() noexcept { return g_pointers; }
 const std::vector<WheelRecord> &wheels() noexcept { return g_wheels; }
 const std::vector<KeyRecord> &keys() noexcept { return g_keys; }
 const std::vector<CompositionRecord> &compositions() noexcept { return g_compositions; }
+const std::vector<KeyboardRecord> &keyboard_events() noexcept { return g_keyboard_events; }
 const std::vector<uint8_t> &focus_changes() noexcept { return g_focus_changes; }
 const std::vector<int64_t> &vsyncs() noexcept { return g_vsyncs; }
 MigoEngine *engine() noexcept { return reinterpret_cast<MigoEngine *>(kEngineToken); }
 const MigoHostCallbacks &installed_callbacks() noexcept { return g_callbacks; }
 bool session_is_alive() noexcept { return g_session_alive; }
 const std::string &loaded_content_id() noexcept { return g_content_id; }
+const std::string &created_network_policy() noexcept { return g_network_policy; }
+const std::string &reported_host_app_id() noexcept { return g_host_app_id; }
+uint32_t reported_host_app_flags() noexcept { return g_host_app_flags; }
+const std::vector<BatteryRecord> &battery_reports() noexcept { return g_battery; }
+const std::vector<NetworkRecord> &network_reports() noexcept { return g_network; }
+const std::vector<std::string> &window_reports() noexcept { return g_window; }
+uint32_t reported_system_settings() noexcept { return g_system_settings; }
+int system_settings_reports() noexcept { return g_system_settings_reports; }
+const MigoAppAuthorizeSetting &reported_app_authorization() noexcept { return g_app_authorization; }
+const std::vector<MigoMemoryWarningLevel> &memory_warnings() noexcept { return g_memory_warnings; }
+const std::vector<GamepadAnnouncement> &gamepad_announcements() noexcept { return g_gamepad_announcements; }
+const std::vector<GamepadSample> &gamepad_samples() noexcept { return g_gamepad_samples; }
+std::vector<BleValue> ble_values() {
+    const std::lock_guard<std::mutex> lock(g_scopes_mutex);
+    return g_ble_values;
+}
+std::vector<MigoSensorSample> sensor_samples() {
+    const std::lock_guard<std::mutex> lock(g_scopes_mutex);
+    return g_sensor_samples;
+}
+MigoScopeState scope_state(MigoScope scope) noexcept {
+    const std::lock_guard<std::mutex> lock(g_scopes_mutex);
+    const auto found = g_scopes.find(scope);
+    return found == g_scopes.end() ? MIGO_SCOPE_STATE_UNKNOWN : found->second;
+}
+
+void write_console(int level, const std::string &text) {
+    // Plain text only: the tests write no character JSON would need escaped.
+    g_console.push_back("{\"l\":" + std::to_string(level) + ",\"t\":0,\"m\":\"" + text + "\"}");
+}
+const std::string &created_launch_options() noexcept { return g_launch_options; }
+std::vector<HostServiceAnswer> host_service_answers() {
+    const std::lock_guard<std::mutex> lock(g_answers_mutex);
+    return g_answers;
+}
+void set_host_service_completion(std::function<void(const HostServiceAnswer &)> take) {
+    const std::lock_guard<std::mutex> lock(g_answers_mutex);
+    g_completion = std::move(take);
+}
+const std::vector<HostServiceEvent> &host_service_events() noexcept { return g_events; }
 void set_session_create_result(MigoResult result) noexcept { g_session_create_result = result; }
 void set_set_callbacks_result(MigoResult result) noexcept { g_set_callbacks_result = result; }
 void set_load_content_result(MigoResult result) noexcept { g_load_content_result = result; }
@@ -207,12 +313,106 @@ void deliver_error_from_engine_thread(MigoResult code, const char *message) noex
     });
 }
 
+namespace {
+
+/// One request on its way to the host, owned by the task that carries it:
+/// consecutive deliveries are queued before any runs, so each carries its own.
+struct PendingCall {
+    MigoHostService service = 0;
+    uint32_t method = 0;
+    uint64_t call_id = 0;
+    std::string payload;
+};
+
+}  // namespace
+
+void expect_host_service_call(MigoHostService service, uint64_t call_id) noexcept {
+    const std::lock_guard<std::mutex> lock(g_answers_mutex);
+    g_open_calls[call_id] = service;
+}
+
+void deliver_host_service_call_from_engine_thread(MigoHostService service, uint32_t method,
+                                                  uint64_t call_id,
+                                                  const std::string &payload_json) noexcept {
+    if (call_id != 0) {
+        const std::lock_guard<std::mutex> lock(g_answers_mutex);
+        g_open_calls[call_id] = service;
+    }
+    if (g_callbacks.dispatch == nullptr) return;
+    auto *pending = new PendingCall{service, method, call_id, payload_json};
+    std::thread engine_thread([pending] {
+        const MigoResult accepted = g_callbacks.dispatch(
+            g_callbacks.dispatcher_data,
+            [](void *context) {
+                const std::unique_ptr<PendingCall> call(static_cast<PendingCall *>(context));
+                if (g_callbacks.on_host_service_call == nullptr) return;
+                MigoHostServiceCall request{};
+                request.struct_size = sizeof(request);
+                request.abi_version = MIGO_ABI_VERSION_CURRENT;
+                request.call_id = call->call_id;
+                request.service = call->service;
+                request.method = call->method;
+                request.payload_json_utf8 = call->payload.c_str();
+                request.payload_length = static_cast<uint32_t>(call->payload.size());
+                g_callbacks.on_host_service_call(g_callbacks.user_data, fake_migo::session(), &request);
+            },
+            pending);
+        // Refused, the task is the deliverer's again.
+        if (accepted != MIGO_OK) delete pending;
+    });
+    engine_thread.join();
+}
+
 void deliver_frame_request_from_engine_thread() noexcept {
     dispatch_from_engine_thread([](const MigoHostCallbacks &callbacks) {
         if (callbacks.on_request_frame != nullptr) {
             callbacks.on_request_frame(callbacks.user_data, session());
         }
     });
+}
+
+void deliver_show_keyboard_from_engine_thread(const MigoKeyboardShowOptions &options,
+                                              const std::string &default_value) noexcept {
+    // Held for the task, as the engine holds its own copy until the callback runs.
+    static MigoKeyboardShowOptions s_options{};
+    static std::string s_default;
+    s_options = options;
+    s_default = default_value;
+    s_options.default_value_utf8 = s_default.data();
+    s_options.default_value_length = static_cast<uint32_t>(s_default.size());
+    dispatch_from_engine_thread([](const MigoHostCallbacks &callbacks) {
+        if (callbacks.on_show_keyboard != nullptr) callbacks.on_show_keyboard(callbacks.user_data, session(), &s_options);
+    });
+}
+
+void deliver_hide_keyboard_from_engine_thread() noexcept {
+    dispatch_from_engine_thread([](const MigoHostCallbacks &callbacks) {
+        if (callbacks.on_hide_keyboard != nullptr) callbacks.on_hide_keyboard(callbacks.user_data, session());
+    });
+}
+
+void deliver_update_keyboard_from_engine_thread(const std::string &value) noexcept {
+    static std::string s_value;
+    s_value = value;
+    dispatch_from_engine_thread([](const MigoHostCallbacks &callbacks) {
+        if (callbacks.on_update_keyboard != nullptr) {
+            callbacks.on_update_keyboard(callbacks.user_data, session(), s_value.data(),
+                                         static_cast<uint32_t>(s_value.size()));
+        }
+    });
+}
+
+void deliver_keep_screen_on_from_engine_thread(bool keep_on) noexcept {
+    // Each delivery is its own task: a capture by value outlives this call.
+    if (keep_on) {
+        dispatch_from_engine_thread([](const MigoHostCallbacks &callbacks) {
+            if (callbacks.on_keep_screen_on != nullptr) callbacks.on_keep_screen_on(callbacks.user_data, session(), 1);
+        });
+    } else {
+        dispatch_from_engine_thread([](const MigoHostCallbacks &callbacks) {
+            if (callbacks.on_keep_screen_on != nullptr) callbacks.on_keep_screen_on(callbacks.user_data, session(), 0);
+        });
+    }
 }
 
 }  // namespace fake_migo
@@ -235,6 +435,7 @@ migo_session_attach_surface(MigoSession *session, const MigoSurfaceDescriptor *d
             g_surface.platform_descriptor = &g_wayland;
         }
     }
+    if (g_attach_result == MIGO_OK && !g_attach_returns_null) g_has_host = true;
     if ((g_attach_result == MIGO_OK && !g_attach_returns_null) ||
         (g_attach_result != MIGO_OK && g_attach_writes_handle_on_error)) {
         *out_attachment = fake_migo::attachment();
@@ -313,6 +514,20 @@ extern "C" MigoResult MIGO_CALL migo_session_send_wheel_event(MigoSession *sessi
     return g_input_result;
 }
 
+extern "C" MigoResult MIGO_CALL migo_session_send_keyboard_event(MigoSession *session,
+                                                                 const MigoKeyboardEvent *event) {
+    if (session == nullptr || event == nullptr) return MIGO_ERROR_INVALID_ARGUMENT;
+    if (event->struct_size != sizeof(*event)) return MIGO_ERROR_INVALID_ARGUMENT;
+    if (event->event_type > MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE) return MIGO_ERROR_INVALID_ARGUMENT;
+    if (event->value_length != 0 && event->value_utf8 == nullptr) return MIGO_ERROR_INVALID_ARGUMENT;
+    fake_migo::KeyboardRecord record;
+    record.event_type = event->event_type;
+    if (event->value_utf8 != nullptr) record.value.assign(event->value_utf8, event->value_length);
+    record.height_css_px = event->height_css_px;
+    g_keyboard_events.push_back(std::move(record));
+    return MIGO_OK;
+}
+
 extern "C" MigoResult MIGO_CALL migo_session_send_key_event(MigoSession *session,
                                                             const MigoKeyEvent *event) {
     ++g_calls.key;
@@ -373,6 +588,8 @@ extern "C" MigoResult MIGO_CALL migo_session_create(MigoEngine *engine,
     }
     if (config->struct_size != sizeof(*config)) return MIGO_ERROR_INVALID_ARGUMENT;
     if (g_session_create_result != MIGO_OK) return g_session_create_result;
+    g_network_policy = config->network_policy_json_utf8 != nullptr ? config->network_policy_json_utf8 : "";
+    g_launch_options = config->launch_options_json_utf8 != nullptr ? config->launch_options_json_utf8 : "";
     g_session_alive = true;
     *out_session = fake_migo::session();
     return MIGO_OK;
@@ -395,6 +612,15 @@ migo_session_set_host_callbacks(MigoSession *session, const MigoHostCallbacks *c
                                    (callbacks->on_hide_keyboard != nullptr ? 1 : 0) +
                                    (callbacks->on_update_keyboard != nullptr ? 1 : 0);
     if (keyboard_installed != 0 && keyboard_installed != 3) return MIGO_ERROR_INVALID_ARGUMENT;
+    // The host-service channel: the callback and the services it answers, both or neither, and only
+    // services the header defines.
+    if ((callbacks->on_host_service_call != nullptr) != (callbacks->host_services != 0)) {
+        return MIGO_ERROR_INVALID_ARGUMENT;
+    }
+    if ((callbacks->host_services >> (MIGO_HOST_SERVICE_UPDATE + 1)) != 0) return MIGO_ERROR_INVALID_ARGUMENT;
+    if (callbacks->on_host_service_call != nullptr && callbacks->dispatch == nullptr) {
+        return MIGO_ERROR_INVALID_ARGUMENT;
+    }
     if (g_set_callbacks_result != MIGO_OK) return g_set_callbacks_result;
     g_callbacks = *callbacks;
     return MIGO_OK;
@@ -408,6 +634,8 @@ extern "C" MigoResult MIGO_CALL migo_session_load_content(MigoSession *session,
     if (content->content_id_utf8 == nullptr || content->entry_utf8 == nullptr) {
         return MIGO_ERROR_INVALID_ARGUMENT;
     }
+    // As the library: content needs a render target, and there is none before the first attach.
+    if (!g_has_host) return MIGO_ERROR_INVALID_STATE;
     if (g_load_content_result != MIGO_OK) return g_load_content_result;
     g_content_id = content->content_id_utf8;
     return MIGO_OK;
@@ -418,5 +646,216 @@ extern "C" MigoResult MIGO_CALL migo_session_destroy(MigoSession *session) {
     if (session == nullptr) return MIGO_ERROR_INVALID_ARGUMENT;
     if (g_session_destroy_result != MIGO_OK) return g_session_destroy_result;
     g_session_alive = false;
+    return MIGO_OK;
+}
+
+extern "C" MigoResult MIGO_CALL migo_session_complete_host_service_call(
+    MigoSession *session, uint64_t call_id, const MigoHostServiceResult *result) {
+    // As strict as the library: an open call of a declared service, answered
+    // once, a failure with a reason.
+    if (session != fake_migo::session() || !g_session_alive || result == nullptr) {
+        return MIGO_ERROR_INVALID_ARGUMENT;
+    }
+    std::function<void(const fake_migo::HostServiceAnswer &)> take;
+    {
+        const std::lock_guard<std::mutex> lock(g_answers_mutex);
+        const auto open = g_open_calls.find(call_id);
+        if (open == g_open_calls.end()) return MIGO_ERROR_INVALID_ARGUMENT;
+        if ((g_callbacks.host_services & (uint64_t{1} << open->second)) == 0) return MIGO_ERROR_INVALID_ARGUMENT;
+        if (result->status == MIGO_HOST_SERVICE_STATUS_FAIL && result->message_length == 0) {
+            return MIGO_ERROR_INVALID_ARGUMENT;
+        }
+        g_open_calls.erase(open);
+        take = g_completion;
+    }
+    fake_migo::HostServiceAnswer answer;
+    answer.call_id = call_id;
+    answer.status = result->status;
+    if (result->message_utf8 != nullptr) answer.message.assign(result->message_utf8, result->message_length);
+    if (result->payload_json_utf8 != nullptr) answer.payload.assign(result->payload_json_utf8, result->payload_length);
+    answer.has_error_code = (result->flags & MIGO_HOST_SERVICE_RESULT_FLAG_ERROR_CODE) != 0;
+    answer.error_code = result->error_code;
+    // Before the answer is seen, as the library takes the files before content hears of them.
+    if (take) take(answer);
+    const std::lock_guard<std::mutex> lock(g_answers_mutex);
+    g_answers.push_back(std::move(answer));
+    return MIGO_OK;
+}
+
+extern "C" MigoResult MIGO_CALL migo_session_set_scope_state(MigoSession *session, MigoScope scope,
+                                                              MigoScopeState state) {
+    // As strict as the library: a known scope and state, and the permission
+    // service declared, without which no decision is read.
+    if (session != fake_migo::session() || !g_session_alive || scope > MIGO_SCOPE_GAME_CLUB_DATA ||
+        state > MIGO_SCOPE_STATE_DENIED ||
+        (g_callbacks.host_services & (uint64_t{1} << MIGO_HOST_SERVICE_PERMISSION)) == 0) {
+        return MIGO_ERROR_INVALID_ARGUMENT;
+    }
+    const std::lock_guard<std::mutex> lock(g_scopes_mutex);
+    g_scopes[scope] = state;
+    return MIGO_OK;
+}
+
+extern "C" MigoResult MIGO_CALL migo_session_post_sensor_sample(MigoSession *session, const MigoSensorSample *sample) {
+    // As strict as the library: a whole sample of a known kind, finite, from a
+    // host that declared the motion service.
+    if (session != fake_migo::session() || !g_session_alive || sample == nullptr ||
+        sample->struct_size < sizeof(MigoSensorSample) || sample->kind > MIGO_SENSOR_COMPASS ||
+        sample->compass_accuracy > MIGO_COMPASS_ACCURACY_UNRELIABLE ||
+        (g_callbacks.host_services & (uint64_t{1} << MIGO_HOST_SERVICE_MOTION)) == 0) {
+        return MIGO_ERROR_INVALID_ARGUMENT;
+    }
+    for (const double value : sample->values) {
+        if (!std::isfinite(value)) return MIGO_ERROR_INVALID_ARGUMENT;
+    }
+    const std::lock_guard<std::mutex> lock(g_scopes_mutex);
+    g_sensor_samples.push_back(*sample);
+    return MIGO_OK;
+}
+
+extern "C" MigoResult MIGO_CALL migo_session_post_ble_characteristic_value(MigoSession *session,
+                                                                          const MigoBleCharacteristicValue *value) {
+    // As strict as the library: ids present and bounded, a value of at most 512
+    // bytes, from a host that declared Bluetooth.
+    if (session != fake_migo::session() || !g_session_alive || value == nullptr ||
+        value->struct_size < sizeof(MigoBleCharacteristicValue) || value->device_id_length == 0 ||
+        value->service_id_length == 0 || value->characteristic_id_length == 0 || value->device_id_length > 256 ||
+        value->service_id_length > 256 || value->characteristic_id_length > 256 || value->value_length > 512 ||
+        (value->value_length > 0 && value->value == nullptr) ||
+        (g_callbacks.host_services & (uint64_t{1} << MIGO_HOST_SERVICE_BLUETOOTH)) == 0) {
+        return MIGO_ERROR_INVALID_ARGUMENT;
+    }
+    fake_migo::BleValue posted;
+    posted.device.assign(value->device_id_utf8, value->device_id_length);
+    posted.service.assign(value->service_id_utf8, value->service_id_length);
+    posted.characteristic.assign(value->characteristic_id_utf8, value->characteristic_id_length);
+    posted.value.assign(reinterpret_cast<const char *>(value->value), value->value_length);
+    const std::lock_guard<std::mutex> lock(g_scopes_mutex);
+    g_ble_values.push_back(std::move(posted));
+    return MIGO_OK;
+}
+
+extern "C" MigoResult MIGO_CALL migo_session_set_gamepad_connected(MigoSession *session, const MigoGamepadInfo *info,
+                                                                   uint32_t connected) {
+    if (session != fake_migo::session() || !g_session_alive || info == nullptr) return MIGO_ERROR_INVALID_ARGUMENT;
+    // As strict as the library: haptics need someone to play them.
+    if (connected != 0 && info->haptics != 0 && g_callbacks.on_gamepad_rumble == nullptr) {
+        return MIGO_ERROR_INVALID_ARGUMENT;
+    }
+    fake_migo::GamepadAnnouncement announced;
+    announced.info = *info;
+    if (info->id_utf8 != nullptr) announced.id = info->id_utf8;
+    if (info->mapping_utf8 != nullptr) announced.mapping = info->mapping_utf8;
+    announced.connected = connected != 0;
+    g_gamepad_announcements.push_back(std::move(announced));
+    return MIGO_OK;
+}
+
+extern "C" MigoResult MIGO_CALL migo_session_send_gamepad_state(MigoSession *session, const MigoGamepadStateEvent *event) {
+    if (session != fake_migo::session() || !g_session_alive || event == nullptr ||
+        event->axis_count > MIGO_GAMEPAD_MAX_AXES || event->button_count > MIGO_GAMEPAD_MAX_BUTTONS) {
+        return MIGO_ERROR_INVALID_ARGUMENT;
+    }
+    fake_migo::GamepadSample sample;
+    sample.index = event->index;
+    sample.axes.assign(event->axes, event->axes + event->axis_count);
+    sample.buttons.assign(event->buttons, event->buttons + event->button_count);
+    g_gamepad_samples.push_back(std::move(sample));
+    return MIGO_OK;
+}
+
+extern "C" MigoResult MIGO_CALL migo_session_post_host_service_event(
+    MigoSession *session, MigoHostService service, uint32_t event, const char *payload_json_utf8,
+    uint32_t payload_length) {
+    if (session != fake_migo::session() || !g_session_alive || payload_json_utf8 == nullptr) {
+        return MIGO_ERROR_INVALID_ARGUMENT;
+    }
+    if ((g_callbacks.host_services & (uint64_t{1} << service)) == 0) return MIGO_ERROR_INVALID_ARGUMENT;
+    g_events.push_back({service, event, std::string(payload_json_utf8, payload_length)});
+    return MIGO_OK;
+}
+
+extern "C" MigoResult MIGO_CALL migo_session_set_host_app_info(MigoSession *session, const MigoHostAppInfo *info) {
+    if (session != fake_migo::session() || !g_session_alive || info == nullptr) return MIGO_ERROR_INVALID_ARGUMENT;
+    if (info->struct_size != sizeof(*info) || info->benchmark_level < -2) return MIGO_ERROR_INVALID_ARGUMENT;
+    g_host_app_id = info->app_id_utf8 != nullptr ? info->app_id_utf8 : "";
+    g_host_app_flags = info->flags;
+    return MIGO_OK;
+}
+
+extern "C" MigoResult MIGO_CALL migo_session_set_visibility(MigoSession *session, uint8_t visible) {
+    if (session != fake_migo::session() || !g_session_alive || visible > 1) return MIGO_ERROR_INVALID_ARGUMENT;
+    g_window.emplace_back(visible != 0 ? "shown" : "hidden");
+    return MIGO_OK;
+}
+
+extern "C" MigoResult MIGO_CALL migo_session_set_lifecycle(MigoSession *session, MigoLifecycleState state) {
+    if (session != fake_migo::session() || !g_session_alive) return MIGO_ERROR_INVALID_ARGUMENT;
+    if (state == MIGO_LIFECYCLE_CREATED) return MIGO_ERROR_INVALID_STATE;
+    if (state != MIGO_LIFECYCLE_RUNNING && state != MIGO_LIFECYCLE_PAUSED) return MIGO_ERROR_INVALID_ARGUMENT;
+    g_window.emplace_back(state == MIGO_LIFECYCLE_RUNNING ? "running" : "paused");
+    return MIGO_OK;
+}
+
+extern "C" MigoResult MIGO_CALL migo_session_set_system_settings(MigoSession *session, MigoSystemSettingFlags flags) {
+    constexpr MigoSystemSettingFlags kKnown = MIGO_SYSTEM_SETTING_FLAG_BLUETOOTH_ENABLED |
+                                              MIGO_SYSTEM_SETTING_FLAG_LOCATION_ENABLED |
+                                              MIGO_SYSTEM_SETTING_FLAG_WIFI_ENABLED;
+    if (session != fake_migo::session() || !g_session_alive || (flags & ~kKnown) != 0) return MIGO_ERROR_INVALID_ARGUMENT;
+    g_system_settings = flags;
+    ++g_system_settings_reports;
+    return MIGO_OK;
+}
+
+extern "C" MigoResult MIGO_CALL migo_session_set_app_authorize_setting(MigoSession *session,
+                                                                     const MigoAppAuthorizeSetting *setting) {
+    if (session != fake_migo::session() || !g_session_alive || setting == nullptr ||
+        setting->struct_size != sizeof(*setting)) {
+        return MIGO_ERROR_INVALID_ARGUMENT;
+    }
+    g_app_authorization = *setting;
+    return MIGO_OK;
+}
+
+extern "C" MigoResult MIGO_CALL migo_session_post_memory_warning(MigoSession *session, MigoMemoryWarningLevel level) {
+    if (session != fake_migo::session() || !g_session_alive) return MIGO_ERROR_INVALID_ARGUMENT;
+    if (level != MIGO_MEMORY_WARNING_MODERATE && level != MIGO_MEMORY_WARNING_LOW &&
+        level != MIGO_MEMORY_WARNING_CRITICAL) {
+        return MIGO_ERROR_INVALID_ARGUMENT;
+    }
+    g_memory_warnings.push_back(level);
+    return MIGO_OK;
+}
+
+extern "C" MigoResult MIGO_CALL migo_session_set_battery_status(MigoSession *session, uint32_t level_percent,
+                                                              MigoBatteryFlags flags) {
+    if (session != fake_migo::session() || !g_session_alive || level_percent > 100) return MIGO_ERROR_INVALID_ARGUMENT;
+    if ((flags & ~(MIGO_BATTERY_FLAG_CHARGING | MIGO_BATTERY_FLAG_LOW_POWER_MODE)) != 0) return MIGO_ERROR_INVALID_ARGUMENT;
+    g_battery.push_back({level_percent, flags});
+    return MIGO_OK;
+}
+
+extern "C" MigoResult MIGO_CALL migo_session_set_network_status(MigoSession *session, MigoNetworkType type,
+                                                              uint8_t connected) {
+    if (session != fake_migo::session() || !g_session_alive || type > MIGO_NETWORK_5G || connected > 1 ||
+        (type == MIGO_NETWORK_NONE && connected != 0)) {
+        return MIGO_ERROR_INVALID_ARGUMENT;
+    }
+    g_network.push_back({type, connected});
+    return MIGO_OK;
+}
+
+extern "C" MigoResult MIGO_CALL migo_session_copy_console_logs(MigoSession *session, uint64_t since_cursor,
+                                                             char *buffer, size_t capacity, size_t *out_length) {
+    if (session != fake_migo::session() || !g_session_alive || out_length == nullptr) return MIGO_ERROR_INVALID_ARGUMENT;
+    std::string json = "{\"logs\":[";
+    for (size_t index = since_cursor; index < g_console.size(); ++index) {
+        if (index > since_cursor) json += ",";
+        json += g_console[index];
+    }
+    json += "],\"cursor\":" + std::to_string(g_console.size()) + "}";
+    *out_length = json.size();
+    if (buffer == nullptr || capacity < json.size() + 1) return MIGO_ERROR_INVALID_ARGUMENT;
+    std::memcpy(buffer, json.c_str(), json.size() + 1);
     return MIGO_OK;
 }

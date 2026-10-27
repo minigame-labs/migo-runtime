@@ -1447,7 +1447,7 @@ fn caller_ready_signal_stays_after_host_construction() {
         .find("Host::new(")
         .expect("host thread must construct Host");
     let publish = THREAD
-        .find("create_runtime_before_ready(")
+        .find("announce_ready(ready_tx)")
         .expect("host thread must publish readiness through the shared helper");
     assert!(
         construct < publish,
@@ -1457,6 +1457,25 @@ fn caller_ready_signal_stays_after_host_construction() {
         SESSION_THREAD.contains("ready_tx.send(())"),
         "the shared helper is what actually signals readiness"
     );
+}
+
+#[test]
+fn the_host_is_built_inside_its_session_s_runtime() {
+    // `Host::new` creates the isolate, and V8 hands its delayed tasks to the
+    // tokio runtime current at that moment; deno_core aborts the process at the
+    // first one when there was none. So the runtime is built first and entered
+    // around the construction. HostJsRuntime::new asserts it too, but only a
+    // session that gets that far would say so.
+    let runtime = THREAD
+        .find("create_basic_runtime()")
+        .expect("host thread must build its runtime");
+    let construct = THREAD
+        .find("Host::new(")
+        .expect("host thread must construct Host");
+    let entered = THREAD[runtime..construct]
+        .find("runtime.enter()")
+        .expect("Host::new must run with the session's runtime entered");
+    assert!(runtime < runtime + entered && runtime + entered < construct);
 }
 
 #[test]

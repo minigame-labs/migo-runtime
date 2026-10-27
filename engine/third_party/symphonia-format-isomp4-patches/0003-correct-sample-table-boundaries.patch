@@ -1,0 +1,171 @@
+--- symphonia-format-isomp4-0.6.1/src/atoms/stsc.rs
++++ symphonia-format-isomp4-0.6.1/src/atoms/stsc.rs
+@@ -37,7 +37,7 @@
+ 
+             let entry = self.entries.get(mid).expect("mid is always within entries bounds");
+ 
+-            if entry.first_sample < sample_num {
++            if entry.first_sample <= sample_num {
+                 left = mid + 1;
+             }
+             else {
+@@ -46,7 +46,7 @@
+         }
+ 
+         // The index found above (left) is the exclusive upper bound of all entries where
+-        // first_sample < sample_num. Therefore, the entry to return has an index of left-1. The
++        // first_sample <= sample_num. Therefore, the entry to return has an index of left-1. The
+         // index will never equal 0 so this is safe. If the table were empty, left == 1, thus calling
+         // get with an index of 0, and safely returning None.
+         self.entries.get(left - 1)
+--- symphonia-format-isomp4-0.6.1/src/atoms/stts.rs
++++ symphonia-format-isomp4-0.6.1/src/atoms/stts.rs
+@@ -27,7 +27,7 @@
+     /// is indexed relative to the `SttsAtom`. Complexity of this function in O(N).
+     pub fn find_timing_for_sample(&self, sample_num: u32) -> Option<(u64, u32)> {
+         let mut ts = 0;
+-        let mut next_entry_first_sample = 0;
++        let mut next_entry_first_sample: u32 = 0;
+ 
+         // The Stts atom compactly encodes a mapping between number of samples and sample duration.
+         // Iterate through each entry until the entry containing the next sample is found. The next
+@@ -35,10 +35,10 @@
+         // the n-1 iterated entries, plus the product of the number of consumed samples in the n-th
+         // iterated entry and sample duration.
+         for entry in &self.entries {
+-            next_entry_first_sample += entry.sample_count;
++            next_entry_first_sample = next_entry_first_sample.checked_add(entry.sample_count)?;
+ 
+             if sample_num < next_entry_first_sample {
+-                let entry_sample_offset = sample_num + entry.sample_count - next_entry_first_sample;
++                let entry_sample_offset = sample_num - (next_entry_first_sample - entry.sample_count);
+                 ts += u64::from(entry.sample_delta) * u64::from(entry_sample_offset);
+ 
+                 return Some((ts, entry.sample_delta));
+@@ -83,10 +83,16 @@
+         let mut entries = Vec::with_capacity(MAX_TABLE_INITIAL_CAPACITY.min(entry_count as usize));
+ 
+         let mut total_duration: u64 = 0;
++        let mut total_samples: u32 = 0;
+ 
+         for _ in 0..entry_count {
+             let sample_count = it.read_u32()?;
+             let sample_delta = it.read_u32()?;
++
++            total_samples = match total_samples.checked_add(sample_count) {
++                Some(total) => total,
++                None => return decode_error("isomp4 (stts): sample count overflow"),
++            };
+ 
+             let Some(next_duration) =
+                 total_duration.checked_add(u64::from(sample_count) * u64::from(sample_delta))
+--- symphonia-format-isomp4-0.6.1/src/lib.rs
++++ symphonia-format-isomp4-0.6.1/src/lib.rs
+@@ -20,3 +20,107 @@
+ mod stream;
+ 
+ pub use demuxer::IsoMp4Reader;
++
++#[cfg(test)]
++mod streaming_index_boundary_contracts {
++    use crate::atoms::stsc::{StscAtom, StscEntry};
++    use crate::atoms::stts::{SampleDurationEntry, SttsAtom};
++
++    #[test]
++    fn chunk_groups_include_their_first_sample() {
++        let table = StscAtom {
++            entries: vec![
++                StscEntry {
++                    first_chunk: 0,
++                    first_sample: 0,
++                    samples_per_chunk: 3,
++                    sample_desc_index: 1,
++                },
++                StscEntry {
++                    first_chunk: 2,
++                    first_sample: 6,
++                    samples_per_chunk: 2,
++                    sample_desc_index: 1,
++                },
++                StscEntry {
++                    first_chunk: 5,
++                    first_sample: 12,
++                    samples_per_chunk: 1,
++                    sample_desc_index: 1,
++                },
++            ],
++        };
++        for sample in 0..18 {
++            let expected = if sample < 6 {
++                0
++            } else if sample < 12 {
++                2
++            } else {
++                5
++            };
++            assert_eq!(
++                table.find_entry_for_sample(sample).unwrap().first_chunk,
++                expected,
++                "sample {sample}"
++            );
++        }
++        assert!(
++            StscAtom { entries: vec![] }
++                .find_entry_for_sample(0)
++                .is_none()
++        );
++    }
++
++    #[test]
++    fn sample_count_overflow_is_rejected_before_index_use() {
++        use crate::atoms::AtomIterator;
++        use std::io::Cursor;
++        use symphonia_core::io::MediaSourceStream;
++        for (first, second, overflow) in [(u32::MAX - 10, 10, false), (u32::MAX, 1, true)] {
++            let mut bytes = Vec::new();
++            bytes.extend_from_slice(&32_u32.to_be_bytes());
++            bytes.extend_from_slice(b"stts");
++            bytes.extend_from_slice(&0_u32.to_be_bytes());
++            bytes.extend_from_slice(&2_u32.to_be_bytes());
++            for count in [first, second] {
++                bytes.extend_from_slice(&count.to_be_bytes());
++                bytes.extend_from_slice(&1024_u32.to_be_bytes());
++            }
++            let reader = MediaSourceStream::new(Box::new(Cursor::new(bytes)), Default::default());
++            let mut atoms = AtomIterator::new(reader, Some(32));
++            atoms
++                .next_header()
++                .map_err(symphonia_core::errors::Error::from)
++                .unwrap()
++                .unwrap();
++            let parsed = atoms.read_atom::<SttsAtom>();
++            assert_eq!(parsed.is_err(), overflow, "sample counts {first}+{second}");
++        }
++    }
++
++    #[test]
++    fn time_table_arithmetic_handles_valid_large_sample_indices() {
++        let table = SttsAtom {
++            entries: vec![
++                SampleDurationEntry {
++                    sample_count: u32::MAX - 10,
++                    sample_delta: 1024,
++                },
++                SampleDurationEntry {
++                    sample_count: 10,
++                    sample_delta: 1024,
++                },
++            ],
++            total_duration: u64::from(u32::MAX) * 1024,
++        };
++        for sample in [0, u32::MAX - 11, u32::MAX - 10, u32::MAX - 1] {
++            let timestamp = u64::from(sample) * 1024;
++            assert_eq!(
++                table.find_timing_for_sample(sample),
++                Some((timestamp, 1024))
++            );
++            assert_eq!(table.find_sample_for_timestamp(timestamp), Some(sample));
++        }
++        assert!(table.find_timing_for_sample(u32::MAX).is_none());
++    }
++}

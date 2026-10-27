@@ -183,7 +183,9 @@ info "the build scripts enforce the pin rather than logging it"
 for s in "$SCRIPT_DIR"/build-v8-android.sh; do
     name="$(basename "$s")"
     assert_line="$(grep -n 'gn_pin_assert_binary' "$s" | head -1 | cut -d: -f1)"
-    build_line="$(grep -n '^cargo build --release' "$s" | head -1 | cut -d: -f1)"
+    # The invocation, whatever order its flags come in: `--target-dir` moved
+    # ahead of `--release` and a pattern that spelled the old order found none.
+    build_line="$(grep -nE '^cargo build( |$)' "$s" | head -1 | cut -d: -f1)"
     if [[ -n "$assert_line" ]]; then
         pass "$name asserts the gn pin"
     else

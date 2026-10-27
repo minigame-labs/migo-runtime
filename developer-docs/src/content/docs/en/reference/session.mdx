@@ -39,6 +39,8 @@ Creation parameters passed to `migo_session_create`. `flags` has no defined bits
 
 Each of `request`, `download` (which also covers remote images, audio streaming and asset prefetch), `upload`, `socket`, `tcp` and `udp` is an array of domains or `"unrestricted"`; a channel left out is refused. `example.com` matches that host only, `*.example.com` its subdomains and not itself, and an IP address cannot be listed. `allowPlainHttp` is what permits `http://` and `ws://`; `lan` lets socket, tcp and udp reach other devices on the local network, which request, download and upload never reach. An unknown key or a malformed entry makes `migo_session_create` return `MIGO_ERROR_INVALID_ARGUMENT`. This field is appended too: a host passing the older struct gets NULL, which is no network.
 
+`tlsTrust` fixes certificate trust for HTTPS and WSS: `"platform"` uses the platform verifier, while `"mozilla"` uses the engine's Mozilla root set. Platform is the default, except on OHOS, which defaults to Mozilla. Verification failures never switch trust stores. **Android C ABI hosts without an initialized Java SDK/JVM must explicitly set `"tlsTrust":"mozilla"`.** The Android Java SDK defaults to the host's CA and `networkSecurityConfig`; `NetworkPolicy.Builder.setTlsTrust` selects the mode. The engine does not override the embedding app's network configuration.
+
 `launch_options_json_utf8` is what the game is launched with, as NUL-terminated UTF-8 JSON borrowed for the duration of `migo_session_create`; NULL launches it with the engine's defaults (scene 1001, an empty query).
 
 ```json
@@ -381,7 +383,7 @@ Windows, OpenHarmony) embeds the C ABI and reaches them through this channel:
 | `MIGO_HOST_SERVICE_AD` (0) | `CREATE` 0 · `LOAD` 1 · `SHOW` 2 · `HIDE` 3 · `UPDATE_STYLE` 4 · `DESTROY` 5 | commands; outcomes as `MIGO_AD_EVENT_LIFECYCLE`; the host's own cover advert reports its state as it changes, as `{"event":"splashStatus","status","code"}` with no `adId` | `createRewardedVideoAd` and every other ad; `getShowSplashAdStatus` answers the last report (`unknown` / -1 before one) |
 | `MIGO_HOST_SERVICE_PAYMENT` (1) | `REQUEST_MIDAS_PAYMENT` 0 · `REQUEST_MIDAS_PAYMENT_GAME_ITEM` 1 | calls | `requestMidasPayment` · `requestMidasPaymentGameItem` |
 | `MIGO_HOST_SERVICE_AUTH` (2) | `LOGIN` 0 · `CHECK_SESSION` 1 · `GET_USER_INFO` 2 · `GET_PHONE_NUMBER` 3 | calls | `login` · `checkSession` · `getUserInfo` · `getPhoneNumber` |
-| `MIGO_HOST_SERVICE_SHARE` (3) | `SHARE_APP_MESSAGE` 0 · `SHARE_MESSAGE_TO_FRIEND` 1 · `SHOW_SHARE_IMAGE_MENU` 2 (calls) · `SET_SHARE_MENU` 3 · `MENU_SHARE_REPLY` 4 (commands); event `EVENT_MENU_SHARE` 0 | as listed; an image path is the real file resolved through the sandbox (only `SHARE_APP_MESSAGE` may name an http(s) URL) | `shareAppMessage` · `shareMessageToFriend` (carrying the query `setMessageToFriendQuery` set; `onShareMessageToFriend` follows from its settlement) · `showShareImageMenu` |
+| `MIGO_HOST_SERVICE_SHARE` (3) | `SHARE_APP_MESSAGE` 0 · `SHARE_MESSAGE_TO_FRIEND` 1 · `SHOW_SHARE_IMAGE_MENU` 2 · `SHARE_GAME_RECORDING` 5 (calls) · `SET_SHARE_MENU` 3 · `MENU_SHARE_REPLY` 4 (commands); event `EVENT_MENU_SHARE` 0 | as listed; an image path is the real file resolved through the sandbox (only `SHARE_APP_MESSAGE` may name an http(s) URL) | `shareAppMessage` · `shareMessageToFriend` (carrying the query `setMessageToFriendQuery` set; `onShareMessageToFriend` follows from its settlement) · `showShareImageMenu` |
 | `MIGO_HOST_SERVICE_NAVIGATE` (4) | `NAVIGATE_TO_MINI_PROGRAM` 0 (call) · `NAVIGATE_BACK_MINI_PROGRAM` 1 · `OPEN_CUSTOMER_SERVICE_CONVERSATION` 2 (commands) | as listed | `navigateToMiniProgram` · `navigateBackMiniProgram` · `openCustomerServiceConversation` |
 | `MIGO_HOST_SERVICE_SUBPACKAGE` (5) | `DOWNLOAD` 0 | call, reports progress | `loadSubpackage` · `preDownloadSubpackage` |
 | `MIGO_HOST_SERVICE_PERMISSION` (6) | `REQUEST_SCOPE` 0 | call; the request is `{"scope","scopeId","desc"}`, `scopeId` being the `MIGO_SCOPE_*` number the decision is reported with, so a host keeps no table of names; a scope the platform does not define never reaches the host | `authorize` (and `getWritePhotosAlbum`, ...) |
@@ -736,6 +738,47 @@ Returns:
 
 Threading: any thread.
 
+## migo_session_report_network
+
+```c
+/* Derived example: no tests/c_host coverage yet; the header is authoritative */
+typedef struct MigoNetworkReport {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    MigoNetworkType type;
+    MigoNetworkFlags flags;      /* MIGO_NETWORK_FLAG_CONNECTED, _SYSTEM_PROXY, _WEAK */
+    int32_t signal_strength_dbm; /* 0 when unknown */
+    uint32_t reserved0;          /* zero */
+} MigoNetworkReport;
+
+MIGO_API MigoResult MIGO_CALL migo_session_report_network(MigoSession *session,
+                                                          const MigoNetworkReport *report);
+```
+
+The network, whole: what `getNetworkType` answers. Report it now and again each
+time anything in it changes. Content hears a change of the connection or its
+type through `onNetworkStatusChange`, and a change of the host's judgement
+through `onNetworkWeakChange`.
+
+- `MIGO_NETWORK_FLAG_CONNECTED`: the network reaches the internet.
+- `MIGO_NETWORK_FLAG_SYSTEM_PROXY` (`hasSystemProxy`): the system routes the
+  network through a proxy, as the platform's own setting says. Games read it
+  to refuse running under a capture proxy, so it is the device's setting, not
+  a guess.
+- `MIGO_NETWORK_FLAG_WEAK` (`weakNet`): the host judges the network weak.
+- `signal_strength_dbm` (`signalStrength`): the received signal in dBm,
+  Wi-Fi's RSSI or a cell's signal, and `0` when the host cannot read it, as on
+  iOS.
+
+Returns:
+
+- `MIGO_OK` — kept (and forwarded, when content listens and anything changed)
+- `MIGO_ERROR_INVALID_ARGUMENT` — `session` or `report` is NULL; `type` is
+  above `MIGO_NETWORK_5G`; a flag the header does not define;
+  `MIGO_NETWORK_NONE` reported as connected or weak; a positive signal; a
+  non-zero `reserved0`
+- `MIGO_ERROR_INVALID_STATE` — the Session has been destroyed
+
 ## migo_session_set_network_status
 
 ```c
@@ -745,8 +788,9 @@ MIGO_API MigoResult MIGO_CALL migo_session_set_network_status(MigoSession *sessi
                                                               uint8_t connected);
 ```
 
-The device's network, as content's `getNetworkType` and `onNetworkStatusChange`
-describe it. The host reports the network the device is on now and again each
+The report with only the type and whether it is connected known: no proxy, no
+signal, not weak. The device's network, as content's `getNetworkType` and
+`onNetworkStatusChange` describe it. The host reports the network the device is on now and again each
 time it changes; Migo keeps the last report and tells content about a change
 only while content is listening. Before the first report, content's network
 calls fail with "not supported". May be called before a Surface is attached;
@@ -1065,6 +1109,74 @@ Returns:
 - `MIGO_OK` — delivered
 - `MIGO_ERROR_INVALID_ARGUMENT` — a NULL or malformed record; an id that is empty, longer than 256 bytes or not UTF-8; a
   value longer than 512 bytes; the host did not declare `MIGO_HOST_SERVICE_BLUETOOTH`
+- `MIGO_ERROR_INVALID_STATE` — no Surface attached
+
+## migo_session_post_camera_frame
+
+```c
+typedef uint32_t MigoPixelFormat;
+#define MIGO_PIXEL_FORMAT_RGBA8 0U
+#define MIGO_PIXEL_FORMAT_BGRA8 1U
+
+typedef struct MigoCameraFrame {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint32_t camera_id;
+    uint32_t width;
+    uint32_t height;
+    uint32_t row_stride;
+    MigoPixelFormat format;
+    uint32_t reserved0;
+    const uint8_t *pixels;
+} MigoCameraFrame;
+
+MIGO_API MigoResult MIGO_CALL migo_session_post_camera_frame(MigoSession *session,
+                                                             const MigoCameraFrame *frame);
+```
+
+One frame of a camera content listens to (`MIGO_CAMERA_LISTEN_FRAME_CHANGE`), from any thread while a Surface is attached:
+`width` x `height` pixels of `format`, rows top first, `row_stride` bytes apart. A camera sends thirty a second, so this
+is a typed record, borrowed for the call: the pixels are read once into content's RGBA -- the reference's
+`onCameraFrame` data, four bytes a pixel, opaque -- and only the latest frame waits for content; one that arrives before
+content took the last replaces it.
+
+Returns:
+
+- `MIGO_OK` — delivered, or replaced the frame content had not taken yet
+- `MIGO_ERROR_INVALID_ARGUMENT` — a NULL or malformed record; a format the header does not define; a width or height of 0
+  or over 8192; a `row_stride` below `width * 4`; a frame whose RGBA is over 64 MiB; the host did not declare
+  `MIGO_HOST_SERVICE_CAMERA`
+- `MIGO_ERROR_INVALID_STATE` — no Surface attached
+
+## migo_session_post_recorder_frame
+
+```c
+typedef struct MigoRecorderFrame {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint32_t recording_id;
+    uint32_t is_last_frame;
+    const uint8_t *data;
+    uint32_t length;
+    uint32_t reserved0;
+} MigoRecorderFrame;
+
+MIGO_API MigoResult MIGO_CALL migo_session_post_recorder_frame(MigoSession *session,
+                                                               const MigoRecorderFrame *frame);
+```
+
+One frame of a recording whose `MIGO_RECORDER_START` asked for frames (`frameSize`), from any thread while a Surface is
+attached: `length` bytes of the recording's format, at most 1 MiB, for content's `onFrameRecorded`. `is_last_frame` is 1
+for the frame that ends the recording -- which may be empty -- and 0 otherwise. A microphone sends many a second, so this
+is a typed record, borrowed for the call and copied once. Frames share a byte budget content drains: one over it is
+refused and dropped, so a host that outruns content loses frames rather than memory; the last frame is never dropped.
+
+Returns:
+
+- `MIGO_OK` — delivered
+- `MIGO_ERROR_WOULD_BLOCK` — content has not taken enough of the frames before it; this one is dropped
+- `MIGO_ERROR_INVALID_ARGUMENT` — a NULL or malformed record; a `recording_id` of 0; an `is_last_frame` other than 0 or 1;
+  a `length` over 1 MiB, or `data` NULL with a length; the host did not declare `MIGO_HOST_SERVICE_RECORDER`
 - `MIGO_ERROR_INVALID_STATE` — no Surface attached
 
 ## migo_session_set_ecosystem_value

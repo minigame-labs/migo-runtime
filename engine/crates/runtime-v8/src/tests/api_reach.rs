@@ -29,12 +29,12 @@ use deno_core::serde_json::{self, Value, json};
 use deno_core::{FastString, JsRuntime, PollEventLoopOptions, RuntimeOptions, v8};
 use shared::services::{
     AccelerometerService, AdService, AudioPlatformService, AuthService, BatteryService,
-    BluetoothService, CameraService, ClipboardService, CodecService, CommerceServices,
-    CompassService, ConnectivityServices, DeviceMotionService, EcosystemService, FileService,
-    GameLogService, GamepadService, GyroscopeService, ImageApiService, InteractionService,
-    KeyboardService, LocationService, MediaServices, NavigateService, NetworkService,
-    PaymentService, PermissionService, RecorderService, ScanCodeService, Scope, ScopeState,
-    ScreenService, SensorServices, ServiceError, ShareService, SubpackageService,
+    BlePeripheralService, BluetoothService, CameraService, ClipboardService, CodecService,
+    CommerceServices, CompassService, ConnectivityServices, DeviceMotionService, EcosystemService,
+    FileService, GameLogService, GamepadService, GyroscopeService, ImageApiService,
+    InteractionService, KeyboardService, LocationService, MediaServices, NavigateService,
+    NetworkService, PaymentService, PermissionService, RecorderService, ScanCodeService, Scope,
+    ScopeState, ScreenService, SensorServices, ServiceError, ShareService, SubpackageService,
     SystemInfoService, SystemUtilServices, UpdateService, VibrationService, VideoDecoderService,
     VideoFrameSource, VideoService, WindowService,
 };
@@ -81,6 +81,7 @@ probe_accessors!(MediaServices {
 probe_accessors!(ConnectivityServices {
     network: NetworkService,
     bluetooth: BluetoothService,
+    ble_peripheral: BlePeripheralService,
     location: LocationService,
 });
 probe_accessors!(CommerceServices {
@@ -113,8 +114,6 @@ impl GyroscopeService for ProbeService {}
 impl CompassService for ProbeService {}
 impl AccelerometerService for ProbeService {}
 impl AudioPlatformService for ProbeService {}
-impl RecorderService for ProbeService {}
-impl CameraService for ProbeService {}
 impl ImageApiService for ProbeService {}
 impl NetworkService for ProbeService {}
 impl BluetoothService for ProbeService {}
@@ -134,6 +133,57 @@ impl ScanCodeService for ProbeService {}
 impl NavigateService for ProbeService {}
 impl WindowService for ProbeService {}
 impl EcosystemService for ProbeService {}
+
+/// A host that has taken content's camera and not yet answered: the camera
+/// stays content's, so what its methods reach is measured too. A camera whose
+/// create failed is destroyed, and its methods reach nothing.
+impl CameraService for ProbeService {
+    fn create(&self, _request_json: &str) -> Result<(), ServiceError> {
+        Ok(())
+    }
+}
+
+/// The calls a probed host answers, as a host does once it has done what was
+/// asked: the hook, and the request it answers. Drained by the probe loop, which
+/// dispatches each answer as a host's would arrive.
+static ANSWERS: Mutex<Vec<(&str, String)>> = Mutex::new(Vec::new());
+
+/// A host that serves: content's server is made, so what its methods reach is
+/// measured too. Its server arrives only in the answer.
+impl BlePeripheralService for ProbeService {
+    fn create_server(&self, request_json: &str) -> Result<(), ServiceError> {
+        ANSWERS.lock().unwrap().push((
+            shared::services::BLE_PERIPHERAL_RESULT_HOOKS
+                [shared::services::ble_peripheral_method::CREATE_SERVER as usize],
+            request_json.to_owned(),
+        ));
+        Ok(())
+    }
+}
+
+/// Every answer a probed host owes, dispatched as the host's would arrive.
+fn answer_probed_calls(runtime: &mut JsRuntime) {
+    let answers: Vec<_> = ANSWERS.lock().unwrap().drain(..).collect();
+    for (hook, request) in answers {
+        let request: Value = serde_json::from_str(&request).expect("a request is JSON");
+        let answer = json!({ "requestId": request["requestId"] }).to_string();
+        eval_string(
+            runtime,
+            format!(
+                "globalThis[Symbol.for('Migo.hostBridge')]._internalDispatch({hook:?}, {:?}); ''",
+                json!([answer]).to_string()
+            ),
+        );
+    }
+}
+
+/// A host that has taken content's recording: the recording stays content's,
+/// so what its pause, resume and stop reach is measured too.
+impl RecorderService for ProbeService {
+    fn start(&self, _request_json: &str) -> Result<(), ServiceError> {
+        Ok(())
+    }
+}
 
 impl UpdateService for ProbeService {
     fn apply_update(&self) -> Result<(), ServiceError> {
@@ -164,33 +214,10 @@ impl VideoDecoderService for ProbeService {
     }
 }
 
+/// A host that has made content's player: what its methods reach is measured.
 impl VideoService for ProbeService {
-    fn create(&self, _options_json: &str) -> Result<String, ServiceError> {
-        refused()
-    }
-    fn play(&self, _video_id: u32) -> Result<(), ServiceError> {
-        refused()
-    }
-    fn pause(&self, _video_id: u32) -> Result<(), ServiceError> {
-        refused()
-    }
-    fn stop(&self, _video_id: u32) -> Result<(), ServiceError> {
-        refused()
-    }
-    fn seek(&self, _video_id: u32, _position: f64) -> Result<(), ServiceError> {
-        refused()
-    }
-    fn request_fullscreen(&self, _video_id: u32, _direction: i32) -> Result<(), ServiceError> {
-        refused()
-    }
-    fn exit_fullscreen(&self, _video_id: u32) -> Result<(), ServiceError> {
-        refused()
-    }
-    fn set_property(&self, _video_id: u32, _property_json: &str) -> Result<(), ServiceError> {
-        refused()
-    }
-    fn destroy(&self, _video_id: u32) -> Result<(), ServiceError> {
-        refused()
+    fn create(&self, _request_json: &str) -> Result<(), ServiceError> {
+        Ok(())
     }
 }
 
@@ -227,6 +254,12 @@ const PLUMBING: &[&str] = &[
     "op_now",
     "op_queue_microtask",
     "op_run_microtasks",
+    "op_drain_pending_rejections",
+    "op_immediate_check",
+    "op_timer_now",
+    "op_timer_schedule",
+    "op_timer_track",
+    "op_timer_untrack",
     "op_timer_cancel",
     "op_timer_is_backgrounded",
     "op_timer_queue",
@@ -236,6 +269,7 @@ const PLUMBING: &[&str] = &[
 const LISTENING: &[&str] = &[
     "op_await_frame_content",
     "op_await_next_frame",
+    "op_game_recorder_next_event",
     "op_tcp_next_event",
     "op_udp_next_event",
     "op_ws_next_event",
@@ -319,6 +353,11 @@ const CALLS: &[(&str, &str)] = &[
         "__probeCall('createCustomAd', [{ adUnitId: 'probe', style: { left: 0, top: 0 } }])",
     ),
     (
+        "createGameRecorderShareButton",
+        "__probeCall('createGameRecorderShareButton', [{ style: {}, \
+             share: { bgm: '/tmp/probe.mp3', timeRange: [[0, 3000]] } }])",
+    ),
+    (
         "createGridAd",
         "__probeCall('createGridAd', [{ adUnitId: 'probe', style: { left: 0, top: 0, width: 300 } }])",
     ),
@@ -326,6 +365,25 @@ const CALLS: &[(&str, &str)] = &[
     (
         "createInterstitialAd",
         "__probeCall('createInterstitialAd', [{ adUnitId: 'probe' }])",
+    ),
+    (
+        "createBLEPeripheralServer",
+        "migo.createBLEPeripheralServer().then(function (res) { \
+             var server = res.server; \
+             server.addService({ service: { uuid: 'FFE0', characteristics: [] } }); \
+             server.removeService({ serviceId: 'FFE0' }); \
+             server.startAdvertising({ advertiseRequest: {} }); \
+             server.stopAdvertising({}); \
+             server.writeCharacteristicValue({ serviceId: 'FFE0', characteristicId: 'FFE1', \
+                 value: new ArrayBuffer(1), needNotify: false }); \
+         }, function () {})",
+    ),
+    (
+        "createVideo",
+        "__probeCall('createVideo', [{}]); \
+         var __video = migo.createVideo({}); \
+         __video.seek(1).then(function () {}, function () {}); \
+         __video.requestFullScreen(0).then(function () {}, function () {})",
     ),
     (
         "createVideoDecoder",
@@ -379,6 +437,10 @@ const CALLS: &[(&str, &str)] = &[
     (
         "preDownloadSubpackage",
         "__probeCall('preDownloadSubpackage', [{ name: 'probe' }])",
+    ),
+    (
+        "operateGameRecorderVideo",
+        "__probeCall('operateGameRecorderVideo', [{}])",
     ),
     (
         "previewImage",
@@ -515,9 +577,10 @@ fn eval_string(runtime: &mut JsRuntime, source: String) -> String {
     v8::Local::new(scope, value).to_rust_string_lossy(scope)
 }
 
-#[cfg(feature = "profile-full")]
 #[test]
 fn api_reach_matches_the_committed_record() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let reference: Value = serde_json::from_str(
         &std::fs::read_to_string(contract("minigame-api.json")).expect("the API reference"),
     )
@@ -550,8 +613,15 @@ fn api_reach_matches_the_committed_record() {
     let temp = sandbox.paths.temp_dir();
     std::fs::write(temp.join("probe.png"), [0x89, b'P', b'N', b'G']).expect("probe image");
     std::fs::write(temp.join("probe.ttf"), [0, 1, 0, 0]).expect("probe font");
+    std::fs::write(temp.join("probe.mp3"), [0xff, 0xfb]).expect("probe music");
+    // A recording the recorder finished, so sharing it gets as far as the host.
+    let recording = sandbox.paths.recording_path();
+    std::fs::create_dir_all(recording.parent().expect("the recordings directory"))
+        .expect("the recordings directory");
+    std::fs::write(&recording, b"mp4").expect("probe recording");
     let mut state = super::support::test_host_state();
     state.vfs = Some(sandbox.vfs());
+    state.game_paths = Some(Arc::new(sandbox.paths.clone()));
     // Every channel granted, so a network call gets past the gate and reaches what it would reach in a host that
     // allowed it: the record is the API's reach, not the default policy's refusal.
     state.network_policy = shared::network_policy::NetworkPolicy::unrestricted();
@@ -612,6 +682,7 @@ fn api_reach_matches_the_committed_record() {
             let deadline = std::time::Instant::now() + SETTLE_BOUND;
             loop {
                 let before = dispatched.get();
+                answer_probed_calls(&mut runtime);
                 reactor.block_on(async {
                     let _ = tokio::time::timeout(
                         SETTLE_SLICE,

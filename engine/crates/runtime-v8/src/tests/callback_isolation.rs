@@ -97,6 +97,8 @@ mod callback_isolation_tests {
     fn exec(rt: &mut JsRuntime, source: impl Into<String>) {
         rt.execute_script("<test:callbacks>", FastString::from(source.into()))
             .expect("callback probe script");
+        rt.perform_microtask_checkpoint()
+            .expect("callback task checkpoint");
     }
 
     fn assert_js(rt: &mut JsRuntime, expression: &str) {
@@ -133,6 +135,8 @@ mod callback_isolation_tests {
     /// A `success` that throws must not swallow `complete`.
     #[test]
     fn a_throwing_success_callback_still_runs_complete() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot();
         exec(
             &mut rt,
@@ -162,6 +166,8 @@ mod callback_isolation_tests {
     /// other test.
     #[test]
     fn a_throwing_fail_callback_still_runs_complete() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot();
         exec(
             &mut rt,
@@ -203,6 +209,8 @@ mod callback_isolation_tests {
     #[cfg(feature = "api-media")]
     #[test]
     fn a_failing_op_reports_through_fail_rather_than_throwing() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot();
         exec(
             &mut rt,
@@ -227,6 +235,36 @@ mod callback_isolation_tests {
         );
     }
 
+    /// The audio options are answered as every asynchronous call is: callback-style
+    /// content gets nothing back and hears its callbacks after the call returns.
+    /// `setInnerAudioOption` and `getAvailableAudioSources` called them before
+    /// returning, and returned a Promise to callback-style content too, whose
+    /// rejection nobody held.
+    #[cfg(feature = "api-media")]
+    #[test]
+    fn the_audio_options_answer_after_returning_and_return_nothing_to_callbacks() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
+        let mut rt = boot();
+        exec(
+            &mut rt,
+            r#"
+            for (const api of ['setInnerAudioOption', 'getAvailableAudioSources']) {
+                const returned = migo[api]({
+                    complete: function () { globalThis.__log.push(api + ' complete'); },
+                });
+                globalThis.__log.push(api + (returned === undefined ? ' returned nothing' : ' RETURNED'));
+            }
+            "#,
+        );
+        assert_js(
+            &mut rt,
+            "globalThis.__log.join(',') === 'setInnerAudioOption returned nothing,\
+             getAvailableAudioSources returned nothing,setInnerAudioOption complete,\
+             getAvailableAudioSources complete'",
+        );
+    }
+
     /// An op's error must reach JS as a constructible Error, not as `undefined`.
     ///
     /// `#[class("AudioError")]` on the Rust side only names the class; deno_core
@@ -242,6 +280,8 @@ mod callback_isolation_tests {
     #[cfg(all(feature = "api-media", feature = "api-system"))]
     #[test]
     fn a_failing_op_error_is_constructible_in_js() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot();
         for (probe, class) in [("__audioOp", "AudioError"), ("__workerOp", "WorkerError")] {
             exec(
@@ -281,6 +321,8 @@ mod callback_isolation_tests {
     #[cfg(feature = "api-connectivity")]
     #[test]
     fn the_login_apis_answer_by_callback_or_by_promise() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut rt = boot();
         for api in [
             "login",

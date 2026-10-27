@@ -29,8 +29,11 @@ The three currently declared CMake targets are:
 - `migo::qt6-x11-surface-view` — a Qt 6.4+ Widgets adapter based on the `xcb` platform plugin,
   using a native child `QWidget` and handling surface lifecycle, input, focus, IME composition, and
   frame requests.
+- `migo::qt6-host-services` — the host-service channel for Qt, and the built-in services Qt's own
+  facilities answer (the clipboard; toasts, loading indicators, modals and action sheets; the window's
+  size, state and cursor; the screen; compressing, picking and saving images and files).
 - `migo::qt6-managed-session` — the Managed ownership form: `MigoManagedSession` owns the Session,
-  callback table, and view.
+  callback table, and view, and installs the built-in services.
 
 Qt Wayland, Qt Quick, and GTK 4 are **not yet supported**. The public C ABI is still marked
 `MIGO_C_ABI_CANDIDATE`; this Host Kit is an integration preview until the ABI is frozen.
@@ -45,7 +48,8 @@ sudo apt-get update
 sudo apt-get install -y \
   cmake ninja-build g++ ripgrep xvfb xauth \
   qt6-base-dev qt6-base-dev-tools qt6-qpa-plugins \
-  libx11-dev libxkbcommon-x11-dev libxcb-cursor0
+  libx11-dev libxkbcommon-x11-dev libxcb-cursor0 \
+  pkg-config libxcb-xinput-dev libxtst-dev libudev-dev dbus
 ```
 
 If the host uses only the toolkit-neutral `migo::linux-surface-host` controller (Wayland), also
@@ -56,6 +60,16 @@ sudo apt-get install -y libwayland-dev
 ```
 
 Do not install Qt private-header packages; Host Kit does not depend on any private Qt API.
+
+At run time, `createVideoDecoder` decodes through GStreamer, which the engine loads when it is there
+and does not link: its base plugins (`playbin`, `videoconvert`), the demuxers and decoders the
+videos need -- `gstreamer1.0-plugins-good` for MP4, `gstreamer1.0-libav` for H.264 among others.
+A system without GStreamer runs every game; only `createVideoDecoder` answers that it is not
+supported.
+
+```bash
+sudo apt-get install -y gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav
+```
 
 ## 2. Obtain the Linux SDK
 
@@ -147,6 +161,196 @@ MigoSession  > SurfaceHost ──> MigoQtX11SurfaceView
 `QApplication` must exist before the Qt view and must be destroyed only after the view's final surface release,
 because Qt owns the X11 connection and GUI event loop.
 
+### Host services
+
+When content calls APIs such as `migo.showToast`, `showModal` or `setClipboardData`, the engine asks the
+host through the C ABI's host-service channel (`MigoHostCallbacks.host_services` and
+`on_host_service_call`). `MigoQtBuiltInHostServices` in `migo::qt6-host-services` answers the part a
+desktop already offers with Qt's own:
+
+- **Clipboard** (`setClipboardData`, `getClipboardData`): `QClipboard`.
+- **Interaction** (`showToast`, `hideToast`, `showLoading`, `hideLoading`, `showModal`, `showActionSheet`):
+  toasts and loading indicators are a panel over the game that takes none of its input, one at a time -- `hideToast` hides only a
+  toast and `hideLoading` only a loading indicator -- and with `mask` the game hears none of the
+  player's input while one is up; a modal is a window-modal dialog, and when `editable` its `content`
+  is what the field starts with; an action sheet is a menu popped up over the game's centre, and closing
+  it fails with `cancel`. Button colours are not applied: a desktop's dialogs are the desktop's.
+- **Keyboard** (`showKeyboard`, `hideKeyboard`, `updateKeyboard` and the `onKeyboard*` events): a desktop has no soft
+  keyboard and content no field of its own, so content's text is typed into a field along the bottom of the game, which
+  takes the keyboard's focus while it shows; its height is the keyboard height content is told. Each edit reports the
+  whole text (content's own `updateKeyboard` is not reported back); Enter confirms in a one-line field and closes it
+  unless content asked to hold it, and a field of several lines takes Enter as a new line. Esc, or turning to the game or
+  another window, closes it, and content is told the text it was left with. A number keyboard takes digits, and a length
+  limit counts UTF-16 code units, as on Android. An on-screen keyboard that follows the focused field (a touch
+  device's) opens for it, with digits and the confirm key content named.
+- **Window** (`setWindowSize`, `setCursor`, `requestPointerLock`, `onWindowStateChange`): `setWindowSize` is the game's
+  size in pixels, the window growing or shrinking by what the view must (refused while full screen); each change of the
+  window's state is reported (minimize, maximize -- full screen included -- normalize); `setCursor` sets the cursor over
+  the game, a CSS keyword or an image and its hotspot. A pointer lock is granted only with the player at the game -- the
+  view holding the keyboard, the cursor over the part of it that shows -- and refused, and said to be, otherwise. While
+  it holds, the cursor is hidden and the mouse grabbed, and XInput 2's raw motion (after the pointer's acceleration)
+  moves content's pointer from where the cursor stood, past the view's edges too; a click lands where content's pointer
+  is. Esc releases it (that Esc and its release are not the game's), as do the view losing the keyboard and the game
+  ending; the cursor then stands where it stood.
+- **Screen** (`setDeviceOrientation`, `onDeviceOrientationChange`, `setEnableDebug`): a desktop's screen does not
+  turn, its window does, so the screen's orientation is the game's shape -- portrait when its view is taller than
+  wide, landscape otherwise -- reported each time the view crosses from one to the other; `setDeviceOrientation`
+  turns the window to the shape asked for, the view's width and height exchanged (refused while full screen, or when
+  the screen cannot hold the window turned). `setEnableDebug` turns the debugging aids: `MigoManagedSession` shows a
+  panel over the top 40% of the game -- the frames a second and what content writes to its console from then -- that
+  takes no input, so the game stays playable, and reports `MIGO_HOST_APP_INFO_FLAG_DEBUG` to the Session
+  (`getAppBaseInfo().enableDebug`); an App that answers the screen service itself turns them with `setDebugAids()`.
+  The brightness (`getScreenBrightness`, `setScreenBrightness`) is the backlight's: read from the one the kernel shows
+  in `/sys/class/backlight` (the firmware's over the platform's over a raw one, as systemd and GNOME pick) and set
+  through logind's `Session.SetBrightness` (the active session's user needs no privileges), 0 its darkest, still lit;
+  a screen with no backlight -- an external monitor, a virtual machine -- is refused. Screenshot and recording notices
+  and `setVisualEffectOnCapture` are not offered: a Linux desktop tells an app of neither, nor keeps a window out of a
+  screenshot (on X11 any client may read any window).
+- **Images** (`compressImage`, `chooseImage`, `chooseMedia`, `chooseMessageFile`, `saveFileToDisk`,
+  `saveImageToPhotosAlbum`, `previewImage`, `previewMedia`): `compressImage` reads with Qt's image readers -- upright, its EXIF orientation applied,
+  decoded no larger than the size asked where the format can -- and writes a PNG as a PNG and anything else as a JPEG at
+  the quality asked (at most 50 million pixels, as on the other platforms). The pickers are the file dialog -- the
+  desktop's, through its portal or its platform theme, wherever Qt finds one, and Qt's own otherwise -- and the game is
+  given copies, never the player's files: a JPEG, PNG, GIF, BMP or WebP as it is, anything else Qt reads (a TIFF, an
+  SVG, a HEIF where a plugin reads it) written upright as a PNG when it has transparency and a JPEG when not.
+  `chooseMessageFile` gives each file the name the player saw, its kind (`image`, `video` or `file`, by what the desktop
+  knows it to be) and when it last changed; `extension` narrows `type: 'file'` only, as the reference says. A dialog
+  does not count, so the first `count` the player picked are given. `saveFileToDisk` is the dialog to save, the copy
+  replacing a file only once whole; `saveImageToPhotosAlbum` writes into the player's Pictures folder (the XDG
+  `PICTURES` directory) as `IMG_<milliseconds>.<suffix>`, refusing what is no image. A file the game is given is staged
+  in the App's cache (`QStandardPaths::CacheLocation`), where the engine takes it as the call completes -- a rename
+  when the engine's `cache_dir` is on the same volume -- and one it does not take is removed. One file dialog shows at
+  a time. The previews are a viewer over the game, its window's size: the images one at a time, fitted to it, from the
+  one content asked for; Left and Right or the buttons go between them, Esc or the close button closes it, and an image
+  that cannot be decoded shows a warning sign. Each image is held open before the call is answered, so the engine may
+  take back what it lent; an http(s) one -- which the engine lets through as the session's network policy lets content
+  download -- is downloaded over Qt's network, with no referrer, into a file removed as it is made. Another preview
+  replaces the one shown. Videos are the optional `migo::qt6-media` component's (below): without it, `chooseMedia` and
+  `previewMedia` refuse them. The camera is refused.
+- **Videos** (`chooseMedia`, `previewMedia`), with `migo::qt6-media`: GStreamer -- the engine's decoder on Linux too --
+  describes and plays them. It is its own component because it links GStreamer, which the rest of the Host Kit does
+  not: configure the Host Kit with `-DMIGO_LINUX_HOST_KIT_BUILD_QT6_MEDIA=ON` (it needs `libgstreamer1.0-dev` and
+  `libgstreamer-plugins-base1.0-dev`), link `migo::qt6-media`, and give the Session a `MigoQtMedia`:
+
+  ```cpp
+  MigoManagedSession::Options options;
+  options.videos = std::make_shared<MigoQtMedia>();
+  ```
+
+  `chooseMedia` then offers images and videos -- or only videos, as `mediaType` asks -- and describes a video as the
+  other platforms do: `duration` in seconds, `width` and `height` as it is shown (a video recorded turned is measured
+  upright, non-square pixels at their intended shape), and its first frame as the cover (`thumbTempFilePath`, a
+  JPEG); one GStreamer cannot read is answered with zeros and no cover. `previewMedia` plays a video in the viewer,
+  with its sound: its `poster` until it first plays (its first frame without one), a click or the button to play and
+  pause, and a slider to move through it. A file is played through the handle the viewer holds, so the engine may
+  take back what it lent; an http(s) video is played as it streams. Which videos play is GStreamer's plugins':
+  `gstreamer1.0-plugins-good` for MP4 and WebM, `gstreamer1.0-libav` for H.264 and most other codecs.
+- **Location** (`getLocation`, `getFuzzyLocation`): GeoClue's position, asked of GeoClue on the system bus outside a
+  sandbox and of the XDG desktop portal's `Location` inside one (Flatpak, Snap), which asks GeoClue for the App.
+  `getLocation` asks at street level, or exactly with `isHighAccuracy`, and waits ten seconds for a position --
+  `highAccuracyExpireTime` instead when given with it -- failing with `unable to get location`; `getFuzzyLocation` asks
+  at city level, and the engine rounds what it answers. Requests made while GeoClue runs share it, and it stops once
+  they are answered. GeoClue names the App to its agent by `QGuiApplication::desktopFileName()` (else the application
+  name): set it to the App's desktop file id.
+- **Bluetooth** (`openBluetoothAdapter` and the BLE central APIs): BlueZ's, on the system bus -- the adapter (not
+  powered is `10001`), a BLE scan with the services asked for (`SetDiscoveryFilter`), devices reported as heard
+  (batched by `interval`, once each unless `allowDuplicatesKey`), the connected devices offering a service, and
+  connections answered once BlueZ has resolved the device's services (`timeout` honoured, `-1` for one already made).
+  Services, characteristics, reads (the value arrives on its own), writes with or without response, notifications and
+  the MTU (BlueZ 5.62 on) work as on the other platforms, with the common platform's codes. A device is named by its
+  address; a scan for some services reports only devices offering one, whoever else scans. A connected device's RSSI
+  (BlueZ gives no app one), pairing and setting the MTU (Android's in the reference) and the peripheral mode are
+  refused. BlueZ is mirrored only while the adapter is open.
+- **iBeacons** (`startBeaconDiscovery`, `getBeacons`, `onBeaconUpdate`, `onBeaconServiceChange`): heard in the BLE
+  advertisements BlueZ reports -- the Apple segment of type 2, length 21 -- on a scan of their own (its own D-Bus
+  connection, so content's device scan and the beacon scan neither narrow nor stop each other), for the proximity UUIDs
+  asked for (128-bit; anything else `11006`). The beacons in range are reported every second, as CoreLocation ranges
+  them, those not heard for ten seconds dropped; the distance and proximity are estimated from the RSSI and the
+  transmit power as the Android SDK does. Bluetooth off is `11001`. A second start ranges the new UUIDs instead.
+- **Motion** (`startAccelerometer`, `startGyroscope`, `startCompass`, `startDeviceMotionListening` and their stops): the
+  accelerometer, gyroscope and magnetometer the kernel shows through IIO, read where udev finds them, in the screen's
+  frame (x right, y up the screen, z out of it) -- udev's `ACCEL_MOUNT_MATRIX`, the hardware database's correction for
+  the laptop, over the kernel's `mount_matrix`; a convertible's display accelerometer over its base's. Read at the
+  interval asked (`game` 20 ms, `ui` 60 ms, `normal` 200 ms) on a thread of their own. The compass heading and the
+  device's orientation are worked out from gravity and the magnetic field as Android's `SensorManager` does, so the two
+  platforms answer one position alike; IIO says nothing of a magnetometer's calibration, so the compass's accuracy is
+  `unknown`. A sensor the device lacks is refused with what it lacks: nothing is made up. The Host Kit links libudev.
+- **Permission** (`authorize` and the calls that need a scope): the scopes the desktop decides. `scope.userLocation`
+  (and `scope.userLocationBackground`: a desktop has no other) is GeoClue's -- its agent, or inside a sandbox the
+  portal, asks the player the first time the App asks -- and is recorded as decided; with no GeoClue there is no one to
+  ask, and the scope stays undecided. `scope.writePhotosAlbum` is granted: the player's Pictures folder is theirs and
+  the App's, which a desktop does not gate. Any other scope is refused (`auth deny`): an App that decides scopes --
+  sign-in, its own consent dialog -- answers the permission service itself, all of it.
+
+`MigoManagedSession` reads the gamepads the kernel shows (`getGamepads`, `onGamepadConnected`,
+`onGamepadDisconnected`, `vibrationActuator`): the evdev devices udev tags as joysticks, found as they come and go. A
+pad that follows the kernel's gamepad layout (`Documentation/input/gamepad.rst`) is mapped onto the W3C standard
+layout -- 17 buttons and 4 axes, with the analog triggers and the D-pad's hat where the driver reports them -- and one
+that does not is passed on as it is (its buttons and axes in code order, `mapping` empty). A pad whose driver plays
+`FF_RUMBLE`, opened writable, has dual rumble. Samples are stamped on `CLOCK_MONOTONIC`, the clock the X server stamps
+the view's input with. Reading a gamepad needs access to its `/dev/input/event*` node, which desktop sessions grant the
+logged-in user (udev's `uaccess`); inside a Flatpak it needs `--device=all`.
+
+`MigoManagedSession` also keeps the display awake for content (`setKeepScreenOn`): it asks the desktop through the XDG
+desktop portal's `Inhibit` (the session's idle: blanking, locking), or through the freedesktop screen saver
+(`org.freedesktop.ScreenSaver.Inhibit`) where no portal answers, and lets go when content stops asking or the game
+ends. A desktop with neither holds nothing, and the host logs a warning.
+
+It also reports the battery and the network as the system shows them, and again each time they change. The battery is
+UPower's display device (every battery the machine has, as one): its level and whether it charges, with
+power-profiles-daemon's saver as the low-power mode (`isLowPowerModeEnabled`); a machine with no battery reports none,
+and content's `getBatteryInfo` says, truly, that it is not supported. The network is NetworkManager's primary
+connection: Wi-Fi and wired both `wifi` (the nearest the API has), a modem `unknown` (its generation is not
+NetworkManager's to say), disconnected `none`; whether it reaches the internet is NetworkManager's connectivity check, or
+its state where the check is off. A machine without NetworkManager reports none. The Wi-Fi switch (`getSystemSetting`'s
+`wifiEnabled`) is NetworkManager's too: on when both its software switch and the radio's own are.
+
+Content runs and shows with its window: it runs while the window is shown and not minimized (`onShow`), and is paused
+while it is minimized or hidden (`onHide`); a window covered whole (X no longer exposes it) keeps its game running,
+unseen, as a background browser tab keeps its script running. The game starts shown and running, and is told only of
+changes.
+
+`getAppAuthorizeSetting`: a Linux App outside a sandbox meets no authorisation the system gates -- its files, devices
+and notifications are its user's -- so the album, Bluetooth, the camera, the microphone, notifications and the calendar
+are reported authorised; inside one (Flatpak, Snap) the portals decide as content asks, and they are not determined.
+Location is GeoClue's agent's to decide, which the Host Kit does not ask yet: not determined.
+
+Memory warnings (`onMemoryWarning`) are heard where GLib hears them: low-memory-monitor's `LowMemoryWarning` on the
+system bus outside a sandbox, the desktop portal's `MemoryMonitor`, which relays it, inside one. Its levels 50 (low),
+100 (medium) and 255 (critical) are Migo's moderate, low and critical; the engine lets that share of its caches go
+before content hears. A desktop that runs neither warns of nothing.
+
+`MigoManagedSession` installs these services. The services the App answers itself (adverts, payments,
+sign-in, ...) come from a `MigoQtHostServiceProvider` given as `Options::appServices`: the services the
+App names are its, including any the built-in services would answer, and the built-in services answer
+the rest. The same `Options` carry the network policy (`networkPolicyJson`; without one the game has no
+network at all) and the launch options (`launchOptionsJson`), each the JSON of the `MigoSessionConfig`
+field of the same name; `appId` is what content reads as `getAppBaseInfo().host.appId`, and without it the App's
+`QGuiApplication::desktopFileName()` -- the name a Linux App gives itself:
+
+```cpp
+class AppServices final : public migo::linux_host::qt6::MigoQtHostServiceProvider {
+public:
+    std::uint64_t services() const noexcept override {
+        return migo::linux_host::qt6::hostServiceBit(MIGO_HOST_SERVICE_AD);
+    }
+    void call(MigoHostService service, std::uint32_t method, const QJsonObject &request,
+              migo::linux_host::qt6::MigoQtHostServiceReply reply) override {
+        // Hand it to the advert SDK; when its result arrives, reply.succeed(...) or reply.fail("..."), once.
+    }
+};
+
+migo::linux_host::qt6::MigoManagedSession::Options options;
+options.networkPolicyJson = R"({"request": ["api.example.com"]})";
+options.appServices = &app_services;  // must outlive the Session
+migo::linux_host::qt6::MigoManagedSession game(engine, window, options);
+```
+
+An App that owns its Session (the Bound shape) uses `MigoQtBuiltInHostServices` and
+`MigoQtHostServiceChannel` directly: it hands calls to them from its own `on_host_service_call`, and
+closes the channel before `migo_session_destroy`. A dialog can be answered after the game has gone, and
+a closed channel keeps that answer from reaching a destroyed Session.
+
 ## 5. Input and frames
 
 - **Coordinates are CSS pixels; no conversion is needed**: Qt's logical position equals physical
@@ -180,9 +384,6 @@ this case rather than hiding the error.
   limitation is established by evidence rather than a documentation claim.
 - **Qt Quick**: it uses a compositor-owned scene graph; child-window overlays break clipping,
   transforms, and frame scheduling, so it is not supported yet.
-- **On-screen keyboard**: `MigoManagedSession` explicitly rejects keyboard capability; a desktop
-  host passes input through the physical keyboard, and `migo.showKeyboard` correctly reports failure
-  here.
 
 ## Verify the contract tests
 

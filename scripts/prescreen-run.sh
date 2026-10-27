@@ -18,9 +18,14 @@
 #
 #   * It observes the screen and the log. It does not instrument the content, so
 #     it works on a bundle that was never built with this in mind -- which is the
-#     whole point, since the bundle belongs to someone else. A host can inject the
-#     compatibility recorder itself (tools/compat-recorder/recorder.js, logging at
-#     INFO); when the log carries its lines, the report adds what the game reached for.
+#     whole point, since the bundle belongs to someone else. The host can inject the
+#     compatibility recorder (tools/compat-recorder/recorder.js, logging at INFO):
+#     its own host, or one that takes --record; when the log carries its lines, the
+#     report adds what the game reached for.
+#   * What it hands the host (--adapter, --record) the report lists, and it says
+#     "injected" only for what the host's log confirms by its digest: a host that
+#     ignores the request runs without it, and a verdict on content missing its
+#     adapter is about the run, not the bundle.
 #   * "Painted" here means the surface carries a real image: many distinct
 #     colours rather than one flat fill. A game that legitimately renders a solid
 #     colour for its first seconds reads as not-painted, and the report says the
@@ -34,7 +39,7 @@
 # Usage:
 #   scripts/prescreen-run.sh <bundle-dir> --package PKG --activity NAME
 #                            [--device SERIAL] [--game-id ID] [--secs N]
-#                            [--out FILE] [--keep]
+#                            [--adapter FILE] [--record] [--out FILE] [--keep]
 #
 #   --package   an installed host that loads a bundle from its own private
 #               directory. The report names it, because "it ran" means nothing
@@ -48,12 +53,22 @@
 #               that window is the one in front.
 #   --game-id   which slot under <files>/migo/games/<id>/code the host reads
 #               (default: demo)
+#   --adapter   a prelude for the host to inject before the game: the adapter
+#               bundle the content is written against, as for
+#               scripts/compat-report.sh (PRESCREEN.md names it)
+#   --record    have the host inject this checkout's compatibility recorder after
+#               it, and log at INFO
+#
+#   Both are copied to <files>/migo-prescreen/ (adapter.js, recorder.js) and asked
+#   for with the boolean extras migo_prescreen_adapter / migo_prescreen_record.
+#   The host confirms each by logging "injected <name> sha256=<hex>", as the
+#   PrescreenProbeActivity in migo-examples does.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 BUNDLE=""; PKG=""; SERIAL="${ANDROID_SERIAL:-}"; ACTIVITY=""; GAME_ID="demo"; ENTRY="game.js"
-SECS=20; OUT=""; KEEP=false
+SECS=20; OUT=""; KEEP=false; ADAPTER=""; RECORD=false
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --package) PKG="${2:?--package requires a value}"; shift 2 ;;
@@ -70,8 +85,11 @@ while [[ $# -gt 0 ]]; do
         --secs=*) SECS="${1#*=}"; shift ;;
         --out) OUT="${2:?--out requires a path}"; shift 2 ;;
         --out=*) OUT="${1#*=}"; shift ;;
+        --adapter) ADAPTER="${2:?--adapter requires a file}"; shift 2 ;;
+        --adapter=*) ADAPTER="${1#*=}"; shift ;;
+        --record) RECORD=true; shift ;;
         --keep) KEEP=true; shift ;;
-        -h|--help) sed -n '2,45p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,/^set -euo/p' "$0" | sed '$d'; exit 0 ;;
         *) BUNDLE="$1"; shift ;;
     esac
 done
@@ -80,6 +98,8 @@ done
 [[ -d "$BUNDLE" ]] || { echo "not a directory: $BUNDLE" >&2; exit 2; }
 [[ -n "$PKG" ]] || { echo "--package is required: this reports what ran the bundle, and an unnamed host is not evidence" >&2; exit 2; }
 [[ -f "$BUNDLE/game.js" ]] || { echo "no game.js in $BUNDLE; the host loads game.js from the bundle root" >&2; exit 2; }
+[[ -z "$ADAPTER" || -s "$ADAPTER" ]] || { echo "no adapter at $ADAPTER, or it is empty" >&2; exit 2; }
+RECORDER="$ROOT_DIR/tools/compat-recorder/recorder.js"
 
 ADB_BIN="${ADB:-$HOME/Android/Sdk/platform-tools/adb}"
 [[ -x "$ADB_BIN" ]] || ADB_BIN="$(command -v adb || true)"
@@ -130,11 +150,36 @@ CODE_DIR="files/migo/games/$GAME_ID/code"
 if ! "${ADB[@]}" shell "run-as $PKG sh -c 'rm -rf $CODE_DIR && mkdir -p $CODE_DIR && cd $CODE_DIR && tar -xf $REMOTE_STAGE/bundle.tar'" 2>&1 | grep -qv .; then
     :
 fi
-deployed="$("${ADB[@]}" shell "run-as $PKG sh -c 'ls $CODE_DIR/game.js 2>/dev/null'" | tr -d '\r')"
+# What the host is asked to inject: under fixed names in its own directory, emptied every run so
+# nothing of an earlier one is injected, and listed for the report with the digest the host
+# confirms it by. World-readable on the way, or `run-as` cannot copy it in.
+PRELUDE_DIR="files/migo-prescreen"
+EXTRAS=""
+: > "$WORK/preludes.txt"
+stage_prelude() { # role file name-on-device extra
+    local digest
+    cp "$2" "$WORK/$3" && chmod 644 "$WORK/$3"
+    # Of the bytes pushed, by the python3 the report needs anyway: sha256sum is not on every machine.
+    digest="$(python3 -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$WORK/$3")"
+    "${ADB[@]}" push "$WORK/$3" "$REMOTE_STAGE/$3" >/dev/null 2>&1 || { echo "adb push failed" >&2; exit 1; }
+    printf '%s\t%s\t%s\n' "$1" "$(basename "$2")" "$digest" >> "$WORK/preludes.txt"
+    EXTRAS+=" --ez $4 true"
+}
+if [[ -n "$ADAPTER" ]]; then stage_prelude adapter "$ADAPTER" adapter.js migo_prescreen_adapter; fi
+if [[ "$RECORD" == true ]]; then stage_prelude recorder "$RECORDER" recorder.js migo_prescreen_record; fi
+"${ADB[@]}" shell "run-as $PKG sh -c 'rm -rf $PRELUDE_DIR && mkdir -p $PRELUDE_DIR && for f in adapter.js recorder.js; do [ ! -f $REMOTE_STAGE/\$f ] || cp $REMOTE_STAGE/\$f $PRELUDE_DIR/; done'" >/dev/null 2>&1 || true
+# `|| true` on both reads: under pipefail a failed `ls` (a host `run-as` cannot enter) ended the
+# script here in silence, before the lines below that say why.
+placed="$("${ADB[@]}" shell "run-as $PKG sh -c 'ls $PRELUDE_DIR 2>/dev/null'" | tr -d '\r' | sort | tr '\n' ' ')" || true
+wanted="$( { [[ -z "$ADAPTER" ]] || echo adapter.js; [[ "$RECORD" != true ]] || echo recorder.js; } | sort | tr '\n' ' ')"
+deployed="$("${ADB[@]}" shell "run-as $PKG sh -c 'ls $CODE_DIR/game.js 2>/dev/null'" | tr -d '\r')" || true
 "${ADB[@]}" shell "rm -rf $REMOTE_STAGE" >/dev/null 2>&1 || true
 [[ -n "$deployed" ]] || {
     echo "deploy failed: game.js is not in the host's private directory." >&2
     echo "  \`run-as\` needs a debuggable build of $PKG. A release host cannot be driven this way." >&2
+    exit 1; }
+[[ "$placed" == "$wanted" ]] || {
+    echo "deploy failed: $PRELUDE_DIR in the host holds '${placed% }', not '${wanted% }'." >&2
     exit 1; }
 
 # ---- the screen has to be on, and this is not a nicety ------------------
@@ -193,7 +238,7 @@ say "launching $ACTIVITY for ${SECS}s"
 am_out="$("${ADB[@]}" shell "am start -n $ACTIVITY \
     --es migo_game_id $GAME_ID --es migo_entry_point $ENTRY \
     --es gameId $GAME_ID --es migoGameId $GAME_ID \
-    --es MIGO_CAPI_LOG info" 2>&1 | tr -d '\r')" || true
+    --es MIGO_CAPI_LOG info$EXTRAS" 2>&1 | tr -d '\r')" || true
 if grep -qiE "error|does not exist|not exported|permission denial" <<<"$am_out"; then
     echo "could not start $ACTIVITY:" >&2
     sed 's/^/  /' <<<"$am_out" >&2
@@ -217,6 +262,8 @@ fi
 # the dump is bound to this launch's pid.
 sleep 2
 TARGET_PID="$("${ADB[@]}" shell "pidof $PKG" 2>/dev/null | tr -d '\r' | awk '{print $1}')"
+# The report attributes a host's "injected" line to this process only, whatever the log's scope.
+printf '%s\n' "$TARGET_PID" > "$WORK/host-pid.txt"
 [[ -n "$TARGET_PID" ]] && say "host pid $TARGET_PID"
 
 focus_now() {

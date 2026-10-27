@@ -28,6 +28,7 @@ public final class Permissions {
     public static final String BLUETOOTH_ADMIN = "android.permission.BLUETOOTH_ADMIN";
     public static final String BLUETOOTH_CONNECT = "android.permission.BLUETOOTH_CONNECT";
     public static final String BLUETOOTH_SCAN = "android.permission.BLUETOOTH_SCAN";
+    public static final String BLUETOOTH_ADVERTISE = "android.permission.BLUETOOTH_ADVERTISE";
     public static final String READ_CALENDAR = "android.permission.READ_CALENDAR";
     public static final String READ_MEDIA_IMAGES = "android.permission.READ_MEDIA_IMAGES";
     public static final String POST_NOTIFICATIONS = "android.permission.POST_NOTIFICATIONS";

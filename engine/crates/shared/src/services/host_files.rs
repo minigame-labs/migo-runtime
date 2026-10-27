@@ -78,6 +78,13 @@ impl HostFiles {
 
     /// `compressImage`.
     pub const COMPRESS_IMAGE: Self = Self(&[&[Step::Key("tempFilePath")]]);
+    /// A camera's `takePhoto`.
+    pub const CAMERA_TAKE_PHOTO: Self = Self(&[&[Step::Key("tempImagePath")]]);
+    /// A camera's `stopRecord`: the video and its cover.
+    pub const CAMERA_STOP_RECORD: Self =
+        Self(&[&[Step::Key("tempVideoPath")], &[Step::Key("tempThumbPath")]]);
+    /// A recording's STOP event.
+    pub const RECORDER_STOP: Self = Self(&[&[Step::Key("tempFilePath")]]);
 
     /// The fields as the contract spells them: `tempFiles[].path`.
     pub fn describe(&self) -> Vec<String> {
@@ -208,10 +215,50 @@ pub fn deliver_result(host_id: i32, files: &HostFiles, result_json: &str) -> Str
         return failure(request_id, "the session has no temporary directory");
     };
 
+    match import_files(&temp_dir, files, &mut result) {
+        Ok(()) => result.to_string(),
+        Err(reason) => failure(request_id, &reason),
+    }
+}
+
+/// An event a host reported, as content may see it.
+///
+/// Takes over every file `files` names as [`deliver_result`] does -- moved into
+/// the session's `/tmp`, its field rewritten -- with no request to correlate,
+/// since an event answers none: a recording's STOP, which the host may report
+/// on its own. A file that cannot be taken is removed from the event rather
+/// than failing it: the event happened, and content is never told about a file
+/// it cannot open.
+pub fn deliver_event(host_id: i32, files: &HostFiles, event_json: &str) -> String {
+    let Ok(mut event @ Value::Object(_)) = serde_json::from_str::<Value>(event_json) else {
+        return "{}".to_string();
+    };
+    if files.0.is_empty() {
+        return event.to_string();
+    }
+    let temp_dir = SESSIONS
+        .lock()
+        .get(&host_id)
+        .map(|session| session.temp_dir.clone());
+    let imported = match &temp_dir {
+        Some(temp_dir) => import_files(temp_dir, files, &mut event),
+        None => Err("the session has no temporary directory".to_string()),
+    };
+    if let Err(reason) = imported {
+        tracing::warn!("host event's files not taken: {reason}");
+        strip(&mut event, files);
+    }
+    event.to_string()
+}
+
+/// Move every file `files` names in `result` into `temp_dir`, rewriting each
+/// field to its sandbox path. All or nothing: on failure the files already
+/// moved are removed.
+fn import_files(temp_dir: &Path, files: &HostFiles, result: &mut Value) -> Result<(), String> {
     let mut imported: HashMap<String, String> = HashMap::new();
     let mut created: Vec<PathBuf> = Vec::new();
     let outcome = files.0.iter().try_for_each(|field| {
-        visit_fields(&mut result, field, &mut |value| {
+        visit_fields(result, field, &mut |value| {
             let Value::String(host_path) = value else {
                 return Err("a file field is not a string".to_string());
             };
@@ -223,7 +270,7 @@ pub fn deliver_result(host_id: i32, files: &HostFiles, result_json: &str) -> Str
             let sandbox_path = match imported.get(host_path.as_str()) {
                 Some(done) => done.clone(),
                 None => {
-                    let (real, name) = take_file(Path::new(host_path.as_str()), &temp_dir)?;
+                    let (real, name) = take_file(Path::new(host_path.as_str()), temp_dir)?;
                     created.push(real);
                     let sandbox_path = format!("/tmp/{name}");
                     imported.insert(host_path.clone(), sandbox_path.clone());
@@ -234,13 +281,10 @@ pub fn deliver_result(host_id: i32, files: &HostFiles, result_json: &str) -> Str
             Ok(())
         })
     });
-    match outcome {
-        Ok(()) => result.to_string(),
-        Err(reason) => {
-            remove_exports(created);
-            failure(request_id, &reason)
-        }
+    if outcome.is_err() {
+        remove_exports(created);
     }
+    outcome
 }
 
 fn failure(request_id: Option<u64>, reason: &str) -> String {
@@ -527,6 +571,72 @@ mod tests {
                 .contains("not an absolute path")
         );
         assert_eq!(std::fs::read_dir(scratch.tmp()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn an_event_hands_its_file_over_with_no_request_to_answer() {
+        let scratch = Scratch::new("event");
+        let host = 7106;
+        register_session_temp(host, scratch.tmp());
+        let recorded = scratch.host_file("rec_1.m4a", b"aac bytes");
+
+        let delivered = json(&deliver_event(
+            host,
+            &HostFiles::RECORDER_STOP,
+            &serde_json::json!({
+                "recordingId": 3,
+                "tempFilePath": recorded,
+                "duration": 1200,
+                "fileSize": 9,
+            })
+            .to_string(),
+        ));
+        unregister_session(host);
+
+        let path = delivered["tempFilePath"].as_str().unwrap();
+        assert!(
+            path.starts_with("/tmp/host-") && path.ends_with(".m4a"),
+            "{delivered}"
+        );
+        assert_eq!(delivered["recordingId"], 3);
+        assert_eq!(delivered["duration"], 1200);
+        let name = path.strip_prefix("/tmp/").unwrap();
+        assert_eq!(
+            std::fs::read(scratch.tmp().join(name)).unwrap(),
+            b"aac bytes"
+        );
+        assert!(!Path::new(&recorded).exists(), "handed over, not shared");
+    }
+
+    #[test]
+    fn an_event_whose_file_cannot_be_taken_still_happens_without_it() {
+        let scratch = Scratch::new("event-lost");
+        let host = 7107;
+        register_session_temp(host, scratch.tmp());
+
+        let delivered = json(&deliver_event(
+            host,
+            &HostFiles::RECORDER_STOP,
+            r#"{"recordingId":3,"tempFilePath":"relative/rec.m4a","duration":5}"#,
+        ));
+        // A session that is gone has nowhere to put it either.
+        let unregistered = json(&deliver_event(
+            7108,
+            &HostFiles::RECORDER_STOP,
+            r#"{"recordingId":4,"tempFilePath":"/nowhere/rec.m4a"}"#,
+        ));
+        unregister_session(host);
+
+        assert_eq!(delivered, json(r#"{"recordingId":3,"duration":5}"#));
+        assert_eq!(unregistered, json(r#"{"recordingId":4}"#));
+        assert_eq!(
+            json(&deliver_event(
+                host,
+                &HostFiles::NONE,
+                r#"{"recordingId":5,"errMsg":"x"}"#
+            )),
+            json(r#"{"recordingId":5,"errMsg":"x"}"#)
+        );
     }
 
     #[test]

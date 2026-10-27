@@ -1567,45 +1567,6 @@ public final class NativeExports {
     // ==================== Audio Platform ====================
 
     /**
-     * Set inner audio options for audio focus and routing.
-     *
-     * @param sessionId      The session ID
-     * @param mixWithOther   If true, duck other audio instead of taking exclusive focus
-     * @param obeyMuteSwitch If true, respect the device ringer/mute mode
-     * @param speakerOn      If true, route audio output to speaker
-     */
-    public static void setInnerAudioOption(int sessionId, boolean mixWithOther,
-                                           boolean obeyMuteSwitch, boolean speakerOn) {
-        RuntimeContext context = RuntimeRegistry.get(sessionId);
-        if (context == null) return;
-        Activity activity = context.getActivity();
-        if (activity == null) return;
-
-        try {
-            android.media.AudioManager audioManager =
-                    (android.media.AudioManager) activity.getSystemService(Context.AUDIO_SERVICE);
-            if (audioManager == null) return;
-
-            // Audio focus: GAIN_TRANSIENT_MAY_DUCK allows mixing, GAIN takes exclusive focus
-            int focusGain = mixWithOther
-                    ? android.media.AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK
-                    : android.media.AudioManager.AUDIOFOCUS_GAIN;
-            audioManager.requestAudioFocus(null,
-                    android.media.AudioManager.STREAM_MUSIC, focusGain);
-
-            // Speaker routing
-            audioManager.setSpeakerphoneOn(speakerOn);
-
-            // obeyMuteSwitch: adjust stream type behavior
-            // When obeyMuteSwitch is false, use STREAM_MUSIC which ignores ringer mode
-            // When true, the app should check ringer mode before playing
-            // This is stored and checked at playback time by the audio engine
-        } catch (Exception e) {
-            // Silently fail - audio options are best-effort
-        }
-    }
-
-    /**
      * Get available audio input sources: the identifiers RecorderManager.start()
      * takes on Android, as the mini-game API lists them -- "auto" (the
      * MediaRecorder DEFAULT source) on every platform, then Android's four.
@@ -1656,43 +1617,28 @@ public final class NativeExports {
 
     // ==================== Recorder (delegates to MediaExports) ====================
 
-    /**
-     * Start recording with the given options.
-     *
-     * @param sessionId   The session ID
-     * @param optionsJson JSON string with recording options:
-     *                    duration, sampleRate, numberOfChannels, encodeBitRate,
-     *                    format, frameSize, audioSource
-     */
-    public static void recorderStart(int sessionId, String optionsJson) {
-        MediaExports.recorderStart(sessionId, optionsJson);
+    // Each takes the request content made, {"recordingId", ...}; what happens
+    // comes back through NativeMethods.onRecorderEvent.
+
+    /** Start recording: recordingId, duration, sampleRate, numberOfChannels,
+     *  encodeBitRate, format, frameSize, audioSource, audioMode. */
+    public static void recorderStart(int sessionId, String requestJson) {
+        MediaExports.recorderStart(sessionId, requestJson);
     }
 
-    /**
-     * Pause recording.
-     *
-     * @param sessionId The session ID
-     */
-    public static void recorderPause(int sessionId) {
-        MediaExports.recorderPause(sessionId);
+    /** Pause the recording the request names. */
+    public static void recorderPause(int sessionId, String requestJson) {
+        MediaExports.recorderPause(sessionId, requestJson);
     }
 
-    /**
-     * Resume recording after pause.
-     *
-     * @param sessionId The session ID
-     */
-    public static void recorderResume(int sessionId) {
-        MediaExports.recorderResume(sessionId);
+    /** Resume the recording the request names. */
+    public static void recorderResume(int sessionId, String requestJson) {
+        MediaExports.recorderResume(sessionId, requestJson);
     }
 
-    /**
-     * Stop recording.
-     *
-     * @param sessionId The session ID
-     */
-    public static void recorderStop(int sessionId) {
-        MediaExports.recorderStop(sessionId);
+    /** Stop the recording the request names. */
+    public static void recorderStop(int sessionId, String requestJson) {
+        MediaExports.recorderStop(sessionId, requestJson);
     }
 
     /**
@@ -1706,91 +1652,55 @@ public final class NativeExports {
 
     // ==================== Camera (delegates to MediaExports) ====================
 
-    /**
-     * Create a camera instance.
-     *
-     * @param sessionId   The session ID
-     * @param optionsJson JSON with keys: cameraId, x, y, width, height, devicePosition, flash, size
-     * @return JSON result: {"cameraId": <id>} or error JSON
-     */
-    public static String cameraCreate(int sessionId, String optionsJson) {
-        return MediaExports.cameraCreate(sessionId, optionsJson);
+    // ==================== Camera ====================
+    //
+    // Every one is the request content made -- {"cameraId", ...}, and a call's
+    // "requestId" -- answered, for a call, through NativeMethods.onCameraResult
+    // once it has happened. None blocks the engine's thread.
+
+    /** Open a camera and show its preview: a call, answered once it runs. */
+    public static void cameraCreate(int sessionId, String requestJson) {
+        MediaExports.cameraCreate(sessionId, requestJson);
     }
 
-    /**
-     * Destroy a camera instance.
-     *
-     * @param sessionId The session ID
-     * @param cameraId  The camera instance ID
-     */
-    public static void cameraDestroy(int sessionId, int cameraId) {
-        MediaExports.cameraDestroy(sessionId, cameraId);
+    /** Close a camera: a command. */
+    public static void cameraDestroy(int sessionId, String requestJson) {
+        MediaExports.cameraDestroy(sessionId, requestJson);
     }
 
-
-    /**
-     * Start a photo capture without blocking the native caller.
-     *
-     * @param sessionId session identifier
-     * @param requestId host callback identifier
-     * @param optionsJson JSON with keys: cameraId, quality
-     */
-    public static void cameraTakePhotoAsync(
-            int sessionId, int requestId, String optionsJson) {
-        MediaExports.cameraTakePhotoAsync(sessionId, requestId, optionsJson);
+    /** What content changed on a camera: a command. */
+    public static void cameraSet(int sessionId, String requestJson) {
+        MediaExports.cameraSet(sessionId, requestJson);
     }
 
-    /**
-     * Start video recording.
-     *
-     * @param sessionId   The session ID
-     * @param optionsJson JSON with keys: cameraId
-     * @return JSON result or error JSON
-     */
-    public static String cameraStartRecord(int sessionId, String optionsJson) {
-        return MediaExports.cameraStartRecord(sessionId, optionsJson);
+    /** Take a photo: a call, answered with its file. */
+    public static void cameraTakePhoto(int sessionId, String requestJson) {
+        MediaExports.cameraTakePhoto(sessionId, requestJson);
     }
 
-    /**
-     * Stop video recording.
-     *
-     * @param sessionId   The session ID
-     * @param optionsJson JSON with keys: cameraId, compressed
-     * @return JSON result or error JSON
-     */
-    public static String cameraStopRecord(int sessionId, String optionsJson) {
-        return MediaExports.cameraStopRecord(sessionId, optionsJson);
+    /** Start recording: a call, answered once it records. */
+    public static void cameraStartRecord(int sessionId, String requestJson) {
+        MediaExports.cameraStartRecord(sessionId, requestJson);
     }
 
-    /**
-     * Set camera zoom level.
-     *
-     * @param sessionId   The session ID
-     * @param optionsJson JSON with keys: cameraId, zoom
-     * @return JSON result or error JSON
-     */
-    public static String cameraSetZoom(int sessionId, String optionsJson) {
-        return MediaExports.cameraSetZoom(sessionId, optionsJson);
+    /** Stop recording: a call, answered with the video and its cover. */
+    public static void cameraStopRecord(int sessionId, String requestJson) {
+        MediaExports.cameraStopRecord(sessionId, requestJson);
     }
 
-    /**
-     * Start listening for camera frame changes.
-     *
-     * @param sessionId The session ID
-     * @param cameraId  The camera instance ID
-     */
-    public static void cameraListenFrameChange(int sessionId, int cameraId) {
-        MediaExports.cameraListenFrameChange(sessionId, cameraId);
+    /** Zoom: a call, answered with the zoom taken. */
+    public static void cameraSetZoom(int sessionId, String requestJson) {
+        MediaExports.cameraSetZoom(sessionId, requestJson);
     }
 
-    /**
-     * Stop listening for camera frame changes.
-     *
-     * @param sessionId The session ID
-     * @param cameraId  The camera instance ID
-     */
-    public static void cameraCloseFrameChange(int sessionId, int cameraId) {
-        MediaExports.cameraCloseFrameChange(sessionId, cameraId);
+    /** Start handing content the camera's frames: a command. */
+    public static void cameraListenFrameChange(int sessionId, String requestJson) {
+        MediaExports.cameraListenFrameChange(sessionId, requestJson);
+    }
+
+    /** Stop handing content the camera's frames: a command. */
+    public static void cameraCloseFrameChange(int sessionId, String requestJson) {
+        MediaExports.cameraCloseFrameChange(sessionId, requestJson);
     }
 
     /**
@@ -1930,6 +1840,33 @@ public final class NativeExports {
 
     public static void bleGetMTU(int sessionId, String requestJson) {
         BluetoothExports.bleGetMTU(sessionId, requestJson);
+    }
+
+    // This device as a BLE peripheral: each request {"serverId", "requestId", ...}
+    // is answered through NativeMethods.onBlePeripheralResult.
+
+    public static void blePeripheralCreateServer(int sessionId, String requestJson) {
+        BluetoothExports.blePeripheralCreateServer(sessionId, requestJson);
+    }
+
+    public static void blePeripheralAddService(int sessionId, String requestJson) {
+        BluetoothExports.blePeripheralAddService(sessionId, requestJson);
+    }
+
+    public static void blePeripheralRemoveService(int sessionId, String requestJson) {
+        BluetoothExports.blePeripheralRemoveService(sessionId, requestJson);
+    }
+
+    public static void blePeripheralStartAdvertising(int sessionId, String requestJson) {
+        BluetoothExports.blePeripheralStartAdvertising(sessionId, requestJson);
+    }
+
+    public static void blePeripheralStopAdvertising(int sessionId, String requestJson) {
+        BluetoothExports.blePeripheralStopAdvertising(sessionId, requestJson);
+    }
+
+    public static void blePeripheralWriteCharacteristicValue(int sessionId, String requestJson) {
+        BluetoothExports.blePeripheralWriteCharacteristicValue(sessionId, requestJson);
     }
 
     /**
@@ -2082,40 +2019,43 @@ public final class NativeExports {
 
     // ==================== Video (delegates to MediaExports) ====================
 
-    public static String videoCreate(int sessionId, String optionsJson) {
-        return MediaExports.videoCreate(sessionId, optionsJson);
+    // Each takes the request content made, {"videoId", ...}; a call's answer
+    // comes back through NativeMethods.onVideoResult once it has happened.
+
+    public static void videoCreate(int sessionId, String requestJson) {
+        MediaExports.videoCreate(sessionId, requestJson);
     }
 
-    public static void videoPlay(int sessionId, int videoId) {
-        MediaExports.videoPlay(sessionId, videoId);
+    public static void videoDestroy(int sessionId, String requestJson) {
+        MediaExports.videoDestroy(sessionId, requestJson);
     }
 
-    public static void videoPause(int sessionId, int videoId) {
-        MediaExports.videoPause(sessionId, videoId);
+    public static void videoSet(int sessionId, String requestJson) {
+        MediaExports.videoSet(sessionId, requestJson);
     }
 
-    public static void videoStop(int sessionId, int videoId) {
-        MediaExports.videoStop(sessionId, videoId);
+    public static void videoPlay(int sessionId, String requestJson) {
+        MediaExports.videoPlay(sessionId, requestJson);
     }
 
-    public static void videoSeek(int sessionId, String json) {
-        MediaExports.videoSeek(sessionId, json);
+    public static void videoPause(int sessionId, String requestJson) {
+        MediaExports.videoPause(sessionId, requestJson);
     }
 
-    public static void videoRequestFullscreen(int sessionId, String json) {
-        MediaExports.videoRequestFullscreen(sessionId, json);
+    public static void videoStop(int sessionId, String requestJson) {
+        MediaExports.videoStop(sessionId, requestJson);
     }
 
-    public static void videoExitFullscreen(int sessionId, int videoId) {
-        MediaExports.videoExitFullscreen(sessionId, videoId);
+    public static void videoSeek(int sessionId, String requestJson) {
+        MediaExports.videoSeek(sessionId, requestJson);
     }
 
-    public static void videoSetProperty(int sessionId, String json) {
-        MediaExports.videoSetProperty(sessionId, json);
+    public static void videoRequestFullScreen(int sessionId, String requestJson) {
+        MediaExports.videoRequestFullScreen(sessionId, requestJson);
     }
 
-    public static void videoDestroy(int sessionId, int videoId) {
-        MediaExports.videoDestroy(sessionId, videoId);
+    public static void videoExitFullScreen(int sessionId, String requestJson) {
+        MediaExports.videoExitFullScreen(sessionId, requestJson);
     }
 
     /**
@@ -2907,6 +2847,22 @@ public final class NativeExports {
                         HostDelegation.shareSink(settlement)));
     }
 
+    /**
+     * Share the game's last finished recording. Delegates to the session's {@link ShareHandler}.
+     *
+     * @param sessionId   The session ID
+     * @param optionsJson JSON with video, the share options content set, volume, atempo and audioMix
+     */
+    public static void shareGameRecording(int sessionId, String optionsJson) {
+        JSONObject options = HostDelegation.options(optionsJson);
+        HostDelegation.Settlement settlement =
+                settlement(sessionId, options, NativeMethods::onShareGameRecordingResult);
+        delegate(sessionId, sShareHandlers, "operateGameRecorderVideo", settlement,
+                handler -> handler.shareGameRecording(
+                        HostDelegation.recordingShareRequest(options),
+                        HostDelegation.shareSink(settlement)));
+    }
+
     // ==================== Navigate ====================
 
     /**
@@ -3026,7 +2982,8 @@ public final class NativeExports {
         if (view != null) view.post(view::releasePointerCapture);
     }
 
-    private static View inputViewOf(int sessionId) {
+    /** The game's view of a live session, or null. */
+    static View inputViewOf(int sessionId) {
         GameSession session = sSessions.get(sessionId);
         return session != null && !isSessionTerminated(sessionId) ? session.getInputView() : null;
     }

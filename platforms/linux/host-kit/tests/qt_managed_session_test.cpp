@@ -1,18 +1,218 @@
 #include "fake_migo.hpp"
+#include "gamepads.hpp"
+#include "memory_monitor.hpp"
+#include "screen_awake.hpp"
+#include "system_reports.hpp"
 
 #include <migo/linux/qt6/managed_session.hpp>
 
 #include <QApplication>
+#include <QDBusConnection>
+#include <QDBusMessage>
+#include <QDeadlineTimer>
+#include <QDBusObjectPath>
+#include <QLineEdit>
+#include <QPlainTextEdit>
+#include <QVariantMap>
+#include <QVBoxLayout>
 #include <QSignalSpy>
 #include <QThread>
 #include <QtTest>
 
+#include <linux/input.h>
+
+#include <fcntl.h>
+#include <unistd.h>
+
 #include <memory>
+#include <string>
+#include <vector>
 
 using migo::linux_host::SurfaceState;
 using migo::linux_host::qt6::MigoManagedSession;
+using migo::linux_host::qt6::BatteryReport;
+using migo::linux_host::qt6::Gamepads;
+using migo::linux_host::qt6::MemoryMonitor;
+using migo::linux_host::qt6::NetworkReport;
+using migo::linux_host::qt6::ScreenAwake;
 
 namespace {
+
+const QString kRequestPath = QStringLiteral("/org/freedesktop/portal/desktop/request/1_1/migo");
+
+/// What closing the portal's request ends: the inhibition.
+class FakeRequest final : public QObject {
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.freedesktop.portal.Request")
+
+public:
+    int closed = 0;
+
+public Q_SLOTS:
+    void Close() { ++closed; }
+};
+
+/// The desktop portal's Inhibit, on the session bus.
+class FakePortal final : public QObject {
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.freedesktop.portal.Inhibit")
+
+public:
+    QStringList asked;
+    FakeRequest request;
+
+public Q_SLOTS:
+    QDBusObjectPath Inhibit(const QString &window, uint flags, const QVariantMap &options) {
+        asked << QStringLiteral("%1 %2 %3").arg(window).arg(flags).arg(options.value(QStringLiteral("reason")).toString());
+        QDBusConnection::sessionBus().registerObject(kRequestPath, &request, QDBusConnection::ExportAllSlots);
+        return QDBusObjectPath(kRequestPath);
+    }
+};
+
+/// The freedesktop screen saver, on the session bus.
+class FakeScreenSaver final : public QObject {
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.freedesktop.ScreenSaver")
+
+public:
+    QStringList asked;
+    QList<uint> released;
+
+public Q_SLOTS:
+    uint Inhibit(const QString &application, const QString &reason) {
+        asked << application + QStringLiteral(": ") + reason;
+        return 7;
+    }
+    void UnInhibit(uint cookie) { released << cookie; }
+};
+
+/// UPower's display device: every battery the machine has, as one.
+class FakeBattery final : public QObject {
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.freedesktop.UPower.Device")
+    Q_PROPERTY(uint Type MEMBER type)
+    Q_PROPERTY(bool IsPresent MEMBER present)
+    Q_PROPERTY(double Percentage MEMBER percentage)
+    Q_PROPERTY(uint State MEMBER state)
+
+public:
+    uint type = 2;  // a battery
+    bool present = true;
+    double percentage = 76.4;
+    uint state = 2;  // discharging
+};
+
+/// power-profiles-daemon, as UPower's.
+class FakePowerProfiles final : public QObject {
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.freedesktop.UPower.PowerProfiles")
+    Q_PROPERTY(QString ActiveProfile MEMBER profile)
+
+public:
+    QString profile = QStringLiteral("power-saver");
+};
+
+/// NetworkManager.
+class FakeNetworkManager final : public QObject {
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.freedesktop.NetworkManager")
+    Q_PROPERTY(uint State MEMBER state)
+    Q_PROPERTY(uint Connectivity MEMBER connectivity)
+    Q_PROPERTY(QString PrimaryConnectionType MEMBER primary)
+    Q_PROPERTY(bool WirelessEnabled MEMBER wireless)
+    Q_PROPERTY(bool WirelessHardwareEnabled MEMBER radio)
+
+public:
+    uint state = 70;         // connected, globally
+    uint connectivity = 4;   // full
+    QString primary = QStringLiteral("802-11-wireless");
+    bool wireless = true;
+    bool radio = true;
+};
+
+/// Say, as a D-Bus object does, that its properties of `interface` changed.
+void announce(const QString &path, const QString &interface) {
+    QDBusMessage signal =
+        QDBusMessage::createSignal(path, QStringLiteral("org.freedesktop.DBus.Properties"), QStringLiteral("PropertiesChanged"));
+    signal << interface << QVariantMap() << QStringList();
+    QDBusConnection::sessionBus().send(signal);
+}
+
+/// A fake standing on the session bus as `service` at `path` while it lives.
+class OnTheBus {
+public:
+    OnTheBus(QObject &fake, const QString &service, const QString &path) : service_(service), path_(path) {
+        QDBusConnection bus = QDBusConnection::sessionBus();
+        registered_ = bus.registerService(service) &&
+                      bus.registerObject(path, &fake, QDBusConnection::ExportAllSlots | QDBusConnection::ExportAllProperties);
+    }
+    ~OnTheBus() {
+        QDBusConnection bus = QDBusConnection::sessionBus();
+        bus.unregisterObject(path_);
+        bus.unregisterObject(kRequestPath);
+        bus.unregisterService(service_);
+    }
+    [[nodiscard]] bool registered() const { return registered_; }
+
+private:
+    QString service_;
+    QString path_;
+    bool registered_ = false;
+};
+
+/// Retires an attached Managed session on the way out, however the test left:
+/// destroyed with its view attached, it would terminate the test run.
+struct ReleasedOnExit {
+    MigoManagedSession &managed;
+    ~ReleasedOnExit() {
+        if (managed.isClosed()) return;
+        (void)managed.close();
+        if (managed.view() != nullptr) {
+            fake_migo::set_release_status(managed.view()->generation(), MIGO_SURFACE_RELEASE_RELEASED);
+        }
+        QDeadlineTimer deadline(5000);
+        while (!managed.isClosed() && !deadline.hasExpired()) QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    }
+};
+
+/// What content asked for when it opened the keyboard.
+MigoKeyboardShowOptions keyboardOptions(MigoKeyboardFlags flags = MIGO_KEYBOARD_FLAG_NONE, std::uint32_t max_length = 0,
+                                        MigoKeyboardType type = MIGO_KEYBOARD_TYPE_TEXT,
+                                        MigoKeyboardConfirmType confirm = MIGO_KEYBOARD_CONFIRM_DONE) {
+    MigoKeyboardShowOptions options{};
+    options.struct_size = static_cast<std::uint32_t>(sizeof(options));
+    options.abi_version = MIGO_ABI_VERSION_1;
+    options.flags = flags;
+    options.max_length = max_length;
+    options.confirm_type = confirm;
+    options.keyboard_type = type;
+    return options;
+}
+
+/// The keyboard's field, over the game's window: null once it is put away.
+QWidget *keyboardField(QWidget &container) {
+    return container.findChild<QWidget *>(QStringLiteral("migoKeyboardField"), Qt::FindDirectChildrenOnly);
+}
+
+/// What the Session was told of the keyboard, from the `from`th event: each event and its text.
+std::vector<std::pair<MigoKeyboardEventType, std::string>> said(std::size_t from = 0) {
+    std::vector<std::pair<MigoKeyboardEventType, std::string>> told;
+    const std::vector<fake_migo::KeyboardRecord> &events = fake_migo::keyboard_events();
+    for (std::size_t index = from; index < events.size(); ++index) {
+        told.emplace_back(events[index].event_type, events[index].value);
+    }
+    return told;
+}
+
+/// The game on screen, its view attached.
+void showGame(QWidget &container, MigoManagedSession &managed) {
+    auto *layout = new QVBoxLayout(&container);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->addWidget(managed.view());
+    container.resize(320, 200);
+    container.show();
+    QTRY_COMPARE(fake_migo::calls().attach, 1);
+}
 
 bool require_xcb(const char *why, const char *file, int line) {
     if (QGuiApplication::platformName() == QStringLiteral("xcb")) return true;
@@ -44,15 +244,8 @@ private slots:
         QVERIFY(managed.isClosed());
     }
 
-    /// The soft keyboard is not claimed, and not claimed in part.
-    ///
-    /// The three callbacks install together or not at all. This wrapper cannot
-    /// honour them -- the common mini-game platform's model needs the host to own a text field and report
-    /// its whole current value, and a desktop host has a physical keyboard
-    /// whose input already reaches content as key and composition events. So
-    /// content's `migo.showKeyboard` correctly reports failure rather than
-    /// opening a keyboard that reports nothing back.
-    void the_soft_keyboard_capability_is_declined_whole() {
+    /// The soft keyboard is claimed whole: the three callbacks install together.
+    void the_soft_keyboard_is_claimed_whole() {
         QWidget container;
         MigoManagedSession managed(*fake_migo::engine(), container);
         QVERIFY(managed.isValid());
@@ -60,15 +253,443 @@ private slots:
         const MigoHostCallbacks &installed = fake_migo::installed_callbacks();
         // Compared as booleans: QCOMPARE cannot take a function pointer, and
         // the assertion is about presence, not identity.
-        QVERIFY(installed.on_show_keyboard == nullptr);
-        QVERIFY(installed.on_hide_keyboard == nullptr);
-        QVERIFY(installed.on_update_keyboard == nullptr);
-        // But the capabilities it does claim are there.
-        QVERIFY(installed.dispatch != nullptr);
-        QVERIFY(installed.on_ready != nullptr);
-        QVERIFY(installed.on_request_frame != nullptr);
+        QVERIFY(installed.on_show_keyboard != nullptr);
+        QVERIFY(installed.on_hide_keyboard != nullptr);
+        QVERIFY(installed.on_update_keyboard != nullptr);
 
         QCOMPARE(managed.close(), MIGO_OK);
+    }
+
+    /// Content's showKeyboard opens a field along the bottom of the game, the
+    /// height content is told; each edit reports the whole text, content's own
+    /// correction is not reported back, and Enter confirms and closes it,
+    /// telling content the height 0 and the text it was left with.
+    void content_types_into_a_field_along_the_bottom_of_the_game() {
+        if (!require_xcb("xcb-only: the field takes the keyboard's focus", __FILE__, __LINE__)) return;
+        QWidget container;
+        MigoManagedSession managed(*fake_migo::engine(), container);
+        const ReleasedOnExit released{managed};
+        showGame(container, managed);
+
+        fake_migo::deliver_show_keyboard_from_engine_thread(keyboardOptions(), "ab");
+        QWidget *field = keyboardField(container);
+        QVERIFY(field != nullptr);
+        QTRY_VERIFY(field->isVisible());
+        auto *line = field->findChild<QLineEdit *>();
+        QVERIFY(line != nullptr && line->isVisible());
+        QCOMPARE(line->text(), QStringLiteral("ab"));
+        QTRY_VERIFY(line->hasFocus());
+        const QRect game(managed.view()->mapToGlobal(QPoint(0, 0)), managed.view()->size());
+        QCOMPARE(field->geometry().left(), game.left());
+        QCOMPARE(field->geometry().width(), game.width());
+        QCOMPARE(field->geometry().bottom(), game.bottom());
+        using Said = std::vector<std::pair<MigoKeyboardEventType, std::string>>;
+        QCOMPARE(said(), (Said{{MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE, ""}}));
+        QVERIFY(field->height() > 0);
+        QCOMPARE(fake_migo::keyboard_events()[0].height_css_px, static_cast<double>(field->height()));
+
+        QTest::keyClicks(line, QStringLiteral("cd"));
+        fake_migo::deliver_update_keyboard_from_engine_thread("xyz");
+        QTRY_COMPARE(line->text(), QStringLiteral("xyz"));
+        QTest::keyClick(line, Qt::Key_Return);
+        QCOMPARE(said(), (Said{{MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE, ""},
+                               {MIGO_KEYBOARD_EVENT_INPUT, "abc"},
+                               {MIGO_KEYBOARD_EVENT_INPUT, "abcd"},
+                               {MIGO_KEYBOARD_EVENT_CONFIRM, "xyz"},
+                               {MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE, ""},
+                               {MIGO_KEYBOARD_EVENT_COMPLETE, "xyz"}}));
+        QCOMPARE(fake_migo::keyboard_events()[4].height_css_px, 0.0);
+        QVERIFY(!field->isVisible());
+    }
+
+    /// A confirm content asked to hold leaves the field up; content's
+    /// hideKeyboard closes it, as the player's going would.
+    void a_held_confirm_keeps_the_field_until_content_hides_it() {
+        if (!require_xcb("xcb-only: the field takes the keyboard's focus", __FILE__, __LINE__)) return;
+        QWidget container;
+        MigoManagedSession managed(*fake_migo::engine(), container);
+        const ReleasedOnExit released{managed};
+        showGame(container, managed);
+
+        fake_migo::deliver_show_keyboard_from_engine_thread(keyboardOptions(MIGO_KEYBOARD_FLAG_CONFIRM_HOLD), "go");
+        QWidget *field = keyboardField(container);
+        QTRY_VERIFY(field->isVisible());
+        auto *line = field->findChild<QLineEdit *>();
+        QTest::keyClick(line, Qt::Key_Return);
+        QVERIFY(field->isVisible());
+        fake_migo::deliver_hide_keyboard_from_engine_thread();
+        QTRY_VERIFY(!field->isVisible());
+        using Said = std::vector<std::pair<MigoKeyboardEventType, std::string>>;
+        QCOMPARE(said(), (Said{{MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE, ""},
+                               {MIGO_KEYBOARD_EVENT_CONFIRM, "go"},
+                               {MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE, ""},
+                               {MIGO_KEYBOARD_EVENT_COMPLETE, "go"}}));
+        // A keyboard that is not up is not hidden again.
+        fake_migo::deliver_hide_keyboard_from_engine_thread();
+        QTest::qWait(50);
+        QCOMPARE(fake_migo::keyboard_events().size(), std::size_t{4});
+    }
+
+    /// What content asked of the keyboard: a length the text keeps to, digits
+    /// for a number keyboard -- and an input method told so -- the confirm key
+    /// it named, and several lines, in which Enter is a new line.
+    void the_field_is_the_keyboard_content_asked_for() {
+        if (!require_xcb("xcb-only: the field takes the keyboard's focus", __FILE__, __LINE__)) return;
+        QWidget container;
+        MigoManagedSession managed(*fake_migo::engine(), container);
+        const ReleasedOnExit released{managed};
+        showGame(container, managed);
+        QWidget *field = nullptr;
+
+        fake_migo::deliver_show_keyboard_from_engine_thread(keyboardOptions(MIGO_KEYBOARD_FLAG_NONE, 3), "");
+        field = keyboardField(container);
+        QTRY_VERIFY(field->isVisible());
+        auto *line = field->findChild<QLineEdit *>();
+        QTest::keyClicks(line, QStringLiteral("abcdef"));
+        QCOMPARE(line->text(), QStringLiteral("abc"));
+        fake_migo::deliver_hide_keyboard_from_engine_thread();
+        QTRY_VERIFY(!field->isVisible());
+
+        fake_migo::deliver_show_keyboard_from_engine_thread(
+            keyboardOptions(MIGO_KEYBOARD_FLAG_NONE, 0, MIGO_KEYBOARD_TYPE_NUMBER, MIGO_KEYBOARD_CONFIRM_SEND), "");
+        QTRY_VERIFY(field->isVisible());
+        QTest::keyClicks(line, QStringLiteral("1a2"));
+        QCOMPARE(line->text(), QStringLiteral("12"));
+        QVERIFY(line->inputMethodHints().testFlag(Qt::ImhDigitsOnly));
+        QCOMPARE(line->inputMethodQuery(Qt::ImEnterKeyType).toInt(), static_cast<int>(Qt::EnterKeySend));
+        fake_migo::deliver_hide_keyboard_from_engine_thread();
+        QTRY_VERIFY(!field->isVisible());
+
+        // Text again: the digits and the confirm key were that request's.
+        fake_migo::deliver_show_keyboard_from_engine_thread(keyboardOptions(), "");
+        QTRY_VERIFY(field->isVisible());
+        QTest::keyClicks(line, QStringLiteral("x1"));
+        QCOMPARE(line->text(), QStringLiteral("x1"));
+        QCOMPARE(line->inputMethodQuery(Qt::ImEnterKeyType).toInt(), static_cast<int>(Qt::EnterKeyDone));
+        fake_migo::deliver_hide_keyboard_from_engine_thread();
+        QTRY_VERIFY(!field->isVisible());
+        const int one_line = field->height();
+
+        const std::size_t before = fake_migo::keyboard_events().size();
+        fake_migo::deliver_show_keyboard_from_engine_thread(keyboardOptions(MIGO_KEYBOARD_FLAG_MULTIPLE, 4), "");
+        QTRY_VERIFY(field->isVisible());
+        auto *lines = field->findChild<QPlainTextEdit *>();
+        QVERIFY(lines != nullptr && lines->isVisible() && !line->isVisible());
+        QVERIFY(field->height() > one_line);
+        QTest::keyClicks(lines, QStringLiteral("a"));
+        QTest::keyClick(lines, Qt::Key_Return);
+        QTest::keyClicks(lines, QStringLiteral("bcd"));
+        QCOMPARE(lines->toPlainText(), QStringLiteral("a\nbc"));
+        using Said = std::vector<std::pair<MigoKeyboardEventType, std::string>>;
+        QCOMPARE(said(before), (Said{{MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE, ""},
+                               {MIGO_KEYBOARD_EVENT_INPUT, "a"},
+                               {MIGO_KEYBOARD_EVENT_INPUT, "a\n"},
+                               {MIGO_KEYBOARD_EVENT_INPUT, "a\nb"},
+                               {MIGO_KEYBOARD_EVENT_INPUT, "a\nbc"},
+                               {MIGO_KEYBOARD_EVENT_INPUT, "a\nbc"}}));
+    }
+
+    /// The player closes the field with Esc, or by turning to the game:
+    /// content is told the keyboard went, with the text it was left with.
+    void escape_or_turning_away_closes_the_field() {
+        if (!require_xcb("xcb-only: the field takes the keyboard's focus", __FILE__, __LINE__)) return;
+        QWidget container;
+        MigoManagedSession managed(*fake_migo::engine(), container);
+        const ReleasedOnExit released{managed};
+        showGame(container, managed);
+
+        fake_migo::deliver_show_keyboard_from_engine_thread(keyboardOptions(), "esc");
+        QWidget *field = keyboardField(container);
+        QTRY_VERIFY(field->isVisible());
+        auto *line = field->findChild<QLineEdit *>();
+        QTRY_VERIFY(line->hasFocus());
+        QTest::keyClick(line, Qt::Key_Escape);
+        QVERIFY(!field->isVisible());
+        // The keys are the game's again.
+        QTRY_VERIFY(managed.view()->hasFocus());
+
+        fake_migo::deliver_show_keyboard_from_engine_thread(keyboardOptions(), "away");
+        QTRY_VERIFY(field->isVisible());
+        QTRY_VERIFY(line->hasFocus());
+        container.activateWindow();
+        QTRY_VERIFY(!field->isVisible());
+        using Said = std::vector<std::pair<MigoKeyboardEventType, std::string>>;
+        QCOMPARE(said(), (Said{{MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE, ""},
+                               {MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE, ""},
+                               {MIGO_KEYBOARD_EVENT_COMPLETE, "esc"},
+                               {MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE, ""},
+                               {MIGO_KEYBOARD_EVENT_HEIGHT_CHANGE, ""},
+                               {MIGO_KEYBOARD_EVENT_COMPLETE, "away"}}));
+    }
+
+    /// A Session that closes takes the field with it, telling content nothing:
+    /// it is going.
+    void closing_puts_the_field_away_unreported() {
+        if (!require_xcb("xcb-only: the field takes the keyboard's focus", __FILE__, __LINE__)) return;
+        QWidget container;
+        MigoManagedSession managed(*fake_migo::engine(), container);
+        showGame(container, managed);
+        fake_migo::deliver_show_keyboard_from_engine_thread(keyboardOptions(), "left");
+        QTRY_VERIFY(keyboardField(container) != nullptr && keyboardField(container)->isVisible());
+
+        QCOMPARE(managed.close(), MIGO_OK);
+        QVERIFY(keyboardField(container) == nullptr);
+        fake_migo::set_release_status(managed.view()->generation(), MIGO_SURFACE_RELEASE_RELEASED);
+        QTRY_VERIFY(managed.isClosed());
+        QCOMPARE(fake_migo::keyboard_events().size(), std::size_t{1});
+    }
+
+    /// The display is kept awake through the desktop portal's Inhibit, for the
+    /// game's window, and let go when the game stops asking.
+    void the_display_is_kept_awake_through_the_portal() {
+        QVERIFY2(QDBusConnection::sessionBus().isConnected(),
+                 "no session bus: run this test under dbus-run-session, as scripts/test-linux-qt-host-kit.sh does");
+        FakePortal portal;
+        OnTheBus standing(portal, QStringLiteral("org.freedesktop.portal.Desktop"),
+                          QStringLiteral("/org/freedesktop/portal/desktop"));
+        QVERIFY(standing.registered());
+        ScreenAwake awake(QDBusConnection::sessionBus());
+
+        awake.keepAwake(true, 0x2a00001);
+        QTRY_VERIFY(awake.isHeld());
+        QCOMPARE(portal.asked, QStringList{QStringLiteral("x11:2a00001 8 A game asked to keep the display on")});
+        awake.keepAwake(true, 0x2a00001);
+        QCOMPARE(portal.asked.size(), 1);
+        awake.keepAwake(false, 0x2a00001);
+        QVERIFY(!awake.isHeld());
+        QTRY_COMPARE(portal.request.closed, 1);
+
+        // Let go while the desktop was still answering: let go as it answers.
+        awake.keepAwake(true, 0x2a00001);
+        awake.keepAwake(false, 0x2a00001);
+        QTRY_COMPARE(portal.request.closed, 2);
+        QVERIFY(!awake.isHeld());
+    }
+
+    /// Where no portal answers, the freedesktop screen saver does; what is
+    /// held goes with the holder.
+    void without_a_portal_the_screen_saver_keeps_the_display_awake() {
+        QVERIFY2(QDBusConnection::sessionBus().isConnected(),
+                 "no session bus: run this test under dbus-run-session, as scripts/test-linux-qt-host-kit.sh does");
+        FakeScreenSaver saver;
+        OnTheBus standing(saver, QStringLiteral("org.freedesktop.ScreenSaver"),
+                          QStringLiteral("/org/freedesktop/ScreenSaver"));
+        QVERIFY(standing.registered());
+        {
+            ScreenAwake awake(QDBusConnection::sessionBus());
+            awake.keepAwake(true, 1);
+            QTRY_VERIFY(awake.isHeld());
+            QCOMPARE(saver.asked.size(), 1);
+            QVERIFY(saver.asked[0].endsWith(QStringLiteral(": A game asked to keep the display on")));
+        }
+        QTRY_COMPARE(saver.released, QList<uint>{7});
+    }
+
+    /// Where neither answers, nothing holds the display, and the host says why.
+    void without_either_nothing_holds_the_display() {
+        QVERIFY2(QDBusConnection::sessionBus().isConnected(),
+                 "no session bus: run this test under dbus-run-session, as scripts/test-linux-qt-host-kit.sh does");
+        QTest::ignoreMessage(QtWarningMsg,
+                             QRegularExpression(QStringLiteral("neither the desktop portal nor the screen saver answers")));
+        ScreenAwake awake(QDBusConnection::sessionBus());
+        awake.keepAwake(true, 1);
+        QTest::qWait(300);
+        QVERIFY(!awake.isHeld());
+    }
+
+    /// The Managed session holds content's setKeepScreenOn for it, and lets go
+    /// when the Session ends, whatever content last asked.
+    void the_session_keeps_the_display_awake_while_content_asks() {
+        QVERIFY2(QDBusConnection::sessionBus().isConnected(),
+                 "no session bus: run this test under dbus-run-session, as scripts/test-linux-qt-host-kit.sh does");
+        FakePortal portal;
+        OnTheBus standing(portal, QStringLiteral("org.freedesktop.portal.Desktop"),
+                          QStringLiteral("/org/freedesktop/portal/desktop"));
+        QVERIFY(standing.registered());
+        QWidget container;
+        MigoManagedSession managed(*fake_migo::engine(), container);
+        QVERIFY(fake_migo::installed_callbacks().on_keep_screen_on != nullptr);
+
+        fake_migo::deliver_keep_screen_on_from_engine_thread(true);
+        QTRY_COMPARE(portal.asked.size(), 1);
+        QVERIFY(portal.asked[0].startsWith(QStringLiteral("x11:%1 ").arg(container.winId(), 0, 16)));
+        QTest::qWait(100);
+        QCOMPARE(portal.request.closed, 0);
+        QCOMPARE(managed.close(), MIGO_OK);
+        QTRY_COMPARE(portal.request.closed, 1);
+    }
+
+    /// The battery is UPower's display device -- its level, whether it charges
+    /// -- with the power profile's saver as the low-power mode, reported each
+    /// time what is reported changes.
+    void the_battery_is_reported_as_upower_shows_it() {
+        QVERIFY2(QDBusConnection::sessionBus().isConnected(),
+                 "no session bus: run this test under dbus-run-session, as scripts/test-linux-qt-host-kit.sh does");
+        const QString device = QStringLiteral("/org/freedesktop/UPower/devices/DisplayDevice");
+        FakeBattery battery;
+        OnTheBus upower(battery, QStringLiteral("org.freedesktop.UPower"), device);
+        QVERIFY(upower.registered());
+        std::vector<BatteryReport::State> reports;
+        BatteryReport report(QDBusConnection::sessionBus(),
+                             [&reports](const BatteryReport::State &state) { reports.push_back(state); });
+
+        QTRY_COMPARE(reports.size(), std::size_t{1});
+        QCOMPARE(reports[0].level_percent, 76U);
+        QCOMPARE(reports[0].flags, MigoBatteryFlags{MIGO_BATTERY_FLAG_NONE});
+        battery.state = 1;  // charging
+        announce(device, QStringLiteral("org.freedesktop.UPower.Device"));
+        QTRY_COMPARE(reports.size(), std::size_t{2});
+        QCOMPARE(reports[1].flags, MigoBatteryFlags{MIGO_BATTERY_FLAG_CHARGING});
+
+        FakePowerProfiles profiles;
+        OnTheBus saver(profiles, QStringLiteral("org.freedesktop.UPower.PowerProfiles"),
+                       QStringLiteral("/org/freedesktop/UPower/PowerProfiles"));
+        QVERIFY(saver.registered());
+        QTRY_COMPARE(reports.size(), std::size_t{3});
+        QCOMPARE(reports[2].flags, MigoBatteryFlags{MIGO_BATTERY_FLAG_CHARGING | MIGO_BATTERY_FLAG_LOW_POWER_MODE});
+
+        // A change below what the level is reported in is not reported again.
+        battery.percentage = 76.2;
+        announce(device, QStringLiteral("org.freedesktop.UPower.Device"));
+        QTest::qWait(200);
+        QCOMPARE(reports.size(), std::size_t{3});
+    }
+
+    /// A machine with no battery reports none: content is told its call is
+    /// not supported, the answer for such a machine.
+    void a_machine_without_a_battery_reports_none() {
+        QVERIFY2(QDBusConnection::sessionBus().isConnected(),
+                 "no session bus: run this test under dbus-run-session, as scripts/test-linux-qt-host-kit.sh does");
+        FakeBattery none;
+        none.type = 0;
+        none.present = false;
+        OnTheBus upower(none, QStringLiteral("org.freedesktop.UPower"),
+                        QStringLiteral("/org/freedesktop/UPower/devices/DisplayDevice"));
+        QVERIFY(upower.registered());
+        std::vector<BatteryReport::State> reports;
+        BatteryReport report(QDBusConnection::sessionBus(),
+                             [&reports](const BatteryReport::State &state) { reports.push_back(state); });
+        QTest::qWait(300);
+        QVERIFY(reports.empty());
+    }
+
+    /// The network is NetworkManager's primary connection: Wi-Fi, and wired as
+    /// Wi-Fi; a modem's generation unknown; whether it reaches the internet by
+    /// NetworkManager's check, or by its state where the check is off; none
+    /// while disconnected.
+    void the_network_is_reported_as_networkmanager_shows_it() {
+        QVERIFY2(QDBusConnection::sessionBus().isConnected(),
+                 "no session bus: run this test under dbus-run-session, as scripts/test-linux-qt-host-kit.sh does");
+        const QString path = QStringLiteral("/org/freedesktop/NetworkManager");
+        const QString interface = QStringLiteral("org.freedesktop.NetworkManager");
+        FakeNetworkManager manager;
+        OnTheBus networkmanager(manager, interface, path);
+        QVERIFY(networkmanager.registered());
+        std::vector<NetworkReport::State> reports;
+        NetworkReport report(QDBusConnection::sessionBus(),
+                             [&reports](const NetworkReport::State &state) { reports.push_back(state); });
+        const auto last = [&reports] { return reports.back(); };
+
+        QTRY_COMPARE(reports.size(), std::size_t{1});
+        QCOMPARE(last().type, MigoNetworkType{MIGO_NETWORK_WIFI});
+        QVERIFY(last().connected);
+        QVERIFY(last().wifi_enabled);
+        manager.primary = QStringLiteral("802-3-ethernet");
+        manager.radio = false;  // the radio's own switch: Wi-Fi is off
+        manager.connectivity = 3;  // limited: no internet
+        announce(path, interface);
+        QTRY_COMPARE(reports.size(), std::size_t{2});
+        QCOMPARE(last().type, MigoNetworkType{MIGO_NETWORK_WIFI});
+        QVERIFY(!last().connected);
+        QVERIFY(!last().wifi_enabled);
+        manager.connectivity = 0;  // not checked: the state says
+        announce(path, interface);
+        QTRY_COMPARE(reports.size(), std::size_t{3});
+        QVERIFY(last().connected);
+        manager.primary = QStringLiteral("gsm");
+        announce(path, interface);
+        QTRY_COMPARE(reports.size(), std::size_t{4});
+        QCOMPARE(last().type, MigoNetworkType{MIGO_NETWORK_UNKNOWN});
+        manager.state = 20;  // disconnected
+        manager.primary.clear();
+        announce(path, interface);
+        QTRY_COMPARE(reports.size(), std::size_t{5});
+        QCOMPARE(last().type, MigoNetworkType{MIGO_NETWORK_NONE});
+        QVERIFY(!last().connected);
+    }
+
+    /// Content runs while its window is shown and not minimized, and is told
+    /// so when that changes: it starts shown and running, so nothing is said
+    /// until then.
+    void content_runs_and_shows_with_its_window() {
+        if (!require_xcb("xcb-only: the view attaches only on X11", __FILE__, __LINE__)) return;
+        QWidget container;
+        MigoManagedSession managed(*fake_migo::engine(), container);
+        const ReleasedOnExit released{managed};
+        auto *layout = new QVBoxLayout(&container);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->addWidget(managed.view());
+        container.resize(320, 200);
+        container.show();
+        QTRY_COMPARE(fake_migo::calls().attach, 1);
+        QTest::qWait(100);
+        using Said = std::vector<std::string>;
+        QCOMPARE(fake_migo::window_reports(), Said{});
+
+        container.showMinimized();
+        QTRY_COMPARE(fake_migo::window_reports(), (Said{"hidden", "paused"}));
+        container.showNormal();
+        QTRY_COMPARE(fake_migo::window_reports(), (Said{"hidden", "paused", "shown", "running"}));
+    }
+
+    /// An App outside a sandbox is granted what the system could gate, and the
+    /// Session is told so; location is GeoClue's agent's, and not determined.
+    void the_app_is_granted_what_the_system_could_gate() {
+        QWidget container;
+        MigoManagedSession managed(*fake_migo::engine(), container);
+        const MigoAppAuthorizeSetting &granted = fake_migo::reported_app_authorization();
+        QCOMPARE(granted.struct_size, std::uint32_t{sizeof(MigoAppAuthorizeSetting)});
+        for (const std::uint8_t field : {granted.album, granted.bluetooth, granted.camera, granted.microphone,
+                                         granted.notification, granted.phone_calendar}) {
+            QCOMPARE(field, std::uint8_t{MIGO_AUTHORIZATION_AUTHORIZED});
+        }
+        QCOMPARE(granted.location, std::uint8_t{MIGO_AUTHORIZATION_NOT_DETERMINED});
+        QCOMPARE(managed.close(), MIGO_OK);
+    }
+
+    /// A desktop's memory warnings are heard from low-memory-monitor, or inside
+    /// a sandbox from the portal that relays them, each at its level: low,
+    /// medium and critical; a level below low is no warning.
+    void the_desktops_memory_warnings_are_heard_at_their_levels() {
+        QVERIFY2(QDBusConnection::sessionBus().isConnected(),
+                 "no session bus: run this test under dbus-run-session, as scripts/test-linux-qt-host-kit.sh does");
+        struct Case {
+            MemoryMonitor::Source source;
+            const char *service;
+            const char *path;
+            const char *interface;
+        };
+        for (const Case &heard : {Case{MemoryMonitor::Source::LowMemoryMonitor, "org.freedesktop.LowMemoryMonitor",
+                                       "/org/freedesktop/LowMemoryMonitor", "org.freedesktop.LowMemoryMonitor"},
+                                  Case{MemoryMonitor::Source::Portal, "org.freedesktop.portal.Desktop",
+                                       "/org/freedesktop/portal/desktop", "org.freedesktop.portal.MemoryMonitor"}}) {
+            QObject sender;
+            OnTheBus standing(sender, QLatin1String(heard.service), QLatin1String(heard.path));
+            QVERIFY(standing.registered());
+            std::vector<MigoMemoryWarningLevel> warned;
+            MemoryMonitor monitor(QDBusConnection::sessionBus(), heard.source,
+                                  [&warned](MigoMemoryWarningLevel level) { warned.push_back(level); });
+            for (const uchar level : {uchar{20}, uchar{50}, uchar{100}, uchar{255}}) {
+                QDBusMessage signal = QDBusMessage::createSignal(QLatin1String(heard.path), QLatin1String(heard.interface),
+                                                                 QStringLiteral("LowMemoryWarning"));
+                // A byte, as the desktop sends it: a bare uchar would go as an int.
+                signal << QVariant::fromValue(level);
+                QVERIFY(QDBusConnection::sessionBus().send(signal));
+            }
+            QTRY_COMPARE(warned.size(), std::size_t{3});
+            QCOMPARE(warned, (std::vector<MigoMemoryWarningLevel>{MIGO_MEMORY_WARNING_MODERATE, MIGO_MEMORY_WARNING_LOW,
+                                                                  MIGO_MEMORY_WARNING_CRITICAL}));
+        }
     }
 
     /// A Session created but left without callbacks must not be stranded.
@@ -134,22 +755,71 @@ private slots:
     }
 
     /// Loading reports argument failures synchronously, not through the signal.
-    void load_content_reports_its_own_failures_synchronously() {
+    /// Content waits for the view: the Session has nothing to run it on until
+    /// the view first attaches, which is after Qt has put the window on screen.
+    /// Asked for before then, it is loaded then; asked for twice, it is refused.
+    void content_waits_for_the_view_to_attach() {
         QWidget container;
         MigoManagedSession managed(*fake_migo::engine(), container);
         QVERIFY(managed.isValid());
-        QSignalSpy failures(&managed, &MigoManagedSession::contentFailed);
 
-        fake_migo::set_load_content_result(MIGO_ERROR_INVALID_STATE);
+        QCOMPARE(managed.loadContent(QStringLiteral("game"), QStringLiteral("game.js")), MIGO_OK);
+        QCOMPARE(fake_migo::calls().load_content, 0);
         QCOMPARE(managed.loadContent(QStringLiteral("game"), QStringLiteral("game.js")),
                  MIGO_ERROR_INVALID_STATE);
-        QCOMPARE(failures.count(), 0);
 
-        fake_migo::set_load_content_result(MIGO_OK);
-        QCOMPARE(managed.loadContent(QStringLiteral("game"), QStringLiteral("game.js")), MIGO_OK);
-        QCOMPARE(fake_migo::loaded_content_id(), std::string("game"));
+        if (require_xcb("xcb-only: the view attaches only on X11", __FILE__, __LINE__)) {
+            container.show();
+            QTRY_COMPARE(fake_migo::calls().attach, 1);
+            QCOMPARE(fake_migo::calls().load_content, 1);
+            QCOMPARE(fake_migo::loaded_content_id(), std::string("game"));
+            QCOMPARE(managed.close(), MIGO_OK);
+            fake_migo::set_release_status(managed.view()->generation(), MIGO_SURFACE_RELEASE_RELEASED);
+            QTRY_VERIFY(managed.isClosed());
+        } else {
+            QCOMPARE(managed.close(), MIGO_OK);
+        }
+    }
 
-        QCOMPARE(managed.close(), MIGO_OK);
+    /// Once the view has attached, a load is the library's answer, now; one the
+    /// library refuses when the view attaches arrives as `contentFailed`.
+    void a_load_is_answered_now_once_attached_and_later_before() {
+        if (!require_xcb("xcb-only test", __FILE__, __LINE__)) return;
+        {
+            QWidget container;
+            MigoManagedSession managed(*fake_migo::engine(), container);
+            QSignalSpy failures(&managed, &MigoManagedSession::contentFailed);
+            container.show();
+            QTRY_COMPARE(fake_migo::calls().attach, 1);
+
+            fake_migo::set_load_content_result(MIGO_ERROR_INVALID_ARGUMENT);
+            QCOMPARE(managed.loadContent(QStringLiteral("game"), QStringLiteral("game.js")),
+                     MIGO_ERROR_INVALID_ARGUMENT);
+            QCOMPARE(failures.count(), 0);
+            // Refused, it was not loaded: it may be asked for again.
+            fake_migo::set_load_content_result(MIGO_OK);
+            QCOMPARE(managed.loadContent(QStringLiteral("game"), QStringLiteral("game.js")), MIGO_OK);
+            QCOMPARE(fake_migo::loaded_content_id(), std::string("game"));
+
+            QCOMPARE(managed.close(), MIGO_OK);
+            fake_migo::set_release_status(managed.view()->generation(), MIGO_SURFACE_RELEASE_RELEASED);
+            QTRY_VERIFY(managed.isClosed());
+        }
+        fake_migo::reset();
+        {
+            QWidget container;
+            MigoManagedSession managed(*fake_migo::engine(), container);
+            QSignalSpy failures(&managed, &MigoManagedSession::contentFailed);
+            fake_migo::set_load_content_result(MIGO_ERROR_INVALID_ARGUMENT);
+            QCOMPARE(managed.loadContent(QStringLiteral("game"), QStringLiteral("game.js")), MIGO_OK);
+            container.show();
+            QTRY_COMPARE(failures.count(), 1);
+            QCOMPARE(failures.at(0).at(0).value<MigoResult>(), MIGO_ERROR_INVALID_ARGUMENT);
+
+            QCOMPARE(managed.close(), MIGO_OK);
+            fake_migo::set_release_status(managed.view()->generation(), MIGO_SURFACE_RELEASE_RELEASED);
+            QTRY_VERIFY(managed.isClosed());
+        }
     }
 
     /// Once teardown starts the dispatcher must refuse, not queue.
@@ -234,6 +904,150 @@ private slots:
         QTRY_VERIFY(managed.isClosed());
         QCOMPARE(fake_migo::calls().session_destroy, 1);
         QVERIFY(!fake_migo::session_is_alive());
+    }
+
+    /// The gamepads the kernel shows: a pad following the kernel's gamepad
+    /// layout mapped onto the standard one -- buttons, sticks, analog
+    /// triggers, the D-pad's hat -- with its rumble; one that does not passed on
+    /// as it is; the lowest free index; a report delivered whole, none after
+    /// the kernel dropped events until it reports again; an unplugged pad
+    /// withdrawn.
+    void gamepads_are_the_kernels() {
+        struct Heard {
+            std::vector<std::pair<MigoGamepadInfo, bool>> connections;
+            std::vector<std::string> ids;
+            std::vector<std::string> mappings;
+            std::vector<std::vector<float>> axes;
+            std::vector<std::vector<MigoGamepadButton>> buttons;
+            std::vector<double> times;
+        } heard;
+        Gamepads pads(Gamepads::Sink{
+            [&heard](const MigoGamepadInfo &info, bool connected) {
+                heard.connections.emplace_back(info, connected);
+                heard.ids.emplace_back(info.id_utf8);
+                heard.mappings.emplace_back(info.mapping_utf8);
+            },
+            [&heard](const MigoGamepadStateEvent &sample) {
+                heard.axes.emplace_back(sample.axes, sample.axes + sample.axis_count);
+                heard.buttons.emplace_back(sample.buttons, sample.buttons + sample.button_count);
+                heard.times.push_back(sample.timestamp_ms);
+            }});
+        // A pipe for each device: what the kernel would write, written here.
+        const auto device = [] {
+            std::array<int, 2> ends{};
+            if (::pipe2(ends.data(), O_NONBLOCK | O_CLOEXEC) != 0) qFatal("pipe2");
+            return ends;
+        };
+        const auto send = [](int fd, std::vector<input_event> events) {
+            for (input_event &event : events) {
+                event.input_event_sec = 12;
+                event.input_event_usec = 500000;
+            }
+            const auto bytes = static_cast<ssize_t>(events.size() * sizeof(input_event));
+            QCOMPARE(::write(fd, events.data(), static_cast<size_t>(bytes)), bytes);
+        };
+        const auto event = [](int type, int code, int value) {
+            input_event made{};
+            made.type = static_cast<__u16>(type);
+            made.code = static_cast<__u16>(code);
+            made.value = value;
+            return made;
+        };
+
+        Gamepads::Capabilities standard;
+        standard.name = "Pad";
+        standard.keys = {BTN_SOUTH, BTN_EAST, BTN_NORTH, BTN_WEST, BTN_TL, BTN_TR, BTN_SELECT, BTN_START, BTN_MODE,
+                         BTN_THUMBL, BTN_THUMBR};
+        for (const int stick : {ABS_X, ABS_Y, ABS_RX, ABS_RY}) standard.axes[stick] = {-32768, 32767};
+        standard.axes[ABS_Z] = {0, 1023};
+        standard.axes[ABS_RZ] = {0, 1023};
+        standard.axes[ABS_HAT0X] = {-1, 1};
+        standard.axes[ABS_HAT0Y] = {-1, 1};
+        std::vector<std::tuple<float, float, std::uint32_t>> rumbled;
+        const auto first = device();
+        pads.add(QStringLiteral("/dev/input/event7"), first[0], standard,
+                 [&rumbled](float strong, float weak, std::uint32_t ms) { rumbled.emplace_back(strong, weak, ms); });
+        QCOMPARE(heard.connections.size(), std::size_t{1});
+        const MigoGamepadInfo announced = heard.connections[0].first;
+        QVERIFY(heard.connections[0].second);
+        QCOMPARE(announced.index, 0U);
+        QCOMPARE(announced.axis_count, 4U);
+        QCOMPARE(announced.button_count, 17U);
+        QCOMPARE(announced.haptics, MIGO_GAMEPAD_HAPTICS_DUAL_RUMBLE);
+        QCOMPARE(heard.ids[0], std::string("Pad"));
+        QCOMPARE(heard.mappings[0], std::string("standard"));
+
+        // A, the left stick right, the left trigger full, the D-pad up; the left
+        // action button is BTN_WEST, the top one BTN_NORTH.
+        send(first[1], {event(EV_KEY, BTN_SOUTH, 1), event(EV_KEY, BTN_WEST, 1), event(EV_ABS, ABS_X, 32767),
+                        event(EV_ABS, ABS_Z, 1023), event(EV_ABS, ABS_HAT0Y, -1), event(EV_SYN, SYN_REPORT, 0)});
+        QTRY_COMPARE(heard.buttons.size(), std::size_t{1});
+        const auto &pressed = heard.buttons[0];
+        QVERIFY(pressed[0].flags & MIGO_GAMEPAD_BUTTON_FLAG_PRESSED);
+        QCOMPARE(pressed[0].value, 1.0F);
+        QVERIFY(pressed[2].flags & MIGO_GAMEPAD_BUTTON_FLAG_PRESSED);
+        QCOMPARE(pressed[3].value, 0.0F);
+        QCOMPARE(pressed[6].value, 1.0F);
+        QVERIFY(pressed[6].flags & MIGO_GAMEPAD_BUTTON_FLAG_PRESSED);
+        QVERIFY(pressed[12].flags & MIGO_GAMEPAD_BUTTON_FLAG_PRESSED);
+        QCOMPARE(pressed[13].value, 0.0F);
+        QCOMPARE(heard.axes[0][0], 1.0F);
+        QVERIFY(std::abs(heard.axes[0][1]) < 1e-4F);
+        QCOMPARE(heard.times[0], 12500.0);
+
+        // Events after the kernel dropped some make no sample until it reports again.
+        send(first[1], {event(EV_SYN, SYN_DROPPED, 0), event(EV_KEY, BTN_EAST, 1), event(EV_SYN, SYN_REPORT, 0)});
+        QTest::qWait(50);
+        QCOMPARE(heard.buttons.size(), std::size_t{1});
+        send(first[1], {event(EV_ABS, ABS_Z, 0), event(EV_SYN, SYN_REPORT, 0)});
+        QTRY_COMPARE(heard.buttons.size(), std::size_t{2});
+        QCOMPARE(heard.buttons[1][6].value, 0.0F);
+
+        // A joystick of its own layout: as it is.
+        Gamepads::Capabilities stick;
+        stick.name = "Stick";
+        stick.keys = {BTN_TRIGGER, BTN_THUMB, BTN_THUMB2};
+        stick.axes[ABS_X] = {0, 255};
+        stick.axes[ABS_Y] = {0, 255};
+        stick.axes[ABS_THROTTLE] = {0, 255};
+        const auto second = device();
+        pads.add(QStringLiteral("/dev/input/event9"), second[0], stick, {});
+        QCOMPARE(heard.connections.back().first.index, 1U);
+        QCOMPARE(heard.connections.back().first.button_count, 3U);
+        QCOMPARE(heard.connections.back().first.axis_count, 3U);
+        QCOMPARE(heard.connections.back().first.haptics, MIGO_GAMEPAD_HAPTICS_NONE);
+        QCOMPARE(heard.mappings.back(), std::string());
+
+        MigoGamepadRumble rumble{};
+        rumble.struct_size = sizeof(rumble);
+        rumble.index = 0;
+        rumble.duration_ms = 200;
+        rumble.strong_magnitude = 0.75F;
+        rumble.weak_magnitude = 0.25F;
+        pads.rumble(rumble);
+        QCOMPARE(rumbled.size(), std::size_t{1});
+        QCOMPARE(std::get<0>(rumbled[0]), 0.75F);
+        QCOMPARE(std::get<2>(rumbled[0]), 200U);
+
+        // Unplugged: withdrawn, and its index free for the next pad.
+        ::close(first[1]);
+        QTRY_COMPARE(heard.connections.size(), std::size_t{3});
+        QVERIFY(!heard.connections.back().second);
+        QCOMPARE(heard.connections.back().first.index, 0U);
+        const auto third = device();
+        pads.add(QStringLiteral("/dev/input/event11"), third[0], standard, {});
+        QCOMPARE(heard.connections.back().first.index, 0U);
+        ::close(second[1]);
+        ::close(third[1]);
+    }
+
+    /// A Managed Session plays the pads' effects, so their rumble is announced.
+    void a_managed_session_plays_the_gamepads_rumble() {
+        QWidget parent;
+        MigoManagedSession managed(*fake_migo::engine(), parent);
+        QVERIFY(managed.isValid());
+        QVERIFY(fake_migo::installed_callbacks().on_gamepad_rumble != nullptr);
+        QCOMPARE(managed.close(), MIGO_OK);
     }
 };
 

@@ -74,7 +74,8 @@ function errorMessage(err) {
 // sibling's -- is told under this one.
 function failMessage(apiName, e) {
     var why = errorMessage(e);
-    var named = /^[A-Za-z_$][\w$]*:fail /.exec(why);
+    // A class's method is named with its class: `BLEPeripheralServer.addService`.
+    var named = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*:fail /.exec(why);
     return apiName + ':fail ' + (named ? why.slice(named[0].length) : why);
 }
 
@@ -106,11 +107,49 @@ function isCallbackStyle(options) {
 
 function noop() {}
 
-// The answer to one asynchronous call: `promise` is what the call returns --
-// undefined for callback-style options -- and `resolve` / `reject` settle it.
-// Calling them for a callback-style call does nothing; the callbacks carry the
-// answer there.
-function createSettlement(options) {
+// The APIs the reference gives no Promise style ("not supported" for calling
+// in the Promise style, on its page; `promise: false` in
+// contracts/runtime/minigame-api-spec.json, which
+// scripts/test-promise-style-contract.sh holds this list to). Called without
+// callbacks they return a Promise here as every asynchronous API does, but
+// content written for the reference does not look at what they return, so a
+// failure it never asked to hear of must not reach it as an unhandled
+// rejection -- which, with no rejection listener, is reported to the game's
+// onError as an error the platform never raises.
+var WITHOUT_PROMISE_STYLE = new Set([
+    "authPrivateMessage", "checkHandoffEnabled", "checkIsAddedToMyMiniProgram", "checkIsSupportFacialRecognition",
+    "checkIsSupportMidasPayment", "connectSocket", "createCamera", "downloadFile",
+    "enableOfflineModeDebug", "enterChatToolMode", "exitChatTool", "faceDetect",
+    "getChannelsLiveInfo", "getChannelsLiveNoticeInfo", "getDeviceBenchmarkInfo", "getFriendCloudStorage",
+    "getFriendSendGiftStatus", "getFuzzyLocation", "getGameClubData", "getGameExptInfo",
+    "getGroupCloudStorage", "getGroupEnterInfo", "getGroupInfo", "getGroupMembersInfo",
+    "getInferenceEnvInfo", "getLocalIPAddress", "getMiniReportManager", "getPhoneNumber",
+    "getPotentialFriendList", "getPrivacySetting", "getRelationFriendList", "getScenePerformanceManager",
+    "getScreenRecordingState", "getShareInfo", "getShowSplashAdStatus", "getSystemInfoAsync",
+    "getTextLineHeight", "getUserCloudStorage", "getUserCloudStorageKeys", "getUserInfo",
+    "getWeRunData", "initFaceDetect", "login", "modifyFriendInteractiveStorage",
+    "openChannelsActivity", "openChannelsEvent", "openChannelsLive", "openChannelsUserProfile",
+    "openCustomerServiceChat", "openPhotoTopicView", "openPrivacyContract", "operateGameRecorderVideo",
+    "reportScene", "request", "requestFacialRecognition", "requestFacialVerify",
+    "requestMidasFriendPayment", "requestMidasPaymentGameItem", "requirePrivacyAuthorize", "reserveChannelsLive",
+    "restartMiniProgram", "saveFileToDisk", "sendGiftToFriend", "setDeviceOrientation",
+    "setVisualEffectOnCapture", "setWindowSize", "shareMessageToFriend", "shareTextToGroup",
+    "startHandoff", "stopFaceDetect", "uploadFile",
+]);
+
+// `promise`, as the call to `apiName` returns it: for an API without a Promise
+// style, a rejection nobody waits for is not an unhandled one. Whoever does
+// wait for it still has it.
+function answeredBy(apiName, promise) {
+    if (WITHOUT_PROMISE_STYLE.has(apiName)) promise.catch(noop);
+    return promise;
+}
+
+// The answer to one asynchronous call to `apiName`: `promise` is what the call
+// returns -- undefined for callback-style options -- and `resolve` / `reject`
+// settle it. Calling them for a callback-style call does nothing; the
+// callbacks carry the answer there.
+function createSettlement(apiName, options) {
     if (isCallbackStyle(options)) {
         return { promise: undefined, resolve: noop, reject: noop };
     }
@@ -119,7 +158,7 @@ function createSettlement(options) {
         resolve = res;
         reject = rej;
     });
-    return { promise: promise, resolve: resolve, reject: reject };
+    return { promise: answeredBy(apiName, promise), resolve: resolve, reject: reject };
 }
 
 // `options` without content's callbacks: for a call whose promise is made
@@ -137,7 +176,7 @@ function withoutCallbacks(options) {
 // work of its own to do with the outcome first. Content that passed callbacks
 // and never looks at the promise leaves no rejection unhandled.
 function withCallbacks(apiName, promise, options) {
-    if (!isCallbackStyle(options)) return promise;
+    if (!isCallbackStyle(options)) return answeredBy(apiName, promise);
     promise.then(function (res) {
         invokeCallback(apiName, 'success', options.success, res);
         invokeCallback(apiName, 'complete', options.complete, res);
@@ -196,12 +235,12 @@ function wrapAsync(apiName, fn, options) {
                 throw res;
             }
         );
-        return callbackStyle ? undefined : answered;
+        return callbackStyle ? undefined : answeredBy(apiName, answered);
     } catch (e) {
         const res = { errMsg: failMessage(apiName, e) };
         queueMicrotask(function () { invokeCallback(apiName, 'fail', fail, res); });
         queueMicrotask(function () { invokeCallback(apiName, 'complete', complete, res); });
-        return callbackStyle ? undefined : Promise.reject(res);
+        return callbackStyle ? undefined : answeredBy(apiName, Promise.reject(res));
     }
 }
 
@@ -268,6 +307,48 @@ var _deferredPendingCount = 0;
 // admission can fail, and APIs with timeout disabled would otherwise have no
 // bound.
 
+// ---- a call that asks for its scope ----------------------------------------
+//
+// What content may do only with a scope it has been granted asks for that scope
+// itself when nobody has decided it: authorize is how content asks in advance,
+// and once it is granted later calls do not ask (the reference's authorize
+// page). system/14_setting.js owns the asking and registers it here: given what
+// a gated op threw, a Promise settled once the scope is decided, or null when
+// the refusal is not of an undecided scope. The call then runs again, and its
+// op decides from the recorded decision: granted, it goes ahead; refused, or
+// with nobody to ask, it refuses as it did.
+var _scopeAsker = null;
+
+function setScopeAsker(asker) {
+    _scopeAsker = asker;
+}
+
+// For a call made outside createDeferredApi: runs `call`, then `done`; when
+// `call` throws the refusal of a scope nobody has decided, asks for the scope
+// and runs it once more. `failed` gets anything else it throws.
+function withScope(call, done, failed) {
+    try {
+        call();
+    } catch (e) {
+        var asking = _scopeAsker === null ? null : _scopeAsker(e);
+        if (asking === null) {
+            failed(e);
+            return;
+        }
+        asking.then(function () {
+            try {
+                call();
+            } catch (again) {
+                failed(again);
+                return;
+            }
+            done();
+        });
+        return;
+    }
+    done();
+}
+
 function createDeferredApi(apiName, defaultTimeoutMs) {
     var _pending = new Map();
     if (defaultTimeoutMs === undefined) defaultTimeoutMs = 30000;
@@ -315,7 +396,7 @@ function createDeferredApi(apiName, defaultTimeoutMs) {
         var success = typeof opts.success === 'function' ? opts.success : null;
         var fail = typeof opts.fail === 'function' ? opts.fail : null;
         var complete = typeof opts.complete === 'function' ? opts.complete : null;
-        var settlement = createSettlement(opts);
+        var settlement = createSettlement(apiName, opts);
         var resolve = settlement.resolve;
         var reject = settlement.reject;
 
@@ -358,21 +439,44 @@ function createDeferredApi(apiName, defaultTimeoutMs) {
             _deferredPendingCount++;
 
             // The request failed before the host saw it: whatever the executor
-            // threw, or the rejection of the Promise it returned.
+            // threw, or the rejection of the Promise it returned -- with the
+            // API's code when the error names one.
             function failStart(e) {
                 var entry = removePending(requestId);
                 if (!entry) return;
                 clearTimeout(entry._timer);
                 var res = { errMsg: failMessage(apiName, e) };
+                if (e !== null && typeof e === 'object' && typeof e.errCode === 'number') res.errCode = e.errCode;
                 invokeCallback(apiName, 'fail', entry.fail, res);
                 invokeCallback(apiName, 'complete', entry.complete, res);
                 entry.reject(res);
             }
 
+            // Refused for a scope nobody has decided, the call asks for it --
+            // once -- and starts again when it is decided. The player's answer
+            // is not the call's time: its timer stops while they are asked.
+            var askedForScope = false;
+            function refused(e) {
+                var asking = askedForScope || _scopeAsker === null ? null : _scopeAsker(e);
+                if (asking === null) {
+                    failStart(e);
+                    return;
+                }
+                askedForScope = true;
+                clearTimeout(pendingEntry._timer);
+                asking.then(function () {
+                    try {
+                        start();
+                    } catch (again) {
+                        failStart(again);
+                    }
+                });
+            }
+
             // Timer admission and executor dispatch are one rollback scope:
             // either both start, or the pending entry and timer are removed and
             // the caller receives exactly one failure settlement.
-            try {
+            function start() {
                 var ms = (opts && typeof opts._timeout === 'number') ? opts._timeout : defaultTimeoutMs;
                 if (ms > 0) {
                     pendingEntry._timer = setTimeout(function () {
@@ -389,10 +493,13 @@ function createDeferredApi(apiName, defaultTimeoutMs) {
                 // names. Its rejection fails the request as a throw would.
                 var started = executor(opts, requestId);
                 if (started !== undefined && started !== null && typeof started.then === 'function') {
-                    started.then(undefined, failStart);
+                    started.then(undefined, refused);
                 }
+            }
+            try {
+                start();
             } catch (e) {
-                failStart(e);
+                refused(e);
             }
         })();
         return settlement.promise;
@@ -571,4 +678,6 @@ export {
     // rest" is a second answer to that.
     invokeCallback,
     errorMessage,
+    setScopeAsker,
+    withScope,
 };

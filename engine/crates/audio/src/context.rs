@@ -316,6 +316,16 @@ impl AudioContext {
         self.nodes.values().any(|n| n.is_producing())
     }
 
+    /// Check a specific source when validating an explicit playback request.
+    #[cfg(any(target_os = "ios", test))]
+    pub(crate) fn has_active_source(&self, node_id: AudioNodeId) -> bool {
+        self.state == AudioContextState::Running
+            && self
+                .nodes
+                .get(&node_id)
+                .is_some_and(|node| node.is_producing())
+    }
+
     /// Mark a node as unreachable from JavaScript, and collect whatever that
     /// makes collectible right now.
     ///

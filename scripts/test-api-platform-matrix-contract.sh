@@ -35,6 +35,7 @@ trap 'rm -rf "$TMP"' EXIT
 # Every file the generator reads, copied where it expects it.
 inputs=(
     contracts/runtime/minigame-api.json
+    contracts/runtime/minigame-api-spec.json
     contracts/runtime/minigame-api-reach.json
     contracts/runtime/api-platform-decisions.json
     contracts/runtime/api-platform-matrix.json
@@ -102,6 +103,12 @@ red "a host layer that stops installing a callback" platforms/apple/Sources/Migo
     'text.replace("callbacks.on_keep_screen_on = ", "// ", 1)'
 red "a channel method moving to another op" contracts/runtime/host-services.json \
     'text.replace("\"op\": \"op_set_clipboard_data\"", "\"op\": \"op_set_clipboard_data_moved\"", 1)'
+# What is owed is what the reference offers on each kind of client: a desktop-only call that a page stops calling
+# desktop-only is owed on the phones, and a phones-only one a desktop client starts offering is owed there.
+red "a desktop-only call the reference starts offering on its phones" contracts/runtime/minigame-api-spec.json \
+    'text.replace("\"mobile\": false", "\"mobile\": true", 1)'
+red "a phones-only call the reference's Windows client starts offering" contracts/runtime/minigame-api-spec.json \
+    'text.replace("\"createVideoDecoder\": {", "\"createVideoDecoder\": {\"clients\": {\"windows\": true}, ", 1)'
 # Ready is verified, not wired: a measured API that regresses is no longer ready, and a record that does not measure
 # the platform's API list, or says what no run can, is refused.
 if [[ -e "$ROOT/contracts/runtime/api-conformance-macos.json" ]]; then
@@ -118,10 +125,18 @@ red "the macOS game view that stops answering the window service" platforms/appl
     'text.replace("builtIn.insert(.window)", "// builtIn.insert(.window)", 1)'
 red "the Swift SDK that stops reporting the system's switches" platforms/apple/Sources/MigoAppleRenderer/MigoEngineSession.swift \
     'text.replace("migo_session_set_system_settings(session", "migo_session_set_system_settings_gone(session", 1)'
+red "the Swift SDK that stops reporting the network" platforms/apple/Sources/MigoAppleRenderer/MigoEngineSession.swift \
+    'text.replace("migo_session_report_network(session", "migo_session_report_network_gone(session", 1)'
 red "a capability product that stops answering its service" platforms/apple/Sources/MigoAppleLocation/MigoLocation.swift \
     'text.replace("builtIn.insert(.location)", "// builtIn.insert(.location)", 1)'
 red "an engine decoder compiled for another system" engine/crates/capi/src/host_kit.rs \
     'text.replace("#[cfg(target_os = \"macos\")]\n    fn video_decoder", "#[cfg(target_os = \"windows\")]\n    fn video_decoder", 1)'
+# OpenHarmony's targets are `target_os = "linux"` too: an accessor that stops
+# telling them apart claims a decoder for a platform that has none.
+red "an engine decoder that a bare Linux cfg also builds for OpenHarmony" engine/crates/capi/src/host_kit.rs \
+    'text.replace("#[cfg(all(target_os = \"linux\", not(target_env = \"ohos\")))]\n    fn video_decoder", "#[cfg(target_os = \"linux\")]\n    fn video_decoder", 1)'
+red "an accessor cfg that does not say which platforms" engine/crates/capi/src/host_kit.rs \
+    'text.replace("#[cfg(all(target_os = \"linux\", not(target_env = \"ohos\")))]\n    fn video_decoder", "#[cfg(all(target_os = \"linux\", feature = \"gst\"))]\n    fn video_decoder", 1)'
 red "the engine's audio settings no longer built for Windows" engine/crates/capi/src/host_kit.rs \
     'text.replace("target_os = \"windows\"\n    ))]\n    fn audio_platform", "target_os = \"linux\"\n    ))]\n    fn audio_platform", 1)'
 red "the Mac's game view that stops feeding the mouse" platforms/apple/Sources/MigoMacV8/MigoGameView.swift \
@@ -134,6 +149,8 @@ red "the iPad's game view that stops reporting the screen's turn" platforms/appl
     'text.replace("MigoHostServiceID.Screen.Event.deviceOrientationChange", "MigoHostServiceID.Screen.Event.recordingStateChange")'
 red "a listener decided by an event no service has" contracts/runtime/api-platform-decisions.json \
     'text.replace("\"screen.device_orientation_change\"", "\"screen.turned\"", 1)'
+red "the Linux Host Kit that stops answering a service itself" platforms/linux/host-kit/src/qt6/host_services.cpp \
+    'text.replace("builtIn |= hostServiceBit(MIGO_HOST_SERVICE_CLIPBOARD);", "// clipboard", 1)'
 red "a host layer that stops feeding touch" platforms/linux/host-kit/src/qt6/x11_surface_view.cpp \
     'text.replace("migo_session_send_touch(", "migo_session_send_touch_removed(")'
 red "an unsupported decision with no reason" contracts/runtime/api-platform-decisions.json \

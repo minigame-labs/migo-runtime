@@ -46,6 +46,10 @@ pub const MIGO_HOST_SERVICE_BLUETOOTH: u32 = 15;
 pub const MIGO_HOST_SERVICE_WINDOW: u32 = 16;
 pub const MIGO_HOST_SERVICE_ECOSYSTEM: u32 = 17;
 pub const MIGO_HOST_SERVICE_UPDATE: u32 = 18;
+pub const MIGO_HOST_SERVICE_CAMERA: u32 = 19;
+pub const MIGO_HOST_SERVICE_RECORDER: u32 = 20;
+pub const MIGO_HOST_SERVICE_VIDEO: u32 = 21;
+pub const MIGO_HOST_SERVICE_BLE_PERIPHERAL: u32 = 22;
 
 /// Every service this library knows. A host declaring a bit outside it was
 /// built against a newer header than the library it runs with.
@@ -67,7 +71,11 @@ pub const MIGO_HOST_SERVICES_KNOWN: u64 = (1 << MIGO_HOST_SERVICE_AD)
     | (1 << MIGO_HOST_SERVICE_BLUETOOTH)
     | (1 << MIGO_HOST_SERVICE_WINDOW)
     | (1 << MIGO_HOST_SERVICE_ECOSYSTEM)
-    | (1 << MIGO_HOST_SERVICE_UPDATE);
+    | (1 << MIGO_HOST_SERVICE_UPDATE)
+    | (1 << MIGO_HOST_SERVICE_CAMERA)
+    | (1 << MIGO_HOST_SERVICE_RECORDER)
+    | (1 << MIGO_HOST_SERVICE_VIDEO)
+    | (1 << MIGO_HOST_SERVICE_BLE_PERIPHERAL);
 
 // ---- Methods, numbered per service. ----
 
@@ -91,6 +99,7 @@ pub const MIGO_SHARE_SHARE_MESSAGE_TO_FRIEND: u32 = 1;
 pub const MIGO_SHARE_SHOW_SHARE_IMAGE_MENU: u32 = 2;
 pub const MIGO_SHARE_SET_SHARE_MENU: u32 = 3;
 pub const MIGO_SHARE_MENU_SHARE_REPLY: u32 = 4;
+pub const MIGO_SHARE_SHARE_GAME_RECORDING: u32 = 5;
 pub const MIGO_SHARE_EVENT_MENU_SHARE: u32 = 0;
 
 pub const MIGO_NAVIGATE_NAVIGATE_TO_MINI_PROGRAM: u32 = 0;
@@ -194,6 +203,59 @@ pub const MIGO_ECOSYSTEM_EVENT_EVENT: u32 = 0;
 
 pub const MIGO_UPDATE_APPLY_UPDATE: u32 = 0;
 pub const MIGO_UPDATE_EVENT_STATE: u32 = 0;
+
+pub const MIGO_CAMERA_CREATE: u32 = 0;
+pub const MIGO_CAMERA_DESTROY: u32 = 1;
+pub const MIGO_CAMERA_SET: u32 = 2;
+pub const MIGO_CAMERA_TAKE_PHOTO: u32 = 3;
+pub const MIGO_CAMERA_START_RECORD: u32 = 4;
+pub const MIGO_CAMERA_STOP_RECORD: u32 = 5;
+pub const MIGO_CAMERA_SET_ZOOM: u32 = 6;
+pub const MIGO_CAMERA_LISTEN_FRAME_CHANGE: u32 = 7;
+pub const MIGO_CAMERA_CLOSE_FRAME_CHANGE: u32 = 8;
+pub const MIGO_CAMERA_EVENT_STOP: u32 = 0;
+pub const MIGO_CAMERA_EVENT_AUTH_CANCEL: u32 = 1;
+
+pub const MIGO_RECORDER_START: u32 = 0;
+pub const MIGO_RECORDER_PAUSE: u32 = 1;
+pub const MIGO_RECORDER_RESUME: u32 = 2;
+pub const MIGO_RECORDER_STOP: u32 = 3;
+pub const MIGO_RECORDER_EVENT_START: u32 = 0;
+pub const MIGO_RECORDER_EVENT_PAUSE: u32 = 1;
+pub const MIGO_RECORDER_EVENT_RESUME: u32 = 2;
+pub const MIGO_RECORDER_EVENT_STOP: u32 = 3;
+pub const MIGO_RECORDER_EVENT_ERROR: u32 = 4;
+pub const MIGO_RECORDER_EVENT_INTERRUPTION_BEGIN: u32 = 5;
+pub const MIGO_RECORDER_EVENT_INTERRUPTION_END: u32 = 6;
+
+pub const MIGO_VIDEO_CREATE: u32 = 0;
+pub const MIGO_VIDEO_DESTROY: u32 = 1;
+pub const MIGO_VIDEO_SET: u32 = 2;
+pub const MIGO_VIDEO_PLAY: u32 = 3;
+pub const MIGO_VIDEO_PAUSE: u32 = 4;
+pub const MIGO_VIDEO_STOP: u32 = 5;
+pub const MIGO_VIDEO_SEEK: u32 = 6;
+pub const MIGO_VIDEO_REQUEST_FULL_SCREEN: u32 = 7;
+pub const MIGO_VIDEO_EXIT_FULL_SCREEN: u32 = 8;
+pub const MIGO_VIDEO_EVENT_PLAY: u32 = 0;
+pub const MIGO_VIDEO_EVENT_PAUSE: u32 = 1;
+pub const MIGO_VIDEO_EVENT_ENDED: u32 = 2;
+pub const MIGO_VIDEO_EVENT_TIME_UPDATE: u32 = 3;
+pub const MIGO_VIDEO_EVENT_ERROR: u32 = 4;
+pub const MIGO_VIDEO_EVENT_WAITING: u32 = 5;
+pub const MIGO_VIDEO_EVENT_PROGRESS: u32 = 6;
+
+pub const MIGO_BLE_PERIPHERAL_CREATE_SERVER: u32 = 0;
+pub const MIGO_BLE_PERIPHERAL_ADD_SERVICE: u32 = 1;
+pub const MIGO_BLE_PERIPHERAL_REMOVE_SERVICE: u32 = 2;
+pub const MIGO_BLE_PERIPHERAL_START_ADVERTISING: u32 = 3;
+pub const MIGO_BLE_PERIPHERAL_STOP_ADVERTISING: u32 = 4;
+pub const MIGO_BLE_PERIPHERAL_WRITE_CHARACTERISTIC_VALUE: u32 = 5;
+pub const MIGO_BLE_PERIPHERAL_EVENT_CHARACTERISTIC_READ_REQUEST: u32 = 0;
+pub const MIGO_BLE_PERIPHERAL_EVENT_CHARACTERISTIC_WRITE_REQUEST: u32 = 1;
+pub const MIGO_BLE_PERIPHERAL_EVENT_CHARACTERISTIC_SUBSCRIBED: u32 = 2;
+pub const MIGO_BLE_PERIPHERAL_EVENT_CHARACTERISTIC_UNSUBSCRIBED: u32 = 3;
+pub const MIGO_BLE_PERIPHERAL_EVENT_CONNECTION_STATE_CHANGED: u32 = 4;
 
 // ---- Events, numbered per service. ----
 
@@ -484,6 +546,148 @@ unsafe fn borrow_value<'a>(value: *const u8, length: u32) -> Result<&'a [u8], Mi
     Ok(unsafe { std::slice::from_raw_parts(value, length as usize) })
 }
 
+pub const MIGO_PIXEL_FORMAT_RGBA8: u32 = 0;
+pub const MIGO_PIXEL_FORMAT_BGRA8: u32 = 1;
+/// The widest or tallest camera frame a host may hand over.
+const CAMERA_FRAME_MAX_DIMENSION: u32 = 8192;
+
+/// One frame of a camera content listens to.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct MigoCameraFrame {
+    pub header: VersionedHeader,
+    pub camera_id: u32,
+    pub width: u32,
+    pub height: u32,
+    pub row_stride: u32,
+    pub format: u32,
+    pub reserved0: u32,
+    pub pixels: *const u8,
+}
+
+// SAFETY: integers and a pointer, all zero-valid; v1 requires the complete record.
+unsafe impl AbiStruct for MigoCameraFrame {}
+
+/// A validated [`MigoCameraFrame`], borrowing the caller's pixels for the call.
+#[derive(Debug, PartialEq, Eq)]
+pub struct CameraFrameView<'a> {
+    pub camera_id: u32,
+    pub width: u32,
+    pub height: u32,
+    pub row_stride: usize,
+    /// True for `MIGO_PIXEL_FORMAT_BGRA8`, false for `RGBA8`.
+    pub bgra: bool,
+    /// Every byte the rows reach: `row_stride` per row but the last, which is
+    /// `width * 4`.
+    pub pixels: &'a [u8],
+}
+
+impl MigoCameraFrame {
+    /// Validate a caller-owned frame and borrow its pixels.
+    ///
+    /// # Safety
+    /// `record` must be null or readable for its announced byte count, and the
+    /// rows it announces readable for the call.
+    pub unsafe fn parse<'a>(record: *const Self) -> Result<CameraFrameView<'a>, MigoResult> {
+        // SAFETY: forwarded from this function's contract.
+        let raw = unsafe { copy_versioned::<Self>(record.cast::<VersionedHeader>()) }?;
+        let bgra = match raw.format {
+            MIGO_PIXEL_FORMAT_RGBA8 => false,
+            MIGO_PIXEL_FORMAT_BGRA8 => true,
+            _ => return Err(MIGO_ERROR_INVALID_ARGUMENT),
+        };
+        if raw.width == 0
+            || raw.height == 0
+            || raw.width > CAMERA_FRAME_MAX_DIMENSION
+            || raw.height > CAMERA_FRAME_MAX_DIMENSION
+            || raw.pixels.is_null()
+            || raw.reserved0 != 0
+        {
+            return Err(MIGO_ERROR_INVALID_ARGUMENT);
+        }
+        let row = raw.width as usize * 4;
+        let row_stride = raw.row_stride as usize;
+        if row_stride < row {
+            return Err(MIGO_ERROR_INVALID_ARGUMENT);
+        }
+        let reach = (raw.height as usize - 1)
+            .checked_mul(row_stride)
+            .and_then(|start| start.checked_add(row))
+            .ok_or(MIGO_ERROR_INVALID_ARGUMENT)?;
+        Ok(CameraFrameView {
+            camera_id: raw.camera_id,
+            width: raw.width,
+            height: raw.height,
+            row_stride,
+            bgra,
+            // SAFETY: the caller guarantees the rows it announced are readable.
+            pixels: unsafe { std::slice::from_raw_parts(raw.pixels, reach) },
+        })
+    }
+}
+
+/// The largest recording frame a host may hand over: content asks for frames of
+/// at most 1024 KB.
+const RECORDER_FRAME_MAX_BYTES: u32 = 1 << 20;
+
+/// One frame of a recording whose options asked for frames.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct MigoRecorderFrame {
+    pub header: VersionedHeader,
+    pub recording_id: u32,
+    pub is_last_frame: u32,
+    pub data: *const u8,
+    pub length: u32,
+    pub reserved0: u32,
+}
+
+// SAFETY: integers and a pointer, all zero-valid; v1 requires the complete record.
+unsafe impl AbiStruct for MigoRecorderFrame {}
+
+/// A validated [`MigoRecorderFrame`], borrowing the caller's bytes for the call.
+#[derive(Debug, PartialEq, Eq)]
+pub struct RecorderFrameView<'a> {
+    pub recording_id: u32,
+    pub is_last_frame: bool,
+    pub data: &'a [u8],
+}
+
+impl MigoRecorderFrame {
+    /// Validate a caller-owned frame and borrow its bytes.
+    ///
+    /// # Safety
+    /// `record` must be null or readable for its announced byte count, and
+    /// `data` readable for `length` bytes for the call.
+    pub unsafe fn parse<'a>(record: *const Self) -> Result<RecorderFrameView<'a>, MigoResult> {
+        // SAFETY: forwarded from this function's contract.
+        let raw = unsafe { copy_versioned::<Self>(record.cast::<VersionedHeader>()) }?;
+        let is_last_frame = match raw.is_last_frame {
+            0 => false,
+            1 => true,
+            _ => return Err(MIGO_ERROR_INVALID_ARGUMENT),
+        };
+        if raw.recording_id == 0
+            || raw.length > RECORDER_FRAME_MAX_BYTES
+            || (raw.data.is_null() && raw.length != 0)
+            || raw.reserved0 != 0
+        {
+            return Err(MIGO_ERROR_INVALID_ARGUMENT);
+        }
+        let data = if raw.length == 0 {
+            &[][..]
+        } else {
+            // SAFETY: the caller guarantees `length` readable bytes at `data`.
+            unsafe { std::slice::from_raw_parts(raw.data, raw.length as usize) }
+        };
+        Ok(RecorderFrameView {
+            recording_id: raw.recording_id,
+            is_last_frame,
+            data,
+        })
+    }
+}
+
 impl MigoSensorSample {
     /// Copy and validate a caller-owned reading.
     ///
@@ -688,6 +892,18 @@ const _: () = assert!(offset_of!(MigoBleCharacteristicValue, device_id_utf8) == 
 const _: () = assert!(size_of::<MigoBleCharacteristicValue>() == 56);
 #[cfg(target_pointer_width = "64")]
 const _: () = assert!(offset_of!(MigoBleCharacteristicValue, device_id_length) == 40);
+const _: () = assert!(offset_of!(MigoCameraFrame, camera_id) == 8);
+const _: () = assert!(offset_of!(MigoCameraFrame, format) == 24);
+const _: () = assert!(offset_of!(MigoCameraFrame, pixels) == 32);
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(size_of::<MigoCameraFrame>() == 40);
+const _: () = assert!(offset_of!(MigoRecorderFrame, recording_id) == 8);
+const _: () = assert!(offset_of!(MigoRecorderFrame, is_last_frame) == 12);
+const _: () = assert!(offset_of!(MigoRecorderFrame, data) == 16);
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(offset_of!(MigoRecorderFrame, length) == 24);
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(size_of::<MigoRecorderFrame>() == 32);
 const _: () = assert!(offset_of!(MigoAppAuthorizeSetting, album) == 8);
 const _: () = assert!(offset_of!(MigoAppAuthorizeSetting, location_reduced_accuracy) == 18);
 const _: () = assert!(offset_of!(MigoHostServiceCall, header) == 0);
@@ -753,6 +969,155 @@ mod tests {
 
     fn parse(value: &MigoHostServiceResult) -> Result<HostServiceOutcome, MigoResult> {
         unsafe { MigoHostServiceResult::parse(value) }
+    }
+
+    fn frame(
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+        row_stride: u32,
+        format: u32,
+    ) -> MigoCameraFrame {
+        MigoCameraFrame {
+            header: VersionedHeader {
+                struct_size: size_of::<MigoCameraFrame>() as u32,
+                abi_version: MIGO_ABI_VERSION_CURRENT,
+            },
+            camera_id: 7,
+            width,
+            height,
+            row_stride,
+            format,
+            reserved0: 0,
+            pixels: pixels.as_ptr(),
+        }
+    }
+
+    #[test]
+    fn a_camera_frame_borrows_the_rows_it_announces() {
+        // 2 x 2, rows 12 bytes apart: the last row ends 20 bytes in.
+        let pixels = [0u8; 24];
+        let view =
+            unsafe { MigoCameraFrame::parse(&frame(&pixels, 2, 2, 12, MIGO_PIXEL_FORMAT_BGRA8)) }
+                .expect("a whole frame");
+        assert_eq!(
+            (
+                view.camera_id,
+                view.width,
+                view.height,
+                view.row_stride,
+                view.bgra
+            ),
+            (7, 2, 2, 12, true)
+        );
+        assert_eq!(
+            view.pixels.len(),
+            20,
+            "the last row is width * 4, not a stride"
+        );
+    }
+
+    #[test]
+    fn a_camera_frame_out_of_shape_is_refused() {
+        let pixels = [0u8; 64];
+        let refused = |record: MigoCameraFrame| unsafe { MigoCameraFrame::parse(&record) }.err();
+        assert_eq!(
+            refused(frame(&pixels, 2, 2, 8, 2)),
+            Some(MIGO_ERROR_INVALID_ARGUMENT),
+            "a format"
+        );
+        assert_eq!(
+            refused(frame(&pixels, 2, 2, 7, 0)),
+            Some(MIGO_ERROR_INVALID_ARGUMENT),
+            "a stride"
+        );
+        assert_eq!(
+            refused(frame(&pixels, 0, 2, 8, 0)),
+            Some(MIGO_ERROR_INVALID_ARGUMENT),
+            "no width"
+        );
+        assert_eq!(
+            refused(frame(&pixels, 8193, 1, 32772, 0)),
+            Some(MIGO_ERROR_INVALID_ARGUMENT),
+            "too wide"
+        );
+        let mut unnamed = frame(&pixels, 2, 2, 8, 0);
+        unnamed.pixels = std::ptr::null();
+        assert_eq!(
+            refused(unnamed),
+            Some(MIGO_ERROR_INVALID_ARGUMENT),
+            "no pixels"
+        );
+        assert_eq!(
+            unsafe { MigoCameraFrame::parse(std::ptr::null()) }.err(),
+            Some(MIGO_ERROR_INVALID_ARGUMENT)
+        );
+    }
+
+    fn recorder_frame(data: &[u8], recording_id: u32, is_last_frame: u32) -> MigoRecorderFrame {
+        MigoRecorderFrame {
+            header: VersionedHeader {
+                struct_size: size_of::<MigoRecorderFrame>() as u32,
+                abi_version: MIGO_ABI_VERSION_CURRENT,
+            },
+            recording_id,
+            is_last_frame,
+            data: if data.is_empty() {
+                std::ptr::null()
+            } else {
+                data.as_ptr()
+            },
+            length: data.len() as u32,
+            reserved0: 0,
+        }
+    }
+
+    #[test]
+    fn a_recorder_frame_borrows_its_bytes() {
+        let bytes = [1u8, 2, 3, 4];
+        let view = unsafe { MigoRecorderFrame::parse(&recorder_frame(&bytes, 9, 0)) }.unwrap();
+        assert_eq!(
+            view,
+            RecorderFrameView {
+                recording_id: 9,
+                is_last_frame: false,
+                data: &bytes,
+            }
+        );
+        // The last frame of a recording may be empty.
+        let last = unsafe { MigoRecorderFrame::parse(&recorder_frame(&[], 9, 1)) }.unwrap();
+        assert!(last.is_last_frame && last.data.is_empty());
+    }
+
+    #[test]
+    fn a_malformed_recorder_frame_is_refused() {
+        let bytes = [0u8; 4];
+        let refused =
+            |record: MigoRecorderFrame| unsafe { MigoRecorderFrame::parse(&record) }.err();
+        let invalid = Some(MIGO_ERROR_INVALID_ARGUMENT);
+        assert_eq!(
+            refused(recorder_frame(&bytes, 0, 0)),
+            invalid,
+            "no recording"
+        );
+        assert_eq!(
+            refused(recorder_frame(&bytes, 9, 2)),
+            invalid,
+            "a flag that is not one"
+        );
+        let mut huge = recorder_frame(&bytes, 9, 0);
+        huge.length = RECORDER_FRAME_MAX_BYTES + 1;
+        assert_eq!(refused(huge), invalid, "over 1 MiB");
+        let mut unnamed = recorder_frame(&bytes, 9, 0);
+        unnamed.data = std::ptr::null();
+        assert_eq!(refused(unnamed), invalid, "bytes announced, none given");
+        let mut reserved = recorder_frame(&bytes, 9, 0);
+        reserved.reserved0 = 1;
+        assert_eq!(refused(reserved), invalid, "reserved");
+        assert_eq!(
+            unsafe { MigoRecorderFrame::parse(std::ptr::null()) }.err(),
+            invalid
+        );
     }
 
     #[test]

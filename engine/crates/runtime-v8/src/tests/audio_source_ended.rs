@@ -66,6 +66,8 @@ mod audio_source_ended_tests {
 
     #[test]
     fn a_handler_starts_the_watch_and_the_report_fires_it_once() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, responder, watches) = boot();
         run(
             &mut runtime,
@@ -121,6 +123,8 @@ mod audio_source_ended_tests {
 
     #[test]
     fn clearing_the_handler_stops_the_watch_and_the_node_never_reports() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, responder, watches) = boot();
         run(
             &mut runtime,

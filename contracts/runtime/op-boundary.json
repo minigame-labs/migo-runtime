@@ -259,12 +259,13 @@
       }
     },
     "host_v8_media": {
-      "reason": "Camera, video and photo-album surfaces are native UI and native permissions, outside the Performance+ profile; so is video decoding, which content is told this profile does not have. Choosing images, media and files is the host app's picker, reached as a command through the host-service channel; the files it hands over are taken into the session's /tmp, as in process. Compressing, previewing and saving to the album name content's files: they are awaited, because the host resolves each path through the game's sandbox into a file the app can open before it asks (migo_services::host_paths, as the embedded ops do), and a refusal fails the call.",
+      "reason": "Camera, video and photo-album surfaces are native UI and native permissions, outside the Performance+ profile; so is video decoding, which content is told this profile does not have. Choosing images, media and files is the host app's picker, reached as a command through the host-service channel; the files it hands over are taken into the session's /tmp, as in process. Compressing, previewing and saving to the album name content's files: they are awaited, because the host resolves each path through the game's sandbox into a file the app can open before it asks (migo_services::host_paths, as the embedded ops do), and a refusal fails the call. Recording the game (getGameRecorder) is the native renderer's frames through an encoder beside it, which the Performance+ profile does not have yet.",
       "ops": {
         "op_camera_close_frame_change": "unsupported",
         "op_camera_create": "unsupported",
         "op_camera_destroy": "unsupported",
         "op_camera_listen_frame_change": "unsupported",
+        "op_camera_set": "unsupported",
         "op_camera_set_zoom": "unsupported",
         "op_camera_start_record": "unsupported",
         "op_camera_stop_record": "unsupported",
@@ -273,6 +274,13 @@
         "op_choose_media": "command",
         "op_choose_message_file": "command",
         "op_compress_image": "async",
+        "op_game_recorder_abort": "unsupported",
+        "op_game_recorder_next_event": "unsupported",
+        "op_game_recorder_pause": "unsupported",
+        "op_game_recorder_resume": "unsupported",
+        "op_game_recorder_start": "unsupported",
+        "op_game_recorder_stop": "unsupported",
+        "op_game_recorder_supported": "unsupported",
         "op_preview_image": "async",
         "op_preview_media": "async",
         "op_save_image_to_photos_album": "async",
@@ -284,12 +292,12 @@
         "op_video_decoder_stop": "unsupported",
         "op_video_decoder_take_frame": "unsupported",
         "op_video_destroy": "unsupported",
-        "op_video_exit_fullscreen": "unsupported",
+        "op_video_exit_full_screen": "unsupported",
         "op_video_pause": "unsupported",
         "op_video_play": "unsupported",
-        "op_video_request_fullscreen": "unsupported",
+        "op_video_request_full_screen": "unsupported",
         "op_video_seek": "unsupported",
-        "op_video_set_property": "unsupported",
+        "op_video_set": "unsupported",
         "op_video_stop": "unsupported"
       }
     },
@@ -328,9 +336,10 @@
       }
     },
     "host_v8_share": {
-      "reason": "Sharing is the host app's: the share menu's state is set as a command through the host-service channel, and a share -- to the app's chooser, to a friend, from the image menu, or the menu's reply -- is awaited while the host resolves the image it names through the game's sandbox (migo_services::host_paths), as the embedded ops do.",
+      "reason": "Sharing is the host app's: the share menu's state is set as a command through the host-service channel, and a share -- to the app's chooser, to a friend, from the image menu, or the menu's reply -- is awaited while the host resolves the image it names through the game's sandbox (migo_services::host_paths), as the embedded ops do. Sharing the game's recording (operateGameRecorderVideo, its share button) shares what getGameRecorder recorded, which the Performance+ profile does not have yet.",
       "ops": {
         "op_share_app_message": "async",
+        "op_share_game_recording": "unsupported",
         "op_share_menu_reply": "async",
         "op_share_message_to_friend": "async",
         "op_share_set_menu": "command",
@@ -355,13 +364,19 @@
       }
     },
     "host_v8_system": {
-      "reason": "Device, window and system descriptions are an environment snapshot the host injects and updates by event. What the app says about itself (getAppBaseInfo, and the fields of getSystemInfoSync it feeds) is read from the host synchronously: it changes during a session -- the debugging aids turned on, the language or text size changed -- so the host's one copy is the answer. Login, account, permission requests, the settings pages, Bluetooth, beacons and mini-program navigation are the host app's services: each request is a command the host makes the embedded op's scope check and device-service call for (engine/crates/core/src/runtime/service_channel.rs), and its result, a refusal included, and the host's reports reach content through the hooks the embedded runtime calls. Ecosystem calls are awaited while the files a group share names are resolved through the game's sandbox. Whether the host app answers ecosystem calls at all, and the values it reported for the synchronous getters, are the host's, read synchronously: the producer has no host of its own to ask. The scopes content was granted, the app's authorization and the system's switches are the host's last report, read synchronously as the network type is: each changes during a session -- a prompt answered, a setting changed and come back from -- so the host's one copy is the answer.",
+      "reason": "Device, window and system descriptions are an environment snapshot the host injects and updates by event. What the app says about itself (getAppBaseInfo, and the fields of getSystemInfoSync it feeds) is read from the host synchronously: it changes during a session -- the debugging aids turned on, the language or text size changed -- so the host's one copy is the answer. Login, account, permission requests, the settings pages, Bluetooth, beacons and mini-program navigation are the host app's services: each request is a command the host makes the embedded op's scope check and device-service call for (engine/crates/core/src/runtime/service_channel.rs), and its result, a refusal included, and the host's reports reach content through the hooks the embedded runtime calls. Ecosystem calls are awaited while the files a group share names are resolved through the game's sandbox. Whether the host app answers ecosystem calls at all, and the values it reported for the synchronous getters, are the host's, read synchronously: the producer has no host of its own to ask. The scopes content was granted, the app's authorization and the system's switches are the host's last report, read synchronously as the network type is: each changes during a session -- a prompt answered, a setting changed and come back from -- so the host's one copy is the answer. This device as a Bluetooth LE peripheral -- a GATT server centrals connect to, and its advertising -- is outside the Performance+ profile.",
       "ops": {
         "op_authorize": "command",
+        "op_ble_peripheral_add_service": "unsupported",
+        "op_ble_peripheral_remove_service": "unsupported",
+        "op_ble_peripheral_start_advertising": "unsupported",
+        "op_ble_peripheral_stop_advertising": "unsupported",
+        "op_ble_peripheral_write_characteristic_value": "unsupported",
         "op_check_session": "command",
         "op_close_ble_connection": "command",
         "op_close_bluetooth_adapter": "command",
         "op_create_ble_connection": "command",
+        "op_create_ble_peripheral_server": "unsupported",
         "op_crypto_random_values": "local",
         "op_ecosystem_available": "sync",
         "op_ecosystem_call": "async",
@@ -671,7 +686,6 @@
       "reason": "Content already runs in a Worker, and WebKit offers no nested-Worker constructor inside one (confirmed on-device, iPhone 12 / iOS 17.0.3: `typeof Worker === \"undefined\"` there). migo.createWorker crosses a dedicated MessagePort to the page instead, which a Window context's Worker support has no such gap in -- see worker-relay.mjs and worker-page-relay.mjs.",
       "ops": {
         "op_worker_create": "async",
-        "op_worker_post_message": "command",
         "op_worker_recv_error": "async",
         "op_worker_recv_message": "async",
         "op_worker_terminate": "command"
@@ -680,9 +694,28 @@
     "host_v8_worker_inner": {
       "reason": "The nested worker the page makes runs its own bootstrap (worker-nested-bootstrap.js) over its native self.postMessage/onmessage, not this shared module -- it has no Rust op boundary to answer for at all, and the in-process lane's audio/network/filesystem capabilities this module also exposes to a worker script are not yet proxied through the page relay either.",
       "ops": {
-        "op_worker_inner_post_message": "unsupported",
+        "op_worker_inner_poll_lifecycle": "unsupported",
         "op_worker_inner_recv_message": "unsupported"
       }
+    },
+    "host_v8_worker_codec": {
+      "reason": "Private Worker clone backend and admission tickets. Native V8 uses bounded serializer wire; WebKit uses native structuredClone and private MessagePorts, with per-direction credits retained until dequeue. These ops are local to the producer and never cross the C ABI service channel.",
+      "ops": {
+        "op_worker_reserve_message": "local",
+        "op_worker_commit_message": "local",
+        "op_worker_abort_message": "local",
+        "op_worker_post_message": "local"
+      }
+    },
+    "host_v8_url": {
+      "ops": {
+        "op_url_parse": "local",
+        "op_url_parts": "local",
+        "op_url_set": "local",
+        "op_url_search_parse": "local",
+        "op_url_search_serialize": "local"
+      },
+      "reason": "URL parser, setters and form codec are isolate-local. WebKit staging uses captured native URL classes. No host RPC or browser DOM dependency."
     }
   },
   "core_members": {
@@ -702,7 +735,6 @@
     "members": {
       "close": "command",
       "read": "async",
-      "readAll": "local",
       "tryClose": "command"
     }
   }

@@ -71,7 +71,7 @@ impl AddressRule {
 
 pub(crate) struct ConnectorConfig {
     pub(crate) rule: AddressRule,
-    pub(crate) tls: Arc<rustls::ClientConfig>,
+    pub(crate) tls: crate::network::tls::ClientTls,
     pub(crate) proxies: Arc<Matcher>,
 }
 
@@ -115,6 +115,11 @@ async fn connect(config: &ConnectorConfig, dst: Uri) -> Result<Conn, BoxError> {
         .trim_end_matches(']')
         .to_string();
     let port = dst.port_u16().unwrap_or(if https { 443 } else { 80 });
+    let tls_config = if https {
+        Some(config.tls.config().await?)
+    } else {
+        None
+    };
 
     let (tcp, dns, connect_span, proxied) = match config.proxies.intercept(&dst) {
         Some(proxy) => {
@@ -152,12 +157,20 @@ async fn connect(config: &ConnectorConfig, dst: Uri) -> Result<Conn, BoxError> {
     let started = Instant::now();
     let server_name = ServerName::try_from(bare_host)
         .map_err(|error| format!("invalid TLS server name: {error}"))?;
-    let tls = tokio::time::timeout(
-        CONNECT_TIMEOUT,
-        TlsConnector::from(Arc::clone(&config.tls)).connect(server_name, tcp),
-    )
-    .await
-    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "TLS handshake timed out"))??;
+    let handshake = TlsConnector::from(tls_config.ok_or("missing HTTPS configuration")?)
+        .connect(server_name, tcp);
+    // Platform certificate APIs may do blocking filesystem/JVM/OCSP work.
+    // Only one handshake poll runs per admitted job; socket waits free it.
+    let handshake = migo_io::polling::run(
+        handshake,
+        config.tls.pools(),
+        migo_io::task::PoolKind::Tls,
+        1024 * 1024,
+    );
+    let connected = tokio::time::timeout(CONNECT_TIMEOUT, handshake)
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "TLS handshake timed out"))??;
+    let tls = connected?;
     let tls_span = Span::since(started);
     let protocol = match tls.get_ref().1.alpn_protocol() {
         Some(b"h2") => Version::HTTP_2,
@@ -208,16 +221,92 @@ async fn resolve(
 /// The TCP connector every connection is made with: happy eyeballs across the resolved addresses, TCP_NODELAY, keep
 /// alive probing, the connect timeout.
 fn tcp_connector<R>(resolver: R) -> HttpConnector<R> {
-    let mut tcp = HttpConnector::new_with_resolver(resolver);
-    tcp.enforce_http(false);
-    tcp.set_nodelay(true);
-    tcp.set_connect_timeout(Some(CONNECT_TIMEOUT));
+    let mut tcp = base_tcp_connector(resolver, CONNECT_TIMEOUT);
     tcp.set_keepalive(Some(Duration::from_secs(15)));
     tcp.set_keepalive_interval(Some(Duration::from_secs(15)));
     tcp.set_keepalive_retries(Some(3));
     #[cfg(any(target_os = "android", target_os = "linux"))]
     tcp.set_tcp_user_timeout(Some(Duration::from_secs(30)));
     tcp
+}
+
+fn base_tcp_connector<R>(resolver: R, timeout: Duration) -> HttpConnector<R> {
+    let mut tcp = HttpConnector::new_with_resolver(resolver);
+    tcp.enforce_http(false);
+    tcp.set_nodelay(true);
+    tcp.set_connect_timeout(Some(timeout));
+    tcp
+}
+
+/// Reuse hyper-util's happy-eyeballs driver after the caller has checked
+/// every DNS answer. The static resolver cannot resolve the name again.
+/// WSS keeps its original deadline and does not inherit HTTP's idle probes.
+pub(in crate::network) async fn connect_vetted_tcp(
+    addresses: Vec<SocketAddr>,
+    host: &str,
+    port: u16,
+    deadline: tokio::time::Instant,
+) -> Result<TcpStream, BoxError> {
+    let remaining = deadline
+        .checked_duration_since(tokio::time::Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "TCP connect deadline expired"))?;
+    if addresses.is_empty() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "no vetted TCP addresses").into());
+    }
+    let target = Uri::builder()
+        .scheme("http")
+        .authority(crate::network::sockets::join_host_port(host, port))
+        .path_and_query("/")
+        .build()?;
+    let connecting =
+        base_tcp_connector(StaticAddresses(Arc::new(addresses)), remaining).call_async_uri(target);
+    tokio::time::timeout_at(deadline, connecting)
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "TCP connect timed out"))?
+}
+
+#[cfg(test)]
+mod vetted_tcp_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn an_unreachable_answer_does_not_hide_a_later_vetted_address() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let live = listener.local_addr().unwrap();
+        let dead = SocketAddr::new("127.0.0.2".parse().unwrap(), live.port());
+        let socket = connect_vetted_tcp(
+            vec![dead, live],
+            // This name cannot use public DNS; all answers are the exact
+            // test-vetted addresses above, as on the production WSS path.
+            "already-vetted.invalid",
+            live.port(),
+            tokio::time::Instant::now() + Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        assert_eq!(socket.peer_addr().unwrap(), live);
+        assert!(socket.nodelay().unwrap());
+    }
+
+    #[tokio::test]
+    async fn an_expired_deadline_cannot_start_another_connection() {
+        let result = connect_vetted_tcp(
+            vec!["127.0.0.1:1".parse().unwrap()],
+            "already-vetted.invalid",
+            1,
+            tokio::time::Instant::now() - Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(
+            result
+                .unwrap_err()
+                .downcast_ref::<io::Error>()
+                .unwrap()
+                .kind(),
+            io::ErrorKind::TimedOut
+        );
+    }
 }
 
 trait CallUri {
@@ -378,30 +467,4 @@ impl hyper::rt::Write for Conn {
     ) -> Poll<io::Result<usize>> {
         Pin::new(&mut self.io).poll_write_vectored(cx, bufs)
     }
-}
-
-/// The TLS configuration every HTTPS connection uses: the Mozilla root set (webpki-roots, as the engine has always
-/// shipped), ring for the cryptography, and ALPN for HTTP/2 where the client allows it.
-pub(crate) fn tls_config(
-    enable_http2: bool,
-    extra_roots: &[rustls::pki_types::CertificateDer<'static>],
-) -> Result<Arc<rustls::ClientConfig>, BoxError> {
-    let mut roots = rustls::RootCertStore {
-        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
-    };
-    for root in extra_roots {
-        roots.add(root.clone())?;
-    }
-    let mut config = rustls::ClientConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
-    ))
-    .with_safe_default_protocol_versions()?
-    .with_root_certificates(roots)
-    .with_no_client_auth();
-    config.alpn_protocols = if enable_http2 {
-        vec![b"h2".to_vec(), b"http/1.1".to_vec()]
-    } else {
-        vec![b"http/1.1".to_vec()]
-    };
-    Ok(Arc::new(config))
 }

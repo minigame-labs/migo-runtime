@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Derive the engine-less AAR and its per-ABI engine archives from one built AAR.
 
-A host that integrates Migo pays ~17 MB of first-install download and ~45 MB of
+A host that integrates Migo pays ~19 MB of first-install download and ~45 MB of
 installed size per ABI for `libmigo.so`, whether or not a user ever opens a
 mini-game. This splits the published AAR in two so that cost can be deferred:
 

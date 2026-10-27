@@ -54,7 +54,7 @@ public final class NativeMethods {
     private static final long MAX_CAMERA_FRAME_PIXELS =
             (long) MAX_CAMERA_FRAME_DIMENSION * MAX_CAMERA_FRAME_DIMENSION;
 
-    /** Maximum synchronous Y/U/V payload copied from a camera callback. */
+    /** Maximum synchronous payload a camera callback reads -- its Y/U/V -- or writes -- its RGBA. */
     private static final long MAX_CAMERA_FRAME_BYTES = 64L * 1024L * 1024L;
 
     private static final int DEFAULT_LAUNCH_SCENE = 1001;
@@ -738,19 +738,23 @@ public final class NativeMethods {
     // ==================== Camera Callbacks ====================
 
     /**
-     * Callback for camera events.
-     * Called from {@link com.migo.runtime.internal.platform.CameraManager}.
-     *
-     * @param sessionId   The session ID
-     * @param cameraId    The camera instance ID
-     * @param eventType   Event type: "stop", "error", "authCancel", "timeoutCallback"
-     * @param jsonPayload JSON-encoded event data
+     * What happened to camera {@code cameraId} on its own, by event number
+     * ({@code CameraManager.EVENT_*}): it stopped, or the player refused the
+     * system's permission.
      */
-    public static void onCameraEvent(
-            int sessionId, long generation, int cameraId, String eventType, String jsonPayload) {
-        if (sessionId >= 0 && eventType != null) {
-            NativeBridge.onCameraEvent(sessionId, generation, cameraId, eventType,
-                    jsonPayload != null ? jsonPayload : "{}");
+    public static void onCameraEvent(int sessionId, int cameraId, int event) {
+        if (sessionId >= 0) {
+            NativeBridge.onCameraEvent(sessionId, cameraId, event);
+        }
+    }
+
+    /**
+     * The answer to a camera call, by method number ({@code CameraManager.METHOD_*}):
+     * the result with its {@code requestId}, or {@code {"requestId", "error"}}.
+     */
+    public static void onCameraResult(int sessionId, int method, String resultJson) {
+        if (sessionId >= 0 && resultJson != null) {
+            NativeBridge.onCameraResult(sessionId, method, resultJson);
         }
     }
 
@@ -758,38 +762,44 @@ public final class NativeMethods {
      * Callback for camera frame data.
      * Called from {@link com.migo.runtime.internal.platform.CameraManager}.
      *
-     * @param sessionId The session ID
-     * @param cameraId  The camera instance ID
-     * @param yBuffer   Direct Y-plane ByteBuffer
-     * @param yOffset   Y-plane window start (buffer position)
-     * @param yLength   Y-plane window length (buffer remaining)
-     * @param uBuffer   Direct U-plane ByteBuffer
-     * @param uOffset   U-plane window start
-     * @param uLength   U-plane window length
-     * @param vBuffer   Direct V-plane ByteBuffer
-     * @param vOffset   V-plane window start
-     * @param vLength   V-plane window length
-     * @param width     Frame width in pixels
-     * @param height    Frame height in pixels
+     * @param sessionId     The session ID
+     * @param cameraId      The camera instance ID
+     * @param yBuffer       Direct Y-plane ByteBuffer
+     * @param yOffset       Y-plane window start (buffer position)
+     * @param yLength       Y-plane window length (buffer remaining)
+     * @param yRowStride    Y-plane row stride
+     * @param uBuffer       Direct U-plane ByteBuffer
+     * @param uOffset       U-plane window start
+     * @param uLength       U-plane window length
+     * @param vBuffer       Direct V-plane ByteBuffer
+     * @param vOffset       V-plane window start
+     * @param vLength       V-plane window length
+     * @param uvRowStride   U- and V-plane row stride
+     * @param uvPixelStride U- and V-plane pixel stride
+     * @param width         Frame width in pixels
+     * @param height        Frame height in pixels
      */
     public static void onCameraFrameData(int sessionId, long generation, int cameraId,
-            ByteBuffer yBuffer, int yOffset, int yLength,
+            ByteBuffer yBuffer, int yOffset, int yLength, int yRowStride,
             ByteBuffer uBuffer, int uOffset, int uLength,
             ByteBuffer vBuffer, int vOffset, int vLength,
+            int uvRowStride, int uvPixelStride,
             int width, int height) {
         // Native code reads each plane via its direct address. Reject malformed
         // or oversized metadata before crossing JNI; the Rust entry point and
-        // shared packing boundary repeat their own checks.
+        // the shared conversion repeat their own checks.
         if (sessionId >= 0
                 && isCameraFrameMetadataWithinLimits(
                         width, height, yLength, uLength, vLength)
+                && yRowStride > 0 && uvRowStride > 0 && uvPixelStride > 0
                 && yBuffer != null && yBuffer.isDirect()
                 && uBuffer != null && uBuffer.isDirect()
                 && vBuffer != null && vBuffer.isDirect()) {
             NativeBridge.onCameraFrameData(sessionId, generation, cameraId,
-                    yBuffer, yOffset, yLength,
+                    yBuffer, yOffset, yLength, yRowStride,
                     uBuffer, uOffset, uLength,
                     vBuffer, vOffset, vLength,
+                    uvRowStride, uvPixelStride,
                     width, height);
         }
     }
@@ -804,15 +814,20 @@ public final class NativeMethods {
         }
 
         final long pixels;
+        final long rgbaBytes;
         final long totalBytes;
         try {
             pixels = Math.multiplyExact((long) width, (long) height);
+            // What content is given: four bytes a pixel.
+            rgbaBytes = Math.multiplyExact(pixels, 4L);
             totalBytes = Math.addExact(
                     Math.addExact((long) yLength, (long) uLength), (long) vLength);
         } catch (ArithmeticException ignored) {
             return false;
         }
-        return pixels <= MAX_CAMERA_FRAME_PIXELS && totalBytes <= MAX_CAMERA_FRAME_BYTES;
+        return pixels <= MAX_CAMERA_FRAME_PIXELS
+                && rgbaBytes <= MAX_CAMERA_FRAME_BYTES
+                && totalBytes <= MAX_CAMERA_FRAME_BYTES;
     }
 
     // ==================== Bluetooth Callbacks ====================
@@ -1008,6 +1023,18 @@ public final class NativeMethods {
     public static void onBluetoothResult(int sessionId, int method, String resultJson) {
         if (sessionId >= 0 && resultJson != null) {
             NativeBridge.onBluetoothResult(sessionId, method, resultJson);
+        }
+    }
+
+    public static void onBlePeripheralResult(int sessionId, int method, String resultJson) {
+        if (sessionId >= 0 && resultJson != null) {
+            NativeBridge.onBlePeripheralResult(sessionId, method, resultJson);
+        }
+    }
+
+    public static void onBlePeripheralEvent(int sessionId, int event, String payloadJson) {
+        if (sessionId >= 0 && payloadJson != null) {
+            NativeBridge.onBlePeripheralEvent(sessionId, event, payloadJson);
         }
     }
 
@@ -1265,38 +1292,31 @@ public final class NativeMethods {
     // ==================== Recorder Callbacks ====================
 
     /**
-     * Callback for recorder events.
-     * Called from {@link com.migo.runtime.internal.platform.AudioRecorderManager}.
-     *
-     * @param sessionId   The session ID
-     * @param eventType   Event type: "start", "pause", "resume", "stop", "error",
-     *                    "interruptionBegin", "interruptionEnd"
-     * @param jsonPayload JSON-encoded event data
+     * What happened to a recording, by event number
+     * ({@code AudioRecorderManager.EVENT_*}): {@code payloadJson} is
+     * {@code {"recordingId", ...}} -- STOP's with its file, ERROR's with errMsg.
      */
-    public static void onRecorderEvent(
-            int sessionId, long generation, String eventType, String jsonPayload) {
-        if (sessionId >= 0 && eventType != null) {
-            NativeBridge.onRecorderEvent(
-                    sessionId, generation, eventType, jsonPayload != null ? jsonPayload : "{}");
+    public static void onRecorderEvent(int sessionId, int event, String payloadJson) {
+        if (sessionId >= 0 && payloadJson != null) {
+            NativeBridge.onRecorderEvent(sessionId, event, payloadJson);
         }
     }
 
     /**
-     * Callback for recorder frame data.
+     * One frame of recording {@code recordingId}.
      * Called from {@link com.migo.runtime.internal.platform.AudioRecorderManager}.
      *
-     * @param sessionId   The session ID
      * @param frameData   Raw audio frame bytes
      * @param frameLength Number of valid bytes at the start of {@code frameData}
      * @param isLastFrame Whether this is the last frame before stop
      */
     public static void onRecorderFrameData(
-            int sessionId, long generation, byte[] frameData, int frameLength,
+            int sessionId, int recordingId, byte[] frameData, int frameLength,
             boolean isLastFrame) {
         if (sessionId >= 0 && frameData != null
                 && frameLength >= 0 && frameLength <= frameData.length) {
             NativeBridge.onRecorderFrameData(
-                    sessionId, generation, frameData, frameLength, isLastFrame);
+                    sessionId, recordingId, frameData, frameLength, isLastFrame);
         }
     }
 
@@ -1354,6 +1374,13 @@ public final class NativeMethods {
         }
     }
 
+    /** Callback for a game recording's share result. */
+    public static void onShareGameRecordingResult(int sessionId, String resultJson) {
+        if (sessionId >= 0 && resultJson != null) {
+            NativeBridge.onShareGameRecordingResult(sessionId, resultJson);
+        }
+    }
+
     // ==================== Navigate Callback ====================
 
     /**
@@ -1408,23 +1435,23 @@ public final class NativeMethods {
     // ==================== Video Callbacks ====================
 
     /**
-     * Callback for video player events.
-     * Called from {@link com.migo.runtime.internal.platform.VideoManager}.
-     *
-     * @param sessionId The session ID
-     * @param videoId   The video player instance ID
-     * @param eventType Event type: "play", "pause", "ended", "error", "timeupdate",
-     *                  "progress", "fullscreenchange"
-     * @param dataJson  JSON-encoded event data
+     * What a player did, by event number ({@code VideoManager.EVENT_*}), with
+     * its {@code {"videoId", ...}}.
      */
-    public static void onVideoEvent(
-            int sessionId, long generation, int videoId, String eventType, String dataJson) {
-        try {
-            NativeBridge.onVideoEvent(sessionId, generation, videoId,
-                eventType != null ? eventType : "",
-                dataJson != null ? dataJson : "{}");
-        } catch (Exception e) {
-            // Ignore callback errors during shutdown
+    public static void onVideoEvent(int sessionId, int event, String payloadJson) {
+        if (sessionId >= 0 && payloadJson != null) {
+            NativeBridge.onVideoEvent(sessionId, event, payloadJson);
+        }
+    }
+
+    /**
+     * The answer to a video call, by method number
+     * ({@code VideoManager.METHOD_*}): {@code {"requestId"}}, or with
+     * {@code "error"}.
+     */
+    public static void onVideoResult(int sessionId, int method, String resultJson) {
+        if (sessionId >= 0 && resultJson != null) {
+            NativeBridge.onVideoResult(sessionId, method, resultJson);
         }
     }
 

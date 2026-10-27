@@ -269,6 +269,8 @@ int migo_core_c_contract(void) {
     MigoResult(MIGO_CALL *destroy_fn)(MigoSession *) = &migo_session_destroy;
     MigoResult(MIGO_CALL *network_fn)(MigoSession *, MigoNetworkType, uint8_t) =
         &migo_session_set_network_status;
+    MigoResult(MIGO_CALL *report_network_fn)(MigoSession *, const MigoNetworkReport *) =
+        &migo_session_report_network;
     MigoResult(MIGO_CALL *battery_fn)(MigoSession *, uint32_t, MigoBatteryFlags) =
         &migo_session_set_battery_status;
     MigoResult(MIGO_CALL *complete_call_fn)(MigoSession *, uint64_t,
@@ -300,7 +302,7 @@ int migo_core_c_contract(void) {
                  (session_create_fn != NULL) + (set_callbacks_fn != NULL) +
                  (set_lifecycle_fn != NULL) + (set_visibility_fn != NULL) +
                  (set_focus_fn != NULL) + (memory_warning_fn != NULL) + (destroy_fn != NULL) +
-                 (network_fn != NULL) + (battery_fn != NULL) +
+                 (network_fn != NULL) + (report_network_fn != NULL) + (battery_fn != NULL) +
                  (complete_call_fn != NULL) + (post_event_fn != NULL) +
                  (host_service_call != NULL) + (callbacks.host_services != 0) +
                  (gamepad_rumble != NULL) +

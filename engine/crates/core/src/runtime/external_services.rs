@@ -401,9 +401,17 @@ impl ServiceContext {
         })
     }
 
+    /// Name the session these services belong to and start its scheduler.
+    /// Bound from both sides of the spawn: by the session thread first thing,
+    /// because its own startup needs the scheduler (`bind_network`), and by the
+    /// spawner before it hands the session out, because only then can a caller
+    /// reach the services. Whichever comes first builds the one scheduler; the
+    /// other finds it.
     pub(crate) fn bind_session(&self, session_id: i32) {
-        let _ = self.session_id.set(session_id);
-        let _ = self.scheduler.set(Arc::new(IoScheduler::new(session_id)));
+        let bound = *self.session_id.get_or_init(|| session_id);
+        debug_assert_eq!(bound, session_id, "one ServiceHost serves one session");
+        self.scheduler
+            .get_or_init(|| Arc::new(IoScheduler::new(session_id)));
     }
 
     /// Give the services the session's audio: the sender its audio service
@@ -432,9 +440,16 @@ impl ServiceContext {
         backgrounded: Arc<AtomicBool>,
         runtime: tokio::runtime::Handle,
     ) {
-        let _ = self
-            .network
-            .set(NetworkBinding::new(policy, backgrounded, runtime));
+        let scheduler = self
+            .scheduler
+            .get()
+            .expect("bind_session must precede bind_network");
+        let _ = self.network.set(NetworkBinding::new(
+            policy,
+            backgrounded,
+            runtime,
+            scheduler.pools().clone(),
+        ));
     }
 
     /// What an `http(s)://` image source is fetched with, or why there is
@@ -2115,18 +2130,10 @@ mod tests {
         use shared::services::{AudioPlatformService, ServiceError as DeviceError};
         use std::sync::Mutex;
         #[derive(Default)]
-        struct Audio(Mutex<Vec<(bool, bool, bool)>>);
+        struct Audio(Mutex<Vec<bool>>);
         impl AudioPlatformService for Audio {
-            fn set_inner_audio_option(
-                &self,
-                mix_with_other: bool,
-                obey_mute_switch: bool,
-                speaker_on: bool,
-            ) -> Result<(), DeviceError> {
-                self.0
-                    .lock()
-                    .unwrap()
-                    .push((mix_with_other, obey_mute_switch, speaker_on));
+            fn set_inner_audio_option(&self, obey_mute_switch: bool) -> Result<(), DeviceError> {
+                self.0.lock().unwrap().push(obey_mute_switch);
                 Ok(())
             }
             fn get_available_audio_sources(&self) -> Result<Vec<String>, DeviceError> {
@@ -2144,11 +2151,12 @@ mod tests {
             }
         }
         let root = std::env::temp_dir().join(format!("migo-audio-platform-{}", std::process::id()));
-        let options = || {
+        // mixWithOther, obeyMuteSwitch, speakerOn.
+        let options = |speaker_on| {
             vec![
                 OwnedValue::Bool(false),
                 OwnedValue::Bool(true),
-                OwnedValue::Bool(false),
+                OwnedValue::Bool(speaker_on),
             ]
         };
 
@@ -2156,10 +2164,22 @@ mod tests {
         let context = ServiceContext::new(root.join("files"), root.join("cache"));
         context.bind_device(Some(Arc::new(Platform(Arc::clone(&audio)))));
         assert!(matches!(
-            context.call_sync(id::op_audio_set_inner_audio_option, options()),
+            context.call_sync(id::op_audio_set_inner_audio_option, options(true)),
             Ok(OwnedValue::Null)
         ));
-        assert_eq!(*audio.0.lock().unwrap(), [(false, true, false)]);
+        assert_eq!(*audio.0.lock().unwrap(), [true]);
+        assert_eq!(
+            context
+                .call_sync(id::op_audio_set_inner_audio_option, options(false))
+                .unwrap_err()
+                .message,
+            "setInnerAudioOption:fail speakerOn: false (the earpiece) is not supported"
+        );
+        assert_eq!(
+            audio.0.lock().unwrap().len(),
+            1,
+            "the earpiece asks the platform nothing"
+        );
         match context.call_sync(id::op_audio_get_available_audio_sources, Vec::new()) {
             Ok(OwnedValue::Array(sources)) => assert!(matches!(
                 sources.as_slice(),
@@ -2171,7 +2191,7 @@ mod tests {
         let none = ServiceContext::new(root.join("files"), root.join("cache"));
         none.bind_device(None);
         assert_eq!(
-            none.call_sync(id::op_audio_set_inner_audio_option, options())
+            none.call_sync(id::op_audio_set_inner_audio_option, options(true))
                 .unwrap_err()
                 .message,
             "setInnerAudioOption:fail not supported"
@@ -3533,6 +3553,12 @@ mod tests {
         /// them: `op_fetch` gives the request and what aborts it, and
         /// `op_fetch_send` gives the body's.
         fn handles_of(name: &str, value: &OwnedValue) -> Vec<u32> {
+            if name == "op_fetch_upload_cancel_handle" {
+                let OwnedValue::U32(id) = value else {
+                    panic!("the cancellation op must issue one resource id");
+                };
+                return vec![*id];
+            }
             let OwnedValue::Array(fields) = value else {
                 return Vec::new();
             };
@@ -3590,6 +3616,14 @@ mod tests {
                 };
                 args[0] = OwnedValue::U32(*host_of.get(&recorded).unwrap_or_else(|| {
                     panic!("{name} names handle {recorded}, which no answer gave out")
+                }));
+            }
+            if name == "op_ws_create" && args.len() == 7 {
+                let OwnedValue::U32(recorded) = args[6] else {
+                    panic!("the WSS cancellation fixture must name its cancel resource");
+                };
+                args[6] = OwnedValue::U32(*host_of.get(&recorded).unwrap_or_else(|| {
+                    panic!("op_ws_create names unissued cancel handle {recorded}")
                 }));
             }
             let outcome = match call["shape"].as_str() {

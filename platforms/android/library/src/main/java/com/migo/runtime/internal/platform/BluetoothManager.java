@@ -8,8 +8,15 @@ import android.bluetooth.BluetoothGatt;
 import android.bluetooth.BluetoothGattCallback;
 import android.bluetooth.BluetoothGattCharacteristic;
 import android.bluetooth.BluetoothGattDescriptor;
+import android.bluetooth.BluetoothGattServer;
+import android.bluetooth.BluetoothGattServerCallback;
 import android.bluetooth.BluetoothGattService;
 import android.bluetooth.BluetoothProfile;
+import android.bluetooth.BluetoothStatusCodes;
+import android.bluetooth.le.AdvertiseCallback;
+import android.bluetooth.le.AdvertiseData;
+import android.bluetooth.le.AdvertiseSettings;
+import android.bluetooth.le.BluetoothLeAdvertiser;
 import android.bluetooth.le.BluetoothLeScanner;
 import android.bluetooth.le.ScanCallback;
 import android.bluetooth.le.ScanFilter;
@@ -46,6 +53,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 
 /**
  * Manages Bluetooth adapter, BLE device discovery, pairing, and Beacon operations.
@@ -105,17 +113,25 @@ public class BluetoothManager {
      * The answer to one request, given once. A request answered twice would
      * settle content's call with whichever arrived first and drop the other
      * silently; refusing the second makes a double answer impossible instead.
+     * The peripheral role's requests ({@link BlePeripheral.Method}) are
+     * answered the same way, through their own service's sink.
      */
     public static final class Reply {
         private final int sessionId;
-        private final Method method;
+        private final int method;
+        private final String apiName;
         private final int requestId;
         private final ResultSink sink;
         private final AtomicBoolean answered = new AtomicBoolean(false);
 
         public Reply(int sessionId, Method method, int requestId, ResultSink sink) {
+            this(sessionId, method.ordinal(), method.apiName, requestId, sink);
+        }
+
+        public Reply(int sessionId, int method, String apiName, int requestId, ResultSink sink) {
             this.sessionId = sessionId;
             this.method = method;
+            this.apiName = apiName;
             this.requestId = requestId;
             this.sink = sink;
         }
@@ -128,7 +144,7 @@ public class BluetoothManager {
             } catch (JSONException impossible) {
                 // stamp only puts an int.
             }
-            sink.deliver(sessionId, method.ordinal(), answer.toString());
+            sink.deliver(sessionId, method, answer.toString());
         }
 
         public void ok() {
@@ -139,13 +155,13 @@ public class BluetoothManager {
             if (!answered.compareAndSet(false, true)) return;
             JSONObject answer = new JSONObject();
             try {
-                answer.put("error", method.apiName + ":fail " + (reason != null ? reason : "system error"));
+                answer.put("error", apiName + ":fail " + (reason != null ? reason : "system error"));
                 answer.put("errCode", errCode);
                 CallbackCorrelation.stamp(answer, requestId);
             } catch (JSONException impossible) {
                 // Only strings and ints are put.
             }
-            sink.deliver(sessionId, method.ordinal(), answer.toString());
+            sink.deliver(sessionId, method, answer.toString());
         }
 
         public boolean isAnswered() {
@@ -557,6 +573,9 @@ public class BluetoothManager {
     /** Client Characteristic Configuration Descriptor UUID for enabling notifications. */
     private static final UUID CCCD_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");
 
+    /** This device as a peripheral while the adapter is open; null otherwise. */
+    private BlePeripheral peripheral;
+
     private BluetoothLeScanner leScanner;
     private ScanCallback leScanCallback;
     private BroadcastReceiver adapterStateReceiver;
@@ -705,20 +724,20 @@ public class BluetoothManager {
                 Build.VERSION.SDK_INT, scanGranted, locationGranted);
     }
 
-    private void requireConnectPermission(String operation) {
+    // A permission the app was not granted fails the request with the reason
+    // alone: the reply names the API (Reply.fail).
+    private void requireConnectPermission() {
         if (!hasConnectPermission()) {
-            throw new SecurityException(
-                    operation + ":fail permission denied (BLUETOOTH_CONNECT)");
+            throw new BluetoothFailure(SYSTEM_ERROR, "permission denied (BLUETOOTH_CONNECT)");
         }
     }
 
-    private void requireScanPermission(String operation) {
+    private void requireScanPermission() {
         if (!hasScanPermission()) {
             String permission = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
                     ? "BLUETOOTH_SCAN"
                     : "ACCESS_FINE_LOCATION";
-            throw new SecurityException(
-                    operation + ":fail permission denied (" + permission + ")");
+            throw new BluetoothFailure(SYSTEM_ERROR, "permission denied (" + permission + ")");
         }
     }
 
@@ -781,7 +800,7 @@ public class BluetoothManager {
         if (adapter == null) {
             throw new BluetoothFailure(NOT_AVAILABLE, "not available");
         }
-        requireConnectPermission("openBluetoothAdapter");
+        requireConnectPermission();
         // Claimed before any state is mutated, so a refusal leaves this manager
         // exactly as it was rather than half-opened.
         if (!adapterOpened && !ExclusiveDeviceArbiter.tryAcquire(
@@ -819,6 +838,7 @@ public class BluetoothManager {
                         }),
                 this::retryUnclosedCandidates,
                 this::finishPairings,
+                this::closePeripheral,
                 negotiatedMtu::clear,
                 cachedRssi::clear);
     }
@@ -836,6 +856,165 @@ public class BluetoothManager {
     private void requireOpened() {
         if (adapter == null || !adapterOpened) {
             throw new BluetoothFailure(NOT_INIT, "not init");
+        }
+    }
+
+    // ==================== Peripheral ====================
+
+    /** This device as a peripheral: the adapter open, Bluetooth on, connecting allowed. */
+    public synchronized BlePeripheral peripheral() {
+        requireOpened();
+        if (!isAdapterEnabled()) throw new BluetoothFailure(NOT_AVAILABLE, "not available");
+        requireConnectPermission();
+        if (peripheral == null) {
+            peripheral = new BlePeripheral(sessionId, new PeripheralRadio(),
+                    NativeMethods::onBlePeripheralEvent);
+        }
+        return peripheral;
+    }
+
+    /** The peripheral, if the adapter has one open: what stopping finds to stop. */
+    public synchronized BlePeripheral openPeripheral() {
+        return peripheral;
+    }
+
+    private synchronized void closePeripheral() {
+        BlePeripheral open = peripheral;
+        peripheral = null;
+        if (open != null) open.close();
+    }
+
+    /** The radio a peripheral advertises and serves on: this session's adapter. */
+    private final class PeripheralRadio implements BlePeripheral.Radio {
+        /** How long the adapter has to take a name before advertising gives up. */
+        private static final long RENAME_TIMEOUT_MS = 3000;
+
+        @Override
+        @SuppressLint("MissingPermission")
+        public BlePeripheral.Gatt openServer(BluetoothGattServerCallback callback) {
+            Activity activity = getActivity();
+            if (activity == null) return null;
+            android.bluetooth.BluetoothManager system = (android.bluetooth.BluetoothManager)
+                    activity.getSystemService(Context.BLUETOOTH_SERVICE);
+            BluetoothGattServer server = system != null ? system.openGattServer(activity, callback) : null;
+            return server == null ? null : new AndroidGattServer(server);
+        }
+
+        @Override
+        public boolean advertisingSupported() {
+            return adapter != null && adapter.getBluetoothLeAdvertiser() != null;
+        }
+
+        @Override
+        public boolean advertisingPermitted() {
+            Activity activity = getActivity();
+            boolean granted = activity != null
+                    && Permissions.isGranted(activity, Permissions.BLUETOOTH_ADVERTISE);
+            return BluetoothPermissionPolicy.canAdvertise(Build.VERSION.SDK_INT, granted);
+        }
+
+        @Override
+        @SuppressLint("MissingPermission")
+        public void startAdvertising(AdvertiseSettings settings, AdvertiseData data, AdvertiseData scanResponse,
+                                     AdvertiseCallback callback) {
+            BluetoothLeAdvertiser advertiser = adapter.getBluetoothLeAdvertiser();
+            if (advertiser == null) throw new BluetoothFailure(NOT_AVAILABLE, "not available");
+            advertiser.startAdvertising(settings, data, scanResponse, callback);
+        }
+
+        @Override
+        @SuppressLint("MissingPermission")
+        public void stopAdvertising(AdvertiseCallback callback) {
+            BluetoothLeAdvertiser advertiser = adapter.getBluetoothLeAdvertiser();
+            if (advertiser != null) advertiser.stopAdvertising(callback);
+        }
+
+        @Override
+        @SuppressLint("MissingPermission")
+        public String name() {
+            return adapter.getName();
+        }
+
+        /**
+         * The adapter renamed, heard once it has taken the name: an
+         * advertisement started before then would carry the old one.
+         */
+        @Override
+        @SuppressLint("MissingPermission")
+        public void rename(String name, Consumer<Boolean> done) {
+            Activity activity = getActivity();
+            if (activity == null || !adapter.setName(name)) {
+                done.accept(false);
+                return;
+            }
+            Handler main = new Handler(Looper.getMainLooper());
+            AtomicBoolean heard = new AtomicBoolean(false);
+            BroadcastReceiver receiver = new BroadcastReceiver() {
+                @Override
+                public void onReceive(Context context, Intent intent) {
+                    if (!name.equals(intent.getStringExtra(BluetoothAdapter.EXTRA_LOCAL_NAME))) return;
+                    if (!heard.compareAndSet(false, true)) return;
+                    activity.unregisterReceiver(this);
+                    done.accept(true);
+                }
+            };
+            IntentFilter filter = new IntentFilter(BluetoothAdapter.ACTION_LOCAL_NAME_CHANGED);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                activity.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED);
+            } else {
+                activity.registerReceiver(receiver, filter);
+            }
+            main.postDelayed(() -> {
+                if (!heard.compareAndSet(false, true)) return;
+                activity.unregisterReceiver(receiver);
+                done.accept(name.equals(adapter.getName()));
+            }, RENAME_TIMEOUT_MS);
+        }
+    }
+
+    /** A platform GATT server, as a peripheral uses it. */
+    private static final class AndroidGattServer implements BlePeripheral.Gatt {
+        private final BluetoothGattServer server;
+
+        AndroidGattServer(BluetoothGattServer server) {
+            this.server = server;
+        }
+
+        @Override
+        @SuppressLint("MissingPermission")
+        public boolean addService(BluetoothGattService service) {
+            return server.addService(service);
+        }
+
+        @Override
+        @SuppressLint("MissingPermission")
+        public boolean removeService(BluetoothGattService service) {
+            return server.removeService(service);
+        }
+
+        @Override
+        @SuppressLint("MissingPermission")
+        public boolean sendResponse(BluetoothDevice device, int requestId, int status, int offset, byte[] value) {
+            return server.sendResponse(device, requestId, status, offset, value);
+        }
+
+        @Override
+        @SuppressLint("MissingPermission")
+        @SuppressWarnings("deprecation")
+        public boolean sendNotification(BluetoothDevice device, BluetoothGattCharacteristic characteristic,
+                                        boolean confirm, byte[] value) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                return server.notifyCharacteristicChanged(device, characteristic, confirm, value)
+                        == BluetoothStatusCodes.SUCCESS;
+            }
+            characteristic.setValue(value);
+            return server.notifyCharacteristicChanged(device, characteristic, confirm);
+        }
+
+        @Override
+        @SuppressLint("MissingPermission")
+        public void close() {
+            server.close();
         }
     }
 
@@ -880,8 +1059,8 @@ public class BluetoothManager {
 
     @SuppressLint("MissingPermission")
     private void startDiscoveryInternal(String optionsJson) {
-        requireConnectPermission("startBluetoothDevicesDiscovery");
-        requireScanPermission("startBluetoothDevicesDiscovery");
+        requireConnectPermission();
+        requireScanPermission();
         if (adapter == null || !adapterOpened) {
             throw new BluetoothFailure(NOT_INIT, "not init");
         }
@@ -1030,7 +1209,7 @@ public class BluetoothManager {
     @SuppressLint("MissingPermission")
     public void getConnectedDevices(JSONObject opts, Reply reply) {
         requireOpened();
-        requireConnectPermission("getConnectedBluetoothDevices");
+        requireConnectPermission();
         JSONArray wanted = opts.optJSONArray("services");
         JSONArray devices = new JSONArray();
         for (Map.Entry<String, GattAttempt> entry : gattConnections.entrySet()) {
@@ -1158,7 +1337,7 @@ public class BluetoothManager {
         if (adapter == null) {
             throw new BluetoothFailure(NOT_AVAILABLE, "not available");
         }
-        requireConnectPermission("makeBluetoothPair");
+        requireConnectPermission();
         String deviceId = requiredString(opts, "deviceId");
         BluetoothDevice device = remoteDevice(deviceId);
         if (device.getBondState() == BluetoothDevice.BOND_BONDED) {
@@ -1187,7 +1366,7 @@ public class BluetoothManager {
         if (adapter == null) {
             throw new BluetoothFailure(NOT_AVAILABLE, "not available");
         }
-        requireConnectPermission("isBluetoothDevicePaired");
+        requireConnectPermission();
         String deviceId = requiredString(opts, "deviceId");
         if (remoteDevice(deviceId).getBondState() == BluetoothDevice.BOND_BONDED) {
             reply.ok();
@@ -1208,8 +1387,8 @@ public class BluetoothManager {
 
     public synchronized void startBeaconDiscovery(JSONObject opts, Reply reply) {
         String optionsJson = opts.toString();
-        requireConnectPermission("startBeaconDiscovery");
-        requireScanPermission("startBeaconDiscovery");
+        requireConnectPermission();
+        requireScanPermission();
         if (adapter == null || !isAdapterEnabled()) {
             throw new BluetoothFailure(BEACON_UNAVAILABLE, "bluetooth unavailable");
         }
@@ -1240,8 +1419,8 @@ public class BluetoothManager {
 
     @SuppressLint("MissingPermission")
     private void startBeaconDiscoveryInternal() {
-        requireConnectPermission("startBeaconDiscovery");
-        requireScanPermission("startBeaconDiscovery");
+        requireConnectPermission();
+        requireScanPermission();
         if (adapter == null || !isAdapterEnabled()) {
             throw new BluetoothFailure(BEACON_UNAVAILABLE, "bluetooth unavailable");
         }
@@ -1353,7 +1532,7 @@ public class BluetoothManager {
         if (adapter == null) {
             throw new BluetoothFailure(NOT_AVAILABLE, "not available");
         }
-        requireConnectPermission("createBLEConnection");
+        requireConnectPermission();
         {
             String deviceId = requiredString(opts, "deviceId");
 
@@ -1903,7 +2082,7 @@ public class BluetoothManager {
 
     @SuppressLint("MissingPermission")
     public void getBLEDeviceServices(JSONObject opts, Reply reply) {
-        requireConnectPermission("getBLEDeviceServices");
+        requireConnectPermission();
         BluetoothGatt gatt = connectedGatt(requiredString(opts, "deviceId"));
         JSONArray services = new JSONArray();
         try {
@@ -1921,7 +2100,7 @@ public class BluetoothManager {
 
     @SuppressLint("MissingPermission")
     public void getBLEDeviceCharacteristics(JSONObject opts, Reply reply) {
-        requireConnectPermission("getBLEDeviceCharacteristics");
+        requireConnectPermission();
         BluetoothGatt gatt = connectedGatt(requiredString(opts, "deviceId"));
         BluetoothGattService service = findService(gatt, requiredString(opts, "serviceId"));
         JSONArray characteristics = new JSONArray();
@@ -1950,7 +2129,7 @@ public class BluetoothManager {
     /** Answered once the read is issued: the value arrives as the characteristic event. */
     @SuppressLint("MissingPermission")
     public void readBLECharacteristicValue(JSONObject opts, Reply reply) {
-        requireConnectPermission("readBLECharacteristicValue");
+        requireConnectPermission();
         BluetoothGatt gatt = connectedGatt(requiredString(opts, "deviceId"));
         BluetoothGattCharacteristic ch = findCharacteristic(gatt,
                 requiredString(opts, "serviceId"), requiredString(opts, "characteristicId"));
@@ -1970,7 +2149,7 @@ public class BluetoothManager {
     @SuppressLint("MissingPermission")
     @SuppressWarnings("deprecation")
     public void writeBLECharacteristicValue(JSONObject opts, Reply reply) {
-        requireConnectPermission("writeBLECharacteristicValue");
+        requireConnectPermission();
         String deviceId = requiredString(opts, "deviceId");
         BluetoothGatt gatt = connectedGatt(deviceId);
         BluetoothGattCharacteristic ch = findCharacteristic(gatt,
@@ -2010,7 +2189,7 @@ public class BluetoothManager {
     @SuppressLint("MissingPermission")
     @SuppressWarnings("deprecation")
     public void notifyBLECharacteristicValueChange(JSONObject opts, Reply reply) {
-        requireConnectPermission("notifyBLECharacteristicValueChange");
+        requireConnectPermission();
         String deviceId = requiredString(opts, "deviceId");
         BluetoothGatt gatt = connectedGatt(deviceId);
         BluetoothGattCharacteristic ch = findCharacteristic(gatt,
@@ -2058,7 +2237,7 @@ public class BluetoothManager {
     /** Answered with the RSSI read from the device for this request. */
     @SuppressLint("MissingPermission")
     public void getBLEDeviceRSSI(JSONObject opts, Reply reply) {
-        requireConnectPermission("getBLEDeviceRSSI");
+        requireConnectPermission();
         String deviceId = requiredString(opts, "deviceId");
         BluetoothGatt gatt = connectedGatt(deviceId);
         GattAttempt attempt = gattConnections.get(deviceId);
@@ -2082,7 +2261,7 @@ public class BluetoothManager {
     /** Answered with the MTU the peripheral agreed to. */
     @SuppressLint("MissingPermission")
     public void setBLEMTU(JSONObject opts, Reply reply) {
-        requireConnectPermission("setBLEMTU");
+        requireConnectPermission();
         String deviceId = requiredString(opts, "deviceId");
         BluetoothGatt gatt = connectedGatt(deviceId);
         GattAttempt attempt = gattConnections.get(deviceId);
@@ -2145,7 +2324,7 @@ public class BluetoothManager {
         return characteristic;
     }
 
-    private static byte[] hexToBytes(String hex) {
+    static byte[] hexToBytes(String hex) {
         if (hex == null || hex.isEmpty()) return new byte[0];
         int len = hex.length();
         if (len % 2 != 0) {
@@ -2369,6 +2548,8 @@ public class BluetoothManager {
                 if (BluetoothAdapter.ACTION_STATE_CHANGED.equals(intent.getAction())) {
                     int state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR);
                     boolean available = (state == BluetoothAdapter.STATE_ON);
+                    // A GATT server does not outlive Bluetooth going off.
+                    if (!available) closePeripheral();
                     NativeMethods.onBluetoothAdapterStateChange(sessionId, available, discovering);
                 }
             }
@@ -2434,7 +2615,7 @@ public class BluetoothManager {
 
     private static final char[] HEX_DIGITS = "0123456789abcdef".toCharArray();
 
-    private static String bytesToHex(byte[] bytes) {
+    static String bytesToHex(byte[] bytes) {
         char[] output = new char[bytes.length * 2];
         appendHex(bytes, 0, bytes.length, output, 0);
         return new String(output);

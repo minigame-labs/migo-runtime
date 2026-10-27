@@ -1,8 +1,11 @@
 #include "fake_migo.hpp"
+#include "x11_player.hpp"
+#include "xi2_raw_motion.hpp"
 
 #include <migo/linux/qt6/x11_surface_view.hpp>
 
 #include <QApplication>
+#include <QCursor>
 #include <QInputMethodEvent>
 #include <QKeyEvent>
 #include <QMouseEvent>
@@ -16,11 +19,17 @@
 #include <cstdlib>
 #include <memory>
 #include <dlfcn.h>
+#include <initializer_list>
 #include <new>
+
+#include <xcb/xcb.h>
+#include <xcb/xinput.h>
 
 using migo::linux_host::SurfaceHost;
 using migo::linux_host::SurfaceState;
 using migo::linux_host::qt6::MigoQtX11SurfaceView;
+using migo::linux_host::qt6::RawMotion;
+using migo::linux_host::qt6::rawMotion;
 
 namespace {
 
@@ -205,6 +214,16 @@ private:
                           Qt::NoModifier);
         event.setTimestamp(timestamp);
         QCoreApplication::sendEvent(&view, &event);
+    }
+
+    /// The player at the game: its window active, the view holding the
+    /// keyboard, the cursor at `at` in the view.
+    static bool bringPlayerTo(AttachedFixture &fixture, QPoint at) {
+        fixture.container.activateWindow();
+        if (!QTest::qWaitForWindowActive(&fixture.container)) return false;
+        fixture.view.setFocus();
+        QCursor::setPos(fixture.view.mapToGlobal(at));
+        return fixture.view.hasFocus();
     }
 
 private slots:
@@ -562,6 +581,149 @@ private slots:
         // does not have was lifted.
         QCoreApplication::sendEvent(&view, &focus_out);
         QCOMPARE(fake_migo::touches().size(), touches_before + 1);
+    }
+
+    /// An XInput 2 raw motion event's motion is read from the valuators it
+    /// sets, a pointer's x and y being its first two, whichever of them it
+    /// carries; an event that moves neither, or is not raw motion of the
+    /// extension asked about, is none.
+    void raw_motion_is_read_from_the_valuators_it_sets() {
+        constexpr std::uint8_t kOpcode = 131;
+        // As xcb reads one: the fixed part with full_sequence, a mask word, the values.
+        struct Event {
+            xcb_input_raw_button_press_event_t head;
+            std::uint32_t mask;
+            xcb_input_fp3232_t values[4];
+        };
+        const auto event = [](std::uint32_t mask, std::initializer_list<xcb_input_fp3232_t> values) {
+            Event raw{};
+            raw.head.response_type = XCB_GE_GENERIC;
+            raw.head.extension = kOpcode;
+            raw.head.event_type = XCB_INPUT_RAW_MOTION;
+            raw.head.time = 4242;
+            raw.head.valuators_len = 1;
+            raw.mask = mask;
+            int index = 0;
+            for (const xcb_input_fp3232_t value : values) raw.values[index++] = value;
+            return raw;
+        };
+        // 7.5 and -2.25: a whole part, then the fraction over 2^32 added to it.
+        Event both = event(0b11, {{7, 0x80000000U}, {-3, 0xC0000000U}});
+        std::optional<RawMotion> motion = rawMotion(&both, kOpcode);
+        QVERIFY(motion.has_value());
+        QCOMPARE(motion->delta, QPointF(7.5, -2.25));
+        QCOMPARE(motion->time, 4242U);
+
+        Event y_only = event(0b10, {{5, 0}});
+        motion = rawMotion(&y_only, kOpcode);
+        QVERIFY(motion.has_value());
+        QCOMPARE(motion->delta, QPointF(0.0, 5.0));
+
+        // A third valuator -- a wheel's, say -- is not the pointer's motion.
+        Event x_and_wheel = event(0b101, {{4, 0}, {9, 0}});
+        motion = rawMotion(&x_and_wheel, kOpcode);
+        QVERIFY(motion.has_value());
+        QCOMPARE(motion->delta, QPointF(4.0, 0.0));
+        Event wheel_only = event(0b100, {{9, 0}});
+        QVERIFY(!rawMotion(&wheel_only, kOpcode).has_value());
+
+        Event still = event(0b11, {{0, 0}, {0, 0}});
+        QVERIFY(!rawMotion(&still, kOpcode).has_value());
+        QVERIFY(!rawMotion(&both, kOpcode + 1).has_value());
+        Event press = both;
+        press.head.event_type = XCB_INPUT_RAW_BUTTON_PRESS;
+        QVERIFY(!rawMotion(&press, kOpcode).has_value());
+        Event core = both;
+        core.head.response_type = XCB_MOTION_NOTIFY;
+        QVERIFY(!rawMotion(&core, kOpcode).has_value());
+    }
+
+    /// A pointer lock is taken only with the player at the game -- the view
+    /// holding the keyboard, the cursor over it -- and hides the cursor. The
+    /// mouse's raw motion then moves content's pointer from where the cursor
+    /// stood, past the view's edge too, the hidden cursor's own motion moving
+    /// nothing, and a click lands where content's pointer is. Esc releases it,
+    /// neither that Esc nor its release reaching content, and the cursor stands
+    /// where it stood.
+    void a_pointer_lock_moves_the_pointer_by_the_mouse_until_esc() {
+        if (!require_xcb("xcb-only test", __FILE__, __LINE__)) return;
+        AttachedFixture fixture;
+        MigoQtX11SurfaceView &view = fixture.view;
+        QTRY_COMPARE(fake_migo::calls().attach, 1);
+        x11_player::Hands hands;
+        QSignalSpy changes(&view, &MigoQtX11SurfaceView::pointerLockChanged);
+
+        view.clearFocus();
+        QCursor::setPos(view.mapToGlobal(QPoint(100, 50)));
+        QVERIFY(!view.lockPointer());
+        QVERIFY(bringPlayerTo(fixture, QPoint(view.width() + 10, 50)));
+        QVERIFY(!view.lockPointer());
+        QCOMPARE(changes.size(), 0);
+
+        const QPoint origin = view.mapToGlobal(QPoint(100, 50));
+        QCursor::setPos(origin);
+        QVERIFY(view.lockPointer());
+        QVERIFY(view.isPointerLocked());
+        QCOMPARE(changes.size(), 1);
+        QCOMPARE(changes.at(0).at(0).toBool(), true);
+        QVERIFY(QGuiApplication::overrideCursor() != nullptr);
+        QCOMPARE(QGuiApplication::overrideCursor()->shape(), Qt::BlankCursor);
+        // A lock already held is no change.
+        QVERIFY(view.lockPointer());
+        QCOMPARE(changes.size(), 1);
+
+        const std::size_t before = fake_migo::pointers().size();
+        hands.move(30, -70);
+        QTRY_COMPARE(fake_migo::pointers().size(), before + 1);
+        QTest::qWait(100);
+        QCOMPARE(fake_migo::pointers().size(), before + 1);
+        QCOMPARE(fake_migo::pointers().back().event_type, MIGO_POINTER_EVENT_MOVE);
+        QCOMPARE(fake_migo::pointers().back().x, 130.0F);
+        QCOMPARE(fake_migo::pointers().back().y, -20.0F);
+
+        hands.click(1);
+        QTRY_COMPARE(fake_migo::pointers().size(), before + 3);
+        QCOMPARE(fake_migo::pointers()[before + 1].event_type, MIGO_POINTER_EVENT_DOWN);
+        QCOMPARE(fake_migo::pointers()[before + 1].x, 130.0F);
+        QCOMPARE(fake_migo::pointers()[before + 1].y, -20.0F);
+        QCOMPARE(fake_migo::pointers()[before + 2].event_type, MIGO_POINTER_EVENT_UP);
+
+        const std::size_t keys = fake_migo::keys().size();
+        hands.escape();
+        QTRY_VERIFY(!view.isPointerLocked());
+        QCOMPARE(changes.size(), 2);
+        QCOMPARE(changes.at(1).at(0).toBool(), false);
+        QCOMPARE(QGuiApplication::overrideCursor(), nullptr);
+        QCOMPARE(QCursor::pos(), origin);
+        QTest::qWait(100);
+        QCOMPARE(fake_migo::keys().size(), keys);
+        // The next Esc is the game's.
+        hands.escape();
+        QTRY_COMPARE(fake_migo::keys().size(), keys + 2);
+    }
+
+    /// A lock goes when the view loses the keyboard -- Esc would no longer
+    /// reach it -- and when the game goes.
+    void a_pointer_lock_goes_with_the_keyboard_and_with_the_game() {
+        if (!require_xcb("xcb-only test", __FILE__, __LINE__)) return;
+        AttachedFixture fixture;
+        MigoQtX11SurfaceView &view = fixture.view;
+        QTRY_COMPARE(fake_migo::calls().attach, 1);
+        QSignalSpy changes(&view, &MigoQtX11SurfaceView::pointerLockChanged);
+
+        QVERIFY(bringPlayerTo(fixture, QPoint(10, 10)));
+        QVERIFY(view.lockPointer());
+        view.clearFocus();
+        QVERIFY(!view.isPointerLocked());
+        QCOMPARE(changes.size(), 2);
+
+        QVERIFY(bringPlayerTo(fixture, QPoint(10, 10)));
+        QVERIFY(view.lockPointer());
+        QCOMPARE(view.beginDetach(), MIGO_OK);
+        QVERIFY(!view.isPointerLocked());
+        QCOMPARE(changes.size(), 4);
+        QCOMPARE(changes.at(3).at(0).toBool(), false);
+        QCOMPARE(QGuiApplication::overrideCursor(), nullptr);
     }
 
     /// Without an attachment there is nothing to deliver to.

@@ -29,6 +29,7 @@ mod android;
 mod bluetooth;
 mod callback_gate;
 mod callbacks;
+mod camera;
 mod capabilities;
 #[cfg(test)]
 mod concurrent_sessions;
@@ -41,6 +42,7 @@ mod keyboard;
 mod layout;
 mod panic_barrier;
 mod platform;
+mod recorder;
 // Which execution this product compiled: a JavaScript runtime in this process,
 // or frames produced by one somewhere else.
 mod retirement;

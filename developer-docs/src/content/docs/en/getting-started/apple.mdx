@@ -161,7 +161,7 @@ it carries no signature; subpackages inside the package work.
 | `setKeepScreenOn` | the idle timer; the app's own setting comes back when the game ends | a power assertion; likewise |
 | `getNetworkType` / `onNetworkStatusChange` | `NWPathMonitor` (wired is `wifi`, cellular `unknown`, as on Android) | likewise |
 | `vibrateShort` / `vibrateLong` | the Taptic Engine | answers "not supported" |
-| `getBatteryInfo` | battery level and Low Power Mode | answers "not supported" |
+| `getBatteryInfo` | battery level and Low Power Mode | a laptop's internal battery (IOKit) and Low Power Mode (macOS 12 and later); "not supported" on a Mac without a battery |
 | `onDeviceOrientationChange` | the interface's orientation (in landscape, `landscape` with the Home side on the right, `landscapeReverse` on the left; the half turn between them from iOS 16) | the game's shape crossing between portrait and landscape |
 | `setDeviceOrientation` | asks the scene to turn to the shape asked for (iOS 16 and later); fails where the view controller does not support it | turns the window to the shape asked for; fails in full screen |
 | `getGameLogManager().log` | delivered to the app as `onEvent(.gameLog(json))` | likewise |

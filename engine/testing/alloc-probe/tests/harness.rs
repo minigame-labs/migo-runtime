@@ -287,3 +287,115 @@ fn a_measured_burst_reports_the_iteration_count_it_covered() {
         "message did not report the measured span: {message}"
     );
 }
+
+#[cfg(any(unix, windows))]
+#[test]
+fn system_allocator_activity_is_outside_the_global_counter() {
+    let (before, after) = migo_alloc_probe::on_native_thread(|| {
+        use std::alloc::{GlobalAlloc, Layout, System};
+        let layout = Layout::from_size_align(64, 8).unwrap();
+        let before = thread_counts();
+        // System deliberately bypasses the configured GlobalAlloc; std Thread
+        // metadata uses this path. A zero here cannot certify native heaps.
+        let pointer = unsafe { System.alloc(layout) };
+        if pointer.is_null() {
+            std::alloc::handle_alloc_error(layout);
+        }
+        std::hint::black_box(pointer);
+        unsafe {
+            System.dealloc(pointer, layout);
+        }
+        (before, thread_counts())
+    })
+    .unwrap();
+    assert_eq!(
+        before, after,
+        "native interception is needed beyond GlobalAlloc"
+    );
+}
+
+#[cfg(all(any(unix, windows), panic = "unwind"))]
+#[test]
+fn native_thread_panics_return_to_the_rust_caller() {
+    let result = std::panic::catch_unwind(|| {
+        migo_alloc_probe::on_native_thread(|| panic!("native probe assertion")).unwrap();
+    });
+    let panic = result.expect_err("native assertion must propagate");
+    assert_eq!(
+        panic.downcast_ref::<&str>(),
+        Some(&"native probe assertion")
+    );
+}
+
+#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+#[test]
+#[ignore = "explicit LLVM RTSan native runtime matrix"]
+fn native_realtime_runtime_matrix() {
+    let probe = migo_alloc_probe::RealtimeProbe::load().unwrap();
+    let case = std::env::var("MIGO_RTSAN_CASE").unwrap();
+    migo_alloc_probe::on_native_thread(move || match case.as_str() {
+        "clean" => probe.run_traced(|| std::hint::black_box(17u64)),
+        "system-allocation" => probe.run_traced(|| {
+            use std::alloc::{GlobalAlloc, Layout, System};
+            let layout = Layout::from_size_align(64, 8).unwrap();
+            let pointer = unsafe { System.alloc(layout) };
+            if pointer.is_null() {
+                std::alloc::handle_alloc_error(layout);
+            }
+            std::hint::black_box(pointer);
+            unsafe {
+                System.dealloc(pointer, layout);
+            }
+            0
+        }),
+        "system-deallocation" => {
+            use std::alloc::{GlobalAlloc, Layout, System};
+            let layout = Layout::from_size_align(64, 8).unwrap();
+            let pointer = unsafe { System.alloc(layout) };
+            if pointer.is_null() {
+                std::alloc::handle_alloc_error(layout);
+            }
+            probe.run_traced(|| unsafe { System.dealloc(pointer, layout) });
+            0
+        }
+        "thread-current" => probe.run_traced(|| {
+            std::hint::black_box(std::thread::current());
+            0
+        }),
+        "pthread-mutex" => {
+            let mut mutex = std::mem::MaybeUninit::<libc::pthread_mutex_t>::uninit();
+            assert_eq!(
+                unsafe { libc::pthread_mutex_init(mutex.as_mut_ptr(), std::ptr::null()) },
+                0
+            );
+            let mut mutex = unsafe { mutex.assume_init() };
+            probe.run_traced(|| unsafe { libc::pthread_mutex_lock(&mut mutex) });
+            unsafe {
+                libc::pthread_mutex_unlock(&mut mutex);
+                libc::pthread_mutex_destroy(&mut mutex);
+            }
+            0
+        }
+        "blocking-syscall" => probe.run_traced(|| {
+            let value = std::sync::atomic::AtomicU32::new(0);
+            let timeout = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            };
+            // This deliberate zero-duration wait never hangs the control,
+            // but an independent trace must reject its WAIT opcode.
+            unsafe {
+                libc::syscall(
+                    libc::SYS_futex,
+                    value.as_ptr(),
+                    libc::FUTEX_WAIT | libc::FUTEX_PRIVATE_FLAG,
+                    0,
+                    &timeout as *const libc::timespec,
+                );
+            }
+            0
+        }),
+        _ => panic!("unknown RTSan fixture case"),
+    })
+    .unwrap();
+}

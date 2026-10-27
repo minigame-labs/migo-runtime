@@ -2789,7 +2789,9 @@ pub fn spawn_external_frame_session(
         },
     )?;
     // Before the session is handed out, so nothing that can reach the services
-    // -- only the session handle can -- finds them without their scheduler.
+    // -- only the session handle can -- finds them without their scheduler. The
+    // session thread binds too, first thing: it may already be running, and its
+    // startup needs them bound (see run_external_session).
     services.context.bind_session(started.host.id());
 
     Ok(SpawnedExternalSession {
@@ -2848,6 +2850,11 @@ fn run_external_session(
         restart_boundary,
         ready_tx,
     } = ctx;
+    // Before anything here reaches the services. The spawner binds them only
+    // once the spawn has returned, and this thread does not wait for that: its
+    // startup binds the network below, which builds on the scheduler -- and on
+    // the iOS simulator this thread got there first every time.
+    services.context.bind_session(id);
     // Raised by the host's own shutdown, before anything else it does: what tells
     // the session's end the host asked for from the one content asked for.
     let host_shutdown = Arc::clone(&surface_control);

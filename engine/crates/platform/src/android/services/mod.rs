@@ -6,9 +6,9 @@ use std::sync::{Arc, OnceLock};
 
 use migo_core::services::{
     AccelerometerService, AdService, AudioPlatformService, AuthService, BatteryService,
-    BluetoothService, CameraService, ClipboardService, CodecService, CommerceServices,
-    CompassService, ConnectivityServices, DeviceMotionService, EcosystemService, FileService,
-    GameLogService, GamepadRumble, GamepadService, GyroscopeService, ImageApiService,
+    BlePeripheralService, BluetoothService, CameraService, ClipboardService, CodecService,
+    CommerceServices, CompassService, ConnectivityServices, DeviceMotionService, EcosystemService,
+    FileService, GameLogService, GamepadRumble, GamepadService, GyroscopeService, ImageApiService,
     InteractionService, KeyboardService, LocationService, MediaServices, NavigateService,
     NetworkService, PaymentService, PermissionService, RecorderService, ScanCodeService, Scope,
     ScopeState, ScreenService, SensorServices, ServiceError, ServiceErrorCode, ShareService,
@@ -166,6 +166,12 @@ impl ConnectivityServices for AndroidDeviceServices {
     #[cfg(feature = "api-connectivity")]
     fn bluetooth(&self) -> Option<Arc<dyn BluetoothService>> {
         Some(Arc::new(AndroidBluetooth {
+            session: self.session.clone(),
+        }))
+    }
+    #[cfg(feature = "api-connectivity")]
+    fn ble_peripheral(&self) -> Option<Arc<dyn BlePeripheralService>> {
+        Some(Arc::new(AndroidBlePeripheral {
             session: self.session.clone(),
         }))
     }
@@ -695,18 +701,14 @@ struct AndroidAudioPlatform {
 }
 
 impl AudioPlatformService for AndroidAudioPlatform {
-    fn set_inner_audio_option(
-        &self,
-        mix_with_other: bool,
-        obey_mute_switch: bool,
-        speaker_on: bool,
-    ) -> Result<(), ServiceError> {
-        Ok(jni::set_inner_audio_option(
-            self.host_id,
-            mix_with_other,
-            obey_mute_switch,
-            speaker_on,
-        )?)
+    /// Nothing is left for Android to do: it has no silent switch over a game's
+    /// media, and the game's audio focus, exclusive as the reference's is with the
+    /// speaker on, is the session's own (`AudioFocusManager`). It used to take a second
+    /// focus here, with no listener and never given back -- ducking other apps for
+    /// `mixWithOther`, against the option's meaning -- and to switch the device's
+    /// call routing with `setSpeakerphoneOn`.
+    fn set_inner_audio_option(&self, _obey_mute_switch: bool) -> Result<(), ServiceError> {
+        Ok(())
     }
 
     fn get_available_audio_sources(&self) -> Result<Vec<String>, ServiceError> {
@@ -727,28 +729,30 @@ struct AndroidRecorder {
     session: SessionGate,
 }
 
+/// Every request goes to the SDK as content made it, `{"recordingId", ...}`;
+/// what happens comes back through `onRecorderEvent`.
 impl RecorderService for AndroidRecorder {
-    fn start(&self, options_json: &str) -> Result<(), ServiceError> {
+    fn start(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, Some(Scope::Record), || {
-            jni::recorder_start(self.session.host_id(), options_json)
+            jni::recorder_start(self.session.host_id(), request_json)
         })
     }
 
-    fn pause(&self) -> Result<(), ServiceError> {
+    fn pause(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, Some(Scope::Record), || {
-            jni::recorder_pause(self.session.host_id())
+            jni::recorder_pause(self.session.host_id(), request_json)
         })
     }
 
-    fn resume(&self) -> Result<(), ServiceError> {
+    fn resume(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, Some(Scope::Record), || {
-            jni::recorder_resume(self.session.host_id())
+            jni::recorder_resume(self.session.host_id(), request_json)
         })
     }
 
-    fn stop(&self) -> Result<(), ServiceError> {
+    fn stop(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, None, || {
-            jni::recorder_stop(self.session.host_id())
+            jni::recorder_stop(self.session.host_id(), request_json)
         })
     }
 }
@@ -759,52 +763,60 @@ struct AndroidCamera {
     session: SessionGate,
 }
 
+/// Every request goes to the SDK as content made it; a call is answered through
+/// `onCameraResult` once it has happened.
 impl CameraService for AndroidCamera {
-    fn create(&self, options_json: &str) -> Result<String, ServiceError> {
+    fn create(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, Some(Scope::Camera), || {
-            jni::camera_create(self.session.host_id(), options_json)
+            jni::camera_create(self.session.host_id(), request_json)
         })
     }
 
-    fn destroy(&self, camera_id: u32) -> Result<(), ServiceError> {
+    fn destroy(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, None, || {
-            jni::camera_destroy(self.session.host_id(), camera_id)
+            jni::camera_destroy(self.session.host_id(), request_json)
         })
     }
 
-    fn take_photo_async(&self, request_id: u32, options_json: &str) -> Result<(), ServiceError> {
+    fn set(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, Some(Scope::Camera), || {
-            jni::camera_take_photo_async(self.session.host_id(), request_id, options_json)
+            jni::camera_set(self.session.host_id(), request_json)
         })
     }
 
-    fn start_record(&self, options_json: &str) -> Result<String, ServiceError> {
+    fn take_photo(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, Some(Scope::Camera), || {
-            jni::camera_start_record(self.session.host_id(), options_json)
+            jni::camera_take_photo(self.session.host_id(), request_json)
         })
     }
 
-    fn stop_record(&self, options_json: &str) -> Result<String, ServiceError> {
+    fn start_record(&self, request_json: &str) -> Result<(), ServiceError> {
+        permission_jni_call(&self.session, Some(Scope::Camera), || {
+            jni::camera_start_record(self.session.host_id(), request_json)
+        })
+    }
+
+    fn stop_record(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, None, || {
-            jni::camera_stop_record(self.session.host_id(), options_json)
+            jni::camera_stop_record(self.session.host_id(), request_json)
         })
     }
 
-    fn set_zoom(&self, options_json: &str) -> Result<String, ServiceError> {
+    fn set_zoom(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, Some(Scope::Camera), || {
-            jni::camera_set_zoom(self.session.host_id(), options_json)
+            jni::camera_set_zoom(self.session.host_id(), request_json)
         })
     }
 
-    fn listen_frame_change(&self, camera_id: u32) -> Result<(), ServiceError> {
+    fn listen_frame_change(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, Some(Scope::Camera), || {
-            jni::camera_listen_frame_change(self.session.host_id(), camera_id)
+            jni::camera_listen_frame_change(self.session.host_id(), request_json)
         })
     }
 
-    fn close_frame_change(&self, camera_id: u32) -> Result<(), ServiceError> {
+    fn close_frame_change(&self, request_json: &str) -> Result<(), ServiceError> {
         permission_jni_call(&self.session, None, || {
-            jni::camera_close_frame_change(self.session.host_id(), camera_id)
+            jni::camera_close_frame_change(self.session.host_id(), request_json)
         })
     }
 }
@@ -1038,6 +1050,51 @@ impl BluetoothService for AndroidBluetooth {
     }
 }
 
+struct AndroidBlePeripheral {
+    session: SessionGate,
+}
+
+// The SDK answers every request through `onBlePeripheralResult`; serving and
+// advertising need `scope.bluetooth`, releasing what was acquired under it
+// does not.
+impl BlePeripheralService for AndroidBlePeripheral {
+    fn create_server(&self, request_json: &str) -> Result<(), ServiceError> {
+        permission_jni_call(&self.session, Some(Scope::Bluetooth), || {
+            jni::ble_peripheral_create_server(self.session.host_id(), request_json)
+        })
+    }
+
+    fn add_service(&self, request_json: &str) -> Result<(), ServiceError> {
+        permission_jni_call(&self.session, Some(Scope::Bluetooth), || {
+            jni::ble_peripheral_add_service(self.session.host_id(), request_json)
+        })
+    }
+
+    fn remove_service(&self, request_json: &str) -> Result<(), ServiceError> {
+        permission_jni_call(&self.session, None, || {
+            jni::ble_peripheral_remove_service(self.session.host_id(), request_json)
+        })
+    }
+
+    fn start_advertising(&self, request_json: &str) -> Result<(), ServiceError> {
+        permission_jni_call(&self.session, Some(Scope::Bluetooth), || {
+            jni::ble_peripheral_start_advertising(self.session.host_id(), request_json)
+        })
+    }
+
+    fn stop_advertising(&self, request_json: &str) -> Result<(), ServiceError> {
+        permission_jni_call(&self.session, None, || {
+            jni::ble_peripheral_stop_advertising(self.session.host_id(), request_json)
+        })
+    }
+
+    fn write_characteristic_value(&self, request_json: &str) -> Result<(), ServiceError> {
+        permission_jni_call(&self.session, Some(Scope::Bluetooth), || {
+            jni::ble_peripheral_write_characteristic_value(self.session.host_id(), request_json)
+        })
+    }
+}
+
 // ==================== Keyboard ====================
 
 struct AndroidKeyboard {
@@ -1141,41 +1198,35 @@ struct AndroidVideo {
     host_id: i32,
 }
 
+/// Every request goes to the SDK as content made it, `{"videoId", ...}`; a call
+/// is answered through `onVideoResult` once it has happened.
 impl VideoService for AndroidVideo {
-    fn create(&self, options_json: &str) -> Result<String, ServiceError> {
-        Ok(jni::video_create(self.host_id, options_json)?)
+    fn create(&self, request_json: &str) -> Result<(), ServiceError> {
+        Ok(jni::video_create(self.host_id, request_json)?)
     }
-    fn play(&self, video_id: u32) -> Result<(), ServiceError> {
-        Ok(jni::video_play(self.host_id, video_id)?)
+    fn destroy(&self, request_json: &str) -> Result<(), ServiceError> {
+        Ok(jni::video_destroy(self.host_id, request_json)?)
     }
-    fn pause(&self, video_id: u32) -> Result<(), ServiceError> {
-        Ok(jni::video_pause(self.host_id, video_id)?)
+    fn set(&self, request_json: &str) -> Result<(), ServiceError> {
+        Ok(jni::video_set(self.host_id, request_json)?)
     }
-    fn stop(&self, video_id: u32) -> Result<(), ServiceError> {
-        Ok(jni::video_stop(self.host_id, video_id)?)
+    fn play(&self, request_json: &str) -> Result<(), ServiceError> {
+        Ok(jni::video_play(self.host_id, request_json)?)
     }
-    fn seek(&self, video_id: u32, position: f64) -> Result<(), ServiceError> {
-        Ok(jni::video_seek(self.host_id, video_id, position)?)
+    fn pause(&self, request_json: &str) -> Result<(), ServiceError> {
+        Ok(jni::video_pause(self.host_id, request_json)?)
     }
-    fn request_fullscreen(&self, video_id: u32, direction: i32) -> Result<(), ServiceError> {
-        Ok(jni::video_request_fullscreen(
-            self.host_id,
-            video_id,
-            direction,
-        )?)
+    fn stop(&self, request_json: &str) -> Result<(), ServiceError> {
+        Ok(jni::video_stop(self.host_id, request_json)?)
     }
-    fn exit_fullscreen(&self, video_id: u32) -> Result<(), ServiceError> {
-        Ok(jni::video_exit_fullscreen(self.host_id, video_id)?)
+    fn seek(&self, request_json: &str) -> Result<(), ServiceError> {
+        Ok(jni::video_seek(self.host_id, request_json)?)
     }
-    fn set_property(&self, video_id: u32, property_json: &str) -> Result<(), ServiceError> {
-        Ok(jni::video_set_property(
-            self.host_id,
-            video_id,
-            property_json,
-        )?)
+    fn request_full_screen(&self, request_json: &str) -> Result<(), ServiceError> {
+        Ok(jni::video_request_full_screen(self.host_id, request_json)?)
     }
-    fn destroy(&self, video_id: u32) -> Result<(), ServiceError> {
-        Ok(jni::video_destroy(self.host_id, video_id)?)
+    fn exit_full_screen(&self, request_json: &str) -> Result<(), ServiceError> {
+        Ok(jni::video_exit_full_screen(self.host_id, request_json)?)
     }
 }
 
@@ -1233,7 +1284,8 @@ pub(crate) const ANDROID_PERMISSION_GATED_METHODS: &[(&str, Scope)] = &[
     ("RecorderService::pause", Scope::Record),
     ("RecorderService::resume", Scope::Record),
     ("CameraService::create", Scope::Camera),
-    ("CameraService::take_photo_async", Scope::Camera),
+    ("CameraService::set", Scope::Camera),
+    ("CameraService::take_photo", Scope::Camera),
     ("CameraService::start_record", Scope::Camera),
     ("CameraService::set_zoom", Scope::Camera),
     ("CameraService::listen_frame_change", Scope::Camera),
@@ -1273,6 +1325,13 @@ pub(crate) const ANDROID_PERMISSION_GATED_METHODS: &[(&str, Scope)] = &[
     ("BluetoothService::get_ble_device_rssi", Scope::Bluetooth),
     ("BluetoothService::set_ble_mtu", Scope::Bluetooth),
     ("BluetoothService::get_ble_mtu", Scope::Bluetooth),
+    ("BlePeripheralService::create_server", Scope::Bluetooth),
+    ("BlePeripheralService::add_service", Scope::Bluetooth),
+    ("BlePeripheralService::start_advertising", Scope::Bluetooth),
+    (
+        "BlePeripheralService::write_characteristic_value",
+        Scope::Bluetooth,
+    ),
     (
         "ImageApiService::save_image_to_photos_album",
         Scope::WritePhotosAlbum,
@@ -1294,6 +1353,8 @@ pub(crate) const ANDROID_PERMISSION_CLEANUP_METHODS: &[(&str, Scope)] = &[
     ("BluetoothService::stop_devices_discovery", Scope::Bluetooth),
     ("BluetoothService::stop_beacon_discovery", Scope::Bluetooth),
     ("BluetoothService::close_ble_connection", Scope::Bluetooth),
+    ("BlePeripheralService::remove_service", Scope::Bluetooth),
+    ("BlePeripheralService::stop_advertising", Scope::Bluetooth),
 ];
 
 /// Scope decisions the host has pushed for a session.
@@ -1414,6 +1475,10 @@ impl ShareService for AndroidShare {
 
     fn show_share_image_menu(&self, options_json: &str) -> Result<(), ServiceError> {
         Ok(jni::show_share_image_menu(self.host_id, options_json)?)
+    }
+
+    fn share_game_recording(&self, request_json: &str) -> Result<(), ServiceError> {
+        Ok(jni::share_game_recording(self.host_id, request_json)?)
     }
 
     fn set_share_menu(&self, json: &str) -> Result<(), ServiceError> {

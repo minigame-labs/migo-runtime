@@ -42,6 +42,102 @@ pub fn op_open_system_bluetooth_setting(
 // `scope.bluetooth`; releasing what was acquired under it does not, so a
 // revocation never traps a scan or a connection.
 
+// ==================== BLE peripheral ====================
+//
+// This device as a Bluetooth LE peripheral: every operation is a request the
+// host answers through `shared::services::BLE_PERIPHERAL_RESULT_HOOKS`.
+// Serving and advertising need `scope.bluetooth`; removing a service and
+// stopping advertising release what was acquired under it, and do not.
+
+/// The peripheral service, or `err_msg` when the host supplies none.
+fn ble_peripheral(
+    state: &OpState,
+    err_msg: &'static str,
+) -> Result<std::sync::Arc<dyn shared::services::BlePeripheralService>, JsErrorBox> {
+    state
+        .borrow::<HostOpState>()
+        .device_services
+        .as_ref()
+        .and_then(|services| services.ble_peripheral())
+        .ok_or_else(|| JsErrorBox::generic(err_msg))
+}
+
+#[op2(fast)]
+pub fn op_create_ble_peripheral_server(
+    state: &mut OpState,
+    #[string] request_json: &str,
+) -> Result<(), JsErrorBox> {
+    crate::permission::require_scope(state, Scope::Bluetooth)?;
+    ble_peripheral(state, "createBLEPeripheralServer:fail not supported")?
+        .create_server(request_json)
+        .map_err(JsErrorBox::generic)
+}
+
+#[op2(fast)]
+pub fn op_ble_peripheral_add_service(
+    state: &mut OpState,
+    #[string] request_json: &str,
+) -> Result<(), JsErrorBox> {
+    crate::permission::require_scope(state, Scope::Bluetooth)?;
+    ble_peripheral(state, "BLEPeripheralServer.addService:fail not supported")?
+        .add_service(request_json)
+        .map_err(JsErrorBox::generic)
+}
+
+#[op2(fast)]
+pub fn op_ble_peripheral_remove_service(
+    state: &mut OpState,
+    #[string] request_json: &str,
+) -> Result<(), JsErrorBox> {
+    ble_peripheral(
+        state,
+        "BLEPeripheralServer.removeService:fail not supported",
+    )?
+    .remove_service(request_json)
+    .map_err(JsErrorBox::generic)
+}
+
+#[op2(fast)]
+pub fn op_ble_peripheral_start_advertising(
+    state: &mut OpState,
+    #[string] request_json: &str,
+) -> Result<(), JsErrorBox> {
+    crate::permission::require_scope(state, Scope::Bluetooth)?;
+    ble_peripheral(
+        state,
+        "BLEPeripheralServer.startAdvertising:fail not supported",
+    )?
+    .start_advertising(request_json)
+    .map_err(JsErrorBox::generic)
+}
+
+#[op2(fast)]
+pub fn op_ble_peripheral_stop_advertising(
+    state: &mut OpState,
+    #[string] request_json: &str,
+) -> Result<(), JsErrorBox> {
+    ble_peripheral(
+        state,
+        "BLEPeripheralServer.stopAdvertising:fail not supported",
+    )?
+    .stop_advertising(request_json)
+    .map_err(JsErrorBox::generic)
+}
+
+#[op2(fast)]
+pub fn op_ble_peripheral_write_characteristic_value(
+    state: &mut OpState,
+    #[string] request_json: &str,
+) -> Result<(), JsErrorBox> {
+    crate::permission::require_scope(state, Scope::Bluetooth)?;
+    ble_peripheral(
+        state,
+        "BLEPeripheralServer.writeCharacteristicValue:fail not supported",
+    )?
+    .write_characteristic_value(request_json)
+    .map_err(JsErrorBox::generic)
+}
+
 /// The Bluetooth service, or `err_msg` when the host supplies none.
 fn bluetooth(
     state: &OpState,
@@ -662,56 +758,64 @@ pub fn op_game_log_report(
 
 // ==================== Extension Definition ====================
 
-deno_core::extension!(
+main_runtime_extension!(
     host_v8_system,
-    deps = [host_v8_base],
-    ops = [
-        op_open_system_bluetooth_setting,
-        op_open_bluetooth_adapter,
-        op_close_bluetooth_adapter,
-        op_get_bluetooth_adapter_state,
-        op_start_bluetooth_devices_discovery,
-        op_stop_bluetooth_devices_discovery,
-        op_get_bluetooth_devices,
-        op_get_connected_bluetooth_devices,
-        op_make_bluetooth_pair,
-        op_is_bluetooth_device_paired,
-        op_create_ble_connection,
-        op_close_ble_connection,
-        op_get_ble_device_services,
-        op_get_ble_device_characteristics,
-        op_read_ble_characteristic_value,
-        op_write_ble_characteristic_value,
-        op_notify_ble_characteristic_value_change,
-        op_get_ble_device_rssi,
-        op_set_ble_mtu,
-        op_get_ble_mtu,
-        op_start_beacon_discovery,
-        op_stop_beacon_discovery,
-        op_get_beacons,
-        op_open_app_authorize_setting,
-        op_login,
-        op_check_session,
-        op_get_user_info,
-        op_get_phone_number,
-        op_get_window_info,
-        op_get_system_settings,
-        op_get_device_info,
-        op_get_app_info,
-        op_get_app_authorization_setting,
-        op_game_log_report,
-        op_get_auth_setting,
-        op_crypto_random_values,
-        op_ecosystem_available,
-        op_ecosystem_call,
-        op_ecosystem_reply,
-        op_ecosystem_value,
-        op_authorize,
-        op_open_setting,
-        op_navigate_to_mini_program,
-        op_navigate_back_mini_program,
-        op_open_customer_service_conversation,
-    ],
+    {
+        deps = [host_v8_base],
+        ops = [
+            op_open_system_bluetooth_setting,
+            op_open_bluetooth_adapter,
+            op_close_bluetooth_adapter,
+            op_get_bluetooth_adapter_state,
+            op_start_bluetooth_devices_discovery,
+            op_stop_bluetooth_devices_discovery,
+            op_get_bluetooth_devices,
+            op_get_connected_bluetooth_devices,
+            op_make_bluetooth_pair,
+            op_is_bluetooth_device_paired,
+            op_create_ble_connection,
+            op_close_ble_connection,
+            op_get_ble_device_services,
+            op_get_ble_device_characteristics,
+            op_read_ble_characteristic_value,
+            op_write_ble_characteristic_value,
+            op_notify_ble_characteristic_value_change,
+            op_get_ble_device_rssi,
+            op_set_ble_mtu,
+            op_get_ble_mtu,
+            op_start_beacon_discovery,
+            op_stop_beacon_discovery,
+            op_get_beacons,
+            op_create_ble_peripheral_server,
+            op_ble_peripheral_add_service,
+            op_ble_peripheral_remove_service,
+            op_ble_peripheral_start_advertising,
+            op_ble_peripheral_stop_advertising,
+            op_ble_peripheral_write_characteristic_value,
+            op_open_app_authorize_setting,
+            op_login,
+            op_check_session,
+            op_get_user_info,
+            op_get_phone_number,
+            op_get_window_info,
+            op_get_system_settings,
+            op_get_device_info,
+            op_get_app_info,
+            op_get_app_authorization_setting,
+            op_game_log_report,
+            op_get_auth_setting,
+            op_crypto_random_values,
+            op_ecosystem_available,
+            op_ecosystem_call,
+            op_ecosystem_reply,
+            op_ecosystem_value,
+            op_authorize,
+            op_open_setting,
+            op_navigate_to_mini_program,
+            op_navigate_back_mini_program,
+            op_open_customer_service_conversation,
+        ],
+    },
     esm_entry_point = "ext:host_v8_system/99_global_scope.js",
     esm = [
         dir "src/system",
@@ -730,13 +834,14 @@ deno_core::extension!(
         "13_login.js",
         "14_setting.js",
         "15_navigate.js",
+        "16_ble_peripheral.js",
         "17_analytics.js",
         "18_crypto.js",
         "19_log_manager.js",
         "20_ecosystem.js",
         "21_ecosystem_objects.js",
         "99_global_scope.js",
-    ]
+    ],
 );
 
 pub fn system_extensions() -> Vec<Extension> {

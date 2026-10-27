@@ -1,418 +1,330 @@
 import {
     op_video_create,
+    op_video_destroy,
+    op_video_set,
     op_video_play,
     op_video_pause,
     op_video_stop,
     op_video_seek,
-    op_video_request_fullscreen,
-    op_video_exit_fullscreen,
-    op_video_set_property,
-    op_video_destroy,
+    op_video_request_full_screen,
+    op_video_exit_full_screen,
 } from "ext:core/ops";
 import {
     allocateHostCallbackId,
+    createDeferredApi,
     createListenerGroup,
-    wrapAsync,
+    failMessage,
 } from "ext:host_v8_base/02_async.js";
 
-// Video instance registry: videoId -> Video
-var _videos = new Map();
+// The players content holds, by id: where the host's events go.
+const _videos = new Map();
+
+// Every call is answered through its hook once what it asked has happened, as
+// the reference's promises settle. Playing may wait on the network as long as
+// it takes, and the host answers every call -- a destroyed player's with a
+// failure -- so none has a timeout.
+const _playApi = createDeferredApi("video.play", 0);
+const _pauseApi = createDeferredApi("video.pause", 0);
+const _stopApi = createDeferredApi("video.stop", 0);
+const _seekApi = createDeferredApi("video.seek", 0);
+const _requestFullScreenApi = createDeferredApi("video.requestFullScreen", 0);
+const _exitFullScreenApi = createDeferredApi("video.exitFullScreen", 0);
+
+const OBJECT_FITS = ["contain", "cover", "fill"];
+const PLAYBACK_RATES = [0.5, 0.8, 1.0, 1.25, 1.5];
+const DIRECTIONS = [0, 90, -90];
+
+const finite = (value) => typeof value === "number" && Number.isFinite(value);
+const nonNegative = (value) => finite(value) && value >= 0;
+const bool = (value) => typeof value === "boolean";
+const string = (value) => typeof value === "string";
+const oneOf = (values) => (value) => values.includes(value);
+
+// Every property the reference documents, with its default and what it takes.
+const PROPERTIES = {
+    x: [0, finite],
+    y: [0, finite],
+    width: [300, nonNegative],
+    height: [150, nonNegative],
+    src: ["", string],
+    poster: ["", string],
+    initialTime: [0, nonNegative],
+    playbackRate: [1.0, oneOf(PLAYBACK_RATES)],
+    live: [false, bool],
+    objectFit: ["contain", oneOf(OBJECT_FITS)],
+    controls: [true, bool],
+    showProgress: [true, bool],
+    showProgressInControlMode: [true, bool],
+    backgroundColor: ["#000000", string],
+    autoplay: [false, bool],
+    loop: [false, bool],
+    muted: [false, bool],
+    obeyMuteSwitch: [false, bool],
+    enableProgressGesture: [true, bool],
+    enablePlayGesture: [false, bool],
+    showCenterPlayBtn: [true, bool],
+    underGameView: [false, bool],
+    autoPauseIfNavigate: [true, bool],
+    autoPauseIfOpenNative: [true, bool],
+};
+
+// A command the host carries out and does not answer: one it refuses is
+// reported, since there is no call to fail.
+function command(op, request) {
+    try {
+        op(JSON.stringify(request));
+    } catch (e) {
+        console.error(failMessage("video", e));
+    }
+}
+
+// A player's private state, as the module needs it: set by the class, reachable
+// by nothing content holds. `_dispatch` hands an event to its listeners;
+// `_read` and `_change` are its properties.
+let _dispatch;
+let _read;
+let _change;
+let _handler;
+let _setHandler;
 
 /**
- * Video - Provides video playback capability.
- *
- * Created via createVideo(). Each instance has a unique ID
- * used to route native events back to the correct instance.
+ * A video player, shown where content put it -- over the game, or under it.
+ * Made by createVideo; its properties may be set, and play, pause, stop, seek
+ * and the full-screen calls settle once done.
  */
 class Video {
     #id;
     #destroyed = false;
-
-    // Playback state (updated by native events)
-    #src = '';
-    #duration = 0;
-    #currentTime = 0;
-    #paused = true;
-    #loop = false;
-    #muted = false;
-    #playbackRate = 1.0;
-    #objectFit = 'contain';
-
-    // Multi-listener arrays for event callbacks
+    #properties;
+    // The reference's assignable handlers -- video.onplay = fn -- by event
+    // type, each called after the event's listeners.
+    #handlers = {
+        play: null,
+        pause: null,
+        ended: null,
+        timeUpdate: null,
+        error: null,
+        waiting: null,
+        progress: null,
+    };
     #listeners = {
-        play: createListenerGroup('Video play'),
-        pause: createListenerGroup('Video pause'),
-        ended: createListenerGroup('Video ended'),
-        timeupdate: createListenerGroup('Video timeupdate'),
-        error: createListenerGroup('Video error'),
-        waiting: createListenerGroup('Video waiting'),
-        progress: createListenerGroup('Video progress'),
-        fullscreenchange: createListenerGroup('Video fullscreenchange'),
+        play: createListenerGroup("Video play"),
+        pause: createListenerGroup("Video pause"),
+        ended: createListenerGroup("Video ended"),
+        timeUpdate: createListenerGroup("Video timeUpdate"),
+        error: createListenerGroup("Video error"),
+        waiting: createListenerGroup("Video waiting"),
+        progress: createListenerGroup("Video progress"),
     };
 
-    constructor(id, options) {
+    static {
+        _dispatch = (video, type, res) => {
+            video.#listeners[type].trigger(res);
+            const handler = video.#handlers[type];
+            if (typeof handler === "function") {
+                try {
+                    handler.call(video, res);
+                } catch (e) {
+                    console.error(failMessage(`Video on${type.toLowerCase()}`, e));
+                }
+            }
+        };
+        _handler = (video, type) => video.#handlers[type];
+        _setHandler = (video, type, fn) => {
+            if (!video.#destroyed) video.#handlers[type] = typeof fn === "function" ? fn : null;
+        };
+        _read = (video, name) => video.#properties[name];
+        // Kept and sent when the reference allows the value, ignored otherwise.
+        _change = (video, name, value) => {
+            if (video.#destroyed || !PROPERTIES[name][1](value)) return;
+            video.#properties[name] = value;
+            command(op_video_set, { videoId: video.#id, [name]: value });
+        };
+    }
+
+    constructor(id, properties) {
         this.#id = id;
-        if (options.src !== undefined) this.#src = String(options.src);
-        if (options.loop !== undefined) this.#loop = !!options.loop;
-        if (options.muted !== undefined) this.#muted = !!options.muted;
-        if (options.playbackRate !== undefined) this.#playbackRate = Number(options.playbackRate) || 1.0;
-        if (options.objectFit !== undefined) this.#objectFit = String(options.objectFit);
+        this.#properties = properties;
     }
 
-    // ==================== Properties ====================
-
-    get src() { return this.#src; }
-    set src(val) {
-        this.#src = String(val);
-        this.#syncProperty('src', this.#src);
+    /** Play. Settles once it plays. */
+    play() {
+        return this.#call(_playApi, "video.play", op_video_play, {});
     }
 
-    get duration() { return this.#duration; }
-    get currentTime() { return this.#currentTime; }
-    get paused() { return this.#paused; }
-
-    get loop() { return this.#loop; }
-    set loop(val) {
-        this.#loop = !!val;
-        this.#syncProperty('loop', this.#loop);
+    /** Pause. Settles once paused. */
+    pause() {
+        return this.#call(_pauseApi, "video.pause", op_video_pause, {});
     }
 
-    get muted() { return this.#muted; }
-    set muted(val) {
-        this.#muted = !!val;
-        this.#syncProperty('muted', this.#muted);
+    /** Stop, back at the start. Settles once stopped. */
+    stop() {
+        return this.#call(_stopApi, "video.stop", op_video_stop, {});
     }
 
-    get playbackRate() { return this.#playbackRate; }
-    set playbackRate(val) {
-        this.#playbackRate = Number(val) || 1.0;
-        this.#syncProperty('playbackRate', this.#playbackRate);
+    /** Go to `time` seconds. Settles once there. */
+    seek(time) {
+        if (!nonNegative(time)) {
+            return Promise.reject({ errMsg: "video.seek:fail time must be a number of seconds" });
+        }
+        return this.#call(_seekApi, "video.seek", op_video_seek, { time });
     }
 
-    get objectFit() { return this.#objectFit; }
-    set objectFit(val) {
-        this.#objectFit = String(val);
-        this.#syncProperty('objectFit', this.#objectFit);
+    /** Fill the screen, turned `direction`: 0, 90 (counterclockwise) or -90. */
+    requestFullScreen(direction) {
+        const turned = direction === undefined ? 0 : direction;
+        if (!DIRECTIONS.includes(turned)) {
+            return Promise.reject({ errMsg: "video.requestFullScreen:fail direction must be 0, 90 or -90" });
+        }
+        return this.#call(_requestFullScreenApi, "video.requestFullScreen", op_video_request_full_screen,
+            { direction: turned });
     }
 
-    // ==================== Playback Control ====================
-
-    /**
-     * Start or resume playback.
-     * @param {Object} [options] - success/fail/complete callbacks
-     * @returns {Promise}
-     */
-    play(options) {
-        var self = this;
-        return wrapAsync('video.play', function () {
-            op_video_play(self.#id);
-        }, options);
+    /** Leave full screen. Settles once back where content put it. */
+    exitFullScreen() {
+        return this.#call(_exitFullScreenApi, "video.exitFullScreen", op_video_exit_full_screen, {});
     }
 
-    /**
-     * Pause playback.
-     * @param {Object} [options] - success/fail/complete callbacks
-     * @returns {Promise}
-     */
-    pause(options) {
-        var self = this;
-        return wrapAsync('video.pause', function () {
-            op_video_pause(self.#id);
-        }, options);
-    }
-
-    /**
-     * Stop playback and reset to beginning.
-     * @param {Object} [options] - success/fail/complete callbacks
-     * @returns {Promise}
-     */
-    stop(options) {
-        var self = this;
-        return wrapAsync('video.stop', function () {
-            op_video_stop(self.#id);
-        }, options);
-    }
-
-    /**
-     * Seek to a given position.
-     * @param {number} time - Position in seconds
-     * @param {Object} [options] - success/fail/complete callbacks
-     * @returns {Promise}
-     */
-    seek(time, options) {
-        var self = this;
-        var pos = Number(time) || 0;
-        return wrapAsync('video.seek', function () {
-            op_video_seek(self.#id, pos);
-        }, options);
-    }
-
-    /**
-     * Enter fullscreen mode.
-     * @param {Object} [options]
-     * @param {number} [options.direction=0] - 0: normal, 90: rotate 90, -90: rotate -90
-     * @returns {Promise}
-     */
-    requestFullScreen(options) {
-        var self = this;
-        var opts = options || {};
-        var direction = (opts.direction !== undefined) ? Number(opts.direction) : 0;
-        return wrapAsync('video.requestFullScreen', function () {
-            op_video_request_fullscreen(self.#id, direction);
-        }, opts);
-    }
-
-    /**
-     * Exit fullscreen mode.
-     * @param {Object} [options] - success/fail/complete callbacks
-     * @returns {Promise}
-     */
-    exitFullScreen(options) {
-        var self = this;
-        return wrapAsync('video.exitFullScreen', function () {
-            op_video_exit_fullscreen(self.#id);
-        }, options);
-    }
-
-    // ==================== Event Listeners ====================
-
-    onPlay(callback) {
-        this.#listeners.play.on(callback);
-    }
-    offPlay(callback) {
-        this.#removeListener('play', callback);
-    }
-
-    onPause(callback) {
-        this.#listeners.pause.on(callback);
-    }
-    offPause(callback) {
-        this.#removeListener('pause', callback);
-    }
-
-    onEnded(callback) {
-        this.#listeners.ended.on(callback);
-    }
-    offEnded(callback) {
-        this.#removeListener('ended', callback);
-    }
-
-    onTimeUpdate(callback) {
-        this.#listeners.timeupdate.on(callback);
-    }
-    offTimeUpdate(callback) {
-        this.#removeListener('timeupdate', callback);
-    }
-
-    onError(callback) {
-        this.#listeners.error.on(callback);
-    }
-    offError(callback) {
-        this.#removeListener('error', callback);
-    }
-
-    onWaiting(callback) {
-        this.#listeners.waiting.on(callback);
-    }
-    offWaiting(callback) {
-        this.#removeListener('waiting', callback);
-    }
-
-    onProgress(callback) {
-        this.#listeners.progress.on(callback);
-    }
-    offProgress(callback) {
-        this.#removeListener('progress', callback);
-    }
-
-    onFullScreenChange(callback) {
-        this.#listeners.fullscreenchange.on(callback);
-    }
-    offFullScreenChange(callback) {
-        this.#removeListener('fullscreenchange', callback);
-    }
-
-    // ==================== Lifecycle ====================
-
-    /**
-     * Destroy the video player and release all resources.
-     */
+    /** Take the player away; its calls still unanswered fail. */
     destroy() {
         if (this.#destroyed) return;
         this.#destroyed = true;
         _videos.delete(this.#id);
-
-        try {
-            op_video_destroy(this.#id);
-        } catch (e) {
-            // Ignore errors during cleanup
-        }
-
-        // Clear all listeners
-        for (var key of Object.keys(this.#listeners)) {
+        command(op_video_destroy, { videoId: this.#id });
+        for (const key of Object.keys(this.#listeners)) {
             this.#listeners[key].off();
+            this.#handlers[key] = null;
         }
     }
 
-    // ==================== Internal ====================
+    onPlay(callback) { this.#listeners.play.on(callback); }
+    offPlay(callback) { this.#listeners.play.off(callback); }
+    onPause(callback) { this.#listeners.pause.on(callback); }
+    offPause(callback) { this.#listeners.pause.off(callback); }
+    onEnded(callback) { this.#listeners.ended.on(callback); }
+    offEnded(callback) { this.#listeners.ended.off(callback); }
+    onTimeUpdate(callback) { this.#listeners.timeUpdate.on(callback); }
+    offTimeUpdate(callback) { this.#listeners.timeUpdate.off(callback); }
+    onError(callback) { this.#listeners.error.on(callback); }
+    offError(callback) { this.#listeners.error.off(callback); }
+    onWaiting(callback) { this.#listeners.waiting.on(callback); }
+    offWaiting(callback) { this.#listeners.waiting.off(callback); }
+    onProgress(callback) { this.#listeners.progress.on(callback); }
+    offProgress(callback) { this.#listeners.progress.off(callback); }
 
-    /** Remove a listener for the given event type. */
-    #removeListener(type, callback) {
-        var group = this.#listeners[type];
-        if (!group) return;
-        group.off(callback);
-    }
-
-    /** Fire all listeners for the given event type. */
-    #fireListeners(type, arg) {
-        var group = this.#listeners[type];
-        if (!group) return;
-        group.trigger(arg);
-    }
-
-    /** Sync a single property to native. */
-    #syncProperty(name, value) {
-        if (this.#destroyed) return;
-        try {
-            var obj = {};
-            obj[name] = value;
-            op_video_set_property(this.#id, JSON.stringify(obj));
-        } catch (e) {
-            // Silently ignore sync errors
+    // One request of this player, `name`, answered through `api`'s hook.
+    #call(api, name, op, request) {
+        if (this.#destroyed) {
+            return Promise.reject({ errMsg: failMessage(name, "video destroyed") });
         }
-    }
-
-    /**
-     * Internal: handle event from native layer.
-     * @param {string} eventType - Event type string
-     * @param {string} dataJson - JSON payload
-     */
-    _handleEvent(eventType, dataJson) {
-        var data = {};
-        if (dataJson) {
-            try { data = JSON.parse(dataJson); } catch (e) { /* empty */ }
-        }
-
-        switch (eventType) {
-            case 'play':
-                this.#paused = false;
-                this.#fireListeners('play', data);
-                break;
-            case 'pause':
-                this.#paused = true;
-                this.#fireListeners('pause', data);
-                break;
-            case 'ended':
-                this.#paused = true;
-                this.#fireListeners('ended', data);
-                break;
-            case 'timeupdate':
-                if (data.currentTime !== undefined) {
-                    this.#currentTime = Number(data.currentTime);
-                }
-                if (data.duration !== undefined) {
-                    this.#duration = Number(data.duration);
-                }
-                this.#fireListeners('timeupdate', {
-                    position: this.#currentTime,
-                    duration: this.#duration,
-                });
-                break;
-            case 'waiting':
-                this.#fireListeners('waiting', data);
-                break;
-            case 'progress':
-                if (data.buffered !== undefined) {
-                    this.#fireListeners('progress', { buffered: Number(data.buffered) });
-                } else {
-                    this.#fireListeners('progress', data);
-                }
-                break;
-            case 'error':
-                this.#fireListeners('error', data);
-                break;
-            case 'fullscreenchange':
-                this.#fireListeners('fullscreenchange', data);
-                break;
-            default:
-                break;
-        }
+        request.videoId = this.#id;
+        return api.invoke({}, (opts, requestId) => {
+            request.requestId = requestId;
+            op(JSON.stringify(request));
+        });
     }
 }
 
+// video.onplay, .onpause, .onended, .ontimeupdate, .onerror, .onwaiting,
+// .onprogress: one handler each, as the reference documents them.
+for (const type of ["play", "pause", "ended", "timeUpdate", "error", "waiting", "progress"]) {
+    Object.defineProperty(Video.prototype, `on${type.toLowerCase()}`, {
+        get() { return _handler(this, type); },
+        set(fn) { _setHandler(this, type, fn); },
+        enumerable: false,
+        configurable: true,
+    });
+}
+
+for (const name of Object.keys(PROPERTIES)) {
+    Object.defineProperty(Video.prototype, name, {
+        get() { return _read(this, name); },
+        set(value) { _change(this, name, value); },
+        enumerable: false,
+        configurable: true,
+    });
+}
+
 /**
- * Create a Video instance.
+ * Create a video player and show it.
  *
- * @param {Object} [options={}]
- * @param {string} [options.src] - Video source URL
- * @param {number} [options.x=0] - Left position
- * @param {number} [options.y=0] - Top position
- * @param {number} [options.width=300] - Width
- * @param {number} [options.height=150] - Height
- * @param {boolean} [options.autoplay=false] - Auto-play on create
- * @param {boolean} [options.loop=false] - Loop playback
- * @param {boolean} [options.muted=false] - Muted
- * @param {number} [options.playbackRate=1.0] - Playback rate
- * @param {string} [options.objectFit='contain'] - Object fit mode
- * @param {string} [options.poster] - Poster image URL
- * @param {boolean} [options.controls=true] - Show native controls
- * @param {boolean} [options.showCenterPlayBtn=true] - Show center play button
- * @param {boolean} [options.enableProgressGesture=true] - Enable progress gesture
+ * @param {Object} options - The reference's: src (required), x, y, width,
+ *   height, poster, initialTime, playbackRate, live, objectFit, controls,
+ *   showProgress, showProgressInControlMode, backgroundColor, autoplay, loop,
+ *   muted, obeyMuteSwitch, enableProgressGesture, enablePlayGesture,
+ *   showCenterPlayBtn, underGameView, autoPauseIfNavigate, autoPauseIfOpenNative
  * @returns {Video}
  */
 function createVideo(options) {
-    var opts = options || {};
+    const opts = options || {};
+    const properties = {};
+    for (const [name, [fallback, valid]] of Object.entries(PROPERTIES)) {
+        properties[name] = valid(opts[name]) ? opts[name] : fallback;
+    }
     // From the Host's id space, not a module counter: the platform keeps its
     // players in a map that outlives this isolate, so a counter restarting at 1
     // hands the replacement runtime an id the retired one still owns -- and the
     // events of the video that is still playing would arrive at the new object.
-    var videoId = allocateHostCallbackId();
-    var createJson = JSON.stringify({
-        videoId: videoId,
-        src: opts.src !== undefined ? String(opts.src) : '',
-        x: opts.x !== undefined ? Number(opts.x) : 0,
-        y: opts.y !== undefined ? Number(opts.y) : 0,
-        width: opts.width !== undefined ? Number(opts.width) : 300,
-        height: opts.height !== undefined ? Number(opts.height) : 150,
-        autoplay: !!opts.autoplay,
-        loop: !!opts.loop,
-        muted: !!opts.muted,
-        playbackRate: (opts.playbackRate !== undefined) ? Number(opts.playbackRate) : 1.0,
-        objectFit: opts.objectFit !== undefined ? String(opts.objectFit) : 'contain',
-        poster: opts.poster !== undefined ? String(opts.poster) : '',
-        controls: (opts.controls !== undefined) ? !!opts.controls : true,
-        showCenterPlayBtn: (opts.showCenterPlayBtn !== undefined) ? !!opts.showCenterPlayBtn : true,
-        enableProgressGesture: (opts.enableProgressGesture !== undefined) ? !!opts.enableProgressGesture : true,
-    });
-
-    try {
-        op_video_create(createJson);
-    } catch (e) {
-        console.error('createVideo failed:', e);
-    }
-
-    var video = new Video(videoId, opts);
+    const videoId = allocateHostCallbackId();
+    command(op_video_create, Object.assign({ videoId }, properties));
+    const video = new Video(videoId, properties);
     _videos.set(videoId, video);
     return video;
 }
 
-/**
- * Internal: called from JsBindings to dispatch video events to the correct
- * Video instance.
- *
- * @param {number} videoId - Video instance ID
- * @param {string} eventType - Event type string
- * @param {string} dataJson - JSON-encoded event data
- */
-function _internalTriggerVideoEvent(videoId, eventType, dataJson) {
-    var video = _videos.get(videoId);
-    if (video) {
-        video._handleEvent(eventType, dataJson);
+// ==================== The host's answers and events ====================
+
+function _internalOnVideoPlayResult(json) { _playApi.settle(json); }
+function _internalOnVideoPauseResult(json) { _pauseApi.settle(json); }
+function _internalOnVideoStopResult(json) { _stopApi.settle(json); }
+function _internalOnVideoSeekResult(json) { _seekApi.settle(json); }
+function _internalOnVideoRequestFullScreenResult(json) { _requestFullScreenApi.settle(json); }
+function _internalOnVideoExitFullScreenResult(json) { _exitFullScreenApi.settle(json); }
+
+// An event's player and fields, if it is a player content holds.
+function _event(json) {
+    let event;
+    try {
+        event = JSON.parse(json);
+    } catch (_) {
+        return null;
     }
+    const video = event && typeof event === "object" ? _videos.get(event.videoId) : undefined;
+    return video === undefined ? null : [video, event];
 }
+
+function _on(type, shape) {
+    return (json) => {
+        const found = _event(json);
+        if (found) _dispatch(found[0], type, shape(found[1]));
+    };
+}
+
+const _internalOnVideoPlayEvent = _on("play", () => ({}));
+const _internalOnVideoPauseEvent = _on("pause", () => ({}));
+const _internalOnVideoEndedEvent = _on("ended", () => ({}));
+const _internalOnVideoWaitingEvent = _on("waiting", () => ({}));
+const _internalOnVideoTimeUpdateEvent = _on("timeUpdate",
+    (event) => ({ position: Number(event.position) || 0, duration: Number(event.duration) || 0 }));
+const _internalOnVideoProgressEvent = _on("progress",
+    (event) => ({ buffered: Number(event.buffered) || 0, duration: Number(event.duration) || 0 }));
+const _internalOnVideoErrorEvent = _on("error",
+    (event) => ({ errMsg: String(event.errMsg ?? "video:fail unknown error") }));
 
 export {
     Video,
     createVideo,
-    _internalTriggerVideoEvent,
+    _internalOnVideoPlayResult,
+    _internalOnVideoPauseResult,
+    _internalOnVideoStopResult,
+    _internalOnVideoSeekResult,
+    _internalOnVideoRequestFullScreenResult,
+    _internalOnVideoExitFullScreenResult,
+    _internalOnVideoPlayEvent,
+    _internalOnVideoPauseEvent,
+    _internalOnVideoEndedEvent,
+    _internalOnVideoTimeUpdateEvent,
+    _internalOnVideoErrorEvent,
+    _internalOnVideoWaitingEvent,
+    _internalOnVideoProgressEvent,
 };

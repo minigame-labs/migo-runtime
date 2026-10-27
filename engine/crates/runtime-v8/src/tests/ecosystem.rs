@@ -60,6 +60,8 @@ fn boot(host: Option<Arc<FakeEcosystem>>, vfs: Option<Arc<VirtualFS>>) -> JsRunt
 
 #[test]
 fn without_a_host_only_true_answers_are_given() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let mut runtime = boot(None, None);
     runtime
         .execute_script("<test:ecosystem-setup>", FastString::from_static(SETTLE))
@@ -108,6 +110,8 @@ fn without_a_host_only_true_answers_are_given() {
 
 #[test]
 fn a_request_reaches_the_host_by_name_and_its_files_through_the_sandbox() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let sandbox = Sandbox::new("ecosystem");
     let image = sandbox.paths.user_data_dir().join("share.png");
     std::fs::write(&image, b"png").unwrap();
@@ -162,6 +166,8 @@ fn a_request_reaches_the_host_by_name_and_its_files_through_the_sandbox() {
 
 #[test]
 fn events_reach_listeners_and_answers_go_back_to_the_host() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let host = Arc::new(FakeEcosystem {
         values: HashMap::from([("isChatTool", "true"), ("getExtConfigSync", r#"{"a":1}"#)]),
         ..Default::default()
@@ -233,6 +239,8 @@ fn post(name: &str, data: &str) -> String {
 
 #[test]
 fn the_game_service_crosses_by_class_and_member_and_frames_keep_their_bytes() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let host = Arc::new(FakeEcosystem::default());
     let mut runtime = boot(Some(host.clone()), None);
     run(
@@ -304,6 +312,8 @@ fn the_game_service_crosses_by_class_and_member_and_frames_keep_their_bytes() {
 
 #[test]
 fn a_challenge_accepted_before_the_game_listened_reaches_its_first_listener() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let host = Arc::new(FakeEcosystem::default());
     let mut runtime = boot(Some(host), None);
     let early = post(
@@ -329,6 +339,8 @@ fn a_challenge_accepted_before_the_game_listened_reaches_its_first_listener() {
 
 #[test]
 fn reports_carry_their_merged_scene_and_a_gift_opens_through_the_host() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let host = Arc::new(FakeEcosystem {
         values: HashMap::from([("StoreGift.isSupported", "true")]),
         ..Default::default()
@@ -391,6 +403,8 @@ fn reports_carry_their_merged_scene_and_a_gift_opens_through_the_host() {
 
 #[test]
 fn without_a_host_the_objects_say_so() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let mut runtime = boot(None, None);
     let checked = run(
         &mut runtime,
@@ -422,6 +436,8 @@ fn without_a_host_the_objects_say_so() {
 
 #[test]
 fn every_page_manager_is_its_own_page_and_hears_only_its_own_events() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let host = Arc::new(FakeEcosystem::default());
     let mut runtime = boot(Some(host.clone()), None);
     run(
@@ -505,6 +521,8 @@ fn every_page_manager_is_its_own_page_and_hears_only_its_own_events() {
 
 #[test]
 fn without_a_host_a_page_does_not_open_and_says_so_with_the_platform_code() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let mut runtime = boot(None, None);
     let checked = run(
         &mut runtime,

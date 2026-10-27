@@ -55,6 +55,8 @@ mod request_tests {
     /// failure said why at the top of its errMsg.
     #[test]
     fn an_aborted_task_fails_as_its_own_call_and_says_abort() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         run(
             r#"
             const answer = (api) => ({
@@ -78,6 +80,8 @@ mod request_tests {
     /// The text of a body is the text.
     #[test]
     fn a_text_body_arrives_as_text() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         run(
             r#"
             migo.request({
@@ -99,6 +103,8 @@ mod request_tests {
     /// JSON is parsed by default, and a body that is not JSON arrives as the text it is.
     #[test]
     fn a_json_body_is_parsed_and_one_that_is_not_json_stays_text() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         run(
             r#"
             migo.request({
@@ -126,6 +132,8 @@ mod request_tests {
     /// `responseType: "arraybuffer"` is an ArrayBuffer with the bytes in it.
     #[test]
     fn an_arraybuffer_body_arrives_as_an_arraybuffer() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         run(
             r#"
             migo.request({
@@ -150,6 +158,8 @@ mod request_tests {
     /// order.
     #[test]
     fn a_body_of_several_chunks_arrives_whole_and_in_order() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         run(
             r#"
             const length = 200000;
@@ -189,6 +199,8 @@ mod request_tests {
     /// `res.data.byteLength` are read without a check.
     #[test]
     fn an_empty_body_is_empty_not_null() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         run(
             r#"
             migo.request({
@@ -219,6 +231,8 @@ mod request_tests {
     /// `fail` must not run, and `complete` runs once.
     #[test]
     fn a_success_callback_that_throws_does_not_turn_the_request_into_a_failure() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         run(
             r#"
             migo.request({
@@ -239,6 +253,8 @@ mod request_tests {
     /// runs.
     #[test]
     fn a_fail_callback_that_throws_still_runs_complete_once() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         run(
             r#"
             migo.request({
@@ -258,6 +274,8 @@ mod request_tests {
     /// request helper does not wrap every call in a try.
     #[test]
     fn a_call_that_cannot_make_a_request_fails_through_its_callbacks() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         run(
             r#"
             const attempt = (label, options) => {

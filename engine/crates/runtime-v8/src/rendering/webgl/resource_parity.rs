@@ -67,6 +67,8 @@ fn repository() -> PathBuf {
 #[test]
 #[ignore = "needs the producer's packets from node; run through scripts/test-performance-plus-engine-contract.sh"]
 fn the_producer_s_resource_records_decode_to_the_commands_the_ops_build() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     compare_fixture("MIGO_RESOURCE_PARITY_DIR", "webgl-resource-calls.js", 60);
 }
 
@@ -80,6 +82,8 @@ fn the_producer_s_resource_records_decode_to_the_commands_the_ops_build() {
 #[test]
 #[ignore = "needs the producer's packets from node; run through scripts/test-performance-plus-engine-contract.sh"]
 fn the_producer_s_raw_records_decode_to_the_commands_the_ops_build() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     compare_fixture("MIGO_RAW_PARITY_DIR", "webgl-raw-path-calls.js", 40);
 }
 
@@ -94,6 +98,8 @@ fn the_producer_s_raw_records_decode_to_the_commands_the_ops_build() {
 #[test]
 #[ignore = "needs the producer's packets from node; run through scripts/test-performance-plus-engine-contract.sh"]
 fn the_producer_s_canvas_source_uploads_decode_to_the_commands_the_ops_build() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     compare_fixture(
         "MIGO_CANVAS_SOURCE_PARITY_DIR",
         "webgl-canvas-source-calls.js",

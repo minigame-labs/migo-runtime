@@ -315,67 +315,53 @@ final class NativeBridge {
 
     // ==================== Recorder Callbacks ====================
 
-    /**
-     * Callback when a recorder event occurs (start, pause, resume, stop, error, interruption).
-     *
-     * @param sessionId   The session ID
-     * @param eventType   Event type string
-     * @param jsonPayload JSON-encoded event data
-     */
-    static native void onRecorderEvent(
-            int sessionId, long generation, String eventType, String jsonPayload);
+    /** What happened to a recording, by event number, with its {@code recordingId}. */
+    static native void onRecorderEvent(int sessionId, int event, String payloadJson);
 
-    /**
-     * Callback when recorder frame data is available.
-     *
-     * @param sessionId   The session ID
-     * @param frameData   Raw audio frame bytes
-     * @param frameLength Number of valid bytes at the start of {@code frameData}
-     * @param isLastFrame Whether this is the last frame before stop
-     */
+    /** One frame of recording {@code recordingId}. */
     static native void onRecorderFrameData(
-            int sessionId, long generation, byte[] frameData, int frameLength,
+            int sessionId, int recordingId, byte[] frameData, int frameLength,
             boolean isLastFrame);
 
     // ==================== Camera Callbacks ====================
 
-    /**
-     * Callback when a camera event occurs (stop, error, authCancel, timeoutCallback).
-     *
-     * @param sessionId   The session ID
-     * @param cameraId    The camera instance ID
-     * @param eventType   Event type string
-     * @param jsonPayload JSON-encoded event data
-     */
-    static native void onCameraEvent(
-            int sessionId, long generation, int cameraId, String eventType, String jsonPayload);
+    /** What happened to camera {@code cameraId} on its own, by event number. */
+    static native void onCameraEvent(int sessionId, int cameraId, int event);
+
+    /** The answer to a camera call, by method number. */
+    static native void onCameraResult(int sessionId, int method, String resultJson);
 
     /**
      * Callback when camera frame data is available.
      *
      * <p>The three YUV_420_888 plane buffers are passed by reference (direct
-     * ByteBuffers) together with each plane's window; native code copies the
-     * {@code [offset, offset + length)} bytes synchronously. The buffers must
-     * stay valid (their Image open) for the duration of this call.
+     * ByteBuffers) together with each plane's window and strides; native code
+     * reads the {@code [offset, offset + length)} bytes through the strides
+     * synchronously, into the RGBA content is given. The buffers must stay
+     * valid (their Image open) for the duration of this call.
      *
-     * @param sessionId The session ID
-     * @param cameraId  The camera instance ID
-     * @param yBuffer   Direct Y-plane ByteBuffer
-     * @param yOffset   Y-plane window start (buffer position)
-     * @param yLength   Y-plane window length (buffer remaining)
-     * @param uBuffer   Direct U-plane ByteBuffer
-     * @param uOffset   U-plane window start
-     * @param uLength   U-plane window length
-     * @param vBuffer   Direct V-plane ByteBuffer
-     * @param vOffset   V-plane window start
-     * @param vLength   V-plane window length
-     * @param width     Frame width in pixels
-     * @param height    Frame height in pixels
+     * @param sessionId     The session ID
+     * @param cameraId      The camera instance ID
+     * @param yBuffer       Direct Y-plane ByteBuffer
+     * @param yOffset       Y-plane window start (buffer position)
+     * @param yLength       Y-plane window length (buffer remaining)
+     * @param yRowStride    Y-plane row stride
+     * @param uBuffer       Direct U-plane ByteBuffer
+     * @param uOffset       U-plane window start
+     * @param uLength       U-plane window length
+     * @param vBuffer       Direct V-plane ByteBuffer
+     * @param vOffset       V-plane window start
+     * @param vLength       V-plane window length
+     * @param uvRowStride   U- and V-plane row stride
+     * @param uvPixelStride U- and V-plane pixel stride
+     * @param width         Frame width in pixels
+     * @param height        Frame height in pixels
      */
     static native void onCameraFrameData(int sessionId, long generation, int cameraId,
-            ByteBuffer yBuffer, int yOffset, int yLength,
+            ByteBuffer yBuffer, int yOffset, int yLength, int yRowStride,
             ByteBuffer uBuffer, int uOffset, int uLength,
             ByteBuffer vBuffer, int vOffset, int vLength,
+            int uvRowStride, int uvPixelStride,
             int width, int height);
 
     // ==================== Bluetooth Callbacks ====================
@@ -501,6 +487,19 @@ final class NativeBridge {
      * {@code {error, errCode}}, stamped with the request's id.
      */
     static native void onBluetoothResult(int sessionId, int method, String resultJson);
+
+    /**
+     * Answers a peripheral request: {@code method} is its number in the
+     * host-service contract ({@code BlePeripheral.Method#ordinal}), the JSON its
+     * result or {@code {error, errCode}}, stamped with the request's id.
+     */
+    static native void onBlePeripheralResult(int sessionId, int method, String resultJson);
+
+    /**
+     * What a central did to a peripheral server, by event number
+     * ({@code BlePeripheral.EVENT_*}), with its {@code {"serverId", ...}}.
+     */
+    static native void onBlePeripheralEvent(int sessionId, int event, String payloadJson);
 
     // ==================== Image API Callbacks ====================
     //
@@ -713,6 +712,8 @@ final class NativeBridge {
 
     static native void onShowShareImageMenuResult(int sessionId, String resultJson);
 
+    static native void onShareGameRecordingResult(int sessionId, String resultJson);
+
     // ==================== Navigate Callback ====================
 
     /**
@@ -743,16 +744,11 @@ final class NativeBridge {
 
     // ==================== Video Callbacks ====================
 
-    /**
-     * Callback when a video player event occurs (play, pause, ended, error, timeupdate, etc.).
-     *
-     * @param sessionId The session ID
-     * @param videoId   The video player instance ID
-     * @param eventType Event type string
-     * @param dataJson  JSON-encoded event data
-     */
-    static native void onVideoEvent(
-            int sessionId, long generation, int videoId, String eventType, String dataJson);
+    /** What a player did, by event number, with its {@code videoId}. */
+    static native void onVideoEvent(int sessionId, int event, String payloadJson);
+
+    /** The answer to a video call, by method number. */
+    static native void onVideoResult(int sessionId, int method, String resultJson);
 
     // ==================== Script Execution ====================
 

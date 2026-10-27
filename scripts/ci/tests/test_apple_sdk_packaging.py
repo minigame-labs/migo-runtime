@@ -96,8 +96,14 @@ class SDKPackaging(unittest.TestCase):
         # before building -- and a fixture that omitted this would exercise a
         # different code path than the one that ships.
         (self.root/"scripts/lib").mkdir()
-        for name in ("v8-materialise.sh", "python-cmd.sh", "runtime_ops.py", "runtime_modules.py"):
+        for name in ("v8-materialise.sh", "python-cmd.sh", "runtime_ops.py", "runtime_modules.py", "v8_cohort.py"):
             shutil.copy2(ROOT/"scripts/lib"/name, self.root/"scripts/lib"/name)
+        # What the materialiser's cohort check reads: the V8 version Cargo
+        # selects, the four native locks that must agree with it, and the Rust
+        # pointer-compression policy a component's ABI is held to.
+        for name in ("engine/Cargo.lock", "engine/Cargo.toml", "engine/crates/runtime-v8/Cargo.toml"):
+            (self.root/name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(ROOT/name, self.root/name)
         # The producer's engine is generated during assembly from the engine's
         # own JavaScript and the op-boundary contract -- real inputs, because a
         # stubbed generator would make "the bundle carries the engine" a claim
@@ -123,6 +129,10 @@ class SDKPackaging(unittest.TestCase):
         shutil.copy2(ROOT/"platforms/apple/Package.swift", self.root/"platforms/apple/Package.swift")
         (self.root/"contracts/artifact-manifest").mkdir()
         shutil.copy2(ROOT/"contracts/artifact-manifest/apple-angle.lock.json", self.root/"contracts/artifact-manifest/apple-angle.lock.json")
+        for platform in ("android", "apple", "ohos", "windows"):
+            name = f"contracts/artifact-manifest/{platform}-v8.lock.json"
+            shutil.copy2(ROOT/name, self.root/name)
+        apple_v8 = json.loads((ROOT/"contracts/artifact-manifest/apple-v8.lock.json").read_text())
         (self.root/"engine").mkdir(exist_ok=True)
         # A V8 component per darwin triple: three files and two hashes that match
         # them, which is exactly what scripts/lib/v8-materialise.sh checks. Mocked
@@ -138,6 +148,13 @@ class SDKPackaging(unittest.TestCase):
             (v8/"src_binding.rs").write_bytes(binding)
             (v8/"component-manifest.json").write_text(json.dumps({
                 "schema": "migo-v8-component-manifest/v1",
+                # The cohort the locks select, and the uncompressed pointers a
+                # darwin component carries.
+                "target": {"triple": triple},
+                "runtime": {
+                    **{field: apple_v8[field] for field in ("rusty_v8_version", "rusty_v8_revision", "v8_revision")},
+                    "normalized_gn_args": ["v8_enable_pointer_compression=false"],
+                },
                 "hashes": {
                     "archive": hashlib.sha256(archive).hexdigest(),
                     "rust_binding": hashlib.sha256(binding).hexdigest(),

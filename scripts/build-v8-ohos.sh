@@ -204,6 +204,10 @@ GN_ARGS+=" use_glib=false is_cfi=false"
 GN_ARGS+=" use_thin_lto=false chrome_pgo_phase=0"
 GN_ARGS+=" exclude_unwind_tables=true"
 GN_ARGS+=" v8_enable_sandbox=false"
+GN_ARGS+=" v8_enable_pointer_compression=false"
+GN_ARGS+=" rusty_v8_enable_simdutf=true"
+GN_ARGS+=" icu_use_data_file=true icu_use_stub_data=true"
+GN_ARGS+=" icu_copy_icudata_to_root_build_dir=true v8_depend_on_icu_data_file=true"
 GN_ARGS+=" v8_monolithic=true v8_monolithic_for_shared_library=true"
 GN_ARGS+=" v8_use_external_startup_data=false"
 # PartitionAlloc's shim hijacks malloc/free process-wide. An engine embedded in
@@ -268,7 +272,7 @@ fi
 BUILD_LOG="${TMPDIR:-/tmp}/migo-v8-ohos-build-${ARCH}.$$.log"
 info "building (log: $BUILD_LOG)"
 info "GN_ARGS = $GN_ARGS"
-if ! (cd "$RUSTY_V8_SRC" && cargo build --release --target "$RUST_TRIPLE" > "$BUILD_LOG" 2>&1); then
+if ! (cd "$RUSTY_V8_SRC" && cargo build --release --target "$RUST_TRIPLE" --features simdutf > "$BUILD_LOG" 2>&1); then
     err "build failed. last failing step:"
     grep -m1 -A20 "FAILED:" "$BUILD_LOG" >&2 || tail -30 "$BUILD_LOG" >&2
     exit 1

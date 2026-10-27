@@ -30,9 +30,14 @@ struct Session {
 
 impl Session {
     fn new(policy: NetworkPolicy) -> Self {
-        let client =
-            super::super::client::create_policy_http_client("migo", false, &policy, "fetch")
-                .expect("a client");
+        let client = super::super::client::create_policy_http_client(
+            "migo",
+            false,
+            &policy,
+            "fetch",
+            IoPools::new(4242),
+        )
+        .expect("a client");
         Self::with_client(policy, client)
     }
 
@@ -45,7 +50,13 @@ impl Session {
             super::super::http::HttpClientBuilder,
         ) -> super::super::http::HttpClientBuilder,
     ) -> Self {
-        let builder = super::super::client::policy_client_builder("migo", false, &policy, "fetch");
+        let builder = super::super::client::policy_client_builder(
+            "migo",
+            false,
+            &policy,
+            "fetch",
+            IoPools::new(4242),
+        );
         let client = configure(builder).build().expect("a client");
         Self::with_client(policy, client)
     }

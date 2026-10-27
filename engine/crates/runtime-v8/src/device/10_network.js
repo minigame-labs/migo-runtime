@@ -9,7 +9,20 @@ import { wrapAsync, createListenerGroup } from "ext:host_v8_base/02_async.js";
 const _listeners = createListenerGroup('onNetworkStatusChange');
 const _weakNetListeners = createListenerGroup('onNetworkWeakChange');
 let _isMonitoring = false;
+// What content's listeners were last told, or held when they began listening: a
+// report tells each group only of a change in what that group hears about.
+let _lastStatus = null;
 let _lastWeakNet = false;
+
+// The host's last report, or null when there is none to read.
+function _report() {
+    try {
+        const res = JSON.parse(op_get_network_type());
+        return res && !res._error ? res : null;
+    } catch (e) {
+        return null;
+    }
+}
 
 function _updateMonitoring() {
     const shouldMonitor = _listeners.size() > 0 || _weakNetListeners.size() > 0;
@@ -17,13 +30,9 @@ function _updateMonitoring() {
         try {
             op_start_network_monitoring();
             _isMonitoring = true;
-            // Initialize _lastWeakNet
-            try {
-                const res = JSON.parse(op_get_network_type());
-                _lastWeakNet = res.weakNet === true;
-            } catch (e) {
-                // Ignore
-            }
+            const res = _report();
+            _lastStatus = res ? { isConnected: res.isConnected, networkType: res.networkType } : null;
+            _lastWeakNet = res ? res.weakNet === true : false;
         } catch (e) {
             console.error('Failed to start network monitoring:', e);
         }
@@ -61,36 +70,22 @@ function offNetworkWeakChange(listener) {
     _updateMonitoring();
 }
 
+// The host's report changed. Its listeners hear what changed for them: a status
+// change when the connection or its type did, a weak-network change when the host's
+// judgement did. Every report used to reach the status listeners, changed or not, and
+// a change in the judgement alone reached nobody.
 function _internalTriggerNetworkStatusChange(isConnected, networkType) {
-    // 1. Trigger standard network status change listeners
-    if (_listeners.size() > 0) {
+    const res = _report();
+    const statusChanged = _lastStatus === null ||
+        _lastStatus.isConnected !== isConnected || _lastStatus.networkType !== networkType;
+    _lastStatus = { isConnected: isConnected, networkType: networkType };
+    if (statusChanged) {
         _listeners.trigger({ isConnected: isConnected, networkType: networkType });
     }
-
-    // 2. Trigger weak network change listeners
-    // We fetch the latest status to get weakNet field which is not passed in the event arguments
-    if (_weakNetListeners.size() > 0 || _isMonitoring) {
-        try {
-            const res = JSON.parse(op_get_network_type());
-            // Ensure we handle potential error response structure if op fails silently or returns error obj
-            if (res && !res._error) {
-                const currentWeakNet = res.weakNet === true;
-                
-                if (currentWeakNet !== _lastWeakNet) {
-                    _lastWeakNet = currentWeakNet;
-                    
-                    if (_weakNetListeners.size() > 0) {
-                        const weakData = {
-                            weakNet: currentWeakNet, 
-                            networkType: res.networkType 
-                        };
-                        _weakNetListeners.trigger(weakData);
-                    }
-                }
-            }
-        } catch (e) {
-            console.error('Error checking weak net status:', e);
-        }
+    const weakNet = res ? res.weakNet === true : _lastWeakNet;
+    if (weakNet !== _lastWeakNet) {
+        _lastWeakNet = weakNet;
+        _weakNetListeners.trigger({ weakNet: weakNet, networkType: networkType });
     }
 }
 

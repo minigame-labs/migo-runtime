@@ -21,10 +21,14 @@ extension MigoHostServiceID {
     public static let window = Self(rawValue: 16)
     public static let ecosystem = Self(rawValue: 17)
     public static let update = Self(rawValue: 18)
+    public static let camera = Self(rawValue: 19)
+    public static let recorder = Self(rawValue: 20)
+    public static let video = Self(rawValue: 21)
+    public static let blePeripheral = Self(rawValue: 22)
 
     /// Every service this SDK knows, in number order.
     public static let all: [Self] = [
-        .ad, .payment, .auth, .share, .navigate, .subpackage, .permission, .setting, .interaction, .clipboard, .scanCode, .location, .image, .motion, .screen, .bluetooth, .window, .ecosystem, .update,
+        .ad, .payment, .auth, .share, .navigate, .subpackage, .permission, .setting, .interaction, .clipboard, .scanCode, .location, .image, .motion, .screen, .bluetooth, .window, .ecosystem, .update, .camera, .recorder, .video, .blePeripheral,
     ]
 
     /// `ad`'s method and event numbers, as `include/migo/host_services.h` documents them.
@@ -80,6 +84,8 @@ extension MigoHostServiceID {
         public static let setShareMenu: UInt32 = 3
         /// `menu_share_reply`: a command, unanswered.
         public static let menuShareReply: UInt32 = 4
+        /// `share_game_recording`: a call, answered once.
+        public static let shareGameRecording: UInt32 = 5
 
         /// The service's events, for `postHostServiceEvent`.
         public enum Event {
@@ -325,6 +331,115 @@ extension MigoHostServiceID {
         /// The service's events, for `postHostServiceEvent`.
         public enum Event {
             public static let state: UInt32 = 0
+        }
+    }
+
+    /// `camera`'s method and event numbers, as `include/migo/host_services.h` documents them.
+    public enum Camera {
+        /// `create`: a call, answered once.
+        public static let create: UInt32 = 0
+        /// `destroy`: a command, unanswered.
+        public static let destroy: UInt32 = 1
+        /// `set`: a command, unanswered.
+        public static let set: UInt32 = 2
+        /// `take_photo`: a call, answered once.
+        public static let takePhoto: UInt32 = 3
+        /// `start_record`: a call, answered once.
+        public static let startRecord: UInt32 = 4
+        /// `stop_record`: a call, answered once.
+        public static let stopRecord: UInt32 = 5
+        /// `set_zoom`: a call, answered once.
+        public static let setZoom: UInt32 = 6
+        /// `listen_frame_change`: a command, unanswered.
+        public static let listenFrameChange: UInt32 = 7
+        /// `close_frame_change`: a command, unanswered.
+        public static let closeFrameChange: UInt32 = 8
+
+        /// The service's events, for `postHostServiceEvent`.
+        public enum Event {
+            public static let stop: UInt32 = 0
+            public static let authCancel: UInt32 = 1
+        }
+    }
+
+    /// `recorder`'s method and event numbers, as `include/migo/host_services.h` documents them.
+    public enum Recorder {
+        /// `start`: a command, unanswered.
+        public static let start: UInt32 = 0
+        /// `pause`: a command, unanswered.
+        public static let pause: UInt32 = 1
+        /// `resume`: a command, unanswered.
+        public static let resume: UInt32 = 2
+        /// `stop`: a command, unanswered.
+        public static let stop: UInt32 = 3
+
+        /// The service's events, for `postHostServiceEvent`.
+        public enum Event {
+            public static let start: UInt32 = 0
+            public static let pause: UInt32 = 1
+            public static let resume: UInt32 = 2
+            public static let stop: UInt32 = 3
+            public static let error: UInt32 = 4
+            public static let interruptionBegin: UInt32 = 5
+            public static let interruptionEnd: UInt32 = 6
+        }
+    }
+
+    /// `video`'s method and event numbers, as `include/migo/host_services.h` documents them.
+    public enum Video {
+        /// `create`: a command, unanswered.
+        public static let create: UInt32 = 0
+        /// `destroy`: a command, unanswered.
+        public static let destroy: UInt32 = 1
+        /// `set`: a command, unanswered.
+        public static let set: UInt32 = 2
+        /// `play`: a call, answered once.
+        public static let play: UInt32 = 3
+        /// `pause`: a call, answered once.
+        public static let pause: UInt32 = 4
+        /// `stop`: a call, answered once.
+        public static let stop: UInt32 = 5
+        /// `seek`: a call, answered once.
+        public static let seek: UInt32 = 6
+        /// `request_full_screen`: a call, answered once.
+        public static let requestFullScreen: UInt32 = 7
+        /// `exit_full_screen`: a call, answered once.
+        public static let exitFullScreen: UInt32 = 8
+
+        /// The service's events, for `postHostServiceEvent`.
+        public enum Event {
+            public static let play: UInt32 = 0
+            public static let pause: UInt32 = 1
+            public static let ended: UInt32 = 2
+            public static let timeUpdate: UInt32 = 3
+            public static let error: UInt32 = 4
+            public static let waiting: UInt32 = 5
+            public static let progress: UInt32 = 6
+        }
+    }
+
+    /// `ble_peripheral`'s method and event numbers, as `include/migo/host_services.h` documents them.
+    public enum BlePeripheral {
+        /// `create_server`: a call, answered once.
+        public static let createServer: UInt32 = 0
+        /// `add_service`: a call, answered once.
+        public static let addService: UInt32 = 1
+        /// `remove_service`: a call, answered once.
+        public static let removeService: UInt32 = 2
+        /// `start_advertising`: a call, answered once.
+        public static let startAdvertising: UInt32 = 3
+        /// `stop_advertising`: a call, answered once.
+        public static let stopAdvertising: UInt32 = 4
+        /// `write_characteristic_value`: a call, answered once.
+        public static let writeCharacteristicValue: UInt32 = 5
+
+        /// The service's events, for `postHostServiceEvent`.
+        public enum Event {
+            public static let characteristicReadRequest: UInt32 = 0
+            public static let characteristicWriteRequest: UInt32 = 1
+            public static let characteristicSubscribed: UInt32 = 2
+            public static let characteristicUnsubscribed: UInt32 = 3
+            public static let connectionStateChanged: UInt32 = 4
         }
     }
 }

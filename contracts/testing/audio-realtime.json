@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "package": "libclang-rt-23-dev",
+  "version": "1:23.1.5~++20261023090852+395ba2c4d274-1~exp1~20261023090919.90",
+  "url": "https://apt.llvm.org/noble/pool/main/l/llvm-toolchain-23/libclang-rt-23-dev_23.1.5~++20261023090852+395ba2c4d274-1~exp1~20261023090919.90_amd64.deb",
+  "bytes": 4355628,
+  "sha256": "a43266990eebf2d0a7a930d3e3f195ca21c4c4fbb29b243cea14a735316b0865",
+  "archive": {
+    "path": "usr/lib/llvm-23/lib/clang/23/lib/linux/libclang_rt.rtsan-x86_64.a",
+    "sha256": "ccced14f58b2848039b1753e9904f7f10be5279d47f3eadc9d82b5b86f1b523c",
+    "bytes": 1255312
+  },
+  "rust_toolchain": "1.95.0",
+  "std_source_sha256": {
+    "thread/thread.rs": "d011159a57f3501648af6f7010b8b19bdf6430a1725af87847a8753dcc718539",
+    "sys/sync/thread_parking/mod.rs": "c8c6888503b01e52396760ec4a76e65a23445958bfa0ce83af67ae8f660b3042",
+    "sys/sync/thread_parking/futex.rs": "13617a66b7684288ef3c81e582d17f83948d3016f8210b857cfe15b12fd7ce86",
+    "sys/pal/unix/futex.rs": "7a3649b2fea96ff61773a91aee306e08ed35c552fe7a2f4d6deac47361a27785"
+  },
+  "scope": "Test-only Linux x86_64 allocator/lock interception plus complete callback syscall trace. Not a product dependency or hard RT proof."
+}

@@ -109,18 +109,13 @@ const NATIVE_SENSORS: &[JniMethod] = methods![
 const NATIVE_MEDIA: &[JniMethod] = methods![
     ("onAudioInterruptionBegin", "(I)V"),
     ("onAudioInterruptionEnd", "(I)V"),
-    (
-        "onRecorderEvent",
-        "(IJLjava/lang/String;Ljava/lang/String;)V"
-    ),
-    ("onRecorderFrameData", "(IJ[BIZ)V"),
-    (
-        "onCameraEvent",
-        "(IJILjava/lang/String;Ljava/lang/String;)V"
-    ),
+    ("onRecorderEvent", "(IILjava/lang/String;)V"),
+    ("onRecorderFrameData", "(II[BIZ)V"),
+    ("onCameraEvent", "(III)V"),
+    ("onCameraResult", "(IILjava/lang/String;)V"),
     (
         "onCameraFrameData",
-        "(IJILjava/nio/ByteBuffer;IILjava/nio/ByteBuffer;IILjava/nio/ByteBuffer;IIII)V"
+        "(IJILjava/nio/ByteBuffer;IIILjava/nio/ByteBuffer;IILjava/nio/ByteBuffer;IIIIII)V"
     ),
     ("onSaveImageToPhotosAlbumResult", "(ILjava/lang/String;)V"),
     ("onPreviewImageResult", "(ILjava/lang/String;)V"),
@@ -129,13 +124,16 @@ const NATIVE_MEDIA: &[JniMethod] = methods![
     ("onChooseImageResult", "(ILjava/lang/String;)V"),
     ("onChooseMessageFileResult", "(ILjava/lang/String;)V"),
     ("onChooseMediaResult", "(ILjava/lang/String;)V"),
-    ("onVideoEvent", "(IJILjava/lang/String;Ljava/lang/String;)V"),
+    ("onVideoEvent", "(IILjava/lang/String;)V"),
+    ("onVideoResult", "(IILjava/lang/String;)V"),
 ];
 
 const NATIVE_CONNECTIVITY: &[JniMethod] = methods![
     ("onOpenSystemBluetoothSetting", "(III)V"),
     ("onOpenAppAuthorizeSetting", "(III)V"),
     ("onBluetoothResult", "(IILjava/lang/String;)V"),
+    ("onBlePeripheralResult", "(IILjava/lang/String;)V"),
+    ("onBlePeripheralEvent", "(IILjava/lang/String;)V"),
     ("onBluetoothAdapterStateChange", "(IZZ)V"),
     ("onBluetoothDeviceFound", "(ILjava/lang/String;)V"),
     ("onBeaconUpdate", "(ILjava/lang/String;)V"),
@@ -158,6 +156,7 @@ const NATIVE_COMMERCE: &[JniMethod] = methods![
     ("onShareAppMessageResult", "(ILjava/lang/String;)V"),
     ("onShareMessageToFriendResult", "(ILjava/lang/String;)V"),
     ("onShowShareImageMenuResult", "(ILjava/lang/String;)V"),
+    ("onShareGameRecordingResult", "(ILjava/lang/String;)V"),
     ("onShareMenuEvent", "(ILjava/lang/String;)V"),
     ("onAdEvent", "(ILjava/lang/String;)V"),
     ("onMidasPaymentResult", "(ILjava/lang/String;)V"),
@@ -242,26 +241,20 @@ const JAVA_SENSORS: &[JniMethod] = methods![
 ];
 
 const JAVA_MEDIA: &[JniMethod] = methods![
-    ("setInnerAudioOption", "(IZZZ)V"),
     ("getAvailableAudioSources", "(I)Ljava/lang/String;"),
     ("recorderStart", "(ILjava/lang/String;)V"),
-    ("recorderPause", "(I)V"),
-    ("recorderResume", "(I)V"),
-    ("recorderStop", "(I)V"),
-    ("cameraCreate", "(ILjava/lang/String;)Ljava/lang/String;"),
-    ("cameraDestroy", "(II)V"),
-    ("cameraTakePhotoAsync", "(IILjava/lang/String;)V"),
-    (
-        "cameraStartRecord",
-        "(ILjava/lang/String;)Ljava/lang/String;"
-    ),
-    (
-        "cameraStopRecord",
-        "(ILjava/lang/String;)Ljava/lang/String;"
-    ),
-    ("cameraSetZoom", "(ILjava/lang/String;)Ljava/lang/String;"),
-    ("cameraListenFrameChange", "(II)V"),
-    ("cameraCloseFrameChange", "(II)V"),
+    ("recorderPause", "(ILjava/lang/String;)V"),
+    ("recorderResume", "(ILjava/lang/String;)V"),
+    ("recorderStop", "(ILjava/lang/String;)V"),
+    ("cameraCreate", "(ILjava/lang/String;)V"),
+    ("cameraDestroy", "(ILjava/lang/String;)V"),
+    ("cameraSet", "(ILjava/lang/String;)V"),
+    ("cameraTakePhoto", "(ILjava/lang/String;)V"),
+    ("cameraStartRecord", "(ILjava/lang/String;)V"),
+    ("cameraStopRecord", "(ILjava/lang/String;)V"),
+    ("cameraSetZoom", "(ILjava/lang/String;)V"),
+    ("cameraListenFrameChange", "(ILjava/lang/String;)V"),
+    ("cameraCloseFrameChange", "(ILjava/lang/String;)V"),
     ("imageSaveToPhotosAlbum", "(ILjava/lang/String;)V"),
     ("imagePreviewMedia", "(ILjava/lang/String;)V"),
     ("imagePreviewImage", "(ILjava/lang/String;)V"),
@@ -269,15 +262,15 @@ const JAVA_MEDIA: &[JniMethod] = methods![
     ("imageChooseMessageFile", "(ILjava/lang/String;)V"),
     ("imageChooseImage", "(ILjava/lang/String;)V"),
     ("imageChooseMedia", "(ILjava/lang/String;)V"),
-    ("videoCreate", "(ILjava/lang/String;)Ljava/lang/String;"),
-    ("videoPlay", "(II)V"),
-    ("videoPause", "(II)V"),
-    ("videoStop", "(II)V"),
+    ("videoCreate", "(ILjava/lang/String;)V"),
+    ("videoDestroy", "(ILjava/lang/String;)V"),
+    ("videoSet", "(ILjava/lang/String;)V"),
+    ("videoPlay", "(ILjava/lang/String;)V"),
+    ("videoPause", "(ILjava/lang/String;)V"),
+    ("videoStop", "(ILjava/lang/String;)V"),
     ("videoSeek", "(ILjava/lang/String;)V"),
-    ("videoRequestFullscreen", "(ILjava/lang/String;)V"),
-    ("videoExitFullscreen", "(II)V"),
-    ("videoSetProperty", "(ILjava/lang/String;)V"),
-    ("videoDestroy", "(II)V"),
+    ("videoRequestFullScreen", "(ILjava/lang/String;)V"),
+    ("videoExitFullScreen", "(ILjava/lang/String;)V"),
 ];
 
 const JAVA_CONNECTIVITY: &[JniMethod] = methods![
@@ -313,6 +306,15 @@ const JAVA_CONNECTIVITY: &[JniMethod] = methods![
     ("bleGetDeviceRSSI", "(ILjava/lang/String;)V"),
     ("bleSetMTU", "(ILjava/lang/String;)V"),
     ("bleGetMTU", "(ILjava/lang/String;)V"),
+    ("blePeripheralCreateServer", "(ILjava/lang/String;)V"),
+    ("blePeripheralAddService", "(ILjava/lang/String;)V"),
+    ("blePeripheralRemoveService", "(ILjava/lang/String;)V"),
+    ("blePeripheralStartAdvertising", "(ILjava/lang/String;)V"),
+    ("blePeripheralStopAdvertising", "(ILjava/lang/String;)V"),
+    (
+        "blePeripheralWriteCharacteristicValue",
+        "(ILjava/lang/String;)V"
+    ),
     ("gameLogReport", "(ILjava/lang/String;)V"),
     ("authLogin", "(ILjava/lang/String;)V"),
     ("authCheckSession", "(ILjava/lang/String;)V"),
@@ -328,6 +330,7 @@ const JAVA_COMMERCE: &[JniMethod] = methods![
     ("shareAppMessage", "(ILjava/lang/String;)V"),
     ("shareMessageToFriend", "(ILjava/lang/String;)V"),
     ("showShareImageMenu", "(ILjava/lang/String;)V"),
+    ("shareGameRecording", "(ILjava/lang/String;)V"),
     ("shareMenuChanged", "(ILjava/lang/String;)V"),
     ("shareMenuReply", "(ILjava/lang/String;)V"),
     (
@@ -491,8 +494,14 @@ mod tests {
         // (`onPointerLockChanged`, `onWindowStateChanged`). A physical keyboard and
         // gamepads add +3 native, Core (`onKeyEvent`, `onGamepadConnection`,
         // `onGamepadState`). The host's package updates add +1 native, System
-        // (`onUpdateEvent`).
-        assert_eq!(native.len(), 87, "full NativeBridge surface changed");
+        // (`onUpdateEvent`). Camera requests the SDK answers once they have
+        // happened add +1 native (`onCameraResult`, one for all of them, keyed
+        // by method number). Video calls answered the same way add +1 native
+        // (`onVideoResult`). This device as a BLE peripheral adds +2 native,
+        // Connectivity (`onBlePeripheralResult`, `onBlePeripheralEvent`).
+        // Sharing the game's recording adds +1 native, Commerce
+        // (`onShareGameRecordingResult`).
+        assert_eq!(native.len(), 92, "full NativeBridge surface changed");
         // Runtime-generation fencing adds +2 Java (`beginRuntimeRestart`,
         // `completeRuntimeRestart`), both Core: every profile restarts.
         // Concurrent-session correctness removes -1 Java (`getCacheDirPath`,
@@ -513,8 +522,13 @@ mod tests {
         // +1 Java (`getHostAppInfoJson`). The host's package updates add +2
         // Java, System (`updateAvailable`, `applyUpdate`). Returning to the
         // mini program that opened this one adds +1 Java, Connectivity
-        // (`navigateBackMiniProgram`).
-        assert_eq!(java.len(), 147, "full NativeExports surface changed");
+        // (`navigateBackMiniProgram`). `setInnerAudioOption` is gone, -1 Java,
+        // Media: what the option leaves the platform is nothing Android does.
+        // A camera's properties content may set add +1 Java, Media
+        // (`cameraSet`). This device as a BLE peripheral adds +6 Java,
+        // Connectivity (`blePeripheral*`, one per request). Sharing the game's
+        // recording adds +1 Java, Commerce (`shareGameRecording`).
+        assert_eq!(java.len(), 154, "full NativeExports surface changed");
         assert_unique(&native);
         assert_unique(&java);
     }

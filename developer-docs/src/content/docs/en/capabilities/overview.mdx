@@ -23,6 +23,7 @@ import { CardGrid, LinkCard } from '@astrojs/starlight/components';
 A **capability** in Migo is the layer between **content calling `migo.*`** and the host's actual implementation. The engine never fabricates system capabilities the host does not provide — an unregistered capability returns an explicit "not supported" instead of pretending to succeed. Four categories: input events, the soft keyboard, device capabilities, and Android handlers. Dedicated pages:
 
 <CardGrid>
+  <LinkCard title="API platform support" href="/docs/en/capabilities/api-support/" description="Who answers each API of the common mini-game platform on each platform, whether conformance testing verified it, and what the host provides; rendered from the contracts at build time." />
   <LinkCard title="Commerce: Ads" href="/docs/en/capabilities/commerce/ads/" description="The SDK is already delivered to content; the host calls the other end. Rewarded video settled fallback and callback dispatch are all covered here." />
   <LinkCard title="Commerce: Payment" href="/docs/en/capabilities/commerce/payment/" description="Midas/Android payment handler contract and fallback behavior when isMidasPaymentSupported defaults to false." />
   <LinkCard title="Platform Services" href="/docs/en/capabilities/services/auth/" description="Login/auth, share, settings, permissions, subpackages, logging, mini-program navigation — contracts and fallbacks for seven platform handlers." />
@@ -65,7 +66,7 @@ Vibration, keeping the screen on, the game log, the network and the battery — 
 | Content asks the host to act | `MigoHostCallbacks.on_vibrate` | `vibrateShort` / `vibrateLong` | not supported |
 | Content asks the host to act | `MigoHostCallbacks.on_keep_screen_on` | `setKeepScreenOn` | not supported |
 | Content asks the host to act | `MigoHostCallbacks.on_game_log` | `getGameLogManager().log` | not supported |
-| The host reports the current state | `migo_session_set_network_status` | `getNetworkType` / `onNetworkStatusChange` | not supported until the first report |
+| The host reports the current state | `migo_session_report_network` (or `migo_session_set_network_status`) | `getNetworkType` / `onNetworkStatusChange` | not supported until the first report |
 | The host reports the current state | `migo_session_set_battery_status` | `getBatteryInfo` | not supported until the first report (the right answer on a device with no battery) |
 
 The three callbacks are each optional and independent, and are delivered through `dispatch` like every other callback; for the two status entry points the engine keeps the last report and forwards a change only while content is listening. Details are in [Session · Device capability callbacks](/docs/en/reference/session/#device-capability-callbacks).
@@ -91,7 +92,7 @@ Eleven `set*Handler(...)` methods on `GameSession` plus `setListener(GameSession
 | PermissionHandler | `migo.getSetting` and authorization requests | Every scope is denied; capability calls receive `auth deny` |
 | AdHandler | `createAd / loadAd / showAd / hideAd` | All calls settle; `showAd` closes with `isEnded=false` |
 | SettingHandler | `migo.openSetting` | `-2 openSetting:fail not supported` (must still settle — content denied permission needs a path to the settings page) |
-| ShareHandler | `migo.shareAppMessage` / `shareMessageToFriend` / `showShareImageMenu` | `-2 <api>:fail not supported` (the share wait-path never stalls) |
+| ShareHandler | `migo.shareAppMessage` / `shareMessageToFriend` / `showShareImageMenu` / `operateGameRecorderVideo` | `-2 <api>:fail not supported` (the share wait-path never stalls) |
 | NavigationHandler | `navigateToMiniProgram / openCustomerServiceConversation` etc. | `-2 navigateToMiniProgram:fail not supported` |
 | PaymentHandler | `requestMidasPayment*` | `isMidasPaymentSupported=false`; every request returns `-2 not supported` |
 | SubpackageHandler | `loadSubpackage / preDownloadSubpackage` | Download failure receipt; `loadSubpackage()` falls back to any locally downloaded file |
@@ -122,7 +123,7 @@ load, close and other events are reported with
 | `MIGO_HOST_SERVICE_AD` | every ad (`createRewardedVideoAd`, ...) | the runtime's fallback: nothing plays, a rewarded video closes with `isEnded=false` |
 | `MIGO_HOST_SERVICE_PAYMENT` | `checkIsSupportMidasPayment` / `requestMidasPayment*` | `allow_pay=false`, requests not supported |
 | `MIGO_HOST_SERVICE_AUTH` | `login` / `checkSession` / `getUserInfo` / `getPhoneNumber` | not supported |
-| `MIGO_HOST_SERVICE_SHARE` | `shareAppMessage` / `shareMessageToFriend` / `showShareImageMenu` | not supported |
+| `MIGO_HOST_SERVICE_SHARE` | `shareAppMessage` / `shareMessageToFriend` / `showShareImageMenu` / `operateGameRecorderVideo` | not supported |
 | `MIGO_HOST_SERVICE_NAVIGATE` | `navigateToMiniProgram` / `navigateBackMiniProgram` / `openCustomerServiceConversation` | not supported |
 | `MIGO_HOST_SERVICE_SUBPACKAGE` | `loadSubpackage` / `preDownloadSubpackage` | only subpackages already in the content package run |
 | `MIGO_HOST_SERVICE_PERMISSION` | `authorize`; `getSetting` and every gated capability read the decisions the host records with `migo_session_set_scope_state` | every scope denied |
@@ -137,6 +138,9 @@ load, close and other events are reported with
 | `MIGO_HOST_SERVICE_WINDOW` | `setWindowSize` / `setCursor` / `requestPointerLock` / `onWindowStateChange`, ... (desktop) | `setCursor` returns `false`, pointer lock does nothing, `setWindowSize` not supported |
 | `MIGO_HOST_SERVICE_ECOSYSTEM` | the host's own ecosystem -- friends and groups, open-data cloud storage, live channels, voice chat, handoff, subscription messages, privacy agreements -- each arriving by API name through one `CALL`, and the members of its objects (`GameServerManager` frame sync, `RankManager`, `MiniReportManager`, `ScenePerformanceManager`, `StoreGift`) as `Class.member` (the list is the contract's `ecosystem.names`); events such as `onCopyUrl` / `onNeedPrivacyAuthorization` are posted by the host and content's answers come back through `REPLY`; `getExtConfigSync` / `isChatTool` and the other getters read what the host reported with `migo_session_set_ecosystem_value` | the APIs with a true answer give it (`getPrivacySetting` needs no authorization, `getExtConfig` is empty, `checkIsAddedToMyMiniProgram` is not added); every other one not supported |
 | `MIGO_HOST_SERVICE_IMAGE` | `chooseImage` / `chooseMedia` / `chooseMessageFile` / `compressImage` / `previewImage` / `previewMedia` / `saveImageToPhotosAlbum` | not supported |
+| `MIGO_HOST_SERVICE_CAMERA` | `createCamera` and its `Camera`: the preview over the game, its properties, `takePhoto` / `startRecord` / `stopRecord` / `setZoom`; `onStop` / `onAuthCancel` hear `MIGO_CAMERA_EVENT_*`; `onCameraFrame` hears the frames the host hands over with `migo_session_post_camera_frame` | not supported |
+| `MIGO_HOST_SERVICE_RECORDER` | `getRecorderManager`: `start` / `pause` / `resume` / `stop`, each naming its recording; `onStart` / `onPause` / `onResume` / `onStop` / `onError` / `onInterruptionBegin` / `onInterruptionEnd` hear `MIGO_RECORDER_EVENT_*`, STOP handing its file over; `onFrameRecorded` hears the frames the host hands over with `migo_session_post_recorder_frame` | not supported |
+| `MIGO_HOST_SERVICE_VIDEO` | `createVideo` and its `Video`: the player where content put it, its properties, `play` / `pause` / `stop` / `seek` / `requestFullScreen` / `exitFullScreen` settling once done; `onPlay` / `onPause` / `onEnded` / `onTimeUpdate` / `onError` / `onWaiting` / `onProgress` hear `MIGO_VIDEO_EVENT_*` -- a position or buffering reading content fell behind on is dropped. The player's own controls, as its options ask (`controls`, `showProgress`, `showProgressInControlMode`, `showCenterPlayBtn`, `enablePlayGesture`, `enableProgressGesture`), are the host's to draw, as the Android SDK draws its own; what the player does through them is reported as the same events | not supported |
 
 The host gives the success fields or the failure's reason; the engine puts a
 failure's code in the field its API defines (`errno` or `errCode`), content

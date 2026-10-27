@@ -14,12 +14,12 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use crate::network::url::Url;
 use migo_io::scheduler::IoScheduler;
 use serde_json::Value;
 use shared::network_policy::NetworkPolicy;
 use shared::services::host_files::{self, Step};
 use shared::vfs::{FileOp, MountTable, VirtualFS};
-use url::Url;
 
 use crate::error::ServiceError;
 use crate::fs;
@@ -86,6 +86,12 @@ pub const SHARE_MESSAGE_TO_FRIEND: Files = Files {
 /// `showShareImageMenu`'s image, a local file.
 pub const SHOW_SHARE_IMAGE_MENU: Files = Files {
     fields: &[&[Step::Key("path")]],
+    remote: Remote::Refused,
+};
+/// The music a shared recording is set to (`operateGameRecorderVideo`, the
+/// recorder's share button): a file of the game's, never a URL.
+pub const SHARE_GAME_RECORDING: Files = Files {
+    fields: &[&[Step::Key("bgm")]],
     remote: Remote::Refused,
 };
 /// The images a menu share's content may name, network images included. Each
@@ -344,11 +350,14 @@ fn checked_url(
     path: &str,
     remote: Remote,
 ) -> Result<Option<String>, ServiceError> {
-    if remote == Remote::Refused || !(path.starts_with("https://") || path.starts_with("http://")) {
+    if remote == Remote::Refused {
         return Ok(None);
     }
-    let url = Url::parse(path)
-        .map_err(|e| ServiceError::generic(format!("invalid URL '{path}': {e}")))?;
+    let Some(url) = Url::parse_http(path)
+        .map_err(|e| ServiceError::generic(format!("invalid URL '{path}': {e}")))?
+    else {
+        return Ok(None);
+    };
     gate::enforce(&url, &sandbox.policy, GateKind::HostMedia).map_err(ServiceError::generic)?;
     Ok(Some(url.into()))
 }
@@ -361,4 +370,48 @@ fn extension_of(virtual_path: &str) -> String {
         .and_then(|ext| ext.to_str())
         .map(|ext| format!(".{ext}"))
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod url_tests {
+    use super::*;
+
+    #[test]
+    fn shared_url_contract_classifies_host_media_with_the_same_parser() {
+        let sandbox = Sandbox {
+            host_id: 7924,
+            scheduler: Arc::new(IoScheduler::new(7924)),
+            vfs: None,
+            mount_table: None,
+            policy: NetworkPolicy::from_json(r#"{"download":["cdn.example"]}"#).unwrap(),
+        };
+        assert_eq!(
+            checked_url(&sandbox, " \tHTTPS://CDN.example:443/a^b ", Remote::Allowed).unwrap(),
+            Some("https://cdn.example/a%5Eb".to_owned())
+        );
+        let refused = checked_url(
+            &sandbox,
+            " HTTPS://blocked.example/image.png",
+            Remote::Allowed,
+        )
+        .unwrap_err();
+        assert!(refused.message.contains("blocked.example"));
+        assert!(checked_url(&sandbox, " HTTPS:// ", Remote::Allowed).is_err());
+        for local in [
+            "/user/image.png",
+            "asset://image.png",
+            "data:image/png;base64,AA==",
+        ] {
+            assert!(
+                checked_url(&sandbox, local, Remote::Allowed)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        assert!(
+            checked_url(&sandbox, "https://cdn.example/a.png", Remote::Refused)
+                .unwrap()
+                .is_none()
+        );
+    }
 }

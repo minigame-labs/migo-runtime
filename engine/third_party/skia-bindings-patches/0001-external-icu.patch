@@ -1,0 +1,83 @@
+--- skia-bindings-0.93.1/build_support/binary_cache/download.rs
++++ skia-bindings-0.93.1/build_support/binary_cache/download.rs
+@@ -142,7 +142,11 @@
+ 
+ /// Returns whether the prepared download needs to be built.
+ pub fn try_prepare_download(binaries_config: &binaries_config::BinariesConfiguration) -> bool {
+-    env::force_skia_build() || {
++    // The binaries' key does not encode an external ICU, so a downloaded archive would carry the
++    // bundled one this build was asked to leave out.
++    env::force_skia_build()
++        || crate::build_support::skia::env::external_icu_include_dirs().is_some()
++        || {
+         let force_download = env::force_skia_binaries_download();
+         if let Some((tag, key)) = should_try_download_binaries(binaries_config, force_download) {
+             println!("TRYING TO DOWNLOAD AND INSTALL SKIA BINARIES: {tag}/{key}");
+--- skia-bindings-0.93.1/build_support/binary_cache/git.rs
++++ skia-bindings-0.93.1/build_support/binary_cache/git.rs
+@@ -8,6 +8,12 @@
+ 
+ /// Returns a 20 digit hash of the repository located in the current directory.
+ pub fn half_hash() -> Option<String> {
++    // A packaged crate unpacked into the registry is in no repository, so this always answered
++    // `None` there. Vendored into another project's repository it would answer that project's
++    // HEAD; keep the registry's answer so export and forced-download keys do not change.
++    if crate::build_support::cargo::is_crate() {
++        return None;
++    }
+     let mut cmd = Command::new("git");
+     cmd.arg("rev-parse").arg("--short=20");
+     let output = cmd.arg("HEAD").stderr(Stdio::inherit()).output().ok()?;
+--- skia-bindings-0.93.1/build_support/skia/config.rs
++++ skia-bindings-0.93.1/build_support/skia/config.rs
+@@ -172,10 +172,19 @@
+             }
+ 
+             if features[feature::TEXTLAYOUT] {
++                let external_icu = super::env::external_icu_include_dirs();
++                if let Some(dirs) = &external_icu {
++                    for dir in dirs {
++                        builder.cflag(format!("-I{}", dir.display()));
++                    }
++                }
+                 builder
+                     .arg("skia_enable_skshaper", yes())
+                     .arg("skia_use_icu", yes())
+-                    .arg("skia_use_system_icu", yes_if(use_system_libraries))
++                    .arg(
++                        "skia_use_system_icu",
++                        yes_if(use_system_libraries || external_icu.is_some()),
++                    )
+                     .arg("skia_use_harfbuzz", yes())
+                     .arg("skia_pdf_subset_harfbuzz", yes())
+                     .arg("skia_use_system_harfbuzz", yes_if(use_system_libraries))
+--- skia-bindings-0.93.1/build_support/skia/env.rs
++++ skia-bindings-0.93.1/build_support/skia/env.rs
+@@ -8,6 +8,13 @@
+     cargo::env_var("SKIA_USE_SYSTEM_LIBRARIES").is_some()
+ }
+ 
++/// The header directories of an ICU that the final link already provides (an embedder's own, such as
++/// V8's). When set, Skia is built against those headers and links no ICU of its own, so a binary that
++/// carries both does not carry two. The ICU's version-suffixed symbols are resolved at the final link.
++pub fn external_icu_include_dirs() -> Option<Vec<PathBuf>> {
++    cargo::env_var("SKIA_EXTERNAL_ICU_INCLUDE_DIRS").map(|dirs| std::env::split_paths(&dirs).collect())
++}
++
+ /// The full path of the ninja command to run.
+ pub fn ninja_command() -> Option<PathBuf> {
+     cargo::env_var("SKIA_NINJA_COMMAND").map(PathBuf::from)
+--- skia-bindings-0.93.1/build_support/skia_bindgen.rs
++++ skia-bindings-0.93.1/build_support/skia_bindgen.rs
+@@ -940,7 +940,10 @@
+                 "obj/modules/skunicode/skunicode_icu.ninja".into(),
+             ]);
+             // shaper.cpp includes SkLoadICU.h
+-            if !use_system_libraries {
++            // An external ICU is a GN system() config, not a target: there is no icu.ninja to read.
++            if !use_system_libraries
++                && crate::build_support::skia::env::external_icu_include_dirs().is_none()
++            {
+                 files.push("obj/third_party/icu/icu.ninja".into())
+             }
+         }

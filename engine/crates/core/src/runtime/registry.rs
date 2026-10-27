@@ -14,7 +14,12 @@ use shared::{
     host_channel::{CriticalHostCommandSender, InputSendOutcome, InputStream},
     op_state::HostTx,
     payload_pool::{PayloadPool, RecyclePool},
+    protocol::camera_frame::{
+        CameraFrameEntry, CameraFramePush, PixelLayout, packed_frame_to_rgba, publish_camera_frame,
+        take_camera_frame, with_camera_frame_admission,
+    },
     protocol::host_cmd::{BleCharacteristicData, GamepadState, HostCommand, TouchData},
+    protocol::recorder_frame::with_recorder_frame_credit,
     surface::{
         PublicSurfaceGeneration, SurfaceControl, SurfaceGeneration, SurfaceLease, SurfaceRef,
         SurfaceResourceLease,
@@ -105,6 +110,87 @@ impl HostIngress {
                 Err(HostIngressSendError::Full)
             }
             Err(TrySendError::Closed(_)) => Err(HostIngressSendError::Closed),
+        }
+    }
+
+    /// Hand content the latest frame of camera `camera_id`: `width` x `height`
+    /// four-byte `layout` pixels whose rows are `row_stride` bytes apart, read
+    /// once into content's RGBA. Only the latest frame waits for content -- one
+    /// that arrives before content took the last replaces it -- so however fast
+    /// a camera runs, frames never queue; the same mailbox Android's frames
+    /// take. The caller has validated the frame's shape, so the read fails
+    /// only when the RGBA cannot be allocated, which drops the frame.
+    pub fn try_send_camera_frame(
+        &self,
+        camera_id: u32,
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+        row_stride: usize,
+        layout: PixelLayout,
+    ) -> Result<(), HostIngressSendError> {
+        let Some((admission, rgba)) = with_camera_frame_admission(self.host_id, camera_id, || {
+            packed_frame_to_rgba(pixels, width, height, row_stride, layout).ok()
+        }) else {
+            self.stats.command_drops.fetch_add(1, Ordering::Relaxed);
+            return Err(HostIngressSendError::Full);
+        };
+        match publish_camera_frame(
+            admission,
+            CameraFrameEntry {
+                data: rgba,
+                width,
+                height,
+            },
+        ) {
+            CameraFramePush::Notify(credit) => {
+                let sent = self.try_send(HostCommand::CameraFrameData {
+                    camera_id,
+                    data: Vec::new(),
+                    width: 0,
+                    height: 0,
+                    credit,
+                    runtime_generation: None,
+                });
+                // Nothing will take the frame the notification announced.
+                if sent.is_err() {
+                    let _ = take_camera_frame(self.host_id, camera_id);
+                }
+                sent
+            }
+            CameraFramePush::Superseded => Ok(()),
+        }
+    }
+
+    /// Hand content one frame of recording `recording_id`, copied once. A frame
+    /// reserves its bytes from the recorder's budget and is dropped when the
+    /// budget is spent -- a microphone outrunning content loses frames, not
+    /// memory; the last frame carries no bytes of budget and travels the
+    /// reliable lane, so a recording's end is never what is lost.
+    pub fn try_send_recorder_frame(
+        &self,
+        recording_id: u32,
+        data: &[u8],
+        is_last_frame: bool,
+    ) -> Result<(), HostIngressSendError> {
+        let reserved = if is_last_frame { 0 } else { data.len() };
+        let Some((credit, data)) =
+            with_recorder_frame_credit(self.host_id, reserved, || data.to_vec())
+        else {
+            self.stats.command_drops.fetch_add(1, Ordering::Relaxed);
+            return Err(HostIngressSendError::Full);
+        };
+        let command = HostCommand::RecorderFrameData {
+            recording_id,
+            data,
+            is_last_frame,
+            credit,
+        };
+        if is_last_frame {
+            send_reliable_command_to_host(self.host_id, command)
+                .map_err(|_| HostIngressSendError::Closed)
+        } else {
+            self.try_send(command)
         }
     }
 

@@ -49,6 +49,8 @@ mod v8_limits_tests {
     // ========================================================================
     #[test]
     fn test_infinite_loop_terminated_by_watchdog() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let mut runtime = JsRuntime::new(RuntimeOptions::default());
         let isolate_handle = runtime.v8_isolate().thread_safe_handle();
 
@@ -88,6 +90,8 @@ mod v8_limits_tests {
     // ========================================================================
     #[test]
     fn test_heap_limit_oom_intercepted() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         // Use 32MB heap — enough for V8 to initialize, but small enough
         // that aggressive allocation will trigger near-heap-limit quickly.
         // Note: 5MB is too small; V8 needs ~10-20MB just for its own internals
@@ -124,6 +128,8 @@ mod v8_limits_tests {
     // ========================================================================
     #[test]
     fn test_heap_limit_gradual_oom() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         // 32MB: sufficient for V8 init, triggers OOM on repeated string growth
         let (mut runtime, oom_flag) = create_limited_runtime(32);
 
@@ -171,6 +177,8 @@ mod v8_limits_tests {
     // ========================================================================
     #[test]
     fn test_normal_execution_with_limits() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let (mut runtime, oom_flag) = create_limited_runtime(256);
 
         // Normal arithmetic
@@ -274,6 +282,8 @@ mod host_watchdog_tests {
 
     #[test]
     fn guarded_execute_script_terminates_infinite_loop() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let dir = unique_dir("exec");
         let mut rt = build_runtime(dir.clone(), dir, Duration::from_millis(200));
         let start = Instant::now();
@@ -295,6 +305,8 @@ mod host_watchdog_tests {
 
     #[test]
     fn normal_script_disarms_and_isolate_remains_usable() {
+        let v8_executor = crate::tests::support::v8_test_executor();
+        let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let dir = unique_dir("normal");
         let mut rt = build_runtime(dir.clone(), dir, Duration::from_millis(150));
         assert!(rt.exec_script("a", "globalThis.__wd = 1 + 1;").is_ok());

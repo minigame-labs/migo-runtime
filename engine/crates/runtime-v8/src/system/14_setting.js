@@ -5,7 +5,13 @@
 // can be shown; falls back to returning current state if no host op available.
 
 import { op_open_setting, op_get_auth_setting, op_authorize } from "ext:core/ops";
-import { wrapAsync, createDeferredApi, isCallbackStyle } from "ext:host_v8_base/02_async.js";
+import {
+    wrapAsync,
+    createDeferredApi,
+    isCallbackStyle,
+    errorMessage,
+    setScopeAsker,
+} from "ext:host_v8_base/02_async.js";
 
 // ---- authorisation state ---------------------------------------------------
 //
@@ -44,7 +50,8 @@ function getSetting(options) {
 // set its own map entry and returned success: an API whose entire purpose is to
 // obtain consent, obtaining none.
 
-const _authorizeApi = createDeferredApi('authorize');
+// Timeout disabled: the player answers the host's question when they do.
+const _authorizeApi = createDeferredApi('authorize', 0);
 
 function authorize(options) {
     const opts = options || {};
@@ -69,9 +76,46 @@ function _internalOnAuthorizeResult(resultJson) {
     _authorizeApi.settle(resultJson);
 }
 
+// ---- asking as a call needs ------------------------------------------------
+//
+// A call that needs a scope nobody has decided asks for it as authorize does
+// (base/02_async.js, setScopeAsker): authorize is how content asks in advance.
+// scope.userInfo is not asked this way -- in a mini-game it is asked through a
+// user-info button, and authorize does not prompt for it. One ask per scope at a
+// time: calls made while the player is asked share the answer.
+
+const _SCOPE_REFUSAL = /^auth deny: (scope\.[A-Za-z]+) is not granted$/;
+const _asking = new Map();
+
+function _askForScope(error) {
+    const refusal = _SCOPE_REFUSAL.exec(errorMessage(error));
+    if (refusal === null) return null;
+    const scope = refusal[1];
+    if (scope === 'scope.userInfo') return null;
+    const pending = _asking.get(scope);
+    if (pending !== undefined) return pending;
+    // Decided, and so refused: asked no more, as on the platform.
+    if (Object.prototype.hasOwnProperty.call(_cloneAuthSetting(), scope)) return null;
+    let decided;
+    const asking = new Promise(function (resolve) { decided = resolve; });
+    // Held before asking: an authorize that fails at once completes at once.
+    _asking.set(scope, asking);
+    authorize({
+        scope: scope,
+        complete: function () {
+            _asking.delete(scope);
+            decided();
+        },
+    });
+    return asking;
+}
+
+setScopeAsker(_askForScope);
+
 // ---- openSetting (Mode C - host op) ---------------------------------------
 
-const _openSettingApi = createDeferredApi('openSetting');
+// Timeout disabled: the player is in the settings page as long as they like.
+const _openSettingApi = createDeferredApi('openSetting', 0);
 
 function openSetting(options) {
     return _openSettingApi.invoke(options, function (opts, requestId) {

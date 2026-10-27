@@ -46,13 +46,18 @@ pub const fn host_os_name() -> &'static str {
     }
 }
 
-/// The device info a host that has none to give answers with: only what the build knows (the platform, the OS
-/// name, the CPU architecture), and nothing it would have to invent -- `model` stays `"unknown"`, `brand`
-/// and the sizes empty. The fields are the ones `get_device_info_json` documents.
+/// The device info a host that has none to give answers with: what the build knows (the platform, the OS
+/// name, the CPU architecture) and the system says (its memory, in MB, as the reference's `memorySize` is),
+/// and nothing it would have to invent -- `model` stays `"unknown"`, `brand` and `cpuType` empty. The memory
+/// was empty too, on every platform but Android, though the engine reads it for its own budgets. The fields
+/// are the ones `get_device_info_json` documents.
 pub fn default_device_info_json() -> String {
     let arch = std::env::consts::ARCH;
+    let memory_size = crate::device::memory::physical_memory_bytes()
+        .map(|bytes| (bytes >> 20).to_string())
+        .unwrap_or_default();
     format!(
-        r#"{{"abi":"{arch}","deviceAbi":"{arch}","brand":"","model":"unknown","system":"{}","platform":"{}","cpuType":"","memorySize":""}}"#,
+        r#"{{"abi":"{arch}","deviceAbi":"{arch}","brand":"","model":"unknown","system":"{}","platform":"{}","cpuType":"","memorySize":"{memory_size}"}}"#,
         host_os_name(),
         host_platform_name(),
     )
@@ -198,7 +203,7 @@ mod tests {
     /// The fields content reads are all present, and nothing is invented: the model is unknown and the
     /// brand empty.
     #[test]
-    fn the_default_has_the_documented_fields_and_invents_nothing() {
+    fn the_default_has_the_documented_fields_the_system_s_memory_and_invents_nothing() {
         let json: serde_json::Value = serde_json::from_str(&default_device_info_json()).unwrap();
         for field in [
             "abi",
@@ -215,6 +220,13 @@ mod tests {
         assert_eq!(json["model"], "unknown");
         assert_eq!(json["brand"], "");
         assert_eq!(json["abi"], std::env::consts::ARCH);
+        // The memory is the system's, in MB, as a string: Android's shape.
+        let memory = json["memorySize"].as_str().expect("memorySize is a string");
+        let megabytes: u64 = memory.parse().expect("memorySize is a number of MB");
+        assert_eq!(
+            Some(megabytes),
+            crate::device::memory::physical_memory_bytes().map(|bytes| bytes >> 20)
+        );
     }
 
     /// A service that does not describe the device gets the default through the trait, so the desktop

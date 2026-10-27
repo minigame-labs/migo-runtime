@@ -5,11 +5,11 @@ use std::sync::Arc;
 use crate::protocol::error::ServiceError;
 
 use super::{
-    AdService, AuthService, CameraService, ClipboardService, CodecService, EcosystemService,
-    FileService, GameLogService, ImageApiService, InteractionService, LocationService,
-    NavigateService, NetworkService, PaymentService, PermissionService, ScanCodeService,
-    ShareService, SubpackageService, SystemInfoService, UpdateService, VideoDecoderService,
-    VideoService, WindowService,
+    AdService, AuthService, BlePeripheralService, CameraService, ClipboardService, CodecService,
+    EcosystemService, FileService, GameLogService, ImageApiService, InteractionService,
+    LocationService, NavigateService, NetworkService, PaymentService, PermissionService,
+    RecorderService, ScanCodeService, ShareService, SubpackageService, SystemInfoService,
+    UpdateService, VideoDecoderService, VideoService, WindowService,
 };
 
 // ==================== Battery ====================
@@ -216,17 +216,13 @@ pub trait AccelerometerService: Send + Sync {
 /// Handles operations that require platform AudioManager access,
 /// such as audio focus, speaker routing, and input source queries.
 pub trait AudioPlatformService: Send + Sync {
-    /// Configure inner audio behavior.
+    /// Content's `setInnerAudioOption`, as much of it as is the platform's to act on.
     ///
-    /// - `mix_with_other`: Allow mixing with other audio apps (Android: abandon focus vs duck)
-    /// - `obey_mute_switch`: Respect device mute/ringer mode
-    /// - `speaker_on`: Route audio to speaker (vs earpiece/headset)
-    fn set_inner_audio_option(
-        &self,
-        _mix_with_other: bool,
-        _obey_mute_switch: bool,
-        _speaker_on: bool,
-    ) -> Result<(), ServiceError> {
+    /// The rest is decided before this is called (`migo_services::audio::set_inner_audio_option`):
+    /// the speaker is on and the game's audio is exclusive -- the reference ignores
+    /// `mixWithOther` with the speaker on -- so what is left is whether the silent switch
+    /// is obeyed, which only iOS has.
+    fn set_inner_audio_option(&self, _obey_mute_switch: bool) -> Result<(), ServiceError> {
         Err(ServiceError::not_supported(
             "setInnerAudioOption:fail not supported",
         ))
@@ -246,53 +242,6 @@ pub trait AudioPlatformService: Send + Sync {
     fn get_available_audio_sources(&self) -> Result<Vec<String>, ServiceError> {
         Err(ServiceError::not_supported(
             "getAvailableAudioSources:fail not supported",
-        ))
-    }
-}
-
-// ==================== Recorder ====================
-
-/// Audio recording service (microphone input, encoding, file output).
-///
-/// Manages the platform media recorder lifecycle. Commands are fire-and-forget;
-/// results and state changes are delivered asynchronously via `HostCommand::RecorderEvent`
-/// and `HostCommand::RecorderFrameData`.
-pub trait RecorderService: Send + Sync {
-    /// Start recording with the given options (JSON-encoded).
-    ///
-    /// JSON fields:
-    /// - `duration`: max recording duration in ms (default 60000, max 600000)
-    /// - `sampleRate`: sample rate Hz (8000,11025,12000,16000,22050,24000,32000,44100,48000)
-    /// - `numberOfChannels`: 1 or 2 (default 2)
-    /// - `encodeBitRate`: encode bit rate in bps (default 48000)
-    /// - `format`: "mp3", "aac", "wav", "PCM" (default "aac")
-    /// - `frameSize`: frame size in KB (if set, triggers onFrameRecorded)
-    /// - `audioSource`: "auto","buildInMic","headsetMic","mic","camcorder",
-    ///                   "voice_recognition","voice_communication" (default "auto")
-    fn start(&self, _options_json: &str) -> Result<(), ServiceError> {
-        Err(ServiceError::not_supported(
-            "recorderManager.start:fail not supported",
-        ))
-    }
-
-    /// Pause recording.
-    fn pause(&self) -> Result<(), ServiceError> {
-        Err(ServiceError::not_supported(
-            "recorderManager.pause:fail not supported",
-        ))
-    }
-
-    /// Resume recording after pause.
-    fn resume(&self) -> Result<(), ServiceError> {
-        Err(ServiceError::not_supported(
-            "recorderManager.resume:fail not supported",
-        ))
-    }
-
-    /// Stop recording. The platform will fire a RecorderEvent("stop", ...) with the file path.
-    fn stop(&self) -> Result<(), ServiceError> {
-        Err(ServiceError::not_supported(
-            "recorderManager.stop:fail not supported",
         ))
     }
 }
@@ -675,6 +624,11 @@ pub trait ConnectivityServices: Send + Sync {
         None
     }
     fn bluetooth(&self) -> Option<Arc<dyn BluetoothService>> {
+        None
+    }
+    /// This device as a Bluetooth LE peripheral, which a host declares apart
+    /// from the central role.
+    fn ble_peripheral(&self) -> Option<Arc<dyn BlePeripheralService>> {
         None
     }
     fn location(&self) -> Option<Arc<dyn LocationService>> {

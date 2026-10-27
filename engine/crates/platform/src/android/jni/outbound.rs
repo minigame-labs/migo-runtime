@@ -447,19 +447,6 @@ fn call_void_with_int_and_string(
     })
 }
 
-/// Call a NativeExports static method with signature `(II)V`.
-/// Avoids the String allocation needed by `call_void_with_string` when
-/// the second argument is just an integer.
-fn call_void_with_int(method_name: &str, host_id: i32, value: i32) -> Result<(), String> {
-    with_env(|env| {
-        call_void_impl(
-            env,
-            method_name,
-            &[jvalue { i: host_id }, jvalue { i: value }],
-        )
-    })
-}
-
 jni_void_json!(show_toast, "showToast");
 jni_void!(hide_toast, "hideToast");
 jni_void_json!(show_modal, "showModal");
@@ -735,33 +722,6 @@ pub fn get_network_type_json(host_id: i32) -> Result<String, String> {
 
 // ==================== Audio Platform ====================
 
-/// Set inner audio options: mixWithOther, obeyMuteSwitch, speakerOn.
-/// Calls Java: NativeExports.setInnerAudioOption(hostId, mixWithOther, obeyMuteSwitch, speakerOn)
-pub fn set_inner_audio_option(
-    host_id: i32,
-    mix_with_other: bool,
-    obey_mute_switch: bool,
-    speaker_on: bool,
-) -> Result<(), String> {
-    call_static_method(
-        "setInnerAudioOption",
-        ReturnType::Primitive(Primitive::Void),
-        |_env, _| Ok(()),
-        &[
-            jvalue { i: host_id },
-            jvalue {
-                z: mix_with_other as u8,
-            },
-            jvalue {
-                z: obey_mute_switch as u8,
-            },
-            jvalue {
-                z: speaker_on as u8,
-            },
-        ],
-    )
-}
-
 /// Get available audio input sources as JSON array string.
 /// Calls Java: NativeExports.getAvailableAudioSources(hostId) -> String (JSON array)
 pub fn get_available_audio_sources(host_id: i32) -> Result<String, String> {
@@ -786,14 +746,14 @@ pub fn get_available_audio_sources(host_id: i32) -> Result<String, String> {
 // Calls Java: NativeExports.recorderStart(hostId, optionsJson)
 jni_void_json!(recorder_start, "recorderStart");
 
-// Pause recording. Calls Java: NativeExports.recorderPause(hostId)
-jni_void!(recorder_pause, "recorderPause");
+// Pause recording. Calls Java: NativeExports.recorderPause(hostId, requestJson)
+jni_void_json!(recorder_pause, "recorderPause");
 
-// Resume recording. Calls Java: NativeExports.recorderResume(hostId)
-jni_void!(recorder_resume, "recorderResume");
+// Resume recording. Calls Java: NativeExports.recorderResume(hostId, requestJson)
+jni_void_json!(recorder_resume, "recorderResume");
 
-// Stop recording. Calls Java: NativeExports.recorderStop(hostId)
-jni_void!(recorder_stop, "recorderStop");
+// Stop recording. Calls Java: NativeExports.recorderStop(hostId, requestJson)
+jni_void_json!(recorder_stop, "recorderStop");
 
 // ==================== Charset Encoding (GBK) ====================
 
@@ -1082,80 +1042,20 @@ fn call_json_method(method_name: &str, host_id: i32, options_json: &str) -> Resu
     })
 }
 
-/// Start a camera photo capture without waiting for the image callback.
-/// The result is delivered through `onCameraEvent("takePhotoResult", ...)`.
-pub fn camera_take_photo_async(
-    host_id: i32,
-    request_id: u32,
-    options_json: &str,
-) -> Result<(), String> {
-    call_void_with_int_and_string(
-        "cameraTakePhotoAsync",
-        host_id,
-        request_id as i32,
-        options_json,
-    )
-}
-// Create a camera instance.
-// Calls Java: NativeExports.cameraCreate(hostId, optionsJson) -> String
-jni_json!(camera_create, "cameraCreate");
-
-/// Destroy a camera instance.
-/// Calls Java: NativeExports.cameraDestroy(hostId, cameraId)
-pub fn camera_destroy(host_id: i32, camera_id: u32) -> Result<(), String> {
-    call_static_method(
-        "cameraDestroy",
-        ReturnType::Primitive(Primitive::Void),
-        |_env, _| Ok(()),
-        &[
-            jvalue { i: host_id },
-            jvalue {
-                i: camera_id as i32,
-            },
-        ],
-    )
-}
-
-// Start video recording. Calls Java: NativeExports.cameraStartRecord(hostId, optionsJson) -> String
-jni_json!(camera_start_record, "cameraStartRecord");
-
-// Stop video recording. Calls Java: NativeExports.cameraStopRecord(hostId, optionsJson) -> String
-jni_json!(camera_stop_record, "cameraStopRecord");
-
-// Set camera zoom level. Calls Java: NativeExports.cameraSetZoom(hostId, optionsJson) -> String
-jni_json!(camera_set_zoom, "cameraSetZoom");
-
-/// Start listening for camera frame changes.
-/// Calls Java: NativeExports.cameraListenFrameChange(hostId, cameraId)
-pub fn camera_listen_frame_change(host_id: i32, camera_id: u32) -> Result<(), String> {
-    call_static_method(
-        "cameraListenFrameChange",
-        ReturnType::Primitive(Primitive::Void),
-        |_env, _| Ok(()),
-        &[
-            jvalue { i: host_id },
-            jvalue {
-                i: camera_id as i32,
-            },
-        ],
-    )
-}
-
-/// Stop listening for camera frame changes.
-/// Calls Java: NativeExports.cameraCloseFrameChange(hostId, cameraId)
-pub fn camera_close_frame_change(host_id: i32, camera_id: u32) -> Result<(), String> {
-    call_static_method(
-        "cameraCloseFrameChange",
-        ReturnType::Primitive(Primitive::Void),
-        |_env, _| Ok(()),
-        &[
-            jvalue { i: host_id },
-            jvalue {
-                i: camera_id as i32,
-            },
-        ],
-    )
-}
+// ==================== Camera ====================
+//
+// Every one is the request content made -- `{"cameraId", ...}`, and a call's
+// `"requestId"` -- which the SDK answers, for a call, through `onCameraResult`
+// once it has happened.
+jni_void_json!(camera_create, "cameraCreate");
+jni_void_json!(camera_destroy, "cameraDestroy");
+jni_void_json!(camera_set, "cameraSet");
+jni_void_json!(camera_take_photo, "cameraTakePhoto");
+jni_void_json!(camera_start_record, "cameraStartRecord");
+jni_void_json!(camera_stop_record, "cameraStopRecord");
+jni_void_json!(camera_set_zoom, "cameraSetZoom");
+jni_void_json!(camera_listen_frame_change, "cameraListenFrameChange");
+jni_void_json!(camera_close_frame_change, "cameraCloseFrameChange");
 
 // ==================== Bluetooth ====================
 //
@@ -1209,6 +1109,27 @@ jni_void_json!(
 jni_void_json!(ble_get_device_rssi, "bleGetDeviceRSSI");
 jni_void_json!(ble_set_mtu, "bleSetMTU");
 jni_void_json!(ble_get_mtu, "bleGetMTU");
+
+// ==================== BLE Peripheral ====================
+//
+// Each hands the SDK the request content made, `{"serverId", "requestId", ...}`;
+// the answer comes back through onBlePeripheralResult once it has happened.
+
+jni_void_json!(ble_peripheral_create_server, "blePeripheralCreateServer");
+jni_void_json!(ble_peripheral_add_service, "blePeripheralAddService");
+jni_void_json!(ble_peripheral_remove_service, "blePeripheralRemoveService");
+jni_void_json!(
+    ble_peripheral_start_advertising,
+    "blePeripheralStartAdvertising"
+);
+jni_void_json!(
+    ble_peripheral_stop_advertising,
+    "blePeripheralStopAdvertising"
+);
+jni_void_json!(
+    ble_peripheral_write_characteristic_value,
+    "blePeripheralWriteCharacteristicValue"
+);
 
 // ==================== Image API ====================
 
@@ -1575,6 +1496,7 @@ jni_void_json!(open_setting, "openSetting");
 jni_void_json!(share_app_message, "shareAppMessage");
 jni_void_json!(share_message_to_friend, "shareMessageToFriend");
 jni_void_json!(show_share_image_menu, "showShareImageMenu");
+jni_void_json!(share_game_recording, "shareGameRecording");
 jni_void_json!(share_menu_changed, "shareMenuChanged");
 jni_void_json!(share_menu_reply, "shareMenuReply");
 
@@ -1668,52 +1590,16 @@ jni_void_json!(
 );
 
 // ==================== Video ====================
+//
+// Each hands the SDK the request content made, `{"videoId", ...}`; a call's
+// answer comes back through onVideoResult.
 
-jni_json!(video_create, "videoCreate");
-
-pub fn video_play(host_id: i32, video_id: u32) -> Result<(), String> {
-    call_void_with_int("videoPlay", host_id, video_id as i32)
-}
-
-pub fn video_pause(host_id: i32, video_id: u32) -> Result<(), String> {
-    call_void_with_int("videoPause", host_id, video_id as i32)
-}
-
-pub fn video_stop(host_id: i32, video_id: u32) -> Result<(), String> {
-    call_void_with_int("videoStop", host_id, video_id as i32)
-}
-
-pub fn video_seek(host_id: i32, video_id: u32, position: f64) -> Result<(), String> {
-    call_void_with_string(
-        "videoSeek",
-        host_id,
-        &format!("{{\"videoId\":{},\"position\":{}}}", video_id, position),
-    )
-}
-
-pub fn video_request_fullscreen(host_id: i32, video_id: u32, direction: i32) -> Result<(), String> {
-    call_void_with_string(
-        "videoRequestFullscreen",
-        host_id,
-        &format!("{{\"videoId\":{},\"direction\":{}}}", video_id, direction),
-    )
-}
-
-pub fn video_exit_fullscreen(host_id: i32, video_id: u32) -> Result<(), String> {
-    call_void_with_int("videoExitFullscreen", host_id, video_id as i32)
-}
-
-pub fn video_set_property(host_id: i32, video_id: u32, property_json: &str) -> Result<(), String> {
-    call_void_with_string(
-        "videoSetProperty",
-        host_id,
-        &format!(
-            "{{\"videoId\":{},\"properties\":{}}}",
-            video_id, property_json
-        ),
-    )
-}
-
-pub fn video_destroy(host_id: i32, video_id: u32) -> Result<(), String> {
-    call_void_with_int("videoDestroy", host_id, video_id as i32)
-}
+jni_void_json!(video_create, "videoCreate");
+jni_void_json!(video_destroy, "videoDestroy");
+jni_void_json!(video_set, "videoSet");
+jni_void_json!(video_play, "videoPlay");
+jni_void_json!(video_pause, "videoPause");
+jni_void_json!(video_stop, "videoStop");
+jni_void_json!(video_seek, "videoSeek");
+jni_void_json!(video_request_full_screen, "videoRequestFullScreen");
+jni_void_json!(video_exit_full_screen, "videoExitFullScreen");

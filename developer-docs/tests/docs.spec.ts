@@ -126,18 +126,23 @@ test('zh search indexes an API term', async ({page}) => {
   await expect(page.locator('.pagefind-ui__result').first()).toBeVisible({timeout: 10_000});
 });
 
-test('mobile layout fits the viewport', async ({page, isMobile}) => {
-  test.skip(!isMobile, 'mobile project only');
-  await openDocsPage(page, '/');
-  const fitsViewport = await page.evaluate(
-    () => document.body.scrollWidth <= document.body.clientWidth,
-  );
-  expect(fitsViewport).toBe(true);
-});
+// The API support page is the widest content: its tables scroll inside themselves, never the page.
+for (const path of ['/', '/capabilities/api-support/']) {
+  test(`mobile layout fits the viewport on ${path}`, async ({page, isMobile}) => {
+    test.skip(!isMobile, 'mobile project only');
+    await openDocsPage(page, path);
+    const fitsViewport = await page.evaluate(
+      () => document.body.scrollWidth <= document.body.clientWidth,
+    );
+    expect(fitsViewport).toBe(true);
+  });
+}
 
 test.describe('axe accessibility', () => {
-  for (const path of ['/', '/reference/overview/']) {
+  for (const path of ['/', '/reference/overview/', '/capabilities/api-support/']) {
     test(`has no serious or critical violations on ${path}`, async ({page}) => {
+      // axe checks each of the API support tables' thousands of cells: alone it takes most of a default budget.
+      test.slow(path === '/capabilities/api-support/');
       await openDocsPage(page, path);
       const results = await new AxeBuilder({page}).analyze();
       const seriousViolations = results.violations.filter(

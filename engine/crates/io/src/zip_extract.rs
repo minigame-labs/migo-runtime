@@ -136,6 +136,7 @@ impl From<zip::result::ZipError> for ZipError {
 impl From<PoolError> for ZipError {
     fn from(err: PoolError) -> Self {
         match err {
+            PoolError::AudioQueueLimit { .. } => ZipError::Io(io::Error::other(err.to_string())),
             PoolError::Closed => ZipError::Io(io::Error::other("IO worker pool closed")),
             PoolError::ByteLimitExceeded {
                 requested,

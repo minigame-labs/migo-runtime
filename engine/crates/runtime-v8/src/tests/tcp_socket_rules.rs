@@ -8,6 +8,8 @@ use super::support::{boot_with_services, run_to_idle};
 /// the engine, which refuses the port before any connection is attempted.
 #[test]
 fn the_twenty_first_socket_fails_and_a_forbidden_port_is_refused() {
+    let v8_executor = crate::tests::support::v8_test_executor();
+    let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
     let mut runtime = boot_with_services(None, None);
     let said = run_to_idle(
         &mut runtime,

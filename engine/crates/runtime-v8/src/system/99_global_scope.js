@@ -1,6 +1,7 @@
 // Global scope registration for host_v8_system APIs (api-connectivity feature gate).
 
 import * as bluetooth from 'ext:host_v8_system/01_bluetooth.js';
+import * as blePeripheral from 'ext:host_v8_system/16_ble_peripheral.js';
 import * as authorize from 'ext:host_v8_system/02_authorize.js';
 import * as windowInfo from 'ext:host_v8_system/03_window_info.js';
 import * as systemSetting from 'ext:host_v8_system/04_system_settings.js';
@@ -98,6 +99,21 @@ ObjectDefineProperties(globalThis, {
     _internalOnBluetoothAdapterStateEvent: core.propNonEnumerable(bluetooth._internalOnBluetoothAdapterStateEvent),
     _internalOnBluetoothDeviceFoundEvent: core.propNonEnumerable(bluetooth._internalOnBluetoothDeviceFoundEvent),
     _internalOnBLEConnectionStateEvent: core.propNonEnumerable(bluetooth._internalOnBLEConnectionStateEvent),
+    // BLE peripheral
+    createBLEPeripheralServer: core.propNonEnumerable(blePeripheral.createBLEPeripheralServer),
+    onBLEPeripheralConnectionStateChanged: core.propNonEnumerable(blePeripheral.onBLEPeripheralConnectionStateChanged),
+    offBLEPeripheralConnectionStateChanged: core.propNonEnumerable(blePeripheral.offBLEPeripheralConnectionStateChanged),
+    _internalOnCreateBLEPeripheralServerResult: core.propNonEnumerable(blePeripheral._internalOnCreateBLEPeripheralServerResult),
+    _internalOnBLEPeripheralAddServiceResult: core.propNonEnumerable(blePeripheral._internalOnBLEPeripheralAddServiceResult),
+    _internalOnBLEPeripheralRemoveServiceResult: core.propNonEnumerable(blePeripheral._internalOnBLEPeripheralRemoveServiceResult),
+    _internalOnBLEPeripheralStartAdvertisingResult: core.propNonEnumerable(blePeripheral._internalOnBLEPeripheralStartAdvertisingResult),
+    _internalOnBLEPeripheralStopAdvertisingResult: core.propNonEnumerable(blePeripheral._internalOnBLEPeripheralStopAdvertisingResult),
+    _internalOnBLEPeripheralWriteCharacteristicValueResult: core.propNonEnumerable(blePeripheral._internalOnBLEPeripheralWriteCharacteristicValueResult),
+    _internalOnBLEPeripheralCharacteristicReadRequestEvent: core.propNonEnumerable(blePeripheral._internalOnBLEPeripheralCharacteristicReadRequestEvent),
+    _internalOnBLEPeripheralCharacteristicWriteRequestEvent: core.propNonEnumerable(blePeripheral._internalOnBLEPeripheralCharacteristicWriteRequestEvent),
+    _internalOnBLEPeripheralCharacteristicSubscribedEvent: core.propNonEnumerable(blePeripheral._internalOnBLEPeripheralCharacteristicSubscribedEvent),
+    _internalOnBLEPeripheralCharacteristicUnsubscribedEvent: core.propNonEnumerable(blePeripheral._internalOnBLEPeripheralCharacteristicUnsubscribedEvent),
+    _internalOnBLEPeripheralConnectionStateChangedEvent: core.propNonEnumerable(blePeripheral._internalOnBLEPeripheralConnectionStateChangedEvent),
     _internalOnBLEMTUEvent: core.propNonEnumerable(bluetooth._internalOnBLEMTUEvent),
     _internalOnBeaconUpdateEvent: core.propNonEnumerable(bluetooth._internalOnBeaconUpdateEvent),
     _internalOnBeaconServiceEvent: core.propNonEnumerable(bluetooth._internalOnBeaconServiceEvent),

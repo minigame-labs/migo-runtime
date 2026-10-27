@@ -307,7 +307,9 @@ fi
 # One definition, interpolated into the batch below and handed to the manifest
 # writer. Writing them twice would let the recorded provenance drift from the
 # arguments the build actually used -- silently, since nothing compares them.
-GN_ARGS="v8_enable_webassembly=true v8_enable_pointer_compression=true v8_enable_i18n_support=true v8_enable_sandbox=false use_allocator_shim=false use_partition_alloc_as_malloc=false"
+GN_ARGS="v8_enable_webassembly=true v8_enable_pointer_compression=true v8_enable_i18n_support=true v8_enable_sandbox=false use_allocator_shim=false use_partition_alloc_as_malloc=false rusty_v8_enable_simdutf=true"
+GN_ARGS+=" icu_use_data_file=true icu_use_stub_data=true"
+GN_ARGS+=" icu_copy_icudata_to_root_build_dir=true v8_depend_on_icu_data_file=true"
 # target_cpu is NOT added here: rusty_v8's build.rs (see its CARGO_CFG_TARGET_ARCH
 # handling) already pushes target_cpu="arm64" onto its own GN args whenever
 # the Rust target is aarch64, the same way `cargo build --target` already
@@ -406,7 +408,7 @@ rem 78 -Wctad-maybe-unsupported errors. Chromium compiles those with
 rem -D_HAS_EXCEPTIONS=0 and /std:c++23preview, a combination Microsoft does not
 rem support for its own STL. So `use_custom_libcxx=false` is not an option here,
 rem and the Skia/V8 std::terminate collision needs a different answer.
-cargo build --release --target ${TARGET}
+cargo build --release --target ${TARGET} --features simdutf,v8_enable_pointer_compression
 rem Capture before echoing: an echo succeeds and would otherwise become the
 rem batch file's exit status, making a failed build look like a pass.
 set CARGO_EXIT=%errorlevel%

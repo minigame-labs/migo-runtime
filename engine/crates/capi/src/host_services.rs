@@ -22,8 +22,31 @@
 
 use std::sync::Arc;
 
+use migo_capi_abi::host_services::{
+    MIGO_BLE_PERIPHERAL_ADD_SERVICE, MIGO_BLE_PERIPHERAL_CREATE_SERVER,
+    MIGO_BLE_PERIPHERAL_EVENT_CHARACTERISTIC_READ_REQUEST,
+    MIGO_BLE_PERIPHERAL_EVENT_CHARACTERISTIC_SUBSCRIBED,
+    MIGO_BLE_PERIPHERAL_EVENT_CHARACTERISTIC_UNSUBSCRIBED,
+    MIGO_BLE_PERIPHERAL_EVENT_CHARACTERISTIC_WRITE_REQUEST,
+    MIGO_BLE_PERIPHERAL_EVENT_CONNECTION_STATE_CHANGED, MIGO_BLE_PERIPHERAL_REMOVE_SERVICE,
+    MIGO_BLE_PERIPHERAL_START_ADVERTISING, MIGO_BLE_PERIPHERAL_STOP_ADVERTISING,
+    MIGO_BLE_PERIPHERAL_WRITE_CHARACTERISTIC_VALUE, MIGO_HOST_SERVICE_BLE_PERIPHERAL,
+};
+use migo_capi_abi::host_services::{
+    MIGO_HOST_SERVICE_RECORDER, MIGO_RECORDER_EVENT_ERROR, MIGO_RECORDER_EVENT_INTERRUPTION_BEGIN,
+    MIGO_RECORDER_EVENT_INTERRUPTION_END, MIGO_RECORDER_EVENT_PAUSE, MIGO_RECORDER_EVENT_RESUME,
+    MIGO_RECORDER_EVENT_START, MIGO_RECORDER_EVENT_STOP, MIGO_RECORDER_PAUSE, MIGO_RECORDER_RESUME,
+    MIGO_RECORDER_START, MIGO_RECORDER_STOP,
+};
+use migo_capi_abi::host_services::{
+    MIGO_HOST_SERVICE_VIDEO, MIGO_VIDEO_CREATE, MIGO_VIDEO_DESTROY, MIGO_VIDEO_EVENT_ENDED,
+    MIGO_VIDEO_EVENT_ERROR, MIGO_VIDEO_EVENT_PAUSE, MIGO_VIDEO_EVENT_PLAY,
+    MIGO_VIDEO_EVENT_PROGRESS, MIGO_VIDEO_EVENT_TIME_UPDATE, MIGO_VIDEO_EVENT_WAITING,
+    MIGO_VIDEO_EXIT_FULL_SCREEN, MIGO_VIDEO_PAUSE, MIGO_VIDEO_PLAY, MIGO_VIDEO_REQUEST_FULL_SCREEN,
+    MIGO_VIDEO_SEEK, MIGO_VIDEO_SET, MIGO_VIDEO_STOP,
+};
 use migo_capi_abi::{
-    MIGO_ERROR_INTERNAL, MIGO_ERROR_INVALID_ARGUMENT, MIGO_OK, MigoResult,
+    MIGO_ERROR_INTERNAL, MIGO_ERROR_INVALID_ARGUMENT, MIGO_ERROR_WOULD_BLOCK, MIGO_OK, MigoResult,
     host_services::{
         HostServiceOutcome, MIGO_AD_CREATE, MIGO_AD_DESTROY, MIGO_AD_EVENT_LIFECYCLE, MIGO_AD_HIDE,
         MIGO_AD_LOAD, MIGO_AD_SHOW, MIGO_AD_UPDATE_STYLE, MIGO_AUTH_CHECK_SESSION,
@@ -41,22 +64,26 @@ use migo_capi_abi::{
         MIGO_BLUETOOTH_READ_BLE_CHARACTERISTIC_VALUE, MIGO_BLUETOOTH_SET_BLE_MTU,
         MIGO_BLUETOOTH_START_BEACON_DISCOVERY, MIGO_BLUETOOTH_START_DEVICES_DISCOVERY,
         MIGO_BLUETOOTH_STOP_BEACON_DISCOVERY, MIGO_BLUETOOTH_STOP_DEVICES_DISCOVERY,
-        MIGO_BLUETOOTH_WRITE_BLE_CHARACTERISTIC_VALUE, MIGO_CLIPBOARD_GET_CLIPBOARD_DATA,
+        MIGO_BLUETOOTH_WRITE_BLE_CHARACTERISTIC_VALUE, MIGO_CAMERA_CLOSE_FRAME_CHANGE,
+        MIGO_CAMERA_CREATE, MIGO_CAMERA_DESTROY, MIGO_CAMERA_EVENT_AUTH_CANCEL,
+        MIGO_CAMERA_EVENT_STOP, MIGO_CAMERA_LISTEN_FRAME_CHANGE, MIGO_CAMERA_SET,
+        MIGO_CAMERA_SET_ZOOM, MIGO_CAMERA_START_RECORD, MIGO_CAMERA_STOP_RECORD,
+        MIGO_CAMERA_TAKE_PHOTO, MIGO_CLIPBOARD_GET_CLIPBOARD_DATA,
         MIGO_CLIPBOARD_SET_CLIPBOARD_DATA, MIGO_ECOSYSTEM_CALL, MIGO_ECOSYSTEM_EVENT_EVENT,
         MIGO_ECOSYSTEM_REPLY, MIGO_HOST_SERVICE_AD, MIGO_HOST_SERVICE_AUTH,
-        MIGO_HOST_SERVICE_BLUETOOTH, MIGO_HOST_SERVICE_CLIPBOARD, MIGO_HOST_SERVICE_ECOSYSTEM,
-        MIGO_HOST_SERVICE_IMAGE, MIGO_HOST_SERVICE_INTERACTION, MIGO_HOST_SERVICE_LOCATION,
-        MIGO_HOST_SERVICE_MOTION, MIGO_HOST_SERVICE_NAVIGATE, MIGO_HOST_SERVICE_PAYMENT,
-        MIGO_HOST_SERVICE_PERMISSION, MIGO_HOST_SERVICE_SCAN_CODE, MIGO_HOST_SERVICE_SCREEN,
-        MIGO_HOST_SERVICE_SETTING, MIGO_HOST_SERVICE_SHARE, MIGO_HOST_SERVICE_SUBPACKAGE,
-        MIGO_HOST_SERVICE_UPDATE, MIGO_HOST_SERVICE_WINDOW, MIGO_IMAGE_CHOOSE_IMAGE,
-        MIGO_IMAGE_CHOOSE_MEDIA, MIGO_IMAGE_CHOOSE_MESSAGE_FILE, MIGO_IMAGE_COMPRESS_IMAGE,
-        MIGO_IMAGE_PREVIEW_IMAGE, MIGO_IMAGE_PREVIEW_MEDIA, MIGO_IMAGE_SAVE_FILE_TO_DISK,
-        MIGO_IMAGE_SAVE_IMAGE_TO_PHOTOS_ALBUM, MIGO_INTERACTION_HIDE_LOADING,
-        MIGO_INTERACTION_HIDE_TOAST, MIGO_INTERACTION_SHOW_ACTION_SHEET,
-        MIGO_INTERACTION_SHOW_LOADING, MIGO_INTERACTION_SHOW_MODAL, MIGO_INTERACTION_SHOW_TOAST,
-        MIGO_LOCATION_GET_FUZZY_LOCATION, MIGO_LOCATION_GET_LOCATION,
-        MIGO_MOTION_START_ACCELEROMETER, MIGO_MOTION_START_COMPASS,
+        MIGO_HOST_SERVICE_BLUETOOTH, MIGO_HOST_SERVICE_CAMERA, MIGO_HOST_SERVICE_CLIPBOARD,
+        MIGO_HOST_SERVICE_ECOSYSTEM, MIGO_HOST_SERVICE_IMAGE, MIGO_HOST_SERVICE_INTERACTION,
+        MIGO_HOST_SERVICE_LOCATION, MIGO_HOST_SERVICE_MOTION, MIGO_HOST_SERVICE_NAVIGATE,
+        MIGO_HOST_SERVICE_PAYMENT, MIGO_HOST_SERVICE_PERMISSION, MIGO_HOST_SERVICE_SCAN_CODE,
+        MIGO_HOST_SERVICE_SCREEN, MIGO_HOST_SERVICE_SETTING, MIGO_HOST_SERVICE_SHARE,
+        MIGO_HOST_SERVICE_SUBPACKAGE, MIGO_HOST_SERVICE_UPDATE, MIGO_HOST_SERVICE_WINDOW,
+        MIGO_IMAGE_CHOOSE_IMAGE, MIGO_IMAGE_CHOOSE_MEDIA, MIGO_IMAGE_CHOOSE_MESSAGE_FILE,
+        MIGO_IMAGE_COMPRESS_IMAGE, MIGO_IMAGE_PREVIEW_IMAGE, MIGO_IMAGE_PREVIEW_MEDIA,
+        MIGO_IMAGE_SAVE_FILE_TO_DISK, MIGO_IMAGE_SAVE_IMAGE_TO_PHOTOS_ALBUM,
+        MIGO_INTERACTION_HIDE_LOADING, MIGO_INTERACTION_HIDE_TOAST,
+        MIGO_INTERACTION_SHOW_ACTION_SHEET, MIGO_INTERACTION_SHOW_LOADING,
+        MIGO_INTERACTION_SHOW_MODAL, MIGO_INTERACTION_SHOW_TOAST, MIGO_LOCATION_GET_FUZZY_LOCATION,
+        MIGO_LOCATION_GET_LOCATION, MIGO_MOTION_START_ACCELEROMETER, MIGO_MOTION_START_COMPASS,
         MIGO_MOTION_START_DEVICE_MOTION, MIGO_MOTION_START_GYROSCOPE,
         MIGO_MOTION_STOP_ACCELEROMETER, MIGO_MOTION_STOP_COMPASS, MIGO_MOTION_STOP_DEVICE_MOTION,
         MIGO_MOTION_STOP_GYROSCOPE, MIGO_NAVIGATE_NAVIGATE_BACK_MINI_PROGRAM,
@@ -72,12 +99,12 @@ use migo_capi_abi::{
         MIGO_SCREEN_STOP_RECORDING_OBSERVER, MIGO_SETTING_OPEN_APP_AUTHORIZE_SETTING,
         MIGO_SETTING_OPEN_SETTING, MIGO_SETTING_OPEN_SYSTEM_BLUETOOTH_SETTING,
         MIGO_SHARE_EVENT_MENU_SHARE, MIGO_SHARE_MENU_SHARE_REPLY, MIGO_SHARE_SET_SHARE_MENU,
-        MIGO_SHARE_SHARE_APP_MESSAGE, MIGO_SHARE_SHARE_MESSAGE_TO_FRIEND,
-        MIGO_SHARE_SHOW_SHARE_IMAGE_MENU, MIGO_SUBPACKAGE_DOWNLOAD, MIGO_UPDATE_APPLY_UPDATE,
-        MIGO_UPDATE_EVENT_STATE, MIGO_WINDOW_EVENT_POINTER_LOCK_CHANGE,
-        MIGO_WINDOW_EVENT_WINDOW_STATE_CHANGE, MIGO_WINDOW_EXIT_POINTER_LOCK,
-        MIGO_WINDOW_REQUEST_POINTER_LOCK, MIGO_WINDOW_SET_CURSOR, MIGO_WINDOW_SET_WINDOW_SIZE,
-        MigoHostServiceResult, copy_bounded,
+        MIGO_SHARE_SHARE_APP_MESSAGE, MIGO_SHARE_SHARE_GAME_RECORDING,
+        MIGO_SHARE_SHARE_MESSAGE_TO_FRIEND, MIGO_SHARE_SHOW_SHARE_IMAGE_MENU,
+        MIGO_SUBPACKAGE_DOWNLOAD, MIGO_UPDATE_APPLY_UPDATE, MIGO_UPDATE_EVENT_STATE,
+        MIGO_WINDOW_EVENT_POINTER_LOCK_CHANGE, MIGO_WINDOW_EVENT_WINDOW_STATE_CHANGE,
+        MIGO_WINDOW_EXIT_POINTER_LOCK, MIGO_WINDOW_REQUEST_POINTER_LOCK, MIGO_WINDOW_SET_CURSOR,
+        MIGO_WINDOW_SET_WINDOW_SIZE, MigoHostServiceResult, copy_bounded,
     },
 };
 use migo_core::services::{
@@ -88,11 +115,18 @@ use migo_core::services::{
     UpdateService, WindowService,
 };
 use serde_json::{Map, Value};
+use shared::services::{
+    BLE_PERIPHERAL_EVENT_HOOKS, BLE_PERIPHERAL_RESULT_HOOKS, BlePeripheralService,
+};
 use shared::{
     js_escape::hook_args_one,
     protocol::error::ServiceError,
     protocol::host_cmd::HostCommand,
-    services::{BLUETOOTH_RESULT_HOOKS, host_files::HostFiles},
+    services::{
+        BLUETOOTH_RESULT_HOOKS, CAMERA_EVENT_HOOKS, CAMERA_RESULT_HOOKS, CameraService,
+        RECORDER_EVENT_HOOKS, RecorderService, VIDEO_EVENT_HOOKS, VIDEO_RESULT_HOOKS, VideoService,
+        camera_result_files, host_files::HostFiles, recorder_event_files, video_event_droppable,
+    },
 };
 
 use crate::{
@@ -133,6 +167,10 @@ enum Delivery {
     /// path, and what the engine copied out for the request is released
     /// (`shared::services::host_files::deliver_result`).
     HostFiles(&'static HostFiles),
+    /// Fields of an event naming files the host hands over: taken over as a
+    /// result's are, with no request to correlate
+    /// (`shared::services::host_files::deliver_event`).
+    EventFiles(&'static HostFiles),
 }
 
 const REQUEST_MIDAS_PAYMENT: Call = Call {
@@ -204,6 +242,14 @@ const SHOW_SHARE_IMAGE_MENU: Call = Call {
     service: MIGO_HOST_SERVICE_SHARE,
     method: MIGO_SHARE_SHOW_SHARE_IMAGE_MENU,
     hook: "_internalOnShowShareImageMenuResult",
+    error_code_field: Some("errCode"),
+    progress_hook: None,
+    delivery: Delivery::HostFiles(&HostFiles::NONE),
+};
+const SHARE_GAME_RECORDING: Call = Call {
+    service: MIGO_HOST_SERVICE_SHARE,
+    method: MIGO_SHARE_SHARE_GAME_RECORDING,
+    hook: "_internalOnShareGameRecordingResult",
     error_code_field: Some("errCode"),
     progress_hook: None,
     delivery: Delivery::HostFiles(&HostFiles::NONE),
@@ -497,6 +543,75 @@ const BLUETOOTH_GET_BLE_DEVICE_RSSI: Call = bluetooth_call(MIGO_BLUETOOTH_GET_BL
 const BLUETOOTH_SET_BLE_MTU: Call = bluetooth_call(MIGO_BLUETOOTH_SET_BLE_MTU);
 const BLUETOOTH_GET_BLE_MTU: Call = bluetooth_call(MIGO_BLUETOOTH_GET_BLE_MTU);
 
+/// A camera call: answered through the hook the one shared table names for
+/// its method, handing over the files the one shared table names for it.
+const fn camera_call(method: u32) -> Call {
+    Call {
+        service: MIGO_HOST_SERVICE_CAMERA,
+        method,
+        hook: match CAMERA_RESULT_HOOKS[method as usize] {
+            Some(hook) => hook,
+            None => panic!("a camera command is not a call"),
+        },
+        error_code_field: None,
+        progress_hook: None,
+        delivery: Delivery::HostFiles(camera_result_files(method)),
+    }
+}
+
+const CAMERA_CREATE: Call = camera_call(MIGO_CAMERA_CREATE);
+const CAMERA_TAKE_PHOTO: Call = camera_call(MIGO_CAMERA_TAKE_PHOTO);
+const CAMERA_START_RECORD: Call = camera_call(MIGO_CAMERA_START_RECORD);
+const CAMERA_STOP_RECORD: Call = camera_call(MIGO_CAMERA_STOP_RECORD);
+const CAMERA_SET_ZOOM: Call = camera_call(MIGO_CAMERA_SET_ZOOM);
+
+/// A video call: answered through the hook the one shared table names for its
+/// method, once what it asked has happened.
+const fn video_call(method: u32) -> Call {
+    Call {
+        service: MIGO_HOST_SERVICE_VIDEO,
+        method,
+        hook: match VIDEO_RESULT_HOOKS[method as usize] {
+            Some(hook) => hook,
+            None => panic!("a video command is not a call"),
+        },
+        error_code_field: None,
+        progress_hook: None,
+        delivery: Delivery::Verbatim,
+    }
+}
+
+const VIDEO_PLAY: Call = video_call(MIGO_VIDEO_PLAY);
+const VIDEO_PAUSE: Call = video_call(MIGO_VIDEO_PAUSE);
+const VIDEO_STOP: Call = video_call(MIGO_VIDEO_STOP);
+const VIDEO_SEEK: Call = video_call(MIGO_VIDEO_SEEK);
+const VIDEO_REQUEST_FULL_SCREEN: Call = video_call(MIGO_VIDEO_REQUEST_FULL_SCREEN);
+const VIDEO_EXIT_FULL_SCREEN: Call = video_call(MIGO_VIDEO_EXIT_FULL_SCREEN);
+
+/// A BLE peripheral call: answered through the hook the one shared table names
+/// for its method -- every one of them is a call -- and failing in the central
+/// role's Bluetooth codes.
+const fn ble_peripheral_call(method: u32) -> Call {
+    Call {
+        service: MIGO_HOST_SERVICE_BLE_PERIPHERAL,
+        method,
+        hook: BLE_PERIPHERAL_RESULT_HOOKS[method as usize],
+        error_code_field: Some("errCode"),
+        progress_hook: None,
+        delivery: Delivery::Verbatim,
+    }
+}
+
+const BLE_PERIPHERAL_CREATE_SERVER: Call = ble_peripheral_call(MIGO_BLE_PERIPHERAL_CREATE_SERVER);
+const BLE_PERIPHERAL_ADD_SERVICE: Call = ble_peripheral_call(MIGO_BLE_PERIPHERAL_ADD_SERVICE);
+const BLE_PERIPHERAL_REMOVE_SERVICE: Call = ble_peripheral_call(MIGO_BLE_PERIPHERAL_REMOVE_SERVICE);
+const BLE_PERIPHERAL_START_ADVERTISING: Call =
+    ble_peripheral_call(MIGO_BLE_PERIPHERAL_START_ADVERTISING);
+const BLE_PERIPHERAL_STOP_ADVERTISING: Call =
+    ble_peripheral_call(MIGO_BLE_PERIPHERAL_STOP_ADVERTISING);
+const BLE_PERIPHERAL_WRITE_CHARACTERISTIC_VALUE: Call =
+    ble_peripheral_call(MIGO_BLE_PERIPHERAL_WRITE_CHARACTERISTIC_VALUE);
+
 const SET_WINDOW_SIZE: Call = Call {
     service: MIGO_HOST_SERVICE_WINDOW,
     method: MIGO_WINDOW_SET_WINDOW_SIZE,
@@ -527,6 +642,7 @@ const CALLS: &[&Call] = &[
     &SHARE_APP_MESSAGE,
     &SHARE_MESSAGE_TO_FRIEND,
     &SHOW_SHARE_IMAGE_MENU,
+    &SHARE_GAME_RECORDING,
     &NAVIGATE_TO_MINI_PROGRAM,
     &SUBPACKAGE_DOWNLOAD,
     &REQUEST_SCOPE,
@@ -581,6 +697,23 @@ const CALLS: &[&Call] = &[
     &BLUETOOTH_GET_BLE_MTU,
     &SET_WINDOW_SIZE,
     &ECOSYSTEM_CALL,
+    &CAMERA_CREATE,
+    &CAMERA_TAKE_PHOTO,
+    &CAMERA_START_RECORD,
+    &CAMERA_STOP_RECORD,
+    &CAMERA_SET_ZOOM,
+    &VIDEO_PLAY,
+    &VIDEO_PAUSE,
+    &VIDEO_STOP,
+    &VIDEO_SEEK,
+    &VIDEO_REQUEST_FULL_SCREEN,
+    &VIDEO_EXIT_FULL_SCREEN,
+    &BLE_PERIPHERAL_CREATE_SERVER,
+    &BLE_PERIPHERAL_ADD_SERVICE,
+    &BLE_PERIPHERAL_REMOVE_SERVICE,
+    &BLE_PERIPHERAL_START_ADVERTISING,
+    &BLE_PERIPHERAL_STOP_ADVERTISING,
+    &BLE_PERIPHERAL_WRITE_CHARACTERISTIC_VALUE,
 ];
 
 /// Fire-and-forget requests, as `(service, method)`. Listed so the contract test
@@ -628,6 +761,17 @@ const COMMANDS: &[(u32, u32)] = &[
     (MIGO_HOST_SERVICE_SHARE, MIGO_SHARE_SET_SHARE_MENU),
     (MIGO_HOST_SERVICE_SHARE, MIGO_SHARE_MENU_SHARE_REPLY),
     (MIGO_HOST_SERVICE_UPDATE, MIGO_UPDATE_APPLY_UPDATE),
+    (MIGO_HOST_SERVICE_CAMERA, MIGO_CAMERA_DESTROY),
+    (MIGO_HOST_SERVICE_CAMERA, MIGO_CAMERA_SET),
+    (MIGO_HOST_SERVICE_CAMERA, MIGO_CAMERA_LISTEN_FRAME_CHANGE),
+    (MIGO_HOST_SERVICE_CAMERA, MIGO_CAMERA_CLOSE_FRAME_CHANGE),
+    (MIGO_HOST_SERVICE_RECORDER, MIGO_RECORDER_START),
+    (MIGO_HOST_SERVICE_RECORDER, MIGO_RECORDER_PAUSE),
+    (MIGO_HOST_SERVICE_RECORDER, MIGO_RECORDER_RESUME),
+    (MIGO_HOST_SERVICE_RECORDER, MIGO_RECORDER_STOP),
+    (MIGO_HOST_SERVICE_VIDEO, MIGO_VIDEO_CREATE),
+    (MIGO_HOST_SERVICE_VIDEO, MIGO_VIDEO_DESTROY),
+    (MIGO_HOST_SERVICE_VIDEO, MIGO_VIDEO_SET),
 ];
 
 /// A service's own events, as `(service, event, hook)`.
@@ -707,7 +851,81 @@ const EVENTS: &[(u32, u32, &str)] = &[
         MIGO_UPDATE_EVENT_STATE,
         "_internalOnUpdateEvent",
     ),
+    (
+        MIGO_HOST_SERVICE_CAMERA,
+        MIGO_CAMERA_EVENT_STOP,
+        CAMERA_EVENT_HOOKS[MIGO_CAMERA_EVENT_STOP as usize],
+    ),
+    (
+        MIGO_HOST_SERVICE_CAMERA,
+        MIGO_CAMERA_EVENT_AUTH_CANCEL,
+        CAMERA_EVENT_HOOKS[MIGO_CAMERA_EVENT_AUTH_CANCEL as usize],
+    ),
+    recorder_event(MIGO_RECORDER_EVENT_START),
+    recorder_event(MIGO_RECORDER_EVENT_PAUSE),
+    recorder_event(MIGO_RECORDER_EVENT_RESUME),
+    recorder_event(MIGO_RECORDER_EVENT_STOP),
+    recorder_event(MIGO_RECORDER_EVENT_ERROR),
+    recorder_event(MIGO_RECORDER_EVENT_INTERRUPTION_BEGIN),
+    recorder_event(MIGO_RECORDER_EVENT_INTERRUPTION_END),
+    video_event(MIGO_VIDEO_EVENT_PLAY),
+    video_event(MIGO_VIDEO_EVENT_PAUSE),
+    video_event(MIGO_VIDEO_EVENT_ENDED),
+    video_event(MIGO_VIDEO_EVENT_TIME_UPDATE),
+    video_event(MIGO_VIDEO_EVENT_ERROR),
+    video_event(MIGO_VIDEO_EVENT_WAITING),
+    video_event(MIGO_VIDEO_EVENT_PROGRESS),
+    ble_peripheral_event(MIGO_BLE_PERIPHERAL_EVENT_CHARACTERISTIC_READ_REQUEST),
+    ble_peripheral_event(MIGO_BLE_PERIPHERAL_EVENT_CHARACTERISTIC_WRITE_REQUEST),
+    ble_peripheral_event(MIGO_BLE_PERIPHERAL_EVENT_CHARACTERISTIC_SUBSCRIBED),
+    ble_peripheral_event(MIGO_BLE_PERIPHERAL_EVENT_CHARACTERISTIC_UNSUBSCRIBED),
+    ble_peripheral_event(MIGO_BLE_PERIPHERAL_EVENT_CONNECTION_STATE_CHANGED),
 ];
+
+/// A recorder event's row: its hook from the one shared table.
+const fn recorder_event(event: u32) -> (u32, u32, &'static str) {
+    (
+        MIGO_HOST_SERVICE_RECORDER,
+        event,
+        RECORDER_EVENT_HOOKS[event as usize],
+    )
+}
+
+/// A BLE peripheral event's row: its hook from the one shared table.
+const fn ble_peripheral_event(event: u32) -> (u32, u32, &'static str) {
+    (
+        MIGO_HOST_SERVICE_BLE_PERIPHERAL,
+        event,
+        BLE_PERIPHERAL_EVENT_HOOKS[event as usize],
+    )
+}
+
+/// A video event's row: its hook from the one shared table.
+const fn video_event(event: u32) -> (u32, u32, &'static str) {
+    (
+        MIGO_HOST_SERVICE_VIDEO,
+        event,
+        VIDEO_EVENT_HOOKS[event as usize],
+    )
+}
+
+/// The files an event hands over, from the shared tables that name them --
+/// a recording's STOP -- as a call's are.
+fn event_files(service: u32, event: u32) -> &'static HostFiles {
+    match service {
+        MIGO_HOST_SERVICE_RECORDER => recorder_event_files(event),
+        _ => &HostFiles::NONE,
+    }
+}
+
+/// Whether an event is a reading the next one supersedes, which travels the
+/// bounded lane and is refused when content falls behind.
+fn event_droppable(service: u32, event: u32) -> bool {
+    match service {
+        MIGO_HOST_SERVICE_VIDEO => video_event_droppable(event),
+        _ => false,
+    }
+}
 
 fn event_hook(service: u32, event: u32) -> Option<&'static str> {
     EVENTS
@@ -1191,6 +1409,122 @@ impl EcosystemService for CapiHostServices {
     }
 }
 
+impl CameraService for CapiHostServices {
+    fn create(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&CAMERA_CREATE, request_json)
+    }
+    fn destroy(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.command(MIGO_HOST_SERVICE_CAMERA, MIGO_CAMERA_DESTROY, request_json)
+    }
+    fn set(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.command(MIGO_HOST_SERVICE_CAMERA, MIGO_CAMERA_SET, request_json)
+    }
+    fn take_photo(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&CAMERA_TAKE_PHOTO, request_json)
+    }
+    fn start_record(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&CAMERA_START_RECORD, request_json)
+    }
+    fn stop_record(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&CAMERA_STOP_RECORD, request_json)
+    }
+    fn set_zoom(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&CAMERA_SET_ZOOM, request_json)
+    }
+    fn listen_frame_change(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.command(
+            MIGO_HOST_SERVICE_CAMERA,
+            MIGO_CAMERA_LISTEN_FRAME_CHANGE,
+            request_json,
+        )
+    }
+    fn close_frame_change(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.command(
+            MIGO_HOST_SERVICE_CAMERA,
+            MIGO_CAMERA_CLOSE_FRAME_CHANGE,
+            request_json,
+        )
+    }
+}
+
+impl RecorderService for CapiHostServices {
+    fn start(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.command(
+            MIGO_HOST_SERVICE_RECORDER,
+            MIGO_RECORDER_START,
+            request_json,
+        )
+    }
+    fn pause(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.command(
+            MIGO_HOST_SERVICE_RECORDER,
+            MIGO_RECORDER_PAUSE,
+            request_json,
+        )
+    }
+    fn resume(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.command(
+            MIGO_HOST_SERVICE_RECORDER,
+            MIGO_RECORDER_RESUME,
+            request_json,
+        )
+    }
+    fn stop(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.command(MIGO_HOST_SERVICE_RECORDER, MIGO_RECORDER_STOP, request_json)
+    }
+}
+
+impl VideoService for CapiHostServices {
+    fn create(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.command(MIGO_HOST_SERVICE_VIDEO, MIGO_VIDEO_CREATE, request_json)
+    }
+    fn destroy(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.command(MIGO_HOST_SERVICE_VIDEO, MIGO_VIDEO_DESTROY, request_json)
+    }
+    fn set(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.command(MIGO_HOST_SERVICE_VIDEO, MIGO_VIDEO_SET, request_json)
+    }
+    fn play(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&VIDEO_PLAY, request_json)
+    }
+    fn pause(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&VIDEO_PAUSE, request_json)
+    }
+    fn stop(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&VIDEO_STOP, request_json)
+    }
+    fn seek(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&VIDEO_SEEK, request_json)
+    }
+    fn request_full_screen(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&VIDEO_REQUEST_FULL_SCREEN, request_json)
+    }
+    fn exit_full_screen(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&VIDEO_EXIT_FULL_SCREEN, request_json)
+    }
+}
+
+impl BlePeripheralService for CapiHostServices {
+    fn create_server(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&BLE_PERIPHERAL_CREATE_SERVER, request_json)
+    }
+    fn add_service(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&BLE_PERIPHERAL_ADD_SERVICE, request_json)
+    }
+    fn remove_service(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&BLE_PERIPHERAL_REMOVE_SERVICE, request_json)
+    }
+    fn start_advertising(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&BLE_PERIPHERAL_START_ADVERTISING, request_json)
+    }
+    fn stop_advertising(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&BLE_PERIPHERAL_STOP_ADVERTISING, request_json)
+    }
+    fn write_characteristic_value(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&BLE_PERIPHERAL_WRITE_CHARACTERISTIC_VALUE, request_json)
+    }
+}
+
 impl UpdateService for CapiHostServices {
     fn apply_update(&self) -> Result<(), ServiceError> {
         self.command(MIGO_HOST_SERVICE_UPDATE, MIGO_UPDATE_APPLY_UPDATE, "{}")
@@ -1257,6 +1591,9 @@ impl ShareService for CapiHostServices {
     }
     fn show_share_image_menu(&self, options_json: &str) -> Result<(), ServiceError> {
         self.call(&SHOW_SHARE_IMAGE_MENU, options_json)
+    }
+    fn share_game_recording(&self, request_json: &str) -> Result<(), ServiceError> {
+        self.call(&SHARE_GAME_RECORDING, request_json)
     }
     fn set_share_menu(&self, json: &str) -> Result<(), ServiceError> {
         self.command(MIGO_HOST_SERVICE_SHARE, MIGO_SHARE_SET_SHARE_MENU, json)
@@ -1378,6 +1715,7 @@ fn deliver(
     hook: &'static str,
     json: String,
     delivery: &Delivery,
+    droppable: bool,
 ) -> MigoResult {
     let Ok(state) = session.state.lock() else {
         return MIGO_ERROR_INTERNAL;
@@ -1401,14 +1739,23 @@ fn deliver(
         Delivery::HostFiles(files) => {
             shared::services::host_files::deliver_result(host, files, &json)
         }
+        Delivery::EventFiles(files) => {
+            shared::services::host_files::deliver_event(host, files, &json)
+        }
     };
-    if let Err(error) = migo_core::send_reliable_command_to_host(
-        host,
-        HostCommand::InvokeHostHook {
-            hook,
-            args_json: hook_args_one(json),
-        },
-    ) {
+    let command = HostCommand::InvokeHostHook {
+        hook,
+        args_json: hook_args_one(json),
+    };
+    if droppable {
+        // A reading the next one supersedes: refused, not queued, when content
+        // falls behind.
+        return match migo_core::send_command_to_host(host, command) {
+            Ok(()) => MIGO_OK,
+            Err(_) => MIGO_ERROR_WOULD_BLOCK,
+        };
+    }
+    if let Err(error) = migo_core::send_reliable_command_to_host(host, command) {
         tracing::warn!("host service result for {hook} not delivered: {error}");
     }
     MIGO_OK
@@ -1436,7 +1783,14 @@ pub unsafe extern "C" fn migo_session_complete_host_service_call(
             Err(error) => return error,
         };
         match completion_json(call, request_id, outcome) {
-            Ok(json) => deliver(&session, call.service, call.hook, json, &call.delivery),
+            Ok(json) => deliver(
+                &session,
+                call.service,
+                call.hook,
+                json,
+                &call.delivery,
+                false,
+            ),
             Err(error) => error,
         }
     })
@@ -1468,7 +1822,14 @@ pub unsafe extern "C" fn migo_session_update_host_service_call(
             Err(error) => return error,
         };
         match progress_json(request_id, &payload) {
-            Ok(json) => deliver(&session, call.service, hook, json, &Delivery::Verbatim),
+            Ok(json) => deliver(
+                &session,
+                call.service,
+                hook,
+                json,
+                &Delivery::Verbatim,
+                false,
+            ),
             Err(error) => error,
         }
     })
@@ -1505,7 +1866,20 @@ pub unsafe extern "C" fn migo_session_post_host_service_event(
         ) {
             return MIGO_ERROR_INVALID_ARGUMENT;
         }
-        deliver(&session, service, hook, payload, &Delivery::Verbatim)
+        let files = event_files(service, event);
+        let delivery = if files.0.is_empty() {
+            Delivery::Verbatim
+        } else {
+            Delivery::EventFiles(files)
+        };
+        deliver(
+            &session,
+            service,
+            hook,
+            payload,
+            &delivery,
+            event_droppable(service, event),
+        )
     })
 }
 
@@ -1550,6 +1924,10 @@ mod tests {
             "window" => MIGO_HOST_SERVICE_WINDOW,
             "ecosystem" => MIGO_HOST_SERVICE_ECOSYSTEM,
             "update" => MIGO_HOST_SERVICE_UPDATE,
+            "camera" => MIGO_HOST_SERVICE_CAMERA,
+            "recorder" => MIGO_HOST_SERVICE_RECORDER,
+            "video" => MIGO_HOST_SERVICE_VIDEO,
+            "ble_peripheral" => MIGO_HOST_SERVICE_BLE_PERIPHERAL,
             other => panic!("the contract names a service the ABI has no constant for: {other}"),
         }
     }
@@ -1611,6 +1989,9 @@ mod tests {
                             Delivery::Verbatim => (vec![], vec![]),
                             Delivery::SubpackageZip => (vec!["zipPath".into()], vec![]),
                             Delivery::HostFiles(files) => (vec![], files.describe()),
+                            Delivery::EventFiles(_) => {
+                                panic!("{name}.{method_name}: a call's result is not an event")
+                            }
                         };
                         assert_eq!(listed("withheld"), withheld, "{method_name} withheld");
                         assert_eq!(listed("files"), files, "{method_name} files");
@@ -1632,6 +2013,25 @@ mod tests {
                     event_hook(service, id),
                     event["hook"].as_str(),
                     "{name}.{event_name}"
+                );
+                let listed: Vec<String> = event["files"]
+                    .as_array()
+                    .map(|files| {
+                        files
+                            .iter()
+                            .map(|file| file.as_str().expect("a file field").to_owned())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                assert_eq!(
+                    listed,
+                    event_files(service, id).describe(),
+                    "{name}.{event_name} files"
+                );
+                assert_eq!(
+                    event["droppable"].as_bool().unwrap_or(false),
+                    event_droppable(service, id),
+                    "{name}.{event_name} droppable"
                 );
                 events_seen += 1;
             }

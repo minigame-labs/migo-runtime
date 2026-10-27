@@ -10,8 +10,9 @@ use crate::{
         onAccelerometerChange, onActionSheetResult, onAdEvent, onAudioInterruptionBegin,
         onAudioInterruptionEnd, onAuthorizeResult, onBLECharacteristicValueChange,
         onBLEConnectionStateChange, onBLEMTUChange, onBeaconServiceChange, onBeaconUpdate,
-        onBluetoothAdapterStateChange, onBluetoothDeviceFound, onBluetoothResult, onCameraEvent,
-        onCameraFrameData, onCheckSessionResult, onChooseImageResult, onChooseMediaResult,
+        onBlePeripheralEvent, onBlePeripheralResult, onBluetoothAdapterStateChange,
+        onBluetoothDeviceFound, onBluetoothResult, onCameraEvent, onCameraFrameData,
+        onCameraResult, onCheckSessionResult, onChooseImageResult, onChooseMediaResult,
         onChooseMessageFileResult, onCompassChange, onCompressImageResult, onDeviceMotionChange,
         onDeviceOrientationChange, onEcosystemEvent, onEcosystemResult, onFuzzyLocationResult,
         onGamepadConnection, onGamepadState, onGetPhoneNumberResult, onGetUserInfoResult,
@@ -22,10 +23,11 @@ use crate::{
         onOpenSettingResult, onOpenSystemBluetoothSetting, onPointerEvent, onPointerLockChanged,
         onPreviewImageResult, onPreviewMediaResult, onRecorderEvent, onRecorderFrameData,
         onRestart, onSaveImageToPhotosAlbumResult, onScanCodeResult, onScreenRecordingStateChanged,
-        onShareAppMessageResult, onShareMenuEvent, onShareMessageToFriendResult, onShow,
-        onShowShareImageMenuResult, onSubpackageProgress, onSubpackageResult, onSurfaceDestroyed,
-        onThermalStatusChanged, onTouch, onUpdateEvent, onUserCaptureScreen, onVideoEvent, onVsync,
-        onWheelEvent, onWindowStateChanged, shutdown, updatePermission, updateSurface, version,
+        onShareAppMessageResult, onShareGameRecordingResult, onShareMenuEvent,
+        onShareMessageToFriendResult, onShow, onShowShareImageMenuResult, onSubpackageProgress,
+        onSubpackageResult, onSurfaceDestroyed, onThermalStatusChanged, onTouch, onUpdateEvent,
+        onUserCaptureScreen, onVideoEvent, onVideoResult, onVsync, onWheelEvent,
+        onWindowStateChanged, shutdown, updatePermission, updateSurface, version,
     },
     jni_profile_contract::{self, JniMethod, MethodDirection},
 };
@@ -89,6 +91,7 @@ fn native_fn_ptr(name: &str) -> Option<*mut c_void> {
         "onRecorderFrameData" => onRecorderFrameData as *mut c_void,
         #[cfg(feature = "api-media")]
         "onCameraEvent" => onCameraEvent as *mut c_void,
+        "onCameraResult" => onCameraResult as *mut c_void,
         #[cfg(feature = "api-media")]
         "onCameraFrameData" => onCameraFrameData as *mut c_void,
         #[cfg(feature = "api-media")]
@@ -107,12 +110,17 @@ fn native_fn_ptr(name: &str) -> Option<*mut c_void> {
         "onChooseMediaResult" => onChooseMediaResult as *mut c_void,
         #[cfg(feature = "api-media")]
         "onVideoEvent" => onVideoEvent as *mut c_void,
+        "onVideoResult" => onVideoResult as *mut c_void,
         #[cfg(feature = "api-connectivity")]
         "onOpenSystemBluetoothSetting" => onOpenSystemBluetoothSetting as *mut c_void,
         #[cfg(feature = "api-connectivity")]
         "onOpenAppAuthorizeSetting" => onOpenAppAuthorizeSetting as *mut c_void,
         #[cfg(feature = "api-connectivity")]
         "onBluetoothResult" => onBluetoothResult as *mut c_void,
+        #[cfg(feature = "api-connectivity")]
+        "onBlePeripheralResult" => onBlePeripheralResult as *mut c_void,
+        #[cfg(feature = "api-connectivity")]
+        "onBlePeripheralEvent" => onBlePeripheralEvent as *mut c_void,
         #[cfg(feature = "api-connectivity")]
         "onBluetoothAdapterStateChange" => onBluetoothAdapterStateChange as *mut c_void,
         #[cfg(feature = "api-connectivity")]
@@ -149,6 +157,7 @@ fn native_fn_ptr(name: &str) -> Option<*mut c_void> {
         "onShareAppMessageResult" => onShareAppMessageResult as *mut c_void,
         "onShareMessageToFriendResult" => onShareMessageToFriendResult as *mut c_void,
         "onShowShareImageMenuResult" => onShowShareImageMenuResult as *mut c_void,
+        "onShareGameRecordingResult" => onShareGameRecordingResult as *mut c_void,
         "onShareMenuEvent" => onShareMenuEvent as *mut c_void,
         "onPointerEvent" => onPointerEvent as *mut c_void,
         "onKeyEvent" => onKeyEvent as *mut c_void,
@@ -270,7 +279,7 @@ mod tests {
             .find(|method| method.name == "onCameraFrameData")
             .expect("media camera-frame contract");
         assert_eq!(method.sig.matches("Ljava/nio/ByteBuffer;").count(), 3);
-        assert_eq!(method.sig.matches('I').count(), 10);
+        assert_eq!(method.sig.matches('I').count(), 13);
         assert!(method.sig.ends_with(")V"));
     }
 }
