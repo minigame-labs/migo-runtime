@@ -177,10 +177,6 @@ protocol MigoPreviewPresenter: AnyObject {
         func present(
             _ files: [URL], at index: Int, shown: @escaping (Bool) -> Void, dismissed: @escaping () -> Void
         ) {
-            guard let top = MigoSystemPresentation.topController() else {
-                shown(false)
-                return
-            }
             let viewer = Viewer(files: files)
             let key = ObjectIdentifier(viewer)
             viewer.closed = { [weak self] in
@@ -192,8 +188,14 @@ protocol MigoPreviewPresenter: AnyObject {
             controller.dataSource = viewer
             controller.delegate = viewer
             controller.currentPreviewItemIndex = index
-            controller.modalPresentationStyle = .fullScreen
-            top.present(controller, animated: true) { shown(true) }
+            // Over the game, not in place of it: a full-screen presentation takes
+            // the views below out of the window when it is up, and the game view
+            // leaving its window is the app ending the game.
+            controller.modalPresentationStyle = .overFullScreen
+            MigoSystemPresentation.present(controller) { [weak self] up in
+                if !up { self?.showing[key] = nil }
+                shown(up)
+            }
         }
 
         private final class Viewer: NSObject, QLPreviewControllerDataSource, QLPreviewControllerDelegate {
