@@ -1205,6 +1205,11 @@ jobs:
       - name: Android NDK pin contract
         run: bash scripts/test-android-ndk-pin-contract.sh
 
+      # The Rust side declares the NDK constants it uses by hand; the pinned NDK's
+      # headers are compiled against each value.
+      - name: Android NDK constants contract
+        run: bash scripts/test-android-ndk-constants-contract.sh
+
       # Layout-only compatibility check. This does not publish or claim an
       # armeabi-v7a artifact; it exercises the 8-byte uint64_t alignment used
       # by ARM ILP32 at the Android API 26 floor.
