@@ -95,6 +95,9 @@ enum Event {
     GameLog {
         entry_json: String,
     },
+    RestartRequested {
+        launch_options_json: String,
+    },
     GamepadRumble(GamepadRumble),
     HostServiceCall {
         call_id: u64,
@@ -232,6 +235,21 @@ fn invoke_task(task: &Task) {
                 let bytes = entry_json.as_bytes();
                 unsafe {
                     on_game_log(
+                        user_data,
+                        session,
+                        bytes.as_ptr() as *const c_char,
+                        bytes.len() as u32,
+                    )
+                };
+            }
+        }
+        Event::RestartRequested {
+            launch_options_json,
+        } => {
+            if let Some(on_restart_requested) = task.callbacks.on_restart_requested {
+                let bytes = launch_options_json.as_bytes();
+                unsafe {
+                    on_restart_requested(
                         user_data,
                         session,
                         bytes.as_ptr() as *const c_char,
@@ -400,6 +418,14 @@ impl Notifier {
 
     pub fn game_log(&self, entry_json: String) -> bool {
         self.post(Event::GameLog { entry_json })
+    }
+
+    /// Content asked to be launched again, with these options, in a session that
+    /// cannot replace its content in place.
+    pub fn restart_requested(&self, launch_options_json: String) -> bool {
+        self.post(Event::RestartRequested {
+            launch_options_json,
+        })
     }
 
     /// Set a pad's motors. Like the keyboard verbs, the flag is the
@@ -663,6 +689,7 @@ mod tests {
             on_host_service_call: None,
             host_services: 0,
             on_gamepad_rumble: None,
+            on_restart_requested: None,
         }
     }
 
@@ -729,6 +756,7 @@ mod tests {
             on_host_service_call: None,
             host_services: 0,
             on_gamepad_rumble: None,
+            on_restart_requested: None,
         }
     }
 
@@ -755,6 +783,7 @@ mod tests {
             on_host_service_call: None,
             host_services: 0,
             on_gamepad_rumble: None,
+            on_restart_requested: None,
         };
         test_notifier(callbacks)
     }
@@ -959,6 +988,42 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner()),
             "seed"
+        );
+    }
+
+    static RESTART_OPTIONS: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+    unsafe extern "C" fn recording_restart_requested(
+        _user: *mut c_void,
+        _session: *mut c_void,
+        launch_options: *const c_char,
+        length: u32,
+    ) {
+        let bytes =
+            unsafe { std::slice::from_raw_parts(launch_options.cast::<u8>(), length as usize) };
+        *RESTART_OPTIONS.lock().unwrap_or_else(|e| e.into_inner()) =
+            String::from_utf8(bytes.to_vec()).expect("the options are UTF-8");
+    }
+
+    /// A restart the session cannot make itself reaches the host with the options
+    /// to launch the game with, borrowed for the call and whole.
+    #[test]
+    fn a_restart_reaches_the_host_with_its_launch_options() {
+        let _guard = COUNTER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        RESTART_OPTIONS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        let mut with_restart = callbacks(inline_dispatch);
+        with_restart.on_restart_requested = Some(recording_restart_requested);
+        let notifier = test_notifier(with_restart);
+
+        let options = r#"{"scene":1007,"query":"level=2"}"#;
+        assert!(notifier.restart_requested(options.to_string()));
+
+        assert_eq!(
+            *RESTART_OPTIONS.lock().unwrap_or_else(|e| e.into_inner()),
+            options
         );
     }
 

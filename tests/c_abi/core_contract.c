@@ -130,7 +130,7 @@ _Static_assert(MIGO_SURFACE_RELEASE_RELEASED == UINT32_C(1), "released state val
 #if UINTPTR_MAX == UINT64_MAX
 _Static_assert(sizeof(MigoError) == 32, "LP64 error layout");
 _Static_assert(sizeof(MigoSurfaceDescriptor) == 72, "LP64 Surface layout");
-_Static_assert(sizeof(MigoHostCallbacks) == 152, "LP64 callback layout");
+_Static_assert(sizeof(MigoHostCallbacks) == 160, "LP64 callback layout");
 _Static_assert(offsetof(MigoHostCallbacks, on_surface_released) == 96,
                "release wakeup stays where it was appended");
 _Static_assert(offsetof(MigoHostCallbacks, on_game_log) == 120,
@@ -140,7 +140,9 @@ _Static_assert(offsetof(MigoHostCallbacks, on_host_service_call) == 128,
 _Static_assert(offsetof(MigoHostCallbacks, host_services) == 136,
                "host_services follows its callback");
 _Static_assert(offsetof(MigoHostCallbacks, on_gamepad_rumble) == 144,
-               "the gamepad motors are the append-only tail");
+               "the gamepad motors stay where they were appended");
+_Static_assert(offsetof(MigoHostCallbacks, on_restart_requested) == 152,
+               "the restart request is the append-only tail");
 _Static_assert(sizeof(MigoGamepadRumble) == 32, "one rumble layout on every target");
 _Static_assert(sizeof(MigoHostServiceCall) == 40, "LP64 host-service call layout");
 _Static_assert(offsetof(MigoHostServiceCall, payload_json_utf8) == 24,
@@ -180,9 +182,11 @@ _Static_assert(sizeof(MigoSurfaceDescriptor) == (MIGO_U64_MEMBER_ALIGN == 8 ? 72
  * this one was not, and the soft-keyboard callbacks were then added on top of
  * the wrong base. Nothing caught it because every lane ran on an LP64 host, so
  * this branch had never once been compiled. */
-/* host_services at 72, then on_gamepad_rumble at 80: the record ends at 84,
- * rounded up to the uint64_t member alignment. */
-_Static_assert(sizeof(MigoHostCallbacks) == (MIGO_U64_MEMBER_ALIGN == 8 ? 88 : 84),
+/* host_services at 72, on_gamepad_rumble at 80, on_restart_requested at 84: the
+ * record ends at 88, which either uint64_t member alignment leaves as it is. */
+_Static_assert(offsetof(MigoHostCallbacks, on_restart_requested) == 84,
+               "the restart request is the append-only tail");
+_Static_assert(sizeof(MigoHostCallbacks) == 88,
                "ILP32 callback layout follows the target uint64_t member alignment");
 _Static_assert(sizeof(MigoHostAppInfo) == 32, "ILP32 host app report layout");
 _Static_assert(offsetof(MigoHostAppInfo, font_scale) == 16, "ILP32 host app report scalars");

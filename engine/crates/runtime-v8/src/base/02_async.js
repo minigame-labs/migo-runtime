@@ -455,13 +455,11 @@ function createDeferredApi(apiName, defaultTimeoutMs) {
             // Refused for a scope nobody has decided, the call asks for it --
             // once -- and starts again when it is decided. The player's answer
             // is not the call's time: its timer stops while they are asked.
+            // Whether it asked: a refusal it does not ask for is the caller's.
             var askedForScope = false;
-            function refused(e) {
+            function askForScope(e) {
                 var asking = askedForScope || _scopeAsker === null ? null : _scopeAsker(e);
-                if (asking === null) {
-                    failStart(e);
-                    return;
-                }
+                if (asking === null) return false;
                 askedForScope = true;
                 clearTimeout(pendingEntry._timer);
                 asking.then(function () {
@@ -471,7 +469,16 @@ function createDeferredApi(apiName, defaultTimeoutMs) {
                         failStart(again);
                     }
                 });
+                return true;
             }
+            function refused(e) {
+                if (!askForScope(e)) failStart(e);
+            }
+            // A host that checks the scope itself refuses in its answer rather
+            // than by a throw -- the external-frame session's host channel,
+            // whose request has left before any check -- and is asked for as a
+            // throw is (settleParsed).
+            pendingEntry.askForScope = askForScope;
 
             // Timer admission and executor dispatch are one rollback scope:
             // either both start, or the pending entry and timer are removed and
@@ -530,6 +537,10 @@ function createDeferredApi(apiName, defaultTimeoutMs) {
         if (parsed === null || typeof parsed !== 'object' || !('requestId' in parsed)) return;
         var requestId = parseHostCallbackId(parsed.requestId);
         if (requestId === null) return;
+        // Refused for a scope nobody has decided: asked for, and the same
+        // request started again once decided -- it stays pending meanwhile.
+        var waiting = _pending.get(requestId);
+        if (waiting && typeof parsed.error === 'string' && waiting.askForScope(parsed.error)) return;
         var entry = removePending(requestId);
         if (entry) _settleEntry(entry, parsed);
     }

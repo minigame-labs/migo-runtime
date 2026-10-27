@@ -967,6 +967,12 @@ mod tests {
         wait_until("the connection's drain has ended", || {
             session.drains.load(Ordering::Relaxed) >= 1
         });
+        // The connection drains what waits, and a wake while that drain runs is
+        // folded into it rather than counted: queued before it ended, these went
+        // with it and no wake was counted, one run in a few.
+        wait_until("the connection's drain has ended", || {
+            session.drains.load(Ordering::Relaxed) >= 1
+        });
 
         // Header lengths on both sides of each boundary: 7-bit, 16-bit, 64-bit.
         let service_a = vec![1u8; 125];

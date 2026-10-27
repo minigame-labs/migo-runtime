@@ -405,6 +405,9 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             case .exitRequested:
                 stop()
                 onEvent?(.exitRequested)
+            case .restartRequested:
+                // Content runs in process here, and the engine restarts it in place.
+                break
             case .error(let code, let message, let recoverable):
                 onEvent?(.error(code: code, message: message, recoverable: recoverable))
             case .surfaceLost:
@@ -677,7 +680,7 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
     /// The desktop's answer to `migo.showKeyboard`: a real field, because a
     /// Mac has a keyboard and no soft one, pinned along the game's bottom edge
     /// and reported to content as the keyboard's height.
-    private final class KeyboardField: NSObject, NSTextFieldDelegate {
+    final class KeyboardField: NSObject, NSTextFieldDelegate {
         private weak var owner: MigoGameView?
         private let field = NSTextField()
         private var request: MigoEngineSession.KeyboardRequest?
@@ -704,6 +707,10 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             field.usesSingleLineMode = !request.multiline
             field.isHidden = false
             owner?.window?.makeFirstResponder(field)
+            // Taking the focus selects a field's whole text, and the first key
+            // would replace content's defaultValue; a phone's field, Android's
+            // and the Linux Host Kit's start with the caret after it instead.
+            placeCaretAtEnd()
             owner?.keyboardInput(.heightChange(Double(Self.height)))
         }
 
@@ -724,16 +731,37 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
         func replaceText(_ text: String) {
             guard request != nil else { return }
             field.stringValue = text
+            placeCaretAtEnd()
         }
 
         func controlTextDidChange(_ notification: Notification) {
             guard let request else { return }
             var text = field.stringValue
-            if request.maxLength > 0, text.count > request.maxLength {
-                text = String(text.prefix(request.maxLength))
+            if request.maxLength > 0, text.utf16.count > request.maxLength {
+                text = Self.prefix(of: text, utf16Units: request.maxLength)
                 field.stringValue = text
+                placeCaretAtEnd()
             }
             owner?.keyboardInput(.input(text))
+        }
+
+        private func placeCaretAtEnd() {
+            field.currentEditor()?.selectedRange = NSRange(location: field.stringValue.utf16.count, length: 0)
+        }
+
+        /// The longest whole-character prefix of `text` that is at most
+        /// `limit` UTF-16 units: maxLength counts what a JavaScript string's
+        /// length does, as Android's field and the Linux Host Kit's do, and a
+        /// character is never cut in two.
+        static func prefix(of text: String, utf16Units limit: Int) -> String {
+            var units = 0
+            var end = text.startIndex
+            for character in text {
+                units += character.utf16.count
+                if units > limit { break }
+                end = text.index(after: end)
+            }
+            return String(text[..<end])
         }
 
         func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
