@@ -33,6 +33,7 @@ REQUIRED = [
     'scripts/testing/fixtures/audio-codec-probe/isomp4_source_contracts.rs',
     'engine/third_party/symphonia-format-isomp4-patches/0006-bind-pinned-stream-length.patch',
     'engine/crates/services/src/network/http/range.rs',
+    'engine/crates/services/src/network/http/range/stream.rs',
     'engine/crates/services/src/network/http/range/tests.rs',
     'scripts/testing/fixtures/audio-codec-probe/isomp4_index_contracts.rs',
     'scripts/testing/fixtures/audio-codec-probe/isomp4_streaming_contracts.rs',

@@ -7,6 +7,7 @@
 //! dropping the read future, which also latches this reader as failed.
 use super::{HttpClient, Response};
 use crate::network::{gate::GateKind, url::Url};
+use bytes::Bytes;
 use http::{
     HeaderMap, HeaderValue, StatusCode,
     header::{
@@ -173,115 +174,161 @@ impl Reader {
         let mut output = Vec::new();
         output.try_reserve_exact(len).map_err(|_| Error::Limit)?;
         while output.len() < len {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Err(Error::Timeout);
-            }
             self.requests = self
                 .requests
                 .checked_add(1)
                 .filter(|n| *n <= self.limits.max_requests)
                 .ok_or(Error::Limit)?;
             let start = offset + output.len() as u64;
-            let value = HeaderValue::from_str(&format!("bytes={start}-{}", end - 1))
-                .map_err(|_| Error::Limit)?;
-            let mut response = self
-                .client
-                .get(self.kind, self.identity.url.clone())
-                .header(RANGE, value)
-                .header(IF_RANGE, self.identity.etag.clone())
-                .header(ACCEPT_ENCODING, HeaderValue::from_static("identity"))
-                .timeout(remaining)
-                .send()
-                .await
-                .map_err(|e| {
-                    if Instant::now() >= deadline {
-                        Error::Timeout
-                    } else {
-                        Error::Http(e.to_string())
-                    }
-                })?;
-            if response.url().as_str() != self.identity.url.as_str() {
-                return Err(Error::RepresentationChanged);
-            }
-            identity_encoding(response.headers())?;
-            let tag = single(response.headers(), ETAG.as_str())?;
-            if tag.is_some_and(|tag| tag != self.identity.etag) {
-                return Err(Error::RepresentationChanged);
-            }
-            if response.status() == StatusCode::OK {
-                return Err(Error::RangeUnsupported);
-            }
-            if response.status() != StatusCode::PARTIAL_CONTENT || tag.is_none() {
-                return Err(Error::InvalidResponse(
-                    "expected a validated single-part 206",
-                ));
-            }
-            if single(response.headers(), CONTENT_TYPE.as_str())?.is_some_and(|v| {
-                v.as_bytes()
-                    .get(..10)
-                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"multipart/"))
-            }) {
-                return Err(Error::InvalidResponse("multipart range response"));
-            }
-            let extent = single(response.headers(), CONTENT_RANGE.as_str())?
-                .ok_or(Error::InvalidResponse("missing Content-Range"))?;
-            let extent = ContentRange::parse(extent)?;
-            if extent.start != start || extent.end >= end {
-                return Err(Error::InvalidResponse(
-                    "range does not match requested coordinates",
-                ));
-            }
-            if self
-                .identity
-                .length
-                .zip(extent.total)
-                .is_some_and(|(a, b)| a != b)
-            {
-                return Err(Error::RepresentationChanged);
-            }
-            let total = self.identity.length.or(extent.total);
-            if total.is_some_and(|n| end > n || extent.end >= n) {
-                return Err(Error::InvalidResponse("range exceeds the representation"));
-            }
-            self.identity.length = total;
-            let expected = extent.end - extent.start + 1;
-            if single(response.headers(), CONTENT_LENGTH.as_str())?
-                .is_some_and(|n| decimal(n.as_bytes()) != Some(expected))
-            {
-                return Err(Error::InvalidResponse(
-                    "Content-Length disagrees with Content-Range",
-                ));
-            }
-            let before = output.len();
-            while let Some(chunk) = response.chunk().await.map_err(|e| {
-                if Instant::now() >= deadline {
-                    Error::Timeout
-                } else {
-                    Error::Http(e.to_string())
-                }
-            })? {
+            let mut segment = self.open_range(start, end, deadline, true).await?;
+            while let Some(chunk) = segment.chunk(deadline).await? {
                 self.bytes = self
                     .bytes
                     .checked_add(chunk.len() as u64)
                     .filter(|n| *n <= self.limits.max_total_bytes)
                     .ok_or(Error::Limit)?;
-                let received = (output.len() - before) as u64;
-                if received
-                    .checked_add(chunk.len() as u64)
-                    .is_none_or(|n| n > expected)
-                {
-                    return Err(Error::InvalidResponse("range body exceeds declared extent"));
-                }
                 output.extend_from_slice(&chunk);
-            }
-            if (output.len() - before) as u64 != expected {
-                return Err(Error::InvalidResponse("truncated range body"));
             }
         }
         Ok(output)
     }
+
+    /// Shared request/identity/extent validation for control reads and media.
+    /// Control exchanges retain their absolute deadline. Media only bounds the
+    /// headers here; its caller applies an idle deadline to each body read.
+    async fn open_range(
+        &mut self,
+        start: u64,
+        end: u64,
+        deadline: Instant,
+        whole_exchange: bool,
+    ) -> Result<Segment, Error> {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(Error::Timeout);
+        }
+        let value = HeaderValue::from_str(&format!("bytes={start}-{}", end - 1))
+            .map_err(|_| Error::Limit)?;
+        let request = self
+            .client
+            .get(self.kind, self.identity.url.clone())
+            .header(RANGE, value)
+            .header(IF_RANGE, self.identity.etag.clone())
+            .header(ACCEPT_ENCODING, HeaderValue::from_static("identity"));
+        let response = if whole_exchange {
+            request.timeout(remaining).send().await
+        } else {
+            tokio::time::timeout_at(deadline, request.send())
+                .await
+                .map_err(|_| Error::Timeout)?
+        }
+        .map_err(|e| {
+            if Instant::now() >= deadline {
+                Error::Timeout
+            } else {
+                Error::Http(e.to_string())
+            }
+        })?;
+        if response.url().as_str() != self.identity.url.as_str() {
+            return Err(Error::RepresentationChanged);
+        }
+        if response.has_decoded_representation() {
+            return Err(Error::InvalidResponse("range representation was decoded"));
+        }
+        identity_encoding(response.headers())?;
+        let tag = single(response.headers(), ETAG.as_str())?;
+        if tag.is_some_and(|tag| tag != self.identity.etag) {
+            return Err(Error::RepresentationChanged);
+        }
+        if response.status() == StatusCode::OK {
+            return Err(Error::RangeUnsupported);
+        }
+        if response.status() != StatusCode::PARTIAL_CONTENT || tag.is_none() {
+            return Err(Error::InvalidResponse(
+                "expected a validated single-part 206",
+            ));
+        }
+        if single(response.headers(), CONTENT_TYPE.as_str())?.is_some_and(|v| {
+            v.as_bytes()
+                .get(..10)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b"multipart/"))
+        }) {
+            return Err(Error::InvalidResponse("multipart range response"));
+        }
+        let extent = single(response.headers(), CONTENT_RANGE.as_str())?
+            .ok_or(Error::InvalidResponse("missing Content-Range"))?;
+        let extent = ContentRange::parse(extent)?;
+        if extent.start != start || extent.end >= end {
+            return Err(Error::InvalidResponse(
+                "range does not match requested coordinates",
+            ));
+        }
+        if self
+            .identity
+            .length
+            .zip(extent.total)
+            .is_some_and(|(a, b)| a != b)
+        {
+            return Err(Error::RepresentationChanged);
+        }
+        let total = self.identity.length.or(extent.total);
+        if total.is_some_and(|n| end > n || extent.end >= n) {
+            return Err(Error::InvalidResponse("range exceeds the representation"));
+        }
+        self.identity.length = total;
+        let expected = extent.end - extent.start + 1;
+        if single(response.headers(), CONTENT_LENGTH.as_str())?
+            .is_some_and(|n| decimal(n.as_bytes()) != Some(expected))
+        {
+            return Err(Error::InvalidResponse(
+                "Content-Length disagrees with Content-Range",
+            ));
+        }
+        Ok(Segment {
+            response,
+            remaining: expected,
+        })
+    }
 }
+
+/// One validated response extent. No chunk crosses its announced boundary and
+/// EOF must be observed before a short 206 can continue at the next byte.
+struct Segment {
+    response: Response,
+    remaining: u64,
+}
+impl Segment {
+    async fn chunk(&mut self, deadline: Instant) -> Result<Option<Bytes>, Error> {
+        let chunk = tokio::time::timeout_at(deadline, self.response.chunk())
+            .await
+            .map_err(|_| Error::Timeout)?
+            .map_err(|e| {
+                if Instant::now() >= deadline {
+                    Error::Timeout
+                } else {
+                    Error::Http(e.to_string())
+                }
+            })?;
+        match chunk {
+            Some(chunk) => {
+                if (chunk.len() as u64) > self.remaining {
+                    return Err(Error::InvalidResponse("range body exceeds declared extent"));
+                }
+                self.remaining = self.remaining.saturating_sub(chunk.len() as u64);
+                Ok(Some(chunk))
+            }
+            None => {
+                if self.remaining != 0 {
+                    return Err(Error::InvalidResponse("truncated range body"));
+                }
+                Ok(None)
+            }
+        }
+    }
+}
+
+mod stream;
+pub use stream::{Stream, StreamLimits};
 
 fn single<'a>(headers: &'a HeaderMap, name: &str) -> Result<Option<&'a HeaderValue>, Error> {
     let mut values = headers.get_all(name).iter();

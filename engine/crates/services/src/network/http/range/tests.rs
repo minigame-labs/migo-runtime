@@ -52,12 +52,18 @@ enum Reply {
     SlowShort,
     Redirect,
     GzipInitial,
+    OtherCoding,
+    Streamed,
+    Drip,
+    HoldTail,
+    ChangedAfterFirst,
 }
 struct Server {
     url: Url,
     task: tokio::task::JoinHandle<()>,
     requests: Arc<Mutex<Vec<String>>>,
     arrived: Arc<Notify>,
+    release: Arc<Notify>,
 }
 impl Drop for Server {
     fn drop(&mut self) {
@@ -75,12 +81,15 @@ async fn start_server(reply: Reply, length: u64, initial_chunked: bool) -> Serve
     let observed = requests.clone();
     let arrived = Arc::new(Notify::new());
     let signal = arrived.clone();
+    let release = Arc::new(Notify::new());
+    let unblock = release.clone();
     let task = tokio::spawn(async move {
         let mut children = tokio::task::JoinSet::new();
         loop {
             let (mut socket, _) = listener.accept().await.unwrap();
             let observed = observed.clone();
             let signal = signal.clone();
+            let unblock = unblock.clone();
             children.spawn(async move {
                 let mut request = Vec::new();
                 while !request.ends_with(b"\r\n\r\n") {
@@ -88,7 +97,11 @@ async fn start_server(reply: Reply, length: u64, initial_chunked: bool) -> Serve
                     assert!(request.len() < 8192);
                 }
                 let text = String::from_utf8(request).unwrap().to_ascii_lowercase();
-                observed.lock().unwrap().push(text.clone());
+                let ordinal = {
+                    let mut requests = observed.lock().unwrap();
+                    requests.push(text.clone());
+                    requests.len()
+                };
                 let range = text.lines().find_map(|line| line.strip_prefix("range: bytes="));
                 let Some(range) = range else {
                     if matches!(reply, Reply::GzipInitial) {
@@ -119,14 +132,14 @@ async fn start_server(reply: Reply, length: u64, initial_chunked: bool) -> Serve
                 assert!(text.contains("if-range: \"v1\"\r\n"));
                 assert!(text.contains("accept-encoding: identity\r\n"));
                 if matches!(reply, Reply::HangHeaders) { std::future::pending::<()>().await; }
-                if matches!(reply, Reply::Short | Reply::SlowShort) { end = end.min(start + 3); }
+                if matches!(reply, Reply::Short | Reply::SlowShort | Reply::ChangedAfterFirst) { end = end.min(start + 3); }
                 if matches!(reply, Reply::SlowShort) { tokio::time::sleep(Duration::from_millis(25)).await; }
                 if matches!(reply, Reply::Redirect) && !text.starts_with("get /changed ") {
                     let _ = socket.write_all(b"HTTP/1.1 302 Found\r\nLocation: /changed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await;
                     return;
                 }
                 let mut tag = "ETag: \"v1\"\r\n";
-                if matches!(reply, Reply::ChangedTag | Reply::ChangedFull) { tag = "ETag: \"v2\"\r\n"; }
+                if matches!(reply, Reply::ChangedTag | Reply::ChangedFull) || (matches!(reply, Reply::ChangedAfterFirst) && ordinal > 2) { tag = "ETag: \"v2\"\r\n"; }
                 if matches!(reply, Reply::MissingTag) { tag = ""; }
                 if matches!(reply, Reply::Ignored | Reply::ChangedFull) {
                     let _ = socket.write_all(format!("HTTP/1.1 200 OK\r\n{tag}Content-Length: 10485760\r\nConnection: close\r\n\r\n").as_bytes()).await;
@@ -142,19 +155,24 @@ async fn start_server(reply: Reply, length: u64, initial_chunked: bool) -> Serve
                 if !matches!(reply, Reply::MissingRange) { head.push_str(&range); }
                 if matches!(reply, Reply::DuplicateRange) { head.push_str(&range); }
                 if matches!(reply, Reply::Gzip) { head.push_str("Content-Encoding: gzip\r\n"); }
+                if matches!(reply, Reply::OtherCoding) { head.push_str("Content-Encoding: snappy\r\n"); }
                 if matches!(reply, Reply::Multipart) { head.push_str("Content-Type: multipart/byteranges; boundary=x\r\n"); }
-                let chunked = matches!(reply, Reply::Chunked | Reply::BodyShort | Reply::BodyLong);
+                let chunked = matches!(reply, Reply::Chunked | Reply::BodyShort | Reply::BodyLong | Reply::HoldTail | Reply::Drip);
                 let count = (declared_end - declared_start + 1) as usize;
                 head.push_str(&if chunked { "Transfer-Encoding: chunked\r\n\r\n".to_owned() }
                     else { format!("Content-Length: {count}\r\n\r\n") });
                 if socket.write_all(head.as_bytes()).await.is_err() { return; }
                 if matches!(reply, Reply::HangBody) { std::future::pending::<()>().await; }
                 let count = count - usize::from(matches!(reply, Reply::BodyShort)) + usize::from(matches!(reply, Reply::BodyLong));
-                let body = payload(start, count);
-                for bytes in body.chunks(3) {
+                let step = if matches!(reply, Reply::Streamed) { 8192 } else if matches!(reply, Reply::BodyLong) { 1 } else { 3 };
+                for offset in (0..count).step_by(step) {
+                    let body = payload(start + offset as u64, step.min(count - offset));
+                    let bytes = body.as_slice();
                     if chunked && socket.write_all(format!("{:x}\r\n", bytes.len()).as_bytes()).await.is_err() { return; }
                     if socket.write_all(bytes).await.is_err() { return; }
                     if chunked && socket.write_all(b"\r\n").await.is_err() { return; }
+                    if matches!(reply, Reply::Drip) { tokio::time::sleep(Duration::from_millis(20)).await; }
+                    if matches!(reply, Reply::HoldTail) && offset == 0 && count > step { unblock.notified().await; }
                 }
                 // Overlong data must be rejected before it enters the result
                 // buffer, without waiting for the peer to finish its body.
@@ -168,6 +186,7 @@ async fn start_server(reply: Reply, length: u64, initial_chunked: bool) -> Serve
         task,
         requests,
         arrived,
+        release,
     }
 }
 async fn reader(server: &Server, limits: Limits) -> Reader {
@@ -358,6 +377,7 @@ async fn actual_http_identity_extent_and_body_failures_never_return_partial_data
         Reply::MissingTag,
         Reply::ChangedLength,
         Reply::Gzip,
+        Reply::OtherCoding,
         Reply::Multipart,
         Reply::DuplicateRange,
         Reply::MissingRange,
@@ -499,4 +519,310 @@ async fn cancellation_and_one_absolute_deadline_end_pending_headers_body_and_par
         );
         assert!(start.elapsed() < Duration::from_millis(500));
     }
+}
+
+async fn drain(stream: &mut Stream<'_>) -> Result<u64, Error> {
+    let mut count = 0;
+    loop {
+        let position = stream.position();
+        let Some(chunk) = stream.chunk().await? else {
+            break;
+        };
+        assert_eq!(chunk.as_ref(), payload(position, chunk.len()));
+        count += chunk.len() as u64;
+    }
+    Ok(count)
+}
+
+#[tokio::test]
+async fn media_stream_exceeds_control_budgets_without_collecting_or_truncating_positions() {
+    let offset = (1_u64 << 34) + 73;
+    let len = 6 * 1024 * 1024 + 37;
+    let server = start_server(Reply::Streamed, offset + len + 128, false).await;
+    let mut source = reader(
+        &server,
+        Limits {
+            max_read_bytes: 16,
+            max_total_bytes: 16,
+            max_requests: 2,
+        },
+    )
+    .await;
+    assert_eq!(
+        source.read_exact_at(7, 8, deadline()).await.unwrap(),
+        payload(7, 8)
+    );
+    {
+        let mut stream = source
+            .stream_at(offset, len, StreamLimits::default())
+            .unwrap();
+        assert_eq!(drain(&mut stream).await.unwrap(), len);
+        assert_eq!(stream.position(), offset + len);
+        assert_eq!(stream.bytes_received(), len);
+        assert_eq!(stream.requests(), 1);
+        assert_eq!(stream.chunk().await.unwrap(), None);
+    }
+    assert_eq!(source.bytes_received(), 8);
+    assert_eq!(source.requests(), 1);
+    assert_eq!(
+        source.read_exact_at(9, 8, deadline()).await.unwrap(),
+        payload(9, 8)
+    );
+    assert_eq!(source.bytes_received(), 16);
+    assert_eq!(source.requests(), 2);
+}
+
+#[tokio::test]
+async fn media_short_responses_continue_exactly_and_unknown_total_is_not_object_eof() {
+    for mode in [
+        Reply::Fixed,
+        Reply::Chunked,
+        Reply::Short,
+        Reply::UnknownTotal,
+    ] {
+        for chunked in [false, true] {
+            let server = start_server(mode, 512, chunked).await;
+            let mut source = reader(&server, Limits::default()).await;
+            let mut stream = source.stream_at(37, 61, StreamLimits::default()).unwrap();
+            assert_eq!(drain(&mut stream).await.unwrap(), 61);
+            assert_eq!(stream.position(), 98);
+            assert_eq!(stream.bytes_received(), 61);
+            assert_eq!(
+                stream.requests(),
+                if matches!(mode, Reply::Short) { 16 } else { 1 }
+            );
+            assert_eq!(
+                stream.object_length(),
+                if chunked && matches!(mode, Reply::UnknownTotal) {
+                    None
+                } else {
+                    Some(512)
+                }
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn media_rejects_headers_body_faults_and_version_changes_before_retry_or_success() {
+    for mode in [
+        Reply::WrongStart,
+        Reply::WrongEnd,
+        Reply::ChangedTag,
+        Reply::MissingTag,
+        Reply::ChangedLength,
+        Reply::Gzip,
+        Reply::OtherCoding,
+        Reply::Multipart,
+        Reply::DuplicateRange,
+        Reply::MissingRange,
+        Reply::BodyShort,
+        Reply::BodyLong,
+        Reply::Redirect,
+        Reply::ChangedAfterFirst,
+    ] {
+        let server = start_server(mode, 512, false).await;
+        let mut source = reader(&server, Limits::default()).await;
+        {
+            let mut stream = source.stream_at(7, 16, StreamLimits::default()).unwrap();
+            assert!(
+                tokio::time::timeout(Duration::from_secs(1), drain(&mut stream))
+                    .await
+                    .expect("invalid media must not wait for untrusted body EOF")
+                    .is_err()
+            );
+            assert_eq!(
+                stream.requests(),
+                if matches!(mode, Reply::ChangedAfterFirst) {
+                    2
+                } else {
+                    1
+                }
+            );
+            assert_eq!(
+                tokio::time::timeout(Duration::from_millis(500), stream.chunk())
+                    .await
+                    .expect("a failed or cancelled media read must fail immediately"),
+                Err(Error::PreviouslyFailed)
+            );
+        }
+        assert_eq!(
+            source.read_exact_at(7, 16, deadline()).await,
+            Err(Error::PreviouslyFailed)
+        );
+    }
+    for (mode, expected) in [
+        (Reply::Ignored, Error::RangeUnsupported),
+        (Reply::ChangedFull, Error::RepresentationChanged),
+    ] {
+        let server = start_server(mode, 512, false).await;
+        let mut source = reader(&server, Limits::default()).await;
+        let mut stream = source.stream_at(7, 16, StreamLimits::default()).unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), stream.chunk())
+                .await
+                .unwrap(),
+            Err(expected)
+        );
+        assert_eq!(stream.bytes_received(), 0);
+    }
+}
+
+#[tokio::test]
+async fn media_first_chunk_and_backpressure_do_not_wait_for_or_expire_the_body() {
+    let server = start_server(Reply::HoldTail, 512, false).await;
+    let mut source = reader(&server, Limits::default()).await;
+    {
+        let mut stream = source
+            .stream_at(
+                7,
+                16,
+                StreamLimits {
+                    header_timeout: Duration::from_millis(100),
+                    idle_timeout: Duration::from_millis(100),
+                    ..StreamLimits::default()
+                },
+            )
+            .unwrap();
+        let first = tokio::time::timeout(Duration::from_millis(500), stream.chunk())
+            .await
+            .expect("first bytes must arrive before the held tail")
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.as_ref(), payload(7, first.len()));
+        assert!(stream.position() < 23);
+        tokio::time::sleep(Duration::from_millis(160)).await;
+        server.release.notify_one();
+        assert_eq!(drain(&mut stream).await.unwrap() + first.len() as u64, 16);
+    }
+    // Dropping a completed chunk's stream does not poison later control reads.
+    let mut stream = source.stream_at(7, 16, StreamLimits::default()).unwrap();
+    assert!(stream.chunk().await.unwrap().is_some());
+    drop(stream);
+    server.release.notify_one();
+    assert_eq!(
+        source.read_exact_at(7, 3, deadline()).await.unwrap(),
+        payload(7, 3)
+    );
+}
+
+#[tokio::test]
+async fn media_request_count_extent_and_timeout_limits_fail_without_unbounded_requests() {
+    let server = start_server(Reply::Short, 512, false).await;
+    let mut source = reader(&server, Limits::default()).await;
+    let mut stream = source
+        .stream_at(
+            7,
+            16,
+            StreamLimits {
+                max_requests: 2,
+                ..StreamLimits::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(drain(&mut stream).await, Err(Error::Limit));
+    assert_eq!(stream.bytes_received(), 8);
+    assert_eq!(server.requests.lock().unwrap().len(), 3);
+    drop(stream);
+    for (offset, len, limits) in [
+        (500, 16, StreamLimits::default()),
+        (u64::MAX, 1, StreamLimits::default()),
+        (0, 0, StreamLimits::default()),
+        (
+            0,
+            1,
+            StreamLimits {
+                header_timeout: Duration::ZERO,
+                ..StreamLimits::default()
+            },
+        ),
+        (
+            0,
+            1,
+            StreamLimits {
+                idle_timeout: Duration::ZERO,
+                ..StreamLimits::default()
+            },
+        ),
+    ] {
+        let mut source = reader(&server, Limits::default()).await;
+        let before = server.requests.lock().unwrap().len();
+        assert!(matches!(
+            source.stream_at(offset, len, limits),
+            Err(Error::Limit)
+        ));
+        assert_eq!(server.requests.lock().unwrap().len(), before);
+        assert!(matches!(
+            source.stream_at(7, 16, StreamLimits::default()),
+            Err(Error::PreviouslyFailed)
+        ));
+    }
+}
+
+#[tokio::test]
+async fn media_header_idle_and_cancel_deadlines_are_separate_from_duration() {
+    for mode in [Reply::HangHeaders, Reply::HangBody] {
+        let server = start_server(mode, 512, false).await;
+        let mut source = reader(&server, Limits::default()).await;
+        let start = Instant::now();
+        let mut stream = source
+            .stream_at(
+                7,
+                16,
+                StreamLimits {
+                    header_timeout: Duration::from_millis(70),
+                    idle_timeout: Duration::from_millis(70),
+                    ..StreamLimits::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_millis(500), stream.chunk())
+                .await
+                .expect("header and idle timers must both interrupt pending IO"),
+            Err(Error::Timeout)
+        );
+        assert!(start.elapsed() < Duration::from_millis(500));
+    }
+    for mode in [Reply::HangHeaders, Reply::HangBody] {
+        let server = start_server(mode, 512, false).await;
+        let mut source = reader(&server, Limits::default()).await;
+        let mut stream = source.stream_at(7, 16, StreamLimits::default()).unwrap();
+        {
+            let read = stream.chunk();
+            tokio::pin!(read);
+            tokio::select! { result = &mut read => panic!("pending media completed: {result:?}"),
+            _ = server.arrived.notified() => {} }
+        }
+        assert_eq!(
+            tokio::time::timeout(Duration::from_millis(500), stream.chunk())
+                .await
+                .expect("a failed or cancelled media read must fail immediately"),
+            Err(Error::PreviouslyFailed)
+        );
+        drop(stream);
+        assert_eq!(
+            source.read_exact_at(7, 16, deadline()).await,
+            Err(Error::PreviouslyFailed)
+        );
+    }
+    let server = start_server(Reply::Drip, 512, false).await;
+    let mut source = reader(&server, Limits::default()).await;
+    let start = Instant::now();
+    let mut stream = source
+        .stream_at(
+            7,
+            32,
+            StreamLimits {
+                header_timeout: Duration::from_millis(100),
+                idle_timeout: Duration::from_millis(100),
+                ..StreamLimits::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(drain(&mut stream).await.unwrap(), 32);
+    assert!(
+        start.elapsed() > Duration::from_millis(100),
+        "header timeout must not become whole-media timeout"
+    );
 }

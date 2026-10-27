@@ -135,7 +135,7 @@ symphonia-format-isomp4={version="=0.6.1",features=["streaming"]}
     codecs.run(['cargo','metadata','--offline','--format-version','1'],work/'candidate-metadata.jsonl',cwd=package,env=env)
     codecs.run(['cargo','check','--offline','--locked','--lib'],work/'normal-library-check.log',cwd=package,env=env)
     positive=build(work,env,'positive')
-    for label,selected,count in [('source','isomp4_source_contracts::',9),('range','network::http::range::tests::',10)]:
+    for label,selected,count in [('source','isomp4_source_contracts::',9),('range','network::http::range::tests::',16)]:
         log=work/f'positive-{label}.log'
         codecs.run([str(positive),selected,'--nocapture','--test-threads=1'],log,cwd=package,env=env)
         assert f'{count} passed; 0 failed'in log.read_text(),label
@@ -144,7 +144,7 @@ symphonia-format-isomp4={version="=0.6.1",features=["streaming"]}
     assert all(codecs.sha(work/rel)==h for rel,h in retained.items()),'source copy not restored'
     rows=json.loads((work/'library-source-provenance.json').read_text())
     for row in rows:assert index_gate.timeline.source_tree(libraries[row['crate']])==row['source_files'],row['crate']
-    summary={'source_tests':9,'http_range_regression_tests':10,'http_pcm_comparisons':16,'compiled_controls':negative,
+    summary={'source_tests':9,'http_range_regression_tests':16,'http_pcm_comparisons':16,'compiled_controls':negative,
              'binary_sha256':codecs.sha(positive),'libraries':len(rows),'patches':sum(len(r['patches'])for r in rows),
              'root_inputs_unchanged':True,'source_copies_restored':True,'root_lock_sha256':codecs.sha(ROOT/'engine/Cargo.lock'),
              'scope':'Actual HTTP tail-index/common decoder/CPU lane only; test PCM collection is an oracle. No ReadAt/DSP/player/disk fallback/product/native/device/performance acceptance.'}
