@@ -77,6 +77,12 @@ public final class MigoEngineSession {
         case error(code: MigoResult, message: String, recoverable: Bool)
         /// Content called `migo.exitMiniProgram()`.
         case exitRequested
+        /// Content called `migo.restartMiniProgram()` in a session that cannot
+        /// replace its content in place -- one whose content runs in WebKit's
+        /// process: start the game again in a new session, launched with these
+        /// options (the JSON object `launchOptionsJSON` takes). A session whose
+        /// content runs in process restarts in place and never says this.
+        case restartRequested(launchOptionsJSON: String)
         /// The surface of this generation stopped being presentable.
         case surfaceLost(generation: UInt64, reason: MigoSurfaceLossReason)
         /// Content opened the soft keyboard (`migo.showKeyboard`).
@@ -364,6 +370,7 @@ public final class MigoEngineSession {
         callbacks.on_ready = migoOnReady
         callbacks.on_error = migoOnError
         callbacks.on_exit_requested = migoOnExitRequested
+        callbacks.on_restart_requested = migoOnRestartRequested
         callbacks.on_surface_lost = migoOnSurfaceLost
         callbacks.on_request_frame = migoOnRequestFrame
         callbacks.on_surface_released = migoOnSurfaceReleased
@@ -968,6 +975,12 @@ public final class MigoEngineSession {
     /// Polled on the main run loop rather than blocked on: the renderer's
     /// release can need the main thread (Core Animation hands drawables back
     /// there), so a main thread that sleeps here can wait on itself.
+    ///
+    /// The polls hold the session until it finishes. A close outlives the
+    /// reference that started it -- a view lets go of its session as it closes
+    /// it -- and polls that held it weakly stopped when that reference went,
+    /// with the surface still PENDING, so neither the destroy nor `completion`
+    /// ran: a game restarted in a new session never started. `finish` lets go.
     private func waitForRelease(
         _ observer: OpaquePointer, deadline: Date, completion: ((Bool) -> Void)?
     ) {
@@ -986,11 +999,11 @@ public final class MigoEngineSession {
             return
         }
         // The release edge callback wakes this early; the timer is the floor.
-        relay.releaseWaiter = { [weak self] in
-            self?.waitForRelease(observer, deadline: deadline, completion: completion)
+        relay.releaseWaiter = {
+            self.waitForRelease(observer, deadline: deadline, completion: completion)
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(4)) { [weak self] in
-            guard let self, let waiter = self.relay.releaseWaiter else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(4)) {
+            guard let waiter = self.relay.releaseWaiter else { return }
             self.relay.releaseWaiter = nil
             waiter()
         }
@@ -1104,6 +1117,12 @@ private let migoOnError: MigoOnErrorFn = { userData, _, error in
 
 private let migoOnExitRequested: MigoOnExitRequestedFn = { userData, _ in
     relay(userData)?.owner?.deliver(.exitRequested)
+}
+
+private let migoOnRestartRequested: MigoOnRestartRequestedFn = { userData, _, options, length in
+    guard let options, length > 0 else { return }
+    let json = String(decoding: UnsafeRawBufferPointer(start: options, count: Int(length)), as: UTF8.self)
+    relay(userData)?.owner?.deliver(.restartRequested(launchOptionsJSON: json))
 }
 
 private let migoOnSurfaceLost: MigoOnSurfaceLostFn = { userData, _, generation, reason in

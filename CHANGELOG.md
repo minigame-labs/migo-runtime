@@ -890,6 +890,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- On iOS (Performance+), `restartMiniProgram` launches the game again: the session asks its host to start the game
+  over in a new session, launched as a restart launches it -- with the options it was last shown with, its query the
+  one `path` names -- and `MigoGameView` does. It did nothing: the session, whose content runs in WebKit's process,
+  cannot replace it in place, and it had no way to ask. The C ABI carries the request as
+  `MigoHostCallbacks.on_restart_requested` (appended), which only a session whose content runs outside the engine
+  calls.
+- A restart is a cold start: the restarted runtime is shown before its content runs, as a host's first show is, rather
+  than after it, which made the new entry's `onShow` listener hear one. The reference reads a cold start from
+  `getLaunchOptionsSync()` and `getEnterOptionsSync()`; `onShow` is the return to the foreground.
+- Apple: `MigoEngineSession.close` completes when its surface is released while the session is still running. Its
+  polls held the session weakly, and a view lets go of its session as it closes it, so the polls stopped and neither
+  the destroy nor the completion ran; a game started again in a new session never started.
 - Android camera frames reach content as the reference defines `onCameraFrame`'s `data`: straight RGBA, four bytes a
   pixel. They were the camera's three YUV planes concatenated as they lay, row padding and interleaved chroma
   included -- 1.5 bytes a pixel nobody could read without the strides, which were not given. The planes' strides now

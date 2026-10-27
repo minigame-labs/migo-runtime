@@ -218,7 +218,9 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
         private var metalView = MetalView()
         /// Layers a session never released. Kept, never reused: see `tearDown`.
         private var abandonedLayers: [MetalView] = []
-        private var game: (id: String, entry: String)?
+        /// The game this view runs, and what it is launched with: the
+        /// configuration's options, or a restart's.
+        private var game: (id: String, entry: String, launchOptionsJSON: String?)?
         // Readable by `@testable` tests, which report device changes through it.
         private(set) var engine: MigoEngineSession?
         private var host: MigoPerformancePlusHost?
@@ -304,7 +306,7 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
         public func loadGame(id: String, entry: String = "game.js") {
             precondition(Thread.isMainThread, "MigoGameView is main-thread only")
             stop()
-            game = (id, entry)
+            game = (id, entry, configuration.launchOptionsJSON)
             startIfPossible()
         }
 
@@ -436,7 +438,7 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
         private func startIfPossible() {
             guard let game, !isRunning, closing == 0, let window, bounds.width >= 1, bounds.height >= 1 else { return }
             do {
-                try start(id: game.id, entry: game.entry, in: window)
+                try start(id: game.id, entry: game.entry, launchOptionsJSON: game.launchOptionsJSON, in: window)
             } catch {
                 tearDown(then: nil)
                 self.game = nil
@@ -444,7 +446,7 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             }
         }
 
-        private func start(id: String, entry: String, in window: UIWindow) throws {
+        private func start(id: String, entry: String, launchOptionsJSON: String?, in window: UIWindow) throws {
             let started = layout(in: window)
             let size = started.size
             metalView.configure(scale: window.screen.scale)
@@ -462,7 +464,7 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
                 preferredFramesPerSecond: configuration.preferredFramesPerSecond,
                 hostServices: MigoGameViewHostServices(app: configuration.hostServices, window: windowService),
                 capabilities: configuration.capabilities, networkPolicyJSON: configuration.networkPolicyJSON,
-                launchOptionsJSON: configuration.launchOptionsJSON)
+                launchOptionsJSON: launchOptionsJSON)
             self.engine = engine
             engine.onEvent = { [weak self] event in self?.engineEvent(event) }
             for (name, json) in ecosystemValues { engine.setEcosystemValue(name, json: json) }
@@ -482,7 +484,7 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
                     engineSession: .init(
                         launchNonce: engine.launchNonce, surfaceGeneration: engine.surfaceGeneration,
                         surfaceWidthPixels: Int(size.widthPixels), surfaceHeightPixels: Int(size.heightPixels),
-                        device: device, launchOptionsJSON: configuration.launchOptionsJSON)),
+                        device: device, launchOptionsJSON: launchOptionsJSON)),
                 channel: MigoFrameChannel(session: engine.session))
             self.host = host
             host.onReport = { [weak self] report in self?.producerReport(report) }
@@ -573,6 +575,20 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             }
         }
 
+        /// Content asked to be launched again (`restartMiniProgram`). Its session
+        /// cannot replace content running in WebKit's process, so the game starts
+        /// over in a new one, launched with what the engine says: the options it
+        /// was last shown with, its query the one the restart named. Content's
+        /// own doing, so neither a recovery nor `.restarted`.
+        private func relaunch(launchOptionsJSON: String) {
+            guard let current = game else { return }
+            game = (current.id, current.entry, launchOptionsJSON)
+            tearDown { [weak self] in
+                guard let self, self.game?.id == current.id else { return }
+                self.startIfPossible()
+            }
+        }
+
         // MARK: - what the engine and the producer say
 
         private func engineEvent(_ event: MigoEngineSession.Event) {
@@ -582,6 +598,8 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             case .exitRequested:
                 stop()
                 onEvent?(.exitRequested)
+            case .restartRequested(let launchOptionsJSON):
+                relaunch(launchOptionsJSON: launchOptionsJSON)
             case .error(let code, let message, let recoverable):
                 onEvent?(.error(code: code, message: message, recoverable: recoverable))
             case .surfaceLost:
