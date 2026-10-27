@@ -14,8 +14,8 @@ use tracing::{debug, error, info};
 use crate::runtime::host::Host;
 use crate::runtime::registry;
 use crate::runtime::session_thread::{
-    HostThread, SessionThreadContext, SpawnedSurfaceHost, create_basic_runtime,
-    create_runtime_before_ready, spawn_session_thread,
+    HostThread, SessionThreadContext, SpawnedSurfaceHost, announce_ready, create_basic_runtime,
+    spawn_session_thread,
 };
 use crate::services::PlatformServices;
 use shared::{
@@ -101,22 +101,16 @@ fn run_embedded_session(ctx: SessionThreadContext) {
         restart_boundary,
         ready_tx,
     } = ctx;
-    let host = match Host::new(
-        id,
-        host_tx,
-        critical_host_tx,
-        initial_surface,
-        graphics_platform,
-        platform,
-        opt,
-        Arc::clone(&surface_control),
-        vsync_rx,
-        restart_boundary,
-    ) {
-        Ok(h) => h,
+    // The session's runtime first, and the Host built inside it. `Host::new`
+    // creates the isolate, and V8 hands every delayed task it posts (a timed
+    // wait, the collector's memory reducer) to the tokio runtime that was
+    // current when that isolate was created; with none, deno_core aborts the
+    // process the first time one is posted. Readiness is still announced only
+    // once the Host exists.
+    let runtime = match create_basic_runtime() {
+        Ok(rt) => rt,
         Err(e) => {
-            error!("[Host {}] failed to create host: {}", id, e);
-            // Notify Java of the initialization failure
+            error!("[Host {}] failed to create its tokio runtime: {}", id, e);
             platform_for_error.notify_error(
                 id,
                 e.code.as_u16(),
@@ -127,24 +121,40 @@ fn run_embedded_session(ctx: SessionThreadContext) {
             return;
         }
     };
+    let host = {
+        let _in_the_session_s_runtime = runtime.enter();
+        match Host::new(
+            id,
+            host_tx,
+            critical_host_tx,
+            initial_surface,
+            graphics_platform,
+            platform,
+            opt,
+            Arc::clone(&surface_control),
+            vsync_rx,
+            restart_boundary,
+        ) {
+            Ok(h) => h,
+            Err(e) => {
+                error!("[Host {}] failed to create host: {}", id, e);
+                // Notify Java of the initialization failure
+                platform_for_error.notify_error(
+                    id,
+                    e.code.as_u16(),
+                    &e.msg,
+                    e.detail.as_deref().unwrap_or(""),
+                );
+                // ready_tx will be dropped without sending, triggering error in caller
+                return;
+            }
+        }
+    };
     if let Err(error) = registry::install_shutdown_notify(id, host.shutdown_notify()) {
         error!("[Host {id}] failed to install startup cancellation wake: {error}");
         return;
     }
-
-    let runtime = match create_runtime_before_ready(ready_tx, create_basic_runtime) {
-        Ok(rt) => rt,
-        Err(e) => {
-            error!("[Host {}] failed to enter tokio runtime: {}", id, e);
-            platform_for_error.notify_error(
-                id,
-                e.code.as_u16(),
-                &e.msg,
-                e.detail.as_deref().unwrap_or(""),
-            );
-            return;
-        }
-    };
+    announce_ready(ready_tx);
 
     // Keep a reference to platform_for_error for use in the event loop
     let platform_ref = &platform_for_error;

@@ -47,6 +47,8 @@ VERDICTS = {
     "unverified": "answered here, but no conformance run has verified it",
     "host-owned": "the host app's own integration answers it (its ads, payments, accounts, consent), the platform the rest",
     "verified": "answered here, and verified by the conformance suite",
+    "beyond-reference": "the reference does not offer it on this kind of client (a phones-only call on a desktop, or a "
+                        "desktop-only one on a phone), so nothing here is owed to compatibility",
     "outside": "not an API of the mini-game platform (an engine global, or migo's own)",
 }
 BLOCKING = ("unsupported", "missing", "failing")
@@ -174,7 +176,9 @@ def judge(name: str, platform: str, contracts: dict) -> dict:
               "conformance": status}
     if record.get("failing"):
         judged["failing"] = record["failing"]
-    if wired == "unsupported":
+    if platform in cell.get("outside", []):
+        judged["verdict"] = "beyond-reference"
+    elif wired == "unsupported":
         judged["verdict"] = "unsupported"
         judged["reason"] = contracts["decisions"]["unsupported"].get(name, {}).get("reason")
     elif wired == "missing":
