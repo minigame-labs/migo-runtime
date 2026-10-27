@@ -65,6 +65,10 @@ impl Decoder for Push {
         };
         let progress = match self.0.drain(pcm, cancel).map_err(error)? {
             crate::push_decoder::Progress::NeedInput => Progress::NeedInput,
+            #[cfg(feature = "m4a-streaming-probe")]
+            crate::push_decoder::Progress::NeedSource => {
+                return Err(error("MP3 requested source IO"));
+            }
             crate::push_decoder::Progress::Yield => Progress::Yield,
             crate::push_decoder::Progress::Finished => Progress::Finished,
             crate::push_decoder::Progress::Cancelled => Progress::Cancelled,

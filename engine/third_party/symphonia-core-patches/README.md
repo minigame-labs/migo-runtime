@@ -45,3 +45,10 @@ Layer3 consumers are migrated in their matching candidate patches. A real
 string-carrying error. Precise EOF classification, allocation checks, the Core
 suite and the complete codec corpus cover the change; unrelated IO errors do
 not become normal exhaustion. This remains a candidate, not a product cutover.
+
+`0006-borrowed-slice-buffered-seek.patch` makes the existing borrowed BufReader
+implement SeekBuffered over its real slice. Absolute and relative positions
+clamp to the actual buffer; even isize::MIN/u64::MAX do not overflow. This lets
+the regular MP4 atom parser read a complete bounded moov without another ring
+buffer or a payload copy. Oversized skips are checked before a usize cast.
+Core slice-position/skip tests and the actual indexed AAC decoder cover it.

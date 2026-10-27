@@ -1,0 +1,758 @@
+--- symphonia-format-isomp4-0.6.1/Cargo.toml
++++ symphonia-format-isomp4-0.6.1/Cargo.toml
+@@ -64,3 +64,6 @@
+ level = "warn"
+ priority = 0
+ check-cfg = ["cfg(fuzzing)"]
++
++[features]
++streaming=[]
+--- symphonia-format-isomp4-0.6.1/Cargo.toml.orig
++++ symphonia-format-isomp4-0.6.1/Cargo.toml.orig
+@@ -21,3 +21,6 @@
+ 
+ [lints]
+ workspace = true
++
++[features]
++streaming=[]
+--- symphonia-format-isomp4-0.6.1/src/lib.rs
++++ symphonia-format-isomp4-0.6.1/src/lib.rs
+@@ -124,3 +124,6 @@
+         assert!(table.find_timing_for_sample(u32::MAX).is_none());
+     }
+ }
++
++#[cfg(feature="streaming")]
++pub mod streaming;
+--- symphonia-format-isomp4-0.6.1/src/demuxer.rs
++++ symphonia-format-isomp4-0.6.1/src/demuxer.rs
+@@ -26,6 +26,7 @@
+ use crate::atoms::{AtomError, AtomIterator, AtomType, ReadAtom};
+ use crate::atoms::{FtypAtom, MetaAtom, MoofAtom, MoovAtom, SidxAtom, TrakAtom};
+ use crate::audio_timeline::AudioTimeline;
++use crate::atoms::stts::TimingCursor;
+ use crate::stream::*;
+ use symphonia_common::mpeg::audio::{AudioObjectType, AudioSpecificConfig};
+ use symphonia_core::codecs::audio::well_known::CODEC_ID_AAC;
+@@ -50,6 +51,8 @@
+     /// The current sample byte position relative to the start of the track.
+     next_sample_pos: u64,
+     audio_timeline: Option<AudioTimeline>,
++    timing_cursor: TimingCursor,
++    timing_cursor_segment: usize,
+ }
+ 
+ impl TrackState {
+@@ -134,38 +137,102 @@
+             next_sample: 0,
+             next_sample_pos: 0,
+             audio_timeline,
++            timing_cursor: TimingCursor::default(),
++            timing_cursor_segment: 0,
+         };
+ 
+         Ok((state, track))
+     }
++
++    #[cfg(feature = "streaming")]
++    pub(crate) fn reset(&mut self) {
++        self.cur_seg = 0;
++        self.next_sample = 0;
++        self.next_sample_pos = 0;
++        self.timing_cursor = TimingCursor::default();
++        self.timing_cursor_segment = 0;
++    }
++
++    #[cfg(feature = "streaming")]
++    pub(crate) fn sample_number(&self) -> u32 { self.next_sample }
++
++    pub(crate) fn next_timing<S: StreamSegment + ?Sized>(
++        &mut self, seg: &S, seg_idx: usize,
++    ) -> Result<Option<SampleTiming>> {
++        if self.timing_cursor_segment != seg_idx {
++            self.timing_cursor = TimingCursor::default();
++            self.timing_cursor_segment = seg_idx;
++        }
++        seg.sample_timing_cached(self.track_num, self.next_sample, &mut self.timing_cursor)
++    }
++
++    pub(crate) fn sample_info(
++        &self, track: &Track, timing: SampleTiming, seg_idx: usize,
++    ) -> Result<Option<NextSampleInfo>> {
++        let tb = track.time_base.expect("track always created with a timebase");
++        let (ts, dur, trim_start, trim_end) = if let Some(timeline) = &self.audio_timeline {
++            let packet = timeline.packet(timing.ts, u64::from(timing.dur))?;
++            (packet.pts, packet.dur, packet.trim_start, packet.trim_end)
++        } else {
++            let ts = Timestamp::try_from(timing.ts)
++                .map_err(|_| Error::DecodeError("isomp4: sample timestamp overflow"))?;
++            (ts, Duration::from(timing.dur), Duration::ZERO, Duration::ZERO)
++        };
++        let Some(time) = tb.calc_time(ts) else { return Ok(None); };
++        Ok(Some(NextSampleInfo {
++            track_num: self.track_num, track_id: self.track_id,
++            ts, time, dur, trim_start, trim_end, seg_idx,
++        }))
++    }
++
++    pub(crate) fn consume_sample<S: StreamSegment + ?Sized>(
++        &mut self, info: &NextSampleInfo, seg: &S,
++    ) -> Result<SampleDataInfo> {
++        let desc = seg.sample_data(self.track_num, self.next_sample, false)?;
++        // A chunk-start offset is cheap and authoritative, including a chunk
++        // placed before the previous one. Otherwise keep the sequential cursor.
++        let pos = match desc.offset {
++            Some(offset) => desc.base_pos.checked_add(offset),
++            None => Some(desc.base_pos.max(self.next_sample_pos)),
++        }.ok_or(Error::DecodeError("isomp4: sample position overflow"))?;
++        let next_pos = pos.checked_add(u64::from(desc.size))
++            .ok_or(Error::DecodeError("isomp4: sample end overflow"))?;
++        let next_sample = self.next_sample.checked_add(1)
++            .ok_or(Error::DecodeError("isomp4: sample index overflow"))?;
++        self.cur_seg = info.seg_idx;
++        self.next_sample = next_sample;
++        self.next_sample_pos = next_pos;
++        Ok(SampleDataInfo {pos, len:desc.size})
++    }
++
+ }
+ 
+ /// Information regarding the next sample.
+ #[derive(Debug)]
+-struct NextSampleInfo {
++pub(crate) struct NextSampleInfo {
+     /// The track number of the next sample.
+-    track_num: usize,
++    pub(crate) track_num: usize,
+     /// The track id.
+-    track_id: u32,
++    pub(crate) track_id: u32,
+     /// The timestamp of the next sample.
+-    ts: Timestamp,
++    pub(crate) ts: Timestamp,
+     /// The timestamp expressed in seconds.
+-    time: Time,
++    pub(crate) time: Time,
+     /// The duration of the next sample.
+-    dur: Duration,
+-    trim_start: Duration,
+-    trim_end: Duration,
++    pub(crate) dur: Duration,
++    pub(crate) trim_start: Duration,
++    pub(crate) trim_end: Duration,
+     /// The segment containing the next sample.
+-    seg_idx: usize,
++    pub(crate) seg_idx: usize,
+ }
+ 
+ /// Information regarding a sample.
+ #[derive(Debug)]
+-struct SampleDataInfo {
++pub(crate) struct SampleDataInfo {
+     /// The position of the sample in the track.
+-    pos: u64,
++    pub(crate) pos: u64,
+     /// The length of the sample.
+-    len: u32,
++    pub(crate) len: u32,
+ }
+ 
+ /// A representation of time, defining a duration relative to a specific frequency
+@@ -394,99 +461,26 @@
+ 
+     /// Idempotently gets information regarding the next sample of the media stream. This function
+     /// selects the next sample with the lowest timestamp of all tracks.
+-    fn next_sample_info(&self) -> Result<Option<NextSampleInfo>> {
+-        let mut earliest = None;
+-
+-        // TODO: Consider returning samples based on lowest byte position in the track instead of
+-        // timestamp. This may be important if video tracks are ever decoded (i.e., DTS vs. PTS).
+-
+-        for (state, track) in self.track_states.iter().zip(&self.tracks) {
+-            // Get the timebase of the track used to calculate the presentation time.
+-            let tb = track.time_base.expect("track always created with a timebase");
+-
+-            // Get the next timestamp for the next sample of the current track. The next sample may
+-            // be in a future segment.
+-            for (seg_idx_delta, seg) in self.segs[state.cur_seg..].iter().enumerate() {
+-                // Try to get the timestamp for the next sample of the track from the segment.
+-                if let Some(timing) = seg.sample_timing(state.track_num, state.next_sample)? {
+-                    // Calculate the presentation time using the timestamp.
+-                    let (ts, dur, trim_start, trim_end) = if let Some(timeline) =
+-                        &state.audio_timeline
+-                    {
+-                        let packet = timeline.packet(timing.ts, u64::from(timing.dur))?;
+-                        (packet.pts, packet.dur, packet.trim_start, packet.trim_end)
+-                    } else {
+-                        let ts = Timestamp::try_from(timing.ts)
+-                            .map_err(|_| Error::DecodeError("isomp4: sample timestamp overflow"))?;
+-                        (ts, Duration::from(timing.dur), Duration::ZERO, Duration::ZERO)
+-                    };
+-
+-                    let Some(sample_time) = tb.calc_time(ts) else {
++    fn next_sample_info(&mut self) -> Result<Option<NextSampleInfo>> {
++        let mut earliest: Option<NextSampleInfo> = None;
++        for (state, track) in self.track_states.iter_mut().zip(&self.tracks) {
++            for (delta, seg) in self.segs[state.cur_seg..].iter().enumerate() {
++                if let Some(timing) = state.next_timing(&**seg, delta + state.cur_seg)? {
++                    let Some(info) = state.sample_info(track, timing, delta + state.cur_seg)? else {
+                         return Ok(None);
+                     };
+-
+-                    // Compare the presentation time of the sample from this track to other tracks,
+-                    // and select the track with the earliest presentation time.
+-                    match earliest {
+-                        Some(NextSampleInfo { time, .. }) if time <= sample_time => {
+-                            // Earliest is less than or equal to the track's next sample
+-                            // presentation time. No need to update earliest.
+-                        }
+-                        _ => {
+-                            // Earliest was either None, or greater than the track's next sample
+-                            // presentation time. Update earliest.
+-                            earliest = Some(NextSampleInfo {
+-                                track_num: state.track_num,
+-                                track_id: state.track_id,
+-                                ts,
+-                                time: sample_time,
+-                                dur,
+-                                trim_start,
+-                                trim_end,
+-                                seg_idx: seg_idx_delta + state.cur_seg,
+-                            });
+-                        }
++                    if earliest.as_ref().is_none_or(|prev| prev.time > info.time) {
++                        earliest = Some(info);
+                     }
+-
+-                    // Either the next sample of the track had the earliest presentation time seen
+-                    // thus far, or it was greater than those from other tracks, but there is no
+-                    // reason to check samples in future segments.
+                     break;
+                 }
+             }
+         }
+-
+         Ok(earliest)
+     }
+ 
+     fn consume_next_sample(&mut self, info: &NextSampleInfo) -> Result<Option<SampleDataInfo>> {
+-        // Get the track state.
+-        let track = &mut self.track_states[info.track_num];
+-
+-        // Get the segment associated with the sample.
+-        let seg = &self.segs[info.seg_idx];
+-
+-        // Get the sample data descriptor.
+-        let sample_data_desc = seg.sample_data(track.track_num, track.next_sample, false)?;
+-
+-        // The sample base position in the sample data descriptor remains constant if the sample
+-        // followed immediately after the previous sample. In this case, the track state's
+-        // next_sample_pos is the position of the current sample. If the base position has jumped,
+-        // then the base position is the position of current the sample.
+-        let pos = if sample_data_desc.base_pos > track.next_sample_pos {
+-            sample_data_desc.base_pos
+-        } else {
+-            track.next_sample_pos
+-        };
+-
+-        // Advance the track's current segment to the next sample's segment.
+-        track.cur_seg = info.seg_idx;
+-
+-        // Advance the track's next sample number and position.
+-        track.next_sample += 1;
+-        track.next_sample_pos = pos + u64::from(sample_data_desc.size);
+-
+-        Ok(Some(SampleDataInfo { pos, len: sample_data_desc.size }))
++        self.track_states[info.track_num].consume_sample(info, &*self.segs[info.seg_idx]).map(Some)
+     }
+ 
+     fn try_read_more_segments(&mut self) -> Result<bool> {
+--- symphonia-format-isomp4-0.6.1/src/stream.rs
++++ symphonia-format-isomp4-0.6.1/src/stream.rs
+@@ -6,6 +6,7 @@
+ // file, You can obtain one at https://mozilla.org/MPL/2.0/.
+ use symphonia_core::errors::{Error, Result, decode_error};
+ 
++use crate::atoms::stts::TimingCursor;
+ use crate::atoms::{Co64Atom, MoofAtom, MoovAtom, StcoAtom, TrafAtom, stsz::SampleSize};
+ 
+ use std::ops::Range;
+@@ -46,6 +47,12 @@
+     /// Get the timestamp and duration for the sample indicated by `sample_num` for the track
+     /// `track_num`.
+     fn sample_timing(&self, track_num: usize, sample_num: u32) -> Result<Option<SampleTiming>>;
++
++    fn sample_timing_cached(
++        &self, track_num: usize, sample_num: u32, _cursor: &mut TimingCursor,
++    ) -> Result<Option<SampleTiming>> {
++        self.sample_timing(track_num, sample_num)
++    }
+ 
+     /// Get the sample number of the sample containing the timestamp indicated by `ts` for track
+     // `track_num`.
+@@ -374,6 +381,14 @@
+         if let Some((ts, dur)) = timing { Ok(Some(SampleTiming { ts, dur })) } else { Ok(None) }
+     }
+ 
++    fn sample_timing_cached(
++        &self, track_num: usize, sample_num: u32, cursor: &mut TimingCursor,
++    ) -> Result<Option<SampleTiming>> {
++        let table = &self.moov.traks[track_num].mdia.minf.stbl.stts;
++        Ok(table.find_timing_for_sample_cached(sample_num, cursor)
++            .map(|(ts, dur)| SampleTiming {ts, dur}))
++    }
++
+     fn ts_sample(&self, track_num: usize, ts: u64) -> Result<Option<u32>> {
+         // Get the trak atom associated with track_num.
+         debug_assert!(track_num < self.moov.traks.len());
+@@ -421,12 +436,13 @@
+             None => return decode_error("isomp4: chunk offset not found"),
+         };
+ 
++        // The first sample of a chunk has a cheap exact offset. Preserve this
++        // hint even for sequential reads, including non-monotonic chunk layouts.
++        let sample_in_chunk = sample_in_group - (chunk_in_group * group.samples_per_chunk);
++
+         // Determine the absolute sample byte position if requested by calculating the offset of
+         // the sample from the base position of the chunk.
+-        let offset = if get_offset {
+-            // Index of the sample relative to the chunk containing the sample.
+-            let sample_in_chunk = sample_in_group - (chunk_in_group * group.samples_per_chunk);
+-
++        let offset = if sample_in_chunk == 0 { Some(0) } else if get_offset {
+             // Calculat the byte offset of the sample relative to the chunk containing it.
+             let offset = match stsz.sample_sizes {
+                 SampleSize::Constant(size) => {
+--- symphonia-format-isomp4-0.6.1/src/atoms/stts.rs
++++ symphonia-format-isomp4-0.6.1/src/atoms/stts.rs
+@@ -22,31 +22,47 @@
+     pub total_duration: u64,
+ }
+ 
++/// Reusable state for sequential timing lookups. No per-packet allocation.
++#[derive(Default)]
++pub(crate) struct TimingCursor {
++    row: usize,
++    first_sample: u32,
++    first_ts: u64,
++    #[cfg(test)]
++    visited: usize,
++}
++
+ impl SttsAtom {
+     /// Get the timestamp and duration for the sample indicated by `sample_num`. Note, `sample_num`
+     /// is indexed relative to the `SttsAtom`. Complexity of this function in O(N).
+     pub fn find_timing_for_sample(&self, sample_num: u32) -> Option<(u64, u32)> {
+-        let mut ts = 0;
+-        let mut next_entry_first_sample: u32 = 0;
++        self.find_timing_for_sample_cached(sample_num, &mut TimingCursor::default())
++    }
+ 
+-        // The Stts atom compactly encodes a mapping between number of samples and sample duration.
+-        // Iterate through each entry until the entry containing the next sample is found. The next
+-        // packet timestamp is then the sum of the product of sample count and sample duration for
+-        // the n-1 iterated entries, plus the product of the number of consumed samples in the n-th
+-        // iterated entry and sample duration.
+-        for entry in &self.entries {
+-            next_entry_first_sample = next_entry_first_sample.checked_add(entry.sample_count)?;
+-
+-            if sample_num < next_entry_first_sample {
+-                let entry_sample_offset = sample_num - (next_entry_first_sample - entry.sample_count);
+-                ts += u64::from(entry.sample_delta) * u64::from(entry_sample_offset);
+-
++    /// Sequential queries retain a cursor instead of rescanning old entries.
++    /// Backward queries reset the cursor; this remains correct for seek/rewind.
++    pub(crate) fn find_timing_for_sample_cached(
++        &self, sample_num: u32, cursor: &mut TimingCursor,
++    ) -> Option<(u64, u32)> {
++        if sample_num < cursor.first_sample {
++            cursor.row = 0;
++            cursor.first_sample = 0;
++            cursor.first_ts = 0;
++        }
++        while let Some(entry) = self.entries.get(cursor.row) {
++            #[cfg(test)] { cursor.visited += 1; }
++            let end = cursor.first_sample.checked_add(entry.sample_count)?;
++            if sample_num < end {
++                let offset = u64::from(sample_num - cursor.first_sample);
++                let ts = cursor.first_ts.checked_add(u64::from(entry.sample_delta) * offset)?;
+                 return Some((ts, entry.sample_delta));
+             }
+-
+-            ts += u64::from(entry.sample_count) * u64::from(entry.sample_delta);
++            cursor.first_sample = end;
++            cursor.first_ts = cursor.first_ts.checked_add(
++                u64::from(entry.sample_count) * u64::from(entry.sample_delta)
++            )?;
++            cursor.row += 1;
+         }
+-
+         None
+     }
+ 
+@@ -107,3 +123,34 @@
+         Ok(SttsAtom { entries, total_duration })
+     }
+ }
++
++#[cfg(test)]
++mod cursor_contracts {
++    use super::*;
++
++    #[test]
++    fn sequential_timing_visits_entries_linearly_and_seeks_stay_correct() {
++        let rows = 4096_u32;
++        let table = SttsAtom {
++            entries: (0..rows).map(|n| SampleDurationEntry {
++                sample_count: 2, sample_delta: 1024 + (n % 2),
++            }).collect(),
++            total_duration: 0,
++        };
++        let mut cursor = TimingCursor::default();
++        let mut expected_ts = 0_u64;
++        for sample in 0..rows*2 {
++            let delta = 1024 + ((sample / 2) % 2);
++            assert_eq!(table.find_timing_for_sample_cached(sample, &mut cursor), Some((expected_ts, delta)));
++            expected_ts += u64::from(delta);
++        }
++        assert!(table.find_timing_for_sample_cached(rows*2, &mut cursor).is_none());
++        assert!(cursor.visited <= rows as usize * 3, "timing lookup rescanned old entries");
++        for sample in [0, rows*2-1, 17, 17, 16, rows, 1] {
++            let pairs = u64::from(sample / 4);
++            let mut ts = pairs * (2*1024 + 2*1025);
++            for n in (sample/4)*4..sample { ts += u64::from(1024 + ((n/2)%2)); }
++            assert_eq!(table.find_timing_for_sample_cached(sample, &mut cursor), Some((ts, 1024 + ((sample/2)%2))));
++        }
++    }
++}
+--- /dev/null
++++ symphonia-format-isomp4-0.6.1/src/streaming.rs
+@@ -0,0 +1,327 @@
++// Symphonia
++// Copyright (c) 2019-2026 The Project Symphonia Developers.
++//
++// This Source Code Form is subject to the terms of the Mozilla Public
++// License, v. 2.0. If a copy of the MPL was not distributed with this
++// file, You can obtain one at https://mozilla.org/MPL/2.0/.
++
++//! Bounded complete-index parsing and borrowed AAC-LC sample descriptors.
++//!
++//! The caller owns network/file access and must validate sample extents against
++//! actual mdat atoms. This module performs no IO or implicit range requests.
++
++use std::sync::Arc;
++
++use symphonia_core::codecs::{CodecParameters, audio::well_known::CODEC_ID_AAC};
++use symphonia_core::common::Limit;
++use symphonia_core::errors::{Error, Result, decode_error, unsupported_error};
++use symphonia_core::formats::Track;
++use symphonia_core::io::BufReader;
++use symphonia_core::meta::MetadataOptions;
++use symphonia_core::packet::PacketRef;
++use symphonia_core::units::{Duration, Timestamp};
++
++use crate::atoms::{
++    Atom, AtomHeader, AtomIterator, AtomType, FtypAtom, MoovAtom, ReadAtom, stsz::SampleSize,
++};
++use crate::demuxer::{TimeSpan, TrackState};
++use crate::stream::MoovSegment;
++
++impl ReadAtom for BufReader<'_> {}
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum AtomKind {
++    FileType,
++    Movie,
++    MediaData,
++    Padding,
++    Fragmented,
++    Other,
++}
++
++/// A top-level atom extent. Reading this fixed-size header never scans payload.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct AtomSpan {
++    pub kind: AtomKind,
++    pub offset: u64,
++    pub body_offset: u64,
++    pub end: Option<u64>,
++    pub header_len: usize,
++}
++
++impl AtomSpan {
++    /// None means fewer than the required 8 or 16 header bytes are available.
++    /// Object length is authoritative only for the exact representation read.
++    pub fn read(input: &[u8], offset: u64, object_len: Option<u64>) -> Result<Option<Self>> {
++        if input.len() < usize::from(AtomHeader::HEADER_SIZE) {
++            return Ok(None);
++        }
++        if input[..4] == 1_u32.to_be_bytes() && input.len() < 16 {
++            return Ok(None);
++        }
++        let header = AtomHeader::read(&mut BufReader::new(input))?;
++        let body_offset = offset
++            .checked_add(header.data_pos())
++            .ok_or(Error::DecodeError("isomp4: atom body offset overflow"))?;
++        let end = match header.end() {
++            Some(relative) => Some(
++                offset
++                    .checked_add(relative)
++                    .ok_or(Error::DecodeError("isomp4: atom end overflow"))?,
++            ),
++            None => object_len,
++        };
++        if end.is_some_and(|end| end < body_offset)
++            || object_len.is_some_and(|len| body_offset > len || end.is_some_and(|end| end > len))
++        {
++            return decode_error("isomp4: atom extent exceeds object");
++        }
++        let kind = match header.atom_type() {
++            AtomType::FileType => AtomKind::FileType,
++            AtomType::Movie => AtomKind::Movie,
++            AtomType::MediaData => AtomKind::MediaData,
++            AtomType::Free | AtomType::Skip => AtomKind::Padding,
++            AtomType::MovieFragment => AtomKind::Fragmented,
++            _ => AtomKind::Other,
++        };
++        Ok(Some(Self {
++            kind,
++            offset,
++            body_offset,
++            end,
++            header_len: header.data_pos() as usize,
++        }))
++    }
++}
++
++fn complete_atom<A: Atom>(input: &[u8], kind: AtomKind, cap: usize) -> Result<A> {
++    if input.len() > cap {
++        return decode_error("isomp4: index atom exceeds configured byte budget");
++    }
++    let span = AtomSpan::read(input, 0, Some(input.len() as u64))?
++        .ok_or(Error::DecodeError("isomp4: truncated index atom header"))?;
++    if span.kind != kind || span.end != Some(input.len() as u64) {
++        return decode_error("isomp4: expected one complete index atom");
++    }
++    // The sync parser runs only over a complete bounded atom, never over a
++    // network reader returning WouldBlock partway through a nested parse.
++    let options = MetadataOptions::default().limit_total_bytes(Limit::Maximum(0));
++    let mut atoms = AtomIterator::new(BufReader::new(input), Some(input.len() as u64))
++        .with_metadata_options(options);
++    let header = atoms
++        .next_header()?
++        .ok_or(Error::DecodeError("isomp4: missing index atom"))?;
++    if header.size().is_none() {
++        return unsupported_error("isomp4: streaming index requires an explicit atom size");
++    }
++    Ok(atoms.read_atom::<A>()?)
++}
++
++/// Validate a complete bounded file-type atom using the regular parser.
++pub fn validate_file_type(input: &[u8]) -> Result<()> {
++    complete_atom::<FtypAtom>(input, AtomKind::FileType, 64 * 1024).map(|_| ())
++}
++
++#[derive(Clone, Copy, Debug)]
++pub struct IndexOptions {
++    pub max_index_bytes: usize,
++    pub max_packet_bytes: u32,
++    pub object_len: Option<u64>,
++}
++
++impl Default for IndexOptions {
++    fn default() -> Self {
++        Self {
++            max_index_bytes: 2 * 1024 * 1024,
++            max_packet_bytes: 64 * 1024,
++            object_len: None,
++        }
++    }
++}
++
++/// A sample's location and presentation timing. Payload ownership stays with IO.
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub struct IndexedPacket {
++    pub offset: u64,
++    pub size: u32,
++    pub track_id: u32,
++    pub pts: Timestamp,
++    pub dur: Duration,
++    pub trim_start: Duration,
++    pub trim_end: Duration,
++}
++
++impl IndexedPacket {
++    pub fn packet<'a>(&self, data: &'a [u8]) -> Result<PacketRef<'a>> {
++        if data.len() != self.size as usize {
++            return decode_error("isomp4: indexed packet length mismatch");
++        }
++        let mut packet = PacketRef::new(self.track_id, self.pts, self.dur, data);
++        packet.trim_start = self.trim_start;
++        packet.trim_end = self.trim_end;
++        Ok(packet)
++    }
++}
++
++/// One nonfragmented AAC-LC mono/stereo track, using the pull reader's cursor
++/// and presentation timeline. There is no per-sample Vec, Box or payload copy.
++pub struct AudioIndex {
++    segment: MoovSegment,
++    state: TrackState,
++    track: Track,
++    count: u32,
++    options: IndexOptions,
++    failed: bool,
++}
++
++impl AudioIndex {
++    pub fn from_moov(input: &[u8], options: IndexOptions) -> Result<Self> {
++        if options.max_index_bytes < 8 || options.max_packet_bytes == 0 {
++            return decode_error("isomp4: invalid streaming index budget");
++        }
++        let moov = complete_atom::<MoovAtom>(input, AtomKind::Movie, options.max_index_bytes)?;
++        if moov.is_fragmented() || moov.traks.len() != 1 {
++            return unsupported_error("isomp4: streaming requires one nonfragmented audio track");
++        }
++        let trak = &moov.traks[0];
++        let stbl = &trak.mdia.minf.stbl;
++        let timespan = TimeSpan::new(
++            trak.mdia.mdhd.timescale,
++            Duration::new(stbl.stts.total_duration),
++        );
++        let (state, track) = TrackState::make(0, trak, &timespan, moov.mvhd.timescale, false)?;
++        match track.codec_params.as_ref() {
++            Some(CodecParameters::Audio(audio))
++                if audio.codec == CODEC_ID_AAC
++                    && audio
++                        .channels
++                        .as_ref()
++                        .is_some_and(|c| matches!(c.count(), 1 | 2)) =>
++            {
++                ()
++            }
++            _ => return unsupported_error("isomp4: streaming requires AAC-LC mono/stereo"),
++        }
++        let count = stbl.stsz.sample_count;
++        if count == 0 {
++            return decode_error("isomp4: empty streaming sample table");
++        }
++        let mut timing_count = 0_u32;
++        for row in &stbl.stts.entries {
++            timing_count = timing_count
++                .checked_add(row.sample_count)
++                .ok_or(Error::DecodeError(
++                    "isomp4: streaming sample count overflow",
++                ))?;
++        }
++        if timing_count != count {
++            return decode_error("isomp4: inconsistent timing/sample counts");
++        }
++        let valid_size = |size| size != 0 && size <= options.max_packet_bytes;
++        match &stbl.stsz.sample_sizes {
++            SampleSize::Constant(size) if valid_size(*size) => (),
++            SampleSize::Variable(sizes)
++                if sizes.len() == count as usize && sizes.iter().copied().all(valid_size) =>
++            {
++                ()
++            }
++            _ => return decode_error("isomp4: streaming packet exceeds configured byte budget"),
++        }
++        let chunks = match (&stbl.stco, &stbl.co64) {
++            (Some(table), None) => table.chunk_offsets.len(),
++            (None, Some(table)) => table.chunk_offsets.len(),
++            _ => return decode_error("isomp4: expected one chunk offset table"),
++        };
++        let groups = &stbl.stsc.entries;
++        if groups.first().is_none_or(|g| g.first_chunk != 0) || chunks == 0 {
++            return decode_error("isomp4: invalid first streaming chunk");
++        }
++        let mut grouped_samples = 0_u64;
++        for (i, group) in groups.iter().enumerate() {
++            let end = groups
++                .get(i + 1)
++                .map_or(chunks as u64, |g| u64::from(g.first_chunk));
++            let start = u64::from(group.first_chunk);
++            if end <= start || end > chunks as u64 || group.sample_desc_index != 1 {
++                return decode_error("isomp4: invalid streaming chunk group");
++            }
++            let samples = (end - start)
++                .checked_mul(u64::from(group.samples_per_chunk))
++                .and_then(|n| grouped_samples.checked_add(n))
++                .ok_or(Error::DecodeError("isomp4: streaming chunk count overflow"))?;
++            grouped_samples = samples;
++        }
++        if grouped_samples != u64::from(count) {
++            return decode_error("isomp4: inconsistent chunk/sample counts");
++        }
++        Ok(Self {
++            segment: MoovSegment::new(Arc::new(moov)),
++            state,
++            track,
++            count,
++            options,
++            failed: false,
++        })
++    }
++
++    pub fn track(&self) -> &Track {
++        &self.track
++    }
++    pub fn packet_count(&self) -> u32 {
++        self.count
++    }
++
++    pub fn rewind(&mut self) -> Result<()> {
++        if self.failed {
++            return decode_error("isomp4: streaming index previously failed");
++        }
++        self.state.reset();
++        Ok(())
++    }
++
++    pub fn next_packet(&mut self) -> Result<Option<IndexedPacket>> {
++        if self.failed {
++            return decode_error("isomp4: streaming index previously failed");
++        }
++        let result = self.next_inner();
++        if result.is_err() {
++            self.failed = true;
++        }
++        result
++    }
++
++    fn next_inner(&mut self) -> Result<Option<IndexedPacket>> {
++        if self.state.sample_number() == self.count {
++            return Ok(None);
++        }
++        let timing = self
++            .state
++            .next_timing(&self.segment, 0)?
++            .ok_or(Error::DecodeError(
++                "isomp4: streaming sample timing missing",
++            ))?;
++        let info = self
++            .state
++            .sample_info(&self.track, timing, 0)?
++            .ok_or(Error::DecodeError(
++                "isomp4: streaming sample time out of range",
++            ))?;
++        let data = self.state.consume_sample(&info, &self.segment)?;
++        let end = data
++            .pos
++            .checked_add(u64::from(data.len))
++            .ok_or(Error::DecodeError("isomp4: streaming sample end overflow"))?;
++        if self.options.object_len.is_some_and(|len| end > len) {
++            return decode_error("isomp4: streaming sample exceeds object");
++        }
++        Ok(Some(IndexedPacket {
++            offset: data.pos,
++            size: data.len,
++            track_id: info.track_id,
++            pts: info.ts,
++            dur: info.dur,
++            trim_start: info.trim_start,
++            trim_end: info.trim_end,
++        }))
++    }
++}

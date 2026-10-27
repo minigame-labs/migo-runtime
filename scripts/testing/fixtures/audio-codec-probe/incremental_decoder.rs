@@ -10,6 +10,8 @@ use symphonia::core::{errors::Result as FormatResult, packet::PacketRef};
 
 pub enum PacketStep<'a> {
     NeedMore,
+    #[cfg(feature = "m4a-streaming-probe")]
+    NeedSource,
     Discard(usize),
     Packet {
         consumed: usize,
@@ -21,8 +23,17 @@ pub enum PacketStep<'a> {
     End,
 }
 
+#[cfg(feature = "m4a-streaming-probe")]
+pub enum BufferedSource {
+    Unavailable,
+    NeedInput,
+    Yield,
+    Resume(usize),
+}
+
 pub trait Packetizer: Send + 'static {
     type Codec: AudioDecoder + Send + 'static;
+    const RETAIN_ENCODED_HISTORY: bool = false;
     const OUTPUT_SAMPLES_PER_STEP: usize = SAMPLES_PER_STEP;
     const ENCODED_BYTES_PER_STEP: usize = WORK_BYTES_PER_STEP;
     fn new() -> Self;
@@ -30,6 +41,15 @@ pub trait Packetizer: Send + 'static {
     fn next<'a>(&mut self, input: &'a [u8], eof: bool) -> FormatResult<PacketStep<'a>>;
     fn buffered_packet<'a>(&'a self, _input: &'a [u8]) -> Option<PacketRef<'a>> {
         None
+    }
+    #[cfg(feature = "m4a-streaming-probe")]
+    fn resume_buffered(
+        &mut self,
+        _input: &[u8],
+        _head: usize,
+        _eof: bool,
+    ) -> FormatResult<BufferedSource> {
+        Ok(BufferedSource::Unavailable)
     }
     fn validate_codec(params: &AudioCodecParameters) -> Result<(), String>;
     fn create_decoder(params: &AudioCodecParameters) -> Result<Self::Codec, String>;
@@ -43,6 +63,8 @@ const WORK_BYTES_PER_STEP: usize = 4096;
 #[derive(Debug, PartialEq, Eq)]
 pub enum Progress {
     NeedInput,
+    #[cfg(feature = "m4a-streaming-probe")]
+    NeedSource,
     Yield,
     Finished,
     Cancelled,
@@ -60,6 +82,14 @@ pub struct Decoder<P: Packetizer> {
     failed: bool,
     total_samples: u64,
     cap: Option<u64>,
+    #[cfg(feature = "m4a-streaming-probe")]
+    source_waiting: bool,
+    #[cfg(test)]
+    buffered_resumes: u64,
+    #[cfg(test)]
+    buffered_yields: u64,
+    #[cfg(test)]
+    peak_input: usize,
     pub rate: u32,
     pub channels: u32,
 }
@@ -68,8 +98,12 @@ impl<P: Packetizer> Decoder<P> {
     /// The optional total quota is separate from resident buffering. `None`
     /// allows long music without retaining its previous PCM in memory.
     pub fn new(cap: Option<u64>) -> Self {
+        Self::with_packetizer(P::new(), cap)
+    }
+
+    pub(crate) fn with_packetizer(packets: P, cap: Option<u64>) -> Self {
         Self {
-            packets: P::new(),
+            packets,
             decoder: None,
             packet_budget: PACKETS_PER_STEP,
             input: Vec::with_capacity(ENCODED_CAPACITY),
@@ -80,6 +114,14 @@ impl<P: Packetizer> Decoder<P> {
             failed: false,
             total_samples: 0,
             cap,
+            #[cfg(feature = "m4a-streaming-probe")]
+            source_waiting: false,
+            #[cfg(test)]
+            buffered_resumes: 0,
+            #[cfg(test)]
+            buffered_yields: 0,
+            #[cfg(test)]
+            peak_input: 0,
             rate: 0,
             channels: 0,
         }
@@ -88,8 +130,15 @@ impl<P: Packetizer> Decoder<P> {
     /// Accept at most the remaining bounded input space. The caller drains and
     /// retries the unaccepted suffix; it never appends an unbounded HTTP chunk.
     pub fn push(&mut self, data: &[u8]) -> Result<usize, String> {
+        #[cfg(feature = "m4a-streaming-probe")]
+        if self.source_waiting {
+            return Err("source request must be resolved before accepting input".into());
+        }
         if self.eof || self.finished || self.cancelled || self.failed {
             return Err("stream no longer accepts encoded input".into());
+        }
+        if data.is_empty() {
+            return Ok(0);
         }
         if self.head != 0 && self.input.len() == ENCODED_CAPACITY {
             self.input.copy_within(self.head.., 0);
@@ -98,11 +147,57 @@ impl<P: Packetizer> Decoder<P> {
         }
         let accepted = data.len().min(ENCODED_CAPACITY - self.input.len());
         self.input.extend_from_slice(&data[..accepted]);
+        #[cfg(test)]
+        {
+            self.peak_input = self.peak_input.max(self.input.len());
+        }
         Ok(accepted)
+    }
+
+    #[cfg(test)]
+    pub fn buffered_metrics(&self) -> (usize, usize, u64, u64) {
+        (
+            self.peak_input,
+            self.input.capacity(),
+            self.buffered_resumes,
+            self.buffered_yields,
+        )
     }
 
     pub fn finish_input(&mut self) {
         self.eof = true;
+    }
+
+    #[cfg(feature = "m4a-streaming-probe")]
+    pub(super) fn source_packetizer(&self) -> Option<&P> {
+        (self.source_waiting && !self.failed && !self.cancelled && !self.finished)
+            .then_some(&self.packets)
+    }
+
+    #[cfg(feature = "m4a-streaming-probe")]
+    pub(super) fn resume_source(
+        &mut self,
+        reset_input: bool,
+        resume: impl FnOnce(&mut P) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let result = if self.source_packetizer().is_some() {
+            resume(&mut self.packets)
+        } else {
+            Err("decoder has no active source request".into())
+        };
+        if result.is_err() {
+            self.failed = true;
+            return result;
+        }
+        if reset_input {
+            // Encoded bytes belong to the previous read position. The codec
+            // and PCM timeline stay live across an indexed source reposition.
+            self.input.clear();
+            self.head = 0;
+            self.eof = false;
+        }
+        self.source_waiting = false;
+        Ok(())
     }
 
     /// Runs off the async transport executor. One step has bounded packets,
@@ -135,6 +230,10 @@ impl<P: Packetizer> Decoder<P> {
                 out.clear();
                 return Ok(Progress::Cancelled);
             }
+            #[cfg(feature = "m4a-streaming-probe")]
+            if self.source_waiting {
+                return Ok(Progress::NeedSource);
+            }
             if packets >= self.packet_budget
                 || bytes >= P::ENCODED_BYTES_PER_STEP
                 || scanned >= WORK_BYTES_PER_STEP
@@ -148,6 +247,37 @@ impl<P: Packetizer> Decoder<P> {
                 .map_err(|e| format!("packet: {e}"))?
             {
                 PacketStep::NeedMore => return Ok(Progress::NeedInput),
+                #[cfg(feature = "m4a-streaming-probe")]
+                PacketStep::NeedSource => {
+                    match self
+                        .packets
+                        .resume_buffered(&self.input, self.head, self.eof)
+                        .map_err(|e| format!("buffered source: {e}"))?
+                    {
+                        BufferedSource::Resume(head) => {
+                            if head > self.input.len() {
+                                return Err("buffered cursor outside input".into());
+                            }
+                            self.head = head;
+                            #[cfg(test)]
+                            {
+                                self.buffered_resumes += 1;
+                            }
+                            continue;
+                        }
+                        BufferedSource::Yield => {
+                            #[cfg(test)]
+                            {
+                                self.buffered_yields += 1;
+                            }
+                            return Ok(Progress::Yield);
+                        }
+                        BufferedSource::NeedInput => return Ok(Progress::NeedInput),
+                        BufferedSource::Unavailable => {}
+                    }
+                    self.source_waiting = true;
+                    return Ok(Progress::NeedSource);
+                }
                 PacketStep::End => {
                     if self.total_samples == 0 {
                         return Err("stream contains no decoded samples".into());
@@ -170,7 +300,7 @@ impl<P: Packetizer> Decoder<P> {
                     self.head += consumed;
                     bytes += consumed;
                     scanned += consumed;
-                    if self.head == self.input.len() {
+                    if self.head == self.input.len() && !P::RETAIN_ENCODED_HISTORY {
                         self.input.clear();
                         self.head = 0;
                     }
@@ -257,7 +387,7 @@ impl<P: Packetizer> Decoder<P> {
             bytes += consumed;
             packets += 1;
 
-            if self.head == self.input.len() {
+            if self.head == self.input.len() && !P::RETAIN_ENCODED_HISTORY {
                 self.input.clear();
                 self.head = 0;
             }

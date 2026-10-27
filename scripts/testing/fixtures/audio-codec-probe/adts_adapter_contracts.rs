@@ -37,6 +37,8 @@ fn decode(data: &[u8], fragment: usize, cap: Option<u64>) -> Result<Vec<f32>, St
                     return Ok(actual);
                 }
                 Progress::Cancelled => panic!("unexpected cancellation"),
+                #[cfg(feature = "m4a-streaming-probe")]
+                Progress::NeedSource => panic!("ADTS requested an indexed source"),
             }
         }
     }

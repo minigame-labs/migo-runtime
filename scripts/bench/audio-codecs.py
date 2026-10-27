@@ -110,6 +110,7 @@ streaming-probe={json.dumps(["dep:symphonia-bundle-mp3", "symphonia-bundle-mp3/s
 wave-streaming-probe={json.dumps(["streaming-probe", "dep:symphonia-format-riff", "symphonia-format-riff/streaming", "dep:symphonia-codec-pcm"] if patched_libraries else [])}
 adts-streaming-probe={json.dumps(["streaming-probe", "dep:symphonia-codec-aac", "symphonia-codec-aac/streaming"] if patched_libraries else [])}
 vorbis-streaming-probe={json.dumps(["streaming-probe", "dep:symphonia-format-ogg", "symphonia-format-ogg/streaming", "dep:symphonia-codec-vorbis"] if patched_libraries else [])}
+m4a-streaming-probe={json.dumps(["streaming-probe", "dep:symphonia-format-isomp4", "symphonia-format-isomp4/streaming", "dep:symphonia-codec-aac"] if patched_libraries else [])}
 [dependencies]
 symphonia={{version="=0.6.1",default-features=false,features=["aac","isomp4","mp3","ogg","vorbis","wav","pcm","id3v2"]}}
 minimp3-sys="={version('minimp3-sys')}"
@@ -123,6 +124,7 @@ symphonia-codec-pcm={{version="=0.6.1",optional=true}}
 symphonia-codec-aac={{version="=0.6.1",optional=true}}
 symphonia-format-ogg={{version="=0.6.1",optional=true}}
 symphonia-codec-vorbis={{version="=0.6.1",optional=true}}
+symphonia-format-isomp4={{version="=0.6.1",optional=true}}
 shared={{package="migo-shared",path={json.dumps(str(root / 'engine/crates/shared'), ensure_ascii=False)},default-features=false}}
 [dev-dependencies]
 migo-alloc-probe={{path={json.dumps(str(root / 'engine/testing/alloc-probe'))}}}
@@ -162,6 +164,8 @@ codegen-units=1
     source.append(f'#[cfg(all(test,feature="wave-streaming-probe"))] #[path={json.dumps(str(wave_tests))}] mod wave_streaming_contracts;\n')
     vorbis_tests = root / "scripts/testing/fixtures/audio-codec-probe/vorbis_adapter_contracts.rs"
     source.append(f'#[cfg(all(test,feature="vorbis-streaming-probe"))] #[path={json.dumps(str(vorbis_tests))}] mod vorbis_adapter_contracts;\n')
+    m4a_tests = root / "scripts/testing/fixtures/audio-codec-probe/isomp4_adapter_contracts.rs"
+    source.append(f'#[cfg(all(test,feature="m4a-streaming-probe"))] #[path={json.dumps(str(m4a_tests))}] mod isomp4_adapter_contracts;\n')
     if patched_libraries:
         contracts = root / "scripts/testing/fixtures/audio-codec-probe/timeline_contracts.rs"
         source.append(f'\n#[cfg(test)] #[path = {json.dumps(str(contracts))}] mod timeline_contracts;\n')

@@ -1,14 +1,13 @@
-//! One HTTP / CPU / PCM publication path for streaming codecs.
+//! One source / CPU / PCM publication path for streaming codecs.
 //!
-//! A decoder accepts a prefix of a network chunk and performs a bounded step.
+//! A decoder accepts a prefix of a source chunk and performs a bounded step.
 //! Retrying its suffix and draining Yield before requesting another body chunk
-//! preserves the four-slot channel's backpressure all the way to the socket.
+//! preserves the four-slot channel's backpressure all the way to its IO source.
 
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use futures_util::StreamExt;
 use shared::error::{EngineError, EngineResult, ErrorCode};
 use tokio::sync::mpsc;
 
@@ -21,6 +20,7 @@ use crate::streaming::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Progress {
     NeedInput,
+    NeedSource,
     Yield,
     Finished,
     Cancelled,
@@ -46,6 +46,102 @@ pub(crate) trait Decoder: Send + 'static {
     ) -> EngineResult<Step>;
 }
 
+/// A source may suspend the CPU decoder for an index or a media reposition.
+/// Requests are captured in the same CPU step; resolving them never occupies
+/// a CPU worker while waiting for IO. Sequential codecs use the default source.
+pub(crate) trait Source<D: Decoder>: Send {
+    type Request: Send + 'static;
+
+    fn pending(decoder: &D) -> EngineResult<Self::Request>;
+    fn read(
+        &mut self,
+        tx: &mpsc::Sender<StreamMsg>,
+        state: &Arc<StreamingState>,
+    ) -> impl Future<Output = EngineResult<SourceRead<impl AsRef<[u8]> + Send + 'static>>> + Send;
+    fn resume(
+        &mut self,
+        request: Self::Request,
+        decoder: OffWorker<Option<D>>,
+        tx: &mpsc::Sender<StreamMsg>,
+        state: &Arc<StreamingState>,
+    ) -> impl Future<Output = EngineResult<Option<SourceResume<D>>>> + Send;
+}
+
+/// HTTP opening is separate from the source-independent publication loop.
+pub(crate) trait HttpSource<D: Decoder>: Source<D> {
+    fn request(
+        request: migo_services::network::http::RequestBuilder,
+    ) -> migo_services::network::http::RequestBuilder {
+        request
+    }
+    fn new(
+        client: HttpClient,
+        response: migo_services::network::http::Response,
+    ) -> EngineResult<Self>
+    where
+        Self: Sized;
+}
+
+pub(crate) enum SourceRead<C> {
+    Data(C),
+    End,
+    Cancelled,
+}
+
+pub(crate) struct SourceResume<D> {
+    pub decoder: OffWorker<Option<D>>,
+    /// A media reposition invalidates the old response's unaccepted suffix.
+    /// Installing an index preserves it, including when HTTP EOF was reached.
+    pub restart: bool,
+}
+
+struct Sequential {
+    response: migo_services::network::http::Response,
+    // Preserve the original client's pool/domain lifetime through body EOF.
+    _client: HttpClient,
+}
+impl<D: Decoder> Source<D> for Sequential {
+    type Request = ();
+    fn pending(_decoder: &D) -> EngineResult<()> {
+        Err(invalid("sequential decoder requested source reposition"))
+    }
+    async fn read(
+        &mut self,
+        _tx: &mpsc::Sender<StreamMsg>,
+        _state: &Arc<StreamingState>,
+    ) -> EngineResult<SourceRead<impl AsRef<[u8]> + Send + 'static>> {
+        self.response
+            .chunk()
+            .await
+            .map(|chunk| match chunk {
+                Some(bytes) => SourceRead::Data(bytes),
+                None => SourceRead::End,
+            })
+            .map_err(|e| invalid(&format!("Stream error: {e}")))
+    }
+    async fn resume(
+        &mut self,
+        _request: (),
+        _decoder: OffWorker<Option<D>>,
+        _tx: &mpsc::Sender<StreamMsg>,
+        _state: &Arc<StreamingState>,
+    ) -> EngineResult<Option<SourceResume<D>>> {
+        Err(invalid("sequential source cannot reposition"))
+    }
+}
+
+impl<D: Decoder> HttpSource<D> for Sequential {
+    fn new(
+        client: HttpClient,
+        response: migo_services::network::http::Response,
+    ) -> EngineResult<Self> {
+        Ok(Self {
+            response,
+            _client: client,
+        })
+    }
+}
+
 /// Also used for Error and Done: a stopped consumer must never strand a task
 /// waiting for a slot, including when the stream has already reached EOF.
 pub(crate) async fn send(
@@ -60,7 +156,7 @@ pub(crate) async fn send(
     }
 }
 
-async fn while_active<T>(
+pub(crate) async fn while_active<T>(
     tx: &mpsc::Sender<StreamMsg>,
     state: &StreamingState,
     operation: impl Future<Output = T>,
@@ -84,22 +180,32 @@ pub(crate) async fn run<D: Decoder>(
     state: Arc<StreamingState>,
     make_decoder: impl FnOnce() -> D + Send + 'static,
 ) {
-    if let Err(error) = download(cpu, client, url, &tx, &state, make_decoder).await {
-        send(&tx, &state, StreamMsg::Error(error.to_string())).await;
-    }
+    run_with_source::<D, Sequential>(cpu, client, url, tx, state, move |_| make_decoder()).await;
+}
+
+pub(crate) async fn run_with_source<D: Decoder, S: HttpSource<D>>(
+    cpu: migo_io::audio_cpu::AudioCpu,
+    client: HttpClient,
+    url: String,
+    tx: mpsc::Sender<StreamMsg>,
+    state: Arc<StreamingState>,
+    make_decoder: impl FnOnce(Option<u64>) -> D + Send + 'static,
+) {
+    let result = download::<D, S>(cpu, client, url, &tx, &state, make_decoder).await;
+    publish_result(&tx, &state, result).await;
 }
 
 fn invalid(message: &str) -> EngineError {
     EngineError::from_detail(ErrorCode::IoError, message)
 }
 
-async fn download<D: Decoder>(
+async fn download<D: Decoder, S: HttpSource<D>>(
     cpu: migo_io::audio_cpu::AudioCpu,
     client: HttpClient,
     url: String,
     tx: &mpsc::Sender<StreamMsg>,
     state: &Arc<StreamingState>,
-    make_decoder: impl FnOnce() -> D + Send + 'static,
+    make_decoder: impl FnOnce(Option<u64>) -> D + Send + 'static,
 ) -> EngineResult<()> {
     if state.is_cancelled() || tx.is_closed() {
         return Ok(());
@@ -116,8 +222,7 @@ async fn download<D: Decoder>(
         wait_for_network(
             state,
             RESPONSE_HEADER_TIMEOUT,
-            client
-                .get(migo_services::network::gate::GateKind::AudioStream, parsed)
+            S::request(client.get(migo_services::network::gate::GateKind::AudioStream, parsed))
                 .send(),
         ),
     )
@@ -141,11 +246,39 @@ async fn download<D: Decoder>(
     if !response.status().is_success() {
         return Err(invalid(&format!("HTTP error: {}", response.status())));
     }
-    if let Some(length) = response.content_length() {
+    let object_len = response.content_length();
+    if let Some(length) = object_len {
         state.bytes_total.store(length, Ordering::Relaxed);
     }
 
-    let mut body = response.bytes_stream();
+    let source = S::new(client, response)?;
+    run_source(cpu, source, object_len, tx, state, make_decoder).await
+}
+
+pub(crate) async fn publish_result(
+    tx: &mpsc::Sender<StreamMsg>,
+    state: &StreamingState,
+    result: EngineResult<()>,
+) {
+    if let Err(error) = result {
+        send(tx, state, StreamMsg::Error(error.to_string())).await;
+    }
+}
+
+pub(crate) async fn run_source<D: Decoder, S: Source<D>>(
+    cpu: migo_io::audio_cpu::AudioCpu,
+    mut source: S,
+    object_len: Option<u64>,
+    tx: &mpsc::Sender<StreamMsg>,
+    state: &Arc<StreamingState>,
+    make_decoder: impl FnOnce(Option<u64>) -> D + Send + 'static,
+) -> EngineResult<()> {
+    if state.is_cancelled() || tx.is_closed() {
+        return Ok(());
+    }
+    if let Some(length) = object_len {
+        state.bytes_total.store(length, Ordering::Relaxed);
+    }
     // Construction can initialize codec tables and allocate scratch. Include it
     // in the first off-worker step, with no extra thread-pool round trip.
     let mut decoder = OffWorker::new(None::<D>, cpu);
@@ -154,34 +287,35 @@ async fn download<D: Decoder>(
     let mut format = None;
     let mut ready_sent = false;
     let mut total_samples = 0;
-    loop {
+    'download: loop {
         let Some(next) = while_active(
             tx,
             state,
-            wait_for_network(state, BODY_IDLE_TIMEOUT, body.next()),
+            wait_for_network(state, BODY_IDLE_TIMEOUT, source.read(tx, state)),
         )
         .await
         else {
             return Ok(());
         };
-        let mut input = match next {
-            NetworkWait::Cancelled => return Ok(()),
+        let next = match next {
+            NetworkWait::Cancelled => SourceRead::Cancelled,
             NetworkWait::TimedOut => {
                 return Err(EngineError::from_detail(
                     ErrorCode::Timeout,
                     "audio response body idle timeout",
                 ));
             }
-            NetworkWait::Ready(Some(Err(error))) => {
-                return Err(invalid(&format!("Stream error: {error}")));
-            }
-            NetworkWait::Ready(Some(Ok(chunk))) => Some(chunk),
-            NetworkWait::Ready(None) => None,
+            NetworkWait::Ready(result) => result?,
+        };
+        let mut input = match next {
+            SourceRead::Data(chunk) => Some(chunk),
+            SourceRead::End => None,
+            SourceRead::Cancelled => return Ok(()),
         };
         if let Some(chunk) = &input {
             state
                 .bytes_downloaded
-                .fetch_add(chunk.len() as u64, Ordering::Relaxed);
+                .fetch_add(chunk.as_ref().len() as u64, Ordering::Relaxed);
         }
         let eof = input.is_none();
         let mut offset = 0;
@@ -190,19 +324,27 @@ async fn download<D: Decoder>(
             let cancel = state.clone();
             let initialize = make_decoder.take();
             let operation = decoder.with(move |slot| {
-                let decoder = slot.get_or_insert_with(|| initialize.expect("first decoder step")());
-                let offered = input.as_ref().map_or(&[][..], |chunk| &chunk[offset..]);
+                let decoder =
+                    slot.get_or_insert_with(|| initialize.expect("first decoder step")(object_len));
+                let offered = input
+                    .as_ref()
+                    .map_or(&[][..], |chunk| &chunk.as_ref()[offset..]);
                 let step = decoder.step(offered, eof, pcm.buffer_mut(), &cancel.cancelled);
-                (input, pcm, step)
+                let request = match &step {
+                    Ok(step) if step.progress == Progress::NeedSource => Some(S::pending(decoder)),
+                    _ => None,
+                };
+                (input, pcm, step, request)
             });
             let Some(result) = while_active(tx, state, operation).await else {
                 return Ok(());
             };
-            let (rest, (returned_input, pcm, step)) = result?;
+            let (rest, (returned_input, pcm, step, request)) = result?;
             decoder = rest;
             input = returned_input;
             let step = step?;
-            let remaining = input.as_ref().map_or(0, |chunk| chunk.len()) - offset;
+            let request = request.transpose()?;
+            let remaining = input.as_ref().map_or(0, |chunk| chunk.as_ref().len()) - offset;
             if step.consumed > remaining {
                 return Err(invalid("stream decoder consumed beyond supplied input"));
             }
@@ -248,6 +390,21 @@ async fn download<D: Decoder>(
                         state.download_complete.store(true, Ordering::Release);
                     }
                     return Ok(());
+                }
+                Progress::NeedSource => {
+                    let request = request.ok_or_else(|| invalid("missing source request"))?;
+                    let Some(resumed) =
+                        while_active(tx, state, source.resume(request, decoder, tx, state)).await
+                    else {
+                        return Ok(());
+                    };
+                    let Some(resumed) = resumed? else {
+                        return Ok(());
+                    };
+                    decoder = resumed.decoder;
+                    if resumed.restart {
+                        continue 'download;
+                    }
                 }
                 Progress::NeedInput => {
                     if eof || (remaining != 0 && step.consumed == 0) {

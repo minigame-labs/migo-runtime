@@ -32,6 +32,8 @@ fn adapted(file: &[u8], fragment: usize, cap: Option<u64>) -> Result<Vec<f32>, S
                 }
                 Progress::NeedInput => break,
                 Progress::Cancelled => panic!("unexpected cancellation"),
+                #[cfg(feature = "m4a-streaming-probe")]
+                Progress::NeedSource => panic!("WAVE requested an indexed source"),
             }
         }
     }
@@ -122,6 +124,8 @@ fn long_wave_uses_bounded_buffers_beyond_the_whole_decode_quota() {
                 }
                 Progress::NeedInput => break,
                 Progress::Cancelled => panic!("unexpected cancellation"),
+                #[cfg(feature = "m4a-streaming-probe")]
+                Progress::NeedSource => panic!("WAVE requested an indexed source"),
             }
         }
     }

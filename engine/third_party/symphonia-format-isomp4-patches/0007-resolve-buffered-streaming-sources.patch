@@ -1,0 +1,299 @@
+--- symphonia-format-isomp4-0.6.1/src/streaming.rs
++++ symphonia-format-isomp4-0.6.1/src/streaming.rs
+@@ -12,9 +12,9 @@
+ 
+ use std::sync::Arc;
+ 
+-use symphonia_core::codecs::{CodecParameters, audio::well_known::CODEC_ID_AAC};
++use symphonia_core::codecs::{audio::well_known::CODEC_ID_AAC, CodecParameters};
+ use symphonia_core::common::Limit;
+-use symphonia_core::errors::{Error, Result, decode_error, unsupported_error};
++use symphonia_core::errors::{decode_error, unsupported_error, Error, Result};
+ use symphonia_core::formats::Track;
+ use symphonia_core::io::BufReader;
+ use symphonia_core::meta::MetadataOptions;
+@@ -22,7 +22,7 @@
+ use symphonia_core::units::{Duration, Timestamp};
+ 
+ use crate::atoms::{
+-    Atom, AtomHeader, AtomIterator, AtomType, FtypAtom, MoovAtom, ReadAtom, stsz::SampleSize,
++    stsz::SampleSize, Atom, AtomHeader, AtomIterator, AtomType, FtypAtom, MoovAtom, ReadAtom,
+ };
+ use crate::demuxer::{TimeSpan, TrackState};
+ use crate::stream::MoovSegment;
+@@ -327,4 +327,4 @@
+ }
+ 
+ mod sequential;
+-pub use sequential::{Packetizer, PacketizerOptions, PacketStep, IndexRequest};
++pub use sequential::{BufferedStep, IndexRequest, PacketStep, Packetizer, PacketizerOptions};
+--- symphonia-format-isomp4-0.6.1/src/streaming/sequential.rs
++++ symphonia-format-isomp4-0.6.1/src/streaming/sequential.rs
+@@ -1,10 +1,14 @@
+ //! Sequential packet delivery; IO owns external index/range acquisition.
+-use super::{AtomKind, AtomSpan, AudioIndex, IndexOptions, IndexedPacket, validate_file_type};
++use super::{validate_file_type, AtomKind, AtomSpan, AudioIndex, IndexOptions, IndexedPacket};
+ use symphonia_core::{
+-    errors::{Error, Result, decode_error, unsupported_error},
++    errors::{decode_error, unsupported_error, Error, Result},
+     formats::Track,
+     packet::PacketRef,
+ };
++
++mod buffered;
++pub use buffered::BufferedStep;
++use buffered::Probe;
+ 
+ const DISCARD_STEP: usize = 4096;
+ 
+@@ -63,6 +67,7 @@
+     scratch: Vec<u8>,
+     skipped_metadata: u64,
+     failed: bool,
++    buffered_probe: Option<Probe>,
+ }
+ 
+ impl Packetizer {
+@@ -80,6 +85,7 @@
+             scratch: Vec::new(),
+             skipped_metadata: 0,
+             failed: false,
++            buffered_probe: None,
+         }
+     }
+ 
+@@ -102,6 +108,7 @@
+             self.failed = true;
+             return decode_error("isomp4: invalid external streaming index");
+         }
++        self.buffered_probe = None;
+         self.index = Some(index);
+         self.external_index = true;
+         self.stage = Stage::Header;
+@@ -166,6 +173,7 @@
+             self.failed = true;
+             return decode_error("isomp4: invalid streaming range resume");
+         }
++        self.buffered_probe = None;
+         self.position = offset;
+         self.stage = Stage::Media { span: media };
+         Ok(())
+--- /dev/null
++++ symphonia-format-isomp4-0.6.1/src/streaming/sequential/buffered.rs
+@@ -0,0 +1,216 @@
++// Symphonia
++// Copyright (c) 2019-2026 The Project Symphonia Developers.
++//
++// This Source Code Form is subject to the terms of the Mozilla Public
++// License, v. 2.0. If a copy of the MPL was not distributed with this
++// file, You can obtain one at https://mozilla.org/MPL/2.0/.
++
++//! Opportunistic resolution from a caller's bounded, contiguous source window.
++//! The window has the same byte coordinates/representation as `next` input;
++//! no IO, second encoded cache, or AAC decoder is owned here.
++use super::{AtomKind, AtomSpan, AudioIndex, IndexedPacket, Packetizer, Stage};
++use symphonia_core::errors::{decode_error, unsupported_error, Error, Result};
++
++const HEADERS_PER_STEP: usize = 32;
++
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum BufferedStep {
++    /// The requested bytes/geometry cannot be resolved inside this window.
++    Unavailable,
++    /// More bytes can still fit in the caller's supplied window capacity.
++    NeedMore,
++    /// Header scanning made bounded progress; retry without fetching input.
++    Yield,
++    /// An index was installed without consuming the original mdat prefix.
++    Index,
++    /// Move the input cursor, preserving the codec and current HTTP EOF state.
++    ReadAt { offset: u64 },
++}
++
++#[derive(Clone, Copy, PartialEq, Eq)]
++enum Request {
++    Index,
++    ReadAt { offset: u64 },
++}
++#[derive(Clone, Copy)]
++pub(super) struct Probe {
++    request: Request,
++    base: u64,
++    position: u64,
++    skipped: u64,
++}
++
++impl Packetizer {
++    /// Resolve a pending source request using bytes already owned by the
++    /// caller. `capacity` bounds possible prefetch; it never allocates here.
++    /// Only a genuine parsed mdat may contain an indexed sample. Cross-mdat
++    /// discovery requires the original top-level prefix (base == 0).
++    pub fn try_buffered(
++        &mut self,
++        base: u64,
++        input: &[u8],
++        capacity: usize,
++    ) -> Result<BufferedStep> {
++        if self.failed {
++            return decode_error("isomp4: streaming packetizer previously failed");
++        }
++        let result = self.buffered_inner(base, input, capacity);
++        if result.is_err() {
++            self.failed = true;
++            self.buffered_probe = None;
++        }
++        result
++    }
++
++    fn buffered_inner(&mut self, base: u64, input: &[u8], capacity: usize) -> Result<BufferedStep> {
++        if input.len() > capacity {
++            return decode_error("isomp4: invalid buffered window capacity");
++        }
++        let end = base
++            .checked_add(input.len() as u64)
++            .ok_or(Error::DecodeError("isomp4: buffered window end overflow"))?;
++        // Capacity is a potential upper bound, not bytes already present.
++        // Clamp it at the addressable/object end instead of rejecting a valid
++        // short window close to u64::MAX.
++        let limit = base
++            .saturating_add(capacity as u64)
++            .min(self.options.index.object_len.unwrap_or(u64::MAX));
++        if self.options.index.object_len.is_some_and(|len| end > len) {
++            return decode_error("isomp4: buffered window exceeds object");
++        }
++        let (request, start) = match self.stage {
++            Stage::AwaitIndex(request) => {
++                let Some(start) = request.next_atom_offset else {
++                    return Ok(BufferedStep::Unavailable);
++                };
++                (Request::Index, start)
++            }
++            Stage::Media { span } => {
++                let Some(packet) = self.pending.filter(|p| p.offset < self.position) else {
++                    return Ok(BufferedStep::Unavailable);
++                };
++                let packet_end = packet
++                    .offset
++                    .checked_add(u64::from(packet.size))
++                    .filter(|end| *end > packet.offset)
++                    .ok_or(Error::DecodeError("isomp4: invalid buffered packet extent"))?;
++                if packet.offset < base || packet_end > limit {
++                    return Ok(BufferedStep::Unavailable);
++                }
++                if packet_end > end {
++                    return Ok(BufferedStep::NeedMore);
++                }
++                if packet.offset >= span.body_offset && span.end.is_none_or(|n| packet_end <= n) {
++                    self.resume_at(span, packet.offset)?;
++                    return Ok(BufferedStep::ReadAt {
++                        offset: packet.offset,
++                    });
++                }
++                if base != 0 {
++                    return Ok(BufferedStep::Unavailable);
++                }
++                (
++                    Request::ReadAt {
++                        offset: packet.offset,
++                    },
++                    0,
++                )
++            }
++            _ => return Ok(BufferedStep::Unavailable),
++        };
++        let mut probe = self
++            .buffered_probe
++            .take()
++            .filter(|p| p.request == request && p.base == base)
++            .unwrap_or(Probe {
++                request,
++                base,
++                position: start,
++                skipped: 0,
++            });
++        for _ in 0..HEADERS_PER_STEP {
++            let header_end = probe.position.checked_add(8).ok_or(Error::DecodeError(
++                "isomp4: buffered header offset overflow",
++            ))?;
++            if probe.position < base || header_end > limit {
++                return Ok(BufferedStep::Unavailable);
++            }
++            if header_end > end {
++                self.buffered_probe = Some(probe);
++                return Ok(BufferedStep::NeedMore);
++            }
++            let relative = usize::try_from(probe.position - base)
++                .map_err(|_| Error::DecodeError("isomp4: buffered offset not addressable"))?;
++            let Some(span) = AtomSpan::read(
++                &input[relative..],
++                probe.position,
++                self.options.index.object_len,
++            )?
++            else {
++                if probe.position.checked_add(16).is_none_or(|n| n > limit) {
++                    return Ok(BufferedStep::Unavailable);
++                }
++                self.buffered_probe = Some(probe);
++                return Ok(BufferedStep::NeedMore);
++            };
++            if span.kind == AtomKind::Fragmented {
++                return unsupported_error("isomp4: fragmented streaming is unsupported");
++            }
++            if request == Request::Index && span.kind == AtomKind::Movie {
++                let movie_end = span
++                    .end
++                    .ok_or(Error::DecodeError("isomp4: unbounded buffered index"))?;
++                if movie_end - span.offset > self.options.index.max_index_bytes as u64 {
++                    return decode_error("isomp4: buffered index exceeds byte budget");
++                }
++                if movie_end > limit {
++                    return Ok(BufferedStep::Unavailable);
++                }
++                if movie_end > end {
++                    self.buffered_probe = Some(probe);
++                    return Ok(BufferedStep::NeedMore);
++                }
++                let movie_end = usize::try_from(movie_end - base).map_err(|_| {
++                    Error::DecodeError("isomp4: buffered movie end not addressable")
++                })?;
++                let index = AudioIndex::from_moov(&input[relative..movie_end], self.options.index)?;
++                self.install_index(index)?;
++                return Ok(BufferedStep::Index);
++            }
++            if let Request::ReadAt { offset } = request {
++                if span.offset <= offset && span.end.is_none_or(|n| offset < n) {
++                    let packet: IndexedPacket = self
++                        .pending
++                        .ok_or(Error::DecodeError("isomp4: missing buffered packet"))?;
++                    let packet_end = offset
++                        .checked_add(u64::from(packet.size))
++                        .ok_or(Error::DecodeError("isomp4: buffered sample end overflow"))?;
++                    if span.kind != AtomKind::MediaData
++                        || offset < span.body_offset
++                        || span.end.is_some_and(|n| packet_end > n)
++                    {
++                        return decode_error("isomp4: buffered packet is outside actual media");
++                    }
++                    self.resume_at(span, offset)?;
++                    return Ok(BufferedStep::ReadAt { offset });
++                }
++            }
++            let next = span
++                .end
++                .filter(|n| *n > probe.position)
++                .ok_or(Error::DecodeError("isomp4: unbounded buffered atom scan"))?;
++            if request == Request::Index && span.kind != AtomKind::MediaData {
++                probe.skipped = probe
++                    .skipped
++                    .checked_add(next - probe.position)
++                    .filter(|n| *n <= self.options.max_skipped_metadata_bytes)
++                    .ok_or(Error::DecodeError(
++                        "isomp4: buffered metadata exceeds byte budget",
++                    ))?;
++            }
++            probe.position = next;
++        }
++        self.buffered_probe = Some(probe);
++        Ok(BufferedStep::Yield)
++    }
++}
