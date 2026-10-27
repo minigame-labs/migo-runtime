@@ -9,6 +9,7 @@ mod body;
 mod connector;
 mod decode;
 pub mod multipart;
+pub mod range;
 mod tcp_info;
 #[cfg(test)]
 mod tests;
@@ -622,6 +623,12 @@ impl Response {
 
     pub fn headers(&self) -> &HeaderMap {
         &self.headers
+    }
+
+    // Decoding removes Content-Encoding/Length from the public headers. Keep
+    // the distinction available after body EOF too, for byte-range identity.
+    pub(super) fn has_decoded_representation(&self) -> bool {
+        self.wire_counter.is_some()
     }
 
     /// The URL the response came from: the request's, or the last redirect's.
