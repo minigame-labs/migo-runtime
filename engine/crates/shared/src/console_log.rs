@@ -347,6 +347,10 @@ mod recording_tests {
             *host.0.lock().unwrap(),
             [(1, "off".to_owned()), (3, "on".to_owned())]
         );
-        assert_eq!(log.read_since(0).0.len(), 1, "the buffer keeps only what came while on");
+        assert_eq!(
+            log.read_since(0).0.len(),
+            1,
+            "the buffer keeps only what came while on"
+        );
     }
 }
