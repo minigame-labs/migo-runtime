@@ -81,6 +81,26 @@ def controls(work,env):
         ('read-at-renews-media-setup-deadline',source,[('tokio::time::timeout_at(deadline, self.reader.chunk())','tokio::time::timeout_at(deadline + std::time::Duration::from_secs(2), self.reader.chunk())')],'read_at_pending_media_uses_the_absolute_setup_deadline',None),
         ('read-at-collects-complete-media-body',source,[('ReaderOwner::Media(stream) => stream.chunk().await,','ReaderOwner::Media(stream) => { let mut all = Vec::new(); while let Some(bytes) = stream.chunk().await? { all.extend_from_slice(&bytes); } Ok((!all.is_empty()).then(|| bytes::Bytes::from(all))) },')],'actual_read_at_short_ranges_and_held_body_deliver_before_tail_release',None),
     ]
+    buffered = work/'source/isomp4_buffered_contracts.rs'
+    binding = work/'source/isomp4_streaming.rs'
+    buffer_lib = work/'vendor/symphonia-format-isomp4-0.6.1/src/streaming/sequential/buffered.rs'
+    small = 'buffered::small_assets_reuse_one_response_without_validators_or_range'
+    geometry = 'buffered::compaction_keeps_absolute_positions_and_avoids_redundant_io'
+    quantum = 'buffered::buffered_index_scanning_yields_and_cancellation_stays_sticky'
+    bounds = 'buffered::library_buffer_windows_reject_overflow_and_latch_failure'
+    declarations += [
+        ('buffered-history-discarded',binding,[('const RETAIN_ENCODED_HISTORY: bool = BUFFERED;','const RETAIN_ENCODED_HISTORY: bool = false;')],small,None),
+        ('buffered-empty-push-compacts-prefix',common,[('        if data.is_empty() {\n            return Ok(0);\n        }\n','')],quantum,None),
+        ('buffered-absolute-base-lost',binding,[('.checked_sub(head as u64)','.checked_sub(head as u64).map(|_| 0)')],geometry,None),
+        ('buffered-rewind-uses-absolute-head',binding,[('.checked_sub(base)','.checked_sub(0)')],geometry,None),
+        ('buffered-resume-resets-aac',common,[('BufferedSource::Resume(head) => {','BufferedSource::Resume(head) => { self.decoder = None;')],small,None),
+        ('buffered-eof-asks-for-more-input',binding,[('            BufferedStep::NeedMore if eof => Err(symphonia::core::errors::Error::DecodeError(\n                "incomplete buffered source at EOF",\n            )),','            BufferedStep::NeedMore if eof => Ok(BufferedSource::NeedInput),')],'buffered::buffered_eof_quota_and_failed_state_do_not_hide_errors',None),
+        ('buffered-index-overfills-prefetch',buffer_lib,[('if movie_end > limit {','if false {')],'buffered::genuine_misses_keep_pinned_http_and_large_indexes_stop_prefetch_at_capacity','symphonia-format-isomp4'),
+        ('buffered-header-quantum-removed',buffer_lib,[('for _ in 0..HEADERS_PER_STEP {','for _ in 0..usize::MAX {')],quantum,'symphonia-format-isomp4'),
+        ('buffered-probe-restarts-each-yield',buffer_lib,[('        self.buffered_probe = Some(probe);\n        Ok(BufferedStep::Yield)','        self.buffered_probe = None;\n        Ok(BufferedStep::Yield)')],quantum,'symphonia-format-isomp4'),
+        ('buffered-window-error-not-sticky',buffer_lib,[('            self.failed = true;','            self.failed = false;')],bounds,'symphonia-format-isomp4'),
+        ('buffered-window-cap-unchecked',buffer_lib,[('if input.len() > capacity {','if false {')],bounds,'symphonia-format-isomp4'),
+    ]
     for label,path,changes,test,library in declarations:
         original=path.read_bytes();text=original.decode()
         for before,after in changes:
@@ -144,6 +164,64 @@ def source_fixtures(directory):
     (directory/'source-layouts.json').write_text(json.dumps({'layouts':made,'ffmpeg_pcm_identical':True},indent=2)+'\n')
     print('Generated4reverse/multi-mdat/front+tailfixtures;FFmpegPCMidentical',flush=True)
 
+def buffered_fixtures(directory):
+    import struct
+    U=lambda n:struct.pack('>I',n)
+    atom=lambda kind,body:U(8+len(body))+kind+body
+    path=(b'moov',b'trak',b'mdia',b'minf',b'stbl')
+    def top(data):
+        rows=[];pos=0
+        while pos<len(data):
+            size=int.from_bytes(data[pos:pos+4],'big');assert size>=8
+            rows.append((pos,data[pos+4:pos+8],data[pos:pos+size]));pos+=size
+        assert pos==len(data);return rows
+    def offsets(data):
+        payload=index_gate.timeline.payloads(data,path+(b'stco',))[0]
+        n=int.from_bytes(payload[4:8],'big');return list(struct.unpack('>'+str(n)+'I',payload[8:]))
+    def changed(data,values):return index_gate.timeline.rewrite(data,{path+(b'stco',):U(0)+U(len(values))+b''.join(U(n)for n in values)})
+    made=[]
+    # A large prefix forces history compaction without moving audio packets
+    # outside the retained final window. Absolute byte coordinates must survive.
+    data=(directory/'1-reorder.m4a').read_bytes();gap=atom(b'free',b'x'*(128*1024))
+    data=changed(data,[n+len(gap)for n in offsets(data)])
+    at=next(p for p,k,d in top(data)if k==b'mdat');data=data[:at]+gap+data[at:]
+    name='1-buffered-prefix.m4a';(directory/name).write_bytes(data);made.append((name,'1-front.m4a'))
+    # The first chronological chunks are moved beyond an actual 128KiB mdat
+    # hole. Backwards audio is then genuinely evicted and needs external IO.
+    data=(directory/'2-reorder.m4a').read_bytes();old=offsets(data);hole=b'x'*(128*1024)
+    data=changed(data,[old[0]+len(hole),old[1]+len(hole),old[2]])
+    rows=top(data);pos,_,mdat=next(r for r in rows if r[1]==b'mdat');where=old[0]-(pos+8)
+    payload=mdat[8:];new=atom(b'mdat',payload[:where]+hole+payload[where:])
+    data=data[:pos]+new+data[pos+len(mdat):]
+    name='2-buffered-miss.m4a';(directory/name).write_bytes(data);made.append((name,'2-front.m4a'))
+    # Every AAC packet is its own chunk, in reverse physical order, so steady
+    # decoding repeatedly exercises buffered resumes after the codec warms.
+    data=(directory/'2-front.m4a').read_bytes();payload=index_gate.timeline.payloads(data,path+(b'stsz',))[0][12:]
+    sizes=list(struct.unpack('>'+str(len(payload)//4)+'I',payload));old=offsets(data)[0]
+    packets=[];at=old
+    for size in sizes:packets.append(data[at:at+size]);at+=size
+    def rewrite(delta):
+        start=old+delta;ends=[];running=sum(sizes)
+        for size in sizes:running-=size;ends.append(start+running)
+        return index_gate.timeline.rewrite(data,{path+(b'stco',):U(0)+U(len(ends))+b''.join(U(n)for n in ends),path+(b'stsc',):U(0)+U(1)+U(1)+U(1)+U(1)})
+    tmp=rewrite(0);oldpos=next(p for p,k,d in top(data)if k==b'mdat');newpos=next(p for p,k,d in top(tmp)if k==b'mdat')
+    data=rewrite(newpos-oldpos);pos,_,mdat=next(r for r in top(data)if r[1]==b'mdat')
+    data=data[:pos]+atom(b'mdat',b''.join(reversed(packets)))+data[pos+len(mdat):]
+    name='2-buffered-many.m4a';(directory/name).write_bytes(data);made.append((name,'2-front.m4a'))
+    data=(directory/'2-multi.m4a').read_bytes();gap=atom(b'free',b'x'*4096)
+    data=changed(data,[n+len(gap)for n in offsets(data)])
+    at=next(p for p,k,d in top(data)if k==b'mdat');data=data[:at]+gap+data[at:]
+    assert len(data)+8<=65536
+    data+=atom(b'free',b'x'*(65536-len(data)-8));assert len(data)==65536
+    name='2-buffered-full.m4a';(directory/name).write_bytes(data);made.append((name,'2-front.m4a'))
+    for name,reference in made:
+        outputs=[]
+        for asset in [name,reference]:
+            outputs.append(subprocess.run(['ffmpeg','-nostdin','-hide_banner','-loglevel','error','-i',str(directory/asset),'-f','f32le','-'],check=True,timeout=30,stdout=subprocess.PIPE).stdout)
+        assert outputs[0]==outputs[1],name
+    (directory/'buffered-layouts.json').write_text(json.dumps({'layouts':made,'ffmpeg_pcm_identical':True},indent=2)+'\n')
+    print('Generated4bounded-history/compaction/missfixtures;FFmpegPCMidentical',flush=True)
+
 def main(work,target,positive_only=False):
     env,frozen,_,_=range_gate.prepare(work,target)
     package=work/'probe';source=work/'source';source.mkdir()
@@ -181,7 +259,7 @@ symphonia-format-isomp4={version="=0.6.1",features=["streaming"]}
         shutil.copyfile(fixtures/file,source/(name+'.rs'))
         prefix='#[cfg(test)] 'if name.endswith('contracts')else''
         text+=f'{prefix}#[path={json.dumps(str(source/(name+".rs")))}] mod {name};\n'
-    for file in ['incremental_decoder.rs','isomp4_streaming.rs']:shutil.copyfile(fixtures/file,source/file)
+    for file in ['incremental_decoder.rs','isomp4_streaming.rs','isomp4_buffered_contracts.rs']:shutil.copyfile(fixtures/file,source/file)
     text+='#[cfg(test)] #[global_allocator] static COUNTING: migo_alloc_probe::CountingAllocator = migo_alloc_probe::CountingAllocator::system();\n'
     (package/'src/lib.rs').write_text(text)
     # The shared off-worker tests and actual decoder use the same Tokio shape.
@@ -195,20 +273,26 @@ symphonia-format-isomp4={version="=0.6.1",features=["streaming"]}
     for rel in frozen:
         dst=work/'source-inputs'/rel;dst.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(ROOT/rel,dst)
     retained={str(p.relative_to(work)):codecs.sha(p)for tree in [package/'src',source]for p in tree.rglob('*.rs')}
-    index_gate.fixtures(work/'fixtures');source_fixtures(work/'fixtures');env['W09_M4A_FIXTURES']=str(work/'fixtures')
+    index_gate.fixtures(work/'fixtures');source_fixtures(work/'fixtures');buffered_fixtures(work/'fixtures');env['W09_M4A_FIXTURES']=str(work/'fixtures')
     codecs.run(['cargo','metadata','--offline','--format-version','1'],work/'candidate-metadata.jsonl',cwd=package,env=env)
     codecs.run(['cargo','check','--offline','--locked','--lib'],work/'normal-library-check.log',cwd=package,env=env)
     positive=build(work,env,'positive')
-    for label,selected,count in [('source','isomp4_source_contracts::',17),('range','network::http::range::tests::',18)]:
+    for label,selected,count in [('source','isomp4_source_contracts::',25),('range','network::http::range::tests::',18)]:
         log=work/f'positive-{label}.log'
         codecs.run([str(positive),selected,'--nocapture','--test-threads=1'],log,cwd=package,env=env)
         assert f'{count} passed; 0 failed'in log.read_text(),label
+    observations=[]
+    for line in (work/'positive-source.log').read_text().splitlines():
+        if 'W09_M4A_BUFFERED_ABBA ' in line:
+            observations.append(json.loads(line.split('W09_M4A_BUFFERED_ABBA ',1)[1]))
+    assert len(observations)==16
+    (work/'buffered-abba.json').write_text(json.dumps({'observations':observations,'scope':'Host loopback with30msperRange response;not device or wholepipeline performance'},indent=2)+'\n')
     negative=0 if positive_only else controls(work,env)
     assert all(codecs.sha(ROOT/rel)==h for rel,h in frozen.items()),'Root inputs changed'
     assert all(codecs.sha(work/rel)==h for rel,h in retained.items()),'source copy not restored'
     rows=json.loads((work/'library-source-provenance.json').read_text())
     for row in rows:assert index_gate.timeline.source_tree(libraries[row['crate']])==row['source_files'],row['crate']
-    summary={'source_tests':17,'http_range_regression_tests':18,'http_pcm_comparisons':42,'compiled_controls':negative,
+    summary={'source_tests':25,'http_range_regression_tests':18,'http_pcm_comparisons':105,'legacy_http_pcm_comparisons':42,'buffered_http_pcm_comparisons':63,'buffered_tests':8,'encoded_cache_capacity':65536,'compiled_controls':negative,
              'binary_sha256':codecs.sha(positive),'libraries':len(rows),'patches':sum(len(r['patches'])for r in rows),
              'root_inputs_unchanged':True,'source_copies_restored':True,'root_lock_sha256':codecs.sha(ROOT/'engine/Cargo.lock'),
              'positive_only':positive_only,'scope':'Actual HTTP tail-index and ReadAt/common decoder/CPU lane; PCM collection is an oracle. No DSP/player/disk fallback/product/native/device/performance acceptance.'}

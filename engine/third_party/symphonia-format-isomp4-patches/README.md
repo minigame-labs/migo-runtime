@@ -75,3 +75,9 @@ buffer is released before packet playback. Object EOF and complete samples
 remain distinct, including a known but unreceived non-audio tail.
 The library protocol/codec gate is separate from common Migo/HTTP/Range/fallback
 acceptance. The product still has no M4A codec/DSP switch.
+
+0007 adds an opt-in bounded-window source resolver to the existing sequential
+packetizer. It reuses AtomSpan and AudioIndex, preserves physical-moov EOF
+validation and AAC/index cursors, and yields after 32 header probes. Cached
+indexes and real mdat-backed packet rewinds can avoid IO; incomplete/evicted
+windows return NeedMore/Unavailable without retaining another encoded cache.

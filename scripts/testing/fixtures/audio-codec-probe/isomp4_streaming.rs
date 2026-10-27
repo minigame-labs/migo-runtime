@@ -1,6 +1,6 @@
 //! Typed AAC binding. MP4 parsing and source positions belong to the library;
 //! the common decoder retains its codec while IO resolves explicit requests.
-use super::incremental::{Decoder, PacketStep, Packetizer};
+use super::incremental::{BufferedSource, Decoder, ENCODED_CAPACITY, PacketStep, Packetizer};
 use symphonia::core::{
     codecs::audio::{
         AudioCodecParameters, AudioDecoder, AudioDecoderOptions, well_known::CODEC_ID_AAC,
@@ -10,7 +10,7 @@ use symphonia::core::{
 };
 pub use symphonia_format_isomp4::streaming::AtomSpan;
 use symphonia_format_isomp4::streaming::{
-    AudioIndex, IndexOptions, IndexRequest, IndexedPacket, PacketStep as Mp4Step,
+    AudioIndex, BufferedStep, IndexOptions, IndexRequest, IndexedPacket, PacketStep as Mp4Step,
     Packetizer as Mp4Packetizer, PacketizerOptions,
 };
 
@@ -20,12 +20,12 @@ pub enum SourceRequest {
     ReadAt(IndexedPacket),
 }
 
-pub struct M4a {
+pub struct M4a<const BUFFERED: bool = false> {
     packets: Mp4Packetizer,
     request: Option<SourceRequest>,
 }
 
-impl M4a {
+impl<const BUFFERED: bool> M4a<BUFFERED> {
     fn configured(object_len: Option<u64>) -> Self {
         Self {
             packets: Mp4Packetizer::new(PacketizerOptions {
@@ -40,7 +40,8 @@ impl M4a {
     }
 }
 
-impl Packetizer for M4a {
+impl<const BUFFERED: bool> Packetizer for M4a<BUFFERED> {
+    const RETAIN_ENCODED_HISTORY: bool = BUFFERED;
     type Codec = symphonia_codec_aac::AacDecoder;
     fn new() -> Self {
         Self::configured(None)
@@ -64,6 +65,47 @@ impl Packetizer for M4a {
             Mp4Step::End => PacketStep::End,
         })
     }
+    fn resume_buffered(
+        &mut self,
+        input: &[u8],
+        head: usize,
+        eof: bool,
+    ) -> FormatResult<BufferedSource> {
+        if !BUFFERED {
+            return Ok(BufferedSource::Unavailable);
+        }
+        let base = self.packets.position().checked_sub(head as u64).ok_or(
+            symphonia::core::errors::Error::DecodeError("invalid buffered source base"),
+        )?;
+        let resumed = self.packets.try_buffered(base, input, ENCODED_CAPACITY)?;
+        match resumed {
+            BufferedStep::Unavailable => Ok(BufferedSource::Unavailable),
+            BufferedStep::NeedMore if eof => Err(symphonia::core::errors::Error::DecodeError(
+                "incomplete buffered source at EOF",
+            )),
+            BufferedStep::NeedMore if input.len() == ENCODED_CAPACITY && head == 0 => {
+                Ok(BufferedSource::Unavailable)
+            }
+            BufferedStep::NeedMore => Ok(BufferedSource::NeedInput),
+            BufferedStep::Yield => Ok(BufferedSource::Yield),
+            BufferedStep::Index => {
+                self.request = None;
+                Ok(BufferedSource::Resume(head))
+            }
+            BufferedStep::ReadAt { offset } => {
+                let head = usize::try_from(offset.checked_sub(base).ok_or(
+                    symphonia::core::errors::Error::DecodeError(
+                        "buffered source rewind before input",
+                    ),
+                )?)
+                .map_err(|_| {
+                    symphonia::core::errors::Error::DecodeError("buffered cursor not addressable")
+                })?;
+                self.request = None;
+                Ok(BufferedSource::Resume(head))
+            }
+        }
+    }
     fn validate_codec(params: &AudioCodecParameters) -> Result<(), String> {
         if params.codec != CODEC_ID_AAC {
             return Err("streaming M4A profile requires AAC-LC".into());
@@ -76,7 +118,7 @@ impl Packetizer for M4a {
     }
 }
 
-impl Decoder<M4a> {
+impl<const BUFFERED: bool> Decoder<M4a<BUFFERED>> {
     pub fn with_object_len(cap: Option<u64>, object_len: Option<u64>) -> Self {
         Self::with_packetizer(M4a::configured(object_len), cap)
     }
@@ -123,5 +165,32 @@ impl Decoder<M4a> {
             p.request = None;
             Ok(())
         })
+    }
+}
+
+/// Source operations are also implementable by a DSP wrapper without moving
+/// parsing, codec state or IO into that wrapper.
+pub trait M4aSourceDecoder: Send + 'static {
+    fn source_request(&self) -> Option<SourceRequest>;
+    fn install_index_with_length(
+        &mut self,
+        index: AudioIndex,
+        length: Option<u64>,
+    ) -> Result<(), String>;
+    fn resume_at(&mut self, media: AtomSpan, offset: u64) -> Result<(), String>;
+}
+impl<const BUFFERED: bool> M4aSourceDecoder for Decoder<M4a<BUFFERED>> {
+    fn source_request(&self) -> Option<SourceRequest> {
+        Decoder::<M4a<BUFFERED>>::source_request(self)
+    }
+    fn install_index_with_length(
+        &mut self,
+        index: AudioIndex,
+        length: Option<u64>,
+    ) -> Result<(), String> {
+        Decoder::<M4a<BUFFERED>>::install_index_with_length(self, index, length)
+    }
+    fn resume_at(&mut self, media: AtomSpan, offset: u64) -> Result<(), String> {
+        Decoder::<M4a<BUFFERED>>::resume_at(self, media, offset)
     }
 }

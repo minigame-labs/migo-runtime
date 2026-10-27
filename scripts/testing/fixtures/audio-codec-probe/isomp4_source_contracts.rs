@@ -9,7 +9,7 @@ use crate::{
     candidate,
     isomp4_source::{IndexSource, Limits, MediaRead},
     off_worker::OffWorker,
-    push_decoder::{M4aDecoder, M4aSourceRequest, Progress, SAMPLES_PER_STEP},
+    push_decoder::{M4aDecoder, M4aDecoderMode, M4aSourceRequest, Progress, SAMPLES_PER_STEP},
     streaming::{StreamMsg, StreamingState, stream_channel},
     streaming_transport::while_active,
 };
@@ -214,8 +214,32 @@ struct Decoded {
     resumes: u32,
     media_requests: u64,
     media_bytes: u64,
+    buffer: (usize, usize, u64, u64),
+    first_source_peak: Option<usize>,
 }
 async fn decode(
+    client: HttpClient,
+    url: Url,
+    fragment: usize,
+    limits: Limits,
+    tx: mpsc::Sender<StreamMsg>,
+    state: Arc<StreamingState>,
+    first_pcm: Arc<Notify>,
+    index_timeout: Duration,
+) -> Result<Option<Decoded>, String> {
+    decode_mode::<false>(
+        client,
+        url,
+        fragment,
+        limits,
+        tx,
+        state,
+        first_pcm,
+        index_timeout,
+    )
+    .await
+}
+async fn decode_mode<const BUFFERED: bool>(
     client: HttpClient,
     url: Url,
     fragment: usize,
@@ -244,10 +268,14 @@ async fn decode(
     let mut identity = Some(range::Identity::capture(&response));
     limits.index.object_len = length;
     let mut source = None::<IndexSource>;
-    let mut decoder = OffWorker::new(M4aDecoder::with_object_len(None, length), owner.audio_cpu());
+    let mut decoder = OffWorker::new(
+        M4aDecoderMode::<BUFFERED>::with_object_len(None, length),
+        owner.audio_cpu(),
+    );
     let mut pcm = Vec::new();
     let mut scratch = Vec::with_capacity(SAMPLES_PER_STEP);
     let mut indexes = 0;
+    let mut first_source_peak = None;
     let mut eof_sent = false;
     let mut response = Some(response);
     let mut using_media = false;
@@ -297,14 +325,20 @@ async fn decode(
                     value.push(&bytes[offset..end])?
                 };
                 let progress = value.drain(&mut scratch, &active.cancelled)?;
-                Ok::<_, String>((scratch, accepted, progress, value.source_request()))
+                Ok::<_, String>((
+                    scratch,
+                    accepted,
+                    progress,
+                    value.source_request(),
+                    value.buffered_metrics(),
+                ))
             });
             let Some(result) = while_active(&tx, &state, operation).await else {
                 return Ok(None);
             };
             let (returned, outcome) = result.map_err(|e| e.to_string())?;
             decoder = returned;
-            let (out, accepted, progress, request) = outcome?;
+            let (out, accepted, progress, request, buffer) = outcome?;
             scratch = out;
             offset += accepted;
             if eof {
@@ -316,6 +350,7 @@ async fn decode(
             pcm.extend_from_slice(&scratch);
             match progress {
                 Progress::NeedSource => {
+                    first_source_peak.get_or_insert(buffer.0);
                     if source.is_none() {
                         let pin = identity.take().unwrap().map_err(|e| e.to_string())?;
                         source = Some(IndexSource::new(
@@ -401,6 +436,8 @@ async fn decode(
                         resumes: source.as_ref().map_or(0, IndexSource::resumes),
                         media_requests: source.as_ref().map_or(0, IndexSource::media_requests),
                         media_bytes: source.as_ref().map_or(0, IndexSource::media_bytes_received),
+                        buffer,
+                        first_source_peak,
                     }));
                 }
                 Progress::Cancelled => return Ok(None),
@@ -1207,3 +1244,6 @@ fn learned_library_length_is_monotonic_and_only_binds_pending_index() {
     parser.install_index(index).unwrap();
     assert!(parser.bind_object_len(len).is_err());
 }
+
+#[path = "isomp4_buffered_contracts.rs"]
+mod buffered;

@@ -3,7 +3,7 @@
 //! decoder resume use the existing CPU lane; no waiting CPU worker.
 use crate::{
     off_worker::OffWorker,
-    push_decoder::{M4aDecoder, M4aSourceRequest},
+    push_decoder::{M4aDecoder, M4aSourceDecoder, M4aSourceRequest},
     streaming::{StreamMsg, StreamingState},
     streaming_transport::while_active,
 };
@@ -58,8 +58,8 @@ impl std::fmt::Display for Error {
 }
 impl std::error::Error for Error {}
 
-pub struct Resolved {
-    pub decoder: OffWorker<M4aDecoder>,
+pub struct Resolved<D: M4aSourceDecoder = M4aDecoder> {
+    pub decoder: OffWorker<D>,
     #[cfg(test)]
     pub parse_thread: std::thread::ThreadId,
 }
@@ -175,8 +175,8 @@ impl SourceReader {
     }
 }
 
-pub struct Repositioned {
-    pub decoder: OffWorker<M4aDecoder>,
+pub struct Repositioned<D: M4aSourceDecoder = M4aDecoder> {
+    pub decoder: OffWorker<D>,
     pub first: Bytes,
     #[cfg(test)]
     pub resume_thread: std::thread::ThreadId,
@@ -229,14 +229,14 @@ impl IndexSource {
     /// None means cancellation or receiver exit; the decoder is then dropped.
     /// RangeUnsupported/NoStrongValidator remain typed for the future bounded
     /// fallback owner, rather than being converted into successful stream EOF.
-    pub async fn resolve(
+    pub async fn resolve<D: M4aSourceDecoder>(
         &mut self,
         request: IndexRequest,
-        mut decoder: OffWorker<M4aDecoder>,
+        mut decoder: OffWorker<D>,
         tx: &mpsc::Sender<StreamMsg>,
         state: &Arc<StreamingState>,
         deadline: Instant,
-    ) -> Result<Option<Resolved>, Error> {
+    ) -> Result<Option<Resolved<D>>, Error> {
         if request.media.kind != AtomKind::MediaData
             || request.next_atom_offset != request.media.end
         {
@@ -444,14 +444,14 @@ impl IndexSource {
     /// Validate the new body before clearing prefetch or resuming the decoder.
     /// The first chunk and CPU queue wait share the discovery's absolute deadline;
     /// subsequent media uses independent header/idle limits and no duration cap.
-    pub async fn read_at(
+    pub async fn read_at<D: M4aSourceDecoder>(
         &mut self,
         packet: IndexedPacket,
-        mut decoder: OffWorker<M4aDecoder>,
+        mut decoder: OffWorker<D>,
         tx: &mpsc::Sender<StreamMsg>,
         state: &Arc<StreamingState>,
         deadline: Instant,
-    ) -> Result<Option<Repositioned>, Error> {
+    ) -> Result<Option<Repositioned<D>>, Error> {
         self.resumes = self
             .resumes
             .checked_add(1)

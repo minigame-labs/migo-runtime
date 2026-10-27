@@ -74,6 +74,10 @@ pub use vorbis::Vorbis;
 #[path = "isomp4_streaming.rs"]
 mod m4a;
 #[cfg(feature = "m4a-streaming-probe")]
-pub type M4aDecoder = incremental::Decoder<m4a::M4a>;
+pub type M4aDecoder = incremental::Decoder<m4a::M4a<false>>;
 #[cfg(feature = "m4a-streaming-probe")]
-pub use m4a::{M4a, SourceRequest as M4aSourceRequest};
+pub type M4aDecoderMode<const BUFFERED: bool> = incremental::Decoder<m4a::M4a<BUFFERED>>;
+#[cfg(feature = "m4a-streaming-probe")]
+pub type BufferedM4aDecoder = M4aDecoderMode<true>;
+#[cfg(feature = "m4a-streaming-probe")]
+pub use m4a::{M4a, M4aSourceDecoder, SourceRequest as M4aSourceRequest};
