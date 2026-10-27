@@ -16,7 +16,7 @@ pub(crate) use migo_services::host_paths::Remote;
 
 use crate::io_state::IoSchedulerState;
 
-fn sandbox(state: &Rc<RefCell<OpState>>) -> Sandbox {
+pub(crate) fn sandbox(state: &Rc<RefCell<OpState>>) -> Sandbox {
     sandbox_of(&state.borrow())
 }
 

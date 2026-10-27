@@ -484,6 +484,14 @@ export function op_revoke_buffer_url(url) {
   callService(SERVICE_OP.op_revoke_buffer_url, (w) => w.str(u));
 }
 
+// ---- the game recorder ------------------------------------------------------------
+
+/// Whether this device records the game: the host asks its render thread, and
+/// content's `isFrameSupported()` answers at once.
+export function op_game_recorder_supported() {
+  return callService(SERVICE_OP.op_game_recorder_supported);
+}
+
 // ---- images -------------------------------------------------------------------
 
 /// This game's image cache figures, as the embedded op's serde answer.

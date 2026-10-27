@@ -9,6 +9,7 @@ pub mod content;
 pub mod cursor;
 pub mod error;
 pub mod fs;
+pub mod game_recorder;
 pub mod host_paths;
 pub mod image;
 pub mod network;

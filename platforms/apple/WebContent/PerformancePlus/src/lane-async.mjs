@@ -765,6 +765,49 @@ export const op_save_image_to_photos_album = hostRequestWithFiles(SERVICE_OP.op_
 export const op_share_app_message = hostRequestWithFiles(SERVICE_OP.op_share_app_message);
 export const op_share_message_to_friend = hostRequestWithFiles(SERVICE_OP.op_share_message_to_friend);
 export const op_show_share_image_menu = hostRequestWithFiles(SERVICE_OP.op_show_share_image_menu);
+export const op_share_game_recording = hostRequestWithFiles(SERVICE_OP.op_share_game_recording);
+
+// ---- the game recorder ------------------------------------------------------------
+//
+// What the host's renderer presents is what is recorded, so each call is the host
+// asking its render thread, as the embedded ops ask it (migo_services::game_recorder),
+// and answers what happened: started, not supported, failed. The recording's events
+// are waited on one at a time, as content's side of the embedded runtime waits.
+
+export function op_game_recorder_start(fps, bitrateKbps, gop, durationMs) {
+  const args = [
+    smiU32(fps, "fps"),
+    smiU32(bitrateKbps, "bitrate_kbps"),
+    smiU32(gop, "gop"),
+    toF64(durationMs, "duration_ms"),
+  ];
+  return servicesOf(engineHost()).request(SERVICE_OP.op_game_recorder_start, (w) => {
+    w.u32(args[0]);
+    w.u32(args[1]);
+    w.u32(args[2]);
+    w.f64(args[3]);
+  });
+}
+
+export function op_game_recorder_pause() {
+  return servicesOf(engineHost()).request(SERVICE_OP.op_game_recorder_pause);
+}
+
+export function op_game_recorder_resume() {
+  return servicesOf(engineHost()).request(SERVICE_OP.op_game_recorder_resume);
+}
+
+export function op_game_recorder_abort() {
+  return servicesOf(engineHost()).request(SERVICE_OP.op_game_recorder_abort);
+}
+
+export function op_game_recorder_stop() {
+  return servicesOf(engineHost()).request(SERVICE_OP.op_game_recorder_stop);
+}
+
+export function op_game_recorder_next_event() {
+  return servicesOf(engineHost()).request(SERVICE_OP.op_game_recorder_next_event);
+}
 
 export function op_ecosystem_call(api, requestJson) {
   const name = stringOf(api, "api");
