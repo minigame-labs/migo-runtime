@@ -1078,27 +1078,7 @@ jobs:
           cache-on-failure: true
 
       - name: Install the engine's host build dependencies
-        # Bounded and retried like the other apt steps; see pr-ci.yml for the
-        # stall this guards against.
-        run: |
-          # Advisory for the same reason as the Qt job: a mirror that is down
-          # makes `update` report per-index failures, and the packages still
-          # install from the indexes already on the image.
-          timeout 180 sudo apt-get update -qq \
-            || echo "apt-get update incomplete; continuing on the image's indexes" >&2
-          install_pkgs() {
-            sudo apt-get install -y -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -qq \
-              ninja-build \
-              libgl-dev libegl-dev libgles-dev \
-              libgl1-mesa-dri libegl-mesa0 \
-              libfontconfig1-dev libfreetype-dev \
-              libasound2-dev strace \
-              gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav || return 1
-          }
-          install_pkgs || {
-            echo "host build dependency install failed; retrying once" >&2
-            install_pkgs
-          }
+        uses: ./.github/actions/host-engine-deps
 
       # The ASTC encoder, checked by a decoder that is not ours.
       #
