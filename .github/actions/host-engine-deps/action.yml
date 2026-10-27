@@ -1,0 +1,55 @@
+name: Install the engine's host build dependencies
+description: >
+  The system packages the host engine's crates need to build, link and test on
+  Linux. Shared by the host-engine-tests jobs.
+
+# Each package answers a link or include request the build actually makes,
+# confirmed against the build script output rather than guessed:
+#   ninja-build          Skia's GN/ninja source build
+#   libgl-dev            KHR/khrplatform.h, which the EGL and GLES headers include
+#   libegl-dev           EGL/*, for Skia's GL interface
+#   libgles-dev          GLES2/*, GLES3/*
+#   libfontconfig1-dev   skia-bindings emits `cargo:rustc-link-lib=fontconfig`
+#   libfreetype-dev      skia-bindings emits `cargo:rustc-link-lib=freetype`
+#   libasound2-dev       alsa-sys emits `cargo:rustc-link-lib=asound`
+# The last three are needed at link time even though the finished binaries do
+# not end up depending on them: `-l` has to resolve before `--as-needed` can
+# drop it.
+# And one the tests need at run time, not build time: the Linux video
+# decoder loads GStreamer, so its tests want it present, with its base,
+# good and libav plugins -- playbin and videoconvert, the MP4 demuxer, the
+# H.264 decoder the fixture clip needs:
+#   gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav
+
+runs:
+  using: composite
+  steps:
+    # Bounded and retried for the reason the ILP32 lane already is: a
+    # stalled mirror hung this exact step for 90 minutes, producing no
+    # output at all because -qq suppresses progress, until the job's
+    # ceiling cancelled it. Read from the outside that is "the tests hung",
+    # which is the wrong place to look. One slow mirror should cost a
+    # bounded retry, not the whole budget -- and the budget has to stay
+    # large for a cold cache that rebuilds Skia from source, so it cannot
+    # double as the guard against a hung apt.
+    - name: Install the packages
+      shell: bash
+      run: |
+        # Advisory for the same reason as the Qt job: a mirror that is down
+        # makes `update` report per-index failures, and the packages still
+        # install from the indexes already on the image.
+        timeout 180 sudo apt-get update -qq \
+          || echo "apt-get update incomplete; continuing on the image's indexes" >&2
+        install_pkgs() {
+          sudo apt-get install -y -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -qq \
+            ninja-build \
+            libgl-dev libegl-dev libgles-dev \
+            libgl1-mesa-dri libegl-mesa0 \
+            libfontconfig1-dev libfreetype-dev \
+            libasound2-dev strace \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav || return 1
+        }
+        install_pkgs || {
+          echo "host build dependency install failed; retrying once" >&2
+          install_pkgs
+        }

@@ -1457,23 +1457,6 @@ jobs:
           # driver rather than reporting on the code.
           components: clippy
 
-      # Each package answers a link or include request the build actually makes,
-      # confirmed against the build script output rather than guessed:
-      #   ninja-build          Skia's GN/ninja source build
-      #   libgl-dev            KHR/khrplatform.h, which the EGL and GLES headers include
-      #   libegl-dev           EGL/*, for Skia's GL interface
-      #   libgles-dev          GLES2/*, GLES3/*
-      #   libfontconfig1-dev   skia-bindings emits `cargo:rustc-link-lib=fontconfig`
-      #   libfreetype-dev      skia-bindings emits `cargo:rustc-link-lib=freetype`
-      #   libasound2-dev       alsa-sys emits `cargo:rustc-link-lib=asound`
-      # The last three are needed at link time even though the finished binaries do
-      # not end up depending on them: `-l` has to resolve before `--as-needed` can
-      # drop it.
-      # And one the tests need at run time, not build time: the Linux video
-      # decoder loads GStreamer, so its tests want it present, with its base,
-      # good and libav plugins -- playbin and videoconvert, the MP4 demuxer, the
-      # H.264 decoder the fixture clip needs:
-      #   gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav
       # NO Rust cache, for the reason scripts/lib/v8-materialise.sh's header
       # states: `cargo test -p migo-core` links V8, and Swatinem/rust-cache keeps
       # the v8 build script's fingerprint while pruning the archive that script
@@ -1491,33 +1474,7 @@ jobs:
       # not taken here because nothing in this repository has measured it, and
       # this job is not the place to find out.
       - name: Install the engine's host build dependencies
-        # Bounded and retried for the reason the ILP32 lane already is: a
-        # stalled mirror hung this exact step for 90 minutes, producing no
-        # output at all because -qq suppresses progress, until the job's
-        # ceiling cancelled it. Read from the outside that is "the tests hung",
-        # which is the wrong place to look. One slow mirror should cost a
-        # bounded retry, not the whole budget -- and the budget here has to
-        # stay large for a cold cache that rebuilds Skia from source, so it
-        # cannot double as the guard against a hung apt.
-        run: |
-          # Advisory for the same reason as the Qt job: a mirror that is down
-          # makes `update` report per-index failures, and the packages still
-          # install from the indexes already on the image.
-          timeout 180 sudo apt-get update -qq \
-            || echo "apt-get update incomplete; continuing on the image's indexes" >&2
-          install_pkgs() {
-            sudo apt-get install -y -o Acquire::Retries=5 -o Acquire::http::Timeout=30 -qq \
-              ninja-build \
-              libgl-dev libegl-dev libgles-dev \
-              libgl1-mesa-dri libegl-mesa0 \
-              libfontconfig1-dev libfreetype-dev \
-              libasound2-dev strace \
-              gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-libav || return 1
-          }
-          install_pkgs || {
-            echo "host build dependency install failed; retrying once" >&2
-            install_pkgs
-          }
+        uses: ./.github/actions/host-engine-deps
 
       # These five crates' clippy ran in no job at all until now, for the same
       # reason their tests did not: quality-gate installs no system packages and
@@ -1588,12 +1545,67 @@ jobs:
           # opens libX11 at run time -- and this job has already built all of it.
           # A type-check elsewhere covered its build and none of its tests.
           cargo test -p migo-player --bins
+        env:
+          RUST_BACKTRACE: 1
+
+  # The Slim and external-frame builds of core, capi and platform, beside the
+  # full profile's tests rather than behind them. These six lines used to end
+  # host-engine-tests, each another rebuild of the three crates under other
+  # features, and that serial build reached the job's 90-minute ceiling on a
+  # slow runner: #636's run was cancelled mid-suite with every test so far
+  # passing. In their own jobs they rebuild in parallel with the full one.
+  host-engine-tests-slim:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          lfs: false
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0
+
+      - name: Install the engine's host build dependencies
+        uses: ./.github/actions/host-engine-deps
+
+      - name: Prepare verified host V8
+        uses: ./.github/actions/prepare-host-v8
+
+      - name: Run Rust tests (Slim core, capi, platform)
+        working-directory: engine
+        run: |
           # Slim, for the two crates whose capability surface the profile selects
           # and the two that re-export it to a host. `graphics` has no Slim build
           # of its own: both profiles expand to the same features.
           cargo test -p migo-core --lib --no-default-features --features profile-slim
           cargo test -p migo-capi --lib --no-default-features --features profile-slim
           cargo test -p migo-platform --lib --no-default-features --features profile-slim
+        env:
+          RUST_BACKTRACE: 1
+
+  host-engine-tests-external-frames:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          lfs: false
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@a5f673d0ba8626c3977bb416a1612774bc82181b # 1.95.0
+
+      - name: Install the engine's host build dependencies
+        uses: ./.github/actions/host-engine-deps
+
+      # No V8 is prepared: the external-frame product links none, so a build
+      # of it that reached for one fails here instead of finding it.
+      - name: Run Rust tests (external-frame core, capi, platform)
+        working-directory: engine
+        run: |
           # The external-frame product the iOS package ships. `external-frames`
           # excludes `embedded-v8`, so no default build compiles any of it; the
           # quality gate builds its archive and links no test of it.
