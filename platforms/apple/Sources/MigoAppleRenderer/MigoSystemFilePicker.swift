@@ -85,11 +85,10 @@ protocol MigoFilePicker: AnyObject {
                 completion(.unavailable("another picker is showing"))
                 return
             }
-            guard let controller = MigoSystemPresentation.topController() else {
-                completion(.unavailable("there is no window to show it in"))
-                return
-            }
             pending = (request, completion)
+            let shown: (Bool) -> Void = { [weak self] up in
+                if !up { self?.finish(.unavailable("there is no window to show it in")) }
+            }
             switch request.source {
             case .library:
                 var configuration = PHPickerConfiguration()
@@ -102,12 +101,12 @@ protocol MigoFilePicker: AnyObject {
                 configuration.filter = .any(of: filters)
                 let picker = PHPickerViewController(configuration: configuration)
                 picker.delegate = self
-                controller.present(picker, animated: true)
+                MigoSystemPresentation.present(picker, shown: shown)
             case .files:
                 let picker = UIDocumentPickerViewController(forOpeningContentTypes: request.contentTypes, asCopy: true)
                 picker.allowsMultipleSelection = request.count > 1
                 picker.delegate = self
-                controller.present(picker, animated: true)
+                MigoSystemPresentation.present(picker, shown: shown)
             }
         }
 

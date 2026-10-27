@@ -919,6 +919,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- On iOS `previewImage` and `previewMedia` no longer end the game. The preview was presented full screen, which takes
+  the views below it out of the window once it is up, and the game view leaving its window is the app ending the game:
+  the game was torn down under the preview and started over from its entry when it closed. It is presented over the
+  game, which runs on under it.
+- On iOS a picker, a modal, an action sheet or a preview asked for while another of the system's sheets is still
+  leaving now appears once it has left. UIKit refuses to present from a controller in the middle of a transition with
+  a console warning and nothing else: a `chooseMedia` right after a cancelled `chooseImage` never showed, and every
+  pick after it failed with "another picker is showing". Every presentation goes through one place
+  (`MigoSystemPresentation.present`), which waits for the transition under way and says when there is no window.
 - On iOS (Performance+) content's console reaches the app in order with everything else the game does. It travelled
   the page's message channel, which nothing orders with the service stream, so an `exitMiniProgram` or a restart on
   the stream overtook the lines written just before it and the view was gone before they arrived. It is now the
