@@ -157,11 +157,11 @@ private:
             if (line.endsWith(QLatin1Char('\r'))) line.chop(1);
             buffered_.remove(0, end + 1);
             if (line.startsWith(QStringLiteral("TAP-TEXT "))) {
-                requests_.append({Request::Tap, line.mid(9)});
+                requests_.append(Request{Request::Tap, line.mid(9)});
             } else if (line.startsWith(QStringLiteral("TYPE-TEXT "))) {
-                requests_.append({Request::Type, line.mid(10)});
+                requests_.append(Request{Request::Type, line.mid(10)});
             } else if (line == QStringLiteral("PRESS-ENTER")) {
-                requests_.append({Request::Enter, {}});
+                requests_.append(Request{Request::Enter, {}});
             }
         }
         while (!requests_.isEmpty() && perform(requests_.first())) requests_.removeFirst();
