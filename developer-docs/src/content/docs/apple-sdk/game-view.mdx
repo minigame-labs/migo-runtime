@@ -233,6 +233,10 @@ public struct Configuration {
 
 `networkPolicyJSON` 是游戏能访问的网络,格式见 [会话参考](/docs/reference/session/) 里的 JSON:每个通道一个白名单。默认 `nil` 即**完全没有网络**——在 App 授权之前,所有请求、下载、上传和套接字一律被拒。
 
+其中带 `"lan": true` 时，游戏的 socket（`createTCPSocket`、`createUDPSocket`、`connectSocket`）才能连到玩家局域网里
+的其他设备。iOS 14 与 macOS 15 起，App 访问本地网络前系统会先询问玩家，弹窗里写的是 App 在 Info.plist 的
+`NSLocalNetworkUsageDescription` 中给出的理由。授予 `lan` 的 App 必须声明这个键：没有它系统不弹窗，这类连接全部失败。
+
 | 字段 | 平台 | 默认 | 说明 |
 | --- | --- | --- | --- |
 | `directories` | 两者 | `.standard()` | 已安装游戏、存档与缓存的位置，见 [`MigoGameDirectories`](#migogamedirectories) |
