@@ -54,10 +54,56 @@ pub struct EncoderConfig {
     pub key_frame_interval: u32,
 }
 
+/// How an encoder takes the frames drawn for it.
+#[derive(Clone, Copy, Debug)]
+pub enum EncoderInput {
+    /// A window (`EGLNativeWindowType`): each frame is drawn into an EGL window
+    /// surface on it and swapped, stamped with `EGL_ANDROID_presentation_time`
+    /// where the EGL has it. A codec's input surface.
+    Window(*mut c_void),
+    /// Buffers it lends one frame at a time ([`VideoEncoder::lend`]): each is
+    /// drawn into as an EGL client buffer bound to a texture, and handed back
+    /// ([`VideoEncoder::submit`]) once the GPU has finished with it.
+    ClientBuffers,
+}
+
+/// A buffer an encoder lends for one frame, and how EGL takes it.
+#[derive(Debug)]
+pub struct ClientBuffer {
+    /// What `eglCreatePbufferFromClientBuffer` is given.
+    pub buffer_type: khronos_egl::Enum,
+    pub handle: *mut c_void,
+    /// The same each time one buffer of the encoder's is lent: what EGL and GL
+    /// made for it are kept for the next time.
+    pub key: u64,
+    /// The pbuffer's attributes, without the closing `EGL_NONE`.
+    pub attribs: Vec<khronos_egl::Int>,
+    /// The attributes of an EGL config that takes it, without `EGL_NONE`.
+    pub config_attribs: Vec<khronos_egl::Int>,
+    /// The GL texture target it is bound to.
+    pub texture_target: u32,
+    /// Whether its first row in memory is the picture's top: GL's is the
+    /// bottom, so such a buffer is drawn into upside down.
+    pub top_row_first: bool,
+}
+
 /// One encoder, driven from the encoder thread alone.
 pub trait VideoEncoder: Send {
-    /// The window its frames are drawn into: an `EGLNativeWindowType`.
-    fn input_window(&self) -> *mut c_void;
+    /// How it takes its frames.
+    fn input(&self) -> EncoderInput;
+
+    /// A buffer to draw the next frame into, or none when the encoder is not
+    /// ready for another frame now: that frame is not recorded. Only asked of
+    /// an encoder whose input is [`EncoderInput::ClientBuffers`].
+    fn lend(&mut self) -> EngineResult<Option<ClientBuffer>> {
+        Err(not_lending())
+    }
+
+    /// The frame drawn into `buffer`, complete on the GPU, shown at `pts_ns`.
+    fn submit(&mut self, buffer: ClientBuffer, pts_ns: i64) -> EngineResult<()> {
+        let _ = (buffer, pts_ns);
+        Err(not_lending())
+    }
 
     /// Write what has been encoded so far to the file, waiting for nothing.
     fn drain(&mut self) -> EngineResult<()>;
@@ -68,6 +114,11 @@ pub trait VideoEncoder: Send {
 
     /// Give it up: nothing more is written and the file is not complete.
     fn discard(self: Box<Self>);
+}
+
+fn not_lending() -> EngineError {
+    EngineError::new(ErrorCode::RenderBackendError)
+        .with_msg("this encoder takes its frames through a window, not lent buffers")
 }
 
 /// The longest side a recording is encoded at, and the shorter one's limit:

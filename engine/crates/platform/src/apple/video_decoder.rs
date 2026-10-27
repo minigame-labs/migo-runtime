@@ -6,70 +6,20 @@
 //! so a seek starts a new one a little before the position and keeps the frame
 //! shown there, as the Android decoder does.
 
-use std::ffi::{c_char, c_void};
+use std::ffi::c_void;
 
 use shared::{
     protocol::error::ServiceError,
     services::{FrameTiming, VideoDecoderService, VideoFrameSource},
 };
 
-type Id = *mut c_void;
-type Sel = *const c_void;
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct CMTime {
-    value: i64,
-    timescale: i32,
-    flags: u32,
-    epoch: i64,
-}
+use super::objc::{CFRelease, CMTime, Cf, Id, Owned, Pool, class, describe, sel, send};
 
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct CMTimeRange {
     start: CMTime,
     duration: CMTime,
-}
-
-/// `CFDictionaryKeyCallBacks` / `CFDictionaryValueCallBacks`, only ever passed
-/// by address.
-#[repr(C)]
-struct CallBacks([usize; 6]);
-
-#[link(name = "objc")]
-unsafe extern "C" {
-    fn objc_getClass(name: *const c_char) -> Id;
-    fn sel_registerName(name: *const c_char) -> Sel;
-    fn objc_msgSend();
-    fn objc_retain(object: Id) -> Id;
-    fn objc_release(object: Id);
-    fn objc_autoreleasePoolPush() -> *mut c_void;
-    fn objc_autoreleasePoolPop(pool: *mut c_void);
-}
-
-#[link(name = "CoreFoundation", kind = "framework")]
-unsafe extern "C" {
-    fn CFStringCreateWithBytes(
-        allocator: *const c_void,
-        bytes: *const u8,
-        length: isize,
-        encoding: u32,
-        external: u8,
-    ) -> *const c_void;
-    fn CFNumberCreate(allocator: *const c_void, kind: isize, value: *const c_void)
-    -> *const c_void;
-    fn CFDictionaryCreate(
-        allocator: *const c_void,
-        keys: *const *const c_void,
-        values: *const *const c_void,
-        count: isize,
-        key_callbacks: *const CallBacks,
-        value_callbacks: *const CallBacks,
-    ) -> *const c_void;
-    fn CFRelease(object: *const c_void);
-    static kCFTypeDictionaryKeyCallBacks: CallBacks;
-    static kCFTypeDictionaryValueCallBacks: CallBacks;
 }
 
 #[link(name = "CoreVideo", kind = "framework")]
@@ -97,73 +47,12 @@ unsafe extern "C" {
     static AVMediaTypeVideo: Id;
 }
 
-const UTF8: u32 = 0x0800_0100;
-const SINT32: isize = 3;
 const BGRA: i32 = 0x4247_5241;
 const READ_ONLY: u64 = 1;
 const READER_COMPLETED: isize = 2;
 /// How far before a seek's position the new reader starts, so the frame shown
 /// there is among those it decodes.
 const SEEK_LEAD_SECONDS: f64 = 2.0;
-
-fn sel(name: &std::ffi::CStr) -> Sel {
-    // SAFETY: registering a selector has no preconditions.
-    unsafe { sel_registerName(name.as_ptr()) }
-}
-
-fn class(name: &std::ffi::CStr) -> Id {
-    // SAFETY: looking a class up has no preconditions.
-    unsafe { objc_getClass(name.as_ptr()) }
-}
-
-/// `objc_msgSend` through the prototype of the method it dispatches to: every
-/// call below names the method's own argument and return types.
-macro_rules! send {
-    ($receiver:expr, $selector:expr => $ret:ty) => {{
-        let call: unsafe extern "C" fn(Id, Sel) -> $ret = std::mem::transmute(objc_msgSend as *const ());
-        call($receiver, $selector)
-    }};
-    ($receiver:expr, $selector:expr, $($arg:expr => $ty:ty),+ ; $ret:ty) => {{
-        let call: unsafe extern "C" fn(Id, Sel, $($ty),+) -> $ret = std::mem::transmute(objc_msgSend as *const ());
-        call($receiver, $selector, $($arg),+)
-    }};
-}
-
-/// An autorelease pool for the length of one call on the decode thread, which
-/// has none of its own.
-struct Pool(*mut c_void);
-
-impl Pool {
-    fn new() -> Self {
-        // SAFETY: pushing a pool has no preconditions; it is popped on drop.
-        Self(unsafe { objc_autoreleasePoolPush() })
-    }
-}
-
-impl Drop for Pool {
-    fn drop(&mut self) {
-        // SAFETY: the pool pushed by `new`, popped once.
-        unsafe { objc_autoreleasePoolPop(self.0) }
-    }
-}
-
-/// An object this module holds a reference to.
-struct Owned(Id);
-
-impl Owned {
-    /// Take a reference to an object the caller does not own.
-    fn retain(object: Id) -> Option<Self> {
-        // SAFETY: a non-null object is live for the call that returned it.
-        (!object.is_null()).then(|| Self(unsafe { objc_retain(object) }))
-    }
-}
-
-impl Drop for Owned {
-    fn drop(&mut self) {
-        // SAFETY: the reference `retain` took.
-        unsafe { objc_release(self.0) }
-    }
-}
 
 /// A sample buffer `copyNextSampleBuffer` handed over.
 struct Sample(*mut c_void);
@@ -208,23 +97,15 @@ impl Source {
         // SAFETY: each message is sent to a live object through its method's
         // prototype; what is kept past the pool is retained.
         unsafe {
-            let string = CFStringCreateWithBytes(
-                ptr_null(),
-                source.as_ptr(),
-                source.len() as isize,
-                UTF8,
-                0,
-            );
-            if string.is_null() {
-                return Err(ServiceError::invalid_param("the source is not text"));
-            }
+            let string = Cf::string(source)
+                .ok_or_else(|| ServiceError::invalid_param("the source is not text"))?;
             let remote = source.starts_with("http://") || source.starts_with("https://");
             let url: Id = if remote {
-                send!(class(c"NSURL"), sel(c"URLWithString:"), string as Id => Id; Id)
+                send!(class(c"NSURL"), sel(c"URLWithString:"), string.id() => Id; Id)
             } else {
-                send!(class(c"NSURL"), sel(c"fileURLWithPath:"), string as Id => Id; Id)
+                send!(class(c"NSURL"), sel(c"fileURLWithPath:"), string.id() => Id; Id)
             };
-            CFRelease(string);
+            drop(string);
             if url.is_null() {
                 return Err(ServiceError::invalid_param("the source is not a URL"));
             }
@@ -282,22 +163,11 @@ impl Source {
                 asset.0 => Id, &mut error as *mut Id => *mut Id; Id);
             let reader = Owned::retain(reader)
                 .ok_or_else(|| ServiceError::system(describe("opening the video", error)))?;
-            let format = BGRA;
-            let number = CFNumberCreate(ptr_null(), SINT32, &format as *const i32 as *const c_void);
-            let keys = [kCVPixelBufferPixelFormatTypeKey];
-            let values = [number];
-            let settings = CFDictionaryCreate(
-                ptr_null(),
-                keys.as_ptr(),
-                values.as_ptr(),
-                1,
-                &kCFTypeDictionaryKeyCallBacks,
-                &kCFTypeDictionaryValueCallBacks,
-            );
-            CFRelease(number);
+            let format = Cf::i32(BGRA);
+            let settings = Cf::dictionary(&[(kCVPixelBufferPixelFormatTypeKey, format.0)]);
             let output = send!(class(c"AVAssetReaderTrackOutput"), sel(c"assetReaderTrackOutputWithTrack:outputSettings:"),
-                track.0 => Id, settings as Id => Id; Id);
-            CFRelease(settings);
+                track.0 => Id, settings.id() => Id; Id);
+            drop(settings);
             let output = Owned::retain(output)
                 .ok_or_else(|| ServiceError::system("the video track cannot be read"))?;
             // The frames are only read here, never kept past the next one.
@@ -399,34 +269,6 @@ fn bgra_to_rgba(
             out[1] = pixel[1];
             out[2] = pixel[0];
             out[3] = pixel[3];
-        }
-    }
-}
-
-fn ptr_null() -> *const c_void {
-    std::ptr::null()
-}
-
-/// What failed, with the system's reason when it gave one.
-unsafe fn describe(what: &str, error: Id) -> String {
-    if error.is_null() {
-        return format!("{what} failed");
-    }
-    // SAFETY: an NSError's description is an NSString with a UTF-8 rendering.
-    unsafe {
-        let text: Id = send!(error, sel(c"localizedDescription") => Id);
-        let utf8: *const c_char = if text.is_null() {
-            std::ptr::null()
-        } else {
-            send!(text, sel(c"UTF8String") => *const c_char)
-        };
-        if utf8.is_null() {
-            format!("{what} failed")
-        } else {
-            format!(
-                "{what} failed: {}",
-                std::ffi::CStr::from_ptr(utf8).to_string_lossy()
-            )
         }
     }
 }

@@ -51,9 +51,12 @@ be an http(s) URL, which reaches the host as is; the other two refuse network im
 
 `SHARE_GAME_RECORDING` shares the last recording `migo.getGameRecorder()` finished. `video` is the engine's own file
 (an H.264 MP4 under the session's cache), never a path content named, and it stays readable for the rest of the
-session; `bgm` is a real file resolved through the sandbox, as images are, and never a URL. The engine judges the
-options before the host is asked, failing with the reference's codes: 22603 no recorded video, 22613 bgm not found,
-22623 time range invalid, 22633 duration out of limit (more than 60 s in all), 22643 time range too short (under 2 s).
+session; `bgm` is a real file resolved through the sandbox, as images are, and never a URL. Android, macOS and iOS
+record; elsewhere there is no recording to share yet. The time range is content's own mistake and is refused first
+everywhere: 22623 time range invalid, 22633 duration out of limit (more than 60 s in all), 22643 time range too short
+(under 2 s). A host without the share service then answers `not supported`, as for every share; one with it is asked
+only once the engine has a recording (else 22603 no recorded video) and the music is a file of the game's (else 22613
+bgm not found).
 Cutting the video to `timeRange`, setting it to `bgm`, its volume and its speed are the host's share surface's.
 
 The share button settles the same request. Its tap listeners hear only a share that failed for a reason other than the
