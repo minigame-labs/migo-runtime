@@ -277,6 +277,15 @@ channel! {
     op_stop_device_motion(none) => device_motion.stop;
     op_stop_gyroscope(none) => gyroscope.stop;
     op_stop_screen_recording_observer(none) => screen.stop_screen_recording_observer;
+    op_video_destroy(json) => video.destroy;
+    op_video_exit_full_screen(json) => video.exit_full_screen,
+        "_internalOnVideoExitFullScreenResult";
+    op_video_pause(json) => video.pause, "_internalOnVideoPauseResult";
+    op_video_play(json) => video.play, "_internalOnVideoPlayResult";
+    op_video_request_full_screen(json) => video.request_full_screen,
+        "_internalOnVideoRequestFullScreenResult";
+    op_video_seek(json) => video.seek, "_internalOnVideoSeekResult";
+    op_video_stop(json) => video.stop, "_internalOnVideoStopResult";
     op_write_ble_characteristic_value(json) => bluetooth.write_ble_characteristic_value,
         "_internalOnWriteBLECharacteristicValueResult";
 }

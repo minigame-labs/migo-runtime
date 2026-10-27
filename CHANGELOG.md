@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `createVideo` on iOS (Performance+): the players are the host app's, as on every other platform (the video service,
+  `migo/host_services.h`). The producer makes a player, or changes what it plays, through the host's synchronous
+  endpoint -- answered at once, its `src` and `poster` exported through the game's sandbox as the embedded ops export
+  them, and refused in their words -- and plays, pauses, stops, seeks and goes full screen as commands the host
+  answers through each method's result hook. It was not offered on this lane at all.
 - `getBatteryInfo` and `getBatteryInfoSync` on a Mac laptop: the Apple SDK reports the internal battery among IOKit's
   power sources (its charge, and whether it is charging or full on the charger) and Low Power Mode from macOS 12, at
   each change. A Mac without a battery still answers "not supported".
