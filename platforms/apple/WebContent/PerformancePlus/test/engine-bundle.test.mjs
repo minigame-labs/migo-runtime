@@ -124,11 +124,16 @@ const reports = [];
 const { ValueWriter, readValues } = await import(`${root}/service-value.mjs`);
 const { SERVICE_OP } = await import(`${root}/service-ops.mjs`);
 const commands = [];
+let exitSent;
+const exited = new Promise((resolveExit) => {
+  exitSent = resolveExit;
+});
 const services = {
   command(op, writeArgs) {
     const writer = new ValueWriter(64);
     writeArgs?.(writer);
     commands.push({ op, args: readValues(writer.finish()) });
+    if (op === SERVICE_OP.op_exit_mini_program) exitSent();
   },
 };
 bindEngineHost({
@@ -332,6 +337,24 @@ if (packetDir) {
       answers.join() === "start:fail not supported,null,seek:fail the decoder is not decoding,stop:ok,remove:ok",
     `a decoder with none to decode answers every call (${threw ? threw.message : answers.join()})`,
   );
+}
+
+// An exit is sent once the task that asked has ended, as the embedded runtime ends the session then: what the call's
+// own complete does -- a line to the console, here -- is on the stream before it, where the host reads it before the
+// exit. Sent at once, the exit overtook it and the host closed the game without it. Last: the session ends here.
+{
+  const before = commands.length;
+  migo.exitMiniProgram({ complete: (res) => console.log(`answered ${res.errMsg}`) });
+  check(
+    !commands.slice(before).some((command) => command.op === SERVICE_OP.op_exit_mini_program),
+    "the exit waits for the task that asked to end",
+  );
+  await exited;
+  const order = commands
+    .slice(before)
+    .filter((c) => c.op === SERVICE_OP.op_exit_mini_program || c.op === SERVICE_OP.op_console)
+    .map((c) => (c.op === SERVICE_OP.op_console ? c.args[0] : "exit"));
+  check(order.join() === "answered exitMiniProgram:ok,exit", `the call's answer is on the stream before the exit (${order})`);
 }
 
 log(failures === 0 ? "PASS" : `FAIL: ${failures} check(s) failed`);

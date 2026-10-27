@@ -916,7 +916,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the stream overtook the lines written just before it and the view was gone before they arrived. It is now the
   command the op-boundary contract always said it was (`op_console`, 311): the host logs it as the embedded op does,
   keeps it for the debugging aids, and hands it on through `on_console`. A line too long for one service record is
-  cut, and a line written after the channel broke is dropped, rather than either throwing from `console`.
+  cut, and a line written after the channel broke is dropped, rather than either throwing from `console`. And
+  `exitMiniProgram` and `restartMiniProgram` are sent once the task that asked has ended, as the embedded runtime
+  acts on them only between tasks: the call's own success and complete, and whatever they log or save, now happen
+  before the session goes, where the host acted on the command as it read it and closed the game first.
 - On iOS and macOS the clipboard is read and written off the main thread. Reading what another app put there asks
   the player first (iOS 16, macOS 15.4) and blocks the reading thread until they answer: on the main thread
   `getClipboardData` froze the game -- its frames, its touches, every other answer -- for as long as the prompt was

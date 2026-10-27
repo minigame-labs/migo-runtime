@@ -21,8 +21,10 @@ import {
 import { engineHost } from "./engine-host.mjs";
 import { servicesOf } from "./lane-async.mjs";
 import { f32BitsOf, optionalBytesOf, optionalStringOf, smiU32, stringOf, toBool, toF64, toI32, toU8 } from "./op-args.mjs";
+import { platform } from "./platform.mjs";
 import { SERVICE_OP } from "./service-ops.mjs";
 import { MAX_SERVICE_MESSAGE_BYTES, RECORD_HEADER_BYTES, SERVICE_HEADER_BYTES } from "./service.mjs";
+import { runTask } from "./task-gate.mjs";
 import { terminateWorkerAttempt } from "./worker-relay-channel.mjs";
 
 /// The longest console line one service record carries, in UTF-16 code units:
@@ -609,24 +611,48 @@ export function op_udp_set_ttl(rid, ttl) {
 
 // ---- the session, as content asks about itself -----------------------------------
 
+/// Hand `send` its turn once the task that called has run to its end, its
+/// microtasks included. The embedded host thread acts on a session's end or
+/// restart only between tasks, so what content does in the rest of the task --
+/// the call's own success and complete, which settle in its microtasks, and
+/// whatever they log or save -- happens first; here the host acts on a command
+/// as it reads it, so the command waits for the task's end instead. A message
+/// rather than a zero-delay timer, which HTML clamps when nested; through the
+/// task gate, so a synchronous call's nested run loop cannot run it inside the
+/// script that made the call.
+function afterThisTask(send) {
+  const channel = new platform.MessageChannel();
+  channel.port1.onmessage = () => {
+    channel.port1.close();
+    runTask(send);
+  };
+  channel.port2.postMessage(null);
+}
+
 /// End the session. The host stops it as it stops one the embedded runtime
 /// asked to end: the same command on the same channel, so the shutdown path is
-/// one path.
+/// one path -- sent when the task that asked has ended, as the embedded runtime
+/// ends the session then.
 export function op_exit_mini_program() {
-  servicesOf(engineHost()).command(SERVICE_OP.op_exit_mini_program);
+  const services = servicesOf(engineHost());
+  afterThisTask(() => services.command(SERVICE_OP.op_exit_mini_program));
 }
 
 /// Restart the session, which is how a game recovers from a state it cannot
 /// leave. The generation the producer stamps its packets with changes with it,
 /// which is what stops a frame built for the old one from landing in the new.
 /// `launch_query` is the query the restarted game is launched with, or null for
-/// the one it was last shown with.
+/// the one it was last shown with. Sent when the task that asked has ended, as
+/// an exit is.
 export function op_restart_mini_program(launch_query) {
   const query = optionalStringOf(launch_query, "launch_query");
-  servicesOf(engineHost()).command(SERVICE_OP.op_restart_mini_program, (w) => {
-    if (query === null) w.null();
-    else w.str(query);
-  });
+  const services = servicesOf(engineHost());
+  afterThisTask(() =>
+    services.command(SERVICE_OP.op_restart_mini_program, (w) => {
+      if (query === null) w.null();
+      else w.str(query);
+    }),
+  );
 }
 
 // ---- the soft keyboard ----------------------------------------------------------
