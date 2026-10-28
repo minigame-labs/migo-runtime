@@ -971,15 +971,41 @@ fn is_exdev(_e: &std::io::Error) -> bool {
 /// chosen so an interrupted run leaves either the old file intact or
 /// a correctly-fsynced new file, never a half-copied intermediate:
 ///
-/// 1. Write to `<new_path>.partN`.
+/// 1. Write to a tracked atomic temporary at the destination.
 /// 2. `fsync` the tmp file.
 /// 3. `rename(tmp, new_path)` — atomic at the destination FS.
 /// 4. `fsync` the destination parent directory.
 /// 5. Unlink the source.
 /// 6. `fsync` the source parent (best-effort; already safe if crashed).
 fn rename_cross_fs(old_path: &str, new_path: &str) -> std::io::Result<()> {
-    use std::fs::{File, OpenOptions};
-    use std::io::{self, Read, Write};
+    rename_cross_fs_with(old_path, new_path, |src, dst| {
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        {
+            // Preserve std's file-to-file kernel copy specialization. It
+            // falls back when the filesystem cannot offload the transfer.
+            std::io::copy(src, dst)?;
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        {
+            let mut buf = [0u8; 64 * 1024];
+            loop {
+                let n = src.read(&mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                dst.write_all(&buf[..n])?;
+            }
+        }
+        Ok(())
+    })
+}
+
+fn rename_cross_fs_with(
+    old_path: &str,
+    new_path: &str,
+    transfer: impl FnOnce(&mut std::fs::File, &mut std::fs::File) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    use std::{fs::File, io};
 
     let src_meta = std::fs::symlink_metadata(old_path)?;
     if src_meta.file_type().is_symlink() {
@@ -1006,56 +1032,16 @@ fn rename_cross_fs(old_path: &str, new_path: &str) -> std::io::Result<()> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "destination has no parent"))?;
     std::fs::create_dir_all(parent)?;
 
-    // Unique suffix: pid+nanoseconds is collision-resistant enough for
-    // the tmp file, and short enough to keep the path under any FS
-    // filename limit even for long destination names.
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or(0);
-    let tmp_name = format!(
-        ".{}.{}.{}.part",
-        new_path_buf
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("rename"),
-        std::process::id(),
-        nanos
-    );
-    let tmp_path = parent.join(tmp_name);
-
-    {
-        let mut src = File::open(old_path)?;
-        let mut dst = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&tmp_path)?;
-        let mut buf = [0u8; 64 * 1024];
-        loop {
-            let n = src.read(&mut buf)?;
-            if n == 0 {
-                break;
-            }
-            dst.write_all(&buf[..n])?;
-        }
-        dst.flush()?;
-        crate::durable::sync(&dst)?;
+    let mut src = File::open(old_path)?;
+    if !src.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "rename across filesystems requires a regular file",
+        ));
     }
-
-    if let Err(e) = std::fs::rename(&tmp_path, new_path) {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(e);
-    }
-
-    // Parent directory fsync is a no-op on some filesystems (e.g. tmpfs)
-    // and unavailable on Windows; we try and swallow errors because the
-    // `rename` above already committed the name, so the tmp file cannot
-    // resurface as a live entry.
-    #[cfg(unix)]
-    {
-        let _ = crate::durable::sync_dir(parent);
-    }
+    // Reuse the tracked temporary writer and its error cleanup, sync and
+    // publication protocol. Never truncate or write the anchored old target.
+    crate::atomic_write::atomic_write_with(&new_path_buf, |dst| transfer(&mut src, dst))?;
 
     // Now the destination is durable — unlink the source.
     if let Err(e) = std::fs::remove_file(old_path) {
@@ -1095,7 +1081,12 @@ pub fn rmdir(dir_path: &str, recursive: bool) -> Result<(), EngineError> {
 /// Copy a file.
 pub fn copy(src_path: &str, dest_path: &str) -> Result<(), EngineError> {
     let started_at = Instant::now();
-    let result = std::fs::copy(src_path, dest_path).map(|_| ()).map_err(|e| {
+    let result = (|| {
+        let source = crate::source_copy::open_source(Path::new(src_path))?;
+        crate::source_copy::PreparedCopy::new(shared::vfs::mount::CopySource::File(source))?
+            .copy_to_path(Path::new(dest_path))
+    })()
+    .map_err(|e| {
         io_err_ctx(e, "copy", src_path).with_detail(format!("copy {src_path} -> {dest_path}"))
     });
     match &result {
@@ -1116,23 +1107,10 @@ pub fn copy_mount_entry_to_path(
     dest_path: &Path,
 ) -> Result<(), EngineError> {
     let started_at = Instant::now();
-    let result = match mount_table.copy_to_path(relative_path, dest_path) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == std::io::ErrorKind::Unsupported => {
-            let file = std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(dest_path)
-                .map_err(io_err)?;
-            let mut writer = std::io::BufWriter::new(file);
-            mount_table
-                .copy_to_writer(relative_path, &mut writer)
-                .map_err(io_err)?;
-            writer.flush().map_err(io_err)
-        }
-        Err(err) => Err(io_err(err)),
-    };
+    let result = mount_table
+        .pin_copy_source(relative_path)
+        .map_err(io_err)
+        .and_then(|source| copy_pinned_entry_to_path(source, dest_path));
     let target = dest_path.to_string_lossy();
     match &result {
         Ok(()) => trace_fs_edge(
@@ -1156,8 +1134,31 @@ pub fn materialize_mount_entry_to_temp(
     relative_path: &str,
     suffix: &str,
 ) -> Result<PathBuf, EngineError> {
+    let source = mount_table.pin_copy_source(relative_path).map_err(io_err)?;
+    materialize_pinned_entry_to_temp(source, mount_table.code_dir(), suffix)
+}
+
+pub fn copy_pinned_entry_to_path(
+    source: shared::vfs::mount::PinnedCopySource,
+    dest_path: &Path,
+) -> Result<(), EngineError> {
+    source
+        .open()
+        .and_then(crate::source_copy::PreparedCopy::new)
+        .and_then(|source| source.copy_to_path(dest_path))
+        .map_err(io_err)
+}
+
+pub fn materialize_pinned_entry_to_temp(
+    source: shared::vfs::mount::PinnedCopySource,
+    mut dir: PathBuf,
+    suffix: &str,
+) -> Result<PathBuf, EngineError> {
     let started_at = Instant::now();
-    let mut dir = mount_table.code_dir();
+    let source = source
+        .open()
+        .and_then(crate::source_copy::PreparedCopy::new)
+        .map_err(io_err)?;
     let parent = dir
         .parent()
         .map(Path::to_path_buf)
@@ -1182,15 +1183,15 @@ pub fn materialize_mount_entry_to_temp(
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(err) => return Err(io_err(err)),
         };
-        drop(file);
+        let mut file = file;
 
-        match copy_mount_entry_to_path(mount_table, relative_path, &path) {
+        match source.copy_to_file(&mut file).map_err(io_err) {
             Ok(()) => {
                 trace_fs_edge(
                     "materialize_mount_entry",
                     &path.to_string_lossy(),
                     started_at,
-                    &format!("entry={relative_path} suffix={suffix}"),
+                    &format!("suffix={suffix}"),
                 );
                 return Ok(path);
             }
@@ -1200,7 +1201,7 @@ pub fn materialize_mount_entry_to_temp(
                     "materialize_mount_entry",
                     &path.to_string_lossy(),
                     started_at,
-                    &format!("entry={relative_path} suffix={suffix} err={err}"),
+                    &format!("suffix={suffix} err={err}"),
                 );
                 return Err(err);
             }
@@ -2334,13 +2335,14 @@ mod tests {
             None
         }
 
-        fn copy_to_writer(
+        fn open_copy_source(
             &self,
             _relative_path: &str,
-            writer: &mut dyn io::Write,
-        ) -> io::Result<()> {
+        ) -> io::Result<shared::vfs::mount::CopySource> {
             self.writer_calls.fetch_add(1, Ordering::SeqCst);
-            writer.write_all(&self.data)
+            Ok(shared::vfs::mount::CopySource::Stream(Box::new(
+                io::Cursor::new(self.data.clone()),
+            )))
         }
 
         fn is_file(&self, relative_path: &str) -> bool {
@@ -2349,7 +2351,7 @@ mod tests {
     }
 
     #[test]
-    fn copy_mount_entry_to_path_falls_back_to_writer_when_path_copy_is_unsupported() {
+    fn copy_mount_entry_to_path_opens_a_non_native_stream_source() {
         let dir = tmp_dir("mount_copy_fallback");
         let base = dir.join("base");
         let dest = dir.join("dest.txt");

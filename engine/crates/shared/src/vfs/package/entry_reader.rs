@@ -3,6 +3,8 @@
 use super::*;
 
 #[cfg(test)]
+mod copy_tests;
+#[cfg(test)]
 mod tests;
 
 #[derive(Clone, Copy)]
@@ -16,6 +18,21 @@ impl Default for PackageReadLimits {
             max_encoded_chunk: zstd::zstd_safe::compress_bound(MAX_CHUNK_RAW_SIZE as usize),
             max_decoded_chunk: MAX_CHUNK_RAW_SIZE as usize,
         }
+    }
+}
+
+impl PackageReadLimits {
+    /// Upper bound for the reader's two reusable Rust buffers. Shared index
+    /// storage and the native zstd context are not included in this payload.
+    pub fn max_scratch_bytes(self) -> io::Result<usize> {
+        self.max_encoded_chunk
+            .checked_add(self.max_decoded_chunk)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "package scratch budget overflow",
+                )
+            })
     }
 }
 
@@ -125,42 +142,10 @@ impl PackageEntryReader {
         while at < end {
             let stride = self.inner.chunks[self.entry.first_chunk as usize].raw_size as u64;
             let i = (at / stride) as u32;
-            let chunk = &self.inner.chunks[(self.entry.first_chunk + i) as usize];
-            if self.cached != Some(i) {
-                self.cached = None;
-                let compressed = &mut self.compressed[..chunk.compressed_size as usize];
-                read_exact_at(&self.inner.file, compressed, chunk.data_offset)?;
-                // One frame per writer chunk: reject concatenated frames and suffixes.
-                let frame_size =
-                    zstd::zstd_safe::find_frame_compressed_size(compressed).map_err(|_| {
-                        io::Error::new(io::ErrorKind::InvalidData, "invalid package zstd frame")
-                    })?;
-                if frame_size != compressed.len() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        "package chunk has trailing frames or bytes",
-                    )
-                    .into());
-                }
-                let size = self.decoder.decompress_to_buffer(
-                    compressed,
-                    &mut self.decoded[..chunk.raw_size as usize],
-                )?;
-                if size != chunk.raw_size as usize {
-                    return Err(PackageError::DecompressSizeMismatch {
-                        path: self.entry.path.clone(),
-                        expected: chunk.raw_size as u64,
-                        actual: size,
-                    });
-                }
-                #[cfg(test)]
-                {
-                    self.decodes += 1;
-                }
-                self.cached = Some(i);
-            }
+            let raw_size = self.inner.chunks[(self.entry.first_chunk + i) as usize].raw_size;
+            self.decode_chunk(i)?;
             let within = (at % stride) as usize;
-            let len = ((end - at) as usize).min(chunk.raw_size as usize - within);
+            let len = ((end - at) as usize).min(raw_size as usize - within);
             output[filled..filled + len].copy_from_slice(&self.decoded[within..within + len]);
             filled += len;
             at += len as u64;
@@ -172,5 +157,83 @@ impl PackageEntryReader {
         self.verify()?;
         self.failed = false;
         Ok(())
+    }
+    fn decode_chunk(&mut self, i: u32) -> Result<(), PackageError> {
+        if self.cached == Some(i) {
+            return Ok(());
+        }
+        let chunk = &self.inner.chunks[(self.entry.first_chunk + i) as usize];
+        self.cached = None;
+        let compressed = &mut self.compressed[..chunk.compressed_size as usize];
+        read_exact_at(&self.inner.file, compressed, chunk.data_offset)?;
+        // One frame per writer chunk: reject concatenated frames and suffixes.
+        let frame_size = zstd::zstd_safe::find_frame_compressed_size(compressed).map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "invalid package zstd frame")
+        })?;
+        if frame_size != compressed.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "package chunk has trailing frames or bytes",
+            )
+            .into());
+        }
+        let size = self
+            .decoder
+            .decompress_to_buffer(compressed, &mut self.decoded[..chunk.raw_size as usize])?;
+        if size != chunk.raw_size as usize {
+            return Err(PackageError::DecompressSizeMismatch {
+                path: self.entry.path.clone(),
+                expected: chunk.raw_size as u64,
+                actual: size,
+            });
+        }
+        #[cfg(test)]
+        {
+            self.decodes += 1;
+        }
+        self.cached = Some(i);
+        Ok(())
+    }
+
+    /// Native object containing this entry, not the package's pathname.
+    pub fn backing_identity(&self) -> io::Result<super::super::file_io::FileIdentity> {
+        super::super::file_io::FileIdentity::of(&self.inner.file)
+    }
+
+    /// Stream complete decoded chunks directly to the writer and verify the
+    /// whole-entry CRC. Scratch is independent of entry length; no output Vec,
+    /// inflate-cache insertion or second per-chunk copy. An error poisons this
+    /// reader, including a writer that accepted only part of a chunk.
+    pub fn copy_to(&mut self, writer: &mut (impl Write + ?Sized)) -> Result<u64, PackageError> {
+        if self.failed {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "package reader previously failed",
+            )
+            .into());
+        }
+        self.failed = true;
+        self.verify()?;
+        let mut hasher = crc32fast::Hasher::new();
+        let mut total = 0u64;
+        for i in 0..self.entry.chunk_count {
+            self.decode_chunk(i)?;
+            let size = self.inner.chunks[(self.entry.first_chunk + i) as usize].raw_size as usize;
+            let bytes = &self.decoded[..size];
+            hasher.update(bytes);
+            writer.write_all(bytes)?;
+            total += size as u64;
+        }
+        self.verify()?;
+        let actual = hasher.finalize();
+        if total != self.entry.raw_size || actual != self.entry.crc32 {
+            return Err(PackageError::ChecksumMismatch {
+                path: self.entry.path.clone(),
+                expected: self.entry.crc32,
+                actual,
+            });
+        }
+        self.failed = false;
+        Ok(total)
     }
 }

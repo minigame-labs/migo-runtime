@@ -62,8 +62,8 @@ def io_controls(work,env):
         f.write_all(bytes)?;''','ATOMIC:byte_writer_tracks_an_already_open_temporary_object'),
         ('mutation-atomic-closure-writer-untracked','atomic_write.rs','''        let _write = crate::fs_ops::begin_file_write(&f)?;
         f.set_len(0)?;
-        writer(&mut f)?;''','''        f.set_len(0)?;
-        writer(&mut f)?;''','atomic_writer_enrols_its_temporary_object_before_calling_the_writer'),
+        let value = writer(&mut f)?;''','''        f.set_len(0)?;
+        let value = writer(&mut f)?;''','atomic_writer_enrols_its_temporary_object_before_calling_the_writer'),
     ]
     for name,file,before,after,test in declarations:
         path=work/'probe/src'/file;original=path.read_text();assert original.count(before)==1,(name,'anchor drift');path.write_text(original.replace(before,after))
@@ -91,13 +91,13 @@ def main(work,shared_target,io_target,positive_only):
     for row in tomllib.loads((ROOT/'engine/Cargo.lock').read_text())['package']:locked.setdefault(row['name'],set()).add(row['version'])
     assert all(row['name']not in locked or row['version']in locked[row['name']]for row in selected),'IO probe existing version drift'
     binary=io.g.build(iw/'probe',iw,ienv,'positive');assert io.g.run([str(binary),'--nocapture','--test-threads=1'],iw/'positive.log',iw/'probe',ienv)==0
-    match=re.search(r'test result: ok\. (\d+) passed; 0 failed; (\d+) ignored;',(iw/'positive.log').read_text());assert match and (iw/'positive.log').read_text().count('test fs_ops::mutation_tests::')==6
+    match=re.search(r'test result: ok\. (\d+) passed; 0 failed; (\d+) ignored;',(iw/'positive.log').read_text());assert match and (iw/'positive.log').read_text().count('test fs_ops::mutation_tests::')==9
     assert 'test atomic_write::tests::byte_writer_tracks_an_already_open_temporary_object ... ok'in(iw/'positive.log').read_text()
     io_count=0 if positive_only else io_controls(iw,ienv)
     assert all(sha(ROOT/p)==h for p,h in inputs.items());assert all(sha(iw/'probe'/p)==h for p,h in copies.items())
-    i={'passed':int(match[1]),'ignored':int(match[2]),'writer_tests':7,'compiled_controls':io_count,'binary_sha256':sha(binary),'root_inputs_unchanged':True,'source_copies_restored':True,'existing_dependency_versions_preserved':True}
+    i={'passed':int(match[1]),'ignored':int(match[2]),'writer_tests':10,'compiled_controls':io_count,'binary_sha256':sha(binary),'root_inputs_unchanged':True,'source_copies_restored':True,'existing_dependency_versions_preserved':True}
     (iw/'summary.json').write_text(json.dumps(i,indent=2)+'\n')
-    summary={'shared':s,'io':i,'compiled_controls':shared_count+io_count,'positive_only':positive_only,'root_lock_sha256':sha(ROOT/'engine/Cargo.lock'),'scope':'Cooperative per-native-object mutation ledger and FD/pathfast/append/atomictemporary writer hooks only. Copy/packcopy/unzip/otherwriters and actualwritablesnapshot/source dispatch remain pending. Windows sourceAPI check only; no native/device/performance acceptance.'}
+    summary={'shared':s,'io':i,'compiled_controls':shared_count+io_count,'positive_only':positive_only,'root_lock_sha256':sha(ROOT/'engine/Cargo.lock'),'scope':'Cooperative per-native-object mutation ledger and FD/pathfast/append/atomictemporary writer hooks only. Ordinary copy/packcopy/otherwriters and actualwritablesnapshot/source dispatch remain pending. Cross-FS stage reuses the atomic writer; ZIP has its own output gate. Windows sourceAPI check only; no native/device/performance acceptance.'}
     (work/'summary.json').write_text(json.dumps(summary,indent=2)+'\n');print(json.dumps(summary,indent=2),flush=True)
 if __name__=='__main__':
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--output',type=Path,required=True);p.add_argument('--shared-target-dir',type=Path,required=True);p.add_argument('--io-target-dir',type=Path,required=True);p.add_argument('--positive-only',action='store_true');a=p.parse_args();main(a.output.resolve(),a.shared_target_dir.resolve(),a.io_target_dir.resolve(),a.positive_only)

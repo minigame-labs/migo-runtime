@@ -82,6 +82,9 @@ sha2 = "0.10"
 hex = "0.4"
 
 [dev-dependencies]
+# Give admission tests their own executor and quota; never saturate the
+# process-global pool used by unrelated tests or product sessions.
+migo-io = { path = "../io", default-features = false, features = ["admission-probe"] }
 miniz_oxide = "=0.8.9"
 tokio = { workspace = true, features = ["rt", "sync", "macros", "time", "test-util"] }
 # Servers the HTTP client's tests run in-process (HTTP/1.1 and HTTP/2, over TCP and TLS), and the certificate

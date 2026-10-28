@@ -3,7 +3,7 @@
 //! This is the "ingest" step: zip is treated as an input/download format
 //! and converted to the runtime-native package format for mounted access.
 
-use std::io::{BufReader, Read};
+use std::io::{BufReader, Read, Seek};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -125,9 +125,27 @@ pub fn ingest_zip_to_package_with_budget(
     gpu_caps: GpuCapsSnapshot,
 ) -> Result<PackageIdentity, PackageError> {
     let zip_file = std::fs::File::open(zip_path)?;
-    let mut archive = zip::ZipArchive::new(BufReader::new(zip_file))
+    let archive = zip::ZipArchive::new(BufReader::new(zip_file))
         .map_err(|e| PackageError::BadIndex(format!("invalid zip: {e}")))?;
 
+    ingest_archive_to_package(
+        archive,
+        pkg_path,
+        package_name,
+        package_version,
+        budget,
+        gpu_caps,
+    )
+}
+
+fn ingest_archive_to_package<R: Read + Seek>(
+    mut archive: zip::ZipArchive<R>,
+    pkg_path: &Path,
+    package_name: &str,
+    package_version: &str,
+    budget: ExtractBudget,
+    gpu_caps: GpuCapsSnapshot,
+) -> Result<PackageIdentity, PackageError> {
     let entry_count = archive.len();
     if entry_count > budget.max_entries {
         return Err(PackageError::Io(std::io::Error::new(
@@ -174,12 +192,11 @@ pub fn ingest_zip_to_package_with_budget(
         }
     }
 
-    let tmp_pkg_path = pkg_path.with_extension("mpkg.tmp");
-    let _ = std::fs::remove_file(&tmp_pkg_path);
-    let pkg_file = std::fs::File::create(&tmp_pkg_path)?;
-    let mut writer = PackageWriter::new(std::io::BufWriter::new(pkg_file))?;
-
-    let ingest_result: Result<PackageIdentity, PackageError> = (|| {
+    // Each ingest owns an independent stage. The common writer enrolls the
+    // opened object before truncation, tracks all buffered writes and header
+    // fixups, then syncs and publishes only a completely finished package.
+    crate::atomic_write::atomic_write_with_result(pkg_path, |file| {
+        let mut writer = PackageWriter::new(std::io::BufWriter::new(file))?;
         let mut ingested_total: u64 = 0;
         for i in 0..entry_count {
             let mut entry = archive.by_index(i).map_err(|e| {
@@ -302,22 +319,7 @@ pub fn ingest_zip_to_package_with_budget(
         }
 
         writer.finish(package_name, package_version)
-    })();
-
-    let identity = match ingest_result {
-        Ok(identity) => identity,
-        Err(e) => {
-            let _ = std::fs::remove_file(&tmp_pkg_path);
-            return Err(e);
-        }
-    };
-
-    if let Err(e) = std::fs::rename(&tmp_pkg_path, pkg_path) {
-        let _ = std::fs::remove_file(&tmp_pkg_path);
-        return Err(PackageError::Io(e));
-    }
-
-    Ok(identity)
+    })
 }
 
 pub async fn ingest_zip_to_package_with_scheduler(
@@ -365,6 +367,9 @@ pub async fn ingest_zip_to_package_with_scheduler_and_budget(
         .await
         .map_err(PackageError::from)?
 }
+
+#[cfg(test)]
+mod mutation_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1038,7 +1043,7 @@ mod tests {
             "FIO-01 sidecar boundary: failed ingest must preserve the prior target"
         );
         assert!(
-            !pkg_sidecar_failure.with_extension("mpkg.tmp").exists(),
+            super::mutation_tests::stages(&dir).is_empty(),
             "FIO-01 sidecar boundary: failed ingest must clean its temporary output"
         );
 
@@ -1088,7 +1093,7 @@ mod tests {
             "FIO-01 cap+1: failed ingest must preserve the previous target"
         );
         assert!(
-            !pkg_tight.with_extension("mpkg.tmp").exists(),
+            super::mutation_tests::stages(&dir).is_empty(),
             "FIO-01 cap+1: failed ingest must clean its temporary output"
         );
 

@@ -35,6 +35,7 @@ pub mod pools;
 pub mod read_at_file;
 pub mod read_at_package;
 pub mod scheduler;
+mod source_copy;
 pub mod spool;
 pub mod storage_ops;
 pub mod task;

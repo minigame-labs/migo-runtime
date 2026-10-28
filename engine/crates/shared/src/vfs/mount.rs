@@ -43,6 +43,15 @@ use parking_lot::{Mutex, RwLock};
 /// All paths passed to methods are **relative** (no leading `/`), e.g.
 /// `"lib/utils.js"` or `"subpackages/stage1/game.js"`.
 pub trait MountBackend: Send + Sync + fmt::Debug {
+    /// Open the source before a caller opens or truncates its destination.
+    /// Native files must retain their handle identity; streams are for sources
+    /// without a native file object. There is no whole-file read fallback.
+    fn open_copy_source(&self, _relative_path: &str) -> io::Result<CopySource> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "backend has no copy source",
+        ))
+    }
     /// Already captured directory authority. This lookup must not touch disk.
     /// Package/custom backends do not emulate it with a path or whole-file read.
     fn directory_read_root(&self) -> Option<Arc<super::read_root::ReadRoot>> {
@@ -94,20 +103,6 @@ pub trait MountBackend: Send + Sync + fmt::Debug {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
             "get_file_info not supported by this backend",
-        ))
-    }
-
-    fn copy_to_path(&self, _relative_path: &str, _dest_path: &Path) -> io::Result<()> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "copy_to_path not supported by this backend",
-        ))
-    }
-
-    fn copy_to_writer(&self, _relative_path: &str, _writer: &mut dyn io::Write) -> io::Result<()> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "copy_to_writer not supported by this backend",
         ))
     }
 
@@ -285,10 +280,13 @@ impl MountBackend for DirSource {
             .map(|m| m.len())
     }
 
-    fn copy_to_writer(&self, relative_path: &str, writer: &mut dyn io::Write) -> io::Result<()> {
-        let mut file = std::fs::File::open(self.root.join(relative_path))?;
-        std::io::copy(&mut file, writer)?;
-        Ok(())
+    fn open_copy_source(&self, relative_path: &str) -> io::Result<CopySource> {
+        let root = self.read_root.as_ref().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::NotFound, "directory root was not captured")
+        })?;
+        root.open_regular(Path::new(relative_path))
+            .map(CopySource::File)
+            .map_err(io::Error::other)
     }
 }
 
@@ -417,6 +415,27 @@ pub struct MountTable {
 pub struct PinnedPackRead {
     backend: Arc<dyn MountBackend>,
     relative: String,
+}
+
+/// A copy retains the actual source object, including package backing-file
+/// identity. The boxed stream is only for non-native custom sources; normal
+/// directory/package transfers do not erase the native File type.
+pub enum CopySource {
+    File(std::fs::File),
+    Package(super::package::PackageEntryReader),
+    Stream(Box<dyn io::Read + Send>),
+}
+
+/// Admission captures the selected backend without native IO. Open it on the
+/// existing Fs/Pack executor; later mount replacement cannot retarget it.
+pub struct PinnedCopySource {
+    backend: Arc<dyn MountBackend>,
+    relative: String,
+}
+impl PinnedCopySource {
+    pub fn open(self) -> io::Result<CopySource> {
+        self.backend.open_copy_source(&self.relative)
+    }
 }
 
 /// Selected under the mount reader lock; open it on the Fs class. Removal of
@@ -776,30 +795,30 @@ impl MountTable {
         inner.base.backend.get_file_info(&normalized, algorithm)
     }
 
-    pub fn copy_to_path(&self, relative_path: &str, dest_path: &Path) -> io::Result<()> {
-        let normalized = normalize_relative_path(relative_path).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "path escapes mount root")
-        })?;
-        let inner = self.inner.read();
-        if let Some((overlay, sub)) = highest_matching_overlay(&inner.overlays, &normalized) {
-            return overlay.backend.copy_to_path(sub, dest_path);
-        }
-        inner.base.backend.copy_to_path(&normalized, dest_path)
+    /// Select once under the mount lock, then perform all native/decode IO
+    /// after releasing it. A concurrent replacement cannot retarget this copy.
+    pub fn open_copy_source(&self, relative_path: &str) -> io::Result<CopySource> {
+        self.pin_copy_source(relative_path)?.open()
     }
-
-    pub fn copy_to_writer(
-        &self,
-        relative_path: &str,
-        writer: &mut dyn io::Write,
-    ) -> io::Result<()> {
+    pub fn pin_copy_source(&self, relative_path: &str) -> io::Result<PinnedCopySource> {
+        if relative_path.starts_with('/') {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "copy requires a relative code path",
+            ));
+        }
         let normalized = normalize_relative_path(relative_path).ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "path escapes mount root")
         })?;
-        let inner = self.inner.read();
-        if let Some((overlay, sub)) = highest_matching_overlay(&inner.overlays, &normalized) {
-            return overlay.backend.copy_to_writer(sub, writer);
-        }
-        inner.base.backend.copy_to_writer(&normalized, writer)
+        super::read_root::validate_relative(Path::new(&normalized)).map_err(io::Error::other)?;
+        let (backend, relative) = {
+            let inner = self.inner.read();
+            match highest_matching_overlay(&inner.overlays, &normalized) {
+                Some((entry, sub)) => (Arc::clone(&entry.backend), sub.to_owned()),
+                None => (Arc::clone(&inner.base.backend), normalized),
+            }
+        };
+        Ok(PinnedCopySource { backend, relative })
     }
 
     /// Read a file through the overlay chain.
@@ -2751,3 +2770,6 @@ mod tests {
         let _ = fs::remove_dir_all(&nested);
     }
 }
+
+#[cfg(test)]
+mod copy_tests;

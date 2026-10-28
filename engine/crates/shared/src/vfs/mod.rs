@@ -46,6 +46,7 @@
 //! let real = vfs.resolve("/user/save.json", FileOp::Write)?;
 //! ```
 
+pub mod file_copy;
 pub mod file_io;
 pub mod file_mutation;
 pub mod game_paths;

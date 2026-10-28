@@ -23,9 +23,8 @@ impl ReadAtPackage {
     /// The zstd native context and shared package index are not included here.
     pub fn reservation_bytes(limits: PackageReadLimits) -> io::Result<u64> {
         limits
-            .max_encoded_chunk
-            .checked_add(limits.max_decoded_chunk)
-            .and_then(|n| n.checked_add(2 * FILE_CHUNK_BYTES))
+            .max_scratch_bytes()?
+            .checked_add(2 * FILE_CHUNK_BYTES)
             .and_then(|n| u64::try_from(n).ok())
             .ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidInput, "package reservation overflow")

@@ -14,8 +14,9 @@
 //!   barrier rather than a drive-cache flush and a power loss in the moments
 //!   after success can roll the write back to the old contents -- see
 //!   [`crate::durable`] for why, and what it measured.
-//! * On failure, `path` is unchanged; the temporary file is best-
-//!   effort cleaned up.
+//! * Failure before rename leaves `path` unchanged and best-effort removes
+//!   the temporary file. A directory-sync failure after rename returns an
+//!   error even though the new contents have already been published.
 //! * Concurrent callers writing to the same `path` do not interleave
 //!   bytes — each call materialises either its full payload or
 //!   nothing (last writer wins after rename).
@@ -140,10 +141,25 @@ pub fn atomic_write_with<F>(path: impl AsRef<Path>, writer: F) -> io::Result<()>
 where
     F: FnOnce(&mut File) -> io::Result<()>,
 {
+    atomic_write_with_result(path, writer)
+}
+
+/// The same tracked staging and publication protocol with a typed result.
+///
+/// Package ingest returns its identity only after publication, while preserving
+/// format errors from the writer instead of flattening them into IO errors.
+/// The caller must flush any buffered writer before returning successfully.
+pub(crate) fn atomic_write_with_result<T, E>(
+    path: impl AsRef<Path>,
+    writer: impl FnOnce(&mut File) -> Result<T, E>,
+) -> Result<T, E>
+where
+    E: From<io::Error>,
+{
     let path = path.as_ref();
     let tmp = tmp_path_for(path);
 
-    let result = (|| -> io::Result<()> {
+    let result = (|| -> Result<T, E> {
         let mut f = OpenOptions::new()
             .write(true)
             .create(true)
@@ -151,21 +167,24 @@ where
             .open(&tmp)?;
         let _write = crate::fs_ops::begin_file_write(&f)?;
         f.set_len(0)?;
-        writer(&mut f)?;
+        let value = writer(&mut f)?;
         crate::durable::sync(&f)?;
-        Ok(())
+        Ok(value)
     })();
-    if let Err(e) = result {
-        let _ = fs::remove_file(&tmp);
-        return Err(e);
-    }
+    let value = match result {
+        Ok(value) => value,
+        Err(e) => {
+            let _ = fs::remove_file(&tmp);
+            return Err(e);
+        }
+    };
 
     if let Err(e) = fs::rename(&tmp, path) {
         let _ = fs::remove_file(&tmp);
-        return Err(e);
+        return Err(e.into());
     }
     sync_parent_dir(path)?;
-    Ok(())
+    Ok(value)
 }
 
 /// Best-effort cleanup of `.atomic.tmp` leftovers in `dir`.

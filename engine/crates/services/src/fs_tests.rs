@@ -494,9 +494,11 @@ impl MountBackend for TrackingBackend {
         None
     }
 
-    fn copy_to_writer(&self, _relative_path: &str, writer: &mut dyn io::Write) -> io::Result<()> {
+    fn open_copy_source(&self, _relative_path: &str) -> io::Result<shared::vfs::mount::CopySource> {
         self.calls.fetch_add(1, Ordering::SeqCst);
-        writer.write_all(&self.data)
+        Ok(shared::vfs::mount::CopySource::Stream(Box::new(
+            io::Cursor::new(self.data.clone()),
+        )))
     }
 
     fn is_file(&self, relative_path: &str) -> bool {

@@ -1285,9 +1285,9 @@ impl super::MountBackend for PackSource {
                 other => io::Error::new(io::ErrorKind::Other, other.to_string()),
             })
     }
-    fn copy_to_writer(&self, p: &str, writer: &mut dyn io::Write) -> io::Result<()> {
-        let data = self.read(p)?;
-        writer.write_all(&data)
+    fn open_copy_source(&self, path: &str) -> io::Result<super::mount::CopySource> {
+        self.open_package_entry(path, PackageReadLimits::default())
+            .map(super::mount::CopySource::Package)
     }
 }
 

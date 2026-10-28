@@ -40,6 +40,11 @@ impl Drop for Tracked {
 #[derive(Clone)]
 pub struct FileMutations(Arc<Tracked>);
 impl FileMutations {
+    /// Identity of the registered object. Keep its native handle alive while
+    /// using this identity; a registration alone cannot prevent inode reuse.
+    pub fn identity(&self) -> FileIdentity {
+        self.0.identity
+    }
     /// Nonregular handles have no snapshot contract and keep their existing IO.
     pub fn for_file(file: &File) -> io::Result<Option<Self>> {
         let Some(identity) = FileIdentity::of_regular(file)? else {
