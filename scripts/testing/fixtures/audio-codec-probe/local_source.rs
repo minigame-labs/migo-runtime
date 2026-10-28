@@ -73,13 +73,13 @@ impl Drop for ReadActive {
     }
 }
 
-enum Backing {
+pub(crate) enum Backing {
     File(ReadAtFile),
     Package(ReadAtPackage),
     Spool(migo_io::spool::SealedSpool),
 }
 impl Backing {
-    fn len(&self) -> u64 {
+    pub(crate) fn len(&self) -> u64 {
         match self {
             Self::File(v) => v.len(),
             Self::Package(v) => v.len(),
@@ -89,7 +89,7 @@ impl Backing {
     fn is_empty(&self) -> bool {
         self.len() == 0
     }
-    fn kind(&self) -> PoolKind {
+    pub(crate) fn kind(&self) -> PoolKind {
         match self {
             Self::File(_) => PoolKind::Fs,
             Self::Spool(_) => PoolKind::Fs,
@@ -110,6 +110,13 @@ impl Backing {
             Self::Spool(v) => v.reader().read_exact_at(offset, len),
         }
     }
+    pub(crate) fn read_into_at(&self, offset: u64, output: &mut [u8]) -> std::io::Result<()> {
+        match self {
+            Self::File(v) => v.read_into_at(offset, output),
+            Self::Package(v) => v.read_into_at(offset, output),
+            Self::Spool(v) => v.reader().read_into_at(offset, output),
+        }
+    }
     fn chunk_at(&self, offset: u64, len: usize) -> std::io::Result<FileChunk> {
         match self {
             Self::File(v) => v.chunk_at(offset, len),
@@ -120,13 +127,13 @@ impl Backing {
 }
 
 pub struct FileReader {
-    file: Arc<Backing>,
-    pools: IoPools,
-    domain: Arc<migo_io::domain::IoDomain>,
+    pub(crate) file: Arc<Backing>,
+    pub(crate) pools: IoPools,
+    pub(crate) domain: Arc<migo_io::domain::IoDomain>,
     position: u64,
     end: u64,
     max_control_bytes: usize,
-    failed: bool,
+    pub(crate) failed: bool,
     read_active: Arc<AtomicBool>,
     #[cfg(test)]
     pub io_reads: Arc<std::sync::atomic::AtomicUsize>,

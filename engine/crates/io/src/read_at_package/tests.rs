@@ -43,6 +43,38 @@ fn budget() -> u64 {
 }
 
 #[test]
+fn borrowed_controls_reuse_scratch_with_no_payload_allocation_or_extent_bypass() {
+    let f = Fixture::new();
+    let pools = IoPools::with_byte_budget(budget());
+    let reader = ReadAtPackage::new(f.pin(), &pools, 1024).unwrap();
+    let mut out = [0; 777];
+    migo_alloc_probe::assert_no_steady_state_allocation(
+        migo_alloc_probe::Burst {
+            path: "borrowed package controls",
+            warmup: 8,
+            measured: 96,
+        },
+        |n| {
+            let at = n * 4073 % (f.data.len() - out.len());
+            reader.read_into_at(at as u64, &mut out).unwrap();
+            assert_eq!(out, f.data[at..at + out.len()]);
+        },
+    );
+    assert!(reader.read_into_at(0, &mut [0; 1025]).is_err());
+    assert!(reader.read_into_at(u64::MAX, &mut out).is_err());
+    assert!(reader.read_into_at(reader.len(), &mut out).is_err());
+    assert!(pools.reserve_bytes(1).is_err());
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(&f.path)
+        .unwrap();
+    file.set_len(1).unwrap();
+    assert!(reader.read_into_at(0, &mut out).is_err());
+    assert!(reader.read_into_at(reader.len(), &mut []).is_err());
+    drop(reader);
+    assert!(pools.reserve_bytes(budget()).is_ok());
+}
+#[test]
 fn persistent_credit_lasts_until_the_final_media_chunk_is_dropped() {
     let f = Fixture::new();
     let pools = IoPools::with_byte_budget(budget());

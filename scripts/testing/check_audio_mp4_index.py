@@ -232,7 +232,7 @@ migo-alloc-probe={{path={json.dumps(str(ROOT / "engine/testing/alloc-probe"))}}}
 ''')
     codecs.run(["cargo", "generate-lockfile", "--offline"], output / "resolve.log", cwd=output, env=env)
     binaries = {}
-    for name, selected, expected in [("core", "symphonia-core", 69), ("format", "symphonia-format-isomp4", 12),
+    for name, selected, expected in [("core", "symphonia-core", 72), ("format", "symphonia-format-isomp4", 12),
                                      ("index", "migo-mp4-index-probe", 7)]:
         binary = build(output, output, env, f"positive-{name}", selected)
         log = output / f"positive-{name}-tests.log"
@@ -245,7 +245,7 @@ migo-alloc-probe={{path={json.dumps(str(ROOT / "engine/testing/alloc-probe"))}}}
         assert timeline.source_tree(path) == row["source_files"], (row["crate"], "mutated source not restored")
     assert all(codecs.sha(ROOT / path) == checksum for path, checksum in frozen.items()), "Root inputs changed"
     assert (ROOT / "engine/Cargo.lock").read_bytes() == initial_lock, "production lock changed"
-    summary = {"core_tests": 69, "format_tests": 12, "real_index_tests": 7, "valid_codec_fixtures": 12,
+    summary = {"core_tests": 72, "format_tests": 12, "real_index_tests": 7, "valid_codec_fixtures": 12,
                "compiled_controls": negatives, "binary_sha256": binaries,
                "libraries": len(recorded), "patches": sum(len(row["patches"]) for row in recorded),
                "selected_library_cargo_paths_verified": ["core", "AAC", "ISOMP4", "metadata"],

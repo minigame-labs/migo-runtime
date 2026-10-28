@@ -52,3 +52,11 @@ clamp to the actual buffer; even isize::MIN/u64::MAX do not overflow. This lets
 the regular MP4 atom parser read a complete bounded moov without another ring
 buffer or a payload copy. Oversized skips are checked before a usize cast.
 Core slice-position/skip tests and the actual indexed AAC decoder cover it.
+
+`0007-defer-probed-container-construction.patch` separates leading format
+identification from container-reader construction. `probe_format` returns a
+`ProbedFormat` with the registered FormatInfo and an optional `into_reader`
+continuation. Full `probe` and identification share the original scoring and
+metadata search, without a second parser. Identification does not seek to
+trailing metadata or instantiate a container whose index may require external
+IO. Callers bound source reads/seeks and metadata retention independently.

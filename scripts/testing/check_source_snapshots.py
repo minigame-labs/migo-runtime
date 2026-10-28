@@ -184,7 +184,7 @@ def main(work, target, positive_only):
         if crate == 'io':
             assert observed.count('test source_snapshot::tests::') == 22
             assert observed.count('test spool::tests::') == 7
-            assert observed.count('test read_at_file::tests::') == 8
+            assert observed.count('test read_at_file::tests::') == 9
         suites[name] = {'passed': int(match[1]), 'ignored': int(match[2]),
                         'binary_sha256': g.sha(binary)}
     count = 0 if positive_only else controls(work, env)
@@ -192,7 +192,7 @@ def main(work, target, positive_only):
     assert all(g.sha(work / p) == h for p, h in copies.items()), 'source copy not restored'
     summary = {
         'suites': suites, 'snapshot_tests': 22, 'spool_regression_tests': 7,
-        'positioned_file_regression_tests': 8, 'compiled_controls': count,
+        'positioned_file_regression_tests': 9, 'compiled_controls': count,
         'positive_only': positive_only, 'root_inputs_unchanged': True,
         'source_copies_restored': True, 'existing_dependency_versions_preserved': True,
         'normal_io_features': normal[0], 'probe_feature_absent_from_normal_io': True,

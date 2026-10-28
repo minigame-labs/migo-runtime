@@ -213,6 +213,12 @@ impl ReadAtFile {
         self.fill(offset, &mut data)?;
         Ok(data)
     }
+    /// Fill a caller-owned bounded buffer without an intermediate allocation.
+    /// On error, the caller must discard the buffer contents.
+    pub fn read_into_at(&self, offset: u64, output: &mut [u8]) -> io::Result<()> {
+        self.extent(offset, output.len(), self.max_control_bytes)?;
+        self.fill(offset, output)
+    }
     /// Recycle one media buffer after the caller drops its previous chunk.
     /// One extra slot is allocated lazily for a validated reposition while the
     /// old input is still in flight. A third retained chunk is rejected.
@@ -241,6 +247,47 @@ mod tests {
             .collect::<Vec<_>>();
         std::fs::write(&p, &data).unwrap();
         (p, data)
+    }
+    #[test]
+    fn borrowed_controls_preserve_extent_stamp_and_allocate_no_payload() {
+        let (path, data) = fixture();
+        let reader = ReadAtFile::new(File::open(&path).unwrap(), 128).unwrap();
+        let mut out = [0; 128];
+        migo_alloc_probe::assert_no_steady_state_allocation(
+            migo_alloc_probe::Burst {
+                path: "borrowed file controls",
+                warmup: 8,
+                measured: 96,
+            },
+            |n| {
+                let at = n * 137 % (data.len() - out.len());
+                reader.read_into_at(at as u64, &mut out).unwrap();
+                assert_eq!(out, data[at..at + out.len()]);
+            },
+        );
+        let reads = reader.reads.load(Ordering::Relaxed);
+        assert!(reader.read_into_at(0, &mut [0; 129]).is_err());
+        assert!(reader.read_into_at(u64::MAX, &mut out).is_err());
+        assert!(reader.read_into_at(reader.len(), &mut out).is_err());
+        assert_eq!(reader.reads.load(Ordering::Relaxed), reads);
+        *reader.after_read.lock() = Some(Box::new({
+            let path = path.clone();
+            move || {
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(path)
+                    .unwrap()
+                    .set_len(1)
+                    .unwrap()
+            }
+        }));
+        assert!(
+            reader.read_into_at(0, &mut out).is_err(),
+            "post-read mutation accepted"
+        );
+        assert!(reader.read_into_at(reader.len(), &mut []).is_err());
+        drop(reader);
+        std::fs::remove_file(path).unwrap();
     }
     #[test]
     fn bounded_controls_rewinds_and_two_media_slots_keep_exact_bytes() {

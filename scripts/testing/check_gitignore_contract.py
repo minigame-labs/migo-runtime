@@ -7,6 +7,11 @@ sys.path.insert(0, str(ROOT / 'scripts/lib'))
 from gitignore_policy import check, tracked_ignored
 
 REQUIRED = [
+    'engine/third_party/symphonia-core-patches/0007-defer-probed-container-construction.patch',
+    'scripts/testing/check_audio_format_sources.py',
+    'scripts/testing/check_audio_probe_primitives.py',
+    'scripts/testing/fixtures/audio-codec-probe/format_source.rs',
+    'scripts/testing/fixtures/audio-codec-probe/format_source_contracts.rs',
     'engine/Cargo.lock', 'tools/artifact-manifest/Cargo.lock',
     'engine/third_party/rustls-platform-verifier-android-0.2.0/classes.jar',
     'engine/third_party/rustls-platform-verifier-android-0.2.0/rustls-platform-verifier-0.2.0.aar',
