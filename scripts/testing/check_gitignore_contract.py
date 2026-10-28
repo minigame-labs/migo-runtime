@@ -7,6 +7,10 @@ sys.path.insert(0, str(ROOT / 'scripts/lib'))
 from gitignore_policy import check, tracked_ignored
 
 REQUIRED = [
+    'scripts/testing/fixtures/audio-codec-probe/source_chunk.rs',
+    'scripts/testing/fixtures/audio-codec-probe/http_prefix_contracts.rs',
+    'scripts/testing/fixtures/audio-codec-probe/http_prefix.rs',
+    'scripts/testing/fixtures/audio-codec-probe/replay_body.rs',
     'scripts/testing/check_audio_http_sources.py',
     'scripts/testing/fixtures/audio-codec-probe/http_source.rs',
     'scripts/testing/fixtures/audio-codec-probe/http_source_contracts.rs',

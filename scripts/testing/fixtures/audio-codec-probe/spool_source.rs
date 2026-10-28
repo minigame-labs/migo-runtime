@@ -2,15 +2,15 @@
 //! No request retry, cross-representation ranges, parser or CPU loop lives here.
 use crate::{
     local_source::{FileReader, MAX_CONTROL_BYTES},
+    source_chunk::BodyChunk,
     streaming::{
         BODY_IDLE_TIMEOUT, HttpClient, RESPONSE_HEADER_TIMEOUT, StreamMsg, StreamingState,
     },
     streaming_transport::while_active,
 };
-use bytes::Bytes;
 use migo_io::{
     domain::IoDomain,
-    pools::{ByteTicket, IoPools},
+    pools::IoPools,
     read_at_file::FILE_CHUNK_BYTES,
     scheduler::IoScheduler,
     spool::{DEFAULT_SPOOL_FILE_BYTES, SealedSpool, SpoolBudget, SpoolWriter},
@@ -30,7 +30,6 @@ use tokio::{
     sync::mpsc,
     time::{Duration, Instant},
 };
-const MAX_HTTP_CHUNK_BYTES: usize = 1024 * 1024;
 #[cfg(test)]
 #[derive(Default)]
 pub struct Trace {
@@ -108,33 +107,6 @@ async fn fs<T: Send + 'static>(
         return Err(error("late spool IO completion"));
     }
     Ok(value)
-}
-struct BodyChunk {
-    data: Bytes,
-    _credit: Arc<ByteTicket>,
-}
-impl AsRef<[u8]> for BodyChunk {
-    fn as_ref(&self) -> &[u8] {
-        &self.data
-    }
-}
-impl BodyChunk {
-    fn new(data: Bytes, pools: &IoPools) -> EngineResult<Self> {
-        if data.len() > MAX_HTTP_CHUNK_BYTES {
-            return Err(error("HTTP spool chunk exceeds bound"));
-        }
-        let credit = pools.reserve_bytes(data.len() as u64).map_err(error)?;
-        Ok(Self {
-            data,
-            _credit: Arc::new(credit),
-        })
-    }
-    fn slice(&self, start: usize, end: usize) -> Self {
-        Self {
-            data: self.data.slice(start..end),
-            _credit: self._credit.clone(),
-        }
-    }
 }
 struct Session {
     owner: Arc<Mutex<Option<SpoolWriter>>>,
@@ -241,49 +213,60 @@ async fn finish_response(
     tx: &mpsc::Sender<StreamMsg>,
     state: &Arc<StreamingState>,
 ) -> EngineResult<Option<FileReader>> {
-    if response.decoded_body_bytes() != 0 {
-        return Err(error("spool requires an unread response body"));
-    }
-    if response.status() != http::StatusCode::OK
-        || response.headers().contains_key(http::header::CONTENT_RANGE)
-    {
-        return Err(error("spool requires a complete HTTP response"));
-    }
+    finish_body(
+        crate::replay_body::Body::new(response)?,
+        scheduler,
+        limits,
+        tx,
+        state,
+    )
+    .await
+}
+async fn finish_body(
+    body: crate::replay_body::Body,
+    scheduler: &IoScheduler,
+    limits: Limits,
+    tx: &mpsc::Sender<StreamMsg>,
+    state: &Arc<StreamingState>,
+) -> EngineResult<Option<FileReader>> {
     if state.is_cancelled() || tx.is_closed() {
         return Ok(None);
     }
     #[cfg(test)]
     let trace = limits.trace.clone();
-    let expected = response.content_length();
+    let (mut response, expected, mut prefix) = body.into_parts();
     let deadline = limits.deadline;
     let Some(session) = while_active(tx, state, Session::create(scheduler, limits, expected)).await
     else {
         return Ok(None);
     };
     let mut session = session?;
-    let mut response = response;
     loop {
         #[cfg(test)]
         if let Some(trace) = &trace {
             trace.waiting.notify_one();
         }
-        let Some(chunk) = while_active(
-            tx,
-            state,
-            tokio::time::timeout_at(
-                deadline.min(Instant::now() + BODY_IDLE_TIMEOUT),
-                response.chunk(),
-            ),
-        )
-        .await
-        else {
-            return Ok(None);
+        let chunk = if let Some(chunk) = prefix.pop_front() {
+            chunk
+        } else {
+            let Some(chunk) = while_active(
+                tx,
+                state,
+                tokio::time::timeout_at(
+                    deadline.min(Instant::now() + BODY_IDLE_TIMEOUT),
+                    response.chunk(),
+                ),
+            )
+            .await
+            else {
+                return Ok(None);
+            };
+            let chunk = chunk
+                .map_err(|_| error("spool body deadline exceeded"))?
+                .map_err(error)?;
+            let Some(chunk) = chunk else { break };
+            BodyChunk::new(chunk, scheduler.pools())?
         };
-        let chunk = chunk
-            .map_err(|_| error("spool body deadline exceeded"))?
-            .map_err(error)?;
-        let Some(chunk) = chunk else { break };
-        let chunk = BodyChunk::new(chunk, scheduler.pools())?;
         for at in (0..chunk.data.len()).step_by(FILE_CHUNK_BYTES) {
             let part = chunk.slice(at, (at + FILE_CHUNK_BYTES).min(chunk.data.len()));
             #[cfg(test)]
@@ -377,6 +360,17 @@ pub async fn response(
     )
     .await
 }
+/// The validated owner carries the exact consumed prefix and original length.
+/// It cannot be constructed from an arbitrary body suffix or replacement GET.
+pub(crate) async fn body(
+    body: crate::replay_body::Body,
+    scheduler: &IoScheduler,
+    limits: Limits,
+    tx: &mpsc::Sender<StreamMsg>,
+    state: &Arc<StreamingState>,
+) -> EngineResult<Option<FileReader>> {
+    in_domain(scheduler, finish_body(body, scheduler, limits, tx, state)).await
+}
 pub async fn http(
     client: HttpClient,
     url: String,
@@ -395,6 +389,7 @@ pub async fn http(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bytes::Bytes;
     fn limits(name: &str) -> Limits {
         Limits {
             dir: std::path::PathBuf::from(std::env::var_os("W09_M4A_FIXTURES").unwrap())
@@ -422,7 +417,7 @@ mod tests {
         let before = available(owner.pools());
         let data = BodyChunk::new(Bytes::from(vec![7; 4096]), owner.pools()).unwrap();
         assert_eq!(available(owner.pools()), before - 4096);
-        let weak = Arc::downgrade(&data._credit);
+        let weak = Arc::downgrade(data.credit());
         let source = session.owner.clone();
         assert!(
             tokio::time::timeout(Duration::from_millis(20), session.append(data))

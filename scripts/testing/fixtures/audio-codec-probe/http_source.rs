@@ -6,15 +6,14 @@ use crate::{
     isomp4_transport::IndexedHttp,
     local_source::FileReader,
     push_decoder,
+    replay_body::{Body, Replayed},
     resampled_streaming::Batched,
+    source_chunk::BodyChunk,
     spool_source,
     streaming::{HttpClient, RESPONSE_HEADER_TIMEOUT, StreamMsg, StreamingState},
     streaming_transport::{self as transport, Decoder, HttpSource, Sequential, while_active},
 };
-use http::{
-    HeaderValue, StatusCode,
-    header::{ACCEPT_ENCODING, CONTENT_RANGE},
-};
+use http::{HeaderValue, header::ACCEPT_ENCODING};
 use migo_io::scheduler::IoScheduler;
 use migo_services::network::{
     gate::GateKind,
@@ -22,18 +21,19 @@ use migo_services::network::{
     url::Url,
 };
 use shared::error::{EngineError, EngineResult, ErrorCode};
-use std::{future::Future, sync::Arc};
+use std::{collections::VecDeque, future::Future, sync::Arc};
 use tokio::{sync::mpsc, time::Instant};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Sequential,
     Range,
+    Buffered,
     Spool,
 }
 enum Source {
-    Sequential(HttpClient, Response),
-    Range(IndexedHttp, Option<u64>),
+    Sequential(HttpClient, Response, Option<u64>, VecDeque<BodyChunk>),
+    Range(IndexedHttp, Option<u64>, VecDeque<BodyChunk>, bool),
     Spool(FileReader),
 }
 pub struct Prepared {
@@ -55,14 +55,15 @@ impl Prepared {
     #[cfg(test)]
     pub(crate) fn range_requests(&self) -> Option<u32> {
         match &self.source {
-            Source::Range(source, _) => Some(source.control_requests()),
+            Source::Range(source, _, _, false) => Some(source.control_requests()),
             _ => None,
         }
     }
     pub fn kind(&self) -> Kind {
         match self.source {
             Source::Sequential(..) => Kind::Sequential,
-            Source::Range(..) => Kind::Range,
+            Source::Range(_, _, _, false) => Kind::Range,
+            Source::Range(_, _, _, true) => Kind::Buffered,
             Source::Spool(..) => Kind::Spool,
         }
     }
@@ -86,10 +87,10 @@ impl Prepared {
                         format_source::run(owner, reader, self.deadline, target, tx, state).await
                     }
                 },
-                Source::Range(source, length) => {
+                Source::Range(source, length, prefix, _) => {
                     transport::run_source(
                         owner.audio_cpu(),
-                        source,
+                        source.with_prefix(prefix),
                         length,
                         tx,
                         state,
@@ -99,29 +100,57 @@ impl Prepared {
                     )
                     .await
                 }
-                Source::Sequential(client, response) => match self.format {
+                Source::Sequential(client, response, length, prefix) => match self.format {
                     Some(Format::Mp3) => {
-                        sequential(owner, client, response, tx, state, move |_| {
-                            Batched::<16, push_decoder::Mp3>::new(target)
-                        })
+                        sequential(
+                            owner,
+                            client,
+                            response,
+                            length,
+                            prefix,
+                            tx,
+                            state,
+                            move |_| Batched::<16, push_decoder::Mp3>::new(target),
+                        )
                         .await
                     }
                     Some(Format::Wave) => {
-                        sequential(owner, client, response, tx, state, move |_| {
-                            Batched::<16, push_decoder::Wave>::new(target)
-                        })
+                        sequential(
+                            owner,
+                            client,
+                            response,
+                            length,
+                            prefix,
+                            tx,
+                            state,
+                            move |_| Batched::<16, push_decoder::Wave>::new(target),
+                        )
                         .await
                     }
                     Some(Format::Adts) => {
-                        sequential(owner, client, response, tx, state, move |_| {
-                            Batched::<16, push_decoder::Adts>::new(target)
-                        })
+                        sequential(
+                            owner,
+                            client,
+                            response,
+                            length,
+                            prefix,
+                            tx,
+                            state,
+                            move |_| Batched::<16, push_decoder::Adts>::new(target),
+                        )
                         .await
                     }
                     Some(Format::Ogg) => {
-                        sequential(owner, client, response, tx, state, move |_| {
-                            Batched::<16, push_decoder::Vorbis>::new(target)
-                        })
+                        sequential(
+                            owner,
+                            client,
+                            response,
+                            length,
+                            prefix,
+                            tx,
+                            state,
+                            move |_| Batched::<16, push_decoder::Vorbis>::new(target),
+                        )
                         .await
                     }
                     _ => Err(error("invalid sequential container selection")),
@@ -135,17 +164,21 @@ async fn sequential<D: Decoder>(
     owner: &IoScheduler,
     client: HttpClient,
     response: Response,
+    length: Option<u64>,
+    prefix: VecDeque<BodyChunk>,
     tx: &mpsc::Sender<StreamMsg>,
     state: &Arc<StreamingState>,
     make: impl FnOnce(Option<u64>) -> D + Send + 'static,
 ) -> EngineResult<()> {
-    let length = response.content_length();
-    let source = <Sequential as HttpSource<D>>::new(client, response)?;
+    let source = Replayed {
+        source: <Sequential as HttpSource<D>>::new(client, response)?,
+        prefix,
+    };
     transport::run_source(owner.audio_cpu(), source, length, tx, state, make).await
 }
 
 /// `format` is a trusted, previously identified container, never a filename/MIME
-/// guess. Unknown containers use bounded single-response spool + library probe.
+/// guess. Unknown containers use the bounded library prefix probe first.
 pub async fn response(
     client: HttpClient,
     response: Response,
@@ -178,24 +211,55 @@ async fn prepare(
     if state.is_cancelled() || tx.is_closed() {
         return Ok(None);
     }
-    if response.status() != StatusCode::OK
-        || response.headers().contains_key(CONTENT_RANGE)
-        || response.decoded_body_bytes() != 0
-    {
-        return Err(error("audio source requires an unread complete response"));
-    }
+    let mut body = Body::new(response)?;
+    let decoded = body.response().has_decoded_representation();
+    let identity = if !decoded {
+        Some(range::Identity::capture(body.response()))
+    } else {
+        None
+    };
+    let format = if format.is_none() {
+        let Some((returned, found)) =
+            crate::http_prefix::probe(body, owner, deadline, tx, state).await?
+        else {
+            return Ok(None);
+        };
+        body = returned;
+        found
+    } else {
+        format
+    };
     if matches!(
         format,
         Some(Format::Mp3 | Format::Wave | Format::Adts | Format::Ogg)
     ) {
         return Ok(Some(Prepared {
-            source: Source::Sequential(client, response),
+            source: {
+                let (response, length, prefix) = body.into_parts();
+                Source::Sequential(client, response, length, prefix)
+            },
             format,
             deadline,
         }));
     }
-    if format == Some(Format::M4a) && !response.has_decoded_representation() {
-        match range::Identity::capture(&response) {
+    if format == Some(Format::M4a)
+        && body.complete()
+        && body.received() <= crate::http_prefix::MAX_PREFIX_BYTES
+    {
+        let (response, length, prefix) = body.into_parts();
+        return Ok(Some(Prepared {
+            source: Source::Range(
+                IndexedHttp::cached(client, response, length),
+                length,
+                prefix,
+                true,
+            ),
+            format,
+            deadline,
+        }));
+    }
+    if format == Some(Format::M4a) && !decoded && !body.complete() {
+        match identity.expect("identity captured before prefix") {
             Ok(identity) => {
                 let mut reader = range::Reader::new(
                     client.clone(),
@@ -217,9 +281,12 @@ async fn prepare(
                         return Ok(Some(Prepared {
                             source: {
                                 let length = reader.length();
+                                let (response, _, prefix) = body.into_parts();
                                 Source::Range(
                                     IndexedHttp::prepared(client, response, reader),
                                     length,
+                                    prefix,
+                                    false,
                                 )
                             },
                             format,
@@ -234,7 +301,7 @@ async fn prepare(
             Err(e) => return Err(error(e)),
         }
     }
-    let reader = spool_source::response(response, owner, limits, tx, state).await?;
+    let reader = spool_source::body(body, owner, limits, tx, state).await?;
     drop(client);
     Ok(reader.map(|reader| Prepared {
         source: Source::Spool(reader),

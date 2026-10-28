@@ -27,7 +27,7 @@ use tokio::{
 pub(crate) struct Reply {
     pub chunked: bool,
     pub tag: bool,
-    hold: Option<usize>,
+    pub(crate) hold: Option<usize>,
     cut: Option<usize>,
 }
 impl Reply {
@@ -43,8 +43,8 @@ pub(crate) struct Server {
     pub url: String,
     task: tokio::task::JoinHandle<()>,
     pub requests: Arc<AtomicUsize>,
-    held: Arc<Notify>,
-    release: Arc<Notify>,
+    pub(crate) held: Arc<Notify>,
+    pub(crate) release: Arc<Notify>,
 }
 impl Drop for Server {
     fn drop(&mut self) {

@@ -23,8 +23,8 @@ def controls(work,env):
         ('spool-domain-close-wait-removed','spool_source.rs','_=domain.closed()=>Err(error("spool domain closed"))','_=std::future::pending::<()>()=>Err(error("spool domain closed"))','HTTP:cancellation_and_receiver_drop_abort_download_without_decoder_output'),
         ('spool-setup-write-seal-use-pack','spool_source.rs','            PoolKind::Fs,','            PoolKind::Pack,','spool_setup_write_seal_and_media_do_not_use_the_pack_class'),
         ('spool-media-uses-pack','local_source.rs','Self::Spool(_) => PoolKind::Fs,','Self::Spool(_) => PoolKind::Pack,','spool_setup_write_seal_and_media_do_not_use_the_pack_class'),
-        ('spool-consumed-response-accepted','spool_source.rs','if response.decoded_body_bytes() != 0 {','if false {','HTTP:already_consumed_response_is_rejected_before_private_file_creation'),
-        ('spool-body-credit-not-charged','spool_source.rs','pools.reserve_bytes(data.len() as u64)','pools.reserve_bytes(0)','queued_cancelled_writes_keep_credit_and_cannot_reuse_or_seal'),
+        ('spool-consumed-response-accepted','replay_body.rs','if response.decoded_body_bytes() != 0 {','if false {','HTTP:already_consumed_response_is_rejected_before_private_file_creation'),
+        ('spool-body-credit-not-charged','source_chunk.rs','pools.reserve_bytes(data.len() as u64)','pools.reserve_bytes(0)','queued_cancelled_writes_keep_credit_and_cannot_reuse_or_seal'),
         ('sealed-admission-charges-media-credit','local_source.rs','''        Ok(Self::from_backing(
             Backing::Spool(spool),''','''        let _credit = scheduler.pools().reserve_bytes(FILE_CHUNK_BYTES as u64).map_err(error)?;
         Ok(Self::from_backing(
@@ -53,8 +53,8 @@ def controls(work,env):
 
 def include(work):
     package=work/'probe'
-    for name in ['spool_source.rs','spool_contracts.rs']:shutil.copy2(ROOT/'scripts/testing/fixtures/audio-codec-probe'/name,work/'source'/name)
-    lib=package/'src/lib.rs';lib.write_text(lib.read_text()+''.join(f'\n#[path={json.dumps(str(work/"source"/(name+".rs")))}] mod {name};\n'for name in ['spool_source'])+f'\n#[cfg(test)] #[path={json.dumps(str(work/"source/spool_contracts.rs"))}] mod spool_contracts;\n')
+    for name in ['replay_body.rs','spool_source.rs','spool_contracts.rs']:shutil.copy2(ROOT/'scripts/testing/fixtures/audio-codec-probe'/name,work/'source'/name)
+    lib=package/'src/lib.rs';lib.write_text(lib.read_text()+''.join(f'\n#[path={json.dumps(str(work/"source"/(name+".rs")))}] mod {name};\n'for name in ['replay_body','spool_source'])+f'\n#[cfg(test)] #[path={json.dumps(str(work/"source/spool_contracts.rs"))}] mod spool_contracts;\n')
 
 def positive(work,env,binary,extra=()):
     checks=[*extra,('spool','spool_contracts::',5),('spool-owner','spool_source::tests::',4),('local','isomp4_source_contracts::transport::local::',11),('package','isomp4_source_contracts::transport::local::package::',8),('directory','isomp4_source_contracts::transport::local::directory::',5),('setup','local_source::tests::',1),('http','isomp4_source_contracts::transport::',11),('source','isomp4_source_contracts::',25),('range','network::http::range::tests::',18),('common','streaming_transport::tests::',3)]

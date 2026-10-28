@@ -176,7 +176,7 @@ async fn m4a_actual_range_capability_or_original_response_spool_preserves_pcm() 
     println!("W09_HTTP_SELECT_M4A_PCM {count}");
 }
 #[tokio::test]
-async fn unknown_containers_use_single_bounded_spool_then_library_identification() {
+async fn unknown_containers_use_library_prefix_or_original_response_fallback() {
     let mut assets = vec![];
     for name in ["0.mp3", "0.wav", "0.aac", "0.ogg"] {
         assets.push(std::fs::read(local::assets().join(name)).unwrap());
@@ -186,10 +186,13 @@ async fn unknown_containers_use_single_bounded_spool_then_library_identification
     for data in assets {
         for chunked in [false, true] {
             for target in [44100, 48000] {
-                let server = spool::server(data.clone(), Reply::framing(chunked, true)).await;
+                let server = spool::server(data.clone(), Reply::framing(chunked, false)).await;
                 let owner = IoScheduler::new(0);
                 let plan = prepare(server.url.clone(), &owner, None, limits()).await;
-                assert_eq!(plan.kind(), Kind::Spool);
+                assert!(matches!(
+                    plan.kind(),
+                    Kind::Sequential | Kind::Buffered | Kind::Spool
+                ));
                 exact(receive(owner, plan, target).await, &data, target);
                 assert_eq!(server.requests.load(Ordering::Acquire), 1);
                 count += 1;
@@ -388,7 +391,17 @@ async fn queued_unknown_probe_stops_on_playback_cancel_and_receiver_exit() {
         task::{Context, Poll, Waker},
     };
     for close in [false, true] {
-        let data = std::fs::read(local::assets().join("0.mp3")).unwrap();
+        let audio = std::fs::read(local::assets().join("0.mp3")).unwrap();
+        let size = 100 * 1024;
+        let mut data = b"ID3\x04\0\0".to_vec();
+        data.extend_from_slice(&[
+            ((size >> 21) & 127) as u8,
+            ((size >> 14) & 127) as u8,
+            ((size >> 7) & 127) as u8,
+            (size & 127) as u8,
+        ]);
+        data.resize(10 + size, 0);
+        data.extend_from_slice(&audio);
         let server = spool::server(data, Reply::framing(false, false)).await;
         let owner = IoScheduler::isolated_for_admission_probe(957, 1, 4 * 1024 * 1024);
         let plan = prepare(server.url.clone(), &owner, None, limits()).await;

@@ -24,8 +24,24 @@ pub struct IndexedHttp {
     source: Option<IndexSource>,
     pending: Option<Bytes>,
     limits: Limits,
+    replay: std::collections::VecDeque<crate::source_chunk::BodyChunk>,
 }
 impl IndexedHttp {
+    /// The complete bounded prefix is replayed by the outer source. All bytes
+    /// are already owned; the buffered library decoder must not issue a GET.
+    pub(crate) fn cached(client: HttpClient, response: Response, length: Option<u64>) -> Self {
+        let mut limits = Limits::default();
+        limits.index.object_len = length;
+        Self {
+            client,
+            identity: Some(Err(range::Error::NoStrongValidator)),
+            initial: Some(response),
+            source: None,
+            pending: None,
+            limits,
+            replay: Default::default(),
+        }
+    }
     /// Retain the actual capability probe's reader, counters and learned length.
     /// The original full response is still unread and remains the initial body.
     pub(crate) fn prepared(client: HttpClient, response: Response, reader: range::Reader) -> Self {
@@ -39,7 +55,15 @@ impl IndexedHttp {
             source: Some(source),
             pending: None,
             limits,
+            replay: Default::default(),
         }
+    }
+    pub(crate) fn with_prefix(
+        mut self,
+        prefix: std::collections::VecDeque<crate::source_chunk::BodyChunk>,
+    ) -> Self {
+        self.replay = prefix;
+        self
     }
     #[cfg(test)]
     pub(crate) fn control_requests(&self) -> u32 {
@@ -61,15 +85,19 @@ impl<D: Decoder + M4aSourceDecoder> Source<D> for IndexedHttp {
         tx: &mpsc::Sender<StreamMsg>,
         state: &Arc<StreamingState>,
     ) -> EngineResult<SourceRead<impl AsRef<[u8]> + Send + 'static>> {
+        use crate::source_chunk::Chunk;
+        if let Some(bytes) = self.replay.pop_front() {
+            return Ok(SourceRead::Data(Chunk::Prefix(bytes)));
+        }
         if let Some(bytes) = self.pending.take() {
-            return Ok(SourceRead::Data(bytes));
+            return Ok(SourceRead::Data(Chunk::Tail(bytes)));
         }
         if let Some(response) = &mut self.initial {
             return response
                 .chunk()
                 .await
                 .map(|chunk| match chunk {
-                    Some(bytes) => SourceRead::Data(bytes),
+                    Some(bytes) => SourceRead::Data(Chunk::Tail(bytes)),
                     None => SourceRead::End,
                 })
                 .map_err(error);
@@ -82,7 +110,7 @@ impl<D: Decoder + M4aSourceDecoder> Source<D> for IndexedHttp {
             .await
             .map_err(error)?
         {
-            MediaRead::Data(bytes) => Ok(SourceRead::Data(bytes)),
+            MediaRead::Data(bytes) => Ok(SourceRead::Data(Chunk::Tail(bytes))),
             MediaRead::End => Ok(SourceRead::End),
             MediaRead::Cancelled => Ok(SourceRead::Cancelled),
         }
@@ -135,6 +163,7 @@ impl<D: Decoder + M4aSourceDecoder> Source<D> for IndexedHttp {
                     return Ok(None);
                 };
                 self.initial = None;
+                self.replay.clear();
                 self.pending = Some(resumed.first);
                 Ok(Some(SourceResume {
                     decoder: resumed.decoder,
@@ -162,6 +191,7 @@ impl<D: Decoder + M4aSourceDecoder> HttpSource<D> for IndexedHttp {
             source: None,
             pending: None,
             limits,
+            replay: Default::default(),
         })
     }
 }

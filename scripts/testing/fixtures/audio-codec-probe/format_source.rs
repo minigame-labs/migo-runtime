@@ -153,26 +153,31 @@ impl MediaSource for &mut Input {
         Some(self.source.len())
     }
 }
-fn identify(mut input: Input) -> EngineResult<Identified> {
-    let stream = MediaSourceStream::new(Box::new(&mut input), Default::default());
-    let metadata = MetadataOptions::default()
+pub(crate) fn metadata_options() -> MetadataOptions {
+    MetadataOptions::default()
         .limit_total_bytes(Limit::Maximum(0))
         .limit_tag_bytes(Limit::Maximum(64 * 1024))
         .limit_visual_bytes(Limit::Maximum(0))
         .limit_frame_bytes(Limit::Maximum(64 * 1024))
-        .limit_nesting_depth(Limit::Maximum(2));
-    let identified = symphonia::default::get_probe()
-        .probe_format(&Hint::new(), stream, metadata)
-        .map_err(error)?;
-    let id = identified.info().format;
-    let format = match id {
+        .limit_nesting_depth(Limit::Maximum(2))
+}
+pub(crate) fn selected_format(id: symphonia::core::formats::FormatId) -> EngineResult<Format> {
+    Ok(match id {
         FORMAT_ID_MP3 => Format::Mp3,
         FORMAT_ID_WAVE => Format::Wave,
         FORMAT_ID_ADTS => Format::Adts,
         FORMAT_ID_OGG => Format::Ogg,
         FORMAT_ID_ISOMP4 => Format::M4a,
         _ => return Err(error("unsupported audio container")),
-    };
+    })
+}
+fn identify(mut input: Input) -> EngineResult<Identified> {
+    let stream = MediaSourceStream::new(Box::new(&mut input), Default::default());
+    let identified = symphonia::default::get_probe()
+        .probe_format(&Hint::new(), stream, metadata_options())
+        .map_err(error)?;
+    let id = identified.info().format;
+    let format = selected_format(id)?;
     drop(identified);
     check(&input.domain, &input.active, input.deadline).map_err(error)?;
     Ok(Identified {
