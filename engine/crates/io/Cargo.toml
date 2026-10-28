@@ -40,6 +40,10 @@ tracing = { workspace = true }
 shared = { package = "migo-shared", path = "../shared", default-features = false, features = ["vfs", "codec"] }
 serde_json.workspace = true
 parking_lot = "0.12.4"
+# Anonymous disk-backed spools use the existing locked crate; no path-based
+# cleanup or named-temp API. The optional system-random reseed is not needed
+# in a host-private directory; consumers can still unify it through dev builds.
+tempfile = { version = "3", default-features = false }
 
 # Image decoders — optional, excluded on Android (uses BitmapFactory via JNI)
 image = { workspace = true, optional = true }
@@ -89,6 +93,7 @@ rusqlite = { version = "0.32", default-features = false, features = ["bundled", 
 libc = "0.2"
 
 [dev-dependencies]
+# Existing temporary-directory tests retain their default entropy feature.
 tempfile = "3"
 texture2ddecoder = "0.1.2"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

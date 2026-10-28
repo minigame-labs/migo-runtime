@@ -139,6 +139,8 @@ pub struct GamePaths {
     /// This session's game recording: runtime state, never mapped, gone with
     /// the session like `temp_dir`.
     recording_dir: PathBuf,
+    /// Host-only session spool directory, outside every game VFS mapping.
+    spool_dir: PathBuf,
 }
 
 impl GamePaths {
@@ -148,6 +150,7 @@ impl GamePaths {
     const TEMP_SUBDIR: &'static str = "tmp";
     /// Parent of the per-session recording directories.
     const RECORDING_SUBDIR: &'static str = "recordings";
+    const SPOOL_SUBDIR: &'static str = "audio-spool";
 
     /// Create game paths from base directories, game ID and session ID.
     ///
@@ -194,6 +197,9 @@ impl GamePaths {
                 .join(session_id.to_string()),
             recording_dir: cache_base
                 .join(Self::RECORDING_SUBDIR)
+                .join(session_id.to_string()),
+            spool_dir: cache_base
+                .join(Self::SPOOL_SUBDIR)
                 .join(session_id.to_string()),
         })
     }
@@ -257,6 +263,12 @@ impl GamePaths {
         &self.temp_dir
     }
 
+    /// Host-private disk spools. Created lazily on the Fs class, never mapped
+    /// to `/tmp` or `/cache`, and cleaned with this session's temporary state.
+    pub fn spool_dir(&self) -> &Path {
+        &self.spool_dir
+    }
+
     /// Where this session's game recording is made (`getGameRecorder`): under
     /// the cache root, which no VFS mapping reaches -- content never sees the
     /// file, as on the reference; the host is handed it to share.
@@ -287,6 +299,9 @@ impl GamePaths {
         if self.recording_dir.exists() {
             std::fs::remove_dir_all(&self.recording_dir)?;
         }
+        if self.spool_dir.exists() {
+            std::fs::remove_dir_all(&self.spool_dir)?;
+        }
         std::fs::create_dir_all(&self.temp_dir)?;
         Ok(())
     }
@@ -303,7 +318,7 @@ impl GamePaths {
     /// Absent is success: teardown runs on every exit path, including a panic
     /// before the first module eval created the directory.
     pub fn remove_temp(&self) -> std::io::Result<()> {
-        for dir in [&self.temp_dir, &self.recording_dir] {
+        for dir in [&self.temp_dir, &self.recording_dir, &self.spool_dir] {
             match std::fs::remove_dir_all(dir) {
                 Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -646,6 +661,34 @@ mod tests {
         assert_ne!(temp_root, paths.cache_dir());
         assert!(temp_root.starts_with(paths.cache_dir()));
         assert!(!paths.sandbox_cache_dir().starts_with(temp_root));
+    }
+
+    #[test]
+    fn spools_are_unmapped_session_owned_and_cleaned_with_temp_state() {
+        let root = scratch_root("private_spool");
+        let paths = GamePaths::new(root.join("files"), root.join("cache"), "test-game", 7).unwrap();
+        let sibling =
+            GamePaths::new(root.join("files"), root.join("cache"), "test-game", 8).unwrap();
+        assert!(paths.spool_dir().starts_with(paths.cache_dir()));
+        for mapped in [
+            paths.code_dir(),
+            paths.user_data_dir(),
+            paths.sandbox_cache_dir(),
+            paths.temp_dir(),
+        ] {
+            assert!(!paths.spool_dir().starts_with(mapped));
+        }
+        assert_ne!(paths.spool_dir(), sibling.spool_dir());
+        std::fs::create_dir_all(sibling.spool_dir()).unwrap();
+        std::fs::write(sibling.spool_dir().join("keep"), b"x").unwrap();
+        for cleanup in [GamePaths::clean_temp, GamePaths::remove_temp] {
+            std::fs::create_dir_all(paths.spool_dir()).unwrap();
+            std::fs::write(paths.spool_dir().join("stale"), b"x").unwrap();
+            cleanup(&paths).unwrap();
+            assert!(!paths.spool_dir().exists());
+            assert!(sibling.spool_dir().join("keep").exists());
+        }
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// A session's recording is runtime state: under the cache root, outside

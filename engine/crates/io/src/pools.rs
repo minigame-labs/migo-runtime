@@ -1140,6 +1140,13 @@ pub struct IoPools {
 }
 
 impl IoPools {
+    #[cfg(test)]
+    pub(crate) fn with_byte_budget(byte_limit: u64) -> Self {
+        Self::with_executor(
+            0,
+            ProcessIoExecutor::new(ExecutorConfig::for_workers(2).with_byte_limit(byte_limit)),
+        )
+    }
     pub fn new(host_id: i32) -> Self {
         Self::with_executor(host_id, process_io_executor())
     }

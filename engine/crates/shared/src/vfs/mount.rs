@@ -43,6 +43,23 @@ use parking_lot::{Mutex, RwLock};
 /// All paths passed to methods are **relative** (no leading `/`), e.g.
 /// `"lib/utils.js"` or `"subpackages/stage1/game.js"`.
 pub trait MountBackend: Send + Sync + fmt::Debug {
+    /// Already captured directory authority. This lookup must not touch disk.
+    /// Package/custom backends do not emulate it with a path or whole-file read.
+    fn directory_read_root(&self) -> Option<Arc<super::read_root::ReadRoot>> {
+        None
+    }
+    /// Open bounded package scratch on the Pack executor. There is deliberately
+    /// no default whole-file read/slice fallback for streaming callers.
+    fn open_package_entry(
+        &self,
+        _relative_path: &str,
+        _limits: super::package::PackageReadLimits,
+    ) -> io::Result<super::package::PackageEntryReader> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "backend has no bounded package reader",
+        ))
+    }
     /// Read entire file contents.
     fn read(&self, relative_path: &str) -> io::Result<Vec<u8>>;
 
@@ -179,11 +196,25 @@ pub trait MountBackend: Send + Sync + fmt::Debug {
 #[derive(Debug, Clone)]
 pub struct DirSource {
     root: PathBuf,
+    read_root: Option<Arc<super::read_root::ReadRoot>>,
 }
 
 impl DirSource {
     pub fn new(root: PathBuf) -> Self {
-        Self { root }
+        let read_root = super::read_root::ReadRoot::open(&root).ok().map(Arc::new);
+        Self { root, read_root }
+    }
+
+    /// Strict construction for publishers; create the directory before mount.
+    /// `new` keeps legacy missing-directory resolution, but cannot pin a read
+    /// until the publisher replaces that mount with a successfully opened root.
+    pub fn try_new(root: PathBuf) -> io::Result<Self> {
+        let read_root =
+            Arc::new(super::read_root::ReadRoot::open(&root).map_err(io::Error::other)?);
+        Ok(Self {
+            root,
+            read_root: Some(read_root),
+        })
     }
 
     pub fn root(&self) -> &Path {
@@ -192,6 +223,9 @@ impl DirSource {
 }
 
 impl MountBackend for DirSource {
+    fn directory_read_root(&self) -> Option<Arc<super::read_root::ReadRoot>> {
+        self.read_root.clone()
+    }
     fn read(&self, relative_path: &str) -> io::Result<Vec<u8>> {
         std::fs::read(self.root.join(relative_path))
     }
@@ -385,7 +419,36 @@ pub struct PinnedPackRead {
     relative: String,
 }
 
+/// Selected under the mount reader lock; open it on the Fs class. Removal of
+/// an unopened old entry may fail, but never selects a new root or generation.
+pub struct PinnedDirectoryRead {
+    root: Arc<super::read_root::ReadRoot>,
+    relative: PathBuf,
+    generation: u64,
+    source_identity: u64,
+}
+impl PinnedDirectoryRead {
+    pub fn open(&self) -> io::Result<std::fs::File> {
+        self.root
+            .open_regular(&self.relative)
+            .map_err(io::Error::other)
+    }
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+    pub fn source_identity(&self) -> u64 {
+        self.source_identity
+    }
+}
+
 impl PinnedPackRead {
+    /// Keeps the backend selected at admission, even after a mount replacement.
+    pub fn open_reader(
+        &self,
+        limits: super::package::PackageReadLimits,
+    ) -> io::Result<super::package::PackageEntryReader> {
+        self.backend.open_package_entry(&self.relative, limits)
+    }
     pub fn entry_size(&self) -> Option<u64> {
         self.backend.entry_size(&self.relative)
     }
@@ -763,12 +826,7 @@ impl MountTable {
             io::Error::new(io::ErrorKind::InvalidInput, "path escapes mount root")
         })?;
         let inner = self.inner.read();
-        if generation != self.generation.load(Ordering::Acquire) {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                "stale package module generation",
-            ));
-        }
+        self.validate_read_generation(generation)?;
         let (backend, relative) = match highest_matching_overlay(&inner.overlays, &normalized) {
             Some((entry, sub)) => (&entry.backend, sub),
             None => (&inner.base.backend, normalized.as_str()),
@@ -782,6 +840,55 @@ impl MountTable {
         Ok(PinnedPackRead {
             backend: Arc::clone(backend),
             relative: relative.to_owned(),
+        })
+    }
+
+    fn validate_read_generation(&self, generation: u64) -> io::Result<()> {
+        if generation != self.generation.load(Ordering::Acquire) {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                "stale code mount generation",
+            ));
+        }
+        Ok(())
+    }
+    /// Select a directory capability and source identity under one generation
+    /// check. Admission performs no filesystem IO; call `open` on the Fs pool.
+    /// An admitted generation may fail after its publisher removes old files,
+    /// but cannot retarget a replacement directory at the same pathname.
+    pub fn pin_directory_read(
+        &self,
+        relative_path: &str,
+        generation: u64,
+    ) -> io::Result<PinnedDirectoryRead> {
+        if relative_path.starts_with('/') {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "directory read requires a relative code path",
+            ));
+        }
+        let normalized = normalize_relative_path(relative_path).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "path escapes mount root")
+        })?;
+        let inner = self.inner.read();
+        self.validate_read_generation(generation)?;
+        // Validate the logical prefix too: an overlay cannot hide a reserved
+        // or control-character component by stripping it from the native path.
+        super::read_root::validate_relative(Path::new(&normalized)).map_err(io::Error::other)?;
+        let selected = highest_matching_overlay(&inner.overlays, &normalized);
+        let (entry, sub) = selected.unwrap_or((&inner.base, normalized.as_str()));
+        super::read_root::validate_relative(Path::new(sub)).map_err(io::Error::other)?;
+        let root = entry.backend.directory_read_root().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                "backend has no pinned directory root",
+            )
+        })?;
+        Ok(PinnedDirectoryRead {
+            root,
+            relative: PathBuf::from(sub),
+            generation,
+            source_identity: entry.source_identity(),
         })
     }
 

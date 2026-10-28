@@ -24,10 +24,12 @@ def main(work,target):
     assert not work.exists();work.mkdir(parents=True);(work/'src').mkdir();(work/'source').mkdir()
     locked=tomllib.loads((ROOT/'engine/Cargo.lock').read_text())['package'];versions={r['version']for r in locked if r['name']=='parking_lot'};assert len(versions)==1
     (work/'Cargo.toml').write_text('[package]\nname="migo-read-at-file-probe"\nversion="0.0.0"\nedition="2024"\n[workspace]\n[dependencies]\nshared={package="migo-shared",path='+json.dumps(str(ROOT/'engine/crates/shared'))+',default-features=false,features=["vfs"]}\nparking_lot="='+versions.pop()+'"\n[dev-dependencies]\nmigo-alloc-probe={path='+json.dumps(str(ROOT/'engine/testing/alloc-probe'))+'}\n[profile.release]\nopt-level=3\n')
+    manifest=work/'Cargo.toml';manifest.write_text(manifest.read_text().replace('[dependencies]\n','[dependencies]\nmigo-io={path='+json.dumps(str(ROOT/'engine/crates/io'))+',default-features=false}\n',1))
     (work/'Cargo.lock').write_bytes((ROOT/'engine/Cargo.lock').read_bytes())
     path=work/'source/read_at_file.rs';shutil.copy2(ROOT/'engine/crates/io/src/read_at_file.rs',path)
-    (work/'src/lib.rs').write_text('#[cfg(test)] #[global_allocator] static COUNTING:migo_alloc_probe::CountingAllocator=migo_alloc_probe::CountingAllocator::system();\n#[path='+json.dumps(str(path))+']mod read_at_file;\n')
+    (work/'src/lib.rs').write_text('pub mod pools {pub use migo_io::pools::ByteTicket;}\n#[cfg(test)] #[global_allocator] static COUNTING:migo_alloc_probe::CountingAllocator=migo_alloc_probe::CountingAllocator::system();\n#[path='+json.dumps(str(path))+']mod read_at_file;\n')
     inputs=[Path(__file__).resolve(),ROOT/'engine/crates/io/src/read_at_file.rs',ROOT/'engine/crates/io/src/lib.rs',ROOT/'engine/Cargo.toml',ROOT/'engine/Cargo.lock',ROOT/'scripts/bench/audio-codecs.py',ROOT/'engine/crates/shared/Cargo.toml',ROOT/'engine/testing/alloc-probe/Cargo.toml']
+    inputs+=[ROOT/'engine/crates/io/Cargo.toml']+list((ROOT/'engine/crates/io/src').rglob('*.rs'))
     inputs+=list((ROOT/'engine/crates/shared/src').rglob('*.rs'))+list((ROOT/'engine/testing/alloc-probe/src').rglob('*.rs'))
     frozen={str(p.relative_to(ROOT)):codecs.sha(p)for p in inputs}
     (work/'source-inputs.json').write_text(json.dumps(frozen,indent=2)+'\n')
@@ -43,11 +45,11 @@ def main(work,target):
         ('post-read-version-guard-removed','        self.verify()\n    }','        Ok(())\n    }','mutation_after_read_and_after_last_chunk_never_become_successful_eof'),
         ('control-cap-removed','if len > cap','if false',bounds),
         ('extent-overflow-wraps','''offset
-                .checked_add(len as u64)
-                .is_none_or(|end| end > self.stamp.len)''','offset.wrapping_add(len as u64)>self.stamp.len',bounds),
+            .checked_add(len as u64)
+            .is_none_or(|end| end > object_len)''','offset.wrapping_add(len as u64)>object_len',bounds),
         ('third-media-slot-allocated','state.allocated < 2','state.allocated < 3',bounds),
         ('media-buffer-not-recycled','slot.take().unwrap()','{drop(slot.take());vec![0;FILE_CHUNK_BYTES]}','recycled_media_reads_have_no_steady_rust_heap_allocation'),
-        ('absolute-offset-truncated-u32','self.file.read_exact_at(buffer, offset)?;','self.file.read_exact_at(buffer, u64::from(offset as u32))?;','large_sparse_offsets_are_u64_and_do_not_read_the_prefix'),
+        ('absolute-offset-truncated-u32','read_exact_at(&self.file, buffer, offset)?;','read_exact_at(&self.file, buffer, u64::from(offset as u32))?;','large_sparse_offsets_are_u64_and_do_not_read_the_prefix'),
     ]
     declarations.append(('media-storage-rezeroed','            *slot = Some(std::mem::take(&mut self.data));','            self.data.fill(0);\n            *slot = Some(std::mem::take(&mut self.data));','short_chunks_hide_retained_bytes_without_rezeroing_storage'))
     original=path.read_text()

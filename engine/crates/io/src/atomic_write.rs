@@ -81,15 +81,17 @@ fn sync_parent_dir(path: &Path) -> io::Result<()> {
 /// return does leave a `.atomic.tmp` behind, which is exactly what
 /// [`cleanup_stale_tmp`] is for).
 fn write_and_fsync(tmp: &Path, bytes: &[u8]) -> io::Result<()> {
-    // `create` truncates any stale tmp file with the same name.
-    // `write` + `create` is the mode reqired; readers never see this
-    // partial file because we rename into place after `sync_all`.
+    // Register the opened object before truncating any stale tmp file. Final
+    // publication remains the rename after sync; tracking also protects a
+    // participating reader that already pinned the temporary object itself.
     let result = (|| -> io::Result<()> {
         let mut f = OpenOptions::new()
             .write(true)
             .create(true)
-            .truncate(true)
+            .truncate(false)
             .open(tmp)?;
+        let _write = crate::fs_ops::begin_file_write(&f)?;
+        f.set_len(0)?;
         f.write_all(bytes)?;
         crate::durable::sync(&f)?;
         Ok(())
@@ -145,8 +147,10 @@ where
         let mut f = OpenOptions::new()
             .write(true)
             .create(true)
-            .truncate(true)
+            .truncate(false)
             .open(&tmp)?;
+        let _write = crate::fs_ops::begin_file_write(&f)?;
+        f.set_len(0)?;
         writer(&mut f)?;
         crate::durable::sync(&f)?;
         Ok(())
@@ -204,6 +208,24 @@ mod tests {
         atomic_write(&path, b"v1").unwrap();
         atomic_write(&path, b"v2-longer").unwrap();
         assert_eq!(fs::read(&path).unwrap(), b"v2-longer");
+    }
+
+    #[test]
+    fn byte_writer_tracks_an_already_open_temporary_object() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("known.atomic.tmp");
+        fs::write(&path, b"old").unwrap();
+        let file = File::open(&path).unwrap();
+        let mutations = shared::vfs::file_mutation::FileMutations::for_file(&file)
+            .unwrap()
+            .unwrap();
+        let before = mutations.read_epoch().unwrap();
+        write_and_fsync(&path, b"new").unwrap();
+        assert!(
+            before.verify().is_err(),
+            "temporary byte writer was unregistered"
+        );
+        assert_eq!(fs::read(&path).unwrap(), b"new");
     }
 
     #[test]

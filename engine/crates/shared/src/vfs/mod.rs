@@ -46,11 +46,14 @@
 //! let real = vfs.resolve("/user/save.json", FileOp::Write)?;
 //! ```
 
+pub mod file_io;
+pub mod file_mutation;
 pub mod game_paths;
 #[cfg(feature = "code-signing")]
 pub mod integrity;
 pub mod mount;
 pub mod package;
+pub mod read_root;
 
 #[cfg(unix)]
 mod unix;

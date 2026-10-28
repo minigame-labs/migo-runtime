@@ -42,9 +42,13 @@ use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use super::file_io::{FileStamp, read_exact_at};
 use digest::Digest;
 use lru::LruCache;
 use parking_lot::Mutex;
+
+mod entry_reader;
+pub use entry_reader::{PackageEntryReader, PackageReadLimits};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -107,17 +111,23 @@ impl PackageDigest {
     /// Digest a package file, streaming through a fixed buffer so a large
     /// package costs one buffer rather than its own size in memory.
     pub fn of_file(path: &Path) -> io::Result<Self> {
+        let file = std::fs::File::open(path)?;
+        let stamp = FileStamp::of(file.metadata()?)?;
+        Self::of_open_file(&file, &stamp)
+    }
+    fn of_open_file(file: &std::fs::File, stamp: &FileStamp) -> io::Result<Self> {
         const CHUNK: usize = 64 * 1024;
-        let mut file = std::fs::File::open(path)?;
+        stamp.verify(file)?;
         let mut hasher = sha2::Sha256::new();
         let mut buf = vec![0u8; CHUNK];
-        loop {
-            let read = file.read(&mut buf)?;
-            if read == 0 {
-                break;
-            }
-            hasher.update(&buf[..read]);
+        let mut position = 0;
+        while position < stamp.len {
+            let len = (stamp.len - position).min(CHUNK as u64) as usize;
+            read_exact_at(file, &mut buf[..len], position)?;
+            hasher.update(&buf[..len]);
+            position += len as u64;
         }
+        stamp.verify(file)?;
         Ok(Self(hasher.finalize().into()))
     }
 
@@ -679,6 +689,8 @@ const INFLATE_CACHE_CAPACITY: usize = 128;
 
 struct ReaderInner {
     path: PathBuf,
+    file: std::fs::File,
+    stamp: FileStamp,
     chunks: Vec<ChunkEntry>,
     entries: HashMap<String, EntryMeta>,
     identity: PackageIdentity,
@@ -702,7 +714,18 @@ impl PackageReader {
         package_version: &str,
     ) -> Result<Self, PackageError> {
         let file = std::fs::File::open(path)?;
-        let file_len = file.metadata()?.len();
+        Self::open_file(file, path, package_name, package_version)
+    }
+
+    /// Parse and retain the same already-open immutable regular file.
+    pub fn open_file(
+        file: std::fs::File,
+        path: &Path,
+        package_name: &str,
+        package_version: &str,
+    ) -> Result<Self, PackageError> {
+        let stamp = FileStamp::of(file.metadata()?)?;
+        let file_len = stamp.len;
         let mut reader = BufReader::new(file);
         let header = Header::read_from(&mut reader)?;
 
@@ -910,9 +933,13 @@ impl PackageReader {
             hasher.update(p.as_bytes());
         }
 
+        let file = reader.into_inner();
+        stamp.verify(&file)?;
         Ok(Self {
             inner: Arc::new(ReaderInner {
                 path: path.to_path_buf(),
+                file,
+                stamp,
                 chunks,
                 entries,
                 identity: PackageIdentity {
@@ -927,6 +954,16 @@ impl PackageReader {
         })
     }
 
+    /// Own per-reader bounded decompression scratch; no mount lookup or path reopen.
+    /// Run construction and reads on the bounded Pack executor, not an isolate.
+    pub fn entry_reader(
+        &self,
+        relative_path: &str,
+        limits: PackageReadLimits,
+    ) -> Result<PackageEntryReader, PackageError> {
+        PackageEntryReader::new(Arc::clone(&self.inner), relative_path, limits)
+    }
+
     /// Read a byte range, decompressing only overlapping chunks.
     pub fn read_range(
         &self,
@@ -934,6 +971,7 @@ impl PackageReader {
         position: u64,
         length: Option<u64>,
     ) -> Result<Vec<u8>, PackageError> {
+        self.inner.stamp.verify(&self.inner.file)?;
         let entry =
             self.inner.entries.get(relative_path).ok_or_else(|| {
                 io::Error::new(io::ErrorKind::NotFound, relative_path.to_string())
@@ -973,55 +1011,9 @@ impl PackageReader {
             }
         }
 
-        // `PackageReader::open` validates that a non-empty entry's first
-        // chunk has a non-zero `raw_size`, so `chunk_size` is > 0 here.
-        // Guard anyway (defense in depth) so a future code path that
-        // bypasses open-time validation degrades to an error, never a
-        // divide-by-zero panic.
-        let chunk_size = self.inner.chunks[entry.first_chunk as usize].raw_size as u64;
-        if chunk_size == 0 {
-            return Err(PackageError::BadIndex(format!(
-                "entry '{relative_path}' first chunk has zero raw_size"
-            )));
-        }
-        let first_needed = (position / chunk_size) as u32;
-        let last_needed = ((end - 1) / chunk_size) as u32;
-
-        let mut result = Vec::with_capacity((end - position) as usize);
-        let mut file = std::fs::File::open(&self.inner.path)?;
-
-        for i in first_needed..=last_needed.min(entry.chunk_count - 1) {
-            let ci = (entry.first_chunk + i) as usize;
-            let chunk = &self.inner.chunks[ci];
-
-            file.seek(SeekFrom::Start(chunk.data_offset))?;
-            let mut compressed = vec![0u8; chunk.compressed_size as usize];
-            file.read_exact(&mut compressed)?;
-
-            // Cap decompress output at raw_size (already validated <= MAX_CHUNK_RAW_SIZE).
-            let max_output = (chunk.raw_size as usize).min(MAX_CHUNK_RAW_SIZE as usize);
-            let decompressed = zstd::bulk::decompress(&compressed, max_output).map_err(|e| {
-                PackageError::Io(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("zstd decompress chunk {ci}: {e}"),
-                ))
-            })?;
-
-            let chunk_offset = i as u64 * chunk_size;
-            let copy_start = if position > chunk_offset {
-                (position - chunk_offset) as usize
-            } else {
-                0
-            };
-            let copy_end = if end < chunk_offset + decompressed.len() as u64 {
-                (end - chunk_offset) as usize
-            } else {
-                decompressed.len()
-            };
-            if copy_start < copy_end {
-                result.extend_from_slice(&decompressed[copy_start..copy_end]);
-            }
-        }
+        let mut source = self.entry_reader(relative_path, PackageReadLimits::default())?;
+        let mut result = vec![0; (end - position) as usize];
+        source.read_exact_at(position, &mut result)?;
         // Populate the inflate cache when the request covered the
         // entire entry. We don't cache partial reads even if the entry
         // is small — the next reader of the rest of the entry would
@@ -1111,24 +1103,16 @@ impl PackageReader {
                 io::Error::new(io::ErrorKind::NotFound, relative_path.to_string())
             })?;
         let mut hasher = HashState::new(algorithm)?;
-        let mut file = std::fs::File::open(&self.inner.path)?;
+        let mut source = self.entry_reader(relative_path, PackageReadLimits::default())?;
+        let mut buffer = vec![0; DEFAULT_CHUNK_SIZE as usize];
         let mut total = 0u64;
-        for i in 0..entry.chunk_count {
-            let ci = (entry.first_chunk + i) as usize;
-            let chunk = &self.inner.chunks[ci];
-            file.seek(SeekFrom::Start(chunk.data_offset))?;
-            let mut compressed = vec![0u8; chunk.compressed_size as usize];
-            file.read_exact(&mut compressed)?;
-            let decompressed = zstd::bulk::decompress(&compressed, chunk.raw_size as usize)
-                .map_err(|e| {
-                    PackageError::Io(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("zstd: {e}"),
-                    ))
-                })?;
-            hasher.update(&decompressed);
-            total += decompressed.len() as u64;
+        while total < entry.raw_size {
+            let len = (entry.raw_size - total).min(buffer.len() as u64) as usize;
+            source.read_exact_at(total, &mut buffer[..len])?;
+            hasher.update(&buffer[..len]);
+            total += len as u64;
         }
+        source.verify()?;
         Ok((total, hasher.finalize_hex()))
     }
 }
@@ -1155,8 +1139,12 @@ pub struct PackSource {
 impl PackSource {
     /// Open a package and derive its identity from its bytes.
     pub fn open(path: &Path, name: &str, version: &str) -> Result<Self, PackageError> {
-        let digest = PackageDigest::of_file(path)?;
-        Self::open_with_recorded_digest(path, name, version, &digest)
+        let reader = PackageReader::open(path, name, version)?;
+        let digest = PackageDigest::of_open_file(&reader.inner.file, &reader.inner.stamp)?;
+        Ok(Self {
+            reader,
+            cache_identity: digest.cache_identity(),
+        })
     }
 
     /// Open a package whose digest a runtime-written record already holds, which
@@ -1197,6 +1185,15 @@ impl fmt::Debug for PackSource {
 }
 
 impl super::MountBackend for PackSource {
+    fn open_package_entry(
+        &self,
+        path: &str,
+        limits: PackageReadLimits,
+    ) -> io::Result<PackageEntryReader> {
+        self.reader
+            .entry_reader(path, limits)
+            .map_err(io::Error::other)
+    }
     /// A digest of the package's bytes, which means the same thing in every
     /// Session -- unlike a position in one Session's mount table. Two Sessions
     /// that mounted byte-identical packages get the same value and may share

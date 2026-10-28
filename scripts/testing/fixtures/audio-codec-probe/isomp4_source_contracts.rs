@@ -1250,4 +1250,4 @@ mod buffered;
 
 #[cfg(feature = "m4a-transport-probe")]
 #[path = "isomp4_transport_contracts.rs"]
-mod transport;
+pub(crate) mod transport;
