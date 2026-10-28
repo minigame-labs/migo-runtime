@@ -8,6 +8,55 @@ use std::{
     time::SystemTime,
 };
 
+/// Identity of an opened native object, independent of its current pathname.
+/// Windows keeps the complete 128-bit ID and volume, not the legacy file index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FileIdentity {
+    #[cfg(unix)]
+    unix: (u64, u64),
+    #[cfg(windows)]
+    windows: (u64, [u8; 16]),
+}
+impl FileIdentity {
+    pub fn of(file: &File) -> io::Result<Self> {
+        #[cfg(unix)]
+        {
+            Ok(Self::from_metadata(&file.metadata()?))
+        }
+        #[cfg(windows)]
+        {
+            super::windows::file_identity(file)
+                .map(|windows| Self { windows })
+                .map_err(io::Error::other)
+        }
+        #[cfg(not(any(unix, windows)))]
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "native file identity unavailable",
+        ))
+    }
+    #[cfg(unix)]
+    fn from_metadata(meta: &Metadata) -> Self {
+        use std::os::unix::fs::MetadataExt;
+        Self {
+            unix: (meta.dev(), meta.ino()),
+        }
+    }
+    /// Classify and identify the same live regular-file handle.
+    /// Unix needs one fstat; Windows reuses the VFS's native FileIdInfo query.
+    pub fn of_regular(file: &File) -> io::Result<Option<Self>> {
+        let meta = file.metadata()?;
+        if !meta.is_file() {
+            return Ok(None);
+        }
+        #[cfg(unix)]
+        let identity = Self::from_metadata(&meta);
+        #[cfg(not(unix))]
+        let identity = Self::of(file)?;
+        Ok(Some(identity))
+    }
+}
+
 #[derive(PartialEq, Eq)]
 pub struct FileStamp {
     pub len: u64,

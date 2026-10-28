@@ -19,8 +19,19 @@ use shared::{
         FileId, FileStat, MAX_READ_LENGTH, OpenFlag, SavedFileInfo, StatEntry, StatResult,
         WriteDurability, WriteMode,
     },
-    vfs::MountTable,
+    vfs::{
+        MountTable,
+        file_mutation::{FileMutations, OwnedWriteGuard},
+    },
 };
+
+/// Enrol a native regular file before a destructive operation. A guard covers
+/// even failed/partial writes; it never holds the registry lock during IO.
+pub(crate) fn begin_file_write(file: &std::fs::File) -> std::io::Result<Option<OwnedWriteGuard>> {
+    FileMutations::for_file(file)?
+        .map(FileMutations::into_write)
+        .transpose()
+}
 /// Per-call cap for `readZipEntry` result rows. This is separate from the
 /// extraction budget: it protects the result table built by `all` and by
 /// explicit requests, including rows that carry only an error.
@@ -406,6 +417,7 @@ fn compute_digest(data: &[u8], algorithm: &str) -> Result<String, EngineError> {
 /// on every write.
 pub struct FdIo {
     file: std::fs::File,
+    mutations: Option<FileMutations>,
     /// True when this fd was opened with `'as'` / `'as+'`; every write must
     /// call `sync_data` (fdatasync) before returning so the durability those
     /// flags promise actually holds — matching Node-compatible synchronous
@@ -414,9 +426,10 @@ pub struct FdIo {
 }
 
 impl FdIo {
-    fn new(file: std::fs::File, sync_on_write: bool) -> Self {
+    fn new(file: std::fs::File, sync_on_write: bool, mutations: Option<FileMutations>) -> Self {
         Self {
             file,
+            mutations,
             sync_on_write,
         }
     }
@@ -477,7 +490,15 @@ impl FdIo {
         if let Some(pos) = position {
             self.file.seek(SeekFrom::Start(pos)).map_err(io_err)?;
         }
-        self.file.write_all(data).map_err(io_err)?;
+        {
+            let _write = self
+                .mutations
+                .as_ref()
+                .map(FileMutations::begin_write)
+                .transpose()
+                .map_err(io_err)?;
+            self.file.write_all(data).map_err(io_err)?;
+        }
         if self.sync_on_write {
             // `sync_data` (fdatasync) rather than `sync_all`: we only need
             // data + size durable, not atime/mtime — the cheaper guarantee
@@ -496,12 +517,23 @@ impl FdIo {
 
     /// Truncate or extend this fd to `len` bytes.
     pub fn ftruncate(&mut self, len: u64) -> Result<(), EngineError> {
-        self.file.set_len(len).map_err(io_err)?;
+        {
+            let _write = self
+                .mutations
+                .as_ref()
+                .map(FileMutations::begin_write)
+                .transpose()
+                .map_err(io_err)?;
+            self.file.set_len(len).map_err(io_err)?;
+        }
         // Best-effort cursor move to end; ignore seek errors on non-seekable fds.
         let _ = self.file.seek(SeekFrom::End(0));
         Ok(())
     }
 }
+
+#[cfg(test)]
+type NativeOpenHook = Box<dyn Fn(&std::fs::File) + Send + Sync>;
 
 /// Manages open file descriptors with ID allocation, temporary file cleanup,
 /// and optional synthetic stat data.  Each fd's `File` and I/O state lives in
@@ -513,6 +545,8 @@ pub struct FileTable {
     files: HashMap<FileId, std::sync::Arc<parking_lot::Mutex<FdIo>>>,
     temp_files: HashMap<FileId, PathBuf>,
     synthetic_stats: HashMap<FileId, FileStat>,
+    #[cfg(test)]
+    after_native_open: Option<NativeOpenHook>,
 }
 
 impl FileTable {
@@ -526,6 +560,8 @@ impl FileTable {
             files: HashMap::with_capacity(Self::INITIAL_FILE_CAPACITY),
             temp_files: HashMap::new(),
             synthetic_stats: HashMap::new(),
+            #[cfg(test)]
+            after_native_open: None,
         }
     }
 
@@ -559,10 +595,10 @@ impl FileTable {
                 opts.read(true).write(true);
             }
             OpenFlag::WriteTruncateCreate => {
-                opts.write(true).create(true).truncate(true);
+                opts.write(true).create(true).truncate(false);
             }
             OpenFlag::ReadWriteTruncateCreate => {
-                opts.read(true).write(true).create(true).truncate(true);
+                opts.read(true).write(true).create(true).truncate(false);
             }
             OpenFlag::AppendCreate => {
                 opts.append(true).create(true);
@@ -605,6 +641,27 @@ impl FileTable {
         } else {
             (opts.open(path).map_err(io_err)?, false)
         };
+        #[cfg(test)]
+        if let Some(hook) = &self.after_native_open {
+            hook(&file);
+        }
+
+        let mutations = if matches!(flag, OpenFlag::Read) {
+            None
+        } else {
+            FileMutations::for_file(&file).map_err(io_err)?
+        };
+        let mut file = FdIo::new(file, is_sync_append, mutations);
+        if matches!(
+            flag,
+            OpenFlag::WriteTruncateCreate | OpenFlag::ReadWriteTruncateCreate
+        ) {
+            // Opening with O_TRUNC would destroy bytes before registration.
+            // As before, nonregular Unix handles have no truncation semantics.
+            if file.mutations.is_some() {
+                file.ftruncate(0)?;
+            }
+        }
 
         let id = self.alloc_id()?;
 
@@ -615,10 +672,8 @@ impl FileTable {
             let _ = fsync_parent_dir(Path::new(path));
         }
 
-        self.files.insert(
-            id,
-            std::sync::Arc::new(parking_lot::Mutex::new(FdIo::new(file, is_sync_append))),
-        );
+        self.files
+            .insert(id, std::sync::Arc::new(parking_lot::Mutex::new(file)));
         if let Some(path) = cleanup_path {
             self.temp_files.insert(id, path);
         }
@@ -1686,8 +1741,8 @@ pub fn list_saved_files(
 /// after writing so an `appendFile` immediately followed by power loss
 /// can't lose the just-appended bytes.
 ///
-/// With [`WriteDurability::Fast`] overwrite does a plain truncating
-/// `std::fs::write` and append skips the `fsync`: higher throughput, but a
+/// With [`WriteDurability::Fast`] overwrite truncates the opened object after
+/// mutation registration, and append skips the `fsync`: higher throughput, but a
 /// crash can leave a torn (overwrite) or lost (append) write. Only for
 /// scratch/cache data the caller can afford to lose.
 pub fn write_file(
@@ -1701,9 +1756,23 @@ pub fn write_file(
             WriteDurability::Durable => crate::atomic_write::atomic_write(path, data)
                 .map(|_| true)
                 .map_err(io_err),
-            WriteDurability::Fast => std::fs::write(path, data)
-                .map(|_| true)
-                .map_err(|e| io_err_ctx(e, "write_file", path)),
+            WriteDurability::Fast => {
+                let result = (|| -> std::io::Result<()> {
+                    let mut file = std::fs::OpenOptions::new()
+                        .write(true)
+                        .create(true)
+                        .truncate(false)
+                        .open(path)?;
+                    let write = begin_file_write(&file)?;
+                    if write.is_some() {
+                        file.set_len(0)?;
+                    }
+                    file.write_all(data)
+                })();
+                result
+                    .map(|_| true)
+                    .map_err(|e| io_err_ctx(e, "write_file", path))
+            }
         },
         WriteMode::Append => {
             // Distinguish a freshly-created file from an append to an
@@ -1712,7 +1781,10 @@ pub fn write_file(
             // must be durable); an existing file's directory entry already
             // survived a prior fsync.
             let (mut file, created) = open_append_created_aware(path, false)?;
-            file.write_all(data).map_err(io_err)?;
+            {
+                let _write = begin_file_write(&file).map_err(io_err)?;
+                file.write_all(data).map_err(io_err)?;
+            }
             if durability == WriteDurability::Durable {
                 // Ensure the appended region is on disk before we return
                 // success to JS; without this an `appendFile` immediately
@@ -3174,3 +3246,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+#[cfg(test)]
+#[path = "fs_ops/mutation_tests.rs"]
+mod mutation_tests;

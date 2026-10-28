@@ -181,7 +181,7 @@ pub(super) fn open_regular_from_movable_root_with_hook(
     }
     open_regular_impl(&guard, &path, relative, true)
 }
-fn file_identity(file: &File) -> Result<(u64, [u8; 16]), VfsOpenError> {
+pub(super) fn file_identity(file: &File) -> Result<(u64, [u8; 16]), VfsOpenError> {
     let mut info = FILE_ID_INFO::default();
     // SAFETY: `info` is a correctly sized/aligned output object for FileIdInfo;
     // only a successful API result is inspected. The borrowed handle is live.

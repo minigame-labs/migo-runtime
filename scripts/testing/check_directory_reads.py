@@ -13,7 +13,7 @@ spec = importlib.util.spec_from_file_location('package_reads', ROOT/'scripts/tes
 package = importlib.util.module_from_spec(spec); spec.loader.exec_module(package)
 sha = package.sha
 
-def windows_api_check(work, env):
+def windows_api_check(work, env, extra_modules=(), extra_dependencies=None):
     # Actual native module + exact Root error/helper excerpts, not fake Win32
     # declarations. This checks Rust API availability, never native execution.
     probe = work/'windows-api'; (probe/'src').mkdir(parents=True)
@@ -25,13 +25,19 @@ def windows_api_check(work, env):
         return source[at:stop]
     text = 'pub mod vfs {\nuse std::path::{Path, PathBuf};\n'+source[start:end]
     text += function('fn is_unsafe_windows_component(')+function('pub(crate) fn normalize_path(')
-    for name in ['windows', 'read_root']:
+    for name in ['windows', 'read_root', *extra_modules]:
         origin = work/'engine/crates/shared/src/vfs'/f'{name}.rs'
         text += f'#[path={json.dumps(str(origin))}] pub mod {name};\n'
     (probe/'src/lib.rs').write_text(text+'}\n')
     dependency = tomllib.loads((ROOT/'engine/crates/shared/Cargo.toml').read_text())['target']['cfg(windows)']['dependencies']['windows-sys']
-    (probe/'Cargo.toml').write_text('[package]\nname="migo-directory-windows-api"\nversion="0.0.0"\nedition="2024"\n[workspace]\n[dependencies]\nwindows-sys='+json.dumps({'version':'='+dependency['version'], 'features':dependency['features']}).replace(':', '=')+'\n')
-    assert package.helper.run(['cargo','generate-lockfile','--offline'], work/'windows-lock.log', probe, env)==0
+    manifest='[package]\nname="migo-directory-windows-api"\nversion="0.0.0"\nedition="2024"\n[workspace]\n[dependencies]\nwindows-sys='+json.dumps({'version':'='+dependency['version'], 'features':dependency['features']}).replace(':', '=')+'\n'
+    for name, version in (extra_dependencies or {}).items():manifest+=name+'='+json.dumps('='+version)+'\n'
+    (probe/'Cargo.toml').write_text(manifest)
+    (probe/'Cargo.lock').write_bytes((ROOT/'engine/Cargo.lock').read_bytes())
+    assert package.helper.run(['cargo','metadata','--offline','--format-version','1'], work/'windows-metadata.jsonl', probe, env)==0
+    selected=json.loads(next(l for l in(work/'windows-metadata.jsonl').read_text().splitlines()if l.startswith('{"packages"')))['packages'];locked={}
+    for row in tomllib.loads((ROOT/'engine/Cargo.lock').read_text())['package']:locked.setdefault(row['name'],set()).add(row['version'])
+    assert all(row['name']not in locked or row['version']in locked[row['name']]for row in selected),'Windows probe existing version drift'
     targets = ['x86_64-pc-windows-gnu', 'aarch64-pc-windows-msvc']
     for target in targets:
         assert package.helper.run(['cargo','check','--offline','--locked','--lib','--target',target],work/f'windows-{target}-check.log',probe,env)==0

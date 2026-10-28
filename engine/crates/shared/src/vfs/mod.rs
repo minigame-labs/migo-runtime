@@ -47,6 +47,7 @@
 //! ```
 
 pub mod file_io;
+pub mod file_mutation;
 pub mod game_paths;
 #[cfg(feature = "code-signing")]
 pub mod integrity;
