@@ -57,6 +57,13 @@ pub trait MountBackend: Send + Sync + fmt::Debug {
     fn directory_read_root(&self) -> Option<Arc<super::read_root::ReadRoot>> {
         None
     }
+    /// Explicit bounded package-reader authority. This must not perform IO;
+    /// absence of a native path or directory capability is not such authority.
+    /// The publisher keeps package generations immutable, including aliases,
+    /// for the lifetime of admitted readers, just like `PinnedPackRead`.
+    fn has_package_reader(&self) -> bool {
+        false
+    }
     /// Open bounded package scratch on the Pack executor. There is deliberately
     /// no default whole-file read/slice fallback for streaming callers.
     fn open_package_entry(
@@ -415,6 +422,14 @@ pub struct MountTable {
 pub struct PinnedPackRead {
     backend: Arc<dyn MountBackend>,
     relative: String,
+}
+
+/// Backend selection and generation captured in one mount-table read.
+/// Directory authority says nothing about byte immutability; the caller must
+/// select direct reads or a cooperative private snapshot using provenance.
+pub enum PinnedAssetRead {
+    Directory(PinnedDirectoryRead),
+    Package(PinnedPackRead),
 }
 
 /// A copy retains the actual source object, including package backing-file
@@ -870,6 +885,47 @@ impl MountTable {
             ));
         }
         Ok(())
+    }
+    /// Choose bounded source authority without stat, opening files, inflating,
+    /// trying multiple generations, or falling back to a whole backend read.
+    pub fn pin_asset_read(
+        &self,
+        relative_path: &str,
+        generation: u64,
+    ) -> io::Result<PinnedAssetRead> {
+        if relative_path.starts_with('/') {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "asset requires a relative code path",
+            ));
+        }
+        let normalized = normalize_relative_path(relative_path).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "path escapes mount root")
+        })?;
+        super::read_root::validate_relative(Path::new(&normalized)).map_err(io::Error::other)?;
+        let inner = self.inner.read();
+        self.validate_read_generation(generation)?;
+        let (entry, sub) = highest_matching_overlay(&inner.overlays, &normalized)
+            .unwrap_or((&inner.base, normalized.as_str()));
+        super::read_root::validate_relative(Path::new(sub)).map_err(io::Error::other)?;
+        if let Some(root) = entry.backend.directory_read_root() {
+            return Ok(PinnedAssetRead::Directory(PinnedDirectoryRead {
+                root,
+                relative: PathBuf::from(sub),
+                generation,
+                source_identity: entry.source_identity(),
+            }));
+        }
+        if entry.backend.has_package_reader() {
+            return Ok(PinnedAssetRead::Package(PinnedPackRead {
+                backend: entry.backend.clone(),
+                relative: sub.to_owned(),
+            }));
+        }
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "backend has no bounded asset reader",
+        ))
     }
     /// Select a directory capability and source identity under one generation
     /// check. Admission performs no filesystem IO; call `open` on the Fs pool.
@@ -2771,5 +2827,7 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+mod asset_tests;
 #[cfg(test)]
 mod copy_tests;

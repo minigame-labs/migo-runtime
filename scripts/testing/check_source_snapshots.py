@@ -182,17 +182,17 @@ def main(work, target, positive_only):
         match = re.search(r'test result: ok\. (\d+) passed; 0 failed; (\d+) ignored;', observed)
         assert match
         if crate == 'io':
-            assert observed.count('test source_snapshot::tests::') == 19
+            assert observed.count('test source_snapshot::tests::') == 22
             assert observed.count('test spool::tests::') == 7
-            assert observed.count('test read_at_file::tests::') == 7
+            assert observed.count('test read_at_file::tests::') == 8
         suites[name] = {'passed': int(match[1]), 'ignored': int(match[2]),
                         'binary_sha256': g.sha(binary)}
     count = 0 if positive_only else controls(work, env)
     assert all(g.sha(ROOT / p) == h for p, h in frozen.items()), 'Root changed'
     assert all(g.sha(work / p) == h for p, h in copies.items()), 'source copy not restored'
     summary = {
-        'suites': suites, 'snapshot_tests': 19, 'spool_regression_tests': 7,
-        'positioned_file_regression_tests': 7, 'compiled_controls': count,
+        'suites': suites, 'snapshot_tests': 22, 'spool_regression_tests': 7,
+        'positioned_file_regression_tests': 8, 'compiled_controls': count,
         'positive_only': positive_only, 'root_inputs_unchanged': True,
         'source_copies_restored': True, 'existing_dependency_versions_preserved': True,
         'normal_io_features': normal[0], 'probe_feature_absent_from_normal_io': True,

@@ -38,7 +38,7 @@ def main(work,target):
     env=os.environ.copy();env.update(RUSTUP_TOOLCHAIN='1.95.0',CARGO_TARGET_DIR=str(target),CARGO_NET_OFFLINE='true')
     for name in ['ANDROID_NDK','ANDROID_NDK_HOME']:env.pop(name,None)
     codecs.run(['cargo','metadata','--offline','--format-version','1'],work/'metadata.jsonl',cwd=work,env=env)
-    positive=build(work,env,'positive');codecs.run([str(positive),'--nocapture','--test-threads=1'],work/'positive.log',cwd=work,env=env);assert '7 passed; 0 failed'in(work/'positive.log').read_text()
+    positive=build(work,env,'positive');codecs.run([str(positive),'--nocapture','--test-threads=1'],work/'positive.log',cwd=work,env=env);assert '8 passed; 0 failed'in(work/'positive.log').read_text()
     base='read_at_file::tests::';bounds='bounded_controls_rewinds_and_two_media_slots_keep_exact_bytes'
     declarations=[
         ('pre-read-version-guard-removed','        self.verify()?;','', 'mutation_before_read_never_issues_a_payload_read'),
@@ -62,7 +62,7 @@ def main(work,target):
         finally:path.write_text(original)
         print('actual file IO fault',name,': executable assertion rejected',flush=True)
     assert all(codecs.sha(ROOT/p)==h for p,h in frozen.items());assert path.read_text()==original
-    summary={'positive_tests':7,'compiled_controls':len(declarations),'binary_sha256':codecs.sha(positive),'source_restored':True,'root_inputs_unchanged':True,'root_lock_sha256':codecs.sha(ROOT/'engine/Cargo.lock'),'scope':'Actual positioned regular-file IO/recycling/mutation boundaries on host; Windows/native-device/performance not accepted'}
+    summary={'positive_tests':8,'compiled_controls':len(declarations),'binary_sha256':codecs.sha(positive),'source_restored':True,'root_inputs_unchanged':True,'root_lock_sha256':codecs.sha(ROOT/'engine/Cargo.lock'),'scope':'Actual positioned regular-file IO/recycling/mutation boundaries on host; Windows/native-device/performance not accepted'}
     (work/'summary.json').write_text(json.dumps(summary,indent=2)+'\n');print(json.dumps(summary,indent=2),flush=True)
 if __name__=='__main__':
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--output',type=Path,required=True);p.add_argument('--target-dir',type=Path,required=True);a=p.parse_args();main(a.output.resolve(),a.target_dir.resolve())

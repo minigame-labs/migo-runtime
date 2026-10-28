@@ -364,6 +364,7 @@ fn cancellation_after_the_final_read_does_not_publish_output() {
 fn byte_credit_follows_the_last_chunk_after_the_reader_is_dropped() {
     let f = Fixture::new(100);
     let output = finish(f.begin().unwrap(), &f.scheduler);
+    assert_eq!(output.reader().transient_media_bytes(), 0);
     let chunk = output.reader().chunk_at(0, 100).unwrap();
     assert!(f.scheduler.pools().reserve_bytes(1).is_err());
     drop(output);
@@ -505,4 +506,126 @@ fn invalid_reused_buffers_cannot_escape_the_memory_credit_bound() {
         assert!(writer.seal_with_buffer(1, buffer, lease).is_err());
         f.released();
     }
+}
+
+#[test]
+fn deferred_opener_runs_on_fs_and_is_not_called_for_invalid_or_unpolled_work() {
+    let f = Fixture::new(100);
+    let called = Arc::new(AtomicUsize::new(0));
+    let make = |max_bytes, max_control, dir: PathBuf| {
+        let c = called.clone();
+        let path = f.path.clone();
+        snapshot_open(
+            f.scheduler.clone(),
+            move || {
+                c.fetch_add(1, Ordering::SeqCst);
+                File::open(path)
+            },
+            dir,
+            f.budget.clone(),
+            max_bytes,
+            max_control,
+        )
+    };
+    drop(make(100, 1, f.dir.clone()));
+    assert_eq!(called.load(Ordering::SeqCst), 0);
+    for (max, control, dir) in [
+        (0, 1, f.dir.clone()),
+        (100, 0, f.dir.clone()),
+        (100, 1, PathBuf::from("relative")),
+    ] {
+        assert!(runtime().block_on(make(max, control, dir)).is_err());
+    }
+    assert_eq!(called.load(Ordering::SeqCst), 0);
+    assert!(!f.dir.exists());
+    let caller = std::thread::current().id();
+    let path = f.path.clone();
+    let output = runtime()
+        .block_on(snapshot_open(
+            f.scheduler.clone(),
+            move || {
+                assert_ne!(std::thread::current().id(), caller);
+                File::open(path)
+            },
+            f.dir.clone(),
+            f.budget.clone(),
+            100,
+            1,
+        ))
+        .unwrap();
+    exact(&output, &f.data);
+}
+
+#[test]
+fn expired_queued_open_is_rejected_without_repolling_the_waiter() {
+    let f = Fixture::new(100);
+    let entered = Arc::new(Barrier::new(2));
+    let release = Arc::new(Barrier::new(2));
+    let (e, r) = (entered.clone(), release.clone());
+    f.scheduler
+        .install_worker_start_test_hook(Arc::new(move || {
+            e.wait();
+            r.wait();
+        }));
+    let called = Arc::new(AtomicBool::new(false));
+    let c = called.clone();
+    let path = f.path.clone();
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(30);
+    let mut future = Box::pin(snapshot_open_until(
+        f.scheduler.clone(),
+        move || {
+            c.store(true, Ordering::SeqCst);
+            File::open(path)
+        },
+        f.dir.clone(),
+        f.budget.clone(),
+        100,
+        1,
+        deadline,
+    ));
+    let mut context = Context::from_waker(Waker::noop());
+    assert!(matches!(future.as_mut().poll(&mut context), Poll::Pending));
+    entered.wait();
+    std::thread::sleep(Duration::from_millis(60));
+    release.wait();
+    assert!(runtime().block_on(future).is_err());
+    assert!(!called.load(Ordering::SeqCst));
+    assert!(!f.dir.exists());
+}
+
+#[test]
+fn copy_deadline_is_checked_between_steps_and_before_final_sealing() {
+    let f = Fixture::new(1024 * 1024);
+    let copy = f.begin().unwrap();
+    let result = copy.step_until(
+        &f.scheduler,
+        &AtomicBool::new(false),
+        Some(tokio::time::Instant::now() + Duration::from_millis(30)),
+        |n| {
+            if n == f.data.len() as u64 {
+                std::thread::sleep(Duration::from_millis(60));
+            }
+        },
+    );
+    assert!(result.is_err());
+    f.released();
+    let f = Fixture::new(1024 * 1024 + 1);
+    let Progress::More(copy) = f
+        .begin()
+        .unwrap()
+        .step(&f.scheduler, &AtomicBool::new(false))
+        .unwrap()
+    else {
+        panic!("expected more")
+    };
+    assert!(
+        copy.step_until(
+            &f.scheduler,
+            &AtomicBool::new(false),
+            Some(tokio::time::Instant::now()),
+            |_| panic!("expired step read bytes")
+        )
+        .is_err()
+    );
+    f.released();
 }

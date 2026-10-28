@@ -144,16 +144,28 @@ impl SnapshotCopy {
         self.epoch.verify()?;
         self.stamp.verify(&self.source)
     }
+    #[cfg(test)]
     fn step(self, scheduler: &IoScheduler, cancelled: &AtomicBool) -> io::Result<Progress> {
         self.step_with(scheduler, cancelled, |_| {})
     }
+    #[cfg(test)]
     fn step_with(
+        self,
+        scheduler: &IoScheduler,
+        cancelled: &AtomicBool,
+        after_read: impl FnMut(u64),
+    ) -> io::Result<Progress> {
+        self.step_until(scheduler, cancelled, None, after_read)
+    }
+    fn step_until(
         mut self,
         scheduler: &IoScheduler,
         cancelled: &AtomicBool,
+        deadline: Option<tokio::time::Instant>,
         mut after_read: impl FnMut(u64),
     ) -> io::Result<Progress> {
         for _ in 0..STEP_CHUNKS {
+            check_deadline(deadline)?;
             check(scheduler, cancelled)?;
             self.verify()?;
             if self.copied == self.stamp.len {
@@ -166,6 +178,7 @@ impl SnapshotCopy {
             after_read(self.copied);
             self.verify()?;
         }
+        check_deadline(deadline)?;
         check(scheduler, cancelled)?;
         if self.copied == self.stamp.len {
             let output =
@@ -191,13 +204,103 @@ pub async fn snapshot_file(
     max_bytes: u64,
     max_control_bytes: usize,
 ) -> io::Result<SealedSpool> {
+    snapshot_open(
+        scheduler,
+        move || Ok(source),
+        spool_dir,
+        budget,
+        max_bytes,
+        max_control_bytes,
+    )
+    .await
+}
+
+/// The same snapshot protocol with source opening deferred to the first Fs
+/// job. Pass an already-captured directory/VFS capability, never resolve a
+/// later mount generation in this opener. Dropped/unpolled/closed operations
+/// cannot acquire new source authority. The opener has the same cooperative
+/// writer or quiescent-host obligation as [`snapshot_file`].
+pub async fn snapshot_open(
+    scheduler: Arc<IoScheduler>,
+    open: impl FnOnce() -> io::Result<File> + Send + 'static,
+    spool_dir: PathBuf,
+    budget: SpoolBudget,
+    max_bytes: u64,
+    max_control_bytes: usize,
+) -> io::Result<SealedSpool> {
+    snapshot_open_inner(
+        scheduler,
+        open,
+        spool_dir,
+        budget,
+        max_bytes,
+        max_control_bytes,
+        None,
+    )
+    .await
+}
+
+/// Apply one absolute deadline to admission, queued opening, every copy step
+/// and final sealing. Expired work is rejected even when its async waiter has
+/// not polled the timeout again.
+pub async fn snapshot_open_until(
+    scheduler: Arc<IoScheduler>,
+    open: impl FnOnce() -> io::Result<File> + Send + 'static,
+    spool_dir: PathBuf,
+    budget: SpoolBudget,
+    max_bytes: u64,
+    max_control_bytes: usize,
+    deadline: tokio::time::Instant,
+) -> io::Result<SealedSpool> {
+    snapshot_open_inner(
+        scheduler,
+        open,
+        spool_dir,
+        budget,
+        max_bytes,
+        max_control_bytes,
+        Some(deadline),
+    )
+    .await
+}
+
+fn check_deadline(deadline: Option<tokio::time::Instant>) -> io::Result<()> {
+    if deadline.is_some_and(|end| tokio::time::Instant::now() >= end) {
+        Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            "snapshot deadline exceeded",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+async fn snapshot_open_inner(
+    scheduler: Arc<IoScheduler>,
+    open: impl FnOnce() -> io::Result<File> + Send + 'static,
+    spool_dir: PathBuf,
+    budget: SpoolBudget,
+    max_bytes: u64,
+    max_control_bytes: usize,
+    deadline: Option<tokio::time::Instant>,
+) -> io::Result<SealedSpool> {
+    control_limit(max_control_bytes)?;
+    if max_bytes == 0 || !spool_dir.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid snapshot limits or root",
+        ));
+    }
+    check_deadline(deadline)?;
     let cancelled = Arc::new(AtomicBool::new(false));
     let _cancel_on_drop = CancelOnDrop(cancelled.clone());
     let worker = scheduler.clone();
     let flag = cancelled.clone();
     let mut progress = scheduler
         .run_async(request(), move || {
+            check_deadline(deadline)?;
             check(&worker, &flag)?;
+            let source = open()?;
             SnapshotCopy::new(
                 source,
                 &spool_dir,
@@ -206,7 +309,7 @@ pub async fn snapshot_file(
                 max_control_bytes,
                 worker.pools(),
             )?
-            .step(&worker, &flag)
+            .step_until(&worker, &flag, deadline, |_| {})
         })
         .await
         .map_err(pool_error)??;
@@ -217,7 +320,9 @@ pub async fn snapshot_file(
                 let worker = scheduler.clone();
                 let flag = cancelled.clone();
                 progress = scheduler
-                    .run_async(request(), move || copy.step(&worker, &flag))
+                    .run_async(request(), move || {
+                        copy.step_until(&worker, &flag, deadline, |_| {})
+                    })
                     .await
                     .map_err(pool_error)??;
             }

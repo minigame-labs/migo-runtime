@@ -1185,6 +1185,10 @@ impl fmt::Debug for PackSource {
 }
 
 impl super::MountBackend for PackSource {
+    fn has_package_reader(&self) -> bool {
+        true
+    }
+
     fn open_package_entry(
         &self,
         path: &str,

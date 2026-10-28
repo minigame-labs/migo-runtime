@@ -23,6 +23,33 @@ use tokio::{sync::mpsc, time::Instant};
 /// Per-control allocation bound; sequential codecs do not issue control reads.
 pub const MAX_CONTROL_BYTES: usize = 2 * 1024 * 1024;
 
+/// Host-supplied byte ownership, never inferred from a path, stat or link count.
+pub enum DirectoryOwnership {
+    /// All writers cooperate with runtime mutation epochs, or the host hands
+    /// over a quiescent object. Always create independent private bytes.
+    Snapshot,
+    /// The host/publisher guarantees the opened generation remains immutable
+    /// for the reader's lifetime, including aliases outside the game mapping.
+    Immutable,
+}
+
+pub struct SnapshotOptions {
+    pub dir: std::path::PathBuf,
+    pub budget: migo_io::spool::SpoolBudget,
+    pub max_bytes: u64,
+    pub deadline: Instant,
+}
+impl SnapshotOptions {
+    pub fn session(paths: &shared::vfs::GamePaths) -> Self {
+        Self {
+            dir: paths.spool_dir().to_path_buf(),
+            budget: migo_io::spool::SpoolBudget::process(),
+            max_bytes: migo_io::spool::DEFAULT_SPOOL_FILE_BYTES,
+            deadline: Instant::now() + RESPONSE_HEADER_TIMEOUT,
+        }
+    }
+}
+
 fn error(cause: impl std::fmt::Display) -> EngineError {
     EngineError::from_detail(ErrorCode::IoError, cause.to_string())
 }
@@ -71,8 +98,8 @@ impl Backing {
     }
     fn media_bytes(&self) -> u64 {
         match self {
-            Self::File(_) => FILE_CHUNK_BYTES as u64,
-            Self::Spool(_) => FILE_CHUNK_BYTES as u64,
+            Self::File(v) => v.transient_media_bytes(),
+            Self::Spool(v) => v.reader().transient_media_bytes(),
             Self::Package(_) => 0,
         }
     }
@@ -117,6 +144,49 @@ pub struct FileReader {
     pub chunk_bytes: usize,
 }
 impl FileReader {
+    /// Automatic backend selection uses a single admitted capability. Package
+    /// bytes stay on Pack; directory bytes follow the explicit host contract.
+    /// A missing/failed backend never retries another mount or whole-file read.
+    pub async fn open_asset(
+        source: shared::vfs::mount::PinnedAssetRead,
+        ownership: DirectoryOwnership,
+        scheduler: Arc<migo_io::scheduler::IoScheduler>,
+        snapshot: SnapshotOptions,
+    ) -> EngineResult<Self> {
+        scheduler.ensure_open().map_err(error)?;
+        check_deadline(snapshot.deadline).map_err(error)?;
+        match source {
+            shared::vfs::mount::PinnedAssetRead::Package(pin) => {
+                Self::open_package_at(pin, &scheduler, snapshot.deadline).await
+            }
+            shared::vfs::mount::PinnedAssetRead::Directory(pin) => match ownership {
+                DirectoryOwnership::Immutable => {
+                    Self::build(&scheduler, snapshot.deadline, move || pin.open()).await
+                }
+                DirectoryOwnership::Snapshot => {
+                    let deadline = snapshot.deadline;
+                    let operation = migo_io::source_snapshot::snapshot_open_until(
+                        scheduler.clone(),
+                        move || pin.open(),
+                        snapshot.dir,
+                        snapshot.budget,
+                        snapshot.max_bytes,
+                        MAX_CONTROL_BYTES,
+                        deadline,
+                    );
+                    let domain = scheduler.domain();
+                    let sealed = tokio::select! {
+                        biased;
+                        _ = domain.closed() => return Err(error("asset domain closed")),
+                        result = tokio::time::timeout_at(deadline, operation) => result
+                            .map_err(|_| error("asset snapshot deadline exceeded"))?
+                            .map_err(error)?,
+                    };
+                    Self::open_spool(sealed, &scheduler, deadline)
+                }
+            },
+        }
+    }
     /// `file` comes from VFS::open_regular_for_read or a private spool owner.
     /// It must remain immutable; metadata checks are not a cryptographic snapshot.
     pub async fn open(
@@ -179,14 +249,17 @@ impl FileReader {
         pin: shared::vfs::mount::PinnedPackRead,
         scheduler: &migo_io::scheduler::IoScheduler,
     ) -> EngineResult<Self> {
+        Self::open_package_at(pin, scheduler, Instant::now() + RESPONSE_HEADER_TIMEOUT).await
+    }
+    async fn open_package_at(
+        pin: shared::vfs::mount::PinnedPackRead,
+        scheduler: &migo_io::scheduler::IoScheduler,
+        deadline: Instant,
+    ) -> EngineResult<Self> {
         let pools = scheduler.pools().clone();
-        Self::build_source(
-            scheduler,
-            PoolKind::Pack,
-            0,
-            Instant::now() + RESPONSE_HEADER_TIMEOUT,
-            move || ReadAtPackage::new(pin, &pools, MAX_CONTROL_BYTES).map(Backing::Package),
-        )
+        Self::build_source(scheduler, PoolKind::Pack, 0, deadline, move || {
+            ReadAtPackage::new(pin, &pools, MAX_CONTROL_BYTES).map(Backing::Package)
+        })
         .await
     }
     async fn build(
@@ -194,13 +267,10 @@ impl FileReader {
         deadline: Instant,
         open: impl FnOnce() -> std::io::Result<File> + Send + 'static,
     ) -> EngineResult<Self> {
-        Self::build_source(
-            scheduler,
-            PoolKind::Fs,
-            FILE_CHUNK_BYTES as u64,
-            deadline,
-            move || ReadAtFile::new(open()?, MAX_CONTROL_BYTES).map(Backing::File),
-        )
+        let pools = scheduler.pools().clone();
+        Self::build_source(scheduler, PoolKind::Fs, 0, deadline, move || {
+            ReadAtFile::with_budget(open()?, MAX_CONTROL_BYTES, &pools).map(Backing::File)
+        })
         .await
     }
     async fn build_source(
