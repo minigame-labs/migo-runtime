@@ -162,3 +162,92 @@ fn repeated_descriptor_writes_have_no_steady_rust_heap_allocation() {
         },
     );
 }
+
+#[test]
+fn cross_fs_transfer_uses_active_epoch_and_atomic_publication() {
+    let (root, dest, old_file, old_mutations) = fixture();
+    let old = old_mutations.read_epoch().unwrap();
+    let source = root.path().join("source");
+    std::fs::write(&source, b"replacement").unwrap();
+    let mut retained = None;
+    rename_cross_fs_with(
+        source.to_str().unwrap(),
+        dest.to_str().unwrap(),
+        |src, dst| {
+            let mutations = FileMutations::for_file(dst)?.unwrap();
+            assert!(
+                mutations.read_epoch().is_err(),
+                "cross-FS stage writer is untracked"
+            );
+            assert!(
+                old.verify().is_ok(),
+                "stage truncated the anchored old target"
+            );
+            // Keep the native object alive until the epoch check: a registration
+            // alone cannot prevent inode reuse after an unlinked stage closes.
+            retained = Some((dst.try_clone()?, mutations));
+            std::io::copy(src, dst)?;
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert!(
+        retained.as_ref().unwrap().1.read_epoch().is_ok(),
+        "stage guard leaked"
+    );
+    assert!(old.verify().is_ok());
+    assert!(!source.exists());
+    assert_eq!(std::fs::read(&dest).unwrap(), b"replacement");
+    let mut previous = [0; 3];
+    shared::vfs::file_io::read_exact_at(&old_file, &mut previous, 0).unwrap();
+    assert_eq!(&previous, b"old");
+    assert_eq!(
+        std::fs::read_dir(root.path()).unwrap().count(),
+        1,
+        "stage leaked"
+    );
+}
+
+#[test]
+fn cross_fs_transfer_failure_keeps_source_and_target_and_cleans_partial_stage() {
+    let (root, dest, _old_file, mutations) = fixture();
+    let before = mutations.read_epoch().unwrap();
+    let source = root.path().join("source");
+    std::fs::write(&source, b"source").unwrap();
+    let mut retained = None;
+    let result = rename_cross_fs_with(
+        source.to_str().unwrap(),
+        dest.to_str().unwrap(),
+        |_, dst| {
+            let mutations = FileMutations::for_file(dst)?.unwrap();
+            assert!(mutations.read_epoch().is_err());
+            // Keep the native object alive until the epoch check: a registration
+            // alone cannot prevent inode reuse after an unlinked stage closes.
+            retained = Some((dst.try_clone()?, mutations));
+            dst.write_all(b"partial")?;
+            Err(std::io::Error::other("injected partial transfer failure"))
+        },
+    );
+    assert!(result.is_err());
+    assert!(retained.as_ref().unwrap().1.read_epoch().is_ok());
+    assert!(before.verify().is_ok());
+    assert_eq!(std::fs::read(&source).unwrap(), b"source");
+    assert_eq!(std::fs::read(&dest).unwrap(), b"old");
+    assert_eq!(
+        std::fs::read_dir(root.path()).unwrap().count(),
+        2,
+        "partial stage leaked"
+    );
+}
+
+#[test]
+fn cross_fs_production_transfer_preserves_a_large_payload() {
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("source");
+    let dest = root.path().join("dest");
+    let bytes = (0..196_777).map(|n| (n % 251) as u8).collect::<Vec<_>>();
+    std::fs::write(&source, &bytes).unwrap();
+    rename_cross_fs(source.to_str().unwrap(), dest.to_str().unwrap()).unwrap();
+    assert_eq!(std::fs::read(&dest).unwrap(), bytes);
+    assert!(!source.exists());
+}

@@ -26,6 +26,10 @@ def prepare(work,target,extra_inputs=()):
         to=work/'source-inputs'/rel;to.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(ROOT/rel,to)
     retained={str(p.relative_to(package)):g.sha(p)for p in(package/'src').rglob('*')if p.is_file()}
     env=os.environ.copy();env.update(RUSTUP_TOOLCHAIN='1.95.0',CARGO_TARGET_DIR=str(target),CARGO_NET_OFFLINE='true',CC='/usr/bin/clang',CXX='/usr/bin/clang++')
+    # Legacy IO tests use fixed names under temp_dir(). Separate each cohort
+    # from other test binaries; thread serialization alone cannot isolate them.
+    runtime_tmp=work/'runtime-tmp';runtime_tmp.mkdir()
+    env.update(TMPDIR=str(runtime_tmp),TMP=str(runtime_tmp),TEMP=str(runtime_tmp))
     for k in ['ANDROID_NDK','ANDROID_NDK_HOME']:env.pop(k,None)
     assert g.run(['cargo','metadata','--offline','--format-version','1'],work/'metadata.jsonl',package,env)==0
     return env,frozen,retained

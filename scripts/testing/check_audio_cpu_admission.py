@@ -44,15 +44,18 @@ def run(command: list[str], log: Path, package: Path, env: dict, timeout: int = 
             raise AssertionError(f'timeout is not an accepted contract outcome: {log}')
 
 
-def build(package: Path, output: Path, env: dict, name: str) -> Path:
+def build(package: Path, output: Path, env: dict, name: str, features=()) -> Path:
     log = output / f'{name}-build.jsonl'
     # Cargo can reuse a same-name/path-relocated local crate whose copied file
     # mtimes predate a previous mutation artifact. Invalidate only this isolated
     # test package, then require an actually rebuilt compiler artifact.
     assert run(['cargo', 'clean', '--offline', '--locked', '-p', 'migo-io'],
                output / f'{name}-clean.log', package, env) == 0
-    status = run(['cargo', 'test', '--offline', '--locked', '--lib', '--no-default-features', '--no-run',
-                  '--message-format=json'], log, package, env)
+    command = ['cargo', 'test', '--offline', '--locked', '--lib', '--no-default-features', '--no-run',
+               '--message-format=json']
+    if features:
+        command += ['--features', ','.join(features)]
+    status = run(command, log, package, env)
     assert status == 0, (name, 'compile failed', log)
     binaries = []
     for line in log.read_text().splitlines():

@@ -258,7 +258,7 @@ mod dirfd {
         Ok(current)
     }
 
-    /// Create (or truncate) `name` directly under `dir`.
+    /// Open `name` directly under `dir` without mutating an existing object.
     ///
     /// `O_NOFOLLOW` without `O_EXCL`: overwriting a plain file left by an
     /// earlier extraction is expected, following a symlink is not.
@@ -270,7 +270,11 @@ mod dirfd {
             libc::openat(
                 dir.as_raw_fd(),
                 c_name.as_ptr(),
-                libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                libc::O_WRONLY
+                    | libc::O_CREAT
+                    | libc::O_NOFOLLOW
+                    | libc::O_CLOEXEC
+                    | libc::O_NONBLOCK,
                 0o644 as libc::c_uint,
             )
         };
@@ -281,6 +285,9 @@ mod dirfd {
         Ok(unsafe { File::from_raw_fd(fd) })
     }
 }
+
+#[cfg(test)]
+type OutputOpenHook = Box<dyn FnOnce(&File)>;
 
 /// The destination tree an extraction writes into.
 ///
@@ -300,6 +307,8 @@ struct OutputTree {
     dirs: HashMap<PathBuf, std::os::fd::OwnedFd>,
     #[cfg(not(unix))]
     dirs: HashSet<PathBuf>,
+    #[cfg(test)]
+    after_native_open: Option<OutputOpenHook>,
 }
 
 impl OutputTree {
@@ -308,6 +317,8 @@ impl OutputTree {
         Ok(Self {
             root: dirfd::open_root(dest_canonical)?,
             dirs: HashMap::new(),
+            #[cfg(test)]
+            after_native_open: None,
         })
     }
 
@@ -316,6 +327,8 @@ impl OutputTree {
         Ok(Self {
             root: dest_canonical.to_path_buf(),
             dirs: HashSet::new(),
+            #[cfg(test)]
+            after_native_open: None,
         })
     }
 
@@ -338,9 +351,10 @@ impl OutputTree {
         Ok(())
     }
 
-    /// Create (or truncate) the file at `relative`, making its parents first.
+    /// Open without truncating: the common path registers the actual object
+    /// before any payload mutation, including an empty archive entry.
     #[cfg(unix)]
-    fn create_file(&mut self, relative: &Path) -> io::Result<File> {
+    fn open_file(&mut self, relative: &Path) -> io::Result<File> {
         let name = relative.file_name().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "zip entry has no file name")
         })?;
@@ -350,7 +364,7 @@ impl OutputTree {
     }
 
     #[cfg(not(unix))]
-    fn create_file(&mut self, relative: &Path) -> io::Result<File> {
+    fn open_file(&mut self, relative: &Path) -> io::Result<File> {
         if relative.file_name().is_none() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -361,7 +375,30 @@ impl OutputTree {
         self.ensure_dir(parent)?;
         // No `O_NOFOLLOW` counterpart here, so this platform keeps the weaker
         // guarantee the path-based checks above provide.
-        File::create(self.root.join(relative))
+        fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(self.root.join(relative))
+    }
+
+    fn create_file(
+        &mut self,
+        relative: &Path,
+    ) -> io::Result<(File, shared::vfs::file_mutation::OwnedWriteGuard)> {
+        let file = self.open_file(relative)?;
+        #[cfg(test)]
+        if let Some(hook) = self.after_native_open.take() {
+            hook(&file);
+        }
+        let write = crate::fs_ops::begin_file_write(&file)?.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "zip output is not a regular file",
+            )
+        })?;
+        file.set_len(0)?;
+        Ok((file, write))
     }
 }
 
@@ -372,6 +409,18 @@ impl OutputTree {
 struct LimitedEntryReader<'a, R: Read> {
     inner: &'a mut R,
     remaining: u64,
+}
+
+/// Keep the regular File type visible to std's copy specialization and hold
+/// the writer epoch until even a failed/partial transfer has finished.
+fn copy_entry(
+    tree: &mut OutputTree,
+    relative: &Path,
+    reader: &mut impl Read,
+) -> io::Result<(File, u64)> {
+    let (mut outfile, _write) = tree.create_file(relative)?;
+    let count = io::copy(reader, &mut outfile)?;
+    Ok((outfile, count))
 }
 
 impl<'a, R: Read> LimitedEntryReader<'a, R> {
@@ -592,9 +641,8 @@ pub fn extract_zip_with_budget(
             let cap = std::cmp::min(budget.max_entry_uncompressed, remaining_total);
             let mut limited = LimitedEntryReader::new(&mut file, cap + 1);
 
-            let mut outfile = tree.create_file(relative)?;
-            let actually_written = match io::copy(&mut limited, &mut outfile) {
-                Ok(n) => n,
+            let (outfile, actually_written) = match copy_entry(&mut tree, relative, &mut limited) {
+                Ok(result) => result,
                 Err(e) if e.kind() == io::ErrorKind::InvalidData => {
                     let _ = fs::remove_file(&outpath);
                     return Err(ZipError::BudgetExceeded(format!(
@@ -632,13 +680,13 @@ pub fn extract_zip_with_budget(
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                if let Some(mode) = file.unix_mode() {
-                    if let Err(e) = fs::set_permissions(&outpath, fs::Permissions::from_mode(mode))
-                    {
-                        warn!("extract_zip: failed to set permissions: {}", e);
-                    }
+                if let Some(mode) = file.unix_mode()
+                    && let Err(e) = outfile.set_permissions(fs::Permissions::from_mode(mode))
+                {
+                    warn!("extract_zip: failed to set permissions: {}", e);
                 }
             }
+            drop(outfile);
         }
 
         if let Some(ref callback) = progress {
@@ -1386,3 +1434,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+#[cfg(test)]
+mod mutation_tests;

@@ -36,6 +36,8 @@ REQUIRED = [
     'engine/crates/shared/src/vfs/file_mutation.rs',
     'engine/crates/shared/src/vfs/file_mutation/tests.rs',
     'scripts/testing/check_file_mutations.py',
+    'scripts/testing/check_output_mutations.py',
+    'engine/crates/io/src/zip_extract/mutation_tests.rs',
     'scripts/testing/check_audio_spool.py',
     'scripts/testing/check_audio_spool_formats.py',
     'scripts/testing/check_spool_io.py',

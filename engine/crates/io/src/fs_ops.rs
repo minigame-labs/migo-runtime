@@ -971,15 +971,41 @@ fn is_exdev(_e: &std::io::Error) -> bool {
 /// chosen so an interrupted run leaves either the old file intact or
 /// a correctly-fsynced new file, never a half-copied intermediate:
 ///
-/// 1. Write to `<new_path>.partN`.
+/// 1. Write to a tracked atomic temporary at the destination.
 /// 2. `fsync` the tmp file.
 /// 3. `rename(tmp, new_path)` — atomic at the destination FS.
 /// 4. `fsync` the destination parent directory.
 /// 5. Unlink the source.
 /// 6. `fsync` the source parent (best-effort; already safe if crashed).
 fn rename_cross_fs(old_path: &str, new_path: &str) -> std::io::Result<()> {
-    use std::fs::{File, OpenOptions};
-    use std::io::{self, Read, Write};
+    rename_cross_fs_with(old_path, new_path, |src, dst| {
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        {
+            // Preserve std's file-to-file kernel copy specialization. It
+            // falls back when the filesystem cannot offload the transfer.
+            std::io::copy(src, dst)?;
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        {
+            let mut buf = [0u8; 64 * 1024];
+            loop {
+                let n = src.read(&mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                dst.write_all(&buf[..n])?;
+            }
+        }
+        Ok(())
+    })
+}
+
+fn rename_cross_fs_with(
+    old_path: &str,
+    new_path: &str,
+    transfer: impl FnOnce(&mut std::fs::File, &mut std::fs::File) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    use std::{fs::File, io};
 
     let src_meta = std::fs::symlink_metadata(old_path)?;
     if src_meta.file_type().is_symlink() {
@@ -1006,56 +1032,16 @@ fn rename_cross_fs(old_path: &str, new_path: &str) -> std::io::Result<()> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "destination has no parent"))?;
     std::fs::create_dir_all(parent)?;
 
-    // Unique suffix: pid+nanoseconds is collision-resistant enough for
-    // the tmp file, and short enough to keep the path under any FS
-    // filename limit even for long destination names.
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.subsec_nanos())
-        .unwrap_or(0);
-    let tmp_name = format!(
-        ".{}.{}.{}.part",
-        new_path_buf
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("rename"),
-        std::process::id(),
-        nanos
-    );
-    let tmp_path = parent.join(tmp_name);
-
-    {
-        let mut src = File::open(old_path)?;
-        let mut dst = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&tmp_path)?;
-        let mut buf = [0u8; 64 * 1024];
-        loop {
-            let n = src.read(&mut buf)?;
-            if n == 0 {
-                break;
-            }
-            dst.write_all(&buf[..n])?;
-        }
-        dst.flush()?;
-        crate::durable::sync(&dst)?;
+    let mut src = File::open(old_path)?;
+    if !src.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "rename across filesystems requires a regular file",
+        ));
     }
-
-    if let Err(e) = std::fs::rename(&tmp_path, new_path) {
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(e);
-    }
-
-    // Parent directory fsync is a no-op on some filesystems (e.g. tmpfs)
-    // and unavailable on Windows; we try and swallow errors because the
-    // `rename` above already committed the name, so the tmp file cannot
-    // resurface as a live entry.
-    #[cfg(unix)]
-    {
-        let _ = crate::durable::sync_dir(parent);
-    }
+    // Reuse the tracked temporary writer and its error cleanup, sync and
+    // publication protocol. Never truncate or write the anchored old target.
+    crate::atomic_write::atomic_write_with(&new_path_buf, |dst| transfer(&mut src, dst))?;
 
     // Now the destination is durable — unlink the source.
     if let Err(e) = std::fs::remove_file(old_path) {
