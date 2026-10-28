@@ -488,10 +488,14 @@ pub async fn materialize_pack_to_temp_async(
         }
     }
 
+    let source = mount_table
+        .pin_copy_source(&relative)
+        .map_err(|error| engine_err(EngineError::from(error)))?;
+    let code_dir = mount_table.code_dir();
     let request = copy_request(BackendKind::Pack, RequestKind::Async);
     scheduler
         .run_async(request, move || {
-            fs_ops::materialize_mount_entry_to_temp(&mount_table, &relative, &suffix)
+            fs_ops::materialize_pinned_entry_to_temp(source, code_dir, &suffix)
         })
         .await
         .map_err(pool_err)?
@@ -505,10 +509,13 @@ pub async fn copy_pack_file_async(
     relative_path: String,
     dest_path: PathBuf,
 ) -> FsResult<()> {
+    let source = mount_table
+        .pin_copy_source(&relative_path)
+        .map_err(|error| engine_err(EngineError::from(error)))?;
     let request = copy_request(BackendKind::Pack, RequestKind::Async);
     scheduler
         .run_async(request, move || {
-            fs_ops::copy_mount_entry_to_path(&mount_table, &relative_path, &dest_path)
+            fs_ops::copy_pinned_entry_to_path(source, &dest_path)
         })
         .await
         .map_err(pool_err)?

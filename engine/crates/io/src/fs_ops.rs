@@ -1081,7 +1081,12 @@ pub fn rmdir(dir_path: &str, recursive: bool) -> Result<(), EngineError> {
 /// Copy a file.
 pub fn copy(src_path: &str, dest_path: &str) -> Result<(), EngineError> {
     let started_at = Instant::now();
-    let result = std::fs::copy(src_path, dest_path).map(|_| ()).map_err(|e| {
+    let result = (|| {
+        let source = crate::source_copy::open_source(Path::new(src_path))?;
+        crate::source_copy::PreparedCopy::new(shared::vfs::mount::CopySource::File(source))?
+            .copy_to_path(Path::new(dest_path))
+    })()
+    .map_err(|e| {
         io_err_ctx(e, "copy", src_path).with_detail(format!("copy {src_path} -> {dest_path}"))
     });
     match &result {
@@ -1102,23 +1107,10 @@ pub fn copy_mount_entry_to_path(
     dest_path: &Path,
 ) -> Result<(), EngineError> {
     let started_at = Instant::now();
-    let result = match mount_table.copy_to_path(relative_path, dest_path) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == std::io::ErrorKind::Unsupported => {
-            let file = std::fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .open(dest_path)
-                .map_err(io_err)?;
-            let mut writer = std::io::BufWriter::new(file);
-            mount_table
-                .copy_to_writer(relative_path, &mut writer)
-                .map_err(io_err)?;
-            writer.flush().map_err(io_err)
-        }
-        Err(err) => Err(io_err(err)),
-    };
+    let result = mount_table
+        .pin_copy_source(relative_path)
+        .map_err(io_err)
+        .and_then(|source| copy_pinned_entry_to_path(source, dest_path));
     let target = dest_path.to_string_lossy();
     match &result {
         Ok(()) => trace_fs_edge(
@@ -1142,8 +1134,31 @@ pub fn materialize_mount_entry_to_temp(
     relative_path: &str,
     suffix: &str,
 ) -> Result<PathBuf, EngineError> {
+    let source = mount_table.pin_copy_source(relative_path).map_err(io_err)?;
+    materialize_pinned_entry_to_temp(source, mount_table.code_dir(), suffix)
+}
+
+pub fn copy_pinned_entry_to_path(
+    source: shared::vfs::mount::PinnedCopySource,
+    dest_path: &Path,
+) -> Result<(), EngineError> {
+    source
+        .open()
+        .and_then(crate::source_copy::PreparedCopy::new)
+        .and_then(|source| source.copy_to_path(dest_path))
+        .map_err(io_err)
+}
+
+pub fn materialize_pinned_entry_to_temp(
+    source: shared::vfs::mount::PinnedCopySource,
+    mut dir: PathBuf,
+    suffix: &str,
+) -> Result<PathBuf, EngineError> {
     let started_at = Instant::now();
-    let mut dir = mount_table.code_dir();
+    let source = source
+        .open()
+        .and_then(crate::source_copy::PreparedCopy::new)
+        .map_err(io_err)?;
     let parent = dir
         .parent()
         .map(Path::to_path_buf)
@@ -1168,15 +1183,15 @@ pub fn materialize_mount_entry_to_temp(
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(err) => return Err(io_err(err)),
         };
-        drop(file);
+        let mut file = file;
 
-        match copy_mount_entry_to_path(mount_table, relative_path, &path) {
+        match source.copy_to_file(&mut file).map_err(io_err) {
             Ok(()) => {
                 trace_fs_edge(
                     "materialize_mount_entry",
                     &path.to_string_lossy(),
                     started_at,
-                    &format!("entry={relative_path} suffix={suffix}"),
+                    &format!("suffix={suffix}"),
                 );
                 return Ok(path);
             }
@@ -1186,7 +1201,7 @@ pub fn materialize_mount_entry_to_temp(
                     "materialize_mount_entry",
                     &path.to_string_lossy(),
                     started_at,
-                    &format!("entry={relative_path} suffix={suffix} err={err}"),
+                    &format!("suffix={suffix} err={err}"),
                 );
                 return Err(err);
             }
@@ -2320,13 +2335,14 @@ mod tests {
             None
         }
 
-        fn copy_to_writer(
+        fn open_copy_source(
             &self,
             _relative_path: &str,
-            writer: &mut dyn io::Write,
-        ) -> io::Result<()> {
+        ) -> io::Result<shared::vfs::mount::CopySource> {
             self.writer_calls.fetch_add(1, Ordering::SeqCst);
-            writer.write_all(&self.data)
+            Ok(shared::vfs::mount::CopySource::Stream(Box::new(
+                io::Cursor::new(self.data.clone()),
+            )))
         }
 
         fn is_file(&self, relative_path: &str) -> bool {
@@ -2335,7 +2351,7 @@ mod tests {
     }
 
     #[test]
-    fn copy_mount_entry_to_path_falls_back_to_writer_when_path_copy_is_unsupported() {
+    fn copy_mount_entry_to_path_opens_a_non_native_stream_source() {
         let dir = tmp_dir("mount_copy_fallback");
         let base = dir.join("base");
         let dest = dir.join("dest.txt");
