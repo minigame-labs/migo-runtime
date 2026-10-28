@@ -53,9 +53,8 @@ def declarations():
     sp = 'storage::buffer_url_tests::'
     hp = 'services::host_files::mutation_tests::'
     cases = [
-        ('buffer-truncates-a-collision', 'services/storage.rs',
-         '            .create_new(true)',
-         '            .create(true)\n            .truncate(true)',
+        ('buffer-truncates-a-collision', 'shared/vfs/unix.rs',
+         'libc::O_EXCL', '0',
          sp + 'exclusive_creation_skips_existing_objects_without_truncating_or_following_them'),
         ('buffer-unregistered-write', 'services/storage.rs',
          '        let _write = mutations.into_write()?;', '        let _write = mutations;',
@@ -64,12 +63,12 @@ def declarations():
          '        write(&mut file)', '        drop(_write);\n        write(&mut file)',
          sp + 'buffer_write_tracks_the_actual_open_object_and_releases_its_epoch'),
         ('buffer-leaks-a-partial-file', 'services/storage.rs',
-         '        let _ = fs::remove_file(&path);',
+         '        let _ = dir.remove_file(&name);',
          '        // Deliberately leave the failed URL visible.',
          sp + 'a_partial_write_error_removes_the_failed_url_and_releases_the_epoch'),
         ('buffer-hides-a-write-error', 'services/storage.rs',
-         '        return Err(error);\n    }\n    Ok(path)',
-         '        return Ok(path);\n    }\n    Ok(path)',
+         '        return Err(error);\n    }\n    Ok(name)',
+         '        return Ok(name);\n    }\n    Ok(name)',
          sp + 'a_partial_write_error_removes_the_failed_url_and_releases_the_epoch'),
         ('buffer-drops-the-last-byte', 'services/storage.rs',
          '|file| file.write_all(buffer),',
@@ -128,7 +127,8 @@ def controls(work, env):
         assert original.count(before) == 1, (name, 'anchor drift')
         path.write_text(original.replace(before, after))
         try:
-            binary = build(work, env, name, crate)
+            target_crate = 'services' if test.startswith('storage::') else 'shared'
+            binary = build(work, env, name, target_crate)
             log = work / f'{name}-test.log'
             status = g.run([str(binary), '--exact', test, '--nocapture'], log,
                            work / 'engine/crates' / crate, env, timeout=40)

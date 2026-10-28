@@ -117,10 +117,16 @@ mod storage_isolation_tests {
     /// An op state carrying the host app's directories, with or without a
     /// loaded game.
     fn op_state_with(game: Option<GamePaths>) -> OpState {
+        let mut state = OpState::new(None);
+        state.put(host_state_with(game));
+        state
+    }
+
+    fn host_state_with(game: Option<GamePaths>) -> HostOpState {
         let (render_tx, _render_rx) = CommandSender::new();
         let (host_tx, _critical_host_tx, _host_rx) = shared::host_channel::channel(1);
 
-        let host = HostOpState {
+        HostOpState {
             callback_ids: std::sync::Arc::new(shared::callback_id::CallbackIdAllocator::default()),
             runtime_generation: 1,
             id: 1,
@@ -147,11 +153,56 @@ mod storage_isolation_tests {
             context_lost: Arc::new(shared::op_state::ContextLostState::default()),
             code_signing_enabled: false,
             gpu_caps: GpuCaps::new(),
-        };
+        }
+    }
 
-        let mut state = OpState::new(None);
-        state.put(host);
-        state
+    #[test]
+    fn actual_buffer_url_ops_use_the_loaded_vfs_and_return_virtual_paths() {
+        let executor = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _guard = executor.enter();
+        let root = std::env::temp_dir().join(format!("migo-v8-buffer-url-{}", std::process::id()));
+        let paths = GamePaths::new(root.join("files"), root.join("cache"), "game", 1).unwrap();
+        paths.ensure_directories().unwrap();
+        std::fs::create_dir_all(paths.code_dir()).unwrap();
+        let mut host = host_state_with(Some(paths.clone()));
+        host.vfs = Some(Arc::new(
+            shared::vfs::VirtualFS::try_from_game_paths(&paths).unwrap(),
+        ));
+        deno_core::extension!(
+            buffer_url_actual_ops,
+            ops = [
+                crate::storage::op_create_buffer_url,
+                crate::storage::op_revoke_buffer_url
+            ]
+        );
+        let mut runtime = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
+            extensions: vec![buffer_url_actual_ops::init()],
+            ..Default::default()
+        });
+        runtime.op_state().borrow_mut().put(host);
+        runtime.execute_script("create-buffer-url", r#"
+            globalThis.issued = Deno.core.ops.op_create_buffer_url(new Uint8Array([2,4,8]));
+            if (!issued.startsWith('/cache/buffer_urls/buffer-')) throw new Error('host path escaped');
+        "#).unwrap();
+        let directory = paths.sandbox_cache_dir().join("buffer_urls");
+        let files: Vec<_> = std::fs::read_dir(&directory)
+            .unwrap()
+            .map(|p| p.unwrap().path())
+            .collect();
+        assert_eq!(files.len(), 1);
+        assert_eq!(std::fs::read(&files[0]).unwrap(), [2, 4, 8]);
+        runtime
+            .execute_script(
+                "revoke-buffer-url",
+                "Deno.core.ops.op_revoke_buffer_url(issued);",
+            )
+            .unwrap();
+        assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
+        drop(runtime);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// The regression itself: two loaded games must resolve to different files.

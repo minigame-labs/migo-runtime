@@ -204,12 +204,13 @@ pub fn op_create_buffer_url(
     state: &mut OpState,
     #[buffer] buffer: JsBuffer,
 ) -> Result<String, JsErrorBox> {
-    storage::create_buffer_url(game_paths(state).as_deref(), &buffer).map_err(js_err)
+    storage::create_buffer_url(state.borrow::<HostOpState>().vfs.as_deref(), &buffer)
+        .map_err(js_err)
 }
 
 #[op2(fast)]
 pub fn op_revoke_buffer_url(state: &mut OpState, #[string] url: &str) -> Result<(), JsErrorBox> {
-    storage::revoke_buffer_url(game_paths(state).as_deref(), url).map_err(js_err)
+    storage::revoke_buffer_url(state.borrow::<HostOpState>().vfs.as_deref(), url).map_err(js_err)
 }
 
 // ==================== Extension ====================

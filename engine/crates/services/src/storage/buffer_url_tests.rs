@@ -11,6 +11,17 @@ impl Scratch {
         fs::create_dir(&path).unwrap();
         Self(path)
     }
+    pub(super) fn vfs(&self) -> VirtualFS {
+        VirtualFS::new(
+            self.0.join("code"),
+            self.0.join("user"),
+            self.0.clone(),
+            self.0.join("tmp"),
+        )
+    }
+    fn directory(&self) -> WriteDirectory {
+        self.vfs().write_directory("/cache", false).unwrap()
+    }
 }
 impl Drop for Scratch {
     fn drop(&mut self) {
@@ -33,13 +44,13 @@ fn exclusive_creation_skips_existing_objects_without_truncating_or_following_the
         names.insert(1, "link");
     }
     let path = create_buffer_url_in(
-        &root.0,
+        &root.directory(),
         || Ok(names.pop_front().unwrap().to_owned()),
         |file| file.write_all(b"new payload"),
     )
     .unwrap();
-    assert_eq!(path, root.0.join("new"));
-    assert_eq!(fs::read(path).unwrap(), b"new payload");
+    assert_eq!(path, "new");
+    assert_eq!(fs::read(root.0.join(path)).unwrap(), b"new payload");
     assert_eq!(fs::read(occupied).unwrap(), b"another object");
     assert!(before.verify().is_ok());
 }
@@ -49,7 +60,7 @@ fn buffer_write_tracks_the_actual_open_object_and_releases_its_epoch() {
     let root = Scratch::new();
     let mut held = None;
     let path = create_buffer_url_in(
-        &root.0,
+        &root.directory(),
         || Ok("new".to_owned()),
         |file| {
             let reader = File::open(root.0.join("new"))?;
@@ -68,7 +79,7 @@ fn buffer_write_tracks_the_actual_open_object_and_releases_its_epoch() {
     .unwrap();
     let (_reader, mutations) = held.unwrap();
     assert!(mutations.read_epoch().is_ok());
-    assert_eq!(fs::read(path).unwrap(), b"first second");
+    assert_eq!(fs::read(root.0.join(path)).unwrap(), b"first second");
 }
 
 #[test]
@@ -76,7 +87,7 @@ fn a_partial_write_error_removes_the_failed_url_and_releases_the_epoch() {
     let root = Scratch::new();
     let mut held = None;
     let error = create_buffer_url_in(
-        &root.0,
+        &root.directory(),
         || Ok("failed".to_owned()),
         |file| {
             let reader = File::open(root.0.join("failed"))?;
@@ -102,16 +113,22 @@ fn concurrent_public_buffer_urls_keep_complete_independent_payloads() {
     let root = Scratch::new();
     let paths =
         Arc::new(GamePaths::new(root.0.join("files"), root.0.join("cache"), "game", 7).unwrap());
+    paths.ensure_directories().unwrap();
+    fs::create_dir_all(paths.code_dir()).unwrap();
+    let vfs = Arc::new(VirtualFS::try_from_game_paths(&paths).unwrap());
     let barrier = Arc::new(Barrier::new(8));
     let workers: Vec<_> = (0..8_u8)
         .map(|byte| {
-            let paths = paths.clone();
+            let vfs = vfs.clone();
             let barrier = barrier.clone();
             thread::spawn(move || {
                 let payload = vec![byte; 128 * 1024 + byte as usize];
                 barrier.wait();
-                let path = create_buffer_url(Some(&paths), &payload).unwrap();
-                assert_eq!(fs::read(&path).unwrap(), payload);
+                let path = create_buffer_url(Some(&vfs), &payload).unwrap();
+                let mut file = vfs.open_regular_for_read(&path).unwrap();
+                let mut actual = Vec::new();
+                std::io::Read::read_to_end(&mut file, &mut actual).unwrap();
+                assert_eq!(actual, payload);
                 (path, payload)
             })
         })
@@ -120,8 +137,11 @@ fn concurrent_public_buffer_urls_keep_complete_independent_payloads() {
     let names: std::collections::HashSet<_> = values.iter().map(|(path, _)| path).collect();
     assert_eq!(names.len(), values.len());
     for (path, payload) in values {
-        assert_eq!(fs::read(&path).unwrap(), payload);
-        revoke_buffer_url(Some(&paths), &path).unwrap();
-        assert!(!Path::new(&path).exists());
+        let real = paths
+            .sandbox_cache_dir()
+            .join(path.strip_prefix("/cache/").unwrap());
+        assert_eq!(fs::read(&real).unwrap(), payload);
+        revoke_buffer_url(Some(&vfs), &path).unwrap();
+        assert!(!real.exists());
     }
 }

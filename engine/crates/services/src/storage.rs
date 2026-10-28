@@ -36,7 +36,7 @@ use migo_io::storage_ops::{self, StorageInfo};
 use migo_io::task::{IoRequest, PriorityClass, RequestKind};
 use parking_lot::Mutex;
 use shared::error::{EngineError, ErrorCode};
-use shared::vfs::GamePaths;
+use shared::vfs::{GamePaths, VirtualFS, write_directory::WriteDirectory};
 
 use crate::error::{ServiceError, detail_or_message, message_and_detail};
 
@@ -49,6 +49,7 @@ pub const STORAGE_DIR: &str = "kv_storage";
 
 /// Buffer URL directory name under the game's sandbox cache directory.
 pub const BUFFER_URL_DIR: &str = "buffer_urls";
+const BUFFER_URL_ROOT: &str = "/cache/buffer_urls";
 
 static NEXT_BUFFER_URL: AtomicU64 = AtomicU64::new(0);
 
@@ -421,16 +422,16 @@ pub async fn info(
 
 // ---- Buffer URLs ----
 
-/// `URL.createObjectURL(buffer)`: write the bytes to the game's scratch space
-/// and answer with the path.
-pub fn create_buffer_url(
-    game_paths: Option<&GamePaths>,
-    buffer: &[u8],
-) -> Result<String, ServiceError> {
-    let dir = buffer_url_dir(game_paths).map_err(sync_error)?;
-    fs::create_dir_all(&dir)
-        .map_err(|e| ServiceError::generic(format!("storage: mkdir fail {e}")))?;
-    let path = create_buffer_url_in(
+/// `URL.createObjectURL(buffer)`: write beneath the captured VFS cache root and
+/// return an opaque virtual path, without exposing/reopening a host pathname.
+pub fn create_buffer_url(vfs: Option<&VirtualFS>, buffer: &[u8]) -> Result<String, ServiceError> {
+    let vfs = vfs.ok_or_else(|| {
+        ServiceError::generic("buffer URLs are unavailable before a game is loaded")
+    })?;
+    let dir = vfs
+        .write_directory(BUFFER_URL_ROOT, true)
+        .map_err(|e| ServiceError::generic(format!("createBufferURL:fail {e}")))?;
+    let name = create_buffer_url_in(
         &dir,
         || {
             let id = NEXT_BUFFER_URL
@@ -441,22 +442,18 @@ pub fn create_buffer_url(
         |file| file.write_all(buffer),
     )
     .map_err(|e| ServiceError::generic(format!("createBufferURL:fail {e}")))?;
-    Ok(path.to_string_lossy().into_owned())
+    Ok(format!("{BUFFER_URL_ROOT}/{name}"))
 }
 
 fn create_buffer_url_in(
-    dir: &Path,
+    dir: &WriteDirectory,
     mut next_name: impl FnMut() -> io::Result<String>,
     write: impl FnOnce(&mut fs::File) -> io::Result<()>,
-) -> io::Result<PathBuf> {
-    let (mut file, path) = loop {
-        let path = dir.join(next_name()?);
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
-            Ok(file) => break (file, path),
+) -> io::Result<String> {
+    let (mut file, name) = loop {
+        let name = next_name()?;
+        match dir.create_new(&name) {
+            Ok(file) => break (file, name),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error),
         }
@@ -469,25 +466,38 @@ fn create_buffer_url_in(
     })();
     if let Err(error) = result {
         drop(file);
-        let _ = fs::remove_file(&path);
+        let _ = dir.remove_file(&name);
         return Err(error);
     }
-    Ok(path)
+    Ok(name)
 }
 
 /// `URL.revokeObjectURL(url)`. Deletes only inside the game's buffer URL
 /// directory; anything else is not this game's to delete, and is ignored.
-pub fn revoke_buffer_url(game_paths: Option<&GamePaths>, url: &str) -> Result<(), ServiceError> {
-    let dir = buffer_url_dir(game_paths).map_err(sync_error)?;
-    let path = Path::new(url);
-    if path.starts_with(&dir) && path.is_file() {
-        let _ = fs::remove_file(path);
+pub fn revoke_buffer_url(vfs: Option<&VirtualFS>, url: &str) -> Result<(), ServiceError> {
+    let vfs = vfs.ok_or_else(|| {
+        ServiceError::generic("buffer URLs are unavailable before a game is loaded")
+    })?;
+    let Some(name) = url
+        .strip_prefix(BUFFER_URL_ROOT)
+        .and_then(|tail| tail.strip_prefix('/'))
+    else {
+        return Ok(());
+    };
+    if let Ok(dir) = vfs.write_directory(BUFFER_URL_ROOT, false) {
+        // The capability accepts one portable child name, so traversal, nested
+        // paths and Windows aliases fail before native unlink. Missing or
+        // replaced directories are a harmless best-effort revocation failure.
+        let _ = dir.remove_file(name);
     }
     Ok(())
 }
 
 #[cfg(test)]
 mod buffer_url_tests;
+
+#[cfg(test)]
+mod buffer_url_namespace_tests;
 
 #[cfg(test)]
 mod tests {

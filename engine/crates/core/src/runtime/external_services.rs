@@ -787,8 +787,11 @@ impl ServiceContext {
             }
             id::op_create_buffer_url => {
                 let [buffer] = exactly(op, args)?;
-                migo_services::storage::create_buffer_url(paths, &bytes(op, 0, buffer)?)
-                    .map(OwnedValue::Str)
+                migo_services::storage::create_buffer_url(
+                    self.fs_env()?.vfs.as_deref(),
+                    &bytes(op, 0, buffer)?,
+                )
+                .map(OwnedValue::Str)
             }
             id::op_get_image_cache_stats => {
                 let [] = exactly(op, args)?;
@@ -799,8 +802,11 @@ impl ServiceContext {
             }
             id::op_revoke_buffer_url => {
                 let [url] = exactly(op, args)?;
-                migo_services::storage::revoke_buffer_url(paths, &string(op, 0, url)?)
-                    .map(|()| OwnedValue::Null)
+                migo_services::storage::revoke_buffer_url(
+                    self.fs_env()?.vfs.as_deref(),
+                    &string(op, 0, url)?,
+                )
+                .map(|()| OwnedValue::Null)
             }
             // What content reads about the device: the host's last report,
             // through the same services the embedded ops read.
@@ -2960,6 +2966,43 @@ mod tests {
             .expect("get");
         assert_eq!(read, OwnedValue::Str("v".into()));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn buffer_urls_answer_through_the_mounted_vfs_capability() {
+        let root =
+            std::env::temp_dir().join(format!("migo-external-buffer-url-{}", std::process::id()));
+        let files = root.join("files");
+        let cache = root.join("cache");
+        let paths = shared::vfs::GamePaths::new(&files, &cache, "g", 1).unwrap();
+        std::fs::create_dir_all(paths.code_dir()).unwrap();
+        let context = ServiceContext::new(files, cache);
+        context.bind_session(1);
+        assert!(
+            context
+                .call_sync(id::op_create_buffer_url, vec![OwnedValue::Bytes(vec![1])])
+                .is_err()
+        );
+        context.load_content("g", "game.js").unwrap();
+        let value = context
+            .call_sync(
+                id::op_create_buffer_url,
+                vec![OwnedValue::Bytes(vec![2, 4, 8])],
+            )
+            .unwrap();
+        let OwnedValue::Str(url) = value else {
+            panic!("buffer URL must be a string")
+        };
+        assert!(url.starts_with("/cache/buffer_urls/buffer-"));
+        let path = paths
+            .sandbox_cache_dir()
+            .join(url.strip_prefix("/cache/").unwrap());
+        assert_eq!(std::fs::read(&path).unwrap(), [2, 4, 8]);
+        context
+            .call_sync(id::op_revoke_buffer_url, vec![OwnedValue::Str(url)])
+            .unwrap();
+        assert!(!path.exists());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// The file system and `require` answer through the same sandbox the
