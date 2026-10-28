@@ -10,7 +10,7 @@ import argparse,importlib.util,json,os,re,shutil
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[2]
 spec=importlib.util.spec_from_file_location('package_cpu_io',ROOT/'scripts/testing/check_audio_cpu_admission.py');g=importlib.util.module_from_spec(spec);spec.loader.exec_module(g)
-def main(work,target):
+def prepare(work,target,extra_inputs=()):
     assert not work.exists();work.mkdir(parents=True);package=work/'probe';package.mkdir();original=ROOT/'engine/crates/io'
     shutil.copytree(original/'src',package/'src');shutil.copytree(original/'tests/fixtures',package/'tests/fixtures')
     root_manifest=(ROOT/'engine/Cargo.toml').read_text();manifest=g.rebase((original/'Cargo.toml').read_text(),original)
@@ -20,6 +20,7 @@ def main(work,target):
     (package/'Cargo.toml').write_text(manifest);(package/'Cargo.lock').write_bytes((ROOT/'engine/Cargo.lock').read_bytes())
     inputs=[Path(__file__).resolve(),ROOT/'scripts/testing/check_audio_cpu_admission.py',ROOT/'engine/Cargo.toml',ROOT/'engine/Cargo.lock',original/'Cargo.toml',ROOT/'engine/crates/shared/Cargo.toml']
     inputs+=[p for tree in [original/'src',original/'tests/fixtures',ROOT/'engine/crates/shared/src']for p in tree.rglob('*')if p.is_file()]
+    inputs.extend(extra_inputs)
     frozen={str(p.relative_to(ROOT)):g.sha(p)for p in inputs};(work/'source-inputs.json').write_text(json.dumps(frozen,indent=2)+'\n')
     for rel in frozen:
         to=work/'source-inputs'/rel;to.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(ROOT/rel,to)
@@ -27,6 +28,11 @@ def main(work,target):
     env=os.environ.copy();env.update(RUSTUP_TOOLCHAIN='1.95.0',CARGO_TARGET_DIR=str(target),CARGO_NET_OFFLINE='true',CC='/usr/bin/clang',CXX='/usr/bin/clang++')
     for k in ['ANDROID_NDK','ANDROID_NDK_HOME']:env.pop(k,None)
     assert g.run(['cargo','metadata','--offline','--format-version','1'],work/'metadata.jsonl',package,env)==0
+    return env,frozen,retained
+
+def main(work,target):
+    env,frozen,retained=prepare(work,target)
+    package=work/'probe'
     binary=g.build(package,work,env,'positive');assert g.run([str(binary),'--test-threads=1'],work/'positive.log',package,env)==0
     positive=(work/'positive.log').read_text();match=re.search(r'test result: ok\. (\d+) passed; 0 failed; (\d+) ignored;',positive);assert match;assert positive.count('test read_at_package::tests::')==5
     before='''        let lease = pools

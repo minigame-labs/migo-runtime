@@ -680,4 +680,4 @@ impl<D: Decoder + M4aSourceDecoder> transport::HttpSource<D> for CoalescedFixtur
 
 #[cfg(feature = "m4a-file-probe")]
 #[path = "isomp4_file_contracts.rs"]
-mod local;
+pub(crate) mod local;

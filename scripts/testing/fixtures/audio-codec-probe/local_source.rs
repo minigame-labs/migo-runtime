@@ -49,12 +49,14 @@ impl Drop for ReadActive {
 enum Backing {
     File(ReadAtFile),
     Package(ReadAtPackage),
+    Spool(migo_io::spool::SealedSpool),
 }
 impl Backing {
     fn len(&self) -> u64 {
         match self {
             Self::File(v) => v.len(),
             Self::Package(v) => v.len(),
+            Self::Spool(v) => v.reader().len(),
         }
     }
     fn is_empty(&self) -> bool {
@@ -63,12 +65,14 @@ impl Backing {
     fn kind(&self) -> PoolKind {
         match self {
             Self::File(_) => PoolKind::Fs,
+            Self::Spool(_) => PoolKind::Fs,
             Self::Package(_) => PoolKind::Pack,
         }
     }
     fn media_bytes(&self) -> u64 {
         match self {
             Self::File(_) => FILE_CHUNK_BYTES as u64,
+            Self::Spool(_) => FILE_CHUNK_BYTES as u64,
             Self::Package(_) => 0,
         }
     }
@@ -76,12 +80,14 @@ impl Backing {
         match self {
             Self::File(v) => v.read_exact_at(offset, len),
             Self::Package(v) => v.read_exact_at(offset, len),
+            Self::Spool(v) => v.reader().read_exact_at(offset, len),
         }
     }
     fn chunk_at(&self, offset: u64, len: usize) -> std::io::Result<FileChunk> {
         match self {
             Self::File(v) => v.chunk_at(offset, len),
             Self::Package(v) => v.chunk_at(offset, len),
+            Self::Spool(v) => v.reader().chunk_at(offset, len),
         }
     }
 }
@@ -121,6 +127,19 @@ impl FileReader {
             scheduler,
             Instant::now() + RESPONSE_HEADER_TIMEOUT,
             move || Ok(file),
+        )
+        .await
+    }
+    pub async fn open_spool(
+        spool: migo_io::spool::SealedSpool,
+        scheduler: &migo_io::scheduler::IoScheduler,
+    ) -> EngineResult<Self> {
+        Self::build_source(
+            scheduler,
+            PoolKind::Fs,
+            FILE_CHUNK_BYTES as u64,
+            Instant::now() + RESPONSE_HEADER_TIMEOUT,
+            move || Ok(Backing::Spool(spool)),
         )
         .await
     }

@@ -8,7 +8,7 @@ use std::fs::File;
 #[path = "isomp4_directory_contracts.rs"]
 mod directory;
 #[path = "isomp4_package_contracts.rs"]
-mod package;
+pub(crate) mod package;
 
 fn vfs() -> Arc<VirtualFS> {
     let code = std::path::PathBuf::from(std::env::var_os("W09_M4A_FIXTURES").unwrap());
