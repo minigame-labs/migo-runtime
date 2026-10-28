@@ -98,7 +98,7 @@ def controls() -> list[tuple[str, str, str, str]]:
     ]
 
 
-def main(output: Path, target: Path) -> None:
+def prepare(output: Path, target: Path, extra_inputs=()):
     assert not output.exists(), 'use a new evidence directory'
     output.mkdir(parents=True)
     audio = ROOT / 'engine/crates/audio'
@@ -116,7 +116,7 @@ def main(output: Path, target: Path) -> None:
     (package / 'Cargo.toml').write_text(manifest)
     (package / 'Cargo.lock').write_bytes((ROOT / 'engine/Cargo.lock').read_bytes())
     inputs = {ROOT / 'engine/Cargo.toml', ROOT / 'engine/Cargo.lock', Path(__file__).resolve(),
-              Path(common.__file__).resolve()}
+              Path(common.__file__).resolve(), *extra_inputs}
     for name in ['audio', 'io', 'services', 'shared']:
         crate = ROOT / 'engine/crates' / name
         inputs.update(crate.rglob('*.rs'))
@@ -144,6 +144,12 @@ def main(output: Path, target: Path) -> None:
     assert set(map(key, selected)) <= set(map(key, locked)), 'existing dependency version/source drift'
     assert common.run(['cargo', 'check', '--lib', '--offline', '--locked'],
                       output / 'normal-library-check.log', package, env) == 0
+    return package, env, frozen
+
+
+def main(output: Path, target: Path) -> None:
+    package, env, frozen = prepare(output, target)
+    audio = ROOT / 'engine/crates/audio'
     source = package / 'src/inner_audio.rs'
     original = source.read_text()
     for name, before, _, _ in controls():

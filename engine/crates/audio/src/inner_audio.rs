@@ -64,6 +64,8 @@ pub struct InnerAudioSharedState {
     autoplay: AtomicBool,
     /// Whether audio data is loaded
     loaded: AtomicBool,
+    /// Zero is retired; accepted loads use monotonically increasing generations.
+    source_generation: AtomicU64,
 }
 
 impl InnerAudioSharedState {
@@ -80,6 +82,7 @@ impl InnerAudioSharedState {
             channels: AtomicU32::new(0),
             autoplay: AtomicBool::new(false),
             loaded: AtomicBool::new(false),
+            source_generation: AtomicU64::new(0),
         }
     }
 
@@ -247,6 +250,46 @@ impl InnerAudioSharedState {
         let duration = self.duration_frames();
         let clamped = frame.min(duration);
         self.request_seek(clamped);
+    }
+
+    pub(crate) fn begin_source(self: &Arc<Self>) -> EngineResult<InnerAudioLoadToken> {
+        let previous = self
+            .source_generation
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |generation| {
+                generation.checked_add(1)
+            })
+            .map_err(|_| {
+                EngineError::from_detail(
+                    ErrorCode::InputSaturated,
+                    "InnerAudio source generation exhausted",
+                )
+            })?;
+        Ok(InnerAudioLoadToken {
+            shared: Arc::clone(self),
+            generation: previous + 1,
+        })
+    }
+}
+
+/// Reuses the player's existing atomic state allocation. Keeping a token alive
+/// retains no audio backing, stream or player, and cannot keep a destroyed
+/// source valid. Both allocation identity and generation matter when IDs recur.
+pub(crate) struct InnerAudioLoadToken {
+    shared: Arc<InnerAudioSharedState>,
+    generation: u64,
+}
+
+impl InnerAudioLoadToken {
+    pub(crate) fn is_current(&self) -> bool {
+        self.shared.source_generation.load(Ordering::Acquire) == self.generation
+    }
+
+    pub(crate) fn matches(&self, shared: &Arc<InnerAudioSharedState>) -> bool {
+        Arc::ptr_eq(&self.shared, shared) && self.is_current()
+    }
+
+    pub(crate) fn cancelled_error() -> EngineError {
+        EngineError::from_detail(ErrorCode::Cancelled, "InnerAudio source load superseded")
     }
 }
 
@@ -442,8 +485,48 @@ impl InnerAudioPlayer {
     }
 
     /// Load decoded audio data (full load mode, owned).
+    #[cfg(test)]
     pub fn load_audio(&mut self, audio: DecodedAudio) -> EngineResult<()> {
+        let load = self.begin_load()?;
+        self.complete_load(load, audio)
+    }
+
+    /// Retire a source before any asynchronous preparation starts, including a
+    /// preparation that later fails. Never replay old PCM, seeks or events while
+    /// a new load is pending. Release storage before returning its byte permit.
+    pub(crate) fn begin_load(&mut self) -> EngineResult<InnerAudioLoadToken> {
+        let load = self.shared.begin_source()?;
         self.cancel_stream();
+        self.source = AudioSource::Owned(Vec::new());
+        self.stream_permit = None;
+        self.position = 0;
+        self.position_phase = 0;
+        self.frames_since_time_update = 0;
+        self.shared.take_seek_target();
+        self.shared.set_position_frames(0);
+        self.shared.set_duration_frames(0);
+        self.shared.set_sample_rate(0);
+        self.shared.set_channels(0);
+        self.shared.set_loaded(false);
+        self.shared.set_state(PlaybackState::Stopped);
+        self.stream_complete = false;
+        self.stream_base_frames = 0;
+        self.stream_windowed = false;
+        self.stream_canplay_sent = false;
+        self.waiting_notified = false;
+        self.loading_url = None;
+        self.pending_events.clear();
+        Ok(load)
+    }
+
+    pub(crate) fn complete_load(
+        &mut self,
+        load: InnerAudioLoadToken,
+        audio: DecodedAudio,
+    ) -> EngineResult<()> {
+        if !load.matches(&self.shared) || self.shared.is_loaded() {
+            return Err(InnerAudioLoadToken::cancelled_error());
+        }
         let bytes = crate::limits::pcm_bytes(audio.samples.capacity())?;
         let permit = self.aggregate.try_reserve(bytes, "InnerAudio")?;
         let frame_count = audio.frame_count();
@@ -471,8 +554,14 @@ impl InnerAudioPlayer {
     }
 
     /// Load cached audio data (shared reference, no copy).
-    pub fn load_cached(&mut self, audio: Arc<CachedAudio>) {
-        self.cancel_stream();
+    pub(crate) fn complete_cached_load(
+        &mut self,
+        load: InnerAudioLoadToken,
+        audio: Arc<CachedAudio>,
+    ) -> EngineResult<()> {
+        if !load.matches(&self.shared) || self.shared.is_loaded() {
+            return Err(InnerAudioLoadToken::cancelled_error());
+        }
         let frame_count = audio.frame_count();
         self.shared.set_sample_rate(audio.sample_rate);
         self.shared.set_channels(audio.channels);
@@ -494,19 +583,38 @@ impl InnerAudioPlayer {
             self.shared.set_state(PlaybackState::Playing);
             self.push_event(InnerAudioEventType::Play);
         }
+        Ok(())
     }
 
     /// Start streaming playback from URL.
+    #[cfg(test)]
     pub fn start_streaming(
         &mut self,
         url: String,
         rx: Receiver<StreamMsg>,
         state: Arc<StreamingState>,
     ) -> EngineResult<()> {
-        self.cancel_stream();
+        let load = self.begin_load().inspect_err(|_| state.cancel())?;
+        self.complete_stream_load(load, url, rx, state)
+    }
+
+    pub(crate) fn complete_stream_load(
+        &mut self,
+        load: InnerAudioLoadToken,
+        url: String,
+        rx: Receiver<StreamMsg>,
+        state: Arc<StreamingState>,
+    ) -> EngineResult<()> {
+        if !load.matches(&self.shared) || self.shared.is_loaded() {
+            state.cancel();
+            return Err(InnerAudioLoadToken::cancelled_error());
+        }
         const ESTIMATED_CAPACITY: usize = 44_100 * 2 * 5;
         let initial_bytes = crate::limits::pcm_bytes(ESTIMATED_CAPACITY)?;
-        let permit = self.aggregate.try_reserve(initial_bytes, "InnerAudio")?;
+        let permit = self
+            .aggregate
+            .try_reserve(initial_bytes, "InnerAudio")
+            .inspect_err(|_| state.cancel())?;
         self.source = AudioSource::Owned(Vec::with_capacity(ESTIMATED_CAPACITY));
         self.stream_permit = Some(permit);
         self.position = 0;
@@ -1085,6 +1193,7 @@ impl InnerAudioPlayer {
 
 impl Drop for InnerAudioPlayer {
     fn drop(&mut self) {
+        self.shared.source_generation.store(0, Ordering::Release);
         // Cancel any in-flight streaming download so its background task stops
         // promptly instead of downloading/decoding into a dropped channel
         // (happens on DestroyInnerAudio, which removes the player from the map).
@@ -1096,6 +1205,27 @@ impl Drop for InnerAudioPlayer {
 mod tests {
     use super::*;
     use crate::streaming::{StreamMsg, StreamingState};
+
+    #[test]
+    fn source_generation_exhaustion_never_wraps_or_revalidates_a_token() {
+        let mut player = InnerAudioPlayer::new(1, 1);
+        player
+            .shared
+            .source_generation
+            .store(u64::MAX - 1, Ordering::Release);
+        let last = player.begin_load().unwrap();
+        assert_eq!(last.generation, u64::MAX);
+        assert!(last.is_current());
+        let error = player.begin_load().err().expect("generation exhaustion");
+        assert_eq!(error.code, ErrorCode::InputSaturated);
+        assert!(last.is_current());
+        assert_eq!(
+            player.shared.source_generation.load(Ordering::Acquire),
+            u64::MAX
+        );
+        drop(player);
+        assert!(!last.is_current());
+    }
 
     fn send_pcm(tx: &tokio::sync::mpsc::Sender<StreamMsg>, samples: &[f32]) {
         let mut pool = crate::streaming::PcmPool::new();
