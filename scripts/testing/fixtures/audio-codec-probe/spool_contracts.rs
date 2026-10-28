@@ -24,16 +24,25 @@ use tokio::{
     time::Instant,
 };
 #[derive(Default)]
-struct Reply {
-    chunked: bool,
-    tag: bool,
+pub(crate) struct Reply {
+    pub chunked: bool,
+    pub tag: bool,
     hold: Option<usize>,
     cut: Option<usize>,
 }
-struct Server {
-    url: String,
+impl Reply {
+    pub(crate) fn framing(chunked: bool, tag: bool) -> Self {
+        Self {
+            chunked,
+            tag,
+            ..Self::default()
+        }
+    }
+}
+pub(crate) struct Server {
+    pub url: String,
     task: tokio::task::JoinHandle<()>,
-    requests: Arc<AtomicUsize>,
+    pub requests: Arc<AtomicUsize>,
     held: Arc<Notify>,
     release: Arc<Notify>,
 }
@@ -42,7 +51,7 @@ impl Drop for Server {
         self.task.abort();
     }
 }
-async fn server(data: Vec<u8>, reply: Reply) -> Server {
+pub(crate) async fn server(data: Vec<u8>, reply: Reply) -> Server {
     let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
         .await
         .unwrap();
@@ -115,7 +124,7 @@ async fn server(data: Vec<u8>, reply: Reply) -> Server {
         release,
     }
 }
-fn client() -> crate::network::http::HttpClient {
+pub(crate) fn client() -> crate::network::http::HttpClient {
     crate::network::http::HttpClientBuilder::new(
         "spool-contract",
         false,
@@ -134,7 +143,7 @@ fn client() -> crate::network::http::HttpClient {
 fn data(name: &str) -> Vec<u8> {
     std::fs::read(PathBuf::from(std::env::var_os("W09_M4A_FIXTURES").unwrap()).join(name)).unwrap()
 }
-fn limits(name: &str, max_bytes: u64) -> Limits {
+pub(crate) fn limits(name: &str, max_bytes: u64) -> Limits {
     Limits {
         dir: PathBuf::from(std::env::var_os("W09_M4A_FIXTURES").unwrap())
             .parent()

@@ -301,21 +301,10 @@ async fn finish_response(
     let Some(sealed) = while_active(tx, state, session.seal()).await else {
         return Ok(None);
     };
-    let Some(reader) = while_active(
-        tx,
-        state,
-        tokio::time::timeout_at(deadline, FileReader::open_spool(sealed?, scheduler)),
-    )
-    .await
-    else {
+    if state.is_cancelled() || tx.is_closed() {
         return Ok(None);
-    };
-    if Instant::now() >= deadline {
-        return Err(error("late spool admission"));
     }
-    reader
-        .map_err(|_| error("spool admission deadline exceeded"))?
-        .map(Some)
+    FileReader::open_spool(sealed?, scheduler, deadline).map(Some)
 }
 /// Network policy, redirect accounting and HTTP body errors remain those of
 /// the shared client. This is an explicit pre-PCM spool selection, not a retry
@@ -487,6 +476,50 @@ mod tests {
         );
     }
     #[tokio::test]
+    async fn sealed_admission_keeps_the_deadline_owner_and_needs_no_io_credit() {
+        let owner = IoScheduler::new(0);
+        async fn sealed(owner: &IoScheduler, name: &str) -> SealedSpool {
+            let mut writer = Session::create(owner, limits(name), Some(3)).await.unwrap();
+            writer
+                .append(BodyChunk::new(Bytes::from_static(b"xyz"), owner.pools()).unwrap())
+                .await
+                .unwrap();
+            writer.seal().await.unwrap()
+        }
+        let spool = sealed(&owner, "admission").await;
+        let expired = sealed(&owner, "admission-expired").await;
+        let closed = sealed(&owner, "admission-closed").await;
+        let available = match owner.pools().reserve_bytes(u64::MAX) {
+            Err(migo_io::pools::ByteAdmitError::BytesExhausted { available, .. }) => available,
+            _ => panic!("expected byte probe"),
+        };
+        let credit = owner.pools().reserve_bytes(available).unwrap();
+        let mut reader =
+            FileReader::open_spool(spool, &owner, Instant::now() + Duration::from_secs(1))
+                .expect("sealed admission requested transient IO credit");
+        assert_eq!(reader.len(), 3);
+        assert!(
+            FileReader::open_spool(expired, &owner, Instant::now()).is_err(),
+            "sealed admission renewed its absolute deadline"
+        );
+        drop(credit);
+        reader.chunk_bytes = 1;
+        let a = reader.chunk().await.unwrap().unwrap();
+        let b = reader.chunk().await.unwrap().unwrap();
+        assert_eq!((a.as_ref(), b.as_ref()), (b"x".as_slice(), b"y".as_slice()));
+        assert!(
+            reader.chunk().await.is_err(),
+            "sealed admission replaced the two-slot media pool"
+        );
+        drop((reader, a, b));
+        owner.domain().close_all();
+        assert!(
+            FileReader::open_spool(closed, &owner, Instant::now() + Duration::from_secs(1))
+                .is_err(),
+            "sealed admission accepted a closed domain"
+        );
+    }
+    #[tokio::test]
     async fn spool_setup_write_seal_and_media_do_not_use_the_pack_class() {
         let owner = IoScheduler::new(0);
         let _release =
@@ -500,7 +533,9 @@ mod tests {
                 .await
                 .unwrap();
             let spool = writer.seal().await.unwrap();
-            let mut reader = FileReader::open_spool(spool, &owner).await.unwrap();
+            let mut reader =
+                FileReader::open_spool(spool, &owner, Instant::now() + Duration::from_secs(1))
+                    .unwrap();
             assert_eq!(reader.chunk().await.unwrap().unwrap().as_ref(), b"x");
         };
         tokio::time::timeout(Duration::from_secs(1), operation)

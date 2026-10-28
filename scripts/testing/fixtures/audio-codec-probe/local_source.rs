@@ -130,18 +130,21 @@ impl FileReader {
         )
         .await
     }
-    pub async fn open_spool(
+    /// Sealing already captured metadata on Fs. Admission only moves the owner;
+    /// no second disk operation, worker hop or transient media credit is needed.
+    pub fn open_spool(
         spool: migo_io::spool::SealedSpool,
         scheduler: &migo_io::scheduler::IoScheduler,
+        deadline: Instant,
     ) -> EngineResult<Self> {
-        Self::build_source(
-            scheduler,
-            PoolKind::Fs,
-            FILE_CHUNK_BYTES as u64,
-            Instant::now() + RESPONSE_HEADER_TIMEOUT,
-            move || Ok(Backing::Spool(spool)),
-        )
-        .await
+        scheduler.ensure_open().map_err(error)?;
+        check_deadline(deadline).map_err(error)?;
+        Ok(Self::from_backing(
+            Backing::Spool(spool),
+            scheduler.pools().clone(),
+            scheduler.domain(),
+            Arc::new(AtomicBool::new(false)),
+        ))
     }
     pub async fn open_code(
         vfs: Arc<shared::vfs::VirtualFS>,
@@ -215,7 +218,6 @@ impl FileReader {
         let read_active = Arc::new(AtomicBool::new(true));
         let _operation = ReadActive(read_active.clone());
         let active = read_active.clone();
-        let max_control_bytes = MAX_CONTROL_BYTES;
         let task = pools
             .submit_async_bytes(
                 kind,
@@ -245,14 +247,22 @@ impl FileReader {
             return Err(error("file domain closed"));
         }
         check_deadline(deadline).map_err(error)?;
+        Ok(Self::from_backing(file, pools, domain, read_active))
+    }
+    fn from_backing(
+        file: Backing,
+        pools: IoPools,
+        domain: Arc<migo_io::domain::IoDomain>,
+        read_active: Arc<AtomicBool>,
+    ) -> Self {
         let end = file.len();
-        Ok(Self {
+        Self {
             file: Arc::new(file),
             pools,
             domain,
             position: 0,
             end,
-            max_control_bytes,
+            max_control_bytes: MAX_CONTROL_BYTES,
             failed: false,
             read_active,
             #[cfg(test)]
@@ -269,7 +279,7 @@ impl FileReader {
             after_io: None,
             #[cfg(test)]
             chunk_bytes: FILE_CHUNK_BYTES,
-        })
+        }
     }
     pub fn len(&self) -> u64 {
         self.file.len()

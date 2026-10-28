@@ -31,13 +31,13 @@ enum Backend {
     Package,
 }
 #[derive(Clone, Copy, Debug)]
-enum Format {
+pub(crate) enum Format {
     Mp3,
     Wave,
     Adts,
     Vorbis,
 }
-fn assets() -> PathBuf {
+pub(crate) fn assets() -> PathBuf {
     PathBuf::from(std::env::var_os("W09_LOCAL_SOURCE_ASSETS").unwrap())
 }
 fn package() -> Arc<MountTable> {
@@ -150,7 +150,7 @@ async fn produce<P: Packetizer>(
     .await;
     transport::publish_result(&tx, &state, result).await;
 }
-fn spawn(
+pub(crate) fn spawn(
     format: Format,
     owner: IoScheduler,
     reader: FileReader,
@@ -174,7 +174,7 @@ fn spawn(
         )),
     }
 }
-fn reference(data: &[u8], target: u32) -> (Vec<f32>, u32) {
+pub(crate) fn reference(data: &[u8], target: u32) -> (Vec<f32>, u32) {
     let decoded = crate::candidate::decode(data, 16_777_216).unwrap();
     let channels = decoded.channels;
     if decoded.sample_rate == target {
@@ -195,13 +195,18 @@ fn reference(data: &[u8], target: u32) -> (Vec<f32>, u32) {
     }
     (out, channels)
 }
-struct Received {
-    pcm: Vec<f32>,
-    ready: usize,
-    done: usize,
-    errors: Vec<String>,
+pub(crate) struct Received {
+    pub pcm: Vec<f32>,
+    pub ready: usize,
+    pub done: usize,
+    pub errors: Vec<String>,
 }
-async fn receive(format: Format, owner: IoScheduler, reader: FileReader, target: u32) -> Received {
+pub(crate) async fn receive(
+    format: Format,
+    owner: IoScheduler,
+    reader: FileReader,
+    target: u32,
+) -> Received {
     let state = StreamingState::new();
     let (tx, mut rx) = stream_channel();
     let task = spawn(

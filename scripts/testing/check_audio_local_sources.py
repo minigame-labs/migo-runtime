@@ -61,8 +61,9 @@ def controls(work,env):
         print('actual sequential source fault',name,': executable assertion rejected',flush=True)
     return len(declarations)
 
-def main(work,target,rubato,positive_only):
+def prepare(work,target,rubato,extra_inputs=()):
     extra=[Path(__file__).resolve(),ROOT/'scripts/testing/check_audio_ogg_streaming.py',ROOT/'scripts/testing/check_audio_metadata_skip.py']
+    extra.extend(extra_inputs)
     env,frozen,_,libraries,new=file.prepare(work,target,rubato,extra)
     package=work/'probe';manifest=(package/'Cargo.toml').read_text()
     manifest=manifest.replace('"isomp4","id3v2","opt-simd"','"isomp4","id3v2","opt-simd","wav","pcm","ogg","vorbis"',1)
@@ -78,6 +79,11 @@ symphonia-codec-vorbis="=0.6.1"
     for name in ['wave_streaming.rs','adts_streaming.rs','vorbis_streaming.rs','local_source_contracts.rs']:shutil.copy2(ROOT/'scripts/testing/fixtures/audio-codec-probe'/name,work/'source'/name)
     lib=package/'src/lib.rs';lib.write_text(lib.read_text()+f'\n#[cfg(test)] #[path={json.dumps(str(work/"source/local_source_contracts.rs"))}] mod local_source_contracts;\n')
     fixtures(work,env)
+    return env,frozen,libraries,new
+
+def main(work,target,rubato,positive_only):
+    env,frozen,libraries,new=prepare(work,target,rubato)
+    package=work/'probe'
     retained={str(p.relative_to(work)):codecs.sha(p)for tree in [package/'src',work/'source']for p in tree.rglob('*.rs')}
     codecs.run(['cargo','metadata','--offline','--format-version','1'],work/'candidate-metadata.jsonl',cwd=package,env=env)
     selected=json.loads(next(line for line in(work/'candidate-metadata.jsonl').read_text().splitlines()if line.startswith('{"packages"')))['packages'];locked={}
