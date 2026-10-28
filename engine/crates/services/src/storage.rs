@@ -1,7 +1,7 @@
 //! Key-value storage and buffer URLs.
 //!
 //! Backed by an embedded WAL-mode SQLite database opened lazily per game at
-//! `{game user_data_dir}/kv_storage/storage.db` -- per game, not per host app;
+//! `{game files}/runtime_state/kv_storage/storage.db`, outside the VFS roots;
 //! see [`storage_dir`]. The schema and the quota accounting are
 //! [`migo_io::storage_ops`] and [`migo_io::kv_store`]; this module is the rules
 //! an op applies on top of them and the errors content sees, moved here from
@@ -36,16 +36,14 @@ use migo_io::storage_ops::{self, StorageInfo};
 use migo_io::task::{IoRequest, PriorityClass, RequestKind};
 use parking_lot::Mutex;
 use shared::error::{EngineError, ErrorCode};
-use shared::vfs::{GamePaths, VirtualFS, write_directory::WriteDirectory};
+use shared::vfs::{
+    GamePaths, VirtualFS, game_paths::StoragePaths, write_directory::WriteDirectory,
+};
 
 use crate::error::{ServiceError, detail_or_message, message_and_detail};
 
-/// Storage directory name under the game's user-data directory.
-///
-/// The SQLite file itself lives at `{STORAGE_DIR}/storage.db`; the directory
-/// layer is kept so per-game cleanup tools that `rm -rf` the folder keep
-/// working.
-pub const STORAGE_DIR: &str = "kv_storage";
+/// Reserved leaf name, shared by legacy and private storage namespaces.
+pub const STORAGE_DIR: &str = shared::vfs::game_paths::KV_STORAGE_SUBDIR;
 
 /// Buffer URL directory name under the game's sandbox cache directory.
 pub const BUFFER_URL_DIR: &str = "buffer_urls";
@@ -75,8 +73,7 @@ pub const CLASS_STORAGE_ERROR: &str = "StorageError";
 
 /// Per-game storage root.
 ///
-/// Anchored to the game's own user-data directory, not to the host app's files
-/// directory. A host that runs several games would otherwise give all of them
+/// Host-private and persistent per game. A host that runs several games must not give them
 /// one SQLite file: any game could read another's saves by guessing keys, a
 /// single `migo.clearStorage()` would wipe the whole catalogue, and the 10 MB
 /// quota would be a shared pool one game could exhaust for the rest.
@@ -84,13 +81,56 @@ pub const CLASS_STORAGE_ERROR: &str = "StorageError";
 /// Fails when no game is loaded rather than falling back to a shared location:
 /// a fallback would silently reintroduce the shared file it exists to prevent.
 pub fn storage_dir(game_paths: Option<&GamePaths>) -> Result<PathBuf, EngineError> {
+    storage_paths(game_paths).map(|paths| paths.directory().to_path_buf())
+}
+
+fn storage_paths(game_paths: Option<&GamePaths>) -> Result<&Arc<StoragePaths>, EngineError> {
     match game_paths {
-        Some(paths) => Ok(paths.user_data_dir().join(STORAGE_DIR)),
+        Some(paths) => Ok(paths.storage()),
         None => Err(EngineError::from_detail(
             ErrorCode::InvalidOperation,
             "storage is unavailable before a game is loaded".to_string(),
         )),
     }
+}
+
+fn prepare_sync_dir(
+    scheduler: &IoScheduler,
+    game_paths: Option<&GamePaths>,
+) -> Result<PathBuf, EngineError> {
+    let paths = storage_paths(game_paths)?;
+    if !paths.is_prepared() {
+        let owned = paths.clone();
+        let request = IoRequest::StorageMutate {
+            request: RequestKind::Sync,
+            priority: PriorityClass::from(RequestKind::Sync),
+        };
+        scheduler
+            .run_sync(&request, move || {
+                migo_io::storage_migration::prepare(&owned)
+            })
+            .map_err(EngineError::from)??;
+    }
+    Ok(paths.directory().to_path_buf())
+}
+
+async fn prepare_async_dir(
+    scheduler: &IoScheduler,
+    game_paths: Option<&GamePaths>,
+) -> Result<PathBuf, EngineError> {
+    let paths = storage_paths(game_paths)?;
+    if !paths.is_prepared() {
+        let owned = paths.clone();
+        let request = IoRequest::StorageMutate {
+            request: RequestKind::Async,
+            priority: PriorityClass::from(RequestKind::Async),
+        };
+        scheduler
+            .run_async(request, move || migo_io::storage_migration::prepare(&owned))
+            .await
+            .map_err(EngineError::from)??;
+    }
+    Ok(paths.directory().to_path_buf())
 }
 
 /// Per-game scratch space for `URL.createObjectURL` payloads.
@@ -193,7 +233,7 @@ pub fn get_sync(
     game_paths: Option<&GamePaths>,
     key: &str,
 ) -> Result<String, ServiceError> {
-    let dir = storage_dir(game_paths).map_err(sync_error)?;
+    let dir = prepare_sync_dir(&scheduler, game_paths).map_err(sync_error)?;
     storage_ops::storage_get_sync_with_scheduler(scheduler, dir, key.to_string(), MAX_TOTAL_BYTES)
         .map(Option::unwrap_or_default)
         .map_err(sync_error)
@@ -206,7 +246,7 @@ pub fn set_sync(
     value: &str,
 ) -> Result<(), ServiceError> {
     check_value_and_key(key, value).map_err(ServiceError::generic)?;
-    let dir = storage_dir(game_paths).map_err(sync_error)?;
+    let dir = prepare_sync_dir(&scheduler, game_paths).map_err(sync_error)?;
     storage_ops::storage_set_sync_with_scheduler(
         scheduler,
         dir,
@@ -222,7 +262,7 @@ pub fn remove_sync(
     game_paths: Option<&GamePaths>,
     key: &str,
 ) -> Result<(), ServiceError> {
-    let dir = storage_dir(game_paths).map_err(sync_error)?;
+    let dir = prepare_sync_dir(&scheduler, game_paths).map_err(sync_error)?;
     storage_ops::storage_remove_sync_with_scheduler(
         scheduler,
         dir,
@@ -236,7 +276,7 @@ pub fn clear_sync(
     scheduler: Arc<IoScheduler>,
     game_paths: Option<&GamePaths>,
 ) -> Result<(), ServiceError> {
-    let dir = storage_dir(game_paths).map_err(sync_error)?;
+    let dir = prepare_sync_dir(&scheduler, game_paths).map_err(sync_error)?;
     storage_ops::storage_clear_sync_with_scheduler(scheduler, dir, MAX_TOTAL_BYTES)
         .map_err(sync_error)
 }
@@ -246,7 +286,7 @@ pub fn info_sync(
     scheduler: Arc<IoScheduler>,
     game_paths: Option<&GamePaths>,
 ) -> Result<String, ServiceError> {
-    let dir = storage_dir(game_paths).map_err(sync_error)?;
+    let dir = prepare_sync_dir(&scheduler, game_paths).map_err(sync_error)?;
     let info = storage_ops::storage_info_sync_with_scheduler(scheduler, dir, MAX_TOTAL_BYTES)
         .map_err(sync_error)?;
     Ok(info_to_json(&info))
@@ -314,9 +354,10 @@ fn run_mutate<F>(
 where
     F: FnOnce(&Path) -> Result<(), EngineError> + Send + 'static,
 {
-    let place = storage_dir(game_paths)
-        .map(|dir| {
-            let chain = mutation_chain(&dir);
+    let place = storage_paths(game_paths)
+        .map(|paths| {
+            let dir = paths.clone();
+            let chain = mutation_chain(dir.directory());
             let (predecessor, finished) = chain.enqueue();
             (dir, chain, predecessor, finished)
         })
@@ -335,7 +376,9 @@ where
                     priority: PriorityClass::from(RequestKind::Async),
                 },
                 move || {
-                    let result = f(&dir).map_err(async_error);
+                    let result = migo_io::storage_migration::prepare(&dir)
+                        .and_then(|()| f(dir.directory()))
+                        .map_err(async_error);
                     // Released when the job is done, not when the caller stops
                     // waiting: a caller that gave up must not let the next write
                     // start while this one is still running.
@@ -353,7 +396,9 @@ pub async fn get(
     game_paths: Option<&GamePaths>,
     key: String,
 ) -> Result<String, ServiceError> {
-    let dir = storage_dir(game_paths).map_err(async_error)?;
+    let dir = prepare_async_dir(&scheduler, game_paths)
+        .await
+        .map_err(async_error)?;
     storage_ops::storage_get_with_scheduler(
         scheduler,
         dir,
@@ -406,7 +451,9 @@ pub async fn info(
     scheduler: Arc<IoScheduler>,
     game_paths: Option<&GamePaths>,
 ) -> Result<String, ServiceError> {
-    let dir = storage_dir(game_paths).map_err(async_error)?;
+    let dir = prepare_async_dir(&scheduler, game_paths)
+        .await
+        .map_err(async_error)?;
     let info = scheduler
         .run_async(
             IoRequest::StorageInfo {
@@ -498,6 +545,9 @@ mod buffer_url_tests;
 
 #[cfg(test)]
 mod buffer_url_namespace_tests;
+
+#[cfg(test)]
+mod private_tests;
 
 #[cfg(test)]
 mod tests {

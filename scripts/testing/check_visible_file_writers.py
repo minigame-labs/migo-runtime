@@ -34,7 +34,7 @@ def build(work, env, name, crate, minimal=False):
         command.append('--no-default-features')
     assert g.run(command, work / f'{name}-build.jsonl', package, env) == 0, (
         name, 'compile failure is not a rejected runtime control')
-    target = 'shared' if crate == 'shared' else 'migo_services'
+    target = {'shared': 'shared', 'io': 'migo_io', 'services': 'migo_services'}[crate]
     artifacts = []
     for line in (work / f'{name}-build.jsonl').read_text().splitlines():
         try:

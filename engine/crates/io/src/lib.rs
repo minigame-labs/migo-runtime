@@ -37,6 +37,7 @@ pub mod read_at_package;
 pub mod scheduler;
 mod source_copy;
 pub mod spool;
+pub mod storage_migration;
 pub mod storage_ops;
 pub mod task;
 #[cfg(feature = "zip-extract")]

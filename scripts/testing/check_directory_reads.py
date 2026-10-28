@@ -25,7 +25,7 @@ def windows_api_check(work, env, extra_modules=(), extra_dependencies=None):
         return source[at:stop]
     text = 'pub mod vfs {\nuse std::path::{Path, PathBuf};\n'+source[start:end]
     text += function('fn is_unsafe_windows_component(')+function('pub(crate) fn normalize_path(')
-    for name in ['windows', 'read_root', *extra_modules]:
+    for name in dict.fromkeys(['windows', 'file_io', 'read_root', *extra_modules]):
         origin = work/'engine/crates/shared/src/vfs'/f'{name}.rs'
         text += f'#[path={json.dumps(str(origin))}] pub mod {name};\n'
     (probe/'src/lib.rs').write_text(text+'}\n')

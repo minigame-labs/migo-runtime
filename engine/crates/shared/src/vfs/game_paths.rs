@@ -5,6 +5,48 @@
 //! across different platforms (Android, iOS, Desktop).
 
 use std::path::{Path, PathBuf};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
+#[cfg(test)]
+mod storage_tests;
+
+pub const KV_STORAGE_SUBDIR: &str = "kv_storage";
+
+/// Host-private persistent storage, shared by clones of one game's paths.
+/// Preparation runs on IO before content publication. Failed attempts remain
+/// retryable; a successful preparation is a single atomic read on hot paths.
+#[derive(Debug)]
+pub struct StoragePaths {
+    directory: PathBuf,
+    legacy: PathBuf,
+    prepared: AtomicBool,
+    prepare_lock: parking_lot::Mutex<()>,
+}
+impl StoragePaths {
+    pub fn directory(&self) -> &Path {
+        &self.directory
+    }
+    pub fn legacy(&self) -> &Path {
+        &self.legacy
+    }
+    pub fn is_prepared(&self) -> bool {
+        self.prepared.load(Ordering::Acquire)
+    }
+    pub fn prepare_with<E>(&self, prepare: impl FnOnce() -> Result<(), E>) -> Result<(), E> {
+        if self.is_prepared() {
+            return Ok(());
+        }
+        let _guard = self.prepare_lock.lock();
+        if !self.is_prepared() {
+            prepare()?;
+            self.prepared.store(true, Ordering::Release);
+        }
+        Ok(())
+    }
+}
 
 /// Error types for game path operations.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,6 +172,8 @@ pub struct GamePaths {
     code_dir: PathBuf,
     /// User data directory (persistent, survives app updates)
     user_data_dir: PathBuf,
+    /// SQLite and its journals are not game VFS files.
+    storage: Arc<StoragePaths>,
     /// Cache directory (may be cleared by system)
     cache_dir: PathBuf,
     /// Game-writable subtree of the cache directory (mapped to `/cache`)
@@ -187,6 +231,12 @@ impl GamePaths {
             game_id: game_id.to_string(),
             code_dir: files_base.join("code"),
             user_data_dir: files_base.join("user_data"),
+            storage: Arc::new(StoragePaths {
+                directory: files_base.join("runtime_state").join(KV_STORAGE_SUBDIR),
+                legacy: files_base.join("user_data").join(KV_STORAGE_SUBDIR),
+                prepared: AtomicBool::new(false),
+                prepare_lock: parking_lot::Mutex::new(()),
+            }),
             cache_dir: cache_base.clone(),
             sandbox_cache_dir: cache_base.join("sandbox"),
             // A component rather than a suffix, so everything a sweep may remove
@@ -230,6 +280,10 @@ impl GamePaths {
     /// Get the user data directory path (persistent).
     pub fn user_data_dir(&self) -> &Path {
         &self.user_data_dir
+    }
+
+    pub fn storage(&self) -> &Arc<StoragePaths> {
+        &self.storage
     }
 
     /// Get the cache directory path.

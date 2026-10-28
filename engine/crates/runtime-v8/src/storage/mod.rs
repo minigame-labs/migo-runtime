@@ -1,8 +1,8 @@
 //! Key-value storage ops and buffer URL management.
 //!
-//! Backed by an embedded WAL-mode SQLite database opened lazily per
-//! session at `{game user_data_dir}/kv_storage/storage.db` -- per game, not
-//! per host app; see [`storage_dir`].  The on-disk
+//! Backed by an embedded WAL-mode SQLite database opened lazily per game at
+//! `{game files}/runtime_state/kv_storage/storage.db`, outside game VFS roots;
+//! see [`storage_dir`]. The on-disk
 //! layout (a single `storage.db`) is a full replacement of the
 //! previous `file-per-key` hex-named layout — see
 //! [`migo_io::storage_ops`] and [`migo_io::kv_store`] for the rationale and

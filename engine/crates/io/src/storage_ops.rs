@@ -3,7 +3,7 @@
 //! This file is the Rust-side facade for the `getStorage / setStorage /
 //! removeStorage / clearStorage / getStorageInfo` small-game APIs.
 //! The underlying backend is a single WAL-mode SQLite database per
-//! session, created lazily at `<storage_dir>/storage.db` on first
+//! game storage directory, created lazily at `<storage_dir>/storage.db` on first
 //! access.  See [`crate::kv_store`] for the schema and concurrency
 //! model; everything here is a thin wrapper that also routes work
 //! through the `IoScheduler` so the host thread never blocks on

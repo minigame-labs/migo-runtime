@@ -11,6 +11,10 @@ pub struct ReadRoot {
     file: File,
 }
 impl ReadRoot {
+    /// Full native identity; this capability keeps the directory object alive.
+    pub fn identity(&self) -> std::io::Result<super::file_io::FileIdentity> {
+        super::file_io::FileIdentity::of(&self.file)
+    }
     /// Capture before publishing a directory mount. Missing/unsafe roots fail;
     /// a later pathname replacement cannot silently acquire this capability.
     pub fn open(path: &Path) -> Result<Self, VfsOpenError> {

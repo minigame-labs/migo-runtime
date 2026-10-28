@@ -282,6 +282,15 @@ pub(super) fn file_identity(file: &File) -> Result<(u64, [u8; 16]), VfsOpenError
     Ok((info.VolumeSerialNumber, info.FileId.Identifier))
 }
 
+pub(super) fn link_count(file: &File) -> Result<u32, VfsOpenError> {
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: a live borrowed handle and a correctly-sized output structure.
+    if unsafe { GetFileInformationByHandle(handle(file), &mut info) } == 0 {
+        return Err(VfsOpenError::OpenFailed);
+    }
+    Ok(info.nNumberOfLinks)
+}
+
 fn open_final_file(path: &Path, share_delete: bool) -> Result<File, VfsOpenError> {
     let path = verbatim_path(path)?;
     OpenOptions::new()

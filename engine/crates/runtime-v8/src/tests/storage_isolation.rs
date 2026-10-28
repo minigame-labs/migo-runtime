@@ -81,10 +81,10 @@ mod storage_isolation_tests {
         let app_files = PathBuf::from("/tmp/host-app/files");
         let paths = paths_for("game-a");
 
-        let user_data = paths.user_data_dir();
+        let user_data = paths.storage().directory();
         assert!(
             user_data.starts_with(&app_files),
-            "user data should still live under the host app's files directory"
+            "private storage must live under the host app's persistent files directory"
         );
 
         // The game id has to appear on the path between the two, which is what
