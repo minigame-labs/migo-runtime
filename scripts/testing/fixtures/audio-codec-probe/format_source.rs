@@ -245,9 +245,28 @@ pub async fn run(
     tx: &mpsc::Sender<StreamMsg>,
     state: &Arc<StreamingState>,
 ) -> EngineResult<()> {
-    let format = probe(&mut reader, deadline, Limits::default())
-        .await?
-        .format;
+    let Some(found) = streaming_transport::while_active(
+        tx,
+        state,
+        probe(&mut reader, deadline, Limits::default()),
+    )
+    .await
+    else {
+        return Ok(());
+    };
+    run_identified(owner, reader, found?.format, target, tx, state).await
+}
+
+/// Dispatch a container already identified by a trusted caller. A filename or
+/// MIME hint is not identification; unknown sources must use `run` above.
+pub async fn run_identified(
+    owner: &migo_io::scheduler::IoScheduler,
+    reader: FileReader,
+    format: Format,
+    target: u32,
+    tx: &mpsc::Sender<StreamMsg>,
+    state: &Arc<StreamingState>,
+) -> EngineResult<()> {
     let length = reader.length();
     use crate::{push_decoder, resampled_streaming::Batched};
     match format {

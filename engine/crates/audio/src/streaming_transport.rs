@@ -95,7 +95,7 @@ pub(crate) struct SourceResume<D> {
     pub restart: bool,
 }
 
-struct Sequential {
+pub(crate) struct Sequential {
     response: migo_services::network::http::Response,
     // Preserve the original client's pool/domain lifetime through body EOF.
     _client: HttpClient,

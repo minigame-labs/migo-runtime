@@ -7,6 +7,9 @@ sys.path.insert(0, str(ROOT / 'scripts/lib'))
 from gitignore_policy import check, tracked_ignored
 
 REQUIRED = [
+    'scripts/testing/check_audio_http_sources.py',
+    'scripts/testing/fixtures/audio-codec-probe/http_source.rs',
+    'scripts/testing/fixtures/audio-codec-probe/http_source_contracts.rs',
     'engine/third_party/symphonia-core-patches/0007-defer-probed-container-construction.patch',
     'scripts/testing/check_audio_format_sources.py',
     'scripts/testing/check_audio_probe_primitives.py',

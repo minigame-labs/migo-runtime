@@ -27,7 +27,7 @@ use tokio::{
     time::Instant,
 };
 
-fn fixture(name: &str) -> Vec<u8> {
+pub(crate) fn fixture(name: &str) -> Vec<u8> {
     std::fs::read(
         std::path::PathBuf::from(std::env::var_os("W09_M4A_FIXTURES").unwrap()).join(name),
     )
@@ -45,7 +45,7 @@ fn atom(data: &[u8], kind: AtomKind) -> AtomSpan {
         position = span.end.unwrap() as usize;
     }
 }
-fn client() -> HttpClient {
+pub(crate) fn client() -> HttpClient {
     HttpClientBuilder::new(
         "m4a-index-contract",
         false,
@@ -62,7 +62,7 @@ fn client() -> HttpClient {
     .unwrap()
 }
 #[derive(Clone, Copy, Default)]
-enum Fault {
+pub(crate) enum Fault {
     #[default]
     None,
     ChangedTag,
@@ -73,32 +73,33 @@ enum Fault {
     BodyShort,
 }
 #[derive(Clone, Default)]
-struct Config {
-    chunked: bool,
-    no_tag: bool,
-    unknown_range_total: bool,
-    cut: Option<usize>,
-    hold: Option<usize>,
-    fault: Fault,
-    media_fault: Fault,
-    short_media: Option<u64>,
-    hold_media_after: Option<usize>,
+pub(crate) struct Config {
+    pub chunked: bool,
+    pub no_tag: bool,
+    pub unknown_range_total: bool,
+    pub cut: Option<usize>,
+    pub hold: Option<usize>,
+    pub fault: Fault,
+    pub media_fault: Fault,
+    pub short_media: Option<u64>,
+    pub hold_media_after: Option<usize>,
 }
-struct Server {
-    url: Url,
+pub(crate) struct Server {
+    pub url: Url,
     task: tokio::task::JoinHandle<()>,
-    ranges: Arc<Mutex<Vec<(u64, u64)>>>,
-    index_arrived: Arc<Notify>,
+    pub ranges: Arc<Mutex<Vec<(u64, u64)>>>,
+    pub index_arrived: Arc<Notify>,
+    pub full_requests: Arc<std::sync::atomic::AtomicUsize>,
     media_arrived: Arc<Notify>,
     media_held: Arc<Notify>,
-    release: Arc<Notify>,
+    pub release: Arc<Notify>,
 }
 impl Drop for Server {
     fn drop(&mut self) {
         self.task.abort();
     }
 }
-async fn start_server(data: Vec<u8>, config: Config) -> Server {
+pub(crate) async fn start_server(data: Vec<u8>, config: Config) -> Server {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = Url::parse(&format!(
         "http://localhost:{}/audio.m4a",
@@ -109,6 +110,8 @@ async fn start_server(data: Vec<u8>, config: Config) -> Server {
     let data = Arc::new(data);
     let ranges = Arc::new(Mutex::new(Vec::new()));
     let observed = ranges.clone();
+    let full_requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let full_counted = full_requests.clone();
     let index_arrived = Arc::new(Notify::new());
     let signal = index_arrived.clone();
     let media_arrived = Arc::new(Notify::new());
@@ -124,6 +127,7 @@ async fn start_server(data: Vec<u8>, config: Config) -> Server {
             let data = data.clone();
             let config = config.clone();
             let observed = observed.clone();
+            let full_counted = full_counted.clone();
             let signal = signal.clone();
             let media_signal = media_signal.clone();
             let held_signal = held_signal.clone();
@@ -177,6 +181,7 @@ async fn start_server(data: Vec<u8>, config: Config) -> Server {
                     }
                     if chunked { let _=socket.write_all(b"0\r\n\r\n").await; }
                 } else {
+                    full_counted.fetch_add(1, std::sync::atomic::Ordering::Release);
                     let cut=config.cut.unwrap_or(data.len());
                     let framing=if config.chunked {"Transfer-Encoding: chunked\r\n".to_owned()} else {format!("Content-Length: {}\r\n",data.len())};
                     let head=format!("HTTP/1.1 200 OK\r\n{tag}{framing}Connection: close\r\n\r\n");
@@ -201,6 +206,7 @@ async fn start_server(data: Vec<u8>, config: Config) -> Server {
         task,
         ranges,
         index_arrived,
+        full_requests,
         media_arrived,
         media_held,
         release,

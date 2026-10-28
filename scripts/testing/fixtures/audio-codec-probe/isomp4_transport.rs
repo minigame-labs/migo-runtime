@@ -25,6 +25,27 @@ pub struct IndexedHttp {
     pending: Option<Bytes>,
     limits: Limits,
 }
+impl IndexedHttp {
+    /// Retain the actual capability probe's reader, counters and learned length.
+    /// The original full response is still unread and remains the initial body.
+    pub(crate) fn prepared(client: HttpClient, response: Response, reader: range::Reader) -> Self {
+        let mut limits = Limits::default();
+        limits.index.object_len = reader.length();
+        let source = IndexSource::new(reader, limits);
+        Self {
+            client,
+            identity: None,
+            initial: Some(response),
+            source: Some(source),
+            pending: None,
+            limits,
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn control_requests(&self) -> u32 {
+        self.source.as_ref().expect("prepared source").requests()
+    }
+}
 fn error(cause: impl std::fmt::Display) -> EngineError {
     EngineError::from_detail(ErrorCode::IoError, cause.to_string())
 }
