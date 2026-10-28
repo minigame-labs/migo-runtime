@@ -54,6 +54,14 @@ impl PoolKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IoRequest {
+    /// A copy writes a destination even when its source is tiny or cached.
+    /// Scratch is retained until the queued or active copy actually ends.
+    Copy {
+        backend: BackendKind,
+        request: RequestKind,
+        priority: PriorityClass,
+        scratch_bytes: usize,
+    },
     ReadFile {
         backend: BackendKind,
         request: RequestKind,
@@ -122,7 +130,8 @@ pub enum IoRequest {
 impl IoRequest {
     pub fn priority(&self) -> PriorityClass {
         match self {
-            IoRequest::ReadFile { priority, .. }
+            IoRequest::Copy { priority, .. }
+            | IoRequest::ReadFile { priority, .. }
             | IoRequest::GetFileInfo { priority, .. }
             | IoRequest::DecodeImage { priority, .. }
             | IoRequest::Unzip { priority, .. }

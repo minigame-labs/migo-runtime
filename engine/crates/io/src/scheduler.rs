@@ -89,6 +89,13 @@ struct SchedulerMetrics {
 }
 
 impl IoScheduler {
+    #[cfg(feature = "admission-probe")]
+    pub fn isolated_for_admission_probe(host_id: i32, workers: usize, byte_limit: u64) -> Self {
+        Self::with_pools(
+            host_id,
+            IoPools::local_with_byte_limit_for_test(host_id, workers, byte_limit),
+        )
+    }
     pub fn new(host_id: i32) -> Self {
         Self::with_pools(host_id, IoPools::new(host_id))
     }
@@ -175,7 +182,7 @@ impl IoScheduler {
                 let domain = Arc::clone(&self.domain);
                 #[cfg(test)]
                 let worker_start_hook = Arc::clone(&self.worker_start_hook);
-                let result = self.pools.run(pool, priority, move || {
+                let work = move || {
                     #[cfg(test)]
                     run_worker_start_test_hook(&worker_start_hook);
 
@@ -183,7 +190,14 @@ impl IoScheduler {
                         return Err(PoolError::Closed);
                     }
                     Ok(job())
-                });
+                };
+                let result = if matches!(req, IoRequest::Copy { .. }) {
+                    self.pools
+                        .run_bytes(pool, priority, pending_bytes_hint(req), work)
+                        .map_err(PoolError::from)
+                } else {
+                    self.pools.run(pool, priority, work)
+                };
                 let wait_micros = started_at.elapsed().as_micros() as u64;
                 self.metrics
                     .sync_wait_micros
@@ -368,6 +382,11 @@ impl Drop for IoScheduler {
 
 pub fn classify_request(req: &IoRequest, policy: &CheapPolicy) -> RouteDecision {
     match req {
+        IoRequest::Copy { backend, .. } => RouteDecision::Delegated(match backend {
+            BackendKind::Pack => PoolKind::Pack,
+            BackendKind::Filesystem => PoolKind::Fs,
+            BackendKind::Archive => PoolKind::Archive,
+        }),
         IoRequest::ReadFile {
             backend,
             request: _,
@@ -419,6 +438,7 @@ pub fn classify_request(req: &IoRequest, policy: &CheapPolicy) -> RouteDecision 
 /// a byte budget.
 fn pending_bytes_hint(req: &IoRequest) -> u64 {
     match req {
+        IoRequest::Copy { scratch_bytes, .. } => *scratch_bytes as u64,
         IoRequest::ReadFile {
             estimated_bytes, ..
         }

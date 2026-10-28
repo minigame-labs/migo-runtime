@@ -38,6 +38,8 @@ REQUIRED = [
     'scripts/testing/check_file_mutations.py',
     'scripts/testing/check_output_mutations.py',
     'scripts/testing/check_source_copies.py',
+    'scripts/testing/check_pack_copy_budget.py',
+    'engine/crates/services/src/fs_copy_budget_tests.rs',
     'engine/crates/shared/src/vfs/file_copy.rs',
     'engine/crates/shared/src/vfs/file_copy/tests.rs',
     'engine/crates/shared/src/vfs/mount/copy_tests.rs',

@@ -21,6 +21,21 @@ impl Default for PackageReadLimits {
     }
 }
 
+impl PackageReadLimits {
+    /// Upper bound for the reader's two reusable Rust buffers. Shared index
+    /// storage and the native zstd context are not included in this payload.
+    pub fn max_scratch_bytes(self) -> io::Result<usize> {
+        self.max_encoded_chunk
+            .checked_add(self.max_decoded_chunk)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "package scratch budget overflow",
+                )
+            })
+    }
+}
+
 pub struct PackageEntryReader {
     inner: Arc<ReaderInner>,
     entry: EntryMeta,

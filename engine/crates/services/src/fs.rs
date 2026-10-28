@@ -189,13 +189,16 @@ pub fn archive_read_request() -> IoRequest {
 }
 
 #[inline]
-fn copy_request(backend: BackendKind, request: RequestKind) -> IoRequest {
-    IoRequest::ReadFile {
-        backend,
+fn copy_request(request: RequestKind) -> FsResult<IoRequest> {
+    let scratch_bytes = shared::vfs::package::PackageReadLimits::default()
+        .max_scratch_bytes()
+        .map_err(|error| engine_err(EngineError::from(error)))?;
+    Ok(IoRequest::Copy {
+        backend: BackendKind::Pack,
         request,
         priority: PriorityClass::from(request),
-        estimated_bytes: shared::protocol::io_cmd::MAX_READ_LENGTH as usize,
-    }
+        scratch_bytes,
+    })
 }
 
 /// A whole pack entry read or digested on the Pack lane, charged what the entry is.
@@ -441,26 +444,6 @@ fn read_pack_bytes(mount_table: Option<&MountTable>, virtual_path: &str) -> FsRe
         .map_err(|e| ioerr(format!("pack read failed: {e}")))
 }
 
-fn materialize_pack_to_temp(
-    mount_table: Option<&MountTable>,
-    virtual_path: &str,
-    suffix: &str,
-) -> FsResult<String> {
-    let mt = mount_table.ok_or_else(|| ioerr("mount table not initialized"))?;
-    let relative = code_relative(virtual_path);
-    if let Some(size) = mt.entry_size(relative) {
-        if size > MAX_MATERIALIZE_LENGTH {
-            return Err(ioerr(format!(
-                "file size {} exceeds materialize limit {}",
-                size, MAX_MATERIALIZE_LENGTH,
-            )));
-        }
-    }
-    fs_ops::materialize_mount_entry_to_temp(mt, relative, suffix)
-        .map(|path| path.to_string_lossy().into_owned())
-        .map_err(engine_err)
-}
-
 pub fn materialize_pack_to_temp_checked(
     scheduler: &IoScheduler,
     mount_table: Option<&MountTable>,
@@ -468,7 +451,28 @@ pub fn materialize_pack_to_temp_checked(
     suffix: &str,
 ) -> FsResult<String> {
     scheduler.ensure_open().map_err(pool_err)?;
-    materialize_pack_to_temp(mount_table, virtual_path, suffix)
+    let mt = mount_table.ok_or_else(|| ioerr("mount table not initialized"))?;
+    let relative = code_relative(virtual_path);
+    if let Some(size) = mt.entry_size(relative)
+        && size > MAX_MATERIALIZE_LENGTH
+    {
+        return Err(ioerr(format!(
+            "file size {} exceeds materialize limit {}",
+            size, MAX_MATERIALIZE_LENGTH
+        )));
+    }
+    let source = mt
+        .pin_copy_source(relative)
+        .map_err(|error| engine_err(EngineError::from(error)))?;
+    let code_dir = mt.code_dir();
+    let suffix = suffix.to_owned();
+    scheduler
+        .run_sync(&copy_request(RequestKind::Sync)?, move || {
+            fs_ops::materialize_pinned_entry_to_temp(source, code_dir, &suffix)
+        })
+        .map_err(pool_err)?
+        .map(|path| path.to_string_lossy().into_owned())
+        .map_err(engine_err)
 }
 
 pub async fn materialize_pack_to_temp_async(
@@ -479,20 +483,20 @@ pub async fn materialize_pack_to_temp_async(
 ) -> FsResult<String> {
     let suffix = suffix.into();
     let relative = code_relative(&virtual_path).to_string();
-    if let Some(size) = mount_table.entry_size(&relative) {
-        if size > MAX_MATERIALIZE_LENGTH {
-            return Err(ioerr(format!(
-                "file size {} exceeds materialize limit {}",
-                size, MAX_MATERIALIZE_LENGTH,
-            )));
-        }
+    if let Some(size) = mount_table.entry_size(&relative)
+        && size > MAX_MATERIALIZE_LENGTH
+    {
+        return Err(ioerr(format!(
+            "file size {} exceeds materialize limit {}",
+            size, MAX_MATERIALIZE_LENGTH,
+        )));
     }
 
     let source = mount_table
         .pin_copy_source(&relative)
         .map_err(|error| engine_err(EngineError::from(error)))?;
     let code_dir = mount_table.code_dir();
-    let request = copy_request(BackendKind::Pack, RequestKind::Async);
+    let request = copy_request(RequestKind::Async)?;
     scheduler
         .run_async(request, move || {
             fs_ops::materialize_pinned_entry_to_temp(source, code_dir, &suffix)
@@ -512,7 +516,7 @@ pub async fn copy_pack_file_async(
     let source = mount_table
         .pin_copy_source(&relative_path)
         .map_err(|error| engine_err(EngineError::from(error)))?;
-    let request = copy_request(BackendKind::Pack, RequestKind::Async);
+    let request = copy_request(RequestKind::Async)?;
     scheduler
         .run_async(request, move || {
             fs_ops::copy_pinned_entry_to_path(source, &dest_path)
@@ -1006,7 +1010,15 @@ pub fn copy_sync(env: &FsEnv, src_path: &str, dest_path: &str) -> FsResult<()> {
         }
         ResolvedPath::Pack { virtual_path } => {
             let rel = code_relative(&virtual_path);
-            fs_ops::copy_mount_entry_to_path(env.mounts()?, rel, Path::new(&dest_full))
+            let source = env
+                .mounts()?
+                .pin_copy_source(rel)
+                .map_err(|error| engine_err(EngineError::from(error)))?;
+            env.scheduler
+                .run_sync(&copy_request(RequestKind::Sync)?, move || {
+                    fs_ops::copy_pinned_entry_to_path(source, Path::new(&dest_full))
+                })
+                .map_err(pool_err)?
                 .map_err(engine_err)
         }
     }
@@ -1691,3 +1703,7 @@ pub async fn list_saved_files(
 #[cfg(test)]
 #[path = "fs_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "fs_copy_budget_tests.rs"]
+mod copy_budget_tests;

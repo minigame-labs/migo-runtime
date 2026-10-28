@@ -224,7 +224,7 @@ impl ExecutorConfig {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "admission-probe"))]
     fn with_byte_limit(mut self, process_byte_limit: u64) -> Self {
         self.process_byte_limit = process_byte_limit;
         self
@@ -1296,7 +1296,7 @@ impl IoPools {
             ProcessIoExecutor::new(ExecutorConfig::for_workers(worker_count)),
         )
     }
-    #[cfg(test)]
+    #[cfg(any(test, feature = "admission-probe"))]
     pub(crate) fn local_with_byte_limit_for_test(
         host_id: i32,
         worker_count: usize,
