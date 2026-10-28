@@ -7,6 +7,8 @@ sys.path.insert(0, str(ROOT / 'scripts/lib'))
 from gitignore_policy import check, tracked_ignored
 
 REQUIRED = [
+    'engine/crates/audio/src/inner_audio.rs',
+    'scripts/testing/check_audio_playback_clock.py',
     'scripts/testing/fixtures/audio-codec-probe/source_chunk.rs',
     'scripts/testing/fixtures/audio-codec-probe/http_prefix_contracts.rs',
     'scripts/testing/fixtures/audio-codec-probe/http_prefix.rs',

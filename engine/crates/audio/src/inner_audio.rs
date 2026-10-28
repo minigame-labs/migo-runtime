@@ -14,6 +14,10 @@ use crate::decoder::DecodedAudio;
 use crate::limits::{AudioAggregateLedger, AudioAggregatePermit};
 use crate::streaming::{StreamMsg, StreamingState};
 
+// Use the shared rate's exact resolution for the cursor too. Converting through
+// binary fixed point introduces an error on every output frame (e.g. at 1.1x).
+const PLAYBACK_RATE_SCALE: u32 = 1000;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum PlaybackState {
@@ -68,8 +72,8 @@ impl InnerAudioSharedState {
             state: AtomicU32::new(PlaybackState::Stopped as u32),
             position_frames: AtomicU64::new(0),
             duration_frames: AtomicU64::new(0),
-            volume: AtomicU32::new(1000),        // 1.0
-            playback_rate: AtomicU32::new(1000), // 1.0
+            volume: AtomicU32::new(1000),                       // 1.0
+            playback_rate: AtomicU32::new(PLAYBACK_RATE_SCALE), // 1.0
             loop_enabled: AtomicBool::new(false),
             seek_target: AtomicU64::new(u64::MAX),
             sample_rate: AtomicU32::new(0),
@@ -126,15 +130,26 @@ impl InnerAudioSharedState {
     /// Get playback rate as f32
     #[inline]
     pub fn playback_rate(&self) -> f32 {
-        self.playback_rate.load(Ordering::Relaxed) as f32 / 1000.0
+        self.playback_rate_units() as f32 / PLAYBACK_RATE_SCALE as f32
     }
 
-    /// Set playback rate (0.5 - 2.0)
+    #[inline]
+    fn playback_rate_units(&self) -> u32 {
+        self.playback_rate.load(Ordering::Relaxed)
+    }
+
+    /// Set playback rate (0.5 - 2.0), rounded to the nearest thousandth.
+    /// A NaN must not replace a valid rate with a zero-step, endless playback.
     #[inline]
     pub fn set_playback_rate(&self, rate: f32) {
+        if rate.is_nan() {
+            return;
+        }
         let clamped = rate.clamp(0.5, 2.0);
-        self.playback_rate
-            .store((clamped * 1000.0) as u32, Ordering::Relaxed);
+        self.playback_rate.store(
+            (clamped * PLAYBACK_RATE_SCALE as f32).round() as u32,
+            Ordering::Relaxed,
+        );
     }
 
     #[inline]
@@ -347,7 +362,8 @@ pub struct InnerAudioPlayer {
     pub shared: Arc<InnerAudioSharedState>,
     source: AudioSource,
     position: usize,
-    position_frac: u16,
+    /// Fractional source frame in thousandths, always below PLAYBACK_RATE_SCALE.
+    position_phase: u16,
     output_channels: u32,
     pending_events: Vec<InnerAudioEvent>,
     stream_rx: Option<Receiver<StreamMsg>>,
@@ -377,7 +393,7 @@ impl InnerAudioPlayer {
             shared: Arc::new(InnerAudioSharedState::new()),
             source: AudioSource::Owned(Vec::new()),
             position: 0,
-            position_frac: 0,
+            position_phase: 0,
             output_channels,
             pending_events: Vec::with_capacity(4),
             stream_rx: None,
@@ -437,7 +453,7 @@ impl InnerAudioPlayer {
         self.shared.set_position_frames(0);
         self.source = AudioSource::Owned(audio.samples);
         self.position = 0;
-        self.position_frac = 0;
+        self.position_phase = 0;
         self.frames_since_time_update = 0;
         self.stream_complete = true;
         self.stream_base_frames = 0;
@@ -464,7 +480,7 @@ impl InnerAudioPlayer {
         self.shared.set_position_frames(0);
         self.source = AudioSource::Cached(audio);
         self.position = 0;
-        self.position_frac = 0;
+        self.position_phase = 0;
         self.frames_since_time_update = 0;
         self.stream_complete = true;
         self.stream_base_frames = 0;
@@ -494,7 +510,7 @@ impl InnerAudioPlayer {
         self.source = AudioSource::Owned(Vec::with_capacity(ESTIMATED_CAPACITY));
         self.stream_permit = Some(permit);
         self.position = 0;
-        self.position_frac = 0;
+        self.position_phase = 0;
         self.frames_since_time_update = 0;
         self.shared.set_duration_frames(0);
         self.shared.set_sample_rate(0);
@@ -828,7 +844,7 @@ impl InnerAudioPlayer {
         tracing::debug!("InnerAudioPlayer {} stop", self.id);
         self.shared.set_state(PlaybackState::Stopped);
         self.position = 0;
-        self.position_frac = 0;
+        self.position_phase = 0;
         self.shared.set_position_frames(0);
         self.frames_since_time_update = 0;
     }
@@ -871,7 +887,7 @@ impl InnerAudioPlayer {
         self.shared.set_state(PlaybackState::Stopped);
         self.push_event(InnerAudioEventType::Ended);
         self.position = 0;
-        self.position_frac = 0;
+        self.position_phase = 0;
         self.shared.set_position_frames(0);
         self.frames_since_time_update = 0;
     }
@@ -897,7 +913,7 @@ impl InnerAudioPlayer {
             self.position = relative_frame
                 .saturating_mul(channels)
                 .min(self.source.len());
-            self.position_frac = 0;
+            self.position_phase = 0;
             self.shared
                 .set_position_frames(self.stream_base_frames + (self.position / channels) as u64);
             // A seek may land in buffered data and resume playback, so a later
@@ -908,32 +924,33 @@ impl InnerAudioPlayer {
         }
 
         let volume = self.shared.volume();
-        let playback_rate = self.shared.playback_rate();
+        let rate_units = self.shared.playback_rate_units();
         let loop_enabled = self.shared.loop_enabled();
         let output_channels = self.output_channels as usize;
 
         // Get samples reference after seek handling
         let samples = self.source.samples();
 
-        // Position is tracked in FRAMES (not samples) as 16.16 fixed point; the
-        // fractional part drives the interpolation below and is retained across
-        // process calls so chunk boundaries cannot change the rendered signal.
-        let rate_fixed = (playback_rate * 65536.0) as u64;
-        let current_frame = self.position / channels;
-        let mut frame_fixed = ((current_frame as u64) << 16) | (self.position_frac as u64);
+        // Keep an integer source frame and a phase in the shared rate's units.
+        // Split the step once per block: advancing a frame needs only addition
+        // and a carry, with no division or floating-point clock accumulation.
+        let step_frames = (rate_units / PLAYBACK_RATE_SCALE) as usize;
+        let step_phase = (rate_units % PLAYBACK_RATE_SCALE) as u16;
+        let mut source_frame = self.position / channels;
+        let mut phase = self.position_phase;
 
         let total_frames = samples.len() / channels;
         let output_frames = output.len() / output_channels;
         let waiting_for_input = !self.stream_complete && self.stream_rx.is_some();
 
         for frame_idx in 0..output_frames {
-            let mut src_frame = (frame_fixed >> 16) as usize;
+            let mut src_frame = source_frame;
 
             // Check if we've reached the end of available data
             let missing_neighbor = waiting_for_input
                 && src_frame < total_frames
                 && src_frame + 1 == total_frames
-                && frame_fixed & 0xFFFF != 0;
+                && phase != 0;
             if src_frame >= total_frames || missing_neighbor {
                 // In streaming mode, we might just need to wait for more data
                 if waiting_for_input {
@@ -951,9 +968,9 @@ impl InnerAudioPlayer {
                     // Preserve the exact next source position, including an
                     // interpolation fraction or playbackRate overshoot. Moving
                     // backward repeats already consumed frames after every stall.
-                    let final_frame = (frame_fixed >> 16) as usize;
+                    let final_frame = source_frame;
                     self.position = final_frame * channels;
-                    self.position_frac = (frame_fixed & 0xFFFF) as u16;
+                    self.position_phase = phase;
                     self.shared
                         .set_position_frames(self.stream_base_frames + final_frame as u64);
                     if !self.waiting_notified {
@@ -967,17 +984,11 @@ impl InnerAudioPlayer {
                 }
 
                 if loop_enabled {
-                    // Loop back to start, carrying the fixed-point overshoot so high
-                    // playback rates keep correct loop timing, and render the restart
-                    // frame this iteration (a `continue` would drop one output frame).
+                    // Carry overshoot and phase across the seam, including
+                    // multiple wraps when a very short clip plays above 1x.
                     tracing::trace!("InnerAudioPlayer {} looping back to start", self.id);
-                    let loop_len_fixed = (total_frames as u64) << 16;
-                    frame_fixed = if loop_len_fixed > 0 {
-                        frame_fixed % loop_len_fixed
-                    } else {
-                        0
-                    };
-                    src_frame = (frame_fixed >> 16) as usize;
+                    source_frame %= total_frames;
+                    src_frame = source_frame;
                 } else {
                     // Playback finished
                     tracing::debug!("InnerAudioPlayer {} playback ended", self.id);
@@ -988,12 +999,10 @@ impl InnerAudioPlayer {
                 }
             }
 
-            // Interpolate toward the next source frame. Truncating the
-            // fixed-point position is a zero-order hold, so any playbackRate
-            // other than 1.0 produced broadband aliasing rather than a pitch
-            // shift. The successor wraps to the loop start so the seam does not
-            // flatten into the final frame.
-            let frac = (frame_fixed & 0xFFFF) as f32 / 65536.0;
+            // Linear interpolation uses the exact cursor phase. This is not an
+            // anti-aliasing filter; playback-rate DSP quality is a separate gate.
+            // Wrap the successor at a completed loop's seam.
+            let frac = phase as f32 / PLAYBACK_RATE_SCALE as f32;
             let next_frame = if src_frame + 1 < total_frames {
                 src_frame + 1
             } else if loop_enabled && !waiting_for_input {
@@ -1028,30 +1037,32 @@ impl InnerAudioPlayer {
             }
 
             // Advance frame position by playback rate
-            frame_fixed += rate_fixed;
+            source_frame += step_frames;
+            phase += step_phase;
+            if phase >= PLAYBACK_RATE_SCALE as u16 {
+                phase -= PLAYBACK_RATE_SCALE as u16;
+                source_frame += 1;
+            }
         }
 
         // Update position (convert frame back to sample index). When looping,
         // normalize a final overshoot so the stored currentTime doesn't briefly
         // pin at duration until the next callback wraps.
         if loop_enabled && !waiting_for_input {
-            let loop_len_fixed = (total_frames as u64) << 16;
-            if loop_len_fixed > 0 && frame_fixed >= loop_len_fixed {
-                frame_fixed %= loop_len_fixed;
-            }
+            source_frame %= total_frames;
         }
-        if !waiting_for_input && !loop_enabled && frame_fixed >= (total_frames as u64) << 16 {
+        if !waiting_for_input && !loop_enabled && source_frame >= total_frames {
             self.finish_playback(total_frames, output_frames);
             return false;
         }
-        let final_frame = (frame_fixed >> 16) as usize;
+        let final_frame = source_frame;
         let final_frame = if waiting_for_input {
             final_frame
         } else {
             final_frame.min(total_frames)
         };
         self.position = final_frame * channels;
-        self.position_frac = (frame_fixed & 0xFFFF) as u16;
+        self.position_phase = phase;
         self.shared
             .set_position_frames(self.stream_base_frames + final_frame as u64);
 
@@ -1207,7 +1218,7 @@ mod tests {
             waiting, [0.0; 2],
             "missing successor must not be fabricated from the previous frame"
         );
-        assert_eq!(player.position_frac, 32768);
+        assert_eq!(player.position_phase, 500);
         send_pcm(&tx, &[2.0, 3.0]);
         player.poll_stream();
         let mut resumed = [0.0; 2];
@@ -1534,7 +1545,221 @@ mod tests {
 
         assert_eq!(split_output, one_output);
         assert_eq!(split.position, one_quantum.position);
-        assert_eq!(split.position_frac, one_quantum.position_frac);
+        assert_eq!(split.position_phase, one_quantum.position_phase);
+    }
+
+    fn clock_player(samples: &[f32], rate: f32) -> InnerAudioPlayer {
+        let mut player = InnerAudioPlayer::new(1, 1);
+        player.source.extend_from_slice(samples);
+        player.shared.set_sample_rate(48_000);
+        player.shared.set_channels(1);
+        player.shared.set_duration_frames(samples.len() as u64);
+        player.shared.set_loaded(true);
+        player.shared.set_playback_rate(rate);
+        player.play();
+        player
+    }
+
+    #[test]
+    fn playback_rate_preserves_every_supported_thousandth() {
+        let shared = InnerAudioSharedState::new();
+        for units in 500..=2000 {
+            let rate = units as f32 / 1000.0;
+            shared.set_playback_rate(rate);
+            assert_eq!(shared.playback_rate(), rate, "rate {units}/1000");
+        }
+        shared.set_playback_rate(1.2346);
+        assert_eq!(shared.playback_rate(), 1.235);
+        shared.set_playback_rate(f32::NEG_INFINITY);
+        assert_eq!(shared.playback_rate(), 0.5);
+        shared.set_playback_rate(f32::INFINITY);
+        assert_eq!(shared.playback_rate(), 2.0);
+    }
+
+    #[test]
+    fn nan_rate_retains_the_previous_valid_playback_speed() {
+        let mut player = clock_player(&[0.0; 8], 1.1);
+        player.shared.set_playback_rate(f32::NAN);
+        assert_eq!(player.shared.playback_rate(), 1.1);
+        assert!(player.process(&mut [0.0; 5]));
+        assert_eq!(player.shared.position_frames(), 5);
+        assert!(!player.process(&mut [0.0; 3]));
+    }
+
+    #[test]
+    fn decimal_rate_tracks_exact_time_over_many_callbacks() {
+        let samples: Vec<_> = (0..60_000).map(|frame| frame as f32).collect();
+        let mut player = clock_player(&samples, 1.1);
+        let mut rendered = 0;
+        let mut output = [0.0; 509];
+        for block in [127, 1, 64, 311, 509].into_iter().cycle() {
+            let count = block.min(48_000 - rendered);
+            output[..count].fill(0.0);
+            assert!(player.process(&mut output[..count]));
+            for (offset, actual) in output[..count].iter().enumerate() {
+                let expected = ((rendered + offset) as f64 * 1.1) as f32;
+                assert!(
+                    (actual - expected).abs() <= 0.004,
+                    "at {}",
+                    rendered + offset
+                );
+            }
+            rendered += count;
+            if rendered == 48_000 {
+                break;
+            }
+        }
+        assert_eq!(player.shared.position_frames(), 52_800);
+        assert_eq!(player.position_phase, 0);
+    }
+
+    #[test]
+    fn decimal_rate_ends_on_the_exact_final_output_frame() {
+        for units in [503_u64, 1100, 1333, 1999] {
+            let mut player = clock_player(&[0.25; 11], units as f32 / 1000.0);
+            player.drain_events().for_each(drop);
+            let output_frames = (11 * 1000_u64).div_ceil(units);
+            for frame in 0..output_frames {
+                let mut output = [0.0];
+                assert_eq!(player.process(&mut output), frame + 1 < output_frames);
+                assert_eq!(output, [0.25]);
+            }
+            assert_eq!(player.shared.position_frames(), 0);
+            assert_eq!(player.position_phase, 0);
+            assert!(!player.process(&mut [0.0; 3]));
+            assert_eq!(
+                player
+                    .drain_events()
+                    .filter(|event| matches!(event.event_type, InnerAudioEventType::Ended))
+                    .count(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn rate_changes_and_pause_preserve_the_fractional_media_clock() {
+        let samples: Vec<_> = (0..32).map(|frame| frame as f32).collect();
+        let mut player = clock_player(&samples, 1.1);
+        assert!(player.process(&mut [0.0; 3]));
+        player.pause();
+        let mut paused_mix = [7.0; 8];
+        assert!(player.process(&mut paused_mix));
+        assert_eq!(paused_mix, [7.0; 8]);
+        player.shared.set_playback_rate(0.503);
+        player.play();
+        let mut resumed = [0.0; 2];
+        assert!(player.process(&mut resumed));
+        assert!((resumed[0] - 3.3).abs() < 1e-6);
+        assert!((resumed[1] - 3.803).abs() < 1e-6);
+        player.shared.set_playback_rate(1.333);
+        assert!(player.process(&mut [0.0; 3]));
+        // Three at 1.1 + two at .503 + three at 1.333 = 8.305 frames.
+        assert_eq!(player.shared.position_frames(), 8);
+        assert_eq!(player.position_phase, 305);
+    }
+
+    #[test]
+    fn buffered_seek_and_stop_reset_the_fractional_media_clock() {
+        let samples: Vec<_> = (0..32).map(|frame| frame as f32).collect();
+        let mut player = clock_player(&samples, 1.1);
+        assert!(player.process(&mut [0.0; 3]));
+        player.shared.request_seek(10);
+        let mut output = [0.0];
+        assert!(player.process(&mut output));
+        assert_eq!(output, [10.0]);
+        assert_eq!(player.position_phase, 100);
+        player.stop();
+        assert_eq!(player.position_phase, 0);
+        player.play();
+        output.fill(0.0);
+        assert!(player.process(&mut output));
+        assert_eq!(output, [0.0]);
+        assert_eq!(player.position_phase, 100);
+    }
+
+    #[test]
+    fn short_decimal_loops_match_an_absolute_clock_across_partitions() {
+        for samples in [&[0.25][..], &[0.0, 1.0, -1.0][..]] {
+            for units in [503_u64, 1100, 1333, 1999, 2000] {
+                let mut whole = clock_player(samples, units as f32 / 1000.0);
+                let mut split = clock_player(samples, units as f32 / 1000.0);
+                whole.shared.set_loop_enabled(true);
+                split.shared.set_loop_enabled(true);
+                let mut whole_output = [0.0; 1001];
+                let mut split_output = [0.0; 1001];
+                assert!(whole.process(&mut whole_output));
+                for chunk in split_output.chunks_mut(7) {
+                    assert!(split.process(chunk));
+                }
+                assert_eq!(split_output, whole_output);
+                for (frame, actual) in whole_output.iter().enumerate() {
+                    let position = (frame as u64 * units) % (samples.len() as u64 * 1000);
+                    let index = (position / 1000) as usize;
+                    let next = (index + 1) % samples.len();
+                    let fraction = (position % 1000) as f64 / 1000.0;
+                    let expected =
+                        samples[index] as f64 * (1.0 - fraction) + samples[next] as f64 * fraction;
+                    assert!(
+                        (*actual as f64 - expected).abs() < 2e-7,
+                        "rate {units}/1000 at frame {frame}: {actual} != {expected}"
+                    );
+                }
+                let end = 1001 * units;
+                assert_eq!(
+                    split.shared.position_frames(),
+                    (end / 1000) % samples.len() as u64
+                );
+                assert_eq!(split.position_phase as u64, end % 1000);
+            }
+        }
+    }
+
+    #[test]
+    fn decimal_stream_stalls_preserve_phase_and_the_additive_mix() {
+        let (mut player, tx) = short_stream(&[0.0, 1.0, 2.0, 3.0]);
+        player.shared.set_playback_rate(1.1);
+        let mut first = [0.0; 8];
+        assert!(player.process(&mut first));
+        assert_eq!(&first[..3], &[0.0, 1.1, 2.2]);
+        assert_eq!(&first[3..], &[0.0; 5]);
+        for _ in 0..3 {
+            let mut other_players = [7.0; 4];
+            assert!(player.process(&mut other_players));
+            assert_eq!(other_players, [7.0; 4]);
+        }
+        let more: Vec<_> = (4..20).map(|frame| frame as f32).collect();
+        send_pcm(&tx, &more);
+        player.poll_stream();
+        let mut resumed = [0.0; 7];
+        assert!(player.process(&mut resumed));
+        for (offset, actual) in resumed.iter().enumerate() {
+            let expected = 3.3 + offset as f32 * 1.1;
+            assert!((actual - expected).abs() < 1e-6);
+        }
+        assert_eq!(player.shared.position_frames(), 11);
+        assert_eq!(player.position_phase, 0);
+    }
+
+    #[test]
+    fn decimal_rate_mixing_has_no_steady_state_heap_activity() {
+        use migo_alloc_probe::{Burst, assert_no_steady_state_allocation};
+        let mut player = clock_player(&[0.0, 0.25, -0.25], 1.1);
+        player.shared.set_loop_enabled(true);
+        let mut output = [0.0; 128];
+        assert_no_steady_state_allocation(
+            Burst {
+                path: "InnerAudio decimal-rate mix, loop and event drain",
+                warmup: 4,
+                measured: 256,
+            },
+            |_| {
+                output.fill(0.0);
+                assert!(player.process(&mut output));
+                player.drain_events().for_each(drop);
+                std::hint::black_box(&output);
+            },
+        );
     }
 
     #[test]
@@ -1546,7 +1771,7 @@ mod tests {
         player.shared.set_state(PlaybackState::Playing);
         player.shared.set_loop_enabled(true);
         player.position = 20;
-        player.position_frac = 1234;
+        player.position_phase = 234;
         player.frames_since_time_update = 17;
         player.loading_url = Some("https://example.test/audio.mp3".into());
         player.source.extend_from_slice(&[0.0; 20]);
@@ -1568,7 +1793,7 @@ mod tests {
         player.attach_cached_backing(cached);
 
         assert_eq!(player.position, 20);
-        assert_eq!(player.position_frac, 1234);
+        assert_eq!(player.position_phase, 234);
         assert_eq!(player.shared.state(), PlaybackState::Playing);
         assert!(player.shared.loop_enabled());
         assert_eq!(player.frames_since_time_update, 17);
