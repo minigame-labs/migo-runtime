@@ -21,13 +21,25 @@ struct Buffers {
 pub(crate) struct ChunkPool(Arc<Buffers>);
 impl ChunkPool {
     pub(crate) fn new(lease: Option<crate::pools::ByteTicket>) -> Self {
+        Self::from_parts(vec![0; FILE_CHUNK_BYTES], lease)
+    }
+    fn from_parts(buffer: Vec<u8>, lease: Option<crate::pools::ByteTicket>) -> Self {
         Self(Arc::new(Buffers {
             state: Mutex::new(BufferState {
-                slots: [Some(vec![0; FILE_CHUNK_BYTES]), None],
+                slots: [Some(buffer), None],
                 allocated: 1,
             }),
             _lease: lease,
         }))
+    }
+    fn from_buffer(buffer: Vec<u8>, lease: crate::pools::ByteTicket) -> io::Result<Self> {
+        if buffer.len() != FILE_CHUNK_BYTES || buffer.capacity() != FILE_CHUNK_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid media scratch buffer",
+            ));
+        }
+        Ok(Self::from_parts(buffer, Some(lease)))
     }
     pub(crate) fn fill(
         &self,
@@ -117,6 +129,23 @@ pub struct ReadAtFile {
 impl ReadAtFile {
     /// Construct on the bounded FS executor: metadata is a disk operation.
     pub fn new(file: File, max_control_bytes: usize) -> io::Result<Self> {
+        Self::with_pool(file, max_control_bytes, || Ok(ChunkPool::new(None)))
+    }
+    pub(crate) fn from_buffer(
+        file: File,
+        max_control_bytes: usize,
+        buffer: Vec<u8>,
+        lease: crate::pools::ByteTicket,
+    ) -> io::Result<Self> {
+        Self::with_pool(file, max_control_bytes, || {
+            ChunkPool::from_buffer(buffer, lease)
+        })
+    }
+    fn with_pool(
+        file: File,
+        max_control_bytes: usize,
+        pool: impl FnOnce() -> io::Result<ChunkPool>,
+    ) -> io::Result<Self> {
         control_limit(max_control_bytes)?;
         let stamp = Stamp::of(file.metadata()?)?;
         Ok(Self {
@@ -127,7 +156,7 @@ impl ReadAtFile {
             reads: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(test)]
             after_read: Mutex::new(None),
-            pool: ChunkPool::new(None),
+            pool: pool()?,
         })
     }
     pub fn len(&self) -> u64 {
