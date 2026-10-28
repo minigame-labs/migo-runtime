@@ -62,8 +62,8 @@ def io_controls(work,env):
         f.write_all(bytes)?;''','ATOMIC:byte_writer_tracks_an_already_open_temporary_object'),
         ('mutation-atomic-closure-writer-untracked','atomic_write.rs','''        let _write = crate::fs_ops::begin_file_write(&f)?;
         f.set_len(0)?;
-        writer(&mut f)?;''','''        f.set_len(0)?;
-        writer(&mut f)?;''','atomic_writer_enrols_its_temporary_object_before_calling_the_writer'),
+        let value = writer(&mut f)?;''','''        f.set_len(0)?;
+        let value = writer(&mut f)?;''','atomic_writer_enrols_its_temporary_object_before_calling_the_writer'),
     ]
     for name,file,before,after,test in declarations:
         path=work/'probe/src'/file;original=path.read_text();assert original.count(before)==1,(name,'anchor drift');path.write_text(original.replace(before,after))

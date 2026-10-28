@@ -56,14 +56,14 @@ def controls(work, env):
          'if let Err(e) = Ok::<(), std::io::Error>(()) {',
          'fs_ops::mutation_tests::cross_fs_production_transfer_preserves_a_large_payload'),
         ('move-leaks-partial-stage', 'atomic_write.rs',
-         '''    if let Err(e) = result {
-        let _ = fs::remove_file(&tmp);
-        return Err(e);
-    }''',
-         '''    if let Err(e) = result {
-        // Deliberately leave the failed stage behind.
-        return Err(e);
-    }''',
+         '''        Err(e) => {
+            let _ = fs::remove_file(&tmp);
+            return Err(e);
+        }''',
+         '''        Err(e) => {
+            // Deliberately leave the failed stage behind.
+            return Err(e);
+        }''',
          'fs_ops::mutation_tests::cross_fs_transfer_failure_keeps_source_and_target_and_cleans_partial_stage'),
         ('move-copies-only-a-prefix', 'fs_ops.rs',
          '            std::io::copy(src, dst)?;',

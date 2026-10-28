@@ -37,6 +37,8 @@ REQUIRED = [
     'engine/crates/shared/src/vfs/file_mutation/tests.rs',
     'scripts/testing/check_file_mutations.py',
     'scripts/testing/check_output_mutations.py',
+    'scripts/testing/check_package_ingest_mutations.py',
+    'engine/crates/io/src/package_ingest/mutation_tests.rs',
     'scripts/testing/check_source_copies.py',
     'scripts/testing/check_pack_copy_budget.py',
     'engine/crates/services/src/fs_copy_budget_tests.rs',
