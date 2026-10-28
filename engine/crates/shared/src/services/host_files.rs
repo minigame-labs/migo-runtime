@@ -345,6 +345,17 @@ pub fn visit_fields(
 /// Move the host's file into `temp_dir` under a fresh name; returns the new real
 /// path and the name.
 fn take_file(source: &Path, temp_dir: &Path) -> Result<(PathBuf, String), String> {
+    take_file_with(source, temp_dir, copy_import)
+}
+
+// The host transfers a quiescent owned path. Keeping both opened objects pins
+// the copy branch even if either name changes; it does not freeze host writers
+// or make the same-volume rename an arbitrary hostile-namespace operation.
+fn take_file_with(
+    source: &Path,
+    temp_dir: &Path,
+    transfer: impl FnOnce(&mut std::fs::File, &mut std::fs::File) -> std::io::Result<()>,
+) -> Result<(PathBuf, String), String> {
     let shown = source.display();
     if !source.is_absolute() {
         return Err(format!("{shown} is not an absolute path"));
@@ -361,23 +372,71 @@ fn take_file(source: &Path, temp_dir: &Path) -> Result<(PathBuf, String), String
         }
     }
 
-    let (dest, name) = reserve(temp_dir, extension(source))?;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let mut input = options.open(source).map_err(|e| format!("{shown}: {e}"))?;
+    let metadata = input.metadata().map_err(|e| format!("{shown}: {e}"))?;
+    if !metadata.is_file() {
+        return Err(format!("{shown} is not a regular file"));
+    }
+    let (mut output, dest, name) = reserve(temp_dir, extension(source))?;
     let moved = movable && std::fs::rename(source, &dest).is_ok();
     if !moved {
-        if let Err(error) = std::fs::copy(source, &dest) {
+        let result = (|| -> std::io::Result<()> {
+            // The no-VFS engine-free profile has no VFS source readers. Avoid
+            // pulling package/zstd capabilities into it just for this ledger.
+            #[cfg(feature = "vfs")]
+            let _write = crate::vfs::file_mutation::FileMutations::for_file(&output)?
+                .ok_or_else(|| std::io::Error::other("import output is not a regular file"))?
+                .into_write()?;
+            transfer(&mut input, &mut output)?;
+            #[cfg(any(not(target_vendor = "apple"), not(feature = "vfs")))]
+            {
+                let permissions = metadata.permissions();
+                let writable =
+                    owner_writable_permissions(permissions.clone()).unwrap_or(permissions);
+                output.set_permissions(writable)?;
+            }
+            #[cfg(all(target_vendor = "apple", feature = "vfs"))]
+            if let Some(writable) = owner_writable_permissions(metadata.permissions()) {
+                // fcopyfile already copied metadata. Only add missing owner
+                // write permission, through the same destination handle.
+                output.set_permissions(writable)?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            drop(output);
             let _ = std::fs::remove_file(&dest);
             return Err(format!("{shown}: {error}"));
         }
         if let Err(error) = std::fs::remove_file(source) {
             tracing::warn!("host file {shown} copied but not removed: {error}");
         }
+    } else {
+        make_owner_writable(&dest);
     }
-    make_owner_writable(&dest);
     Ok((dest, name))
 }
 
+fn copy_import(source: &mut std::fs::File, dest: &mut std::fs::File) -> std::io::Result<()> {
+    #[cfg(feature = "vfs")]
+    crate::vfs::file_copy::copy_contents(source, dest)?;
+    #[cfg(not(feature = "vfs"))]
+    std::io::copy(source, dest)?;
+    Ok(())
+}
+
 /// Claim a name no other file in `dir` has.
-fn reserve(dir: &Path, extension: Option<String>) -> Result<(PathBuf, String), String> {
+fn reserve(
+    dir: &Path,
+    extension: Option<String>,
+) -> Result<(std::fs::File, PathBuf, String), String> {
     loop {
         let n = NEXT_IMPORT.fetch_add(1, Ordering::Relaxed);
         let name = match &extension {
@@ -390,7 +449,7 @@ fn reserve(dir: &Path, extension: Option<String>) -> Result<(PathBuf, String), S
             .create_new(true)
             .open(&path)
         {
-            Ok(_) => return Ok((path, name)),
+            Ok(file) => return Ok((file, path, name)),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(format!("{}: {error}", dir.display())),
         }
@@ -421,25 +480,35 @@ fn make_owner_writable(path: &Path) {
     let Ok(metadata) = std::fs::metadata(path) else {
         return;
     };
-    let mut permissions = metadata.permissions();
+    if let Some(permissions) = owner_writable_permissions(metadata.permissions()) {
+        let _ = std::fs::set_permissions(path, permissions);
+    }
+}
+
+fn owner_writable_permissions(
+    mut permissions: std::fs::Permissions,
+) -> Option<std::fs::Permissions> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let mode = permissions.mode();
         if mode & 0o200 != 0 {
-            return;
+            return None;
         }
         permissions.set_mode(mode | 0o200);
     }
     #[cfg(not(unix))]
     {
         if !permissions.readonly() {
-            return;
+            return None;
         }
         permissions.set_readonly(false);
     }
-    let _ = std::fs::set_permissions(path, permissions);
+    Some(permissions)
 }
+
+#[cfg(all(test, feature = "vfs", unix))]
+mod mutation_tests;
 
 #[cfg(test)]
 mod tests {

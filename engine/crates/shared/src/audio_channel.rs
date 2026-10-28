@@ -798,14 +798,18 @@ pub fn disconnected() -> AudioCommandSender {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::channel::ThreadWakeup;
-    use crate::op_state::AudioSender;
+    // The sender wrapper belongs to VFS-enabled operational state. Keep the
+    // transport's own tests usable in the engine-free no-VFS profile too.
+    #[cfg(feature = "vfs")]
+    use crate::{channel::ThreadWakeup, op_state::AudioSender};
+    #[cfg(feature = "vfs")]
     use migo_alloc_probe::{Burst, assert_no_steady_state_allocation};
-    use std::sync::mpsc;
-    use std::time::Duration;
+    #[cfg(feature = "vfs")]
+    use std::{sync::mpsc, time::Duration};
 
     /// Generous: correct code returns in microseconds, and only code that parks
     /// forever reaches this.
+    #[cfg(feature = "vfs")]
     const LIVENESS_DEADLINE: Duration = Duration::from_secs(10);
 
     fn command(ctx_id: u32) -> AudioCmd {
@@ -915,6 +919,7 @@ mod tests {
     /// V8 producer. Keeping the command is essential for request/response variants:
     /// their oneshot sender must be resolved or dropped by the caller immediately.
     #[test]
+    #[cfg(feature = "vfs")]
     fn a_send_into_a_full_queue_returns_full_without_blocking() {
         let (tx, _rx) = channel();
         for ctx_id in 0..AUDIO_COMMAND_CAPACITY as u32 {
@@ -1187,6 +1192,7 @@ mod tests {
     /// that no consumer will ever free is the one way a bounded queue can be
     /// worse than an unbounded one.
     #[test]
+    #[cfg(feature = "vfs")]
     fn a_disconnected_transport_returns_the_command_instead_of_waiting() {
         let (tx, rx) = channel();
         drop(rx);
@@ -1208,6 +1214,7 @@ mod tests {
     /// nothing accumulates and nothing waits — the property the previous
     /// never-drained receiver had only by virtue of the ops being compiled out.
     #[test]
+    #[cfg(feature = "vfs")]
     fn a_disconnected_sender_holds_no_queue_and_refuses_every_send() {
         let sender = AudioSender::new(disconnected(), ThreadWakeup::new());
 
@@ -1228,6 +1235,7 @@ mod tests {
     /// fills nor makes the send wait — a burst that filled it would be measuring
     /// the wait instead.
     #[test]
+    #[cfg(feature = "vfs")]
     fn a_steady_state_audio_command_send_never_reaches_the_heap() {
         const WARMUP: usize = 4;
         const MEASURED: usize = 64;

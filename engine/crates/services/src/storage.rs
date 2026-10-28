@@ -25,7 +25,9 @@
 use std::collections::HashMap;
 use std::fs;
 use std::future::Future;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Weak};
 
 use futures::channel::oneshot;
@@ -47,6 +49,8 @@ pub const STORAGE_DIR: &str = "kv_storage";
 
 /// Buffer URL directory name under the game's sandbox cache directory.
 pub const BUFFER_URL_DIR: &str = "buffer_urls";
+
+static NEXT_BUFFER_URL: AtomicU64 = AtomicU64::new(0);
 
 /// Maximum size of a single stored value (1 MB).
 pub const MAX_VALUE_SIZE: usize = 1024 * 1024;
@@ -424,23 +428,51 @@ pub fn create_buffer_url(
     buffer: &[u8],
 ) -> Result<String, ServiceError> {
     let dir = buffer_url_dir(game_paths).map_err(sync_error)?;
-    if !dir.exists() {
-        fs::create_dir_all(&dir)
-            .map_err(|e| ServiceError::generic(format!("storage: mkdir fail {e}")))?;
-    }
-    // Unique file name: nanosecond timestamp in hex.
-    let id = {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        format!("{nanos:x}")
-    };
-    let path = dir.join(&id);
-    fs::write(&path, buffer)
-        .map_err(|e| ServiceError::generic(format!("createBufferURL:fail {e}")))?;
+    fs::create_dir_all(&dir)
+        .map_err(|e| ServiceError::generic(format!("storage: mkdir fail {e}")))?;
+    let path = create_buffer_url_in(
+        &dir,
+        || {
+            let id = NEXT_BUFFER_URL
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
+                .map_err(|_| io::Error::other("buffer URL identifier exhausted"))?;
+            Ok(format!("buffer-{}-{id:x}", std::process::id()))
+        },
+        |file| file.write_all(buffer),
+    )
+    .map_err(|e| ServiceError::generic(format!("createBufferURL:fail {e}")))?;
     Ok(path.to_string_lossy().into_owned())
+}
+
+fn create_buffer_url_in(
+    dir: &Path,
+    mut next_name: impl FnMut() -> io::Result<String>,
+    write: impl FnOnce(&mut fs::File) -> io::Result<()>,
+) -> io::Result<PathBuf> {
+    let (mut file, path) = loop {
+        let path = dir.join(next_name()?);
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => break (file, path),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    };
+    let result = (|| {
+        let mutations = shared::vfs::file_mutation::FileMutations::for_file(&file)?
+            .ok_or_else(|| io::Error::other("buffer URL is not a regular file"))?;
+        let _write = mutations.into_write()?;
+        write(&mut file)
+    })();
+    if let Err(error) = result {
+        drop(file);
+        let _ = fs::remove_file(&path);
+        return Err(error);
+    }
+    Ok(path)
 }
 
 /// `URL.revokeObjectURL(url)`. Deletes only inside the game's buffer URL
@@ -453,6 +485,9 @@ pub fn revoke_buffer_url(game_paths: Option<&GamePaths>, url: &str) -> Result<()
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod buffer_url_tests;
 
 #[cfg(test)]
 mod tests {
