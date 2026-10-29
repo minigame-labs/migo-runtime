@@ -7,6 +7,9 @@ sys.path.insert(0, str(ROOT / 'scripts/lib'))
 from gitignore_policy import check, tracked_ignored
 
 REQUIRED = [
+    'engine/crates/shared/src/audio_load.rs',
+    'scripts/testing/check_audio_source_lifecycle.py',
+    'platforms/apple/WebContent/PerformancePlus/test/source-load.test.mjs',
     'engine/crates/audio/src/source_load_tests.rs',
     'scripts/testing/check_audio_source_epochs.py',
     'engine/crates/audio/src/inner_audio.rs',

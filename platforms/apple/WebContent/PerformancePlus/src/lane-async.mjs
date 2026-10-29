@@ -519,14 +519,14 @@ export function op_audio_get_reduction(nodeId) {
   return audioRequest(SERVICE_OP.op_audio_get_reduction, (w) => w.u32(node));
 }
 
-/// An InnerAudioContext's `src`: a sound in the game's package, read and
-/// decoded on the host. A streamed `http(s)` source is refused until this lane
-/// has its network service.
-export function op_inner_audio_load_url(id, src) {
+/// Carry the source identity through the host's asynchronous media preparation.
+export function op_inner_audio_load_url(id, sourceId, src) {
   const inner = smiU32(id, "id");
+  const sourceTag = smiU32(sourceId, "source_id");
   const source = stringOf(src, "src");
   return audioRequest(SERVICE_OP.op_inner_audio_load_url, (w) => {
     w.u32(inner);
+    w.u32(sourceTag);
     w.str(source);
   }).then(nothing);
 }

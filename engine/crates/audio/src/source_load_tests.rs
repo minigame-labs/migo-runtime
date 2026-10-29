@@ -432,3 +432,151 @@ fn source_epoch_changes_reuse_the_existing_atomic_allocation() {
         },
     );
 }
+
+#[test]
+fn preparation_observers_wake_on_native_replacement_and_destruction() {
+    use std::{
+        future::Future,
+        sync::atomic::{AtomicUsize, Ordering},
+        task::{Context, Wake, Waker},
+    };
+    struct Wakes(AtomicUsize);
+    impl Wake for Wakes {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+    let mut player = InnerAudioPlayer::new(1, 1);
+    let first = player.begin_load_for(501).unwrap();
+    assert_eq!(first.source_id(), 501);
+    let watch = first.watch();
+    let wakes = Arc::new(Wakes(AtomicUsize::new(0)));
+    let waker = Waker::from(wakes.clone());
+    let mut waiting = std::pin::pin!(watch.while_current(std::future::pending::<()>()));
+    assert!(
+        waiting
+            .as_mut()
+            .poll(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+    let next = player.begin_load_for(502).unwrap();
+    assert_eq!(wakes.0.load(Ordering::Acquire), 1);
+    assert!(matches!(
+        waiting.as_mut().poll(&mut Context::from_waker(&waker)),
+        std::task::Poll::Ready(Err(_))
+    ));
+    let watch = next.watch();
+    let mut waiting = std::pin::pin!(watch.while_current(std::future::pending::<()>()));
+    assert!(
+        waiting
+            .as_mut()
+            .poll(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+    let _retained = player.shared.clone();
+    drop(player);
+    assert_eq!(wakes.0.load(Ordering::Acquire), 2);
+    assert!(matches!(
+        waiting.as_mut().poll(&mut Context::from_waker(&waker)),
+        std::task::Poll::Ready(Err(_))
+    ));
+}
+
+#[test]
+fn native_events_capture_source_identity_and_playback_state_at_emission() {
+    let mut player = InnerAudioPlayer::new(1, 1);
+    let load = player.begin_load_for(501).unwrap();
+    player.complete_load(load, pcm(0.25)).unwrap();
+    player.play();
+    player.process(&mut [0.0; 8]);
+    player.pause();
+    let events: Vec<_> = player.drain_events().collect();
+    assert_eq!(events.len(), 3);
+    assert!(events.iter().all(|event| event.source_id == 501
+        && event.buffered
+        && event.duration == 32.0 / 48_000.0));
+    assert!(events[0].paused);
+    assert!(!events[1].paused);
+    assert!(events[2].paused);
+    assert_eq!(events[2].current_time, 8.0 / 48_000.0);
+    let load = player.begin_load_for(502).unwrap();
+    player.complete_load(load, pcm(0.75)).unwrap();
+    assert!(player.drain_events().all(|event| event.source_id == 502));
+    assert!(events.iter().all(|event| event.source_id == 501));
+}
+
+#[test]
+fn prepared_local_decode_uses_its_original_token_through_the_actual_worker() {
+    let mut player = InnerAudioPlayer::new(1, 1);
+    let load = player.begin_load_for(501).unwrap();
+    let watch = load.watch();
+    let mut players = HashMap::from([(1, player)]);
+    let (tx, rx) = decode_queue(1, 1024);
+    let wake = ThreadWakeup::new();
+    let actual_pool = DecodePool::new_with_in_flight(
+        1,
+        tx.clone(),
+        Arc::new(DecodeInFlightUsage::new(1, 1)),
+        48_000,
+        wake.clone(),
+    );
+    let mut pool = LazyDecodePool::new(tx, 48_000, wake);
+    pool.pool = Some(actual_pool);
+    let (resp, mut response) = response();
+    submit_prepared_inner_audio_load(
+        &players,
+        &mut pool,
+        1,
+        load,
+        super::tests::wav(48_000, 32),
+        resp,
+    );
+    match rx.recv_timeout(Duration::from_secs(1)).unwrap() {
+        DecodeResult::InnerAudio {
+            id,
+            load,
+            result,
+            resp,
+        } => integrate_inner_audio_decode_result(&mut players, id, load, result, resp),
+        _ => panic!("prepared local decode result"),
+    }
+    assert_eq!(response.try_recv().unwrap().unwrap().sample_rate, 48_000);
+    assert!(
+        watch.is_current(),
+        "completion must not start another generation"
+    );
+    assert!(
+        players
+            .get_mut(&1)
+            .unwrap()
+            .drain_events()
+            .all(|event| event.source_id == 501)
+    );
+}
+
+#[test]
+fn older_source_tags_cannot_retire_a_newer_preparation_or_loaded_source() {
+    let mut player = InnerAudioPlayer::new(1, 1);
+    let current = player.begin_load_for(702).unwrap();
+    let watch = current.watch();
+    assert_eq!(
+        player.begin_load_for(701).err().unwrap().code,
+        ErrorCode::Cancelled
+    );
+    assert!(watch.is_current());
+    player.complete_load(current, pcm(0.25)).unwrap();
+    player.play();
+    assert_eq!(
+        player.begin_load_for(702).err().unwrap().code,
+        ErrorCode::Cancelled
+    );
+    assert!(watch.is_current());
+    audible(&mut player, 0.25);
+    // Legacy Rust callers use tag 0 without erasing the tagged request history.
+    let _legacy = player.begin_load().unwrap();
+    assert_eq!(
+        player.begin_load_for(701).err().unwrap().code,
+        ErrorCode::Cancelled
+    );
+    assert!(player.begin_load_for(703).is_ok());
+}

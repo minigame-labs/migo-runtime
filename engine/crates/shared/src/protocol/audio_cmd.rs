@@ -607,6 +607,21 @@ pub enum AudioCmd {
     /// Destroy an InnerAudioContext
     DestroyInnerAudio { id: InnerAudioId },
 
+    /// Issued synchronously before asynchronous source preparation.
+    InnerAudioBeginLoad {
+        id: InnerAudioId,
+        source_id: u32,
+        resp: AudioResp<crate::audio_load::InnerAudioLoadToken>,
+    },
+
+    /// Complete an already admitted local source without starting a new epoch.
+    InnerAudioCompleteLoad {
+        id: InnerAudioId,
+        load: crate::audio_load::InnerAudioLoadToken,
+        data: Vec<u8>,
+        resp: AudioResp<InnerAudioInfo>,
+    },
+
     /// Load audio data into InnerAudioContext (full load mode)
     InnerAudioLoad {
         id: InnerAudioId,
@@ -617,6 +632,7 @@ pub enum AudioCmd {
     /// Load audio from URL with streaming (edge-download-edge-play)
     InnerAudioLoadUrl {
         id: InnerAudioId,
+        load: crate::audio_load::InnerAudioLoadToken,
         url: String,
         resp: AudioResp<()>,
     },
@@ -693,9 +709,12 @@ impl AudioCmd {
             } => vector_bytes(feedforward).saturating_add(vector_bytes(feedback)),
             Self::GetFrequencyResponse { frequencies, .. } => vector_bytes(frequencies),
             Self::CopyToChannel { data, .. } => vector_bytes(data),
-            Self::InnerAudioLoad { data, .. } => data.capacity(),
+            Self::InnerAudioLoad { data, .. } | Self::InnerAudioCompleteLoad { data, .. } => {
+                data.capacity()
+            }
             Self::InnerAudioLoadUrl { url, .. } => url.capacity(),
             Self::CreateContext { .. }
+            | Self::InnerAudioBeginLoad { .. }
             | Self::ReleaseContext { .. }
             | Self::ReleaseNode { .. }
             | Self::ReleaseAllContexts
@@ -799,6 +818,10 @@ pub use super::host_cmd::InnerAudioEventType;
 pub struct InnerAudioEvent {
     /// ID of the InnerAudioContext that generated this event
     pub id: InnerAudioId,
+    pub source_id: u32,
+    pub duration: f64,
+    pub buffered: bool,
+    pub paused: bool,
     /// Type of event
     pub event_type: InnerAudioEventType,
     /// Current playback time when event occurred

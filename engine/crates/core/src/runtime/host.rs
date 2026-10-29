@@ -816,13 +816,8 @@ impl Host {
 
             HostCommand::Shutdown => Ok(()),
 
-            HostCommand::InnerAudioEvent {
-                id,
-                event_type,
-                current_time,
-            } => {
-                self.js
-                    .dispatch_inner_audio_event(id, event_type.as_str(), current_time);
+            HostCommand::InnerAudioEvent { event } => {
+                self.js.dispatch_inner_audio_event(&event);
                 Ok(())
             }
 

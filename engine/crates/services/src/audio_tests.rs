@@ -18,6 +18,207 @@ fn hosted() -> (AudioSender, AudioCommandReceiver) {
     (sender, rx)
 }
 
+struct TestLoadState {
+    generation: std::sync::atomic::AtomicU64,
+    changed: tokio::sync::Notify,
+}
+impl shared::audio_load::AudioLoadState for TestLoadState {
+    fn generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::Acquire)
+    }
+    fn generation_changed(&self) -> &tokio::sync::Notify {
+        &self.changed
+    }
+}
+fn accept_begin(rx: &AudioCommandReceiver) -> Arc<TestLoadState> {
+    let AudioCmd::InnerAudioBeginLoad {
+        source_id, resp, ..
+    } = rx.try_recv().unwrap()
+    else {
+        panic!("source begin");
+    };
+    let state = Arc::new(TestLoadState {
+        generation: std::sync::atomic::AtomicU64::new(1),
+        changed: tokio::sync::Notify::new(),
+    });
+    resp.send(Ok(shared::audio_load::InnerAudioLoadToken::new(
+        &state, 1, source_id,
+    )))
+    .unwrap();
+    state
+}
+fn started_load<G>(
+    tx: AudioSender,
+    sources: InnerAudioSources<G>,
+    id: u32,
+    src: String,
+    rx: &AudioCommandReceiver,
+) -> impl std::future::Future<Output = Result<(), ServiceError>> + use<G>
+where
+    G: FnOnce(&Url) -> Result<(), ServiceError>,
+{
+    let load = inner_audio_load_url(tx, sources, id, 100 + id, src).unwrap();
+    accept_begin(rx);
+    load
+}
+
+#[test]
+fn source_begin_is_synchronous_and_old_preparation_is_not_started() {
+    let (tx, rx) = hosted();
+    let old_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted_old = old_calls.clone();
+    let old = inner_audio_load_url(
+        tx.clone(),
+        InnerAudioSources {
+            code_dir: None,
+            vfs: None,
+            admit_remote: move |_: &Url| {
+                counted_old.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                Err(audio_error("stale preparation reached admission"))
+            },
+        },
+        7,
+        701,
+        "https://media.example/old.mp3".into(),
+    )
+    .unwrap();
+    // The factory has not been polled, yet its ordering boundary is published.
+    let state = accept_begin(&rx);
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = calls.clone();
+    let new = inner_audio_load_url(
+        tx,
+        InnerAudioSources {
+            code_dir: None,
+            vfs: None,
+            admit_remote: move |_: &Url| {
+                counted.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                Ok(())
+            },
+        },
+        7,
+        702,
+        "https://media.example/new.mp3".into(),
+    )
+    .unwrap();
+    let AudioCmd::InnerAudioBeginLoad {
+        id,
+        source_id,
+        resp,
+    } = rx.try_recv().unwrap()
+    else {
+        panic!("new boundary");
+    };
+    assert_eq!((id, source_id), (7, 702));
+    state
+        .generation
+        .store(2, std::sync::atomic::Ordering::Release);
+    state.changed.notify_waiters();
+    resp.send(Ok(shared::audio_load::InnerAudioLoadToken::new(
+        &state, 2, source_id,
+    )))
+    .unwrap();
+    let rt = runtime();
+    let error = rt.block_on(old).unwrap_err();
+    assert_eq!(error.class, CLASS_AUDIO_ERROR);
+    assert!(error.message.contains("Cancelled"), "{error:?}");
+    assert_eq!(old_calls.load(std::sync::atomic::Ordering::Acquire), 0);
+    let task = rt.spawn(new);
+    let command = rt.block_on(async {
+        loop {
+            if let Ok(command) = rx.try_recv() {
+                break command;
+            }
+            tokio::task::yield_now().await;
+        }
+    });
+    let AudioCmd::InnerAudioLoadUrl {
+        load, url, resp, ..
+    } = command
+    else {
+        panic!("current remote source");
+    };
+    assert_eq!(load.source_id(), 702);
+    assert_eq!(url, "https://media.example/new.mp3");
+    resp.send(Ok(())).unwrap();
+    rt.block_on(task).unwrap().unwrap();
+    assert_eq!(calls.load(std::sync::atomic::Ordering::Acquire), 1);
+    assert!(rx.try_recv().is_err());
+}
+
+#[test]
+fn source_cancellation_finishes_while_the_native_reply_is_still_held() {
+    let (tx, rx) = hosted();
+    let load = inner_audio_load_url(
+        tx,
+        InnerAudioSources {
+            code_dir: None,
+            vfs: None,
+            admit_remote: |_: &Url| Ok(()),
+        },
+        7,
+        701,
+        "https://media.example/old.mp3".into(),
+    )
+    .unwrap();
+    let state = accept_begin(&rx);
+    let rt = runtime();
+    let task = rt.spawn(load);
+    let command = rt.block_on(async {
+        loop {
+            if let Ok(command) = rx.try_recv() {
+                break command;
+            }
+            tokio::task::yield_now().await;
+        }
+    });
+    let AudioCmd::InnerAudioLoadUrl { resp, .. } = command else {
+        panic!("remote source");
+    };
+    assert!(!resp.is_closed());
+    state
+        .generation
+        .store(2, std::sync::atomic::Ordering::Release);
+    state.changed.notify_waiters();
+    let error = rt.block_on(async {
+        tokio::time::timeout(std::time::Duration::from_secs(1), task)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err()
+    });
+    assert!(error.message.contains("Cancelled"));
+    assert!(
+        resp.is_closed(),
+        "cancellation must drop the still-pending reply receiver"
+    );
+}
+
+#[test]
+fn clearing_a_source_publishes_a_boundary_without_open_or_remote_admission() {
+    let (tx, rx) = hosted();
+    let load = inner_audio_load_url(
+        tx,
+        InnerAudioSources {
+            code_dir: None,
+            vfs: None,
+            admit_remote: |_: &Url| -> Result<(), ServiceError> {
+                panic!("empty source admitted as remote")
+            },
+        },
+        7,
+        701,
+        String::new(),
+    )
+    .unwrap();
+    accept_begin(&rx);
+    runtime().block_on(load).unwrap();
+    assert!(
+        rx.try_recv().is_err(),
+        "clearing must not open or enqueue encoded media"
+    );
+}
+
 fn runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -646,7 +847,7 @@ fn remote_audio_url_classification_is_case_insensitive_and_exact() {
 fn shared_url_contract_queues_the_exact_canonical_audio_url_that_was_admitted() {
     let (tx, rx) = hosted();
     let rt = runtime();
-    let load = rt.spawn(inner_audio_load_url(
+    let load = rt.spawn(started_load(
         tx,
         InnerAudioSources {
             code_dir: None,
@@ -658,6 +859,7 @@ fn shared_url_contract_queues_the_exact_canonical_audio_url_that_was_admitted() 
         },
         5,
         " \tHTTPS://MEDIA.example:443/audio^game.mp3 ".to_owned(),
+        &rx,
     ));
     let command = rt.block_on(async {
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
@@ -694,7 +896,7 @@ fn shared_url_contract_bounds_the_canonical_audio_command_before_enqueue() {
     let error = runtime().block_on(async {
         tokio::time::timeout(
             std::time::Duration::from_secs(1),
-            inner_audio_load_url(
+            started_load(
                 tx,
                 InnerAudioSources {
                     code_dir: None,
@@ -703,6 +905,7 @@ fn shared_url_contract_bounds_the_canonical_audio_command_before_enqueue() {
                 },
                 5,
                 src,
+                &rx,
             ),
         )
         .await
@@ -719,13 +922,13 @@ fn shared_url_contract_bounds_the_canonical_audio_command_before_enqueue() {
 #[test]
 fn a_remote_source_is_admitted_before_it_reaches_the_queue() {
     let source = include_str!("audio.rs");
-    let body = section(source, "pub async fn inner_audio_load_url", "\n}\n");
+    let body = section(source, "pub fn inner_audio_load_url", "\n}\n");
     let admit = body.find("(sources.admit_remote)(&url)").unwrap();
     let enqueue = body.find("AudioCmd::InnerAudioLoadUrl").unwrap();
     assert!(admit < enqueue);
 
     let (tx, rx) = hosted();
-    let refused = runtime().block_on(inner_audio_load_url(
+    let refused = runtime().block_on(started_load(
         tx,
         InnerAudioSources {
             code_dir: None,
@@ -734,6 +937,7 @@ fn a_remote_source_is_admitted_before_it_reaches_the_queue() {
         },
         1,
         "https://media.example/a.mp3".to_owned(),
+        &rx,
     ));
     let refused = refused.unwrap_err();
     assert_eq!(refused.message, "not on the allow list");
@@ -743,8 +947,9 @@ fn a_remote_source_is_admitted_before_it_reaches_the_queue() {
     );
     assert!(rx.try_recv().is_err());
     // As is a URL that is not one.
-    let malformed = runtime().block_on(inner_audio_load_url(
-        hosted().0,
+    let (tx, rx) = hosted();
+    let malformed = runtime().block_on(started_load(
+        tx,
         InnerAudioSources {
             code_dir: None,
             vfs: None,
@@ -752,6 +957,7 @@ fn a_remote_source_is_admitted_before_it_reaches_the_queue() {
         },
         1,
         "https://".to_owned(),
+        &rx,
     ));
     assert_eq!(malformed.unwrap_err().class, CLASS_AUDIO_NETWORK_ERROR);
 }
@@ -759,7 +965,7 @@ fn a_remote_source_is_admitted_before_it_reaches_the_queue() {
 #[test]
 fn a_local_source_is_admitted_before_it_is_opened_and_charged_what_it_keeps() {
     let source = include_str!("audio.rs");
-    let body = section(source, "pub async fn inner_audio_load_url", "\n}\n");
+    let body = section(source, "pub fn inner_audio_load_url", "\n}\n");
     let reserve = body.find("reserve(&tx, MAX_ENCODED_AUDIO_BYTES)").unwrap();
     let open = body
         .find("open_local_audio_source(sources.vfs, source)")
@@ -777,7 +983,7 @@ fn a_packaged_sound_is_read_through_the_sandbox_and_loaded() {
     let (tx, rx) = hosted();
     let rt = runtime();
 
-    let load = rt.spawn(inner_audio_load_url(
+    let load = rt.spawn(started_load(
         tx,
         InnerAudioSources {
             code_dir: Some(code.to_string_lossy().into_owned()),
@@ -788,6 +994,7 @@ fn a_packaged_sound_is_read_through_the_sandbox_and_loaded() {
         },
         3,
         "clip.mp3".to_owned(),
+        &rx,
     ));
     let command = rt.block_on(async {
         loop {
@@ -797,7 +1004,10 @@ fn a_packaged_sound_is_read_through_the_sandbox_and_loaded() {
             tokio::task::yield_now().await;
         }
     });
-    let AudioCmd::InnerAudioLoad { id: 3, data, resp } = command else {
+    let AudioCmd::InnerAudioCompleteLoad {
+        id: 3, data, resp, ..
+    } = command
+    else {
         panic!("a load of the file's bytes");
     };
     assert_eq!(data, b"encoded");
@@ -823,7 +1033,7 @@ fn a_packaged_sound_the_decoder_refuses_is_a_format_error() {
         fs::write(code_dir.join("clip.mp3"), b"not audio").unwrap();
         let (tx, rx) = hosted();
         let rt = runtime();
-        let load = rt.spawn(inner_audio_load_url(
+        let load = rt.spawn(started_load(
             tx,
             InnerAudioSources {
                 code_dir: Some(code_dir.to_string_lossy().into_owned()),
@@ -832,6 +1042,7 @@ fn a_packaged_sound_the_decoder_refuses_is_a_format_error() {
             },
             4,
             "clip.mp3".to_owned(),
+            &rx,
         ));
         let command = rt.block_on(async {
             loop {
@@ -841,7 +1052,7 @@ fn a_packaged_sound_the_decoder_refuses_is_a_format_error() {
                 tokio::task::yield_now().await;
             }
         });
-        let AudioCmd::InnerAudioLoad { resp, .. } = command else {
+        let AudioCmd::InnerAudioCompleteLoad { resp, .. } = command else {
             panic!("a load of the file's bytes");
         };
         resp.send(Err(EngineError::from_detail(code, "refused")))

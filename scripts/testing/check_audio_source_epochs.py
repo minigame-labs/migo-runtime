@@ -37,16 +37,19 @@ def controls(originals: dict[str, str]):
         add(name, file, body, body.replace(before, after), test)
 
     file = 'inner_audio.rs'
-    add('source-generation-ignored', file,
-        'self.shared.source_generation.load(Ordering::Acquire) == self.generation', 'true',
+    add('older-source-tag-admitted', file,
+        'source_id != 0 && source_id <= self.last_source_id', 'false',
+        'older_source_tags_cannot_retire_a_newer_preparation_or_loaded_source')
+    add('source-generation-lags', file,
+        'self.source_generation.load(Ordering::Acquire)', 'self.source_generation.load(Ordering::Acquire).saturating_sub(1)',
         'superseded_queued_jobs_are_cancelled_before_peak_admission')
     add('allocation-identity-ignored', file,
-        'Arc::ptr_eq(&self.shared, shared) && self.is_current()', 'self.is_current()',
+        'load.matches(self)', 'load.is_current()',
         'equal_generations_from_different_live_players_do_not_match')
     add('destruction-keeps-token-valid', file,
         'self.shared.source_generation.store(0, Ordering::Release);', '',
         'destruction_invalidates_tokens_even_if_atomic_state_is_retained')
-    begin = '    pub(crate) fn begin_load('
+    begin = '    pub(crate) fn begin_load_for('
     for name, before, after, test in [
         ('old-stream-not-cancelled', '        self.cancel_stream();\n', '',
          'source_switch_retires_old_pcm_stream_seek_and_events'),
@@ -60,12 +63,12 @@ def controls(originals: dict[str, str]):
          'source_switch_retires_old_pcm_stream_seek_and_events'),
         ('old-pcm-credit-retained', '        self.stream_permit = None;\n', '',
          'source_replacement_returns_old_pcm_credit_before_new_admission'),
-        ('epoch-change-allocates', '        let load = self.shared.begin_source()?;',
-         '        std::hint::black_box(vec![0_u8; 64]);\n        let load = self.shared.begin_source()?;',
+        ('epoch-change-allocates', '        let load = self.shared.begin_source(source_id)?;',
+         '        std::hint::black_box(vec![0_u8; 64]);\n        let load = self.shared.begin_source(source_id)?;',
          'source_epoch_changes_reuse_the_existing_atomic_allocation'),
     ]:
         change(name, file, begin, before, after, test)
-    guard = ('        if !load.matches(&self.shared) || self.shared.is_loaded() {\n'
+    guard = ('        if !self.shared.owns_load(&load) || self.shared.is_loaded() {\n'
              '            return Err(InnerAudioLoadToken::cancelled_error());\n        }\n')
     for name, method in [('owned-completion-accepts-stale', 'complete_load'),
                          ('cached-completion-accepts-stale', 'complete_cached_load')]:
@@ -78,9 +81,9 @@ def controls(originals: dict[str, str]):
            '            .inspect_err(|_| state.cancel())?', '?',
            'rejected_stream_preparation_cancels_its_incoming_producer')
     body = function(originals[file], '    pub(crate) fn begin_source(')
-    assert body.count('generation.checked_add(1)') == body.count('generation: previous + 1') == 1
+    assert body.count('generation.checked_add(1)') == body.count('previous + 1') == 1
     wrapped = body.replace('generation.checked_add(1)', 'Some(generation.wrapping_add(1))').replace(
-        'generation: previous + 1', 'generation: previous.wrapping_add(1)')
+        'previous + 1', 'previous.wrapping_add(1)')
     add('source-generation-wraps', file, body, wrapped,
         'source_generation_exhaustion_never_wraps_or_revalidates_a_token', 'inner_audio::tests::')
     file = 'audio_thread.rs'
@@ -94,7 +97,7 @@ def controls(originals: dict[str, str]):
         '\n        if job.is_cancelled() {', '\n        if false {',
         'abandoned_replies_do_not_start_a_decode_pool')
     add('install-does-not-check-stale-errors', file,
-        'Some(player) if load.matches(&player.shared) && !resp.is_closed() => {',
+        'Some(player) if player.shared.owns_load(&load) && !resp.is_closed() => {',
         'Some(player) if !resp.is_closed() => {',
         'stale_errors_are_cancelled_without_changing_the_new_source')
     return declarations

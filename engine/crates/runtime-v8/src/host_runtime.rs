@@ -627,11 +627,12 @@ impl HostJsRuntime {
         self.dispatch_task(|rt, bindings| bindings.dispatch_focus_changed(rt, focused));
     }
 
-    pub fn dispatch_inner_audio_event(&mut self, id: u32, event_type: &str, current_time: f64) {
+    pub fn dispatch_inner_audio_event(
+        &mut self,
+        event: &shared::protocol::audio_cmd::InnerAudioEvent,
+    ) {
         let host_id = self.host_id;
-        self.dispatch_task(|rt, bindings| {
-            bindings.dispatch_inner_audio_event(rt, host_id, id, event_type, current_time)
-        });
+        self.dispatch_task(|rt, bindings| bindings.dispatch_inner_audio_event(rt, host_id, event));
     }
 
     // ---- Sensor event dispatch (zero-alloc, no JS parsing) ----

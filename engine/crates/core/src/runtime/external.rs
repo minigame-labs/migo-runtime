@@ -3238,11 +3238,7 @@ impl Lifecycle {
 /// differently. Anything else is returned for [`handle_command`].
 fn route_audio_event(sink: &ServiceEventSink<'_>, command: HostCommand) -> Option<HostCommand> {
     match command {
-        HostCommand::InnerAudioEvent {
-            id,
-            event_type,
-            current_time,
-        } => sink.inner_audio_event(id, event_type.as_str(), current_time),
+        HostCommand::InnerAudioEvent { event } => sink.inner_audio_event(&event),
         HostCommand::AudioSourceEnded { node_id } => {
             sink.host_hook("_internalTriggerAudioSourceEnded", &format!("[{node_id}]"))
         }

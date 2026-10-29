@@ -1374,56 +1374,88 @@ pub fn prepare_inner_audio_src(src: &str) -> Result<String, ServiceError> {
 
 /// Load `src` into an InnerAudioContext: streamed from an `http(s)` URL the
 /// caller admits, or read from the game's sandbox and decoded.
-pub async fn inner_audio_load_url<G>(
+pub fn inner_audio_load_url<G>(
     tx: AudioSender,
     sources: InnerAudioSources<G>,
     id: InnerAudioId,
+    source_id: u32,
     mut src: String,
-) -> Result<(), ServiceError>
+) -> Result<impl std::future::Future<Output = Result<(), ServiceError>>, ServiceError>
 where
     G: FnOnce(&Url) -> Result<(), ServiceError>,
 {
-    if let Some(url) = parse_remote_audio_url(&src).map_err(as_network_error)? {
-        (sources.admit_remote)(&url).map_err(as_network_error)?;
-        // Queue the exact URL admitted above. Reuse the input allocation when
-        // possible, and enforce the queue's bound after percent-encoding expands it.
-        validate_audio_control_string("audio source URL", url.as_str())?;
-        if src != url.as_str() {
-            src.clear();
-            src.push_str(url.as_str());
-        }
-        return request(&tx, |resp| AudioCmd::InnerAudioLoadUrl {
-            id,
-            url: src,
-            resp,
-        })?
-        .answer()
-        .await
-        .map_err(as_network_error);
-    }
+    validate_audio_control_string("audio source URL", &src)?;
+    // Publish the source boundary now, before this future's first poll and
+    // before any local open/read can finish in a different order.
+    let begin = request(&tx, |resp| AudioCmd::InnerAudioBeginLoad {
+        id,
+        source_id,
+        resp,
+    })?;
+    Ok(async move {
+        let load = begin.answer().await?;
+        let watch = load.watch();
+        watch
+            .while_current(async move {
+                if src.is_empty() {
+                    return Ok(());
+                }
+                if let Some(url) = parse_remote_audio_url(&src).map_err(as_network_error)? {
+                    (sources.admit_remote)(&url).map_err(as_network_error)?;
+                    // Queue the exact URL admitted above. Reuse the input allocation when
+                    // possible, and enforce the queue's bound after percent-encoding expands it.
+                    validate_audio_control_string("audio source URL", url.as_str())?;
+                    if src != url.as_str() {
+                        src.clear();
+                        src.push_str(url.as_str());
+                    }
+                    return request(&tx, |resp| AudioCmd::InnerAudioLoadUrl {
+                        id,
+                        load,
+                        url: src,
+                        resp,
+                    })?
+                    .answer()
+                    .await
+                    .map_err(as_network_error);
+                }
 
-    let source = resolve_local_src(sources.code_dir.as_deref(), sources.vfs.as_deref(), &src)?;
-    // Admit the operation before it reaches the blocking filesystem pool.
-    // This bounds concurrent opens as well as the later allocation; every
-    // failure releases the RAII permit, and a successful small load shrinks it
-    // to the Vec capacity its queued command retains.
-    let mut permit = reserve(&tx, MAX_ENCODED_AUDIO_BYTES)?;
-    let file = open_local_audio_source(sources.vfs, source).await?;
-    let data = read_capped_local_audio(file).await?;
-    if data.capacity() > MAX_ENCODED_AUDIO_BYTES {
-        return Err(engine_error(EngineError::from_detail(
-            ErrorCode::InputSaturated,
-            "local audio buffer capacity exceeds its reservation",
-        )));
-    }
-    // The file reader uses metadata only as an allocation hint, so charge the
-    // actual retained capacity before publishing its command.
-    permit.shrink_to(data.capacity());
-    let (resp, answer) = oneshot::channel();
-    send_reserved(&tx, AudioCmd::InnerAudioLoad { id, data, resp }, permit)?;
-    // Waited for, but what the load learned is not this op's answer -- except that bytes the decoder
-    // refused are the source's format error.
-    Pending(answer).answer_decode().await.map(|_| ())
+                let source =
+                    resolve_local_src(sources.code_dir.as_deref(), sources.vfs.as_deref(), &src)?;
+                // Admit the operation before it reaches the blocking filesystem pool.
+                // This bounds concurrent opens as well as the later allocation; every
+                // failure releases the RAII permit, and a successful small load shrinks it
+                // to the Vec capacity its queued command retains.
+                let mut permit = reserve(&tx, MAX_ENCODED_AUDIO_BYTES)?;
+                let file = open_local_audio_source(sources.vfs, source).await?;
+                let data = read_capped_local_audio(file).await?;
+                if data.capacity() > MAX_ENCODED_AUDIO_BYTES {
+                    return Err(engine_error(EngineError::from_detail(
+                        ErrorCode::InputSaturated,
+                        "local audio buffer capacity exceeds its reservation",
+                    )));
+                }
+                // The file reader uses metadata only as an allocation hint, so charge the
+                // actual retained capacity before publishing its command.
+                permit.shrink_to(data.capacity());
+                let (resp, answer) = oneshot::channel();
+                send_reserved(
+                    &tx,
+                    AudioCmd::InnerAudioCompleteLoad {
+                        id,
+                        load,
+                        data,
+                        resp,
+                    },
+                    permit,
+                )?;
+                // Waited for, but what the load learned is not this op's answer -- except that bytes the decoder
+                // refused are the source's format error.
+                Pending(answer).answer_decode().await.map(|_| ())
+            })
+            .await
+            .map_err(engine_error)?
+    })
 }
 
 /// A remote audio URL, without reclassifying ordinary local or VFS paths. URL

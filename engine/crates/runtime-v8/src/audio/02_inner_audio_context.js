@@ -11,7 +11,6 @@ import {
   op_inner_audio_set_loop,
   op_inner_audio_set_playback_rate,
   op_inner_audio_set_autoplay,
-  op_inner_audio_get_state,
   op_audio_set_inner_audio_option,
   op_audio_get_available_audio_sources,
 } from "ext:core/ops";
@@ -34,8 +33,8 @@ let _scheduled = false;
  * @param {string} eventType - Event type (canPlay, play, pause, etc.)
  * @param {number} currentTime - Current playback time
  */
-function _internalEnqueueInnerAudioEvent(id, eventType, currentTime) {
-  _eventQueue.push({ id, eventType, currentTime });
+function _internalEnqueueInnerAudioEvent(id, eventType, currentTime, sourceId, duration, buffered, paused) {
+  _eventQueue.push({ id, eventType, currentTime, sourceId, duration, buffered, paused });
 
   if (!_scheduled) {
     _scheduled = true;
@@ -78,6 +77,7 @@ function unregisterContext(ctx) {
 class InnerAudioContext {
   #id;
   #src = "";
+  #sourceId = 0;
   #startTime = 0;
   #autoplay = false;
   #loop = false;
@@ -87,8 +87,6 @@ class InnerAudioContext {
   #offlineMode = false;
   // Read-only properties (cached from native)
   #duration = 0;
-  // The tail of the events waiting for native state (see _handleNativeEvent), or null.
-  #behind = null;
   #currentTime = 0;
   #paused = true;
   #buffered = false;
@@ -126,42 +124,19 @@ class InnerAudioContext {
     return this.#id;
   }
 
-  /** Internal: Handle native event */
+  /** Internal: Apply only snapshots belonging to the current source. */
   _handleNativeEvent(event) {
-    if (this.#destroyed) return;
-    // `canplay` waits for native state (below). An event that arrives while it waits waits behind it, so listeners see
-    // events in the order they happened: canplay, then the play of an autoplaying source.
-    let pending = this.#behind;
-    if (pending === null) {
-      pending = this.#deliver(event);       // nothing: this event did not have to wait
-      if (!pending) return;
-    } else {
-      pending = pending.then(() => this.#deliver(event));
-    }
-    const tail = pending.then(() => {
-      if (this.#behind === tail) this.#behind = null;
-    });
-    this.#behind = tail;
-  }
-
-  /** Delivers one native event; returns a promise when its listeners must wait for native state, else undefined. */
-  #deliver(event) {
-    if (this.#destroyed) return undefined;
-
-    // Update current time from event
+    if (this.#destroyed || event.sourceId !== this.#sourceId) return;
     this.#currentTime = event.currentTime;
-
+    this.#duration = event.duration;
+    this.#buffered = event.buffered;
+    this.#paused = event.paused;
     switch (event.eventType) {
       case "canPlay":
-        this.#buffered = true;
-        // The event carries only currentTime, and `canplay` is when a game reads `duration` (Howler's HTML5 path computes
-        // its end timer from it there): the listeners run once the duration has been fetched, not before.
-        return this.#refreshState().then(() => {
-          if (!this.#destroyed) this.#fireListeners("canplay");
-        });
+        this.#fireListeners("canplay");
+        break;
       case "play":
         this.#paused = false;
-        this.#refreshState(); // refresh duration for streaming sources
         this.#fireListeners("play");
         break;
       case "pause":
@@ -198,29 +173,12 @@ class InnerAudioContext {
         this.#fireListeners("error", { errCode: 10001, errMsg: "Playback error" });
         break;
     }
-    return undefined;
   }
 
   #fireListeners(type, arg) {
     const group = this.#listeners[type];
     if (!group) return;
     group.trigger(arg);
-  }
-
-  // Pull duration/buffered (and a fresh currentTime) from native. The push-based
-  // event stream only carries currentTime, so duration/buffered would otherwise
-  // stay 0. Fire-and-forget; guarded against teardown.
-  async #refreshState() {
-    if (this.#destroyed) return;
-    try {
-      const st = await op_inner_audio_get_state(this.#id);
-      if (this.#destroyed) return;
-      if (typeof st.duration === "number") this.#duration = st.duration;
-      if (typeof st.buffered === "boolean") this.#buffered = st.buffered;
-      if (typeof st.current_time === "number") this.#currentTime = st.current_time;
-    } catch (_) {
-      /* context gone or audio thread unavailable */
-    }
   }
 
   // ==================== Properties ====================
@@ -231,9 +189,15 @@ class InnerAudioContext {
   }
 
   set src(value) {
-    if (this.#src === value) return;
+    if (this.#destroyed || this.#src === value) return;
+    const sourceId = allocateHostCallbackId();
+    this.#sourceId = sourceId;
     this.#src = value;
-    this.#loadAudio();
+    this.#buffered = false;
+    this.#paused = true;
+    this.#currentTime = 0;
+    this.#duration = 0;
+    this.#loadAudio(sourceId, value);
   }
 
   /** Start position in seconds */
@@ -472,20 +436,14 @@ class InnerAudioContext {
 
   // ==================== Internal Methods ====================
 
-  async #loadAudio() {
-    if (!this.#src || this.#destroyed) return;
-
-    this.#buffered = false;
-
+  async #loadAudio(sourceId, src) {
+    if (this.#destroyed) return;
     try {
-      // Use streaming load - Rust handles HTTP download and progressive decoding
-      // This enables edge-download-edge-play for faster playback start
-      await op_inner_audio_load_url(this.#id, this.#src);
-
-      // Note: canplay event will be fired from native via push once enough data is buffered
-      // Duration will be updated as streaming progresses
-      // Autoplay is also handled by native
+      await op_inner_audio_load_url(this.#id, sourceId, src);
     } catch (e) {
+      if (this.#destroyed || sourceId !== this.#sourceId) return;
+      this.#buffered = false;
+      this.#paused = true;
       this.#fireListeners("error", { errCode: loadErrorCode(e), errMsg: errorMessage(e) });
     }
   }

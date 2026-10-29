@@ -28,6 +28,29 @@ fn binding() -> (AudioBinding, AudioCommandReceiver) {
     )
 }
 
+struct SourceState(tokio::sync::Notify);
+impl shared::audio_load::AudioLoadState for SourceState {
+    fn generation(&self) -> u64 {
+        1
+    }
+    fn generation_changed(&self) -> &tokio::sync::Notify {
+        &self.0
+    }
+}
+fn accept_source_begin(rx: &AudioCommandReceiver) {
+    let AudioCmd::InnerAudioBeginLoad {
+        source_id, resp, ..
+    } = rx.try_recv().unwrap()
+    else {
+        panic!("source begin");
+    };
+    let state = std::sync::Arc::new(SourceState(tokio::sync::Notify::new()));
+    resp.send(Ok(shared::audio_load::InnerAudioLoadToken::new(
+        &state, 1, source_id,
+    )))
+    .unwrap();
+}
+
 fn no_sources() -> LocalSources {
     LocalSources {
         code_dir: None,
@@ -344,10 +367,12 @@ fn a_streamed_source_goes_through_the_session_s_network_policy() {
         id::op_inner_audio_load_url,
         vec![
             OwnedValue::U32(3),
+            OwnedValue::U32(3001),
             OwnedValue::Str("https://blocked.example/a.mp3".into()),
         ],
     )
     .unwrap();
+    accept_source_begin(&rx);
     let error = runtime().block_on(refused).unwrap_err();
     assert_eq!(error.class, "AudioNetworkError");
     assert!(
@@ -363,10 +388,12 @@ fn a_streamed_source_goes_through_the_session_s_network_policy() {
         id::op_inner_audio_load_url,
         vec![
             OwnedValue::U32(3),
+            OwnedValue::U32(3001),
             OwnedValue::Str("https://media.example/a.mp3".into()),
         ],
     )
     .unwrap();
+    accept_source_begin(&rx);
     let rt = runtime();
     let answer = rt.spawn(admitted);
     let command = rt.block_on(async {
@@ -377,7 +404,10 @@ fn a_streamed_source_goes_through_the_session_s_network_policy() {
             tokio::task::yield_now().await;
         }
     });
-    let AudioCmd::InnerAudioLoadUrl { id: 3, url, resp } = command else {
+    let AudioCmd::InnerAudioLoadUrl {
+        id: 3, url, resp, ..
+    } = command
+    else {
         panic!("a streamed load");
     };
     assert_eq!(url, "https://media.example/a.mp3");
