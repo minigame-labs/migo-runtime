@@ -148,11 +148,28 @@ impl SpoolWriter {
         self.failed = false;
         Ok(())
     }
-    pub fn seal(mut self, max_control_bytes: usize) -> io::Result<SealedSpool> {
+    pub fn seal(self, max_control_bytes: usize) -> io::Result<SealedSpool> {
+        self.seal_with(max_control_bytes, ReadAtFile::new)
+    }
+    pub(crate) fn seal_with_buffer(
+        self,
+        max_control_bytes: usize,
+        buffer: Vec<u8>,
+        lease: crate::pools::ByteTicket,
+    ) -> io::Result<SealedSpool> {
+        self.seal_with(max_control_bytes, |file, limit| {
+            ReadAtFile::from_buffer(file, limit, buffer, lease)
+        })
+    }
+    fn seal_with(
+        mut self,
+        max_control_bytes: usize,
+        reader: impl FnOnce(File, usize) -> io::Result<ReadAtFile>,
+    ) -> io::Result<SealedSpool> {
         if self.failed || self.expected.is_some_and(|n| n != self.written) {
             return Err(invalid("spool is incomplete or failed"));
         }
-        let reader = ReadAtFile::new(self.file, max_control_bytes)?;
+        let reader = reader(self.file, max_control_bytes)?;
         if reader.len() != self.written {
             return Err(invalid("spool file length changed"));
         }

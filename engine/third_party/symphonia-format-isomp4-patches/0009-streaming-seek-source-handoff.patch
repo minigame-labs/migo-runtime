@@ -1,0 +1,160 @@
+--- symphonia-format-isomp4-0.6.1/src/streaming/sequential.rs
++++ symphonia-format-isomp4-0.6.1/src/streaming/sequential.rs
+@@ -2,7 +2,8 @@
+ use super::{validate_file_type, AtomKind, AtomSpan, AudioIndex, IndexOptions, IndexedPacket};
+ use symphonia_core::{
+     errors::{decode_error, unsupported_error, Error, Result},
+-    formats::Track,
++    formats::{SeekedTo, Track},
++    units::Timestamp,
+     packet::PacketRef,
+ };
+ 
+@@ -51,6 +52,7 @@
+     Skip { end: u64 },
+     Media { span: AtomSpan },
+     AwaitIndex(IndexRequest),
++    AwaitSeek { media: Option<AtomSpan> },
+     Finished,
+ }
+ 
+@@ -68,6 +70,8 @@
+     skipped_metadata: u64,
+     failed: bool,
+     buffered_probe: Option<Probe>,
++    movie_span: Option<(u64, u64)>,
++    seek_traversal: bool,
+ }
+ 
+ impl Packetizer {
+@@ -86,6 +90,8 @@
+             skipped_metadata: 0,
+             failed: false,
+             buffered_probe: None,
++            movie_span: None,
++            seek_traversal: false,
+         }
+     }
+ 
+@@ -94,6 +100,41 @@
+     }
+     pub fn track(&self) -> Option<&Track> {
+         self.index.as_ref().map(AudioIndex::track)
++    }
++
++    /// Seek through the retained index. Packet bytes remain unavailable until
++    /// the existing ReadAt request is resolved with a verified mdat/window.
++    /// Codec reset and discarding preroll before required_ts belong to callers.
++    /// Recoverable target errors leave the current request and input position.
++    pub fn seek(&mut self, ts: Timestamp) -> Result<SeekedTo> {
++        if self.failed {
++            return decode_error("isomp4: streaming packetizer previously failed");
++        }
++        let result = self.seek_inner(ts);
++        self.failed = result.as_ref().is_err_and(|error| !matches!(error, Error::SeekError(_)));
++        result
++    }
++
++    fn seek_inner(&mut self, ts: Timestamp) -> Result<SeekedTo> {
++        let index = self.index.as_mut().ok_or(Error::SeekError(
++            symphonia_core::errors::SeekErrorKind::Unseekable,
++        ))?;
++        let seeked = index.seek(ts)?;
++        let packet = index.next_packet()?.ok_or(Error::DecodeError(
++            "isomp4: seek index returned no preroll packet",
++        ))?;
++        let media = match self.stage {
++            Stage::Media { span } => Some(span),
++            Stage::AwaitSeek { media } => media,
++            _ => None,
++        };
++        self.pending = Some(packet);
++        self.audio_done = false;
++        self.buffered_probe = None;
++        self.skipped_metadata = 0;
++        self.seek_traversal = true;
++        self.stage = Stage::AwaitSeek { media };
++        Ok(seeked)
+     }
+ 
+     /// IO supplies an index obtained for the very same pinned representation.
+@@ -145,7 +186,7 @@
+     /// position, mdat extent and representation identity. Never resets AAC.
+     pub fn resume_at(&mut self, media: AtomSpan, offset: u64) -> Result<()> {
+         let valid = !self.failed
+-            && matches!(self.stage, Stage::Media { .. })
++            && matches!(self.stage, Stage::Media { .. } | Stage::AwaitSeek { .. })
+             && media.kind == AtomKind::MediaData
+             && matches!(media.header_len, 8 | 16)
+             && media.offset.checked_add(media.header_len as u64) == Some(media.body_offset)
+@@ -243,6 +284,9 @@
+             .ok_or(Error::DecodeError(
+                 "isomp4: streaming index exceeds configured byte budget",
+             ))?;
++        if span.kind == AtomKind::Movie {
++            self.movie_span = Some((span.offset, span.end.expect("bounded movie atom")));
++        }
+         self.scratch.clear();
+         self.scratch
+             .try_reserve_exact(total)
+@@ -261,6 +305,11 @@
+             match self.stage {
+                 Stage::Finished => return Ok(PacketStep::End),
+                 Stage::AwaitIndex(request) => return Ok(PacketStep::NeedIndex(request)),
++                Stage::AwaitSeek { .. } => {
++                    return self.pending.ok_or(Error::DecodeError(
++                        "isomp4: seek lost pending packet",
++                    )).map(PacketStep::ReadAt);
++                }
+                 Stage::Collect { kind, total } => {
+                     let remaining = total - self.scratch.len();
+                     if remaining == 0 {
+@@ -330,7 +379,10 @@
+                             return self.collect(span, input);
+                         }
+                         AtomKind::Movie => {
+-                            if !self.external_index || self.movie_seen {
++                            let replay = self.seek_traversal && span.end.is_some_and(|end| {
++                                self.movie_span == Some((span.offset, end))
++                            });
++                            if (!self.external_index || self.movie_seen) && !replay {
+                                 return decode_error("isomp4: duplicate streaming movie");
+                             }
+                             let end = span
+@@ -341,6 +393,7 @@
+                                 .ok_or(Error::DecodeError(
+                                     "isomp4: streaming movie exceeds byte budget",
+                                 ))?;
++                            self.movie_span = Some((span.offset, end));
+                             self.movie_seen = true;
+                             self.stage = Stage::Skip { end };
+                         }
+--- symphonia-format-isomp4-0.6.1/src/streaming/sequential/buffered.rs
++++ symphonia-format-isomp4-0.6.1/src/streaming/sequential/buffered.rs
+@@ -85,8 +85,13 @@
+                 };
+                 (Request::Index, start)
+             }
+-            Stage::Media { span } => {
+-                let Some(packet) = self.pending.filter(|p| p.offset < self.position) else {
++            stage @ (Stage::Media { .. } | Stage::AwaitSeek { .. }) => {
++                let (media, explicit_seek) = match stage {
++                    Stage::Media { span } => (Some(span), false),
++                    Stage::AwaitSeek { media } => (media, true),
++                    _ => unreachable!(),
++                };
++                let Some(packet) = self.pending.filter(|p| explicit_seek || p.offset < self.position) else {
+                     return Ok(BufferedStep::Unavailable);
+                 };
+                 let packet_end = packet
+@@ -100,7 +105,9 @@
+                 if packet_end > end {
+                     return Ok(BufferedStep::NeedMore);
+                 }
+-                if packet.offset >= span.body_offset && span.end.is_none_or(|n| packet_end <= n) {
++                if let Some(span) = media.filter(|span| {
++                    packet.offset >= span.body_offset && span.end.is_none_or(|n| packet_end <= n)
++                }) {
+                     self.resume_at(span, packet.offset)?;
+                     return Ok(BufferedStep::ReadAt {
+                         offset: packet.offset,

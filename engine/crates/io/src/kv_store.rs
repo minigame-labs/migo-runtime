@@ -9,8 +9,8 @@
 //!   transaction, so `set` / `set_batch` / `info` never scan the `kv` table.
 //! * **Crash-safety** comes from WAL + `synchronous=NORMAL`, which
 //!   is the combination SQLite itself recommends for KV workloads.
-//!   We never lose a committed write on power loss; at worst the
-//!   last un-checkpointed WAL frame is replayed on startup.
+//!   Process crashes preserve committed WAL transactions; with NORMAL a
+//!   power loss can roll back commits since the last durable checkpoint.
 //! * **Schema migrations** are a pragma bump, not a home-grown
 //!   header format.
 //!
@@ -165,7 +165,11 @@ impl KvStore {
             })?;
         }
 
-        let mut conn = Connection::open(&path).map_err(sql_err("kv: open"))?;
+        let mut conn = Connection::open_with_flags(
+            &path,
+            rusqlite::OpenFlags::default() | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )
+        .map_err(sql_err("kv: open"))?;
 
         // WAL + NORMAL sync is SQLite's recommended KV config:
         //   - WAL gives concurrent reads during writes and is faster

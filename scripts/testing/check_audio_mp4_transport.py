@@ -76,7 +76,7 @@ def prepare(work,target,rubato_home):
     lib=package/'src/lib.rs';text=lib.read_text()
     for name in ['cache','inner_audio']:
         path=ROOT/f'engine/crates/audio/src/{name}.rs';text+=f'#[path={json.dumps(str(path))}] mod {name};\n'
-    for name in ['bandlimited','resampled_streaming','isomp4_transport']:
+    for name in ['source_chunk','bandlimited','resampled_streaming','isomp4_transport']:
         file=name+'.rs';shutil.copy2(ROOT/'scripts/testing/fixtures/audio-codec-probe'/file,work/'source'/file)
         text+=f'#[path={json.dumps(str(work/"source"/file))}] mod {name};\n'
     shutil.copy2(ROOT/'scripts/testing/fixtures/audio-codec-probe/isomp4_transport_contracts.rs',work/'source/isomp4_transport_contracts.rs')

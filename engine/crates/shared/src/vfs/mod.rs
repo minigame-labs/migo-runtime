@@ -55,6 +55,7 @@ pub mod integrity;
 pub mod mount;
 pub mod package;
 pub mod read_root;
+pub mod write_directory;
 
 #[cfg(unix)]
 mod unix;
@@ -484,6 +485,31 @@ impl VirtualFS {
             let _ = (mapping, relative);
             Err(VfsOpenError::OpenFailed)
         }
+    }
+
+    /// Capture a writable directory below the existing mapping handle. The
+    /// returned capability creates/removes single child names without resolving
+    /// the mapping's original host pathname again. It grants all three mutation
+    /// operations, so partially writable mappings must not acquire it.
+    pub fn write_directory(
+        &self,
+        virtual_path: &str,
+        create: bool,
+    ) -> std::io::Result<write_directory::WriteDirectory> {
+        let (mapping, relative) = self
+            .resolve_textual(virtual_path, FileOp::Write)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::PermissionDenied, error))?;
+        if !mapping.permissions.create || !mapping.permissions.delete {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "mapping does not grant directory mutation authority",
+            ));
+        }
+        let root = mapping
+            .strict_root
+            .as_deref()
+            .ok_or_else(|| std::io::Error::other("sandbox directory root is unavailable"))?;
+        write_directory::WriteDirectory::capture(root, &relative, create)
     }
 
     #[cfg(all(test, unix))]

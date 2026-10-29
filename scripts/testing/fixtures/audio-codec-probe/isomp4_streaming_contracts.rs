@@ -1,5 +1,7 @@
 #[path = "isomp4_index_contracts.rs"]
 mod index;
+#[path = "support/isomp4_packet_seek_contracts.rs"]
+mod seek;
 use symphonia_codec_aac::AacDecoder;
 use symphonia_core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
 use symphonia_format_isomp4::streaming::{

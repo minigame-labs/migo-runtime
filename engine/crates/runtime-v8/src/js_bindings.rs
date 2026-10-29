@@ -488,14 +488,11 @@ impl JsBindings {
     }
 
     /// Dispatch inner audio event to JS.
-    /// Args: (id: u32, event_type: &str, current_time: f64)
     pub(crate) fn dispatch_inner_audio_event(
         &self,
         rt: &mut deno_core::JsRuntime,
         host_id: i32,
-        id: u32,
-        event_type: &str,
-        current_time: f64,
+        event: &shared::protocol::audio_cmd::InnerAudioEvent,
     ) {
         let Some(func_g) = self.enqueue_inner_audio_event_fn.as_ref() else {
             warn!("[Host {}] inner audio event handler not installed", host_id);
@@ -504,11 +501,15 @@ impl JsBindings {
 
         self.with_main_context(rt, |scope, _ctx, global| {
             let args = [
-                v8::Integer::new_from_unsigned(scope, id).into(),
-                v8::String::new(scope, event_type)
+                v8::Integer::new_from_unsigned(scope, event.id).into(),
+                v8::String::new(scope, event.event_type.as_str())
                     .unwrap_or_else(|| v8::Local::new(scope, &self.empty_string))
                     .into(),
-                v8::Number::new(scope, current_time).into(),
+                v8::Number::new(scope, event.current_time).into(),
+                v8::Integer::new_from_unsigned(scope, event.source_id).into(),
+                v8::Number::new(scope, event.duration).into(),
+                v8::Boolean::new(scope, event.buffered).into(),
+                v8::Boolean::new(scope, event.paused).into(),
             ];
 
             let func = v8::Local::new(scope, func_g);

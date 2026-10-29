@@ -45,6 +45,9 @@ pub fn prepare_content(
             .with_msg("create game directories")
             .with_detail(e.to_string())
     })?;
+    // Finish the SQLite namespace upgrade before any game/Worker can mutate
+    // the formerly mapped legacy directory.
+    migo_io::storage_migration::prepare(game_paths.storage())?;
     // Pin every sandbox root before exposing the VFS to untrusted code. A
     // path-only VFS would allow the mapping root itself to be replaced between
     // construction and a later read.

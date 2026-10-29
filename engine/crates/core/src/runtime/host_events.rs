@@ -164,17 +164,11 @@ fn gamepad_packed(state: &GamepadState) -> Vec<OwnedValue> {
 }
 
 impl ServiceEventSink<'_> {
-    /// An InnerAudioContext event from the audio thread -- `canplay`, `play`,
-    /// `ended`, `timeUpdate` -- as the embedded binding passes it: the
-    /// context's id, the event's name, the playback position in seconds.
-    pub(crate) fn inner_audio_event(&self, id: u32, event_type: &str, current_time: f64) {
+    /// The same source-tagged playback snapshot as the direct embedded binding.
+    pub(crate) fn inner_audio_event(&self, event: &shared::protocol::audio_cmd::InnerAudioEvent) {
         self.send(
             event::_internalEnqueueInnerAudioEvent,
-            vec![
-                OwnedValue::U32(id),
-                OwnedValue::Str(event_type.to_owned()),
-                OwnedValue::F64(current_time),
-            ],
+            inner_audio_event_args(event),
         );
     }
 
@@ -412,9 +406,46 @@ impl InputSink for ServiceEventSink<'_> {
     }
 }
 
+fn inner_audio_event_args(event: &shared::protocol::audio_cmd::InnerAudioEvent) -> Vec<OwnedValue> {
+    vec![
+        OwnedValue::U32(event.id),
+        OwnedValue::Str(event.event_type.as_str().to_owned()),
+        OwnedValue::F64(event.current_time),
+        OwnedValue::U32(event.source_id),
+        OwnedValue::F64(event.duration),
+        OwnedValue::Bool(event.buffered),
+        OwnedValue::Bool(event.paused),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inner_audio_snapshots_keep_the_embedded_argument_order_and_types() {
+        let event = shared::protocol::audio_cmd::InnerAudioEvent {
+            id: 3,
+            source_id: 701,
+            event_type: shared::protocol::host_cmd::InnerAudioEventType::TimeUpdate,
+            current_time: 0.5,
+            duration: 1.25,
+            buffered: true,
+            paused: false,
+        };
+        assert_eq!(
+            inner_audio_event_args(&event),
+            vec![
+                OwnedValue::U32(3),
+                OwnedValue::Str("timeUpdate".into()),
+                OwnedValue::F64(0.5),
+                OwnedValue::U32(701),
+                OwnedValue::F64(1.25),
+                OwnedValue::Bool(true),
+                OwnedValue::Bool(false),
+            ]
+        );
+    }
 
     /// The host's table and the contract, entry for entry.
     #[test]

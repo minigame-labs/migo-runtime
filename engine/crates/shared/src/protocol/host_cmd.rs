@@ -405,12 +405,7 @@ pub enum HostCommand {
     ///
     /// Used to notify the JS layer of audio playback state changes.
     InnerAudioEvent {
-        /// The InnerAudioContext instance ID.
-        id: u32,
-        /// Type of event (play, pause, ended, etc.).
-        event_type: InnerAudioEventType,
-        /// Current playback position in seconds.
-        current_time: f64,
+        event: super::audio_cmd::InnerAudioEvent,
     },
 
     /// A Web Audio source node finished -- ran to its end or was stopped -- and content asked to hear of it

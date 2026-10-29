@@ -167,6 +167,14 @@ pub(super) fn open_regular_from_movable_root_with_hook(
     relative: &Path,
     before_guard: impl FnOnce(&Path),
 ) -> Result<File, VfsOpenError> {
+    let (guard, path) = current_directory_guard(root, before_guard)?;
+    open_regular_impl(&guard, &path, relative, true)
+}
+
+fn current_directory_guard(
+    root: &File,
+    before_guard: impl FnOnce(&Path),
+) -> Result<(File, PathBuf), VfsOpenError> {
     // Query the handle's current path, then hold that namespace without delete
     // sharing for this traversal. Identity validation closes the query/open race.
     let path = PathBuf::from(OsString::from_wide(&final_path_flags(
@@ -179,7 +187,82 @@ pub(super) fn open_regular_from_movable_root_with_hook(
     if file_identity(root)? != file_identity(&guard)? {
         return Err(VfsOpenError::UnsafePath);
     }
-    open_regular_impl(&guard, &path, relative, true)
+    Ok((guard, path))
+}
+
+#[derive(Debug)]
+pub(super) struct WriteNamespace {
+    _directory: File,
+    _parents: Vec<File>,
+    path: PathBuf,
+}
+
+pub(super) fn capture_write_directory(
+    root: &File,
+    relative: &Path,
+    create: bool,
+) -> Result<WriteNamespace, VfsOpenError> {
+    let (guard, mut path) = current_directory_guard(root, |_| {})?;
+    let mut expected = final_path(&guard)?;
+    let mut parents = vec![guard];
+    let components = if relative.as_os_str().is_empty() {
+        Vec::new()
+    } else {
+        relative_components(relative)?
+    };
+    for component in components {
+        path.push(&component);
+        let directory = match open_directory(&path) {
+            Err(VfsOpenError::NotFound) if create => {
+                match std::fs::create_dir(verbatim_path(&path)?) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                    Err(error) => return Err(map_open_error(error)),
+                }
+                open_directory(&path)?
+            }
+            result => result?,
+        };
+        validate_directory(&directory)?;
+        expected = expected_child_path(&expected, &component);
+        if !path_equals_ordinal_ignore_case(&final_path(&directory)?, &expected) {
+            return Err(VfsOpenError::UnsafePath);
+        }
+        parents.push(directory);
+    }
+    let directory = parents.pop().ok_or(VfsOpenError::OpenFailed)?;
+    Ok(WriteNamespace {
+        _directory: directory,
+        _parents: parents,
+        path,
+    })
+}
+
+impl WriteNamespace {
+    pub(super) fn create_new(&self, name: &str) -> io::Result<File> {
+        let path = verbatim_path(&self.path.join(name)).map_err(io::Error::other)?;
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+            .open(path)?;
+        validate_regular_file(&file).map_err(io::Error::other)?;
+        Ok(file)
+    }
+
+    pub(super) fn remove_file(&self, name: &str) -> io::Result<()> {
+        // The parent namespace stays locked without delete sharing throughout
+        // this call. DeleteFileW unlinks a leaf symlink, not its target:
+        // https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-deletefilew
+        let path = verbatim_path(&self.path.join(name)).map_err(io::Error::other)?;
+        let path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        // SAFETY: a valid NUL-terminated path beneath the retained namespace.
+        if unsafe { windows_sys::Win32::Storage::FileSystem::DeleteFileW(path.as_ptr()) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
 }
 pub(super) fn file_identity(file: &File) -> Result<(u64, [u8; 16]), VfsOpenError> {
     let mut info = FILE_ID_INFO::default();
@@ -197,6 +280,15 @@ pub(super) fn file_identity(file: &File) -> Result<(u64, [u8; 16]), VfsOpenError
         return Err(VfsOpenError::OpenFailed);
     }
     Ok((info.VolumeSerialNumber, info.FileId.Identifier))
+}
+
+pub(super) fn link_count(file: &File) -> Result<u32, VfsOpenError> {
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: a live borrowed handle and a correctly-sized output structure.
+    if unsafe { GetFileInformationByHandle(handle(file), &mut info) } == 0 {
+        return Err(VfsOpenError::OpenFailed);
+    }
+    Ok(info.nNumberOfLinks)
 }
 
 fn open_final_file(path: &Path, share_delete: bool) -> Result<File, VfsOpenError> {

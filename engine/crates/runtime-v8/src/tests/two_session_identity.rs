@@ -404,13 +404,19 @@ mod tests {
 
         let (sa, sb) = (a.storage(), b.storage());
         let na = paths(&files, &cache, "game-a")
-            .user_data_dir()
+            .storage()
+            .directory()
             .to_path_buf();
         let nb = paths(&files, &cache, "game-b")
-            .user_data_dir()
+            .storage()
+            .directory()
             .to_path_buf();
 
         assert_ne!(sa, sb, "both live Sessions resolved to {sa:?}");
+        assert_eq!(sa, na, "game-a must select its private persistent store");
+        assert_eq!(sb, nb, "game-b must select its private persistent store");
+        assert!(!sa.starts_with(paths(&files, &cache, "game-a").user_data_dir()));
+        assert!(!sb.starts_with(paths(&files, &cache, "game-b").user_data_dir()));
         // Not merely different: each under the identity it was loaded with, and
         // under no other. Two paths can differ while both are wrong — a counter,
         // a host id, a temp name — and the negative half is what rules out "both

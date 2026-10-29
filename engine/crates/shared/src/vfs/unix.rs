@@ -96,6 +96,80 @@ pub(super) fn pin_root(base: &Path) -> Result<File, VfsOpenError> {
     fd_to_file(fd)
 }
 
+pub(super) fn capture_write_directory(
+    root: &File,
+    relative: &Path,
+    create: bool,
+) -> std::io::Result<File> {
+    let mut parent = root.try_clone()?;
+    for component in relative.components() {
+        let Component::Normal(component) = component else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "unsafe directory component",
+            ));
+        };
+        let name = CString::new(component.as_bytes()).map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid directory name")
+        })?;
+        // SAFETY: the live directory and NUL-terminated component are borrowed
+        // for this call; O_NOFOLLOW/O_DIRECTORY reject replaced symlinks/FIFOs.
+        let mut fd =
+            unsafe { libc::openat(parent.as_raw_fd(), name.as_ptr(), DIRECTORY_OPEN_FLAGS) };
+        if fd < 0 {
+            let error = std::io::Error::last_os_error();
+            if !create || error.kind() != std::io::ErrorKind::NotFound {
+                return Err(error);
+            }
+            // SAFETY: same pinned parent/name. A competing mkdir is harmless;
+            // reopen below validates the actual object without following links.
+            if unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o777) } < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() != std::io::ErrorKind::AlreadyExists {
+                    return Err(error);
+                }
+            }
+            // SAFETY: identical directory-relative guarded open after mkdir.
+            fd = unsafe { libc::openat(parent.as_raw_fd(), name.as_ptr(), DIRECTORY_OPEN_FLAGS) };
+            if fd < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+        // SAFETY: openat just returned this owned descriptor exactly once.
+        parent = unsafe { File::from_raw_fd(fd) };
+    }
+    Ok(parent)
+}
+
+pub(super) fn create_new_child(parent: &File, name: &str) -> std::io::Result<File> {
+    let name = CString::new(name)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid child name"))?;
+    let flags = libc::O_WRONLY
+        | libc::O_CREAT
+        | libc::O_EXCL
+        | libc::O_NOFOLLOW
+        | libc::O_CLOEXEC
+        | libc::O_NONBLOCK;
+    // SAFETY: the parent is retained and name is one validated component.
+    let fd = unsafe { libc::openat(parent.as_raw_fd(), name.as_ptr(), flags, 0o666) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: ownership of the successful openat result is transferred once.
+    Ok(unsafe { File::from_raw_fd(fd) })
+}
+
+pub(super) fn remove_child(parent: &File, name: &str) -> std::io::Result<()> {
+    let name = CString::new(name)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid child name"))?;
+    // SAFETY: parent/name are live; flags=0 unlinks the leaf itself and refuses
+    // directories, without following a symlink to another object's contents.
+    if unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), 0) } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 fn open_by_descriptor_walk<F: FnOnce()>(
     mut parent: File,
     components: &[OsString],

@@ -69,6 +69,15 @@ impl ReadAtPackage {
                 .map_err(io::Error::other)
         })
     }
+    /// Reuse the package reader's bounded scratch to fill a caller's buffer.
+    /// On error, the caller must discard the buffer contents.
+    pub fn read_into_at(&self, offset: u64, output: &mut [u8]) -> io::Result<()> {
+        check_extent(self.len, offset, output.len(), self.max_control_bytes)?;
+        self.source
+            .lock()
+            .read_exact_at(offset, output)
+            .map_err(io::Error::other)
+    }
 }
 
 #[cfg(test)]

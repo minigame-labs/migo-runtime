@@ -50,9 +50,13 @@
 //! audio_tx.send(AudioCmd::CreateInnerAudio { id: 1 });
 //!
 //! // Load audio from URL (with streaming)
+//! let (begin_tx, begin_rx) = oneshot::channel();
+//! audio_tx.send(AudioCmd::InnerAudioBeginLoad { id: 1, source_id: 2, resp: begin_tx });
+//! let load = begin_rx.await.unwrap().unwrap();
 //! let (resp_tx, resp_rx) = oneshot::channel();
 //! audio_tx.send(AudioCmd::InnerAudioLoadUrl {
 //!     id: 1,
+//!     load,
 //!     url: "https://example.com/music.mp3".to_string(),
 //!     resp: resp_tx,
 //! });

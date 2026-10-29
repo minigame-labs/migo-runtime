@@ -14,6 +14,7 @@ from pathlib import Path
 import shutil
 import struct
 import subprocess
+import tomllib
 
 ROOT = Path(__file__).resolve().parents[2]
 def module(name: str, path: Path):
@@ -95,6 +96,53 @@ def fixtures(directory: Path) -> None:
     (directory/'manifest.json').write_text(json.dumps(manifest,indent=2)+'\n')
     print('Generated',len(manifest),'valid AAC-LC index fixtures; FFmpeg chunk-layout oracle agrees')
 
+    # Random-access AAC PNS may use a different noise realization after reset.
+    # Keep the original encoder corpus and add a deterministic no-PNS corpus
+    # for sample-level seek comparisons; do not relax them into count-only tests.
+    seek_manifest=[]
+    for number,(rate,channels,frames) in enumerate([(48000,1,17),(44100,2,9737),(48000,1,240137)]):
+        encoded={}
+        for mode in ['front','tail']:
+            path=directory/f'{number}-seek-{mode}.m4a'
+            args=['ffmpeg','-nostdin','-hide_banner','-loglevel','error','-y','-i',str(directory/f'{number}.wav'),'-c:a','aac','-aac_pns','0','-profile:a','aac_low','-movie_timescale',str(rate)]
+            if mode=='front':args+=['-movflags','+faststart']
+            subprocess.run(args+[str(path)],check=True,timeout=30)
+            encoded[mode]=path.read_bytes()
+            seek_manifest.append({'file':path.name,'frames':frames,'channels':channels,'rate':rate,'pns':False})
+        if number:
+            for name,perm,wide in [('split',False,False),('reorder',True,False),('co64',False,True)]:
+                path=directory/f'{number}-seek-{name}.m4a';path.write_bytes(chunked(encoded['front'],perm,wide))
+                seek_manifest.append({'file':path.name,'frames':frames,'channels':channels,'rate':rate,'pns':False})
+            pcm=[]
+            for mode in ['front','split','reorder','co64']:
+                result=subprocess.run(['ffmpeg','-nostdin','-hide_banner','-loglevel','error','-i',str(directory/f'{number}-seek-{mode}.m4a'),'-f','f32le','-'],check=True,timeout=30,stdout=subprocess.PIPE)
+                pcm.append(result.stdout)
+            assert all(p==pcm[0] for p in pcm)
+    # Derive alternate media clocks and a nonstandard edit from unchanged AAC
+    # payloads. Box sizes/offsets stay fixed; the library remains the only parser.
+    original=(directory/'1-seek-front.m4a').read_bytes()
+    for label,factor,start in [('scaled',2,1024),('edit',1,1377)]:
+        mdhd=bytearray(timeline.payloads(original,timeline.MDHD)[0]);assert mdhd[0]==0
+        for offset in [12,16]:mdhd[offset:offset+4]=U(int.from_bytes(mdhd[offset:offset+4],'big')*factor)
+        stts=bytearray(timeline.payloads(original,timeline.STTS)[0])
+        for offset in range(12,len(stts),8):stts[offset:offset+4]=U(int.from_bytes(stts[offset:offset+4],'big')*factor)
+        elst=bytearray(timeline.payloads(original,timeline.ELST)[0]);assert elst[0]==0
+        elst[12:16]=struct.pack('>i',start*factor)
+        modified=timeline.rewrite(original,{timeline.MDHD:bytes(mdhd),timeline.STTS:bytes(stts),timeline.ELST:bytes(elst)})
+        path=directory/f'1-seek-{label}.m4a';path.write_bytes(modified)
+        outputs=[]
+        for data in [original,modified]:
+            result=subprocess.run(['ffmpeg','-nostdin','-hide_banner','-loglevel','error','-ignore_editlist','1','-i','pipe:0','-f','f32le','-'],input=data,check=True,timeout=30,stdout=subprocess.PIPE)
+            outputs.append(result.stdout)
+        assert outputs[0]==outputs[1],'derived presentation changed raw AAC PCM'
+        # FFmpeg's raw skip_samples behavior on an alternate media clock is
+        # not a presentation-frame oracle. Compare unedited payload PCM here;
+        # the packet/frame contracts independently verify both edit timelines.
+        assert outputs[1], 'derived edit must contain decoded audio'
+        seek_manifest.append({'file':path.name,'frames':9737 if label=='scaled' else 9384,'channels':2,'rate':44100,'pns':False,'media_factor':factor,'media_start':start})
+    (directory/'seek-manifest.json').write_text(json.dumps(seek_manifest,indent=2)+'\n')
+    print('Generated',len(seek_manifest),'additional no-PNS AAC seek fixtures; FFmpeg layout oracle agrees')
+
     src=(directory/'1-tail.m4a').read_bytes()
     meta=atom(b'meta',bytes(4)+atom(b'ilst',atom(b'\xa9nam',atom(b'data',struct.pack('>II',1,0)+b'x'*(1024*1024)))))
     movie=timeline.payloads(src,(b'moov',))[0]
@@ -170,6 +218,26 @@ def controls(work: Path, env: dict) -> int:
         ("object-extent-unchecked", mp4, "src/streaming.rs", "if self.options.object_len.is_some_and(|len| end > len) {", "if false {",
          probe, limits),
     ]
+    seek = "index_seek_matches_pull_descriptors_and_full_packet_preroll_after_eof"
+    invalid = "invalid_seek_preserves_cursor_and_corrupt_extents_remain_failed"
+    wide = "co64_seek_preserves_offsets_above_4gib_and_preroll_sample_positions"
+    declarations += [
+        ("seek-always-starts-at-zero", mp4, "src/streaming.rs", "self.state.seek_media_ts(required_ts)?", "self.state.seek_media_ts(Timestamp::ZERO)?", probe, seek),
+        ("seek-skips-media-clock-mapping", mp4, "src/demuxer.rs", "Some(timeline) => timeline.seek_media_ts(ts),", "Some(_timeline) => Ok(ts),", probe, seek),
+        ("seek-reports-media-ticks", mp4, "src/demuxer.rs", "Some(timeline) => timeline.presentation_ts(timing.ts)?,", "Some(_timeline) => Timestamp::new(timing.ts as i64),", probe, seek),
+        ("seek-does-not-move-sample-cursor", mp4, "src/demuxer.rs", "self.next_sample = sample_num;", "self.next_sample = 0;", probe, seek),
+        ("seek-does-not-move-byte-cursor", mp4, "src/demuxer.rs", "self.next_sample_pos = position;", "self.next_sample_pos = 0;", probe, seek),
+        ("seek-truncates-co64-byte-cursor", mp4, "src/demuxer.rs", "self.next_sample_pos = position;", "self.next_sample_pos = u64::from(position as u32);", probe, wide),
+        ("seek-reports-preroll-as-required", mp4, "src/demuxer.rs", "Ok(SeekedTo { track_id: self.track_id, required_ts, actual_ts })", "Ok(SeekedTo { track_id: self.track_id, required_ts: actual_ts, actual_ts })", probe, seek),
+        ("seek-ignores-object-bound", mp4, "src/demuxer.rs", "if object_len.is_some_and(|len| end > len) {", "if false {", probe, invalid),
+        ("seek-hides-packet-end-overflow", mp4, "src/demuxer.rs", 'position.checked_add(u64::from(desc.size))\n            .ok_or(Error::DecodeError("isomp4: seek sample end overflow"))?', "position.saturating_add(u64::from(desc.size))", probe, invalid),
+        ("seek-error-not-sticky", mp4, "src/streaming.rs", "self.failed = result.as_ref().is_err_and(|error| !matches!(error, Error::SeekError(_)));", "self.failed = false;", probe, invalid),
+        ("seek-bypasses-failed-index", mp4, "src/streaming.rs", 'pub fn seek(&mut self, ts: Timestamp) -> Result<SeekedTo> {\n        if self.failed {', 'pub fn seek(&mut self, ts: Timestamp) -> Result<SeekedTo> {\n        if false {', probe, invalid),
+        ("invalid-target-erases-cursor", mp4, "src/streaming.rs", "        let result = self.seek_inner(ts);", "        self.state.reset();\n        let result = self.seek_inner(ts);", probe, invalid),
+        ("invalid-target-poisons-index", mp4, "src/streaming.rs", "self.failed = result.as_ref().is_err_and(|error| !matches!(error, Error::SeekError(_)));", "self.failed = result.is_err();", probe, invalid),
+        ("seek-allocates-on-every-call", mp4, "src/streaming.rs", "    pub fn seek(&mut self, ts: Timestamp) -> Result<SeekedTo> {", "    pub fn seek(&mut self, ts: Timestamp) -> Result<SeekedTo> {\n        std::hint::black_box(vec![0_u8; 64]);", probe, "index_seek_and_first_descriptor_have_no_steady_heap_activity"),
+        ("seek-omits-codec-preroll", mp4, "src/audio_timeline.rs", "(self.start + ts).saturating_sub(self.block_frames)", "self.start + ts", probe, "deterministic_aac_seek_preroll_matches_full_pcm_suffix"),
+    ]
     for name, library, relative, before, after, package, test in declarations:
         path = work / "vendor" / f"{library}-0.6.1" / relative
         original = path.read_bytes()
@@ -191,13 +259,14 @@ def controls(work: Path, env: dict) -> int:
     return len(declarations)
 
 
-def main(output: Path, target: Path) -> None:
+def main(output: Path, target: Path, *, positive_only: bool = False) -> None:
     assert not output.exists(), "use a fresh result directory"
     output.mkdir(parents=True)
     initial_lock = (ROOT / "engine/Cargo.lock").read_bytes()
     inputs = [Path(__file__).resolve(), ROOT / "scripts/bench/audio-codecs.py",
               ROOT / "scripts/testing/check_audio_codec_timeline.py",
               ROOT / "scripts/testing/fixtures/audio-codec-probe/isomp4_index_contracts.rs",
+              ROOT / "scripts/testing/check_gitignore_contract.py",
               ROOT / "engine/Cargo.toml", ROOT / "engine/Cargo.lock",
               ROOT / "engine/testing/alloc-probe/Cargo.toml"]
     inputs += sorted((ROOT / "engine/testing/alloc-probe/src").rglob("*.rs"))
@@ -230,23 +299,35 @@ symphonia-format-isomp4={{version="=0.6.1",features=["streaming"]}}
 symphonia-codec-aac="=0.6.1"
 migo-alloc-probe={{path={json.dumps(str(ROOT / "engine/testing/alloc-probe"))}}}
 ''')
-    codecs.run(["cargo", "generate-lockfile", "--offline"], output / "resolve.log", cwd=output, env=env)
+    # Resolve new candidate libraries from the product cohort, rather than
+    # upgrading unrelated cached transitive versions in an isolated lock.
+    (output / "Cargo.lock").write_bytes(initial_lock)
+    codecs.run(["cargo", "metadata", "--offline", "--format-version", "1"], output / "resolve.log", cwd=output, env=env)
+    versions = {}
+    for row in tomllib.loads(initial_lock.decode())["package"]:
+        versions.setdefault(row["name"], set()).add(row["version"])
+    selected = tomllib.loads((output / "Cargo.lock").read_text())["package"]
+    assert all(row["name"] not in versions or row["version"] in versions[row["name"]]
+               for row in selected), "existing dependency version drift"
+    identity = lambda row: (row["name"], row["version"], row.get("source"), row.get("checksum"))
+    locked = {identity(row) for row in tomllib.loads(initial_lock.decode())["package"]}
+    assert all(row["name"] not in versions or identity(row) in locked for row in selected), "existing dependency source drift"
     binaries = {}
-    for name, selected, expected in [("core", "symphonia-core", 69), ("format", "symphonia-format-isomp4", 12),
-                                     ("index", "migo-mp4-index-probe", 7)]:
+    for name, selected, expected in [("core", "symphonia-core", 72), ("format", "symphonia-format-isomp4", 12),
+                                     ("index", "migo-mp4-index-probe", 13)]:
         binary = build(output, output, env, f"positive-{name}", selected)
         log = output / f"positive-{name}-tests.log"
         codecs.run([str(binary), "--nocapture", "--test-threads=1"], log, cwd=output, env=env)
         assert f"{expected} passed; 0 failed" in log.read_text(), (name, "expected contracts did not execute")
         binaries[name] = codecs.sha(binary)
-    negatives = controls(output, env)
+    negatives = 0 if positive_only else controls(output, env)
     for row in recorded:
         path = libraries[row["crate"]]
         assert timeline.source_tree(path) == row["source_files"], (row["crate"], "mutated source not restored")
     assert all(codecs.sha(ROOT / path) == checksum for path, checksum in frozen.items()), "Root inputs changed"
     assert (ROOT / "engine/Cargo.lock").read_bytes() == initial_lock, "production lock changed"
-    summary = {"core_tests": 69, "format_tests": 12, "real_index_tests": 7, "valid_codec_fixtures": 12,
-               "compiled_controls": negatives, "binary_sha256": binaries,
+    summary = {"core_tests": 72, "format_tests": 12, "real_index_tests": 13, "valid_codec_fixtures": 12, "deterministic_seek_fixtures": 14,
+               "compiled_controls": negatives, "positive_only": positive_only, "binary_sha256": binaries,
                "libraries": len(recorded), "patches": sum(len(row["patches"]) for row in recorded),
                "selected_library_cargo_paths_verified": ["core", "AAC", "ISOMP4", "metadata"],
                "library_sources_restored": True, "root_inputs_unchanged": True,
@@ -260,5 +341,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--target-dir", type=Path, required=True)
+    parser.add_argument("--positive-only", action="store_true")
     args = parser.parse_args()
-    main(args.output.resolve(), args.target_dir.resolve())
+    main(args.output.resolve(), args.target_dir.resolve(), positive_only=args.positive_only)

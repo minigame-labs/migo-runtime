@@ -286,9 +286,10 @@ pub(crate) fn call_async(
             })
         }
         id::op_inner_audio_load_url => {
-            let [inner_id, src] = exactly(op, args)?;
+            let [inner_id, source_id, src] = exactly(op, args)?;
             let inner_id = u32_of(op, 0, inner_id)?;
-            let src = service::prepare_inner_audio_src(&string(op, 1, src)?)?;
+            let source_id = u32_of(op, 1, source_id)?;
+            let src = service::prepare_inner_audio_src(&string(op, 2, src)?)?;
             let policy = audio.network_policy.clone();
             let sources = InnerAudioSources {
                 code_dir: sources.code_dir,
@@ -305,11 +306,8 @@ pub(crate) fn call_async(
                 },
             };
             let tx = tx.clone();
-            Box::pin(async move {
-                service::inner_audio_load_url(tx, sources, inner_id, src)
-                    .await
-                    .map(nothing)
-            })
+            let load = service::inner_audio_load_url(tx, sources, inner_id, source_id, src)?;
+            Box::pin(async move { load.await.map(nothing) })
         }
         id::op_inner_audio_get_state => {
             let [inner_id] = exactly(op, args)?;

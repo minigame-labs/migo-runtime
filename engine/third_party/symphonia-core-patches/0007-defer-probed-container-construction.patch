@@ -1,0 +1,204 @@
+--- symphonia-core-0.6.1/src/formats/probe.rs
++++ symphonia-core-0.6.1/src/formats/probe.rs
+@@ -144,6 +144,25 @@
+ /// `MetadataReader` probe factory function. Creates a boxed `MetadataReader`.
+ pub type MetadataFactoryFn =
+     for<'s> fn(MediaSourceStream<'s>, MetadataOptions) -> Result<Box<dyn MetadataReader + 's>>;
++
++/// A recognized container whose reader has not been constructed yet.
++/// Identification uses the same registry, scoring and leading metadata path as
++/// `Probe::probe`. It does not parse a container index or trailing metadata.
++/// Call `into_reader` to resume with the captured stream and metadata policy.
++pub struct ProbedFormat<'s> {
++    info: FormatInfo,
++    factory: FormatFactoryFn,
++    source: MediaSourceStream<'s>,
++    options: FormatOptions,
++}
++impl<'s> ProbedFormat<'s> {
++    pub fn info(&self) -> FormatInfo {
++        self.info
++    }
++    pub fn into_reader(self) -> Result<Box<dyn FormatReader + 's>> {
++        (self.factory)(self.source, self.options)
++    }
++}
+ 
+ /// A probe match is the result of one probe iteration on a given media source stream.
+ ///
+@@ -449,16 +468,42 @@
+             }
+         }
+ 
+-        // Loop over all elements in the stream until a container format is found.
++        self.find_format(hint, mss, fmt_opts, meta_opts)?
++            .into_reader()
++    }
++
++    /// Identify the leading container without constructing its reader. This is
++    /// useful when the caller chooses its IO strategy before opening a format
++    /// whose index may live elsewhere in the object. Trailing metadata belongs
++    /// to full reader construction; this method does not seek to the tail.
++    /// The caller bounds the source's reads/seeks and supplies metadata limits.
++    pub fn probe_format<'s>(
++        &self,
++        hint: &Hint,
++        mss: MediaSourceStream<'s>,
++        meta_opts: MetadataOptions,
++    ) -> Result<ProbedFormat<'s>> {
++        self.find_format(hint, mss, FormatOptions::default(), meta_opts)
++    }
++
++    fn find_format<'s>(
++        &self,
++        hint: &Hint,
++        mut mss: MediaSourceStream<'s>,
++        mut fmt_opts: FormatOptions,
++        meta_opts: MetadataOptions,
++    ) -> Result<ProbedFormat<'s>> {
++        fmt_opts.metadata_options = meta_opts;
+         loop {
+             match self.next(&mut mss, hint)? {
+-                // If a container format is found, return an instance to it's reader.
+-                ProbeMatch::Format { factory, .. } => {
+-                    // Instantiate the format reader.
+-                    return factory(mss, fmt_opts);
++                ProbeMatch::Format { info, factory } => {
++                    return Ok(ProbedFormat {
++                        info,
++                        factory,
++                        source: mss,
++                        options: fmt_opts,
++                    });
+                 }
+-                // If metadata was found, instantiate the metadata reader, read the metadata, and
+-                // push it onto the metadata log.
+                 ProbeMatch::Metadata { factory, .. } => {
+                     let mut reader = factory(mss, meta_opts)?;
+                     read_and_append_metadata(&mut reader, &mut fmt_opts, meta_opts)?;
+@@ -466,9 +511,6 @@
+                 }
+             }
+         }
+-
+-        // This function returns when either the end-of-stream is reached, an error occurs, or a
+-        // container format is found.
+     }
+ 
+     /// Scans for trailing metadata relative to the end position of the provided
+@@ -803,3 +845,115 @@
+         }
+     };
+ }
++
++#[cfg(test)]
++mod identification_tests {
++    use super::*;
++    use crate::{
++        common::{FourCc, Limit},
++        formats::FormatId,
++        io::ReadOnlySource,
++    };
++    use std::{
++        cell::Cell,
++        io::{self, Cursor, Read, Seek, SeekFrom},
++    };
++    thread_local! { static CONSTRUCTIONS: Cell<usize> = const {Cell::new(0)}; }
++    fn info() -> FormatInfo {
++        FormatInfo {
++            format: FormatId::new(FourCc::new(*b"TEST")),
++            short_name: "test",
++            long_name: "test",
++        }
++    }
++    fn construct<'a>(
++        _: MediaSourceStream<'a>,
++        options: FormatOptions,
++    ) -> Result<Box<dyn FormatReader + 'a>> {
++        CONSTRUCTIONS.with(|n| n.set(n.get() + 1));
++        assert!(matches!(
++            options.metadata_options.limit_total_bytes,
++            Limit::Maximum(0)
++        ));
++        crate::errors::unsupported_error("factory observed")
++    }
++    fn score(_: ScopedStream<&mut MediaSourceStream<'_>>) -> Result<Score> {
++        Ok(Score::Supported(255))
++    }
++    fn probe() -> Probe {
++        let mut p = Probe::new();
++        p.register(
++            Tier::Standard,
++            GenericProbeMatch {
++                spec: ProbeDataMatchSpec {
++                    extensions: &[],
++                    mime_types: &[],
++                    markers: &[b"TEST"],
++                },
++                score,
++                specific: ProbeMatch::Format {
++                    info: info(),
++                    factory: construct,
++                },
++                anchors: Anchors::None,
++            },
++        );
++        p
++    }
++    fn metadata() -> MetadataOptions {
++        MetadataOptions::default().limit_total_bytes(Limit::Maximum(0))
++    }
++    fn stream() -> MediaSourceStream<'static> {
++        MediaSourceStream::new(
++            Box::new(ReadOnlySource::new(Cursor::new(b"TEST payload"))),
++            Default::default(),
++        )
++    }
++    #[test]
++    fn identify_defers_factory_and_into_reader_preserves_policy() {
++        CONSTRUCTIONS.with(|n| n.set(0));
++        let p = probe();
++        let identified = p.probe_format(&Hint::new(), stream(), metadata()).unwrap();
++        assert_eq!(identified.info().format, info().format);
++        assert_eq!(CONSTRUCTIONS.with(Cell::get), 0);
++        assert!(identified.into_reader().is_err());
++        assert_eq!(CONSTRUCTIONS.with(Cell::get), 1);
++    }
++    #[test]
++    fn full_probe_still_constructs_through_the_shared_search() {
++        CONSTRUCTIONS.with(|n| n.set(0));
++        assert!(probe()
++            .probe(&Hint::new(), stream(), FormatOptions::default(), metadata())
++            .is_err());
++        assert_eq!(CONSTRUCTIONS.with(Cell::get), 1);
++    }
++    struct NoSeek(Cursor<&'static [u8]>);
++    impl Read for NoSeek {
++        fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
++            self.0.read(b)
++        }
++    }
++    impl Seek for NoSeek {
++        fn seek(&mut self, _: SeekFrom) -> io::Result<u64> {
++            panic!("identification sought trailing metadata")
++        }
++    }
++    impl MediaSource for NoSeek {
++        fn is_seekable(&self) -> bool {
++            true
++        }
++        fn byte_len(&self) -> Option<u64> {
++            Some(self.0.get_ref().len() as u64)
++        }
++    }
++    #[test]
++    fn identification_never_probes_the_tail_of_a_seekable_source() {
++        let source = MediaSourceStream::new(
++            Box::new(NoSeek(Cursor::new(b"TEST payload"))),
++            Default::default(),
++        );
++        assert!(probe()
++            .probe_format(&Hint::new(), source, metadata())
++            .is_ok());
++    }
++}

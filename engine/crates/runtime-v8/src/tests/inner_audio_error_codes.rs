@@ -9,6 +9,16 @@ mod inner_audio_error_codes_tests {
     use shared::error::{EngineError, ErrorCode};
     use shared::protocol::audio_cmd::AudioCmd;
 
+    struct SourceState(tokio::sync::Notify);
+    impl shared::audio_load::AudioLoadState for SourceState {
+        fn generation(&self) -> u64 {
+            1
+        }
+        fn generation_changed(&self) -> &tokio::sync::Notify {
+            &self.0
+        }
+    }
+
     /// An audio thread whose decoder refuses every file it is given.
     fn boot() -> (JsRuntime, std::thread::JoinHandle<()>) {
         let (tx, rx) = shared::audio_channel::channel();
@@ -16,7 +26,16 @@ mod inner_audio_error_codes_tests {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
             while std::time::Instant::now() < deadline {
                 match rx.try_recv() {
-                    Ok(AudioCmd::InnerAudioLoad { resp, .. }) => {
+                    Ok(AudioCmd::InnerAudioBeginLoad {
+                        source_id, resp, ..
+                    }) => {
+                        let state = std::sync::Arc::new(SourceState(tokio::sync::Notify::new()));
+                        let _ = resp.send(Ok(shared::audio_load::InnerAudioLoadToken::new(
+                            &state, 1, source_id,
+                        )));
+                    }
+
+                    Ok(AudioCmd::InnerAudioCompleteLoad { resp, .. }) => {
                         let _ = resp.send(Err(EngineError::from_detail(
                             ErrorCode::InvalidArgument,
                             "not a format the decoder knows",

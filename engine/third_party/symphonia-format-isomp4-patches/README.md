@@ -81,3 +81,28 @@ packetizer. It reuses AtomSpan and AudioIndex, preserves physical-moov EOF
 validation and AAC/index cursors, and yields after 32 header probes. Cached
 indexes and real mdat-backed packet rewinds can avoid IO; incomplete/evicted
 windows return NeedMore/Unavailable without retaining another encoded cache.
+
+`0008-shared-presentation-seek.patch` exposes index seek in presentation PCM
+frames, using the pull reader's shared TrackState/AAC timeline and packet/byte
+cursor commit. Lookup, AAC preroll, exact u64 offsets and optional pinned object
+bounds are resolved before publishing a new cursor. An out-of-range target
+leaves the cursor intact; corrupt extents retire the index. No IO, codec reset
+or DSP operation is hidden here: callers reset the codec, resolve the next
+pinned packet extent and discard preroll before required_ts.
+
+The seek corpus retains ordinary PNS AAC and adds deterministic PNS-disabled
+AAC for PCM suffix comparisons (absolute error below 1e-5), alternate media
+timescales and a nonstandard edit start. PNS uses stateful random noise, so
+random access is not a promise of the full stream's exact noise realization.
+Actual source/player transport controls, decoder/DSP reset wiring, native
+platforms, device latency and peak performance still need acceptance.
+
+`0009-streaming-seek-source-handoff.patch` connects presentation index seek to
+the sequential packetizer. Every explicit seek issues the existing ReadAt
+request, even when the packet lies forward of or exactly at the old cursor.
+Only verified mdat geometry/offset or the existing bounded cached-window
+resolver resumes packet delivery; stale offered bytes do not advance it.
+Seek from EOF reuses the retained index, clears its audio EOF and bounds
+metadata per traversal. Revisited moov atoms must match the recorded extent;
+an unrelated duplicate movie remains an error. Codec reset, preroll discard,
+DSP and live source/player control wiring remain explicit follow-up work.

@@ -21,13 +21,25 @@ struct Buffers {
 pub(crate) struct ChunkPool(Arc<Buffers>);
 impl ChunkPool {
     pub(crate) fn new(lease: Option<crate::pools::ByteTicket>) -> Self {
+        Self::from_parts(vec![0; FILE_CHUNK_BYTES], lease)
+    }
+    fn from_parts(buffer: Vec<u8>, lease: Option<crate::pools::ByteTicket>) -> Self {
         Self(Arc::new(Buffers {
             state: Mutex::new(BufferState {
-                slots: [Some(vec![0; FILE_CHUNK_BYTES]), None],
+                slots: [Some(buffer), None],
                 allocated: 1,
             }),
             _lease: lease,
         }))
+    }
+    fn from_buffer(buffer: Vec<u8>, lease: crate::pools::ByteTicket) -> io::Result<Self> {
+        if buffer.len() != FILE_CHUNK_BYTES || buffer.capacity() != FILE_CHUNK_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid media scratch buffer",
+            ));
+        }
+        Ok(Self::from_parts(buffer, Some(lease)))
     }
     pub(crate) fn fill(
         &self,
@@ -117,6 +129,36 @@ pub struct ReadAtFile {
 impl ReadAtFile {
     /// Construct on the bounded FS executor: metadata is a disk operation.
     pub fn new(file: File, max_control_bytes: usize) -> io::Result<Self> {
+        Self::with_pool(file, max_control_bytes, || Ok(ChunkPool::new(None)))
+    }
+    /// Retain the existing process byte credit through the final media chunk.
+    /// Construct on Fs; reserve both possible slots before allocating either.
+    pub fn with_budget(
+        file: File,
+        max_control_bytes: usize,
+        pools: &crate::pools::IoPools,
+    ) -> io::Result<Self> {
+        control_limit(max_control_bytes)?;
+        let lease = pools
+            .reserve_bytes(2 * FILE_CHUNK_BYTES as u64)
+            .map_err(io::Error::other)?;
+        Self::with_pool(file, max_control_bytes, || Ok(ChunkPool::new(Some(lease))))
+    }
+    pub(crate) fn from_buffer(
+        file: File,
+        max_control_bytes: usize,
+        buffer: Vec<u8>,
+        lease: crate::pools::ByteTicket,
+    ) -> io::Result<Self> {
+        Self::with_pool(file, max_control_bytes, || {
+            ChunkPool::from_buffer(buffer, lease)
+        })
+    }
+    fn with_pool(
+        file: File,
+        max_control_bytes: usize,
+        pool: impl FnOnce() -> io::Result<ChunkPool>,
+    ) -> io::Result<Self> {
         control_limit(max_control_bytes)?;
         let stamp = Stamp::of(file.metadata()?)?;
         Ok(Self {
@@ -127,7 +169,7 @@ impl ReadAtFile {
             reads: std::sync::atomic::AtomicUsize::new(0),
             #[cfg(test)]
             after_read: Mutex::new(None),
-            pool: ChunkPool::new(None),
+            pool: pool()?,
         })
     }
     pub fn len(&self) -> u64 {
@@ -135,6 +177,15 @@ impl ReadAtFile {
     }
     pub fn is_empty(&self) -> bool {
         self.stamp.len == 0
+    }
+    /// Existing persistent credit already covers the two possible media slots.
+    /// Legacy unreserved readers retain their per-operation admission hint.
+    pub fn transient_media_bytes(&self) -> u64 {
+        if self.pool.0._lease.is_some() {
+            0
+        } else {
+            FILE_CHUNK_BYTES as u64
+        }
     }
     pub fn verify(&self) -> io::Result<()> {
         self.stamp.verify(&self.file)
@@ -161,6 +212,12 @@ impl ReadAtFile {
         let mut data = vec![0; len];
         self.fill(offset, &mut data)?;
         Ok(data)
+    }
+    /// Fill a caller-owned bounded buffer without an intermediate allocation.
+    /// On error, the caller must discard the buffer contents.
+    pub fn read_into_at(&self, offset: u64, output: &mut [u8]) -> io::Result<()> {
+        self.extent(offset, output.len(), self.max_control_bytes)?;
+        self.fill(offset, output)
     }
     /// Recycle one media buffer after the caller drops its previous chunk.
     /// One extra slot is allocated lazily for a validated reposition while the
@@ -192,9 +249,51 @@ mod tests {
         (p, data)
     }
     #[test]
+    fn borrowed_controls_preserve_extent_stamp_and_allocate_no_payload() {
+        let (path, data) = fixture();
+        let reader = ReadAtFile::new(File::open(&path).unwrap(), 128).unwrap();
+        let mut out = [0; 128];
+        migo_alloc_probe::assert_no_steady_state_allocation(
+            migo_alloc_probe::Burst {
+                path: "borrowed file controls",
+                warmup: 8,
+                measured: 96,
+            },
+            |n| {
+                let at = n * 137 % (data.len() - out.len());
+                reader.read_into_at(at as u64, &mut out).unwrap();
+                assert_eq!(out, data[at..at + out.len()]);
+            },
+        );
+        let reads = reader.reads.load(Ordering::Relaxed);
+        assert!(reader.read_into_at(0, &mut [0; 129]).is_err());
+        assert!(reader.read_into_at(u64::MAX, &mut out).is_err());
+        assert!(reader.read_into_at(reader.len(), &mut out).is_err());
+        assert_eq!(reader.reads.load(Ordering::Relaxed), reads);
+        *reader.after_read.lock() = Some(Box::new({
+            let path = path.clone();
+            move || {
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(path)
+                    .unwrap()
+                    .set_len(1)
+                    .unwrap()
+            }
+        }));
+        assert!(
+            reader.read_into_at(0, &mut out).is_err(),
+            "post-read mutation accepted"
+        );
+        assert!(reader.read_into_at(reader.len(), &mut []).is_err());
+        drop(reader);
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
     fn bounded_controls_rewinds_and_two_media_slots_keep_exact_bytes() {
         let (p, data) = fixture();
         let source = ReadAtFile::new(File::open(&p).unwrap(), 128).unwrap();
+        assert_eq!(source.transient_media_bytes(), FILE_CHUNK_BYTES as u64);
         assert_eq!(source.read_exact_at(37, 128).unwrap(), data[37..165]);
         let reads = source.reads.load(Ordering::Relaxed);
         assert!(source.read_exact_at(0, 129).is_err());
@@ -230,6 +329,26 @@ mod tests {
         );
         drop(source);
         std::fs::remove_file(p).unwrap();
+    }
+    #[test]
+    fn reserved_reader_keeps_both_slots_charged_until_the_final_chunk() {
+        let (path, data) = fixture();
+        let pools = crate::pools::IoPools::with_byte_budget(2 * FILE_CHUNK_BYTES as u64);
+        let reader = ReadAtFile::with_budget(File::open(&path).unwrap(), 128, &pools).unwrap();
+        assert_eq!(reader.transient_media_bytes(), 0);
+        assert!(pools.reserve_bytes(1).is_err());
+        let a = reader.chunk_at(0, 128).unwrap();
+        let b = reader.chunk_at(128, 128).unwrap();
+        drop(reader);
+        drop(a);
+        assert!(pools.reserve_bytes(1).is_err());
+        assert_eq!(b.as_ref(), &data[128..256]);
+        drop(b);
+        assert!(pools.reserve_bytes(2 * FILE_CHUNK_BYTES as u64).is_ok());
+        let small = crate::pools::IoPools::with_byte_budget(2 * FILE_CHUNK_BYTES as u64 - 1);
+        assert!(ReadAtFile::with_budget(File::open(&path).unwrap(), 128, &small).is_err());
+        assert!(small.reserve_bytes(2 * FILE_CHUNK_BYTES as u64 - 1).is_ok());
+        std::fs::remove_file(path).unwrap();
     }
     #[test]
     fn short_chunks_hide_retained_bytes_without_rezeroing_storage() {

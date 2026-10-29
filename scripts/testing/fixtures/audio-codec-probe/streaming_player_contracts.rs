@@ -25,6 +25,17 @@ pub(crate) struct StreamInput {
     pub rx: mpsc::Receiver<StreamMsg>,
 }
 pub(crate) async fn consume_player<const B: bool>(case: PlaybackCase<'_>, input: StreamInput) {
+    consume::<B>(case, input, false).await;
+}
+
+pub(crate) async fn consume_forward_player<const B: bool>(
+    case: PlaybackCase<'_>,
+    input: StreamInput,
+) {
+    consume::<B>(case, input, true).await;
+}
+
+async fn consume<const B: bool>(case: PlaybackCase<'_>, input: StreamInput, forward: bool) {
     let PlaybackCase {
         name,
         source_name,
@@ -53,6 +64,7 @@ pub(crate) async fn consume_player<const B: bool>(case: PlaybackCase<'_>, input:
     let (mut rendered, mut ended, mut canplay, mut pauses) = (0, 0, 0, 0);
     let start = Instant::now();
     let mut peak = 0;
+    let (mut sought, mut seeked) = (false, 0);
     while ended == 0 {
         assert!(
             start.elapsed() < Duration::from_secs(60),
@@ -60,6 +72,15 @@ pub(crate) async fn consume_player<const B: bool>(case: PlaybackCase<'_>, input:
         );
         player.poll_stream();
         peak = peak.max(player.physical_pcm_bytes());
+        if forward && !sought && shared.is_loaded() {
+            assert!(shared.duration_frames() < 2 * target as u64);
+            assert!(frames > 2 * target as usize + 512);
+            assert!(!player.is_stream_complete());
+            player.pause();
+            player.seek(2.0);
+            rendered = 2 * target as usize;
+            sought = true;
+        }
         if pause && pauses == 0 && rendered >= target as usize {
             player.pause();
             let pos = shared.position_frames();
@@ -117,8 +138,16 @@ pub(crate) async fn consume_player<const B: bool>(case: PlaybackCase<'_>, input:
                 InnerAudioEventType::CanPlay => canplay += 1,
                 InnerAudioEventType::Ended => ended += 1,
                 InnerAudioEventType::Error => panic!("streaming player Error at {rendered}"),
+                InnerAudioEventType::Seeked if forward => {
+                    assert!(event.paused);
+                    assert_eq!(event.current_time, 2.0);
+                    seeked += 1;
+                }
                 _ => {}
             }
+        }
+        if forward && seeked == 1 && shared.state() == PlaybackState::Paused {
+            player.play();
         }
         if count == 0 {
             tokio::time::sleep(Duration::from_millis(1)).await;
@@ -129,6 +158,8 @@ pub(crate) async fn consume_player<const B: bool>(case: PlaybackCase<'_>, input:
     task.await.unwrap();
     assert_eq!((rendered, canplay, ended), (frames, 1, 1));
     assert_eq!(pauses, usize::from(pause));
+    assert_eq!(sought, forward);
+    assert_eq!(seeked, usize::from(forward));
     assert_eq!(shared.duration_frames(), frames as u64);
     assert!(player.is_stream_complete());
     assert!(state.download_complete.load(Ordering::Acquire));
@@ -140,6 +171,6 @@ pub(crate) async fn consume_player<const B: bool>(case: PlaybackCase<'_>, input:
     );
     assert!(peak < 4 * 1024 * 1024);
     println!(
-        "W09_SOURCE_PLAYER {{\"asset\":\"{name}\",\"buffered\":{B},\"rate\":{target},\"frames\":{frames},\"peak_pcm_bytes\":{peak},\"pauses\":{pauses}}}"
+        "W09_SOURCE_PLAYER {{\"asset\":\"{name}\",\"buffered\":{B},\"rate\":{target},\"frames\":{frames},\"peak_pcm_bytes\":{peak},\"pauses\":{pauses},\"forward_seek\":{forward}}}"
     );
 }

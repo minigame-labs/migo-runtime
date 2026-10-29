@@ -1481,6 +1481,7 @@ pub async fn op_inner_audio_load(
 pub fn op_inner_audio_load_url(
     state: Rc<RefCell<OpState>>,
     #[smi] id: InnerAudioId,
+    #[smi] source_id: u32,
     #[string] src: &str,
 ) -> Result<impl std::future::Future<Output = Result<(), AudioError>> + use<>, AudioError> {
     let src = service::prepare_inner_audio_src(src)?;
@@ -1506,7 +1507,8 @@ pub fn op_inner_audio_load_url(
             .map_err(|error| service::audio_error(error.to_string()))
         },
     };
-    Ok(async move { Ok(service::inner_audio_load_url(tx, sources, id, src).await?) })
+    let load = service::inner_audio_load_url(tx, sources, id, source_id, src)?;
+    Ok(async move { Ok(load.await?) })
 }
 
 /// Play InnerAudioContext (fire and forget)

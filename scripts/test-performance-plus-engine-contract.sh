@@ -53,6 +53,9 @@ fail() { echo "performance-plus engine contract FAILED: $*" >&2; exit 1; }
 command -v node >/dev/null 2>&1 || fail "node is not available, so the staged engine was not run"
 command -v cargo >/dev/null 2>&1 || fail "cargo is not available, so the host's side was not checked"
 
+# Quiet grep exits as soon as it sees a success marker. Feed captured Cargo
+# output with a here-string: piping printf under pipefail can turn that success
+# into SIGPIPE/141 when diagnostics extend beyond the marker.
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 STAGED="$WORK/resources"
@@ -106,7 +109,7 @@ if (( status != 0 )); then
     printf '%s\n' "$rust" >&2
     fail "the host's ingress refused frames the engine's facade produced"
 fi
-printf '%s\n' "$rust" | grep -qE "admitted $frames frames from the engine's WebGL facade" \
+grep -qE "admitted $frames frames from the engine's WebGL facade" <<< "$rust" \
     || { printf '%s\n' "$rust" >&2; fail "the Rust check did not report admitting $frames frames; it may not have run"; }
 
 PARITY="$WORK/parity"
@@ -119,7 +122,7 @@ if (( status != 0 )); then
     printf '%s\n' "$parity" >&2
     fail "the producer's resource records do not decode to the commands the in-process ops build"
 fi
-printf '%s\n' "$parity" | grep -qE '[0-9]+ commands and [0-9]+ errors agree' \
+grep -qE '[0-9]+ commands and [0-9]+ errors agree' <<< "$parity" \
     || { printf '%s\n' "$parity" >&2; fail "the resource parity check did not report agreeing; it may not have run"; }
 printf '%s\n' "$parity" | grep -E 'commands and [0-9]+ errors agree'
 
@@ -138,7 +141,7 @@ if (( status != 0 )); then
     printf '%s\n' "$raw" >&2
     fail "the producer's raw records do not decode to the commands the in-process ops build"
 fi
-printf '%s\n' "$raw" | grep -qE '[0-9]+ commands and [0-9]+ errors agree' \
+grep -qE '[0-9]+ commands and [0-9]+ errors agree' <<< "$raw" \
     || { printf '%s\n' "$raw" >&2; fail "the raw parity check did not report agreeing; it may not have run"; }
 printf '%s\n' "$raw" | grep -E 'commands and [0-9]+ errors agree'
 
@@ -157,7 +160,7 @@ if (( status != 0 )); then
     printf '%s\n' "$text" >&2
     fail "the producer's text records do not decode to the commands the in-process ops build"
 fi
-printf '%s\n' "$text" | grep -qE '[0-9]+ Canvas2D commands agree' \
+grep -qE '[0-9]+ Canvas2D commands agree' <<< "$text" \
     || { printf '%s\n' "$text" >&2; fail "the text parity check did not report agreeing; it may not have run"; }
 printf '%s\n' "$text" | grep -E '[0-9]+ Canvas2D commands agree'
 
@@ -176,7 +179,7 @@ if (( status != 0 )); then
     printf '%s\n' "$styles" >&2
     fail "the producer's style records do not decode to the commands the in-process ops build"
 fi
-printf '%s\n' "$styles" | grep -qE '[0-9]+ Canvas2D commands agree' \
+grep -qE '[0-9]+ Canvas2D commands agree' <<< "$styles" \
     || { printf '%s\n' "$styles" >&2; fail "the style parity check did not report agreeing; it may not have run"; }
 printf '%s\n' "$styles" | grep -E '[0-9]+ Canvas2D commands agree'
 
@@ -195,7 +198,7 @@ if (( status != 0 )); then
     printf '%s\n' "$paths" >&2
     fail "the producer's path records do not decode to the commands the in-process ops build"
 fi
-printf '%s\n' "$paths" | grep -qE '[0-9]+ Canvas2D commands agree' \
+grep -qE '[0-9]+ Canvas2D commands agree' <<< "$paths" \
     || { printf '%s\n' "$paths" >&2; fail "the path parity check did not report agreeing; it may not have run"; }
 printf '%s\n' "$paths" | grep -E '[0-9]+ Canvas2D commands agree'
 
@@ -213,7 +216,7 @@ if (( status != 0 )); then
     printf '%s\n' "$sources" >&2
     fail "the producer's canvas-source uploads do not decode to the commands the in-process ops build"
 fi
-printf '%s\n' "$sources" | grep -qE '[0-9]+ commands and [0-9]+ errors agree' \
+grep -qE '[0-9]+ commands and [0-9]+ errors agree' <<< "$sources" \
     || { printf '%s\n' "$sources" >&2; fail "the canvas-source parity check did not report agreeing; it may not have run"; }
 printf '%s\n' "$sources" | grep -E 'commands and [0-9]+ errors agree'
 
@@ -231,7 +234,7 @@ if (( status != 0 )); then
     printf '%s\n' "$snapshots" >&2
     fail "the producer's snapshot records do not decode to the commands the in-process ops build"
 fi
-printf '%s\n' "$snapshots" | grep -qE '[0-9]+ Canvas2D commands agree' \
+grep -qE '[0-9]+ Canvas2D commands agree' <<< "$snapshots" \
     || { printf '%s\n' "$snapshots" >&2; fail "the snapshot parity check did not report agreeing; it may not have run"; }
 printf '%s\n' "$snapshots" | grep -E '[0-9]+ Canvas2D commands agree'
 
@@ -249,7 +252,7 @@ if (( status != 0 )); then
     printf '%s\n' "$lifetime" >&2
     fail "the producer's canvas lifetime records do not have the effect the in-process ops have"
 fi
-printf '%s\n' "$lifetime" | grep -qE '[0-9]+ canvas lifetime effects agree' \
+grep -qE '[0-9]+ canvas lifetime effects agree' <<< "$lifetime" \
     || { printf '%s\n' "$lifetime" >&2; fail "the canvas lifetime parity check did not report agreeing; it may not have run"; }
 printf '%s\n' "$lifetime" | grep -E '[0-9]+ canvas lifetime effects agree'
 
@@ -268,7 +271,7 @@ if (( status != 0 )); then
     printf '%s\n' "$files" >&2
     fail "the host refused or failed the producer's file calls"
 fi
-printf '%s\n' "$files" | grep -qE 'ran [0-9]+ producer file calls on the host' \
+grep -qE 'ran [0-9]+ producer file calls on the host' <<< "$files" \
     || { printf '%s\n' "$files" >&2; fail "the file-call replay did not report running; it may not have run"; }
 node platforms/apple/WebContent/PerformancePlus/test/emit-file-calls.mjs read "$FILE_CALLS" \
     || fail "the producer misread the host's answers to its file calls"
@@ -287,7 +290,7 @@ if (( status != 0 )); then
     printf '%s\n' "$network" >&2
     fail "the host refused or failed the producer's network calls"
 fi
-printf '%s\n' "$network" | grep -qE 'ran [0-9]+ producer network calls on the host' \
+grep -qE 'ran [0-9]+ producer network calls on the host' <<< "$network" \
     || { printf '%s\n' "$network" >&2; fail "the network-call replay did not report running; it may not have run"; }
 node platforms/apple/WebContent/PerformancePlus/test/emit-network-calls.mjs read "$NETWORK_CALLS" \
     || fail "the producer misread the host's answers to its network calls"
@@ -305,7 +308,7 @@ if (( status != 0 )); then
     printf '%s\n' "$events" >&2
     fail "the host could not encode its input as events"
 fi
-printf '%s\n' "$events" | grep -qE 'wrote [1-9][0-9]* host-event messages' \
+grep -qE 'wrote [1-9][0-9]* host-event messages' <<< "$events" \
     || { printf '%s\n' "$events" >&2; fail "the host-event corpus was not written; the Rust side may not have run"; }
 node platforms/apple/WebContent/PerformancePlus/test/host-events.test.mjs "$STAGED" "$HOST_EVENTS" \
     || fail "content did not hear the host's input as the embedded runtime delivers it"

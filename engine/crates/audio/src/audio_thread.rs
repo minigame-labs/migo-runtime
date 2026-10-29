@@ -53,7 +53,7 @@ use crate::limits::{AudioAggregateLedger, AudioAggregatePermit};
 /// Result of an off-thread decode+resample operation.
 ///
 /// The heavy work (decoding compressed audio, resampling) runs on a
-/// short-lived `std::thread`. When finished, the result is sent back
+/// bounded persistent decode worker. When finished, the result is sent back
 /// to the audio loop via a [`std_mpsc::Receiver`] so the audio thread
 /// can integrate it without blocking.
 enum DecodeResult {
@@ -66,6 +66,7 @@ enum DecodeResult {
     /// Completed decode for `AudioCmd::InnerAudioLoad`.
     InnerAudio {
         id: InnerAudioId,
+        load: crate::inner_audio::InnerAudioLoadToken,
         result: EngineResult<DecodedAudio>,
         resp: AudioResp<InnerAudioInfo>,
     },
@@ -88,6 +89,7 @@ enum DecodeJob {
     },
     InnerAudio {
         id: InnerAudioId,
+        load: crate::inner_audio::InnerAudioLoadToken,
         data: Vec<u8>,
         resp: AudioResp<InnerAudioInfo>,
     },
@@ -213,6 +215,15 @@ impl DecodeQueuePayload for DecodeJob {
         match self {
             Self::AudioBuffer { data, .. } => data.capacity(),
             Self::InnerAudio { data, .. } => data.capacity(),
+        }
+    }
+}
+
+impl DecodeJob {
+    fn is_cancelled(&self) -> bool {
+        match self {
+            Self::InnerAudio { load, resp, .. } => !load.is_current() || resp.is_closed(),
+            Self::AudioBuffer { resp, .. } => resp.is_closed(),
         }
     }
 }
@@ -475,6 +486,16 @@ fn reject_decode_result(result: DecodeResult, code: ErrorCode, detail: &'static 
 }
 
 fn publish_decode_result(result_tx: &DecodeQueueSender<DecodeResult>, result: DecodeResult) {
+    if let DecodeResult::InnerAudio { load, resp, .. } = &result
+        && (!load.is_current() || resp.is_closed())
+    {
+        reject_decode_result(
+            result,
+            ErrorCode::Cancelled,
+            "InnerAudio source load superseded",
+        );
+        return;
+    }
     match result_tx.try_send(result) {
         Ok(()) => {}
         Err(DecodeQueueSendError::Full(result)) => reject_decode_result(
@@ -532,6 +553,10 @@ impl LazyDecodePool {
     }
 
     fn submit(&mut self, job: DecodeJob) {
+        if job.is_cancelled() {
+            reject_decode_job(job, ErrorCode::Cancelled, "audio decode request cancelled");
+            return;
+        }
         let pool = self.pool.get_or_insert_with(|| {
             DecodePool::new(
                 DECODE_POOL_SIZE,
@@ -711,6 +736,13 @@ fn decode_worker(
 
         match msg {
             Ok(job) => {
+                // Superseded loads and abandoned replies must not enter the
+                // decoder or compete for the process-wide PCM peak allowance.
+                if job.is_cancelled() {
+                    reject_decode_job(job, ErrorCode::Cancelled, "audio decode request cancelled");
+                    wakeup.notify();
+                    continue;
+                }
                 // A decode can transiently retain its 16 MiB encoded input and
                 // both an input and resampled 64 MiB PCM allocation. Claim a
                 // conservative 144 MiB before invoking it so all pools together
@@ -744,7 +776,12 @@ fn decode_worker(
                             },
                         );
                     }
-                    DecodeJob::InnerAudio { id, data, resp } => {
+                    DecodeJob::InnerAudio {
+                        id,
+                        load,
+                        data,
+                        resp,
+                    } => {
                         let result = run_decode_with_panic_boundary(|| {
                             crate::decoder::decode(&data).and_then(|decoded| {
                                 crate::resampler::resample_if_needed(decoded, sample_rate)
@@ -752,7 +789,12 @@ fn decode_worker(
                         });
                         publish_decode_result(
                             &result_tx,
-                            DecodeResult::InnerAudio { id, result, resp },
+                            DecodeResult::InnerAudio {
+                                id,
+                                load,
+                                result,
+                                resp,
+                            },
                         );
                     }
                 }
@@ -1232,6 +1274,57 @@ fn calculate_process_frames(_sample_rate: u32) -> usize {
     RENDER_QUANTUM_FRAMES
 }
 
+/// Prepared bytes keep the source boundary issued before asynchronous IO.
+/// Reject another owner before admitting any decoder work.
+fn submit_prepared_inner_audio_load(
+    players: &HashMap<InnerAudioId, InnerAudioPlayer>,
+    pool: &mut LazyDecodePool,
+    id: InnerAudioId,
+    load: crate::inner_audio::InnerAudioLoadToken,
+    data: Vec<u8>,
+    resp: AudioResp<InnerAudioInfo>,
+) {
+    if players
+        .get(&id)
+        .is_some_and(|player| player.shared.owns_load(&load))
+    {
+        pool.submit(DecodeJob::InnerAudio {
+            id,
+            load,
+            data,
+            resp,
+        });
+    } else {
+        let _ = resp.send(Err(
+            crate::inner_audio::InnerAudioLoadToken::cancelled_error(),
+        ));
+    }
+}
+
+/// Publication is not installation: validate again after draining new commands.
+fn integrate_inner_audio_decode_result(
+    players: &mut HashMap<InnerAudioId, InnerAudioPlayer>,
+    id: InnerAudioId,
+    load: crate::inner_audio::InnerAudioLoadToken,
+    result: EngineResult<DecodedAudio>,
+    resp: AudioResp<InnerAudioInfo>,
+) {
+    let response = match players.get_mut(&id) {
+        Some(player) if player.shared.owns_load(&load) && !resp.is_closed() => {
+            result.and_then(|audio| {
+                let info = InnerAudioInfo {
+                    duration: audio.duration(),
+                    sample_rate: audio.sample_rate,
+                    channels: audio.channels,
+                };
+                player.complete_load(load, audio).map(|()| info)
+            })
+        }
+        _ => Err(crate::inner_audio::InnerAudioLoadToken::cancelled_error()),
+    };
+    let _ = resp.send(response);
+}
+
 /// Step 3 of one audio-thread tick: service every player once — drain what the
 /// network delivered, adopt a finished stream into the cache, and hand out the
 /// events the player raised.
@@ -1267,6 +1360,41 @@ fn service_players(
             emit(event);
         }
     }
+}
+
+#[cfg(test)]
+#[test]
+fn paused_seek_events_are_serviced_without_a_mix_or_output_wakeup() {
+    let mut player = InnerAudioPlayer::new(1, 1);
+    player
+        .load_audio(DecodedAudio {
+            samples: vec![0.25; 128],
+            sample_rate: 8000,
+            channels: 1,
+        })
+        .unwrap();
+    player.play();
+    player.pause();
+    player.drain_events().for_each(drop);
+    player.seek(0.008);
+    let mut players = HashMap::from([(1, player)]);
+    let cache = GlobalAudioCache::new();
+    let mut events = Vec::new();
+    service_players(&mut players, &cache, |event| events.push(event));
+    assert_eq!(events.len(), 2);
+    assert_eq!(
+        events[0].event_type,
+        shared::protocol::audio_cmd::InnerAudioEventType::Seeking
+    );
+    assert_eq!(
+        events[1].event_type,
+        shared::protocol::audio_cmd::InnerAudioEventType::Seeked
+    );
+    assert_eq!(events[1].current_time, 0.008);
+    assert!(events.iter().all(|event| event.paused));
+    let player = &players[&1];
+    assert!(!player.is_active());
+    assert!(!player.needs_stream_poll());
 }
 
 fn wait_for_audio_work(wakeup: &ThreadWakeup, mode: AudioWaitMode) {
@@ -2518,9 +2646,47 @@ fn run_audio_thread(
                     }
                 }
 
+                AudioCmd::InnerAudioBeginLoad {
+                    id,
+                    source_id,
+                    resp,
+                } => {
+                    let result = inner_players
+                        .get_mut(&id)
+                        .ok_or_else(|| EngineError::new(ErrorCode::NotFound))
+                        .and_then(|player| player.begin_load_for(source_id));
+                    let _ = resp.send(result);
+                }
+
+                AudioCmd::InnerAudioCompleteLoad {
+                    id,
+                    load,
+                    data,
+                    resp,
+                } => {
+                    submit_prepared_inner_audio_load(
+                        &inner_players,
+                        &mut decode_pool,
+                        id,
+                        load,
+                        data,
+                        resp,
+                    );
+                }
+
                 AudioCmd::InnerAudioLoad { id, data, resp } => {
-                    if inner_players.contains_key(&id) {
-                        decode_pool.submit(DecodeJob::InnerAudio { id, data, resp });
+                    if let Some(player) = inner_players.get_mut(&id) {
+                        match player.begin_load() {
+                            Ok(load) => decode_pool.submit(DecodeJob::InnerAudio {
+                                id,
+                                load,
+                                data,
+                                resp,
+                            }),
+                            Err(error) => {
+                                let _ = resp.send(Err(error));
+                            }
+                        }
                     } else {
                         let _ = resp.send(Err(EngineError::from_detail(
                             ErrorCode::NotFound,
@@ -2529,13 +2695,23 @@ fn run_audio_thread(
                     }
                 }
 
-                AudioCmd::InnerAudioLoadUrl { id, url, resp } => {
+                AudioCmd::InnerAudioLoadUrl {
+                    id,
+                    load,
+                    url,
+                    resp,
+                } => {
                     if let Some(player) = inner_players.get_mut(&id) {
+                        if !player.shared.owns_load(&load) {
+                            let _ = resp.send(Err(
+                                crate::inner_audio::InnerAudioLoadToken::cancelled_error(),
+                            ));
+                            continue;
+                        }
                         // Check cache first
                         if let Some(cached_audio) = audio_cache.get(&url) {
                             tracing::debug!("Cache hit for InnerAudioContext {}: {}", id, url);
-                            player.load_cached(cached_audio);
-                            let _ = resp.send(Ok(()));
+                            let _ = resp.send(player.complete_cached_load(load, cached_audio));
                         } else {
                             match streaming_client.get() {
                                 Ok(client) => {
@@ -2547,7 +2723,7 @@ fn run_audio_thread(
                                         state.clone(),
                                         sample_rate,
                                     );
-                                    match player.start_streaming(url, rx, state) {
+                                    match player.complete_stream_load(load, url, rx, state) {
                                         Ok(()) => {
                                             let _ = resp.send(Ok(()));
                                             tracing::debug!(
@@ -2608,7 +2784,7 @@ fn run_audio_thread(
                         position
                     );
                     if let Some(player) = inner_players.get_mut(&id) {
-                        player.shared.seek(position);
+                        player.seek(position);
                     } else {
                         tracing::warn!("InnerAudioSeek: player {} not found", id);
                     }
@@ -2680,33 +2856,14 @@ fn run_audio_thread(
                 } => {
                     integrate_audio_buffer_decode_result(&contexts, ctx_id, result, resp);
                 }
-                DecodeResult::InnerAudio { id, result, resp } => match result {
-                    Ok(resampled) => {
-                        if let Some(player) = inner_players.get_mut(&id) {
-                            let info = InnerAudioInfo {
-                                duration: resampled.duration(),
-                                sample_rate: resampled.sample_rate,
-                                channels: resampled.channels,
-                            };
-                            match player.load_audio(resampled) {
-                                Ok(()) => {
-                                    let _ = resp.send(Ok(info));
-                                }
-                                Err(error) => {
-                                    let _ = resp.send(Err(error));
-                                }
-                            }
-                        } else {
-                            let _ = resp.send(Err(EngineError::from_detail(
-                                ErrorCode::NotFound,
-                                format!("InnerAudioContext {} destroyed during decode", id),
-                            )));
-                        }
-                    }
-                    Err(e) => {
-                        let _ = resp.send(Err(e));
-                    }
-                },
+                DecodeResult::InnerAudio {
+                    id,
+                    load,
+                    result,
+                    resp,
+                } => {
+                    integrate_inner_audio_decode_result(&mut inner_players, id, load, result, resp);
+                }
             }
         }
 
@@ -2762,11 +2919,7 @@ fn run_audio_thread(
             );
             let ev_id = event.id;
             let ev_type = event.event_type;
-            if let Err(e) = host_tx.try_send(HostCommand::InnerAudioEvent {
-                id: event.id,
-                event_type: event.event_type,
-                current_time: event.current_time,
-            }) {
+            if let Err(e) = host_tx.try_send(HostCommand::InnerAudioEvent { event }) {
                 tracing::warn!(
                     "Failed to send audio event (id={}, type={:?}): {}",
                     ev_id,
@@ -3147,6 +3300,9 @@ mod tests {
         (
             DecodeJob::InnerAudio {
                 id,
+                load: Arc::new(crate::inner_audio::InnerAudioSharedState::new())
+                    .begin_source(0)
+                    .unwrap(),
                 data: vec![0],
                 resp,
             },
@@ -3155,7 +3311,7 @@ mod tests {
     }
 
     /// A PCM16 WAV of `frames` frames of a ramp, mono, at `rate`.
-    fn wav(rate: u32, frames: u32) -> Vec<u8> {
+    pub(super) fn wav(rate: u32, frames: u32) -> Vec<u8> {
         let data_len = frames * 2;
         let mut out = Vec::new();
         out.extend_from_slice(b"RIFF");
@@ -3224,6 +3380,9 @@ mod tests {
         let (resp, _rx) = tokio::sync::oneshot::channel();
         DecodeResult::InnerAudio {
             id,
+            load: Arc::new(crate::inner_audio::InnerAudioSharedState::new())
+                .begin_source(0)
+                .unwrap(),
             result: Err(EngineError::new(ErrorCode::InvalidArgument)),
             resp,
         }
@@ -3240,6 +3399,9 @@ mod tests {
         (
             DecodeResult::InnerAudio {
                 id,
+                load: Arc::new(crate::inner_audio::InnerAudioSharedState::new())
+                    .begin_source(0)
+                    .unwrap(),
                 result: Ok(DecodedAudio {
                     samples,
                     sample_rate: 48_000,
@@ -4113,12 +4275,8 @@ mod tests {
 
         assert!(!pool.is_started());
 
-        let (resp, _resp_rx) = tokio::sync::oneshot::channel();
-        pool.submit(DecodeJob::InnerAudio {
-            id: 7,
-            data: Vec::new(),
-            resp,
-        });
+        let (job, _resp_rx) = inner_decode_job(7);
+        pool.submit(job);
 
         assert!(pool.is_started());
         assert!(result_rx.recv_timeout(Duration::from_secs(1)).is_ok());
@@ -4294,3 +4452,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "source_load_tests.rs"]
+mod source_load_tests;

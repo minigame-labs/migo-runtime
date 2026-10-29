@@ -3,9 +3,10 @@ use symphonia_codec_aac::AacDecoder;
 use symphonia_core::{
     codecs::audio::{AudioDecoder, AudioDecoderOptions},
     common::Limit,
-    formats::{FormatOptions, FormatReader},
+    formats::{FormatOptions, FormatReader, SeekMode, SeekTo},
     io::MediaSourceStream,
     meta::MetadataOptions,
+    units::Timestamp,
 };
 use symphonia_format_isomp4::{
     IsoMp4Reader,
@@ -362,4 +363,275 @@ fn co64_sample_positions_keep_the_full_absolute_offset() {
     // actual 4GiB HTTP representation has been fetched or validated.
     let mut idx = AudioIndex::from_moov(&movie, Default::default()).unwrap();
     assert_eq!(idx.next_packet().unwrap().unwrap().offset, offset);
+}
+
+pub(crate) fn targets(frames: usize) -> Vec<usize> {
+    let mut targets = vec![frames - 1, 0, 1, frames / 2];
+    targets.extend(
+        [211, 1023, 1024, 2100]
+            .into_iter()
+            .filter(|&frame| frame < frames),
+    );
+    targets
+}
+
+pub(crate) fn seek_files(deterministic: bool) -> Vec<String> {
+    let mut names = Vec::new();
+    for number in 0..3 {
+        for mode in if number == 0 {
+            &["front", "tail"][..]
+        } else {
+            &["front", "tail", "split", "reorder", "co64"][..]
+        } {
+            names.push(format!(
+                "{number}-{}{mode}.m4a",
+                if deterministic { "seek-" } else { "" }
+            ));
+        }
+    }
+    names.extend(["1-seek-scaled.m4a".into(), "1-seek-edit.m4a".into()]);
+    names
+}
+
+fn decode_index_tail(
+    data: &[u8],
+    idx: &mut AudioIndex,
+    decoder: &mut AacDecoder,
+    target: usize,
+) -> (Vec<f32>, usize) {
+    let channels = decoder.codec_params().channels.as_ref().unwrap().count();
+    let mut pcm = Vec::new();
+    let mut packets = 0;
+    while let Some(sample) = idx.next_packet().unwrap() {
+        let at = sample.offset as usize;
+        let packet = sample.packet(&data[at..at + sample.size as usize]).unwrap();
+        let start = sample.pts.get() + sample.trim_start.get() as i64;
+        let block = decoder.decode_ref(&packet).unwrap();
+        let mut scratch = vec![0.0; block.samples_interleaved()];
+        block.copy_to_slice_interleaved(&mut scratch);
+        let skip = (target as i64 - start).max(0) as usize;
+        pcm.extend_from_slice(&scratch[(skip * channels).min(scratch.len())..]);
+        packets += 1;
+    }
+    (pcm, packets)
+}
+
+#[test]
+fn index_seek_matches_pull_descriptors_and_full_packet_preroll_after_eof() {
+    let mut comparisons = 0;
+    for name in seek_files(false) {
+        let data = file(&name);
+        let mut idx = index(&data);
+        let frames = idx.track().num_frames.unwrap() as usize;
+        let mut full = Vec::new();
+        while let Some(packet) = idx.next_packet().unwrap() {
+            full.push(packet);
+        }
+        let mut reader = pull(&data);
+        for target in targets(frames) {
+            let requested = Timestamp::new(target as i64);
+            let seeked = idx.seek(requested).unwrap();
+            let expected = full
+                .iter()
+                .rev()
+                .find(|packet| packet.pts.get() <= target as i64 - 1024)
+                .unwrap_or(&full[0]);
+            assert_eq!(seeked.required_ts, requested);
+            assert_eq!(seeked.actual_ts, expected.pts);
+            let other = reader
+                .seek(
+                    SeekMode::Accurate,
+                    SeekTo::Timestamp {
+                        ts: requested,
+                        track_id: idx.track().id,
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                (seeked.required_ts, seeked.actual_ts),
+                (other.required_ts, other.actual_ts)
+            );
+            assert_eq!(seeked.track_id, idx.track().id);
+            let first = idx.next_packet().unwrap().unwrap();
+            assert_eq!(&first, expected);
+            let packet = reader.next_packet().unwrap().unwrap();
+            assert_eq!(first.pts, packet.pts);
+            assert_eq!(first.dur, packet.dur);
+            assert_eq!(
+                (first.trim_start, first.trim_end),
+                (packet.trim_start, packet.trim_end)
+            );
+            let at = first.offset as usize;
+            assert_eq!(&data[at..at + first.size as usize], &*packet.data);
+            comparisons += 1;
+        }
+    }
+    assert_eq!(comparisons, 104);
+    println!("W09_INDEX_SEEK_DESCRIPTORS {comparisons} exact comparisons");
+}
+
+#[test]
+fn deterministic_aac_seek_preroll_matches_full_pcm_suffix() {
+    let mut comparisons = 0;
+    for name in seek_files(true) {
+        let data = file(&name);
+        let mut idx = index(&data);
+        let frames = idx.track().num_frames.unwrap() as usize;
+        let mut decoder = codec(&idx);
+        let mut reader = pull(&data);
+        let mut other = codec(&idx);
+        let channels = decoder.codec_params().channels.as_ref().unwrap().count();
+        let (full, _) = decode_index_tail(&data, &mut idx, &mut decoder, 0);
+        assert_eq!(full.len(), frames * channels);
+        for target in targets(frames) {
+            let seeked = idx.seek(Timestamp::new(target as i64)).unwrap();
+            assert_eq!(seeked.required_ts.get(), target as i64);
+            decoder.reset();
+            let (tail, packets) = decode_index_tail(&data, &mut idx, &mut decoder, target);
+            assert_eq!(tail.len(), (frames - target) * channels);
+            reader
+                .seek(
+                    SeekMode::Accurate,
+                    SeekTo::Timestamp {
+                        ts: Timestamp::new(target as i64),
+                        track_id: idx.track().id,
+                    },
+                )
+                .unwrap();
+            other.reset();
+            let mut pulled = Vec::new();
+            while let Some(packet) = reader.next_packet().unwrap() {
+                let start = packet.pts.get() + packet.trim_start.get() as i64;
+                let block = other.decode(&packet).unwrap();
+                let mut scratch = vec![0.0; block.samples_interleaved()];
+                block.copy_to_slice_interleaved(&mut scratch);
+                let skip = (target as i64 - start).max(0) as usize;
+                pulled.extend_from_slice(&scratch[(skip * channels).min(scratch.len())..]);
+            }
+            assert_eq!(tail, pulled, "index/pull PCM differs at {name}/{target}");
+            let max_error = tail
+                .iter()
+                .zip(&full[target * channels..])
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0_f32, f32::max);
+            assert!(max_error < 0.000_01, "{name}/{target}: {max_error}");
+            if target == frames - 1 {
+                assert!(packets <= 3, "seek decoded the prefix again");
+            }
+            comparisons += 1;
+        }
+    }
+    assert_eq!(comparisons, 104);
+    println!("W09_INDEX_SEEK_PCM {comparisons} suffixes, max abs error < 0.00001 (PNS disabled)");
+}
+
+#[test]
+fn invalid_seek_preserves_cursor_and_corrupt_extents_remain_failed() {
+    let data = file("1-front.m4a");
+    let mut idx = index(&data);
+    let mut expected = index(&data);
+    idx.next_packet().unwrap();
+    expected.next_packet().unwrap();
+    for value in [-1, 9737, i64::MAX] {
+        assert!(idx.seek(Timestamp::new(value)).is_err());
+        assert_eq!(idx.next_packet().unwrap(), expected.next_packet().unwrap());
+    }
+    let mut short = AudioIndex::from_moov(
+        moov(&data),
+        IndexOptions {
+            object_len: Some(1),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(short.seek(Timestamp::ZERO).is_err());
+    assert!(short.next_packet().is_err());
+    assert!(short.seek(Timestamp::ZERO).is_err());
+    let data = file("1-co64.m4a");
+    let mut movie = moov(&data).to_vec();
+    let table = movie.windows(4).position(|p| p == b"co64").unwrap();
+    movie[table + 12..table + 20].copy_from_slice(&(u64::MAX - 1).to_be_bytes());
+    let mut idx = AudioIndex::from_moov(&movie, Default::default()).unwrap();
+    assert!(idx.seek(Timestamp::ZERO).is_err());
+    assert!(
+        idx.seek(Timestamp::new(9000)).is_err(),
+        "corrupt index revived at a valid later chunk"
+    );
+    assert!(idx.next_packet().is_err());
+    assert!(idx.rewind().is_err());
+}
+
+#[test]
+fn index_seek_and_first_descriptor_have_no_steady_heap_activity() {
+    use migo_alloc_probe::{Burst, assert_no_steady_state_allocation};
+    let data = file("2-split.m4a");
+    let mut idx = index(&data);
+    assert_no_steady_state_allocation(
+        Burst {
+            path: "index presentation seek and first borrowed descriptor",
+            warmup: 8,
+            measured: 256,
+        },
+        |tick| {
+            let requested = Timestamp::new(if tick % 2 == 0 { 200000 } else { 17 });
+            let seeked = idx.seek(requested).unwrap();
+            assert_eq!(seeked.required_ts, requested);
+            let packet = idx.next_packet().unwrap().unwrap();
+            assert_eq!(packet.pts, seeked.actual_ts);
+        },
+    );
+}
+
+#[test]
+fn co64_seek_preserves_offsets_above_4gib_and_preroll_sample_positions() {
+    let data = file("1-co64.m4a");
+    let mut movie = moov(&data).to_vec();
+    let table = movie.windows(4).position(|p| p == b"co64").unwrap();
+    let old = u64::from_be_bytes(movie[table + 12..table + 20].try_into().unwrap());
+    let base = (1_u64 << 32) + 137;
+    let count = u32::from_be_bytes(movie[table + 8..table + 12].try_into().unwrap());
+    for entry in 0..count as usize {
+        let at = table + 12 + entry * 8;
+        let offset = u64::from_be_bytes(movie[at..at + 8].try_into().unwrap());
+        movie[at..at + 8].copy_from_slice(&(base + offset - old).to_be_bytes());
+    }
+    let mut shifted = AudioIndex::from_moov(&movie, Default::default()).unwrap();
+    let mut original = index(&data);
+    for target in [9000, 0, 5000, 1] {
+        shifted.seek(Timestamp::new(target)).unwrap();
+        original.seek(Timestamp::new(target)).unwrap();
+        for _ in 0..2 {
+            let a = shifted.next_packet().unwrap().unwrap();
+            let b = original.next_packet().unwrap().unwrap();
+            assert_eq!(a.offset, base + b.offset - old);
+            assert_eq!((a.pts, a.size), (b.pts, b.size));
+        }
+    }
+}
+
+#[test]
+fn ordinary_pns_aac_seek_keeps_valid_pcm_and_exact_presentation_counts() {
+    let mut comparisons = 0;
+    for number in [1, 2] {
+        let data = file(&format!("{number}-reorder.m4a"));
+        let mut idx = index(&data);
+        let mut decoder = codec(&idx);
+        let channels = decoder.codec_params().channels.as_ref().unwrap().count();
+        let frames = idx.track().num_frames.unwrap() as usize;
+        for target in targets(frames) {
+            idx.seek(Timestamp::new(target as i64)).unwrap();
+            decoder.reset();
+            let (pcm, _) = decode_index_tail(&data, &mut idx, &mut decoder, target);
+            assert_eq!(pcm.len(), (frames - target) * channels);
+            assert!(
+                pcm.iter()
+                    .all(|sample| sample.is_finite() && sample.abs() < 2.0)
+            );
+            comparisons += 1;
+        }
+    }
+    assert_eq!(comparisons, 16);
+    println!(
+        "W09_INDEX_SEEK_PNS {comparisons} exact frame counts; noise realization may differ after reset"
+    );
 }

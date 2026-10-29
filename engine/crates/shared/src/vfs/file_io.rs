@@ -8,6 +8,27 @@ use std::{
     time::SystemTime,
 };
 
+/// Native link count of the same retained object, including all Windows hard
+/// links. Metadata obtained by reopening a path is not alias evidence.
+pub fn link_count(file: &File) -> io::Result<u64> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Ok(file.metadata()?.nlink())
+    }
+    #[cfg(windows)]
+    {
+        super::windows::link_count(file)
+            .map(u64::from)
+            .map_err(io::Error::other)
+    }
+    #[cfg(not(any(unix, windows)))]
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "native link count unavailable",
+    ))
+}
+
 /// Identity of an opened native object, independent of its current pathname.
 /// Windows keeps the complete 128-bit ID and volume, not the legacy file index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

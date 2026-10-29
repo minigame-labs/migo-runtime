@@ -625,9 +625,9 @@ impl Response {
         &self.headers
     }
 
-    // Decoding removes Content-Encoding/Length from the public headers. Keep
-    // the distinction available after body EOF too, for byte-range identity.
-    pub(super) fn has_decoded_representation(&self) -> bool {
+    /// Whether HTTP content decoding changed the representation's byte space.
+    /// Remains true after EOF, when normalized headers no longer describe it.
+    pub fn has_decoded_representation(&self) -> bool {
         self.wire_counter.is_some()
     }
 
