@@ -310,6 +310,18 @@ impl<const Q: usize, const BUFFERED: bool> Batched<Q, push_decoder::M4a<BUFFERED
 }
 
 #[cfg(feature = "m4a-streaming-probe")]
+impl<const Q: usize, const BUFFERED: bool> push_decoder::M4aSeekDecoder
+    for Batched<Q, push_decoder::M4a<BUFFERED>>
+{
+    fn seek(
+        &mut self,
+        ts: symphonia::core::units::Timestamp,
+    ) -> symphonia::core::errors::Result<symphonia::core::formats::SeekedTo> {
+        Batched::<Q, push_decoder::M4a<BUFFERED>>::seek(self, ts)
+    }
+}
+
+#[cfg(feature = "m4a-streaming-probe")]
 impl<const Q: usize, const BUFFERED: bool> push_decoder::M4aSourceDecoder
     for Batched<Q, push_decoder::M4a<BUFFERED>>
 {

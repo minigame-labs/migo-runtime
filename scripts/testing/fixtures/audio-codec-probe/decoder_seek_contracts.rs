@@ -141,7 +141,7 @@ fn run<D: Subject>(
     }
     Err("decoder failed to make bounded progress".into())
 }
-fn assert_pcm(actual: &[f32], expected: &[f32]) {
+pub(crate) fn assert_pcm(actual: &[f32], expected: &[f32]) {
     assert_eq!(actual.len(), expected.len());
     let error = actual
         .iter()
@@ -276,7 +276,7 @@ fn complete_cache_seek_reuses_bytes_and_seek_does_not_bypass_pcm_quota() {
     ));
     assert_eq!(mp3.push(b"ID3").unwrap(), 3);
 }
-fn resample(samples: &[f32], rate: u32, target: u32, channels: u32) -> Vec<f32> {
+pub(crate) fn resample(samples: &[f32], rate: u32, target: u32, channels: u32) -> Vec<f32> {
     use rubato::{
         Resampler, audioadapter::Adapter, audioadapter_buffers::direct::InterleavedSlice,
     };

@@ -192,6 +192,34 @@ pub trait M4aSourceDecoder: Send + 'static {
     ) -> Result<(), String>;
     fn resume_at(&mut self, media: AtomSpan, offset: u64) -> Result<(), String>;
 }
+
+/// Explicit control is separate from continuous container source requests.
+pub trait M4aSeekDecoder: M4aSourceDecoder {
+    fn seek(
+        &mut self,
+        ts: symphonia::core::units::Timestamp,
+    ) -> FormatResult<symphonia::core::formats::SeekedTo>;
+}
+impl<const BUFFERED: bool> M4aSeekDecoder for Decoder<M4a<BUFFERED>> {
+    fn seek(
+        &mut self,
+        ts: symphonia::core::units::Timestamp,
+    ) -> FormatResult<symphonia::core::formats::SeekedTo> {
+        Decoder::<M4a<BUFFERED>>::seek(self, ts)
+    }
+}
+impl<D: M4aSeekDecoder> M4aSeekDecoder for Option<D> {
+    fn seek(
+        &mut self,
+        ts: symphonia::core::units::Timestamp,
+    ) -> FormatResult<symphonia::core::formats::SeekedTo> {
+        self.as_mut()
+            .ok_or(symphonia::core::errors::Error::SeekError(
+                symphonia::core::errors::SeekErrorKind::Unseekable,
+            ))?
+            .seek(ts)
+    }
+}
 impl<const BUFFERED: bool> M4aSourceDecoder for Decoder<M4a<BUFFERED>> {
     fn source_request(&self) -> Option<SourceRequest> {
         Decoder::<M4a<BUFFERED>>::source_request(self)
