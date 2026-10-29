@@ -81,10 +81,10 @@ def main(work, target, rubato, positive_only):
             finally: path.write_text(original)
             count += 1; print('actual format-source fault', name, ': executed assertion rejected', flush=True)
     assert all(codecs.sha(ROOT/p) == h for p, h in frozen.items()) and all(codecs.sha(work/p) == h for p, h in retained.items())
-    rows = json.loads((work/'library-source-provenance.json').read_text()); assert len(rows) == 9 and sum(len(r['patches']) for r in rows) == 28
+    rows = json.loads((work/'library-source-provenance.json').read_text()); assert len(rows) == 9 and sum(len(r['patches']) for r in rows) == 29
     for row in rows: assert local.file.dsp.source.index_gate.timeline.source_tree(libraries[row['crate']]) == row['source_files']
     for name, row in new.items(): assert all(codecs.sha(work/'resampling-vendor'/f"{name}-{row['version']}"/p) == h for p, h in row['source_files'].items())
-    summary = {'format_tests': 7, 'format_pcm_comparisons': 144, 'compiled_controls': count, 'positive_only': positive_only, 'binary_sha256': codecs.sha(binary), 'libraries': 9, 'patches': 28, 'root_inputs_unchanged': True, 'source_copies_restored': True, 'existing_dependency_versions_preserved': True, 'root_lock_sha256': codecs.sha(ROOT/'engine/Cargo.lock'), 'scope': 'Library-native bounded automatic local format selection and shared codec/CPU/DSP dispatch. Not HTTP fallback, product codec cutover, device or maximum-performance acceptance.'}
+    summary = {'format_tests': 7, 'format_pcm_comparisons': 144, 'compiled_controls': count, 'positive_only': positive_only, 'binary_sha256': codecs.sha(binary), 'libraries': 9, 'patches': 29, 'root_inputs_unchanged': True, 'source_copies_restored': True, 'existing_dependency_versions_preserved': True, 'root_lock_sha256': codecs.sha(ROOT/'engine/Cargo.lock'), 'scope': 'Library-native bounded automatic local format selection and shared codec/CPU/DSP dispatch. Not HTTP fallback, product codec cutover, device or maximum-performance acceptance.'}
     (work/'summary.json').write_text(json.dumps(summary, indent=2)+'\n'); print(json.dumps(summary, indent=2), flush=True)
 
 if __name__ == '__main__':

@@ -96,3 +96,13 @@ timescales and a nonstandard edit start. PNS uses stateful random noise, so
 random access is not a promise of the full stream's exact noise realization.
 Actual source/player transport controls, decoder/DSP reset wiring, native
 platforms, device latency and peak performance still need acceptance.
+
+`0009-streaming-seek-source-handoff.patch` connects presentation index seek to
+the sequential packetizer. Every explicit seek issues the existing ReadAt
+request, even when the packet lies forward of or exactly at the old cursor.
+Only verified mdat geometry/offset or the existing bounded cached-window
+resolver resumes packet delivery; stale offered bytes do not advance it.
+Seek from EOF reuses the retained index, clears its audio EOF and bounds
+metadata per traversal. Revisited moov atoms must match the recorded extent;
+an unrelated duplicate movie remains an error. Codec reset, preroll discard,
+DSP and live source/player control wiring remain explicit follow-up work.

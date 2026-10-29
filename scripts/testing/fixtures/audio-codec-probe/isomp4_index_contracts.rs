@@ -365,7 +365,7 @@ fn co64_sample_positions_keep_the_full_absolute_offset() {
     assert_eq!(idx.next_packet().unwrap().unwrap().offset, offset);
 }
 
-fn targets(frames: usize) -> Vec<usize> {
+pub(crate) fn targets(frames: usize) -> Vec<usize> {
     let mut targets = vec![frames - 1, 0, 1, frames / 2];
     targets.extend(
         [211, 1023, 1024, 2100]
@@ -375,7 +375,7 @@ fn targets(frames: usize) -> Vec<usize> {
     targets
 }
 
-fn seek_files(deterministic: bool) -> Vec<String> {
+pub(crate) fn seek_files(deterministic: bool) -> Vec<String> {
     let mut names = Vec::new();
     for number in 0..3 {
         for mode in if number == 0 {

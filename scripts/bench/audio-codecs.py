@@ -177,7 +177,7 @@ codegen-units=1
     inputs += sorted((root / "engine/crates/audio/src/decoder").rglob("*.rs"))
     inputs += sorted((root / "engine/crates/shared/src").rglob("*.rs"))
     inputs += sorted((root / "engine/testing/alloc-probe/src").rglob("*.rs"))
-    inputs += sorted((root / "scripts/testing/fixtures/audio-codec-probe").glob("*.rs"))
+    inputs += sorted((root / "scripts/testing/fixtures/audio-codec-probe").rglob("*.rs"))
     source_inputs = {str(path.relative_to(root)): sha(path) for path in inputs}
     (work / "source-inputs.json").write_text(json.dumps(source_inputs, indent=2) + "\n")
     for path in inputs:
