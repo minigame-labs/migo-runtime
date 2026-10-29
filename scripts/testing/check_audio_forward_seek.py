@@ -29,7 +29,7 @@ def controls(original):
     prefix = "    fn seek_stream_prefix<'a>("
     process = '    pub fn process(&mut self, output: &mut [f32]) -> bool {'
     change('target-clamped-to-prefix', seek,
-           'self.is_streaming() && target_frame >= self.shared.duration_frames()', 'false', paused)
+           'self.is_streaming()\n            && !self.stream_complete\n            && target_frame >= self.shared.duration_frames()', 'false', paused)
     change('seeked-before-first-target-frame', poll,
            'target < self.shared.duration_frames()', 'target <= self.shared.duration_frames()', paused)
     change('pending-seek-renders-old-audio', process,

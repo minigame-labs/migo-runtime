@@ -48,17 +48,18 @@ async fn receive(
             StreamMsg::Ready {
                 sample_rate,
                 channels: got,
+                ..
             } => {
                 ready += 1;
                 assert_eq!((sample_rate, got), (target, channels));
             }
-            StreamMsg::Samples(pcm) => {
+            StreamMsg::Samples { pcm, .. } => {
                 assert_eq!((ready, done), (1, 0));
                 assert!(pcm.len() <= crate::bandlimited::MAX_SCRATCH_SAMPLES);
                 actual.extend_from_slice(&pcm);
             }
-            StreamMsg::Done => done += 1,
-            StreamMsg::Error(error) => panic!("Vorbis transport: {error}"),
+            StreamMsg::Done { .. } => done += 1,
+            StreamMsg::Error { message: error, .. } => panic!("Vorbis transport: {error}"),
         }
     }
     finished(task).await;
@@ -164,7 +165,8 @@ async fn first_vorbis_pcm_arrives_before_remaining_body_is_released() {
         tokio::time::timeout(PATIENCE, rx.recv()).await.unwrap(),
         Some(StreamMsg::Ready {
             sample_rate: 48000,
-            channels: 6
+            channels: 6,
+            ..
         })
     ));
     match tokio::time::timeout(PATIENCE, rx.recv())
@@ -172,7 +174,7 @@ async fn first_vorbis_pcm_arrives_before_remaining_body_is_released() {
         .unwrap()
         .unwrap()
     {
-        StreamMsg::Samples(pcm) => {
+        StreamMsg::Samples { pcm, .. } => {
             assert!(!pcm.is_empty());
             assert_eq!(&*pcm, &audio.samples[..pcm.len()]);
         }
@@ -208,8 +210,8 @@ async fn bad_vorbis_crc_eos_chain_and_http_never_publish_done() {
         let mut errors = 0;
         while let Some(message) = tokio::time::timeout(PATIENCE, rx.recv()).await.unwrap() {
             match message {
-                StreamMsg::Error(_) => errors += 1,
-                StreamMsg::Done => panic!("invalid Ogg/HTTP published Done"),
+                StreamMsg::Error { message: _, .. } => errors += 1,
+                StreamMsg::Done { .. } => panic!("invalid Ogg/HTTP published Done"),
                 _ => {
                     assert!(!invalid_header);
                     assert_eq!(errors, 0);

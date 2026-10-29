@@ -15,7 +15,13 @@ fn send_frames(
         (start..start + frames)
             .flat_map(|f| (0..channels).map(move |ch| (f * 4 + ch as usize) as f32)),
     );
-    assert!(tx.try_send(StreamMsg::Samples(pcm)).is_ok());
+    assert!(
+        tx.try_send(StreamMsg::Samples {
+            revision: crate::streaming::StreamRevision::INITIAL,
+            pcm
+        })
+        .is_ok()
+    );
 }
 
 fn stream(
@@ -35,6 +41,7 @@ fn stream(
         .unwrap();
     assert!(
         tx.try_send(StreamMsg::Ready {
+            revision: crate::streaming::StreamRevision::INITIAL,
             sample_rate: 8000,
             channels
         })
@@ -151,7 +158,12 @@ fn eof_clamps_a_pending_seek_and_ended_waits_for_play() {
         player.seek(f64::MAX);
         player.drain_events().for_each(drop);
         send_frames(&tx, &mut pool, 4000, 100, 1);
-        assert!(tx.try_send(StreamMsg::Done).is_ok());
+        assert!(
+            tx.try_send(StreamMsg::Done {
+                revision: crate::streaming::StreamRevision::INITIAL
+            })
+            .is_ok()
+        );
         player.poll_stream();
         assert_eq!(player.pending_seek, None);
         assert_eq!(player.shared.duration_frames(), 4100);
@@ -187,7 +199,12 @@ fn seek_at_the_current_end_waits_for_the_next_frame_or_eof() {
     player.seek(0.5);
     assert_eq!(player.pending_seek, Some(4000));
     assert_eq!(player.drain_events().count(), 1);
-    assert!(tx.try_send(StreamMsg::Done).is_ok());
+    assert!(
+        tx.try_send(StreamMsg::Done {
+            revision: crate::streaming::StreamRevision::INITIAL
+        })
+        .is_ok()
+    );
     player.poll_stream();
     assert_eq!(player.pending_seek, None);
     let events: Vec<_> = player.drain_events().collect();
@@ -223,7 +240,13 @@ fn stop_error_and_source_replacement_retire_a_pending_seek() {
         match boundary {
             0 => player.stop(),
             1 => {
-                assert!(tx.try_send(StreamMsg::Error("fixture".into())).is_ok());
+                assert!(
+                    tx.try_send(StreamMsg::Error {
+                        revision: crate::streaming::StreamRevision::INITIAL,
+                        message: "fixture".into()
+                    })
+                    .is_ok()
+                );
                 player.poll_stream();
             }
             _ => {
@@ -255,7 +278,13 @@ fn malformed_or_overflowing_seek_pcm_fails_without_seeked() {
         let mut pcm = pool.take();
         pcm.buffer_mut()
             .extend_from_slice(if overflow { &[0.0; 8] } else { &[0.0; 3] });
-        assert!(tx.try_send(StreamMsg::Samples(pcm)).is_ok());
+        assert!(
+            tx.try_send(StreamMsg::Samples {
+                revision: crate::streaming::StreamRevision::INITIAL,
+                pcm
+            })
+            .is_ok()
+        );
         player.poll_stream();
         assert!(state.is_cancelled());
         assert_eq!(player.pending_seek, None);

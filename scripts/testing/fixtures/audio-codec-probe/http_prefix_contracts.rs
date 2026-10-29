@@ -54,12 +54,12 @@ struct Got {
 fn accept(got: &mut Got, msg: StreamMsg) {
     match msg {
         StreamMsg::Ready { .. } => got.ready += 1,
-        StreamMsg::Samples(p) => {
+        StreamMsg::Samples { pcm: p, .. } => {
             assert_eq!((got.ready, got.done, got.errors.len()), (1, 0, 0));
             got.pcm.extend_from_slice(&p);
         }
-        StreamMsg::Done => got.done += 1,
-        StreamMsg::Error(e) => got.errors.push(e),
+        StreamMsg::Done { .. } => got.done += 1,
+        StreamMsg::Error { message: e, .. } => got.errors.push(e),
     }
 }
 async fn drain(mut rx: tokio::sync::mpsc::Receiver<StreamMsg>, mut got: Got) -> Got {

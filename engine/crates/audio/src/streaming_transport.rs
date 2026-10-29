@@ -14,7 +14,7 @@ use tokio::sync::mpsc;
 use crate::off_worker::OffWorker;
 use crate::streaming::{
     BODY_IDLE_TIMEOUT, HttpClient, NetworkWait, PcmPool, RESPONSE_HEADER_TIMEOUT, StreamMsg,
-    StreamingState, publish_stream_chunk, wait_for_network,
+    StreamPublication, StreamingState, publish_stream_chunk, wait_for_network,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -261,7 +261,15 @@ pub(crate) async fn publish_result(
     result: EngineResult<()>,
 ) {
     if let Err(error) = result {
-        send(tx, state, StreamMsg::Error(error.to_string())).await;
+        send(
+            tx,
+            state,
+            StreamMsg::Error {
+                revision: crate::streaming::StreamRevision::INITIAL,
+                message: error.to_string(),
+            },
+        )
+        .await;
     }
 }
 
@@ -284,9 +292,7 @@ pub(crate) async fn run_source<D: Decoder, S: Source<D>>(
     let mut decoder = OffWorker::new(None::<D>, cpu);
     let mut make_decoder = Some(make_decoder);
     let mut pool = PcmPool::new();
-    let mut format = None;
-    let mut ready_sent = false;
-    let mut total_samples = 0;
+    let mut publication = StreamPublication::default();
     'download: loop {
         let Some(next) = while_active(
             tx,
@@ -352,27 +358,13 @@ pub(crate) async fn run_source<D: Decoder, S: Source<D>>(
             if step.progress == Progress::Cancelled {
                 return Ok(());
             }
-            if step.sample_rate != 0 || step.channels != 0 {
-                if step.sample_rate == 0
-                    || step.channels == 0
-                    || !pcm.len().is_multiple_of(step.channels as usize)
-                {
-                    return Err(invalid("stream decoder returned an invalid PCM format"));
-                }
-                let current = (step.sample_rate, step.channels);
-                if format.is_some_and(|format| format != current) {
-                    return Err(invalid("stream PCM format changed"));
-                }
-                format = Some(current);
-            }
             if !publish_stream_chunk(
                 tx,
                 state,
                 pcm,
                 step.sample_rate,
                 step.channels,
-                &mut ready_sent,
-                &mut total_samples,
+                &mut publication,
             )
             .await?
             {
@@ -381,14 +373,7 @@ pub(crate) async fn run_source<D: Decoder, S: Source<D>>(
             match step.progress {
                 Progress::Cancelled => unreachable!(),
                 Progress::Finished => {
-                    if !eof || remaining != 0 || !ready_sent || total_samples == 0 {
-                        return Err(invalid(
-                            "stream decoder finished without complete audio input",
-                        ));
-                    }
-                    if send(tx, state, StreamMsg::Done).await {
-                        state.download_complete.store(true, Ordering::Release);
-                    }
+                    publication.finish(tx, state, eof, remaining).await?;
                     return Ok(());
                 }
                 Progress::NeedSource => {
@@ -428,10 +413,23 @@ mod tests {
 
     #[tokio::test]
     async fn cancelled_stream_releases_terminal_send_without_draining_the_queue() {
-        for terminal in [StreamMsg::Done, StreamMsg::Error("decode failed".into())] {
+        for terminal in [
+            StreamMsg::Done {
+                revision: crate::streaming::StreamRevision::INITIAL,
+            },
+            StreamMsg::Error {
+                revision: crate::streaming::StreamRevision::INITIAL,
+                message: "decode failed".into(),
+            },
+        ] {
             let (tx, _rx) = stream_channel();
             for _ in 0..STREAM_CHANNEL_CAPACITY {
-                assert!(tx.try_send(StreamMsg::Done).is_ok());
+                assert!(
+                    tx.try_send(StreamMsg::Done {
+                        revision: crate::streaming::StreamRevision::INITIAL
+                    })
+                    .is_ok()
+                );
             }
             let state = StreamingState::new();
             let waiting_state = state.clone();
@@ -484,9 +482,16 @@ mod tests {
             let mut pcm = pool.take();
             pcm.buffer_mut().resize(samples, 0.0);
             assert!(
-                publish_stream_chunk(&tx, &state, pcm, rate, channels, &mut true, &mut 0)
-                    .await
-                    .is_err()
+                publish_stream_chunk(
+                    &tx,
+                    &state,
+                    pcm,
+                    rate,
+                    channels,
+                    &mut StreamPublication::default()
+                )
+                .await
+                .is_err()
             );
             assert!(rx.try_recv().is_err());
         }

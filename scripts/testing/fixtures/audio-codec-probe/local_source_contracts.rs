@@ -233,12 +233,12 @@ pub(crate) async fn receive(
                 assert_eq!(sample_rate, target);
                 got.ready += 1;
             }
-            StreamMsg::Samples(pcm) => {
+            StreamMsg::Samples { pcm, .. } => {
                 assert_eq!((got.ready, got.done, got.errors.len()), (1, 0, 0));
                 got.pcm.extend_from_slice(&pcm);
             }
-            StreamMsg::Done => got.done += 1,
-            StreamMsg::Error(e) => got.errors.push(e),
+            StreamMsg::Done { .. } => got.done += 1,
+            StreamMsg::Error { message: e, .. } => got.errors.push(e),
         }
     }
     task.await.unwrap();
@@ -409,7 +409,7 @@ async fn first_pcm_and_four_slot_backpressure_do_not_collect_a_whole_file() {
                 .unwrap()
                 .unwrap()
             {
-                StreamMsg::Samples(_) => samples = true,
+                StreamMsg::Samples { pcm: _, .. } => samples = true,
                 StreamMsg::Ready { .. } => {}
                 _ => panic!("no first PCM"),
             }

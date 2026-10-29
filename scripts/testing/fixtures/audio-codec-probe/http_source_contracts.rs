@@ -46,12 +46,12 @@ async fn receive(owner: IoScheduler, plan: http_source::Prepared, target: u32) -
                 assert_eq!(sample_rate, target);
                 got.ready += 1;
             }
-            StreamMsg::Samples(p) => {
+            StreamMsg::Samples { pcm: p, .. } => {
                 assert_eq!((got.ready, got.done, got.errors.len()), (1, 0, 0));
                 got.pcm.extend_from_slice(&p);
             }
-            StreamMsg::Done => got.done += 1,
-            StreamMsg::Error(e) => got.errors.push(e),
+            StreamMsg::Done { .. } => got.done += 1,
+            StreamMsg::Error { message: e, .. } => got.errors.push(e),
         }
     }
     task.await.unwrap();

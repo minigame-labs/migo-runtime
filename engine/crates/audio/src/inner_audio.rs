@@ -15,7 +15,7 @@ use tokio::sync::mpsc::Receiver;
 use crate::cache::CachedAudio;
 use crate::decoder::DecodedAudio;
 use crate::limits::{AudioAggregateLedger, AudioAggregatePermit};
-use crate::streaming::{STREAM_CHANNEL_CAPACITY, StreamMsg, StreamingState};
+use crate::streaming::{STREAM_CHANNEL_CAPACITY, StreamMsg, StreamRevision, StreamingState};
 
 // Use the shared rate's exact resolution for the cursor too. Converting through
 // binary fixed point introduces an error on every output frame (e.g. at 1.1x).
@@ -382,6 +382,7 @@ pub struct InnerAudioPlayer {
     pending_events: Vec<InnerAudioEvent>,
     stream_rx: Option<Receiver<StreamMsg>>,
     stream_state: Option<Arc<StreamingState>>,
+    stream_revision: StreamRevision,
     stream_complete: bool,
     stream_base_frames: u64,
     stream_windowed: bool,
@@ -415,6 +416,7 @@ impl InnerAudioPlayer {
             pending_events: Vec::with_capacity(4),
             stream_rx: None,
             stream_state: None,
+            stream_revision: StreamRevision::INITIAL,
             stream_complete: false,
             stream_base_frames: 0,
             stream_windowed: false,
@@ -486,6 +488,7 @@ impl InnerAudioPlayer {
             self.last_source_id = source_id;
         }
         self.cancel_stream();
+        self.stream_revision = StreamRevision::INITIAL;
         self.source = AudioSource::Owned(Vec::new());
         self.stream_permit = None;
         self.position = 0;
@@ -620,6 +623,7 @@ impl InnerAudioPlayer {
         self.loading_url = Some(url);
         self.stream_rx = Some(rx);
         self.stream_state = Some(state);
+        self.stream_revision = StreamRevision::INITIAL;
         tracing::debug!("InnerAudioPlayer {} started streaming", self.id);
         Ok(())
     }
@@ -660,7 +664,7 @@ impl InnerAudioPlayer {
 
     /// Take ownership of streamed samples and their physical ownership permit.
     pub fn take_streamed_audio(&mut self) -> Option<(DecodedAudio, AudioAggregatePermit)> {
-        if !self.stream_complete || self.stream_windowed {
+        if !self.stream_complete || self.stream_windowed || self.retains_stream_source() {
             return None;
         }
         let permit = self.stream_permit.take()?;
@@ -700,6 +704,59 @@ impl InnerAudioPlayer {
         self.stream_rx = None;
     }
 
+    fn retains_stream_source(&self) -> bool {
+        self.stream_state
+            .as_ref()
+            .is_some_and(|state| state.retains_source())
+    }
+
+    /// Commit a source-accepted reposition on the audio thread. The caller has
+    /// already validated the target and mapped it to output frames. Merely
+    /// requesting a seek must not clear PCM or admit another revision.
+    pub(crate) fn accept_stream_revision(
+        &mut self,
+        source: &Arc<StreamingState>,
+        revision: StreamRevision,
+        target_frame: u64,
+    ) -> EngineResult<()> {
+        if revision <= self.stream_revision
+            || self
+                .stream_state
+                .as_ref()
+                .is_none_or(|current| !Arc::ptr_eq(current, source))
+            || !self.retains_stream_source()
+            || self.stream_state.as_ref().is_none_or(|s| s.is_cancelled())
+            || self.stream_rx.as_ref().is_none_or(|rx| rx.is_closed())
+            || !self.shared.is_loaded()
+            || self.shared.sample_rate() == 0
+            || self.shared.channels() == 0
+            || !matches!(self.source, AudioSource::Owned(_))
+        {
+            return Err(EngineError::from_detail(
+                ErrorCode::InvalidArgument,
+                "inactive or nonadvancing stream revision",
+            ));
+        }
+        self.push_event(InnerAudioEventType::Seeking);
+        if let AudioSource::Owned(samples) = &mut self.source {
+            samples.clear();
+        }
+        self.stream_revision = revision;
+        self.stream_base_frames = target_frame;
+        self.stream_windowed = true;
+        self.stream_complete = false;
+        self.position = 0;
+        self.position_phase = 0;
+        self.pending_seek = Some(target_frame);
+        self.waiting_notified = false;
+        self.frames_since_time_update = 0;
+        self.shared.set_position_frames(target_frame);
+        // duration_frames currently describes the decoded prefix. The source
+        // actor will own authoritative track duration separately.
+        self.shared.set_duration_frames(target_frame);
+        Ok(())
+    }
+
     fn fail_stream(&mut self) {
         self.cancel_stream();
         self.pending_seek = None;
@@ -727,6 +784,9 @@ impl InnerAudioPlayer {
 
     /// Process incoming stream messages (call from audio thread loop)
     pub fn poll_stream(&mut self) {
+        if self.stream_complete {
+            return;
+        }
         // Reclaim consumed data before appending the next decoder loan. This
         // keeps the retained window bounded while preserving a contiguous slice
         // for interpolation.
@@ -747,10 +807,14 @@ impl InnerAudioPlayer {
                 break;
             }
             let Ok(msg) = rx.try_recv() else { break };
+            if msg.revision() != self.stream_revision {
+                continue;
+            }
             match msg {
                 StreamMsg::Ready {
                     sample_rate,
                     channels,
+                    ..
                 } => {
                     self.shared.set_sample_rate(sample_rate);
                     self.shared.set_channels(channels);
@@ -761,7 +825,9 @@ impl InnerAudioPlayer {
                         channels
                     );
                 }
-                StreamMsg::Samples(new_samples) => {
+                StreamMsg::Samples {
+                    pcm: new_samples, ..
+                } => {
                     let samples = match self.seek_stream_prefix(&new_samples) {
                         Ok(samples) => samples,
                         Err(error) => {
@@ -882,10 +948,12 @@ impl InnerAudioPlayer {
                         }
                     }
                 }
-                StreamMsg::Done => {
+                StreamMsg::Done { .. } => {
                     self.stream_complete = true;
-                    self.stream_state = None;
-                    stream_ended = true;
+                    if !self.retains_stream_source() {
+                        self.stream_state = None;
+                        stream_ended = true;
+                    }
                     if self.pending_seek.take().is_some() {
                         // Unknown duration becomes authoritative only at EOF.
                         self.shared
@@ -921,7 +989,7 @@ impl InnerAudioPlayer {
                     }
                     break; // No more messages after Done
                 }
-                StreamMsg::Error(err) => {
+                StreamMsg::Error { message: err, .. } => {
                     tracing::error!("InnerAudioPlayer {} stream error: {}", self.id, err);
                     self.fail_stream();
                     stream_ended = true;
@@ -1006,7 +1074,10 @@ impl InnerAudioPlayer {
             return;
         }
         let target_frame = (time.max(0.0) * sample_rate as f64) as u64;
-        if self.is_streaming() && target_frame >= self.shared.duration_frames() {
+        if self.is_streaming()
+            && !self.stream_complete
+            && target_frame >= self.shared.duration_frames()
+        {
             self.push_event(InnerAudioEventType::Seeking);
             self.pending_seek = Some(target_frame);
             self.position = self.source.len();
@@ -1081,7 +1152,7 @@ impl InnerAudioPlayer {
     }
 
     pub(crate) fn needs_stream_poll(&self) -> bool {
-        self.is_streaming() && !self.stream_prefetch_full()
+        self.is_streaming() && !self.stream_complete && !self.stream_prefetch_full()
     }
 
     fn finish_playback(&mut self, final_frame: usize, rendered_frames: usize) {
@@ -1294,6 +1365,10 @@ impl Drop for InnerAudioPlayer {
 }
 
 #[cfg(test)]
+#[path = "stream_revision_tests.rs"]
+mod stream_revision_tests;
+
+#[cfg(test)]
 #[path = "seek_tests.rs"]
 mod seek_tests;
 
@@ -1334,7 +1409,13 @@ mod tests {
         let mut pool = crate::streaming::PcmPool::new();
         let mut pcm = pool.take();
         pcm.buffer_mut().extend_from_slice(samples);
-        assert!(tx.try_send(StreamMsg::Samples(pcm)).is_ok());
+        assert!(
+            tx.try_send(StreamMsg::Samples {
+                revision: crate::streaming::StreamRevision::INITIAL,
+                pcm
+            })
+            .is_ok()
+        );
     }
 
     fn short_stream(samples: &[f32]) -> (InnerAudioPlayer, tokio::sync::mpsc::Sender<StreamMsg>) {
@@ -1349,6 +1430,7 @@ mod tests {
             .unwrap();
         assert!(
             tx.try_send(StreamMsg::Ready {
+                revision: crate::streaming::StreamRevision::INITIAL,
                 sample_rate: 8000,
                 channels: 1
             })
@@ -1376,6 +1458,7 @@ mod tests {
             .unwrap();
         assert!(
             tx.try_send(StreamMsg::Ready {
+                revision: crate::streaming::StreamRevision::INITIAL,
                 sample_rate: 8000,
                 channels: 1
             })
@@ -1385,7 +1468,10 @@ mod tests {
         for tick in 0..64 {
             let mut pcm = pool.take();
             pcm.buffer_mut().resize(2000, 0.25);
-            let _ = tx.try_send(StreamMsg::Samples(pcm));
+            let _ = tx.try_send(StreamMsg::Samples {
+                revision: crate::streaming::StreamRevision::INITIAL,
+                pcm,
+            });
             player.poll_stream();
             if tick == 2 {
                 player.play();
@@ -1467,7 +1553,12 @@ mod tests {
             .extend_from_slice(&vec![0.0; InnerAudioPlayer::STREAM_WINDOW_SAMPLES + 20]);
         player.position = InnerAudioPlayer::STREAM_WINDOW_SAMPLES + 5;
         send_pcm(&tx, &[0.0; 8]);
-        assert!(tx.try_send(StreamMsg::Done).is_ok());
+        assert!(
+            tx.try_send(StreamMsg::Done {
+                revision: crate::streaming::StreamRevision::INITIAL
+            })
+            .is_ok()
+        );
         player.poll_stream();
         assert_eq!(
             player.shared.duration_frames(),
@@ -1521,7 +1612,12 @@ mod tests {
         player.process(&mut waiting);
         assert_eq!(waiting, [0.0; 2]);
         send_pcm(&tx, &[4.0, 5.0]);
-        assert!(tx.try_send(StreamMsg::Done).is_ok());
+        assert!(
+            tx.try_send(StreamMsg::Done {
+                revision: crate::streaming::StreamRevision::INITIAL
+            })
+            .is_ok()
+        );
         player.poll_stream();
         let mut resumed = [0.0; 4];
         assert!(player.process(&mut resumed));
@@ -1533,8 +1629,11 @@ mod tests {
         let (mut player, tx) = short_stream(&[1.0, 2.0]);
         player.drain_events().for_each(drop);
         assert!(
-            tx.try_send(StreamMsg::Error("body truncated".into()))
-                .is_ok()
+            tx.try_send(StreamMsg::Error {
+                revision: crate::streaming::StreamRevision::INITIAL,
+                message: "body truncated".into()
+            })
+            .is_ok()
         );
         player.poll_stream();
         assert_eq!(player.shared.state(), PlaybackState::Stopped);
@@ -2050,7 +2149,11 @@ mod tests {
         let mut pool = crate::streaming::PcmPool::new();
         let mut pcm = pool.take();
         pcm.buffer_mut().resize(8, 0.0);
-        tx.try_send(StreamMsg::Samples(pcm)).unwrap();
+        tx.try_send(StreamMsg::Samples {
+            revision: crate::streaming::StreamRevision::INITIAL,
+            pcm,
+        })
+        .unwrap();
         player.poll_stream();
 
         assert!(

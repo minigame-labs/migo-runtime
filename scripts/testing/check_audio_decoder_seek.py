@@ -87,7 +87,7 @@ def main(work,target,rubato,positive_only):
     assert all(r['name']not in known or identity(r)in pinned for r in tomllib.loads((package/'Cargo.lock').read_text())['package']),'existing dependency identity drift'
     codecs.run(['cargo','check','--offline','--locked','--lib'],work/'normal-library-check.log',cwd=package,env=env)
     binary=transport.source.build(work,env,'positive')
-    checks=[('seek','decoder_seek_contracts::',9),('transport','isomp4_source_contracts::transport::',11),('source','isomp4_source_contracts::',25),('range','network::http::range::tests::',18),('common','streaming_transport::tests::',3),('player','inner_audio::',42)]
+    checks=[('seek','decoder_seek_contracts::',9),('transport','isomp4_source_contracts::transport::',11),('source','isomp4_source_contracts::',25),('range','network::http::range::tests::',18),('common','streaming_transport::tests::',3),('player','inner_audio::',51)]
     for label,prefix,count in checks:
         args=[str(binary),prefix,'--nocapture','--test-threads=1']
         if label=='source':args+=['--skip','isomp4_source_contracts::transport::']

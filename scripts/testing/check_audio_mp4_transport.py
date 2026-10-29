@@ -37,7 +37,7 @@ def controls(work,env):
     declarations += [
         ('yield-drops-offered-suffix','streaming_transport.rs','Progress::Yield => tokio::task::yield_now().await,','Progress::Yield => break,','coalesced_input_preserves_index_suffix_and_replaces_repositioned_suffix'),
         ('invalid-source-resume-not-sticky','resampled_streaming.rs','            self.failed = true;\n            return Err("composed decoder has no drained source request".into());','            return Err("composed decoder has no drained source request".into());','invalid_source_resume_and_decode_failures_are_sticky'),
-        ('source-error-published-as-done','streaming_transport.rs','StreamMsg::Error(error.to_string())','StreamMsg::Done','cached_dsp_needs_no_validator_or_range_and_true_misses_fail_closed'),
+        ('source-error-published-as-done','streaming_transport.rs','StreamMsg::Error {\n                revision: crate::streaming::StreamRevision::INITIAL,\n                message: error.to_string(),\n            }','StreamMsg::Done { revision: crate::streaming::StreamRevision::INITIAL }','cached_dsp_needs_no_validator_or_range_and_true_misses_fail_closed'),
         ('media-collected-before-first-dsp-pcm','isomp4_source.rs','ReaderOwner::Media(stream) => stream.chunk().await,','ReaderOwner::Media(stream) => { let mut all=Vec::new(); while let Some(chunk)=stream.chunk().await? { all.extend_from_slice(&chunk); } Ok((!all.is_empty()).then(|| bytes::Bytes::from(all))) },','first_dsp_pcm_from_read_at_does_not_wait_for_media_eof'),
     ]
     for name,file,before,after,test in declarations:
