@@ -339,11 +339,48 @@ async fn every_format_player_preserves_pause_pcm_and_exact_ended() {
                 )
                 .await;
                 count += 1;
+                let (expected, channels) =
+                    reference(&std::fs::read(assets().join(name)).unwrap(), target);
+                let frames = expected.len() / channels as usize;
+                let owner = IoScheduler::new(0);
+                let reader = open(name, backend, &owner, 65536).await;
+                let state = StreamingState::new();
+                let (tx, rx) = stream_channel();
+                let steps = Arc::new(AtomicUsize::new(0));
+                let task = spawn(
+                    format,
+                    owner,
+                    reader,
+                    target,
+                    tx,
+                    state.clone(),
+                    steps.clone(),
+                );
+                playback::consume_forward_player::<false>(
+                    playback::PlaybackCase {
+                        name,
+                        source_name: format!("{backend:?}://{name}"),
+                        target,
+                        pause: false,
+                        long: false,
+                        expected,
+                        channels,
+                        frames,
+                    },
+                    playback::StreamInput {
+                        state,
+                        steps,
+                        task,
+                        rx,
+                    },
+                )
+                .await;
             }
         }
     }
     assert_eq!(count, 16);
     println!("W09_LOCAL_FORMAT_PLAYER {count} cases");
+    println!("W09_LOCAL_FORWARD_SEEK_PLAYER {count} exact PCM suffix comparisons");
 }
 #[tokio::test]
 async fn first_pcm_and_four_slot_backpressure_do_not_collect_a_whole_file() {

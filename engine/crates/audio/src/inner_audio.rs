@@ -15,7 +15,7 @@ use tokio::sync::mpsc::Receiver;
 use crate::cache::CachedAudio;
 use crate::decoder::DecodedAudio;
 use crate::limits::{AudioAggregateLedger, AudioAggregatePermit};
-use crate::streaming::{StreamMsg, StreamingState};
+use crate::streaming::{STREAM_CHANNEL_CAPACITY, StreamMsg, StreamingState};
 
 // Use the shared rate's exact resolution for the cursor too. Converting through
 // binary fixed point introduces an error on every output frame (e.g. at 1.1x).
@@ -386,6 +386,8 @@ pub struct InnerAudioPlayer {
     stream_base_frames: u64,
     stream_windowed: bool,
     stream_canplay_sent: bool,
+    /// Audio-thread-owned target beyond the decoded prefix. No mixer mailbox.
+    pending_seek: Option<u64>,
     waiting_notified: bool,
     frames_since_time_update: u64,
     loading_url: Option<String>,
@@ -417,6 +419,7 @@ impl InnerAudioPlayer {
             stream_base_frames: 0,
             stream_windowed: false,
             stream_canplay_sent: false,
+            pending_seek: None,
             waiting_notified: false,
             frames_since_time_update: 0,
             loading_url: None,
@@ -498,6 +501,7 @@ impl InnerAudioPlayer {
         self.stream_base_frames = 0;
         self.stream_windowed = false;
         self.stream_canplay_sent = false;
+        self.pending_seek = None;
         self.waiting_notified = false;
         self.loading_url = None;
         self.pending_events.clear();
@@ -698,6 +702,7 @@ impl InnerAudioPlayer {
 
     fn fail_stream(&mut self) {
         self.cancel_stream();
+        self.pending_seek = None;
         // Release physical storage before returning its aggregate permit.
         self.source = AudioSource::Owned(Vec::new());
         self.stream_permit = None;
@@ -735,7 +740,12 @@ impl InnerAudioPlayer {
 
         let mut stream_ended = false;
 
-        while !self.stream_prefetch_full() {
+        // A producer may refill the queue concurrently while a seek discards
+        // PCM. Bound each pass even when no forward prefetch is retained.
+        for _ in 0..STREAM_CHANNEL_CAPACITY {
+            if self.stream_prefetch_full() {
+                break;
+            }
             let Ok(msg) = rx.try_recv() else { break };
             match msg {
                 StreamMsg::Ready {
@@ -752,11 +762,21 @@ impl InnerAudioPlayer {
                     );
                 }
                 StreamMsg::Samples(new_samples) => {
-                    let required_samples = self
-                        .source
-                        .len()
-                        .checked_add(new_samples.len())
-                        .ok_or_else(|| {
+                    let samples = match self.seek_stream_prefix(&new_samples) {
+                        Ok(samples) => samples,
+                        Err(error) => {
+                            tracing::error!(
+                                "InnerAudioPlayer {} invalid seek PCM: {}",
+                                self.id,
+                                error
+                            );
+                            self.fail_stream();
+                            stream_ended = true;
+                            break;
+                        }
+                    };
+                    let required_samples =
+                        self.source.len().checked_add(samples.len()).ok_or_else(|| {
                             EngineError::from_detail(
                                 ErrorCode::InvalidArgument,
                                 "stream PCM length overflow",
@@ -785,7 +805,7 @@ impl InnerAudioPlayer {
                         stream_ended = true;
                         break;
                     }
-                    if let Err(error) = self.source.try_reserve_for(new_samples.len()) {
+                    if let Err(error) = self.source.try_reserve_for(samples.len()) {
                         tracing::error!(
                             "InnerAudioPlayer {} cannot grow streaming PCM: {}",
                             self.id,
@@ -795,13 +815,15 @@ impl InnerAudioPlayer {
                         stream_ended = true;
                         break;
                     }
-                    self.source.extend_from_slice(&new_samples);
+                    self.source.extend_from_slice(samples);
                     // Dropped at the end of this arm, which returns the buffer to
                     // the decoder that lent it.
                     drop(new_samples);
                     // Fresh data arrived: re-arm the stall notification so a
                     // subsequent underrun emits `Waiting` again.
-                    self.waiting_notified = false;
+                    if self.pending_seek.is_none() {
+                        self.waiting_notified = false;
+                    }
 
                     // Update duration as we receive more data
                     let channels = self.shared.channels() as usize;
@@ -810,6 +832,14 @@ impl InnerAudioPlayer {
                         self.shared.set_duration_frames(
                             self.stream_base_frames.saturating_add(frames as u64),
                         );
+                    }
+                    if self
+                        .pending_seek
+                        .is_some_and(|target| target < self.shared.duration_frames())
+                    {
+                        self.pending_seek = None;
+                        self.waiting_notified = false;
+                        self.push_event(InnerAudioEventType::Seeked);
                     }
 
                     // Send canplay once we have enough data (~0.5 seconds)
@@ -856,6 +886,12 @@ impl InnerAudioPlayer {
                     self.stream_complete = true;
                     self.stream_state = None;
                     stream_ended = true;
+                    if self.pending_seek.take().is_some() {
+                        // Unknown duration becomes authoritative only at EOF.
+                        self.shared
+                            .set_position_frames(self.shared.duration_frames());
+                        self.push_event(InnerAudioEventType::Seeked);
+                    }
                     let ch = self.shared.channels() as usize;
                     let sr = self.shared.sample_rate();
                     let duration = if ch > 0 && sr > 0 {
@@ -900,6 +936,35 @@ impl InnerAudioPlayer {
         }
     }
 
+    /// Keep the original codec/DSP history and source while skipping forward.
+    /// Decoder loans before the target return without copying into the player.
+    fn seek_stream_prefix<'a>(&mut self, samples: &'a [f32]) -> EngineResult<&'a [f32]> {
+        let Some(target) = self.pending_seek else {
+            return Ok(samples);
+        };
+        let channels = self.shared.channels() as usize;
+        if channels == 0 || !samples.len().is_multiple_of(channels) {
+            return Err(EngineError::from_detail(
+                ErrorCode::IoError,
+                "invalid seek PCM format",
+            ));
+        }
+        let base = self.shared.duration_frames();
+        let frames = (samples.len() / channels) as u64;
+        let end = base.checked_add(frames).ok_or_else(|| {
+            EngineError::from_detail(ErrorCode::IoError, "seek PCM duration overflow")
+        })?;
+        let skip = target.saturating_sub(base).min(frames);
+        if let AudioSource::Owned(pcm) = &mut self.source {
+            pcm.clear();
+        }
+        self.position = 0;
+        self.stream_base_frames = base + skip;
+        self.stream_windowed = true;
+        self.shared.set_duration_frames(end);
+        Ok(&samples[skip as usize * channels..])
+    }
+
     /// Play the audio
     pub fn play(&mut self) {
         if !self.shared.is_loaded() {
@@ -941,6 +1006,16 @@ impl InnerAudioPlayer {
             return;
         }
         let target_frame = (time.max(0.0) * sample_rate as f64) as u64;
+        if self.is_streaming() && target_frame >= self.shared.duration_frames() {
+            self.push_event(InnerAudioEventType::Seeking);
+            self.pending_seek = Some(target_frame);
+            self.position = self.source.len();
+            self.position_phase = 0;
+            self.frames_since_time_update = 0;
+            self.waiting_notified = false;
+            self.shared.set_position_frames(target_frame);
+            return;
+        }
         self.seek_frame(target_frame.min(self.shared.duration_frames()));
     }
 
@@ -949,6 +1024,7 @@ impl InnerAudioPlayer {
         if channels == 0 || self.source.is_empty() {
             return;
         }
+        self.pending_seek = None;
         self.push_event(InnerAudioEventType::Seeking);
         // This is the buffered path. Source/decoder repositioning outside the
         // retained streaming window is handled separately from this cursor.
@@ -970,6 +1046,7 @@ impl InnerAudioPlayer {
     pub fn stop(&mut self) {
         tracing::debug!("InnerAudioPlayer {} stop", self.id);
         self.shared.set_state(PlaybackState::Stopped);
+        self.pending_seek = None;
         self.position = 0;
         self.position_phase = 0;
         self.shared.set_position_frames(0);
@@ -1026,8 +1103,22 @@ impl InnerAudioPlayer {
             return self.shared.state() != PlaybackState::Stopped;
         }
 
+        if self.pending_seek.is_some() {
+            if !self.waiting_notified {
+                self.waiting_notified = true;
+                self.push_event(InnerAudioEventType::Waiting);
+            }
+            return true;
+        }
+
         let channels = self.shared.channels() as usize;
-        if channels == 0 || self.source.is_empty() {
+        if channels == 0 {
+            return false;
+        }
+        if self.source.is_empty() {
+            if self.stream_complete {
+                self.finish_playback(0, 0);
+            }
             return false;
         }
 
@@ -1205,6 +1296,10 @@ impl Drop for InnerAudioPlayer {
 #[cfg(test)]
 #[path = "seek_tests.rs"]
 mod seek_tests;
+
+#[cfg(test)]
+#[path = "forward_seek_tests.rs"]
+mod forward_seek_tests;
 
 #[cfg(test)]
 mod tests {

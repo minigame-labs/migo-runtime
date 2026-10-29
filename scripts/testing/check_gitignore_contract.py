@@ -7,6 +7,8 @@ sys.path.insert(0, str(ROOT / 'scripts/lib'))
 from gitignore_policy import check, tracked_ignored
 
 REQUIRED = [
+    'engine/crates/audio/src/forward_seek_tests.rs',
+    'scripts/testing/check_audio_forward_seek.py',
     'engine/crates/audio/src/seek_tests.rs',
     'scripts/testing/check_audio_buffered_seek.py',
     'engine/crates/shared/src/audio_load.rs',

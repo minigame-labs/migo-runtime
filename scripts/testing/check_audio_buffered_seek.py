@@ -23,9 +23,10 @@ def controls(original: str):
     body = original[start:end]
     rows = []
 
-    def add(name, before, after, test):
-        assert body.count(before) == 1, (name, 'anchor drift')
-        rows.append((name, body, body.replace(before, after), 'inner_audio::seek_tests::' + test))
+    def add(name, before, after, test, buffered=False):
+        selected = body[body.index('    fn seek_frame('):] if buffered else body
+        assert selected.count(before) == 1, (name, 'anchor drift')
+        rows.append((name, selected, selected.replace(before, after), 'inner_audio::seek_tests::' + test))
 
     paused = 'paused_seeks_complete_before_rendering_and_preserve_the_backing'
     add('idle-seek-waits-for-play', '!time.is_finite() || sample_rate == 0',
@@ -33,10 +34,10 @@ def controls(original: str):
     add('seek-not-applied-on-command',
         '        self.seek_frame(target_frame.min(self.shared.duration_frames()));', '',
         'stopped_seek_stop_and_play_observe_command_order')
-    add('seek-retains-fraction', '        self.position_phase = 0;\n', '', paused)
-    add('seek-retains-timeupdate-backlog', '        self.frames_since_time_update = 0;\n', '', paused)
-    add('seek-retains-waiting-latch', '        self.waiting_notified = false;\n', '', paused)
-    add('seeking-observes-new-position', '        self.push_event(InnerAudioEventType::Seeking);\n', '', paused)
+    add('seek-retains-fraction', '        self.position_phase = 0;\n', '', paused, buffered=True)
+    add('seek-retains-timeupdate-backlog', '        self.frames_since_time_update = 0;\n', '', paused, buffered=True)
+    add('seek-retains-waiting-latch', '        self.waiting_notified = false;\n', '', paused, buffered=True)
+    add('seeking-observes-new-position', '        self.push_event(InnerAudioEventType::Seeking);\n', '', paused, buffered=True)
     # Keep both events, but deliberately snapshot Seeking after applying the cursor.
     name, before, after, test = rows.pop()
     after = after.replace('        self.push_event(InnerAudioEventType::Seeked);',
@@ -45,7 +46,7 @@ def controls(original: str):
     rows.append((name, before, after, test))
     add('seeked-event-missing', '        self.push_event(InnerAudioEventType::Seeked);\n', '', paused)
     add('seek-starts-paused-playback', '        self.waiting_notified = false;',
-        '        self.shared.set_state(PlaybackState::Playing);\n        self.waiting_notified = false;', paused)
+        '        self.shared.set_state(PlaybackState::Playing);\n        self.waiting_notified = false;', paused, buffered=True)
     add('nonfinite-seek-accepted', '!time.is_finite() || ', '',
         'seek_rejects_nonfinite_and_unloaded_targets_and_clamps_finite_bounds')
     add('stream-base-ignored', 'target_frame.saturating_sub(self.stream_base_frames)', 'target_frame',
@@ -58,13 +59,13 @@ def controls(original: str):
     return rows
 
 
-def main(output: Path, target: Path):
+def main(output: Path, target: Path, declare=controls, extra_inputs=(), scope=None):
     package, env, frozen = clock.prepare(output, target, [Path(__file__).resolve(),
         ROOT / 'scripts/testing/check_gitignore_contract.py',
-        ROOT / 'scripts/testing/check_audio_source_epochs.py'])
+        ROOT / 'scripts/testing/check_audio_source_epochs.py', *extra_inputs])
     source = package / 'src/inner_audio.rs'
     original = source.read_text()
-    rows = controls(original)
+    rows = declare(original)
     binary = clock.build(package, output, env, 'positive')
     positive_log = output / 'positive-tests.log'
     assert clock.common.run([str(binary)], positive_log, package, env) == 0
@@ -98,7 +99,7 @@ def main(output: Path, target: Path):
                'positive_binary_sha256': clock.common.sha(binary), 'root_inputs_unchanged': True,
                'source_copies_restored': True, 'existing_dependency_versions_preserved': True,
                'root_lock_sha256': clock.common.sha(ROOT / 'engine/Cargo.lock'),
-               'scope': 'Owning-thread buffered seek for idle/playing/stream/cache sources, '
+               'scope': scope or 'Owning-thread buffered seek for idle/playing/stream/cache sources, '
                         'event snapshots, control ordering and actual heap activity. '
                         'Outside-window decoder/transport repositioning remains open.'}
     (output / 'summary.json').write_text(json.dumps(summary, indent=2) + '\n')
