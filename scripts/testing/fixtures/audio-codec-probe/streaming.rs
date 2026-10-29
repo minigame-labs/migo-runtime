@@ -80,4 +80,4 @@ pub type M4aDecoderMode<const BUFFERED: bool> = incremental::Decoder<m4a::M4a<BU
 #[cfg(feature = "m4a-streaming-probe")]
 pub type BufferedM4aDecoder = M4aDecoderMode<true>;
 #[cfg(feature = "m4a-streaming-probe")]
-pub use m4a::{M4a, M4aSourceDecoder, SourceRequest as M4aSourceRequest};
+pub use m4a::{M4a, M4aSeekDecoder, M4aSourceDecoder, SourceRequest as M4aSourceRequest};

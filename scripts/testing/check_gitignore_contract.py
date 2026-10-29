@@ -7,6 +7,13 @@ sys.path.insert(0, str(ROOT / 'scripts/lib'))
 from gitignore_policy import check, tracked_ignored
 
 REQUIRED = [
+    'scripts/testing/check_audio_stream_revisions.py',
+    'engine/crates/audio/src/stream_revision_tests.rs',
+    'scripts/testing/check_audio_source_seek.py',
+    'scripts/testing/fixtures/audio-codec-probe/indexed_seek.rs',
+    'scripts/testing/fixtures/audio-codec-probe/source_seek_contracts.rs',
+    'scripts/testing/check_audio_decoder_seek.py',
+    'scripts/testing/fixtures/audio-codec-probe/decoder_seek_contracts.rs',
     'scripts/testing/fixtures/audio-codec-probe/support/isomp4_packet_seek_contracts.rs',
     'engine/third_party/symphonia-format-isomp4-patches/0009-streaming-seek-source-handoff.patch',
     'engine/third_party/symphonia-format-isomp4-patches/0008-shared-presentation-seek.patch',

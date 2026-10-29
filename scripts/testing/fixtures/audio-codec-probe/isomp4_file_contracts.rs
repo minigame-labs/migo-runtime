@@ -40,7 +40,15 @@ async fn produce_file<const B: bool>(
         None => return,
         Some(Ok(v)) => v,
         Some(Err(e)) => {
-            transport::send(&tx, &state, StreamMsg::Error(e.to_string())).await;
+            transport::send(
+                &tx,
+                &state,
+                StreamMsg::Error {
+                    revision: crate::streaming::StreamRevision::INITIAL,
+                    message: e.to_string(),
+                },
+            )
+            .await;
             return;
         }
     };
@@ -89,12 +97,12 @@ async fn receive_file<const B: bool>(name: &str, target: u32) -> (Received, usiz
                 assert_eq!(sample_rate, target);
                 got.ready += 1;
             }
-            StreamMsg::Samples(pcm) => {
+            StreamMsg::Samples { pcm, .. } => {
                 assert_eq!((got.ready, got.done, got.errors.len()), (1, 0, 0));
                 got.pcm.extend_from_slice(&pcm);
             }
-            StreamMsg::Done => got.done += 1,
-            StreamMsg::Error(e) => got.errors.push(e),
+            StreamMsg::Done { .. } => got.done += 1,
+            StreamMsg::Error { message: e, .. } => got.errors.push(e),
         }
     }
     task.await.unwrap();

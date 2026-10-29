@@ -245,12 +245,14 @@ async fn no_range_no_validator_and_unknown_lengths_spool_one_representation() {
                                 assert_eq!(sample_rate, target);
                                 ready += 1
                             }
-                            StreamMsg::Samples(v) => {
+                            StreamMsg::Samples { pcm: v, .. } => {
                                 assert_eq!((ready, done), (1, 0));
                                 pcm.extend_from_slice(&v)
                             }
-                            StreamMsg::Done => done += 1,
-                            StreamMsg::Error(e) => panic!("{name}/{chunked}/{tag}/{target}: {e}"),
+                            StreamMsg::Done { .. } => done += 1,
+                            StreamMsg::Error { message: e, .. } => {
+                                panic!("{name}/{chunked}/{tag}/{target}: {e}")
+                            }
                         }
                     }
                     task.await.unwrap();
@@ -304,8 +306,8 @@ async fn no_ready_or_pcm_is_published_until_the_spool_is_complete() {
         .unwrap()
     {
         match msg {
-            StreamMsg::Done => done += 1,
-            StreamMsg::Error(e) => panic!("{e}"),
+            StreamMsg::Done { .. } => done += 1,
+            StreamMsg::Error { message: e, .. } => panic!("{e}"),
             _ => {}
         }
     }
@@ -347,7 +349,7 @@ async fn over_limit_truncation_and_deadlines_report_error_without_ready_or_done(
             .unwrap()
         {
             match msg {
-                StreamMsg::Error(_) => errors += 1,
+                StreamMsg::Error { message: _, .. } => errors += 1,
                 _ => panic!("failed spool published audio"),
             }
         }

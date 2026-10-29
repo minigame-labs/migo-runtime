@@ -4339,7 +4339,13 @@ mod tests {
             while feed_rx.recv().is_ok() {
                 let mut pcm = pool.take();
                 pcm.buffer_mut().resize(CHUNK_SAMPLES, 0.0);
-                if tx.try_send(streaming::StreamMsg::Samples(pcm)).is_err() {
+                if tx
+                    .try_send(streaming::StreamMsg::Samples {
+                        revision: crate::streaming::StreamRevision::INITIAL,
+                        pcm,
+                    })
+                    .is_err()
+                {
                     break;
                 }
                 if feed_ack_tx.send(()).is_err() {
@@ -4404,11 +4410,16 @@ mod tests {
         let mut pcm = pool.take();
         pcm.buffer_mut().resize(24_000, 0.5);
         tx.try_send(streaming::StreamMsg::Ready {
+            revision: crate::streaming::StreamRevision::INITIAL,
             sample_rate: 48_000,
             channels: 1,
         })
         .unwrap();
-        tx.try_send(streaming::StreamMsg::Samples(pcm)).unwrap();
+        tx.try_send(streaming::StreamMsg::Samples {
+            revision: crate::streaming::StreamRevision::INITIAL,
+            pcm,
+        })
+        .unwrap();
 
         let mut first_events = Vec::new();
         service_players(&mut players, &cache, |event| {
@@ -4419,7 +4430,10 @@ mod tests {
         players.get_mut(&1).unwrap().process(&mut first_sample);
         assert_eq!(players[&1].shared.position_frames(), 1);
 
-        tx.try_send(streaming::StreamMsg::Done).unwrap();
+        tx.try_send(streaming::StreamMsg::Done {
+            revision: crate::streaming::StreamRevision::INITIAL,
+        })
+        .unwrap();
         let mut done_events = Vec::new();
         service_players(&mut players, &cache, |event| {
             done_events.push(event.event_type)

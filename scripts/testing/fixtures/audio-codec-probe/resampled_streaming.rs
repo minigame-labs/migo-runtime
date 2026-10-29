@@ -155,10 +155,14 @@ impl<const QUANTA: usize, P: push_decoder::incremental::Packetizer> Batched<QUAN
             return Ok(self.outcome(0, progress));
         }
         #[cfg(feature = "m4a-streaming-probe")]
-        if self.source_waiting {
-            return Ok(self.outcome(0, Progress::NeedSource));
-        }
-        let consumed = if eof {
+        let waiting = self.source_waiting;
+        #[cfg(not(feature = "m4a-streaming-probe"))]
+        let waiting = false;
+        let consumed = if waiting {
+            // Explicit seek may resolve from retained bytes inside drain.
+            // Never push old-position input while the common decoder waits.
+            0
+        } else if eof {
             if !self.input_ended {
                 self.decoder.finish_input();
                 self.input_ended = true;
@@ -190,8 +194,8 @@ impl<const QUANTA: usize, P: push_decoder::incremental::Packetizer> Batched<QUAN
             return Ok(self.outcome(consumed, Progress::Cancelled));
         }
         #[cfg(feature = "m4a-streaming-probe")]
-        if progress == push_decoder::Progress::NeedSource {
-            self.source_waiting = true;
+        {
+            self.source_waiting = progress == push_decoder::Progress::NeedSource;
         }
         if self.target_rate == self.decoder.rate {
             // Same-rate playback goes directly to the publication buffer; no
@@ -249,6 +253,33 @@ impl<const QUANTA: usize, P: push_decoder::incremental::Packetizer> Decoder for 
 
 #[cfg(feature = "m4a-streaming-probe")]
 impl<const Q: usize, const BUFFERED: bool> Batched<Q, push_decoder::M4a<BUFFERED>> {
+    pub fn seek(
+        &mut self,
+        ts: symphonia::core::units::Timestamp,
+    ) -> symphonia::core::errors::Result<symphonia::core::formats::SeekedTo> {
+        use symphonia::core::errors::Error;
+        if self.failed || self.stopped {
+            return Err(Error::DecodeError("composed decoder is retired"));
+        }
+        let seeked = match self.decoder.seek(ts) {
+            Ok(seeked) => seeked,
+            Err(error) => {
+                if !matches!(error, Error::SeekError(_)) {
+                    self.failed = true;
+                }
+                return Err(error);
+            }
+        };
+        self.decoded.clear();
+        self.position = 0;
+        if let Some(resampler) = &mut self.resampler {
+            resampler.reset();
+        }
+        self.decoder_done = false;
+        self.source_waiting = true;
+        Ok(seeked)
+    }
+
     pub fn with_object_len(target_rate: u32, object_len: Option<u64>) -> Self {
         Self::with_decoder(
             target_rate,
@@ -275,6 +306,18 @@ impl<const Q: usize, const BUFFERED: bool> Batched<Q, push_decoder::M4a<BUFFERED
             self.input_ended = false;
         }
         Ok(())
+    }
+}
+
+#[cfg(feature = "m4a-streaming-probe")]
+impl<const Q: usize, const BUFFERED: bool> push_decoder::M4aSeekDecoder
+    for Batched<Q, push_decoder::M4a<BUFFERED>>
+{
+    fn seek(
+        &mut self,
+        ts: symphonia::core::units::Timestamp,
+    ) -> symphonia::core::errors::Result<symphonia::core::formats::SeekedTo> {
+        Batched::<Q, push_decoder::M4a<BUFFERED>>::seek(self, ts)
     }
 }
 

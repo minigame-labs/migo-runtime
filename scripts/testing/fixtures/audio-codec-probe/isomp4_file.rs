@@ -1,6 +1,7 @@
 //! M4A index adapter over the shared format-independent local source.
 pub use crate::local_source::FileReader;
 use crate::{
+    indexed_seek::{SeekContext, SeekSource},
     isomp4_source::{self, IndexSource, Limits, MediaRead, Reader},
     off_worker::OffWorker,
     push_decoder::{M4aSourceDecoder, M4aSourceRequest},
@@ -111,14 +112,39 @@ impl<D: Decoder + M4aSourceDecoder> Source<D> for IndexedFile {
             MediaRead::Cancelled => Ok(SourceRead::Cancelled),
         }
     }
-    async fn resume(
-        &mut self,
+    fn resume<'a, 'b, 'c>(
+        &'a mut self,
         request: Self::Request,
         decoder: OffWorker<Option<D>>,
-        tx: &mpsc::Sender<StreamMsg>,
-        state: &Arc<StreamingState>,
+        tx: &'b mpsc::Sender<StreamMsg>,
+        state: &'c Arc<StreamingState>,
+    ) -> impl std::future::Future<Output = EngineResult<Option<SourceResume<D>>>>
+    + Send
+    + use<'a, 'b, 'c, D> {
+        self.resume_before(
+            request,
+            decoder,
+            SeekContext {
+                tx,
+                state,
+                deadline: Instant::now() + RESPONSE_HEADER_TIMEOUT,
+            },
+        )
+    }
+}
+
+impl<D: Decoder + M4aSourceDecoder> SeekSource<D> for IndexedFile {
+    async fn resume_before(
+        &mut self,
+        request: M4aSourceRequest,
+        decoder: OffWorker<Option<D>>,
+        context: SeekContext<'_, '_>,
     ) -> EngineResult<Option<SourceResume<D>>> {
-        let deadline = Instant::now() + RESPONSE_HEADER_TIMEOUT;
+        let SeekContext {
+            tx,
+            state,
+            deadline,
+        } = context;
         match request {
             M4aSourceRequest::Index(index) => {
                 let Some(result) = self

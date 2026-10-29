@@ -252,6 +252,7 @@ async fn real_http_chunks_partial_feed_eof_and_pcm_equal_whole_file() {
                     StreamMsg::Ready {
                         sample_rate,
                         channels,
+                        ..
                     } => {
                         ready += 1;
                         assert_eq!(
@@ -260,16 +261,18 @@ async fn real_http_chunks_partial_feed_eof_and_pcm_equal_whole_file() {
                         );
                         assert_eq!(done, 0);
                     }
-                    StreamMsg::Samples(pcm) => {
+                    StreamMsg::Samples { pcm, .. } => {
                         assert_eq!((ready, done), (1, 0));
                         assert!(pcm.len() <= crate::push_decoder::SAMPLES_PER_STEP);
                         actual.extend_from_slice(&pcm);
                     }
-                    StreamMsg::Done => {
+                    StreamMsg::Done { .. } => {
                         assert_eq!(ready, 1);
                         done += 1;
                     }
-                    StreamMsg::Error(error) => panic!("{name}/{chunk_size}: {error}"),
+                    StreamMsg::Error { message: error, .. } => {
+                        panic!("{name}/{chunk_size}: {error}")
+                    }
                 }
             }
             finished(task).await;
@@ -318,7 +321,10 @@ async fn four_slot_backpressure_stops_decode_and_cancellation_releases_full_queu
     serving.abort();
     assert!(!state.download_complete.load(Ordering::Acquire));
     while let Some(message) = rx.recv().await {
-        assert!(!matches!(message, StreamMsg::Done | StreamMsg::Error(_)));
+        assert!(!matches!(
+            message,
+            StreamMsg::Done { .. } | StreamMsg::Error { message: _, .. }
+        ));
     }
 }
 
@@ -359,8 +365,8 @@ async fn http_status_body_truncation_and_codec_errors_never_publish_done() {
         let mut errors = 0;
         while let Some(message) = tokio::time::timeout(PATIENCE, rx.recv()).await.unwrap() {
             match message {
-                StreamMsg::Done => panic!("failed stream sent Done"),
-                StreamMsg::Error(_) => errors += 1,
+                StreamMsg::Done { .. } => panic!("failed stream sent Done"),
+                StreamMsg::Error { message: _, .. } => errors += 1,
                 _ => assert_eq!(errors, 0),
             }
         }
@@ -373,11 +379,21 @@ async fn http_status_body_truncation_and_codec_errors_never_publish_done() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn terminal_messages_cancel_while_queue_is_full() {
-    for terminal in [StreamMsg::Done, StreamMsg::Error("decode failed".into())] {
+    for terminal in [
+        StreamMsg::Done {
+            revision: crate::streaming::StreamRevision::INITIAL,
+        },
+        StreamMsg::Error {
+            revision: crate::streaming::StreamRevision::INITIAL,
+            message: "decode failed".into(),
+        },
+    ] {
         let (tx, _rx) = crate::streaming::stream_channel();
         for _ in 0..crate::streaming::STREAM_CHANNEL_CAPACITY {
-            tx.try_send(StreamMsg::Done)
-                .unwrap_or_else(|_| panic!("channel capacity changed"));
+            tx.try_send(StreamMsg::Done {
+                revision: crate::streaming::StreamRevision::INITIAL,
+            })
+            .unwrap_or_else(|_| panic!("channel capacity changed"));
         }
         let state = StreamingState::new();
         let waiter_state = state.clone();

@@ -90,7 +90,7 @@ pub(crate) struct Server {
     pub ranges: Arc<Mutex<Vec<(u64, u64)>>>,
     pub index_arrived: Arc<Notify>,
     pub full_requests: Arc<std::sync::atomic::AtomicUsize>,
-    media_arrived: Arc<Notify>,
+    pub(crate) media_arrived: Arc<Notify>,
     media_held: Arc<Notify>,
     pub release: Arc<Notify>,
 }

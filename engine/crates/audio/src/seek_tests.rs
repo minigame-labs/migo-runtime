@@ -171,6 +171,7 @@ fn retained_stream_seek_uses_absolute_frames_while_paused() {
         .start_streaming("stream".into(), rx, state.clone())
         .unwrap();
     tx.try_send(StreamMsg::Ready {
+        revision: crate::streaming::StreamRevision::INITIAL,
         sample_rate: 8000,
         channels: 1,
     })
@@ -181,7 +182,12 @@ fn retained_stream_seek_uses_absolute_frames_while_paused() {
     let frames = InnerAudioPlayer::STREAM_WINDOW_SAMPLES + 32;
     pcm.buffer_mut()
         .extend((0..frames).map(|frame| frame as f32));
-    tx.try_send(StreamMsg::Samples(pcm)).ok().unwrap();
+    tx.try_send(StreamMsg::Samples {
+        revision: crate::streaming::StreamRevision::INITIAL,
+        pcm,
+    })
+    .ok()
+    .unwrap();
     player.poll_stream();
     player.play();
     player.process(&mut vec![0.0; InnerAudioPlayer::STREAM_WINDOW_SAMPLES + 16]);

@@ -48,6 +48,7 @@ fn source_switch_retires_old_pcm_stream_seek_and_events() {
         .unwrap();
     assert!(
         tx.try_send(StreamMsg::Ready {
+            revision: crate::streaming::StreamRevision::INITIAL,
             sample_rate: 8000,
             channels: 1
         })
@@ -56,7 +57,13 @@ fn source_switch_retires_old_pcm_stream_seek_and_events() {
     let mut pool = crate::streaming::PcmPool::new();
     let mut samples = pool.take();
     samples.buffer_mut().extend_from_slice(&[0.75; 4000]);
-    assert!(tx.try_send(StreamMsg::Samples(samples)).is_ok());
+    assert!(
+        tx.try_send(StreamMsg::Samples {
+            revision: crate::streaming::StreamRevision::INITIAL,
+            pcm: samples
+        })
+        .is_ok()
+    );
     player.poll_stream();
     assert!(player.is_active());
     player.seek(0.001);

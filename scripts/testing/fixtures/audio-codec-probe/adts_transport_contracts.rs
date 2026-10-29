@@ -57,17 +57,18 @@ async fn receive(
             StreamMsg::Ready {
                 sample_rate,
                 channels: received,
+                ..
             } => {
                 ready += 1;
                 assert_eq!((sample_rate, received), (target, channels));
             }
-            StreamMsg::Samples(pcm) => {
+            StreamMsg::Samples { pcm, .. } => {
                 assert_eq!((ready, done), (1, 0));
                 assert!(pcm.len() <= crate::bandlimited::MAX_SCRATCH_SAMPLES);
                 actual.extend_from_slice(&pcm);
             }
-            StreamMsg::Done => done += 1,
-            StreamMsg::Error(error) => panic!("ADTS transport error: {error}"),
+            StreamMsg::Done { .. } => done += 1,
+            StreamMsg::Error { message: error, .. } => panic!("ADTS transport error: {error}"),
         }
     }
     finished(task).await;
@@ -148,7 +149,8 @@ async fn first_adts_packet_arrives_before_server_releases_remaining_body() {
         tokio::time::timeout(PATIENCE, rx.recv()).await.unwrap(),
         Some(StreamMsg::Ready {
             sample_rate: 48000,
-            channels: 2
+            channels: 2,
+            ..
         })
     ));
     match tokio::time::timeout(PATIENCE, rx.recv())
@@ -156,7 +158,7 @@ async fn first_adts_packet_arrives_before_server_releases_remaining_body() {
         .unwrap()
         .unwrap()
     {
-        StreamMsg::Samples(pcm) => assert_eq!(&*pcm, &audio.samples[..1024 * 2]),
+        StreamMsg::Samples { pcm, .. } => assert_eq!(&*pcm, &audio.samples[..1024 * 2]),
         _ => panic!("expected first AAC block"),
     }
     assert!(!state.download_complete.load(Ordering::Acquire));
@@ -190,8 +192,8 @@ async fn invalid_adts_and_http_truncation_report_error_without_done() {
         let mut errors = 0;
         while let Some(message) = tokio::time::timeout(PATIENCE, rx.recv()).await.unwrap() {
             match message {
-                StreamMsg::Error(_) => errors += 1,
-                StreamMsg::Done => panic!("invalid AAC/HTTP published Done"),
+                StreamMsg::Error { message: _, .. } => errors += 1,
+                StreamMsg::Done { .. } => panic!("invalid AAC/HTTP published Done"),
                 _ => {
                     assert!(!invalid_header, "invalid profile published audio");
                     assert_eq!(errors, 0, "publication after error");

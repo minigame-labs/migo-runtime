@@ -49,6 +49,19 @@ impl<const BUFFERED: bool> Packetizer for M4a<BUFFERED> {
     fn track(&self) -> Option<&Track> {
         self.packets.track()
     }
+    fn seek(
+        &mut self,
+        ts: symphonia::core::units::Timestamp,
+    ) -> FormatResult<symphonia::core::formats::SeekedTo> {
+        let seeked = self.packets.seek(ts)?;
+        let Mp4Step::ReadAt(packet) = self.packets.next(&[], false)? else {
+            return Err(symphonia::core::errors::Error::DecodeError(
+                "M4A seek did not produce its source request",
+            ));
+        };
+        self.request = Some(SourceRequest::ReadAt(packet));
+        Ok(seeked)
+    }
     fn next<'a>(&mut self, input: &'a [u8], eof: bool) -> FormatResult<PacketStep<'a>> {
         Ok(match self.packets.next(input, eof)? {
             Mp4Step::NeedMore => PacketStep::NeedMore,
@@ -178,6 +191,34 @@ pub trait M4aSourceDecoder: Send + 'static {
         length: Option<u64>,
     ) -> Result<(), String>;
     fn resume_at(&mut self, media: AtomSpan, offset: u64) -> Result<(), String>;
+}
+
+/// Explicit control is separate from continuous container source requests.
+pub trait M4aSeekDecoder: M4aSourceDecoder {
+    fn seek(
+        &mut self,
+        ts: symphonia::core::units::Timestamp,
+    ) -> FormatResult<symphonia::core::formats::SeekedTo>;
+}
+impl<const BUFFERED: bool> M4aSeekDecoder for Decoder<M4a<BUFFERED>> {
+    fn seek(
+        &mut self,
+        ts: symphonia::core::units::Timestamp,
+    ) -> FormatResult<symphonia::core::formats::SeekedTo> {
+        Decoder::<M4a<BUFFERED>>::seek(self, ts)
+    }
+}
+impl<D: M4aSeekDecoder> M4aSeekDecoder for Option<D> {
+    fn seek(
+        &mut self,
+        ts: symphonia::core::units::Timestamp,
+    ) -> FormatResult<symphonia::core::formats::SeekedTo> {
+        self.as_mut()
+            .ok_or(symphonia::core::errors::Error::SeekError(
+                symphonia::core::errors::SeekErrorKind::Unseekable,
+            ))?
+            .seek(ts)
+    }
 }
 impl<const BUFFERED: bool> M4aSourceDecoder for Decoder<M4a<BUFFERED>> {
     fn source_request(&self) -> Option<SourceRequest> {

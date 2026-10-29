@@ -28,7 +28,7 @@ def controls(work,env):
         ('media-resume-keeps-old-http-suffix','streaming_transport.rs',"                        continue 'download;","                        // deliberately keep previous body suffix",'coalesced_input_preserves_index_suffix_and_replaces_repositioned_suffix'),
         ('ready-reports-source-rate','resampled_streaming.rs','                self.target_rate\n','                self.decoder.rate\n','http_index_rewinds_and_buffered_sources_keep_exact_dsp_pcm'),
         ('sinc-tail-not-flushed','resampled_streaming.rs','        if self.decoder_done {','        if self.decoder_done { return Ok(self.outcome(0, Progress::Finished));','http_index_rewinds_and_buffered_sources_keep_exact_dsp_pcm'),
-        ('source-wait-never-published','resampled_streaming.rs','            self.source_waiting = true;','            self.source_waiting = false;','http_index_rewinds_and_buffered_sources_keep_exact_dsp_pcm'),
+        ('source-wait-never-published','resampled_streaming.rs','            self.source_waiting = progress == push_decoder::Progress::NeedSource;','            self.source_waiting = false;','http_index_rewinds_and_buffered_sources_keep_exact_dsp_pcm'),
         ('composed-m4a-step-allocates','resampled_streaming.rs','        let result = self.step_inner(input, eof, pcm, cancel);','        std::hint::black_box(vec![0_u8;64]);\n        let result = self.step_inner(input, eof, pcm, cancel);','bounded_m4a_resampling_steps_have_no_steady_rust_allocation'),
         ('source-cancel-wait-removed','streaming_transport.rs','_ = state.cancelled() => None,','_ = std::future::pending::<()>() => None,','pending_index_wait_cancels_and_receiver_exit_stops_publication'),
         ('source-receiver-exit-wait-removed','streaming_transport.rs','_ = tx.closed() => {','_ = std::future::pending::<()>() => {','pending_index_wait_cancels_and_receiver_exit_stops_publication'),
@@ -37,7 +37,7 @@ def controls(work,env):
     declarations += [
         ('yield-drops-offered-suffix','streaming_transport.rs','Progress::Yield => tokio::task::yield_now().await,','Progress::Yield => break,','coalesced_input_preserves_index_suffix_and_replaces_repositioned_suffix'),
         ('invalid-source-resume-not-sticky','resampled_streaming.rs','            self.failed = true;\n            return Err("composed decoder has no drained source request".into());','            return Err("composed decoder has no drained source request".into());','invalid_source_resume_and_decode_failures_are_sticky'),
-        ('source-error-published-as-done','streaming_transport.rs','StreamMsg::Error(error.to_string())','StreamMsg::Done','cached_dsp_needs_no_validator_or_range_and_true_misses_fail_closed'),
+        ('source-error-published-as-done','streaming_transport.rs','StreamMsg::Error {\n                revision: crate::streaming::StreamRevision::INITIAL,\n                message: error.to_string(),\n            }','StreamMsg::Done { revision: crate::streaming::StreamRevision::INITIAL }','cached_dsp_needs_no_validator_or_range_and_true_misses_fail_closed'),
         ('media-collected-before-first-dsp-pcm','isomp4_source.rs','ReaderOwner::Media(stream) => stream.chunk().await,','ReaderOwner::Media(stream) => { let mut all=Vec::new(); while let Some(chunk)=stream.chunk().await? { all.extend_from_slice(&chunk); } Ok((!all.is_empty()).then(|| bytes::Bytes::from(all))) },','first_dsp_pcm_from_read_at_does_not_wait_for_media_eof'),
     ]
     for name,file,before,after,test in declarations:

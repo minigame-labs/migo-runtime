@@ -1,6 +1,7 @@
 //! M4A source adapter for the shared HTTP/CPU/PCM publication loop.
 //! Format parsing remains in the library and IndexSource; no second decode loop.
 use crate::{
+    indexed_seek::{SeekContext, SeekSource},
     isomp4_source::{IndexSource, Limits, MediaRead},
     off_worker::OffWorker,
     push_decoder::{M4aSourceDecoder, M4aSourceRequest},
@@ -115,13 +116,39 @@ impl<D: Decoder + M4aSourceDecoder> Source<D> for IndexedHttp {
             MediaRead::Cancelled => Ok(SourceRead::Cancelled),
         }
     }
-    async fn resume(
-        &mut self,
+    fn resume<'a, 'b, 'c>(
+        &'a mut self,
         request: Self::Request,
         decoder: OffWorker<Option<D>>,
-        tx: &mpsc::Sender<StreamMsg>,
-        state: &Arc<StreamingState>,
+        tx: &'b mpsc::Sender<StreamMsg>,
+        state: &'c Arc<StreamingState>,
+    ) -> impl std::future::Future<Output = EngineResult<Option<SourceResume<D>>>>
+    + Send
+    + use<'a, 'b, 'c, D> {
+        self.resume_before(
+            request,
+            decoder,
+            SeekContext {
+                tx,
+                state,
+                deadline: Instant::now() + RESPONSE_HEADER_TIMEOUT,
+            },
+        )
+    }
+}
+
+impl<D: Decoder + M4aSourceDecoder> SeekSource<D> for IndexedHttp {
+    async fn resume_before(
+        &mut self,
+        request: M4aSourceRequest,
+        decoder: OffWorker<Option<D>>,
+        context: SeekContext<'_, '_>,
     ) -> EngineResult<Option<SourceResume<D>>> {
+        let SeekContext {
+            tx,
+            state,
+            deadline,
+        } = context;
         if self.source.is_none() {
             let identity = self
                 .identity
@@ -139,7 +166,6 @@ impl<D: Decoder + M4aSourceDecoder> Source<D> for IndexedHttp {
             ));
         }
         let source = self.source.as_mut().expect("source initialized");
-        let deadline = Instant::now() + RESPONSE_HEADER_TIMEOUT;
         match request {
             M4aSourceRequest::Index(request) => {
                 let Some(resolved) = source

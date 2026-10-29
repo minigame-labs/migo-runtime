@@ -67,16 +67,52 @@ pub(crate) fn stream_channel() -> (mpsc::Sender<StreamMsg>, mpsc::Receiver<Strea
     mpsc::channel(STREAM_CHANNEL_CAPACITY)
 }
 
-/// Message from download task to audio thread
+/// One accepted traversal of a source, independent of source/load identity.
+/// Never wrap: a retired traversal must never become current again.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct StreamRevision(u64);
+
+impl StreamRevision {
+    pub const INITIAL: Self = Self(0);
+
+    pub fn checked_next(self) -> EngineResult<Self> {
+        self.0.checked_add(1).map(Self).ok_or_else(|| {
+            EngineError::from_detail(ErrorCode::InputSaturated, "stream revision exhausted")
+        })
+    }
+}
+
+/// Every message, including errors and EOF, belongs to exactly one traversal.
 pub enum StreamMsg {
     /// Audio format detected, can start playback
-    Ready { sample_rate: u32, channels: u32 },
+    Ready {
+        revision: StreamRevision,
+        sample_rate: u32,
+        channels: u32,
+    },
     /// New decoded samples available
-    Samples(PcmChunk),
+    Samples {
+        revision: StreamRevision,
+        pcm: PcmChunk,
+    },
     /// Download/decode complete
-    Done,
+    Done { revision: StreamRevision },
     /// Error occurred
-    Error(String),
+    Error {
+        revision: StreamRevision,
+        message: String,
+    },
+}
+
+impl StreamMsg {
+    pub fn revision(&self) -> StreamRevision {
+        match self {
+            Self::Ready { revision, .. }
+            | Self::Samples { revision, .. }
+            | Self::Done { revision }
+            | Self::Error { revision, .. } => *revision,
+        }
+    }
 }
 
 /// Samples a recycled PCM buffer starts out able to hold.
@@ -166,17 +202,24 @@ pub struct StreamingState {
     pub cancelled: AtomicBool,
     /// Event-driven cancellation edge for tasks blocked on network I/O.
     cancel_notify: Notify,
+    /// A reusable producer keeps its source and command receiver alive at EOF.
+    retain_after_eof: bool,
 }
 
 impl StreamingState {
     pub fn new() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    pub(crate) fn new_reusable() -> Arc<Self> {
         Arc::new(Self {
-            bytes_downloaded: AtomicU64::new(0),
-            bytes_total: AtomicU64::new(0),
-            download_complete: AtomicBool::new(false),
-            cancelled: AtomicBool::new(false),
-            cancel_notify: Notify::new(),
+            retain_after_eof: true,
+            ..Self::default()
         })
+    }
+
+    pub(crate) fn retains_source(&self) -> bool {
+        self.retain_after_eof
     }
 
     pub fn cancel(&self) {
@@ -213,6 +256,7 @@ impl Default for StreamingState {
             download_complete: AtomicBool::new(false),
             cancelled: AtomicBool::new(false),
             cancel_notify: Notify::new(),
+            retain_after_eof: false,
         }
     }
 }
@@ -282,33 +326,115 @@ pub fn start_streaming_download(
     rx
 }
 
-/// Publish one decoded chunk under the stream protocol's format invariant.
-///
-/// Format describes the PCM that follows, not the compressed input.  Keeping
-/// this path shared by body decoding and EOF flush prevents a short stream from
-/// publishing Samples before Ready (or omitting Ready when flush finds the first
-/// frame).
+/// Producer-owned protocol ledger. Seeking reuses the source's PCM format while
+/// starting a fresh Ready/Samples/Done sequence. No atomics on the render path.
+#[derive(Default)]
+pub(crate) struct StreamPublication {
+    revision: StreamRevision,
+    format: Option<(u32, u32)>,
+    ready_sent: bool,
+    total_samples: u64,
+    finished: bool,
+}
+
+impl StreamPublication {
+    /// Call only after a source reposition has succeeded. Rejected requests
+    /// leave the old traversal and its buffered messages valid.
+    pub(crate) fn begin(
+        &mut self,
+        revision: StreamRevision,
+        state: &StreamingState,
+    ) -> EngineResult<()> {
+        if revision <= self.revision {
+            return Err(EngineError::from_detail(
+                ErrorCode::InvalidArgument,
+                "stream revision must advance",
+            ));
+        }
+        self.revision = revision;
+        self.ready_sent = false;
+        self.total_samples = 0;
+        self.finished = false;
+        state.download_complete.store(false, Ordering::Release);
+        Ok(())
+    }
+
+    pub(crate) async fn finish(
+        &mut self,
+        tx: &mpsc::Sender<StreamMsg>,
+        state: &StreamingState,
+        eof: bool,
+        remaining: usize,
+    ) -> EngineResult<bool> {
+        if self.finished || !eof || remaining != 0 || !self.ready_sent || self.total_samples == 0 {
+            return Err(EngineError::from_detail(
+                ErrorCode::IoError,
+                "stream decoder finished without complete audio input",
+            ));
+        }
+        if !crate::streaming_transport::send(
+            tx,
+            state,
+            StreamMsg::Done {
+                revision: self.revision,
+            },
+        )
+        .await
+        {
+            return Ok(false);
+        }
+        self.finished = true;
+        state.download_complete.store(true, Ordering::Release);
+        Ok(true)
+    }
+}
+
+/// One format invariant for ordinary decoding, EOF flush and resumed traversal.
 pub(crate) async fn publish_stream_chunk(
     tx: &mpsc::Sender<StreamMsg>,
     state: &StreamingState,
     pcm: PcmChunk,
     sample_rate: u32,
     channels: u32,
-    ready_sent: &mut bool,
-    total_decoded_samples: &mut u64,
+    publication: &mut StreamPublication,
 ) -> EngineResult<bool> {
+    if publication.finished {
+        return Err(EngineError::from_detail(
+            ErrorCode::IoError,
+            "PCM after traversal EOF",
+        ));
+    }
     let has_format = sample_rate > 0 && channels > 0;
-    if !pcm.is_empty() && (!has_format || !pcm.len().is_multiple_of(channels as usize)) {
+    if (sample_rate != 0 || channels != 0) && !has_format
+        || !pcm.is_empty() && (!has_format || !pcm.len().is_multiple_of(channels as usize))
+    {
         return Err(EngineError::from_detail(
             ErrorCode::Internal,
             "decoded audio samples had no complete PCM format",
         ));
     }
-    if !*ready_sent && has_format {
+    if has_format {
+        let format = (sample_rate, channels);
+        if publication.format.is_some_and(|old| old != format) {
+            return Err(EngineError::from_detail(
+                ErrorCode::IoError,
+                "stream PCM format changed",
+            ));
+        }
+        publication.format = Some(format);
+    }
+    let total = publication
+        .total_samples
+        .checked_add(pcm.len() as u64)
+        .ok_or_else(|| {
+            EngineError::from_detail(ErrorCode::Internal, "stream PCM counter overflow")
+        })?;
+    if !publication.ready_sent && has_format {
         if !crate::streaming_transport::send(
             tx,
             state,
             StreamMsg::Ready {
+                revision: publication.revision,
                 sample_rate,
                 channels,
             },
@@ -317,24 +443,22 @@ pub(crate) async fn publish_stream_chunk(
         {
             return Ok(false);
         }
-        *ready_sent = true;
+        publication.ready_sent = true;
     }
-
     if !pcm.is_empty() {
-        if !*ready_sent {
-            return Err(EngineError::from_detail(
-                ErrorCode::Internal,
-                "decoded audio samples had no format",
-            ));
-        }
-        *total_decoded_samples = total_decoded_samples
-            .checked_add(pcm.len() as u64)
-            .ok_or_else(|| {
-                EngineError::from_detail(ErrorCode::Internal, "stream PCM counter overflow")
-            })?;
-        if !crate::streaming_transport::send(tx, state, StreamMsg::Samples(pcm)).await {
+        if !crate::streaming_transport::send(
+            tx,
+            state,
+            StreamMsg::Samples {
+                revision: publication.revision,
+                pcm,
+            },
+        )
+        .await
+        {
             return Ok(false);
         }
+        publication.total_samples = total;
     }
     Ok(true)
 }
@@ -884,15 +1008,27 @@ mod tests {
         let (tx, mut rx) = stream_channel();
 
         for _ in 0..STREAM_CHANNEL_CAPACITY {
-            assert!(tx.try_send(StreamMsg::Done).is_ok());
+            assert!(
+                tx.try_send(StreamMsg::Done {
+                    revision: crate::streaming::StreamRevision::INITIAL
+                })
+                .is_ok()
+            );
         }
         assert!(matches!(
-            tx.try_send(StreamMsg::Done),
+            tx.try_send(StreamMsg::Done {
+                revision: crate::streaming::StreamRevision::INITIAL
+            }),
             Err(TrySendError::Full(_))
         ));
 
         assert!(rx.try_recv().is_ok());
-        assert!(tx.try_send(StreamMsg::Done).is_ok());
+        assert!(
+            tx.try_send(StreamMsg::Done {
+                revision: crate::streaming::StreamRevision::INITIAL
+            })
+            .is_ok()
+        );
     }
 
     fn counting_factory(calls: Arc<AtomicUsize>) -> StreamingHttpClientFactory {
@@ -1061,21 +1197,20 @@ mod tests {
         runtime.block_on(async {
             let (tx, mut rx) = stream_channel();
             let mut pool = PcmPool::new();
-            let mut ready_sent = false;
+            let mut publication = StreamPublication::default();
             let state = StreamingState::new();
-            let mut total = 0;
 
             let mut first = pool.take();
             first.buffer_mut().extend_from_slice(&[0.1, 0.2]);
             assert!(
-                publish_stream_chunk(&tx, &state, first, 48_000, 1, &mut ready_sent, &mut total)
+                publish_stream_chunk(&tx, &state, first, 48_000, 1, &mut publication)
                     .await
                     .unwrap()
             );
             let mut second = pool.take();
             second.buffer_mut().extend_from_slice(&[0.3]);
             assert!(
-                publish_stream_chunk(&tx, &state, second, 48_000, 1, &mut ready_sent, &mut total)
+                publish_stream_chunk(&tx, &state, second, 48_000, 1, &mut publication)
                     .await
                     .unwrap()
             );
@@ -1084,17 +1219,24 @@ mod tests {
                 rx.recv().await,
                 Some(StreamMsg::Ready {
                     sample_rate: 48_000,
-                    channels: 1
+                    channels: 1,
+                    ..
                 })
             ));
-            assert!(matches!(rx.recv().await, Some(StreamMsg::Samples(_))));
-            assert!(matches!(rx.recv().await, Some(StreamMsg::Samples(_))));
-            assert_eq!(total, 3);
-            assert!(ready_sent);
+            assert!(matches!(
+                rx.recv().await,
+                Some(StreamMsg::Samples { pcm: _, .. })
+            ));
+            assert!(matches!(
+                rx.recv().await,
+                Some(StreamMsg::Samples { pcm: _, .. })
+            ));
+            assert_eq!(publication.total_samples, 3);
+            assert!(publication.ready_sent);
 
             let empty = pool.take();
             assert!(
-                publish_stream_chunk(&tx, &state, empty, 0, 0, &mut ready_sent, &mut total)
+                publish_stream_chunk(&tx, &state, empty, 0, 0, &mut publication)
                     .await
                     .unwrap()
             );
@@ -1110,5 +1252,165 @@ mod tests {
             .unwrap();
         assert!(!production.contains("create_policy_http_client("));
         assert!(!production.contains("HttpClientBuilder::new("));
+    }
+}
+
+#[cfg(test)]
+mod revision_tests {
+    use super::*;
+
+    fn pcm(pool: &mut PcmPool, values: &[f32]) -> PcmChunk {
+        let mut pcm = pool.take();
+        pcm.buffer_mut().extend_from_slice(values);
+        pcm
+    }
+
+    #[test]
+    fn revision_exhaustion_does_not_wrap() {
+        let last = StreamRevision(u64::MAX - 1).checked_next().unwrap();
+        assert_eq!(last, StreamRevision(u64::MAX));
+        assert_eq!(
+            last.checked_next().unwrap_err().code,
+            ErrorCode::InputSaturated
+        );
+    }
+
+    #[tokio::test]
+    async fn every_traversal_has_its_own_ready_pcm_and_exactly_one_done() {
+        let (tx, mut rx) = stream_channel();
+        let state = StreamingState::new();
+        let mut pool = PcmPool::new();
+        let mut publication = StreamPublication::default();
+        for index in 0..3 {
+            let revision = StreamRevision(index);
+            if index != 0 {
+                publication.begin(revision, &state).unwrap();
+            }
+            assert!(!state.download_complete.load(Ordering::Acquire));
+            assert!(
+                publish_stream_chunk(
+                    &tx,
+                    &state,
+                    pcm(&mut pool, &[1.0, 2.0]),
+                    8000,
+                    2,
+                    &mut publication
+                )
+                .await
+                .unwrap()
+            );
+            assert!(publication.finish(&tx, &state, true, 0).await.unwrap());
+            assert!(state.download_complete.load(Ordering::Acquire));
+            assert!(
+                matches!(rx.try_recv(), Ok(StreamMsg::Ready { revision: r, .. }) if r == revision)
+            );
+            assert!(
+                matches!(rx.try_recv(), Ok(StreamMsg::Samples { revision: r, pcm }) if r == revision && *pcm == [1.0, 2.0])
+            );
+            assert!(matches!(rx.try_recv(), Ok(StreamMsg::Done { revision: r }) if r == revision));
+            assert!(publication.finish(&tx, &state, true, 0).await.is_err());
+            assert!(
+                publish_stream_chunk(&tx, &state, pcm(&mut pool, &[]), 0, 0, &mut publication)
+                    .await
+                    .is_err()
+            );
+            assert!(rx.try_recv().is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn rejected_revision_and_changed_format_preserve_publication_state() {
+        let (tx, mut rx) = stream_channel();
+        let state = StreamingState::new();
+        let mut pool = PcmPool::new();
+        let mut p = StreamPublication::default();
+        assert!(
+            publish_stream_chunk(&tx, &state, pcm(&mut pool, &[1.0, 2.0]), 8000, 2, &mut p)
+                .await
+                .unwrap()
+        );
+        while rx.try_recv().is_ok() {}
+        let next = StreamRevision::INITIAL.checked_next().unwrap();
+        p.begin(next, &state).unwrap();
+        assert!(p.begin(StreamRevision::INITIAL, &state).is_err());
+        assert!(p.begin(next, &state).is_err());
+        assert_eq!(p.revision, next);
+        assert_eq!(p.total_samples, 0);
+        assert!(!p.ready_sent);
+        assert!(
+            publish_stream_chunk(&tx, &state, pcm(&mut pool, &[1.0, 2.0]), 16000, 2, &mut p)
+                .await
+                .is_err()
+        );
+        assert!(rx.try_recv().is_err());
+        assert!(
+            publish_stream_chunk(&tx, &state, pcm(&mut pool, &[3.0, 4.0]), 8000, 2, &mut p)
+                .await
+                .unwrap()
+        );
+        assert_eq!(p.total_samples, 2);
+    }
+
+    #[tokio::test]
+    async fn overflow_and_incomplete_eof_do_not_publish_success() {
+        let (tx, mut rx) = stream_channel();
+        let state = StreamingState::new();
+        let mut pool = PcmPool::new();
+        let mut p = StreamPublication::default();
+        assert!(p.finish(&tx, &state, true, 0).await.is_err());
+        assert!(
+            publish_stream_chunk(&tx, &state, pcm(&mut pool, &[1.0, 2.0]), 8000, 2, &mut p)
+                .await
+                .unwrap()
+        );
+        while rx.try_recv().is_ok() {}
+        assert!(p.finish(&tx, &state, false, 0).await.is_err());
+        assert!(p.finish(&tx, &state, true, 1).await.is_err());
+        p.total_samples = u64::MAX;
+        assert!(
+            publish_stream_chunk(&tx, &state, pcm(&mut pool, &[1.0, 2.0]), 8000, 2, &mut p)
+                .await
+                .is_err()
+        );
+        assert!(rx.try_recv().is_err());
+        assert!(!state.download_complete.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_blocked_new_traversal_recycles_pcm_without_completing_it() {
+        let (tx, mut rx) = stream_channel();
+        let state = StreamingState::new();
+        let mut pool = PcmPool::new();
+        for _ in 0..STREAM_CHANNEL_CAPACITY {
+            assert!(
+                tx.try_send(StreamMsg::Done {
+                    revision: StreamRevision::INITIAL
+                })
+                .is_ok()
+            );
+        }
+        let mut p = StreamPublication::default();
+        p.begin(StreamRevision::INITIAL.checked_next().unwrap(), &state)
+            .unwrap();
+        let mut chunk = pcm(&mut pool, &[1.0, 2.0]);
+        let pointer = chunk.buffer_mut().as_ptr();
+        let operation = publish_stream_chunk(&tx, &state, chunk, 8000, 2, &mut p);
+        tokio::pin!(operation);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(5), &mut operation)
+                .await
+                .is_err()
+        );
+        state.cancel();
+        assert!(
+            !tokio::time::timeout(Duration::from_secs(1), operation)
+                .await
+                .unwrap()
+                .unwrap()
+        );
+        // Drop the pinned future before inspecting the mutably borrowed ledger.
+        while rx.try_recv().is_ok() {}
+        assert_eq!(pool.take().buffer_mut().as_ptr(), pointer);
+        assert!(!state.download_complete.load(Ordering::Acquire));
     }
 }

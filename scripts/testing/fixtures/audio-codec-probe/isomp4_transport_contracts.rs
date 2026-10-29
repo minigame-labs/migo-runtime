@@ -138,18 +138,19 @@ async fn receive_from<const B: bool, S: transport::HttpSource<Observed<B>> + 'st
             StreamMsg::Ready {
                 sample_rate,
                 channels,
+                ..
             } => {
                 assert_eq!(sample_rate, target);
                 assert!(channels == 1 || channels == 2);
                 got.ready += 1;
             }
-            StreamMsg::Samples(pcm) => {
+            StreamMsg::Samples { pcm, .. } => {
                 assert_eq!((got.ready, got.done, got.errors.len()), (1, 0, 0));
                 assert!(pcm.len() <= crate::bandlimited::MAX_SCRATCH_SAMPLES);
                 got.pcm.extend_from_slice(&pcm);
             }
-            StreamMsg::Done => got.done += 1,
-            StreamMsg::Error(error) => got.errors.push(error),
+            StreamMsg::Done { .. } => got.done += 1,
+            StreamMsg::Error { message: error, .. } => got.errors.push(error),
         }
     }
     task.await.unwrap();
@@ -322,7 +323,7 @@ async fn first_dsp_pcm_arrives_before_initial_body_is_released() {
                 assert_eq!(sample_rate, 44100);
                 ready = true;
             }
-            StreamMsg::Samples(pcm) => {
+            StreamMsg::Samples { pcm, .. } => {
                 assert!(ready && !pcm.is_empty());
                 break;
             }
@@ -512,7 +513,7 @@ async fn first_dsp_pcm_from_read_at_does_not_wait_for_media_eof() {
                 assert_eq!(sample_rate, 44100);
                 ready += 1;
             }
-            StreamMsg::Samples(pcm) => {
+            StreamMsg::Samples { pcm, .. } => {
                 assert_eq!(ready, 1);
                 actual.extend_from_slice(&pcm);
                 break;
@@ -527,8 +528,8 @@ async fn first_dsp_pcm_from_read_at_does_not_wait_for_media_eof() {
         .unwrap()
     {
         match message {
-            StreamMsg::Samples(pcm) => actual.extend_from_slice(&pcm),
-            StreamMsg::Done => done += 1,
+            StreamMsg::Samples { pcm, .. } => actual.extend_from_slice(&pcm),
+            StreamMsg::Done { .. } => done += 1,
             _ => panic!("invalid post-resume publication"),
         }
     }

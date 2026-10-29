@@ -254,7 +254,7 @@ symphonia-format-isomp4={version="=0.6.1",features=["streaming"]}
             shutil.copyfile(path,source/path.name);path=source/path.name
         text+=f'#[path={json.dumps(str(path))}] mod {name};\n'
     text+=f'#[cfg(test)] #[path={json.dumps(str(ROOT/"engine/crates/audio/src/mp3_fixture.rs"))}] mod mp3_fixture;\n'
-    names={'push_decoder':'streaming.rs','candidate':'candidate.rs','isomp4_source':'isomp4_source.rs','isomp4_source_contracts':'isomp4_source_contracts.rs'}
+    names={'push_decoder':'streaming.rs','candidate':'candidate.rs','isomp4_source':'isomp4_source.rs','indexed_seek':'indexed_seek.rs','isomp4_source_contracts':'isomp4_source_contracts.rs'}
     for name,file in names.items():
         shutil.copyfile(fixtures/file,source/(name+'.rs'))
         prefix='#[cfg(test)] 'if name.endswith('contracts')else''

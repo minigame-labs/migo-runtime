@@ -59,17 +59,20 @@ async fn http_resampling_and_bypass_match_library_timeline_with_exact_done() {
                     StreamMsg::Ready {
                         sample_rate,
                         channels,
+                        ..
                     } => {
                         ready += 1;
                         assert_eq!((sample_rate, channels), (target, decoded.channels));
                     }
-                    StreamMsg::Samples(pcm) => {
+                    StreamMsg::Samples { pcm, .. } => {
                         assert_eq!((ready, done), (1, 0));
                         assert!(pcm.len() <= crate::bandlimited::MAX_SCRATCH_SAMPLES);
                         actual.extend_from_slice(&pcm);
                     }
-                    StreamMsg::Done => done += 1,
-                    StreamMsg::Error(error) => panic!("{name}/{target}/{chunk_size}: {error}"),
+                    StreamMsg::Done { .. } => done += 1,
+                    StreamMsg::Error { message: error, .. } => {
+                        panic!("{name}/{target}/{chunk_size}: {error}")
+                    }
                 }
             }
             finished(task).await;
