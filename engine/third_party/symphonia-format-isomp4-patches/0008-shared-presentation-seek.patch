@@ -1,0 +1,174 @@
+--- symphonia-format-isomp4-0.6.1/src/demuxer.rs
++++ symphonia-format-isomp4-0.6.1/src/demuxer.rs
+@@ -155,6 +155,50 @@
+ 
+     #[cfg(feature = "streaming")]
+     pub(crate) fn sample_number(&self) -> u32 { self.next_sample }
++
++    /// Presentation units and AAC preroll are shared by pull and index seeks.
++    pub(crate) fn seek_media_ts(&self, ts: Timestamp) -> Result<Timestamp> {
++        if ts.is_negative() {
++            return seek_error(SeekErrorKind::OutOfRange);
++        }
++        match &self.audio_timeline {
++            Some(timeline) => timeline.seek_media_ts(ts),
++            None => Ok(ts),
++        }
++    }
++
++    /// Resolve all fallible timing/extent work before publishing a new cursor.
++    pub(crate) fn seek_sample<S: StreamSegment + ?Sized>(
++        &mut self,
++        seg: &S,
++        seg_idx: usize,
++        sample_num: u32,
++        required_ts: Timestamp,
++        object_len: Option<u64>,
++    ) -> Result<SeekedTo> {
++        let timing = seg.sample_timing(self.track_num, sample_num)?
++            .ok_or(Error::SeekError(SeekErrorKind::OutOfRange))?;
++        let actual_ts = match &self.audio_timeline {
++            Some(timeline) => timeline.presentation_ts(timing.ts)?,
++            None => Timestamp::try_from(timing.ts)
++                .map_err(|_| Error::SeekError(SeekErrorKind::OutOfRange))?,
++        };
++        let desc = seg.sample_data(self.track_num, sample_num, true)?;
++        let offset = desc.offset.ok_or(Error::SeekError(SeekErrorKind::OutOfRange))?;
++        let position = desc.base_pos.checked_add(offset)
++            .ok_or(Error::DecodeError("isomp4: seek position overflow"))?;
++        let end = position.checked_add(u64::from(desc.size))
++            .ok_or(Error::DecodeError("isomp4: seek sample end overflow"))?;
++        if object_len.is_some_and(|len| end > len) {
++            return decode_error("isomp4: seek sample exceeds object");
++        }
++        self.cur_seg = seg_idx;
++        self.next_sample = sample_num;
++        self.next_sample_pos = position;
++        self.timing_cursor = TimingCursor::default();
++        self.timing_cursor_segment = seg_idx;
++        Ok(SeekedTo { track_id: self.track_id, required_ts, actual_ts })
++    }
+ 
+     pub(crate) fn next_timing<S: StreamSegment + ?Sized>(
+         &mut self, seg: &S, seg_idx: usize,
+@@ -566,17 +610,8 @@
+             sample_num: u32,
+         }
+ 
+-        // Can only seek to 0 or positive timestamps.
+-        if ts.is_negative() {
+-            return seek_error(SeekErrorKind::OutOfRange);
+-        }
+-
+         let required_ts = ts;
+-        let ts = if let Some(timeline) = &self.track_states[track_num].audio_timeline {
+-            timeline.seek_media_ts(ts)?
+-        } else {
+-            ts
+-        };
++        let ts = self.track_states[track_num].seek_media_ts(ts)?;
+         let mut seg_skip = 0;
+ 
+         let seek_loc = 'locate: loop {
+@@ -599,45 +634,15 @@
+ 
+         let seg = &self.segs[seek_loc.seg_idx];
+ 
+-        // Get the sample timing.
+-        let timing = match seg.sample_timing(track_num, seek_loc.sample_num)? {
+-            Some(t) => t,
+-            None => return seek_error(SeekErrorKind::OutOfRange),
+-        };
+-
+-        // Try to convert the sample timing to a timestamp.
+-        let actual_ts = if let Some(timeline) = &self.track_states[track_num].audio_timeline {
+-            timeline.presentation_ts(timing.ts)?
+-        } else {
+-            match Timestamp::try_from(timing.ts) {
+-                Ok(ts) => ts,
+-                _ => return seek_error(SeekErrorKind::OutOfRange),
+-            }
+-        };
+-
+-        // Get the sample information.
+-        let data_desc = seg.sample_data(track_num, seek_loc.sample_num, true)?;
+-
+-        // Update the track's next sample information to point to the seeked sample.
+-        let track = &mut self.track_states[track_num];
+-
+-        track.cur_seg = seek_loc.seg_idx;
+-        track.next_sample = seek_loc.sample_num;
+-        track.next_sample_pos = data_desc.base_pos
+-            + match data_desc.offset {
+-                Some(o) => o,
+-                None => return seek_error(SeekErrorKind::OutOfRange),
+-            };
+-
++        let result = self.track_states[track_num].seek_sample(
++            &**seg, seek_loc.seg_idx, seek_loc.sample_num, required_ts, None,
++        )?;
+         debug!(
+             "seeked track_num={} (track_id={}) to packet_ts={} (delta={})",
+-            track_num,
+-            track.track_id,
+-            actual_ts,
+-            actual_ts.saturating_delta(ts),
++            track_num, result.track_id, result.actual_ts,
++            result.actual_ts.saturating_delta(required_ts),
+         );
+-
+-        Ok(SeekedTo { track_id: track.track_id, required_ts, actual_ts })
++        Ok(result)
+     }
+ }
+ 
+--- symphonia-format-isomp4-0.6.1/src/streaming.rs
++++ symphonia-format-isomp4-0.6.1/src/streaming.rs
+@@ -14,8 +14,8 @@
+ 
+ use symphonia_core::codecs::{audio::well_known::CODEC_ID_AAC, CodecParameters};
+ use symphonia_core::common::Limit;
+-use symphonia_core::errors::{decode_error, unsupported_error, Error, Result};
+-use symphonia_core::formats::Track;
++use symphonia_core::errors::{decode_error, unsupported_error, Error, Result, SeekErrorKind};
++use symphonia_core::formats::{SeekedTo, Track};
+ use symphonia_core::io::BufReader;
+ use symphonia_core::meta::MetadataOptions;
+ use symphonia_core::packet::PacketRef;
+@@ -25,7 +25,7 @@
+     stsz::SampleSize, Atom, AtomHeader, AtomIterator, AtomType, FtypAtom, MoovAtom, ReadAtom,
+ };
+ use crate::demuxer::{TimeSpan, TrackState};
+-use crate::stream::MoovSegment;
++use crate::stream::{MoovSegment, StreamSegment};
+ 
+ impl ReadAtom for BufReader<'_> {}
+ 
+@@ -277,6 +277,27 @@
+         }
+         self.state.reset();
+         Ok(())
++    }
++
++    /// Seek in presentation PCM frames with the pull reader's AAC preroll.
++    /// This moves only the index cursor. The caller must reset the codec,
++    /// resolve the next packet's pinned source extent and discard preroll PCM
++    /// before required_ts. No IO or decoder work is hidden in this operation.
++    /// Out-of-range targets preserve the cursor; corrupt extents fail closed.
++    pub fn seek(&mut self, ts: Timestamp) -> Result<SeekedTo> {
++        if self.failed {
++            return decode_error("isomp4: streaming index previously failed");
++        }
++        let result = self.seek_inner(ts);
++        self.failed = result.as_ref().is_err_and(|error| !matches!(error, Error::SeekError(_)));
++        result
++    }
++
++    fn seek_inner(&mut self, required_ts: Timestamp) -> Result<SeekedTo> {
++        let media_ts = self.state.seek_media_ts(required_ts)?;
++        let sample = self.segment.ts_sample(0, media_ts.get() as u64)?
++            .ok_or(Error::SeekError(SeekErrorKind::OutOfRange))?;
++        self.state.seek_sample(&self.segment, 0, sample, required_ts, self.options.object_len)
+     }
+ 
+     pub fn next_packet(&mut self) -> Result<Option<IndexedPacket>> {

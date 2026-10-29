@@ -71,10 +71,10 @@ def main(work,target,rubato,positive_only):
             finally:path.write_text(original)
             count+=1;print('actual automatic audio source fault',name,': executed assertion rejected',flush=True)
     assert all(codecs.sha(ROOT/p)==h for p,h in frozen.items())and all(codecs.sha(work/p)==h for p,h in retained.items())
-    rows=json.loads((work/'library-source-provenance.json').read_text());assert len(rows)==9 and sum(len(r['patches'])for r in rows)==27
+    rows=json.loads((work/'library-source-provenance.json').read_text());assert len(rows)==9 and sum(len(r['patches'])for r in rows)==28
     for row in rows:assert local.file.dsp.source.index_gate.timeline.source_tree(libraries[row['crate']])==row['source_files']
     for name,row in new.items():assert all(codecs.sha(work/'resampling-vendor'/f"{name}-{row['version']}"/p)==h for p,h in row['source_files'].items())
-    summary={'automatic_tests':7,'automatic_pcm_comparisons':192,'compiled_controls':count,'positive_only':positive_only,'binary_sha256':codecs.sha(binary),'libraries':9,'patches':27,'root_inputs_unchanged':True,'source_copies_restored':True,'existing_dependency_versions_preserved':True,'root_lock_sha256':codecs.sha(ROOT/'engine/Cargo.lock'),'scope':'Automatic local directory/package dispatch and explicit immutable/mutable ownership, source snapshots connected to common codecs/CPU/DSP, deadlines and resident credit. Existing local/M4A regression suites retained. Not automatic format probing, HTTP fallback/product/native/device/maximum-performance acceptance.'}
+    summary={'automatic_tests':7,'automatic_pcm_comparisons':192,'compiled_controls':count,'positive_only':positive_only,'binary_sha256':codecs.sha(binary),'libraries':9,'patches':28,'root_inputs_unchanged':True,'source_copies_restored':True,'existing_dependency_versions_preserved':True,'root_lock_sha256':codecs.sha(ROOT/'engine/Cargo.lock'),'scope':'Automatic local directory/package dispatch and explicit immutable/mutable ownership, source snapshots connected to common codecs/CPU/DSP, deadlines and resident credit. Existing local/M4A regression suites retained. Not automatic format probing, HTTP fallback/product/native/device/maximum-performance acceptance.'}
     (work/'summary.json').write_text(json.dumps(summary,indent=2)+'\n');print(json.dumps(summary,indent=2),flush=True)
 
 if __name__=='__main__':
