@@ -57,8 +57,8 @@ def controls(work: Path, env: dict) -> int:
     text = original.decode()
     real = "common_m4a_partitions_and_source_resumes_preserve_whole_pcm"
     declarations = [
-        ("source-wait-becomes-input", "self.source_waiting = true;\n                    return Ok(Progress::NeedSource);",
-         "self.source_waiting = true;\n                    return Ok(Progress::NeedInput);", real),
+        ("source-wait-becomes-input", "BufferedSource::Unavailable => return Ok(Progress::NeedSource),",
+         "BufferedSource::Unavailable => return Ok(Progress::NeedInput),", real),
         ("input-accepted-during-source-wait", '        if self.source_waiting {\n            return Err("source request must be resolved before accepting input".into());\n        }',
          "", real),
         ("index-resume-drops-prefetched-input", "        if reset_input {", "        if true {", real),
@@ -116,7 +116,7 @@ def main(work: Path, target: Path) -> None:
     shutil.copytree(fixture_root, work / "source", ignore=shutil.ignore_patterns("__pycache__"))
     main_file = work / "probe/src/main.rs"
     main_file.write_text(main_file.read_text().replace(str(fixture_root), str(work / "source")))
-    retained_sources = {str(p.relative_to(work)): codecs.sha(p) for p in (work / "source").glob("*.rs")}
+    retained_sources = {str(p.relative_to(work)): codecs.sha(p) for p in (work / "source").rglob("*.rs")}
     (work / "frozen-root-inputs.json").write_text(json.dumps(frozen, indent=2) + "\n")
     for path in extra:
         retained = work / "source-inputs" / path.relative_to(ROOT)

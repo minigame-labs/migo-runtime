@@ -49,6 +49,19 @@ impl<const BUFFERED: bool> Packetizer for M4a<BUFFERED> {
     fn track(&self) -> Option<&Track> {
         self.packets.track()
     }
+    fn seek(
+        &mut self,
+        ts: symphonia::core::units::Timestamp,
+    ) -> FormatResult<symphonia::core::formats::SeekedTo> {
+        let seeked = self.packets.seek(ts)?;
+        let Mp4Step::ReadAt(packet) = self.packets.next(&[], false)? else {
+            return Err(symphonia::core::errors::Error::DecodeError(
+                "M4A seek did not produce its source request",
+            ));
+        };
+        self.request = Some(SourceRequest::ReadAt(packet));
+        Ok(seeked)
+    }
     fn next<'a>(&mut self, input: &'a [u8], eof: bool) -> FormatResult<PacketStep<'a>> {
         Ok(match self.packets.next(input, eof)? {
             Mp4Step::NeedMore => PacketStep::NeedMore,

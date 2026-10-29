@@ -43,6 +43,15 @@ pub trait Packetizer: Send + 'static {
         None
     }
     #[cfg(feature = "m4a-streaming-probe")]
+    fn seek(
+        &mut self,
+        _ts: symphonia::core::units::Timestamp,
+    ) -> FormatResult<symphonia::core::formats::SeekedTo> {
+        Err(symphonia::core::errors::Error::SeekError(
+            symphonia::core::errors::SeekErrorKind::Unseekable,
+        ))
+    }
+    #[cfg(feature = "m4a-streaming-probe")]
     fn resume_buffered(
         &mut self,
         _input: &[u8],
@@ -84,6 +93,8 @@ pub struct Decoder<P: Packetizer> {
     cap: Option<u64>,
     #[cfg(feature = "m4a-streaming-probe")]
     source_waiting: bool,
+    #[cfg(feature = "m4a-streaming-probe")]
+    seek_target: Option<symphonia::core::units::Timestamp>,
     #[cfg(test)]
     buffered_resumes: u64,
     #[cfg(test)]
@@ -116,6 +127,8 @@ impl<P: Packetizer> Decoder<P> {
             cap,
             #[cfg(feature = "m4a-streaming-probe")]
             source_waiting: false,
+            #[cfg(feature = "m4a-streaming-probe")]
+            seek_target: None,
             #[cfg(test)]
             buffered_resumes: 0,
             #[cfg(test)]
@@ -166,6 +179,37 @@ impl<P: Packetizer> Decoder<P> {
 
     pub fn finish_input(&mut self) {
         self.eof = true;
+    }
+
+    /// A discontinuity resets the codec once; ordinary container ReadAt
+    /// requests still retain codec history. Keep encoded bytes until the
+    /// buffered resolver or external source validates the new read position.
+    #[cfg(feature = "m4a-streaming-probe")]
+    pub fn seek(
+        &mut self,
+        ts: symphonia::core::units::Timestamp,
+    ) -> FormatResult<symphonia::core::formats::SeekedTo> {
+        use symphonia::core::errors::Error;
+        if self.failed || self.cancelled {
+            return Err(Error::DecodeError("stream decoder is retired"));
+        }
+        let seeked = match self.packets.seek(ts) {
+            Ok(seeked) => seeked,
+            Err(error) => {
+                if !matches!(error, Error::SeekError(_)) {
+                    self.failed = true;
+                }
+                return Err(error);
+            }
+        };
+        if let Some(decoder) = &mut self.decoder {
+            decoder.reset();
+        }
+        self.seek_target = Some(seeked.required_ts);
+        self.source_waiting = true;
+        self.finished = false;
+        self.total_samples = 0;
+        Ok(seeked)
     }
 
     #[cfg(feature = "m4a-streaming-probe")]
@@ -232,7 +276,36 @@ impl<P: Packetizer> Decoder<P> {
             }
             #[cfg(feature = "m4a-streaming-probe")]
             if self.source_waiting {
-                return Ok(Progress::NeedSource);
+                match self
+                    .packets
+                    .resume_buffered(&self.input, self.head, self.eof)
+                    .map_err(|e| format!("buffered source: {e}"))?
+                {
+                    BufferedSource::Resume(head) => {
+                        if head > self.input.len() {
+                            return Err("buffered cursor outside input".into());
+                        }
+                        self.head = head;
+                        self.source_waiting = false;
+                        #[cfg(test)]
+                        {
+                            self.buffered_resumes += 1;
+                        }
+                        continue;
+                    }
+                    BufferedSource::Yield => {
+                        #[cfg(test)]
+                        {
+                            self.buffered_yields += 1;
+                        }
+                        return Ok(Progress::Yield);
+                    }
+                    BufferedSource::NeedInput => {
+                        self.source_waiting = false;
+                        return Ok(Progress::NeedInput);
+                    }
+                    BufferedSource::Unavailable => return Ok(Progress::NeedSource),
+                }
             }
             if packets >= self.packet_budget
                 || bytes >= P::ENCODED_BYTES_PER_STEP
@@ -249,34 +322,8 @@ impl<P: Packetizer> Decoder<P> {
                 PacketStep::NeedMore => return Ok(Progress::NeedInput),
                 #[cfg(feature = "m4a-streaming-probe")]
                 PacketStep::NeedSource => {
-                    match self
-                        .packets
-                        .resume_buffered(&self.input, self.head, self.eof)
-                        .map_err(|e| format!("buffered source: {e}"))?
-                    {
-                        BufferedSource::Resume(head) => {
-                            if head > self.input.len() {
-                                return Err("buffered cursor outside input".into());
-                            }
-                            self.head = head;
-                            #[cfg(test)]
-                            {
-                                self.buffered_resumes += 1;
-                            }
-                            continue;
-                        }
-                        BufferedSource::Yield => {
-                            #[cfg(test)]
-                            {
-                                self.buffered_yields += 1;
-                            }
-                            return Ok(Progress::Yield);
-                        }
-                        BufferedSource::NeedInput => return Ok(Progress::NeedInput),
-                        BufferedSource::Unavailable => {}
-                    }
                     self.source_waiting = true;
-                    return Ok(Progress::NeedSource);
+                    continue;
                 }
                 PacketStep::End => {
                     if self.total_samples == 0 {
@@ -367,6 +414,30 @@ impl<P: Packetizer> Decoder<P> {
             {
                 return Err("stream format changed".into());
             }
+            #[cfg(feature = "m4a-streaming-probe")]
+            let skip = if let Some(target) = self.seek_target {
+                let start = packet
+                    .pts
+                    .get()
+                    .checked_add(
+                        i64::try_from(packet.trim_start.get())
+                            .map_err(|_| "invalid packet trim")?,
+                    )
+                    .ok_or("packet presentation timestamp overflow")?;
+                let skip = usize::try_from(target.get().saturating_sub(start).max(0))
+                    .unwrap_or(usize::MAX)
+                    .min(block.frames());
+                if skip < block.frames() {
+                    self.seek_target = None;
+                }
+                skip
+            } else {
+                0
+            };
+            #[cfg(not(feature = "m4a-streaming-probe"))]
+            let skip = 0;
+            // Library audio slices avoid interleaving/copying discarded preroll.
+            let block = block.slice(skip..);
             let additional = block.samples_interleaved();
             let total = self
                 .total_samples
