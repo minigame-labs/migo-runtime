@@ -81,8 +81,8 @@ def controls() -> list[tuple[str, str, str, str]]:
          '                    self.accumulate_time_update(frame_idx);',
          'decimal_stream_stalls_preserve_phase_and_the_additive_mix'),
         ('seek-retains-old-phase',
-         '                .min(self.source.len());\n            self.position_phase = 0;',
-         '                .min(self.source.len());',
+         '            .min(self.source.len());\n        self.position_phase = 0;',
+         '            .min(self.source.len());',
          'buffered_seek_and_stop_reset_the_fractional_media_clock'),
         ('stop-retains-old-phase',
          '        self.position_phase = 0;\n        self.shared.set_position_frames(0);\n'

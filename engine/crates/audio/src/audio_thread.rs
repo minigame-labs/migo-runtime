@@ -1362,6 +1362,41 @@ fn service_players(
     }
 }
 
+#[cfg(test)]
+#[test]
+fn paused_seek_events_are_serviced_without_a_mix_or_output_wakeup() {
+    let mut player = InnerAudioPlayer::new(1, 1);
+    player
+        .load_audio(DecodedAudio {
+            samples: vec![0.25; 128],
+            sample_rate: 8000,
+            channels: 1,
+        })
+        .unwrap();
+    player.play();
+    player.pause();
+    player.drain_events().for_each(drop);
+    player.seek(0.008);
+    let mut players = HashMap::from([(1, player)]);
+    let cache = GlobalAudioCache::new();
+    let mut events = Vec::new();
+    service_players(&mut players, &cache, |event| events.push(event));
+    assert_eq!(events.len(), 2);
+    assert_eq!(
+        events[0].event_type,
+        shared::protocol::audio_cmd::InnerAudioEventType::Seeking
+    );
+    assert_eq!(
+        events[1].event_type,
+        shared::protocol::audio_cmd::InnerAudioEventType::Seeked
+    );
+    assert_eq!(events[1].current_time, 0.008);
+    assert!(events.iter().all(|event| event.paused));
+    let player = &players[&1];
+    assert!(!player.is_active());
+    assert!(!player.needs_stream_poll());
+}
+
 fn wait_for_audio_work(wakeup: &ThreadWakeup, mode: AudioWaitMode) {
     match mode {
         AudioWaitMode::Continue => {}
@@ -2749,7 +2784,7 @@ fn run_audio_thread(
                         position
                     );
                     if let Some(player) = inner_players.get_mut(&id) {
-                        player.shared.seek(position);
+                        player.seek(position);
                     } else {
                         tracing::warn!("InnerAudioSeek: player {} not found", id);
                     }

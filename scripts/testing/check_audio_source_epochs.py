@@ -55,7 +55,7 @@ def controls(originals: dict[str, str]):
          'source_switch_retires_old_pcm_stream_seek_and_events'),
         ('old-pcm-retained', '        self.source = AudioSource::Owned(Vec::new());\n', '',
          'source_switch_retires_old_pcm_stream_seek_and_events'),
-        ('old-seek-retained', '        self.shared.take_seek_target();\n', '',
+        ('old-cursor-retained', '        self.shared.set_position_frames(0);\n', '',
          'source_switch_retires_old_pcm_stream_seek_and_events'),
         ('old-events-retained', '        self.pending_events.clear();\n', '',
          'source_switch_retires_old_pcm_stream_seek_and_events'),

@@ -59,7 +59,8 @@ fn source_switch_retires_old_pcm_stream_seek_and_events() {
     assert!(tx.try_send(StreamMsg::Samples(samples)).is_ok());
     player.poll_stream();
     assert!(player.is_active());
-    player.shared.request_seek(13);
+    player.seek(0.001);
+    assert_eq!(player.shared.position_frames(), 8);
     let load = player.begin_load().unwrap();
     assert!(state.is_cancelled());
     assert!(tx.is_closed());
@@ -73,7 +74,6 @@ fn source_switch_retires_old_pcm_stream_seek_and_events() {
     assert_eq!(player.shared.channels(), 0);
     assert!(player.loading_url().is_none());
     assert_eq!(player.drain_events().count(), 0);
-    assert!(player.shared.take_seek_target().is_none());
     let mut other = [0.5; 8];
     assert!(!player.process(&mut other));
     assert_eq!(other, [0.5; 8]);

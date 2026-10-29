@@ -57,8 +57,6 @@ pub struct InnerAudioSharedState {
     playback_rate: AtomicU32,
     /// Loop enabled
     loop_enabled: AtomicBool,
-    /// Seek target in frames (u64::MAX means no seek pending)
-    seek_target: AtomicU64,
     /// Sample rate of the audio
     sample_rate: AtomicU32,
     /// Number of channels
@@ -82,7 +80,6 @@ impl InnerAudioSharedState {
             volume: AtomicU32::new(1000),                       // 1.0
             playback_rate: AtomicU32::new(PLAYBACK_RATE_SCALE), // 1.0
             loop_enabled: AtomicBool::new(false),
-            seek_target: AtomicU64::new(u64::MAX),
             sample_rate: AtomicU32::new(0),
             channels: AtomicU32::new(0),
             autoplay: AtomicBool::new(false),
@@ -172,23 +169,6 @@ impl InnerAudioSharedState {
         self.loop_enabled.store(enabled, Ordering::Relaxed);
     }
 
-    /// Request a seek to the given frame position
-    #[inline]
-    pub fn request_seek(&self, frame: u64) {
-        self.seek_target.store(frame, Ordering::Release);
-    }
-
-    /// Check and clear seek target. Returns Some(frame) if seek was requested.
-    #[inline]
-    pub fn take_seek_target(&self) -> Option<u64> {
-        let target = self.seek_target.swap(u64::MAX, Ordering::AcqRel);
-        if target == u64::MAX {
-            None
-        } else {
-            Some(target)
-        }
-    }
-
     #[inline]
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate.load(Ordering::Relaxed)
@@ -245,18 +225,6 @@ impl InnerAudioSharedState {
             return 0.0;
         }
         self.duration_frames() as f64 / sr as f64
-    }
-
-    /// Seek to time in seconds
-    pub fn seek(&self, time: f64) {
-        let sr = self.sample_rate();
-        if sr == 0 {
-            return;
-        }
-        let frame = (time * sr as f64).max(0.0) as u64;
-        let duration = self.duration_frames();
-        let clamped = frame.min(duration);
-        self.request_seek(clamped);
     }
 
     pub(crate) fn owns_load(self: &Arc<Self>, load: &InnerAudioLoadToken) -> bool {
@@ -520,7 +488,6 @@ impl InnerAudioPlayer {
         self.position = 0;
         self.position_phase = 0;
         self.frames_since_time_update = 0;
-        self.shared.take_seek_target();
         self.shared.set_position_frames(0);
         self.shared.set_duration_frames(0);
         self.shared.set_sample_rate(0);
@@ -965,6 +932,40 @@ impl InnerAudioPlayer {
         }
     }
 
+    /// Apply a buffered seek on the owning audio thread, even while paused or
+    /// stopped. Deferring this to process() both stalled idle players and let
+    /// later commands overtake the seek. No seek mailbox belongs in the mixer.
+    pub fn seek(&mut self, time: f64) {
+        let sample_rate = self.shared.sample_rate();
+        if !time.is_finite() || sample_rate == 0 || !self.shared.is_loaded() {
+            return;
+        }
+        let target_frame = (time.max(0.0) * sample_rate as f64) as u64;
+        self.seek_frame(target_frame.min(self.shared.duration_frames()));
+    }
+
+    fn seek_frame(&mut self, target_frame: u64) {
+        let channels = self.shared.channels() as usize;
+        if channels == 0 || self.source.is_empty() {
+            return;
+        }
+        self.push_event(InnerAudioEventType::Seeking);
+        // This is the buffered path. Source/decoder repositioning outside the
+        // retained streaming window is handled separately from this cursor.
+        let relative_frame = target_frame.saturating_sub(self.stream_base_frames) as usize;
+        self.position = relative_frame
+            .saturating_mul(channels)
+            .min(self.source.len());
+        self.position_phase = 0;
+        self.shared
+            .set_position_frames(self.stream_base_frames + (self.position / channels) as u64);
+        // A seek into buffered data may resume a stalled player. Let the next
+        // underrun notify, and start a fresh TimeUpdate interval at the target.
+        self.waiting_notified = false;
+        self.frames_since_time_update = 0;
+        self.push_event(InnerAudioEventType::Seeked);
+    }
+
     /// Stop the audio and reset position
     pub fn stop(&mut self) {
         tracing::debug!("InnerAudioPlayer {} stop", self.id);
@@ -1028,25 +1029,6 @@ impl InnerAudioPlayer {
         let channels = self.shared.channels() as usize;
         if channels == 0 || self.source.is_empty() {
             return false;
-        }
-
-        // Handle pending seek. Streaming windows are addressed in absolute
-        // media frames; seek targets before the reclaimed prefix land at the
-        // oldest retained frame rather than indexing before the Vec.
-        if let Some(target_frame) = self.shared.take_seek_target() {
-            self.push_event(InnerAudioEventType::Seeking);
-            let relative_frame = target_frame.saturating_sub(self.stream_base_frames) as usize;
-            self.position = relative_frame
-                .saturating_mul(channels)
-                .min(self.source.len());
-            self.position_phase = 0;
-            self.shared
-                .set_position_frames(self.stream_base_frames + (self.position / channels) as u64);
-            // A seek may land in buffered data and resume playback, so a later
-            // underrun should notify again.
-            self.waiting_notified = false;
-            self.frames_since_time_update = 0; // restart the TimeUpdate throttle
-            self.push_event(InnerAudioEventType::Seeked);
         }
 
         let volume = self.shared.volume();
@@ -1219,6 +1201,10 @@ impl Drop for InnerAudioPlayer {
         self.cancel_stream();
     }
 }
+
+#[cfg(test)]
+#[path = "seek_tests.rs"]
+mod seek_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1619,7 +1605,7 @@ mod tests {
 
         // Seek back into buffered data (consumes the seek, should re-arm Waiting),
         // then stall again at the edge.
-        player.shared.request_seek(0);
+        player.seek_frame(0);
         player.process(&mut out);
         player.position = 44_100;
         player.process(&mut out);
@@ -1816,7 +1802,7 @@ mod tests {
         let samples: Vec<_> = (0..32).map(|frame| frame as f32).collect();
         let mut player = clock_player(&samples, 1.1);
         assert!(player.process(&mut [0.0; 3]));
-        player.shared.request_seek(10);
+        player.seek_frame(10);
         let mut output = [0.0];
         assert!(player.process(&mut output));
         assert_eq!(output, [10.0]);
