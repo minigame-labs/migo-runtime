@@ -9,12 +9,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use shared::error::{EngineError, EngineResult, ErrorCode};
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, time::Instant};
 
 use crate::off_worker::OffWorker;
 use crate::streaming::{
     BODY_IDLE_TIMEOUT, HttpClient, NetworkWait, PcmPool, RESPONSE_HEADER_TIMEOUT, StreamMsg,
-    StreamPublication, StreamingState, publish_stream_chunk, wait_for_network,
+    StreamPublication, StreamingState, wait_for_network,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,6 +37,14 @@ pub(crate) struct Step {
 /// Implementations bound retained input and each step's CPU/output, clear PCM
 /// on failure, and check the supplied cancellation flag within long steps.
 pub(crate) trait Decoder: Send + 'static {
+    /// Optional authoritative metadata, read only while the CPU owns the codec.
+    fn timeline(&self) -> EngineResult<Option<crate::streaming::StreamTimeline>> {
+        Ok(None)
+    }
+    fn presentation(&self) -> EngineResult<Option<crate::streaming::StreamPresentation>> {
+        self.timeline()
+            .map(|clock| clock.map(crate::streaming::StreamPresentation::single))
+    }
     fn step(
         &mut self,
         input: &[u8],
@@ -65,6 +73,13 @@ pub(crate) trait Source<D: Decoder>: Send {
         tx: &mpsc::Sender<StreamMsg>,
         state: &Arc<StreamingState>,
     ) -> impl Future<Output = EngineResult<Option<SourceResume<D>>>> + Send;
+}
+
+/// A soft control may drop a pending media read, then recover this exact
+/// cursor. Completed failures and terminal cancellation are never recovered.
+/// Sequential sources without this capability remain single-pass owners.
+pub(crate) trait InterruptibleSource: Send {
+    fn resume_after_read_interruption(&mut self) -> EngineResult<()>;
 }
 
 /// HTTP opening is separate from the source-independent publication loop.
@@ -273,114 +288,435 @@ pub(crate) async fn publish_result(
     }
 }
 
+/// A source-specific control owns target validation and the consumer handshake.
+/// The common driver owns decoding, backpressure, revision publication and EOF.
+/// Soft controls never interrupt a CPU/source-resume ownership transfer.
+pub(crate) trait SourceControl<D: Decoder, S: Source<D>>: Send {
+    type Request: Send;
+    fn enabled(&self) -> bool;
+    fn recover_read(&mut self, source: &mut S) -> EngineResult<()>;
+    fn next(&mut self) -> impl Future<Output = Option<Self::Request>> + Send;
+    fn apply<'a>(
+        &'a mut self,
+        request: Self::Request,
+        source: &'a mut S,
+        decoder: OffWorker<Option<D>>,
+        pcm: crate::streaming::PcmChunk,
+        context: ControlContext<'a>,
+    ) -> impl Future<Output = EngineResult<Option<ControlResult<D>>>> + Send + 'a;
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ControlContext<'a> {
+    pub tx: &'a mpsc::Sender<StreamMsg>,
+    pub state: &'a Arc<StreamingState>,
+    pub revision: crate::streaming::StreamRevision,
+    pub initialized: bool,
+}
+
+pub(crate) enum ControlResult<D> {
+    /// A rejected/unstarted target leaves the exact old traversal valid.
+    Unchanged(OffWorker<Option<D>>),
+    /// Source success and consumer acceptance precede this result. No bytes of
+    /// this revision may be published until the common ledger begins it.
+    Applied {
+        decoder: OffWorker<Option<D>>,
+        revision: crate::streaming::StreamRevision,
+        pcm: crate::streaming::PcmChunk,
+        step: Step,
+        restart: bool,
+        /// Absolute first output frame, required for sources with a timeline.
+        output_start: Option<u64>,
+        traversal: Option<crate::streaming::StreamTraversal>,
+    },
+}
+
+struct SinglePass;
+impl<D: Decoder, S: Source<D>> SourceControl<D, S> for SinglePass {
+    type Request = std::convert::Infallible;
+    fn enabled(&self) -> bool {
+        false
+    }
+    fn recover_read(&mut self, _source: &mut S) -> EngineResult<()> {
+        unreachable!("single-pass source has no controls")
+    }
+    async fn next(&mut self) -> Option<Self::Request> {
+        std::future::pending().await
+    }
+    async fn apply<'a>(
+        &'a mut self,
+        request: Self::Request,
+        _source: &'a mut S,
+        _decoder: OffWorker<Option<D>>,
+        _pcm: crate::streaming::PcmChunk,
+        _context: ControlContext<'a>,
+    ) -> EngineResult<Option<ControlResult<D>>> {
+        match request {}
+    }
+}
+
+enum ProducerEvent<T, R> {
+    Ready(T),
+    Control(R),
+    Cancelled,
+}
+
+/// Keep the same pinned operation when the control sender closes. Returning a
+/// control drops a media read, or temporarily leaves a pinned publication with
+/// its PCM owner intact while that request is examined.
+async fn producer_event<D: Decoder, S: Source<D>, C: SourceControl<D, S>, T>(
+    controls: &mut C,
+    open: &mut bool,
+    context: ControlContext<'_>,
+    operation: impl Future<Output = T>,
+) -> ProducerEvent<T, C::Request> {
+    tokio::pin!(operation);
+    loop {
+        tokio::select! {
+            biased;
+            _ = context.state.cancelled() => return ProducerEvent::Cancelled,
+            _ = context.tx.closed() => {
+                context.state.cancel();
+                return ProducerEvent::Cancelled;
+            },
+            request = controls.next(), if *open => match request {
+                Some(request) => return ProducerEvent::Control(request),
+                None => *open = false,
+            },
+            result = &mut operation => return ProducerEvent::Ready(result),
+        }
+    }
+}
+
+struct PendingStep<R> {
+    output: crate::streaming::PendingPublication,
+    step: Step,
+    request: Option<R>,
+    remaining: usize,
+}
+
+fn source_input<C: AsRef<[u8]>>(input: &Option<C>, offset: usize) -> &[u8] {
+    input
+        .as_ref()
+        .map_or(&[], |chunk| &chunk.as_ref()[offset..])
+}
+
 pub(crate) async fn run_source<D: Decoder, S: Source<D>>(
     cpu: migo_io::audio_cpu::AudioCpu,
-    mut source: S,
+    source: S,
     object_len: Option<u64>,
     tx: &mpsc::Sender<StreamMsg>,
     state: &Arc<StreamingState>,
     make_decoder: impl FnOnce(Option<u64>) -> D + Send + 'static,
 ) -> EngineResult<()> {
+    drive_source(
+        cpu,
+        source,
+        object_len,
+        ControlContext {
+            tx,
+            state,
+            revision: crate::streaming::StreamRevision::INITIAL,
+            initialized: false,
+        },
+        make_decoder,
+        SinglePass,
+        &mut StreamPublication::default(),
+    )
+    .await
+}
+
+/// Opt-in producer lifetime. The caller must also retain its consumer at EOF.
+/// Target units/clock mapping belong to the control implementation; this does
+/// not expose a new public playback API or change the single-pass default.
+pub(crate) async fn run_source_controlled<D: Decoder, S: Source<D>, C: SourceControl<D, S>>(
+    cpu: migo_io::audio_cpu::AudioCpu,
+    source: S,
+    object_len: Option<u64>,
+    tx: mpsc::Sender<StreamMsg>,
+    state: Arc<StreamingState>,
+    make_decoder: impl FnOnce(Option<u64>) -> D + Send + 'static,
+    controls: C,
+) -> EngineResult<()> {
+    let mut publication = StreamPublication::default();
+    let result = if !state.retains_source() {
+        Err(invalid("controlled producer requires a reusable consumer"))
+    } else {
+        drive_source(
+            cpu,
+            source,
+            object_len,
+            ControlContext {
+                tx: &tx,
+                state: &state,
+                revision: publication.revision(),
+                initialized: false,
+            },
+            make_decoder,
+            controls,
+            &mut publication,
+        )
+        .await
+    };
+    if let Err(error) = &result {
+        send(
+            &tx,
+            &state,
+            StreamMsg::Error {
+                revision: publication.revision(),
+                message: error.to_string(),
+            },
+        )
+        .await;
+    }
+    result
+}
+
+struct AcceptedStep {
+    revision: crate::streaming::StreamRevision,
+    pcm: crate::streaming::PcmChunk,
+    step: Step,
+    restart: bool,
+    output_start: Option<u64>,
+    traversal: Option<crate::streaming::StreamTraversal>,
+}
+impl<D> ControlResult<D> {
+    fn into_parts(self) -> (OffWorker<Option<D>>, Option<AcceptedStep>) {
+        match self {
+            Self::Unchanged(decoder) => (decoder, None),
+            Self::Applied {
+                decoder,
+                revision,
+                pcm,
+                step,
+                restart,
+                output_start,
+                traversal,
+            } => (
+                decoder,
+                Some(AcceptedStep {
+                    revision,
+                    pcm,
+                    step,
+                    restart,
+                    output_start,
+                    traversal,
+                }),
+            ),
+        }
+    }
+}
+
+async fn drive_source<D: Decoder, S: Source<D>, C: SourceControl<D, S>>(
+    cpu: migo_io::audio_cpu::AudioCpu,
+    mut source: S,
+    object_len: Option<u64>,
+    mut context: ControlContext<'_>,
+    make_decoder: impl FnOnce(Option<u64>) -> D + Send + 'static,
+    mut controls: C,
+    publication: &mut StreamPublication,
+) -> EngineResult<()> {
+    let ControlContext { tx, state, .. } = context;
     if state.is_cancelled() || tx.is_closed() {
         return Ok(());
     }
     if let Some(length) = object_len {
         state.bytes_total.store(length, Ordering::Relaxed);
     }
-    // Construction can initialize codec tables and allocate scratch. Include it
-    // in the first off-worker step, with no extra thread-pool round trip.
-    let mut decoder = OffWorker::new(None::<D>, cpu);
+    let mut decoder = OffWorker::new(None::<D>, cpu.clone());
     let mut make_decoder = Some(make_decoder);
-    let mut pool = PcmPool::new();
-    let mut publication = StreamPublication::default();
-    'download: loop {
-        let Some(next) = while_active(
-            tx,
-            state,
-            wait_for_network(state, BODY_IDLE_TIMEOUT, source.read(tx, state)),
-        )
-        .await
-        else {
-            return Ok(());
-        };
-        let next = match next {
-            NetworkWait::Cancelled => SourceRead::Cancelled,
-            NetworkWait::TimedOut => {
-                return Err(EngineError::from_detail(
-                    ErrorCode::Timeout,
-                    "audio response body idle timeout",
-                ));
+    let mut pool = PcmPool::with_cpu(cpu);
+    let mut open = controls.enabled();
+    let mut input = None;
+    let mut offset = 0;
+    let mut eof = false;
+    let mut need_read = true;
+    let mut read_deadline = None::<Instant>;
+    let mut finished = false;
+    let mut pending = None::<PendingStep<S::Request>>;
+    let mut command = None;
+    let mut accepted = None::<AcceptedStep>;
+    let mut active_presentation = state.presentation();
+    loop {
+        if let Some(AcceptedStep {
+            revision,
+            pcm,
+            mut step,
+            restart,
+            output_start,
+            traversal,
+        }) = accepted.take()
+        {
+            if revision != publication.revision().checked_next()?
+                || step.consumed != 0
+                || step.progress == Progress::NeedSource
+            {
+                return Err(invalid("invalid accepted source control"));
             }
-            NetworkWait::Ready(result) => result?,
-        };
-        let mut input = match next {
-            SourceRead::Data(chunk) => Some(chunk),
-            SourceRead::End => None,
-            SourceRead::Cancelled => return Ok(()),
-        };
-        if let Some(chunk) = &input {
-            state
-                .bytes_downloaded
-                .fetch_add(chunk.as_ref().len() as u64, Ordering::Relaxed);
-        }
-        let eof = input.is_none();
-        let mut offset = 0;
-        loop {
-            let mut pcm = pool.take();
-            let cancel = state.clone();
-            let initialize = make_decoder.take();
-            let operation = decoder.with(move |slot| {
-                let decoder =
-                    slot.get_or_insert_with(|| initialize.expect("first decoder step")(object_len));
-                let offered = input
-                    .as_ref()
-                    .map_or(&[][..], |chunk| &chunk.as_ref()[offset..]);
-                let step = decoder.step(offered, eof, pcm.buffer_mut(), &cancel.cancelled);
-                let request = match &step {
-                    Ok(step) if step.progress == Progress::NeedSource => Some(S::pending(decoder)),
-                    _ => None,
-                };
-                (input, pcm, step, request)
+            if let Some(traversal) = traversal {
+                if Some(traversal.output_start()) != output_start
+                    || Some(traversal.presentation().timeline()) != state.timeline()
+                {
+                    return Err(invalid(
+                        "accepted traversal changes source clock or output position",
+                    ));
+                }
+                active_presentation = Some(traversal.presentation());
+            }
+            publication.begin(revision, state)?;
+            match (state.timeline(), output_start) {
+                (Some(timeline), Some(start)) => publication.bind_presentation(
+                    active_presentation
+                        .or_else(|| state.presentation())
+                        .unwrap_or_else(|| crate::streaming::StreamPresentation::single(timeline)),
+                    start,
+                )?,
+                (None, None) => {}
+                _ => return Err(invalid("accepted control has no matching output clock")),
+            }
+            finished = false;
+            read_deadline = None;
+            // A control step received no old input. Drain its cached state
+            // before deciding whether that old suffix needs another read.
+            need_read = restart;
+            if step.progress == Progress::NeedInput {
+                step.progress = Progress::Yield;
+            }
+            if restart {
+                input = None;
+                offset = 0;
+                eof = false;
+                need_read = true;
+            }
+            pending = Some(PendingStep {
+                output: publication.prepare_chunk(pcm, step.sample_rate, step.channels)?,
+                step,
+                request: None,
+                remaining: source_input(&input, offset).len(),
             });
-            let Some(result) = while_active(tx, state, operation).await else {
+        }
+        context.revision = publication.revision();
+        context.initialized = make_decoder.is_none();
+        if need_read && read_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Err(EngineError::from_detail(
+                ErrorCode::Timeout,
+                "audio response body idle timeout",
+            ));
+        }
+        if let Some(request) = command.take() {
+            let result = {
+                let Some(pcm) = while_active(tx, state, pool.acquire()).await else {
+                    return Ok(());
+                };
+                let applying = controls.apply(request, &mut source, decoder, pcm, context);
+                tokio::pin!(applying);
+                while_active(tx, state, &mut applying).await
+            };
+            let Some(result) = result else {
                 return Ok(());
             };
-            let (rest, (returned_input, pcm, step, request)) = result?;
-            decoder = rest;
-            input = returned_input;
-            let step = step?;
-            let request = request.transpose()?;
-            let remaining = input.as_ref().map_or(0, |chunk| chunk.as_ref().len()) - offset;
-            if step.consumed > remaining {
-                return Err(invalid("stream decoder consumed beyond supplied input"));
+            let Some(result) = result? else {
+                return Ok(());
+            };
+            (decoder, accepted) = result.into_parts();
+            continue;
+        }
+        // A queued control wins a ready source/slot, but never drops a running
+        // CPU ownership transfer. Its bounded step returns before this point.
+        match producer_event::<D, S, _, _>(
+            &mut controls,
+            &mut open,
+            context,
+            std::future::ready(()),
+        )
+        .await
+        {
+            ProducerEvent::Control(request) => {
+                command = Some(request);
+                continue;
             }
-            offset += step.consumed;
-            if step.progress == Progress::Cancelled {
+            ProducerEvent::Cancelled => return Ok(()),
+            ProducerEvent::Ready(()) => {}
+        }
+        if finished {
+            if !open {
                 return Ok(());
             }
-            if !publish_stream_chunk(
-                tx,
-                state,
-                pcm,
-                step.sample_rate,
-                step.channels,
-                &mut publication,
-            )
-            .await?
-            {
+            // EOF owns no read/CPU future. Closing the control sender ends the
+            // lifetime; otherwise wait without polling or publishing Done twice.
+            let Some(request) = while_active(tx, state, controls.next()).await else {
                 return Ok(());
-            }
-            match step.progress {
-                Progress::Cancelled => unreachable!(),
-                Progress::Finished => {
-                    publication.finish(tx, state, eof, remaining).await?;
-                    return Ok(());
+            };
+            let Some(request) = request else {
+                return Ok(());
+            };
+            command = Some(request);
+            continue;
+        }
+        if let Some(frame) = &mut pending {
+            if publication.has_pending(&frame.output) {
+                #[cfg(test)]
+                state.publication_waiting.store(true, Ordering::Release);
+                let event =
+                    producer_event::<D, S, _, _>(&mut controls, &mut open, context, tx.reserve())
+                        .await;
+                #[cfg(test)]
+                state.publication_waiting.store(false, Ordering::Release);
+                match event {
+                    ProducerEvent::Control(request) => {
+                        command = Some(request);
+                        continue;
+                    }
+                    ProducerEvent::Cancelled => return Ok(()),
+                    ProducerEvent::Ready(Err(_)) => {
+                        state.cancel();
+                        return Ok(());
+                    }
+                    ProducerEvent::Ready(Ok(permit)) => {
+                        publication.publish_next(&mut frame.output, permit)
+                    }
                 }
+                continue;
+            }
+            if frame.step.progress == Progress::Finished {
+                publication.validate_finish(eof, frame.remaining)?;
+                #[cfg(test)]
+                state.publication_waiting.store(true, Ordering::Release);
+                let event =
+                    producer_event::<D, S, _, _>(&mut controls, &mut open, context, tx.reserve())
+                        .await;
+                #[cfg(test)]
+                state.publication_waiting.store(false, Ordering::Release);
+                match event {
+                    ProducerEvent::Control(request) => {
+                        command = Some(request);
+                        continue;
+                    }
+                    ProducerEvent::Cancelled => return Ok(()),
+                    ProducerEvent::Ready(Err(_)) => {
+                        state.cancel();
+                        return Ok(());
+                    }
+                    ProducerEvent::Ready(Ok(permit)) => publication.finish_with(permit, state),
+                }
+                pending = None;
+                finished = true;
+                continue;
+            }
+            let PendingStep {
+                step,
+                request,
+                remaining,
+                ..
+            } = pending.take().expect("pending producer step");
+            match step.progress {
+                Progress::Cancelled => return Ok(()),
+                Progress::Finished => unreachable!("EOF publication handled above"),
                 Progress::NeedSource => {
                     let request = request.ok_or_else(|| invalid("missing source request"))?;
-                    let Some(resumed) =
-                        while_active(tx, state, source.resume(request, decoder, tx, state)).await
-                    else {
+                    let resume = source.resume(request, decoder, tx, state);
+                    tokio::pin!(resume);
+                    let Some(resumed) = while_active(tx, state, &mut resume).await else {
                         return Ok(());
                     };
                     let Some(resumed) = resumed? else {
@@ -388,7 +724,10 @@ pub(crate) async fn run_source<D: Decoder, S: Source<D>>(
                     };
                     decoder = resumed.decoder;
                     if resumed.restart {
-                        continue 'download;
+                        input = None;
+                        offset = 0;
+                        eof = false;
+                        need_read = true;
                     }
                 }
                 Progress::NeedInput => {
@@ -396,19 +735,127 @@ pub(crate) async fn run_source<D: Decoder, S: Source<D>>(
                         return Err(invalid("stream decoder made no input progress"));
                     }
                     if step.consumed == remaining {
-                        break;
+                        need_read = true;
                     }
                 }
                 Progress::Yield => tokio::task::yield_now().await,
             }
+            continue;
         }
+        if need_read {
+            // A refused/expired soft control cannot renew the same stalled
+            // read's idle budget. Accepted traversals and delivered bytes reset it.
+            let deadline = *read_deadline.get_or_insert_with(|| Instant::now() + BODY_IDLE_TIMEOUT);
+            let read = wait_for_network(
+                state,
+                deadline.saturating_duration_since(Instant::now()),
+                source.read(tx, state),
+            );
+            let event = producer_event::<D, S, _, _>(&mut controls, &mut open, context, read).await;
+            let next = match event {
+                ProducerEvent::Cancelled => return Ok(()),
+                ProducerEvent::Control(request) => {
+                    controls.recover_read(&mut source)?;
+                    command = Some(request);
+                    continue;
+                }
+                ProducerEvent::Ready(NetworkWait::Cancelled) => return Ok(()),
+                ProducerEvent::Ready(NetworkWait::TimedOut) => {
+                    return Err(EngineError::from_detail(
+                        ErrorCode::Timeout,
+                        "audio response body idle timeout",
+                    ));
+                }
+                ProducerEvent::Ready(NetworkWait::Ready(result)) => result?,
+            };
+            read_deadline = None;
+            input = match next {
+                SourceRead::Data(chunk) => Some(chunk),
+                SourceRead::End => None,
+                SourceRead::Cancelled => return Ok(()),
+            };
+            if let Some(chunk) = &input {
+                state
+                    .bytes_downloaded
+                    .fetch_add(chunk.as_ref().len() as u64, Ordering::Relaxed);
+            }
+            offset = 0;
+            eof = input.is_none();
+            need_read = false;
+            continue;
+        }
+        let Some(mut pcm) = while_active(tx, state, pool.acquire()).await else {
+            return Ok(());
+        };
+        let cancel = state.clone();
+        let initialize = make_decoder.take();
+        let initial_revision = context.revision == crate::streaming::StreamRevision::INITIAL;
+        let expected_presentation = active_presentation.or_else(|| state.presentation());
+        let operation = decoder.with(move |slot| {
+            let decoder =
+                slot.get_or_insert_with(|| initialize.expect("first decoder step")(object_len));
+            let offered = input
+                .as_ref()
+                .map_or(&[][..], |chunk| &chunk.as_ref()[offset..]);
+            let step = decoder
+                .step(offered, eof, pcm.buffer_mut(), &cancel.cancelled)
+                .and_then(|step| {
+                    if let Some(presentation) = decoder.presentation()? {
+                        cancel.bind_timeline(presentation.timeline())?;
+                        if initial_revision {
+                            cancel.bind_presentation(presentation)?;
+                        }
+                        if expected_presentation.is_some_and(|old| old != presentation) {
+                            return Err(invalid("decoder changes accepted traversal"));
+                        }
+                    }
+                    Ok(step)
+                });
+            let request = match &step {
+                Ok(step) if step.progress == Progress::NeedSource => Some(S::pending(decoder)),
+                _ => None,
+            };
+            (input, pcm, step, request)
+        });
+        let Some(result) = while_active(tx, state, operation).await else {
+            return Ok(());
+        };
+        let (rest, (returned_input, pcm, step, request)) = result?;
+        decoder = rest;
+        input = returned_input;
+        let step = step?;
+        let request = request.transpose()?;
+        active_presentation = active_presentation.or_else(|| state.presentation());
+        if !publication.has_timeline()
+            && let Some(timeline) = state.timeline()
+        {
+            publication.bind_presentation(
+                active_presentation
+                    .unwrap_or_else(|| crate::streaming::StreamPresentation::single(timeline)),
+                0,
+            )?;
+        }
+        let remaining = input.as_ref().map_or(0, |chunk| chunk.as_ref().len()) - offset;
+        if step.consumed > remaining {
+            return Err(invalid("stream decoder consumed beyond supplied input"));
+        }
+        offset += step.consumed;
+        if step.progress == Progress::Cancelled {
+            return Ok(());
+        }
+        pending = Some(PendingStep {
+            output: publication.prepare_chunk(pcm, step.sample_rate, step.channels)?,
+            step,
+            request,
+            remaining,
+        });
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::streaming::{STREAM_CHANNEL_CAPACITY, stream_channel};
+    use crate::streaming::{STREAM_CHANNEL_CAPACITY, publish_stream_chunk, stream_channel};
     use std::time::Duration;
 
     #[tokio::test]

@@ -195,6 +195,24 @@ pub trait M4aSourceDecoder: Send + 'static {
 
 /// Explicit control is separate from continuous container source requests.
 pub trait M4aSeekDecoder: M4aSourceDecoder {
+    fn seek_loop(
+        &mut self,
+        _target: symphonia::core::units::Timestamp,
+        _enabled: bool,
+    ) -> symphonia::core::errors::Result<symphonia::core::formats::SeekedTo> {
+        Err(symphonia::core::errors::Error::SeekError(
+            symphonia::core::errors::SeekErrorKind::Unseekable,
+        ))
+    }
+    fn cutover(
+        &mut self,
+        _output_start: u64,
+        _enabled: bool,
+    ) -> symphonia::core::errors::Result<symphonia::core::formats::SeekedTo> {
+        Err(symphonia::core::errors::Error::SeekError(
+            symphonia::core::errors::SeekErrorKind::Unseekable,
+        ))
+    }
     fn seek(
         &mut self,
         ts: symphonia::core::units::Timestamp,

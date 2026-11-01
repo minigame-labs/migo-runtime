@@ -3,7 +3,7 @@ use std::{
     fmt,
     sync::{
         Arc, OnceLock,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
         mpsc,
     },
     thread,
@@ -580,6 +580,13 @@ struct ExecutorShared {
     state: Mutex<QueueState<ExecutorJob>>,
     condvar: ParkingCondvar,
     config: ExecutorConfig,
+    audio_refills: Arc<AudioRefillActivity>,
+    // A close burst must not fill ordinary Audio admission or occupy both
+    // heavy workers. Waiting physical owners stay with their bounded receiver.
+    audio_retirement: Arc<tokio::sync::Semaphore>,
+    // Bound device preparation owners before they enqueue CPU steps. Use the
+    // existing class parallelism; ordinary Audio operation limits still apply.
+    audio_preparation: Arc<tokio::sync::Semaphore>,
 }
 
 impl ExecutorShared {
@@ -756,11 +763,17 @@ struct ProcessIoExecutor {
 
 impl ProcessIoExecutor {
     fn new(config: ExecutorConfig) -> Arc<Self> {
+        let audio_preparation = Arc::new(tokio::sync::Semaphore::new(
+            config.class_caps[pool_index(PoolKind::Audio)],
+        ));
         Arc::new(Self {
             shared: Arc::new(ExecutorShared {
                 state: Mutex::new(QueueState::default()),
                 condvar: ParkingCondvar::new(),
                 config,
+                audio_refills: Arc::new(AudioRefillActivity::default()),
+                audio_retirement: Arc::new(tokio::sync::Semaphore::new(1)),
+                audio_preparation,
             }),
             workers: OnceLock::new(),
             next_host_token: AtomicU64::new(1),
@@ -1139,7 +1152,64 @@ pub struct IoPools {
     registration: Arc<HostRegistration>,
 }
 
+// The ticket follows the existing typed closure. Cancellation/rejection drops
+// it without waiting for its queue placeholder; execution drops it before user
+// work starts. The generation also records short requests between observations.
+// The ticket retains only the activity, not a host or executor cycle.
+#[derive(Default)]
+struct AudioRefillActivity {
+    pending: AtomicUsize,
+    generation: AtomicUsize,
+}
+pub(crate) struct AudioRefillTicket(Arc<AudioRefillActivity>);
+impl Drop for AudioRefillTicket {
+    fn drop(&mut self) {
+        self.0.pending.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 impl IoPools {
+    pub(crate) async fn audio_preparation_permit(&self) -> tokio::sync::OwnedSemaphorePermit {
+        Arc::clone(&self.registration.executor.shared.audio_preparation)
+            .acquire_owned()
+            .await
+            .expect("private audio preparation admission is never closed")
+    }
+
+    pub(crate) async fn audio_retirement_permit(&self) -> tokio::sync::OwnedSemaphorePermit {
+        Arc::clone(&self.registration.executor.shared.audio_retirement)
+            .acquire_owned()
+            .await
+            .expect("private audio retirement admission is never closed")
+    }
+
+    pub(crate) fn track_audio_refill(&self, priority: PriorityClass) -> Option<AudioRefillTicket> {
+        if priority == PriorityClass::Background {
+            return None;
+        }
+        let activity = Arc::clone(&self.registration.executor.shared.audio_refills);
+        activity.pending.fetch_add(1, Ordering::AcqRel);
+        activity.generation.fetch_add(1, Ordering::Release);
+        Some(AudioRefillTicket(activity))
+    }
+
+    pub(crate) fn audio_refill_pending(&self) -> bool {
+        self.registration
+            .executor
+            .shared
+            .audio_refills
+            .pending
+            .load(Ordering::Acquire)
+            != 0
+    }
+    pub(crate) fn audio_refill_generation(&self) -> usize {
+        self.registration
+            .executor
+            .shared
+            .audio_refills
+            .generation
+            .load(Ordering::Acquire)
+    }
     #[cfg(test)]
     pub(crate) fn with_byte_budget(byte_limit: u64) -> Self {
         Self::with_executor(
@@ -1151,14 +1221,20 @@ impl IoPools {
         Self::with_executor(host_id, process_io_executor())
     }
 
+    #[cfg(feature = "admission-probe")]
+    pub(crate) fn peer_for_admission_probe(&self, host_id: i32) -> Self {
+        Self::with_executor(host_id, Arc::clone(&self.registration.executor))
+    }
+
     pub(crate) fn submit_audio(
         &self,
+        priority: PriorityClass,
         task: Arc<dyn crate::audio_cpu::CpuJob>,
     ) -> Result<(), PoolError> {
         self.registration.executor.shared.enqueue(
             self.registration.token,
             PoolKind::Audio,
-            PriorityClass::ForegroundAsync,
+            priority,
             ExecutorJob::Audio(task),
         )?;
         self.registration.executor.ensure_started();
@@ -2792,11 +2868,14 @@ mod audio_admission_tests {
         let pools = IoPools::with_executor(602, executor.clone());
         let (published, observed) = mpsc::channel();
         pools
-            .submit_audio(Arc::new(Probe {
-                shared: executor.shared.clone(),
-                host: pools.registration.token,
-                published,
-            }))
+            .submit_audio(
+                P,
+                Arc::new(Probe {
+                    shared: executor.shared.clone(),
+                    host: pools.registration.token,
+                    published,
+                }),
+            )
             .unwrap();
         assert!(
             observed

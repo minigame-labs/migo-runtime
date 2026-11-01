@@ -1,6 +1,10 @@
-# Symphonia metadata 0.6.1 candidate patch
+# Symphonia metadata 0.6.1 patches
 
-`UPSTREAM` pins the published crate. The product does not select the candidate.
+Product Vorbis selects this checksum-pinned source and its existing patches.
+The other W09 codec/DSP ports remain candidates; platform/device and shipping
+profile acceptance are tracked separately from the host regression checkpoint.
+
+`UPSTREAM` pins the published crate selected for product Vorbis metadata handling.
 
 Expose a narrow `Id3v2Reader::total_tag_len` query that delegates to the existing
 ID3 header parser. It returns the header, payload and optional footer extent

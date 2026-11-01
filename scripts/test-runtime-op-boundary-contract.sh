@@ -206,3 +206,6 @@ print(
     f"{len(members)} core members classified"
 )
 PY
+
+# Append-only IDs survive facade retirement without a fabricated import.
+python3 scripts/testing/check_service_op_retirement.py

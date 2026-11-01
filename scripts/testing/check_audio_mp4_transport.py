@@ -20,12 +20,12 @@ spec=importlib.util.spec_from_file_location('m4a_transport_source',ROOT/'scripts
 source=importlib.util.module_from_spec(spec);spec.loader.exec_module(source)
 codecs=source.codecs
 
-def controls(work,env):
+def controls(work,env,build=None):
     declarations=[
         ('source-resume-resets-sinc','resampled_streaming.rs','        self.source_waiting = false;','        self.resampler = None;\n        self.source_waiting = false;','http_index_rewinds_and_buffered_sources_keep_exact_dsp_pcm'),
         ('source-wait-drops-pending-pcm','resampled_streaming.rs','        if self.position < self.decoded.len() {','        if false {','http_index_rewinds_and_buffered_sources_keep_exact_dsp_pcm'),
         ('index-install-discards-http-suffix','isomp4_transport.rs','restart: false','restart: true','coalesced_input_preserves_index_suffix_and_replaces_repositioned_suffix'),
-        ('media-resume-keeps-old-http-suffix','streaming_transport.rs',"                        continue 'download;","                        // deliberately keep previous body suffix",'coalesced_input_preserves_index_suffix_and_replaces_repositioned_suffix'),
+        ('media-resume-keeps-old-http-suffix','streaming_transport.rs','if resumed.restart {','if false {','coalesced_input_preserves_index_suffix_and_replaces_repositioned_suffix'),
         ('ready-reports-source-rate','resampled_streaming.rs','                self.target_rate\n','                self.decoder.rate\n','http_index_rewinds_and_buffered_sources_keep_exact_dsp_pcm'),
         ('sinc-tail-not-flushed','resampled_streaming.rs','        if self.decoder_done {','        if self.decoder_done { return Ok(self.outcome(0, Progress::Finished));','http_index_rewinds_and_buffered_sources_keep_exact_dsp_pcm'),
         ('source-wait-never-published','resampled_streaming.rs','            self.source_waiting = progress == push_decoder::Progress::NeedSource;','            self.source_waiting = false;','http_index_rewinds_and_buffered_sources_keep_exact_dsp_pcm'),
@@ -35,7 +35,7 @@ def controls(work,env):
         ('cached-source-requires-etag','isomp4_transport.rs','identity: Some(range::Identity::capture(&response)),','identity: Some(Ok(range::Identity::capture(&response).map_err(error)?)),','cached_dsp_needs_no_validator_or_range_and_true_misses_fail_closed'),
     ]
     declarations += [
-        ('yield-drops-offered-suffix','streaming_transport.rs','Progress::Yield => tokio::task::yield_now().await,','Progress::Yield => break,','coalesced_input_preserves_index_suffix_and_replaces_repositioned_suffix'),
+        ('yield-drops-offered-suffix','streaming_transport.rs','Progress::Yield => tokio::task::yield_now().await,','Progress::Yield => { input = None; need_read = true; },','coalesced_input_preserves_index_suffix_and_replaces_repositioned_suffix'),
         ('invalid-source-resume-not-sticky','resampled_streaming.rs','            self.failed = true;\n            return Err("composed decoder has no drained source request".into());','            return Err("composed decoder has no drained source request".into());','invalid_source_resume_and_decode_failures_are_sticky'),
         ('source-error-published-as-done','streaming_transport.rs','StreamMsg::Error {\n                revision: crate::streaming::StreamRevision::INITIAL,\n                message: error.to_string(),\n            }','StreamMsg::Done { revision: crate::streaming::StreamRevision::INITIAL }','cached_dsp_needs_no_validator_or_range_and_true_misses_fail_closed'),
         ('media-collected-before-first-dsp-pcm','isomp4_source.rs','ReaderOwner::Media(stream) => stream.chunk().await,','ReaderOwner::Media(stream) => { let mut all=Vec::new(); while let Some(chunk)=stream.chunk().await? { all.extend_from_slice(&chunk); } Ok((!all.is_empty()).then(|| bytes::Bytes::from(all))) },','first_dsp_pcm_from_read_at_does_not_wait_for_media_eof'),
@@ -44,7 +44,7 @@ def controls(work,env):
         path=work/'source'/file;original=path.read_text();assert original.count(before)==1,(name,'anchor changed')
         path.write_text(original.replace(before,after))
         try:
-            binary=source.build(work,env,name)
+            binary=(build or source.build)(work,env,name)
             log=work/f'{name}-test.log'
             with log.open('w') as stream:
                 result=subprocess.run([str(binary),'--exact','isomp4_source_contracts::transport::'+test,'--nocapture'],cwd=work/'probe',env=env,stdout=stream,stderr=subprocess.STDOUT,timeout=90)
@@ -80,6 +80,7 @@ def prepare(work,target,rubato_home):
         file=name+'.rs';shutil.copy2(ROOT/'scripts/testing/fixtures/audio-codec-probe'/file,work/'source'/file)
         text+=f'#[path={json.dumps(str(work/"source"/file))}] mod {name};\n'
     shutil.copy2(ROOT/'scripts/testing/fixtures/audio-codec-probe/isomp4_transport_contracts.rs',work/'source/isomp4_transport_contracts.rs')
+    shutil.copy2(ROOT/'scripts/testing/fixtures/audio-codec-probe/http_interruption_tests.rs',work/'source/http_interruption_tests.rs')
     shutil.copy2(ROOT/'scripts/testing/fixtures/audio-codec-probe/streaming_player_contracts.rs',work/'source/streaming_player_contracts.rs')
     text+=f'\n#[cfg(test)] #[path={json.dumps(str(work/"source/streaming_player_contracts.rs"))}] mod streaming_player_contracts;\n'
     lib.write_text(text)

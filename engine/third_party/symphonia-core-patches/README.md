@@ -1,7 +1,10 @@
-# Symphonia core 0.6.1 candidate patch
+# Symphonia core 0.6.1 patches
 
-The product does not select this crate. `UPSTREAM` pins the published source;
-only the isolated W09 probes apply this patch.
+Product Vorbis selects this checksum-pinned source and its existing patches.
+The other W09 codec/DSP ports remain candidates; platform/device and shipping
+profile acceptance are tracked separately from the host regression checkpoint.
+
+`UPSTREAM` pins the published source; product and isolated probes apply the same patches.
 
 `PacketBuilder::trimmed_dur` computed local trim fields but calculated valid
 duration from the previous, usually zero, fields. A real MP3 packet decoded to

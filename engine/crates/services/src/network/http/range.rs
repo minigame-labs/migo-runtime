@@ -129,6 +129,9 @@ impl Reader {
     pub fn bytes_received(&self) -> u64 {
         self.bytes
     }
+    pub fn is_failed(&self) -> bool {
+        self.failed
+    }
 
     /// Collect exactly one bounded control/index extent. All subrequests share
     /// the supplied absolute deadline. Valid short 206 responses are continued
@@ -399,3 +402,7 @@ impl ContentRange {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+#[path = "range/interruption_tests.rs"]
+mod interruption_tests;

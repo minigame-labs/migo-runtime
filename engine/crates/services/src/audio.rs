@@ -510,16 +510,17 @@ impl Decoding {
             frames: pcm.frames,
             sample_rate: pcm.sample_rate,
         };
+        let (sample_rate, channels, frames) = (pcm.sample_rate, pcm.channels, pcm.frames);
         let lease = self
             .resources
-            .adopt_frozen(self.runtime_generation, format, pcm.samples)
+            .adopt_decoded(self.runtime_generation, format, pcm)
             .map_err(engine_error)?;
         Ok(AudioBufferInfo {
             id: lease.key().serial,
-            duration: f64::from(pcm.frames) / f64::from(pcm.sample_rate),
-            sample_rate: pcm.sample_rate,
-            channels: pcm.channels,
-            length: pcm.frames,
+            duration: f64::from(frames) / f64::from(sample_rate),
+            sample_rate,
+            channels,
+            length: frames,
         })
     }
 }
@@ -533,7 +534,7 @@ pub fn reserve_buffer(
 ) -> Result<AudioBufferId, ServiceError> {
     scope
         .resources()?
-        .reserve_backing(
+        .reserve_initial_backing(
             scope.runtime_generation,
             AudioBufferFormat {
                 channels,
@@ -553,17 +554,38 @@ pub fn release_buffer(scope: BufferScope<'_>, buffer_id: AudioBufferId) {
     }
 }
 
-/// A frozen buffer's channels, as one exact channel-major allocation that
-/// becomes its writable backing.
+/// One fixed channel-major allocation with physical credit until actual drop.
+/// Logical buffer release cannot detach the allocation from that credit.
 pub fn materialize_buffer(
     scope: BufferScope<'_>,
     buffer_id: AudioBufferId,
-) -> Result<Vec<f32>, ServiceError> {
+) -> Result<shared::audio_resources::AudioPlanarBacking, ServiceError> {
     scope
         .resources()?
-        .prepare_materialize(scope.key(buffer_id))
+        .prepare_writable_backing(scope.key(buffer_id))
         .map(|prepared| prepared.commit())
         .map_err(engine_error)
+}
+
+/// Prepare without committing the registry transition, so output admission
+/// can refuse an external response while preserving the original entry.
+pub fn prepare_buffer_backing(
+    scope: BufferScope<'_>,
+    buffer_id: AudioBufferId,
+) -> Result<shared::audio_resources::PreparedWritableAudioBacking, ServiceError> {
+    scope
+        .resources()?
+        .prepare_writable_backing(scope.key(buffer_id))
+        .map_err(engine_error)
+}
+
+/// Materialize an embedded native backing whose physical credit follows its
+/// actual allocation after logical release, detach, or runtime destruction.
+pub fn materialize_owned_buffer(
+    scope: BufferScope<'_>,
+    buffer_id: AudioBufferId,
+) -> Result<shared::audio_resources::AudioPlanarBacking, ServiceError> {
+    materialize_buffer(scope, buffer_id)
 }
 
 /// A writable buffer's planar PCM, wherever the caller holds it.
@@ -1142,8 +1164,8 @@ pub enum AnalyserRead {
 
 /// What an analyser read answers: bytes, or `f32`s.
 pub enum AnalyserData {
-    Bytes(Vec<u8>),
-    Floats(Vec<f32>),
+    Bytes(shared::audio_analyser_samples::AnalyserSamples<u8>),
+    Floats(shared::audio_analyser_samples::AnalyserSamples<f32>),
 }
 
 pub fn read_analyser(
@@ -1152,8 +1174,8 @@ pub fn read_analyser(
     node_id: AudioNodeId,
 ) -> Result<impl Future<Output = Result<AnalyserData, ServiceError>> + use<>, ServiceError> {
     enum Reading {
-        Bytes(Pending<Vec<u8>>),
-        Floats(Pending<Vec<f32>>),
+        Bytes(Pending<shared::audio_analyser_samples::AnalyserSamples<u8>>),
+        Floats(Pending<shared::audio_analyser_samples::AnalyserSamples<f32>>),
     }
     let reading = match read {
         AnalyserRead::ByteTimeDomain => Reading::Bytes(request(tx, |resp| {
@@ -1182,7 +1204,7 @@ pub fn get_frequency_response(
     tx: &AudioSender,
     node_id: AudioNodeId,
     frequencies: &[u8],
-) -> Result<Pending<(Vec<f32>, Vec<f32>)>, ServiceError> {
+) -> Result<Pending<shared::audio_frequency_response::FrequencyResponse>, ServiceError> {
     validate_frequency_response_bytes(frequencies.len())?;
     let permit = reserve(tx, frequencies.len())?;
     let (resp, answer) = oneshot::channel();
@@ -1304,6 +1326,7 @@ pub enum InnerAudioCommand {
     SetLoop(bool),
     SetPlaybackRate(f32),
     SetAutoplay(bool),
+    SetStartTime(f64),
 }
 
 pub fn inner_audio(
@@ -1330,6 +1353,7 @@ pub fn inner_audio(
             InnerAudioCommand::SetAutoplay(autoplay) => {
                 AudioCmd::InnerAudioSetAutoplay { id, autoplay }
             }
+            InnerAudioCommand::SetStartTime(time) => AudioCmd::InnerAudioSetStartTime { id, time },
         },
     )
 }

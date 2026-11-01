@@ -30,8 +30,6 @@ pub struct DelayNode {
     /// Maximum delay in seconds (set at creation time)
     max_delay: f32,
     channels: usize,
-    /// Reusable per-sample automation values, like `GainNode`'s.
-    automation: Vec<f32>,
 }
 
 impl DelayNode {
@@ -93,7 +91,6 @@ impl DelayNode {
             frames,
             max_delay,
             channels: ch,
-            automation: Vec::new(),
         })
     }
 
@@ -151,16 +148,19 @@ impl AudioNodeProcessor for DelayNode {
         // buffer so the interpolator's older tap cannot wrap past the newest
         // sample.
         let max_delay_frames = (self.frames - 2) as f32;
-        if self.automation.len() < frames {
-            self.automation.resize(frames, 0.0);
-        }
-        self.delay_time
-            .compute_values(current_time, &mut self.automation[..frames], sample_rate);
+        let mut automation = [0.0; crate::audio_thread::RENDER_QUANTUM_FRAMES];
+        let mut block = self.delay_time.values_block(current_time, sample_rate);
 
         let sr = sample_rate.max(1) as f32;
         for frame in 0..frames {
-            let delay_frames = (self.automation[frame].clamp(0.0, self.max_delay) * sr)
-                .clamp(0.0, max_delay_frames);
+            let index = frame % automation.len();
+            if index == 0 {
+                let count = (frames - frame).min(automation.len());
+                self.delay_time
+                    .compute_values_from(&mut block, frame, &mut automation[..count]);
+            }
+            let delay_frames =
+                (automation[index].clamp(0.0, self.max_delay) * sr).clamp(0.0, max_delay_frames);
             let base = frame * channels;
             let write_base = self.write_frame * channels;
             for ch in 0..channels {

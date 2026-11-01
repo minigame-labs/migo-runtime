@@ -1,0 +1,15 @@
+[package]
+name = "windowfunctions"
+version = "0.1.1"
+edition = "2021"
+rust-version = "1.60"
+authors = ["HEnquist <henrik.enquist@gmail.com>"]
+description = "Common window functions for apodization"
+license = "MIT"
+repository = "https://github.com/HEnquist/windowfunctions-rs"
+keywords = ["math", "dsp", "apodization", "windowing", "fft"]
+categories = ["mathematics", "science"]
+readme = "README.md"
+
+[dependencies]
+num-traits = "0.2"

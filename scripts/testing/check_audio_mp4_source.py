@@ -23,10 +23,10 @@ range_gate=module('migo_mp4_source_range',ROOT/'scripts/testing/check_http_range
 index_gate=module('migo_mp4_source_index',ROOT/'scripts/testing/check_audio_mp4_index.py')
 codecs=range_gate.codecs
 
-def build(work,env,label,library=None):
+def build(work,env,label,library=None,release=True,clean=True):
     if library:
-        codecs.run(['cargo','clean','--offline','--locked','--release','-p',library],work/f'{label}-library-clean.log',cwd=work/'probe',env=env)
-    binary=range_gate.build(work,env,label)
+        codecs.run(['cargo','clean','--offline','--locked',*(['--release']if release else []),'-p',library],work/f'{label}-library-clean.log',cwd=work/'probe',env=env)
+    binary=range_gate.build(work,env,label,release=release,clean=clean)
     rows=[]
     for line in (work/f'{label}-build.jsonl').read_text().splitlines():
         try:r=json.loads(line)
@@ -234,23 +234,35 @@ def prepare(work,target):
     deps='''symphonia={version="=0.6.1",default-features=false,features=["mp3","aac","isomp4","id3v2","opt-simd"]}
 symphonia-bundle-mp3={version="=0.6.1",default-features=false,features=["streaming"]}
 symphonia-codec-aac="=0.6.1"
+rubato={version="=5.0.1",default-features=false}
+symphonia-core={version="=0.6.1",default-features=false}
+symphonia-format-ogg={version="=0.6.1",default-features=false,features=["streaming"]}
+symphonia-codec-vorbis={version="=0.6.1",default-features=false}
+symphonia-format-riff={version="=0.6.1",default-features=false,features=["wav","streaming"]}
+symphonia-codec-pcm={version="=0.6.1",default-features=false}
 symphonia-format-isomp4={version="=0.6.1",features=["streaming"]}
 '''
-    for name in ['minimp3-sys','lewton','hound','futures-util']:deps+=f'{name}="={version(name)}"\n'
+    for name in ['minimp3-sys','hound','futures-util']:deps+=f'{name}="={version(name)}"\n'
     manifest=manifest.replace('\n[dependencies]\n','\n[dependencies]\n'+deps,1)
     dev=''
     for name in ['alloc','executor']:dev+=f'migo-{name}-probe={{path={json.dumps(str(ROOT/f"engine/testing/{name}-probe"))},default-features=false}}\n'
     manifest=manifest.replace('\n[dev-dependencies]\n','\n[dev-dependencies]\n'+dev,1)
     manifest=manifest.replace('\n[features]\n','\n[features]\ndefault=["m4a-streaming-probe","metadata-budgets"]\nm4a-streaming-probe=[]\nmetadata-budgets=[]\n',1)
-    for name,path in libraries.items():manifest+=f'{name}={{path={json.dumps(str(path))}}}\n'
+    manifest=codecs.replace_patch_paths(manifest,libraries)
+    manifest=codecs.replace_patch_paths(manifest,{"minimp3-sys":ROOT/"engine/third_party/minimp3-sys-0.6.0"})
+    dsp_ledger=ROOT/"engine/third_party/rubato-sources.json"
+    adopted_dsp=json.loads(dsp_ledger.read_text())
+    manifest=codecs.replace_patch_paths(manifest,{name:ROOT/"engine/third_party"/(name+"-"+row["version"])for name,row in adopted_dsp.items()})
     known='cfg(feature, values("wave-streaming-probe", "adts-streaming-probe", "vorbis-streaming-probe", "phase-probe", "m4a-transport-probe", "m4a-file-probe"))'
     manifest+='\n[lints.rust]\nunexpected_cfgs={level="warn",check-cfg=['+json.dumps(known)+']}\n'
     (package/'Cargo.toml').write_text(manifest)
+    # Preserve streaming.rs's ordinary test sidecar when copying the module.
+    shutil.copyfile(ROOT/'engine/crates/audio/src/stream_cutover_tests.rs',source/'stream_cutover_tests.rs')
     root=package/'src/lib.rs';text=root.read_text()+'\nextern crate self as migo_services;\n'
-    for name in ['decoder','limits','resampler','streaming','streaming_transport','off_worker']:
+    for name in ['decoder','limits','resampler','resample_job','streaming','streaming_transport','off_worker','stream_control']:
         path=ROOT/f'engine/crates/audio/src/{name}.rs'
         if name=='decoder':path=ROOT/'engine/crates/audio/src/decoder/mod.rs'
-        if name in ['streaming','streaming_transport','off_worker']:
+        if name in ['streaming','streaming_transport','off_worker','stream_control']:
             shutil.copyfile(path,source/path.name);path=source/path.name
         text+=f'#[path={json.dumps(str(path))}] mod {name};\n'
     text+=f'#[cfg(test)] #[path={json.dumps(str(ROOT/"engine/crates/audio/src/mp3_fixture.rs"))}] mod mp3_fixture;\n'
@@ -266,6 +278,11 @@ symphonia-format-isomp4={version="=0.6.1",features=["streaming"]}
     (package/'Cargo.toml').write_text((package/'Cargo.toml').read_text().replace('"test-util"','"test-util", "rt-multi-thread"').replace('"fs", "io-util", "net"','"fs", "io-util", "net", "macros", "rt-multi-thread"'))
     extra=[Path(__file__).resolve(),ROOT/'scripts/testing/check_audio_mp4_index.py',ROOT/'engine/crates/audio/Cargo.toml']
     extra+=sorted((ROOT/'engine/crates/audio/src').rglob('*.rs'))
+    extra.append(dsp_ledger)
+    for name,row in adopted_dsp.items():
+        extra += [p for p in (ROOT/"engine/third_party"/(name+"-"+row["version"])).rglob("*") if p.is_file()]
+    for name in ["minimp3-sys-0.6.0","minimp3-sys-patches"]:
+        extra += [p for p in (ROOT/"engine/third_party"/name).rglob("*") if p.is_file()]
     extra+=sorted(fixtures.glob('*.rs'))
     for name in libraries:extra+=sorted((ROOT/f'engine/third_party/{name}-patches').glob('*'))
     frozen.update({str(p.relative_to(ROOT)):codecs.sha(p)for p in extra if p.is_file()})

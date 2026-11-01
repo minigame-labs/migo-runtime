@@ -323,6 +323,23 @@ opt-level = 3
 # copy is the published crate plus engine/third_party/skia-bindings-patches, which
 # scripts/test-skia-bindings-vendor-contract.sh proves byte for byte.
 [patch.crates-io]
+audio-codec-algorithms = { path = "third_party/audio-codec-algorithms-0.8.1" }
+audioadapter = { path = "third_party/audioadapter-5.0.0" }
+audioadapter-buffers = { path = "third_party/audioadapter-buffers-5.2.0" }
+audioadapter-sample = { path = "third_party/audioadapter-sample-5.2.0" }
+rubato = { path = "third_party/rubato-5.0.1" }
+visibility = { path = "third_party/visibility-0.1.1" }
+windowfunctions = { path = "third_party/windowfunctions-0.1.1" }
+# Bounded WAVE framing and mature PCM conversion use the accepted W09 sources.
+symphonia-format-riff = { path = "third_party/symphonia-format-riff-0.6.1" }
+symphonia-codec-pcm = { path = "third_party/symphonia-codec-pcm-0.6.1" }
+# Same mature MP3 codec, with bounded native presentation from W09.
+minimp3-sys = { path = "third_party/minimp3-sys-0.6.0" }
+# The same checksum-pinned codec sources and patches used by W09 conformance.
+symphonia-core = { path = "third_party/symphonia-core-0.6.1" }
+symphonia-metadata = { path = "third_party/symphonia-metadata-0.6.1" }
+symphonia-format-ogg = { path = "third_party/symphonia-format-ogg-0.6.1" }
+symphonia-codec-vorbis = { path = "third_party/symphonia-codec-vorbis-0.6.1" }
 # Exclude unused macOS process-tap capture from the mini-game output product.
 cpal = { path = "third_party/cpal-0.18.2" }
 tungstenite = { path = "third_party/tungstenite-0.30.0" }

@@ -1,9 +1,56 @@
 use std::ffi::c_int;
 
 use minimp3_sys as ffi;
-use shared::error::{EngineError, EngineResult, ErrorCode};
+#[cfg(test)]
+use shared::error::EngineResult;
 
+#[cfg(test)]
 use super::DecodedAudio;
+
+mod file;
+mod job;
+mod presentation;
+pub(crate) use file::{FileStep, Mp3FileDecoder};
+pub(crate) use job::Mp3DecodeJob;
+
+#[cfg(test)]
+#[derive(Clone, Copy, Default)]
+struct NativeTrace {
+    calls: usize,
+    bytes: usize,
+    max_input: usize,
+    max_scan: usize,
+    fallbacks: usize,
+}
+#[cfg(test)]
+thread_local! {
+    static NATIVE_TRACE: std::cell::Cell<NativeTrace> = const { std::cell::Cell::new(NativeTrace {
+        calls: 0, bytes: 0, max_input: 0, max_scan: 0, fallbacks: 0,
+    }) };
+}
+#[cfg(test)]
+fn trace_native(length: usize) {
+    NATIVE_TRACE.with(|trace| {
+        let mut value = trace.get();
+        value.calls += 1;
+        value.bytes += length;
+        value.max_input = value.max_input.max(length);
+        trace.set(value);
+    });
+}
+#[cfg(test)]
+fn take_native_trace() -> NativeTrace {
+    NATIVE_TRACE.with(|trace| trace.replace(NativeTrace::default()))
+}
+
+pub(crate) struct FrameBoundary {
+    pub(crate) offset: usize,
+    pub(crate) length: usize,
+    pub(crate) free_format: bool,
+    pub(crate) view: usize,
+    info: ffi::mp3dec_frame_info_t,
+    free_format_bytes: c_int,
+}
 
 /// Largest number of samples (all channels combined) one MP3 frame can decode
 /// to. Mirrors the constant the `minimp3` wrapper crate derives from the same
@@ -112,6 +159,8 @@ impl Mp3FrameDecoder {
         // `state` is an initialised `mp3dec_t` owned here and borrowed uniquely
         // for this call. Nothing borrowed escapes the call.
         let len = input.len().min(c_int::MAX as usize) as c_int;
+        #[cfg(test)]
+        trace_native(input.len());
         let samples_per_channel = unsafe {
             ffi::mp3dec_decode_frame(
                 &mut *self.state,
@@ -122,9 +171,27 @@ impl Mp3FrameDecoder {
             )
         };
 
+        let total =
+            (samples_per_channel.max(0) as usize).saturating_mul(info.channels.max(1) as usize);
+        self.frame_step(input.len(), info, total, 0, false)
+    }
+
+    fn frame_step(
+        &self,
+        input_len: usize,
+        info: ffi::mp3dec_frame_info_t,
+        total: usize,
+        skip: usize,
+        whole: bool,
+    ) -> Mp3Step<'_> {
         let consumed = info.frame_bytes.max(0) as usize;
 
-        if samples_per_channel <= 0 {
+        if total == 0 && whole && info.hz > 0 && consumed > 0 {
+            // A whole frame consumed by reservoir warmup or presentation trim
+            // is progress, even when the exact view ends at that frame.
+            return Mp3Step::Skipped(consumed);
+        }
+        if total == 0 {
             // Two different answers arrive here and they must not be conflated.
             //
             // When minimp3 consumed *less* than it was given, it got past a real
@@ -142,7 +209,7 @@ impl Mp3FrameDecoder {
             // The bound is what keeps a stream of pure garbage from growing the
             // buffer without limit, and leaving nothing to skip is what stops
             // this from looping: the caller must wait for more input.
-            let hold_back = if consumed >= input.len() {
+            let hold_back = if consumed >= input_len {
                 MAX_FRAME_BYTES + HEADER_BYTES - 1
             } else {
                 0
@@ -154,11 +221,10 @@ impl Mp3FrameDecoder {
         }
 
         let channels = info.channels.max(1) as usize;
-        let total = (samples_per_channel as usize).saturating_mul(channels);
         debug_assert!(total <= MAX_SAMPLES_PER_FRAME);
 
         Mp3Step::Frame {
-            pcm: &self.pcm[..total.min(MAX_SAMPLES_PER_FRAME)],
+            pcm: &self.pcm[skip..skip + total.min(MAX_SAMPLES_PER_FRAME - skip)],
             sample_rate: info.hz.max(0) as u32,
             channels: channels as u32,
             consumed,
@@ -178,10 +244,38 @@ impl Mp3FrameDecoder {
     /// samples, which from outside is indistinguishable from garbage — so a probe
     /// that measured by decoding would report "no frame here" for exactly the
     /// frames worth rescuing.
+    #[cfg(test)]
     fn frame_bytes_at_front(&mut self, input: &[u8]) -> Option<usize> {
+        self.measured_frame(input)
+            .map(|frame| frame.offset + frame.length)
+    }
+
+    pub(crate) fn has_free_format_state(&self) -> bool {
+        self.state.header[0] == 0xFF && self.state.free_format_bytes > 0
+    }
+
+    pub(crate) fn invalidate_header(&mut self) {
+        // SAFETY: same exclusively owned, initialized decoder as in `new`.
+        unsafe { ffi::mp3dec_init(&mut *self.state) };
+    }
+
+    pub(crate) fn measured_frame(&mut self, input: &[u8]) -> Option<FrameBoundary> {
+        self.measure(input).0
+    }
+
+    fn measure(&mut self, input: &[u8]) -> (Option<FrameBoundary>, ffi::mp3dec_frame_info_t) {
         if input.is_empty() {
-            return None;
+            // SAFETY: frame info is a C POD containing only integer fields.
+            return (None, unsafe { std::mem::zeroed() });
         }
+        // A failed dry run must not erase the native free-format size needed
+        // to isolate a later padded or tagged frame. Copy only that rare probe
+        // state; ordinary bitrate streams keep the same allocation-free path.
+        let saved_free = if self.has_free_format_state() {
+            Some(*self.state)
+        } else {
+            None
+        };
 
         let mut info = ffi::mp3dec_frame_info_t {
             frame_bytes: 0,
@@ -196,6 +290,8 @@ impl Mp3FrameDecoder {
         // `pcm` for null and returns the frame's sample count before writing
         // anything through it, so passing null selects its measure-only path.
         let len = input.len().min(c_int::MAX as usize) as c_int;
+        #[cfg(test)]
+        trace_native(input.len());
         let samples = unsafe {
             ffi::mp3dec_decode_frame(
                 &mut *self.state,
@@ -206,7 +302,23 @@ impl Mp3FrameDecoder {
             )
         };
 
-        (samples > 0 && info.frame_bytes > 0).then_some(info.frame_bytes as usize)
+        let end = info.frame_bytes.max(0) as usize;
+        let offset = info.frame_offset.max(0) as usize;
+        let boundary =
+            (samples > 0 && offset < end && end <= input.len()).then_some(FrameBoundary {
+                offset,
+                length: end.saturating_sub(offset),
+                free_format: info.bitrate_kbps == 0,
+                view: input.len().saturating_sub(offset),
+                info,
+                free_format_bytes: self.state.free_format_bytes,
+            });
+        if boundary.is_none()
+            && let Some(saved) = saved_free
+        {
+            *self.state = saved;
+        }
+        (boundary, info)
     }
 }
 
@@ -220,9 +332,14 @@ const MAX_SYNC_CANDIDATES: usize = 32;
 /// Offset of the next byte pair that could begin a frame header.
 ///
 /// Eleven set bits is the sync word; anything else cannot start a frame. This is
-/// a candidate and not a verdict — [`first_frame_at_front`] decides by asking
-/// minimp3.
-fn next_sync_candidate(buffer: &[u8], from: usize) -> Option<usize> {
+/// a candidate and not a verdict; the caller asks minimp3 to confirm it.
+pub(crate) fn next_sync_candidate(buffer: &[u8], from: usize) -> Option<usize> {
+    #[cfg(test)]
+    NATIVE_TRACE.with(|trace| {
+        let mut value = trace.get();
+        value.max_scan = value.max_scan.max(buffer.len());
+        trace.set(value);
+    });
     (from..buffer.len().saturating_sub(1))
         .find(|&index| buffer[index] == 0xFF && (buffer[index + 1] & 0xE0) == 0xE0)
 }
@@ -235,7 +352,7 @@ fn next_sync_candidate(buffer: &[u8], from: usize) -> Option<usize> {
 /// words, is what keeps a tag's own bytes -- text, a cover image whose JPEG is full of `FF Ex`
 /// markers -- from being measured as a frame: minimp3 accepts a lone frame with nothing after it to
 /// confirm it.
-fn id3v2_tag_length(buffer: &[u8]) -> Option<usize> {
+pub(crate) fn id3v2_tag_length(buffer: &[u8]) -> Option<usize> {
     let header = buffer.get(..10)?;
     if &header[..3] != b"ID3"
         || header[3] == 0xFF
@@ -262,6 +379,7 @@ fn id3v2_tag_length(buffer: &[u8]) -> Option<usize> {
 /// frame — an ID3v2 tag at the front and an ID3v1 tag at the end is the classic
 /// pairing, and together they hid the audio from both the in-place path and a
 /// front-anchored probe.
+#[cfg(test)]
 pub(crate) fn first_frame_at_front(
     probe: &mut Mp3FrameDecoder,
     buffer: &[u8],
@@ -294,6 +412,7 @@ pub(crate) fn first_frame_at_front(
 /// **The decoder passed in must be a throwaway.** Every rejected probe resets
 /// minimp3's state, and the bit reservoir is precisely what the real decoder has
 /// to keep.
+#[cfg(test)]
 pub(crate) fn first_frame_length(
     probe: &mut Mp3FrameDecoder,
     buffer: &[u8],
@@ -320,99 +439,25 @@ pub(crate) fn append_as_f32(pcm: &[i16], out: &mut Vec<f32>) {
     out.extend(pcm.iter().map(|&sample| f32::from(sample) / 32768.0));
 }
 
-/// Decode a whole MP3 file.
-///
-/// **The decoder is handed exactly one frame at a time, and that is what makes a
-/// file's frames survive its tags.** minimp3 will not accept a frame it cannot
-/// chain to a successor, and what follows a file's final frame is not audio — an
-/// ID3v1 tag is 128 bytes at the end of a large fraction of real files, usually
-/// paired with an ID3v2 tag at the front. Offering the whole remainder lost the
-/// last frame of a tagged file and lost *every* frame of a short one: a
-/// two-second sound effect with an ID3v1 tag decoded to nothing at all, and
-/// `decode` reported that it had produced no samples. Measured against the
-/// previous implementation, which behaved identically in every case — this is a
-/// defect being fixed, not one being introduced.
-///
-/// A lone frame is the one thing minimp3 accepts without a successor to confirm
-/// it, and handing it one also keeps it on its state-preserving fast path, so the
-/// bit reservoir a frame's main data may live in survives every step. The cost is
-/// one extra call per frame to measure the frame's length, which returns before
-/// any decoding work; see [`first_frame_at_front`].
+/// Decode a complete MP3 by draining the owned codec/PCM job.
+/// Scheduling between steps belongs to the caller; the current pool drains
+/// synchronously. Only a complete continuous buffer can leave the job.
+#[cfg(test)]
 pub fn decode(data: &[u8]) -> EngineResult<DecodedAudio> {
-    let mut frames = Mp3FrameDecoder::new();
-    let mut probe: Option<Mp3FrameDecoder> = None;
-    let mut previous_length: Option<usize> = None;
+    drain_job(Mp3DecodeJob::new(data, None))
+}
 
-    let mut samples: Vec<f32> = Vec::new();
-    let mut sample_rate = 0u32;
-    let mut channels = 0u32;
-    let mut pos = 0usize;
+#[cfg(test)]
+fn drain_job<B: AsRef<[u8]>>(mut job: Mp3DecodeJob<B>) -> EngineResult<DecodedAudio> {
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    while !job.step(&cancel)? {}
+    job.finish()
+}
 
-    while pos < data.len() {
-        let remaining = &data[pos..];
-        let probe = probe.get_or_insert_with(Mp3FrameDecoder::new);
-        let (take, measured) = match first_frame_at_front(probe, remaining, previous_length) {
-            // Get past whatever sits in front of the frame first: the rule that
-            // lets a lone frame through wants it at offset zero.
-            Some((skip, _)) if skip > 0 => {
-                pos += skip;
-                continue;
-            }
-            Some((_, length)) => {
-                previous_length = Some(length);
-                (length, true)
-            }
-            // No whole frame ahead. Offering everything is the last thing to try
-            // before giving up on the remainder.
-            None => (remaining.len(), false),
-        };
-
-        match frames.decode(&remaining[..take]) {
-            // A whole frame that gave nothing -- its main data in a reservoir this
-            // decode never had -- is that frame lost. The frames after it carry
-            // their own, and stopping here dropped every one of them.
-            Mp3Step::NeedMoreData if measured => pos += take,
-            Mp3Step::NeedMoreData => break,
-            Mp3Step::Skipped(skipped) => pos += skipped,
-            Mp3Step::Frame {
-                pcm,
-                sample_rate: sr,
-                channels: ch,
-                consumed,
-            } => {
-                pos += consumed;
-                if sample_rate == 0 {
-                    sample_rate = sr;
-                    channels = ch;
-                }
-
-                // Reject a decode bomb before growing the buffer.
-                if !crate::limits::pcm_samples_within_budget(
-                    samples.len().saturating_add(pcm.len()),
-                ) {
-                    return Err(EngineError::from_detail(
-                        ErrorCode::InvalidArgument,
-                        "MP3 decode exceeds the PCM budget",
-                    ));
-                }
-
-                append_as_f32(pcm, &mut samples);
-            }
-        }
-    }
-
-    if samples.is_empty() {
-        return Err(EngineError::from_detail(
-            ErrorCode::InvalidArgument,
-            "MP3 decode produced no samples",
-        ));
-    }
-
-    Ok(DecodedAudio {
-        samples,
-        sample_rate,
-        channels,
-    })
+#[cfg(test)]
+pub(crate) fn take_stream_trace() -> (usize, usize, usize, usize) {
+    let t = take_native_trace();
+    (t.calls, t.bytes, t.max_input, t.max_scan)
 }
 
 #[cfg(test)]

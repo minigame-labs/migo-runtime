@@ -217,7 +217,7 @@ struct Decoded {
     pcm: Vec<f32>,
     indexes: usize,
     index_bytes: u64,
-    resumes: u32,
+    resumes: u64,
     media_requests: u64,
     media_bytes: u64,
     buffer: (usize, usize, u64, u64),
@@ -561,7 +561,7 @@ async fn actual_read_at_reuses_media_extents_and_preserves_aac_and_container_end
                 assert_eq!(result.pcm, expected, "{name}/{chunked}/{fragment}");
                 let resumes = if name.contains("reorder") { 1 } else { 2 };
                 assert_eq!(result.resumes, resumes);
-                assert_eq!(result.media_requests, u64::from(resumes));
+                assert_eq!(result.media_requests, resumes);
                 assert!(result.media_bytes > 0);
                 let control: Vec<_> = server
                     .ranges
@@ -601,7 +601,7 @@ async fn actual_read_at_short_ranges_and_held_body_deliver_before_tail_release()
     .await;
     let result = run(&server, 137, Limits::default()).await.unwrap();
     assert_eq!(result.pcm, expected);
-    assert!(result.media_requests > u64::from(result.resumes));
+    assert!(result.media_requests > result.resumes);
     let owner = migo_io::scheduler::IoScheduler::new(0);
     let (_, packet) = pending(data.clone(), &owner).await;
     assert!(u64::from(packet.size) < data.len() as u64 - packet.offset);

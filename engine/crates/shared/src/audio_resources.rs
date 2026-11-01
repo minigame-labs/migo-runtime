@@ -11,6 +11,10 @@ use std::sync::{Arc, OnceLock};
 
 use parking_lot::Mutex;
 
+use crate::audio_decoded_pcm::DecodedPcm;
+#[cfg(test)]
+use crate::audio_physical::MAX_AUDIO_AGGREGATE_PHYSICAL_BYTES;
+use crate::audio_physical::{AudioAggregateLedger, AudioAggregatePermit};
 use crate::error::{EngineError, EngineResult, ErrorCode};
 
 const MAX_SINGLE_BACKING_BYTES: usize = 64 * 1024 * 1024;
@@ -139,6 +143,7 @@ impl ProcessUsage {
         Ok(ProcessPermit {
             usage: Arc::clone(self),
             bytes,
+            physical: None,
         })
     }
 
@@ -155,6 +160,7 @@ impl ProcessUsage {
 struct ProcessPermit {
     usage: Arc<ProcessUsage>,
     bytes: usize,
+    physical: Option<AudioAggregatePermit>,
 }
 
 /// Immutable, interleaved PCM acquired by one or more native source nodes.
@@ -166,8 +172,7 @@ struct ProcessPermit {
 #[derive(Debug)]
 pub struct AudioSnapshot {
     format: AudioBufferFormat,
-    samples: Vec<f32>,
-    _process_permit: ProcessPermit,
+    samples: DecodedPcm,
 }
 
 impl AudioSnapshot {
@@ -178,7 +183,7 @@ impl AudioSnapshot {
 
     #[inline]
     pub fn samples(&self) -> &[f32] {
-        &self.samples
+        &self.samples.samples
     }
 }
 
@@ -205,9 +210,12 @@ struct BackingEntry {
 
 #[derive(Debug)]
 enum BackingState {
-    /// The registry permit accounts for the planar allocation currently owned
-    /// by V8. The allocation itself stays on the JS side.
-    Writable { _process_permit: ProcessPermit },
+    /// Logical process/runtime allowance stays with the entry. Native backing
+    /// storage carries its own physical permit through its actual final owner.
+    Writable {
+        _process_permit: ProcessPermit,
+        initial_pending: bool,
+    },
     /// The snapshot owns its own permit and may outlive this entry through
     /// source-node `Arc` clones.
     Frozen(Arc<AudioSnapshot>),
@@ -241,7 +249,53 @@ impl RegistryState {
 struct RegistryInner {
     limits: AudioResourceLimits,
     process: Arc<ProcessUsage>,
+    physical: Arc<AudioAggregateLedger>,
     state: Mutex<RegistryState>,
+}
+
+impl RegistryInner {
+    fn reserve_physical(&self, bytes: usize, already_charged: bool) -> EngineResult<ProcessPermit> {
+        let mut permit = self.process.try_reserve(bytes)?;
+        if !already_charged {
+            permit.physical = Some(self.physical.try_reserve(bytes, "AudioBuffer registry")?);
+        }
+        Ok(permit)
+    }
+}
+
+/// A native materialized allocation whose physical credit follows its actual
+/// backing-store owner, independently of the logical registry entry.
+#[derive(Debug)]
+pub struct AudioPlanarBacking {
+    samples: Vec<f32>,
+    _physical: Option<AudioAggregatePermit>,
+}
+impl AudioPlanarBacking {
+    pub fn samples(&self) -> &[f32] {
+        &self.samples
+    }
+}
+impl std::ops::Deref for AudioPlanarBacking {
+    type Target = [f32];
+    fn deref(&self) -> &Self::Target {
+        &self.samples
+    }
+}
+impl std::ops::DerefMut for AudioPlanarBacking {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.samples
+    }
+}
+impl AudioPlanarBacking {
+    /// Capacity of this fixed allocation; sample mutation cannot resize it.
+    pub fn capacity(&self) -> usize {
+        self.samples.capacity()
+    }
+}
+impl AsMut<[u8]> for AudioPlanarBacking {
+    fn as_mut(&mut self) -> &mut [u8] {
+        bytemuck::cast_slice_mut(&mut self.samples)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -307,8 +361,8 @@ impl PreparedAudioSnapshot {
 /// Exact planar PCM awaiting publication as a new V8 backing store.
 ///
 /// Dropping this value returns the newly reserved process permit and leaves the
-/// entry frozen. [`Self::commit`] transfers the permit into the registry and
-/// returns the exact-capacity allocation for zero-copy adoption by V8.
+/// entry frozen. Commit returns the exact-capacity allocation with its physical
+/// permit. The registry retains only its logical process allowance.
 #[derive(Debug)]
 pub struct PreparedAudioBacking {
     registry: Arc<RegistryInner>,
@@ -325,14 +379,23 @@ impl PreparedAudioBacking {
     }
 
     /// Publish Frozen → Writable under the runtime publication lock.
-    pub fn commit(self) -> Vec<f32> {
+    pub fn commit(self) -> AudioPlanarBacking {
+        self.commit_owned()
+    }
+
+    pub fn commit_owned(self) -> AudioPlanarBacking {
+        self.publish()
+    }
+
+    fn publish(self) -> AudioPlanarBacking {
         let Self {
             registry,
             key,
             source_snapshot,
             planar,
-            writable_permit,
+            mut writable_permit,
         } = self;
+        let physical = writable_permit.physical.take();
         let old_state = {
             let mut state = registry.state.lock();
             let entry = state
@@ -347,11 +410,15 @@ impl PreparedAudioBacking {
                 &mut entry.state,
                 BackingState::Writable {
                     _process_permit: writable_permit,
+                    initial_pending: false,
                 },
             )
         };
         drop(old_state);
-        planar
+        AudioPlanarBacking {
+            samples: planar,
+            _physical: physical,
+        }
     }
 }
 
@@ -406,6 +473,10 @@ impl Default for AudioResourceRegistry {
 
 impl AudioResourceRegistry {
     pub fn new() -> Self {
+        Self::with_physical_ledger(AudioAggregateLedger::process_global())
+    }
+
+    pub fn with_physical_ledger(physical: Arc<AudioAggregateLedger>) -> Self {
         static PROCESS_USAGE: OnceLock<Arc<ProcessUsage>> = OnceLock::new();
         let limits = AudioResourceLimits::PRODUCTION;
         let process = Arc::clone(PROCESS_USAGE.get_or_init(|| {
@@ -414,18 +485,20 @@ impl AudioResourceRegistry {
                 limits.max_process_buffers,
             ))
         }));
-        Self::with_parts(limits, process, 1)
+        Self::with_parts(limits, process, 1, physical)
     }
 
     fn with_parts(
         limits: AudioResourceLimits,
         process: Arc<ProcessUsage>,
         next_serial: u32,
+        physical: Arc<AudioAggregateLedger>,
     ) -> Self {
         Self {
             inner: Arc::new(RegistryInner {
                 limits,
                 process,
+                physical,
                 state: Mutex::new(RegistryState::new(next_serial)),
             }),
         }
@@ -442,6 +515,15 @@ impl AudioResourceRegistry {
         runtime_generation: i64,
         format: AudioBufferFormat,
     ) -> EngineResult<AudioBackingLease> {
+        self.reserve_backing_for(runtime_generation, format, false)
+    }
+
+    fn reserve_backing_for(
+        &self,
+        runtime_generation: i64,
+        format: AudioBufferFormat,
+        initial_pending: bool,
+    ) -> EngineResult<AudioBackingLease> {
         let byte_len = validated_byte_len(format, self.inner.limits.max_single_bytes)?;
         let process_permit = self.inner.process.try_reserve(byte_len)?;
         self.admit(
@@ -450,6 +532,7 @@ impl AudioResourceRegistry {
             byte_len,
             BackingState::Writable {
                 _process_permit: process_permit,
+                initial_pending,
             },
         )
     }
@@ -473,36 +556,59 @@ impl AudioResourceRegistry {
         &self,
         runtime_generation: i64,
         format: AudioBufferFormat,
-        mut interleaved: Vec<f32>,
+        interleaved: Vec<f32>,
+    ) -> EngineResult<AudioBackingLease> {
+        self.adopt_decoded(
+            runtime_generation,
+            format,
+            DecodedPcm::new(
+                format.sample_rate,
+                format.channels,
+                format.frames,
+                interleaved,
+            ),
+        )
+    }
+
+    /// Adopt response custody without extracting its samples or original lease.
+    pub fn adopt_decoded(
+        &self,
+        runtime_generation: i64,
+        format: AudioBufferFormat,
+        mut pcm: DecodedPcm,
     ) -> EngineResult<AudioBackingLease> {
         let byte_len = validated_byte_len(format, self.inner.limits.max_single_bytes)?;
         let sample_count = checked_sample_count(format)?;
-        if interleaved.len() != sample_count {
+        if pcm.samples.len() != sample_count {
             return Err(EngineError::from_detail(
                 ErrorCode::InvalidArgument,
                 format!(
                     "decoded PCM length mismatch: expected {sample_count}, got {}",
-                    interleaved.len()
+                    pcm.samples.len()
                 ),
             ));
         }
         // The budget counts the samples, so what is retained must be exactly
         // them: a decoder's spare capacity would be memory no limit sees.
-        interleaved.shrink_to_fit();
-        if interleaved.capacity() != sample_count {
+        pcm.samples.shrink_to_fit();
+        if pcm.samples.capacity() != sample_count {
             let mut exact = try_exact_pcm_allocation(sample_count)?;
-            exact.copy_from_slice(&interleaved);
-            interleaved = exact;
+            exact.copy_from_slice(&pcm.samples);
+            pcm.samples = exact;
         }
-        let process_permit = self.inner.process.try_reserve(byte_len)?;
+        let process_permit = self
+            .inner
+            .reserve_physical(byte_len, pcm.has_physical_credit(&self.inner.physical))?;
+        // Existing decode physical credit stays with custody; uncharged native
+        // input acquires the same ledger before returning transport credit.
+        pcm.adopt_credit(Box::new(process_permit));
         self.admit(
             runtime_generation,
             format,
             byte_len,
             BackingState::Frozen(Arc::new(AudioSnapshot {
                 format,
-                samples: interleaved,
-                _process_permit: process_permit,
+                samples: pcm,
             })),
         )
     }
@@ -668,7 +774,7 @@ impl AudioResourceRegistry {
 
         // Reserve the second physical copy before its exact-size allocation.
         // Dropping either local on any later error rolls the reservation back.
-        let snapshot_permit = self.inner.process.try_reserve(byte_len)?;
+        let snapshot_permit = self.inner.reserve_physical(byte_len, false)?;
         let mut interleaved = try_exact_pcm_allocation(sample_count)?;
         let channels = format.channels as usize;
         let frames = format.frames as usize;
@@ -677,10 +783,16 @@ impl AudioResourceRegistry {
                 interleaved[frame * channels + channel] = planar.sample(channel * frames + frame);
             }
         }
+        let mut pcm = DecodedPcm::new(
+            format.sample_rate,
+            format.channels,
+            format.frames,
+            interleaved,
+        );
+        pcm.adopt_credit(Box::new(snapshot_permit));
         let snapshot = Arc::new(AudioSnapshot {
             format,
-            samples: interleaved,
-            _process_permit: snapshot_permit,
+            samples: pcm,
         });
 
         Ok(PreparedAudioSnapshot {
@@ -721,7 +833,7 @@ impl AudioResourceRegistry {
                 "frozen AudioBuffer snapshot length invariant violated",
             ));
         }
-        let writable_permit = self.inner.process.try_reserve(byte_len)?;
+        let writable_permit = self.inner.reserve_physical(byte_len, false)?;
         let mut planar = try_exact_pcm_allocation(sample_count)?;
         let channels = format.channels as usize;
         let frames = format.frames as usize;
@@ -934,12 +1046,16 @@ fn validated_byte_len(format: AudioBufferFormat, max_single_bytes: usize) -> Eng
 pub(crate) struct AudioResourceTestScope {
     limits: AudioResourceLimits,
     process: Arc<ProcessUsage>,
+    physical: Arc<AudioAggregateLedger>,
 }
 
 #[cfg(test)]
 impl AudioResourceTestScope {
     pub(crate) fn new(limits: AudioResourceLimits) -> Self {
         Self {
+            physical: Arc::new(AudioAggregateLedger::new(
+                MAX_AUDIO_AGGREGATE_PHYSICAL_BYTES,
+            )),
             process: Arc::new(ProcessUsage::new(
                 limits.max_process_bytes,
                 limits.max_process_buffers,
@@ -949,14 +1065,54 @@ impl AudioResourceTestScope {
     }
 
     pub(crate) fn registry(&self) -> AudioResourceRegistry {
-        AudioResourceRegistry::with_parts(self.limits, Arc::clone(&self.process), 1)
+        AudioResourceRegistry::with_parts(
+            self.limits,
+            Arc::clone(&self.process),
+            1,
+            self.physical.clone(),
+        )
     }
 
     pub(crate) fn registry_with_next_serial(&self, serial: u32) -> AudioResourceRegistry {
-        AudioResourceRegistry::with_parts(self.limits, Arc::clone(&self.process), serial)
+        AudioResourceRegistry::with_parts(
+            self.limits,
+            Arc::clone(&self.process),
+            serial,
+            self.physical.clone(),
+        )
     }
 
     pub(crate) fn process_usage(&self) -> (usize, usize) {
         self.process.snapshot()
     }
 }
+
+#[cfg(test)]
+#[path = "audio_resources_physical_tests.rs"]
+mod physical_tests;
+#[cfg(test)]
+pub(crate) fn physical_custody_test() {
+    physical_tests::lifetime();
+}
+
+#[path = "audio_initial_backing.rs"]
+mod initial_backing;
+pub use initial_backing::PreparedWritableAudioBacking;
+#[cfg(test)]
+#[path = "audio_initial_backing_tests.rs"]
+mod initial_backing_tests;
+#[cfg(test)]
+pub(crate) fn initial_backing_custody_test() {
+    initial_backing_tests::lifetime();
+    wire_reply_tests::lifetime();
+    raw_backing_tests::lifetime();
+    crate::sync_reply::service_wire_custody_test();
+}
+
+#[cfg(test)]
+#[path = "audio_wire_reply_tests.rs"]
+mod wire_reply_tests;
+
+#[cfg(test)]
+#[path = "audio_raw_backing_tests.rs"]
+mod raw_backing_tests;

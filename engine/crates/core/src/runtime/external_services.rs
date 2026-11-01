@@ -38,6 +38,8 @@
 //! messages leave in sequence order, and the host holds one that arrives ahead
 //! of its predecessor, within [`MAX_HELD_MESSAGES`] and [`MAX_HELD_BYTES`].
 
+pub use shared::sync_reply::SyncReplyBytes as ServiceReplyBytes;
+
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -138,9 +140,9 @@ impl WakerSlot {
 #[derive(Default)]
 struct OutboxInner {
     /// Encoded records, each at most [`MAX_INLINE_REPLY_BYTES`].
-    records: VecDeque<Vec<u8>>,
+    records: VecDeque<ServiceReplyBytes>,
     /// Encoded reply records too large to send inline, by request id.
-    parked: HashMap<u32, Vec<u8>>,
+    parked: HashMap<u32, ServiceReplyBytes>,
     bytes: usize,
 }
 
@@ -150,19 +152,35 @@ pub(crate) struct ServiceOutbox {
     generation: u32,
     inner: Mutex<OutboxInner>,
     waker: Arc<WakerSlot>,
+    physical: Arc<shared::audio_physical::AudioAggregateLedger>,
 }
 
 impl ServiceOutbox {
     fn new(generation: u32, waker: Arc<WakerSlot>) -> Self {
+        Self::with_physical_ledger(
+            generation,
+            waker,
+            shared::audio_physical::AudioAggregateLedger::process_global(),
+        )
+    }
+    fn with_physical_ledger(
+        generation: u32,
+        waker: Arc<WakerSlot>,
+        physical: Arc<shared::audio_physical::AudioAggregateLedger>,
+    ) -> Self {
         Self {
             generation,
             inner: Mutex::new(OutboxInner::default()),
             waker,
+            physical,
         }
     }
 
     fn push(&self, record: &ServiceDownRecord, request_id: Option<u32>) {
-        let mut encoded = encode_down_record(record);
+        self.push_encoded(encode_down_record(record).into(), request_id);
+    }
+
+    fn push_encoded(&self, mut encoded: ServiceReplyBytes, request_id: Option<u32>) {
         {
             let mut inner = self.inner.lock();
             if inner.bytes.saturating_add(encoded.len()) > MAX_OUTBOX_BYTES {
@@ -184,7 +202,8 @@ impl ServiceOutbox {
                             inner.bytes
                         ),
                     }),
-                });
+                })
+                .into();
             }
             inner.bytes += encoded.len();
             if encoded.len() > MAX_INLINE_REPLY_BYTES
@@ -198,12 +217,19 @@ impl ServiceOutbox {
                 });
                 inner.bytes += notice.len();
                 inner.parked.insert(request_id, encoded);
-                inner.records.push_back(notice);
+                inner.records.push_back(notice.into());
             } else {
                 inner.records.push_back(encoded);
             }
         }
         self.waker.wake();
+    }
+
+    fn encoded_reply(&self, request_id: u32, outcome: Result<ServiceReplyBytes, ServiceError>) {
+        match outcome {
+            Ok(bytes) => self.push_encoded(bytes, Some(request_id)),
+            Err(error) => self.reply(request_id, Err(error)),
+        }
     }
 
     /// Answer a request.
@@ -233,15 +259,26 @@ impl ServiceOutbox {
 
     /// One `MDS1` message holding as many queued records as fit, or `None` when
     /// nothing is queued.
-    pub(crate) fn take_message(&self) -> Option<Vec<u8>> {
+    /// Audio records use a solo message; other records batch before that boundary.
+    pub(crate) fn take_message(&self) -> Option<ServiceReplyBytes> {
         let mut inner = self.inner.lock();
+        if inner.records.front()?.is_charged() {
+            // Audio records already reserve one envelope in their allocation.
+            // Keep their owner and avoid a second output allocation/admission.
+            let mut record = inner.records.pop_front().expect("peeked above");
+            inner.bytes -= record.len();
+            record
+                .prepend(&down_envelope(self.generation))
+                .expect("audio record reserved its envelope");
+            return Some(record);
+        }
         let first = inner.records.front()?.len();
         let budget = MAX_INLINE_REPLY_BYTES.max(first);
         let mut message = Vec::with_capacity(SERVICE_DOWN_HEADER_BYTES + first);
         message.extend_from_slice(&down_envelope(self.generation));
         let mut used = 0usize;
         while let Some(next) = inner.records.front() {
-            if used > 0 && used + next.len() > budget {
+            if next.is_charged() || (used > 0 && used + next.len() > budget) {
                 break;
             }
             let record = inner.records.pop_front().expect("peeked above");
@@ -249,12 +286,16 @@ impl ServiceOutbox {
             inner.bytes -= record.len();
             message.extend_from_slice(&record);
         }
-        Some(message)
+        Some(message.into())
     }
 
     /// Take a parked answer. Once: the bytes are released as they are handed
     /// over.
-    pub(crate) fn take_parked(&self, generation: u32, request_id: u32) -> Option<Vec<u8>> {
+    pub(crate) fn take_parked(
+        &self,
+        generation: u32,
+        request_id: u32,
+    ) -> Option<ServiceReplyBytes> {
         if generation != self.generation {
             return None;
         }
@@ -1664,7 +1705,12 @@ impl ServiceHost {
     ///
     /// The op's own failure is an answer (`OUTCOME_ERROR`); the barrier failing
     /// -- a malformed call, a timeout, a session that ended -- is the error.
-    pub(crate) fn call_sync(&self, params: &[u8], until: Instant) -> Result<Vec<u8>, SyncError> {
+    pub(crate) fn call_sync(
+        &self,
+        params: &[u8],
+        until: Instant,
+        max_reply_bytes: u32,
+    ) -> Result<shared::sync_reply::SyncReplyBytes, SyncError> {
         if params.len() < 4 {
             return Err(SyncError::UnsupportedOperation);
         }
@@ -1684,7 +1730,13 @@ impl ServiceHost {
                 std::sync::mpsc::RecvTimeoutError::Timeout => SyncError::TimedOut,
                 std::sync::mpsc::RecvTimeoutError::Disconnected => SyncError::SessionEnded,
             })?;
-        Ok(encode_outcome(self.context.call_sync(op, args)))
+        if op == id::op_audio_materialize_buffer {
+            return match self.context.audio() {
+                Ok(audio) => service_audio::materialize_reply(audio, args, max_reply_bytes),
+                Err(error) => Ok(encode_outcome(Err(error)).into()),
+            };
+        }
+        Ok(encode_outcome(self.context.call_sync(op, args)).into())
     }
 
     /// Refuse everything from here on and release every waiter.
@@ -1715,7 +1767,7 @@ impl ServiceHandle {
     }
 
     /// One `MDS1` message of queued answers and events, or `None`.
-    pub fn take_message(&self) -> Option<Vec<u8>> {
+    pub fn take_message(&self) -> Option<ServiceReplyBytes> {
         self.0.outbox.take_message()
     }
 
@@ -1732,13 +1784,13 @@ impl ServiceHandle {
     }
 
     /// A parked answer, taken once.
-    pub fn take_parked(&self, generation: u32, request_id: u32) -> Option<Vec<u8>> {
+    pub fn take_parked(&self, generation: u32, request_id: u32) -> Option<ServiceReplyBytes> {
         self.0.outbox.take_parked(generation, request_id)
     }
 }
 
 /// A synchronous call's reply: `outcome u32`, then the value or the error.
-fn encode_outcome(outcome: Result<OwnedValue, ServiceError>) -> Vec<u8> {
+pub(super) fn encode_outcome(outcome: Result<OwnedValue, ServiceError>) -> Vec<u8> {
     match outcome {
         Ok(value) => {
             let mut writer = ValueWriter::over(OUTCOME_OK.to_le_bytes().to_vec());
@@ -1757,6 +1809,23 @@ fn encode_outcome(outcome: Result<OwnedValue, ServiceError>) -> Vec<u8> {
 // ---------------------------------------------------------------------------
 // Dispatch, on the session thread
 // ---------------------------------------------------------------------------
+
+enum ReplyFuture {
+    Value(BoxFuture<'static, Result<OwnedValue, ServiceError>>),
+    Audio(BoxFuture<'static, Result<ServiceReplyBytes, ServiceError>>),
+}
+enum ReplyOutcome {
+    Value(Result<OwnedValue, ServiceError>),
+    Audio(Result<ServiceReplyBytes, ServiceError>),
+}
+impl ReplyFuture {
+    async fn answer(self) -> ReplyOutcome {
+        match self {
+            Self::Value(future) => ReplyOutcome::Value(future.await),
+            Self::Audio(future) => ReplyOutcome::Audio(future.await),
+        }
+    }
+}
 
 type InFlight = Arc<Mutex<HashMap<u32, tokio::task::AbortHandle>>>;
 
@@ -1812,13 +1881,49 @@ impl ServiceDispatcher {
         }
     }
 
+    fn prepare_reply(
+        &self,
+        request_id: u32,
+        op: u32,
+        args: Vec<OwnedValue>,
+    ) -> Result<ReplyFuture, ServiceError> {
+        if op == id::op_audio_get_frequency_response {
+            service_audio::frequency_wire_reply(
+                self.context.audio()?,
+                request_id,
+                args,
+                self.outbox.physical.clone(),
+            )
+            .map(ReplyFuture::Audio)
+        } else if matches!(
+            op,
+            id::op_audio_analyser_byte_time_domain
+                | id::op_audio_analyser_float_time_domain
+                | id::op_audio_analyser_byte_frequency
+                | id::op_audio_analyser_float_frequency
+        ) {
+            service_audio::analyser_wire_reply(
+                self.context.audio()?,
+                request_id,
+                op,
+                args,
+                self.outbox.physical.clone(),
+            )
+            .map(ReplyFuture::Audio)
+        } else {
+            self.context
+                .call_async(op, args, &self.render)
+                .map(ReplyFuture::Value)
+        }
+    }
+
     fn record(&self, record: OwnedServiceRecord) {
         match record {
             OwnedServiceRecord::Request {
                 request_id,
                 op,
                 args,
-            } => match self.context.call_async(op, args, &self.render) {
+            } => match self.prepare_reply(request_id, op, args) {
                 Ok(future) => {
                     let outbox = Arc::clone(&self.outbox);
                     let in_flight = Arc::clone(&self.in_flight);
@@ -1827,11 +1932,16 @@ impl ServiceDispatcher {
                     // finishes at once still finds its own entry.
                     let mut map = self.in_flight.lock();
                     let task = tokio::spawn(async move {
-                        let outcome = future.await;
+                        let outcome = future.answer().await;
                         // Whoever removes the entry answers: this task, or a
                         // cancel that got there first. Exactly one answer.
                         if in_flight.lock().remove(&request_id).is_some() {
-                            outbox.reply(request_id, outcome);
+                            match outcome {
+                                ReplyOutcome::Value(value) => outbox.reply(request_id, value),
+                                ReplyOutcome::Audio(value) => {
+                                    outbox.encoded_reply(request_id, value)
+                                }
+                            }
                         }
                     });
                     map.insert(request_id, task.abort_handle());
@@ -3984,6 +4094,7 @@ mod tests {
             .call_sync(
                 &sync_params(id::op_access_sync, &[OwnedValue::Str("/user/a".into())]),
                 Instant::now() + std::time::Duration::from_secs(10),
+                u32::MAX,
             )
             .expect("an answer");
         assert_ne!(turns.join().unwrap(), caller);
@@ -4002,6 +4113,7 @@ mod tests {
         let outcome = host.call_sync(
             &sync_params(id::op_access_sync, &[OwnedValue::Str("/user/a".into())]),
             Instant::now() + std::time::Duration::from_millis(20),
+            u32::MAX,
         );
         assert_eq!(outcome, Err(SyncError::TimedOut));
         let Ok(ServiceWork::Sync { turn }) = work.try_recv() else {
@@ -4185,3 +4297,7 @@ mod tests {
         println!("wrote {written} host-event messages");
     }
 }
+
+#[cfg(test)]
+#[path = "audio_frequency_wire_tests.rs"]
+mod audio_frequency_wire_tests;

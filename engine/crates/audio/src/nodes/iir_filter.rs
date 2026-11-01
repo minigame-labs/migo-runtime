@@ -3,6 +3,7 @@ use std::any::Any;
 use shared::protocol::audio_cmd::AudioNodeId;
 
 use super::AudioNodeProcessor;
+use crate::node_storage::{CapacityBytes, FixedStorage};
 
 /// IIRFilterNode: generic IIR filter with user-provided coefficients.
 ///
@@ -14,6 +15,14 @@ use super::AudioNodeProcessor;
 /// Uses circular buffers for history to avoid O(N) per-sample shifting.
 pub struct IIRFilterNode {
     id: AudioNodeId,
+    storage: FixedStorage<IirData>,
+    /// Current write position in circular buffers (shared across channels)
+    x_write_pos: usize,
+    y_write_pos: usize,
+    channels: u32,
+}
+
+struct IirData {
     /// Feedforward coefficients (numerator)
     feedforward: Vec<f64>,
     /// Feedback coefficients (denominator), a[0] is normalized to 1.0
@@ -22,14 +31,43 @@ pub struct IIRFilterNode {
     x_history: Vec<Vec<f64>>,
     /// Per-channel output circular buffer
     y_history: Vec<Vec<f64>>,
-    /// Current write position in circular buffers (shared across channels)
-    x_write_pos: usize,
-    y_write_pos: usize,
-    channels: u32,
 }
-
-impl IIRFilterNode {
-    pub fn new(id: AudioNodeId, feedforward: Vec<f64>, feedback: Vec<f64>, channels: u32) -> Self {
+impl CapacityBytes for IirData {
+    fn capacity_bytes(&self) -> usize {
+        (self.feedforward.capacity() + self.feedback.capacity()) * 8
+            + (self.x_history.capacity() + self.y_history.capacity())
+                * std::mem::size_of::<Vec<f64>>()
+            + self
+                .x_history
+                .iter()
+                .chain(&self.y_history)
+                .map(|v| v.capacity() * 8)
+                .sum::<usize>()
+    }
+}
+impl IirData {
+    fn required_bytes(ff: usize, fb: usize, channels: u32) -> shared::error::EngineResult<usize> {
+        let ch = channels.max(1) as usize;
+        let overflow = crate::node_storage::size_overflow;
+        let coefficients = ff
+            .checked_add(fb)
+            .and_then(|n| n.checked_mul(8))
+            .ok_or_else(overflow)?;
+        let histories = ff
+            .max(1)
+            .checked_add(fb.max(1))
+            .and_then(|n| n.checked_mul(ch))
+            .and_then(|n| n.checked_mul(8))
+            .ok_or_else(overflow)?;
+        let outer = ch
+            .checked_mul(2 * std::mem::size_of::<Vec<f64>>())
+            .ok_or_else(overflow)?;
+        coefficients
+            .checked_add(histories)
+            .and_then(|n| n.checked_add(outer))
+            .ok_or_else(overflow)
+    }
+    fn new(feedforward: &[f64], feedback: &[f64], channels: u32) -> Self {
         let ff_len = feedforward.len().max(1);
         let fb_len = feedback.len().max(1);
 
@@ -49,15 +87,61 @@ impl IIRFilterNode {
         let y_history = vec![vec![0.0; fb_len]; ch];
 
         Self {
-            id,
             feedforward: norm_ff,
             feedback: norm_fb,
             x_history,
             y_history,
+        }
+    }
+}
+
+impl IIRFilterNode {
+    #[cfg(test)]
+    pub fn new(id: AudioNodeId, feedforward: Vec<f64>, feedback: Vec<f64>, channels: u32) -> Self {
+        Self::from_coefficients(id, &feedforward, &feedback, channels)
+    }
+    #[cfg(test)]
+    pub(crate) fn from_coefficients(
+        id: AudioNodeId,
+        feedforward: &[f64],
+        feedback: &[f64],
+        channels: u32,
+    ) -> Self {
+        Self::new_with_retirement(id, feedforward, feedback, channels, None)
+            .expect("unmanaged IIR storage")
+    }
+    pub(crate) fn new_with_retirement(
+        id: AudioNodeId,
+        feedforward: &[f64],
+        feedback: &[f64],
+        channels: u32,
+        host: Option<&crate::node_retirement::Host>,
+    ) -> shared::error::EngineResult<Self> {
+        let bytes = IirData::required_bytes(feedforward.len(), feedback.len(), channels)?;
+        let storage = FixedStorage::new(host, bytes, || {
+            IirData::new(feedforward, feedback, channels)
+        })?;
+        Ok(Self {
+            id,
+            storage,
             x_write_pos: 0,
             y_write_pos: 0,
             channels,
-        }
+        })
+    }
+    pub(crate) fn prepare_storage(
+        &mut self,
+        host: &crate::node_retirement::Host,
+    ) -> shared::error::EngineResult<()> {
+        self.storage.prepare(host)
+    }
+    #[cfg(test)]
+    pub(crate) fn storage_bytes(&self) -> usize {
+        self.storage.capacity_bytes()
+    }
+    #[cfg(test)]
+    pub(crate) fn observe_storage(&mut self, hook: std::sync::Arc<dyn Fn() + Send + Sync>) {
+        self.storage.observe(hook);
     }
 
     /// Compute frequency response H(e^{jw}) for an array of frequencies.
@@ -77,7 +161,7 @@ impl IIRFilterNode {
             // Numerator: sum b[k] * e^{-jkw}
             let mut num_re = 0.0;
             let mut num_im = 0.0;
-            for (k, &bk) in self.feedforward.iter().enumerate() {
+            for (k, &bk) in self.storage.feedforward.iter().enumerate() {
                 let angle = k as f64 * omega;
                 num_re += bk * angle.cos();
                 num_im -= bk * angle.sin();
@@ -86,7 +170,7 @@ impl IIRFilterNode {
             // Denominator: sum a[k] * e^{-jkw}
             let mut den_re = 0.0;
             let mut den_im = 0.0;
-            for (k, &ak) in self.feedback.iter().enumerate() {
+            for (k, &ak) in self.storage.feedback.iter().enumerate() {
                 let angle = k as f64 * omega;
                 den_re += ak * angle.cos();
                 den_im -= ak * angle.sin();
@@ -140,8 +224,9 @@ impl AudioNodeProcessor for IIRFilterNode {
             return 0;
         }
         let len = frames * channels;
-        let ff = &self.feedforward;
-        let fb = &self.feedback;
+        let data = &mut *self.storage;
+        let ff = &data.feedforward;
+        let fb = &data.feedback;
         let ff_len = ff.len();
         let fb_len = fb.len();
 
@@ -160,7 +245,7 @@ impl AudioNodeProcessor for IIRFilterNode {
                 let x0 = inputs.get(idx).copied().unwrap_or(0.0) as f64;
 
                 // Write input to circular buffer (O(1) instead of O(N) shift)
-                let xh = &mut self.x_history[ch];
+                let xh = &mut data.x_history[ch];
                 if !xh.is_empty() {
                     let xpos = self.x_write_pos % ff_len;
                     xh[xpos] = x0;
@@ -172,14 +257,14 @@ impl AudioNodeProcessor for IIRFilterNode {
                     let ri = (self.x_write_pos + ff_len - i) % ff_len;
                     y0 += ff[i] * xh[ri];
                 }
-                let yh = &self.y_history[ch];
+                let yh = &data.y_history[ch];
                 for i in 1..fb_len {
                     let ri = (self.y_write_pos + fb_len - i) % fb_len;
                     y0 -= fb[i] * yh[ri];
                 }
 
                 // Write output to circular buffer
-                let yh = &mut self.y_history[ch];
+                let yh = &mut data.y_history[ch];
                 if !yh.is_empty() {
                     let ypos = self.y_write_pos % fb_len;
                     yh[ypos] = y0;
@@ -196,9 +281,10 @@ impl AudioNodeProcessor for IIRFilterNode {
     }
 
     fn has_tail_audio(&self) -> bool {
-        self.x_history
+        self.storage
+            .x_history
             .iter()
-            .chain(self.y_history.iter())
+            .chain(self.storage.y_history.iter())
             .flatten()
             .any(|sample| sample.abs() > 1e-10)
     }

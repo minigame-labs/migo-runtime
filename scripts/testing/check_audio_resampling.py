@@ -79,13 +79,13 @@ rubato={version="=5.0.1",default-features=false,features=["fft_resampler"]}
     source = []
     for module in ("bandlimited", "bandlimited_contracts"):
         destination = output / f"source/{module}.rs"
-        shutil.copyfile(ROOT / f"scripts/testing/fixtures/audio-codec-probe/{module}.rs", destination)
+        shutil.copyfile((ROOT / "engine/crates/audio/src/bandlimited.rs" if module == "bandlimited" else ROOT / f"scripts/testing/fixtures/audio-codec-probe/{module}.rs"), destination)
         source.append(f'#[path={json.dumps(str(destination))}] mod {module};\n')
     (package / "src/lib.rs").write_text(''.join(source))
     root_inputs = [ROOT / "engine/Cargo.lock", ROOT / "engine/testing/alloc-probe/Cargo.toml"]
     root_inputs += sorted((ROOT / "engine/testing/alloc-probe/src").rglob("*.rs"))
     root_inputs += [ROOT / f"scripts/testing/fixtures/audio-codec-probe/{name}.rs" for name in ("bandlimited", "bandlimited_contracts")]
-    root_inputs.append(ROOT / "scripts/testing/check_audio_resampling.py")
+    root_inputs += [ROOT / "scripts/testing/check_audio_resampling.py", ROOT / "engine/crates/audio/src/bandlimited.rs"]
     checksums = {str(path.relative_to(ROOT)): codecs.sha(path) for path in root_inputs}
     for path in root_inputs:
         destination = output / "source-inputs" / path.relative_to(ROOT)

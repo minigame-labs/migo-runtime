@@ -134,6 +134,13 @@ impl BufferSourceNode {
         self.buffer = buffer.map(SourceBuffer::Snapshot);
     }
 
+    pub(crate) fn retire_buffer(
+        &mut self,
+        host: Option<&crate::node_retirement::Host>,
+    ) -> shared::error::EngineResult<()> {
+        crate::node_retirement::retire_replacement(&mut self.buffer, host, 0)
+    }
+
     pub fn start(&mut self, when: f64, offset: f64, duration: Option<f64>, current_time: f64) {
         if self.state != BufferSourceState::Pending {
             return; // Can only start once per W3C spec
@@ -162,6 +169,9 @@ impl BufferSourceNode {
     }
 
     pub fn stop(&mut self, when: f64) {
+        if self.state == BufferSourceState::Finished {
+            return;
+        }
         // Per W3C spec: stop at the given time, or immediately if when <= 0
         if when <= 0.0 {
             self.state = BufferSourceState::Finished;
@@ -229,25 +239,49 @@ impl BufferSourceNode {
         output_channels: u32,
         current_time: f64,
     ) -> usize {
-        if self.state != BufferSourceState::Playing {
+        let channels = output_channels.max(1) as usize;
+        let frames = output.len() / channels;
+        let clock =
+            crate::render_time::RenderTime::new(current_time, self.context_sample_rate as u32);
+        let stop = self.stop_when.unwrap_or(f64::INFINITY);
+        let stopped = clock.stopped(stop, frames);
+        let active = clock.active(self.start_when, stop, frames);
+        output[..frames * channels].fill(0.0);
+        if !matches!(
+            self.state,
+            BufferSourceState::Playing | BufferSourceState::Scheduled
+        ) || active.is_empty()
+        {
+            if stopped && self.state != BufferSourceState::Pending {
+                self.state = BufferSourceState::Finished;
+            }
             return 0;
         }
+        self.state = BufferSourceState::Playing;
+        let delay = if self.offset_applied {
+            0.0
+        } else {
+            (clock.at(active.start) - self.start_time.unwrap_or(current_time)).max(0.0)
+        };
 
         let buffer = match &self.buffer {
             Some(b) => b.clone(), // Clone Arc to release borrow
-            None => return 0,
+            None => {
+                self.state = BufferSourceState::Finished;
+                return 0;
+            }
         };
 
         let format = buffer.format();
         let src_channels = format.channels as usize;
         let dst_channels = output_channels as usize;
         let buffer_frames = format.frames as usize;
-        let output_frames = output.len() / dst_channels.max(1);
+        let output_frames = active.len();
         let samples = buffer.samples();
         let sample_rate = format.sample_rate as f64;
 
-        self.render(
-            output,
+        let rendered = self.render(
+            &mut output[active.start * channels..active.end * channels],
             samples,
             buffer_frames,
             output_frames,
@@ -255,7 +289,12 @@ impl BufferSourceNode {
             dst_channels,
             sample_rate,
             current_time,
-        )
+            delay,
+        );
+        if stopped {
+            self.state = BufferSourceState::Finished;
+        }
+        rendered
     }
 
     /// Render one block from the bound buffer.
@@ -276,6 +315,7 @@ impl BufferSourceNode {
         dst_channels: usize,
         sample_rate: f64,
         current_time: f64,
+        start_delay: f64,
     ) -> usize {
         if src_channels == 0 || dst_channels == 0 {
             self.state = BufferSourceState::Finished;
@@ -294,16 +334,19 @@ impl BufferSourceNode {
         // frame index. Seeding it here rather than in `start()` is what makes the
         // conversion possible at all -- the buffer, and so its sample rate, may be
         // bound after `start()` was called.
+        let rate = self.block_playback_rate(current_time, sample_rate);
         if !self.offset_applied {
             self.offset_applied = true;
-            self.position = (self.start_offset.max(0.0) * sample_rate).floor();
+            self.position = self.start_offset.max(0.0) * sample_rate;
+            let advance = start_delay * rate * self.context_sample_rate;
+            self.position += advance;
+            self.elapsed_frames += advance;
             if self.position >= buffer_frames as f64 && !self.loop_enabled {
                 self.state = BufferSourceState::Finished;
                 return 0;
             }
         }
 
-        let rate = self.block_playback_rate(current_time, sample_rate);
         let wrap_frame = self.loop_wrap_frame(buffer_frames, sample_rate);
         // Clamped below the wrap so the loop length is always at least one frame;
         // a `loopStart` past `loopEnd` would otherwise wrap on every frame.
@@ -348,6 +391,15 @@ impl BufferSourceNode {
             self.position += rate;
             self.elapsed_frames += rate;
             frames_written += 1;
+        }
+
+        // The next read position is already known. Finish in the block that
+        // consumed the last sample, including exact block-boundary endings.
+        // Looping keeps the read position alive, but not a consumed duration.
+        if (!self.loop_enabled && self.position >= buffer_frames as f64)
+            || duration_frames.is_some_and(|limit| self.elapsed_frames >= limit)
+        {
+            self.state = BufferSourceState::Finished;
         }
 
         frames_written
@@ -428,23 +480,6 @@ impl AudioNodeProcessor for BufferSourceNode {
         channels: u32,
         current_time: f64,
     ) -> usize {
-        // Check scheduled start: transition Scheduled → Playing when time arrives
-        if self.state == BufferSourceState::Scheduled {
-            if current_time >= self.start_when {
-                self.state = BufferSourceState::Playing;
-            } else {
-                return 0;
-            }
-        }
-
-        // Check scheduled stop
-        if let Some(stop_when) = self.stop_when {
-            if current_time >= stop_when {
-                self.state = BufferSourceState::Finished;
-                return 0;
-            }
-        }
-
         // Source node: ignore inputs, generate from buffer
         self.process_with_channels(output, channels, current_time)
     }

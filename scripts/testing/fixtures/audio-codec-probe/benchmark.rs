@@ -15,7 +15,7 @@ fn main() {
     for _ in 0..iterations {
         let start = Instant::now();
         let audio = match mode.as_str() {
-            "legacy" => decoder::decode(black_box(&data)).map_err(|e| format!("{e:?}")),
+            "legacy" => native_product(black_box(&data)).map_err(|e| format!("{e:?}")),
             "candidate" => candidate::decode(black_box(&data), 16_777_216),
             _ => panic!("unknown benchmark arm"),
         }
@@ -41,4 +41,10 @@ fn main() {
             "encoded_bytes": data.len(),
         })
     );
+}
+
+fn native_product(data: &[u8]) -> shared::error::EngineResult<decoder::DecodedAudio> {
+    let mut job = decoder::whole::WholeDecodeJob::new(data, None)?;
+    while !job.step(&std::sync::atomic::AtomicBool::new(false))? {}
+    job.finish()
 }

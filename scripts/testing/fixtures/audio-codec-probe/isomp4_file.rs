@@ -2,11 +2,11 @@
 pub use crate::local_source::FileReader;
 use crate::{
     indexed_seek::{SeekContext, SeekSource},
-    isomp4_source::{self, IndexSource, Limits, MediaRead, Reader},
+    isomp4_source::{self, IndexSource, InterruptibleReader, Limits, MediaRead, Reader},
     off_worker::OffWorker,
     push_decoder::{M4aSourceDecoder, M4aSourceRequest},
     streaming::{RESPONSE_HEADER_TIMEOUT, StreamMsg, StreamingState},
-    streaming_transport::{Decoder, Source, SourceRead, SourceResume},
+    streaming_transport::{Decoder, InterruptibleSource, Source, SourceRead, SourceResume},
 };
 use migo_io::read_at_file::FileChunk;
 use shared::error::{EngineError, EngineResult, ErrorCode};
@@ -54,6 +54,11 @@ impl Reader for FileReader {
             .map_err(isomp4_source::Error::Io)
     }
 }
+impl InterruptibleReader for FileReader {
+    fn resume_after_interruption(&mut self) -> Result<(), isomp4_source::Error> {
+        FileReader::resume_after_interruption(self).map_err(isomp4_source::Error::Io)
+    }
+}
 pub struct IndexedFile {
     source: IndexSource<FileReader>,
     pending: Option<FileChunk>,
@@ -89,6 +94,11 @@ impl IndexedFile {
     }
     pub fn length(&self) -> u64 {
         self.source.length().expect("local length is known")
+    }
+}
+impl InterruptibleSource for IndexedFile {
+    fn resume_after_read_interruption(&mut self) -> EngineResult<()> {
+        self.source.resume_after_read_interruption().map_err(error)
     }
 }
 impl<D: Decoder + M4aSourceDecoder> Source<D> for IndexedFile {

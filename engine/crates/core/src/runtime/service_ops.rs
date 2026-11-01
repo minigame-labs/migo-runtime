@@ -312,6 +312,7 @@ service_ops! {
     op_game_recorder_stop = 289,
     op_game_recorder_next_event = 290,
     op_share_game_recording = 291,
+    op_inner_audio_set_start_time = 292,
 }
 
 /// The op's name, for a refusal a person will read.

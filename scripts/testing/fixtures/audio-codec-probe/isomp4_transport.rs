@@ -6,7 +6,9 @@ use crate::{
     off_worker::OffWorker,
     push_decoder::{M4aSourceDecoder, M4aSourceRequest},
     streaming::{HttpClient, RESPONSE_HEADER_TIMEOUT, StreamMsg, StreamingState},
-    streaming_transport::{Decoder, HttpSource, Source, SourceRead, SourceResume},
+    streaming_transport::{
+        Decoder, HttpSource, InterruptibleSource, Source, SourceRead, SourceResume,
+    },
 };
 use bytes::Bytes;
 use http::{HeaderValue, header::ACCEPT_ENCODING};
@@ -26,6 +28,8 @@ pub struct IndexedHttp {
     pending: Option<Bytes>,
     limits: Limits,
     replay: std::collections::VecDeque<crate::source_chunk::BodyChunk>,
+    failed: bool,
+    interrupted: bool,
 }
 impl IndexedHttp {
     /// The complete bounded prefix is replayed by the outer source. All bytes
@@ -41,6 +45,8 @@ impl IndexedHttp {
             pending: None,
             limits,
             replay: Default::default(),
+            failed: false,
+            interrupted: false,
         }
     }
     /// Retain the actual capability probe's reader, counters and learned length.
@@ -57,6 +63,8 @@ impl IndexedHttp {
             pending: None,
             limits,
             replay: Default::default(),
+            failed: false,
+            interrupted: false,
         }
     }
     pub(crate) fn with_prefix(
@@ -74,18 +82,12 @@ impl IndexedHttp {
 fn error(cause: impl std::fmt::Display) -> EngineError {
     EngineError::from_detail(ErrorCode::IoError, cause.to_string())
 }
-impl<D: Decoder + M4aSourceDecoder> Source<D> for IndexedHttp {
-    type Request = M4aSourceRequest;
-    fn pending(decoder: &D) -> EngineResult<Self::Request> {
-        decoder
-            .source_request()
-            .ok_or_else(|| error("M4A source command is not ready"))
-    }
-    async fn read(
+impl IndexedHttp {
+    async fn read_chunk(
         &mut self,
         tx: &mpsc::Sender<StreamMsg>,
         state: &Arc<StreamingState>,
-    ) -> EngineResult<SourceRead<impl AsRef<[u8]> + Send + 'static>> {
+    ) -> EngineResult<SourceRead<crate::source_chunk::Chunk<Bytes>>> {
         use crate::source_chunk::Chunk;
         if let Some(bytes) = self.replay.pop_front() {
             return Ok(SourceRead::Data(Chunk::Prefix(bytes)));
@@ -115,6 +117,50 @@ impl<D: Decoder + M4aSourceDecoder> Source<D> for IndexedHttp {
             MediaRead::End => Ok(SourceRead::End),
             MediaRead::Cancelled => Ok(SourceRead::Cancelled),
         }
+    }
+}
+impl InterruptibleSource for IndexedHttp {
+    fn resume_after_read_interruption(&mut self) -> EngineResult<()> {
+        if self.failed && !self.interrupted {
+            return Err(error("indexed HTTP source previously failed"));
+        }
+        if let Some(source) = &mut self.source {
+            if let Err(cause) = source.resume_after_read_interruption() {
+                self.failed = true;
+                self.interrupted = false;
+                return Err(error(cause));
+            }
+        }
+        // The initial Response retains its borrowed body across Pending. A
+        // returned error remains terminal even if a later body poll says EOF.
+        self.interrupted = false;
+        self.failed = false;
+        Ok(())
+    }
+}
+impl<D: Decoder + M4aSourceDecoder> Source<D> for IndexedHttp {
+    type Request = M4aSourceRequest;
+    fn pending(decoder: &D) -> EngineResult<Self::Request> {
+        decoder
+            .source_request()
+            .ok_or_else(|| error("M4A source command is not ready"))
+    }
+    async fn read(
+        &mut self,
+        tx: &mpsc::Sender<StreamMsg>,
+        state: &Arc<StreamingState>,
+    ) -> EngineResult<SourceRead<impl AsRef<[u8]> + Send + 'static>> {
+        if self.failed {
+            return Err(error("indexed HTTP source previously failed"));
+        }
+        self.failed = true;
+        self.interrupted = true;
+        let result = self.read_chunk(tx, state).await;
+        self.interrupted = false;
+        if matches!(&result, Ok(SourceRead::Data(_) | SourceRead::End)) {
+            self.failed = false;
+        }
+        result
     }
     fn resume<'a, 'b, 'c>(
         &'a mut self,
@@ -218,6 +264,12 @@ impl<D: Decoder + M4aSourceDecoder> HttpSource<D> for IndexedHttp {
             pending: None,
             limits,
             replay: Default::default(),
+            failed: false,
+            interrupted: false,
         })
     }
 }
+
+#[cfg(test)]
+#[path = "http_interruption_tests.rs"]
+mod interruption_tests;

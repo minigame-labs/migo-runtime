@@ -5,7 +5,9 @@ use crate::{
     off_worker::OffWorker,
     push_decoder::{M4aSeekDecoder, M4aSourceRequest},
     streaming::{PcmChunk, StreamMsg, StreamingState},
-    streaming_transport::{Decoder, Progress, Source, SourceResume, Step, while_active},
+    streaming_transport::{
+        Decoder, InterruptibleSource, Progress, Source, SourceResume, Step, while_active,
+    },
 };
 use shared::error::{EngineError, EngineResult, ErrorCode};
 use std::{future::Future, sync::Arc};
@@ -23,7 +25,9 @@ pub(crate) struct SeekContext<'tx, 'state> {
     pub deadline: Instant,
 }
 
-pub(crate) trait SeekSource<D: Decoder>: Source<D, Request = M4aSourceRequest> {
+pub(crate) trait SeekSource<D: Decoder>:
+    Source<D, Request = M4aSourceRequest> + InterruptibleSource
+{
     fn resume_before(
         &mut self,
         request: M4aSourceRequest,
@@ -65,6 +69,18 @@ pub(crate) fn seek<'a, D: Decoder + M4aSeekDecoder, S: SeekSource<D>>(
     source: &'a mut S,
     decoder: OffWorker<Option<D>>,
     target: Timestamp,
+    pcm: PcmChunk,
+    context: SeekContext<'a, 'a>,
+) -> impl Future<Output = EngineResult<Option<SeekResult<D>>>> + Send + 'a {
+    reposition(source, decoder, move |slot| slot.seek(target), pcm, context)
+}
+
+/// Reuse the same CPU admission, cached step and pinned ReadAt/deadline for
+/// exact output-position loop reconfiguration. No decoder operation runs on IO.
+pub(crate) fn reposition<'a, D: Decoder + M4aSeekDecoder, S: SeekSource<D>>(
+    source: &'a mut S,
+    decoder: OffWorker<Option<D>>,
+    position: impl FnOnce(&mut Option<D>) -> symphonia::core::errors::Result<SeekedTo> + Send + 'static,
     mut pcm: PcmChunk,
     context: SeekContext<'a, 'a>,
 ) -> impl Future<Output = EngineResult<Option<SeekResult<D>>>> + Send + 'a {
@@ -82,7 +98,10 @@ pub(crate) fn seek<'a, D: Decoder + M4aSeekDecoder, S: SeekSource<D>>(
         if Instant::now() >= deadline {
             return Err(timeout());
         }
-        let seeked = match slot.seek(target) {
+        if slot.is_none() {
+            return Ok((pcm, Some(CpuResult::Rejected(SeekErrorKind::Unseekable))));
+        }
+        let seeked = match position(slot) {
             Ok(seeked) => seeked,
             Err(Error::SeekError(kind)) => return Ok((pcm, Some(CpuResult::Rejected(kind)))),
             Err(error) => return Err(invalid(error)),

@@ -23,6 +23,8 @@ mod api_reach;
 #[cfg(feature = "api-media")]
 mod audio_aud11;
 #[cfg(feature = "api-media")]
+mod audio_buffer_backing;
+#[cfg(feature = "api-media")]
 mod audio_context_close;
 #[cfg(feature = "api-media")]
 mod audio_source_ended;

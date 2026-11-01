@@ -12,15 +12,18 @@
     "which stops the build on any difference.",
     "",
     "RULES. Append only. A number is never reused and never renumbered, because a producer and a host",
-    "that disagree about one op's number call a different op with the right-looking arguments. An op",
+    "that disagree about one op's number call a different op with the right-looking arguments. An active op",
     "listed here must be classified async, command or sync in op-boundary.json; which of the three it",
     "is decides whether it travels as a request, a command or a synchronous SERVICE call.",
+    "A retired op keeps its number and host handler for old producers, but has no current engine",
+    "import or producer shim. Its name is recorded in retired_ops rather than inventing an unused lane.",
     "",
     "An entry named `core_*` is not an op but a member of deno's `core` object -- `core.read`,",
     "`core.close`, `core.tryClose` -- which the external execution answers on the host because the",
     "handles they name are the network service's. Those are classified in op-boundary.json's",
     "core_members table instead of under an extension."
   ],
+  "retired_ops": ["op_inner_audio_get_state"],
   "ops": {
     "op_storage_get": 1,
     "op_storage_set": 2,
@@ -312,6 +315,7 @@
     "op_game_recorder_abort": 288,
     "op_game_recorder_stop": 289,
     "op_game_recorder_next_event": 290,
-    "op_share_game_recording": 291
+    "op_share_game_recording": 291,
+    "op_inner_audio_set_start_time": 292
   }
 }

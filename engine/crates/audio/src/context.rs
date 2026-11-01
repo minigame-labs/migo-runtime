@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use shared::audio_resources::AudioSnapshot;
-use shared::error::EngineResult;
+use shared::error::{EngineError, EngineResult, ErrorCode};
 use shared::protocol::audio_cmd::{AudioBufferId, AudioContextId, AudioContextState, AudioNodeId};
 
 use crate::decoder::DecodedAudio;
@@ -12,10 +12,30 @@ use crate::limits::{PcmBudget, RetainedAudio};
 use crate::nodes::{
     AudioNodeProcessor, BufferSourceNode, DestinationNode, GainNode, NodeConnection,
 };
-use crate::resampler::StreamResampler;
 
 /// Special node ID for the destination node
 pub const DESTINATION_NODE_ID: AudioNodeId = 0;
+
+const DEVICE_QUANTUM_FRAMES: usize = 128;
+
+/// Opaque lifetime of one context on one device route. Numeric context IDs and
+/// formats can repeat; keeping an old token alive cannot revive its authority.
+#[derive(Clone)]
+pub(crate) struct DeviceEpoch(Arc<std::sync::atomic::AtomicBool>);
+impl DeviceEpoch {
+    pub(crate) fn new() -> Self {
+        Self(Arc::new(std::sync::atomic::AtomicBool::new(true)))
+    }
+    pub(crate) fn is_live(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Acquire)
+    }
+    pub(crate) fn same(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+    pub(crate) fn invalidate(&self) {
+        self.0.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
 
 /// An AudioContext manages audio resources and the audio graph.
 ///
@@ -29,12 +49,14 @@ pub struct AudioContext {
     channels: u32,
 
     // Resources
-    buffers: HashMap<AudioBufferId, Arc<RetainedAudio>>,
+    buffers: HashMap<AudioBufferId, crate::node_retirement::Value<Arc<RetainedAudio>>>,
     next_buffer_id: AudioBufferId,
     pcm_budget: PcmBudget,
 
     // Generic node storage
-    nodes: HashMap<AudioNodeId, Box<dyn AudioNodeProcessor>>,
+    nodes: HashMap<AudioNodeId, crate::node_retirement::Node>,
+    node_retirement: Option<crate::node_retirement::Host>,
+    context_storage: Option<crate::node_retirement::Value<ContextStorage>>,
 
     // Nodes whose JavaScript object has been collected. They are not dropped on
     // the spot: an effect node still carries audio from any source playing
@@ -49,6 +71,7 @@ pub struct AudioContext {
     // on any graph change).
     processing_order: Vec<u32>,
     graph_dirty: bool,
+    device_controls_pending: bool,
 
     // The graph in CSR form, rebuilt whenever it changes.
     //
@@ -103,14 +126,13 @@ pub struct AudioContext {
     // Scratch buffer for mixing multiple inputs
     mix_buffer: Vec<f32>,
 
-    // Context-rate output staging. These buffers and the resampler are retained
-    // by the context so a device-rate conversion does not allocate per quantum.
-    device_resampler: Option<StreamResampler>,
-    resample_input: Vec<f32>,
-    resample_output: Vec<f32>,
-    resampler_device_rate: u32,
+    // Native-rate channel remapping only. Rate conversion belongs exclusively
+    // to the managed device sinc owner, outside the context graph.
+    device_epoch: DeviceEpoch,
+    native_input: Vec<f32>,
+    native_collected: Vec<AudioNodeId>,
 
-    // Frames processed for sample-accurate currentTime (W3C spec)
+    // Next graph sample position, rebased to the idle epoch before rendering.
     frames_processed: u64,
 
     // Authoritative wall-clock epoch for idle periods.
@@ -124,14 +146,43 @@ pub struct AudioContext {
     // Fix: `current_time()` returns `max(wall_elapsed, frames_processed/sr)`.
     // The wall clock starts at context creation and freezes on suspend, so the
     // native clock never lags further behind than one tick cycle (~50 ms).
-    // Not present in tests: tests advance `frames_processed` directly so there
-    // is no wall-clock dependency, and time is deterministic.
-    #[cfg(not(test))]
+    // Tests normally use the sample clock alone. Clock regressions explicitly
+    // enable the same wall policy with a controlled origin and bank.
     wall_origin: std::time::Instant,
-    #[cfg(not(test))]
     wall_banked: f64,
-    #[cfg(not(test))]
     clock_paused: bool,
+    #[cfg(test)]
+    test_wall_enabled: bool,
+}
+
+/// All graph-owned allocations move as one pre-registered close/drop payload.
+/// Nodes and buffer handles keep their individual permits until CPU destruction.
+#[derive(Default)]
+struct ContextStorage {
+    buffers: HashMap<AudioBufferId, crate::node_retirement::Value<Arc<RetainedAudio>>>,
+    nodes: HashMap<AudioNodeId, crate::node_retirement::Node>,
+    released: std::collections::HashSet<AudioNodeId>,
+    connections: Vec<NodeConnection>,
+    processing_order: Vec<u32>,
+    dense_index: HashMap<AudioNodeId, u32>,
+    dense_ids: Vec<AudioNodeId>,
+    in_degree: Vec<u32>,
+    input_start: Vec<u32>,
+    input_edges: Vec<u32>,
+    output_start: Vec<u32>,
+    output_edges: Vec<u32>,
+    ready_queue: Vec<u32>,
+    edge_src: Vec<u32>,
+    edge_src_port: Vec<Option<usize>>,
+    edge_dst_port: Vec<Option<usize>>,
+    node_buffers: HashMap<AudioNodeId, Vec<f32>>,
+    buffer_pool: Vec<Vec<f32>>,
+    collected: Vec<AudioNodeId>,
+    ended_watch: std::collections::HashSet<AudioNodeId>,
+    ended: Vec<AudioNodeId>,
+    mix_buffer: Vec<f32>,
+    native_input: Vec<f32>,
+    native_collected: Vec<AudioNodeId>,
 }
 
 impl AudioContext {
@@ -143,13 +194,13 @@ impl AudioContext {
         Self::new_with_pcm_budget(id, sample_rate, channels, PcmBudget::for_context())
     }
 
-    fn new_with_pcm_budget(
+    pub(crate) fn new_with_pcm_budget(
         id: AudioContextId,
         sample_rate: u32,
         channels: u32,
         pcm_budget: PcmBudget,
     ) -> Self {
-        let nodes: HashMap<AudioNodeId, Box<dyn AudioNodeProcessor>> =
+        let nodes: HashMap<AudioNodeId, crate::node_retirement::Node> =
             HashMap::with_capacity(Self::DEFAULT_NODE_CAPACITY);
 
         let mut context = Self {
@@ -161,10 +212,13 @@ impl AudioContext {
             next_buffer_id: 1,
             pcm_budget,
             nodes,
+            node_retirement: None,
+            context_storage: None,
             released: std::collections::HashSet::new(),
             connections: Vec::with_capacity(Self::DEFAULT_NODE_CAPACITY),
             processing_order: Vec::with_capacity(Self::DEFAULT_NODE_CAPACITY),
             graph_dirty: true,
+            device_controls_pending: true,
             dense_index: HashMap::with_capacity(Self::DEFAULT_NODE_CAPACITY),
             dense_ids: Vec::with_capacity(Self::DEFAULT_NODE_CAPACITY),
             in_degree: Vec::with_capacity(Self::DEFAULT_NODE_CAPACITY),
@@ -181,18 +235,16 @@ impl AudioContext {
             collected: Vec::with_capacity(Self::DEFAULT_NODE_CAPACITY),
             ended_watch: std::collections::HashSet::new(),
             ended: Vec::new(),
-            mix_buffer: Vec::new(),
-            device_resampler: None,
-            resample_input: Vec::with_capacity(4096 * channels.max(1) as usize),
-            resample_output: Vec::with_capacity(4096 * channels.max(1) as usize),
-            resampler_device_rate: 0,
+            mix_buffer: vec![0.0; DEVICE_QUANTUM_FRAMES * channels.max(1) as usize],
+            device_epoch: DeviceEpoch::new(),
+            native_input: Vec::with_capacity(DEVICE_QUANTUM_FRAMES * channels.max(1) as usize),
+            native_collected: Vec::with_capacity(Self::DEFAULT_NODE_CAPACITY),
             frames_processed: 0,
-            #[cfg(not(test))]
             wall_origin: std::time::Instant::now(),
-            #[cfg(not(test))]
             wall_banked: 0.0,
-            #[cfg(not(test))]
             clock_paused: false,
+            #[cfg(test)]
+            test_wall_enabled: false,
         };
 
         // The destination goes through the same insertion path as every other
@@ -202,6 +254,67 @@ impl AudioContext {
             channels,
         )));
         context
+    }
+
+    /// Command phase: reserve one non-abortable handoff per existing/future node.
+    pub(crate) fn prepare_node_retirement(
+        &mut self,
+        cpu: migo_io::audio_cpu::AudioCpu,
+        aggregate: Arc<crate::limits::AudioAggregateLedger>,
+    ) -> EngineResult<()> {
+        let host = crate::node_retirement::Host::new(cpu, aggregate, self.channels)?;
+        let storage = host
+            .reserve_value::<ContextStorage>()?
+            .finish(ContextStorage::default());
+        for node in self.nodes.values_mut() {
+            if let Some(analyser) = node
+                .as_any_mut()
+                .downcast_mut::<crate::nodes::AnalyserNode>()
+            {
+                analyser.prepare_workspace(&host)?;
+            }
+            if let Some(filter) = node
+                .as_any_mut()
+                .downcast_mut::<crate::nodes::BiquadFilterNode>()
+            {
+                filter.prepare_storage(&host)?;
+            }
+            if let Some(filter) = node
+                .as_any_mut()
+                .downcast_mut::<crate::nodes::IIRFilterNode>()
+            {
+                filter.prepare_storage(&host)?;
+            }
+            node.prepare(&host)?;
+        }
+        for buffer in self.buffers.values_mut() {
+            buffer.prepare(&host)?;
+        }
+        self.context_storage = Some(storage);
+        self.node_retirement = Some(host);
+        Ok(())
+    }
+
+    pub(crate) fn response_retirement_host(&self) -> Option<&crate::node_retirement::Host> {
+        self.node_retirement.as_ref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn observe_buffer_retirement(
+        &mut self,
+        id: AudioBufferId,
+        hook: Arc<dyn Fn() + Send + Sync>,
+    ) -> bool {
+        if let Some(value) = self.buffers.get_mut(&id) {
+            value.observe(hook);
+            true
+        } else {
+            false
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn observe_context_retirement(&mut self, hook: Arc<dyn Fn() + Send + Sync>) {
+        self.context_storage.as_mut().unwrap().observe(hook);
     }
 
     pub fn id(&self) -> AudioContextId {
@@ -216,6 +329,10 @@ impl AudioContext {
         self.sample_rate
     }
 
+    pub(crate) fn device_epoch(&self) -> DeviceEpoch {
+        self.device_epoch.clone()
+    }
+
     pub fn channels(&self) -> u32 {
         self.channels
     }
@@ -228,40 +345,55 @@ impl AudioContext {
     /// scheduling aligned with JS's running clock; suspension and background
     /// pause bank the epoch before stopping it.
     pub fn current_time(&self) -> f64 {
-        let rendered = self.frames_processed as f64 / self.sample_rate.max(1) as f64;
-        #[cfg(not(test))]
-        {
-            let idle = self.wall_banked
+        let rendered = self.rendered_time();
+        self.wall_seconds()
+            .map_or(rendered, |wall| rendered.max(wall))
+    }
+
+    fn rendered_time(&self) -> f64 {
+        self.frames_processed as f64 / self.sample_rate.max(1) as f64
+    }
+
+    fn wall_seconds(&self) -> Option<f64> {
+        #[cfg(test)]
+        if !self.test_wall_enabled {
+            return None;
+        }
+        Some(
+            self.wall_banked
                 + if self.state == AudioContextState::Running && !self.clock_paused {
                     self.wall_origin.elapsed().as_secs_f64()
                 } else {
                     0.0
-                };
-            return rendered.max(idle);
-        }
-        #[cfg(test)]
+                },
+        )
+    }
+
+    fn synchronize_render_clock(&mut self) {
+        if let Some(wall) = self.wall_seconds()
+            && wall > self.rendered_time()
         {
-            rendered
+            // Only the idle wall epoch is converted. Rounding the rendered
+            // clock through f64 on every block would accumulate sample drift.
+            let frame = (wall * f64::from(self.sample_rate.max(1))).ceil() as u64;
+            self.frames_processed = self.frames_processed.max(frame);
         }
     }
 
-    #[cfg(not(test))]
     fn bank_wall_clock(&mut self) {
-        if self.state == AudioContextState::Running {
-            self.wall_banked += self.wall_origin.elapsed().as_secs_f64();
+        if self.state == AudioContextState::Running
+            && let Some(wall) = self.wall_seconds()
+        {
+            self.wall_banked = wall.max(self.rendered_time());
             self.wall_origin = std::time::Instant::now();
         }
     }
     pub fn pause_clock_for_background(&mut self) {
-        #[cfg(not(test))]
-        {
-            self.bank_wall_clock();
-            self.clock_paused = true;
-        }
+        self.bank_wall_clock();
+        self.clock_paused = true;
     }
 
     pub fn resume_clock_after_background(&mut self) {
-        #[cfg(not(test))]
         if self.clock_paused {
             self.wall_origin = std::time::Instant::now();
             self.clock_paused = false;
@@ -269,17 +401,13 @@ impl AudioContext {
     }
 
     pub fn suspend(&mut self) {
-        #[cfg(not(test))]
         self.bank_wall_clock();
         self.state = AudioContextState::Suspended;
     }
 
     pub fn resume(&mut self) {
         if self.state == AudioContextState::Suspended {
-            #[cfg(not(test))]
-            {
-                self.wall_origin = std::time::Instant::now();
-            }
+            self.wall_origin = std::time::Instant::now();
             self.state = AudioContextState::Running;
         }
     }
@@ -291,9 +419,12 @@ impl AudioContext {
     }
 
     pub fn close(&mut self) {
-        #[cfg(not(test))]
+        self.device_epoch.invalidate();
         self.bank_wall_clock();
         self.state = AudioContextState::Closed;
+        if self.retire_storage() {
+            return;
+        }
         self.buffers.clear();
         self.nodes.clear();
         self.released.clear();
@@ -303,6 +434,58 @@ impl AudioContext {
         self.ready_queue.clear();
         self.node_buffers.clear();
         self.collected.clear();
+    }
+
+    /// Transfer existing capacities, not just live entries, so closed contexts
+    /// cannot free registry, graph scratch or recycled PCM on the audio caller.
+    fn retire_storage(&mut self) -> bool {
+        let Some(mut storage) = self.context_storage.take() else {
+            return false;
+        };
+        storage.buffers = std::mem::take(&mut self.buffers);
+        storage.nodes = std::mem::take(&mut self.nodes);
+        storage.released = std::mem::take(&mut self.released);
+        storage.connections = std::mem::take(&mut self.connections);
+        storage.processing_order = std::mem::take(&mut self.processing_order);
+        storage.dense_index = std::mem::take(&mut self.dense_index);
+        storage.dense_ids = std::mem::take(&mut self.dense_ids);
+        storage.in_degree = std::mem::take(&mut self.in_degree);
+        storage.input_start = std::mem::take(&mut self.input_start);
+        storage.input_edges = std::mem::take(&mut self.input_edges);
+        storage.output_start = std::mem::take(&mut self.output_start);
+        storage.output_edges = std::mem::take(&mut self.output_edges);
+        storage.ready_queue = std::mem::take(&mut self.ready_queue);
+        storage.edge_src = std::mem::take(&mut self.edge_src);
+        storage.edge_src_port = std::mem::take(&mut self.edge_src_port);
+        storage.edge_dst_port = std::mem::take(&mut self.edge_dst_port);
+        storage.node_buffers = std::mem::take(&mut self.node_buffers);
+        storage.buffer_pool = std::mem::take(&mut self.buffer_pool);
+        storage.collected = std::mem::take(&mut self.collected);
+        storage.ended_watch = std::mem::take(&mut self.ended_watch);
+        storage.ended = std::mem::take(&mut self.ended);
+        storage.mix_buffer = std::mem::take(&mut self.mix_buffer);
+        storage.native_input = std::mem::take(&mut self.native_input);
+        storage.native_collected = std::mem::take(&mut self.native_collected);
+        self.graph_dirty = true;
+        self.device_controls_pending = false;
+        drop(storage);
+        self.node_retirement = None;
+        true
+    }
+
+    fn reserve_buffer_retirement(
+        &self,
+    ) -> EngineResult<crate::node_retirement::Reservation<Arc<RetainedAudio>>> {
+        if self.state == AudioContextState::Closed {
+            return Err(EngineError::from_detail(
+                ErrorCode::InvalidArgument,
+                "AudioContext is closed",
+            ));
+        }
+        match &self.node_retirement {
+            Some(host) => host.reserve_value(),
+            None => Ok(crate::node_retirement::Reservation::unmanaged()),
+        }
     }
 
     /// Check if this context has any active source nodes (playing or scheduled).
@@ -380,9 +563,20 @@ impl AudioContext {
             if self.ended_watch.remove(&id) && finished {
                 self.ended.push(id);
             }
-            self.nodes.remove(&id);
-            self.recycle_render_buffer(id);
+            let node = self.nodes.remove(&id).unwrap();
+            let buffer = self.recycle_render_buffer(id);
+            node.retire(buffer);
             self.released.remove(&id);
+            // Removing a downstream node can remove a DC effect's last edge.
+            for connection in self.connections.iter().filter(|c| c.dst == id) {
+                let connected = self
+                    .connections
+                    .iter()
+                    .any(|c| c.src == connection.src && c.dst != id);
+                if let Some(source) = self.nodes.get_mut(&connection.src) {
+                    source.set_output_connected(connected);
+                }
+            }
             self.connections.retain(|c| c.src != id && c.dst != id);
             self.collected.push(id);
         }
@@ -435,14 +629,16 @@ impl AudioContext {
 
     pub fn add_buffer(&mut self, audio: DecodedAudio) -> EngineResult<AudioBufferId> {
         let (id, next_id) = self.buffer_id_candidate()?;
+        let reservation = self.reserve_buffer_retirement()?;
         let retained = RetainedAudio::try_new(audio, &self.pcm_budget)?;
-        self.buffers.insert(id, Arc::new(retained));
+        self.buffers
+            .insert(id, reservation.finish(Arc::new(retained)));
         self.next_buffer_id = next_id;
         Ok(id)
     }
 
     pub fn get_buffer(&self, id: AudioBufferId) -> Option<Arc<RetainedAudio>> {
-        self.buffers.get(&id).cloned()
+        self.buffers.get(&id).map(|buffer| Arc::clone(buffer))
     }
 
     pub fn remove_buffer(&mut self, id: AudioBufferId) -> bool {
@@ -485,6 +681,7 @@ impl AudioContext {
     ) -> EngineResult<AudioBufferId> {
         let bytes = crate::limits::validated_buffer_alloc_bytes(channels, length, sample_rate)?;
         let (id, next_id) = self.buffer_id_candidate()?;
+        let reservation = self.reserve_buffer_retirement()?;
         // Claim both aggregate budgets before asking the allocator for the Vec.
         let mut permit = self.pcm_budget.reserve(bytes)?;
         let sample_count = bytes / std::mem::size_of::<f32>();
@@ -496,8 +693,10 @@ impl AudioContext {
             sample_rate,
             channels,
         };
-        self.buffers
-            .insert(id, Arc::new(RetainedAudio::from_reserved(audio, permit)));
+        self.buffers.insert(
+            id,
+            reservation.finish(Arc::new(RetainedAudio::from_reserved(audio, permit))),
+        );
         self.next_buffer_id = next_id;
         Ok(id)
     }
@@ -532,6 +731,7 @@ impl AudioContext {
         start_frame: u32,
     ) -> EngineResult<bool> {
         let pcm_budget = self.pcm_budget.clone();
+        let retirement = self.node_retirement.clone();
         let buffer = match self.buffers.get_mut(&buffer_id) {
             Some(b) => b,
             None => return Ok(false),
@@ -555,11 +755,15 @@ impl AudioContext {
         // A source may hold the old Arc. Reserve and allocate the COW copy
         // fallibly before replacing the map entry, keeping the old PCM intact
         // if either aggregate budget refuses the duplicate.
-        if Arc::get_mut(buffer).is_none() {
+        if Arc::get_mut(&mut **buffer).is_none() {
+            let reservation = match &retirement {
+                Some(host) => host.reserve_value()?,
+                None => crate::node_retirement::Reservation::unmanaged(),
+            };
             let cloned = buffer.try_clone_with_budget(&pcm_budget)?;
-            *buffer = Arc::new(cloned);
+            *buffer = reservation.finish(Arc::new(cloned));
         }
-        let audio = Arc::get_mut(buffer)
+        let audio = Arc::get_mut(&mut **buffer)
             .ok_or_else(|| {
                 shared::error::EngineError::from_detail(
                     shared::error::ErrorCode::Internal,
@@ -581,13 +785,13 @@ impl AudioContext {
     // ==================== Node Management ====================
 
     /// Create a buffer source node with JS-provided node_id
-    pub fn create_buffer_source(&mut self, node_id: AudioNodeId) {
-        self.add_node(Box::new(BufferSourceNode::new(node_id, self.sample_rate)));
+    pub fn create_buffer_source(&mut self, node_id: AudioNodeId) -> bool {
+        self.add_node(Box::new(BufferSourceNode::new(node_id, self.sample_rate)))
     }
 
     /// Create a gain node with JS-provided node_id
-    pub fn create_gain(&mut self, node_id: AudioNodeId) {
-        self.add_node(Box::new(GainNode::new(node_id)));
+    pub fn create_gain(&mut self, node_id: AudioNodeId) -> bool {
+        self.add_node(Box::new(GainNode::new(node_id)))
     }
 
     /// The single insertion point for every node type.
@@ -595,12 +799,96 @@ impl AudioContext {
     /// Provisioning the render buffer here rather than on first render is what
     /// keeps the allocator off the audio thread: this runs on the command path,
     /// where an allocation is a throughput cost, not a missed deadline.
-    pub fn add_node(&mut self, node: Box<dyn AudioNodeProcessor>) {
+    pub fn add_node(&mut self, mut node: Box<dyn AudioNodeProcessor>) -> bool {
+        if self.state == AudioContextState::Closed {
+            return false;
+        }
+        if let Some(host) = &self.node_retirement
+            && let Some(analyser) = node
+                .as_any_mut()
+                .downcast_mut::<crate::nodes::AnalyserNode>()
+            && let Err(error) = analyser.prepare_workspace(host)
+        {
+            tracing::warn!("analyser workspace adoption rejected: {error}");
+            return false;
+        }
+        if let Some(host) = &self.node_retirement
+            && let Some(filter) = node
+                .as_any_mut()
+                .downcast_mut::<crate::nodes::BiquadFilterNode>()
+            && let Err(error) = filter.prepare_storage(host)
+        {
+            tracing::warn!("biquad storage adoption rejected: {error}");
+            return false;
+        }
+        if let Some(host) = &self.node_retirement
+            && let Some(filter) = node
+                .as_any_mut()
+                .downcast_mut::<crate::nodes::IIRFilterNode>()
+            && let Err(error) = filter.prepare_storage(host)
+        {
+            tracing::warn!("IIR storage adoption rejected: {error}");
+            return false;
+        }
         let node_id = node.id();
+        node.set_output_connected(self.connections.iter().any(|c| c.src == node_id));
+        let mut node = crate::node_retirement::Node::new(node);
+        if let Some(host) = &self.node_retirement
+            && let Err(error) = node.prepare(host)
+        {
+            tracing::warn!("graph node {node_id} admission rejected: {error}");
+            return false;
+        }
         let buffer = self.take_render_buffer();
         self.nodes.insert(node_id, node);
         self.node_buffers.insert(node_id, buffer);
+        // One call can collect every source across several native subquanta.
+        // Provision both collectors while adding nodes, before rendering them.
+        self.collected
+            .reserve(self.nodes.len().saturating_sub(self.collected.len()));
+        self.native_collected
+            .reserve(self.nodes.len().saturating_sub(self.native_collected.len()));
+        self.reserve_graph_nodes();
         self.graph_dirty = true;
+        self.device_controls_pending = true;
+        true
+    }
+
+    /// Grow graph scratch on node commands, including before the first quantum
+    /// and after a burst larger than any previously rendered graph. Rebuilding
+    /// still happens lazily, with the existing traversal and mix order.
+    fn reserve_graph_nodes(&mut self) {
+        let nodes = self.nodes.len();
+        self.dense_index
+            .reserve(nodes.saturating_sub(self.dense_index.len()));
+        for scratch in [
+            &mut self.dense_ids,
+            &mut self.in_degree,
+            &mut self.processing_order,
+            &mut self.ready_queue,
+        ] {
+            scratch.reserve(nodes.saturating_sub(scratch.len()));
+        }
+        for scratch in [&mut self.input_start, &mut self.output_start] {
+            scratch.reserve((nodes + 1).saturating_sub(scratch.len()));
+        }
+    }
+
+    /// Fan-in can grow without adding nodes. Reserve by the actual connection
+    /// count so the next CSR rebuild cannot reach the allocator either.
+    fn reserve_graph_edges(&mut self) {
+        let edges = self.connections.len();
+        for scratch in [
+            &mut self.input_edges,
+            &mut self.output_edges,
+            &mut self.edge_src,
+        ] {
+            scratch.reserve(edges.saturating_sub(scratch.len()));
+        }
+        self.edge_src_port
+            .reserve(edges.saturating_sub(self.edge_src_port.len()));
+        self.edge_dst_port
+            .reserve(edges.saturating_sub(self.edge_dst_port.len()));
     }
 
     /// A zeroed render buffer, recycled from a collected node when one is spare.
@@ -617,12 +905,24 @@ impl AudioContext {
     }
 
     /// Take a collected node's render buffer back for reuse.
-    fn recycle_render_buffer(&mut self, node_id: AudioNodeId) {
-        if let Some(buffer) = self.node_buffers.remove(&node_id) {
-            if self.buffer_pool.len() < Self::DEFAULT_NODE_CAPACITY {
-                self.buffer_pool.push(buffer);
-            }
+    fn recycle_render_buffer(&mut self, node_id: AudioNodeId) -> Option<Vec<f32>> {
+        let buffer = self.node_buffers.remove(&node_id)?;
+        if self.buffer_pool.len() < Self::DEFAULT_NODE_CAPACITY {
+            self.buffer_pool.push(buffer);
+            None
+        } else {
+            Some(buffer)
         }
+    }
+
+    /// Inspect a command target without marking playback controls pending.
+    pub(crate) fn node_is<T: AudioNodeProcessor + 'static>(
+        &mut self,
+        node_id: AudioNodeId,
+    ) -> bool {
+        self.nodes
+            .get_mut(&node_id)
+            .is_some_and(|node| node.as_any_mut().is::<T>())
     }
 
     /// Downcast and operate on a specific node type.
@@ -636,7 +936,114 @@ impl AudioContext {
         // Use Any for downcasting
         let any = node.as_any_mut();
         let typed = any.downcast_mut::<T>()?;
+        self.device_controls_pending = true;
         Some(f(typed))
+    }
+
+    pub(crate) fn set_wave_shaper_oversample(
+        &mut self,
+        node_id: AudioNodeId,
+        oversample: crate::nodes::OversampleType,
+    ) -> bool {
+        let channels = self.channels;
+        self.with_node_typed::<crate::nodes::WaveShaperNode, _>(node_id, |node| {
+            node.set_oversample(oversample);
+            node.prepare_oversampling(channels);
+        })
+        .is_some()
+    }
+
+    pub(crate) fn create_biquad_filter(&mut self, node_id: AudioNodeId) -> bool {
+        if self.state == AudioContextState::Closed {
+            return false;
+        }
+        match crate::nodes::BiquadFilterNode::new_with_retirement(
+            node_id,
+            self.channels,
+            self.sample_rate,
+            self.node_retirement.as_ref(),
+        ) {
+            Ok(node) => self.add_node(Box::new(node)),
+            Err(error) => {
+                tracing::warn!("biquad storage creation rejected: {error}");
+                false
+            }
+        }
+    }
+    pub(crate) fn create_iir_filter(
+        &mut self,
+        node_id: AudioNodeId,
+        feedforward: &[f64],
+        feedback: &[f64],
+    ) -> bool {
+        if self.state == AudioContextState::Closed {
+            return false;
+        }
+        match crate::nodes::IIRFilterNode::new_with_retirement(
+            node_id,
+            feedforward,
+            feedback,
+            self.channels,
+            self.node_retirement.as_ref(),
+        ) {
+            Ok(node) => self.add_node(Box::new(node)),
+            Err(error) => {
+                tracing::warn!("IIR storage creation rejected: {error}");
+                false
+            }
+        }
+    }
+    pub(crate) fn create_analyser(&mut self, node_id: AudioNodeId) -> bool {
+        if self.state == AudioContextState::Closed {
+            return false;
+        }
+        match crate::nodes::AnalyserNode::new_with_retirement(
+            node_id,
+            self.channels,
+            self.node_retirement.as_ref(),
+        ) {
+            Ok(node) => self.add_node(Box::new(node)),
+            Err(error) => {
+                tracing::warn!("analyser workspace creation rejected: {error}");
+                false
+            }
+        }
+    }
+    pub(crate) fn set_analyser_fft_size(&mut self, node_id: AudioNodeId, size: usize) -> bool {
+        self.with_node_typed::<crate::nodes::AnalyserNode, _>(node_id, |node| {
+            if let Err(error) = node.try_set_fft_size(size) {
+                tracing::warn!("FFT workspace replacement admission rejected: {error}");
+                return false;
+            }
+            true
+        })
+        .unwrap_or(false)
+    }
+
+    pub(crate) fn set_wave_shaper_curve(
+        &mut self,
+        node_id: AudioNodeId,
+        mut curve: Option<Vec<f32>>,
+    ) -> bool {
+        self.try_set_wave_shaper_curve(node_id, &mut curve)
+    }
+
+    /// Keep incoming storage with its delivery until replacement is admitted.
+    pub(crate) fn try_set_wave_shaper_curve(
+        &mut self,
+        node_id: AudioNodeId,
+        curve: &mut Option<Vec<f32>>,
+    ) -> bool {
+        let retirement = self.node_retirement.clone();
+        self.with_node_typed::<crate::nodes::WaveShaperNode, _>(node_id, |node| {
+            if let Err(error) = node.retire_curve(retirement.as_ref()) {
+                tracing::warn!("curve replacement admission rejected: {error}");
+                return false;
+            }
+            node.set_curve(curve.take());
+            true
+        })
+        .unwrap_or(false)
     }
 
     pub fn set_buffer(&mut self, node_id: AudioNodeId, buffer_id: Option<AudioBufferId>) -> bool {
@@ -655,6 +1062,10 @@ impl AudioContext {
         if let Some(node) = self.nodes.get_mut(&node_id) {
             let any = node.as_any_mut();
             if let Some(source) = any.downcast_mut::<BufferSourceNode>() {
+                if let Err(error) = source.retire_buffer(self.node_retirement.as_ref()) {
+                    tracing::warn!("buffer replacement admission rejected: {error}");
+                    return false;
+                }
                 source.set_buffer(buffer);
                 return true;
             }
@@ -668,12 +1079,25 @@ impl AudioContext {
     pub fn set_started_buffer(
         &mut self,
         node_id: AudioNodeId,
-        buffer: Option<Arc<AudioSnapshot>>,
+        mut buffer: Option<Arc<AudioSnapshot>>,
+    ) -> bool {
+        self.try_set_started_buffer(node_id, &mut buffer)
+    }
+
+    /// Refusal leaves the incoming snapshot and its original ticket untouched.
+    pub(crate) fn try_set_started_buffer(
+        &mut self,
+        node_id: AudioNodeId,
+        buffer: &mut Option<Arc<AudioSnapshot>>,
     ) -> bool {
         if let Some(node) = self.nodes.get_mut(&node_id) {
             let any = node.as_any_mut();
             if let Some(source) = any.downcast_mut::<BufferSourceNode>() {
-                source.set_snapshot(buffer);
+                if let Err(error) = source.retire_buffer(self.node_retirement.as_ref()) {
+                    tracing::warn!("snapshot replacement admission rejected: {error}");
+                    return false;
+                }
+                source.set_snapshot(buffer.take());
                 return true;
             }
         }
@@ -699,6 +1123,7 @@ impl AudioContext {
             let any = node.as_any_mut();
             if let Some(source) = any.downcast_mut::<BufferSourceNode>() {
                 source.start(when, offset, duration, current_time);
+                self.device_controls_pending = true;
                 tracing::trace!("start_source: node started");
                 return true;
             }
@@ -712,6 +1137,7 @@ impl AudioContext {
             let any = node.as_any_mut();
             if let Some(source) = any.downcast_mut::<BufferSourceNode>() {
                 source.stop(when);
+                self.device_controls_pending = true;
                 return true;
             }
         }
@@ -723,8 +1149,12 @@ impl AudioContext {
         if !self.nodes.contains_key(&node_id) {
             return false;
         }
+        self.device_controls_pending = true;
         if enabled {
             self.ended_watch.insert(node_id);
+            // Reserve on the command path for every watch that can finish
+            // before the next drain; the render/prune path must not grow it.
+            self.ended.reserve(self.ended_watch.len());
         } else {
             self.ended_watch.remove(&node_id);
         }
@@ -916,7 +1346,12 @@ impl AudioContext {
                 dst,
                 dst_input,
             });
+            if let Some(node) = self.nodes.get_mut(&src) {
+                node.set_output_connected(true);
+            }
+            self.reserve_graph_edges();
             self.graph_dirty = true;
+            self.device_controls_pending = true;
         }
     }
 
@@ -930,7 +1365,12 @@ impl AudioContext {
             }
         });
         if self.connections.len() != old_len {
+            let connected = self.connections.iter().any(|c| c.src == node_id);
+            if let Some(node) = self.nodes.get_mut(&node_id) {
+                node.set_output_connected(connected);
+            }
             self.graph_dirty = true;
+            self.device_controls_pending = true;
         }
     }
 
@@ -1082,89 +1522,127 @@ impl AudioContext {
         self.graph_dirty = false;
     }
 
-    /// Drop route-specific resampler state after a device recovery.
-    ///
-    /// A new output may use a different device rate; retaining the old
-    /// resampler would carry its phase and layout into the new route.
+    /// Revoke the old route capability on every backend replacement. Heavy SRC
+    /// state belongs to its managed owner; this graph retains only native scratch.
     pub fn renegotiate_device(&mut self, _device_rate: u32, _device_channels: u32) {
-        self.device_resampler = None;
-        self.resampler_device_rate = 0;
-        self.resample_output.clear();
+        self.device_epoch.invalidate();
+        if self.state != AudioContextState::Closed {
+            self.device_epoch = DeviceEpoch::new();
+        }
+        self.native_input.clear();
+        self.native_collected.clear();
     }
 
-    /// Render a context-rate block and convert it into the device-rate mix bus.
-    ///
-    /// A context's clock advances by the number of frames rendered at its own
-    /// sample rate. The resampler then maps those frames to the device quantum;
-    /// passing the device quantum directly to `process` is what made 44.1 kHz
-    /// contexts run 48/44.1 fast on a 48 kHz route.
-    pub fn process_for_device(
+    /// Context-rate source port. Inactive graph state is represented by exact
+    /// zeros; its existing tail classifier remains the authority. Callers offer
+    /// at most one complete 128-frame quantum in private scratch, never a mix bus.
+    pub(crate) fn process_device_source(&mut self, output: &mut [f32]) -> &[AudioNodeId] {
+        let channels = self.channels.max(1) as usize;
+        let frames = output.len() / channels;
+        if self.state != AudioContextState::Running || frames == 0 {
+            self.collected.clear();
+            return &self.collected;
+        }
+        debug_assert!(frames <= DEVICE_QUANTUM_FRAMES);
+        let output = &mut output[..frames * channels];
+        output.fill(0.0);
+        if self.has_active_sources() {
+            return self.process(output);
+        }
+        self.prune();
+        self.device_controls_pending = false;
+        self.synchronize_render_clock();
+        self.frames_processed = self.frames_processed.saturating_add(frames as u64);
+        &self.collected
+    }
+    pub(crate) fn has_device_controls(&self) -> bool {
+        self.device_controls_pending || !self.ended.is_empty()
+    }
+    pub(crate) fn collect_device_controls(&mut self) -> &[AudioNodeId] {
+        if self.device_controls_pending {
+            self.prune();
+        } else {
+            self.collected.clear();
+        }
+        self.device_controls_pending = false;
+        &self.collected
+    }
+    #[cfg(test)]
+    pub(crate) fn device_graph_frame(&self) -> u64 {
+        self.frames_processed
+    }
+    #[cfg(test)]
+    pub(crate) fn set_test_device_wall_epoch(&mut self, seconds: f64) {
+        self.test_wall_enabled = true;
+        self.wall_banked = seconds;
+        self.wall_origin = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    }
+
+    /// Add same-rate graph PCM to a device bus, remapping only the channels.
+    /// Wrong-rate calls fail before touching graph state, clocks or the bus;
+    /// asynchronously prepared managed sinc is the only device SRC path.
+    pub(crate) fn process_native_device(
         &mut self,
         output: &mut [f32],
         device_rate: u32,
         device_channels: u32,
-    ) -> &[AudioNodeId] {
-        let device_rate = device_rate.max(1);
+    ) -> EngineResult<&[AudioNodeId]> {
+        if device_rate != self.sample_rate {
+            return Err(EngineError::from_detail(
+                ErrorCode::InvalidArgument,
+                "native device path cannot change sample rate",
+            ));
+        }
+        self.native_collected.clear();
         let device_channels = device_channels.max(1) as usize;
         let context_channels = self.channels.max(1) as usize;
-        let device_frames = output.len() / device_channels;
-        if self.sample_rate == device_rate {
-            return self.process(output);
+        let frames = output.len() / device_channels;
+        if self.state != AudioContextState::Running || frames == 0 {
+            return Ok(&self.native_collected);
         }
-
-        let context_frames = ((device_frames as u64)
-            .saturating_mul(self.sample_rate.max(1) as u64)
-            .saturating_add(device_rate as u64 - 1)
-            / device_rate as u64) as usize
-            + 2;
-        let context_samples = context_frames.saturating_mul(context_channels);
-        let mut context_input = std::mem::take(&mut self.resample_input);
-        if context_input.len() < context_samples {
-            context_input.resize(context_samples, 0.0);
-        }
-        context_input[..context_samples].fill(0.0);
-        let _ = self.process(&mut context_input[..context_samples]);
-
-        if self.resampler_device_rate != device_rate {
-            self.device_resampler = Some(StreamResampler::new(
-                self.sample_rate,
-                device_rate,
-                self.channels,
-            ));
-            self.resampler_device_rate = device_rate;
-        }
-        let resampler = self
-            .device_resampler
-            .as_mut()
-            .expect("resampler initialized");
-        self.resample_output.clear();
-        resampler.process_into(&context_input[..context_samples], &mut self.resample_output);
-
-        // Resampling preserves context channels; map those channels to the
-        // recovered device layout without duplicating stale device state.
-        let source_frames = self.resample_output.len() / context_channels;
-        let frames = source_frames.min(device_frames);
-        for frame in 0..frames {
-            let src = frame * context_channels;
-            let dst = frame * device_channels;
-            if context_channels == 1 {
-                for ch in 0..device_channels {
-                    output[dst + ch] += self.resample_output[src];
-                }
-            } else if device_channels == 1 {
-                let sum: f32 = self.resample_output[src..src + context_channels]
-                    .iter()
-                    .copied()
-                    .sum();
-                output[dst] += sum / context_channels as f32;
+        let mut input = std::mem::take(&mut self.native_input);
+        for quantum in
+            output[..frames * device_channels].chunks_mut(DEVICE_QUANTUM_FRAMES * device_channels)
+        {
+            if !self.has_active_sources() {
+                break;
+            }
+            if context_channels == device_channels {
+                self.process(quantum);
             } else {
-                for ch in 0..context_channels.min(device_channels) {
-                    output[dst + ch] += self.resample_output[src + ch];
+                input.resize(quantum.len() / device_channels * context_channels, 0.0);
+                self.process_device_source(&mut input);
+                Self::mix_device_channels(&input, quantum, context_channels, device_channels);
+                input.clear();
+            }
+            self.native_collected.extend_from_slice(&self.collected);
+        }
+        self.native_input = input;
+        Ok(&self.native_collected)
+    }
+
+    pub(crate) fn mix_device_channels(
+        input: &[f32],
+        output: &mut [f32],
+        source: usize,
+        target: usize,
+    ) {
+        for (src, dst) in input
+            .chunks_exact(source)
+            .zip(output.chunks_exact_mut(target))
+        {
+            if source == 1 {
+                for sample in dst {
+                    *sample += src[0];
+                }
+            } else if target == 1 {
+                dst[0] += src.iter().copied().sum::<f32>() / source as f32;
+            } else {
+                for (from, to) in src.iter().zip(dst) {
+                    *to += *from;
                 }
             }
         }
-        self.resample_input = context_input;
-        &self.collected
     }
 
     // ==================== Processing ====================
@@ -1187,13 +1665,15 @@ impl AudioContext {
             return &self.collected;
         }
 
+        self.device_controls_pending = false;
         // Rebuild processing order if graph changed
         if self.graph_dirty {
             self.rebuild_processing_order();
         }
 
         let buffer_size = output.len();
-        let current_time = self.current_time();
+        self.synchronize_render_clock();
+        let current_time = self.rendered_time();
         let sample_rate = self.sample_rate;
 
         // Ensure mix buffer is large enough
@@ -1304,7 +1784,7 @@ impl AudioContext {
 
         // Track processed frames for sample-accurate currentTime
         let frames = buffer_size / self.channels.max(1) as usize;
-        self.frames_processed += frames as u64;
+        self.frames_processed = self.frames_processed.saturating_add(frames as u64);
 
         // Drop whatever can no longer affect the output: sources that finished
         // this block, and released nodes their disappearance just orphaned.
@@ -1313,6 +1793,45 @@ impl AudioContext {
         self.prune()
     }
 }
+
+impl Drop for AudioContext {
+    fn drop(&mut self) {
+        self.device_epoch.invalidate();
+        self.retire_storage();
+    }
+}
+
+#[cfg(test)]
+#[path = "context_route_tests.rs"]
+mod route_tests;
+
+#[cfg(test)]
+#[path = "context_device_tests.rs"]
+mod device_tests;
+
+#[cfg(test)]
+#[path = "context_clock_tests.rs"]
+mod clock_tests;
+
+#[cfg(test)]
+#[path = "context_capacity_tests.rs"]
+mod capacity_tests;
+
+#[cfg(test)]
+#[path = "context_waveshaper_tests.rs"]
+mod waveshaper_tests;
+
+#[cfg(test)]
+#[path = "context_source_automation_tests.rs"]
+mod source_automation_tests;
+
+#[cfg(test)]
+#[path = "context_source_scheduling_tests.rs"]
+mod source_scheduling_tests;
+
+#[cfg(test)]
+#[path = "context_source_completion_tests.rs"]
+mod source_completion_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2104,15 +2623,15 @@ mod tests {
         assert!((ctx.current_time() - 1.5).abs() < f64::EPSILON);
     }
     #[test]
-    fn dual_rate_context_keeps_one_second_of_context_time_per_device_second() {
+    fn native_device_keeps_one_second_of_graph_time() {
         let mut ctx = AudioContext::new(1, 44_100, 1);
         let mut oscillator = OscillatorNode::new(10, 44_100);
         oscillator.start(0.0);
         ctx.add_node(Box::new(oscillator));
         ctx.connect(10, DESTINATION_NODE_ID);
 
-        let mut output = vec![0.0; 48_000];
-        ctx.process_for_device(&mut output, 48_000, 1);
+        let mut output = vec![0.0; 44_100];
+        ctx.process_native_device(&mut output, 44_100, 1).unwrap();
 
         assert!(
             (ctx.current_time() - 1.0).abs() < 0.001,
@@ -2122,26 +2641,28 @@ mod tests {
         assert!(output.iter().any(|sample| sample.abs() > 1e-6));
     }
     #[test]
-    fn device_recovery_restarts_rate_and_channel_resampler_state() {
+    fn native_device_recovery_keeps_graph_time_and_new_channel_mapping() {
         let mut ctx = AudioContext::new(1, 44_100, 1);
         let mut oscillator = OscillatorNode::new(10, 44_100);
         oscillator.start(0.0);
         ctx.add_node(Box::new(oscillator));
         ctx.connect(10, DESTINATION_NODE_ID);
 
-        let mut first_route = vec![0.0; 48_000 * 2];
-        ctx.process_for_device(&mut first_route, 48_000, 2);
+        let mut first_route = vec![0.0; 44_100 * 2];
+        ctx.process_native_device(&mut first_route, 44_100, 2)
+            .unwrap();
         ctx.renegotiate_device(44_100, 1);
 
         let mut recovered_route = vec![0.0; 44_100];
-        ctx.process_for_device(&mut recovered_route, 44_100, 1);
+        ctx.process_native_device(&mut recovered_route, 44_100, 1)
+            .unwrap();
         assert!(
             recovered_route.iter().any(|sample| sample.abs() > 1e-6),
             "recovered route must render with its new mono layout"
         );
         assert!(
             (ctx.current_time() - 2.0).abs() < 0.002,
-            "recovery must not reuse the old route's rate phase"
+            "native recovery changed graph duration"
         );
     }
 }
@@ -2168,6 +2689,15 @@ mod steady_state_allocation {
     /// upstream mix, a node with input, and the additive write into the output.
     #[test]
     fn steady_state_audio_quantum_never_reaches_the_heap() {
+        crate::audio_thread::parameter_retirement_tests::analyser_tables();
+        super::source_completion_tests::natural_and_duration();
+        super::capacity_tests::cold_graph_and_collection();
+        super::capacity_tests::growth_after_first_render();
+        super::capacity_tests::first_automation();
+        super::capacity_tests::wave_shaper_commands();
+        super::waveshaper_tests::tail_and_collection();
+        super::source_automation_tests::offset();
+        super::source_scheduling_tests::constant_and_clock();
         const CHANNELS: u32 = 2;
         const QUANTUM_FRAMES: usize = 128;
 
@@ -2213,6 +2743,14 @@ mod steady_state_allocation {
     /// must still never reach the heap.
     #[test]
     fn a_graph_change_on_the_render_path_never_reaches_the_heap() {
+        crate::audio_thread::parameter_retirement_tests::oversampling_tables();
+        super::source_completion_tests::unbound_and_collection();
+        super::capacity_tests::edge_growth_without_new_nodes();
+        super::capacity_tests::automation_long_blocks();
+        super::capacity_tests::wave_shaper_long_blocks();
+        super::waveshaper_tests::dc_and_connections();
+        super::source_automation_tests::oscillator();
+        super::source_scheduling_tests::oscillator_and_buffer();
         const CHANNELS: u32 = 2;
         const QUANTUM_FRAMES: usize = 128;
 

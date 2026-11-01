@@ -96,6 +96,12 @@ impl IoScheduler {
             IoPools::local_with_byte_limit_for_test(host_id, workers, byte_limit),
         )
     }
+
+    /// Another independently cancellable host on this probe's same executor.
+    #[cfg(feature = "admission-probe")]
+    pub fn peer_for_admission_probe(&self, host_id: i32) -> Self {
+        Self::with_pools(host_id, self.pools.peer_for_admission_probe(host_id))
+    }
     pub fn new(host_id: i32) -> Self {
         Self::with_pools(host_id, IoPools::new(host_id))
     }
@@ -128,7 +134,22 @@ impl IoScheduler {
 
     /// A narrow host-domain handle. It does not keep the scheduler owner alive.
     pub fn audio_cpu(&self) -> crate::audio_cpu::AudioCpu {
-        crate::audio_cpu::AudioCpu::new(self.pools.clone(), Arc::clone(&self.domain))
+        crate::audio_cpu::AudioCpu::new(
+            self.pools.clone(),
+            Arc::clone(&self.domain),
+            PriorityClass::ForegroundAsync,
+        )
+    }
+
+    /// Whole-file preparation shares Audio admission and host rotation with
+    /// active refill, at background priority. The existing aging policy gives
+    /// it progress under sustained foreground work; it is not a second pool.
+    pub fn background_audio_cpu(&self) -> crate::audio_cpu::AudioCpu {
+        crate::audio_cpu::AudioCpu::new(
+            self.pools.clone(),
+            Arc::clone(&self.domain),
+            PriorityClass::Background,
+        )
     }
 
     pub fn domain(&self) -> Arc<IoDomain> {

@@ -611,7 +611,7 @@ mod tests {
     fn a_reply_hands_over_its_own_bytes_and_is_freed_once() {
         let pixels: Vec<u8> = (0..=255).collect();
         let address = pixels.as_ptr();
-        let reply = Box::into_raw(Box::new(MigoSyncReply(pixels)));
+        let reply = Box::into_raw(Box::new(MigoSyncReply(pixels.into())));
 
         let mut bytes = std::ptr::null();
         let mut length = usize::MAX;
@@ -624,6 +624,79 @@ mod tests {
         assert!(copied.iter().enumerate().all(|(i, &b)| b == i as u8));
 
         assert_eq!(unsafe { migo_sync_reply_release(reply) }, MIGO_OK);
+        let physical = std::sync::Arc::new(shared::audio_physical::AudioAggregateLedger::new(60));
+        let registry =
+            shared::audio_resources::AudioResourceRegistry::with_physical_ledger(physical.clone());
+        let key = registry
+            .reserve_initial_backing(
+                7,
+                shared::audio_resources::AudioBufferFormat {
+                    channels: 2,
+                    frames: 3,
+                    sample_rate: 48000,
+                },
+            )
+            .unwrap()
+            .key();
+        let owned = registry
+            .prepare_writable_backing(key)
+            .unwrap()
+            .encode_le_reply(&[0; 12])
+            .unwrap();
+        let address = owned.as_ptr();
+        let reply = Box::into_raw(Box::new(MigoSyncReply(owned)));
+        registry.release_buffer(key);
+        drop(registry);
+        assert_eq!(
+            physical.used_bytes(),
+            36,
+            "C opaque reply returned credit before actual release"
+        );
+        assert_eq!(
+            unsafe { migo_sync_reply_bytes(reply, &mut bytes, &mut length) },
+            MIGO_OK
+        );
+        assert_eq!(
+            (bytes, length),
+            (address, 36),
+            "C opaque reply copied charged bytes"
+        );
+        assert_eq!(unsafe { migo_sync_reply_release(reply) }, MIGO_OK);
+        assert_eq!(
+            physical.used_bytes(),
+            0,
+            "C opaque reply actual release leaked credit"
+        );
+        let physical = std::sync::Arc::new(shared::audio_physical::AudioAggregateLedger::new(20));
+        let data = shared::sync_reply::SyncReplyBytes::encode_audio(
+            &physical,
+            16,
+            &[shared::sync_reply::AudioWirePart::Bytes(&[1, 2, 3, 4])],
+        )
+        .unwrap();
+        let address = data.as_ptr();
+        let mut owned = std::ptr::null_mut();
+        hand_over(Some(data), &mut owned);
+        assert_eq!(
+            physical.used_bytes(),
+            20,
+            "C owned service bytes lost allocation credit"
+        );
+        assert_eq!(
+            unsafe { migo_owned_bytes_view(owned, &mut bytes, &mut length) },
+            MIGO_OK
+        );
+        assert_eq!(
+            (bytes, length),
+            (address, 4),
+            "C owned service view copied or exposed headroom"
+        );
+        assert_eq!(unsafe { migo_owned_bytes_release(owned) }, MIGO_OK);
+        assert_eq!(
+            physical.used_bytes(),
+            0,
+            "C owned service bytes final release leaked credit"
+        );
     }
 
     #[test]
@@ -1374,7 +1447,7 @@ pub unsafe extern "C" fn migo_session_post_sync_request(
 /// shrink that cannot happen in place is a reallocation and a copy, which is
 /// what #250 measured on macOS.
 #[cfg(feature = "external-frames")]
-pub struct MigoSyncReply(Vec<u8>);
+pub struct MigoSyncReply(migo_core::SyncReplyBytes);
 
 /// Answer a synchronous call carried whole in one body.
 ///
@@ -1754,10 +1827,10 @@ unsafe fn write_sync_snapshot(
 /// that cannot happen in place is a reallocation and a copy, which is what #250
 /// measured on macOS.
 #[cfg(feature = "external-frames")]
-pub struct MigoOwnedBytes(Vec<u8>);
+pub struct MigoOwnedBytes(migo_core::ServiceReplyBytes);
 
 #[cfg(feature = "external-frames")]
-fn hand_over(bytes: Option<Vec<u8>>, out: &mut *mut MigoOwnedBytes) {
+fn hand_over(bytes: Option<migo_core::ServiceReplyBytes>, out: &mut *mut MigoOwnedBytes) {
     *out = match bytes {
         Some(bytes) => Box::into_raw(Box::new(MigoOwnedBytes(bytes))),
         None => std::ptr::null_mut(),
@@ -1999,7 +2072,7 @@ pub unsafe extern "C" fn migo_session_read_content_module(
             Err(ModuleError::Unreadable(why)) => (MIGO_CONTENT_MODULE_UNREADABLE, why.into_bytes()),
         };
         *out_status = status;
-        hand_over(Some(bytes), out_module);
+        hand_over(Some(bytes.into()), out_module);
         MIGO_OK
     })
 }

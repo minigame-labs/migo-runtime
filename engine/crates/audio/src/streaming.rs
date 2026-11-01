@@ -13,12 +13,9 @@ use std::time::Duration;
 use shared::error::{EngineError, EngineResult, ErrorCode};
 use tokio::sync::{Notify, mpsc};
 
-use crate::decoder::mp3::{
-    MAX_SAMPLES_PER_FRAME, Mp3FrameDecoder, Mp3Step, STREAM_LOOKAHEAD_BYTES, append_as_f32,
-    first_frame_at_front,
-};
 #[cfg(test)]
 use crate::off_worker::OffWorker;
+use crate::streaming_mp3::Mp3StreamDecoder;
 
 /// Keep only a small number of decoded chunks ahead of the audio thread.
 /// When the app is backgrounded and stops polling, async sends apply
@@ -82,6 +79,276 @@ impl StreamRevision {
     }
 }
 
+/// A source clock counts playable frames after codec/container trimming. The
+/// output position retains its rational phase; rounding is only explicit at
+/// the final frame boundary, never accumulated one chunk at a time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct StreamTimeline {
+    frames: u64,
+    input_rate: u32,
+    output_rate: u32,
+    channels: u32,
+    output_frames: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct OutputPosition {
+    pub frame: u64,
+    pub phase: u32,
+    pub divisor: u32,
+}
+
+impl StreamTimeline {
+    pub(crate) fn new(
+        frames: u64,
+        input_rate: u32,
+        output_rate: u32,
+        channels: u32,
+    ) -> EngineResult<Self> {
+        let valid_rate = |rate| {
+            (crate::limits::MIN_SAMPLE_RATE..=crate::limits::MAX_SAMPLE_RATE).contains(&rate)
+        };
+        if frames == 0
+            || !valid_rate(input_rate)
+            || !valid_rate(output_rate)
+            || !(1..=crate::limits::MAX_AUDIO_CHANNELS).contains(&channels)
+        {
+            return Err(EngineError::from_detail(
+                ErrorCode::IoError,
+                "invalid source timeline format",
+            ));
+        }
+        let output_frames = u64::try_from(
+            (u128::from(frames) * u128::from(output_rate)).div_ceil(u128::from(input_rate)),
+        )
+        .map_err(|_| EngineError::from_detail(ErrorCode::IoError, "source timeline overflow"))?;
+        Ok(Self {
+            frames,
+            input_rate,
+            output_rate,
+            channels,
+            output_frames,
+        })
+    }
+    pub(crate) fn output_frames(self) -> u64 {
+        self.output_frames
+    }
+    pub(crate) fn seconds(self) -> f64 {
+        self.frames as f64 / self.input_rate as f64
+    }
+    pub(crate) fn format(self) -> (u32, u32) {
+        (self.output_rate, self.channels)
+    }
+    pub(crate) fn seek_frame(self, seconds: f64) -> EngineResult<i64> {
+        if !seconds.is_finite() {
+            return Err(EngineError::from_detail(
+                ErrorCode::InvalidArgument,
+                "nonfinite seek time",
+            ));
+        }
+        let frame = if seconds <= 0.0 {
+            0
+        } else if seconds >= self.seconds() {
+            self.frames
+        } else {
+            (seconds * self.input_rate as f64) as u64
+        };
+        i64::try_from(frame).map_err(|_| {
+            EngineError::from_detail(ErrorCode::InvalidArgument, "seek time exceeds source clock")
+        })
+    }
+    pub(crate) fn position(self, frame: u64) -> EngineResult<OutputPosition> {
+        if frame > self.frames {
+            return Err(EngineError::from_detail(
+                ErrorCode::InvalidArgument,
+                "position beyond source timeline",
+            ));
+        }
+        let scaled = u128::from(frame) * u128::from(self.output_rate);
+        Ok(OutputPosition {
+            frame: (scaled / u128::from(self.input_rate)) as u64,
+            phase: (scaled % u128::from(self.input_rate)) as u32,
+            divisor: self.input_rate,
+        })
+    }
+}
+
+/// One track's media clock is independent of the traversal's PCM extent.
+/// Repeated output uses one global sampling grid, never a rounded per-loop size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct StreamPresentation {
+    timeline: StreamTimeline,
+    cyclic: bool,
+    output_end: Option<u64>,
+}
+impl StreamPresentation {
+    pub(crate) fn single(timeline: StreamTimeline) -> Self {
+        Self {
+            timeline,
+            cyclic: false,
+            output_end: Some(timeline.output_frames()),
+        }
+    }
+    pub(crate) fn repeated(timeline: StreamTimeline, cycles: Option<u64>) -> EngineResult<Self> {
+        let output_end = cycles
+            .map(|cycles| {
+                if cycles == 0 {
+                    return Err(EngineError::from_detail(
+                        ErrorCode::InvalidArgument,
+                        "zero presentation cycles",
+                    ));
+                }
+                let frames = timeline.frames.checked_mul(cycles).ok_or_else(|| {
+                    EngineError::from_detail(ErrorCode::IoError, "cyclic input clock overflow")
+                })?;
+                StreamTimeline::new(
+                    frames,
+                    timeline.input_rate,
+                    timeline.output_rate,
+                    timeline.channels,
+                )
+                .map(|t| t.output_frames())
+            })
+            .transpose()?;
+        Ok(Self {
+            timeline,
+            cyclic: true,
+            output_end,
+        })
+    }
+    pub(crate) fn timeline(self) -> StreamTimeline {
+        self.timeline
+    }
+    pub(crate) fn output_end(self) -> Option<u64> {
+        self.output_end
+    }
+    pub(crate) fn is_cyclic(self) -> bool {
+        self.cyclic
+    }
+    pub(crate) fn seconds_at(self, frame: u64) -> f64 {
+        if !self.cyclic || self.output_end.is_some_and(|end| frame >= end) {
+            return (frame as f64 / self.timeline.output_rate as f64).min(self.timeline.seconds());
+        }
+        let numerator = u128::from(frame) * u128::from(self.timeline.input_rate);
+        let period = u128::from(self.timeline.frames) * u128::from(self.timeline.output_rate);
+        (numerator % period) as f64
+            / (f64::from(self.timeline.input_rate) * f64::from(self.timeline.output_rate))
+    }
+}
+
+/// Rebuild a cyclic suffix on the global grid at the consumer's next output
+/// frame. Decoder lookahead must not select which cycle disabling will finish.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct StreamCutover {
+    presentation: StreamPresentation,
+    output_start: u64,
+    input_origin: u64,
+    cycles: Option<u64>,
+}
+impl StreamCutover {
+    pub(crate) fn new(
+        timeline: StreamTimeline,
+        output_start: u64,
+        enabled: bool,
+        history: u64,
+    ) -> EngineResult<Self> {
+        let input = u64::from(timeline.input_rate);
+        let output = u64::from(timeline.output_rate);
+        let target =
+            u64::try_from(u128::from(output_start) * u128::from(input) / u128::from(output))
+                .map_err(|_| {
+                    EngineError::from_detail(ErrorCode::InvalidArgument, "cutover input overflow")
+                })?;
+        let cycles = if enabled {
+            None
+        } else {
+            Some((target / timeline.frames).checked_add(1).ok_or_else(|| {
+                EngineError::from_detail(ErrorCode::InvalidArgument, "cutover cycle overflow")
+            })?)
+        };
+        let presentation = StreamPresentation::repeated(timeline, cycles)?;
+        let (mut a, mut b) = (input, output);
+        while b != 0 {
+            (a, b) = (b, a % b);
+        }
+        let period = input / a;
+        let input_origin = if input == output {
+            target
+        } else {
+            target.saturating_sub(history) / period * period
+        };
+        Ok(Self {
+            presentation,
+            output_start,
+            input_origin,
+            cycles,
+        })
+    }
+    pub(crate) fn presentation(self) -> StreamPresentation {
+        self.presentation
+    }
+    pub(crate) fn output_start(self) -> u64 {
+        self.output_start
+    }
+    pub(crate) fn input_origin(self) -> u64 {
+        self.input_origin
+    }
+    pub(crate) fn source_origin(self) -> (u64, u64) {
+        let frames = self.presentation.timeline.frames;
+        (self.input_origin % frames, self.input_origin / frames)
+    }
+    pub(crate) fn input_frames(self) -> u64 {
+        self.presentation.timeline.frames
+    }
+    pub(crate) fn cycles(self) -> Option<u64> {
+        self.cycles
+    }
+}
+
+#[cfg(test)]
+#[path = "stream_cutover_tests.rs"]
+mod cutover_tests;
+
+/// Accepted per-revision metadata; the source's single-track clock stays fixed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct StreamTraversal {
+    presentation: StreamPresentation,
+    output_start: u64,
+}
+impl StreamTraversal {
+    /// A media seek starts a canonical traversal on the track's output grid.
+    /// Disabling loop here ends at the track endpoint, including an empty
+    /// seek-to-duration suffix; it must not select the next audible cycle.
+    pub(crate) fn seek(clock: StreamTimeline, target: u64, enabled: bool) -> EngineResult<Self> {
+        let position = clock.position(target)?;
+        Ok(Self {
+            presentation: if enabled {
+                StreamPresentation::repeated(clock, None)?
+            } else {
+                StreamPresentation::single(clock)
+            },
+            output_start: position.frame + u64::from(position.phase != 0),
+        })
+    }
+    pub(crate) fn cutover(
+        clock: StreamTimeline,
+        output_start: u64,
+        enabled: bool,
+    ) -> EngineResult<Self> {
+        let plan = StreamCutover::new(clock, output_start, enabled, 0)?;
+        Ok(Self {
+            presentation: plan.presentation(),
+            output_start,
+        })
+    }
+    pub(crate) fn presentation(self) -> StreamPresentation {
+        self.presentation
+    }
+    pub(crate) fn output_start(self) -> u64 {
+        self.output_start
+    }
+}
+
 /// Every message, including errors and EOF, belongs to exactly one traversal.
 pub enum StreamMsg {
     /// Audio format detected, can start playback
@@ -132,8 +399,8 @@ const PCM_CHUNK_SAMPLES: usize = 32 * 1024;
 /// which is the same instrument the render path's command vectors use: there is
 /// no recycle step to forget.
 pub struct PcmChunk {
-    buffer: Vec<f32>,
-    home: mpsc::Sender<Vec<f32>>,
+    buffer: pcm_buffer::Buffer,
+    home: mpsc::Sender<pcm_buffer::Buffer>,
 }
 
 impl PcmChunk {
@@ -158,16 +425,18 @@ impl Drop for PcmChunk {
         buffer.clear();
         // Never blocks and never grows. A full return channel means the producer
         // already holds more buffers than it can be using, and a closed one means
-        // the stream is gone; either way this buffer is simply released. That
-        // matters because the common caller is the audio thread.
+        // the stream is gone. Managed buffers then transfer their same allocation
+        // to CPU disposal; legacy standalone pools keep synchronous ownership.
         let _ = self.home.try_send(buffer);
     }
 }
 
 /// The producer's half of the loan: hands out chunks, takes back what returns.
 pub(crate) struct PcmPool {
-    home: mpsc::Sender<Vec<f32>>,
-    returns: mpsc::Receiver<Vec<f32>>,
+    home: mpsc::Sender<pcm_buffer::Buffer>,
+    returns: mpsc::Receiver<pcm_buffer::Buffer>,
+    cpu: Option<migo_io::audio_cpu::AudioCpu>,
+    slots: Option<Arc<tokio::sync::Semaphore>>,
 }
 
 impl PcmPool {
@@ -175,17 +444,66 @@ impl PcmPool {
         // One slot more than can be in flight, so a healthy stream never fails a
         // return for want of room.
         let (home, returns) = mpsc::channel(STREAM_CHANNEL_CAPACITY + 1);
-        Self { home, returns }
+        Self {
+            home,
+            returns,
+            cpu: None,
+            slots: None,
+        }
     }
 
-    pub(crate) fn take(&mut self) -> PcmChunk {
-        let buffer = self
-            .returns
-            .try_recv()
-            .unwrap_or_else(|_| Vec::with_capacity(PCM_CHUNK_SAMPLES));
+    /// Production pools retain CPU-only disposal when returns are full/closed.
+    pub(crate) fn with_cpu(cpu: migo_io::audio_cpu::AudioCpu) -> Self {
+        Self {
+            cpu: Some(cpu),
+            // Original return cache (C+1), publication channel C, one consumer,
+            // old pending output and one applying control/working CPU loan.
+            slots: Some(Arc::new(tokio::sync::Semaphore::new(
+                2 * STREAM_CHANNEL_CAPACITY + 4,
+            ))),
+            ..Self::new()
+        }
+    }
+
+    fn chunk(&self, buffer: pcm_buffer::Buffer) -> PcmChunk {
         PcmChunk {
             buffer,
             home: self.home.clone(),
+        }
+    }
+    fn allocate(&self, slot: Option<tokio::sync::OwnedSemaphorePermit>) -> PcmChunk {
+        self.chunk(pcm_buffer::Buffer::new(
+            Vec::with_capacity(PCM_CHUNK_SAMPLES),
+            self.cpu.as_ref(),
+            slot,
+        ))
+    }
+    // Standalone callers retain their old synchronous API. Production uses
+    // acquire so retired physical loans cannot be replaced without admission.
+    #[cfg(test)]
+    pub(crate) fn take(&mut self) -> PcmChunk {
+        if let Ok(buffer) = self.returns.try_recv() {
+            return self.chunk(buffer);
+        }
+        let slot = self.slots.as_ref().map(|slots| {
+            slots
+                .clone()
+                .try_acquire_owned()
+                .expect("managed PCM loans require async admission")
+        });
+        self.allocate(slot)
+    }
+    pub(crate) async fn acquire(&mut self) -> PcmChunk {
+        if let Ok(buffer) = self.returns.try_recv() {
+            return self.chunk(buffer);
+        }
+        let Some(slots) = self.slots.as_ref() else {
+            return self.allocate(None);
+        };
+        tokio::select! {
+            biased;
+            Some(buffer)=self.returns.recv()=>self.chunk(buffer),
+            slot=slots.clone().acquire_owned()=>self.allocate(Some(slot.expect("PCM physical loan admission closed"))),
         }
     }
 }
@@ -200,10 +518,19 @@ pub struct StreamingState {
     pub download_complete: AtomicBool,
     /// Whether cancelled
     pub cancelled: AtomicBool,
+    /// Monotonic real output consumption, independent of seeks and revisions.
+    rendered_frames: AtomicU64,
     /// Event-driven cancellation edge for tasks blocked on network I/O.
     cancel_notify: Notify,
     /// A reusable producer keeps its source and command receiver alive at EOF.
     retain_after_eof: bool,
+    /// Bound once by the CPU decoder to this exact source, across revisions.
+    timeline: std::sync::OnceLock<StreamTimeline>,
+    presentation: std::sync::OnceLock<StreamPresentation>,
+    controls: std::sync::OnceLock<mpsc::Sender<crate::stream_control::Command>>,
+    /// Test observation of an actual queued publication wait, after CPU return.
+    #[cfg(test)]
+    pub(crate) publication_waiting: AtomicBool,
 }
 
 impl StreamingState {
@@ -222,6 +549,57 @@ impl StreamingState {
         self.retain_after_eof
     }
 
+    pub(crate) fn timeline(&self) -> Option<StreamTimeline> {
+        self.timeline.get().copied()
+    }
+
+    pub(crate) fn presentation(&self) -> Option<StreamPresentation> {
+        self.presentation.get().copied()
+    }
+
+    pub(crate) fn bind_presentation(&self, presentation: StreamPresentation) -> EngineResult<()> {
+        self.bind_timeline(presentation.timeline())?;
+        if *self.presentation.get_or_init(|| presentation) != presentation {
+            return Err(EngineError::from_detail(
+                ErrorCode::IoError,
+                "changed source presentation",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn control_sender(&self) -> Option<&mpsc::Sender<crate::stream_control::Command>> {
+        self.controls.get()
+    }
+
+    pub(crate) fn install_controls(
+        &self,
+        sender: mpsc::Sender<crate::stream_control::Command>,
+    ) -> EngineResult<()> {
+        if !self.retains_source() || self.is_cancelled() {
+            return Err(EngineError::from_detail(
+                ErrorCode::InvalidArgument,
+                "inactive source control port",
+            ));
+        }
+        self.controls.set(sender).map_err(|_| {
+            EngineError::from_detail(
+                ErrorCode::InvalidArgument,
+                "source control port already installed",
+            )
+        })
+    }
+
+    pub(crate) fn bind_timeline(&self, timeline: StreamTimeline) -> EngineResult<()> {
+        if self.is_cancelled() || *self.timeline.get_or_init(|| timeline) != timeline {
+            return Err(EngineError::from_detail(
+                ErrorCode::IoError,
+                "retired or changed source timeline",
+            ));
+        }
+        Ok(())
+    }
+
     pub fn cancel(&self) {
         if !self.cancelled.swap(true, Ordering::AcqRel) {
             self.cancel_notify.notify_waiters();
@@ -230,6 +608,22 @@ impl StreamingState {
 
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn rendered_frames(&self) -> u64 {
+        self.rendered_frames.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn record_rendered_frames(&self, frames: usize) {
+        if frames != 0 && !self.is_cancelled() {
+            // Saturation stops future credit rather than wrapping into a new
+            // epoch. Only the audio consumer calls this, once per mixed block.
+            let _ =
+                self.rendered_frames
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
+                        Some(old.saturating_add(frames as u64))
+                    });
+        }
     }
 
     /// Wait without polling. Registering before the second level check closes
@@ -255,9 +649,37 @@ impl Default for StreamingState {
             bytes_total: AtomicU64::new(0),
             download_complete: AtomicBool::new(false),
             cancelled: AtomicBool::new(false),
+            rendered_frames: AtomicU64::new(0),
             cancel_notify: Notify::new(),
             retain_after_eof: false,
+            timeline: std::sync::OnceLock::new(),
+            presentation: std::sync::OnceLock::new(),
+            controls: std::sync::OnceLock::new(),
+            #[cfg(test)]
+            publication_waiting: AtomicBool::new(false),
         }
+    }
+}
+
+#[cfg(test)]
+mod rendered_progress_tests {
+    use super::*;
+
+    #[test]
+    fn consumed_credit_saturates_and_retirement_cannot_mint_more() {
+        let source = StreamingState::new();
+        source
+            .rendered_frames
+            .store(u64::MAX - 3, Ordering::Relaxed);
+        source.record_rendered_frames(8);
+        assert_eq!(source.rendered_frames(), u64::MAX);
+        source.record_rendered_frames(8);
+        assert_eq!(source.rendered_frames(), u64::MAX);
+        let source = StreamingState::new();
+        source.record_rendered_frames(3);
+        source.cancel();
+        source.record_rendered_frames(8);
+        assert_eq!(source.rendered_frames(), 3);
     }
 }
 
@@ -292,7 +714,7 @@ where
 /// Shared single-worker runtime for all audio streaming downloads.
 static STREAM_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 
-fn get_stream_runtime() -> &'static tokio::runtime::Runtime {
+pub(crate) fn get_stream_runtime() -> &'static tokio::runtime::Runtime {
     STREAM_RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
@@ -334,10 +756,16 @@ pub(crate) struct StreamPublication {
     format: Option<(u32, u32)>,
     ready_sent: bool,
     total_samples: u64,
+    expected_samples: Option<u64>,
+    presentation: Option<StreamPresentation>,
     finished: bool,
 }
 
 impl StreamPublication {
+    pub(crate) fn revision(&self) -> StreamRevision {
+        self.revision
+    }
+
     /// Call only after a source reposition has succeeded. Rejected requests
     /// leave the old traversal and its buffered messages valid.
     pub(crate) fn begin(
@@ -354,6 +782,8 @@ impl StreamPublication {
         self.revision = revision;
         self.ready_sent = false;
         self.total_samples = 0;
+        self.expected_samples = None;
+        self.presentation = None;
         self.finished = false;
         state.download_complete.store(false, Ordering::Release);
         Ok(())
@@ -366,26 +796,233 @@ impl StreamPublication {
         eof: bool,
         remaining: usize,
     ) -> EngineResult<bool> {
-        if self.finished || !eof || remaining != 0 || !self.ready_sent || self.total_samples == 0 {
+        self.validate_finish(eof, remaining)?;
+        let permit = tokio::select! {
+            biased;
+            _ = state.cancelled() => return Ok(false),
+            result = tx.reserve() => match result { Ok(permit) => permit, Err(_) => return Ok(false) },
+        };
+        self.finish_with(permit, state);
+        Ok(true)
+    }
+}
+
+/// One validated PCM frame waiting for channel slots. The producer keeps the
+/// loan here until a permit is ready, so a soft control cannot lose its bytes.
+pub(crate) struct PendingPublication {
+    pcm: Option<PcmChunk>,
+    sample_rate: u32,
+    channels: u32,
+    total: u64,
+}
+
+impl StreamPublication {
+    pub(crate) fn has_timeline(&self) -> bool {
+        self.presentation.is_some() || self.expected_samples.is_some()
+    }
+
+    pub(crate) fn bind_presentation(
+        &mut self,
+        presentation: StreamPresentation,
+        output_start: u64,
+    ) -> EngineResult<()> {
+        if self.presentation.is_some_and(|old| old != presentation) || self.finished {
+            return Err(EngineError::from_detail(
+                ErrorCode::IoError,
+                "publication presentation changed",
+            ));
+        }
+        if !presentation.is_cyclic() {
+            self.bind_timeline(presentation.timeline(), output_start)?;
+        } else {
+            let expected = presentation
+                .output_end()
+                .map(|end| {
+                    end.checked_sub(output_start)
+                        .and_then(|n| n.checked_mul(u64::from(presentation.timeline().format().1)))
+                        .ok_or_else(|| {
+                            EngineError::from_detail(
+                                ErrorCode::IoError,
+                                "invalid cyclic publication extent",
+                            )
+                        })
+                })
+                .transpose()?;
+            if self.presentation.is_some_and(|old| old != presentation)
+                || self
+                    .expected_samples
+                    .is_some_and(|old| Some(old) != expected)
+                || self
+                    .format
+                    .is_some_and(|old| old != presentation.timeline().format())
+                || expected.is_some_and(|end| self.total_samples > end)
+                || self.finished
+            {
+                return Err(EngineError::from_detail(
+                    ErrorCode::IoError,
+                    "cyclic publication extent changed",
+                ));
+            }
+            self.expected_samples = expected;
+            self.format = Some(presentation.timeline().format());
+        }
+        if self.presentation.is_some_and(|old| old != presentation) {
+            return Err(EngineError::from_detail(
+                ErrorCode::IoError,
+                "publication presentation changed",
+            ));
+        }
+        self.presentation = Some(presentation);
+        Ok(())
+    }
+
+    pub(crate) fn bind_timeline(
+        &mut self,
+        timeline: StreamTimeline,
+        output_start: u64,
+    ) -> EngineResult<()> {
+        if self
+            .presentation
+            .is_some_and(|p| p != StreamPresentation::single(timeline))
+        {
+            return Err(EngineError::from_detail(
+                ErrorCode::IoError,
+                "publication clock cannot change traversal mode",
+            ));
+        }
+        let expected = timeline
+            .output_frames()
+            .checked_sub(output_start)
+            .and_then(|frames| frames.checked_mul(u64::from(timeline.format().1)))
+            .ok_or_else(|| {
+                EngineError::from_detail(ErrorCode::IoError, "invalid publication timeline")
+            })?;
+        if self.expected_samples.is_some_and(|old| old != expected)
+            || self.format.is_some_and(|old| old != timeline.format())
+            || self.total_samples > expected
+            || self.finished
+        {
+            return Err(EngineError::from_detail(
+                ErrorCode::IoError,
+                "publication timeline changed",
+            ));
+        }
+        self.expected_samples = Some(expected);
+        self.format = Some(timeline.format());
+        Ok(())
+    }
+
+    pub(crate) fn prepare_chunk(
+        &mut self,
+        pcm: PcmChunk,
+        sample_rate: u32,
+        channels: u32,
+    ) -> EngineResult<PendingPublication> {
+        if self.finished {
+            return Err(EngineError::from_detail(
+                ErrorCode::IoError,
+                "PCM after traversal EOF",
+            ));
+        }
+        let has_format = sample_rate > 0 && channels > 0;
+        if (sample_rate != 0 || channels != 0) && !has_format
+            || !pcm.is_empty() && (!has_format || !pcm.len().is_multiple_of(channels as usize))
+        {
+            return Err(EngineError::from_detail(
+                ErrorCode::Internal,
+                "decoded audio samples had no complete PCM format",
+            ));
+        }
+        if has_format {
+            let format = (sample_rate, channels);
+            if self.format.is_some_and(|old| old != format) {
+                return Err(EngineError::from_detail(
+                    ErrorCode::IoError,
+                    "stream PCM format changed",
+                ));
+            }
+            self.format = Some(format);
+        }
+        let total = self
+            .total_samples
+            .checked_add(pcm.len() as u64)
+            .ok_or_else(|| {
+                EngineError::from_detail(ErrorCode::Internal, "stream PCM counter overflow")
+            })?;
+        if self
+            .expected_samples
+            .is_some_and(|expected| total > expected)
+        {
+            return Err(EngineError::from_detail(
+                ErrorCode::IoError,
+                "PCM exceeds publication timeline",
+            ));
+        }
+        Ok(PendingPublication {
+            pcm: Some(pcm),
+            sample_rate,
+            channels,
+            total,
+        })
+    }
+
+    pub(crate) fn has_pending(&self, pending: &PendingPublication) -> bool {
+        !self.ready_sent && pending.sample_rate > 0
+            || pending.pcm.as_ref().is_some_and(|pcm| !pcm.is_empty())
+    }
+
+    pub(crate) fn publish_next(
+        &mut self,
+        pending: &mut PendingPublication,
+        permit: mpsc::Permit<'_, StreamMsg>,
+    ) {
+        if !self.ready_sent && pending.sample_rate > 0 {
+            permit.send(StreamMsg::Ready {
+                revision: self.revision,
+                sample_rate: pending.sample_rate,
+                channels: pending.channels,
+            });
+            self.ready_sent = true;
+        } else {
+            let pcm = pending.pcm.take().expect("pending PCM owner");
+            assert!(!pcm.is_empty(), "publishing requires pending PCM");
+            permit.send(StreamMsg::Samples {
+                revision: self.revision,
+                pcm,
+            });
+            self.total_samples = pending.total;
+        }
+    }
+
+    pub(crate) fn validate_finish(&self, eof: bool, remaining: usize) -> EngineResult<()> {
+        let complete = self
+            .expected_samples
+            .map_or(self.total_samples > 0, |n| n == self.total_samples);
+        if self.finished
+            || !eof
+            || remaining != 0
+            || !self.ready_sent
+            || !complete
+            || self.presentation.is_some_and(|p| p.output_end().is_none())
+        {
             return Err(EngineError::from_detail(
                 ErrorCode::IoError,
                 "stream decoder finished without complete audio input",
             ));
         }
-        if !crate::streaming_transport::send(
-            tx,
-            state,
-            StreamMsg::Done {
-                revision: self.revision,
-            },
-        )
-        .await
-        {
-            return Ok(false);
-        }
+        Ok(())
+    }
+
+    pub(crate) fn finish_with(
+        &mut self,
+        permit: mpsc::Permit<'_, StreamMsg>,
+        state: &StreamingState,
+    ) {
+        permit.send(StreamMsg::Done {
+            revision: self.revision,
+        });
         self.finished = true;
         state.download_complete.store(true, Ordering::Release);
-        Ok(true)
     }
 }
 
@@ -398,320 +1035,16 @@ pub(crate) async fn publish_stream_chunk(
     channels: u32,
     publication: &mut StreamPublication,
 ) -> EngineResult<bool> {
-    if publication.finished {
-        return Err(EngineError::from_detail(
-            ErrorCode::IoError,
-            "PCM after traversal EOF",
-        ));
-    }
-    let has_format = sample_rate > 0 && channels > 0;
-    if (sample_rate != 0 || channels != 0) && !has_format
-        || !pcm.is_empty() && (!has_format || !pcm.len().is_multiple_of(channels as usize))
-    {
-        return Err(EngineError::from_detail(
-            ErrorCode::Internal,
-            "decoded audio samples had no complete PCM format",
-        ));
-    }
-    if has_format {
-        let format = (sample_rate, channels);
-        if publication.format.is_some_and(|old| old != format) {
-            return Err(EngineError::from_detail(
-                ErrorCode::IoError,
-                "stream PCM format changed",
-            ));
-        }
-        publication.format = Some(format);
-    }
-    let total = publication
-        .total_samples
-        .checked_add(pcm.len() as u64)
-        .ok_or_else(|| {
-            EngineError::from_detail(ErrorCode::Internal, "stream PCM counter overflow")
-        })?;
-    if !publication.ready_sent && has_format {
-        if !crate::streaming_transport::send(
-            tx,
-            state,
-            StreamMsg::Ready {
-                revision: publication.revision,
-                sample_rate,
-                channels,
-            },
-        )
-        .await
-        {
-            return Ok(false);
-        }
-        publication.ready_sent = true;
-    }
-    if !pcm.is_empty() {
-        if !crate::streaming_transport::send(
-            tx,
-            state,
-            StreamMsg::Samples {
-                revision: publication.revision,
-                pcm,
-            },
-        )
-        .await
-        {
-            return Ok(false);
-        }
-        publication.total_samples = total;
+    let mut pending = publication.prepare_chunk(pcm, sample_rate, channels)?;
+    while publication.has_pending(&pending) {
+        let permit = tokio::select! {
+            biased;
+            _ = state.cancelled() => return Ok(false),
+            result = tx.reserve() => match result { Ok(permit) => permit, Err(_) => return Ok(false) },
+        };
+        publication.publish_next(&mut pending, permit);
     }
     Ok(true)
-}
-
-/// Bytes of undecoded MP3 the receive buffer starts out able to hold.
-///
-/// Enough for a typical network chunk plus the lookahead the decoder keeps
-/// behind its cursor, so the buffer settles at one allocation for the stream.
-const RECEIVE_BUFFER_BYTES: usize = 64 * 1024;
-
-/// MP3 streaming decoder.
-///
-/// Everything here is owned once and reused: the minimp3 decoder (whose state a
-/// frame's main data is entitled to reach back into), the receive buffer, and
-/// the scratch a frame is converted through on the way to the resampler. What a
-/// chunk costs is a memcpy of its bytes and the samples it produces, and nothing
-/// else.
-struct Mp3StreamDecoder {
-    frames: Mp3FrameDecoder,
-    /// Bytes received and not yet decoded.
-    buffer: Vec<u8>,
-    /// Detected sample rate
-    sample_rate: u32,
-    /// Detected channels
-    channels: u32,
-    /// Target sample rate for resampling
-    target_sample_rate: u32,
-    /// Resampler state (if needed)
-    resampler: Option<crate::resampler::StreamResampler>,
-    /// One frame as `f32`, reused. Only the resampling path needs it; without a
-    /// resampler a frame goes straight into the caller's buffer.
-    scratch: Vec<f32>,
-}
-
-impl crate::streaming_transport::Decoder for Mp3StreamDecoder {
-    fn step(
-        &mut self,
-        input: &[u8],
-        eof: bool,
-        pcm: &mut Vec<f32>,
-        cancel: &AtomicBool,
-    ) -> EngineResult<crate::streaming_transport::Step> {
-        use crate::streaming_transport::{Progress, Step};
-        if cancel.load(Ordering::Acquire) {
-            return Ok(Step {
-                consumed: 0,
-                progress: Progress::Cancelled,
-                sample_rate: 0,
-                channels: 0,
-            });
-        }
-        // Bound the legacy fallback too. A single HTTP chunk may contain an
-        // entire file; its size must not determine a blocking-pool quantum or
-        // grow retained encoded bytes without limit.
-        let consumed = input
-            .len()
-            .min(4096)
-            .min(RECEIVE_BUFFER_BYTES - self.buffer.len());
-        self.push_data(&input[..consumed]);
-        let (sample_rate, channels) = if eof {
-            self.flush_into(pcm)
-        } else {
-            self.decode_into(pcm)
-        };
-        Ok(Step {
-            consumed,
-            progress: if eof {
-                Progress::Finished
-            } else {
-                Progress::NeedInput
-            },
-            sample_rate,
-            channels,
-        })
-    }
-}
-
-impl Mp3StreamDecoder {
-    fn new(target_sample_rate: u32) -> Self {
-        Self {
-            frames: Mp3FrameDecoder::new(),
-            buffer: Vec::with_capacity(RECEIVE_BUFFER_BYTES),
-            sample_rate: 0,
-            channels: 0,
-            target_sample_rate,
-            resampler: None,
-            scratch: Vec::with_capacity(MAX_SAMPLES_PER_FRAME),
-        }
-    }
-
-    fn push_data(&mut self, data: &[u8]) {
-        self.buffer.extend_from_slice(data);
-    }
-
-    /// Decode what the buffer can spare, appending to `out`.
-    ///
-    /// Leaves a lookahead behind the cursor so minimp3 can confirm the next
-    /// frame's header and keep its state; see [`STREAM_LOOKAHEAD_BYTES`]. What
-    /// the lookahead strands at the end of the stream is [`Self::flush_into`]'s
-    /// problem, and it has a way past it.
-    fn decode_into(&mut self, out: &mut Vec<f32>) -> (u32, u32) {
-        self.decode_with_lookahead(STREAM_LOOKAHEAD_BYTES, out)
-    }
-
-    /// Decode everything that is left, for a stream that has ended.
-    ///
-    /// Isolation first, and **the order is the fix, not a preference.** An
-    /// in-place decode that fails resets minimp3 — and what it resets is the bit
-    /// reservoir the frame it just failed on is entitled to. Trying in place
-    /// first therefore destroys the state needed to recover the very frame it was
-    /// reaching for; measured, that cost the last frame of every tagged stream
-    /// and all six frames of a short one.
-    ///
-    /// The in-place pass is kept as a fallback for the one thing isolation cannot
-    /// do: get past leading bytes that are not audio and are larger than a frame,
-    /// which an ID3v2 tag routinely is. It runs only when isolation could not move
-    /// at all, so a failed attempt cannot cost a frame that was recoverable.
-    fn flush_into(&mut self, out: &mut Vec<f32>) -> (u32, u32) {
-        let before = self.buffer.len();
-        self.isolate_remaining_frames(out);
-
-        if !self.buffer.is_empty() && self.buffer.len() == before {
-            self.decode_with_lookahead(0, out);
-            self.isolate_remaining_frames(out);
-        }
-
-        // The resampler defers any output frame whose interpolation neighbour has
-        // not arrived. At the end of a stream it never will, so without this the
-        // tail of every resampled track was dropped -- a step discontinuity at a
-        // loop seam, heard as a click on each repeat.
-        if let Some(resampler) = self.resampler.as_mut() {
-            resampler.flush_into(out);
-        }
-
-        (self.output_sample_rate(), self.channels)
-    }
-
-    #[inline]
-    fn output_sample_rate(&self) -> u32 {
-        if self.resampler.is_some() {
-            self.target_sample_rate
-        } else {
-            self.sample_rate
-        }
-    }
-
-    /// Decode what is left one isolated frame at a time.
-    ///
-    /// minimp3 rejects a frame it cannot chain to a successor, so a stream ending
-    /// in an ID3v1 tag strands its final frame — and a stream shorter than the
-    /// lookahead, which decodes nothing until the flush and therefore arrives
-    /// here with a decoder that has never run, strands *every* frame it has. Both
-    /// were measured: the second was a short remote clip decoding to silence
-    /// outright.
-    ///
-    /// Handing the decoder exactly one frame is what gets past it, and the length
-    /// comes from a throwaway decoder rather than from the real one, whose bit
-    /// reservoir a rejected probe would reset. The real decoder then sees a buffer
-    /// that is exactly one frame, which is its state-preserving fast path.
-    fn isolate_remaining_frames(&mut self, out: &mut Vec<f32>) {
-        let mut probe: Option<Mp3FrameDecoder> = None;
-        let mut previous_length: Option<usize> = None;
-
-        while !self.buffer.is_empty() {
-            let probe = probe.get_or_insert_with(Mp3FrameDecoder::new);
-            let Some((skip, length)) = first_frame_at_front(probe, &self.buffer, previous_length)
-            else {
-                break;
-            };
-            // Whatever sits in front of the frame goes first: the rule that lets a
-            // lone frame through wants it at offset zero.
-            if skip > 0 {
-                self.buffer.drain(..skip);
-                continue;
-            }
-            previous_length = Some(length);
-
-            match self.decode_step(0, length, out) {
-                Some(consumed) if consumed > 0 => {
-                    self.buffer.drain(..consumed);
-                }
-                // A whole frame that gave nothing -- its main data in a reservoir
-                // this stream never had -- is that frame lost, as in a whole-file
-                // decode. Stopping here left it to the in-place pass, which
-                // decoded it again over a reservoir now holding its own bytes.
-                _ => {
-                    self.buffer.drain(..length);
-                }
-            }
-        }
-    }
-
-    fn decode_with_lookahead(&mut self, lookahead: usize, out: &mut Vec<f32>) -> (u32, u32) {
-        let mut pos = 0usize;
-
-        while self.buffer.len().saturating_sub(pos) > lookahead {
-            let take = self.buffer.len() - pos;
-            match self.decode_step(pos, take, out) {
-                Some(consumed) if consumed > 0 => pos += consumed,
-                _ => break,
-            }
-        }
-
-        if pos > 0 {
-            self.buffer.drain(..pos);
-        }
-
-        (self.output_sample_rate(), self.channels)
-    }
-
-    /// One decode against `buffer[pos..pos + take]`, appending any frame it
-    /// produced. Returns the bytes it got past, or `None` for no progress.
-    ///
-    /// The two callers differ only in how much of the buffer they offer, which is
-    /// the whole of the difference between decoding in place and isolating a
-    /// frame — so they share this and cannot drift apart in how a frame is
-    /// adopted.
-    fn decode_step(&mut self, pos: usize, take: usize, out: &mut Vec<f32>) -> Option<usize> {
-        match self.frames.decode(&self.buffer[pos..pos + take]) {
-            Mp3Step::NeedMoreData => None,
-            Mp3Step::Skipped(skipped) => Some(skipped),
-            Mp3Step::Frame {
-                pcm,
-                sample_rate,
-                channels,
-                consumed,
-            } => {
-                if self.sample_rate == 0 {
-                    self.sample_rate = sample_rate;
-                    self.channels = channels;
-
-                    if sample_rate != self.target_sample_rate {
-                        self.resampler = Some(crate::resampler::StreamResampler::new(
-                            sample_rate,
-                            self.target_sample_rate,
-                            channels,
-                        ));
-                    }
-                }
-
-                match self.resampler.as_mut() {
-                    Some(resampler) => {
-                        self.scratch.clear();
-                        append_as_f32(pcm, &mut self.scratch);
-                        resampler.process_into(&self.scratch, out);
-                    }
-                    None => append_as_f32(pcm, out),
-                }
-
-                Some(consumed)
-            }
-        }
-    }
 }
 
 #[cfg(test)]
@@ -747,7 +1080,7 @@ mod tests {
                             cpu.occupy();
                             decoder.push_data(A_CHUNK);
                             decoder.decode_into(&mut Vec::new());
-                            decoder.buffer.len()
+                            decoder.buffered_len()
                         })
                         .await
                         .expect("the decode step must complete");
@@ -986,6 +1319,7 @@ mod tests {
     /// the allocation gate above is the only other thing that would notice.
     #[test]
     fn a_returned_chunk_is_the_buffer_the_next_one_is_written_into() {
+        super::pcm_retirement_tests::retirement();
         let mut pool = PcmPool::new();
 
         let mut first = pool.take();
@@ -1256,6 +1590,97 @@ mod tests {
 }
 
 #[cfg(test)]
+mod timeline_publication_tests {
+    use super::*;
+    fn pcm(pool: &mut PcmPool, n: usize) -> PcmChunk {
+        let mut chunk = pool.take();
+        chunk.buffer_mut().resize(n, 0.25);
+        chunk
+    }
+    #[tokio::test]
+    async fn only_a_proven_output_endpoint_can_publish_an_empty_traversal() {
+        let timeline = StreamTimeline::new(100, 44100, 16000, 2).unwrap();
+        for start in [None, Some(0), Some(timeline.output_frames())] {
+            let state = StreamingState::new();
+            let (tx, mut rx) = stream_channel();
+            let mut pool = PcmPool::new();
+            let mut publication = StreamPublication::default();
+            if let Some(start) = start {
+                publication.bind_timeline(timeline, start).unwrap();
+            }
+            publish_stream_chunk(&tx, &state, pcm(&mut pool, 0), 16000, 2, &mut publication)
+                .await
+                .unwrap();
+            assert!(matches!(rx.try_recv(), Ok(StreamMsg::Ready { .. })));
+            assert!(publication.finish(&tx, &state, false, 0).await.is_err());
+            assert!(publication.finish(&tx, &state, true, 1).await.is_err());
+            let complete = publication.finish(&tx, &state, true, 0).await;
+            if start == Some(timeline.output_frames()) {
+                assert!(complete.unwrap());
+                assert!(matches!(rx.try_recv(), Ok(StreamMsg::Done { .. })));
+                assert!(publication.finish(&tx, &state, true, 0).await.is_err());
+            } else {
+                assert!(complete.is_err());
+                assert!(rx.try_recv().is_err());
+            }
+        }
+    }
+    #[tokio::test]
+    async fn clocked_publication_rejects_short_excess_and_changed_format() {
+        let timeline = StreamTimeline::new(100, 44100, 16000, 2).unwrap();
+        assert_eq!(timeline.output_frames(), 37);
+        let state = StreamingState::new();
+        let (tx, mut rx) = stream_channel();
+        let mut pool = PcmPool::new();
+        let mut publication = StreamPublication::default();
+        publication.bind_timeline(timeline, 0).unwrap();
+        assert!(publication.bind_timeline(timeline, 38).is_err());
+        let foreign_format = StreamTimeline::new(37, 48000, 48000, 2).unwrap();
+        assert!(publication.bind_timeline(foreign_format, 0).is_err());
+        assert!(
+            publication
+                .prepare_chunk(pcm(&mut pool, 0), 48000, 2)
+                .is_err()
+        );
+        publish_stream_chunk(&tx, &state, pcm(&mut pool, 72), 16000, 2, &mut publication)
+            .await
+            .unwrap();
+        assert!(matches!(rx.try_recv(), Ok(StreamMsg::Ready { .. })));
+        assert!(matches!(rx.try_recv(), Ok(StreamMsg::Samples { .. })));
+        assert!(publication.finish(&tx, &state, true, 0).await.is_err());
+        assert!(
+            publication
+                .prepare_chunk(pcm(&mut pool, 4), 16000, 2)
+                .is_err()
+        );
+        publish_stream_chunk(&tx, &state, pcm(&mut pool, 2), 16000, 2, &mut publication)
+            .await
+            .unwrap();
+        assert!(matches!(rx.try_recv(), Ok(StreamMsg::Samples { .. })));
+        assert!(publication.finish(&tx, &state, true, 0).await.unwrap());
+    }
+    #[test]
+    fn a_new_revision_resets_its_length_and_invalid_binding_preserves_the_ledger() {
+        let state = StreamingState::new();
+        let timeline = StreamTimeline::new(100, 44100, 16000, 2).unwrap();
+        let mut publication = StreamPublication::default();
+        publication.bind_timeline(timeline, 37).unwrap();
+        assert!(publication.has_timeline());
+        assert!(publication.bind_timeline(timeline, 0).is_err());
+        assert_eq!(publication.expected_samples, Some(0));
+        publication
+            .begin(StreamRevision::INITIAL.checked_next().unwrap(), &state)
+            .unwrap();
+        assert!(!publication.has_timeline());
+        publication.bind_timeline(timeline, 0).unwrap();
+        assert_eq!(publication.expected_samples, Some(74));
+        let overflow = StreamTimeline::new(u64::MAX, 48000, 48000, 2).unwrap();
+        assert!(publication.bind_timeline(overflow, 0).is_err());
+        assert_eq!(publication.expected_samples, Some(74));
+    }
+}
+
+#[cfg(test)]
 mod revision_tests {
     use super::*;
 
@@ -1414,3 +1839,9 @@ mod revision_tests {
         assert!(!state.download_complete.load(Ordering::Acquire));
     }
 }
+
+#[path = "stream_pcm_buffer.rs"]
+mod pcm_buffer;
+#[cfg(test)]
+#[path = "stream_pcm_retirement_tests.rs"]
+mod pcm_retirement_tests;

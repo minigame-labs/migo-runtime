@@ -1,0 +1,283 @@
+--- minimp3-sys-0.6.0/minimp3/minimp3_ex.h
++++ minimp3-sys-0.6.0/minimp3/minimp3_ex.h
+@@ -211,13 +211,19 @@
+         return 0; /* side info corrupted */
+ 
+     const uint8_t *tag = frame + HDR_SIZE + bs->pos/8;
++    if (frame_size < 8 || tag > frame + frame_size - 8)
++        return 0;
+     if (memcmp(g_xing_tag, tag, 4) && memcmp(g_info_tag, tag, 4))
+         return 0;
+     int flags = tag[7];
+     if (!((flags & FRAMES_FLAG)))
+         return -1;
+     tag += 8;
+-    *frames = (uint32_t)(tag[0] << 24) | (tag[1] << 16) | (tag[2] << 8) | tag[3];
++    size_t fields = 4 + ((flags & BYTES_FLAG) ? 4 : 0) +
++        ((flags & TOC_FLAG) ? 100 : 0) + ((flags & VBR_SCALE_FLAG) ? 4 : 0);
++    if ((size_t)(frame + frame_size - tag) <= fields)
++        return 0;
++    *frames = ((uint32_t)tag[0] << 24) | ((uint32_t)tag[1] << 16) | ((uint32_t)tag[2] << 8) | tag[3];
+     tag += 4;
+     if (flags & BYTES_FLAG)
+         tag += 4;
+@@ -228,9 +234,9 @@
+     *delay = *padding = 0;
+     if (*tag)
+     {   /* extension, LAME, Lavc, etc. Should be the same structure. */
++        if ((size_t)(frame + frame_size - tag) <= 35)
++            return 0;
+         tag += 21;
+-        if (tag - frame + 14 >= frame_size)
+-            return 0;
+         *delay   = ((tag[0] << 4) | (tag[1] >> 4)) + (528 + 1);
+         *padding = (((tag[1] & 0xF) << 8) | tag[2]) - (528 + 1);
+     }
+@@ -853,6 +859,52 @@
+     return 0;
+ }
+ 
++/* Shared by the upstream reader and the bounded single-frame bridge. */
++static int mp3dec_ex_prepare_frame(mp3dec_ex_t *dec, const uint8_t *dec_buf, mp3dec_frame_info_t *frame_info)
++{
++    if (dec->info.hz != frame_info->hz || dec->info.layer != frame_info->layer)
++    {
++        return MP3D_E_DECODE;
++    }
++    if (dec->buffer_samples)
++    {
++        dec->buffer_samples *= frame_info->channels;
++        if (dec->to_skip)
++        {
++            size_t skip = MINIMP3_MIN(dec->buffer_samples, dec->to_skip);
++            dec->buffer_consumed += skip;
++            dec->to_skip -= skip;
++        }
++        if (
++#ifdef MINIMP3_ALLOW_MONO_STEREO_TRANSITION
++            !(dec->flags & MP3D_ALLOW_MONO_STEREO_TRANSITION) &&
++#endif
++            dec->buffer_consumed != dec->buffer_samples && dec->info.channels != frame_info->channels)
++        {
++            return MP3D_E_DECODE;
++        }
++    } else if (dec->to_skip)
++    {   /* In mp3 decoding not always can start decode from any frame because of bit reservoir,
++           count skip samples for such frames */
++        int frame_samples = hdr_frame_samples(dec_buf)*frame_info->channels;
++        dec->to_skip -= MINIMP3_MIN(frame_samples, dec->to_skip);
++    }
++    return 0;
++}
++
++static size_t mp3dec_ex_take_frame(mp3dec_ex_t *dec, size_t max_samples)
++{
++    size_t out_samples = MINIMP3_MIN((size_t)(dec->buffer_samples - dec->buffer_consumed), max_samples);
++    if (dec->detected_samples)
++    {   /* count decoded samples to properly cut padding */
++        if (dec->cur_sample + out_samples >= dec->detected_samples)
++            out_samples = dec->detected_samples - dec->cur_sample;
++    }
++    dec->cur_sample += out_samples;
++    dec->buffer_consumed += out_samples;
++    return out_samples;
++}
++
+ size_t mp3dec_ex_read_frame(mp3dec_ex_t *dec, mp3d_sample_t **buf, mp3dec_frame_info_t *frame_info, size_t max_samples)
+ {
+     if (!dec || !buf || !frame_info)
+@@ -904,47 +956,15 @@
+             dec->buffer_samples = mp3dec_decode_frame(&dec->mp3d, dec_buf, MINIMP3_MIN(buf_size, (uint64_t)INT_MAX), dec->buffer, frame_info);
+         }
+         dec->buffer_consumed = 0;
+-        if (dec->info.hz != frame_info->hz || dec->info.layer != frame_info->layer)
+-        {
+-return_e_decode:
++        if (mp3dec_ex_prepare_frame(dec, dec_buf, frame_info))
++        {
+             dec->last_error = MP3D_E_DECODE;
+             return 0;
+         }
+-        if (dec->buffer_samples)
+-        {
+-            dec->buffer_samples *= frame_info->channels;
+-            if (dec->to_skip)
+-            {
+-                size_t skip = MINIMP3_MIN(dec->buffer_samples, dec->to_skip);
+-                dec->buffer_consumed += skip;
+-                dec->to_skip -= skip;
+-            }
+-            if (
+-#ifdef MINIMP3_ALLOW_MONO_STEREO_TRANSITION
+-                !(dec->flags & MP3D_ALLOW_MONO_STEREO_TRANSITION) &&
+-#endif
+-                dec->buffer_consumed != dec->buffer_samples && dec->info.channels != frame_info->channels)
+-            {
+-                goto return_e_decode;
+-            }
+-        } else if (dec->to_skip)
+-        {   /* In mp3 decoding not always can start decode from any frame because of bit reservoir,
+-               count skip samples for such frames */
+-            int frame_samples = hdr_frame_samples(dec_buf)*frame_info->channels;
+-            dec->to_skip -= MINIMP3_MIN(frame_samples, dec->to_skip);
+-        }
+         dec->offset += frame_info->frame_bytes;
+     }
+-    size_t out_samples = MINIMP3_MIN((size_t)(dec->buffer_samples - dec->buffer_consumed), max_samples);
+-    if (dec->detected_samples)
+-    {   /* count decoded samples to properly cut padding */
+-        if (dec->cur_sample + out_samples >= dec->detected_samples)
+-            out_samples = dec->detected_samples - dec->cur_sample;
+-    }
+-    dec->cur_sample += out_samples;
+     *buf = dec->buffer + dec->buffer_consumed;
+-    dec->buffer_consumed += out_samples;
+-    return out_samples;
++    return mp3dec_ex_take_frame(dec, max_samples);
+ }
+ 
+ size_t mp3dec_ex_read(mp3dec_ex_t *dec, mp3d_sample_t *buf, size_t samples)
+--- minimp3-sys-0.6.0/minimp3.c
++++ minimp3-sys-0.6.0/minimp3.c
+@@ -1 +1,111 @@
+-#include <minimp3.h>
++#include <stdlib.h>
++#ifdef MIGO_MINIMP3_TEST
++static size_t migo_heap_calls, migo_live_allocations;
++static void *migo_malloc(size_t n) { void *p = malloc(n); migo_heap_calls++; if (p) migo_live_allocations++; return p; }
++static void *migo_realloc(void *p, size_t n) { int was_null = !p; void *q = realloc(p, n); migo_heap_calls++; if (q && was_null) migo_live_allocations++; return q; }
++static void migo_free(void *p) { if (p) migo_live_allocations--; free(p); }
++size_t migo_mp3_test_heap_calls(void) { return migo_heap_calls; }
++size_t migo_mp3_test_live_allocations(void) { return migo_live_allocations; }
++#define malloc migo_malloc
++#define realloc migo_realloc
++#define free migo_free
++#endif
++#define MINIMP3_NO_STDIO
++#include <minimp3_ex.h>
++#include "migo_presentation.h"
++#ifdef MIGO_MINIMP3_TEST
++static size_t migo_codec_calls;
++__attribute__((no_instrument_function))
++void __cyg_profile_func_enter(void *function, void *caller) {
++    (void)caller;
++    if (function == (void *)mp3dec_decode_frame) migo_codec_calls++;
++}
++__attribute__((no_instrument_function))
++void __cyg_profile_func_exit(void *function, void *caller) { (void)function; (void)caller; }
++size_t migo_mp3_test_codec_calls(void) { return migo_codec_calls; }
++/* Correctness oracle only: the original unbounded reader is never a step. */
++int migo_mp3_test_full_reader(const uint8_t *data, size_t size,
++    mp3d_sample_t *output, size_t capacity, size_t *actual)
++{
++    mp3dec_ex_t reader;
++    int status = mp3dec_ex_open_buf(&reader, data, size, MP3D_DO_NOT_SCAN);
++    if (status) return status;
++    *actual = mp3dec_ex_read(&reader, output, capacity);
++    status = reader.last_error;
++    mp3dec_ex_close(&reader);
++    return status;
++}
++#endif
++
++struct migo_mp3_presentation {
++    mp3dec_ex_t state;
++    int initialized;
++};
++
++migo_mp3_presentation *migo_mp3_presentation_new(void)
++{
++    migo_mp3_presentation *p = (migo_mp3_presentation *)malloc(sizeof(*p));
++    if (p) memset(p, 0, sizeof(*p));
++    return p;
++}
++
++void migo_mp3_presentation_free(migo_mp3_presentation *p) { free(p); }
++
++int migo_mp3_presentation_begin(migo_mp3_presentation *p, const uint8_t *frame,
++    int size, int free_format_bytes, const mp3dec_frame_info_t *info,
++    uint64_t limit, uint64_t *expected)
++{
++    if (!p || p->initialized || !frame || size < HDR_SIZE || size > MAX_FREE_FORMAT_FRAME_SIZE || !info || !expected ||
++        info->channels < 1 || info->channels > 2 || info->hz <= 0 ||
++        info->layer < 1 || info->layer > 3 ||
++        free_format_bytes < 0 || free_format_bytes > MAX_FREE_FORMAT_FRAME_SIZE || !hdr_valid(frame) ||
++        hdr_frame_bytes(frame, free_format_bytes) + hdr_padding(frame) != size)
++        return MP3D_E_PARAM;
++    mp3dec_frame_info_t measured = *info;
++    p->state.flags = MP3D_DO_NOT_SCAN;
++    int status = mp3dec_load_index(&p->state, frame, size, free_format_bytes,
++        (size_t)size, 0, &measured);
++    p->initialized = 1;
++    if ((status != MP3D_E_USER && status != 0) || p->state.index.frames ||
++        p->state.detected_samples > MINIMP3_MIN(limit, UINT64_C(16777216)))
++    {
++        p->state.last_error = MP3D_E_DECODE;
++        return MP3D_E_DECODE;
++    }
++    *expected = p->state.detected_samples;
++    return p->state.start_offset == (uint64_t)size;
++}
++
++int migo_mp3_presentation_decode(migo_mp3_presentation *p, mp3dec_t *decoder,
++    const uint8_t *input, int size, mp3d_sample_t *pcm,
++    mp3dec_frame_info_t *info, int *skip)
++{
++    if (!p || !p->initialized || p->state.last_error || !decoder || !input ||
++        size < HDR_SIZE || size > 8192 || !pcm || !info || !skip)
++        return MP3D_E_PARAM;
++    mp3dec_ex_t *state = &p->state;
++    int samples = mp3dec_decode_frame(decoder, input, size, pcm, info);
++    *skip = 0;
++    state->buffer_samples = samples;
++    state->buffer_consumed = 0;
++    if (!info->frame_bytes) return 0;
++    if (info->frame_offset < 0 || info->frame_offset > size - HDR_SIZE ||
++        info->frame_bytes > size ||
++        mp3dec_ex_prepare_frame(state, input + info->frame_offset, info))
++    {
++        state->last_error = MP3D_E_DECODE;
++        return MP3D_E_DECODE;
++    }
++    *skip = state->buffer_consumed;
++    if (state->detected_samples && state->cur_sample >= state->detected_samples)
++        return 0;
++    return (int)mp3dec_ex_take_frame(state, MINIMP3_MAX_SAMPLES_PER_FRAME);
++}
++
++int migo_mp3_presentation_finish(const migo_mp3_presentation *p)
++{
++    if (!p || !p->initialized || p->state.last_error ||
++        (p->state.detected_samples && p->state.cur_sample != p->state.detected_samples))
++        return MP3D_E_DECODE;
++    return 0;
++}
+--- /dev/null
++++ minimp3-sys-0.6.0/migo_presentation.h
+@@ -0,0 +1,26 @@
++/* Private bounded adapter to minimp3_ex; the caller measures a complete first
++ * frame through minimp3 and owns the encoded buffer and mp3dec_t. No index/IO
++ * reader is opened. begin calls the upstream metadata callback once; decode
++ * calls the existing codec once, then the shared upstream trimming helpers.
++ * All sample counts and skip offsets are interleaved, across every channel.
++ * Caller limits input windows and yields/checks cancellation between calls.
++ */
++#ifndef MIGO_PRESENTATION_H
++#define MIGO_PRESENTATION_H
++#include "minimp3/minimp3.h"
++#include <stdint.h>
++typedef struct migo_mp3_presentation migo_mp3_presentation;
++migo_mp3_presentation *migo_mp3_presentation_new(void);
++void migo_mp3_presentation_free(migo_mp3_presentation *);
++/* Returns 1 to skip the tag frame, 0 for ordinary PCM, or a negative error.
++ * expected=0 retains the upstream unknown-duration path. No heap allocation. */
++int migo_mp3_presentation_begin(migo_mp3_presentation *, const uint8_t *, int,
++    int, const mp3dec_frame_info_t *, uint64_t, uint64_t *);
++/* Returns interleaved samples in pcm[skip..skip+count], or a negative error.
++ * The original minimp3 consumed-byte fields remain in info, including when
++ * trimming consumes the whole frame. Does not publish partial-file success. */
++int migo_mp3_presentation_decode(migo_mp3_presentation *, mp3dec_t *,
++    const uint8_t *, int, mp3d_sample_t *, mp3dec_frame_info_t *, int *);
++/* Reject a known-length stream that ended before its declared presentation. */
++int migo_mp3_presentation_finish(const migo_mp3_presentation *);
++#endif

@@ -61,16 +61,16 @@ mod audio_aud11_tests {
             loop {
                 match rx.try_recv() {
                     Ok(AudioCmd::GetAnalyserByteTimeDomainData { resp, .. }) => {
-                        let _ = resp.send(Ok(Vec::new()));
+                        let _ = resp.send(Ok(Vec::new().into()));
                     }
                     Ok(AudioCmd::GetAnalyserFloatTimeDomainData { resp, .. }) => {
-                        let _ = resp.send(Ok(Vec::new()));
+                        let _ = resp.send(Ok(Vec::new().into()));
                     }
                     Ok(AudioCmd::GetAnalyserByteFrequencyData { resp, .. }) => {
-                        let _ = resp.send(Ok(Vec::new()));
+                        let _ = resp.send(Ok(Vec::new().into()));
                     }
                     Ok(AudioCmd::GetAnalyserFloatFrequencyData { resp, .. }) => {
-                        let _ = resp.send(Ok(Vec::new()));
+                        let _ = resp.send(Ok(Vec::new().into()));
                     }
                     Ok(_) => {}
                     Err(crossbeam_channel::TryRecvError::Empty) => {

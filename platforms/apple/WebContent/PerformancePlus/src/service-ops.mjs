@@ -299,4 +299,5 @@ export const SERVICE_OP = Object.freeze({
   op_game_recorder_stop: 289,
   op_game_recorder_next_event: 290,
   op_share_game_recording: 291,
+  op_inner_audio_set_start_time: 292,
 });

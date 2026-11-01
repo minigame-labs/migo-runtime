@@ -15,18 +15,26 @@ use crate::limits::{AudioAggregateLedger, AudioAggregatePermit, MAX_AUDIO_CACHE_
 /// Decoded audio retained by the cache and any player that references it.
 ///
 /// The permit is inside the shared value, so eviction only drops the cache's
-/// Arc. Physical ownership remains charged until the final Arc is released.
+/// Arc. Managed large backing stays charged through its actual CPU disposal.
 pub struct CachedAudio {
-    audio: DecodedAudio,
-    _permit: AudioAggregatePermit,
+    audio: retirement::Value,
+    source_timeline: Option<crate::streaming::StreamTimeline>,
 }
 
 impl CachedAudio {
-    fn new(audio: DecodedAudio, permit: AudioAggregatePermit) -> Self {
+    fn new(
+        audio: DecodedAudio,
+        permit: AudioAggregatePermit,
+        source_timeline: Option<crate::streaming::StreamTimeline>,
+        cpu: Option<&migo_io::audio_cpu::AudioCpu>,
+    ) -> Self {
         Self {
-            audio,
-            _permit: permit,
+            audio: retirement::Value::new(audio, permit, cpu),
+            source_timeline,
         }
+    }
+    pub(crate) fn source_timeline(&self) -> Option<crate::streaming::StreamTimeline> {
+        self.source_timeline
     }
 }
 
@@ -55,6 +63,7 @@ pub struct AudioCache {
     max_size: usize,
     access_counter: u64,
     aggregate: Arc<AudioAggregateLedger>,
+    cpu: Option<migo_io::audio_cpu::AudioCpu>,
 }
 
 impl AudioCache {
@@ -63,6 +72,13 @@ impl AudioCache {
             MAX_AUDIO_CACHE_BYTES,
             AudioAggregateLedger::process_global(),
         )
+    }
+
+    pub(crate) fn with_cpu(cpu: migo_io::audio_cpu::AudioCpu) -> Self {
+        Self {
+            cpu: Some(cpu),
+            ..Self::new()
+        }
     }
 
     const DEFAULT_CACHE_CAPACITY: usize = 16;
@@ -82,6 +98,7 @@ impl AudioCache {
             max_size,
             access_counter: 0,
             aggregate,
+            cpu: None,
         }
     }
 
@@ -112,6 +129,22 @@ impl AudioCache {
         audio: DecodedAudio,
         permit: AudioAggregatePermit,
     ) -> Arc<CachedAudio> {
+        self.insert_with_source(url, audio, permit, None)
+    }
+
+    fn insert_with_source(
+        &mut self,
+        url: String,
+        audio: DecodedAudio,
+        permit: AudioAggregatePermit,
+        timeline: Option<crate::streaming::StreamTimeline>,
+    ) -> Arc<CachedAudio> {
+        let audio = CachedAudio::new(audio, permit, timeline, self.cpu.as_ref());
+        self.insert_ready(url, audio)
+    }
+
+    // An already protected backing keeps its one original physical permit.
+    fn insert_ready(&mut self, url: String, audio: CachedAudio) -> Arc<CachedAudio> {
         let size_bytes = audio.samples.capacity() * std::mem::size_of::<f32>();
         if size_bytes <= self.max_size {
             while self.current_size + size_bytes > self.max_size && !self.entries.is_empty() {
@@ -123,11 +156,11 @@ impl AudioCache {
                 size_bytes,
                 self.max_size
             );
-            return Arc::new(CachedAudio::new(audio, permit));
+            return Arc::new(audio);
         }
 
         self.access_counter += 1;
-        let audio = Arc::new(CachedAudio::new(audio, permit));
+        let audio = Arc::new(audio);
         if let Some(old) = self.entries.remove(&url) {
             self.current_size = self.current_size.saturating_sub(old.size_bytes);
             self.order_index.remove(&old.access_order);
@@ -197,6 +230,7 @@ mod tests {
     /// charges retained PCM by capacity, and has a test saying so.
     #[test]
     fn entries_are_charged_by_allocation_capacity_not_length() {
+        super::rejection_tests::verify();
         let mut samples = Vec::with_capacity(64);
         samples.push(0.0f32);
         let capacity_bytes = samples.capacity() * std::mem::size_of::<f32>();
@@ -246,6 +280,7 @@ mod tests {
     }
     #[test]
     fn eviction_keeps_aggregate_permit_until_last_cached_arc_drops() {
+        super::retirement_tests::verify();
         let ledger = Arc::new(AudioAggregateLedger::new(16));
         let mut cache = AudioCache::with_max_size_and_aggregate(16, Arc::clone(&ledger));
         let cached = cache
@@ -283,18 +318,29 @@ pub struct CacheStats {
 /// Thread-safe global cache wrapper.
 pub struct GlobalAudioCache {
     inner: Mutex<AudioCache>,
+    // Available before validation or lock acquisition, including poison.
+    cpu: Option<migo_io::audio_cpu::AudioCpu>,
 }
 
 impl GlobalAudioCache {
+    pub(crate) fn with_cpu(cpu: migo_io::audio_cpu::AudioCpu) -> Self {
+        Self {
+            inner: Mutex::new(AudioCache::with_cpu(cpu.clone())),
+            cpu: Some(cpu),
+        }
+    }
+
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(AudioCache::new()),
+            cpu: None,
         }
     }
 
     pub fn with_max_size(max_size: usize) -> Self {
         Self {
             inner: Mutex::new(AudioCache::with_max_size(max_size)),
+            cpu: None,
         }
     }
 
@@ -315,10 +361,32 @@ impl GlobalAudioCache {
         audio: DecodedAudio,
         permit: AudioAggregatePermit,
     ) -> EngineResult<Arc<CachedAudio>> {
+        self.insert_with_source(url, audio, permit, None)
+    }
+
+    pub(crate) fn insert_with_source(
+        &self,
+        url: String,
+        audio: DecodedAudio,
+        permit: AudioAggregatePermit,
+        timeline: Option<crate::streaming::StreamTimeline>,
+    ) -> EngineResult<Arc<CachedAudio>> {
+        // Protect the already charged input before either refusal boundary.
+        let audio = CachedAudio::new(audio, permit, timeline, self.cpu.as_ref());
+        if timeline.is_some_and(|t| {
+            t.format() != (audio.sample_rate, audio.channels)
+                || !audio.samples.len().is_multiple_of(audio.channels as usize)
+                || t.output_frames() != audio.frame_count() as u64
+        }) {
+            return Err(EngineError::from_detail(
+                ErrorCode::IoError,
+                "cache timeline does not describe owned PCM",
+            ));
+        }
         let mut cache = self.inner.lock().map_err(|_| {
             EngineError::from_detail(ErrorCode::Internal, "audio cache lock poisoned")
         })?;
-        Ok(cache.insert_with_permit(url, audio, permit))
+        Ok(cache.insert_ready(url, audio))
     }
 
     pub fn remove(&self, url: &str) {
@@ -342,4 +410,19 @@ impl Default for GlobalAudioCache {
     fn default() -> Self {
         Self::new()
     }
+}
+
+#[path = "cache_retirement.rs"]
+mod retirement;
+#[cfg(test)]
+#[path = "cache_retirement_tests.rs"]
+mod retirement_tests;
+
+#[cfg(test)]
+#[path = "cache_rejection_tests.rs"]
+mod rejection_tests;
+
+#[cfg(test)]
+pub(crate) fn observe_retirement<R>(hook: Arc<dyn Fn() + Send + Sync>, f: impl FnOnce() -> R) -> R {
+    retirement::observe(hook, f)
 }

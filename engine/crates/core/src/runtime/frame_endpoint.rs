@@ -234,7 +234,7 @@ pub(crate) trait EndpointTarget: Send + Sync + 'static {
     /// May block while the session's work queue is full: back-pressure on the
     /// socket, as it was on the queue the host used to read it on.
     fn submit_service(&self, message: &[u8]);
-    fn take_service_message(&self) -> Option<Vec<u8>>;
+    fn take_service_message(&self) -> Option<crate::runtime::external_services::ServiceReplyBytes>;
     /// See `ExternalFrameSession::take_downlink`.
     fn take_downlink(&self, out: &mut [u8]) -> usize;
     fn take_downlink_drops(&self) -> u32;
@@ -863,8 +863,10 @@ mod tests {
             self.services.lock().push(message.to_vec());
             self.delivered();
         }
-        fn take_service_message(&self) -> Option<Vec<u8>> {
-            self.service_out.lock().pop_front()
+        fn take_service_message(
+            &self,
+        ) -> Option<crate::runtime::external_services::ServiceReplyBytes> {
+            self.service_out.lock().pop_front().map(Into::into)
         }
         fn take_downlink(&self, out: &mut [u8]) -> usize {
             let Some(next) = self.downlink_out.lock().pop_front() else {

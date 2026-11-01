@@ -108,6 +108,7 @@ pub struct WaveShaperNode {
     down_state: Vec<FirState>,
     /// Oversampled working buffer, `factor` samples per input frame.
     scratch: Vec<f32>,
+    output_connected: bool,
 }
 
 impl WaveShaperNode {
@@ -121,11 +122,23 @@ impl WaveShaperNode {
             up_state: Vec::new(),
             down_state: Vec::new(),
             scratch: Vec::new(),
+            output_connected: false,
         }
     }
 
     pub fn set_curve(&mut self, curve: Option<Vec<f32>>) {
         self.curve = curve;
+    }
+
+    pub(crate) fn retire_curve(
+        &mut self,
+        host: Option<&crate::node_retirement::Host>,
+    ) -> shared::error::EngineResult<()> {
+        let bytes = self
+            .curve
+            .as_ref()
+            .map_or(0, |curve| curve.capacity() * std::mem::size_of::<f32>());
+        crate::node_retirement::retire_replacement(&mut self.curve, host, bytes)
     }
 
     pub fn set_oversample(&mut self, oversample: OversampleType) {
@@ -149,6 +162,30 @@ impl WaveShaperNode {
         self.down_taps = design_lowpass(cutoff, 1.0);
         self.up_state.clear();
         self.down_state.clear();
+    }
+
+    /// Prepare the context's first device quantum while handling its command.
+    /// Keep lengths and filter history unchanged; process initializes new state.
+    pub(crate) fn prepare_oversampling(&mut self, channels: u32) {
+        let factor = self.oversample.factor();
+        if factor == 1 {
+            return;
+        }
+        let channels = channels.max(1) as usize;
+        self.up_state
+            .reserve(channels.saturating_sub(self.up_state.len()));
+        self.down_state
+            .reserve(channels.saturating_sub(self.down_state.len()));
+        self.scratch.reserve(
+            (crate::audio_thread::RENDER_QUANTUM_FRAMES * factor)
+                .saturating_sub(self.scratch.len()),
+        );
+    }
+
+    fn zero_input_response(&self) -> f32 {
+        self.curve
+            .as_ref()
+            .map_or(0.0, |curve| Self::shape(curve, 0.0))
     }
 
     /// Apply waveshaping transfer function using linear interpolation
@@ -194,11 +231,16 @@ impl AudioNodeProcessor for WaveShaperNode {
         channels: u32,
         _current_time: f64,
     ) -> usize {
-        let len = inputs.len().min(output.len());
+        let ch = channels.max(1) as usize;
+        let len =
+            if inputs.is_empty() && (self.has_tail_audio() || self.zero_input_response() != 0.0) {
+                output.len() / ch * ch
+            } else {
+                inputs.len().min(output.len())
+            };
         if len == 0 {
             return 0;
         }
-        let ch = channels.max(1) as usize;
         let frames = len / ch;
 
         let Some(curve) = self.curve.take() else {
@@ -209,8 +251,8 @@ impl AudioNodeProcessor for WaveShaperNode {
 
         let factor = self.oversample.factor();
         if factor == 1 {
-            for i in 0..len {
-                output[i] = Self::shape(&curve, inputs[i]);
+            for (i, sample) in output[..len].iter_mut().enumerate() {
+                *sample = Self::shape(&curve, inputs.get(i).copied().unwrap_or(0.0));
             }
             self.curve = Some(curve);
             return frames;
@@ -228,7 +270,7 @@ impl AudioNodeProcessor for WaveShaperNode {
         for channel in 0..ch {
             // Upsample: zero-stuff, then interpolate.
             for frame in 0..frames {
-                let sample = inputs[frame * ch + channel];
+                let sample = inputs.get(frame * ch + channel).copied().unwrap_or(0.0);
                 for phase in 0..factor {
                     let stuffed = if phase == 0 { sample } else { 0.0 };
                     self.scratch[frame * factor + phase] =
@@ -257,6 +299,30 @@ impl AudioNodeProcessor for WaveShaperNode {
 
         self.curve = Some(curve);
         frames
+    }
+
+    fn has_tail_audio(&self) -> bool {
+        if self.oversample == OversampleType::None || self.curve.is_none() {
+            return false;
+        }
+        // Both FIRs have finite history. Exact comparison retains tiny tails;
+        // for biased curves the downstream steady state is shape(0), not zero.
+        let baseline = self.zero_input_response();
+        self.up_state
+            .iter()
+            .any(|state| state.history.iter().any(|&sample| sample != 0.0))
+            || self
+                .down_state
+                .iter()
+                .any(|state| state.history.iter().any(|&sample| sample != baseline))
+    }
+
+    fn is_producing(&self) -> bool {
+        self.has_tail_audio() || (self.output_connected && self.zero_input_response() != 0.0)
+    }
+
+    fn set_output_connected(&mut self, connected: bool) {
+        self.output_connected = connected;
     }
 }
 

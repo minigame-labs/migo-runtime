@@ -272,7 +272,11 @@ fn malformed_or_overflowing_seek_pcm_fails_without_seeked() {
         let (mut player, tx, mut pool, state) = stream(2);
         player.seek(f64::MAX);
         if overflow {
-            player.shared.set_duration_frames(u64::MAX - 1);
+            // Overflow belongs to the decoded PCM cursor, independently of
+            // the optional authoritative track duration.
+            player.stream_base_frames =
+                u64::MAX - 1 - (player.source.len() / player.shared.channels() as usize) as u64;
+            assert!(player.seek_stream_prefix(&[0.0; 8]).is_err());
         }
         player.drain_events().for_each(drop);
         let mut pcm = pool.take();

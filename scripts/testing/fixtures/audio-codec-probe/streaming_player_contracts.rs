@@ -95,9 +95,27 @@ async fn consume<const B: bool>(case: PlaybackCase<'_>, input: StreamInput, forw
                 }
                 tokio::time::sleep(Duration::from_millis(1)).await;
             }
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            // Observe the producer blocked on a full publication queue after
+            // returning its CPU owner. Codec-only and sinc-only steps need
+            // not produce PCM, so queue saturation alone is not this edge.
+            let fill_started = Instant::now();
+            while (player.queued_stream_messages() < crate::streaming::STREAM_CHANNEL_CAPACITY
+                || !state.publication_waiting.load(Ordering::Acquire))
+                && !state.download_complete.load(Ordering::Acquire)
+            {
+                assert!(fill_started.elapsed() < Duration::from_secs(10));
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
             let count = steps.load(Ordering::Acquire);
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            for _ in 0..50 {
+                player.poll_stream();
+                let mut bus = [0.125; 8];
+                player.process(&mut bus);
+                assert_eq!(bus, [0.125; 8]);
+                assert_eq!(shared.position_frames(), pos);
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            // No CPU transfer is in flight at the observed publication wait.
             assert_eq!(
                 steps.load(Ordering::Acquire),
                 count,
@@ -114,6 +132,7 @@ async fn consume<const B: bool>(case: PlaybackCase<'_>, input: StreamInput, forw
         output.fill(0.0);
         let active = player.process(&mut output);
         let after = shared.position_frames();
+        assert_cyclic_media_time(&shared, &state);
         let count = if active {
             (after - before) as usize
         } else if shared.state() == PlaybackState::Stopped && shared.is_loaded() {
@@ -136,7 +155,13 @@ async fn consume<const B: bool>(case: PlaybackCase<'_>, input: StreamInput, forw
         for event in player.drain_events() {
             match event.event_type {
                 InnerAudioEventType::CanPlay => canplay += 1,
-                InnerAudioEventType::Ended => ended += 1,
+                InnerAudioEventType::Ended => {
+                    ended += 1;
+                    if let Some(presentation) = state.presentation().filter(|p| p.is_cyclic()) {
+                        assert_eq!(event.current_time, presentation.timeline().seconds());
+                        assert_eq!(event.duration, presentation.timeline().seconds());
+                    }
+                }
                 InnerAudioEventType::Error => panic!("streaming player Error at {rendered}"),
                 InnerAudioEventType::Seeked if forward => {
                     assert!(event.paused);
@@ -160,7 +185,12 @@ async fn consume<const B: bool>(case: PlaybackCase<'_>, input: StreamInput, forw
     assert_eq!(pauses, usize::from(pause));
     assert_eq!(sought, forward);
     assert_eq!(seeked, usize::from(forward));
-    assert_eq!(shared.duration_frames(), frames as u64);
+    assert_eq!(
+        shared.duration_frames(),
+        state
+            .timeline()
+            .map_or(frames as u64, |t| t.output_frames())
+    );
     assert!(player.is_stream_complete());
     assert!(state.download_complete.load(Ordering::Acquire));
     player.process(&mut output);
@@ -173,4 +203,34 @@ async fn consume<const B: bool>(case: PlaybackCase<'_>, input: StreamInput, forw
     println!(
         "W09_SOURCE_PLAYER {{\"asset\":\"{name}\",\"buffered\":{B},\"rate\":{target},\"frames\":{frames},\"peak_pcm_bytes\":{peak},\"pauses\":{pauses},\"forward_seek\":{forward}}}"
     );
+}
+
+pub(crate) fn assert_cyclic_media_time(
+    shared: &crate::inner_audio::InnerAudioSharedState,
+    state: &crate::streaming::StreamingState,
+) {
+    if let Some(presentation) = state
+        .presentation()
+        .filter(|p| p.is_cyclic() && shared.is_loaded())
+    {
+        let after = shared.position_frames();
+        let clock = presentation.timeline();
+        let input = clock.position(0).unwrap().divisor as u128;
+        let output = clock.format().0 as u128;
+        let frames = clock.seek_frame(clock.seconds()).unwrap() as u128;
+        let seconds = after as u128 / output;
+        let sub = (after as u128 % output) * input;
+        let whole = seconds * input + sub / output;
+        let expected = if presentation.output_end().is_some_and(|end| after >= end) {
+            clock.seconds()
+        } else {
+            ((whole % frames) as f64 + (sub % output) as f64 / output as f64) / input as f64
+        };
+        assert!(
+            (shared.current_time() - expected).abs() < 1e-14,
+            "cyclic media time at {after}: {} != {expected}",
+            shared.current_time()
+        );
+        assert_eq!(shared.duration(), clock.seconds());
+    }
 }

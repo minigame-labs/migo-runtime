@@ -29,9 +29,9 @@ def controls(original):
     prefix = "    fn seek_stream_prefix<'a>("
     process = '    pub fn process(&mut self, output: &mut [f32]) -> bool {'
     change('target-clamped-to-prefix', seek,
-           'self.is_streaming()\n            && !self.stream_complete\n            && target_frame >= self.shared.duration_frames()', 'false', paused)
+           'self.is_streaming() && !self.stream_complete && target_frame >= self.stream_decoded_end()', 'false', paused)
     change('seeked-before-first-target-frame', poll,
-           'target < self.shared.duration_frames()', 'target <= self.shared.duration_frames()', paused)
+           'target < self.stream_decoded_end()', 'target <= self.stream_decoded_end()', paused)
     change('pending-seek-renders-old-audio', process,
            '        if self.pending_seek.is_some() {', '        if false {',
            'pending_seek_preserves_the_mix_and_emits_one_waiting_event')
@@ -46,7 +46,7 @@ def controls(original):
     change('seek-skip-confuses-samples-and-frames', prefix,
            'skip as usize * channels', 'skip as usize', paused)
     change('seek-uses-requested-cursor-as-decoded-length', prefix,
-           'let base = self.shared.duration_frames();', 'let base = self.shared.position_frames();', paused)
+           'let base = self.stream_decoded_end();', 'let base = self.shared.position_frames();', paused)
     change('discarded-input-rearms-waiting', poll,
            '                    if self.pending_seek.is_none() {', '                    if true {',
            'pending_seek_preserves_the_mix_and_emits_one_waiting_event')

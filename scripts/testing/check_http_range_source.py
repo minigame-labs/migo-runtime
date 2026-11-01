@@ -24,12 +24,14 @@ spec.loader.exec_module(transport)
 codecs = transport.codecs
 
 
-def build(work: Path, env: dict, label: str) -> Path:
+def build(work: Path, env: dict, label: str, release: bool = True, clean: bool = True) -> Path:
     package = work / "probe"
-    codecs.run(["cargo", "clean", "--offline", "--locked", "--release", "-p", "migo-range-source-probe"],
-               work / f"{label}-clean.log", cwd=package, env=env)
+    profile = ["--release"] if release else []
+    if clean:
+        codecs.run(["cargo", "clean", "--offline", "--locked", *profile, "-p", "migo-range-source-probe"],
+                   work / f"{label}-clean.log", cwd=package, env=env)
     log = work / f"{label}-build.jsonl"
-    codecs.run(["cargo", "test", "--offline", "--locked", "--release", "--lib", "--no-run", "--message-format=json"],
+    codecs.run(["cargo", "test", "--offline", "--locked", *profile, "--lib", "--no-run", "--message-format=json"],
                log, cwd=package, env=env)
     rows = []
     for line in log.read_text().splitlines():

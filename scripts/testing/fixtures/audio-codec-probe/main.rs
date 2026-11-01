@@ -22,7 +22,7 @@ fn main() {
     let data = std::fs::read(&input).unwrap();
     let started = Instant::now();
     let result = match mode.as_str() {
-        "legacy" => decoder::decode(&data).map_err(|error| format!("{error:?}")),
+        "legacy" => native_product(&data).map_err(|error| format!("{error:?}")),
         "candidate" => candidate::decode(&data, cap),
         "candidate-unseekable" => candidate::decode_source(&data, cap, false),
         _ => panic!("unknown codec arm"),
@@ -64,4 +64,10 @@ fn main() {
             std::process::exit(2);
         }
     }
+}
+
+fn native_product(data: &[u8]) -> shared::error::EngineResult<decoder::DecodedAudio> {
+    let mut job = decoder::whole::WholeDecodeJob::new(data, None)?;
+    while !job.step(&std::sync::atomic::AtomicBool::new(false))? {}
+    job.finish()
 }

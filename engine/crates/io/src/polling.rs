@@ -220,8 +220,10 @@ mod tests {
     async fn abandoned_blocking_tls_does_not_stall_fs_and_returns_credit_when_it_finishes() {
         let pools = IoPools::local_with_byte_limit_for_test(7094, 2, 4096);
         let (release, gate) = std::sync::mpsc::channel();
+        let (started, entered) = tokio::sync::oneshot::channel();
         let mut task = Offloaded::new(
             async move {
+                started.send(()).unwrap();
                 gate.recv().unwrap();
                 42
             },
@@ -231,11 +233,16 @@ mod tests {
         )
         .unwrap();
         let state = Arc::downgrade(&task.state);
-        assert!(
-            tokio::time::timeout(Duration::from_millis(10), task.wait())
-                .await
-                .is_err()
-        );
+        {
+            let waiting = task.wait();
+            tokio::pin!(waiting);
+            tokio::select! {
+                result = &mut waiting => panic!("native call finished before release: {result:?}"),
+                started = tokio::time::timeout(Duration::from_secs(5), entered) => {
+                    started.expect("native poll did not start").expect("startup signal closed");
+                }
+            }
+        }
         drop(task);
         assert!(
             pools.reserve_bytes(4096).is_err(),

@@ -545,6 +545,11 @@ export function op_inner_audio_set_autoplay(id, autoplay) {
   inner(SERVICE_OP.op_inner_audio_set_autoplay, id, (w) => w.bool(enabled));
 }
 
+export function op_inner_audio_set_start_time(id, time) {
+  const at = toF64(time, "time");
+  inner(SERVICE_OP.op_inner_audio_set_start_time, id, (w) => w.f64(at));
+}
+
 // ---- network ------------------------------------------------------------------
 
 /// Warm the OS resolver for the hosts content named. Nothing answers it: the

@@ -20,6 +20,8 @@ pub struct Limits {
     pub max_atoms: u32,
     pub max_skipped_bytes: u64,
     pub index: IndexOptions,
+    /// Maximum outstanding reposition work; real mixed frames renew credit.
+    /// Index/control and each media response retain their separate limits.
     pub max_resumes: u32,
     pub media: range::StreamLimits,
     #[cfg(test)]
@@ -198,6 +200,23 @@ pub trait Reader: Send {
         &mut self,
     ) -> impl std::future::Future<Output = Result<Option<Self::Chunk>, Error>> + Send;
 }
+
+/// Only readers that can distinguish a dropped media wait from a returned
+/// error may rejoin a retained source after a soft control interrupts IO.
+pub trait InterruptibleReader: Reader {
+    fn resume_after_interruption(&mut self) -> Result<(), Error>;
+}
+
+impl InterruptibleReader for HttpReader {
+    fn resume_after_interruption(&mut self) -> Result<(), Error> {
+        match &mut self.owner {
+            ReaderOwner::Media(stream) => stream.resume_after_interruption().map_err(Error::Range),
+            ReaderOwner::Control(reader) if !reader.is_failed() => Ok(()),
+            ReaderOwner::Control(_) => Err(Error::Range(range::Error::PreviouslyFailed)),
+            ReaderOwner::Failed => Err(Error::Range(range::Error::PreviouslyFailed)),
+        }
+    }
+}
 impl Reader for HttpReader {
     type Chunk = Bytes;
     fn length(&self) -> Option<u64> {
@@ -248,13 +267,71 @@ pub enum MediaRead<C = Bytes> {
     Cancelled,
 }
 
+/// One request per consumed output frame, with a fixed burst and no banked
+/// surplus. Decoder output, reads, controls and elapsed time cannot mint credit.
+/// Bind the first observation to its exact source; exhaustion stays terminal.
+struct ResumeBudget {
+    owner: Option<std::sync::Weak<StreamingState>>,
+    observed: u64,
+    remaining: u64,
+    burst: u64,
+    attempts: u64,
+    failed: bool,
+}
+
+impl ResumeBudget {
+    fn new(burst: u32) -> Self {
+        Self {
+            owner: None,
+            observed: 0,
+            remaining: u64::from(burst),
+            burst: u64::from(burst),
+            attempts: 0,
+            failed: false,
+        }
+    }
+
+    fn charge(&mut self, state: &Arc<StreamingState>) -> Result<(), Error> {
+        if self.failed {
+            return Err(Error::Invalid("source reposition budget retired"));
+        }
+        self.failed = true;
+        if state.is_cancelled() {
+            return Err(Error::Invalid("cancelled source reposition"));
+        }
+        let rendered = state.rendered_frames();
+        if let Some(owner) = &self.owner {
+            if owner.as_ptr() != Arc::as_ptr(state) {
+                return Err(Error::Invalid("source reposition owner changed"));
+            }
+            self.remaining = self
+                .remaining
+                .saturating_add(rendered.saturating_sub(self.observed))
+                .min(self.burst);
+        } else {
+            self.owner = Some(Arc::downgrade(state));
+        }
+        self.observed = rendered;
+        self.remaining = self
+            .remaining
+            .checked_sub(1)
+            .ok_or(Error::Invalid("source reposition budget exceeded"))?;
+        self.attempts = self
+            .attempts
+            .checked_add(1)
+            .ok_or(Error::Invalid("source reposition counter overflow"))?;
+        self.failed = false;
+        Ok(())
+    }
+}
+
 pub struct IndexSource<R: Reader = HttpReader> {
     reader: R,
     limits: Limits,
     media_spans: Vec<AtomSpan>,
     scan_position: u64,
     discovery_atoms: u32,
-    resumes: u32,
+    resumes: ResumeBudget,
 }
 impl IndexSource<HttpReader> {
     pub fn new(reader: range::Reader, limits: Limits) -> Self {
@@ -262,6 +339,12 @@ impl IndexSource<HttpReader> {
     }
 }
 impl<R: Reader> IndexSource<R> {
+    pub fn resume_after_read_interruption(&mut self) -> Result<(), Error>
+    where
+        R: InterruptibleReader,
+    {
+        self.reader.resume_after_interruption()
+    }
     pub fn with_reader(reader: R, limits: Limits) -> Self {
         Self {
             reader,
@@ -269,7 +352,7 @@ impl<R: Reader> IndexSource<R> {
             media_spans: Vec::new(),
             scan_position: 0,
             discovery_atoms: 0,
-            resumes: 0,
+            resumes: ResumeBudget::new(limits.max_resumes),
         }
     }
     pub fn length(&self) -> Option<u64> {
@@ -427,8 +510,8 @@ impl<R: Reader> IndexSource<R> {
     pub fn media_bytes_received(&self) -> u64 {
         self.reader.media_bytes()
     }
-    pub fn resumes(&self) -> u32 {
-        self.resumes
+    pub fn resumes(&self) -> u64 {
+        self.resumes.attempts
     }
 
     fn remember_media(&mut self, span: AtomSpan) -> Result<(), Error> {
@@ -521,11 +604,7 @@ impl<R: Reader> IndexSource<R> {
         state: &Arc<StreamingState>,
         deadline: Instant,
     ) -> Result<Option<Repositioned<D, R::Chunk>>, Error> {
-        self.resumes = self
-            .resumes
-            .checked_add(1)
-            .filter(|n| *n <= self.limits.max_resumes)
-            .ok_or(Error::Invalid("source reposition budget exceeded"))?;
+        self.resumes.charge(state)?;
         self.reader.suspend();
         let Some(media) = self.find_media(packet, tx, state, deadline).await? else {
             return Ok(None);
@@ -603,5 +682,77 @@ impl<R: Reader> IndexSource<R> {
             Some(Ok(Some(bytes))) => Ok(MediaRead::Data(bytes)),
             Some(Ok(None)) => Ok(MediaRead::End),
         }
+    }
+}
+
+#[cfg(test)]
+mod quota_tests {
+    use super::*;
+
+    #[test]
+    fn consumed_frames_renew_one_request_each_and_surplus_is_not_banked() {
+        let state = StreamingState::new();
+        let mut budget = ResumeBudget::new(3);
+        budget.charge(&state).unwrap();
+        budget.charge(&state).unwrap();
+        state.record_rendered_frames(1);
+        budget.charge(&state).unwrap();
+        assert_eq!(budget.remaining, 1);
+        state.record_rendered_frames(1000);
+        budget.charge(&state).unwrap();
+        assert_eq!(budget.remaining, 2);
+        budget.charge(&state).unwrap();
+        budget.charge(&state).unwrap();
+        assert!(budget.charge(&state).is_err());
+        assert_eq!(budget.attempts, 6);
+        state.record_rendered_frames(1000);
+        assert!(budget.charge(&state).is_err());
+    }
+
+    #[test]
+    fn first_observation_zero_limit_cancellation_and_owner_are_fail_closed() {
+        let state = StreamingState::new();
+        state.record_rendered_frames(1000);
+        let mut zero = ResumeBudget::new(0);
+        assert!(zero.charge(&state).is_err());
+        let mut budget = ResumeBudget::new(2);
+        budget.charge(&state).unwrap();
+        assert_eq!(budget.remaining, 1);
+        let foreign = StreamingState::new();
+        foreign.record_rendered_frames(1000);
+        assert!(budget.charge(&foreign).is_err());
+        assert!(budget.charge(&state).is_err());
+        let mut budget = ResumeBudget::new(2);
+        state.cancel();
+        assert!(budget.charge(&state).is_err());
+        assert_eq!(budget.attempts, 0);
+        let state = StreamingState::new();
+        let mut budget = ResumeBudget::new(2);
+        budget.attempts = u64::MAX;
+        assert!(budget.charge(&state).is_err());
+        state.record_rendered_frames(1000);
+        assert!(budget.charge(&state).is_err());
+    }
+
+    #[test]
+    fn resumed_work_remains_bounded_across_many_observations_without_heap_activity() {
+        let state = StreamingState::new();
+        let mut budget = ResumeBudget::new(64);
+        budget.charge(&state).unwrap();
+        migo_alloc_probe::assert_no_steady_state_allocation(
+            migo_alloc_probe::Burst {
+                path: "consumption-bound source work",
+                warmup: 64,
+                measured: 256,
+            },
+            |_| {
+                state.record_rendered_frames(2);
+                budget.charge(&state).unwrap();
+                assert_eq!(budget.remaining, 63);
+                budget.charge(&state).unwrap();
+                assert_eq!(budget.remaining, 62);
+            },
+        );
+        assert_eq!(budget.attempts, 641);
     }
 }
