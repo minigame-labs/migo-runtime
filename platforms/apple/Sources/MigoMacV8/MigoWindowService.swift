@@ -5,8 +5,9 @@ import MigoAppleRenderer
     import AppKit
 
     /// The game view's own part of the host-service channel: what only the
-    /// window the game is shown in can answer -- the window service, and the
-    /// screen's orientation, which on a Mac is the window's shape. It sits
+    /// window the game is shown in can answer -- the window service, the
+    /// screen's orientation, which on a Mac is the window's shape, and
+    /// `createVideo`'s players, which are shown over the game in it. It sits
     /// behind the app's provider, so what the app answers is the app's, and in
     /// front of the SDK's built-in services, which answer the rest of the
     /// screen.
@@ -17,24 +18,27 @@ import MigoAppleRenderer
         static let services: Set<MigoHostServiceID> = {
             var builtIn: Set<MigoHostServiceID> = []
             builtIn.insert(.window)
+            builtIn.insert(.video)
             return builtIn
         }()
 
         private let app: MigoHostServiceProvider?
         private let appServices: Set<MigoHostServiceID>
         private let window: MigoWindowService
+        private let video: MigoVideoPlayers
         let services: Set<MigoHostServiceID>
 
-        init(app: MigoHostServiceProvider?, window: MigoWindowService) {
+        init(app: MigoHostServiceProvider?, window: MigoWindowService, video: MigoVideoPlayers) {
             self.app = app
             self.window = window
+            self.video = video
             appServices = app?.services ?? []
             services = appServices.union(Self.services)
         }
 
         func answers(_ request: MigoHostServiceRequest) -> Bool {
             if let app, app.answers(request) { return true }
-            return request.service == .window || Self.isOrientation(request)
+            return request.service == .window || request.service == .video || Self.isOrientation(request)
         }
 
         func handle(_ request: MigoHostServiceRequest) {
@@ -42,6 +46,8 @@ import MigoAppleRenderer
                 app.handle(request)
             } else if request.service == .window {
                 window.handle(request)
+            } else if request.service == .video {
+                video.handle(request)
             } else if Self.isOrientation(request) {
                 window.setOrientation(request)
             } else {

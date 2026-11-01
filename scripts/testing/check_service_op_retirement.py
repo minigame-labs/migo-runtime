@@ -33,7 +33,7 @@ def main():
     lanes.update({module.wire_name(name): value
                   for name, value in boundary.get('core_members', {}).get('members', {}).items()})
     assert identity['ops']['op_inner_audio_get_state'] == 136
-    assert identity['ops']['op_inner_audio_set_start_time'] == 292
+    assert identity['ops']['op_inner_audio_set_start_time'] == 312
     assert 'op_inner_audio_get_state' in identity['retired_ops']
     with tempfile.TemporaryDirectory(prefix='migo-service-retirement-') as directory:
         root = Path(directory)

@@ -8,6 +8,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `createVideo` on iOS and macOS without the app supplying players: the game views answer the video service themselves
+  (`MigoVideoPlayers`), each player an `AVPlayer` over the game where content put it, with its poster until it plays,
+  `objectFit`, `backgroundColor`, `autoplay`, `loop`, `muted`, `playbackRate` and `initialTime`, and the Android SDK's
+  controls as its options ask -- the bar, the progress line, the centre play button, the double-tap and drag gestures --
+  with the buttons labelled for VoiceOver. Calls settle once done and the events follow the C ABI's video service, as
+  the Android SDK's players do; full screen fills the screen, turned a quarter for a direction of 90 or -90 on iOS, and
+  fills the window on a Mac. Players hold still while the game is paused and play on after. A network poster is read
+  only up to 8 MiB. An app that answers the video service itself still does.
+- `MigoHostCallbacks.on_console` (C ABI): each line content writes to its console, at its level, in order with
+  everything else content does -- a line written before `exitMiniProgram` reaches the host before
+  `on_exit_requested` -- whether content runs in the engine or in an external-frame session. Until now a C ABI host
+  heard content's console only through the engine's own log or, with the debugging aids on,
+  `migo_session_copy_console_logs`. The Apple SDK delivers it as `MigoEngineSession.Event.console`, writes it to the
+  platform log (`dev.migo`, `content`), and the macOS `MigoGameView` gains the `.console` event the iOS one had.
+- `createVideo` on iOS (Performance+): the players are the host app's, as on every other platform (the video service,
+  `migo/host_services.h`). The producer makes a player, or changes what it plays, through the host's synchronous
+  endpoint -- answered at once, its `src` and `poster` exported through the game's sandbox as the embedded ops export
+  them, and refused in their words -- and plays, pauses, stops, seeks and goes full screen as commands the host
+  answers through each method's result hook. It was not offered on this lane at all.
+- `createBLEPeripheralServer` on iOS (Performance+): the device as a Bluetooth LE peripheral is the host app's, as on
+  every other platform (the ble_peripheral service). Each of the server's requests is a command the host makes the
+  embedded op's scope check and service call for, answered through the method's result hook; what centrals do
+  reaches content as the service's events.
+- `getRecorderManager` on iOS (Performance+): the microphone is the host app's, as on every other platform (the
+  recorder service). Starting, pausing, resuming and stopping are answered at once, as the embedded ops answer:
+  scope.record checked where they check it and a refusal thrown in their words, which is what has the player asked.
+  The frames the host records reach `onFrameRecorded` through the same host-bridge call the embedded runtime makes,
+  decided for both executions in one place (`input_route`). The Apple SDK hands an app's frames on with
+  `MigoGameView.postRecorderFrame`.
 - `getBatteryInfo` and `getBatteryInfoSync` on a Mac laptop: the Apple SDK reports the internal battery among IOKit's
   power sources (its charge, and whether it is charging or full on the charger) and Low Power Mode from macOS 12, at
   each change. A Mac without a battery still answers "not supported".
@@ -890,6 +919,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the host's configuration could only disagree with the first.
 
 ### Fixed
+- On iOS `previewImage` and `previewMedia` no longer end the game. The preview was presented full screen, which takes
+  the views below it out of the window once it is up, and the game view leaving its window is the app ending the game:
+  the game was torn down under the preview and started over from its entry when it closed. It is presented over the
+  game, which runs on under it.
+- On iOS a picker, a modal, an action sheet or a preview asked for while another of the system's sheets is still
+  leaving now appears once it has left. UIKit refuses to present from a controller in the middle of a transition with
+  a console warning and nothing else: a `chooseMedia` right after a cancelled `chooseImage` never showed, and every
+  pick after it failed with "another picker is showing". Every presentation goes through one place
+  (`MigoSystemPresentation.present`), which waits for the transition under way and says when there is no window.
+- On iOS (Performance+) content's console reaches the app in order with everything else the game does. It travelled
+  the page's message channel, which nothing orders with the service stream, so an `exitMiniProgram` or a restart on
+  the stream overtook the lines written just before it and the view was gone before they arrived. It is now the
+  command the op-boundary contract always said it was (`op_console`, 311): the host logs it as the embedded op does,
+  keeps it for the debugging aids, and hands it on through `on_console`. A line too long for one service record is
+  cut, and a line written after the channel broke is dropped, rather than either throwing from `console`. And
+  `exitMiniProgram` and `restartMiniProgram` are sent once the task that asked has ended, as the embedded runtime
+  acts on them only between tasks: the call's own success and complete, and whatever they log or save, now happen
+  before the session goes, where the host acted on the command as it read it and closed the game first.
+- On iOS and macOS the clipboard is read and written off the main thread. Reading what another app put there asks
+  the player first (iOS 16, macOS 15.4) and blocks the reading thread until they answer: on the main thread
+  `getClipboardData` froze the game -- its frames, its touches, every other answer -- for as long as the prompt was
+  up. Reads and writes share one serial queue, so a read after a write still reads it.
+- On iOS (Performance+) a call that needs a scope nobody has decided asks the player for it, as it does in process,
+  instead of failing with `auth deny`. The host checks the scope there, after the request has left, and refuses in
+  its answer rather than by a throw; the call now asks for the scope on that answer too, keeps its request pending
+  while the player is asked, and sends it again once decided. Every scope-gated host-channel call was affected:
+  Bluetooth, location, the peripheral server.
+- On iOS (Performance+), `restartMiniProgram` launches the game again: the session asks its host to start the game
+  over in a new session, launched as a restart launches it -- with the options it was last shown with, its query the
+  one `path` names -- and `MigoGameView` does. It did nothing: the session, whose content runs in WebKit's process,
+  cannot replace it in place, and it had no way to ask. The C ABI carries the request as
+  `MigoHostCallbacks.on_restart_requested` (appended), which only a session whose content runs outside the engine
+  calls.
+- A restart is a cold start: the restarted runtime is shown before its content runs, as a host's first show is, rather
+  than after it, which made the new entry's `onShow` listener hear one. The reference reads a cold start from
+  `getLaunchOptionsSync()` and `getEnterOptionsSync()`; `onShow` is the return to the foreground.
+- Apple: `MigoEngineSession.close` completes when its surface is released while the session is still running. Its
+  polls held the session weakly, and a view lets go of its session as it closes it, so the polls stopped and neither
+  the destroy nor the completion ran; a game started again in a new session never started.
 - Android camera frames reach content as the reference defines `onCameraFrame`'s `data`: straight RGBA, four bytes a
   pixel. They were the camera's three YUV planes concatenated as they lay, row padding and interleaved chroma
   included -- 1.5 bytes a pixel nobody could read without the strides, which were not given. The planes' strides now

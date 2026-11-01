@@ -35,6 +35,7 @@ impl ShowOptions {
 
     /// The runtime is launched: its `_internalLaunch` arguments, the options it was last shown with -- or launched
     /// with, before any show -- or `None` while there are none, when it is launched with its first show's.
+    #[cfg(feature = "embedded-v8")]
     pub(crate) fn launch(&self) -> Option<Cow<'static, str>> {
         self.last.as_ref().map(hook_args_one)
     }
@@ -55,7 +56,20 @@ impl ShowOptions {
 
     /// The game is launched again: the arguments of the show that relaunch ends with -- the last options, with
     /// `launch_query` as their query when the restart names one.
+    #[cfg(feature = "embedded-v8")]
     pub(crate) fn relaunch(&mut self, launch_query: Option<String>) -> Cow<'static, str> {
+        self.relaunched(launch_query);
+        self.args()
+    }
+
+    /// The game is launched again in a new session: the options it is launched with there, as the JSON object a
+    /// host creates a session with.
+    #[cfg(feature = "external-frames")]
+    pub(crate) fn relaunch_json(&mut self, launch_query: Option<String>) -> String {
+        self.relaunched(launch_query).to_string()
+    }
+
+    fn relaunched(&mut self, launch_query: Option<String>) -> &Value {
         let mut options = self
             .last
             .take()
@@ -63,8 +77,7 @@ impl ShowOptions {
         if let (Some(query), Some(object)) = (launch_query, options.as_object_mut()) {
             object.insert("query".to_owned(), Value::String(query));
         }
-        self.last = Some(options);
-        self.args()
+        self.last.insert(options)
     }
 
     fn args(&self) -> Cow<'static, str> {
@@ -121,6 +134,7 @@ mod tests {
 
     /// The runtime is launched with the host's options before content runs; with none it is not, and its first show
     /// launches it. A runtime started after a show -- a restart -- is launched with what the game was last shown with.
+    #[cfg(feature = "embedded-v8")]
     #[test]
     fn a_runtime_is_launched_with_the_host_s_options_or_the_last_show_s() {
         let launched = launched(json!({"scene": 1007}));
@@ -133,6 +147,7 @@ mod tests {
 
     /// A restart launches with the options the game was last shown with, its query the one the restart names; with
     /// none named the query is kept, and a game never shown is launched with nothing but the named query.
+    #[cfg(feature = "embedded-v8")]
     #[test]
     fn a_restart_launches_with_the_last_options_and_the_query_it_names() {
         let mut shows = ShowOptions::launched_with(None);
@@ -158,6 +173,23 @@ mod tests {
         assert_eq!(
             args(launched(json!({"scene": 1007})).relaunch(Some("a=1".into()))),
             json!([{"scene": 1007, "query": "a=1"}])
+        );
+    }
+
+    /// A relaunch in a new session is launched with the same options, as the object a session is created with.
+    #[cfg(feature = "external-frames")]
+    #[test]
+    fn a_relaunch_in_a_new_session_carries_the_options_as_a_session_s() {
+        let mut shows = launched(json!({"scene": 1007, "query": {"from": "share"}}));
+        let json = shows.relaunch_json(Some("level=2".into()));
+        assert_eq!(
+            serde_json::from_str::<Value>(&json).unwrap(),
+            json!({"scene": 1007, "query": "level=2"})
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&ShowOptions::launched_with(None).relaunch_json(None))
+                .unwrap(),
+            json!({})
         );
     }
 }

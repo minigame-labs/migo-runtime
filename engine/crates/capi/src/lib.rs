@@ -1299,6 +1299,8 @@ mod tests {
             on_host_service_call: None,
             host_services: 0,
             on_gamepad_rumble: None,
+            on_restart_requested: None,
+            on_console: None,
         };
         session.state.lock().unwrap().notifier = Some(Arc::new(callbacks::Notifier::new(
             host_callbacks,
@@ -2111,6 +2113,8 @@ mod tests {
                 on_host_service_call: None,
                 host_services: 0,
                 on_gamepad_rumble: None,
+                on_restart_requested: None,
+                on_console: None,
             };
             assert_eq!(
                 unsafe { migo_session_set_host_callbacks(session, &host_callbacks) },

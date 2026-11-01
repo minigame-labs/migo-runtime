@@ -178,6 +178,34 @@ import Foundation
             while let presented = top?.presentedViewController { top = presented }
             return top
         }
+
+        /// Present `controller` over whatever the key window shows, once the
+        /// presentation or dismissal under way there has finished. UIKit
+        /// refuses to present from a controller in the middle of one, with a
+        /// console warning and nothing else: a picker asked for as the last one
+        /// leaves would never appear, and whoever waits for its answer would
+        /// wait for ever. `prepare` sees the controller it is presented from
+        /// first -- an iPad's popover points at its view; `shown(true)` once it
+        /// is up, `shown(false)` when there is no window to show it in.
+        static func present(
+            _ controller: UIViewController, prepare: ((UIViewController) -> Void)? = nil,
+            shown: @escaping (Bool) -> Void = { _ in }
+        ) {
+            guard let top = topController() else {
+                shown(false)
+                return
+            }
+            if let transition = top.transitionCoordinator {
+                transition.animate(alongsideTransition: nil) { _ in
+                    // The next turn: a controller that left is out of the chain
+                    // only once the transition's own completion has run.
+                    DispatchQueue.main.async { present(controller, prepare: prepare, shown: shown) }
+                }
+                return
+            }
+            prepare?(top)
+            top.present(controller, animated: true) { shown(true) }
+        }
     }
 
     final class MigoSystemInteractionPresenter: MigoInteractionPresenter {
@@ -186,8 +214,6 @@ import Foundation
         init() {}
 
         private func keyWindow() -> UIWindow? { MigoSystemPresentation.keyWindow() }
-
-        private func topController() -> UIViewController? { MigoSystemPresentation.topController() }
 
         func showHud(_ hud: MigoHud) {
             hideHud()
@@ -205,10 +231,6 @@ import Foundation
         }
 
         func showModal(_ modal: MigoModal, completion: @escaping (MigoModalAnswer?) -> Void) {
-            guard let controller = topController() else {
-                completion(nil)
-                return
-            }
             let alert = UIAlertController(
                 title: modal.title.isEmpty ? nil : modal.title,
                 message: modal.editable || modal.content.isEmpty ? nil : modal.content,
@@ -229,14 +251,10 @@ import Foundation
                 UIAlertAction(title: modal.confirmText, style: .default) { _ in
                     completion(MigoModalAnswer(confirmed: true, content: alert.textFields?.first?.text))
                 })
-            controller.present(alert, animated: true)
+            MigoSystemPresentation.present(alert) { shown in if !shown { completion(nil) } }
         }
 
         func showActionSheet(title: String, items: [String], completion: @escaping (Int?) -> Void) {
-            guard let controller = topController() else {
-                completion(nil)
-                return
-            }
             let sheet = UIAlertController(
                 title: title.isEmpty ? nil : title, message: nil, preferredStyle: .actionSheet)
             for (index, item) in items.enumerated() {
@@ -244,13 +262,17 @@ import Foundation
             }
             sheet.addAction(
                 UIAlertAction(title: MigoSystemInteraction.cancel, style: .cancel) { _ in completion(-1) })
-            // An iPad shows a sheet as a popover, which needs somewhere to point.
-            if let popover = sheet.popoverPresentationController {
-                popover.sourceView = controller.view
-                popover.sourceRect = CGRect(x: controller.view.bounds.midX, y: controller.view.bounds.midY, width: 0, height: 0)
-                popover.permittedArrowDirections = []
-            }
-            controller.present(sheet, animated: true)
+            MigoSystemPresentation.present(
+                sheet,
+                prepare: { controller in
+                    // An iPad shows a sheet as a popover, which needs somewhere to point.
+                    guard let popover = sheet.popoverPresentationController else { return }
+                    popover.sourceView = controller.view
+                    popover.sourceRect = CGRect(
+                        x: controller.view.bounds.midX, y: controller.view.bounds.midY, width: 0, height: 0)
+                    popover.permittedArrowDirections = []
+                },
+                shown: { shown in if !shown { completion(nil) } })
         }
     }
 

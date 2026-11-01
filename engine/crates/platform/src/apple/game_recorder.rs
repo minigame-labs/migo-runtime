@@ -16,7 +16,7 @@ use std::{
 };
 
 use graphics::game_recorder::{
-    ClientBuffer, EncoderConfig, EncoderInput, VideoEncoder, VideoEncoderFactory,
+    ClientBuffer, EncoderConfig, FrameInput, VideoEncoder, VideoEncoderFactory,
 };
 use shared::error::{EngineError, EngineResult, ErrorCode};
 
@@ -113,6 +113,10 @@ impl VideoEncoderFactory for AppleVideoEncoderFactory {
         // AVAssetWriter and its H.264 encoder are part of every macOS and iOS
         // the engine ships to.
         true
+    }
+
+    fn input(&self) -> FrameInput {
+        FrameInput::ClientBuffers
     }
 
     fn create(&self, config: &EncoderConfig, path: &Path) -> EngineResult<Box<dyn VideoEncoder>> {
@@ -256,10 +260,6 @@ impl AppleVideoEncoder {
 }
 
 impl VideoEncoder for AppleVideoEncoder {
-    fn input(&self) -> EncoderInput {
-        EncoderInput::ClientBuffers
-    }
-
     fn lend(&mut self) -> EngineResult<Option<ClientBuffer>> {
         let _pool = Pool::new();
         if let Some(error) = self.failed("encoding the recording") {
@@ -497,7 +497,7 @@ mod tests {
         let mut encoder = AppleVideoEncoderFactory
             .create(&config, &part)
             .expect("an encoder");
-        assert!(matches!(encoder.input(), EncoderInput::ClientBuffers));
+        assert_eq!(AppleVideoEncoderFactory.input(), FrameInput::ClientBuffers);
         // A recording's frames are stamped with the clock's time, not from zero.
         let base_ns = 5_000_000_000i64;
         for i in 0..10i64 {

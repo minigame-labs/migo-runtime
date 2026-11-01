@@ -135,6 +135,10 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             /// JSON object the engine merged -- level, key, value, commonInfo --
             /// for the app to keep or upload.
             case gameLog(String)
+            /// A line the game wrote to `console`: the engine's level (1 info,
+            /// 2 warn, 3 error, anything else debug) and the text, in order with
+            /// everything else the game does.
+            case console(level: Int, message: String)
         }
 
         public var onEvent: ((Event) -> Void)?
@@ -175,6 +179,8 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
         /// The window service for the game that runs: the cursor content
         /// asked for, the pointer lock.
         private var windowService: MigoWindowService?
+        /// `createVideo`'s players, over the game in this view.
+        private var videos: MigoVideoPlayers?
         /// An Esc that released the pointer lock is the player's, not the
         /// game's: its key-up is held back too.
         private var escapeReleasedLock = false
@@ -235,6 +241,13 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             engine?.setScopeState(scope, state)
         }
 
+        /// One frame of recording `recordingId` the app's recorder made, for
+        /// content's `onFrameRecorded` (`MigoEngineSession.postRecorderFrame`).
+        /// Main thread.
+        public func postRecorderFrame(recordingId: UInt32, data: Data, isLastFrame: Bool) {
+            engine?.postRecorderFrame(recordingId: recordingId, data: data, isLastFrame: isLastFrame)
+        }
+
         /// Report the value a synchronous ecosystem getter answers with --
         /// `name` one of the contract's values (`getExtConfigSync`,
         /// `isChatTool`, ...), `json` what the API returns -- whenever it
@@ -269,6 +282,7 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
         public override func setFrameSize(_ newSize: NSSize) {
             super.setFrameSize(newSize)
             surfaceChanged()
+            videos?.stageChanged()
         }
 
         public override func viewDidChangeBackingProperties() {
@@ -328,12 +342,18 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
                     self?.engine?.postHostServiceEvent(service, event: event, json: json)
                 }
                 self.windowService = windowService
+                let videos = MigoVideoPlayers(stage: self) { [weak self] event, object in
+                    guard let json = try? JSONSerialization.data(withJSONObject: object) else { return }
+                    self?.engine?.postHostServiceEvent(.video, event: event, json: json)
+                }
+                self.videos = videos
                 // The app's services, then what only this view can answer;
                 // the session adds the SDK's own behind them.
                 let engine = try MigoEngineSession(
                     directories: configuration.directories, contentSigning: configuration.contentSigning,
                     preferredFramesPerSecond: configuration.preferredFramesPerSecond,
-                    hostServices: MigoGameViewHostServices(app: configuration.hostServices, window: windowService),
+                    hostServices: MigoGameViewHostServices(
+                        app: configuration.hostServices, window: windowService, video: videos),
                     capabilities: configuration.capabilities, networkPolicyJSON: configuration.networkPolicyJSON,
                     launchOptionsJSON: configuration.launchOptionsJSON)
                 self.engine = engine
@@ -361,6 +381,8 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             mouseDown = false
             windowService?.close()
             windowService = nil
+            videos?.close()
+            videos = nil
             escapeReleasedLock = false
             showDebugPanel(false)
             deviceStatus?.stop()
@@ -405,6 +427,9 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             case .exitRequested:
                 stop()
                 onEvent?(.exitRequested)
+            case .restartRequested:
+                // Content runs in process here, and the engine restarts it in place.
+                break
             case .error(let code, let message, let recoverable):
                 onEvent?(.error(code: code, message: message, recoverable: recoverable))
             case .surfaceLost:
@@ -424,6 +449,8 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
                 keepDisplayAwake(on)
             case .gameLog(let entry):
                 onEvent?(.gameLog(entry))
+            case .console(let level, let message):
+                onEvent?(.console(level: level, message: message))
             case .debugAids(let on):
                 showDebugPanel(on)
             }
@@ -501,6 +528,8 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             let running = !window.isMiniaturized && !NSApp.isHidden
             engine.setFocused(window.isKeyWindow)
             engine.setVisible(running && window.occlusionState.contains(.visible))
+            // A covered window's game runs on, and so do its videos.
+            videos?.setRunning(running)
             engine.setRunning(running)
             if running { engine.startFrames(view: self) } else { engine.stopFrames() }
         }
@@ -677,7 +706,7 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
     /// The desktop's answer to `migo.showKeyboard`: a real field, because a
     /// Mac has a keyboard and no soft one, pinned along the game's bottom edge
     /// and reported to content as the keyboard's height.
-    private final class KeyboardField: NSObject, NSTextFieldDelegate {
+    final class KeyboardField: NSObject, NSTextFieldDelegate {
         private weak var owner: MigoGameView?
         private let field = NSTextField()
         private var request: MigoEngineSession.KeyboardRequest?
@@ -704,6 +733,10 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
             field.usesSingleLineMode = !request.multiline
             field.isHidden = false
             owner?.window?.makeFirstResponder(field)
+            // Taking the focus selects a field's whole text, and the first key
+            // would replace content's defaultValue; a phone's field, Android's
+            // and the Linux Host Kit's start with the caret after it instead.
+            placeCaretAtEnd()
             owner?.keyboardInput(.heightChange(Double(Self.height)))
         }
 
@@ -724,16 +757,37 @@ public typealias MigoSystemCapability = MigoAppleRenderer.MigoSystemCapability
         func replaceText(_ text: String) {
             guard request != nil else { return }
             field.stringValue = text
+            placeCaretAtEnd()
         }
 
         func controlTextDidChange(_ notification: Notification) {
             guard let request else { return }
             var text = field.stringValue
-            if request.maxLength > 0, text.count > request.maxLength {
-                text = String(text.prefix(request.maxLength))
+            if request.maxLength > 0, text.utf16.count > request.maxLength {
+                text = Self.prefix(of: text, utf16Units: request.maxLength)
                 field.stringValue = text
+                placeCaretAtEnd()
             }
             owner?.keyboardInput(.input(text))
+        }
+
+        private func placeCaretAtEnd() {
+            field.currentEditor()?.selectedRange = NSRange(location: field.stringValue.utf16.count, length: 0)
+        }
+
+        /// The longest whole-character prefix of `text` that is at most
+        /// `limit` UTF-16 units: maxLength counts what a JavaScript string's
+        /// length does, as Android's field and the Linux Host Kit's do, and a
+        /// character is never cut in two.
+        static func prefix(of text: String, utf16Units limit: Int) -> String {
+            var units = 0
+            var end = text.startIndex
+            for character in text {
+                units += character.utf16.count
+                if units > limit { break }
+                end = text.index(after: end)
+            }
+            return String(text[..<end])
         }
 
         func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {

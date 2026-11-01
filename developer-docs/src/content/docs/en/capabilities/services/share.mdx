@@ -51,8 +51,8 @@ be an http(s) URL, which reaches the host as is; the other two refuse network im
 
 `SHARE_GAME_RECORDING` shares the last recording `migo.getGameRecorder()` finished. `video` is the engine's own file
 (an H.264 MP4 under the session's cache), never a path content named, and it stays readable for the rest of the
-session; `bgm` is a real file resolved through the sandbox, as images are, and never a URL. Android, macOS and iOS
-record; elsewhere there is no recording to share yet. The time range is content's own mistake and is refused first
+session; `bgm` is a real file resolved through the sandbox, as images are, and never a URL. Android, macOS, iOS and
+Linux (where GStreamer has an H.264 encoder) record; elsewhere there is no recording to share yet. The time range is content's own mistake and is refused first
 everywhere: 22623 time range invalid, 22633 duration out of limit (more than 60 s in all), 22643 time range too short
 (under 2 s). A host without the share service then answers `not supported`, as for every share; one with it is asked
 only once the engine has a recording (else 22603 no recorded video) and the music is a file of the game's (else 22613

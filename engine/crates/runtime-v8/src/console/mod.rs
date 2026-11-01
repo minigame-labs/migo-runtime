@@ -113,7 +113,7 @@ mod cross_session_contention {
     #[test]
     fn writing_a_console_entry_does_not_queue_behind_the_console_registry() {
         let host_id = 9_400;
-        let buffer = shared::console_log::register_console_log(host_id, true);
+        let buffer = shared::console_log::register_console_log(host_id, true, None);
         struct Unregister(i32);
         impl Drop for Unregister {
             fn drop(&mut self) {

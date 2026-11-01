@@ -127,6 +127,7 @@ public class KeyboardManager implements RuntimeScoped {
     public void destroy() {
         mainHandler.post(() -> {
             hideOnUiThread();
+            stopKeyboardHeightMonitoring();
             removeEditText();
         });
     }
@@ -215,7 +216,13 @@ public class KeyboardManager implements RuntimeScoped {
             NativeMethods.onKeyboardComplete(sessionId, token.generation(), value);
         }
 
-        stopKeyboardHeightMonitoring();
+        // The keyboard leaves after this, as the input method animates it away:
+        // its height is still reported until it reaches 0 (the layout listener
+        // stops itself there), so content hears it go. One that is already 0 --
+        // a floating keyboard, a hardware one -- has nothing more to say.
+        if (lastKeyboardHeight == 0) {
+            stopKeyboardHeightMonitoring();
+        }
     }
 
     private void ensureEditText() {
@@ -326,6 +333,9 @@ public class KeyboardManager implements RuntimeScoped {
 
                 if (isShowing && previousKeyboardHeight > 0 && keyboardHeight == 0) {
                     completeBySystemDismiss();
+                } else if (!isShowing && keyboardHeight == 0) {
+                    // The field was closed and the keyboard is now gone.
+                    stopKeyboardHeightMonitoring();
                 }
             }
         };

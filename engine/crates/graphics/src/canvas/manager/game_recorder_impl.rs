@@ -24,12 +24,16 @@ impl CanvasManager {
 
     /// Whether this device can record the game: an encoder, and a render
     /// backend that shares its frames with another thread's context.
+    /// Whether this device records: an encoder it has, a renderer of the tier
+    /// the copies need, and -- for an encoder drawn into on its own thread -- a
+    /// second context in the share group. One of frames from memory needs
+    /// none: the render thread reads them back.
     fn recording_supported(&self) -> bool {
-        self.video_encoder
-            .as_ref()
-            .is_some_and(|factory| factory.available())
-            && self.device_caps.tier() == crate::device_caps::DeviceTier::TierA
-            && self.egl_provider.concurrency() == EglConcurrency::SharedContexts
+        self.video_encoder.as_ref().is_some_and(|factory| {
+            factory.available()
+                && (factory.input() == crate::game_recorder::FrameInput::Memory
+                    || self.egl_provider.concurrency() == EglConcurrency::SharedContexts)
+        }) && self.device_caps.tier() == crate::device_caps::DeviceTier::TierA
     }
 
     pub(crate) fn game_recorder(&mut self, cmd: GameRecorderCmd) {

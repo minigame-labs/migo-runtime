@@ -165,6 +165,7 @@ it carries no signature; subpackages inside the package work.
 | `onDeviceOrientationChange` | the interface's orientation (in landscape, `landscape` with the Home side on the right, `landscapeReverse` on the left; the half turn between them from iOS 16) | the game's shape crossing between portrait and landscape |
 | `setDeviceOrientation` | asks the scene to turn to the shape asked for (iOS 16 and later); fails where the view controller does not support it | turns the window to the shape asked for; fails in full screen |
 | `getGameLogManager().log` | delivered to the app as `onEvent(.gameLog(json))` | likewise |
+| `createVideo` | an `AVPlayer` over the game where content put it, its poster until it plays, and the Android SDK's controls as its options ask (the buttons labelled for VoiceOver); `requestFullScreen` fills the screen, turned a quarter for a direction of 90 or -90; players hold still while the app is in the background | likewise; full screen fills the window, never turned; players hold still while the window is in the Dock or the app is hidden |
 
 These are **refused rather than faked**: `getHeapStatistics` on iOS (content runs in
 WebKit's JavaScriptCore, which exposes no heap figures), and downloaded subpackages when

@@ -14,7 +14,7 @@ use shared::{
 use tracing::{info, warn};
 
 use super::{
-    ClientBuffer, EncoderConfig, EncoderInput, FromEncoder, SyncHandle, ToEncoder, VideoEncoder,
+    ClientBuffer, EncoderConfig, FrameInput, FromEncoder, SyncHandle, ToEncoder, VideoEncoder,
     VideoEncoderFactory,
 };
 use crate::egl_platform::{EglInstance, EglProvider, GraphicsBackendId};
@@ -112,6 +112,9 @@ struct Session {
     egl: EglInstance,
     display: khronos_egl::Display,
     context: khronos_egl::Context,
+    /// Current while the context draws into no window of the encoder's: a 1x1
+    /// pbuffer, or none where the EGL makes a context current without one.
+    placeholder: Option<khronos_egl::Surface>,
     target: Target,
     gl: glow::Context,
     /// One per shared texture, to read it.
@@ -126,14 +129,8 @@ enum Target {
         surface: khronos_egl::Surface,
         presentation_time: Option<PresentationTime>,
     },
-    /// The buffers the encoder lends.
-    Buffers {
-        /// Current while the context draws into no window: a 1x1 pbuffer, or
-        /// none where the EGL makes a context current without a surface.
-        placeholder: Option<khronos_egl::Surface>,
-        /// What was made for each buffer, by its key.
-        bound: HashMap<u64, Bound>,
-    },
+    /// The buffers the encoder lends, and what was made for each, by its key.
+    Buffers { bound: HashMap<u64, Bound> },
 }
 
 /// One of the encoder's buffers, as this context draws into it.
@@ -165,7 +162,7 @@ fn run(carried: Carried, start: RenderCmdResp<()>) {
     // Written beside the video it will become, and moved over it only once
     // complete: the last finished recording stays whole while the next is made.
     let part = in_progress(&path);
-    let encoder = match factory.create(&config_e, &part) {
+    let mut encoder = match factory.create(&config_e, &part) {
         Ok(encoder) => encoder,
         Err(e) => {
             start.err(e);
@@ -173,6 +170,21 @@ fn run(carried: Carried, start: RenderCmdResp<()>) {
             return;
         }
     };
+    let input = factory.input();
+    if input == FrameInput::Memory {
+        // The render thread reads the frames back: no context here.
+        info!(
+            width = config_e.width,
+            height = config_e.height,
+            fps = config_e.fps,
+            "game recorder: encoding frames from memory"
+        );
+        let _ = tx.send(FromEncoder::Ready);
+        start.ok(());
+        let outcome = encode_memory(encoder.as_mut(), &rx, &tx);
+        conclude(outcome, encoder, &part, &path, &events, &rx);
+        return;
+    }
     let session = match open(
         &*egl_provider,
         backend,
@@ -180,6 +192,7 @@ fn run(carried: Carried, start: RenderCmdResp<()>) {
         config,
         share,
         &context_attribs,
+        input,
         &*encoder,
         &textures,
         config_e,
@@ -225,6 +238,7 @@ fn open(
     render_config: usize,
     share: usize,
     context_attribs: &[khronos_egl::Int],
+    input: FrameInput,
     encoder: &dyn VideoEncoder,
     textures: &[glow::NativeTexture],
     encoding: EncoderConfig,
@@ -240,10 +254,10 @@ fn open(
     let render_config = unsafe { khronos_egl::Config::from_ptr(render_config as *mut _) };
     let share = unsafe { khronos_egl::Context::from_ptr(share as *mut _) };
     let size = (encoding.width as i32, encoding.height as i32);
-    let window = match encoder.input() {
-        EncoderInput::Window(window) => window,
-        EncoderInput::ClientBuffers => {
-            return open_for_buffers(
+    match input {
+        FrameInput::Window => {}
+        FrameInput::ClientBuffers => {
+            return open_offscreen(
                 egl,
                 display,
                 render_config,
@@ -251,9 +265,19 @@ fn open(
                 context_attribs,
                 textures,
                 size,
+                Target::Buffers {
+                    bound: HashMap::new(),
+                },
             );
         }
-    };
+        FrameInput::Memory => {
+            return Err(failure(
+                "an encoder of frames from memory has no context",
+                "",
+            ));
+        }
+    }
+    let window = encoder.window();
 
     // The encoder's config first, the render one if the driver has none.
     let recordable = [
@@ -311,6 +335,7 @@ fn open(
             egl,
             display,
             context,
+            placeholder: None,
             target: Target::Window {
                 surface,
                 presentation_time,
@@ -326,10 +351,12 @@ fn open(
     ))
 }
 
-/// A context for an encoder that lends buffers: current on a 1x1 pbuffer, or
-/// on no surface where the render config has no pbuffers, as the upload
-/// thread's is. Every frame is drawn into a buffer bound to a texture.
-fn open_for_buffers(
+/// A context drawing into no window of the encoder's: current on a 1x1
+/// pbuffer, or on no surface where the render config has no pbuffers, as the
+/// upload thread's is. Every frame goes to `target`, a buffer the encoder
+/// lends.
+#[allow(clippy::too_many_arguments)]
+fn open_offscreen(
     egl: EglInstance,
     display: khronos_egl::Display,
     config: khronos_egl::Config,
@@ -337,6 +364,7 @@ fn open_for_buffers(
     context_attribs: &[khronos_egl::Int],
     textures: &[glow::NativeTexture],
     size: (i32, i32),
+    target: Target,
 ) -> EngineResult<Session> {
     let context = egl
         .create_context(display, config, Some(share), context_attribs)
@@ -370,10 +398,8 @@ fn open_for_buffers(
         egl,
         display,
         context,
-        target: Target::Buffers {
-            placeholder,
-            bound: HashMap::new(),
-        },
+        placeholder,
+        target,
         gl,
         framebuffers,
         size,
@@ -456,6 +482,9 @@ fn encode(
                     break End::Failed(e.to_string());
                 }
             }
+            // Read-back frames are only sent to an encoder of frames from
+            // memory, which has no context.
+            ToEncoder::Pixels { .. } => {}
             ToEncoder::Finish { duration_ms, resp } => break End::Finish(duration_ms, resp),
             ToEncoder::Discard { resp } => break End::Discard(resp),
         }
@@ -473,6 +502,52 @@ fn encode(
         }
     }
     close(session, textures);
+    conclude(outcome, encoder, part, path, events, rx);
+}
+
+/// Hand the encoder every frame the render thread read back, until it says to
+/// finish or to discard, or the encoder fails. Each frame's memory goes back
+/// for the next.
+fn encode_memory(
+    encoder: &mut dyn VideoEncoder,
+    rx: &Receiver<ToEncoder>,
+    tx: &Sender<FromEncoder>,
+) -> End {
+    let outcome = loop {
+        let Ok(message) = rx.recv() else {
+            break End::Discard(None);
+        };
+        match message {
+            ToEncoder::Pixels { rgba, pts_ns } => {
+                if let Err(e) = encoder
+                    .submit_pixels(&rgba, pts_ns)
+                    .and_then(|()| encoder.drain())
+                {
+                    break End::Failed(e.to_string());
+                }
+                let _ = tx.send(FromEncoder::Spent(rgba));
+            }
+            // Frames in textures are only sent to an encoder drawn into.
+            ToEncoder::Frame { .. } => {}
+            ToEncoder::Finish { duration_ms, resp } => break End::Finish(duration_ms, resp),
+            ToEncoder::Discard { resp } => break End::Discard(resp),
+        }
+    };
+    if let End::Failed(_) = outcome {
+        let _ = tx.send(FromEncoder::Failed);
+    }
+    outcome
+}
+
+/// The file completed or removed, content told, and every caller answered.
+fn conclude(
+    outcome: End,
+    encoder: Box<dyn VideoEncoder>,
+    part: &std::path::Path,
+    path: &std::path::Path,
+    events: &RecorderEvents,
+    rx: &Receiver<ToEncoder>,
+) {
     match outcome {
         End::Finish(duration_ms, resp) => {
             let finished = encoder.finish().and_then(|()| {
@@ -510,7 +585,9 @@ fn encode(
                 match message {
                     ToEncoder::Finish { resp, .. } => resp.err(failure("the recording failed", "")),
                     ToEncoder::Discard { resp: Some(resp) } => resp.ok(()),
-                    ToEncoder::Frame { .. } | ToEncoder::Discard { resp: None } => {}
+                    ToEncoder::Frame { .. }
+                    | ToEncoder::Pixels { .. }
+                    | ToEncoder::Discard { resp: None } => {}
                 }
             }
         }
@@ -574,7 +651,7 @@ fn draw(
                 .map_err(|e| format!("the encoder's input refused a frame: {e:?}"))?;
             Ok(released)
         }
-        Target::Buffers { bound, .. } => {
+        Target::Buffers { bound } => {
             let Some(buffer) = encoder.lend().map_err(|e| e.to_string())? else {
                 // The encoder is not ready for another frame: this one is not
                 // recorded, and its texture is free at once.
@@ -689,6 +766,7 @@ fn close(session: Session, textures: Vec<glow::NativeTexture>) {
         egl,
         display,
         context,
+        placeholder,
         target,
         gl,
         framebuffers,
@@ -702,10 +780,10 @@ fn close(session: Session, textures: Vec<glow::NativeTexture>) {
             gl.delete_texture(texture);
         }
     }
-    let surfaces = match target {
-        Target::Window { surface, .. } => vec![surface],
-        Target::Buffers { placeholder, bound } => {
-            let mut surfaces: Vec<_> = placeholder.into_iter().collect();
+    let mut surfaces: Vec<_> = placeholder.into_iter().collect();
+    match target {
+        Target::Window { surface, .. } => surfaces.push(surface),
+        Target::Buffers { bound } => {
             for (_, bound) in bound {
                 unsafe {
                     gl.delete_framebuffer(bound.framebuffer);
@@ -713,9 +791,8 @@ fn close(session: Session, textures: Vec<glow::NativeTexture>) {
                 }
                 surfaces.push(bound.pbuffer);
             }
-            surfaces
         }
-    };
+    }
     unsafe { gl.finish() };
     let _ = egl.make_current(display, None, None, None);
     for surface in surfaces {

@@ -45,7 +45,7 @@
       }
     },
     "host_v8_audio": {
-      "reason": "Audio plays on the host (PCM never crosses the process boundary; control messages do). A decode is adopted on the host as the AudioBuffer's PCM, so its samples cross only when content reads its channels (materialize, synchronous) or starts a buffer it wrote. Graph edits and parameter changes are ordered commands; analyser reads and decodes are awaited; creation that can fail in a way content catches is synchronous, and so is setInnerAudioOption, whose refusal is what its facade reports as fail. Recording needs the microphone, which the profile does not grant.",
+      "reason": "Audio plays on the host (PCM never crosses the process boundary; control messages do). A decode is adopted on the host as the AudioBuffer's PCM, so its samples cross only when content reads its channels (materialize, synchronous) or starts a buffer it wrote. Graph edits and parameter changes are ordered commands; analyser reads and decodes are awaited; creation that can fail in a way content catches is synchronous, and so is setInnerAudioOption, whose refusal is what its facade reports as fail. Recording is the host app's microphone, as embedded (the recorder service): starting, pausing, resuming and stopping are answered at once, because a refusal -- scope.record not granted, no recorder -- is what the facade reports and what has the player asked, as the embedded ops throw it; the frames the host records reach content as the host-bridge call the embedded runtime makes (_internalOnRecorderFrameData), and its events as every host-service event.",
       "ops": {
         "op_audio_abort_buffer": "command",
         "op_audio_analyser_byte_frequency": "async",
@@ -124,10 +124,10 @@
         "op_media_audio_player_remove_source": "command",
         "op_media_audio_player_start": "command",
         "op_media_audio_player_stop": "command",
-        "op_recorder_pause": "unsupported",
-        "op_recorder_resume": "unsupported",
-        "op_recorder_start": "unsupported",
-        "op_recorder_stop": "unsupported"
+        "op_recorder_pause": "sync",
+        "op_recorder_resume": "sync",
+        "op_recorder_start": "sync",
+        "op_recorder_stop": "sync"
       }
     },
     "host_v8_base": {
@@ -259,7 +259,7 @@
       }
     },
     "host_v8_media": {
-      "reason": "Camera, video and photo-album surfaces are native UI and native permissions, outside the Performance+ profile; so is video decoding, which content is told this profile does not have. Choosing images, media and files is the host app's picker, reached as a command through the host-service channel; the files it hands over are taken into the session's /tmp, as in process. Compressing, previewing and saving to the album name content's files: they are awaited, because the host resolves each path through the game's sandbox into a file the app can open before it asks (migo_services::host_paths, as the embedded ops do), and a refusal fails the call. Recording the game (getGameRecorder) is the native renderer's: the host asks its render thread whether it can record (synchronously -- isFrameSupported answers at once) and to start, pause, resume, stop or abort, and the producer waits on the recording's events, which the host's render thread reports as the embedded ops'.",
+      "reason": "Camera and photo-album surfaces are native UI and native permissions, outside the Performance+ profile; so is video decoding, which content is told this profile does not have. createVideo's players are the host app's, as embedded: making one or changing what it plays is answered at once, as the embedded ops answer, because the host resolves its src and poster through the game's sandbox into files it can open (migo_services::host_paths) and a refusal throws; taking one away is a command, and play, pause, stop, seek and full screen are commands the host answers through each method's result hook, as embedded. Choosing images, media and files is the host app's picker, reached as a command through the host-service channel; the files it hands over are taken into the session's /tmp, as in process. Compressing, previewing and saving to the album name content's files: they are awaited, because the host resolves each path through the game's sandbox into a file the app can open before it asks (migo_services::host_paths, as the embedded ops do), and a refusal fails the call. Recording the game (getGameRecorder) is the native renderer's: the host asks its render thread whether it can record (synchronously -- isFrameSupported answers at once) and to start, pause, resume, stop or abort, and the producer waits on the recording's events, which the host's render thread reports as the embedded ops'.",
       "ops": {
         "op_camera_close_frame_change": "unsupported",
         "op_camera_create": "unsupported",
@@ -284,21 +284,21 @@
         "op_preview_image": "async",
         "op_preview_media": "async",
         "op_save_image_to_photos_album": "async",
-        "op_video_create": "unsupported",
+        "op_video_create": "sync",
         "op_video_decoder_available": "local",
         "op_video_decoder_remove": "unsupported",
         "op_video_decoder_seek": "unsupported",
         "op_video_decoder_start": "unsupported",
         "op_video_decoder_stop": "unsupported",
         "op_video_decoder_take_frame": "unsupported",
-        "op_video_destroy": "unsupported",
-        "op_video_exit_full_screen": "unsupported",
-        "op_video_pause": "unsupported",
-        "op_video_play": "unsupported",
-        "op_video_request_full_screen": "unsupported",
-        "op_video_seek": "unsupported",
-        "op_video_set": "unsupported",
-        "op_video_stop": "unsupported"
+        "op_video_destroy": "command",
+        "op_video_exit_full_screen": "command",
+        "op_video_pause": "command",
+        "op_video_play": "command",
+        "op_video_request_full_screen": "command",
+        "op_video_seek": "command",
+        "op_video_set": "sync",
+        "op_video_stop": "command"
       }
     },
     "host_v8_network": {
@@ -364,19 +364,19 @@
       }
     },
     "host_v8_system": {
-      "reason": "Device, window and system descriptions are an environment snapshot the host injects and updates by event. What the app says about itself (getAppBaseInfo, and the fields of getSystemInfoSync it feeds) is read from the host synchronously: it changes during a session -- the debugging aids turned on, the language or text size changed -- so the host's one copy is the answer. Login, account, permission requests, the settings pages, Bluetooth, beacons and mini-program navigation are the host app's services: each request is a command the host makes the embedded op's scope check and device-service call for (engine/crates/core/src/runtime/service_channel.rs), and its result, a refusal included, and the host's reports reach content through the hooks the embedded runtime calls. Ecosystem calls are awaited while the files a group share names are resolved through the game's sandbox. Whether the host app answers ecosystem calls at all, and the values it reported for the synchronous getters, are the host's, read synchronously: the producer has no host of its own to ask. The scopes content was granted, the app's authorization and the system's switches are the host's last report, read synchronously as the network type is: each changes during a session -- a prompt answered, a setting changed and come back from -- so the host's one copy is the answer. This device as a Bluetooth LE peripheral -- a GATT server centrals connect to, and its advertising -- is outside the Performance+ profile.",
+      "reason": "Device, window and system descriptions are an environment snapshot the host injects and updates by event. What the app says about itself (getAppBaseInfo, and the fields of getSystemInfoSync it feeds) is read from the host synchronously: it changes during a session -- the debugging aids turned on, the language or text size changed -- so the host's one copy is the answer. Login, account, permission requests, the settings pages, Bluetooth, beacons and mini-program navigation are the host app's services: each request is a command the host makes the embedded op's scope check and device-service call for (engine/crates/core/src/runtime/service_channel.rs), and its result, a refusal included, and the host's reports reach content through the hooks the embedded runtime calls. Ecosystem calls are awaited while the files a group share names are resolved through the game's sandbox. Whether the host app answers ecosystem calls at all, and the values it reported for the synchronous getters, are the host's, read synchronously: the producer has no host of its own to ask. The scopes content was granted, the app's authorization and the system's switches are the host's last report, read synchronously as the network type is: each changes during a session -- a prompt answered, a setting changed and come back from -- so the host's one copy is the answer. This device as a Bluetooth LE peripheral -- a GATT server centrals connect to, and its advertising -- is the host app's service too: each request is a command the host makes the embedded op's scope check and device-service call for, answered through the method's result hook, and what centrals do reaches content as the service's events.",
       "ops": {
         "op_authorize": "command",
-        "op_ble_peripheral_add_service": "unsupported",
-        "op_ble_peripheral_remove_service": "unsupported",
-        "op_ble_peripheral_start_advertising": "unsupported",
-        "op_ble_peripheral_stop_advertising": "unsupported",
-        "op_ble_peripheral_write_characteristic_value": "unsupported",
+        "op_ble_peripheral_add_service": "command",
+        "op_ble_peripheral_remove_service": "command",
+        "op_ble_peripheral_start_advertising": "command",
+        "op_ble_peripheral_stop_advertising": "command",
+        "op_ble_peripheral_write_characteristic_value": "command",
         "op_check_session": "command",
         "op_close_ble_connection": "command",
         "op_close_bluetooth_adapter": "command",
         "op_create_ble_connection": "command",
-        "op_create_ble_peripheral_server": "unsupported",
+        "op_create_ble_peripheral_server": "command",
         "op_crypto_random_values": "local",
         "op_ecosystem_available": "sync",
         "op_ecosystem_call": "async",

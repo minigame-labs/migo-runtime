@@ -70,7 +70,7 @@ fn forward<S: ?Sized>(
 
 /// The embedded ops' scope check: a gated op reaches the host only with its
 /// scope granted, and is refused in the words they throw.
-fn scope_refusal(device: Option<&dyn DeviceServices>, op: &str) -> Option<String> {
+pub(crate) fn scope_refusal(device: Option<&dyn DeviceServices>, op: &str) -> Option<String> {
     let scope = op_scope(op)?;
     let state = device
         .and_then(|device| device.permission())
@@ -181,11 +181,23 @@ channel! {
     op_ad_update_style(json) => ad.update_ad_style;
     op_apply_update(none) => update.apply_update;
     op_authorize(json) => permission.request_scope, "_internalOnAuthorizeResult";
+    op_ble_peripheral_add_service(json) => ble_peripheral.add_service,
+        "_internalOnBLEPeripheralAddServiceResult";
+    op_ble_peripheral_remove_service(json) => ble_peripheral.remove_service,
+        "_internalOnBLEPeripheralRemoveServiceResult";
+    op_ble_peripheral_start_advertising(json) => ble_peripheral.start_advertising,
+        "_internalOnBLEPeripheralStartAdvertisingResult";
+    op_ble_peripheral_stop_advertising(json) => ble_peripheral.stop_advertising,
+        "_internalOnBLEPeripheralStopAdvertisingResult";
+    op_ble_peripheral_write_characteristic_value(json) => ble_peripheral.write_characteristic_value,
+        "_internalOnBLEPeripheralWriteCharacteristicValueResult";
     op_check_session(json) => auth.check_session, "_internalOnCheckSessionResult";
     op_choose_image(json) => image_api.choose_image, "_internalOnChooseImageResult";
     op_choose_media(json) => image_api.choose_media, "_internalOnChooseMediaResult";
     op_choose_message_file(json) => image_api.choose_message_file,
         "_internalOnChooseMessageFileResult";
+    op_create_ble_peripheral_server(json) => ble_peripheral.create_server,
+        "_internalOnCreateBLEPeripheralServerResult";
     op_close_ble_connection(json) => bluetooth.close_ble_connection,
         "_internalOnCloseBLEConnectionResult";
     op_close_bluetooth_adapter(json) => bluetooth.close_adapter,
@@ -277,6 +289,15 @@ channel! {
     op_stop_device_motion(none) => device_motion.stop;
     op_stop_gyroscope(none) => gyroscope.stop;
     op_stop_screen_recording_observer(none) => screen.stop_screen_recording_observer;
+    op_video_destroy(json) => video.destroy;
+    op_video_exit_full_screen(json) => video.exit_full_screen,
+        "_internalOnVideoExitFullScreenResult";
+    op_video_pause(json) => video.pause, "_internalOnVideoPauseResult";
+    op_video_play(json) => video.play, "_internalOnVideoPlayResult";
+    op_video_request_full_screen(json) => video.request_full_screen,
+        "_internalOnVideoRequestFullScreenResult";
+    op_video_seek(json) => video.seek, "_internalOnVideoSeekResult";
+    op_video_stop(json) => video.stop, "_internalOnVideoStopResult";
     op_write_ble_characteristic_value(json) => bluetooth.write_ble_characteristic_value,
         "_internalOnWriteBLECharacteristicValueResult";
 }

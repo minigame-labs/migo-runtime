@@ -72,6 +72,25 @@ pub trait HostNotifier: Send + Sync {
         // Default: no-op.
     }
 
+    /// Ask the host to launch the game again, in a new session created with
+    /// `launch_options_json` -- the options it was last shown with, its query the one
+    /// the restart named.
+    ///
+    /// What content's `restartMiniProgram` asks of a session that cannot replace its
+    /// content in place: the external-frame session, whose content runs outside the
+    /// engine. The embedded session restarts in place and never calls this. The
+    /// default does nothing, and content's restart then does nothing either.
+    fn notify_restart(&self, _host_id: i32, _launch_options_json: &str) {}
+
+    /// One line content wrote to its console, at the engine's level (0 debug, 1 log and
+    /// info, 2 warn, 3 error), on the thread that wrote it and in the order it wrote them,
+    /// before anything content did after it reaches the host: a line written before
+    /// `exitMiniProgram` is heard before [`notify_exit`](Self::notify_exit). Whichever
+    /// execution runs content -- the embedded one, or the external-frame session's
+    /// producer -- it arrives here. It must not block. The default does nothing, and the
+    /// line then reaches only the engine's log and the debugging aids' buffer.
+    fn notify_console(&self, _host_id: i32, _level: u8, _message: &str) {}
+
     /// Notify the host application about an error the engine hit.
     ///
     /// Not every one ends the game, and the code says which: a host tells them apart by code

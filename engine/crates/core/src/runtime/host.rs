@@ -839,17 +839,6 @@ impl Host {
             // is the only place that may act on it: a handler comparing it again
             // would be a second decision point that could disagree with the one
             // that already let this command through. Hence `_` here and below.
-            HostCommand::RecorderFrameData {
-                recording_id,
-                data,
-                is_last_frame,
-                credit: _credit,
-            } => {
-                self.js
-                    .dispatch_recorder_frame_data(recording_id, data, is_last_frame);
-                Ok(())
-            }
-
             HostCommand::CameraFrameData {
                 camera_id,
                 credit: _credit,
@@ -1388,8 +1377,18 @@ impl Host {
         // rather than invent an abort with no caller.
 
         // Launched again, as a cold launch is, with the options it was last shown with, its query the one the restart
-        // named: the reload below launches the new isolate with them, and it is shown with them after.
+        // named -- the reload below launches the new isolate with them -- and shown, as a cold launch is, before its
+        // content runs: a fresh isolate is hidden until a show says otherwise, and a restart has no host show to
+        // wait for. Before the content, as a host's first show is, because a cold start is read from
+        // getLaunchOptionsSync() and getEnterOptionsSync(): onShow is the return to the foreground (the reference),
+        // which a restart is not. While the game is hidden, the show waits for the surface as any other does.
         let args = self.show_options.relaunch(launch_query);
+        if self.backgrounded.load(Ordering::Relaxed) {
+            self.pending_on_show_args = Some(args);
+        } else {
+            self.js.set_timer_backgrounded(false);
+            self.js.invoke_host_hook("_internalTriggerOnShow", &args);
+        }
 
         // If we have a last evaluated module, reload it. Even if re-evaluation
         // fails, resume render/audio below so the session doesn't stay paused.
@@ -1425,15 +1424,6 @@ impl Host {
         // thread remains its sole authority across restarts.
         self.last_dispatched_context_lost = false;
         self.reconcile_context_lost();
-
-        // Launched again, so shown again, as a cold launch is: content that starts or resumes on onShow would wait
-        // for one that never came. While the game is hidden, the show waits for the surface as any other does.
-        if self.backgrounded.load(Ordering::Relaxed) {
-            self.pending_on_show_args = Some(args);
-        } else {
-            self.js.set_timer_backgrounded(false);
-            self.js.invoke_host_hook("_internalTriggerOnShow", &args);
-        }
 
         reload_result
     }
@@ -1562,6 +1552,9 @@ impl InputSink for HostJsRuntime {
     }
     fn ble_mtu_change(&mut self, device_id: &str, mtu: u32) {
         self.dispatch_ble_mtu_change(device_id, mtu);
+    }
+    fn recorder_frame(&mut self, recording_id: u32, data: Vec<u8>, is_last_frame: bool) {
+        self.dispatch_recorder_frame_data(recording_id, data, is_last_frame);
     }
 }
 

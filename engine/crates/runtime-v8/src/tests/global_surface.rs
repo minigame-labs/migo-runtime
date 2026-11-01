@@ -405,7 +405,7 @@ mod global_surface_tests {
         let v8_executor = crate::tests::support::v8_test_executor();
         let _v8_enter = v8_executor.as_ref().map(|executor| executor.enter());
         let host_id = 9_401;
-        let buffer = shared::console_log::register_console_log(host_id, true);
+        let buffer = shared::console_log::register_console_log(host_id, true, None);
         crate::console::bind_thread_console(host_id);
         let mut rt = boot_runtime();
         rt.execute_script(

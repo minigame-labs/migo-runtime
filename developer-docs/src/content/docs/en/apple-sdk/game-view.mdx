@@ -264,6 +264,11 @@ public struct Configuration {
 
 `networkPolicyJSON` is what network the game may reach, in the JSON form [the session reference](/docs/en/reference/session/) documents: one allowlist per channel. `nil`, the default, is **no network at all** -- every request, download, upload and socket is refused until the app grants it.
 
+With `"lan": true` in it, the game's sockets -- `createTCPSocket`, `createUDPSocket`, `connectSocket` -- may reach
+the other devices on the player's local network. iOS 14 and macOS 15 ask the player before an app reaches its local
+network, with the reason the app gives in its Info.plist's `NSLocalNetworkUsageDescription`. An app that grants `lan`
+declares that key: without it the system shows no prompt, and every such connection fails.
+
 | Field | Platform | Default | Meaning |
 | --- | --- | --- | --- |
 | `directories` | both | `.standard()` | Where installed games, saves and caches live; see [`MigoGameDirectories`](#migogamedirectories) |

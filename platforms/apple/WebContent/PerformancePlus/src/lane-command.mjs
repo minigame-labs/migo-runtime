@@ -21,17 +21,31 @@ import {
 import { engineHost } from "./engine-host.mjs";
 import { servicesOf } from "./lane-async.mjs";
 import { f32BitsOf, optionalBytesOf, optionalStringOf, smiU32, stringOf, toBool, toF64, toI32, toU8 } from "./op-args.mjs";
+import { platform } from "./platform.mjs";
 import { SERVICE_OP } from "./service-ops.mjs";
+import { MAX_SERVICE_MESSAGE_BYTES, RECORD_HEADER_BYTES, SERVICE_HEADER_BYTES } from "./service.mjs";
+import { runTask } from "./task-gate.mjs";
 import { terminateWorkerAttempt } from "./worker-relay-channel.mjs";
 
-/// A console line, for the host's log.
+/// The longest console line one service record carries, in UTF-16 code units:
+/// a code unit is at most three UTF-8 bytes, and the record's framing and the
+/// note on a cut line fit in what is left.
+const MAX_CONSOLE_UNITS = Math.floor(
+  (MAX_SERVICE_MESSAGE_BYTES - SERVICE_HEADER_BYTES - RECORD_HEADER_BYTES - 256) / 3,
+);
+
+/// A console line, for the host: a command, so it reaches the host in order
+/// with everything content did before and after it -- a line written before
+/// `exitMiniProgram` is heard before the exit -- and the host logs it and hands
+/// it to the app as the embedded op's line is (level 1 info, 2 warn, 3 error,
+/// anything else debug).
 ///
-/// The embedded op writes it to the engine's log at the level given (1 info,
-/// 2 warn, 3 error, anything else debug) and nothing else; the host maps the
-/// same numbers onto its platform log. The message is the value's ToString,
-/// and a value whose ToString throws is logged as `<invalid value>` -- the Rust
-/// op's answer -- rather than turning a log call into an exception, which
-/// would make a failing `toString` fatal to whatever was being reported.
+/// The message is the value's ToString, and a value whose ToString throws is
+/// logged as `<invalid value>` -- the Rust op's answer -- rather than turning a
+/// log call into an exception, which would make a failing `toString` fatal to
+/// whatever was being reported. For the same reason a line too long for one
+/// service record is cut, and a line written after the channel broke is
+/// dropped: nobody is left to hear it.
 export function op_console(value, level) {
   const severity = toU8(level, "level");
   let message;
@@ -40,7 +54,25 @@ export function op_console(value, level) {
   } catch {
     message = "<invalid value>";
   }
-  engineHost().report({ type: "console", level: severity, message });
+  if (message.length > MAX_CONSOLE_UNITS) {
+    // Not between the halves of a surrogate pair.
+    const end = isLeadSurrogate(message.charCodeAt(MAX_CONSOLE_UNITS - 1))
+      ? MAX_CONSOLE_UNITS - 1
+      : MAX_CONSOLE_UNITS;
+    message = `${message.slice(0, end)} [cut: the line was ${message.length} characters]`;
+  }
+  try {
+    servicesOf(engineHost()).command(SERVICE_OP.op_console, (w) => {
+      w.str(message);
+      w.u32(severity);
+    });
+  } catch {
+    // The channel is gone, and the host with it.
+  }
+}
+
+function isLeadSurrogate(unit) {
+  return unit >= 0xd800 && unit <= 0xdbff;
 }
 
 // ---- images ------------------------------------------------------------------
@@ -584,24 +616,48 @@ export function op_udp_set_ttl(rid, ttl) {
 
 // ---- the session, as content asks about itself -----------------------------------
 
+/// Hand `send` its turn once the task that called has run to its end, its
+/// microtasks included. The embedded host thread acts on a session's end or
+/// restart only between tasks, so what content does in the rest of the task --
+/// the call's own success and complete, which settle in its microtasks, and
+/// whatever they log or save -- happens first; here the host acts on a command
+/// as it reads it, so the command waits for the task's end instead. A message
+/// rather than a zero-delay timer, which HTML clamps when nested; through the
+/// task gate, so a synchronous call's nested run loop cannot run it inside the
+/// script that made the call.
+function afterThisTask(send) {
+  const channel = new platform.MessageChannel();
+  channel.port1.onmessage = () => {
+    channel.port1.close();
+    runTask(send);
+  };
+  channel.port2.postMessage(null);
+}
+
 /// End the session. The host stops it as it stops one the embedded runtime
 /// asked to end: the same command on the same channel, so the shutdown path is
-/// one path.
+/// one path -- sent when the task that asked has ended, as the embedded runtime
+/// ends the session then.
 export function op_exit_mini_program() {
-  servicesOf(engineHost()).command(SERVICE_OP.op_exit_mini_program);
+  const services = servicesOf(engineHost());
+  afterThisTask(() => services.command(SERVICE_OP.op_exit_mini_program));
 }
 
 /// Restart the session, which is how a game recovers from a state it cannot
 /// leave. The generation the producer stamps its packets with changes with it,
 /// which is what stops a frame built for the old one from landing in the new.
 /// `launch_query` is the query the restarted game is launched with, or null for
-/// the one it was last shown with.
+/// the one it was last shown with. Sent when the task that asked has ended, as
+/// an exit is.
 export function op_restart_mini_program(launch_query) {
   const query = optionalStringOf(launch_query, "launch_query");
-  servicesOf(engineHost()).command(SERVICE_OP.op_restart_mini_program, (w) => {
-    if (query === null) w.null();
-    else w.str(query);
-  });
+  const services = servicesOf(engineHost());
+  afterThisTask(() =>
+    services.command(SERVICE_OP.op_restart_mini_program, (w) => {
+      if (query === null) w.null();
+      else w.str(query);
+    }),
+  );
 }
 
 // ---- the soft keyboard ----------------------------------------------------------
@@ -722,6 +778,11 @@ export const op_ad_load = hostRequest(SERVICE_OP.op_ad_load);
 export const op_ad_show = hostRequest(SERVICE_OP.op_ad_show);
 export const op_ad_update_style = hostRequest(SERVICE_OP.op_ad_update_style);
 export const op_apply_update = hostCommand(SERVICE_OP.op_apply_update);
+export const op_ble_peripheral_add_service = hostRequest(SERVICE_OP.op_ble_peripheral_add_service);
+export const op_ble_peripheral_remove_service = hostRequest(SERVICE_OP.op_ble_peripheral_remove_service);
+export const op_ble_peripheral_start_advertising = hostRequest(SERVICE_OP.op_ble_peripheral_start_advertising);
+export const op_ble_peripheral_stop_advertising = hostRequest(SERVICE_OP.op_ble_peripheral_stop_advertising);
+export const op_ble_peripheral_write_characteristic_value = hostRequest(SERVICE_OP.op_ble_peripheral_write_characteristic_value);
 export const op_authorize = hostRequest(SERVICE_OP.op_authorize);
 export const op_check_session = hostOptions(SERVICE_OP.op_check_session);
 export const op_choose_image = hostRequest(SERVICE_OP.op_choose_image);
@@ -730,6 +791,7 @@ export const op_choose_message_file = hostRequest(SERVICE_OP.op_choose_message_f
 export const op_close_ble_connection = hostRequest(SERVICE_OP.op_close_ble_connection);
 export const op_close_bluetooth_adapter = hostRequest(SERVICE_OP.op_close_bluetooth_adapter);
 export const op_create_ble_connection = hostRequest(SERVICE_OP.op_create_ble_connection);
+export const op_create_ble_peripheral_server = hostRequest(SERVICE_OP.op_create_ble_peripheral_server);
 export const op_ecosystem_reply = hostJson(SERVICE_OP.op_ecosystem_reply);
 export const op_exit_pointer_lock = hostCommand(SERVICE_OP.op_exit_pointer_lock);
 export const op_get_beacons = hostRequest(SERVICE_OP.op_get_beacons);
@@ -792,6 +854,13 @@ export const op_stop_compass = hostCommand(SERVICE_OP.op_stop_compass);
 export const op_stop_device_motion = hostCommand(SERVICE_OP.op_stop_device_motion);
 export const op_stop_gyroscope = hostCommand(SERVICE_OP.op_stop_gyroscope);
 export const op_stop_screen_recording_observer = hostCommand(SERVICE_OP.op_stop_screen_recording_observer);
+export const op_video_destroy = hostRequest(SERVICE_OP.op_video_destroy);
+export const op_video_exit_full_screen = hostRequest(SERVICE_OP.op_video_exit_full_screen);
+export const op_video_pause = hostRequest(SERVICE_OP.op_video_pause);
+export const op_video_play = hostRequest(SERVICE_OP.op_video_play);
+export const op_video_request_full_screen = hostRequest(SERVICE_OP.op_video_request_full_screen);
+export const op_video_seek = hostRequest(SERVICE_OP.op_video_seek);
+export const op_video_stop = hostRequest(SERVICE_OP.op_video_stop);
 export const op_write_ble_characteristic_value = hostRequest(SERVICE_OP.op_write_ble_characteristic_value);
 
 // ---- content's migo.createWorker (the fire-and-forget half) -----------------

@@ -52,6 +52,7 @@
     "_internalTriggerBeaconServiceChange": 29,
     "_internalTriggerBLEConnectionStateChange": 30,
     "_internalTriggerBLECharacteristicValueChange": 31,
-    "_internalTriggerBLEMTUChange": 32
+    "_internalTriggerBLEMTUChange": 32,
+    "_internalOnRecorderFrameData": 33
   }
 }

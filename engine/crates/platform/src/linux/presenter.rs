@@ -1051,6 +1051,15 @@ pub fn linux_graphics_platform() -> EngineResult<GraphicsPlatform> {
         Arc::new(LinuxEglProvider::offscreen()),
         Arc::new(LinuxEglSurfaceFactory::offscreen()),
     )
+    .map(with_recorder)
+}
+
+/// The platform with what records the game: GStreamer's encoders, where the
+/// system has them.
+fn with_recorder(platform: GraphicsPlatform) -> GraphicsPlatform {
+    platform.with_video_encoder(Arc::new(
+        super::game_recorder::GstVideoEncoderFactory::probing(),
+    ))
 }
 
 /// Session-scoped owner for one private X11 render connection.
@@ -1066,10 +1075,10 @@ pub struct LinuxX11Context {
 
 impl LinuxX11Context {
     fn from_connection(connection: Arc<X11RenderConnection>) -> EngineResult<Self> {
-        let graphics_platform = GraphicsPlatform::try_new(
+        let graphics_platform = with_recorder(GraphicsPlatform::try_new(
             Arc::new(LinuxEglProvider::x11(Arc::clone(&connection))),
             Arc::new(LinuxEglSurfaceFactory::x11(Arc::clone(&connection))),
-        )?;
+        )?);
         Ok(Self {
             connection,
             graphics_platform,
@@ -1142,6 +1151,7 @@ pub fn linux_wayland_graphics_platform(display: NonNull<c_void>) -> EngineResult
         Arc::new(LinuxEglProvider::wayland(display)),
         Arc::new(LinuxEglSurfaceFactory::wayland(display)),
     )
+    .map(with_recorder)
 }
 
 #[cfg(test)]

@@ -3,6 +3,7 @@ import MigoAppleCore
 import MigoEngine
 import QuartzCore
 import Security
+import os
 
 #if os(macOS)
     import AppKit
@@ -77,6 +78,12 @@ public final class MigoEngineSession {
         case error(code: MigoResult, message: String, recoverable: Bool)
         /// Content called `migo.exitMiniProgram()`.
         case exitRequested
+        /// Content called `migo.restartMiniProgram()` in a session that cannot
+        /// replace its content in place -- one whose content runs in WebKit's
+        /// process: start the game again in a new session, launched with these
+        /// options (the JSON object `launchOptionsJSON` takes). A session whose
+        /// content runs in process restarts in place and never says this.
+        case restartRequested(launchOptionsJSON: String)
         /// The surface of this generation stopped being presentable.
         case surfaceLost(generation: UInt64, reason: MigoSurfaceLossReason)
         /// Content opened the soft keyboard (`migo.showKeyboard`).
@@ -95,6 +102,13 @@ public final class MigoEngineSession {
         /// One game-log entry (`migo.getGameLogManager().log`), as the JSON
         /// object the engine merged: level, key, value, commonInfo.
         case gameLog(String)
+        /// One line content wrote to its console (`console.log`, `warn`, ...):
+        /// the engine's level -- 0 debug, 1 log and info, 2 warn, 3 error --
+        /// and the text. In order with everything else content does, wherever
+        /// it runs: a line written before it exits arrives before
+        /// `.exitRequested`. It is in the platform log too (subsystem
+        /// `dev.migo`, category `content`).
+        case console(level: Int, message: String)
         /// The debugging aids were turned on or off (`migo.setEnableDebug`):
         /// a game view shows or hides its panel. See `debugAids`.
         case debugAids(Bool)
@@ -364,6 +378,8 @@ public final class MigoEngineSession {
         callbacks.on_ready = migoOnReady
         callbacks.on_error = migoOnError
         callbacks.on_exit_requested = migoOnExitRequested
+        callbacks.on_restart_requested = migoOnRestartRequested
+        callbacks.on_console = migoOnConsole
         callbacks.on_surface_lost = migoOnSurfaceLost
         callbacks.on_request_frame = migoOnRequestFrame
         callbacks.on_surface_released = migoOnSurfaceReleased
@@ -738,6 +754,28 @@ public final class MigoEngineSession {
 
     // MARK: - input
 
+    /// One frame of recording `recordingId`, as the recorder service's START
+    /// asked for with `frameSize` (`migo_session_post_recorder_frame`):
+    /// content's `onFrameRecorded` hears it, `isLastFrame` on the frame that
+    /// ends the recording. The bytes are copied in the call. A frame content
+    /// has fallen behind on is dropped; the last one never is. Main thread.
+    public func postRecorderFrame(recordingId: UInt32, data: Data, isLastFrame: Bool) {
+        guard !isClosed else { return }
+        let result = data.withUnsafeBytes { bytes -> MigoResult in
+            var frame = MigoRecorderFrame()
+            frame.struct_size = UInt32(MemoryLayout<MigoRecorderFrame>.size)
+            frame.abi_version = MIGO_ABI_VERSION_CURRENT
+            frame.recording_id = recordingId
+            frame.is_last_frame = isLastFrame ? 1 : 0
+            frame.data = bytes.bindMemory(to: UInt8.self).baseAddress
+            frame.length = UInt32(bytes.count)
+            return migo_session_post_recorder_frame(session, &frame)
+        }
+        if result != MIGO_OK, result != MIGO_ERROR_WOULD_BLOCK {
+            NSLog("MigoEngineSession: migo_session_post_recorder_frame returned \(result)")
+        }
+    }
+
     /// One BLE characteristic value, typed: the ids as the requests named
     /// them, the bytes copied by the engine during the call. Main thread.
     func postBleCharacteristicValue(deviceId: String, serviceId: String, characteristicId: String, value: Data) {
@@ -968,6 +1006,12 @@ public final class MigoEngineSession {
     /// Polled on the main run loop rather than blocked on: the renderer's
     /// release can need the main thread (Core Animation hands drawables back
     /// there), so a main thread that sleeps here can wait on itself.
+    ///
+    /// The polls hold the session until it finishes. A close outlives the
+    /// reference that started it -- a view lets go of its session as it closes
+    /// it -- and polls that held it weakly stopped when that reference went,
+    /// with the surface still PENDING, so neither the destroy nor `completion`
+    /// ran: a game restarted in a new session never started. `finish` lets go.
     private func waitForRelease(
         _ observer: OpaquePointer, deadline: Date, completion: ((Bool) -> Void)?
     ) {
@@ -986,11 +1030,11 @@ public final class MigoEngineSession {
             return
         }
         // The release edge callback wakes this early; the timer is the floor.
-        relay.releaseWaiter = { [weak self] in
-            self?.waitForRelease(observer, deadline: deadline, completion: completion)
+        relay.releaseWaiter = {
+            self.waitForRelease(observer, deadline: deadline, completion: completion)
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(4)) { [weak self] in
-            guard let self, let waiter = self.relay.releaseWaiter else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(4)) {
+            guard let waiter = self.relay.releaseWaiter else { return }
             self.relay.releaseWaiter = nil
             waiter()
         }
@@ -1106,6 +1150,12 @@ private let migoOnExitRequested: MigoOnExitRequestedFn = { userData, _ in
     relay(userData)?.owner?.deliver(.exitRequested)
 }
 
+private let migoOnRestartRequested: MigoOnRestartRequestedFn = { userData, _, options, length in
+    guard let options, length > 0 else { return }
+    let json = String(decoding: UnsafeRawBufferPointer(start: options, count: Int(length)), as: UTF8.self)
+    relay(userData)?.owner?.deliver(.restartRequested(launchOptionsJSON: json))
+}
+
 private let migoOnSurfaceLost: MigoOnSurfaceLostFn = { userData, _, generation, reason in
     relay(userData)?.owner?.deliver(.surfaceLost(generation: generation, reason: reason))
 }
@@ -1158,6 +1208,23 @@ private let migoOnKeepScreenOn: MigoOnKeepScreenOnFn = { userData, _, keepOn in
 private let migoOnGamepadRumble: MigoOnGamepadRumbleFn = { userData, _, rumble in
     guard let rumble else { return }
     relay(userData)?.owner?.gamepads.rumble(rumble.pointee)
+}
+
+/// Content's console in the platform log. The message keeps the log's default
+/// privacy: content's console can carry a player's data, and the log redacts
+/// dynamic strings unless a debugger is attached.
+private let contentLog = Logger(subsystem: "dev.migo", category: "content")
+
+private let migoOnConsole: MigoOnConsoleFn = { userData, _, level, message, length in
+    let text =
+        message.map { String(decoding: UnsafeRawBufferPointer(start: $0, count: Int(length)), as: UTF8.self) } ?? ""
+    switch level {
+    case 1: contentLog.info("\(text)")
+    case 2: contentLog.warning("\(text)")
+    case 3: contentLog.error("\(text)")
+    default: contentLog.debug("\(text)")
+    }
+    relay(userData)?.owner?.deliver(.console(level: Int(level), message: text))
 }
 
 private let migoOnGameLog: MigoOnGameLogFn = { userData, _, entry, length in

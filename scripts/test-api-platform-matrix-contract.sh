@@ -153,6 +153,12 @@ red "the Linux Host Kit that stops answering a service itself" platforms/linux/h
     'text.replace("builtIn |= hostServiceBit(MIGO_HOST_SERVICE_CLIPBOARD);", "// clipboard", 1)'
 red "a host layer that stops feeding touch" platforms/linux/host-kit/src/qt6/x11_surface_view.cpp \
     'text.replace("migo_session_send_touch(", "migo_session_send_touch_removed(")'
+# openSetting reaches the Android SDK through system_info, which the SDK answers, and goes on to the host's
+# SettingHandler: the matrix called it the SDK's default, and the SDK has no settings screen.
+red "an Android call handed to the host's handler, read as the SDK's own" platforms/android/library/src/main/java/com/migo/runtime/internal/NativeExports.java \
+    'text.replace("delegate(sessionId, sSettingHandlers, \"openSetting\"", "delegateGone(sessionId, sSettingHandlers, \"openSetting\"", 1)'
+red "an Android call handed to a handler the matrix does not know" platforms/android/library/src/main/java/com/migo/runtime/internal/NativeExports.java \
+    'text.replace("delegate(sessionId, sSettingHandlers, \"openSetting\"", "delegate(sessionId, sSettingsHandlers, \"openSetting\"", 1)'
 red "an unsupported decision with no reason" contracts/runtime/api-platform-decisions.json \
     'text.replace("\"reason\": \"WebGPU is not implemented on any platform; content feature-detects it\"", "\"reason\": \"\"", 1)'
 

@@ -1182,8 +1182,9 @@ import XCTest
                         surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels)),
                 channel: MigoFrameChannel(session: harness.session))
             self.host = host
-            // A game reports the way games do: through `console`.
-            host.onConsole = { _, text in
+            // A game reports the way games do: through `console`, which the
+            // session hands on in order with everything else it does.
+            harness.onConsole = { _, text in
                 guard text.hasPrefix("game-result ") else { return }
                 let json = Data(text.dropFirst("game-result ".count).utf8)
                 result = (try? JSONSerialization.jsonObject(with: json)) as? [String: Any]
@@ -1261,7 +1262,7 @@ import XCTest
                         surfaceWidthPixels: harness.sizePixels, surfaceHeightPixels: harness.sizePixels)),
                 channel: MigoFrameChannel(session: harness.session))
             self.host = host
-            host.onConsole = { _, text in
+            harness.onConsole = { _, text in
                 if text == "listening" {
                     listening.fulfill()
                     return
@@ -2073,7 +2074,7 @@ import XCTest
             // Printed, because a game that stops halfway through its sounds
             // says where it stopped and the test otherwise reports only that
             // nothing arrived.
-            host.onConsole = { _, text in print("[content] \(text)") }
+            harness.onConsole = { _, text in print("[content] \(text)") }
             host.onReport = { message in
                 switch message["type"] as? String {
                 case "audio":

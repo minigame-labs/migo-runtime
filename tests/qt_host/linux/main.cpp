@@ -18,9 +18,13 @@
 // file that whoever runs the host appends lines to while it runs, and
 //
 //   TAP-TEXT <text>    the player taps the button, or the menu item, that says <text>
+//   TYPE-TEXT <text>   the player types <text> into the field that holds the focus
+//   PRESS-ENTER        the player presses Enter there
 //
-// is done once something on screen says it -- a dialog may not be up yet when
-// the line arrives.
+// are done in that order, each once it can be -- a dialog may not be up yet when
+// its line arrives, nor the keyboard's field have taken the focus. The keys are
+// key events sent to the focused field, as a keyboard's are, so what the field
+// reports is the Host Kit's own.
 
 #include <migo/linux/qt6/managed_session.hpp>
 #include <migo/linux/qt6/media.hpp>
@@ -30,7 +34,10 @@
 #include <QApplication>
 #include <QByteArray>
 #include <QFile>
+#include <QKeyEvent>
+#include <QLineEdit>
 #include <QMenu>
+#include <QPlainTextEdit>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
@@ -87,8 +94,46 @@ bool tap(const QString &text) {
     return false;
 }
 
-/// The scripted player: reads the feed as it grows, and keeps each tap until
-/// something on screen says its text.
+/// The field the keyboard's keys go to, if one holds the focus.
+QWidget *focusedField() {
+    QWidget *focus = QApplication::focusWidget();
+    if (focus == nullptr || !focus->isVisible()) return nullptr;
+    if (qobject_cast<QLineEdit *>(focus) == nullptr && qobject_cast<QPlainTextEdit *>(focus) == nullptr) return nullptr;
+    return focus;
+}
+
+/// Presses and releases one key on `field`. A printable ASCII character's key
+/// code is its upper-case code point, as Qt::Key numbers them; anything else is
+/// a key Qt has no name for, which a field inserts by its text all the same.
+void press(QWidget *field, int key, const QString &text) {
+    QKeyEvent down(QEvent::KeyPress, key, Qt::NoModifier, text);
+    QCoreApplication::sendEvent(field, &down);
+    QKeyEvent up(QEvent::KeyRelease, key, Qt::NoModifier, text);
+    QCoreApplication::sendEvent(field, &up);
+}
+
+/// Types `text` into the focused field, if one holds the focus.
+bool type(const QString &text) {
+    QWidget *field = focusedField();
+    if (field == nullptr) return false;
+    for (const QChar character : text) {
+        const char16_t unit = character.unicode();
+        const int key = unit >= 0x20 && unit < 0x7f ? static_cast<int>(character.toUpper().unicode()) : Qt::Key_unknown;
+        press(field, key, QString(character));
+    }
+    return true;
+}
+
+/// Presses Enter in the focused field, if one holds the focus.
+bool enter() {
+    QWidget *field = focusedField();
+    if (field == nullptr) return false;
+    press(field, Qt::Key_Return, QStringLiteral("\r"));
+    return true;
+}
+
+/// The scripted player: reads the feed as it grows, and keeps each request,
+/// in order, until it can be done.
 class Player final : public QObject {
 public:
     explicit Player(const char *path) {
@@ -107,16 +152,38 @@ private:
             buffered_ += feed_.readAll();
             const qsizetype end = buffered_.indexOf('\n');
             if (end < 0) break;
-            const QString line = QString::fromUtf8(buffered_.left(end)).trimmed();
+            // Exactly the line: the text to type may begin or end with a space.
+            QString line = QString::fromUtf8(buffered_.left(end));
+            if (line.endsWith(QLatin1Char('\r'))) line.chop(1);
             buffered_.remove(0, end + 1);
-            if (line.startsWith(QStringLiteral("TAP-TEXT "))) taps_.append(line.mid(9));
+            if (line.startsWith(QStringLiteral("TAP-TEXT "))) {
+                requests_.append(Request{Request::Tap, line.mid(9)});
+            } else if (line.startsWith(QStringLiteral("TYPE-TEXT "))) {
+                requests_.append(Request{Request::Type, line.mid(10)});
+            } else if (line == QStringLiteral("PRESS-ENTER")) {
+                requests_.append(Request{Request::Enter, {}});
+            }
         }
-        while (!taps_.isEmpty() && tap(taps_.first())) taps_.removeFirst();
+        while (!requests_.isEmpty() && perform(requests_.first())) requests_.removeFirst();
+    }
+
+    struct Request {
+        enum Kind { Tap, Type, Enter } kind;
+        QString text;
+    };
+
+    static bool perform(const Request &request) {
+        switch (request.kind) {
+            case Request::Tap: return tap(request.text);
+            case Request::Type: return type(request.text);
+            case Request::Enter: return enter();
+        }
+        return false;
     }
 
     QFile feed_;
     QByteArray buffered_;
-    QStringList taps_;
+    QList<Request> requests_;
 };
 
 }  // namespace

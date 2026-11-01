@@ -316,6 +316,26 @@
     "op_game_recorder_stop": 289,
     "op_game_recorder_next_event": 290,
     "op_share_game_recording": 291,
-    "op_inner_audio_set_start_time": 292
+    "op_video_create": 292,
+    "op_video_destroy": 293,
+    "op_video_set": 294,
+    "op_video_play": 295,
+    "op_video_pause": 296,
+    "op_video_stop": 297,
+    "op_video_seek": 298,
+    "op_video_request_full_screen": 299,
+    "op_video_exit_full_screen": 300,
+    "op_create_ble_peripheral_server": 301,
+    "op_ble_peripheral_add_service": 302,
+    "op_ble_peripheral_remove_service": 303,
+    "op_ble_peripheral_start_advertising": 304,
+    "op_ble_peripheral_stop_advertising": 305,
+    "op_ble_peripheral_write_characteristic_value": 306,
+    "op_recorder_start": 307,
+    "op_recorder_pause": 308,
+    "op_recorder_resume": 309,
+    "op_recorder_stop": 310,
+    "op_console": 311,
+    "op_inner_audio_set_start_time": 312
   }
 }

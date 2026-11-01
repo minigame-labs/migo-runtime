@@ -91,25 +91,41 @@ impl ConsoleLogBuffer {
     }
 }
 
-/// One session's console as its debugging aids read it (`setEnableDebug`'s
-/// panel): every session has one, and it records only while the aids are on,
-/// so they can be turned on while a game runs and a game that never turns them
-/// on pays one relaxed load per `console` call.
+/// Where a session's console lines go besides its buffer: the host, as
+/// content writes them.
+pub trait ConsoleForward: Send + Sync {
+    /// One line, at the engine's level (0 debug, 1 log and info, 2 warn,
+    /// 3 error). Called on the thread that wrote it, in the order it wrote
+    /// them; it must not block.
+    fn line(&self, level: u8, message: &str);
+}
+
+/// One session's console: every line goes to the host it was registered with,
+/// and into the buffer its debugging aids read (`setEnableDebug`'s panel) while
+/// they are on. Every session has one, so the aids can be turned on while a game
+/// runs, and a game that never turns them on pays one relaxed load per
+/// `console` call for the buffer.
 pub struct ConsoleLog {
     recording: AtomicBool,
     buffer: Mutex<ConsoleLogBuffer>,
+    forward: Option<Arc<dyn ConsoleForward>>,
 }
 
 impl ConsoleLog {
-    fn new(recording: bool) -> Self {
+    fn new(recording: bool, forward: Option<Arc<dyn ConsoleForward>>) -> Self {
         Self {
             recording: AtomicBool::new(recording),
             buffer: Mutex::new(ConsoleLogBuffer::new(DEFAULT_CAPACITY)),
+            forward,
         }
     }
 
-    /// Keep one entry, if the aids are on.
+    /// One line content wrote: to the host, and into the buffer if the aids
+    /// are on.
     pub fn record(&self, level: u8, message: String) {
+        if let Some(forward) = &self.forward {
+            forward.line(level, &message);
+        }
         if !self.recording.load(Ordering::Relaxed) {
             return;
         }
@@ -161,9 +177,13 @@ fn log_map() -> &'static RwLock<HashMap<i32, Arc<ConsoleLog>>> {
 }
 
 /// Give session `id` its console, recording from the start when its debugging
-/// aids are on.
-pub fn register_console_log(id: i32, recording: bool) -> Arc<ConsoleLog> {
-    let log = Arc::new(ConsoleLog::new(recording));
+/// aids are on, and handing every line to `forward` when there is one.
+pub fn register_console_log(
+    id: i32,
+    recording: bool,
+    forward: Option<Arc<dyn ConsoleForward>>,
+) -> Arc<ConsoleLog> {
+    let log = Arc::new(ConsoleLog::new(recording, forward));
     log_map().write().insert(id, log.clone());
     log
 }
@@ -264,7 +284,7 @@ mod recording_tests {
     #[test]
     fn a_console_records_only_while_the_aids_are_on() {
         let id = 9_402;
-        let log = register_console_log(id, false);
+        let log = register_console_log(id, false, None);
         assert!(
             push_console_log(id, 1, "before".into()),
             "the session has a console"
@@ -300,10 +320,37 @@ mod recording_tests {
     /// No buffer's worth of memory until the first line is kept.
     #[test]
     fn a_console_holds_nothing_until_it_records() {
-        let log = ConsoleLog::new(false);
+        let log = ConsoleLog::new(false, None);
         assert_eq!(log.buffer.lock().unwrap().entries.capacity(), 0);
         log.set_recording(true);
         log.record(1, "one".into());
         assert_eq!(log.read_since(0).0.len(), 1);
+    }
+
+    /// Every line reaches the host, in the order it was written, whether or not
+    /// the debugging aids keep it: the host's console is not a debugging aid.
+    #[test]
+    fn every_line_reaches_the_host_whether_or_not_the_aids_keep_it() {
+        #[derive(Default)]
+        struct Host(Mutex<Vec<(u8, String)>>);
+        impl ConsoleForward for Host {
+            fn line(&self, level: u8, message: &str) {
+                self.0.lock().unwrap().push((level, message.to_owned()));
+            }
+        }
+        let host = Arc::new(Host::default());
+        let log = ConsoleLog::new(false, Some(Arc::clone(&host) as Arc<dyn ConsoleForward>));
+        log.record(1, "off".into());
+        log.set_recording(true);
+        log.record(3, "on".into());
+        assert_eq!(
+            *host.0.lock().unwrap(),
+            [(1, "off".to_owned()), (3, "on".to_owned())]
+        );
+        assert_eq!(
+            log.read_since(0).0.len(),
+            1,
+            "the buffer keeps only what came while on"
+        );
     }
 }

@@ -14,7 +14,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use graphics::game_recorder::{EncoderConfig, EncoderInput, VideoEncoder, VideoEncoderFactory};
+use graphics::game_recorder::{EncoderConfig, FrameInput, VideoEncoder, VideoEncoderFactory};
 use shared::error::{EngineError, EngineResult, ErrorCode};
 
 use crate::android::{
@@ -82,6 +82,10 @@ pub struct AndroidVideoEncoderFactory;
 impl VideoEncoderFactory for AndroidVideoEncoderFactory {
     fn available(&self) -> bool {
         true
+    }
+
+    fn input(&self) -> FrameInput {
+        FrameInput::Window
     }
 
     fn create(&self, config: &EncoderConfig, path: &Path) -> EngineResult<Box<dyn VideoEncoder>> {
@@ -245,8 +249,8 @@ impl AndroidVideoEncoder {
 }
 
 impl VideoEncoder for AndroidVideoEncoder {
-    fn input(&self) -> EncoderInput {
-        EncoderInput::Window(self.window.cast())
+    fn window(&self) -> *mut c_void {
+        self.window.cast()
     }
 
     fn drain(&mut self) -> EngineResult<()> {

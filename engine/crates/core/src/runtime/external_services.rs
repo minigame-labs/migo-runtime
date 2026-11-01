@@ -324,6 +324,11 @@ pub(crate) struct ServiceContext {
     /// host; see `spawn_external_frame_session`.
     scheduler: OnceLock<Arc<IoScheduler>>,
     session_id: OnceLock<i32>,
+    /// The session's console, looked up on content's first line and held from
+    /// then: the registry is shared with every other session, and a line is a
+    /// per-event path (the embedded op resolves it once at bring-up for the same
+    /// reason).
+    console: OnceLock<Arc<shared::console_log::ConsoleLog>>,
     content: RwLock<Option<MountedContent>>,
     /// The mounted content's `/tmp`: emptied when content mounts and removed
     /// when the session ends, and where files the host app hands over in a
@@ -381,6 +386,7 @@ impl ServiceContext {
             cache_dir,
             scheduler: OnceLock::new(),
             session_id: OnceLock::new(),
+            console: OnceLock::new(),
             content: RwLock::new(None),
             temp: OnceLock::new(),
             aliases: Arc::new(parking_lot::Mutex::new(ImageCache::new())),
@@ -400,6 +406,15 @@ impl ServiceContext {
         // Set before the session is handed out; zero only in a test that never
         // started one, where no image is loaded either.
         self.session_id.get().copied().unwrap_or(0)
+    }
+
+    /// The session's console, once its shell registered it.
+    fn console(&self) -> Option<&Arc<shared::console_log::ConsoleLog>> {
+        if let Some(console) = self.console.get() {
+            return Some(console);
+        }
+        let console = shared::console_log::get_console_log(self.session())?;
+        Some(self.console.get_or_init(|| console))
     }
 
     /// Where a loaded image's pixels are, for the frame decoder's upload of it:
@@ -945,6 +960,69 @@ impl ServiceContext {
                     window.set_cursor(&request).is_ok()
                 })))
             }
+            // The microphone's recording: answered at once, as the embedded ops
+            // answer -- scope.record checked first where they check it (stopping
+            // releases, and is not), then the host's recorder asked -- and
+            // refused in their words, which is what has the player asked for
+            // the scope (base/02_async.js) and what the facade reports.
+            id::op_recorder_start
+            | id::op_recorder_pause
+            | id::op_recorder_resume
+            | id::op_recorder_stop => {
+                let [request] = exactly(op, args)?;
+                let request = string(op, 0, request)?;
+                let device = self.device.get().and_then(Option::as_deref);
+                let name = super::service_ops::name_of(op).unwrap_or_default();
+                if let Some(refusal) = service_channel::scope_refusal(device, name) {
+                    return Err(ServiceError::generic(refusal));
+                }
+                let method = name.trim_start_matches("op_recorder_");
+                let Some(recorder) = device.and_then(|device| device.recorder()) else {
+                    return Err(ServiceError::generic(format!(
+                        "recorderManager.{method}:fail not supported"
+                    )));
+                };
+                match op {
+                    id::op_recorder_start => recorder.start(&request),
+                    id::op_recorder_pause => recorder.pause(&request),
+                    id::op_recorder_resume => recorder.resume(&request),
+                    _ => recorder.stop(&request),
+                }
+                .map_err(device_error)?;
+                Ok(OwnedValue::Null)
+            }
+            // A video player made, or what it plays changed: answered at once, as
+            // the embedded ops answer, with its src and poster exported through
+            // the game's sandbox as they export them, and refused in their words.
+            id::op_video_create | id::op_video_set => {
+                let [request] = exactly(op, args)?;
+                let request = string(op, 0, request)?;
+                let unsupported = if op == id::op_video_create {
+                    "createVideo:fail not supported"
+                } else {
+                    "video:fail not supported"
+                };
+                let Some(video) = self
+                    .device
+                    .get()
+                    .and_then(Option::as_deref)
+                    .and_then(|device| device.video())
+                else {
+                    return Err(ServiceError::generic(unsupported));
+                };
+                let request = migo_services::host_paths::export_json_now(
+                    &self.sandbox()?,
+                    &request,
+                    migo_services::host_paths::VIDEO,
+                )?;
+                if op == id::op_video_create {
+                    video.create(&request)
+                } else {
+                    video.set(&request)
+                }
+                .map_err(device_error)?;
+                Ok(OwnedValue::Null)
+            }
             // Whether the host app answers ecosystem calls, and the values it
             // last reported for the synchronous getters: asked of its service,
             // as the embedded ops ask; a platform with none has no ecosystem.
@@ -1322,6 +1400,26 @@ impl ServiceContext {
         render: &RenderHandles,
     ) -> Result<(), ServiceError> {
         match op {
+            // A line content wrote to its console, as the embedded op takes it:
+            // logged at its level, then handed to the session's console -- the
+            // host and the debugging aids. A command, so it reaches them in
+            // order with everything content did before and after it.
+            id::op_console => {
+                let [message, level] = exactly(op, args)?;
+                let message = string(op, 0, message)?;
+                // Anything but the four levels is debug, as the embedded op logs it.
+                let level = u8::try_from(u32_of(op, 1, level)?).unwrap_or(0);
+                match level {
+                    1 => info!("{}", message),
+                    2 => warn!("{}", message),
+                    3 => tracing::error!("{}", message),
+                    _ => tracing::debug!("{}", message),
+                }
+                if let Some(console) = self.console() {
+                    console.record(level, message);
+                }
+                Ok(())
+            }
             id::op_destroy_image => {
                 let [image_id] = exactly(op, args)?;
                 migo_services::image::destroy_image(
@@ -2879,6 +2977,188 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// The microphone on this lane answers as the embedded ops do: starting,
+    /// pausing and resuming need scope.record and are refused in their words
+    /// until it is granted -- which is what has the player asked -- stopping
+    /// releases and is not, and a platform with no recorder says so in each
+    /// method's own words.
+    #[test]
+    fn the_recorder_answers_at_once_as_the_embedded_ops_answer() {
+        use shared::services::{
+            PermissionService, RecorderService, Scope, ScopeState, ServiceError as DeviceError,
+        };
+        #[derive(Default)]
+        struct Microphone {
+            heard: parking_lot::Mutex<Vec<String>>,
+            granted: std::sync::atomic::AtomicBool,
+        }
+        impl RecorderService for Microphone {
+            fn start(&self, json: &str) -> Result<(), DeviceError> {
+                self.heard.lock().push(format!("start {json}"));
+                Ok(())
+            }
+            fn pause(&self, json: &str) -> Result<(), DeviceError> {
+                self.heard.lock().push(format!("pause {json}"));
+                Ok(())
+            }
+            fn stop(&self, json: &str) -> Result<(), DeviceError> {
+                self.heard.lock().push(format!("stop {json}"));
+                Ok(())
+            }
+        }
+        impl PermissionService for Microphone {
+            fn scope_state(&self, scope: Scope) -> ScopeState {
+                let granted = self.granted.load(std::sync::atomic::Ordering::SeqCst);
+                if scope == Scope::Record && granted {
+                    ScopeState::Granted
+                } else {
+                    ScopeState::Unknown
+                }
+            }
+        }
+        struct Platform(Arc<Microphone>);
+        impl shared::services::SensorServices for Platform {}
+        impl shared::services::ConnectivityServices for Platform {}
+        impl shared::services::CommerceServices for Platform {}
+        impl shared::services::SystemUtilServices for Platform {
+            fn permission(&self) -> Option<Arc<dyn PermissionService>> {
+                Some(Arc::clone(&self.0) as Arc<dyn PermissionService>)
+            }
+        }
+        impl shared::services::MediaServices for Platform {
+            fn recorder(&self) -> Option<Arc<dyn RecorderService>> {
+                Some(Arc::clone(&self.0) as Arc<dyn RecorderService>)
+            }
+        }
+
+        let root = std::env::temp_dir().join(format!("migo-external-mic-{}", std::process::id()));
+        let microphone = Arc::new(Microphone::default());
+        let context = ServiceContext::new(root.join("files"), root.join("cache"));
+        context.bind_session(1);
+        context.bind_device(Some(Arc::new(Platform(Arc::clone(&microphone)))));
+        let call = |context: &ServiceContext, op: u32| {
+            context.call_sync(op, vec![OwnedValue::Str(r#"{"recordingId":3}"#.into())])
+        };
+
+        let refused = call(&context, id::op_recorder_start).expect_err("not granted");
+        assert_eq!(refused.message, "auth deny: scope.record is not granted");
+        assert!(
+            call(&context, id::op_recorder_stop).is_ok(),
+            "stopping releases"
+        );
+        microphone
+            .granted
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(call(&context, id::op_recorder_start).is_ok());
+        assert!(call(&context, id::op_recorder_pause).is_ok());
+        let refused = call(&context, id::op_recorder_resume).expect_err("the app's own refusal");
+        assert!(!refused.message.is_empty());
+        assert_eq!(
+            *microphone.heard.lock(),
+            [
+                r#"stop {"recordingId":3}"#,
+                r#"start {"recordingId":3}"#,
+                r#"pause {"recordingId":3}"#,
+            ]
+        );
+
+        let none = ServiceContext::new(root.join("files"), root.join("cache"));
+        none.bind_session(2);
+        none.bind_device(None);
+        let refused = call(&none, id::op_recorder_stop).expect_err("no microphone");
+        assert_eq!(refused.message, "recorderManager.stop:fail not supported");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A video player made or changed on this lane reaches the host app as the
+    /// embedded ops make it reach it: its src and poster the files the app can
+    /// open, an empty one passed on as it is -- and a request naming a file that
+    /// is not the game's, or a platform with no players, is refused in the
+    /// embedded ops' words before the app hears of it.
+    #[test]
+    fn video_players_reach_the_host_with_their_files_as_the_embedded_ops_export_them() {
+        use shared::services::{ServiceError as DeviceError, VideoService};
+        #[derive(Default)]
+        struct Video(parking_lot::Mutex<Vec<(&'static str, String)>>);
+        impl VideoService for Video {
+            fn create(&self, json: &str) -> Result<(), DeviceError> {
+                self.0.lock().push(("create", json.to_owned()));
+                Ok(())
+            }
+            fn set(&self, json: &str) -> Result<(), DeviceError> {
+                self.0.lock().push(("set", json.to_owned()));
+                Ok(())
+            }
+        }
+        struct Platform(Arc<Video>);
+        impl shared::services::SensorServices for Platform {}
+        impl shared::services::ConnectivityServices for Platform {}
+        impl shared::services::CommerceServices for Platform {}
+        impl shared::services::SystemUtilServices for Platform {}
+        impl shared::services::MediaServices for Platform {
+            fn video(&self) -> Option<Arc<dyn VideoService>> {
+                Some(Arc::clone(&self.0) as Arc<dyn VideoService>)
+            }
+        }
+
+        let root = std::env::temp_dir().join(format!("migo-external-video-{}", std::process::id()));
+        let files = root.join("files");
+        let cache = root.join("cache");
+        let installed = shared::vfs::GamePaths::new(&files, &cache, "g", 1).unwrap();
+        std::fs::create_dir_all(installed.code_dir()).unwrap();
+        std::fs::write(installed.code_dir().join("clip.mp4"), b"mp4").unwrap();
+        let video = Arc::new(Video::default());
+        let context = ServiceContext::new(files.clone(), cache.clone());
+        context.bind_session(1);
+        context.bind_device(Some(Arc::new(Platform(Arc::clone(&video)))));
+        context.load_content("g", "game.js").expect("mounts");
+        let call = |context: &ServiceContext, op: u32, request: serde_json::Value| {
+            context.call_sync(op, vec![OwnedValue::Str(request.to_string())])
+        };
+
+        let made = call(
+            &context,
+            id::op_video_create,
+            serde_json::json!({ "videoId": 7, "src": "clip.mp4", "poster": "" }),
+        );
+        assert!(matches!(made, Ok(OwnedValue::Null)), "{made:?}");
+        let refused = call(
+            &context,
+            id::op_video_set,
+            serde_json::json!({ "videoId": 7, "src": "/etc/hosts" }),
+        )
+        .expect_err("a file that is not the game's");
+        assert!(!refused.message.is_empty());
+        let real = installed.code_dir().join("clip.mp4");
+        let heard = video.0.lock().clone();
+        assert_eq!(
+            heard.len(),
+            1,
+            "the refused change never reached the app: {heard:?}"
+        );
+        let (method, json) = &heard[0];
+        let json: serde_json::Value = serde_json::from_str(json).unwrap();
+        assert_eq!(*method, "create");
+        assert_eq!(json["videoId"], 7);
+        assert_eq!(json["src"], real.to_str().unwrap());
+        assert_eq!(json["poster"], "", "an empty poster names nothing");
+
+        let none = ServiceContext::new(files, cache);
+        none.bind_session(2);
+        none.bind_device(None);
+        let refused = call(
+            &none,
+            id::op_video_create,
+            serde_json::json!({ "videoId": 1 }),
+        )
+        .expect_err("no players");
+        assert_eq!(refused.message, "createVideo:fail not supported");
+        let refused = call(&none, id::op_video_set, serde_json::json!({ "videoId": 1 }))
+            .expect_err("no players");
+        assert_eq!(refused.message, "video:fail not supported");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// A request of the host app's that names content's files reaches it with
     /// real paths the app can open, resolved in the mounted game's sandbox --
     /// and is refused, in the embedded op's words, before the app is asked when
@@ -3418,6 +3698,64 @@ mod tests {
             type_errors.join("\n  ")
         );
         println!("ran {} producer file calls on the host", answers.len());
+    }
+
+    /// A line content wrote to its console reaches the session's console as the
+    /// embedded op's line does: handed to the host at its level whether or not
+    /// the debugging aids keep it, and kept while they are on. A level the
+    /// console does not know is debug's.
+    #[test]
+    fn a_console_line_reaches_the_session_s_console_as_the_embedded_op_s_does() {
+        #[derive(Default)]
+        struct Host(Mutex<Vec<(u8, String)>>);
+        impl shared::console_log::ConsoleForward for Host {
+            fn line(&self, level: u8, message: &str) {
+                self.0.lock().push((level, message.to_owned()));
+            }
+        }
+        let session = 97_311;
+        let host = Arc::new(Host::default());
+        let console = shared::console_log::register_console_log(
+            session,
+            false,
+            Some(Arc::clone(&host) as Arc<dyn shared::console_log::ConsoleForward>),
+        );
+        let root = std::env::temp_dir().join(format!("migo-console-{}", std::process::id()));
+        let context = ServiceContext::new(root.join("files"), root.join("cache"));
+        context.bind_session(session);
+        let (sender, _commands) = shared::render_command_sender::CommandSender::new();
+        let render = RenderHandles {
+            canvas: shared::op_state::CanvasOpState::for_host(sender, 1),
+            gpu_caps: shared::device::gpu_caps::GpuCaps::new(),
+        };
+        let line = |message: &str, level: u32| {
+            context
+                .command(
+                    id::op_console,
+                    vec![OwnedValue::Str(message.into()), OwnedValue::U32(level)],
+                    &render,
+                )
+                .expect("a console line");
+        };
+
+        line("off", 1);
+        console.set_recording(true);
+        line("on", 2);
+        line("odd", 400);
+        assert_eq!(
+            *host.0.lock(),
+            [
+                (1, "off".to_owned()),
+                (2, "on".to_owned()),
+                (0, "odd".to_owned())
+            ]
+        );
+        assert_eq!(
+            console.read_since(0).0.len(),
+            2,
+            "kept only while the aids are on"
+        );
+        shared::console_log::unregister_console_log(session);
     }
 
     /// The two calls content makes about the session itself reach the host's

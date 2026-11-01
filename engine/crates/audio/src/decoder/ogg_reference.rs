@@ -138,4 +138,3 @@ fn codec_error(error: symphonia_core::errors::Error) -> EngineError {
         format!("OGG decode error: {error}"),
     )
 }
-
