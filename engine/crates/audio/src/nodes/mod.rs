@@ -85,6 +85,10 @@ pub trait AudioNodeProcessor: Send + 'static {
         self.has_tail_audio()
     }
 
+    /// Command/collection notification for effects that can generate DC from
+    /// silence. Ordinary sources and finite effect tails do not need it.
+    fn set_output_connected(&mut self, _connected: bool) {}
+
     /// Whether a non-source node still has state that can affect a future
     /// output block after its input becomes silent. Tail-time state is part of
     /// liveness: dropping a released effect here would truncate delay/filter

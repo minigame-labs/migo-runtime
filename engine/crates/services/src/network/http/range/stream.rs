@@ -29,8 +29,9 @@ impl Default for StreamLimits {
 /// A short 206 is continued only after its strict body EOF. None proves the
 /// requested extent ended, not that an unknown-length representation ended.
 /// Earlier yielded chunks cannot be retracted if a later body read fails.
-/// Dropping a pending chunk future poisons the parent reader; dropping a stream
-/// between completed reads simply closes its current response.
+/// Dropping a pending chunk future poisons the parent reader until the owner
+/// explicitly resumes that interrupted wait. Completed errors remain terminal.
+/// Dropping a stream between completed reads simply closes its current response.
 pub struct MediaStream<R> {
     reader: R,
     limits: StreamLimits,
@@ -39,6 +40,7 @@ pub struct MediaStream<R> {
     segment: Option<Segment>,
     requests: u32,
     bytes: u64,
+    interrupted: bool,
 }
 /// Borrowed streaming view; the parent reader is available again on drop.
 pub type Stream<'a> = MediaStream<&'a mut Reader>;
@@ -105,6 +107,7 @@ impl<R: BorrowMut<Reader>> MediaStream<R> {
             segment: None,
             requests: 0,
             bytes: 0,
+            interrupted: false,
         })
     }
     pub fn position(&self) -> u64 {
@@ -124,15 +127,36 @@ impl<R: BorrowMut<Reader>> MediaStream<R> {
         if self.reader.borrow_mut().failed {
             return Err(Error::PreviouslyFailed);
         }
-        // A cancelled future must not retry an unknown partially consumed body.
+        // Ordinary callers remain fail-closed if this future is dropped. The
+        // explicit recovery method distinguishes interruption from a returned
+        // validation/IO error, and preserves the already validated Segment.
         self.reader.borrow_mut().failed = true;
+        self.interrupted = true;
         let result = self.next_inner().await;
+        self.interrupted = false;
         if result.is_ok() {
             self.reader.borrow_mut().failed = false;
         } else {
             self.segment = None;
         }
         result
+    }
+
+    /// Call after dropping a pending `chunk` future. No payload or position is
+    /// committed before that future returns Ready: Segment::chunk mutates its
+    /// extent only after the body await, with no intervening suspension. Keep
+    /// its body to avoid another request, copy or lost byte on an aborted seek.
+    /// Header attempts still consume the original stream's request budget.
+    /// This cannot recover a completed error or an interrupted control read.
+    pub fn resume_after_interruption(&mut self) -> Result<(), Error> {
+        if self.interrupted {
+            self.interrupted = false;
+            self.reader.borrow_mut().failed = false;
+        }
+        if self.reader.borrow().failed {
+            return Err(Error::PreviouslyFailed);
+        }
+        Ok(())
     }
 
     async fn next_inner(&mut self) -> Result<Option<Bytes>, Error> {

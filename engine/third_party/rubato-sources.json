@@ -1,0 +1,175 @@
+{
+  "audio-codec-algorithms": {
+    "version": "0.8.1",
+    "archive_sha256": "1254ebf6529f3763c491acfb5ab6e960809e3c75a38584cc664f8c5667fb7107",
+    "files": {
+      ".cargo_vcs_info.json": "ddfe364ca16a2a2011db083c7962111f9e040b50ba9dab610a8e9a3049ab0b65",
+      ".github/workflows/cross-test.yml": "705921fb5220b298c9370234f7b320c55c73932a81658c62344a694b7f3ebc41",
+      ".gitignore": "392fad98c749ba42a5b57923eecb99b29f720de8b2067c0cb928bb999833c312",
+      "Cargo.lock": "840030f970c9cf64b50d24e4839cc39ede86994ca26bfc552722167daf64f74e",
+      "Cargo.toml": "a0946586560016820e4838d2783e602c1749ec1e2f06382d2098863f6d1d3eef",
+      "Cargo.toml.orig": "e225f73b39bf6f21601433583bdb246c9917997208d1926269b386ac1c2e5cc0",
+      "LICENSE-0BSD": "39741fbd828e4f94222ddba0aa2133bffd41247713ff2fb41005b28001425a06",
+      "LICENSE-APACHE": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+      "README.md": "3050a21686e22e52b02124d2b58a243eb7d9b1dfb5950998d11210cc60907888",
+      "benches/codec_benchmark.rs": "76cf71aab1141623dfbbd1c10cb73cdf0bf66f24d0e1a98e33cb60504bac3ae9",
+      "examples/codec-tester.rs": "51754e46d3ed7a4939ea640704e12c1205b864ebd9161d0cfb1ac84edf4c87f5",
+      "src/adpcm_ima.rs": "c89eb8de3aded27503d4aff1b3a0aef9871b4b9e775a41ea75ad56777b5e31ee",
+      "src/alaw.rs": "92862716d02403a6ed194da92a632e798f37c8ed04ba75be5a8b0a9c2b3e2c6b",
+      "src/convert_laws.rs": "722f7e36c6a4138b90b48c09367a3f87632bbbf190cda04f2ccd8ad1a9bf5be7",
+      "src/lib.rs": "4caeb2e44b66d0e295c73cd7623d2306f5c10e5f388e2289727d95aba2186c56",
+      "src/ulaw.rs": "2c0fb3e905424080cb0f1a8b0b74f250580f671526d5e4d9dd0f120c5c296fe4",
+      "test-files/alaw-reference.bin": "38488f6fd710f4686360edc4d38639f96c491595ef93f8eb8d62d5e07ca6ce7b",
+      "test-files/ulaw-reference.bin": "90c29de505fb68e766118303bd552a16005dcf810873698bee1d8f3b247ce28c"
+    },
+    "source_patches": [
+      "0001-keep-published-lockfiles.patch"
+    ]
+  },
+  "audioadapter": {
+    "version": "5.0.0",
+    "archive_sha256": "d1292ef9edf681b7426ed089004b021a42896492f58bd0c909ad44e5faec9ac4",
+    "files": {
+      ".cargo_vcs_info.json": "98b1184dd8e696499888e6b4c1449d49b695f0bc4e011081a4d5577dee1359d5",
+      "Cargo.lock": "e6719e661cbd6e54ac413f70ff85a658714b56c1657daf2de9a39a323632fb07",
+      "Cargo.toml": "30d2f9dcedf3929842325471bc69e96ac350040df3369f55a63195f19354ee2e",
+      "Cargo.toml.orig": "45564f4920a79dc2f44dfbb42959a31982e494019576586c454014eb2d0b2acd",
+      "LICENSE-APACHE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "LICENSE-MIT": "eea1d5a8dddb0f3f9a705b580296308cd34810daa1dd8c10bf93e5806fc1069c",
+      "LICENSE.txt": "dcc4b6f1193e531c9158487bc5fef24ea6457ee17a436004c0ff70d23dd5ff6b",
+      "README.md": "8677456ce9d7798fa0ad8adf38dd9c938b58c2f89c3114d9ca59cb7de060d863",
+      "benches/sqrt.rs": "695fe907d99f323a1c058521cc3bbd7dec994e9c7ce6e0cd5ba329b1cb588683",
+      "examples/custom_adapter.rs": "19ea78c5ff3a384f6d310fb8cdddc470e78d400b4892eaf648c2d44c7eeaed23",
+      "src/iterators.rs": "cf609747ddc881425b642c3f5a2450012a29c71819ca54dcac24fe7df8cab871",
+      "src/lib.rs": "a99fde1789d7d582078ac6130553110682be3670c3f6698addf437e3e908a5f4",
+      "src/stats.rs": "7201a06d32a307418d62152c65d9b0d860d933291ea844848dcec50d8338bf37",
+      "src/traits.rs": "16f084ed9eb8e21bd7f62ff34c09d309000fa3eb3efbbc29b4f8961a95ab1662"
+    }
+  },
+  "audioadapter-buffers": {
+    "version": "5.2.0",
+    "archive_sha256": "46289a81a3bfa26d0f8b2415f8ca9decde9a66308a150568af5c102381b3c8ce",
+    "files": {
+      ".cargo_vcs_info.json": "e36420a1c81428e96c2e8720bc83bbe355929790361d242682884ccd73232edd",
+      "Cargo.lock": "be859b663cc2fa51197eedb52b0319e70e0e946c814d0cb57dd2b13d939810a5",
+      "Cargo.toml": "30ca55e00709f10d92006b4830e2e366ced5794052a28c45a733068baee7033a",
+      "Cargo.toml.orig": "fbac5ed2787679c22a5e73dfffcb0b886040f58e383d0838a078262d11a4d03e",
+      "LICENSE-APACHE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "LICENSE-MIT": "eea1d5a8dddb0f3f9a705b580296308cd34810daa1dd8c10bf93e5806fc1069c",
+      "LICENSE.txt": "dcc4b6f1193e531c9158487bc5fef24ea6457ee17a436004c0ff70d23dd5ff6b",
+      "README.md": "5a88343eb0f3ef701d968ee6cbf58a463fac923520b94f05743c67c20629c45a",
+      "benches/iteration.rs": "16d85ba38e661e93c2f39d65a7b4156289aef360fd41aa239c716bac04442099",
+      "src/adapter_to_float.rs": "96b5315b0f3e2996664542f6a26f6a850a6bc0c64ab52684c15a36ce56cabcee",
+      "src/direct.rs": "6cd33e569d4ee8de89b8d5746844425d902ec0418d2e7da8e57d622a034e4b04",
+      "src/dummy.rs": "f352047c6e85f48f8d3e99d481d6ef9854d89922e2e15c18f2740d849ada7b66",
+      "src/lib.rs": "4987eb789d3dd886d4c43431a0d3b7feb74db592268416b16daf9443477f4735",
+      "src/number_to_float.rs": "842891b6297dadc8ecfdee678cc39d66d75333bf7fcd68b93122755b5fc6b28e",
+      "src/owned.rs": "e57b6e0daa40f6710680a70c866eb31b57380519ab2e42e227c9fdb51c434544",
+      "src/slicetools.rs": "4ce9104a3fc3daa7dd483035c95194f83aee247067d7edc91fafdbb2fd2af4ab",
+      "src/utils.rs": "af77eeec1140ee0970e9a1e690f7819851d5516915de0485b31aa78700b70966"
+    }
+  },
+  "audioadapter-sample": {
+    "version": "5.2.0",
+    "archive_sha256": "5258faecf4edbe35ec483bda9b1f7438e6b391891819269c6b5461aeaa0e8d7d",
+    "files": {
+      ".cargo_vcs_info.json": "5d44af4e901248fea04d35a16cc3092061214570cc31f0e2035b1b7b7b9aa0d3",
+      "Cargo.lock": "d89ac27c2fbe6b76423eba889e8aef516b8c58d5fa7400580d45279eeeeb492e",
+      "Cargo.toml": "868ac1dafa5e95b1c15e3792888973f00226879a239975de134bd98f01844f5a",
+      "Cargo.toml.orig": "7afc15d8ebed86339ae5bcfc1bf5fa6577e377cf0741c895b38d8ce89abc470c",
+      "LICENSE-APACHE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+      "LICENSE-MIT": "eea1d5a8dddb0f3f9a705b580296308cd34810daa1dd8c10bf93e5806fc1069c",
+      "LICENSE.txt": "dcc4b6f1193e531c9158487bc5fef24ea6457ee17a436004c0ff70d23dd5ff6b",
+      "README.md": "25b7a8dfdd5a4c07e122686f0c26e985bb202c318a1226ca2fc3d37eb11c0e4b",
+      "src/lib.rs": "6875569a2087bbf03a43687cc8567edf6eec1999bf542f6ef8bd5b9b0c2e03b0",
+      "src/readwrite.rs": "3a62bac073cc93c9408e343cb63cc425d4d4539117f31388297a7dacbf7a8485",
+      "src/sample.rs": "973f0cdb50757a66bead64e9dc268b843c279cadf4fa4f7c4223a9602a3ca46b"
+    }
+  },
+  "rubato": {
+    "version": "5.0.1",
+    "archive_sha256": "cc1e951b9f5432ec1422f4dcfa5733fc501265902612edf5ef8bd8ecdd960930",
+    "files": {
+      ".cargo_vcs_info.json": "ef8be130d7ac92b2f8d20a756929812dc59fbdf9a4f4eceef0d77125a9fecb55",
+      ".github/workflows/ci_test.yml": "c7d7c0001dc4d4cd87b1dbae6d564f648a89a1eecb92704a345487c42f4bd47b",
+      ".github/workflows/publish.yml": "d3e0645ed9980037bdc341384ec5f4db71003246d2d8790815b2e5e2198f489d",
+      ".gitignore": "554a6ebc13c86937dcf101091afd3f71ed7040da4bfd005c47451b2fd5dec2ca",
+      "Cargo.lock": "62959098a821181ae6019717359947cf4dc95682c290ab6bc4bbb7d5e8508d21",
+      "Cargo.toml": "afa64e558985008ab9b9b9f2cf7fb83df07dd8a1ad25204bb0c2b17b17899b6f",
+      "Cargo.toml.orig": "1abfef010c9091868a6b1d8a6d8e8f20417f417c324b101a61dc17ae7cd8ed1f",
+      "LICENSE-APACHE": "db7332814a00615b025608278dc1cc53148209baaa4d71073e5f67cac82f979e",
+      "LICENSE-MIT": "36dbd32f27adb0d2477b3d3f6ecbde9ca9ad8d72e24766bebe3ea631d235a7ef",
+      "LICENSE.txt": "0a0f8b42d28c6aaee4f5aff8f684af2bd58ba39ccb75c46f04de726dfe772f10",
+      "README.md": "fe32aeb4f6b39155987015fb03c35336904b85df4c892d6d3233e9c3dd585da4",
+      "benches/resamplers.rs": "fd6e3a8fe574e350d723acea5b6985468caeb4c2737e4c6d64d3354897bd8932",
+      "examples/adjust_ratio_f64.rs": "92270bb126ff6147354ea7808736f0bec73990327ebcfb9c47596abaf93b7b28",
+      "examples/analyze_result.py": "9c94f5507bb415a51402a40dc5e39779f9f1b949eb9cdf60ce6bffc7fc895d9a",
+      "examples/make_multitone.py": "b74277dab7dca1267e8eb4c8a9064beef7d3d4473e489d26794f44c66a3d0df1",
+      "examples/make_sine.py": "6f791ae3b2bfe7674d4f68f86236bbc582841a61f8a38bb3fa3c995dc05e398e",
+      "examples/make_tone_scale.py": "264ca7f5533978621b66217a25ef015262930058b7d12c0caf0eb84a82c4c812",
+      "examples/process_raw.rs": "3393359dc5658ce5a6c80bdfe8f47011e559439fd81a97d98d3ce53e6c679c8b",
+      "examples/ramp_ratio_f64.rs": "78da9ab50d6f753bbbb48cd1ffc053ae1889189b820a7f8c060e9bfa2cfef75e",
+      "examples/resample_wav.rs": "58743e8646ef746a67e59705d3e397b247ccbbe57892c6bbc97237ec17ea8cc4",
+      "src/asynchro.rs": "96544d82dabb4c83a0889fc60120eb55995c85dd284ffdc992e0201dce05e73a",
+      "src/asynchro_fast.rs": "48f93a0f0f07ce9a5d3ba501b6a429505013ae772c1a9177754fbc6e6c5353a1",
+      "src/asynchro_sinc.rs": "b0030f5164e45a60d1657a32223dce8f893828a5f6aa97db978044e00fc04bbd",
+      "src/error.rs": "1aabcac90090e0fd0cb2cc21e8ded6b96bb2b7cf838af5947d64af69cb4af67b",
+      "src/interpolation.rs": "0ec6f9c56365c814f71c4ddda46b78315c4d508c39b161603dae59b562fc544b",
+      "src/lib.rs": "424589aa0061d9061e4acdfa0ca3c7260dba88a0d743d6091ac470c42731a2f7",
+      "src/sample.rs": "2e2c15c112680e52b2cea9509b31736ceff2ff6d90c1d64a3572866f7bcbf7f8",
+      "src/sinc.rs": "bb8423fddea4d4085f142adac3acc5801b77b4bfb679ae631fca583b1199397a",
+      "src/sinc_interpolator/aligned_buf.rs": "7847062467e0c19f70a9445e8e3136d9f3b33a7d87207ec14b2abb7a443efb47",
+      "src/sinc_interpolator/mod.rs": "7aa1d9fdbdd62b200de51cc5bed3ffaa4c5f3968b6f9a8cfcb3961e356026dd0",
+      "src/sinc_interpolator/sinc_interpolator_avx.rs": "e2910666fc1abacbca59d65ad7285e320f6cc7701297d74a1b6cfa490356af26",
+      "src/sinc_interpolator/sinc_interpolator_neon.rs": "f9df5994408dabd07bee2352e619d87b2d53afd550de6e6cca0cec658359bb0a",
+      "src/sinc_interpolator/sinc_interpolator_sse.rs": "c7612b8c93c8dc754b43d98f3b3050683c1c97a395c7d726153d7556037f5a94",
+      "src/slip.rs": "2226dd0d10c6c04783f324343e7e3e052a7b9e51f45eb64387431c7550f0aa4f",
+      "src/synchro.rs": "877911e04b3ca3b8d30a47327274415cb7fc633dda8da41dd6907bed3a7801ea",
+      "src/windows.rs": "882da9b12b5b815732860a60fcc459db33ddb94cb47c6f018517f1c59deae73f",
+      "utils/cutoff_check_cubic.py": "9c632e7ec549192b3acfce88f9a1e99a20a46b033b448dfad73d79309634ba43",
+      "utils/cutoff_fit_cubic.py": "ae1bf73bd2e37002d419a06de0cd9f65b3a8e0c8b471ed17467b007f9eb8297c"
+    },
+    "source_patches": [
+      "0001-keep-published-lockfiles.patch"
+    ]
+  },
+  "visibility": {
+    "version": "0.1.1",
+    "archive_sha256": "d674d135b4a8c1d7e813e2f8d1c9a58308aee4a680323066025e53132218bd91",
+    "files": {
+      ".cargo_vcs_info.json": "c0e64b39ea512bcbe57b77db49b52f6e5c0d2192462ff7396aa6da0e2ed47f7d",
+      ".github/workflows/CI.yml": "2e2a00bdb78b27173e92aa80feb8c3a50f9a2593f6d64e6a3d586cd210b48b0a",
+      ".github/workflows/future-proof.yml": "82f4a2949f8c35b0c7038cf9c4350279c60b25bcba663db3e86bda06310aab32",
+      ".gitignore": "44c92e3a70ad3307b7056871c2bdb096d8bfa9373f5bf06a79bb6324a20ff2fb",
+      "Cargo.toml": "a58164491fa17b6958c8909a6a44c6d8ad21a77abe8aa7ab7816db5727c82e5d",
+      "Cargo.toml.orig": "ec2980a81721c6f412cee50d5fd9ccf189d5cfaecdabf65b4f4ce07463ff5706",
+      "LICENSE": "b72b2d40a984de67680d4b874dea846f5e389599bbe495b22f63e87c6f1d5f0c",
+      "LICENSE-APACHE": "50d26cd90660ea5dfca5db399824028bca4eda4ee5be5d50a1b0be573936cabe",
+      "LICENSE-MIT": "b405b5dbae5d4473f5f932af2b5d47df6114036a0b1382d9f6c411a62b71a547",
+      "LICENSE-ZLIB": "23f99ac423f5950bbd814d05e77e5e7be5183903133f3938be2a313cb8070205",
+      "README.md": "de05b79b1ca846eb98531ef818a167ea87ac1a3aec42d690e2bee97eb04f5e51",
+      "rust-toolchain": "19f1c71cabd3cb062544023af771fbb2883524775fdaed6ca5855bae359b7b9c",
+      "src/lib.rs": "7e25371c90526aa1501abc223020c9f6f77fbb549c877e798b372511f3b5017a",
+      "tests/downstream.rs": "b086a5aef7ef83ddd06f5669f4332ce50a008718fdfe1c8b3cb6697c5352960d"
+    }
+  },
+  "windowfunctions": {
+    "version": "0.1.1",
+    "archive_sha256": "90628d739333b7c5d2ee0b70210b97b8cddc38440c682c96fd9e2c24c2db5f3a",
+    "files": {
+      ".cargo_vcs_info.json": "d3645ab637457ea748a1119eff736102cffeeecb33c62c6e7d46afb7d56c0287",
+      ".github/workflows/ci_test.yml": "438e7c8304a3b5d9c60cdc0f1808863db97ade433ef43e530fa671e34f32e5f5",
+      ".github/workflows/publish.yml": "0cd9d94cb8ad359700429afde37d6eacdaf9699f8378a1335f010932bf25f217",
+      ".gitignore": "940572dd5975e2adf9f428717e65780eb40fb42152700cc1486bcb0f604818bb",
+      "Cargo.lock": "39adf28533b26f38b9cd5459deab9d7aa5ec126e5c5162c2142b2d439871d6e8",
+      "Cargo.toml": "96bcf3f610795d6afe03e041de431b20342cf867b114747eae4c6adcb408b0c7",
+      "Cargo.toml.orig": "4d14cf960eccc4dc74caa6efc447a2d0bf6b08f04afc03eaab3b79f7a3f2c185",
+      "LICENSE.txt": "5d17998baf4c4d77cbf52abe694cb428ac7e3858f87e31fa59f61bcb7d3bb0f6",
+      "README.md": "67e151db9b5b56b07b818d5c87ade6318e6238f0ec0ead91e70f954c126a6f7b",
+      "src/lib.rs": "ea62e91ef7efba477562783c2693d2730226a72baca818309d987c9b70671913"
+    },
+    "source_patches": [
+      "0001-keep-published-lockfiles.patch"
+    ]
+  }
+}

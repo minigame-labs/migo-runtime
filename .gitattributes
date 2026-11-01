@@ -48,6 +48,16 @@
 /engine/third_party/cpal-*/** -text -whitespace linguist-vendored
 /engine/third_party/skia-bindings-*/** -text -whitespace linguist-vendored
 /engine/third_party/rustls-platform-verifier-android-*/** -text -whitespace linguist-vendored
+/engine/third_party/minimp3-sys-0.6.0/** -text -whitespace linguist-vendored
+/engine/third_party/symphonia-format-riff-0.6.1/** -text -whitespace linguist-vendored
+/engine/third_party/symphonia-codec-pcm-0.6.1/** -text -whitespace linguist-vendored
+/engine/third_party/audio-codec-algorithms-0.8.1/** -text -whitespace linguist-vendored
+/engine/third_party/audioadapter-5.0.0/** -text -whitespace linguist-vendored
+/engine/third_party/audioadapter-buffers-5.2.0/** -text -whitespace linguist-vendored
+/engine/third_party/audioadapter-sample-5.2.0/** -text -whitespace linguist-vendored
+/engine/third_party/rubato-5.0.1/** -text -whitespace linguist-vendored
+/engine/third_party/visibility-0.1.1/** -text -whitespace linguist-vendored
+/engine/third_party/windowfunctions-0.1.1/** -text -whitespace linguist-vendored
 /engine/third_party/*-patches/** -text -whitespace -linguist-vendored
 /engine/third_party/rusty_v8/*/src_binding.rs -text -whitespace
 /engine/crates/runtime-v8/testdata/** -text -whitespace linguist-vendored

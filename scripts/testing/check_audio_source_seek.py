@@ -31,6 +31,8 @@ def declarations():
     bad='malformed_seek_steps_and_fatal_index_errors_never_enter_source_io'
     deadline='source_deadline_is_not_renewed_and_a_real_reposition_must_replace_the_body'
     cpu='cpu_deadline_returns_before_the_running_seek_and_skips_late_decode'
+    # Stable OffWorker storage makes a copy-only IO future bounded; the
+    # producer gate instead rejects inline payloads and per-step allocation.
     return [
         ('source-seek-reject-drops-owner','indexed_seek.rs','''            CpuResult::Rejected(kind) => Ok(Some(SeekResult {
                 decoder,
@@ -54,22 +56,16 @@ def declarations():
         ('source-seek-false-body-ack-accepted','indexed_seek.rs','if !resumed.restart {','if false {',deadline),
         ('source-seek-resolved-request-repeated','indexed_seek.rs','step.progress = Progress::Yield;','',matrix),
         ('source-seek-caller-allocates','indexed_seek.rs','let active = state.clone();','std::hint::black_box(vec![0_u8;64]); let active = state.clone();','cached_seek_adds_no_caller_allocation_beyond_one_existing_cpu_handoff'),
-        ('source-seek-io-future-copied','indexed_seek.rs','''                    tokio::pin!(resume);
-                    let Some(resumed) =
-                        while_active(tx, state, tokio::time::timeout_at(deadline, &mut resume))
-                            .await''','''                    let Some(resumed) =
-                        while_active(tx, state, tokio::time::timeout_at(deadline, resume))
-                            .await''','seek_future_fits_the_default_stack_without_boxing_or_stack_overrides'),
     ]
 
 
-def controls(work, env):
+def controls(work, env, build=None):
     rows=declarations()
     for name,file,before,after,test in rows:
         path=work/'source'/file;original=path.read_text();assert original.count(before)==1,(name,'mutation anchor changed')
         path.write_text(original.replace(before,after))
         try:
-            binary=transport.source.build(work,env,name);log=work/f'{name}-test.log'
+            binary=(build or transport.source.build)(work,env,name);log=work/f'{name}-test.log'
             with log.open('w')as out:r=subprocess.run([str(binary),'--exact','source_seek_contracts::'+test,'--nocapture'],cwd=work/'probe',env=env,stdout=out,stderr=subprocess.STDOUT,timeout=120)
             observed=log.read_text();assert r.returncode==101 and 'panicked at'in observed and '1 failed'in observed,(name,'must reject an executed assertion')
         finally:path.write_text(original)

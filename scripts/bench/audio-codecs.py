@@ -16,6 +16,7 @@ import hashlib
 import json
 import math
 import os
+import re
 from pathlib import Path
 import shutil
 import struct
@@ -38,11 +39,21 @@ def run(command: list[str], log: Path, *, cwd: Path, env: dict | None = None) ->
     assert result.returncode == 0, f"command failed ({result.returncode}): {log}"
 
 
+def replace_patch_paths(manifest: str, paths: dict[str, Path]) -> str:
+    """Replace inherited patch identities only for the isolated codec cohort."""
+    before, section = manifest.split('[patch.crates-io]\n', 1)
+    table, separator, suffix = section.partition('\n[')
+    for name, path in paths.items():
+        table = re.sub(r'^' + re.escape(name) + r'\s*=.*(?:\n|$)', '', table, flags=re.MULTILINE)
+        table += f'\n{name}={{path={json.dumps(str(path))}}}\n'
+    return before + '[patch.crates-io]\n' + table + (separator + suffix if separator else '')
+
+
 def library_patches(root: Path, work: Path) -> dict[str, Path]:
     """Materialize checksum-pinned published crates plus the recorded patches.
 
-    These paths belong only to this isolated workspace. The product does not
-    select them until semantic, memory and performance acceptance is complete.
+    These paths belong to the isolated workspace. The product's accepted Vorbis/WAVE
+    subset uses the same pinned source; the other Symphonia ports stay candidates.
     """
     vendor = work / "vendor"
     vendor.mkdir()
@@ -107,36 +118,44 @@ simd=["symphonia/opt-simd"]
 phase-probe=["dep:libc"]
 metadata-budgets=[]
 streaming-probe={json.dumps(["dep:symphonia-bundle-mp3", "symphonia-bundle-mp3/streaming"] if patched_libraries else [])}
-wave-streaming-probe={json.dumps(["streaming-probe", "dep:symphonia-format-riff", "symphonia-format-riff/streaming", "dep:symphonia-codec-pcm"] if patched_libraries else [])}
+wave-streaming-probe={json.dumps(["streaming-probe", "symphonia-format-riff/streaming"] if patched_libraries else [])}
 adts-streaming-probe={json.dumps(["streaming-probe", "dep:symphonia-codec-aac", "symphonia-codec-aac/streaming"] if patched_libraries else [])}
-vorbis-streaming-probe={json.dumps(["streaming-probe", "dep:symphonia-format-ogg", "symphonia-format-ogg/streaming", "dep:symphonia-codec-vorbis"] if patched_libraries else [])}
+vorbis-streaming-probe={json.dumps(["streaming-probe", "symphonia-format-ogg/streaming"] if patched_libraries else [])}
 m4a-streaming-probe={json.dumps(["streaming-probe", "dep:symphonia-format-isomp4", "symphonia-format-isomp4/streaming", "dep:symphonia-codec-aac"] if patched_libraries else [])}
 [dependencies]
 symphonia={{version="=0.6.1",default-features=false,features=["aac","isomp4","mp3","ogg","vorbis","wav","pcm","id3v2"]}}
 minimp3-sys="={version('minimp3-sys')}"
-lewton="={version('lewton')}"
 hound="={version('hound')}"
 serde_json="={version('serde_json')}"
 libc={{version="={version('libc')}",optional=true}}
 symphonia-bundle-mp3={{version="=0.6.1",default-features=false,optional=true}}
-symphonia-format-riff={{version="=0.6.1",default-features=false,features=["wav"],optional=true}}
-symphonia-codec-pcm={{version="=0.6.1",optional=true}}
+symphonia-format-riff={{version="=0.6.1",default-features=false,features=["wav","streaming"]}}
+symphonia-codec-pcm={{version="=0.6.1",default-features=false}}
 symphonia-codec-aac={{version="=0.6.1",optional=true}}
-symphonia-format-ogg={{version="=0.6.1",optional=true}}
-symphonia-codec-vorbis={{version="=0.6.1",optional=true}}
+rubato={{version="=5.0.1",default-features=false}}
+symphonia-core={{version="=0.6.1",default-features=false}}
+symphonia-format-ogg={{version="=0.6.1",default-features=false,features=["streaming"]}}
+symphonia-codec-vorbis={{version="=0.6.1",default-features=false}}
 symphonia-format-isomp4={{version="=0.6.1",optional=true}}
 shared={{package="migo-shared",path={json.dumps(str(root / 'engine/crates/shared'), ensure_ascii=False)},default-features=false}}
 [dev-dependencies]
 migo-alloc-probe={{path={json.dumps(str(root / 'engine/testing/alloc-probe'))}}}
+migo-io={{path={json.dumps(str(root / 'engine/crates/io'))},default-features=false}}
+tokio={{version="={version('tokio')}",features=["rt-multi-thread","sync","time"]}}
 [profile.release]
 opt-level=3
 lto="thin"
 codegen-units=1
 '''
+    # Cargo does not inherit patches from a dependency's workspace. The IO dev
+    # edge must use the same existing local forks and identities as the product.
+    manifest += "\n[patch.crates-io]\n"
+    root_patches = tomllib.loads((root / "engine/Cargo.toml").read_text())["patch"]["crates-io"]
+    for name, patch in root_patches.items():
+        assert set(patch) == {"path"}, (name, "review new patch metadata explicitly")
+        manifest += f'{name}={{path={json.dumps(str((root / "engine" / patch["path"]).resolve()))}}}\n'
     if patched_libraries:
-        manifest += "\n[patch.crates-io]\n"
-        for name, path in library_patches(root, work).items():
-            manifest += f'{name}={{path={json.dumps(str(path), ensure_ascii=False)}}}\n'
+        manifest = replace_patch_paths(manifest, library_patches(root, work))
         manifest += '\n[[test]]\nname="packet-core-contracts"\npath="tests/packet_core.rs"\n'
         tests = package / "tests"
         tests.mkdir()
@@ -150,8 +169,15 @@ codegen-units=1
     source = []
     for name, path in (("decoder", "engine/crates/audio/src/decoder/mod.rs"),
                        ("limits", "engine/crates/audio/src/limits.rs"),
+                       ("resampler", "engine/crates/audio/src/resampler.rs"),
+                       ("resample_job", "engine/crates/audio/src/resample_job.rs"),
                        ("candidate", "scripts/testing/fixtures/audio-codec-probe/candidate.rs")):
         source.append(f'#[path = {json.dumps(str(root / path), ensure_ascii=False)}] mod {name};\n')
+    for name in ("off_worker", "mp3_fixture"):
+        path = root / f"engine/crates/audio/src/{name}.rs"
+        source.append(f'#[cfg(test)] #[path={json.dumps(str(path))}] mod {name};\n')
+    source.append('#[cfg(all(test,not(feature="streaming-probe")))] #[global_allocator]\n'
+                  'static COUNTING: migo_alloc_probe::CountingAllocator = migo_alloc_probe::CountingAllocator::system();\n')
     entry = "benchmark.rs" if benchmark else "main.rs"
     source.append((root / f"scripts/testing/fixtures/audio-codec-probe/{entry}").read_text())
     streaming = root / "scripts/testing/fixtures/audio-codec-probe/streaming.rs"
@@ -166,26 +192,41 @@ codegen-units=1
     source.append(f'#[cfg(all(test,feature="vorbis-streaming-probe"))] #[path={json.dumps(str(vorbis_tests))}] mod vorbis_adapter_contracts;\n')
     m4a_tests = root / "scripts/testing/fixtures/audio-codec-probe/isomp4_adapter_contracts.rs"
     source.append(f'#[cfg(all(test,feature="m4a-streaming-probe"))] #[path={json.dumps(str(m4a_tests))}] mod isomp4_adapter_contracts;\n')
-    if patched_libraries:
-        contracts = root / "scripts/testing/fixtures/audio-codec-probe/timeline_contracts.rs"
-        source.append(f'\n#[cfg(test)] #[path = {json.dumps(str(contracts))}] mod timeline_contracts;\n')
-        mp3_fixture = root / "engine/crates/audio/src/mp3_fixture.rs"
-        source.append(f'#[cfg(test)] #[path = {json.dumps(str(mp3_fixture))}] mod mp3_fixture;\n')
+    # timeline_contracts.rs now tests the real file/HTTP/player composition.
+    # It belongs to the full-audio gates, not this decoder-only executable.
     (package / "src/main.rs").write_text("".join(source), encoding="utf-8")
-    inputs = [root / "engine/crates/audio/src/limits.rs",
-              root / "engine/crates/audio/src/mp3_fixture.rs"]
-    inputs += sorted((root / "engine/crates/audio/src/decoder").rglob("*.rs"))
+    inputs = [root / "engine/Cargo.toml", root / "engine/Cargo.lock", Path(__file__).resolve()]
+    inputs += [root / f"engine/crates/audio/src/{name}.rs" for name in
+               ["limits", "mp3_fixture", "resampler", "bounded_resample_tests", "resample_job", "resample_job_tests", "off_worker"]]
+    inputs += [p for p in (root / "engine/crates/audio/src/decoder").rglob("*") if p.is_file()]
     inputs += sorted((root / "engine/crates/shared/src").rglob("*.rs"))
     inputs += sorted((root / "engine/testing/alloc-probe/src").rglob("*.rs"))
     inputs += sorted((root / "scripts/testing/fixtures/audio-codec-probe").rglob("*.rs"))
-    source_inputs = {str(path.relative_to(root)): sha(path) for path in inputs}
+    # Resolve extra candidate packages only in this isolated lock, then freeze.
+    run(["cargo", "metadata", "--offline", "--format-version", "1"], work / "metadata.jsonl", cwd=package, env=env)
+    metadata = [json.loads(line) for line in (work / "metadata.jsonl").read_text().splitlines()
+                if line.startswith('{"packages":')]
+    assert len(metadata) == 1, "expected one Cargo metadata document"
+    metadata = metadata[0]
+    selected = tomllib.loads((package / "Cargo.lock").read_text())["package"]
+    identity = lambda row: (row["name"], row["version"], row.get("source"), row.get("checksum"))
+    known = {row["name"] for row in locked}
+    pins = set(map(identity, locked))
+    assert all(row["name"] not in known or identity(row) in pins for row in selected), "Root dependency identity drift"
+    # Include the actual local dependency closure, including C/C++ build inputs.
+    for row in metadata["packages"]:
+        directory = Path(row["manifest_path"]).parent
+        if row["source"] is not None or not directory.is_relative_to(root):
+            continue
+        for parent, directories, files in os.walk(directory):
+            directories[:] = [name for name in directories if name not in ["target", ".git", "__pycache__"]]
+            inputs += [Path(parent) / name for name in files]
+    source_inputs = {str(path.relative_to(root)): sha(path) for path in sorted(set(inputs))}
     (work / "source-inputs.json").write_text(json.dumps(source_inputs, indent=2) + "\n")
     for path in inputs:
         retained = work / "source-inputs" / path.relative_to(root)
         retained.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(path, retained)
-    # Resolve extra candidate packages only in this isolated lock, then freeze.
-    run(["cargo", "metadata", "--offline", "--format-version", "1"], work / "metadata.jsonl", cwd=package, env=env)
     selected_features = ((["simd"] if simd else []) + (["metadata-budgets"] if patched_libraries else []) + (["phase-probe"] if phase_probe else [])
                          + (["streaming-probe"] if streaming_probe else []))
     features = ["--features", ",".join(selected_features)] if selected_features else []
@@ -204,6 +245,7 @@ codegen-units=1
         except ValueError:
             continue
         if row.get("reason") == "compiler-artifact" and row.get("executable"):
+            assert row["fresh"] is False, "probe must actually rebuild"
             found.append(Path(row["executable"]))
     assert len(found) == 1, found
     binary = work / ("codec-probe.exe" if os.name == "nt" else "codec-probe")

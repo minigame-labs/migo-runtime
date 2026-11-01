@@ -72,7 +72,7 @@ def build(package: Path, output: Path, env: dict, name: str, features=()) -> Pat
     return binary
 
 
-def main(output: Path, target: Path) -> None:
+def prepare(output: Path, target: Path, extra_inputs=()):
     assert not output.exists(), 'use a fresh result directory'
     output.mkdir(parents=True)
     package = output / 'probe'
@@ -87,6 +87,7 @@ def main(output: Path, target: Path) -> None:
     (package / 'Cargo.toml').write_text(manifest)
     (package / 'Cargo.lock').write_bytes((ROOT / 'engine/Cargo.lock').read_bytes())
     inputs = [ROOT / 'engine/Cargo.toml', ROOT / 'engine/Cargo.lock', io / 'Cargo.toml', Path(__file__).resolve()]
+    inputs += list(extra_inputs)
     inputs += sorted((io / 'src').rglob('*.rs'))
     inputs += sorted((ROOT / 'engine/crates/shared/src').rglob('*.rs'))
     checksums = {str(p.relative_to(ROOT)): sha(p) for p in inputs}
@@ -102,12 +103,11 @@ def main(output: Path, target: Path) -> None:
         env.pop(key, None)
     # Updating the isolated package's workspace members is expected. Root lock is immutable.
     assert run(['cargo', 'metadata', '--offline', '--format-version', '1'], output / 'metadata.jsonl', package, env) == 0
-    binary = build(package, output, env, 'positive')
-    assert run([str(binary)], output / 'positive-test.log', package, env) == 0
-    positive = (output / 'positive-test.log').read_text()
-    match = re.search(r'test result: ok\. (\d+) passed; 0 failed; (\d+) ignored;', positive)
-    assert match, 'missing complete positive suite'
-    declarations = [
+    return package, env, checksums
+
+
+def declarations(originals):
+    rows = [
         ('host-limit-removed', 'pools.rs',
          'self.audio_by_host.get(&host).copied().unwrap_or(0) >= config.audio_host_limit', 'false',
          'pools::audio_admission_tests::audio_admission_bounds_both_host_and_process'),
@@ -123,7 +123,7 @@ def main(output: Path, target: Path) -> None:
          'impl Drop for IoScheduler { fn drop(&mut self) {} }',
          'audio_cpu::tests::audio_handle_does_not_keep_scheduler_scope_open'),
     ]
-    declarations += [
+    rows += [
         ('typed-credit-after-publication', 'pools.rs',
          'task.execute();\n                shared.release_audio_slot(host, pool);\n                task.publish();',
          'task.execute();\n                task.publish();\n                shared.release_audio_slot(host, pool);',
@@ -138,21 +138,32 @@ def main(output: Path, target: Path) -> None:
          'std::hint::black_box(vec![0_u8;64]);\n        let pending = Pending(Arc::new(Task {',
          'audio_cpu::tests::warmed_audio_handoff_uses_one_caller_allocation_per_step'),
     ]
-    # Each wrapper must return credit before publishing, including a closed result receiver.
-    pools = (package / 'src/pools.rs').read_text()
     before = 'release_shared.release_audio_slot(host, pool);\n                let _ = result_tx.send(result);'
+    pools = originals['pools.rs']
     assert pools.count(before) == 5
-    controls = []
-    for name, relative, before_text, after, test in declarations:
-        source = package / 'src' / relative
-        original = source.read_text()
-        assert original.count(before_text) == 1, (name, 'mutation anchor drift')
-        controls.append((name, source, original, original.replace(before_text, after), test))
     for index in range(5):
         pieces = pools.split(before)
         changed = before.join(pieces[:index + 1]) + 'let _ = result_tx.send(result);\n                release_shared.release_audio_slot(host, pool);' + before.join(pieces[index + 1:])
-        controls.append((f'credit-after-publication-{index}', package / 'src/pools.rs', pools, changed,
-                         'pools::audio_admission_tests::audio_result_drop_can_reenter_admission_before_dispatch_completion'))
+        rows.append((f'credit-after-publication-{index}', 'pools.rs', pools, changed,
+                     'pools::audio_admission_tests::audio_result_drop_can_reenter_admission_before_dispatch_completion'))
+    for name, relative, before, after, _test in rows:
+        assert originals[relative].count(before) == 1, (name, 'mutation anchor drift')
+    return rows
+
+
+def main(output: Path, target: Path) -> None:
+    package, env, checksums = prepare(output, target)
+    io = ROOT / 'engine/crates/io'
+    binary = build(package, output, env, 'positive')
+    assert run([str(binary)], output / 'positive-test.log', package, env) == 0
+    positive = (output / 'positive-test.log').read_text()
+    match = re.search(r'test result: ok\. (\d+) passed; 0 failed; (\d+) ignored;', positive)
+    assert match, 'missing complete positive suite'
+    originals = {name: (package / 'src' / name).read_text()
+                 for name in ['audio_cpu.rs', 'scheduler.rs', 'pools.rs']}
+    controls = [(name, package / 'src' / relative, originals[relative],
+                 originals[relative].replace(before, after), test)
+                for name, relative, before, after, test in declarations(originals)]
     for name, source, original, changed, test in controls:
         try:
             source.write_text(changed)

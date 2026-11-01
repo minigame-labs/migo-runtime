@@ -31,7 +31,7 @@ def controls(originals):
     def player(name, signature, before, after, test):
         change(name, 'inner_audio.rs', signature, before, after, test, 'inner_audio::stream_revision_tests::')
 
-    accept = '    pub(crate) fn accept_stream_revision('
+    accept = '    fn accept_stream_revision_as('
     poll = '    pub fn poll_stream('
     stale = 'every_old_message_and_unaccepted_future_message_is_discarded'
     storage = 'accepted_reposition_reuses_storage_and_waits_for_fresh_pcm_in_every_play_state'
@@ -42,12 +42,12 @@ def controls(originals):
     player('duplicate-ack-accepted', accept, 'revision <= self.stream_revision', 'revision < self.stream_revision', 'duplicate_or_reordered_acknowledgements_preserve_the_active_traversal')
     player('old-pcm-retained', accept, '            samples.clear();', '', stale)
     player('fraction-survives-reposition', accept, '        self.position_phase = 0;', '', storage)
-    player('seeked-before-fresh-pcm', accept, 'self.pending_seek = Some(target_frame);', 'self.pending_seek = None;', storage)
+    player('seeked-before-fresh-pcm', accept, 'self.pending_seek = notify_seek.then_some(target_frame);', 'self.pending_seek = None;', storage)
     player('seek-starts-paused-player', accept, '        self.position = 0;', '        self.shared.set_state(PlaybackState::Playing);\n        self.position = 0;', storage)
     player('eof-retires-reusable-source', poll, 'if !self.retains_stream_source() {', 'if true {', eof)
     player('eof-buffered-seek-waits', '    pub fn seek(', ' && !self.stream_complete', '', eof)
     player('eof-keeps-polling', '    pub(crate) fn needs_stream_poll(', ' && !self.stream_complete', '', eof)
-    player('cache-steals-retained-source', '    pub fn take_streamed_audio(', ' || self.retains_stream_source()', '', eof)
+    player('cache-steals-retained-source', '    pub(crate) fn take_streamed_audio_with_source(', ' || self.retains_stream_source()', '', eof)
     player('closed-source-ack-accepted', accept, '            || self.stream_rx.as_ref().is_none_or(|rx| rx.is_closed())\n', '', 'closed_cancelled_or_ordinary_source_rejects_reposition_before_clearing_pcm')
     player('load-keeps-old-revision', '    pub(crate) fn begin_load_for(', '        self.stream_revision = StreamRevision::INITIAL;\n', '', 'replacing_a_source_resets_revision_and_cancels_its_retained_eof')
     player('stale-work-unbounded', poll, 'for _ in 0..STREAM_CHANNEL_CAPACITY', 'for _ in 0..usize::MAX', 'discarded_pcm_returns_the_original_loan_and_polling_keeps_its_work_budget')
@@ -60,8 +60,8 @@ def controls(originals):
         ('source-format-forgotten', '        self.revision = revision;', '        self.format = None;\n        self.revision = revision;', 'rejected_revision_and_changed_format_preserve_publication_state'),
     ]:
         change(name, 'streaming.rs', '    pub(crate) fn begin(', before, after, test, 'streaming::revision_tests::')
-    change('duplicate-done-published', 'streaming.rs', '    pub(crate) async fn finish(', 'self.finished || ', '', sequence, 'streaming::revision_tests::')
-    change('eof-completion-flag-lost', 'streaming.rs', '    pub(crate) async fn finish(', '        state.download_complete.store(true, Ordering::Release);', '', sequence, 'streaming::revision_tests::')
+    change('duplicate-done-published', 'streaming.rs', '    pub(crate) fn validate_finish(', 'self.finished', 'false', sequence, 'streaming::revision_tests::')
+    change('eof-completion-flag-lost', 'streaming.rs', '    pub(crate) fn finish_with(', '        state.download_complete.store(true, Ordering::Release);', '', sequence, 'streaming::revision_tests::')
     return rows
 
 

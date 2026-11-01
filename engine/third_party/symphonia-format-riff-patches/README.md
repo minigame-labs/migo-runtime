@@ -1,7 +1,7 @@
-# Symphonia RIFF 0.6.1 candidate patch
+# Symphonia RIFF 0.6.1 product and candidate patches
 
-`UPSTREAM` pins the published archive. Only isolated audio candidates select the
-patched source; the product dependency graph has not switched.
+`UPSTREAM` pins the published archive. The whole-file WAVE product and isolated
+candidates select this same patched source.
 
 WavReader checks the explicit metadata policy before parsing optional INFO
 contents. The existing chunk reader still validates outer lengths and handles
@@ -29,7 +29,19 @@ channel counts. Channel-mask correction uses a wider intermediate and returns a
 normal error when added positions do not fit, rather than overflowing a shift
 or truncating channel positions. These changes apply to pull and push readers.
 
-The patch is a candidate library interface, not product WAVE streaming delivery.
+The borrowed interface is selected for whole-file product WAVE decoding; this
+does not establish product WAVE streaming delivery.
 HTTP/DSP/player integration, format-policy/seek/rate and device acceptance remain
-required before the product codec switch. The separate PCM oracle fixture lives
+separate acceptance requirements. The separate PCM oracle fixture lives
 in scripts/testing/fixtures/audio-codec-probe/wave_pcm_contracts.rs.
+
+`0003` keeps the product PCM profile compatible with classic 1–32 channel
+files and legacy LSB-aligned 24-in-32 storage. The existing PCM decoder performs
+the conversion using its established sample-shift parameter; no alternate
+parser or converter is added. Extensible zero valid bits retain their stored
+width; valid left-aligned extensible PCM keeps its canonical container scale.
+Discrete channel layouts preserve all interleaved samples without inventing
+speaker positions. AIFF constructors keep their existing zero shift. Two
+library regressions and independent product numeric/legacy comparisons cover
+these decisions. Float64, companding and ADPCM remain outside the product
+profile. All features (including the unselected AIFF code) must still compile.

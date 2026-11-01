@@ -15,40 +15,117 @@
 //!
 //! One caller submits one bounded step at a time. Process/host admission and
 //! scheduling belong to the shared audio CPU lane; dropping a queued operation
-//! releases its captured value without running it.
+//! transfers its value, captures and unclaimed result to CPU-only disposal.
 
 use migo_io::audio_cpu::AudioCpu;
 use shared::error::EngineResult;
+use tokio::sync::mpsc;
 
 /// A value whose work is CPU-bound, reachable only from a blocking thread.
 pub(crate) struct OffWorker<T> {
-    value: T,
+    // Same exclusive allocation across every CPU turn, including waiting custody.
+    value: Option<Box<T>>,
     cpu: AudioCpu,
+    retired: mpsc::Sender<Retired<T>>,
 }
-
+// Destroy state before a captured input/output that may own its final credit.
+struct Retired<T> {
+    _value: Box<T>,
+    _adjunct: Option<Box<dyn Send>>,
+}
+impl<T> Drop for OffWorker<T> {
+    fn drop(&mut self) {
+        let Some(value) = self.value.take() else {
+            return;
+        };
+        if self
+            .retired
+            .try_send(Retired {
+                _value: value,
+                _adjunct: None,
+            })
+            .is_err()
+        {
+            unreachable!("exclusive OffWorker retirement receiver disappeared");
+        }
+    }
+}
+// Protect both a not-yet-executed step and a computed result until extraction.
+// The owner is linear: only one such message can ever retire this allocation.
+struct Handoff<T, P: Send + 'static> {
+    value: Option<(OffWorker<T>, P)>,
+}
+impl<T, P: Send + 'static> Handoff<T, P> {
+    fn take(mut self) -> (OffWorker<T>, P) {
+        self.value.take().unwrap()
+    }
+}
+impl<T, P: Send + 'static> Drop for Handoff<T, P> {
+    fn drop(&mut self) {
+        if let Some((mut owner, adjunct)) = self.value.take() {
+            let value = owner.value.take().unwrap();
+            if owner
+                .retired
+                .try_send(Retired {
+                    _value: value,
+                    _adjunct: Some(Box::new(adjunct)),
+                })
+                .is_err()
+            {
+                unreachable!("exclusive OffWorker handoff receiver disappeared");
+            }
+        }
+    }
+}
+async fn retire<T: Send + 'static>(mut incoming: mpsc::Receiver<Retired<T>>, cpu: AudioCpu) {
+    // Each unique owner owns its original resource credits until this drop.
+    // The process-lifetime receiver is never tied to the caller's abort handle.
+    if let Some(value) = incoming.recv().await {
+        cpu.retirement().retire(value).await;
+    }
+}
 impl<T: Send + 'static> OffWorker<T> {
     pub(crate) fn new(value: T, cpu: AudioCpu) -> Self {
-        Self { value, cpu }
+        Self::from_box(Box::new(value), cpu)
     }
-
-    /// Run `step` against the value on a thread the async executor is not waiting
-    /// for, and hand back the value along with what the step produced.
-    ///
-    /// Uses the shared, bounded executor and the owning host's close signal.
-    pub(crate) async fn with<R: Send + 'static>(
+    /// Transfer already boxed waiting custody without reallocating its state.
+    pub(crate) fn from_box(value: Box<T>, cpu: AudioCpu) -> Self {
+        let (retired, incoming) = mpsc::channel(1);
+        crate::streaming::get_stream_runtime().spawn(retire(incoming, cpu.clone()));
+        Self {
+            value: Some(value),
+            cpu,
+            retired,
+        }
+    }
+    /// Custody starts before first poll. Cancellation never runs a queued step;
+    /// captures and unclaimed results retire on the original bounded CPU lane.
+    pub(crate) fn with<R: Send + 'static>(
         self,
         step: impl FnOnce(&mut T) -> R + Send + 'static,
-    ) -> EngineResult<(Self, R)> {
-        let Self { mut value, cpu } = self;
-        let (value, outcome) = cpu
-            .run(move || {
-                let outcome = step(&mut value);
-                (value, outcome)
-            })
-            .await?;
-        Ok((Self { value, cpu }, outcome))
+    ) -> impl std::future::Future<Output = EngineResult<(Self, R)>> + Send + 'static {
+        let call = Handoff {
+            value: Some((self, step)),
+        };
+        async move {
+            let cpu = call.value.as_ref().unwrap().0.cpu.clone();
+            let result = cpu
+                .run(move || {
+                    let (mut owner, step) = call.take();
+                    let outcome = step(owner.value.as_mut().unwrap().as_mut());
+                    Handoff {
+                        value: Some((owner, outcome)),
+                    }
+                })
+                .await?;
+            Ok(result.take())
+        }
     }
 }
+
+#[cfg(test)]
+#[path = "off_worker_custody_tests.rs"]
+mod custody_tests;
 
 #[cfg(test)]
 mod tests {
@@ -60,6 +137,36 @@ mod tests {
             .worker_threads(1)
             .build()
             .expect("a test executor")
+    }
+
+    #[test]
+    fn handoff_future_size_is_independent_of_the_owned_payload() {
+        let host = migo_io::scheduler::IoScheduler::new(0);
+        let small = OffWorker::new((), host.audio_cpu()).with(|_| ());
+        let large = OffWorker::new([0_u8; 64 * 1024], host.audio_cpu()).with(|_| ());
+        assert_eq!(std::mem::size_of_val(&small), std::mem::size_of_val(&large));
+    }
+
+    #[test]
+    fn successive_steps_keep_the_same_exclusive_value_address() {
+        super::custody_tests::custody();
+        let host = migo_io::scheduler::IoScheduler::new(0);
+        executor().block_on(async {
+            let (owner, first) = OffWorker::new([0_u8; 8192], host.audio_cpu())
+                .with(|value| value.as_ptr() as usize)
+                .await
+                .unwrap();
+            let (owner, second) = owner
+                .with(|value| {
+                    value[0] = 19;
+                    value.as_ptr() as usize
+                })
+                .await
+                .unwrap();
+            let (_, byte) = owner.with(|value| value[0]).await.unwrap();
+            assert_eq!(first, second);
+            assert_eq!(byte, 19);
+        });
     }
 
     // The property this type exists for -- that a step leaves the worker polling it

@@ -338,7 +338,14 @@ def check_service_ops(root: pathlib.Path, lanes: dict[str, str]) -> dict[str, in
     than shipping. Every numbered op must also be one the boundary contract
     sends to the host: async, command or sync.
     """
-    contract = json.loads((root / SERVICE_OPS_CONTRACT).read_text(encoding="utf-8"))["ops"]
+    identity = json.loads((root / SERVICE_OPS_CONTRACT).read_text(encoding="utf-8"))
+    contract = identity["ops"]
+    retired = identity.get("retired_ops", [])
+    if (not isinstance(retired, list) or not all(isinstance(name, str) for name in retired)
+            or len(set(retired)) != len(retired) or any(name not in contract for name in retired)):
+        raise BuildError("retired service ops must be unique names with retained numbers")
+    if any(name in lanes for name in retired):
+        raise BuildError("a retired service op must have no current engine lane")
     declared = {name: int(number) for name, number in SERVICE_OP_ENTRY.findall(
         (root / SERVICE_OPS_MODULE).read_text(encoding="utf-8"))}
     if declared != contract:
@@ -353,6 +360,8 @@ def check_service_ops(root: pathlib.Path, lanes: dict[str, str]) -> dict[str, in
     if len(set(numbers)) != len(numbers) or 0 in numbers:
         raise BuildError(f"{SERVICE_OPS_CONTRACT} reuses a number or uses zero")
     for name in contract:
+        if name in retired:
+            continue
         if lanes.get(name) not in ("async", "command", "sync"):
             raise BuildError(f"{name} has a service number but its lane is {lanes.get(name)}")
     return contract

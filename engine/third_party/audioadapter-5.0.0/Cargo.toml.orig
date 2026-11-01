@@ -1,0 +1,31 @@
+[package]
+name = "audioadapter"
+version = "5.0.0"
+edition = "2024"
+rust-version = "1.87"
+authors = ["HEnquist <henrik.enquist@gmail.com>"]
+description = "A library for making it easier to work with buffers of audio data"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/HEnquist/audioadapter-rs"
+keywords = ["audio", "buffer", "dsp", "sample", "pcm"]
+categories = ["multimedia::audio"]
+readme = "README.md"
+
+[features]
+default = []
+
+# Exposes the generic trait-testing helpers used by the companion crates.
+# This is the only thing in the core crate that needs `num-traits`; a normal
+# build pulls in no dependencies at all.
+test-utils = ["dep:num-traits"]
+
+[dependencies]
+num-traits = { workspace = true, optional = true }
+
+[dev-dependencies]
+criterion = "0.6"
+num-traits = { workspace = true, features = ["std"] }
+
+[[bench]]
+name = "sqrt"
+harness = false

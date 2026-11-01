@@ -11,6 +11,7 @@ import {
   op_inner_audio_set_loop,
   op_inner_audio_set_playback_rate,
   op_inner_audio_set_autoplay,
+  op_inner_audio_set_start_time,
   op_audio_set_inner_audio_option,
   op_audio_get_available_audio_sources,
 } from "ext:core/ops";
@@ -206,7 +207,11 @@ class InnerAudioContext {
   }
 
   set startTime(value) {
-    this.#startTime = Math.max(0, value);
+    if (this.#destroyed) return;
+    const time = Math.max(0, Number(value));
+    if (!Number.isFinite(time)) return;
+    op_inner_audio_set_start_time(this.#id, time);
+    this.#startTime = time;
   }
 
   /** Whether to autoplay */
@@ -297,18 +302,6 @@ class InnerAudioContext {
   /** Start playback. Returns a Promise per mini-game API. */
   play() {
     if (this.#destroyed) return Promise.reject(new Error("AudioContext is destroyed"));
-
-    if (!this.#buffered) {
-      // Not loaded yet, set autoplay
-      this.#autoplay = true;
-      op_inner_audio_set_autoplay(this.#id, true);
-      return Promise.resolve();
-    }
-
-    // Seek to startTime if specified and at the beginning
-    if (this.#startTime > 0 && this.#currentTime === 0) {
-      op_inner_audio_seek(this.#id, this.#startTime);
-    }
 
     op_inner_audio_play(this.#id);
     // Note: Don't update #paused here - wait for native event

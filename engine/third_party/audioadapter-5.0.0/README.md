@@ -1,0 +1,206 @@
+# audioadapter
+
+The `audioadapter` library simplifies working with audio data buffers.
+
+Audio data can vary in layout and numerical representation.
+This crate bridges these differences, handling both layout and data types effectively.
+
+The `audioadapter` family has three core crates:
+- [audioadapter](https://crates.io/crates/audioadapter):
+  This crate provides the traits such as [Adapter] and [AdapterMut],
+  as well as the statistics helpers in the [stats] module.
+- [audioadapter-sample](https://crates.io/crates/audioadapter-sample): A companion crate
+  that provides sample format conversions as well as extensions to the standard `Read` and `Write` traits.
+- [audioadapter-buffers](https://crates.io/crates/audioadapter-buffers): A companion crate
+  that provides wrappers for various common data structures.
+
+In addition to these, the `audioadapter-compat-*` crates implement the traits for
+buffer types from other audio crates, see
+[Compatibility with other audio buffer crates](#compatibility-with-other-audio-buffer-crates).
+
+
+## Background
+Libraries and applications that process audio usually use
+a single layout for the audio data internally.
+If a project combines libraries that store their audio data differently,
+any data passed between them must be converted
+by copying the data from a buffer using one layout
+to another buffer using the other layout.
+
+## Channels and frames
+When audio data has more than one channel, it is made up of a series of _frames_.
+A frame consists of the samples for all channels, belonging to one time point.
+For normal stereo, a frame consists of one sample for the left channel
+and one for the right, usually stored in that order.
+
+## Interleaved and sequential
+When audio data is stored in a file or in memory,
+the data can be ordered in two main ways.
+- Keeping all samples for each channel together,
+  and storing each channel after the previous.
+  This is normally called _sequential_, _non-interleaved_ or _planar_.
+  The sample order of a stereo file with 3 frames becomes:
+  `L1, L2, L3, R1, R2, R3`
+- Keeping all samples for each frame together,
+  and storing each frame after the previous.
+  This is normally called _interleaved_, and this is how the data in most
+  audio file formats such as .wav is ordered.
+  The sample order of a stereo file with 3 frames becomes:
+  `L1, R1, L2, R2, L3, R3`
+
+In a more general sense, the same applies when storing
+any multi-dimensional array in linear storage such as RAM or a file.
+A 2D matrix can then be stored in _row-major_ or _column-major_ order.
+The only difference here compared to a general 2D matrix is that the names `row` and `column`
+are replaced by the audio-specific `channel` and `frame`.
+Using the general notation, _interleaved_ corresponds to _frame-major_ order,
+and _sequential_ to _channel-major_ order.
+
+### Choosing the best order
+A project that uses `audioadapter` supports both sequential and interleaved buffers,
+but depending on how the data is processed, one order may give better performance than the other.
+
+To get the best performance, use the layout that stores the samples in memory
+in the same order as they are accessed during processing.
+This makes memory accesses very predictable, which helps the CPU cache to maximize memory throughput.
+If there is no obvious most common processing order,
+try both and measure the performance.
+
+#### Interleaved
+Use this if the project processes the data frame by frame, such as this dummy loop:
+```ignore
+for frame in 0..data.frames() {
+    for channel in 0..data.channels() {
+        do_something(&data, channel, frame);
+    }
+}
+```
+
+#### Sequential
+Use this if the project processes the data channel by channel:
+```ignore
+for channel in 0..data.channels() {
+    for frame in 0..data.frames() {
+        do_something(&data, channel, frame);
+    }
+}
+```
+
+## Abstracting the data layout and sample format
+This module provides the traits [Adapter] and [AdapterMut].
+These enable basic reading and writing, with methods that access the sample values
+indirectly.
+This makes it possible to do implementations where the samples are converted
+from one format to another when reading and writing from/to the underlying data.
+
+## Statistics
+The [stats] module provides the [AdapterStats](stats::AdapterStats) extension trait.
+It is implemented for every adapter with a numerical sample type,
+and adds methods for calculating RMS, mean, peak and peak-to-peak values,
+per channel or per frame.
+Bring the trait into scope and call the methods on any adapter:
+```ignore
+use audioadapter::stats::AdapterStats;
+
+// `buffer` is any audioadapter `Adapter<f32>`
+let rms = buffer.channel_rms(0);
+let peak = buffer.channel_peak(0);
+```
+
+The raw sums the values are derived from,
+[channel_sum](stats::AdapterStats::channel_sum) and
+[channel_sum_of_squares](stats::AdapterStats::channel_sum_of_squares),
+are also available.
+These make it possible to accumulate statistics over a series of buffers,
+which cannot be done by averaging the per-buffer values.
+
+## Safety and `unsafe trait`
+
+The core traits [Adapter] and [AdapterMut] are `unsafe trait`s.
+This means that implementing the traits comes with a safety contract.
+
+Implementations must report correct, stable bounds via `channels()` and `frames()`
+while an adapter is in use.
+Safe helper methods rely on these values before calling unchecked access internally.
+If these methods report incorrect bounds, the internal unchecked reads/writes may go
+out of bounds and cause undefined behavior.
+
+The crate also provides wrappers that implement some or all of these traits
+for a number of common data structures used for storing audio data.
+
+Any type implementing [core::clone::Clone] can be used as the type for the samples.
+This includes for example all the usual numeric types (`u8`, `f32` etc),
+as well as arrays and vectors of numbers (`Vec<i32>`, `[u8; 4]` etc). 
+
+By accessing the audio data via the trait methods instead
+of indexing the data structure directly,
+an application or library becomes independent of how the data is stored.
+
+The companion crate [audioadapter-buffers](https://crates.io/crates/audioadapter-buffers)
+contains wrappers that implement the `audioadapter` traits
+that allow reading and writing samples from buffers of raw bytes,
+with optional conversion to and from floating point values.
+The format conversions are performed using the
+[audioadapter-sample](https://crates.io/crates/audioadapter-sample) crate.
+
+## Compatibility with other audio buffer crates
+The [Adapter] and [AdapterMut] traits are implemented for buffer types from
+several other crates in the Rust audio ecosystem. To keep the core crate free of
+those dependencies, each integration lives in its own companion crate that wraps
+the foreign buffer in a small adapter type.
+
+The companion crates that exist today are:
+
+| Crate | Companion crate |
+|-------|-----------------|
+| [audio](https://crates.io/crates/audio) | [audioadapter-compat-audio](https://crates.io/crates/audioadapter-compat-audio) |
+| [symphonia](https://crates.io/crates/symphonia) | [audioadapter-compat-symphonia](https://crates.io/crates/audioadapter-compat-symphonia) |
+| [dasp](https://crates.io/crates/dasp) | [audioadapter-compat-dasp](https://crates.io/crates/audioadapter-compat-dasp) |
+| [ndarray](https://crates.io/crates/ndarray) | [audioadapter-compat-ndarray](https://crates.io/crates/audioadapter-compat-ndarray) |
+| [nice-plug](https://codeberg.org/RustAudio/nice-plug) / [nih-plug](https://github.com/robbert-vdh/nih-plug) | [audioadapter-compat-nice-plug](https://crates.io/crates/audioadapter-compat-nice-plug) |
+
+This list is only a snapshot, not the definitive set. Because a companion crate
+depends on the core crate rather than the other way around, new integrations can
+be published without any change to `audioadapter` itself, so more may exist than
+are listed here. If a crate you use is missing, please open an issue or pull
+request to add an integration for it.
+
+Because these companion crates expose the foreign buffer types in their public
+API, they are versioned independently and track their respective upstream crates
+on their own release cadence.
+
+## Supporting new data structures
+The required trait methods are simple, in order to make it easy
+to implement them for new data structures.
+The tests of this crate includes a minimal implementation called `MinimalAdapter`,
+that is based on a normal vector. 
+
+Since [Adapter] and [AdapterMut] are unsafe traits, new implementations must be
+declared with `unsafe impl` and uphold the bounds-reporting contract above.
+
+The [Adapter] and [AdapterMut] traits provide default implementations
+for the functions that read and write slices.
+These loop over the elements to read or write and clone element by element.
+These may be overridden if the wrapped data structure provides a more efficient way
+of cloning the data, such as [slice::clone_from_slice()].
+
+See also the `custom_adapter` example.
+This shows a minimal implementation of [Adapter]
+for a vector of strings.
+
+## Using without the standard library
+The `audioadapter` traits do not require the standard library,
+and can therefore be used in `no_std` environments.
+
+## Changelog
+
+See the [changelog](https://github.com/HEnquist/audioadapter-rs/blob/master/CHANGELOG.md).
+
+## License
+
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
+- MIT license ([LICENSE-MIT](LICENSE-MIT))
+
+at your option.

@@ -1,0 +1,21 @@
+{
+  "before_mp3_source_sha256": "cd7b95e6c5ca96aac53154be56ba51036fc35fcdc0abcc0987fd5b50692fee79",
+  "reference_binary_sha256": "b617d9f9fa37fcc2fd1126f66bde4ad92958f40a3f356cd87c3b0f4979eedbef",
+  "native_red_exit": 101,
+  "old_native_max_input": 65536,
+  "old_rust_max_scan": 65536,
+  "fixtures": {
+    "stereo-cbr": {
+      "encoded_sha256": "c63ce492c0b7444a6ee8acb6c3781e85bdb9ad56180888b60588a78cdd714682",
+      "pcm_sha256": "1bb50151e37bfa5b4a696cb3b1b8da51d6f5de6925f54111e60372f4142ccb11",
+      "pcm_bytes": 55296
+    },
+    "mono-vbr": {
+      "encoded_sha256": "04676d353d4aae212aa4a86db1750f02b4aa15d74089d00f6e5672808bb7fe81",
+      "pcm_sha256": "0b5a1ee455f369bf07772923b711da3eade4d4700505b87499a57600979a916e",
+      "pcm_bytes": 20736
+    }
+  },
+  "encoder_version": "ffmpeg version 6.1.1-3ubuntu5 Copyright (c) 2000-2023 the FFmpeg developers",
+  "provenance": "Synthetic sine inputs; complete f32 PCM from pre-cursor mp3.rs plus test-only FFI observation, no algorithm changes."
+}

@@ -31,7 +31,7 @@
 //!
 //! - **WebAudio API**: Supports `AudioContext`, `AudioBufferSourceNode`, `GainNode`
 //! - **InnerAudioContext**: audio player with streaming support
-//! - **Format Support**: MP3 (minimp3-sys), OGG/Vorbis (lewton), WAV (hound)
+//! - **Format Support**: MP3 (minimp3-sys), OGG/Vorbis and WAV/PCM (Symphonia)
 //! - **Streaming**: Edge-download-edge-play for large audio files
 //! - **Caching**: LRU cache for decoded audio to avoid repeated decoding
 //! - **Resampling**: Automatic sample rate conversion for device compatibility
@@ -97,12 +97,16 @@ pub mod apple_session;
 mod apple_session_policy;
 mod audio_thread;
 pub mod cache;
+mod command_inbox;
 mod context;
 mod decoder;
+mod device_prepare;
 mod inner_audio;
 mod limits;
 #[cfg(test)]
 mod mp3_fixture;
+mod node_retirement;
+mod node_storage;
 mod nodes;
 mod off_worker;
 mod output;
@@ -111,10 +115,18 @@ pub mod param;
 /// the platform's audio (see the module).
 pub mod platform;
 pub mod power_manager;
+mod render_time;
+mod resample_job;
 mod resampler;
+mod stream_control;
 pub mod streaming;
+mod streaming_mp3;
+mod streaming_sinc;
 mod streaming_transport;
 
 pub use audio_thread::*;
 pub use cache::GlobalAudioCache;
 pub use power_manager::{AudioPowerConfig, AudioPowerManager, AudioPowerState};
+
+#[cfg(test)]
+mod inline_automation_tests;

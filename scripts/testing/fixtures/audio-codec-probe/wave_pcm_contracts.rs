@@ -18,7 +18,12 @@ fn chunk(file: &mut Vec<u8>, tag: &[u8; 4], data: &[u8]) {
         file.push(0);
     }
 }
-fn fixture(bits: u16, floating: bool, channels: u16, frames: usize) -> (Vec<u8>, Vec<f32>) {
+pub(super) fn fixture(
+    bits: u16,
+    floating: bool,
+    channels: u16,
+    frames: usize,
+) -> (Vec<u8>, Vec<f32>) {
     let mut raw = Vec::new();
     let mut oracle = Vec::new();
     for index in 0..frames * channels as usize {

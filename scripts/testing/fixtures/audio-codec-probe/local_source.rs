@@ -3,7 +3,7 @@
 use crate::{
     off_worker::OffWorker,
     streaming::{RESPONSE_HEADER_TIMEOUT, StreamMsg, StreamingState},
-    streaming_transport::{Decoder, Source, SourceRead, SourceResume},
+    streaming_transport::{Decoder, InterruptibleSource, Source, SourceRead, SourceResume},
 };
 use migo_io::{
     pools::IoPools,
@@ -16,7 +16,7 @@ use std::{
     fs::File,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicU64, Ordering},
     },
 };
 use tokio::{sync::mpsc, time::Instant};
@@ -64,12 +64,32 @@ fn check_deadline(deadline: Instant) -> std::io::Result<()> {
     }
 }
 
-// A cancelled operation leaves `failed` set, so this flag is never reused
-// while its previous job can still run. One allocation per reader, none per IO.
-struct ReadActive(Arc<AtomicBool>);
+// One reusable reader allocation, with a distinct key for every IO operation.
+// Re-enabling a boolean could let an old queued job borrow a later read's
+// activity. A cancelled job must remain cancelled even after recovery.
+struct ReadActive {
+    active: Arc<AtomicU64>,
+    epoch: u64,
+}
 impl Drop for ReadActive {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
+        let _ = self
+            .active
+            .compare_exchange(self.epoch, 0, Ordering::AcqRel, Ordering::Acquire);
+    }
+}
+
+#[cfg(test)]
+struct MediaJobEnd {
+    hook: Option<Arc<dyn Fn(bool) + Send + Sync>>,
+    succeeded: bool,
+}
+#[cfg(test)]
+impl Drop for MediaJobEnd {
+    fn drop(&mut self) {
+        if let Some(hook) = &self.hook {
+            hook(self.succeeded);
+        }
     }
 }
 
@@ -134,7 +154,9 @@ pub struct FileReader {
     end: u64,
     max_control_bytes: usize,
     pub(crate) failed: bool,
-    read_active: Arc<AtomicBool>,
+    read_active: Arc<AtomicU64>,
+    last_read_epoch: u64,
+    media_interrupted: bool,
     #[cfg(test)]
     pub io_reads: Arc<std::sync::atomic::AtomicUsize>,
     requests: u32,
@@ -147,6 +169,10 @@ pub struct FileReader {
     pub submits: u32,
     #[cfg(test)]
     pub after_io: Option<Arc<dyn Fn() + Send + Sync>>,
+    #[cfg(test)]
+    pub before_media_io: Option<Arc<dyn Fn() + Send + Sync>>,
+    #[cfg(test)]
+    pub after_media_job: Option<Arc<dyn Fn(bool) + Send + Sync>>,
     #[cfg(test)]
     pub chunk_bytes: usize,
 }
@@ -220,7 +246,7 @@ impl FileReader {
             Backing::Spool(spool),
             scheduler.pools().clone(),
             scheduler.domain(),
-            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicU64::new(0)),
         ))
     }
     pub async fn open_code(
@@ -292,8 +318,11 @@ impl FileReader {
         let pools = scheduler.pools().clone();
         let domain = scheduler.domain();
         let check = domain.clone();
-        let read_active = Arc::new(AtomicBool::new(true));
-        let _operation = ReadActive(read_active.clone());
+        let read_active = Arc::new(AtomicU64::new(1));
+        let _operation = ReadActive {
+            active: read_active.clone(),
+            epoch: 1,
+        };
         let active = read_active.clone();
         let task = pools
             .submit_async_bytes(
@@ -301,12 +330,12 @@ impl FileReader {
                 PriorityClass::ForegroundAsync,
                 setup_bytes,
                 move || {
-                    if check.is_closed() || !active.load(Ordering::Acquire) {
+                    if check.is_closed() || active.load(Ordering::Acquire) != 1 {
                         return Err(std::io::Error::other("file domain closed"));
                     }
                     check_deadline(deadline)?;
                     let file = open()?;
-                    if check.is_closed() || !active.load(Ordering::Acquire) {
+                    if check.is_closed() || active.load(Ordering::Acquire) != 1 {
                         return Err(std::io::Error::other("file domain closed"));
                     }
                     check_deadline(deadline)?;
@@ -330,7 +359,7 @@ impl FileReader {
         file: Backing,
         pools: IoPools,
         domain: Arc<migo_io::domain::IoDomain>,
-        read_active: Arc<AtomicBool>,
+        read_active: Arc<AtomicU64>,
     ) -> Self {
         let end = file.len();
         Self {
@@ -341,7 +370,9 @@ impl FileReader {
             end,
             max_control_bytes: MAX_CONTROL_BYTES,
             failed: false,
+            last_read_epoch: read_active.load(Ordering::Acquire),
             read_active,
+            media_interrupted: false,
             #[cfg(test)]
             io_reads: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             requests: 0,
@@ -355,9 +386,39 @@ impl FileReader {
             #[cfg(test)]
             after_io: None,
             #[cfg(test)]
+            before_media_io: None,
+            #[cfg(test)]
+            after_media_job: None,
+            #[cfg(test)]
             chunk_bytes: FILE_CHUNK_BYTES,
         }
     }
+    fn begin_read(&mut self) -> EngineResult<ReadActive> {
+        let epoch = self.last_read_epoch.checked_add(1).ok_or_else(|| {
+            EngineError::from_detail(ErrorCode::InputSaturated, "file read epoch exhausted")
+        })?;
+        self.last_read_epoch = epoch;
+        self.read_active.store(epoch, Ordering::Release);
+        Ok(ReadActive {
+            active: self.read_active.clone(),
+            epoch,
+        })
+    }
+
+    /// Only a dropped pending media wait can be resumed. Returned errors,
+    /// control cancellations and domain closure remain fail-closed. The old job
+    /// keeps its retired epoch; recovery never waits for its disk work to exit.
+    pub fn resume_after_interruption(&mut self) -> EngineResult<()> {
+        if self.domain.is_closed() {
+            return Err(error("file domain closed"));
+        }
+        if self.media_interrupted && self.read_active.load(Ordering::Acquire) == 0 {
+            self.media_interrupted = false;
+            self.failed = false;
+        }
+        self.active()
+    }
+
     pub fn len(&self) -> u64 {
         self.file.len()
     }
@@ -405,12 +466,20 @@ impl FileReader {
         {
             return Err(error("local control extent exceeds bound"));
         }
+        let requests = self
+            .requests
+            .checked_add(1)
+            .ok_or_else(|| error("file request counter overflow"))?;
+        let control_bytes = self
+            .control_bytes
+            .checked_add(len as u64)
+            .ok_or_else(|| error("file control byte counter overflow"))?;
+        let _operation = self.begin_read()?;
+        let epoch = _operation.epoch;
         #[cfg(test)]
         {
             self.submits += 1;
         }
-        self.read_active.store(true, Ordering::Release);
-        let _operation = ReadActive(self.read_active.clone());
         let read_active = self.read_active.clone();
         #[cfg(test)]
         let io_reads = self.io_reads.clone();
@@ -429,7 +498,7 @@ impl FileReader {
                 move || {
                     #[cfg(test)]
                     std::thread::sleep(delay);
-                    if domain.is_closed() || !read_active.load(Ordering::Acquire) {
+                    if domain.is_closed() || read_active.load(Ordering::Acquire) != epoch {
                         return Err(std::io::Error::other("file domain closed"));
                     }
                     // Do not rely on the receiver polling its timeout promptly.
@@ -441,7 +510,7 @@ impl FileReader {
                     if let Some(hook) = after_io {
                         hook();
                     }
-                    if domain.is_closed() || !read_active.load(Ordering::Acquire) {
+                    if domain.is_closed() || read_active.load(Ordering::Acquire) != epoch {
                         return Err(std::io::Error::other("file domain closed"));
                     }
                     // Disk work cannot be interrupted; reject late completions.
@@ -457,8 +526,8 @@ impl FileReader {
             .map_err(|_| error("file control worker panicked"))?
             .map_err(error)?;
         check_deadline(deadline).map_err(error)?;
-        self.requests += 1;
-        self.control_bytes += data.len() as u64;
+        self.requests = requests;
+        self.control_bytes = control_bytes;
         self.failed = false;
         Ok(data)
     }
@@ -477,23 +546,44 @@ impl FileReader {
     pub async fn chunk(&mut self) -> Result<Option<FileChunk>, EngineError> {
         self.active()?;
         self.failed = true;
+        self.media_interrupted = true;
+        let result = self.next_chunk().await;
+        self.media_interrupted = false;
+        if result.is_ok() {
+            self.failed = false;
+        }
+        result
+    }
+    async fn next_chunk(&mut self) -> Result<Option<FileChunk>, EngineError> {
         #[cfg(not(test))]
         let chunk_bytes = FILE_CHUNK_BYTES;
         #[cfg(test)]
         let chunk_bytes = self.chunk_bytes;
         assert!((1..=FILE_CHUNK_BYTES).contains(&chunk_bytes));
         let len = (self.end - self.position).min(chunk_bytes as u64) as usize;
+        let media_reads = self
+            .media_reads
+            .checked_add(1)
+            .ok_or_else(|| error("file media request counter overflow"))?;
+        let media_bytes = self
+            .media_bytes
+            .checked_add(len as u64)
+            .ok_or_else(|| error("file media byte counter overflow"))?;
+        let _operation = self.begin_read()?;
+        let epoch = _operation.epoch;
         #[cfg(test)]
         {
             self.submits += 1;
         }
-        self.read_active.store(true, Ordering::Release);
-        let _operation = ReadActive(self.read_active.clone());
         let read_active = self.read_active.clone();
         #[cfg(test)]
         let io_reads = self.io_reads.clone();
         #[cfg(test)]
         let after_io = self.after_io.clone();
+        #[cfg(test)]
+        let before_io = self.before_media_io.clone();
+        #[cfg(test)]
+        let after_job = self.after_media_job.clone();
         let file = self.file.clone();
         let domain = self.domain.clone();
         let position = self.position;
@@ -507,8 +597,18 @@ impl FileReader {
                 self.file.media_bytes(),
                 move || {
                     #[cfg(test)]
+                    let mut completion = MediaJobEnd {
+                        hook: after_job,
+                        succeeded: false,
+                    };
+                    #[cfg(test)]
+                    if let Some(hook) = before_io {
+                        hook();
+                    }
+
+                    #[cfg(test)]
                     std::thread::sleep(delay);
-                    if domain.is_closed() || !read_active.load(Ordering::Acquire) {
+                    if domain.is_closed() || read_active.load(Ordering::Acquire) != epoch {
                         return Err(std::io::Error::other("file domain closed"));
                     }
                     #[cfg(test)]
@@ -518,8 +618,12 @@ impl FileReader {
                     if let Some(hook) = after_io {
                         hook();
                     }
-                    if domain.is_closed() || !read_active.load(Ordering::Acquire) {
+                    if domain.is_closed() || read_active.load(Ordering::Acquire) != epoch {
                         return Err(std::io::Error::other("file domain closed"));
+                    }
+                    #[cfg(test)]
+                    {
+                        completion.succeeded = result.is_ok();
                     }
                     result
                 },
@@ -531,13 +635,17 @@ impl FileReader {
             .map_err(|_| error("file media worker panicked"))?
             .map_err(error)?;
         self.position += len as u64;
-        self.media_reads += 1;
-        self.media_bytes += len as u64;
-        self.failed = false;
+        self.media_reads = media_reads;
+        self.media_bytes = media_bytes;
         Ok((len != 0).then_some(chunk))
     }
 }
 
+impl InterruptibleSource for FileReader {
+    fn resume_after_read_interruption(&mut self) -> EngineResult<()> {
+        self.resume_after_interruption()
+    }
+}
 impl<D: Decoder> Source<D> for FileReader {
     type Request = ();
     fn pending(_decoder: &D) -> EngineResult<()> {
@@ -588,3 +696,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(230)).await;
     }
 }
+
+#[cfg(test)]
+#[path = "file_interruption_tests.rs"]
+mod interruption_tests;

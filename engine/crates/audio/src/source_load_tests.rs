@@ -90,6 +90,7 @@ fn source_switch_retires_old_pcm_stream_seek_and_events() {
 
 #[test]
 fn out_of_order_owned_results_cannot_replace_the_new_source() {
+    super::inner_custody_tests::custody();
     let mut player = InnerAudioPlayer::new(1, 1);
     let old = player.begin_load().unwrap();
     let new = player.begin_load().unwrap();
@@ -167,44 +168,49 @@ fn superseded_queued_jobs_are_cancelled_before_peak_admission() {
     let mut player = InnerAudioPlayer::new(1, 1);
     let old = player.begin_load().unwrap();
     let _new = player.begin_load().unwrap();
-    let (resp, mut rx) = response();
-    let (jobs, input) = decode_queue(1, 1024);
-    jobs.try_send(DecodeJob::InnerAudio {
-        id: 1,
-        load: old,
-        data: super::tests::wav(48_000, 32),
-        resp,
-    })
-    .unwrap();
-    drop(jobs);
+    let host = migo_io::scheduler::IoScheduler::new(0);
+    let (resp, rx) = response();
     let (results, output) = decode_queue(1, 1024);
     let budget = Arc::new(DecodeInFlightUsage::new(0, 1));
-    decode_worker(
-        Arc::new(std::sync::Mutex::new(input)),
+    let mut pool = DecodePool::new_with_in_flight(
+        1,
         results,
         budget.clone(),
-        48_000,
         ThreadWakeup::new(),
+        host.audio_cpu(),
     );
-    assert_eq!(
-        rx.try_recv().unwrap().unwrap_err().code,
-        ErrorCode::Cancelled
-    );
+    pool.submit(DecodeJob::InnerAudio {
+        id: 1,
+        load: old,
+        target_rate: 48_000,
+        data: super::tests::wav(48_000, 32),
+        resp,
+    });
+    let error = crate::streaming::get_stream_runtime().block_on(async {
+        tokio::time::timeout(Duration::from_secs(5), rx)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err()
+    });
+    assert_eq!(error.code, ErrorCode::Cancelled);
     assert!(output.try_recv().is_err());
     assert_eq!(budget.bytes.load(std::sync::atomic::Ordering::Acquire), 0);
 }
 
 #[test]
 fn abandoned_replies_do_not_start_a_decode_pool() {
+    let host = migo_io::scheduler::IoScheduler::new(0);
     let mut player = InnerAudioPlayer::new(1, 1);
     let load = player.begin_load().unwrap();
     let (resp, rx) = response();
     drop(rx);
     let (results, _output) = decode_queue(1, 1024);
-    let mut pool = LazyDecodePool::new(results, 48_000, ThreadWakeup::new());
+    let mut pool = LazyDecodePool::new(results, 48_000, ThreadWakeup::new(), host.audio_cpu());
     pool.submit(DecodeJob::InnerAudio {
         id: 1,
         load,
+        target_rate: 48_000,
         data: vec![0],
         resp,
     });
@@ -514,6 +520,7 @@ fn native_events_capture_source_identity_and_playback_state_at_emission() {
 
 #[test]
 fn prepared_local_decode_uses_its_original_token_through_the_actual_worker() {
+    let host = migo_io::scheduler::IoScheduler::new(0);
     let mut player = InnerAudioPlayer::new(1, 1);
     let load = player.begin_load_for(501).unwrap();
     let watch = load.watch();
@@ -524,10 +531,10 @@ fn prepared_local_decode_uses_its_original_token_through_the_actual_worker() {
         1,
         tx.clone(),
         Arc::new(DecodeInFlightUsage::new(1, 1)),
-        48_000,
         wake.clone(),
+        host.audio_cpu(),
     );
-    let mut pool = LazyDecodePool::new(tx, 48_000, wake);
+    let mut pool = LazyDecodePool::new(tx, 48_000, wake, host.audio_cpu());
     pool.pool = Some(actual_pool);
     let (resp, mut response) = response();
     submit_prepared_inner_audio_load(

@@ -64,7 +64,7 @@ class AudioBuffer {
       throw notSupported("sampleRate is outside the supported range");
     }
 
-    const bytes = checkedPcmBytes(numberOfChannels, length);
+    checkedPcmBytes(numberOfChannels, length);
     if (internal !== undefined) {
       if (internal.token !== DECODED_BUFFER_TOKEN) {
         throw new TypeError("AudioBuffer internal construction is not public");
@@ -74,18 +74,16 @@ class AudioBuffer {
       this.#initialize(internal.id, numberOfChannels, length, sampleRate, null);
       return;
     }
-    // Admission happens before the one large contiguous JS allocation. If V8
-    // rejects that allocation, immediately roll back the native reservation.
+    // Reserve the logical entry before native initialization. The returned
+    // backing owns its physical credit even if a channel view outlives us.
     const id = op_audio_reserve_buffer(numberOfChannels, length, sampleRate);
-    let backing;
     try {
-      backing = new ArrayBuffer(bytes);
+      const backing = op_audio_materialize_buffer(id);
+      this.#initialize(id, numberOfChannels, length, sampleRate, backing);
     } catch (error) {
       op_audio_abort_buffer(id);
       throw error;
     }
-
-    this.#initialize(id, numberOfChannels, length, sampleRate, backing);
   }
 
 

@@ -9,7 +9,7 @@ name = "migo_io"
 
 [features]
 # Isolated executor construction for cross-crate admission regressions. Enabled
-# by services' dev edge only; resolver 2 excludes it from normal product builds.
+# by service/audio dev edges only; resolver 2 excludes it from normal product builds.
 admission-probe = []
 default = ["zip-extract", "rust-image-decode", "compress-brotli"]
 zip-extract = ["dep:zip", "dep:flate2"]

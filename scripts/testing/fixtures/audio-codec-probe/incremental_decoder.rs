@@ -106,6 +106,9 @@ pub struct Decoder<P: Packetizer> {
 }
 
 impl<P: Packetizer> Decoder<P> {
+    pub(crate) fn presentation_track(&self) -> Option<&Track> {
+        self.packets.track()
+    }
     /// The optional total quota is separate from resident buffering. `None`
     /// allows long music without retaining its previous PCM in memory.
     pub fn new(cap: Option<u64>) -> Self {

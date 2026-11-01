@@ -65,6 +65,8 @@ pub struct OscillatorNode {
     stopped: bool,
     start_when: f64,
     stop_when: f64,
+    start_origin: Option<f64>,
+    phase_started: bool,
 }
 
 impl OscillatorNode {
@@ -86,6 +88,8 @@ impl OscillatorNode {
             stopped: false,
             start_when: 0.0,
             stop_when: f64::INFINITY,
+            start_origin: None,
+            phase_started: false,
         }
     }
 
@@ -94,11 +98,17 @@ impl OscillatorNode {
     }
 
     pub fn start(&mut self, when: f64) {
+        if self.started || self.stopped {
+            return;
+        }
         self.started = true;
         self.start_when = when;
     }
 
     pub fn stop(&mut self, when: f64) {
+        if self.stopped {
+            return;
+        }
         self.stop_when = when;
     }
 
@@ -162,35 +172,107 @@ impl AudioNodeProcessor for OscillatorNode {
         channels: u32,
         current_time: f64,
     ) -> usize {
-        // A stop scheduled before a start is still a stop. Returning early on
-        // `!started` left such a node reporting "not finished" forever, and
-        // `has_active_sources` then pinned the audio thread to its 5 ms tick and
-        // held the output device open for a node that would never make a sound.
-        if current_time >= self.stop_when {
-            self.stopped = true;
-            return 0;
-        }
-        if !self.started || current_time < self.start_when {
-            return 0;
-        }
-
         let channels = channels.max(1) as usize;
         let frames = output.len() / channels;
-        if frames == 0 {
+        let clock = crate::render_time::RenderTime::new(current_time, sample_rate);
+        let stopped = clock.stopped(self.stop_when, frames);
+        if self.stopped || !self.started || frames == 0 {
+            output[..frames * channels].fill(0.0);
+            self.stopped |= stopped;
             return 0;
         }
+        let origin = *self
+            .start_origin
+            .get_or_insert(self.start_when.max(current_time));
+        let active = clock.active(origin, self.stop_when, frames);
+        output[..active.start * channels].fill(0.0);
+        output[active.end * channels..frames * channels].fill(0.0);
+        if active.is_empty() {
+            self.stopped |= stopped;
+            return 0;
+        }
+        let current_time = clock.at(active.start);
+        let output = &mut output[active.start * channels..active.end * channels];
+        let frames = active.len();
 
         let sr = sample_rate.max(1) as f64;
+        let frequency_automated = self.frequency.has_automation();
+        let detune_automated = self.detune.has_automation();
+        if frequency_automated || detune_automated {
+            let mut frequency_values = [0.0; crate::audio_thread::RENDER_QUANTUM_FRAMES];
+            let mut detune_values = [0.0; crate::audio_thread::RENDER_QUANTUM_FRAMES];
+            let static_frequency = self.frequency.value() as f64;
+            let static_detune = self.detune.value() as f64;
+            let static_multiplier = (2.0f64).powf(static_detune / 1200.0);
+            let mut frequency_block = self.frequency.values_block(current_time, sample_rate);
+            let mut detune_block = self.detune.values_block(current_time, sample_rate);
+            for offset in (0..frames).step_by(frequency_values.len()) {
+                let count = (frames - offset).min(frequency_values.len());
+                if frequency_automated {
+                    self.frequency.compute_values_from(
+                        &mut frequency_block,
+                        offset,
+                        &mut frequency_values[..count],
+                    );
+                }
+                if detune_automated {
+                    self.detune.compute_values_from(
+                        &mut detune_block,
+                        offset,
+                        &mut detune_values[..count],
+                    );
+                }
+                if !self.phase_started {
+                    let frequency = if frequency_automated {
+                        frequency_values[0] as f64
+                    } else {
+                        static_frequency
+                    };
+                    let detune = if detune_automated {
+                        detune_values[0] as f64
+                    } else {
+                        static_detune
+                    };
+                    self.phase = ((current_time - origin).max(0.0)
+                        * frequency
+                        * 2.0_f64.powf(detune / 1200.0))
+                    .fract();
+                    self.phase_started = true;
+                }
+                for frame in 0..count {
+                    let frequency = if frequency_automated {
+                        frequency_values[frame] as f64
+                    } else {
+                        static_frequency
+                    };
+                    let multiplier = if detune_automated {
+                        (2.0f64).powf(detune_values[frame] as f64 / 1200.0)
+                    } else {
+                        static_multiplier
+                    };
+                    let sample = self.next_sample(frequency * multiplier / sr);
+                    output[(offset + frame) * channels..(offset + frame + 1) * channels]
+                        .fill(sample);
+                }
+            }
+            self.stopped |= stopped;
+            return frames;
+        }
         let freq = self.frequency.compute_value(current_time) as f64;
         let detune = self.detune.compute_value(current_time) as f64;
         let computed_freq = freq * (2.0f64).powf(detune / 1200.0);
         let phase_inc = computed_freq / sr;
+        if !self.phase_started {
+            self.phase = ((current_time - origin).max(0.0) * computed_freq).fract();
+            self.phase_started = true;
+        }
 
         for frame in 0..frames {
             let sample = self.next_sample(phase_inc);
             output[frame * channels..(frame + 1) * channels].fill(sample);
         }
 
+        self.stopped |= stopped;
         frames
     }
 

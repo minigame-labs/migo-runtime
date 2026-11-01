@@ -1,8 +1,12 @@
 pub(crate) mod mp3;
 mod ogg;
+pub(crate) mod pcm;
 mod wav;
+pub(crate) mod whole;
 
-use shared::error::{EngineError, EngineResult, ErrorCode};
+use shared::error::EngineResult;
+#[cfg(test)]
+use shared::error::{EngineError, ErrorCode};
 
 /// Decoded audio data in f32 samples, interleaved for multi-channel
 #[derive(Debug, Clone)]
@@ -33,6 +37,7 @@ impl DecodedAudio {
 }
 
 /// Detect audio format and decode
+#[cfg(test)]
 pub fn decode(data: &[u8]) -> EngineResult<DecodedAudio> {
     // Try to detect format by magic bytes
     if data.len() < 4 {
@@ -53,7 +58,7 @@ pub fn decode(data: &[u8]) -> EngineResult<DecodedAudio> {
     }
 
     // MP3: ID3 tag or frame sync
-    if data.starts_with(b"ID3") || (data[0] == 0xFF && (data[1] & 0xE0) == 0xE0) {
+    if is_mp3(data) {
         return mp3::decode(data);
     }
 
@@ -61,4 +66,15 @@ pub fn decode(data: &[u8]) -> EngineResult<DecodedAudio> {
         ErrorCode::InvalidArgument,
         "Unknown audio format",
     ))
+}
+
+fn is_mp3(data: &[u8]) -> bool {
+    data.len() >= 4 && (data.starts_with(b"ID3") || (data[0] == 0xFF && (data[1] & 0xE0) == 0xE0))
+}
+
+/// Preserve the submitted target through each product codec, collection and SRC phase.
+pub(crate) fn decode_for_rate(data: &[u8], target_rate: u32) -> EngineResult<DecodedAudio> {
+    let mut job = whole::WholeDecodeJob::new(data, Some(target_rate))?;
+    while !job.step(&std::sync::atomic::AtomicBool::new(false))? {}
+    job.finish()
 }

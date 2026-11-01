@@ -1,5 +1,5 @@
 //! Typed Vorbis binding; Ogg page/packet/timestamp/assembly stay in the library.
-use super::incremental::{self, PacketStep, Packetizer};
+use super::incremental::{PacketStep, Packetizer};
 use symphonia::core::{
     codecs::audio::{AudioCodecParameters, AudioDecoderOptions, well_known::CODEC_ID_VORBIS},
     errors::Result as FormatResult,

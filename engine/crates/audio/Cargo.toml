@@ -20,8 +20,15 @@ name = "audio"
 # on -sys directly removes it from the dependency tree instead of leaving it
 # compiled in on the strength of "but we never call that part."
 minimp3-sys = "0.6"  # MP3, MIT license
-lewton = "0.10"      # OGG Vorbis, MIT/Apache-2.0
-hound = "3.5"        # WAV, Apache-2.0
+# Vorbis uses the mature bounded Ogg packetizer and gapless decoder verified by W09.
+symphonia-core = { version = "=0.6.1", default-features = false, features = ["opt-simd"] }
+symphonia-format-ogg = { version = "=0.6.1", default-features = false, features = ["streaming"] }
+symphonia-codec-vorbis = { version = "=0.6.1", default-features = false }
+symphonia-format-riff = { version = "=0.6.1", default-features = false, features = ["wav", "streaming"] }
+symphonia-codec-pcm = { version = "=0.6.1", default-features = false }
+
+# Mature band-limited whole-file sample-rate conversion; FFT stays unselected.
+rubato = { version = "=5.0.1", default-features = false }
 
 # Thread-safe audio buffer
 ringbuf = "0.5"
@@ -73,6 +80,10 @@ objc2-avf-audio = { version = "=0.3.2", default-features = false, features = ["s
 cc = "1"
 
 [dev-dependencies]
+# Isolate multi-host retirement bursts while retaining real shared queue caps.
+migo-io = { path = "../io", default-features = false, features = ["admission-probe"] }
+# Independent legacy WAVE oracle; not in the product runtime graph.
+hound = "=3.5.1"
 # Occupies the shared streaming worker and requires a co-tenant task to run anyway.
 migo-executor-probe = { path = "../../testing/executor-probe", default-features = false }
 # The steady-state allocation gate. A dev-dependency by construction:

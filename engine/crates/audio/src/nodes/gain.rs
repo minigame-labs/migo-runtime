@@ -9,8 +9,6 @@ use super::AudioNodeProcessor;
 pub struct GainNode {
     id: AudioNodeId,
     gain: AudioParamTimeline,
-    /// Reusable buffer for per-sample automation values
-    automation_buf: Vec<f32>,
 }
 
 impl GainNode {
@@ -18,7 +16,6 @@ impl GainNode {
         Self {
             id,
             gain: AudioParamTimeline::new(1.0, -3.4028235e38, 3.4028235e38),
-            automation_buf: Vec::new(),
         }
     }
 
@@ -58,17 +55,16 @@ impl AudioNodeProcessor for GainNode {
         let frames = len / ch;
 
         if self.gain.has_automation() {
-            // Per-sample automation for zipper-free transitions
-            if self.automation_buf.len() < frames {
-                self.automation_buf.resize(frames, 0.0);
-            }
-            self.gain.compute_values(
-                current_time,
-                &mut self.automation_buf[..frames],
-                sample_rate,
-            );
+            let mut automation_buf = [0.0; crate::audio_thread::RENDER_QUANTUM_FRAMES];
+            let mut block = self.gain.values_block(current_time, sample_rate);
             for frame in 0..frames {
-                let g = self.automation_buf[frame];
+                let index = frame % automation_buf.len();
+                if index == 0 {
+                    let count = (frames - frame).min(automation_buf.len());
+                    self.gain
+                        .compute_values_from(&mut block, frame, &mut automation_buf[..count]);
+                }
+                let g = automation_buf[index];
                 for c in 0..ch {
                     let idx = frame * ch + c;
                     if idx < len {

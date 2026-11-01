@@ -39,14 +39,21 @@
 //! Each command type flows through dedicated channels, enabling concurrent
 //! processing across specialized threads (main, render, audio, IO).
 
+pub mod audio_analyser_samples;
 pub mod audio_channel;
+pub mod audio_decoded_pcm;
+#[cfg(test)]
+mod audio_decoded_pcm_tests;
+pub mod audio_frequency_response;
 pub mod audio_load;
+pub mod audio_physical;
 pub mod audio_resources;
 #[cfg(test)]
 mod audio_resources_tests;
 pub mod callback_id;
 pub mod channel;
 pub mod cjs_compat;
+pub mod sync_reply;
 // Behind `codec`: it owns `base64` and the encoding sniffers, and the
 // engine-free layer decodes no text.
 #[cfg(feature = "codec")]

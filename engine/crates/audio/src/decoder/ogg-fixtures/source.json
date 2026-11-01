@@ -1,0 +1,54 @@
+{
+  "origin": "Existing checksum-pinned W09 generated original-signal Vorbis corpus; files copied without re-encoding",
+  "f32le_origin": {
+    "program": "/tmp/migo-w09-duration-benchmark-final-v1/positive-benchmark",
+    "sha256": "bfa56d704346a55d96b25e2a247e4d4096270ec1024cab2088c8dda9e009b8db",
+    "independent": "Original signal frame counts; all presentation PCM samples compared to corresponding FFmpeg prefix (<1e-5). FFmpeg may retain excess tail samples."
+  },
+  "fixtures": [
+    {
+      "file": "0.ogg",
+      "frames": 17,
+      "sample_rate": 44100,
+      "channels": 1,
+      "sha256": "95ac9064a9a1592a0bb1592ac592d586738d36feb6baa590f704724d7a50b954",
+      "pcm_sha256": "b28bd3f28020d43bd02c84cf946bdd8ca0124f17fd87dfbd258db00332c29bf1",
+      "ffmpeg_max_abs_error": 1.862645149230957e-09,
+      "ffmpeg_frames": 128
+    },
+    {
+      "file": "1.ogg",
+      "frames": 9737,
+      "sample_rate": 48000,
+      "channels": 2,
+      "sha256": "93ed5ac2bd7e8f917ade0653c7323e895d4a8a643608bae04ecc3d9a064aaff4",
+      "pcm_sha256": "e6311308a95e0cc7555c1693a6e72759bd5e472e1aab1ac4fd975d0b7aa54971",
+      "ffmpeg_max_abs_error": 1.1920928955078125e-07,
+      "ffmpeg_frames": 9856
+    },
+    {
+      "file": "2.ogg",
+      "frames": 9737,
+      "sample_rate": 22050,
+      "channels": 1,
+      "sha256": "c71e2c104c94c9f59ef258353f479eb72af71d3e459794eb0154bc5aa2b53eac",
+      "pcm_sha256": "092142caabacaeabf91dcdb9838bd201ac6d866987fc0aecd86377887ea5705d",
+      "ffmpeg_max_abs_error": 1.043081283569336e-07,
+      "ffmpeg_frames": 9984
+    },
+    {
+      "file": "cross.ogg",
+      "frames": 240137,
+      "sample_rate": 48000,
+      "channels": 6,
+      "sha256": "d9bf2ac2f02fdfd053e4a54c485f364c248835e33f30355ce1558af444bb1df5"
+    },
+    {
+      "file": "max-window-8.ogg",
+      "frames": 8192,
+      "sample_rate": 48000,
+      "channels": 8,
+      "sha256": "b18b3562cb7e1f921ac999e2ca6561b668affbfd67908441d31dec46b4ad24cf"
+    }
+  ]
+}

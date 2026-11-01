@@ -7,7 +7,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::Notify;
 
-fn client() -> HttpClient {
+pub(super) fn client() -> HttpClient {
     HttpClientBuilder::new(
         "range-contract",
         false,
@@ -23,13 +23,13 @@ fn client() -> HttpClient {
     .build()
     .unwrap()
 }
-fn payload(start: u64, len: usize) -> Vec<u8> {
+pub(super) fn payload(start: u64, len: usize) -> Vec<u8> {
     (0..len)
         .map(|i| (start.wrapping_add(i as u64).wrapping_mul(37) ^ 0x5a) as u8)
         .collect()
 }
-#[derive(Clone, Copy)]
-enum Reply {
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Reply {
     Fixed,
     Chunked,
     Short,
@@ -48,6 +48,7 @@ enum Reply {
     BodyShort,
     BodyLong,
     HangHeaders,
+    HoldHeaders,
     HangBody,
     SlowShort,
     Redirect,
@@ -58,19 +59,19 @@ enum Reply {
     HoldTail,
     ChangedAfterFirst,
 }
-struct Server {
-    url: Url,
+pub(super) struct Server {
+    pub(super) url: Url,
     task: tokio::task::JoinHandle<()>,
-    requests: Arc<Mutex<Vec<String>>>,
-    arrived: Arc<Notify>,
-    release: Arc<Notify>,
+    pub(super) requests: Arc<Mutex<Vec<String>>>,
+    pub(super) arrived: Arc<Notify>,
+    pub(super) release: Arc<Notify>,
 }
 impl Drop for Server {
     fn drop(&mut self) {
         self.task.abort();
     }
 }
-async fn start_server(reply: Reply, length: u64, initial_chunked: bool) -> Server {
+pub(super) async fn start_server(reply: Reply, length: u64, initial_chunked: bool) -> Server {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = Url::parse(&format!(
         "http://localhost:{}/asset",
@@ -132,6 +133,7 @@ async fn start_server(reply: Reply, length: u64, initial_chunked: bool) -> Serve
                 assert!(text.contains("if-range: \"v1\"\r\n"));
                 assert!(text.contains("accept-encoding: identity\r\n"));
                 if matches!(reply, Reply::HangHeaders) { std::future::pending::<()>().await; }
+                if matches!(reply, Reply::HoldHeaders) { unblock.notified().await; }
                 if matches!(reply, Reply::Short | Reply::SlowShort | Reply::ChangedAfterFirst) { end = end.min(start + 3); }
                 if matches!(reply, Reply::SlowShort) { tokio::time::sleep(Duration::from_millis(25)).await; }
                 if matches!(reply, Reply::Redirect) && !text.starts_with("get /changed ") {
@@ -189,7 +191,7 @@ async fn start_server(reply: Reply, length: u64, initial_chunked: bool) -> Serve
         release,
     }
 }
-async fn reader(server: &Server, limits: Limits) -> Reader {
+pub(super) async fn reader(server: &Server, limits: Limits) -> Reader {
     let client = client();
     let response = client
         .get(GateKind::AudioStream, server.url.clone())
@@ -201,7 +203,7 @@ async fn reader(server: &Server, limits: Limits) -> Reader {
     drop(response);
     Reader::new(client, GateKind::AudioStream, identity, limits)
 }
-fn deadline() -> Instant {
+pub(super) fn deadline() -> Instant {
     Instant::now() + Duration::from_secs(2)
 }
 

@@ -13,7 +13,6 @@ import {
   bytesAsNumbers,
   checkEncodedAudioBytes,
   floatsAsNumbers,
-  innerAudioState,
   transferOut,
 } from "./audio.mjs";
 import { engineHost } from "./engine-host.mjs";
@@ -529,11 +528,6 @@ export function op_inner_audio_load_url(id, sourceId, src) {
     w.u32(sourceTag);
     w.str(source);
   }).then(nothing);
-}
-
-export function op_inner_audio_get_state(id) {
-  const inner = smiU32(id, "id");
-  return audioRequest(SERVICE_OP.op_inner_audio_get_state, (w) => w.u32(inner)).then(innerAudioState);
 }
 
 // ---- network ------------------------------------------------------------------

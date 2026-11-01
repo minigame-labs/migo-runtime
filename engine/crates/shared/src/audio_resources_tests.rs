@@ -548,6 +548,9 @@ fn runtime_drop_reclaims_frozen_entry_but_not_a_live_node_arc() {
 
 #[test]
 fn an_adopted_decode_is_frozen_from_the_start_and_plays_without_a_copy() {
+    crate::audio_resources::physical_custody_test();
+    crate::audio_resources::initial_backing_custody_test();
+    crate::audio_decoded_pcm_tests::ownership();
     let scope = AudioResourceTestScope::new(transition_limits(96, 8));
     let registry = scope.registry();
     let format = stereo_three_frames();

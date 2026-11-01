@@ -4,6 +4,9 @@ use shared::protocol::audio_cmd::AudioNodeId;
 
 use super::AudioNodeProcessor;
 
+#[path = "analyser_workspace.rs"]
+mod workspace;
+
 /// AnalyserNode: provides real-time frequency and time-domain analysis.
 ///
 /// Passes audio through unchanged while capturing samples for FFT analysis.
@@ -13,66 +16,76 @@ pub struct AnalyserNode {
     min_decibels: f32,
     max_decibels: f32,
     smoothing_time_constant: f32,
-    /// Circular time-domain buffer (mono, downmixed from input)
-    time_domain_buffer: Vec<f32>,
     write_pos: usize,
     channels: u32,
-    // --- Cached FFT workspace (avoids allocation per query) ---
-    fft_re: Vec<f64>,
-    fft_im: Vec<f64>,
-    /// Pre-computed Blackman window coefficients (recomputed on fft_size change)
-    window: Vec<f64>,
-    /// Pre-computed twiddle factors, `exp(-2*PI*i*k/n)` for `k` in `0..n/2`.
-    ///
-    /// The butterfly used to derive each factor from the previous one by complex
-    /// multiplication. That recurrence loses precision as it goes, and the loss
-    /// grows with the transform: by the 32768-point size the spec allows, the
-    /// factors near the end of a pass are visibly off, which shows up as a raised
-    /// noise floor across the whole spectrum. A table is exact at every index and
-    /// is built once per `fftSize` change.
-    twiddles: Vec<(f64, f64)>,
-    /// Previous frame's magnitudes, for `smoothingTimeConstant`.
-    smoothed: Vec<f64>,
+    workspace: crate::node_retirement::Value<workspace::Workspace>,
+    workspace_host: Option<crate::node_retirement::Host>,
 }
 
 impl AnalyserNode {
+    #[cfg(test)]
     pub fn new(id: AudioNodeId, channels: u32) -> Self {
-        let fft_size = 2048; // Default per spec
-        let window = Self::compute_blackman_window(fft_size);
-        let twiddles = Self::compute_twiddles(fft_size);
-        Self {
+        Self::new_with_retirement(id, channels, None).expect("unmanaged analyser admission")
+    }
+
+    pub(crate) fn new_with_retirement(
+        id: AudioNodeId,
+        channels: u32,
+        host: Option<&crate::node_retirement::Host>,
+    ) -> shared::error::EngineResult<Self> {
+        let fft_size = 2048;
+        let reservation = workspace::Workspace::reserve(host, fft_size)?;
+        let workspace = reservation.finish(workspace::Workspace::new(fft_size));
+        Ok(Self {
             id,
             fft_size,
             min_decibels: -100.0,
             max_decibels: -30.0,
             smoothing_time_constant: 0.8,
-            time_domain_buffer: vec![0.0; fft_size],
             write_pos: 0,
             channels,
-            fft_re: vec![0.0; fft_size],
-            fft_im: vec![0.0; fft_size],
-            window,
-            twiddles,
-            smoothed: vec![0.0; fft_size / 2],
+            workspace,
+            workspace_host: host.cloned(),
+        })
+    }
+    pub(crate) fn prepare_workspace(
+        &mut self,
+        host: &crate::node_retirement::Host,
+    ) -> shared::error::EngineResult<()> {
+        if let Some(previous) = &self.workspace_host
+            && !previous.shares_physical_ledger(host)
+        {
+            return Err(shared::error::EngineError::from_detail(
+                shared::error::ErrorCode::InvalidArgument,
+                "analyser workspace belongs to another physical ledger",
+            ));
+        }
+        self.workspace
+            .prepare_with_bytes(host, self.workspace.capacity_bytes())?;
+        self.workspace_host = Some(host.clone());
+        Ok(())
+    }
+    pub(crate) fn fft_size(&self) -> usize {
+        self.fft_size
+    }
+    #[cfg(test)]
+    pub fn set_fft_size(&mut self, size: usize) {
+        if let Err(error) = self.try_set_fft_size(size) {
+            tracing::warn!("FFT workspace admission rejected: {error}");
         }
     }
-
-    pub fn set_fft_size(&mut self, size: usize) {
-        // Must be power of 2, between 32 and 32768
-        let size = size.next_power_of_two().max(32).min(32768);
-        if size != self.fft_size {
-            self.fft_size = size;
-            self.time_domain_buffer.resize(size, 0.0);
-            self.write_pos = 0;
-            // Resize cached buffers and recompute window
-            self.fft_re.resize(size, 0.0);
-            self.fft_im.resize(size, 0.0);
-            self.window = Self::compute_blackman_window(size);
-            self.twiddles = Self::compute_twiddles(size);
-            // The history is meaningless at a new resolution.
-            self.smoothed.clear();
-            self.smoothed.resize(size / 2, 0.0);
+    pub(crate) fn try_set_fft_size(&mut self, size: usize) -> shared::error::EngineResult<()> {
+        let size = size.next_power_of_two().clamp(32, 32768);
+        if size == self.fft_size {
+            return Ok(());
         }
+        let next =
+            workspace::Workspace::replacement(&self.workspace, size, self.workspace_host.as_ref())?;
+        let previous = std::mem::replace(&mut self.workspace, next);
+        self.fft_size = size;
+        self.write_pos = 0;
+        previous.retire_replacement();
+        Ok(())
     }
 
     #[allow(dead_code)]
@@ -92,11 +105,11 @@ impl AnalyserNode {
     /// Get the current time domain data as byte values (0-255)
     pub fn get_byte_time_domain_data(&self) -> Vec<u8> {
         let mut result = vec![0u8; self.fft_size];
-        let buf_len = self.time_domain_buffer.len();
+        let buf_len = self.workspace.time_domain_buffer.len();
         for i in 0..self.fft_size {
             let pos = (self.write_pos + i) % buf_len;
             // Map [-1, 1] to [0, 255]
-            let val = ((self.time_domain_buffer[pos] + 1.0) * 128.0).clamp(0.0, 255.0);
+            let val = ((self.workspace.time_domain_buffer[pos] + 1.0) * 128.0).clamp(0.0, 255.0);
             result[i] = val as u8;
         }
         result
@@ -105,10 +118,10 @@ impl AnalyserNode {
     /// Get the current time domain data as float values
     pub fn get_float_time_domain_data(&self) -> Vec<f32> {
         let mut result = vec![0.0f32; self.fft_size];
-        let buf_len = self.time_domain_buffer.len();
+        let buf_len = self.workspace.time_domain_buffer.len();
         for i in 0..self.fft_size {
             let pos = (self.write_pos + i) % buf_len;
-            result[i] = self.time_domain_buffer[pos];
+            result[i] = self.workspace.time_domain_buffer[pos];
         }
         result
     }
@@ -185,17 +198,23 @@ impl AnalyserNode {
 
     /// Prepare windowed time-domain data into cached FFT buffers and run FFT.
     fn run_fft(&mut self) {
-        let buf_len = self.time_domain_buffer.len();
+        let buf_len = self.workspace.time_domain_buffer.len();
         let n = self.fft_size;
 
         // Fill re[] with windowed time-domain data; zero im[]
         for i in 0..n {
             let pos = (self.write_pos + i) % buf_len;
-            self.fft_re[i] = self.time_domain_buffer[pos] as f64 * self.window[i];
-            self.fft_im[i] = 0.0;
+            self.workspace.fft_re[i] =
+                self.workspace.time_domain_buffer[pos] as f64 * self.workspace.window[i];
+            self.workspace.fft_im[i] = 0.0;
         }
 
-        Self::fft(&mut self.fft_re, &mut self.fft_im, &self.twiddles);
+        let workspace = &mut *self.workspace;
+        Self::fft(
+            &mut workspace.fft_re,
+            &mut workspace.fft_im,
+            &workspace.twiddles,
+        );
         self.apply_smoothing();
     }
 
@@ -207,17 +226,19 @@ impl AnalyserNode {
     /// so ignoring it was both a missing feature and a wrong answer.
     fn apply_smoothing(&mut self) {
         let bins = self.fft_size / 2;
-        if self.smoothed.len() != bins {
-            self.smoothed.clear();
-            self.smoothed.resize(bins, 0.0);
+        if self.workspace.smoothed.len() != bins {
+            self.workspace.smoothed.clear();
+            self.workspace.smoothed.resize(bins, 0.0);
         }
         let tau = self.smoothing_time_constant.clamp(0.0, 1.0) as f64;
         let inv_fft = 1.0 / self.fft_size as f64;
         for bin in 0..bins {
-            let magnitude =
-                (self.fft_re[bin] * self.fft_re[bin] + self.fft_im[bin] * self.fft_im[bin]).sqrt()
-                    * inv_fft;
-            self.smoothed[bin] = tau * self.smoothed[bin] + (1.0 - tau) * magnitude;
+            let magnitude = (self.workspace.fft_re[bin] * self.workspace.fft_re[bin]
+                + self.workspace.fft_im[bin] * self.workspace.fft_im[bin])
+                .sqrt()
+                * inv_fft;
+            self.workspace.smoothed[bin] =
+                tau * self.workspace.smoothed[bin] + (1.0 - tau) * magnitude;
         }
     }
 
@@ -233,7 +254,7 @@ impl AnalyserNode {
         let range = max_db - min_db;
 
         for i in 0..freq_bins {
-            let magnitude = self.smoothed[i];
+            let magnitude = self.workspace.smoothed[i];
             let db = if magnitude > 1e-20 {
                 20.0 * magnitude.log10()
             } else {
@@ -255,7 +276,7 @@ impl AnalyserNode {
         let min_db = self.min_decibels as f64;
 
         for i in 0..freq_bins {
-            let magnitude = self.smoothed[i];
+            let magnitude = self.workspace.smoothed[i];
             let db = if magnitude > 1e-20 {
                 20.0 * magnitude.log10()
             } else {
@@ -295,7 +316,7 @@ impl AudioNodeProcessor for AnalyserNode {
         // Capture time-domain data (downmix to mono for analysis)
         let channels = self.channels.max(1) as usize;
         let frames = len / channels;
-        let buf_len = self.time_domain_buffer.len();
+        let buf_len = self.workspace.time_domain_buffer.len();
 
         for frame in 0..frames {
             // Downmix to mono: average all channels
@@ -305,7 +326,7 @@ impl AudioNodeProcessor for AnalyserNode {
             }
             mono /= channels as f32;
 
-            self.time_domain_buffer[self.write_pos] = mono;
+            self.workspace.time_domain_buffer[self.write_pos] = mono;
             self.write_pos = (self.write_pos + 1) % buf_len;
         }
 
@@ -390,10 +411,14 @@ mod tests {
     fn resizing_the_fft_resets_the_smoothing_history_to_match() {
         let mut node = AnalyserNode::new(1, 1);
         node.set_fft_size(512);
-        assert_eq!(node.smoothed.len(), 256);
-        assert_eq!(node.twiddles.len(), 256);
+        assert_eq!(node.workspace.smoothed.len(), 256);
+        assert_eq!(node.workspace.twiddles.len(), 256);
         node.set_fft_size(4096);
-        assert_eq!(node.smoothed.len(), 2048);
-        assert_eq!(node.twiddles.len(), 2048);
+        assert_eq!(node.workspace.smoothed.len(), 2048);
+        assert_eq!(node.workspace.twiddles.len(), 2048);
     }
 }
+
+#[cfg(test)]
+#[path = "analyser_workspace_tests.rs"]
+mod workspace_tests;

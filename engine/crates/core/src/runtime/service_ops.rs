@@ -332,6 +332,7 @@ service_ops! {
     op_recorder_resume = 309,
     op_recorder_stop = 310,
     op_console = 311,
+    op_inner_audio_set_start_time = 312,
 }
 
 /// The op's name, for a refusal a person will read.

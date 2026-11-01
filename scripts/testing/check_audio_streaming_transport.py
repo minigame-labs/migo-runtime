@@ -83,6 +83,29 @@ def build(package: Path, output: Path, env: dict, name: str, features: str = "")
     return retained
 
 
+def record_execution(output: Path, name: str, prune: bool = False) -> dict:
+    binary = output / f"{name}-tests"
+    rows = []
+    for line in (output / f"{name}-build.jsonl").read_text().splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if row.get("reason") == "compiler-artifact" and row.get("executable") and row.get("profile", {}).get("test"):
+            rows.append(row)
+    assert len(rows) == 1 and rows[0]["fresh"] is False
+    record = dict(name=name, path=str(binary), sha256=codecs.sha(binary), fresh=False,
+                  bytes=binary.stat().st_size, pruned_after_execution=prune)
+    ledger = output / "executed-programs.json"
+    records = json.loads(ledger.read_text()) if ledger.exists() else []
+    assert not any(row['name'] == name for row in records), 'program already recorded'
+    records.append(record)
+    ledger.write_text(json.dumps(records, indent=2) + '\n')
+    if prune:
+        binary.unlink()
+    return record
+
+
 def controls(package: Path, output: Path, env: dict, features: str = "") -> int:
     declarations = [
         ("publication-cancel-removed", "streaming_transport.rs",
@@ -92,10 +115,10 @@ def controls(package: Path, output: Path, env: dict, features: str = "") -> int:
          "_ = state.cancelled() => None,", "_ = std::future::pending::<()>() => None,",
          "cpu_step_leaves_http_worker_free_and_cancel_does_not_wait_for_join"),
         ("yield-discarded", "streaming_transport.rs",
-         "Progress::Yield => tokio::task::yield_now().await,", "Progress::Yield => break,",
+         "Progress::Yield => tokio::task::yield_now().await,", "Progress::Yield => return Ok(()),",
          "real_http_chunks_partial_feed_eof_and_pcm_equal_whole_file"),
-        ("cpu-runs-on-io", "off_worker.rs", "let (value, outcome) = cpu\n            .run(move || {\n                let outcome = step(&mut value);\n                (value, outcome)\n            })\n            .await?;",
-         "let outcome = step(&mut value); let (value, outcome) = (value, outcome);",
+        ("cpu-runs-on-io", "off_worker.rs", "let (value, outcome) = cpu\n            .run(move || {\n                let outcome = step(value.as_mut());\n                (value, outcome)\n            })\n            .await?;",
+         "let outcome = step(value.as_mut()); let (value, outcome) = (value, outcome);",
          "cpu_step_leaves_http_worker_free_and_cancel_does_not_wait_for_join"),
     ]
     if "bandlimited-probe" in features.split(","):
@@ -158,6 +181,17 @@ def controls(package: Path, output: Path, env: dict, features: str = "") -> int:
              "Err(io::Error::new(io::ErrorKind::UnexpectedEof, \"unexpected end of bitstream\"))",
              "vorbis::long_vorbis_http_player_has_bounded_pcm_beyond_cache_quota"),
         ]
+    # These existing regressions were previously missing from the probe layout.
+    # Execute real semantic faults so mere successful compilation is not enough.
+    declarations += [
+        ("sidecar-buffer-write-error-leaks-url", "../probe/src/storage.rs",
+         "let _ = dir.remove_file(&name);", "let _ = &name;",
+         "storage::buffer_url_tests::a_partial_write_error_removes_the_failed_url_and_releases_the_epoch"),
+        ("sidecar-cutover-loses-global-grid", "streaming.rs",
+         "target.saturating_sub(history) / period * period", "target.saturating_sub(history)",
+         "streaming::cutover_tests::cyclic_preroll_crosses_short_tracks_without_rebasing_phase_to_each_track"),
+    ]
+    receipts = []
     for name, relative, before, after, test in declarations:
         source = output / "source" / relative
         original = source.read_text()
@@ -166,11 +200,15 @@ def controls(package: Path, output: Path, env: dict, features: str = "") -> int:
         try:
             binary = build(package, output, env, name, features)
             with (output / f"{name}-test.log").open("w") as log:
-                status = subprocess.run([str(binary), "--exact", f"transport_contracts::{test}", "--nocapture"],
+                exact = test if test.startswith(("storage::", "streaming::")) else f"transport_contracts::{test}"
+                status = subprocess.run([str(binary), "--exact", exact, "--nocapture"],
                                         cwd=package, env=env, stdout=log, stderr=subprocess.STDOUT,
                                         timeout=90).returncode
             observed = (output / f"{name}-test.log").read_text()
-            assert status == 101 and "panicked at" in observed and "1 failed" in observed, (name, status, "must fail an executed Rust assertion")
+            assert status == 101 and all(token in observed for token in ["running 1 test", "panicked at", "1 failed"]), (name, status, "must fail an executed Rust assertion")
+            record = record_execution(output, name, prune=True)
+            receipts.append(dict(name=name, test=exact, exit=status, binary_sha256=record['sha256']))
+            (output / 'completed-controls.json').write_text(json.dumps(receipts, indent=2) + '\n')
         finally:
             source.write_text(original)
         print(f"actual transport mutation {name}: executable assertion rejected", flush=True)
@@ -185,14 +223,38 @@ def validate(output: Path, env: dict, positive_only: bool = False) -> None:
     settings = json.loads((output / "build-settings.json").read_text()) if (output / "build-settings.json").exists() else {}
     expected_tests = settings.get("tests", 6)
     retained_sources = {str(path.relative_to(output)): codecs.sha(path)
-                        for path in (output / "source").glob("*.rs")}
+                        for directory in [package / 'src', output / 'source']
+                        for path in directory.rglob('*') if path.is_file()}
+    codecs.run([str(binary), '--list'], output / 'compiled-tests.list', cwd=package, env=env)
+    inventory = (output / 'compiled-tests.list').read_text().splitlines()
+    required = ['storage::buffer_url_tests::', 'storage::buffer_url_namespace_tests::',
+                'storage::private_tests::', 'streaming::cutover_tests::']
+    assert all(any(row.startswith(prefix) and row.endswith(': test') for row in inventory)
+               for prefix in required), 'compiled binary is missing required sidecar tests'
+    fixture_hashes = json.loads((output / 'fixture-sha256.json').read_text())
+    assert all(codecs.sha(output / path) == checksum for path, checksum in fixture_hashes.items())
     codecs.run([str(binary), "transport_contracts::", "--nocapture", "--test-threads=1"],
                output / "tests-validated.log", cwd=package, env=env)
-    assert f"{expected_tests} passed" in (output / "tests-validated.log").read_text()
+    selected = re.search(r'test result: ok\. (\d+) passed; 0 failed; (\d+) ignored;',
+                         (output / "tests-validated.log").read_text())
+    assert selected and int(selected[1]) == expected_tests
+    transport_ignored = int(selected[2])
+    suite = None
+    if settings.get('full_suite', False):
+        codecs.run([str(binary), '--test-threads=4'], output / 'all-tests.log', cwd=package, env=env)
+        matched = re.search(r'test result: ok\. (\d+) passed; 0 failed; (\d+) ignored;',
+                            (output / 'all-tests.log').read_text())
+        assert matched, 'the complete services/audio suite did not finish'
+        suite = dict(passed=int(matched[1]), ignored=int(matched[2]))
+    record_execution(output, 'positive')
     negative = 0 if positive_only else controls(package, output, env, settings.get("features", ""))
-    assert all(codecs.sha(ROOT / path) == checksum for path, checksum in checksums.items()), "Root sources changed during tests"
+    assert all(codecs.sha(ROOT / path) == checksum and codecs.sha(output / 'source-inputs' / path) == checksum
+               for path, checksum in checksums.items()), "Root/saved sources changed during tests"
     assert all(codecs.sha(output / path) == checksum for path, checksum in retained_sources.items()), "mutation was not restored"
-    summary = {"tests": expected_tests, "actual_http_codec_cases": 24,
+    assert all(codecs.sha(output / path) == checksum for path, checksum in fixture_hashes.items())
+    (output / 'retained-sources.json').write_text(json.dumps(retained_sources, indent=2) + '\n')
+    summary = {"tests": expected_tests, "ignored": transport_ignored, "all_tests": suite, "mandatory_sidecar_prefixes": required,
+               "frozen_inputs": len(checksums), "fixtures": len(fixture_hashes), "actual_http_codec_cases": 24,
                "actual_http_resampling_cases": settings.get("resampling_cases", 0), "compiled_negative_controls": negative, "positive_only": positive_only,
                "actual_http_wave_cases": settings.get("wave_cases", 0),
                "actual_wave_player_cases": settings.get("wave_player_cases", 0),
@@ -202,26 +264,36 @@ def validate(output: Path, env: dict, positive_only: bool = False) -> None:
                "actual_vorbis_player_cases": settings.get("vorbis_player_cases", 0),
                "test_binary_sha256": codecs.sha(binary), "root_lock_unchanged": True,
                "retained_sources": retained_sources,
-               "scope": "host loopback HTTP/client/CPU handoff/PCM pool; optional bounded sinc composition; no device/performance acceptance"}
+               "profile": "isolated O3/no-LTO/codegen16/unwind correctness cohort",
+               "scope": "host loopback HTTP/client/CPU handoff/PCM pool; optional bounded sinc composition; no shipping/device/performance acceptance"}
     (output / "summary.json").write_text(json.dumps(summary, indent=2) + '\n')
-    print(json.dumps(summary, indent=2), flush=True)
+    print("transport verified", expected_tests, "passed /", transport_ignored, "ignored; full suite",
+          suite, "; compiled controls", negative, flush=True)
 
 
 def main(output: Path, target: Path, fixtures: Path, rubato_home: Path | None = None,
          wave_streaming: bool = False, adts_streaming: bool = False, vorbis_streaming: bool = False,
-         positive_only: bool = False) -> None:
+         positive_only: bool = False, full_suite: bool = False) -> None:
     assert not (wave_streaming or adts_streaming or vorbis_streaming) or rubato_home is not None, "codec composition requires Rubato candidates"
     assert not output.exists(), "use a fresh result directory"
     output.mkdir(parents=True)
+    # Keep CARGO_MANIFEST_DIR's repo-relative fixture paths meaningful while
+    # preserving the existing output/probe entry point used by helper callers.
+    package_tree = output / "repo/engine/crates/services"
+    (package_tree / "src").mkdir(parents=True)
     package = output / "probe"
-    (package / "src").mkdir(parents=True)
+    package.symlink_to("repo/engine/crates/services", target_is_directory=True)
+    answers = "platforms/apple/WebContent/PerformancePlus/test/fixtures/audio-check-answers.json"
+    copied_answers = output / "repo" / answers
+    copied_answers.parent.mkdir(parents=True)
+    shutil.copyfile(ROOT / answers, copied_answers)
     (output / "source").mkdir()
     env = os.environ.copy()
     env.update(RUSTUP_TOOLCHAIN="1.95.0", CARGO_TARGET_DIR=str(target), CARGO_NET_OFFLINE="true",
                W09_STREAM_FIXTURES=str(output / "fixtures"), CC="/usr/bin/clang", CXX="/usr/bin/clang++")
     env["W09_ADTS_FIXTURES"] = str(output / "adts-fixtures")
     env["W09_OGG_FIXTURES"] = str(output / "vorbis-input/fixtures")
-    for name in ("ANDROID_NDK", "ANDROID_NDK_HOME"):
+    for name in ("ANDROID_NDK", "ANDROID_NDK_HOME", "MIGO_AUDIO_CHECKS_BLESS"):
         env.pop(name, None)
     shutil.copytree(fixtures, output / "fixtures")
     if vorbis_streaming:
@@ -260,32 +332,36 @@ def main(output: Path, target: Path, fixtures: Path, rubato_home: Path | None = 
     manifest = manifest.replace('"test-util"', '"test-util", "rt-multi-thread"')
     extra = '\nsymphonia={version="=0.6.1",default-features=false,features=["mp3","opt-simd"]}\n'
     extra += 'symphonia-bundle-mp3={version="=0.6.1",default-features=false,features=["streaming"]}\n'
-    optional = 'symphonia-format-riff={version="=0.6.1",default-features=false,features=["wav"],optional=true}\n'
-    optional += 'symphonia-codec-pcm={version="=0.6.1",optional=true}\n'
+    optional = 'symphonia-format-riff={version="=0.6.1",default-features=false,features=["wav","streaming"]}\n'
+    optional += 'symphonia-codec-pcm={version="=0.6.1",default-features=false}\n'
     optional += 'symphonia-codec-aac={version="=0.6.1",optional=true}\n'
-    optional += 'symphonia-format-ogg={version="=0.6.1",optional=true}\n'
-    optional += 'symphonia-codec-vorbis={version="=0.6.1",optional=true}\n'
+    optional += 'symphonia-core={version="=0.6.1",default-features=false}\nsymphonia-format-ogg={version="=0.6.1",default-features=false,features=["streaming"]}\n'
+    optional += 'symphonia-codec-vorbis={version="=0.6.1",default-features=false}\n'
     manifest = manifest.replace('\n[dependencies]\n', '\n[dependencies]\n' + optional, 1)
-    for name in ("minimp3-sys", "lewton", "hound", "futures-util"):
+    for name in ("minimp3-sys", "hound", "futures-util"):
         extra += f'{name}="={version(name)}"\n'
     for name in ("alloc", "executor"):
         extra += f'migo-{name}-probe={{path={json.dumps(str(ROOT / f"engine/testing/{name}-probe"))}}}\n'
-    if rubato_home is not None:
-        extra += 'rubato={version="=5.0.1",default-features=false}\n'
+    extra += 'rubato={version="=5.0.1",default-features=false}\n'
     manifest = manifest.replace('\n[features]', extra + '\n[features]')
-    manifest = manifest.replace('\n[features]\n', '\n[features]\nbandlimited-probe=[]\nmetadata-budgets=[]\nwave-streaming-probe=["dep:symphonia-format-riff","symphonia-format-riff/streaming","dep:symphonia-codec-pcm","symphonia/wav","symphonia/pcm"]\n')
+    manifest = manifest.replace('\n[features]\n', '\n[features]\nbandlimited-probe=[]\nmetadata-budgets=[]\nwave-streaming-probe=["symphonia-format-riff/streaming","symphonia/wav","symphonia/pcm"]\n')
     manifest = manifest.replace('\n[features]\n', '\n[features]\nadts-streaming-probe=["dep:symphonia-codec-aac","symphonia-codec-aac/streaming","symphonia/aac"]\n')
-    manifest = manifest.replace('\n[features]\n', '\n[features]\nvorbis-streaming-probe=["dep:symphonia-format-ogg","symphonia-format-ogg/streaming","dep:symphonia-codec-vorbis","symphonia/ogg","symphonia/vorbis"]\n')
+    manifest = manifest.replace('\n[features]\n', '\n[features]\nvorbis-streaming-probe=["symphonia-format-ogg/streaming","symphonia/ogg","symphonia/vorbis"]\n')
     # Keep inherited workspace dependency definitions exact, rebasing only paths.
     workspace_deps = root_manifest.split('[workspace.dependencies]\n', 1)[1].split('\n[', 1)[0]
     manifest += '\n[workspace]\n[workspace.package]\nversion="0.0.0"\nlicense="BSL-1.1"\n'
     manifest += '\n[workspace.dependencies]\n' + absolute_paths(workspace_deps, ROOT / "engine")
-    manifest += '\n[profile.release]\nopt-level=3\nlto="thin"\ncodegen-units=1\n'
+    manifest += '\n[profile.release]\nopt-level=3\nlto=false\ncodegen-units=16\npanic="unwind"\n'
     manifest += '\n[patch.crates-io]\n'
     for name, path in codecs.library_patches(ROOT, output).items():
         manifest += f'{name}={{path={json.dumps(str(path))}}}\n'
-    for name, relative in (("ada-url", "ada-url-4.0.0"), ("tungstenite", "tungstenite-0.30.0")):
+    for name, relative in (("ada-url", "ada-url-4.0.0"), ("tungstenite", "tungstenite-0.30.0"),
+                           ("minimp3-sys", "minimp3-sys-0.6.0")):
         manifest += f'{name}={{path={json.dumps(str(ROOT / "engine/third_party" / relative))}}}\n'
+    dsp_ledger = ROOT / 'engine/third_party/rubato-sources.json'
+    adopted_dsp = json.loads(dsp_ledger.read_text())
+    for name, row in adopted_dsp.items():
+        manifest += f'{name}={{path={json.dumps(str(ROOT / "engine/third_party" / (name + "-" + row["version"])))}}}\n'
     if rubato_home is not None:
         # Only new names get path candidates. Existing versions remain the
         # engine's locked cohort, rather than upgrading shared math/proc macros.
@@ -303,27 +379,32 @@ def main(output: Path, target: Path, fixtures: Path, rubato_home: Path | None = 
                 manifest += f'{row["name"]}={{path={json.dumps(str(retained))}}}\n'
                 new_sources[row["name"]] = {"version": row["version"], "path": str(retained),
                                             "checksum": inventory["package"], "source_files": inventory["files"]}
-        assert new_sources.get("rubato", {}).get("version") == "5.0.1"
+        assert adopted_dsp["rubato"]["version"] == "5.0.1"
         (output / "resampling-paths.json").write_text(json.dumps(new_sources, indent=2) + '\n')
     (package / "Cargo.toml").write_text(manifest)
     (package / "Cargo.lock").write_bytes(locked_bytes)
 
-    source = ['extern crate self as migo_services;\n']
-    for module in re.findall(r'^pub mod (\w+);$', (services / "src/lib.rs").read_text(), re.M):
-        source.append(f'#[path={json.dumps(str(services / f"src/{module}.rs" if (services / f"src/{module}.rs").exists() else services / f"src/{module}/mod.rs"))}] pub mod {module};\n')
-    source.append('pub use error::ServiceError;\n')
-    modules = ["decoder", "limits", "resampler", "mp3_fixture", "streaming", "streaming_transport", "off_worker"]
+    # Preserve Rust's normal submodule layout, including cfg(test) sidecars.
+    # Absolute #[path] roots change resolution for storage.rs's child tests.
+    audio = ROOT / "engine/crates/audio/src"
+    overlap = ({str(path.relative_to(services / 'src')) for path in (services / 'src').rglob('*') if path.is_file()}
+               & {str(path.relative_to(audio)) for path in audio.rglob('*') if path.is_file()}) - {'lib.rs'}
+    assert not overlap, ('services/audio source collision', sorted(overlap))
+    shutil.copytree(services / "src", package / "src", dirs_exist_ok=True)
+    shutil.copytree(audio, package / "src", dirs_exist_ok=True)
+    source = [(services / "src/lib.rs").read_text(), '\nextern crate self as migo_services;\n']
+    modules = ["decoder", "limits", "resampler", "resample_job", "mp3_fixture", "streaming", "streaming_transport", "off_worker", "stream_control"]
     if rubato_home is not None:
         modules += ["cache", "inner_audio"]
     for module in modules:
         path = ROOT / f"engine/crates/audio/src/{module}.rs"
         if module == "decoder":
             path = ROOT / "engine/crates/audio/src/decoder/mod.rs"
-        if module in ("streaming", "streaming_transport", "off_worker"):
-            retained = output / "source" / path.name
-            shutil.copyfile(path, retained)
-            path = retained
-        source.append(f'#[path={json.dumps(str(path))}] mod {module};\n')
+        if module in ("streaming", "streaming_transport", "off_worker", "stream_control"):
+            # Preserve mutation paths, but compile these modules in their normal
+            # directory so every present/future sidecar follows Rust's rules.
+            (output / "source" / path.name).symlink_to(Path('../probe/src') / path.name)
+        source.append(f'mod {module};\n')
     for module, filename in (("push_decoder", "streaming.rs"), ("candidate", "candidate.rs"),
                              ("transport_contracts", "transport_contracts.rs")):
         path = output / "source" / (module + ".rs")
@@ -352,11 +433,19 @@ def main(output: Path, target: Path, fixtures: Path, rubato_home: Path | None = 
                         output / "source/vorbis_transport_contracts.rs")
     source.append('#[global_allocator] static COUNTING:migo_alloc_probe::CountingAllocator=migo_alloc_probe::CountingAllocator::system();\n')
     (package / "src/lib.rs").write_text(''.join(source))
-    inputs = []
+    inputs = [ROOT / answers]
     for relative in ("engine/crates/audio/src", "engine/crates/services/src", "engine/crates/io/src",
                      "engine/crates/shared/src", "engine/testing/alloc-probe/src", "engine/testing/executor-probe/src"):
-        inputs += sorted((ROOT / relative).rglob("*.rs"))
-    inputs += [ROOT / "engine/Cargo.toml", ROOT / "engine/Cargo.lock", services / "Cargo.toml"]
+        inputs += sorted(path for path in (ROOT / relative).rglob("*") if path.is_file())
+    for folder in (ROOT / "engine/third_party").glob("symphonia-*-0.6.1"):
+        inputs += sorted(path for path in folder.rglob("*") if path.is_file())
+    inputs.append(dsp_ledger)
+    for name, row in adopted_dsp.items():
+        inputs += [p for p in (ROOT / 'engine/third_party' / (name + '-' + row['version'])).rglob('*') if p.is_file()]
+    for name in ["minimp3-sys-0.6.0", "minimp3-sys-patches"]:
+        inputs += [p for p in (ROOT / "engine/third_party" / name).rglob("*") if p.is_file()]
+    inputs += [ROOT / "engine/Cargo.toml", ROOT / "engine/Cargo.lock", services / "Cargo.toml",
+               ROOT / "engine/crates/audio/Cargo.toml", ROOT / answers]
     inputs += sorted((ROOT / "scripts/testing/fixtures/audio-codec-probe").glob("*.rs"))
     inputs.append(ROOT / "scripts/testing/check_audio_streaming_transport.py")
     inputs.append(ROOT / "scripts/bench/audio-codecs.py")
@@ -371,12 +460,17 @@ def main(output: Path, target: Path, fixtures: Path, rubato_home: Path | None = 
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(path, destination)
     (output / "source-inputs.json").write_text(json.dumps(checksums, indent=2) + '\n')
+    (output / "fixture-sha256.json").write_text(json.dumps({
+        str(path.relative_to(output)): codecs.sha(path)
+        for directory in [output / "fixtures", output / "adts-fixtures", output / "vorbis-input", output / 'repo/platforms']
+        if directory.exists() for path in directory.rglob('*') if path.is_file()
+    }, indent=2) + '\n')
     for command, log in ((["rustc", "-Vv"], "rustc-version.txt"), (["cargo", "-V"], "cargo-version.txt"),
                          (["cargo", "metadata", "--offline", "--format-version", "1"], "metadata.jsonl")):
         codecs.run(command, output / log, cwd=package, env=env)
     settings = {"features": "bandlimited-probe,metadata-budgets" if rubato_home is not None else "metadata-budgets",
                 "tests": 10 if rubato_home is not None else 6,
-                "resampling_cases": 10 if rubato_home is not None else 0}
+                "resampling_cases": 10 if rubato_home is not None else 0, "full_suite": full_suite}
     if wave_streaming:
         settings["features"] += ",wave-streaming-probe"
         settings["tests"] += 11
@@ -402,6 +496,8 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--target-dir", type=Path, required=True)
     parser.add_argument("--fixtures", type=Path, required=True)
+    parser.add_argument("--full-suite", action="store_true",
+                        help="also run every compiled services/audio regression, including sidecars")
     parser.add_argument("--positive-only", action="store_true",
                         help="run all positive regressions, explicitly recording zero compiled controls")
     parser.add_argument("--resume-validation", action="store_true",
@@ -422,8 +518,9 @@ if __name__ == "__main__":
                    W09_ADTS_FIXTURES=str(args.output.resolve() / "adts-fixtures"),
                    W09_OGG_FIXTURES=str(args.output.resolve() / "vorbis-input/fixtures"),
                    CC="/usr/bin/clang", CXX="/usr/bin/clang++")
+        env.pop('MIGO_AUDIO_CHECKS_BLESS', None)
         validate(args.output.resolve(), env, args.positive_only)
     else:
         main(args.output.resolve(), args.target_dir.resolve(), args.fixtures.resolve(),
              args.rubato_cargo_home.resolve() if args.rubato_cargo_home else None,
-             args.wave_streaming, args.adts_streaming, args.vorbis_streaming, args.positive_only)
+             args.wave_streaming, args.adts_streaming, args.vorbis_streaming, args.positive_only, args.full_suite)

@@ -113,6 +113,11 @@ def prepare(output: Path, target: Path, extra_inputs=()):
         common.section(workspace, 'workspace.dependencies'), ROOT / 'engine')
     manifest += '\n[patch.crates-io]\n' + common.rebase(
         common.section(workspace, 'patch.crates-io'), ROOT / 'engine')
+    native = ROOT / 'engine/third_party/minimp3-sys-0.6.0'
+    if native.is_dir():
+        private_native = output / 'native/minimp3-sys-0.6.0'
+        shutil.copytree(native, private_native)
+        manifest = manifest.replace(str(native), str(private_native))
     (package / 'Cargo.toml').write_text(manifest)
     (package / 'Cargo.lock').write_bytes((ROOT / 'engine/Cargo.lock').read_bytes())
     inputs = {ROOT / 'engine/Cargo.toml', ROOT / 'engine/Cargo.lock', Path(__file__).resolve(),
@@ -125,6 +130,18 @@ def prepare(output: Path, target: Path, extra_inputs=()):
         crate = ROOT / 'engine/testing' / name
         inputs.update(crate.rglob('*.rs'))
         inputs.add(crate / 'Cargo.toml')
+    # Product codec forks and embedded binary test fixtures are real compile inputs.
+    inputs.update(p for p in (audio / 'src').rglob('*') if p.is_file())
+    for folder in (ROOT / 'engine/third_party').glob('symphonia-*-0.6.1'):
+        inputs.update(p for p in folder.rglob('*') if p.is_file())
+    dsp_ledger = ROOT / 'engine/third_party/rubato-sources.json'
+    if dsp_ledger.is_file():
+        inputs.add(dsp_ledger)
+        inputs.update(p for p in (ROOT / 'engine/third_party/rubato-source-patches').rglob('*') if p.is_file())
+        for name, row in json.loads(dsp_ledger.read_text()).items():
+            inputs.update(p for p in (ROOT / 'engine/third_party' / (name + '-' + row['version'])).rglob('*') if p.is_file())
+    for name in ['minimp3-sys-0.6.0', 'minimp3-sys-patches']:
+        inputs.update(p for p in (ROOT / 'engine/third_party' / name).rglob('*') if p.is_file())
     frozen = {str(p.relative_to(ROOT)): common.sha(p) for p in sorted(inputs)}
     for path in inputs:
         destination = output / 'source-inputs' / path.relative_to(ROOT)

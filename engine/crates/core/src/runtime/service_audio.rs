@@ -92,7 +92,7 @@ fn le_bytes(floats: &[f32]) -> OwnedValue {
 
 fn analyser_data(data: AnalyserData) -> OwnedValue {
     match data {
-        AnalyserData::Bytes(bytes) => OwnedValue::Bytes(bytes),
+        AnalyserData::Bytes(bytes) => OwnedValue::Bytes(bytes.to_vec()),
         AnalyserData::Floats(floats) => le_bytes(&floats),
     }
 }
@@ -192,6 +192,161 @@ pub(crate) fn call_sync(
     }
 }
 
+/// Encode the final materialization outcome with physical response custody.
+pub(crate) fn materialize_reply(
+    audio: &AudioBinding,
+    args: Vec<OwnedValue>,
+    max_reply_bytes: u32,
+) -> Result<shared::sync_reply::SyncReplyBytes, frame_wire::sync::SyncError> {
+    let prepare = (|| {
+        let [buffer] = exactly(id::op_audio_materialize_buffer, args)?;
+        service::prepare_buffer_backing(
+            audio.scope(),
+            u32_of(id::op_audio_materialize_buffer, 0, buffer)?,
+        )
+    })();
+    let prepared = match prepare {
+        Ok(value) => value,
+        Err(error) => return Ok(super::external_services::encode_outcome(Err(error)).into()),
+    };
+    let bytes = prepared.samples().len() * 4;
+    let total = bytes + 12;
+    if total > max_reply_bytes as usize {
+        return Err(frame_wire::sync::SyncError::ReplyTooLarge);
+    }
+    let mut prefix = [0u8; 12];
+    prefix[..4].copy_from_slice(&frame_wire::service::OUTCOME_OK.to_le_bytes());
+    prefix[4..8].copy_from_slice(&frame_wire::value::TAG_BYTES.to_le_bytes());
+    prefix[8..12].copy_from_slice(&(bytes as u32).to_le_bytes());
+    match prepared.encode_le_reply(&prefix) {
+        Ok(reply) => Ok(reply),
+        Err(error) => Ok(
+            super::external_services::encode_outcome(Err(ServiceError::classed(
+                "AudioError",
+                error.to_string(),
+            )))
+            .into(),
+        ),
+    }
+}
+
+/// The frequency response crosses directly from borrowed native floats into
+/// its final record; native storage remains owned until encoding finishes.
+pub(crate) fn frequency_wire_reply(
+    audio: &AudioBinding,
+    request_id: u32,
+    args: Vec<OwnedValue>,
+    ledger: std::sync::Arc<shared::audio_physical::AudioAggregateLedger>,
+) -> Result<
+    BoxFuture<'static, Result<shared::sync_reply::SyncReplyBytes, ServiceError>>,
+    ServiceError,
+> {
+    let [node_id, frequencies] = exactly(id::op_audio_get_frequency_response, args)?;
+    let node_id = u32_of(id::op_audio_get_frequency_response, 0, node_id)?;
+    let frequencies = bytes(id::op_audio_get_frequency_response, 1, frequencies)?;
+    let pending = service::get_frequency_response(&audio.sender, node_id, &frequencies)?;
+    Ok(Box::pin(async move {
+        let response = pending.answer().await?;
+        let (magnitude, phase) = response.values();
+        let size_error = || service::audio_error("frequency wire response size overflow");
+        let magnitude_bytes = magnitude.len().checked_mul(4).ok_or_else(size_error)?;
+        let phase_bytes = phase.len().checked_mul(4).ok_or_else(size_error)?;
+        let record_len = magnitude_bytes
+            .checked_add(phase_bytes)
+            .and_then(|v| v.checked_add(40))
+            .ok_or_else(size_error)?;
+        let words = [
+            frame_wire::service::DOWN_REPLY,
+            u32::try_from(record_len - 8).map_err(|_| size_error())?,
+            request_id,
+            frame_wire::service::OUTCOME_OK,
+            frame_wire::value::TAG_ARRAY,
+            2,
+            frame_wire::value::TAG_BYTES,
+            u32::try_from(magnitude_bytes).map_err(|_| size_error())?,
+        ];
+        let mut prefix = [0u8; 32];
+        for (out, word) in prefix.chunks_exact_mut(4).zip(words) {
+            out.copy_from_slice(&word.to_le_bytes());
+        }
+        let mut phase_prefix = [0u8; 8];
+        phase_prefix[..4].copy_from_slice(&frame_wire::value::TAG_BYTES.to_le_bytes());
+        phase_prefix[4..].copy_from_slice(
+            &u32::try_from(phase_bytes)
+                .map_err(|_| size_error())?
+                .to_le_bytes(),
+        );
+        use shared::sync_reply::{AudioWirePart, SyncReplyBytes};
+        SyncReplyBytes::encode_audio(
+            &ledger,
+            frame_wire::service::SERVICE_DOWN_HEADER_BYTES,
+            &[
+                AudioWirePart::Bytes(&prefix),
+                AudioWirePart::Floats(magnitude),
+                AudioWirePart::Bytes(&phase_prefix),
+                AudioWirePart::Floats(phase),
+            ],
+        )
+        .map_err(service::engine_error)
+    }))
+}
+
+/// Encode every analyser snapshot directly into its charged final service record.
+pub(crate) fn analyser_wire_reply(
+    audio: &AudioBinding,
+    request_id: u32,
+    op: u32,
+    args: Vec<OwnedValue>,
+    ledger: std::sync::Arc<shared::audio_physical::AudioAggregateLedger>,
+) -> Result<
+    BoxFuture<'static, Result<shared::sync_reply::SyncReplyBytes, ServiceError>>,
+    ServiceError,
+> {
+    let read = analyser_read(op);
+    let [node_id] = exactly(op, args)?;
+    let reading = service::read_analyser(&audio.sender, read, u32_of(op, 0, node_id)?)?;
+    Ok(Box::pin(async move {
+        use shared::sync_reply::{AudioWirePart, SyncReplyBytes};
+        let data = reading.await?;
+        let size_error = || service::audio_error("analyser wire response size overflow");
+        let (part, len) = match &data {
+            AnalyserData::Bytes(bytes) => (AudioWirePart::Bytes(bytes), bytes.len()),
+            AnalyserData::Floats(floats) => (
+                AudioWirePart::Floats(floats),
+                floats.len().checked_mul(4).ok_or_else(size_error)?,
+            ),
+        };
+        let len = u32::try_from(len).map_err(|_| size_error())?;
+        let body = len.checked_add(16).ok_or_else(size_error)?;
+        let words = [
+            frame_wire::service::DOWN_REPLY,
+            body,
+            request_id,
+            frame_wire::service::OUTCOME_OK,
+            frame_wire::value::TAG_BYTES,
+            len,
+        ];
+        let mut prefix = [0u8; 24];
+        for (out, word) in prefix.chunks_exact_mut(4).zip(words) {
+            out.copy_from_slice(&word.to_le_bytes());
+        }
+        SyncReplyBytes::encode_audio(
+            &ledger,
+            frame_wire::service::SERVICE_DOWN_HEADER_BYTES,
+            &[AudioWirePart::Bytes(&prefix), part],
+        )
+        .map_err(service::engine_error)
+    }))
+}
+fn analyser_read(op: u32) -> AnalyserRead {
+    match op {
+        id::op_audio_analyser_byte_time_domain => AnalyserRead::ByteTimeDomain,
+        id::op_audio_analyser_float_time_domain => AnalyserRead::FloatTimeDomain,
+        id::op_audio_analyser_byte_frequency => AnalyserRead::ByteFrequency,
+        _ => AnalyserRead::FloatFrequency,
+    }
+}
+
 /// Start an awaited audio op. Its command is sent now, in the order the
 /// session dispatches; the future only collects the answer.
 pub(crate) fn call_async(
@@ -254,12 +409,7 @@ pub(crate) fn call_async(
         | id::op_audio_analyser_float_time_domain
         | id::op_audio_analyser_byte_frequency
         | id::op_audio_analyser_float_frequency => {
-            let read = match op {
-                id::op_audio_analyser_byte_time_domain => AnalyserRead::ByteTimeDomain,
-                id::op_audio_analyser_float_time_domain => AnalyserRead::FloatTimeDomain,
-                id::op_audio_analyser_byte_frequency => AnalyserRead::ByteFrequency,
-                _ => AnalyserRead::FloatFrequency,
-            };
+            let read = analyser_read(op);
             let [node_id] = exactly(op, args)?;
             let reading = service::read_analyser(tx, read, u32_of(op, 0, node_id)?)?;
             Box::pin(async move { reading.await.map(analyser_data) })
@@ -270,8 +420,9 @@ pub(crate) fn call_async(
             let frequencies = bytes(op, 1, frequencies)?;
             let pending = service::get_frequency_response(tx, node_id, &frequencies)?;
             Box::pin(async move {
-                pending.answer().await.map(|(magnitude, phase)| {
-                    OwnedValue::Array(vec![le_bytes(&magnitude), le_bytes(&phase)])
+                pending.answer().await.map(|response| {
+                    let (magnitude, phase) = response.values();
+                    OwnedValue::Array(vec![le_bytes(magnitude), le_bytes(phase)])
                 })
             })
         }
@@ -377,6 +528,7 @@ pub(crate) fn is_command(op: u32) -> bool {
             | id::op_inner_audio_set_loop
             | id::op_inner_audio_set_playback_rate
             | id::op_inner_audio_set_autoplay
+            | id::op_inner_audio_set_start_time
     )
 }
 
@@ -692,6 +844,9 @@ pub(crate) fn command(
         }),
         id::op_inner_audio_set_autoplay => inner_with(args, &|value| {
             boolean(op, 1, value).map(InnerAudioCommand::SetAutoplay)
+        }),
+        id::op_inner_audio_set_start_time => inner_with(args, &|value| {
+            f64_of(op, 1, value).map(InnerAudioCommand::SetStartTime)
         }),
         other => Err(not_a(other, "audio command")),
     }

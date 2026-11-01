@@ -9,7 +9,9 @@ use crate::{
     push_decoder::{M4a, M4aSeekDecoder, M4aSourceDecoder, M4aSourceRequest},
     resampled_streaming::Batched,
     streaming::{PcmPool, StreamMsg, StreamingState, stream_channel},
-    streaming_transport::{Decoder, HttpSource, Progress, Source, SourceRead, Step, while_active},
+    streaming_transport::{
+        Decoder, HttpSource, InterruptibleSource, Progress, Source, SourceRead, Step, while_active,
+    },
 };
 use shared::error::EngineResult;
 use std::sync::{
@@ -165,14 +167,14 @@ async fn file(
 
 // Test collector only: the actual source, off-worker decoder, loans and resume
 // protocol are shared with the production transport, without a second codec.
-async fn drain<const B: bool, S: Source<Observed<B>>>(
+pub(crate) async fn drain<D: Decoder, S: Source<D>>(
     source: &mut S,
-    mut decoder: OffWorker<Option<Observed<B>>>,
+    mut decoder: OffWorker<Option<D>>,
     pool: &mut PcmPool,
     tx: &mpsc::Sender<StreamMsg>,
     state: &Arc<StreamingState>,
     mut drain_first: bool,
-) -> OffWorker<Option<Observed<B>>> {
+) -> OffWorker<Option<D>> {
     'read: for _ in 0..10000 {
         let (mut input, eof) = if drain_first {
             drain_first = false;
@@ -243,7 +245,7 @@ async fn drain<const B: bool, S: Source<Observed<B>>>(
     panic!("source driver did not make bounded progress")
 }
 thread_local! { static COLLECT: std::cell::RefCell<Vec<f32>>=const{std::cell::RefCell::new(Vec::new())}; }
-fn take_pcm() -> Vec<f32> {
+pub(crate) fn take_pcm() -> Vec<f32> {
     COLLECT.with(|v| std::mem::take(&mut *v.borrow_mut()))
 }
 
@@ -677,6 +679,11 @@ struct Paused<S> {
     entered: Arc<Notify>,
     release: Arc<Notify>,
 }
+impl<S: InterruptibleSource> InterruptibleSource for Paused<S> {
+    fn resume_after_read_interruption(&mut self) -> EngineResult<()> {
+        self.inner.resume_after_read_interruption()
+    }
+}
 impl<const B: bool, S: SeekSource<Observed<B>>> Source<Observed<B>> for Paused<S> {
     type Request = M4aSourceRequest;
     fn pending(value: &Observed<B>) -> EngineResult<M4aSourceRequest> {
@@ -712,10 +719,10 @@ impl<const B: bool, S: SeekSource<Observed<B>>> SeekSource<Observed<B>> for Paus
             self.release.notified().await;
         }
         let mut result = self.inner.resume_before(request, decoder, context).await?;
-        if self.lie {
-            if let Some(result) = &mut result {
-                result.restart = false;
-            }
+        if self.lie
+            && let Some(result) = &mut result
+        {
+            result.restart = false;
         }
         Ok(result)
     }

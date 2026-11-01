@@ -1,7 +1,10 @@
-# Symphonia Ogg 0.6.1 candidate patch
+# Symphonia Ogg 0.6.1 patches
 
-`UPSTREAM` pins the published archive. Only isolated audio candidates select the
-patched source; the product dependency graph has not switched.
+Product Vorbis selects this checksum-pinned source and its existing patches.
+The other W09 codec/DSP ports remain candidates; platform/device and shipping
+profile acceptance are tracked separately from the host regression checkpoint.
+
+`UPSTREAM` pins the published archive shared by product Vorbis and isolated audio probes.
 
 Carry the format's explicit metadata policy into packet mappers at construction,
 without adding options to the audio-packet call or changing LogicalStream.

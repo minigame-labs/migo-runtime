@@ -1,5 +1,3 @@
-use std::cmp::Ordering;
-
 /// Represents a scheduled automation event on an AudioParam timeline.
 #[derive(Debug, Clone)]
 enum AutomationEvent {
@@ -182,14 +180,44 @@ impl AudioParamTimeline {
     /// `compute_value` per sample, and each of those re-walked every event from the
     /// start, so a-rate automation cost `O(frames * events)` per quantum.
     pub fn compute_values(&self, start_time: f64, buffer: &mut [f32], sample_rate: u32) {
+        self.compute_values_offset(start_time, 0, buffer, sample_rate);
+    }
+
+    /// A bounded slice of the same original block, preserving its sample grid.
+    /// Rebuilding a clock from a chunk's rounded start would change frame times.
+    pub(crate) fn compute_values_offset(
+        &self,
+        start_time: f64,
+        frame_offset: usize,
+        buffer: &mut [f32],
+        sample_rate: u32,
+    ) {
+        let mut block = self.values_block(start_time, sample_rate);
+        self.compute_values_from(&mut block, frame_offset, buffer);
+    }
+
+    pub(crate) fn values_block(&self, start_time: f64, sample_rate: u32) -> AutomationBlock {
+        AutomationBlock {
+            clock: crate::render_time::RenderTime::new(start_time, sample_rate),
+            cursor: self.cursor(),
+        }
+    }
+
+    /// Fill increasing offsets with one cursor for the entire original block.
+    pub(crate) fn compute_values_from(
+        &self,
+        block: &mut AutomationBlock,
+        frame_offset: usize,
+        buffer: &mut [f32],
+    ) {
         if self.events.is_empty() {
             // No automation -- fill with constant value
             buffer.fill(self.current_value);
             return;
         }
 
-        let inv_sample_rate = 1.0 / sample_rate.max(1) as f64;
-        let end_time = start_time + (buffer.len() as f64) * inv_sample_rate;
+        let clock = &block.clock;
+        let end_time = clock.at(frame_offset + buffer.len());
 
         // Fast path: nothing is active yet. Only valid when the first event is a
         // plain SetValue/SetTarget whose start is after this block. Ramps are
@@ -207,10 +235,10 @@ impl AudioParamTimeline {
             }
         }
 
-        let mut cursor = self.cursor();
+        let cursor = &mut block.cursor;
         for (index, sample) in buffer.iter_mut().enumerate() {
-            let time = start_time + index as f64 * inv_sample_rate;
-            *sample = self.value_at(time, &mut cursor);
+            let time = clock.at(frame_offset + index);
+            *sample = self.value_at(time, cursor);
         }
     }
 
@@ -245,10 +273,9 @@ impl AudioParamTimeline {
     /// Insert event in sorted order by time
     fn insert_event(&mut self, event: AutomationEvent) {
         let time = event.time();
-        let pos = self
-            .events
-            .binary_search_by(|e| e.time().partial_cmp(&time).unwrap_or(Ordering::Equal))
-            .unwrap_or_else(|pos| pos);
+        // Equal-time events retain call order; a later set/target must not be
+        // evaluated before the anchor that was scheduled immediately before it.
+        let pos = self.events.partition_point(|e| e.time() <= time);
         self.events.insert(pos, event);
     }
 }
@@ -260,6 +287,11 @@ impl AudioParamTimeline {
 /// what turns a-rate evaluation from `O(frames * events)` into `O(frames +
 /// events)`: `compute_values` used to call `compute_value` per sample, and each of
 /// those calls re-walked the whole event list from the beginning.
+pub(crate) struct AutomationBlock {
+    clock: crate::render_time::RenderTime,
+    cursor: TimelineCursor,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct TimelineCursor {
     /// Index of the first event not yet fully behind us.
