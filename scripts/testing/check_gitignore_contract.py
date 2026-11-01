@@ -7,6 +7,9 @@ sys.path.insert(0, str(ROOT / 'scripts/lib'))
 from gitignore_policy import check, tracked_ignored
 
 REQUIRED = [
+    'engine/crates/audio/src/nodes/wave_shaper_inline_tests.rs',
+    'engine/crates/audio/src/nodes/wave_shaper_inline_reference.rs',
+    'scripts/testing/check_audio_waveshaper_inline.py',
     'engine/crates/audio/src/inline_automation_tests.rs',
     'engine/crates/audio/src/nodes/inline_automation_gain_reference.rs',
     'engine/crates/audio/src/nodes/inline_automation_delay_reference.rs',

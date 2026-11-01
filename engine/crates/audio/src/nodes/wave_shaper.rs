@@ -39,21 +39,19 @@ impl OversampleType {
 const FIR_TAPS: usize = 32;
 
 /// Windowed-sinc lowpass at `cutoff` (cycles/sample), scaled by `gain`.
-fn design_lowpass(cutoff: f64, gain: f64) -> Vec<f32> {
+fn design_lowpass(cutoff: f64, gain: f64) -> [f32; FIR_TAPS] {
     let centre = (FIR_TAPS - 1) as f64 / 2.0;
-    let mut taps: Vec<f64> = (0..FIR_TAPS)
-        .map(|i| {
-            let n = i as f64 - centre;
-            let sinc = if n.abs() < 1e-12 {
-                2.0 * cutoff
-            } else {
-                (std::f64::consts::TAU * cutoff * n).sin() / (std::f64::consts::PI * n)
-            };
-            let phase = std::f64::consts::TAU * i as f64 / (FIR_TAPS - 1) as f64;
-            let window = 0.42 - 0.5 * phase.cos() + 0.08 * (2.0 * phase).cos();
-            sinc * window
-        })
-        .collect();
+    let mut taps: [f64; FIR_TAPS] = std::array::from_fn(|i| {
+        let n = i as f64 - centre;
+        let sinc = if n.abs() < 1e-12 {
+            2.0 * cutoff
+        } else {
+            (std::f64::consts::TAU * cutoff * n).sin() / (std::f64::consts::PI * n)
+        };
+        let phase = std::f64::consts::TAU * i as f64 / (FIR_TAPS - 1) as f64;
+        let window = 0.42 - 0.5 * phase.cos() + 0.08 * (2.0 * phase).cos();
+        sinc * window
+    });
     // Normalise to unit DC gain before applying the interpolation gain, so the
     // filter cannot change the level of the signal it is only meant to band-limit.
     let dc: f64 = taps.iter().sum();
@@ -62,7 +60,7 @@ fn design_lowpass(cutoff: f64, gain: f64) -> Vec<f32> {
             *tap = *tap / dc * gain;
         }
     }
-    taps.into_iter().map(|t| t as f32).collect()
+    taps.map(|t| t as f32)
 }
 
 /// A single channel's FIR delay line.
@@ -102,12 +100,10 @@ pub struct WaveShaperNode {
     curve: Option<Vec<f32>>,
     oversample: OversampleType,
     /// Interpolation and decimation filters, rebuilt when the factor changes.
-    up_taps: Vec<f32>,
-    down_taps: Vec<f32>,
+    up_taps: [f32; FIR_TAPS],
+    down_taps: [f32; FIR_TAPS],
     up_state: Vec<FirState>,
     down_state: Vec<FirState>,
-    /// Oversampled working buffer, `factor` samples per input frame.
-    scratch: Vec<f32>,
     output_connected: bool,
 }
 
@@ -117,11 +113,10 @@ impl WaveShaperNode {
             id,
             curve: None,
             oversample: OversampleType::None,
-            up_taps: Vec::new(),
-            down_taps: Vec::new(),
+            up_taps: [0.0; FIR_TAPS],
+            down_taps: [0.0; FIR_TAPS],
             up_state: Vec::new(),
             down_state: Vec::new(),
-            scratch: Vec::new(),
             output_connected: false,
         }
     }
@@ -148,11 +143,10 @@ impl WaveShaperNode {
         self.oversample = oversample;
         let factor = oversample.factor();
         if factor == 1 {
-            self.up_taps.clear();
-            self.down_taps.clear();
+            self.up_taps.fill(0.0);
+            self.down_taps.fill(0.0);
             self.up_state.clear();
             self.down_state.clear();
-            self.scratch.clear();
             return;
         }
         // Cutoff is the original Nyquist expressed in the oversampled rate. The
@@ -176,10 +170,6 @@ impl WaveShaperNode {
             .reserve(channels.saturating_sub(self.up_state.len()));
         self.down_state
             .reserve(channels.saturating_sub(self.down_state.len()));
-        self.scratch.reserve(
-            (crate::audio_thread::RENDER_QUANTUM_FRAMES * factor)
-                .saturating_sub(self.scratch.len()),
-        );
     }
 
     fn zero_input_response(&self) -> f32 {
@@ -263,37 +253,39 @@ impl AudioNodeProcessor for WaveShaperNode {
             self.up_state.resize(ch, FirState::default());
             self.down_state.resize(ch, FirState::default());
         }
-        if self.scratch.len() < frames * factor {
-            self.scratch.resize(frames * factor, 0.0);
-        }
-
+        // State persists across chunks; only the current oversampled span is local.
+        let mut scratch = [0.0; crate::audio_thread::RENDER_QUANTUM_FRAMES * 4];
         for channel in 0..ch {
-            // Upsample: zero-stuff, then interpolate.
-            for frame in 0..frames {
-                let sample = inputs.get(frame * ch + channel).copied().unwrap_or(0.0);
-                for phase in 0..factor {
-                    let stuffed = if phase == 0 { sample } else { 0.0 };
-                    self.scratch[frame * factor + phase] =
-                        self.up_state[channel].push_and_filter(stuffed, &self.up_taps);
-                }
-            }
-
-            // Shape at the higher rate, where the harmonics it generates have room.
-            for sample in self.scratch[..frames * factor].iter_mut() {
-                *sample = Self::shape(&curve, *sample);
-            }
-
-            // Decimate: filter every oversampled sample, keep one in `factor`.
-            for frame in 0..frames {
-                let mut kept = 0.0;
-                for phase in 0..factor {
-                    let filtered = self.down_state[channel]
-                        .push_and_filter(self.scratch[frame * factor + phase], &self.down_taps);
-                    if phase == 0 {
-                        kept = filtered;
+            for offset in (0..frames).step_by(crate::audio_thread::RENDER_QUANTUM_FRAMES) {
+                let count = (frames - offset).min(crate::audio_thread::RENDER_QUANTUM_FRAMES);
+                // Upsample: zero-stuff, then interpolate.
+                for frame in 0..count {
+                    let sample = inputs
+                        .get((offset + frame) * ch + channel)
+                        .copied()
+                        .unwrap_or(0.0);
+                    for phase in 0..factor {
+                        let stuffed = if phase == 0 { sample } else { 0.0 };
+                        scratch[frame * factor + phase] =
+                            self.up_state[channel].push_and_filter(stuffed, &self.up_taps);
                     }
                 }
-                output[frame * ch + channel] = kept;
+                // Shape only this chunk, preserving the original per-channel order.
+                for sample in scratch[..count * factor].iter_mut() {
+                    *sample = Self::shape(&curve, *sample);
+                }
+                // Decimate: filter every oversampled sample, keep one in `factor`.
+                for frame in 0..count {
+                    let mut kept = 0.0;
+                    for phase in 0..factor {
+                        let filtered = self.down_state[channel]
+                            .push_and_filter(scratch[frame * factor + phase], &self.down_taps);
+                        if phase == 0 {
+                            kept = filtered;
+                        }
+                    }
+                    output[(offset + frame) * ch + channel] = kept;
+                }
             }
         }
 
@@ -428,3 +420,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "wave_shaper_inline_tests.rs"]
+mod inline_tests;
