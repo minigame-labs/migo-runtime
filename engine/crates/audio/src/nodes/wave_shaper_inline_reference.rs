@@ -316,6 +316,6 @@ impl AudioNodeProcessor for WaveShaperNode {
     }
 }
 
-pub(super) fn coefficients(cutoff: f64, gain: f64) -> Vec<f32> {
+pub(crate) fn coefficients(cutoff: f64, gain: f64) -> Vec<f32> {
     design_lowpass(cutoff, gain)
 }

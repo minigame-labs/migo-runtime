@@ -15,7 +15,7 @@ use std::{
 use tokio::sync::{mpsc, oneshot};
 
 // Conservative task/channel/cell overhead. Every live or waiting owner keeps
-// this charge, its inline node, and one context-quantum render buffer charged.
+// this charge and its inline node. Render buffers keep independent credit.
 // PCM, delay storage and other existing resource permits remain with the node.
 pub(crate) const HANDOFF_BYTES: usize = 4096;
 
@@ -53,6 +53,12 @@ impl Host {
             incoming,
         })
     }
+    pub(crate) fn render_buffer_samples(&self) -> usize {
+        crate::audio_thread::RENDER_QUANTUM_FRAMES * self.channels.max(1) as usize
+    }
+    pub(crate) fn accepts_inline(&self, permit: &AudioAggregatePermit) -> bool {
+        permit.belongs_to(&self.aggregate)
+    }
     pub(crate) fn shares_physical_ledger(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.aggregate, &other.aggregate)
     }
@@ -70,14 +76,22 @@ impl Host {
         Lease { send, permit }
     }
     fn admit(&self, node: &dyn AudioNodeProcessor) -> EngineResult<Lease> {
+        self.admit_bytes(std::mem::size_of_val(node))
+    }
+    fn admit_bytes(&self, node_bytes: usize) -> EngineResult<Lease> {
         self.ensure_open()?;
-        let bytes = std::mem::size_of_val(node)
-            + crate::audio_thread::RENDER_QUANTUM_FRAMES
-                * self.channels.max(1) as usize
-                * std::mem::size_of::<f32>()
-            + HANDOFF_BYTES;
+        // Render storage owns its own credit: it can outlive a collected node.
+        let bytes = node_bytes + HANDOFF_BYTES;
         let permit = self.aggregate.try_reserve(bytes, "graph node retirement")?;
         Ok(self.register(permit))
+    }
+    pub(crate) fn reserve_node<T: AudioNodeProcessor + 'static>(
+        &self,
+    ) -> EngineResult<NodeAdmission<T>> {
+        Ok(NodeAdmission {
+            lease: self.admit_bytes(std::mem::size_of::<T>())?,
+            marker: std::marker::PhantomData,
+        })
     }
     pub(crate) fn reserve_value<T: Send + 'static>(&self) -> EngineResult<Reservation<T>> {
         self.reserve_value_with_bytes(0)
@@ -217,7 +231,7 @@ async fn retire_batch(cpu: &AudioCpu, value: Vec<Retired>) {
 struct Retired {
     // Actual node/PCM and excess render storage die before physical credit.
     _resource: Box<dyn Send>,
-    _buffer: Option<Vec<f32>>,
+    _buffer: Option<crate::render_buffer::RenderBuffer>,
     _permit: AudioAggregatePermit,
 }
 struct Lease {
@@ -228,7 +242,7 @@ struct Lease {
 pub(crate) struct Node {
     value: Option<Box<dyn AudioNodeProcessor>>,
     lease: Option<Lease>,
-    buffer: Option<Vec<f32>>,
+    buffer: Option<crate::render_buffer::RenderBuffer>,
 }
 impl Node {
     pub(crate) fn new(value: Box<dyn AudioNodeProcessor>) -> Self {
@@ -244,7 +258,7 @@ impl Node {
         }
         Ok(())
     }
-    pub(crate) fn retire(mut self, buffer: Option<Vec<f32>>) {
+    pub(crate) fn retire(mut self, buffer: Option<crate::render_buffer::RenderBuffer>) {
         self.buffer = buffer;
     }
 }
@@ -270,6 +284,20 @@ impl Drop for Node {
             if lease.send.send(value).is_err() {
                 unreachable!("process-lifetime graph retirement receiver disappeared");
             }
+        }
+    }
+}
+
+pub(crate) struct NodeAdmission<T: AudioNodeProcessor + 'static> {
+    lease: Lease,
+    marker: std::marker::PhantomData<T>,
+}
+impl<T: AudioNodeProcessor + 'static> NodeAdmission<T> {
+    pub(crate) fn finish(self, value: T) -> Node {
+        Node {
+            value: Some(Box::new(value)),
+            lease: Some(self.lease),
+            buffer: None,
         }
     }
 }

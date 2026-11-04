@@ -137,6 +137,22 @@ impl AudioNodeProcessor for DynamicsCompressorNode {
         frames
     }
 
+    fn prepare_params(
+        &mut self,
+        host: &crate::node_retirement::Host,
+    ) -> shared::error::EngineResult<()> {
+        for param in [
+            &mut self.threshold,
+            &mut self.knee,
+            &mut self.ratio,
+            &mut self.attack,
+            &mut self.release,
+        ] {
+            param.prepare_storage(host)?;
+        }
+        Ok(())
+    }
+
     fn get_param_mut(&mut self, name: &str) -> Option<&mut AudioParamTimeline> {
         match name {
             "threshold" => Some(&mut self.threshold),

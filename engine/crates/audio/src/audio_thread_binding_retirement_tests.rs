@@ -199,7 +199,7 @@ pub(super) fn snapshot_rebindings() {
             if mode == "legacy" {
                 set_buffer_scoped(&mut contexts, &index, 1, 10, legacy)
             } else if mode == "deny-start" || mode == "replace-start" {
-                start_buffer_scoped(&mut contexts, &index, 1, 10, next, 0.0, 0.0, None)
+                start_buffer_scoped(&mut contexts, &index, 1, 10, next, (0.0, 0.0, None))
             } else {
                 set_started_buffer_scoped(&mut contexts, &index, 1, 10, next)
             }
@@ -269,16 +269,27 @@ pub(super) fn curve_replacements() {
         curve.resize(2, 0.25);
         let retained_bytes = curve.capacity() * 4;
         assert_eq!(retained_bytes, BYTES);
+        let base = ledger.used_bytes();
         assert!(ctx.set_wave_shaper_curve(10, Some(curve)));
+        let live_credit = ledger.used_bytes();
+        assert!(
+            live_credit >= base + retained_bytes + 4096,
+            "live curve capacity omitted from ledger"
+        );
         let filler = (mode == "deny").then(|| {
             ledger
-                .try_reserve(
-                    LIMIT - ledger.used_bytes() - BYTES + 1,
-                    "test curve capacity quota",
-                )
+                .try_reserve(LIMIT - live_credit, "test curve capacity quota")
                 .unwrap()
         });
         let next = (mode == "replace").then(|| vec![0.75; 2]);
+        let next_bytes = next.as_ref().map_or(0, |data| data.capacity() * 4);
+        let final_credit = base
+            + next_bytes
+            + if mode == "deny" {
+                LIMIT - live_credit
+            } else {
+                0
+            };
         let state = Arc::new(Dropped::default());
         let gate = block(&cpu);
         let credit = ledger.used_bytes();
@@ -291,21 +302,19 @@ pub(super) fn curve_replacements() {
         let queued = state.count.load(Ordering::Acquire);
         gate.open();
         assert!(freed < (BYTES / 2) as u64, "curve escaped CPU retirement");
-        assert_eq!(
-            accepted,
-            mode != "deny",
-            "curve capacity admission bypassed physical ledger"
-        );
+        assert!(accepted, "curve clear acquired duplicate admission");
         assert_eq!(
             queued, 0,
             "curve destroyed while CPU retirement was blocked"
         );
         if accepted {
             assert!(
-                retained_credit >= credit + retained_bytes,
+                retained_credit >= credit + next_bytes,
                 "curve capacity admission bypassed physical ledger"
             );
-            wait(|| state.count.load(Ordering::Acquire) == 1 && ledger.used_bytes() == credit);
+            wait(|| {
+                state.count.load(Ordering::Acquire) == 1 && ledger.used_bytes() == final_credit
+            });
             assert!(
                 !state.wrong.load(Ordering::Acquire),
                 "curve escaped CPU retirement"
@@ -315,13 +324,7 @@ pub(super) fn curve_replacements() {
             let input = [0.0; 128];
             let mut output = [0.0; 128];
             node.process(&input, &mut output, 48000, 1, 0.0);
-            let expected: f32 = if mode == "deny" {
-                0.25
-            } else if mode == "replace" {
-                0.75
-            } else {
-                0.0
-            };
+            let expected: f32 = if mode == "replace" { 0.75 } else { 0.0 };
             assert!(
                 output.iter().all(|v| v.to_bits() == expected.to_bits()),
                 "curve replacement changed complete PCM"

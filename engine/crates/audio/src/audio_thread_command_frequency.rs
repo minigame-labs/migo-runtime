@@ -4,7 +4,7 @@ use super::*;
 
 pub(super) fn forward(
     delivery: AudioCommandDelivery,
-    contexts: &mut HashMap<AudioContextId, AudioContext>,
+    contexts: &mut impl ContextAccess,
     index: &NodeContextIndex,
     inbox: &mut crate::command_inbox::Inbox,
 ) -> Option<AudioCommandDelivery> {
@@ -35,7 +35,7 @@ use crate::node_retirement::{HANDOFF_BYTES, Host, Reservation, Value};
 use shared::audio_frequency_response::{FrequencyResponse, FrequencyResponseStorage};
 
 pub(super) fn query(
-    contexts: &mut HashMap<AudioContextId, AudioContext>,
+    contexts: &mut impl ContextAccess,
     index: &NodeContextIndex,
     node_id: AudioNodeId,
     frequencies: &[f32],

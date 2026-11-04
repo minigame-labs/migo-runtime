@@ -3,10 +3,7 @@
 use super::result_custody::{Owned, Retirement};
 use super::*;
 
-pub(super) fn integrate(
-    entry: Owned<DecodeResult>,
-    players: &mut HashMap<InnerAudioId, InnerAudioPlayer>,
-) {
+pub(super) fn integrate(entry: Owned<DecodeResult>, players: &mut impl PlayerAccess) {
     let ((id, load, resp), body) = entry.split(|value| match value {
         DecodeResult::InnerAudio {
             id,

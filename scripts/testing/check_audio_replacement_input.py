@@ -13,10 +13,7 @@ ROOT=base.ROOT
 TEST='audio_thread::tests::snapshot_buffer_commands_validate_context_and_node_ownership'
 
 
-def main(work,target,preflight=False):
-    package,env,frozen=base.prepare(work,target)
-    paths={'replacement':package/'src/audio_thread_replacement_input.rs','context':package/'src/context.rs','inbox':package/'src/command_inbox.rs','channel':package/'local-deps/shared/src/audio_channel.rs'}
-    originals={k:p.read_text() for k,p in paths.items()}
+def declarations(originals):
     def method(text,marker):
         a=text.index(marker);left=text.index('{',a);depth=1;i=left+1
         while depth:depth+=(text[i]=='{')-(text[i]=='}');i+=1
@@ -37,11 +34,11 @@ def main(work,target,preflight=False):
       ('replacement-input-on-async','inbox','cpu.retirement().retire(batch).await;','drop(batch);',cpu),
       ('replacement-item-credit-early','channel','        (result, self.into_discarded_payload())','        let mut payload=self.into_discarded_payload();\n        if let Some(value)=payload.as_mut(){drop(value._permit.take());}\n        (result,payload)',credit),
       ('replacement-byte-credit-early','channel','        (result, self.into_discarded_payload())','        if let Some(permit)=self.permit.as_mut(){permit.shrink_to(0); }\n        (result,self.into_discarded_payload())',credit),
-      ('replacement-curve-taken-before-admission','context',curve,curve.replace('        let retirement =','        let mut incoming=curve.take();\n        let retirement =',1).replace('node.set_curve(curve.take());','node.set_curve(incoming.take());'),cpu),
+      ('replacement-curve-taken-before-admission','context',curve,curve.replace('        self.with_node_typed', '        let mut incoming=curve.take();\n        self.with_node_typed',1).replace('node.try_set_curve(curve)','node.try_set_curve(&mut incoming)'),cpu),
       ('replacement-snapshot-taken-before-admission','context',snapshot,snapshot.replace('        if let Some(node) =','        let incoming=buffer.take();\n        if let Some(node) =',1).replace('source.set_snapshot(buffer.take());','source.set_snapshot(incoming);'),cpu),
-      ('replacement-curve-old-admission-ignored','context',curve,curve.replace('node.retire_curve(retirement.as_ref())','Ok::<(), EngineError>(())'),pcm),
+      ('replacement-curve-old-admission-ignored','node','self.retirement.as_ref(),\n                    data.capacity() * std::mem::size_of::<f32>(),','None,\n                    data.capacity() * std::mem::size_of::<f32>(),',pcm),
       ('replacement-snapshot-old-admission-ignored','context',snapshot,snapshot.replace('source.retire_buffer(self.node_retirement.as_ref())','Ok::<(), EngineError>(())'),start),
-      ('replacement-curve-cloned','context','node.set_curve(curve.take());','node.set_curve(curve.clone());',consumed),
+      ('replacement-curve-cloned','context','node.try_set_curve(curve)','node.try_set_curve(&mut curve.clone())',consumed),
       ('replacement-snapshot-cloned','context','source.set_snapshot(buffer.take());','source.set_snapshot(buffer.clone());',consumed),
       ('replacement-start-time-lost','replacement','ctx.start_source(*node_id, *when, *offset, *duration)','ctx.start_source(*node_id, 0.0, *offset, *duration)',pcm),
       ('replacement-start-offset-lost','replacement','ctx.start_source(*node_id, *when, *offset, *duration)','ctx.start_source(*node_id, *when, 0.0, *duration)',pcm),
@@ -52,6 +49,14 @@ def main(work,target,preflight=False):
       ('replacement-unrelated-selected','replacement',selector,'        || false','replacement completion requires a curve or snapshot command'),
     ]
     for n,k,a,z,_ in rows:assert a!=z and originals[k].count(a)==1,(n,'anchor drift',originals[k].count(a))
+    return rows
+
+
+def main(work,target,preflight=False):
+    package,env,frozen=base.prepare(work,target)
+    paths={'replacement':package/'src/audio_thread_replacement_input.rs','context':package/'src/context.rs','inbox':package/'src/command_inbox.rs','channel':package/'local-deps/shared/src/audio_channel.rs','node':package/'src/nodes/wave_shaper.rs'}
+    originals={k:p.read_text() for k,p in paths.items()}
+    rows=declarations(originals)
     programs=[];controls=[];suites={}
     product=capacity.product
     def record(name,binary,pruned=False,kind='audio'):

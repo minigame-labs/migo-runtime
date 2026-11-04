@@ -2,7 +2,7 @@
 use super::*;
 use migo_alloc_probe::thread_counts;
 #[path = "wave_shaper_inline_reference.rs"]
-mod before;
+pub(crate) mod before;
 
 fn same(actual: &[f32], expected: &[f32], message: &str) {
     assert!(

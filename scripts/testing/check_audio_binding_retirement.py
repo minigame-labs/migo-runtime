@@ -36,15 +36,15 @@ def main(work, target, before_source=None, preflight=False):
     product = capacity.product
     package, env, frozen = capacity.prepare(work, target)
     assert 'scripts/testing/check_audio_binding_retirement.py' in frozen
-    paths = {n: package / 'src' / n for n in ['node_retirement.rs', 'context.rs', 'nodes/buffer_source.rs', 'nodes/wave_shaper.rs']}
+    paths = {n: package / 'src' / n for n in ['node_retirement.rs', 'context.rs', 'nodes/buffer_source.rs', 'nodes/wave_shaper.rs', 'nodes/wave_shaper_storage.rs']}
     originals = {n: p.read_text() for n, p in paths.items()}
     rows = [
         ('binding-destroyed-inline','node_retirement.rs','if self.lease.is_some() {','if false {',DROP,'legacy binding escaped CPU retirement'),
         ('binding-async-drop','node_retirement.rs','cpu.retirement().retire(value).await;','drop(value);',DROP,'legacy binding escaped CPU retirement'),
         ('legacy-binding-no-handoff','nodes/buffer_source.rs','crate::node_retirement::retire_replacement(&mut self.buffer, host, 0)','Ok(())',DROP,'legacy binding escaped CPU retirement'),
         ('snapshot-binding-no-handoff','nodes/buffer_source.rs','crate::node_retirement::retire_replacement(&mut self.buffer, host, 0)','Ok(())',CLOSE,'snapshot binding escaped CPU retirement'),
-        ('curve-no-handoff','nodes/wave_shaper.rs','crate::node_retirement::retire_replacement(&mut self.curve, host, bytes)','Ok(())',CREDIT,'curve escaped CPU retirement'),
-        ('curve-length-instead-of-capacity','nodes/wave_shaper.rs','curve.capacity() * std::mem::size_of::<f32>()','curve.len() * std::mem::size_of::<f32>()',CREDIT,'curve capacity admission bypassed physical ledger'),
+        ('curve-no-handoff','nodes/wave_shaper_storage.rs','if let Self::Cpu(value) = self {\n            value.retire_replacement();','if let Self::Cpu(mut value) = self {\n            drop(std::mem::take(&mut *value));\n            value.retire_replacement();',CREDIT,'curve escaped CPU retirement'),
+        ('curve-length-instead-of-capacity','nodes/wave_shaper.rs','self.retirement.as_ref(),\n                    data.capacity() * std::mem::size_of::<f32>(),','self.retirement.as_ref(),\n                    data.len() * std::mem::size_of::<f32>(),',CREDIT,'live curve capacity omitted from ledger'),
         ('replacement-admission-uncharged','node_retirement.rs','try_reserve(bytes, "graph retained resource")','try_reserve(0, "graph retained resource")',DROP,'binding admission changed old state'),
     ]
     for name, file, before, after, _, _ in rows:
@@ -74,7 +74,7 @@ def main(work, target, before_source=None, preflight=False):
             try:
                 paths['context.rs'].write_text(adapted)
                 binary = product.src.build(package, work, env, 'before-context-resources', False)
-                for label,test,assertion in [('before-legacy-binding',DROP,'legacy binding escaped CPU retirement'),('before-snapshot-binding',CLOSE,'snapshot binding escaped CPU retirement'),('before-curve-replacement',CREDIT,'curve escaped CPU retirement')]:
+                for label,test,assertion in [('before-legacy-binding',DROP,'legacy binding escaped CPU retirement'),('before-snapshot-binding',CLOSE,'snapshot binding escaped CPU retirement'),('before-curve-replacement',CREDIT,'live curve capacity omitted from ledger')]:
                     red.append(capacity.run(binary, package, env, work, label, test, 101, assertion))
                 record('before-context-resources', binary, True)
             finally:

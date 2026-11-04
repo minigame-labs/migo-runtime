@@ -2,8 +2,14 @@
 //! Only published PCM enters the shared bus; source steps and cached suffixes
 //! stay with one managed owner across callbacks and idle/suspend intervals.
 use super::*;
+use crate::audio_thread::{ContextAccess, ContextView};
 use crate::context::AudioContext;
 use shared::protocol::audio_cmd::AudioContextState;
+#[cfg(test)]
+use std::collections::HashMap;
+#[path = "device_route_storage.rs"]
+mod route_storage;
+use route_storage::Routes;
 use std::time::{Duration, Instant};
 
 const MAX_MIX_TURNS: usize = 4096;
@@ -24,21 +30,33 @@ struct Route {
 }
 pub(crate) struct DeviceMixer {
     controller: Controller,
-    routes: HashMap<u32, Route>,
+    routes: Routes,
+    admission_retry: Option<Instant>,
     // A fixed host stack buffer, independent of route count and backend layout.
     scratch: [f32; QUANTUM * 32],
 }
 impl DeviceMixer {
+    pub(crate) fn managed(cpu: AudioCpu, storage: crate::node_retirement::Host) -> Self {
+        Self {
+            controller: Controller::managed(cpu, storage.clone()),
+            routes: Routes::managed(storage),
+            admission_retry: None,
+            scratch: [0.0; QUANTUM * 32],
+        }
+    }
+    #[cfg(test)]
     pub(crate) fn new(cpu: AudioCpu) -> Self {
         Self {
             controller: Controller::new(cpu),
-            routes: HashMap::new(),
+            routes: Routes::new(),
+            admission_retry: None,
             scratch: [0.0; QUANTUM * 32],
         }
     }
     pub(crate) fn restart(&mut self) {
         self.controller.restart();
         self.routes.clear();
+        self.admission_retry = None;
     }
     fn failed(error: EngineError, retry_admission: bool) -> RouteState {
         tracing::warn!("device SRC route stopped: {}", error);
@@ -67,13 +85,14 @@ impl DeviceMixer {
     /// allocate. No filter construction or CPU wait occurs on this caller.
     pub(crate) fn service(
         &mut self,
-        contexts: &mut HashMap<u32, AudioContext>,
+        contexts: &mut impl ContextAccess,
         target: u32,
         paused: bool,
         wakeup: &ThreadWakeup,
         mut collected: impl FnMut(u32),
         mut ended: impl FnMut(u32),
     ) {
+        self.admission_retry = None;
         self.routes.retain(|id, route| {
             contexts.get(id).is_some_and(|ctx| {
                 route.epoch.same(&ctx.device_epoch()) && route.format.target == target
@@ -84,7 +103,7 @@ impl DeviceMixer {
                 slot.epoch.same(&ctx.device_epoch()) && slot.format.target == target
             })
         });
-        for (&id, context) in contexts {
+        for (&id, context) in contexts.iter_mut() {
             if context.sample_rate() == target {
                 Self::control_only(context, paused, &mut collected, &mut ended);
                 continue;
@@ -100,16 +119,15 @@ impl DeviceMixer {
                 self.controller.remove(context);
             }
             if !paused && context.has_active_sources() && !self.routes.contains_key(&id) {
-                let state = match self
-                    .controller
-                    .ensure(context, target, wakeup.clone(), None)
-                {
-                    Ok(()) => RouteState::Pending,
-                    Err(error) => Self::failed(error, true),
-                };
-                self.routes.insert(
-                    id,
-                    Route {
+                let result = self.routes.create_with(id, || {
+                    let state = match self
+                        .controller
+                        .ensure(context, target, wakeup.clone(), None)
+                    {
+                        Ok(()) => RouteState::Pending,
+                        Err(error) => Self::failed(error, true),
+                    };
+                    Ok(Route {
                         epoch: context.device_epoch(),
                         format: Format {
                             source: context.sample_rate(),
@@ -117,8 +135,17 @@ impl DeviceMixer {
                             channels: context.channels(),
                         },
                         state,
-                    },
-                );
+                    })
+                });
+                if let Err(error) = result {
+                    if error.code == ErrorCode::InputSaturated {
+                        // A refusal cannot allocate a per-route failure record.
+                        // Keep one inline deadline so an idle host retries.
+                        self.admission_retry = Some(Instant::now() + ADMISSION_RETRY);
+                    }
+                    Self::control_only(context, paused, &mut collected, &mut ended);
+                    continue;
+                }
             }
             let Some(route) = self.routes.get_mut(&id) else {
                 Self::control_only(context, paused, &mut collected, &mut ended);
@@ -173,11 +200,7 @@ impl DeviceMixer {
             }
         }
     }
-    pub(crate) fn has_output_work(
-        &self,
-        contexts: &HashMap<u32, AudioContext>,
-        target: u32,
-    ) -> bool {
+    pub(crate) fn has_output_work(&self, contexts: &impl ContextView, target: u32) -> bool {
         contexts.iter().any(|(id, context)| {
             if context.state() != AudioContextState::Running {
                 return false;
@@ -208,7 +231,7 @@ impl DeviceMixer {
                 || !session.pull.buffers.as_ref().unwrap().events.is_empty()
         })
     }
-    pub(crate) fn retry_wait(&self, contexts: &HashMap<u32, AudioContext>) -> Option<Duration> {
+    pub(crate) fn retry_wait(&self, contexts: &impl ContextView) -> Option<Duration> {
         let now = Instant::now();
         self.routes
             .iter()
@@ -227,6 +250,10 @@ impl DeviceMixer {
                     _ => None,
                 }
             })
+            .chain(
+                self.admission_retry
+                    .map(|at| at.saturating_duration_since(now)),
+            )
             .min()
     }
     /// At most one device quantum, with a fixed turn ceiling. Every individual
@@ -328,3 +355,7 @@ impl DeviceMixer {
 #[cfg(test)]
 #[path = "device_mixer_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "device_route_storage_tests.rs"]
+mod storage_tests;

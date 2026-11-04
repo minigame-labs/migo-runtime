@@ -17,15 +17,15 @@ TEST, COMPAT = capacity.TESTS
 
 def declarations(originals):
     rows = [
-        ('shaper-command-preparation-omitted', 'context.rs',
-         'node.prepare_oversampling(channels);', 'let _ = channels;', 'cold context render allocated'),
+        ('shaper-command-preparation-omitted', 'nodes/wave_shaper.rs',
+         'self.prepare_oversampling(channels);', 'let _ = channels;', 'cold context render allocated'),
         ('shaper-only-one-channel-prepared', 'nodes/wave_shaper.rs',
          'let channels = channels.max(1) as usize;', 'let channels = 1_usize;', 'cold context render allocated'),
         ('shaper-heap-scratch-reintroduced', 'nodes/wave_shaper.rs',
          'let mut scratch = [0.0; crate::audio_thread::RENDER_QUANTUM_FRAMES * 4];', 'let mut scratch = vec![0.0; crate::audio_thread::RENDER_QUANTUM_FRAMES * 4];', 'cold context render allocated'),
         ('shaper-repeated-command-loses-history', 'nodes/wave_shaper.rs',
          '    pub(crate) fn prepare_oversampling(&mut self, channels: u32) {',
-         '    pub(crate) fn prepare_oversampling(&mut self, channels: u32) {\n        self.up_state.clear();\n        self.down_state.clear();',
+         '    pub(crate) fn prepare_oversampling(&mut self, channels: u32) {\n        self.history.up_state.clear();\n        self.history.down_state.clear();',
          'prepared waveshaper PCM or history changed'),
     ]
     for name, file, before, after, _ in rows:

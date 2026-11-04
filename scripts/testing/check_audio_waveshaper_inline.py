@@ -25,7 +25,7 @@ def declarations(originals):
     rows += [
         ('FIR-normalization-lost',node,'*tap = *tap / dc * gain;','*tap *= gain;',coefficients,'FIR coefficient bits changed'),
         ('FIR-interpolation-gain-lost',node,'design_lowpass(cutoff, factor as f64)','design_lowpass(cutoff, 1.0)',coefficients,'FIR coefficient bits changed'),
-        ('chunk-restarts-history',node,'                let count = (frames - offset).min(crate::audio_thread::RENDER_QUANTUM_FRAMES);','                self.up_state[channel] = FirState::default();\n                let count = (frames - offset).min(crate::audio_thread::RENDER_QUANTUM_FRAMES);',pcm,'bounded waveshaper PCM or history changed'),
+        ('chunk-restarts-history',node,'                let count = (frames - offset).min(crate::audio_thread::RENDER_QUANTUM_FRAMES);','                history.up_state[channel] = FirState::default();\n                let count = (frames - offset).min(crate::audio_thread::RENDER_QUANTUM_FRAMES);',pcm,'bounded waveshaper PCM or history changed'),
         ('chunk-output-offset-lost',node,'output[(offset + frame) * ch + channel] = kept;','output[frame * ch + channel] = kept;',long,'bounded waveshaper PCM or history changed'),
         ('chunk-shaping-span-lost',node,'scratch[..count * factor].iter_mut()','scratch[..factor].iter_mut()',pcm,'bounded waveshaper PCM or history changed'),
         ('decimation-phase-changed',node,'if phase == 0 {\n                            kept = filtered;','if phase == 1 {\n                            kept = filtered;',pcm,'bounded waveshaper PCM or history changed'),
@@ -39,7 +39,7 @@ def main(work: Path, target: Path, before_directory: Path, preflight=False):
     package, env, frozen = base.prepare(work, target)
     product = base.capacity.product
     common = product.whole.support.clock.common
-    paths={name:package/'src'/name for name in ['nodes/wave_shaper.rs','context.rs']}
+    paths={name:package/'src'/name for name in ['nodes/wave_shaper.rs','context.rs','nodes/wave_shaper_inline_tests.rs','nodes/wave_shaper_inline_reference.rs']}
     originals = {key: path.read_text() for key, path in paths.items()}
     rows = declarations(originals)
     programs, controls, suites, red = [], [], {}, []
@@ -69,17 +69,27 @@ def main(work: Path, target: Path, before_directory: Path, preflight=False):
     assert common.run(['cargo', 'clippy', '--lib', '--tests', '--offline', '--locked', '--message-format=json'], work / 'clippy.jsonl', package, env, timeout=300) == 0
     if not preflight:
         run(positive, 'full-debug')
-        key='nodes/wave_shaper.rs'
+        test_key='nodes/wave_shaper_inline_tests.rs'
+        reference_key='nodes/wave_shaper_inline_reference.rs'
         try:
-            hook='\n#[cfg(test)]\n#[path = "wave_shaper_inline_tests.rs"]\nmod inline_tests;\n'
-            paths[key].write_text((before_directory/'engine/crates/audio/src'/key).read_text()+hook)
+            # New managed APIs must remain compiled. Redirect only the measured
+            # native subject to the complete frozen old kernel, without changing
+            # any old DSP operation or allocation. Expose taps for its old read.
+            before=(before_directory/'engine/crates/audio/src/nodes/wave_shaper.rs').read_text()
+            assert 'fn design_lowpass(cutoff: f64, gain: f64) -> Vec<f32>' in before
+            paths[reference_key].write_text(originals[reference_key].replace('    up_taps: Vec<f32>,','    pub(super) up_taps: Vec<f32>,',1).replace('    down_taps: Vec<f32>,','    pub(super) down_taps: Vec<f32>,',1))
+            adapter='\nuse before::{OversampleType, WaveShaperNode};\nfn design_lowpass(cutoff: f64, gain: f64) -> Vec<f32> { before::coefficients(cutoff, gain) }\n'
+            paths[test_key].write_text(originals[test_key]+adapter)
+            (work/'before-native-subject-adapter.rs').write_text(adapter)
             binary=build('before-node')
             for label,test,message in [('before-coefficients','coefficients_and_mode_setter_are_exact_without_heap','FIR coefficient design allocated'),('before-long-block','long_blocks_and_changing_channels_keep_history_without_scratch_heap','long waveshaper render allocated scratch')]:
                 run(binary,label,PREFIX+test,101,message)
                 red.append(dict(name=label,program='before-node',test=PREFIX+test,exit=101,expected_assertion=message,sha256=programs[-1]['sha256']))
             programs[-1]['pruned']=True;binary.unlink()
-            print('Actual unchanged WaveShaper before source rejected at both heap assertions',flush=True)
-        finally:paths[key].write_text(originals[key])
+            print('Complete frozen native WaveShaper before kernel rejected at both heap assertions',flush=True)
+        finally:
+            paths[test_key].write_text(originals[test_key])
+            paths[reference_key].write_text(originals[reference_key])
 
         for name, key, before, after, test, assertion in rows:
             try:

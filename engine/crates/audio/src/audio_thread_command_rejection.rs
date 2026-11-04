@@ -4,9 +4,9 @@ use super::*;
 
 pub(super) fn forward(
     delivery: AudioCommandDelivery,
-    contexts: &mut HashMap<AudioContextId, AudioContext>,
+    contexts: &mut impl ContextAccess,
     index: &NodeContextIndex,
-    players: &HashMap<InnerAudioId, InnerAudioPlayer>,
+    players: &impl PlayerView,
     inbox: &mut crate::command_inbox::Inbox,
 ) -> Option<AudioCommandDelivery> {
     if let Some(error) = rejection(delivery.command(), contexts, index, players) {
@@ -19,9 +19,9 @@ pub(super) fn forward(
 
 fn rejection(
     command: &AudioCmd,
-    contexts: &mut HashMap<AudioContextId, AudioContext>,
+    contexts: &mut impl ContextAccess,
     index: &NodeContextIndex,
-    players: &HashMap<InnerAudioId, InnerAudioPlayer>,
+    players: &impl PlayerView,
 ) -> Option<EngineError> {
     let missing_context =
         |id| EngineError::from_detail(ErrorCode::NotFound, format!("AudioContext {id} not found"));

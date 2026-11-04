@@ -1184,6 +1184,11 @@ mod tests {
         wait_until("the producer is connected", || {
             session.counters.snapshot().producer_connected
         });
+        // stop is asynchronous: first settle the connection's initial drain.
+        // The assertion below then tests that stop admits no new drain.
+        wait_until("the initial drain has completed", || {
+            session.drains.load(Ordering::Relaxed) >= 1
+        });
         endpoint.stop();
         session.downlink_out.lock().push_back(vec![1u8; 8]);
         session.wake();

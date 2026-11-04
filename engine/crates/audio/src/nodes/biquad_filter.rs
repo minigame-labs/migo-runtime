@@ -370,6 +370,21 @@ impl AudioNodeProcessor for BiquadFilterNode {
         })
     }
 
+    fn prepare_params(
+        &mut self,
+        host: &crate::node_retirement::Host,
+    ) -> shared::error::EngineResult<()> {
+        for param in [
+            &mut self.frequency,
+            &mut self.detune,
+            &mut self.q,
+            &mut self.gain,
+        ] {
+            param.prepare_storage(host)?;
+        }
+        Ok(())
+    }
+
     fn get_param_mut(&mut self, name: &str) -> Option<&mut AudioParamTimeline> {
         match name {
             "frequency" => Some(&mut self.frequency),

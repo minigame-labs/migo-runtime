@@ -4,7 +4,7 @@ use super::*;
 
 pub(super) fn forward(
     delivery: AudioCommandDelivery,
-    contexts: &mut HashMap<AudioContextId, AudioContext>,
+    contexts: &mut impl ContextAccess,
     inbox: &mut crate::command_inbox::Inbox,
 ) -> Option<AudioCommandDelivery> {
     let AudioCmd::CopyToChannel {
@@ -29,7 +29,7 @@ pub(super) fn forward(
 }
 
 pub(super) fn copy(
-    contexts: &mut HashMap<AudioContextId, AudioContext>,
+    contexts: &mut impl ContextAccess,
     ctx_id: AudioContextId,
     buffer_id: shared::protocol::audio_cmd::AudioBufferId,
     data: &[f32],

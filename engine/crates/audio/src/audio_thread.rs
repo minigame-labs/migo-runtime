@@ -32,8 +32,23 @@ mod command_parameters;
 mod command_rejection;
 #[path = "audio_thread_decode_rejection.rs"]
 mod decode_rejection;
+#[path = "audio_thread_node_index.rs"]
+mod node_index;
 #[path = "audio_thread_replacement_input.rs"]
 mod replacement_input;
+use node_index::NodeContextIndex;
+#[path = "audio_thread_context_table.rs"]
+mod context_table;
+#[path = "audio_thread_inner_players.rs"]
+mod inner_collection;
+pub(crate) use context_table::{ContextAccess, ContextCreate, ContextView};
+#[path = "audio_thread_media_players.rs"]
+mod media_membership;
+pub(crate) use inner_collection::{PlayerAccess, PlayerView};
+#[path = "audio_thread_mix_buffer.rs"]
+mod mix_buffer;
+#[path = "audio_thread_node_creation.rs"]
+mod node_creation;
 
 /// Best-effort thread join with a timeout.  Falls back to detaching the
 /// thread if it does not finish within `timeout`.
@@ -764,9 +779,9 @@ impl PlaybackIntents {
 
     fn has_active_target(
         &self,
-        contexts: &HashMap<AudioContextId, AudioContext>,
-        players: &HashMap<InnerAudioId, InnerAudioPlayer>,
-        media_players: &HashMap<u32, Vec<InnerAudioId>>,
+        contexts: &impl ContextView,
+        players: &impl PlayerView,
+        media_players: &impl media_membership::Lookup,
     ) -> bool {
         self.targets[..self.len].iter().any(|target| match *target {
             PlaybackIntent::None => false,
@@ -790,76 +805,61 @@ impl PlaybackIntents {
     }
 }
 
-/// Reverse lookup from node_id to context_id for O(1) access.
-/// This avoids iterating all contexts when looking up a node.
-struct NodeContextIndex {
-    node_to_ctx: HashMap<AudioNodeId, AudioContextId>,
-}
-
-impl NodeContextIndex {
-    fn new() -> Self {
-        Self {
-            node_to_ctx: HashMap::with_capacity(64),
-        }
-    }
-
-    #[inline]
-    fn register(&mut self, node_id: AudioNodeId, ctx_id: AudioContextId) {
-        self.node_to_ctx.insert(node_id, ctx_id);
-    }
-
-    #[inline]
-    fn unregister(&mut self, node_id: AudioNodeId) {
-        self.node_to_ctx.remove(&node_id);
-    }
-
-    #[inline]
-    fn get_context(&self, node_id: AudioNodeId) -> Option<AudioContextId> {
-        self.node_to_ctx.get(&node_id).copied()
-    }
-
-    fn clear_context(&mut self, ctx_id: AudioContextId) {
-        self.node_to_ctx.retain(|_, &mut v| v != ctx_id);
-    }
-
-    fn clear_all(&mut self) {
-        self.node_to_ctx.clear();
-    }
-}
-
 /// Insert a new context without ever replacing a live context that happens to
 /// have the same externally allocated id.
 fn create_context_scoped(
-    contexts: &mut HashMap<AudioContextId, AudioContext>,
+    contexts: &mut impl ContextCreate,
     ctx_id: AudioContextId,
     sample_rate: u32,
     channels: u32,
     cpu: Option<&migo_io::audio_cpu::AudioCpu>,
 ) -> bool {
-    match contexts.entry(ctx_id) {
-        std::collections::hash_map::Entry::Vacant(entry) => {
-            let mut context = AudioContext::new(ctx_id, sample_rate, channels);
-            if let Some(cpu) = cpu
-                && let Err(error) = context.prepare_node_retirement(
-                    cpu.clone(),
-                    crate::limits::AudioAggregateLedger::process_global(),
-                )
-            {
-                tracing::warn!("AudioContext {ctx_id} node admission rejected: {error}");
-                return false;
-            }
-            entry.insert(context);
-            true
-        }
-        std::collections::hash_map::Entry::Occupied(_) => false,
+    contexts.create_context(
+        ctx_id,
+        sample_rate,
+        channels,
+        cpu,
+        crate::limits::AudioAggregateLedger::process_global,
+    )
+}
+
+#[cfg(test)]
+fn create_context_scoped_with_ledger(
+    contexts: &mut HashMap<AudioContextId, AudioContext>,
+    ctx_id: AudioContextId,
+    sample_rate: u32,
+    channels: u32,
+    cpu: Option<&migo_io::audio_cpu::AudioCpu>,
+    aggregate: impl FnOnce() -> Arc<crate::limits::AudioAggregateLedger>,
+) -> bool {
+    if contexts.contains_key(&ctx_id) {
+        return false;
     }
+    let context = match cpu {
+        Some(cpu) => {
+            match AudioContext::new_managed(ctx_id, sample_rate, channels, cpu.clone(), aggregate())
+            {
+                Ok(context) => context,
+                Err(error) => {
+                    tracing::warn!(
+                        "AudioContext {ctx_id} construction admission rejected: {error}"
+                    );
+                    return false;
+                }
+            }
+        }
+        None => AudioContext::new(ctx_id, sample_rate, channels),
+    };
+    // Preserve the legacy native/test map path and its standard allocation.
+    contexts.insert(ctx_id, context);
+    true
 }
 
 /// Every replacement backend is a new route, even when its format repeats.
 /// Keep this outside the format-resize branch so cached PCM and async owners
 /// cannot cross a physical output replacement.
 pub(crate) fn renegotiate_context_routes(
-    contexts: &mut HashMap<AudioContextId, AudioContext>,
+    contexts: &mut impl ContextAccess,
     current: (u32, u32),
     replacement: (u32, u32),
 ) -> bool {
@@ -873,7 +873,7 @@ pub(crate) fn renegotiate_context_routes(
 /// cleared even when the context is already gone so repeated finalizer commands
 /// also purge any stale node ownership entries.
 fn release_context_scoped(
-    contexts: &mut HashMap<AudioContextId, AudioContext>,
+    contexts: &mut impl ContextAccess,
     node_index: &mut NodeContextIndex,
     ctx_id: AudioContextId,
 ) -> bool {
@@ -895,7 +895,7 @@ fn release_context_scoped(
 fn handle_release_all_contexts(
     startup_backlog: &mut std::vec::IntoIter<AudioCmd>,
     rx: &AudioCommandReceiver,
-    contexts: &mut HashMap<AudioContextId, AudioContext>,
+    contexts: &mut impl ContextAccess,
     node_index: &mut NodeContextIndex,
 ) {
     *startup_backlog = Vec::new().into_iter();
@@ -909,7 +909,7 @@ fn handle_release_all_contexts(
 
 fn handle_owned_release_all_contexts(
     inbox: &mut crate::command_inbox::Inbox,
-    contexts: &mut HashMap<AudioContextId, AudioContext>,
+    contexts: &mut impl ContextAccess,
     node_index: &mut NodeContextIndex,
 ) {
     inbox.discard_pending();
@@ -923,7 +923,7 @@ fn handle_owned_release_all_contexts(
 /// Remove only the claimed context's map reference. Missing contexts/buffers
 /// are deliberately a no-op so GC finalizers can issue duplicate releases.
 fn release_buffer_scoped(
-    contexts: &mut HashMap<AudioContextId, AudioContext>,
+    contexts: &mut impl ContextAccess,
     ctx_id: AudioContextId,
     buffer_id: shared::protocol::audio_cmd::AudioBufferId,
 ) {
@@ -951,7 +951,7 @@ fn send_source_ended(host_tx: &HostTx, node_id: AudioNodeId) {
 /// cannot release a node it does not own. Unknown ids are a no-op: this comes
 /// from a GC finalizer, which may run after the context is already gone.
 fn release_node_scoped(
-    contexts: &mut HashMap<AudioContextId, AudioContext>,
+    contexts: &mut impl ContextAccess,
     node_index: &mut NodeContextIndex,
     ctx_id: AudioContextId,
     node_id: AudioNodeId,
@@ -971,7 +971,7 @@ fn release_node_scoped(
 /// Node ids and buffer ids are context-local, so both are resolved only after
 /// the claimed owner matches the node index.
 fn set_buffer_scoped(
-    contexts: &mut HashMap<AudioContextId, AudioContext>,
+    contexts: &mut impl ContextAccess,
     node_index: &NodeContextIndex,
     ctx_id: AudioContextId,
     node_id: AudioNodeId,
@@ -987,7 +987,7 @@ fn set_buffer_scoped(
 }
 
 fn set_started_buffer_scoped(
-    contexts: &mut HashMap<AudioContextId, AudioContext>,
+    contexts: &mut impl ContextAccess,
     node_index: &NodeContextIndex,
     ctx_id: AudioContextId,
     node_id: AudioNodeId,
@@ -1003,14 +1003,12 @@ fn set_started_buffer_scoped(
 }
 
 fn start_buffer_scoped(
-    contexts: &mut HashMap<AudioContextId, AudioContext>,
+    contexts: &mut impl ContextAccess,
     node_index: &NodeContextIndex,
     ctx_id: AudioContextId,
     node_id: AudioNodeId,
     buffer: Option<Arc<AudioSnapshot>>,
-    when: f64,
-    offset: f64,
-    duration: Option<f64>,
+    (when, offset, duration): (f64, f64, Option<f64>),
 ) -> bool {
     if node_index.get_context(node_id) != Some(ctx_id) {
         return false;
@@ -1036,7 +1034,7 @@ fn start_buffer_scoped(
 /// consulted only to refuse a decode it did not live to see.
 #[cfg(test)]
 fn integrate_audio_buffer_decode_result(
-    contexts: &HashMap<AudioContextId, AudioContext>,
+    contexts: &impl ContextView,
     ctx_id: AudioContextId,
     result: EngineResult<DecodedAudio>,
     resp: AudioResp<DecodedPcm>,
@@ -1256,7 +1254,7 @@ fn calculate_process_frames(_sample_rate: u32) -> usize {
 /// Prepared bytes keep the source boundary issued before asynchronous IO.
 /// Reject another owner before admitting any decoder work.
 fn submit_prepared_inner_audio_load(
-    players: &HashMap<InnerAudioId, InnerAudioPlayer>,
+    players: &impl PlayerView,
     pool: &mut LazyDecodePool,
     id: InnerAudioId,
     load: crate::inner_audio::InnerAudioLoadToken,
@@ -1278,7 +1276,7 @@ fn submit_prepared_inner_audio_load(
 /// Publication is not installation: validate again after draining new commands.
 #[cfg(test)]
 fn integrate_inner_audio_decode_result(
-    players: &mut HashMap<InnerAudioId, InnerAudioPlayer>,
+    players: &mut impl PlayerAccess,
     id: InnerAudioId,
     load: crate::inner_audio::InnerAudioLoadToken,
     result: EngineResult<DecodedAudio>,
@@ -1308,7 +1306,7 @@ fn integrate_inner_audio_decode_result(
 /// exact call path independent of the hardware sink lets the host suite compare
 /// the shipping mix against complete mature SRC PCM, including node indexing.
 fn mix_contexts(
-    contexts: &mut HashMap<AudioContextId, AudioContext>,
+    contexts: &mut impl ContextAccess,
     node_index: &mut NodeContextIndex,
     device_mixer: &mut crate::device_prepare::DeviceMixer,
     quantum: &mut [f32],
@@ -1343,7 +1341,7 @@ fn mix_contexts(
 /// the second. The production call site passes a closure over `host_tx`, which
 /// captures by reference and allocates nothing.
 fn service_players(
-    inner_players: &mut HashMap<InnerAudioId, InnerAudioPlayer>,
+    inner_players: &mut impl PlayerAccess,
     audio_cache: &GlobalAudioCache,
     mut emit: impl FnMut(InnerAudioEvent),
 ) {
@@ -1542,18 +1540,46 @@ fn run_audio_thread(
     let mut sample_rate = output.sample_rate();
     let mut channels = output.channels();
 
-    // Pre-allocate with reasonable capacity to avoid rehashing
-    let mut contexts: HashMap<AudioContextId, AudioContext> = HashMap::with_capacity(4);
-    let mut device_mixer = crate::device_prepare::DeviceMixer::new(cpu.clone());
+    let mut node_index = match NodeContextIndex::new_managed(
+        cpu.clone(),
+        AudioAggregateLedger::process_global(),
+        channels,
+    ) {
+        Ok(index) => index,
+        Err(error) => {
+            warn!("AudioThread node index startup admission rejected: {error}");
+            return;
+        }
+    };
 
-    // Node-to-context index for O(1) lookup
-    let mut node_index = NodeContextIndex::new();
+    // Pre-allocate with reasonable capacity to avoid rehashing
+    let mut contexts = match context_table::ContextTable::new(node_index.storage_host()) {
+        Ok(contexts) => contexts,
+        Err(error) => {
+            warn!("AudioThread context table startup admission rejected: {error}");
+            return;
+        }
+    };
+    let mut device_mixer =
+        crate::device_prepare::DeviceMixer::managed(cpu.clone(), node_index.storage_host());
 
     // InnerAudioContext players with pre-allocated capacity
-    let mut inner_players: HashMap<InnerAudioId, InnerAudioPlayer> = HashMap::with_capacity(16);
+    let mut inner_players = match inner_collection::InnerPlayers::new(node_index.storage_host()) {
+        Ok(players) => players,
+        Err(error) => {
+            warn!("AudioThread inner player startup admission rejected: {error}");
+            return;
+        }
+    };
 
     // MediaAudioPlayer: maps player_id -> list of InnerAudioContext source IDs
-    let mut media_players: HashMap<u32, Vec<InnerAudioId>> = HashMap::with_capacity(4);
+    let mut media_players = match media_membership::MediaPlayers::new(node_index.storage_host()) {
+        Ok(players) => players,
+        Err(error) => {
+            warn!("AudioThread media membership startup admission rejected: {error}");
+            return;
+        }
+    };
 
     // Cache backing keeps its physical credit through final CPU disposal.
     let audio_cache = GlobalAudioCache::with_cpu(cpu.clone());
@@ -1576,7 +1602,14 @@ fn run_audio_thread(
     // One render quantum, resized only when device channel layout changes.
     let mut process_frames = calculate_process_frames(sample_rate);
     let mut buffer_size = process_frames * channels as usize;
-    let mut process_buffer = vec![0.0f32; buffer_size];
+    let mut process_buffer =
+        match mix_buffer::MixBuffer::new(node_index.storage_host(), buffer_size) {
+            Ok(buffer) => buffer,
+            Err(error) => {
+                warn!("AudioThread mix buffer startup admission rejected: {error}");
+                return;
+            }
+        };
 
     // Get sync handle for callback-driven wakeup
     let mut sync = output.sync().clone();
@@ -1800,14 +1833,20 @@ fn run_audio_thread(
                     release_node_scoped(&mut contexts, &mut node_index, ctx_id, node_id);
                 }
 
-                AudioCmd::CreateBufferSource { ctx_id, node_id } => {
-                    if let Some(ctx) = contexts.get_mut(&ctx_id) {
-                        if ctx.create_buffer_source(node_id) {
-                            node_index.register(node_id, ctx_id);
-                        }
-                    } else {
-                        tracing::warn!("CreateBufferSource: AudioContext {} not found", ctx_id);
-                    }
+                command @ (AudioCmd::CreateBufferSource { .. }
+                | AudioCmd::CreateGain { .. }
+                | AudioCmd::CreateOscillator { .. }
+                | AudioCmd::CreateDelay { .. }
+                | AudioCmd::CreateBiquadFilter { .. }
+                | AudioCmd::CreateWaveShaper { .. }
+                | AudioCmd::CreateAnalyser { .. }
+                | AudioCmd::CreateDynamicsCompressor { .. }
+                | AudioCmd::CreatePanner { .. }
+                | AudioCmd::CreateChannelMerger { .. }
+                | AudioCmd::CreateChannelSplitter { .. }
+                | AudioCmd::CreateConstantSource { .. }
+                | AudioCmd::CreateIIRFilter { .. }) => {
+                    node_creation::apply(&command, &mut contexts, &mut node_index, sample_rate);
                 }
 
                 AudioCmd::SetBuffer {
@@ -1854,9 +1893,7 @@ fn run_audio_thread(
                         ctx_id,
                         node_id,
                         buffer,
-                        when,
-                        offset,
-                        duration,
+                        (when, offset, duration),
                     );
                     if !started {
                         warn!("StartBuffer rejected: context {ctx_id} does not own node {node_id}");
@@ -1991,16 +2028,6 @@ fn run_audio_thread(
                     }
                 }
 
-                AudioCmd::CreateGain { ctx_id, node_id } => {
-                    if let Some(ctx) = contexts.get_mut(&ctx_id) {
-                        if ctx.create_gain(node_id) {
-                            node_index.register(node_id, ctx_id);
-                        }
-                    } else {
-                        tracing::warn!("CreateGain: AudioContext {} not found", ctx_id);
-                    }
-                }
-
                 AudioCmd::SetGainValue { node_id, value } => {
                     // Use index for O(1) context lookup
                     let found = node_index
@@ -2031,14 +2058,6 @@ fn run_audio_thread(
                 }
 
                 // ==================== Phase 2 Nodes ====================
-                AudioCmd::CreateOscillator { ctx_id, node_id } => {
-                    if let Some(ctx) = contexts.get_mut(&ctx_id)
-                        && ctx.add_node(Box::new(OscillatorNode::new(node_id, sample_rate)))
-                    {
-                        node_index.register(node_id, ctx_id);
-                    }
-                }
-
                 AudioCmd::StartOscillator { node_id, when } => {
                     if let Some(ctx_id) = node_index.get_context(node_id) {
                         if let Some(ctx) = contexts.get_mut(&ctx_id) {
@@ -2063,49 +2082,11 @@ fn run_audio_thread(
                     // once the scheduled stop time is actually reached.
                 }
 
-                AudioCmd::CreateDelay {
-                    ctx_id,
-                    node_id,
-                    max_delay_time,
-                } => {
-                    if let Some(ctx) = contexts.get_mut(&ctx_id) {
-                        let sr = ctx.sample_rate();
-                        let ch = ctx.channels();
-                        if ctx.add_node(Box::new(DelayNode::new(node_id, max_delay_time, sr, ch))) {
-                            node_index.register(node_id, ctx_id);
-                        }
-                    }
-                }
-
-                AudioCmd::CreateBiquadFilter { ctx_id, node_id } => {
-                    if let Some(ctx) = contexts.get_mut(&ctx_id)
-                        && ctx.create_biquad_filter(node_id)
-                    {
-                        node_index.register(node_id, ctx_id);
-                    }
-                }
-
-                AudioCmd::CreateWaveShaper { ctx_id, node_id } => {
-                    if let Some(ctx) = contexts.get_mut(&ctx_id)
-                        && ctx.add_node(Box::new(WaveShaperNode::new(node_id)))
-                    {
-                        node_index.register(node_id, ctx_id);
-                    }
-                }
-
                 AudioCmd::SetWaveShaperCurve { node_id, curve } => {
                     if let Some(ctx_id) = node_index.get_context(node_id) {
                         if let Some(ctx) = contexts.get_mut(&ctx_id) {
                             ctx.set_wave_shaper_curve(node_id, curve);
                         }
-                    }
-                }
-
-                AudioCmd::CreateAnalyser { ctx_id, node_id } => {
-                    if let Some(ctx) = contexts.get_mut(&ctx_id)
-                        && ctx.create_analyser(node_id)
-                    {
-                        node_index.register(node_id, ctx_id);
                     }
                 }
 
@@ -2129,58 +2110,6 @@ fn run_audio_thread(
                 }
 
                 // ==================== Phase 3 Nodes ====================
-                AudioCmd::CreateDynamicsCompressor { ctx_id, node_id } => {
-                    if let Some(ctx) = contexts.get_mut(&ctx_id) {
-                        let ch = ctx.channels();
-                        if ctx.add_node(Box::new(DynamicsCompressorNode::new(node_id, ch))) {
-                            node_index.register(node_id, ctx_id);
-                        }
-                    }
-                }
-
-                AudioCmd::CreatePanner { ctx_id, node_id } => {
-                    if let Some(ctx) = contexts.get_mut(&ctx_id)
-                        && ctx.add_node(Box::new(PannerNode::new(node_id)))
-                    {
-                        node_index.register(node_id, ctx_id);
-                    }
-                }
-
-                AudioCmd::CreateChannelMerger {
-                    ctx_id,
-                    node_id,
-                    number_of_inputs,
-                } => {
-                    if let Some(ctx) = contexts.get_mut(&ctx_id)
-                        && ctx.add_node(Box::new(ChannelMergerNode::new(node_id, number_of_inputs)))
-                    {
-                        node_index.register(node_id, ctx_id);
-                    }
-                }
-
-                AudioCmd::CreateChannelSplitter {
-                    ctx_id,
-                    node_id,
-                    number_of_outputs,
-                } => {
-                    if let Some(ctx) = contexts.get_mut(&ctx_id)
-                        && ctx.add_node(Box::new(ChannelSplitterNode::new(
-                            node_id,
-                            number_of_outputs,
-                        )))
-                    {
-                        node_index.register(node_id, ctx_id);
-                    }
-                }
-
-                AudioCmd::CreateConstantSource { ctx_id, node_id } => {
-                    if let Some(ctx) = contexts.get_mut(&ctx_id)
-                        && ctx.add_node(Box::new(ConstantSourceNode::new(node_id)))
-                    {
-                        node_index.register(node_id, ctx_id);
-                    }
-                }
-
                 AudioCmd::StartConstantSource { node_id, when } => {
                     if let Some(ctx_id) = node_index.get_context(node_id) {
                         if let Some(ctx) = contexts.get_mut(&ctx_id) {
@@ -2203,19 +2132,6 @@ fn run_audio_thread(
                     }
                     // Unregistered by the finished-node sweep in context.process()
                     // once the scheduled stop time is actually reached.
-                }
-
-                AudioCmd::CreateIIRFilter {
-                    ctx_id,
-                    node_id,
-                    feedforward,
-                    feedback,
-                } => {
-                    if let Some(ctx) = contexts.get_mut(&ctx_id)
-                        && ctx.create_iir_filter(node_id, &feedforward, &feedback)
-                    {
-                        node_index.register(node_id, ctx_id);
-                    }
                 }
 
                 AudioCmd::Connect {
@@ -2368,62 +2284,45 @@ fn run_audio_thread(
                 }
 
                 // ==================== MediaAudioPlayer ====================
-                AudioCmd::CreateMediaAudioPlayer { id } => {
-                    media_players.insert(id, Vec::new());
-                    tracing::debug!("Created MediaAudioPlayer {}", id);
-                }
-
+                AudioCmd::CreateMediaAudioPlayer { id } => match media_players.create(id) {
+                    Ok(()) => tracing::debug!("Created MediaAudioPlayer {}", id),
+                    Err(error) => warn!("MediaAudioPlayer {id} admission rejected: {error}"),
+                },
                 AudioCmd::MediaAudioPlayerAddSource {
                     player_id,
                     source_id,
                 } => {
-                    if let Some(sources) = media_players.get_mut(&player_id) {
-                        if !sources.contains(&source_id) {
-                            sources.push(source_id);
-                        }
+                    if let Err(error) = media_players.add_source(player_id, source_id) {
+                        warn!("MediaAudioPlayer {player_id} source admission rejected: {error}");
                     }
                 }
-
                 AudioCmd::MediaAudioPlayerRemoveSource {
                     player_id,
                     source_id,
                 } => {
-                    if let Some(sources) = media_players.get_mut(&player_id) {
-                        sources.retain(|&id| id != source_id);
-                    }
+                    media_players.remove_source(player_id, source_id);
                 }
-
                 AudioCmd::MediaAudioPlayerStart { player_id } => {
-                    if let Some(sources) = media_players.get(&player_id) {
+                    if media_players.start(player_id, &mut inner_players) {
                         request_playback_resume!(PlaybackIntent::Media(player_id));
-                        for &source_id in sources {
-                            if let Some(player) = inner_players.get_mut(&source_id) {
-                                player.play();
-                            }
-                        }
                     }
                 }
-
                 AudioCmd::MediaAudioPlayerStop { player_id } => {
-                    if let Some(sources) = media_players.get(&player_id) {
-                        for &source_id in sources {
-                            if let Some(player) = inner_players.get_mut(&source_id) {
-                                player.stop();
-                            }
-                        }
-                    }
+                    media_players.stop(player_id, &mut inner_players);
                 }
-
                 AudioCmd::MediaAudioPlayerDestroy { player_id } => {
-                    media_players.remove(&player_id);
+                    media_players.destroy(player_id);
                     tracing::debug!("Destroyed MediaAudioPlayer {}", player_id);
                 }
 
                 // ==================== InnerAudioContext ====================
                 AudioCmd::CreateInnerAudio { id } => {
-                    if !inner_players.contains_key(&id) {
-                        inner_players.insert(id, new_inner_audio_player(id, channels, &cpu));
-                        tracing::debug!("Created InnerAudioContext {}", id);
+                    match inner_players
+                        .create_with(id, || Ok(new_inner_audio_player(id, channels, &cpu)))
+                    {
+                        Ok(true) => tracing::debug!("Created InnerAudioContext {}", id),
+                        Ok(false) => {}
+                        Err(error) => warn!("InnerAudioContext {id} admission rejected: {error}"),
                     }
                 }
 
@@ -2761,6 +2660,17 @@ fn run_audio_thread(
             } else {
                 None
             };
+            let replacement = replacement.and_then(|new_output| {
+                let samples = calculate_process_frames(new_output.sample_rate())
+                    * new_output.channels() as usize;
+                match process_buffer.admit(new_output, samples) {
+                    Ok(output) => Some(output),
+                    Err(error) => {
+                        warn!("AudioThread output buffer admission rejected: {error}");
+                        None
+                    }
+                }
+            });
             if let Some(new_output) = replacement {
                 sync.set_callback_wakeup_enabled(false);
                 new_output.bind_wakeup(&wakeup);
@@ -2784,7 +2694,6 @@ fn run_audio_thread(
                     channels = new_channels;
                     process_frames = calculate_process_frames(sample_rate);
                     buffer_size = process_frames * channels as usize;
-                    process_buffer.resize(buffer_size, 0.0);
                     // Jobs submitted after the change use the new route rate;
                     // already-running workers finish their bounded in-flight
                     // jobs with their original target.
@@ -4308,9 +4217,7 @@ mod tests {
             3,
             30,
             None,
-            0.0,
-            0.0,
-            None,
+            (0.0, 0.0, None)
         ));
     }
 
@@ -4737,7 +4644,7 @@ pub(crate) fn new_inner_audio_player(
 }
 #[cfg(test)]
 pub(crate) fn inner_source_cache_service(
-    players: &mut HashMap<InnerAudioId, InnerAudioPlayer>,
+    players: &mut impl PlayerAccess,
     cache: &GlobalAudioCache,
 ) {
     service_players(players, cache, |_| {});
@@ -4750,3 +4657,43 @@ mod physical_custody_tests;
 #[cfg(test)]
 #[path = "audio_thread_filter_storage_tests.rs"]
 mod filter_storage_tests;
+
+#[cfg(test)]
+#[path = "audio_thread_waveshaper_storage_tests.rs"]
+mod waveshaper_storage_tests;
+
+#[cfg(test)]
+#[path = "audio_thread_param_storage_tests.rs"]
+mod param_storage_tests;
+
+#[cfg(test)]
+#[path = "audio_thread_render_buffer_tests.rs"]
+mod render_buffer_tests;
+
+#[cfg(test)]
+#[path = "audio_thread_graph_storage_tests.rs"]
+mod graph_storage_tests;
+
+#[cfg(test)]
+#[path = "audio_thread_graph_table_tests.rs"]
+mod graph_table_tests;
+
+#[cfg(test)]
+#[path = "audio_thread_context_construction_tests.rs"]
+mod context_construction_tests;
+
+#[cfg(test)]
+#[path = "audio_thread_node_index_tests.rs"]
+mod node_index_tests;
+
+#[cfg(test)]
+#[path = "audio_thread_media_players_tests.rs"]
+mod media_membership_tests;
+
+#[cfg(test)]
+#[path = "audio_thread_inner_players_tests.rs"]
+mod inner_collection_tests;
+
+#[cfg(test)]
+#[path = "audio_thread_context_table_tests.rs"]
+mod context_table_tests;
