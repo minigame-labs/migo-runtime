@@ -188,8 +188,8 @@ pub(super) fn reject(entry: Owned<DecodeResult>, code: ErrorCode, detail: &'stat
 }
 pub(super) fn integrate(
     entry: Owned<DecodeResult>,
-    contexts: &HashMap<AudioContextId, AudioContext>,
-    players: &mut HashMap<InnerAudioId, InnerAudioPlayer>,
+    contexts: &impl ContextView,
+    players: &mut impl PlayerAccess,
 ) {
     if matches!(entry.value(), DecodeResult::AudioBuffer { .. }) {
         let ((ctx_id, resp), body) = entry.split(|r| match r {
@@ -206,7 +206,7 @@ pub(super) fn integrate(
     }
 }
 fn integrate_buffer(
-    contexts: &HashMap<AudioContextId, AudioContext>,
+    contexts: &impl ContextView,
     ctx_id: AudioContextId,
     body: Owned<EngineResult<DecodedAudio>>,
     resp: AudioResp<DecodedPcm>,

@@ -4,8 +4,8 @@ use super::*;
 
 pub(super) fn forward(
     delivery: AudioCommandDelivery,
-    contexts: &HashMap<AudioContextId, AudioContext>,
-    players: &mut HashMap<InnerAudioId, InnerAudioPlayer>,
+    contexts: &impl ContextView,
+    players: &mut impl PlayerAccess,
     pool: &mut LazyDecodePool,
     inbox: &mut crate::command_inbox::Inbox,
 ) -> Option<AudioCommandDelivery> {
@@ -30,8 +30,8 @@ enum Origin {
 }
 fn submit(
     command: AudioCmd,
-    contexts: &HashMap<AudioContextId, AudioContext>,
-    players: &mut HashMap<InnerAudioId, InnerAudioPlayer>,
+    contexts: &impl ContextView,
+    players: &mut impl PlayerAccess,
     pool: &mut LazyDecodePool,
 ) -> Option<(AudioCmd, EngineError)> {
     let (job, origin) = match command {

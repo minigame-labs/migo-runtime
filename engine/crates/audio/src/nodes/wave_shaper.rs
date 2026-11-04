@@ -4,6 +4,10 @@ use shared::protocol::audio_cmd::AudioNodeId;
 
 use super::AudioNodeProcessor;
 
+#[path = "wave_shaper_storage.rs"]
+mod storage;
+use storage::{Curve, CurveAdmission, History};
+
 /// Oversample mode for WaveShaperNode
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OversampleType {
@@ -39,21 +43,19 @@ impl OversampleType {
 const FIR_TAPS: usize = 32;
 
 /// Windowed-sinc lowpass at `cutoff` (cycles/sample), scaled by `gain`.
-fn design_lowpass(cutoff: f64, gain: f64) -> Vec<f32> {
+fn design_lowpass(cutoff: f64, gain: f64) -> [f32; FIR_TAPS] {
     let centre = (FIR_TAPS - 1) as f64 / 2.0;
-    let mut taps: Vec<f64> = (0..FIR_TAPS)
-        .map(|i| {
-            let n = i as f64 - centre;
-            let sinc = if n.abs() < 1e-12 {
-                2.0 * cutoff
-            } else {
-                (std::f64::consts::TAU * cutoff * n).sin() / (std::f64::consts::PI * n)
-            };
-            let phase = std::f64::consts::TAU * i as f64 / (FIR_TAPS - 1) as f64;
-            let window = 0.42 - 0.5 * phase.cos() + 0.08 * (2.0 * phase).cos();
-            sinc * window
-        })
-        .collect();
+    let mut taps: [f64; FIR_TAPS] = std::array::from_fn(|i| {
+        let n = i as f64 - centre;
+        let sinc = if n.abs() < 1e-12 {
+            2.0 * cutoff
+        } else {
+            (std::f64::consts::TAU * cutoff * n).sin() / (std::f64::consts::PI * n)
+        };
+        let phase = std::f64::consts::TAU * i as f64 / (FIR_TAPS - 1) as f64;
+        let window = 0.42 - 0.5 * phase.cos() + 0.08 * (2.0 * phase).cos();
+        sinc * window
+    });
     // Normalise to unit DC gain before applying the interpolation gain, so the
     // filter cannot change the level of the signal it is only meant to band-limit.
     let dc: f64 = taps.iter().sum();
@@ -62,7 +64,7 @@ fn design_lowpass(cutoff: f64, gain: f64) -> Vec<f32> {
             *tap = *tap / dc * gain;
         }
     }
-    taps.into_iter().map(|t| t as f32).collect()
+    taps.map(|t| t as f32)
 }
 
 /// A single channel's FIR delay line.
@@ -99,15 +101,14 @@ impl FirState {
 /// as inharmonic tones silently did nothing.
 pub struct WaveShaperNode {
     id: AudioNodeId,
-    curve: Option<Vec<f32>>,
+    curve: Option<Curve>,
     oversample: OversampleType,
     /// Interpolation and decimation filters, rebuilt when the factor changes.
-    up_taps: Vec<f32>,
-    down_taps: Vec<f32>,
-    up_state: Vec<FirState>,
-    down_state: Vec<FirState>,
-    /// Oversampled working buffer, `factor` samples per input frame.
-    scratch: Vec<f32>,
+    up_taps: [f32; FIR_TAPS],
+    down_taps: [f32; FIR_TAPS],
+    history: History,
+    retirement: Option<crate::node_retirement::Host>,
+    context_channels: u32,
     output_connected: bool,
 }
 
@@ -117,42 +118,119 @@ impl WaveShaperNode {
             id,
             curve: None,
             oversample: OversampleType::None,
-            up_taps: Vec::new(),
-            down_taps: Vec::new(),
-            up_state: Vec::new(),
-            down_state: Vec::new(),
-            scratch: Vec::new(),
+            up_taps: [0.0; FIR_TAPS],
+            down_taps: [0.0; FIR_TAPS],
+            history: History::default(),
+            retirement: None,
+            context_channels: 1,
             output_connected: false,
         }
     }
 
-    pub fn set_curve(&mut self, curve: Option<Vec<f32>>) {
-        self.curve = curve;
+    #[cfg(test)]
+    pub fn set_curve(&mut self, mut curve: Option<Vec<f32>>) {
+        if let Err(error) = self.try_set_curve(&mut curve) {
+            tracing::warn!("curve storage admission rejected: {error}");
+        }
     }
 
-    pub(crate) fn retire_curve(
+    /// Admission precedes taking the incoming command's storage.
+    pub(crate) fn try_set_curve(
         &mut self,
-        host: Option<&crate::node_retirement::Host>,
+        curve: &mut Option<Vec<f32>>,
     ) -> shared::error::EngineResult<()> {
-        let bytes = self
+        let admission = curve
+            .as_ref()
+            .map(|data| {
+                CurveAdmission::reserve(
+                    self.retirement.as_ref(),
+                    data.capacity() * std::mem::size_of::<f32>(),
+                )
+            })
+            .transpose()?;
+        let next = admission.map(|reservation| reservation.finish(curve.take().unwrap()));
+        if let Some(old) = std::mem::replace(&mut self.curve, next) {
+            old.retire_replacement();
+        }
+        Ok(())
+    }
+
+    pub(crate) fn prepare_storage(
+        &mut self,
+        host: &crate::node_retirement::Host,
+        channels: u32,
+    ) -> shared::error::EngineResult<()> {
+        if self
+            .retirement
+            .as_ref()
+            .is_some_and(|old| !old.shares_physical_ledger(host))
+        {
+            return Err(storage::foreign_ledger());
+        }
+        // Hold prospective curve credit, but leave the original Vec untouched
+        // until history adoption/growth has also been admitted.
+        let curve_admission = self
             .curve
             .as_ref()
-            .map_or(0, |curve| curve.capacity() * std::mem::size_of::<f32>());
-        crate::node_retirement::retire_replacement(&mut self.curve, host, bytes)
+            .filter(|data| data.is_native())
+            .map(|data| {
+                CurveAdmission::reserve(Some(host), data.capacity() * std::mem::size_of::<f32>())
+            })
+            .transpose()?;
+        let count = if self.oversample == OversampleType::None {
+            0
+        } else {
+            channels.max(1) as usize
+        };
+        self.history.prepare(host, count)?;
+        if let Some(admission) = curve_admission {
+            let data = self.curve.take().unwrap().into_native();
+            self.curve = Some(admission.finish(data));
+        }
+        self.retirement = Some(host.clone());
+        self.context_channels = channels.max(1);
+        Ok(())
     }
 
+    pub(crate) fn try_set_oversample(
+        &mut self,
+        oversample: OversampleType,
+        channels: u32,
+    ) -> shared::error::EngineResult<()> {
+        if let Some(host) = &self.retirement {
+            if oversample != OversampleType::None {
+                self.history.prepare(host, channels.max(1) as usize)?;
+            }
+            self.set_mode(oversample);
+        } else {
+            self.set_mode(oversample);
+            self.prepare_oversampling(channels);
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
     pub fn set_oversample(&mut self, oversample: OversampleType) {
+        if self.retirement.is_some() {
+            if let Err(error) = self.try_set_oversample(oversample, self.context_channels) {
+                tracing::warn!("FIR history admission rejected: {error}");
+            }
+        } else {
+            self.set_mode(oversample);
+        }
+    }
+
+    fn set_mode(&mut self, oversample: OversampleType) {
         if oversample == self.oversample {
             return;
         }
         self.oversample = oversample;
         let factor = oversample.factor();
         if factor == 1 {
-            self.up_taps.clear();
-            self.down_taps.clear();
-            self.up_state.clear();
-            self.down_state.clear();
-            self.scratch.clear();
+            self.up_taps.fill(0.0);
+            self.down_taps.fill(0.0);
+            self.history.up_state.clear();
+            self.history.down_state.clear();
             return;
         }
         // Cutoff is the original Nyquist expressed in the oversampled rate. The
@@ -160,8 +238,8 @@ impl WaveShaperNode {
         let cutoff = 0.5 / factor as f64;
         self.up_taps = design_lowpass(cutoff, factor as f64);
         self.down_taps = design_lowpass(cutoff, 1.0);
-        self.up_state.clear();
-        self.down_state.clear();
+        self.history.up_state.clear();
+        self.history.down_state.clear();
     }
 
     /// Prepare the context's first device quantum while handling its command.
@@ -172,14 +250,49 @@ impl WaveShaperNode {
             return;
         }
         let channels = channels.max(1) as usize;
-        self.up_state
-            .reserve(channels.saturating_sub(self.up_state.len()));
-        self.down_state
-            .reserve(channels.saturating_sub(self.down_state.len()));
-        self.scratch.reserve(
-            (crate::audio_thread::RENDER_QUANTUM_FRAMES * factor)
-                .saturating_sub(self.scratch.len()),
-        );
+        if let Some(host) = &self.retirement {
+            if let Err(error) = self.history.prepare(host, channels) {
+                tracing::warn!("FIR history preparation rejected: {error}");
+            }
+            return;
+        }
+        let history = &mut *self.history;
+        history
+            .up_state
+            .reserve(channels.saturating_sub(history.up_state.len()));
+        history
+            .down_state
+            .reserve(channels.saturating_sub(history.down_state.len()));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn coefficients(&self) -> (&[f32], &[f32]) {
+        (&self.up_taps, &self.down_taps)
+    }
+    #[cfg(test)]
+    pub(crate) fn history_identity(&self) -> (OversampleType, usize, usize, usize) {
+        (
+            self.oversample,
+            self.history.up_state.as_ptr() as usize,
+            self.history.down_state.as_ptr() as usize,
+            self.history.bytes(),
+        )
+    }
+    #[cfg(test)]
+    pub(crate) fn curve_identity(&self) -> Option<(usize, usize)> {
+        self.curve
+            .as_ref()
+            .map(|data| (data.as_ptr() as usize, data.capacity() * 4))
+    }
+    #[cfg(test)]
+    pub(crate) fn observe_history(&mut self, hook: std::sync::Arc<dyn Fn() + Send + Sync>) {
+        self.history.observe(hook);
+    }
+    #[cfg(test)]
+    pub(crate) fn observe_curve(&mut self, hook: std::sync::Arc<dyn Fn() + Send + Sync>) {
+        if let Some(curve) = &mut self.curve {
+            curve.observe(hook);
+        }
     }
 
     fn zero_input_response(&self) -> f32 {
@@ -249,51 +362,62 @@ impl AudioNodeProcessor for WaveShaperNode {
             return frames;
         };
 
+        let samples = curve.as_slice();
         let factor = self.oversample.factor();
         if factor == 1 {
             for (i, sample) in output[..len].iter_mut().enumerate() {
-                *sample = Self::shape(&curve, inputs.get(i).copied().unwrap_or(0.0));
+                *sample = Self::shape(samples, inputs.get(i).copied().unwrap_or(0.0));
             }
             self.curve = Some(curve);
             return frames;
         }
 
-        // Per-channel filter state, allocated when the channel count is first seen.
-        if self.up_state.len() < ch {
-            self.up_state.resize(ch, FirState::default());
-            self.down_state.resize(ch, FirState::default());
+        // Native nodes retain dynamic channel compatibility. Managed contexts
+        // already admitted these exact capacities on their command path.
+        assert!(
+            !self.history.is_owned()
+                || (self.history.up_state.capacity() >= ch
+                    && self.history.down_state.capacity() >= ch),
+            "managed waveshaper exceeds its prepared context channels"
+        );
+        let history = &mut *self.history;
+        if history.up_state.len() < ch {
+            history.up_state.resize(ch, FirState::default());
+            history.down_state.resize(ch, FirState::default());
         }
-        if self.scratch.len() < frames * factor {
-            self.scratch.resize(frames * factor, 0.0);
-        }
-
+        // State persists across chunks; only the current oversampled span is local.
+        let mut scratch = [0.0; crate::audio_thread::RENDER_QUANTUM_FRAMES * 4];
         for channel in 0..ch {
-            // Upsample: zero-stuff, then interpolate.
-            for frame in 0..frames {
-                let sample = inputs.get(frame * ch + channel).copied().unwrap_or(0.0);
-                for phase in 0..factor {
-                    let stuffed = if phase == 0 { sample } else { 0.0 };
-                    self.scratch[frame * factor + phase] =
-                        self.up_state[channel].push_and_filter(stuffed, &self.up_taps);
-                }
-            }
-
-            // Shape at the higher rate, where the harmonics it generates have room.
-            for sample in self.scratch[..frames * factor].iter_mut() {
-                *sample = Self::shape(&curve, *sample);
-            }
-
-            // Decimate: filter every oversampled sample, keep one in `factor`.
-            for frame in 0..frames {
-                let mut kept = 0.0;
-                for phase in 0..factor {
-                    let filtered = self.down_state[channel]
-                        .push_and_filter(self.scratch[frame * factor + phase], &self.down_taps);
-                    if phase == 0 {
-                        kept = filtered;
+            for offset in (0..frames).step_by(crate::audio_thread::RENDER_QUANTUM_FRAMES) {
+                let count = (frames - offset).min(crate::audio_thread::RENDER_QUANTUM_FRAMES);
+                // Upsample: zero-stuff, then interpolate.
+                for frame in 0..count {
+                    let sample = inputs
+                        .get((offset + frame) * ch + channel)
+                        .copied()
+                        .unwrap_or(0.0);
+                    for phase in 0..factor {
+                        let stuffed = if phase == 0 { sample } else { 0.0 };
+                        scratch[frame * factor + phase] =
+                            history.up_state[channel].push_and_filter(stuffed, &self.up_taps);
                     }
                 }
-                output[frame * ch + channel] = kept;
+                // Shape only this chunk, preserving the original per-channel order.
+                for sample in scratch[..count * factor].iter_mut() {
+                    *sample = Self::shape(samples, *sample);
+                }
+                // Decimate: filter every oversampled sample, keep one in `factor`.
+                for frame in 0..count {
+                    let mut kept = 0.0;
+                    for phase in 0..factor {
+                        let filtered = history.down_state[channel]
+                            .push_and_filter(scratch[frame * factor + phase], &self.down_taps);
+                        if phase == 0 {
+                            kept = filtered;
+                        }
+                    }
+                    output[(offset + frame) * ch + channel] = kept;
+                }
             }
         }
 
@@ -308,10 +432,12 @@ impl AudioNodeProcessor for WaveShaperNode {
         // Both FIRs have finite history. Exact comparison retains tiny tails;
         // for biased curves the downstream steady state is shape(0), not zero.
         let baseline = self.zero_input_response();
-        self.up_state
+        self.history
+            .up_state
             .iter()
             .any(|state| state.history.iter().any(|&sample| sample != 0.0))
             || self
+                .history
                 .down_state
                 .iter()
                 .any(|state| state.history.iter().any(|&sample| sample != baseline))
@@ -428,3 +554,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "wave_shaper_inline_tests.rs"]
+pub(super) mod inline_tests;

@@ -119,7 +119,12 @@ fn legacy(
             duration,
         } => {
             return start_buffer_scoped(
-                contexts, index, ctx_id, node_id, buffer, when, offset, duration,
+                contexts,
+                index,
+                ctx_id,
+                node_id,
+                buffer,
+                (when, offset, duration),
             )
             .then_some((ctx_id, node_id));
         }

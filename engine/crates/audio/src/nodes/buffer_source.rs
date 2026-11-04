@@ -502,6 +502,16 @@ impl AudioNodeProcessor for BufferSourceNode {
             .unwrap_or(2)
     }
 
+    fn prepare_params(
+        &mut self,
+        host: &crate::node_retirement::Host,
+    ) -> shared::error::EngineResult<()> {
+        for param in [&mut self.playback_rate, &mut self.detune] {
+            param.prepare_storage(host)?;
+        }
+        Ok(())
+    }
+
     fn get_param_mut(&mut self, name: &str) -> Option<&mut AudioParamTimeline> {
         match name {
             "playbackRate" => Some(&mut self.playback_rate),

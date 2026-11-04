@@ -15,26 +15,31 @@ ROOT = capacity.ROOT
 TEST, COMPAT = capacity.TESTS
 
 
+def declarations(originals):
+    rows = [
+        ('shaper-command-preparation-omitted', 'nodes/wave_shaper.rs',
+         'self.prepare_oversampling(channels);', 'let _ = channels;', 'cold context render allocated'),
+        ('shaper-only-one-channel-prepared', 'nodes/wave_shaper.rs',
+         'let channels = channels.max(1) as usize;', 'let channels = 1_usize;', 'cold context render allocated'),
+        ('shaper-heap-scratch-reintroduced', 'nodes/wave_shaper.rs',
+         'let mut scratch = [0.0; crate::audio_thread::RENDER_QUANTUM_FRAMES * 4];', 'let mut scratch = vec![0.0; crate::audio_thread::RENDER_QUANTUM_FRAMES * 4];', 'cold context render allocated'),
+        ('shaper-repeated-command-loses-history', 'nodes/wave_shaper.rs',
+         '    pub(crate) fn prepare_oversampling(&mut self, channels: u32) {',
+         '    pub(crate) fn prepare_oversampling(&mut self, channels: u32) {\n        self.history.up_state.clear();\n        self.history.down_state.clear();',
+         'prepared waveshaper PCM or history changed'),
+    ]
+    for name, file, before, after, _ in rows:
+        assert before != after and originals[file].count(before) == 1, (name, 'anchor drift')
+    return rows
+
+
 def main(work, target, before_source=None, preflight=False):
     product = capacity.product
     package, env, frozen = capacity.prepare(work, target)
     assert 'scripts/testing/check_audio_waveshaper_capacity.py' in frozen
     paths = {n: package / 'src' / n for n in ['context.rs', 'nodes/wave_shaper.rs']}
     originals = {n: p.read_text() for n, p in paths.items()}
-    rows = [
-        ('shaper-command-preparation-omitted', 'context.rs',
-         'node.prepare_oversampling(channels);', 'let _ = channels;', 'cold context render allocated'),
-        ('shaper-only-one-channel-prepared', 'nodes/wave_shaper.rs',
-         'let channels = channels.max(1) as usize;', 'let channels = 1_usize;', 'cold context render allocated'),
-        ('shaper-oversampled-scratch-too-small', 'nodes/wave_shaper.rs',
-         '(crate::audio_thread::RENDER_QUANTUM_FRAMES * factor)', '(crate::audio_thread::RENDER_QUANTUM_FRAMES)', 'cold context render allocated'),
-        ('shaper-repeated-command-loses-history', 'nodes/wave_shaper.rs',
-         '    pub(crate) fn prepare_oversampling(&mut self, channels: u32) {',
-         '    pub(crate) fn prepare_oversampling(&mut self, channels: u32) {\n        self.up_state.clear();\n        self.down_state.clear();',
-         'prepared waveshaper PCM or history changed'),
-    ]
-    for name, file, before, after, _ in rows:
-        assert before != after and originals[file].count(before) == 1, (name, 'anchor drift')
+    rows = declarations(originals)
     programs, controls, red, suites = [], [], [], {}
 
     def record(name, binary, pruned=False):

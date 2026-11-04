@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::HashMap;
 
 #[test]
 fn every_backend_replacement_revokes_the_previous_route_even_when_format_repeats() {

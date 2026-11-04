@@ -8,7 +8,7 @@ pub(super) enum Forward {
 }
 pub(super) fn forward(
     delivery: AudioCommandDelivery,
-    contexts: &mut HashMap<AudioContextId, AudioContext>,
+    contexts: &mut impl ContextAccess,
     index: &NodeContextIndex,
     inbox: &mut crate::command_inbox::Inbox,
 ) -> Forward {
@@ -36,7 +36,7 @@ pub(super) fn forward(
 }
 fn apply(
     command: &mut AudioCmd,
-    contexts: &mut HashMap<AudioContextId, AudioContext>,
+    contexts: &mut impl ContextAccess,
     index: &NodeContextIndex,
 ) -> Option<(AudioContextId, AudioNodeId)> {
     match command {

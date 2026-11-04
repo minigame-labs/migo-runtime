@@ -4,7 +4,7 @@ use crate::node_retirement::{HANDOFF_BYTES, Host, Reservation, Value};
 use shared::audio_analyser_samples::{AnalyserSamples, AnalyserStorage};
 
 pub(super) fn bytes(
-    contexts: &mut HashMap<AudioContextId, AudioContext>,
+    contexts: &mut impl ContextAccess,
     index: &NodeContextIndex,
     node_id: AudioNodeId,
     frequency: bool,
@@ -18,7 +18,7 @@ pub(super) fn bytes(
     })
 }
 pub(super) fn floats(
-    contexts: &mut HashMap<AudioContextId, AudioContext>,
+    contexts: &mut impl ContextAccess,
     index: &NodeContextIndex,
     node_id: AudioNodeId,
     frequency: bool,
@@ -32,7 +32,7 @@ pub(super) fn floats(
     })
 }
 fn read<T: Send + 'static>(
-    contexts: &mut HashMap<AudioContextId, AudioContext>,
+    contexts: &mut impl ContextAccess,
     index: &NodeContextIndex,
     node_id: AudioNodeId,
     frequency: bool,

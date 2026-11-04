@@ -4,7 +4,7 @@ use super::*;
 
 pub(super) fn forward(
     delivery: AudioCommandDelivery,
-    contexts: &mut HashMap<AudioContextId, AudioContext>,
+    contexts: &mut impl ContextAccess,
     index: &NodeContextIndex,
     inbox: &mut crate::command_inbox::Inbox,
 ) -> Option<AudioCommandDelivery> {
@@ -19,7 +19,7 @@ pub(super) fn forward(
 }
 
 fn owner<'a>(
-    contexts: &'a mut HashMap<AudioContextId, AudioContext>,
+    contexts: &'a mut impl ContextAccess,
     index: &NodeContextIndex,
     node_id: AudioNodeId,
 ) -> Option<&'a mut AudioContext> {
@@ -30,7 +30,7 @@ fn owner<'a>(
 
 pub(super) fn apply(
     command: &AudioCmd,
-    contexts: &mut HashMap<AudioContextId, AudioContext>,
+    contexts: &mut impl ContextAccess,
     index: &NodeContextIndex,
 ) -> bool {
     match command {

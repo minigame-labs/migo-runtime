@@ -30,7 +30,7 @@ fn fixture(
             aggregate: Arc::new(AudioAggregateLedger::new(8 * OWNER_BYTES)),
             retire_hook: None,
         },
-        slots: HashMap::new(),
+        slots: Slots::new(),
     };
     controller
         .ensure(&context, target, ThreadWakeup::new(), None)

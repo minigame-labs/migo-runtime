@@ -4,7 +4,7 @@ use super::*;
 
 pub(super) fn forward(
     delivery: AudioCommandDelivery,
-    contexts: &mut HashMap<AudioContextId, AudioContext>,
+    contexts: &mut impl ContextAccess,
     index: &mut NodeContextIndex,
     inbox: &mut crate::command_inbox::Inbox,
 ) -> Option<AudioCommandDelivery> {
@@ -20,10 +20,10 @@ pub(super) fn forward(
     if !delivery.has_queue_permit() || delivery.command().queued_payload_bytes() < 4096 {
         return Some(delivery);
     }
-    if let Some(ctx) = contexts.get_mut(ctx_id)
-        && ctx.create_iir_filter(*node_id, feedforward, feedback)
-    {
-        index.register(*node_id, *ctx_id);
+    if let Some(ctx) = contexts.get_mut(ctx_id) {
+        index.create(*node_id, *ctx_id, || {
+            ctx.create_iir_filter(*node_id, feedforward, feedback)
+        });
     }
     inbox.finish_parameters(delivery);
     None

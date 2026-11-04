@@ -44,6 +44,9 @@ def original_with_new_tests(before):
     for old, new in replacements:
         assert before.count(old) == 1
         before = before.replace(old, new)
+    if "graph_vector_identities" not in before:
+        import check_audio_graph_vectors
+        before = check_audio_graph_vectors.before_context(before)
     return before, replacements
 
 
@@ -64,20 +67,25 @@ def run(binary, package, env, work, label, test=None, expected=0, assertion=None
     return dict(label=label, test=test, exit=code, expected_assertion=assertion)
 
 
+def declarations(original):
+    controls = [
+        ('nodes-only-provisioned-before-first-render', '        growth.install(self);\n        tables.install(self);',
+         '        if self.dense_ids.is_empty() { growth.install(self); }\n        tables.install(self);', TESTS[0]),
+        ('edges-only-provisioned-before-first-render', '            growth.install(self);\n            self.connections.push',
+         '            if self.edge_src.is_empty() { growth.install(self); }\n            self.connections.push', TESTS[1]),
+        ('mix-buffer-lazy-first-use', 'mix_buffer: GraphVec::from_vec(vec![\n                0.0;\n                DEVICE_QUANTUM_FRAMES * channels.max(1) as usize\n            ]),',
+         'mix_buffer: GraphVec::default(),', TESTS[0]),
+    ]
+    for name, old, new, _ in controls:
+        assert old != new and original.count(old) == 1, (name, 'anchor drift')
+    return controls
+
+
 def main(work, target, before_source=None, preflight=False):
     package, env, frozen = prepare(work, target)
     source = package / 'src/context.rs'
     original = source.read_text()
-    controls = [
-        ('nodes-only-provisioned-before-first-render', 'self.reserve_graph_nodes();',
-         'if self.dense_ids.is_empty() { self.reserve_graph_nodes(); }', TESTS[0]),
-        ('edges-only-provisioned-before-first-render', 'self.reserve_graph_edges();',
-         'if self.edge_src.is_empty() { self.reserve_graph_edges(); }', TESTS[1]),
-        ('mix-buffer-lazy-first-use', 'mix_buffer: vec![0.0; DEVICE_QUANTUM_FRAMES * channels.max(1) as usize],',
-         'mix_buffer: Vec::new(),', TESTS[0]),
-    ]
-    for name, old, new, _ in controls:
-        assert old != new and original.count(old) == 1, (name, 'anchor drift')
+    controls = declarations(original)
     programs, red, negative, suites = [], [], [], {}
     def record(name, binary, pruned):
         digest = product.whole.support.codecs.sha(binary)

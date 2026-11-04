@@ -166,6 +166,7 @@ pub(crate) fn oversampling_tables() {
         let mut actual = vec![0.0; input.len()];
         let mut expected = actual.clone();
         use OversampleType::{FourX, None, TwoX};
+        let mut history_ready = false;
         for (mode, deny) in [
             (TwoX, false),
             (FourX, false),
@@ -190,7 +191,19 @@ pub(crate) fn oversampling_tables() {
             gate.open();
             assert!(accepted, "bounded FIR tables acquired artificial admission");
             assert_eq!(queued, 0, "oversampling tables escaped CPU retirement");
-            assert_eq!(held, credit, "bounded FIR tables added retirement credit");
+            if !history_ready && mode != OversampleType::None {
+                let bytes = 2 * channels as usize * (32 * 4 + std::mem::size_of::<usize>());
+                assert!(
+                    held >= credit + bytes + 4096,
+                    "first FIR history omitted physical credit"
+                );
+                history_ready = true;
+            } else {
+                assert_eq!(
+                    held, credit,
+                    "prepared FIR history acquired duplicate credit"
+                );
+            }
             assert_eq!(
                 state.count.load(Ordering::Acquire),
                 0,

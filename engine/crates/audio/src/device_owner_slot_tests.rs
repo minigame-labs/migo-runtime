@@ -21,7 +21,7 @@ fn controller(s: &migo_io::scheduler::IoScheduler, max: usize) -> Controller {
             aggregate: Arc::new(AudioAggregateLedger::new(8 * OWNER_BYTES)),
             retire_hook: None,
         },
-        slots: HashMap::new(),
+        slots: Slots::new(),
     }
 }
 fn until(mut f: impl FnMut() -> bool) {

@@ -86,6 +86,17 @@ pub(crate) fn parameter_inputs() {
         let mut expected = AudioContext::new(1, 48000, 2);
         graph(&mut actual);
         graph(&mut expected);
+        // Closing refuses fresh storage admission. Keep this test focused on
+        // closed-host parameter delivery and input cleanup by preparing the
+        // reusable FIR and event capacities while its host is still open.
+        if closed {
+            assert!(actual.set_wave_shaper_oversample(30, OversampleType::TwoX));
+            assert!(actual.set_wave_shaper_oversample(30, OversampleType::None));
+            for i in 0..4 {
+                assert!(actual.param_set_value_at_time(60, "gain", 0.5, 1.0e9 + i as f64));
+            }
+            assert!(actual.param_cancel_scheduled(60, "gain", 1.0e9));
+        }
         reference(&mut expected);
         let mut contexts = HashMap::from([(1, actual)]);
         let mut index = NodeContextIndex::new();
