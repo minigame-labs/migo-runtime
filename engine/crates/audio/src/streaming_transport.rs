@@ -115,6 +115,16 @@ pub(crate) struct Sequential {
     // Preserve the original client's pool/domain lifetime through body EOF.
     _client: HttpClient,
 }
+impl Sequential {
+    pub(crate) async fn chunk(
+        &mut self,
+    ) -> EngineResult<Option<migo_services::network::http::Bytes>> {
+        self.response
+            .chunk()
+            .await
+            .map_err(|e| invalid(&format!("Stream error: {e}")))
+    }
+}
 impl<D: Decoder> Source<D> for Sequential {
     type Request = ();
     fn pending(_decoder: &D) -> EngineResult<()> {
@@ -125,14 +135,10 @@ impl<D: Decoder> Source<D> for Sequential {
         _tx: &mpsc::Sender<StreamMsg>,
         _state: &Arc<StreamingState>,
     ) -> EngineResult<SourceRead<impl AsRef<[u8]> + Send + 'static>> {
-        self.response
-            .chunk()
-            .await
-            .map(|chunk| match chunk {
-                Some(bytes) => SourceRead::Data(bytes),
-                None => SourceRead::End,
-            })
-            .map_err(|e| invalid(&format!("Stream error: {e}")))
+        self.chunk().await.map(|chunk| match chunk {
+            Some(bytes) => SourceRead::Data(bytes),
+            None => SourceRead::End,
+        })
     }
     async fn resume(
         &mut self,
@@ -187,6 +193,7 @@ pub(crate) async fn while_active<T>(
     }
 }
 
+#[cfg(test)]
 pub(crate) async fn run<D: Decoder>(
     cpu: migo_io::audio_cpu::AudioCpu,
     client: HttpClient,
@@ -222,10 +229,31 @@ async fn download<D: Decoder, S: HttpSource<D>>(
     state: &Arc<StreamingState>,
     make_decoder: impl FnOnce(Option<u64>) -> D + Send + 'static,
 ) -> EngineResult<()> {
-    if state.is_cancelled() || tx.is_closed() {
+    let Some(response) = open_response(&client, &url, tx, state, S::request).await? else {
         return Ok(());
+    };
+    let object_len = response.content_length();
+    if let Some(length) = object_len {
+        state.bytes_total.store(length, Ordering::Relaxed);
     }
-    let parsed = migo_services::network::url::Url::parse(&url).map_err(|error| {
+
+    let source = S::new(client, response)?;
+    run_source(cpu, source, object_len, tx, state, make_decoder).await
+}
+
+pub(crate) async fn open_response(
+    client: &HttpClient,
+    url: &str,
+    tx: &mpsc::Sender<StreamMsg>,
+    state: &Arc<StreamingState>,
+    customize: impl FnOnce(
+        migo_services::network::http::RequestBuilder,
+    ) -> migo_services::network::http::RequestBuilder,
+) -> EngineResult<Option<migo_services::network::http::Response>> {
+    if state.is_cancelled() || tx.is_closed() {
+        return Ok(None);
+    }
+    let parsed = migo_services::network::url::Url::parse(url).map_err(|error| {
         EngineError::from_detail(
             ErrorCode::InvalidArgument,
             format!("invalid audio URL: {error}"),
@@ -237,16 +265,16 @@ async fn download<D: Decoder, S: HttpSource<D>>(
         wait_for_network(
             state,
             RESPONSE_HEADER_TIMEOUT,
-            S::request(client.get(migo_services::network::gate::GateKind::AudioStream, parsed))
+            customize(client.get(migo_services::network::gate::GateKind::AudioStream, parsed))
                 .send(),
         ),
     )
     .await
     else {
-        return Ok(());
+        return Ok(None);
     };
     let response = match response {
-        NetworkWait::Cancelled => return Ok(()),
+        NetworkWait::Cancelled => return Ok(None),
         NetworkWait::TimedOut => {
             return Err(EngineError::from_detail(
                 ErrorCode::Timeout,
@@ -261,13 +289,7 @@ async fn download<D: Decoder, S: HttpSource<D>>(
     if !response.status().is_success() {
         return Err(invalid(&format!("HTTP error: {}", response.status())));
     }
-    let object_len = response.content_length();
-    if let Some(length) = object_len {
-        state.bytes_total.store(length, Ordering::Relaxed);
-    }
-
-    let source = S::new(client, response)?;
-    run_source(cpu, source, object_len, tx, state, make_decoder).await
+    Ok(Some(response))
 }
 
 pub(crate) async fn publish_result(
@@ -294,7 +316,12 @@ pub(crate) async fn publish_result(
 pub(crate) trait SourceControl<D: Decoder, S: Source<D>>: Send {
     type Request: Send;
     fn enabled(&self) -> bool;
+    fn format_ready(&mut self, _state: &Arc<StreamingState>, _ready: bool) -> EngineResult<()> {
+        Ok(())
+    }
     fn recover_read(&mut self, source: &mut S) -> EngineResult<()>;
+    /// Store a typed source cause before its error message can reach a consumer.
+    fn failed(&self, _error: &EngineError) {}
     fn next(&mut self) -> impl Future<Output = Option<Self::Request>> + Send;
     fn apply<'a>(
         &'a mut self,
@@ -332,6 +359,33 @@ pub(crate) enum ControlResult<D> {
 }
 
 struct SinglePass;
+
+/// The test observer means a real blocked slot, rather than merely entering
+/// reserve(). An immediately available final slot must never expose waiting.
+async fn publication_slot<'a>(
+    tx: &'a mpsc::Sender<StreamMsg>,
+    state: &StreamingState,
+) -> Result<mpsc::Permit<'a, StreamMsg>, mpsc::error::SendError<()>> {
+    #[cfg(test)]
+    {
+        let reservation = tx.reserve();
+        tokio::pin!(reservation);
+        std::future::poll_fn(|cx| {
+            let result = reservation.as_mut().poll(cx);
+            state
+                .publication_waiting
+                .store(result.is_pending(), Ordering::Release);
+            result
+        })
+        .await
+    }
+    #[cfg(not(test))]
+    {
+        let _ = state;
+        tx.reserve().await
+    }
+}
+
 impl<D: Decoder, S: Source<D>> SourceControl<D, S> for SinglePass {
     type Request = std::convert::Infallible;
     fn enabled(&self) -> bool {
@@ -420,7 +474,7 @@ pub(crate) async fn run_source<D: Decoder, S: Source<D>>(
             initialized: false,
         },
         make_decoder,
-        SinglePass,
+        &mut SinglePass,
         &mut StreamPublication::default(),
     )
     .await
@@ -436,10 +490,10 @@ pub(crate) async fn run_source_controlled<D: Decoder, S: Source<D>, C: SourceCon
     tx: mpsc::Sender<StreamMsg>,
     state: Arc<StreamingState>,
     make_decoder: impl FnOnce(Option<u64>) -> D + Send + 'static,
-    controls: C,
+    mut controls: C,
 ) -> EngineResult<()> {
     let mut publication = StreamPublication::default();
-    let result = if !state.retains_source() {
+    let result = if !state.accepts_controls() {
         Err(invalid("controlled producer requires a reusable consumer"))
     } else {
         drive_source(
@@ -453,12 +507,13 @@ pub(crate) async fn run_source_controlled<D: Decoder, S: Source<D>, C: SourceCon
                 initialized: false,
             },
             make_decoder,
-            controls,
+            &mut controls,
             &mut publication,
         )
         .await
     };
     if let Err(error) = &result {
+        controls.failed(error);
         send(
             &tx,
             &state,
@@ -513,7 +568,7 @@ async fn drive_source<D: Decoder, S: Source<D>, C: SourceControl<D, S>>(
     object_len: Option<u64>,
     mut context: ControlContext<'_>,
     make_decoder: impl FnOnce(Option<u64>) -> D + Send + 'static,
-    mut controls: C,
+    controls: &mut C,
     publication: &mut StreamPublication,
 ) -> EngineResult<()> {
     let ControlContext { tx, state, .. } = context;
@@ -623,13 +678,8 @@ async fn drive_source<D: Decoder, S: Source<D>, C: SourceControl<D, S>>(
         }
         // A queued control wins a ready source/slot, but never drops a running
         // CPU ownership transfer. Its bounded step returns before this point.
-        match producer_event::<D, S, _, _>(
-            &mut controls,
-            &mut open,
-            context,
-            std::future::ready(()),
-        )
-        .await
+        match producer_event::<D, S, _, _>(controls, &mut open, context, std::future::ready(()))
+            .await
         {
             ProducerEvent::Control(request) => {
                 command = Some(request);
@@ -655,11 +705,13 @@ async fn drive_source<D: Decoder, S: Source<D>, C: SourceControl<D, S>>(
         }
         if let Some(frame) = &mut pending {
             if publication.has_pending(&frame.output) {
-                #[cfg(test)]
-                state.publication_waiting.store(true, Ordering::Release);
-                let event =
-                    producer_event::<D, S, _, _>(&mut controls, &mut open, context, tx.reserve())
-                        .await;
+                let event = producer_event::<D, S, _, _>(
+                    controls,
+                    &mut open,
+                    context,
+                    publication_slot(tx, state),
+                )
+                .await;
                 #[cfg(test)]
                 state.publication_waiting.store(false, Ordering::Release);
                 match event {
@@ -680,11 +732,13 @@ async fn drive_source<D: Decoder, S: Source<D>, C: SourceControl<D, S>>(
             }
             if frame.step.progress == Progress::Finished {
                 publication.validate_finish(eof, frame.remaining)?;
-                #[cfg(test)]
-                state.publication_waiting.store(true, Ordering::Release);
-                let event =
-                    producer_event::<D, S, _, _>(&mut controls, &mut open, context, tx.reserve())
-                        .await;
+                let event = producer_event::<D, S, _, _>(
+                    controls,
+                    &mut open,
+                    context,
+                    publication_slot(tx, state),
+                )
+                .await;
                 #[cfg(test)]
                 state.publication_waiting.store(false, Ordering::Release);
                 match event {
@@ -751,7 +805,7 @@ async fn drive_source<D: Decoder, S: Source<D>, C: SourceControl<D, S>>(
                 deadline.saturating_duration_since(Instant::now()),
                 source.read(tx, state),
             );
-            let event = producer_event::<D, S, _, _>(&mut controls, &mut open, context, read).await;
+            let event = producer_event::<D, S, _, _>(controls, &mut open, context, read).await;
             let next = match event {
                 ProducerEvent::Cancelled => return Ok(()),
                 ProducerEvent::Control(request) => {
@@ -824,6 +878,7 @@ async fn drive_source<D: Decoder, S: Source<D>, C: SourceControl<D, S>>(
         decoder = rest;
         input = returned_input;
         let step = step?;
+        controls.format_ready(state, step.sample_rate != 0 && step.channels != 0)?;
         let request = request.transpose()?;
         active_presentation = active_presentation.or_else(|| state.presentation());
         if !publication.has_timeline()
@@ -855,6 +910,32 @@ async fn drive_source<D: Decoder, S: Source<D>, C: SourceControl<D, S>>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn publication_observer_reports_only_a_genuinely_pending_slot() {
+        let (tx, _rx) = mpsc::channel(1);
+        let state = StreamingState::new();
+        let first = publication_slot(&tx, &state).await.unwrap();
+        assert!(
+            !state.publication_waiting.load(Ordering::Acquire),
+            "ready publication slot was labeled blocked"
+        );
+        let mut next = std::pin::pin!(publication_slot(&tx, &state));
+        assert!(
+            std::future::poll_fn(|cx| std::task::Poll::Ready(next.as_mut().poll(cx).is_pending()))
+                .await
+        );
+        assert!(
+            state.publication_waiting.load(Ordering::Acquire),
+            "pending publication slot was not observed"
+        );
+        drop(first);
+        let _next = next.await.unwrap();
+        assert!(
+            !state.publication_waiting.load(Ordering::Acquire),
+            "completed publication slot remained blocked"
+        );
+    }
     use crate::streaming::{STREAM_CHANNEL_CAPACITY, publish_stream_chunk, stream_channel};
     use std::time::Duration;
 

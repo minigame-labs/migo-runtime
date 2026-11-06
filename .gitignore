@@ -287,6 +287,11 @@ scripts/perf_compare.ps1
 !engine/third_party/symphonia-format-ogg-0.6.1/Cargo.toml.orig
 !engine/third_party/symphonia-codec-vorbis-0.6.1/Cargo.lock
 !engine/third_party/symphonia-codec-vorbis-0.6.1/Cargo.toml.orig
+# Published AAC/MP4 inputs are part of the reproducible codec source inventory.
+!engine/third_party/symphonia-codec-aac-0.6.1/Cargo.lock
+!engine/third_party/symphonia-codec-aac-0.6.1/Cargo.toml.orig
+!engine/third_party/symphonia-format-isomp4-0.6.1/Cargo.lock
+!engine/third_party/symphonia-format-isomp4-0.6.1/Cargo.toml.orig
 
 # Published MP3 source/metadata are required for reproducible native compilation.
 !engine/third_party/minimp3-sys-0.6.0/Cargo.lock

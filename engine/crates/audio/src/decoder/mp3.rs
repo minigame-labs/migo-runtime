@@ -12,6 +12,7 @@ mod job;
 mod presentation;
 pub(crate) use file::{FileStep, Mp3FileDecoder};
 pub(crate) use job::Mp3DecodeJob;
+pub(crate) use presentation::Presentation;
 
 #[cfg(test)]
 #[derive(Clone, Copy, Default)]
@@ -138,6 +139,7 @@ impl Mp3FrameDecoder {
     /// The whole remaining buffer should be passed, not one frame's worth:
     /// minimp3's state-preserving fast path is conditional on the next header
     /// being visible.
+    #[cfg(test)]
     pub(crate) fn decode<'a>(&'a mut self, input: &[u8]) -> Mp3Step<'a> {
         if input.is_empty() {
             return Mp3Step::NeedMoreData;
@@ -353,6 +355,11 @@ pub(crate) fn next_sync_candidate(buffer: &[u8], from: usize) -> Option<usize> {
 /// markers -- from being measured as a frame: minimp3 accepts a lone frame with nothing after it to
 /// confirm it.
 pub(crate) fn id3v2_tag_length(buffer: &[u8]) -> Option<usize> {
+    id3v2_tag_size(buffer).filter(|length| *length <= buffer.len())
+}
+
+/// Declared extent from the same ID3 header, before the entire tag arrives.
+pub(crate) fn id3v2_tag_size(buffer: &[u8]) -> Option<usize> {
     let header = buffer.get(..10)?;
     if &header[..3] != b"ID3"
         || header[3] == 0xFF
@@ -365,8 +372,7 @@ pub(crate) fn id3v2_tag_length(buffer: &[u8]) -> Option<usize> {
         .iter()
         .fold(0usize, |size, &b| (size << 7) | usize::from(b));
     let footer = if header[5] & 0x10 != 0 { 10 } else { 0 };
-    let total = 10 + size + footer;
-    (total <= buffer.len()).then_some(total)
+    Some(10 + size + footer)
 }
 
 /// Where the next whole frame starts in `buffer`, and how long it is.

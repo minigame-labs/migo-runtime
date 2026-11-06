@@ -3,14 +3,21 @@
 //! Caches decoded audio data to avoid repeated downloads and decoding.
 //! Uses URL as key and applies LRU eviction when memory limit is exceeded.
 
-use std::collections::{BTreeMap, HashMap};
 use std::ops::Deref;
 use std::sync::{Arc, Mutex};
 
 use shared::error::{EngineError, EngineResult, ErrorCode};
 
 use crate::decoder::DecodedAudio;
+#[path = "cache_key_storage.rs"]
+mod key_storage;
 use crate::limits::{AudioAggregateLedger, AudioAggregatePermit, MAX_AUDIO_CACHE_BYTES, pcm_bytes};
+use key_storage::Key;
+#[path = "cache_entries_storage.rs"]
+mod entries_storage;
+use entries_storage::Entries;
+#[path = "cache_lru.rs"]
+mod lru;
 
 /// Decoded audio retained by the cache and any player that references it.
 ///
@@ -53,17 +60,19 @@ struct CacheEntry {
     size_bytes: usize,
     /// Access order (higher = more recent).
     access_order: u64,
+    links: lru::Links,
 }
 
 /// Global audio cache with LRU eviction.
 pub struct AudioCache {
-    entries: HashMap<String, CacheEntry>,
-    order_index: BTreeMap<u64, String>,
+    entries: Entries,
+    order_index: lru::Lru,
     current_size: usize,
     max_size: usize,
     access_counter: u64,
     aggregate: Arc<AudioAggregateLedger>,
     cpu: Option<migo_io::audio_cpu::AudioCpu>,
+    metadata_host: Option<crate::node_retirement::Host>,
 }
 
 impl AudioCache {
@@ -74,6 +83,7 @@ impl AudioCache {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn with_cpu(cpu: migo_io::audio_cpu::AudioCpu) -> Self {
         Self {
             cpu: Some(cpu),
@@ -91,26 +101,41 @@ impl AudioCache {
         max_size: usize,
         aggregate: Arc<AudioAggregateLedger>,
     ) -> Self {
+        Self::with_parts(max_size, aggregate, None, None)
+    }
+
+    fn with_parts(
+        max_size: usize,
+        aggregate: Arc<AudioAggregateLedger>,
+        cpu: Option<migo_io::audio_cpu::AudioCpu>,
+        metadata_host: Option<crate::node_retirement::Host>,
+    ) -> Self {
         Self {
-            entries: HashMap::with_capacity(Self::DEFAULT_CACHE_CAPACITY),
-            order_index: BTreeMap::new(),
+            // Managed construction is lazy: no buckets precede admission.
+            entries: if metadata_host.is_some() {
+                Entries::new()
+            } else {
+                Entries::with_capacity(Self::DEFAULT_CACHE_CAPACITY)
+            },
+            order_index: lru::Lru::default(),
             current_size: 0,
             max_size,
             access_counter: 0,
             aggregate,
-            cpu: None,
+            cpu,
+            metadata_host,
         }
     }
 
     pub fn get(&mut self, url: &str) -> Option<Arc<CachedAudio>> {
-        if let Some(entry) = self.entries.get_mut(url) {
-            self.order_index.remove(&entry.access_order);
-            self.access_counter += 1;
+        if let Some(audio) = self.entries.get(url).map(|entry| Arc::clone(&entry.audio)) {
+            self.order_index.touch(&mut self.entries, url);
+            // Recency is carried by links; this diagnostic tag may wrap.
+            self.access_counter = self.access_counter.wrapping_add(1);
+            let entry = self.entries.get_mut(url).unwrap();
             entry.access_order = self.access_counter;
-            self.order_index
-                .insert(self.access_counter, url.to_string());
-            tracing::trace!("Cache hit: {}", url);
-            Some(Arc::clone(&entry.audio))
+            tracing::trace!(cache_tag = entry.access_order, "Cache hit: {}", url);
+            Some(audio)
         } else {
             tracing::trace!("Cache miss: {}", url);
             None
@@ -146,11 +171,7 @@ impl AudioCache {
     // An already protected backing keeps its one original physical permit.
     fn insert_ready(&mut self, url: String, audio: CachedAudio) -> Arc<CachedAudio> {
         let size_bytes = audio.samples.capacity() * std::mem::size_of::<f32>();
-        if size_bytes <= self.max_size {
-            while self.current_size + size_bytes > self.max_size && !self.entries.is_empty() {
-                self.evict_lru();
-            }
-        } else {
+        if size_bytes > self.max_size {
             tracing::debug!(
                 "Audio too large to cache: {} bytes (max: {})",
                 size_bytes,
@@ -159,11 +180,27 @@ impl AudioCache {
             return Arc::new(audio);
         }
 
-        self.access_counter += 1;
+        // Caching is optional. Refusal preserves the old cache and returns the
+        // already protected PCM without allocating a retained key.
+        let growth = match self.entries.reserve(self.metadata_host.as_ref()) {
+            Ok(growth) => growth,
+            Err(_) => return Arc::new(audio),
+        };
+        let url = match Key::new(url, self.metadata_host.as_ref()) {
+            Ok(key) => key,
+            Err(_) => return Arc::new(audio),
+        };
+        if let Some(growth) = growth {
+            growth.install(&mut self.entries);
+        }
+        while self.current_size + size_bytes > self.max_size && !self.entries.is_empty() {
+            self.evict_lru();
+        }
+        self.access_counter = self.access_counter.wrapping_add(1);
         let audio = Arc::new(audio);
-        if let Some(old) = self.entries.remove(&url) {
+        self.order_index.remove(&mut self.entries, url.as_str());
+        if let Some(old) = self.entries.remove(url.as_str()) {
             self.current_size = self.current_size.saturating_sub(old.size_bytes);
-            self.order_index.remove(&old.access_order);
         }
         self.entries.insert(
             url.clone(),
@@ -171,9 +208,10 @@ impl AudioCache {
                 audio: Arc::clone(&audio),
                 size_bytes,
                 access_order: self.access_counter,
+                links: lru::Links::default(),
             },
         );
-        self.order_index.insert(self.access_counter, url.clone());
+        self.order_index.append(&mut self.entries, url.clone());
         self.current_size += size_bytes;
         tracing::debug!(
             "Cached audio: {} ({} bytes, total cache: {} bytes)",
@@ -185,20 +223,18 @@ impl AudioCache {
     }
 
     fn evict_lru(&mut self) {
-        if let Some((&order, _)) = self.order_index.iter().next() {
-            if let Some(url) = self.order_index.remove(&order) {
-                if let Some(entry) = self.entries.remove(&url) {
-                    self.current_size = self.current_size.saturating_sub(entry.size_bytes);
-                    tracing::debug!("Evicted from cache: {} ({} bytes)", url, entry.size_bytes);
-                }
-            }
+        if let Some(url) = self.order_index.pop(&mut self.entries)
+            && let Some(entry) = self.entries.remove(url.as_str())
+        {
+            self.current_size = self.current_size.saturating_sub(entry.size_bytes);
+            tracing::debug!("Evicted from cache: {} ({} bytes)", url, entry.size_bytes);
         }
     }
 
     pub fn remove(&mut self, url: &str) {
+        self.order_index.remove(&mut self.entries, url);
         if let Some(entry) = self.entries.remove(url) {
             self.current_size = self.current_size.saturating_sub(entry.size_bytes);
-            self.order_index.remove(&entry.access_order);
             tracing::debug!("Removed from cache: {} ({} bytes)", url, entry.size_bytes);
         }
     }
@@ -217,6 +253,41 @@ impl AudioCache {
             current_size: self.current_size,
             max_size: self.max_size,
         }
+    }
+    #[cfg(test)]
+    fn bucket_bytes(&self) -> usize {
+        self.entries.allocation_bytes()
+    }
+    #[cfg(test)]
+    fn observe_buckets(
+        &mut self,
+        hook: Arc<dyn Fn() + Send + Sync>,
+    ) -> Arc<std::sync::atomic::AtomicUsize> {
+        let freed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        self.entries.watch_deallocation(freed.clone());
+        self.entries.observe(hook);
+        freed
+    }
+    #[cfg(test)]
+    fn check_bucket_host(&self, host: &crate::node_retirement::Host) -> EngineResult<()> {
+        self.entries.reserve(Some(host)).map(|_| ())
+    }
+    #[cfg(test)]
+    fn lru_keys(&self) -> impl Iterator<Item = &Key> {
+        self.order_index.keys(&self.entries)
+    }
+    #[cfg(test)]
+    fn lru_iter(&self) -> impl Iterator<Item = (&u64, &Key)> {
+        self.lru_keys()
+            .map(|key| (&self.entries.get(key.as_str()).unwrap().access_order, key))
+    }
+    #[cfg(test)]
+    fn lru_empty(&self) -> bool {
+        self.order_index.is_empty()
+    }
+    #[cfg(test)]
+    fn lru_valid(&self) -> bool {
+        self.order_index.valid(&self.entries)
     }
 }
 
@@ -323,6 +394,21 @@ pub struct GlobalAudioCache {
 }
 
 impl GlobalAudioCache {
+    pub(crate) fn managed(
+        cpu: migo_io::audio_cpu::AudioCpu,
+        storage: crate::node_retirement::Host,
+    ) -> Self {
+        Self {
+            inner: Mutex::new(AudioCache::with_parts(
+                MAX_AUDIO_CACHE_BYTES,
+                AudioAggregateLedger::process_global(),
+                Some(cpu.clone()),
+                Some(storage),
+            )),
+            cpu: Some(cpu),
+        }
+    }
+    #[cfg(test)]
     pub(crate) fn with_cpu(cpu: migo_io::audio_cpu::AudioCpu) -> Self {
         Self {
             inner: Mutex::new(AudioCache::with_cpu(cpu.clone())),

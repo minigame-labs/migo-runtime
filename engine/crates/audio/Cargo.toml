@@ -22,10 +22,14 @@ name = "audio"
 minimp3-sys = "0.6"  # MP3, MIT license
 # Vorbis uses the mature bounded Ogg packetizer and gapless decoder verified by W09.
 symphonia-core = { version = "=0.6.1", default-features = false, features = ["opt-simd"] }
+symphonia-metadata = { version = "=0.6.1", default-features = false }
 symphonia-format-ogg = { version = "=0.6.1", default-features = false, features = ["streaming"] }
 symphonia-codec-vorbis = { version = "=0.6.1", default-features = false }
 symphonia-format-riff = { version = "=0.6.1", default-features = false, features = ["wav", "streaming"] }
 symphonia-codec-pcm = { version = "=0.6.1", default-features = false }
+# AAC-LC full-file jobs reuse the verified ADTS/MP4 bounded ports.
+symphonia-codec-aac = { version = "=0.6.1", default-features = false, features = ["streaming"] }
+symphonia-format-isomp4 = { version = "=0.6.1", default-features = false, features = ["streaming"] }
 
 # Mature band-limited whole-file sample-rate conversion; FFT stays unselected.
 rubato = { version = "=5.0.1", default-features = false }
@@ -80,6 +84,9 @@ objc2-avf-audio = { version = "=0.3.2", default-features = false, features = ["s
 cc = "1"
 
 [dev-dependencies]
+# Existing HTTP client public proxy type, only for deterministic loopback fixtures.
+hyper-util = { version = "=0.1.21", default-features = false, features = ["client-proxy"] }
+tokio = { workspace = true, features = ["net", "io-util"] }
 # Isolate multi-host retirement bursts while retaining real shared queue caps.
 migo-io = { path = "../io", default-features = false, features = ["admission-probe"] }
 # Independent legacy WAVE oracle; not in the product runtime graph.

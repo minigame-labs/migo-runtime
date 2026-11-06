@@ -316,6 +316,21 @@ impl<T> Pending<T> {
             .map_err(engine_error)
     }
 
+    async fn answer_file(self) -> Result<T, ServiceError> {
+        match self.0.await.map_err(|_| response_closed())? {
+            Ok(value) => Ok(value),
+            Err(error) if error.code == ErrorCode::InvalidArgument => {
+                let mut service = engine_error(error);
+                service.class = CLASS_ENCODING_ERROR;
+                Err(service)
+            }
+            Err(error) if matches!(error.code, ErrorCode::IoError | ErrorCode::Timeout) => {
+                Err(file_error("Failed to read local audio file"))
+            }
+            Err(error) => Err(engine_error(error)),
+        }
+    }
+
     /// [`Self::answer`] for a decode: bytes the decoder refused (`InvalidArgument`: not a format it knows,
     /// truncated, corrupt) are an [`CLASS_ENCODING_ERROR`], and every other failure keeps the audio
     /// error's class.
@@ -1378,12 +1393,89 @@ pub fn inner_audio_load(
     Ok(Pending(answer))
 }
 
+/// Existing host IO and the session-private root for consistent local audio reads.
+#[derive(Clone)]
+pub struct LocalAudioFile {
+    scheduler: Arc<migo_io::scheduler::IoScheduler>,
+    spool_dir: PathBuf,
+    mounts: Option<Arc<shared::vfs::MountTable>>,
+    #[cfg(test)]
+    hooks: local_file::Hooks,
+}
+impl LocalAudioFile {
+    /// Same session root and Fs domain, with no VFS mount authority attached.
+    pub fn http_spool(&self) -> Arc<dyn shared::audio_file::AudioHttpSpool> {
+        http_spool::capability(self)
+    }
+    /// A host-private root from the same session, outside every writable VFS mapping.
+    pub fn session(
+        scheduler: Arc<migo_io::scheduler::IoScheduler>,
+        paths: &shared::vfs::GamePaths,
+    ) -> Self {
+        Self {
+            scheduler,
+            spool_dir: paths.spool_dir().to_path_buf(),
+            mounts: None,
+            #[cfg(test)]
+            hooks: local_file::Hooks::default(),
+        }
+    }
+    /// Select `/code` from the same mount table the session publishes to files
+    /// and modules. Other sandbox roots keep their original VFS authority.
+    pub fn with_mounts(mut self, mounts: Option<Arc<shared::vfs::MountTable>>) -> Self {
+        self.mounts = mounts;
+        self
+    }
+    /// Host-side access to the same sealed source used by large local playback.
+    pub async fn source(
+        self,
+        vfs: Arc<VirtualFS>,
+        path: String,
+    ) -> Result<Arc<dyn shared::audio_file::AudioFile>, ServiceError> {
+        file_stream::source(vfs, path, self).await
+    }
+}
+
+#[path = "audio_file_stream.rs"]
+mod file_stream;
+#[path = "audio_http_spool.rs"]
+mod http_spool;
+#[path = "audio_local_file.rs"]
+mod local_file;
+enum LocalAudioPrepared {
+    Data(Vec<u8>),
+    Stream(Arc<dyn shared::audio_file::AudioFile>),
+}
+
+async fn prepare_local_audio_source(
+    vfs: Option<Arc<VirtualFS>>,
+    source: LocalAudioSource,
+    context: Option<LocalAudioFile>,
+) -> Result<LocalAudioPrepared, ServiceError> {
+    match source {
+        LocalAudioSource::Sandboxed { virtual_path } => {
+            let vfs = vfs.ok_or_else(|| file_error("Failed to open local audio file"))?;
+            let context =
+                context.ok_or_else(|| file_error("Local audio file context is unavailable"))?;
+            file_stream::prepare(vfs, virtual_path, context).await
+        }
+        source @ LocalAudioSource::Unconfined { .. } => {
+            open_local_audio_source(vfs, source, context)
+                .await
+                .map(LocalAudioPrepared::Data)
+        }
+    }
+}
+
 /// Where an InnerAudioContext's `src` is read from.
 pub struct InnerAudioSources<G> {
     /// The package's code directory, for a path outside any sandbox.
     pub code_dir: Option<String>,
     /// The game's sandbox. Present in every product; absent only in tooling.
     pub vfs: Option<Arc<VirtualFS>>,
+    /// Existing session IO and private snapshot root. Required for sandboxed files.
+    /// Remote M4A fallback uses the same private spool authority.
+    pub local_file: Option<LocalAudioFile>,
     /// Admits an `http(s)://` source, or refuses it with the reason: the
     /// caller's network policy, which is the caller's to hold.
     pub admit_remote: G,
@@ -1437,6 +1529,7 @@ where
                         id,
                         load,
                         url: src,
+                        spool: sources.local_file.as_ref().map(LocalAudioFile::http_spool),
                         resp,
                     })?
                     .answer()
@@ -1451,8 +1544,26 @@ where
                 // failure releases the RAII permit, and a successful small load shrinks it
                 // to the Vec capacity its queued command retains.
                 let mut permit = reserve(&tx, MAX_ENCODED_AUDIO_BYTES)?;
-                let file = open_local_audio_source(sources.vfs, source).await?;
-                let data = read_capped_local_audio(file).await?;
+                let prepared =
+                    prepare_local_audio_source(sources.vfs, source, sources.local_file).await?;
+                let data = match prepared {
+                    LocalAudioPrepared::Data(data) => data,
+                    LocalAudioPrepared::Stream(source) => {
+                        permit.shrink_to(source.queued_bytes());
+                        let (resp, answer) = oneshot::channel();
+                        send_reserved(
+                            &tx,
+                            AudioCmd::InnerAudioLoadFile {
+                                id,
+                                load,
+                                source,
+                                resp,
+                            },
+                            permit,
+                        )?;
+                        return Pending(answer).answer_file().await;
+                    }
+                };
                 if data.capacity() > MAX_ENCODED_AUDIO_BYTES {
                     return Err(engine_error(EngineError::from_detail(
                         ErrorCode::InputSaturated,
@@ -1556,20 +1667,21 @@ fn resolve_local_src(
 async fn open_local_audio_source(
     vfs: Option<Arc<VirtualFS>>,
     source: LocalAudioSource,
-) -> Result<tokio::fs::File, ServiceError> {
+    context: Option<LocalAudioFile>,
+) -> Result<Vec<u8>, ServiceError> {
     match source {
         LocalAudioSource::Sandboxed { virtual_path } => {
             let vfs = vfs.ok_or_else(|| file_error("Failed to open local audio file"))?;
-            let file =
-                tokio::task::spawn_blocking(move || vfs.open_regular_for_read(&virtual_path))
-                    .await
-                    .map_err(|_| file_error("Failed to open local audio file"))?
-                    .map_err(|_| file_error("Failed to open local audio file"))?;
-            Ok(tokio::fs::File::from_std(file))
+            let context =
+                context.ok_or_else(|| file_error("Local audio file context is unavailable"))?;
+            local_file::read(vfs, virtual_path, context).await
         }
-        LocalAudioSource::Unconfined { path } => tokio::fs::File::open(path)
-            .await
-            .map_err(|_| file_error("Failed to open local audio file")),
+        LocalAudioSource::Unconfined { path } => {
+            let file = tokio::fs::File::open(path)
+                .await
+                .map_err(|_| file_error("Failed to open local audio file"))?;
+            read_capped_local_audio(file).await
+        }
     }
 }
 

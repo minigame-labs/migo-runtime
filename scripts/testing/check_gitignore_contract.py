@@ -7,9 +7,95 @@ sys.path.insert(0, str(ROOT / 'scripts/lib'))
 from gitignore_policy import check, tracked_ignored
 
 REQUIRED = [
+    'engine/crates/audio/src/inner_rate_tests.rs',
+    'engine/crates/audio/src/variable_rate.rs',
+    'engine/crates/audio/native/variable_rate.c',
+    'engine/third_party/libsamplerate-source.json',
+    'engine/third_party/libsamplerate-0.2.2/COPYING',
+    'engine/third_party/libsamplerate-0.2.2/AUTHORS',
+    'engine/third_party/libsamplerate-0.2.2/include/samplerate.h',
+    'engine/third_party/libsamplerate-0.2.2/src/common.h',
+    'engine/third_party/libsamplerate-0.2.2/src/samplerate.c',
+    'engine/third_party/libsamplerate-0.2.2/src/src_sinc.c',
+    'engine/third_party/libsamplerate-0.2.2/src/src_linear.c',
+    'engine/third_party/libsamplerate-0.2.2/src/src_zoh.c',
+    'engine/third_party/libsamplerate-0.2.2/src/high_qual_coeffs.h',
+    'scripts/testing/fixtures/libsamplerate-0.2.2-retain-history.patch',
+    'scripts/testing/fixtures/variable_rate_probe.rs',
+    'scripts/testing/fixtures/variable_rate_alloc.c',
+    'scripts/testing/check_audio_variable_rate.py',
+    'scripts/testing/fixtures/playback_rate_probe.rs',
+    'scripts/testing/check_audio_playback_rate.py',
+    'engine/third_party/symphonia-format-ogg-patches/0004-fragmented-first-page-restore.patch',
+    'engine/crates/audio/src/streaming_http_vorbis_tests.rs',
+    'scripts/testing/check_audio_http_vorbis_controls.py',
+    'engine/crates/audio/src/streaming_file_vorbis_tests.rs',
+    'engine/crates/audio/src/streaming_vorbis_control_tests.rs',
+    'engine/third_party/symphonia-format-ogg-patches/0003-pinned-vorbis-presentation-replay.patch',
+    'scripts/testing/check_audio_file_vorbis_controls.py',
+    'engine/crates/audio/src/streaming_http_mp3_tests.rs',
+    'scripts/testing/check_audio_http_mp3_controls.py',
+    'engine/crates/audio/src/streaming_mp3_control.rs',
+    'engine/crates/audio/src/streaming_mp3_control_tests.rs',
+    'engine/crates/audio/src/streaming_file_mp3_tests.rs',
+    'scripts/testing/check_audio_file_mp3_controls.py',
+    'engine/crates/audio/src/streaming_http_wave.rs',
+    'engine/crates/audio/src/streaming_http_wave_tests.rs',
+    'scripts/testing/check_audio_http_wave_controls.py',
+    'engine/crates/audio/src/streaming_mp3_gapless_tests.rs',
+    'engine/crates/audio/src/streaming_mp3_http_tests.rs',
+    'scripts/testing/fixtures/audio-codec-probe/streaming_mp3_native.rs',
+    'engine/third_party/minimp3-sys-patches/0003-streaming-presentation.patch',
+    'scripts/testing/check_audio_streaming_mp3_gapless.py',
+    'engine/crates/audio/src/streaming_file_control.rs',
+    'engine/crates/audio/src/streaming_file_control_tests.rs',
+    'scripts/testing/check_audio_sinc_origin.py',
+    'engine/crates/audio/src/streaming_sinc_origin_tests.rs',
+    'scripts/testing/check_audio_package_file.py',
+    'engine/crates/io/src/source_snapshot/package.rs',
+    'engine/crates/io/src/source_snapshot/package/tests.rs',
+    'engine/crates/services/src/audio_package_file_tests.rs',
+    'engine/crates/audio/src/streaming_file_index.rs',
+    'engine/crates/audio/src/streaming_file_index_tests.rs',
+    'scripts/testing/check_audio_file_index.py',
+    'engine/crates/shared/src/audio_file.rs',
+    'engine/crates/services/src/audio_file_stream.rs',
+    'engine/crates/services/src/audio_file_stream_tests.rs',
+    'engine/crates/audio/src/streaming_file.rs',
+    'engine/crates/audio/src/streaming_file_tests.rs',
+    'scripts/testing/check_audio_file_stream.py',
+    'engine/testing/alloc-probe/src/deallocation_watch.rs',
+    'scripts/testing/fixtures/oboe/bridge_test.cpp',
+    'scripts/testing/fixtures/oboe/oboe/Oboe.h',
+    'scripts/test-oboe-backend-contract.sh',
+    'engine/crates/audio/src/output_oboe_callback_storage.rs',
+    'engine/crates/audio/src/output_oboe_callback_storage_tests.rs',
+    'scripts/testing/check_audio_oboe_callback.py',
+    'engine/crates/audio/src/output_ohaudio_error_storage.rs',
+    'engine/crates/audio/src/output_ohaudio_error_storage_tests.rs',
+    'scripts/testing/check_audio_ohaudio_errors.py',
+    'engine/crates/audio/src/output_error_storage.rs',
+    'engine/crates/audio/src/output_error_storage_tests.rs',
+    'scripts/testing/check_audio_cpal_errors.py',
+    'engine/crates/audio/src/output_ring.rs',
+    'engine/crates/audio/src/output_ring_tests.rs',
+    'engine/crates/audio/src/output_ring_reference.rs',
+    'scripts/testing/check_audio_output_ring.py',
+    'engine/crates/audio/src/cache_entries_storage.rs',
+    'engine/crates/audio/src/cache_entries_storage_tests.rs',
+    'scripts/testing/check_audio_cache_entries.py',
+    'engine/crates/audio/src/cache_lru.rs',
+    'engine/crates/audio/src/cache_lru_tests.rs',
+    'scripts/testing/check_audio_cache_lru.py',
+    'engine/crates/audio/src/output_sync_storage.rs',
+    'engine/crates/audio/src/output_sync_storage_tests.rs',
+    'scripts/testing/check_audio_output_sync.py',
     'scripts/testing/check_audio_device_slots.py',
     'scripts/testing/check_audio_device_routes.py',
     'scripts/testing/check_audio_mix_buffer.py',
+    'scripts/testing/check_audio_cache_keys.py',
+    'engine/crates/audio/src/cache_key_storage.rs',
+    'engine/crates/audio/src/cache_key_storage_tests.rs',
     'engine/crates/audio/src/audio_thread_mix_buffer.rs',
     'engine/crates/audio/src/audio_thread_mix_buffer_tests.rs',
     'engine/crates/audio/src/device_route_storage.rs',
@@ -164,6 +250,10 @@ REQUIRED = [
     "scripts/testing/check_audio_node_retirement.py",
     "scripts/testing/check_audio_source_completion.py",
     "engine/crates/audio/src/context_source_completion_tests.rs",
+    "engine/crates/audio/src/context_feedback_tests.rs",
+    "engine/crates/audio/src/context_processing.rs",
+    "scripts/testing/check_audio_feedback.py",
+    "scripts/testing/fixtures/audio_feedback_tail_bench.rs",
     "scripts/testing/check_audio_source_scheduling.py",
     "engine/crates/audio/src/context_source_scheduling_tests.rs",
     "engine/crates/audio/src/render_time.rs",
@@ -604,6 +694,10 @@ GENERATED = [
 ]
 
 
+REQUIRED.extend(['engine/crates/services/src/audio_http_spool.rs', 'engine/crates/services/src/audio_http_spool_tests.rs', 'engine/crates/audio/src/streaming_http_prepare.rs', 'engine/crates/audio/src/streaming_http_prepare_tests.rs', 'engine/crates/audio/src/audio_thread_http_spool_tests.rs', 'scripts/testing/check_audio_http_spool.py'])
+
+REQUIRED.extend(['engine/crates/audio/src/streaming_http_control_tests.rs', 'scripts/testing/check_audio_http_control.py'])
+
 def main():
     required = REQUIRED.copy()
     # The provenance gates check every path from their verified archive + patch
@@ -638,6 +732,37 @@ for name, row in json.loads((ROOT / 'engine/third_party/rubato-sources.json').re
     folder=ROOT/'engine/third_party'/(name+'-'+row['version'])
     REQUIRED.extend(str(p.relative_to(ROOT)) for p in sorted(folder.rglob('*')) if p.is_file())
 
+
+# AAC product codecs, provenance and complete immutable test inputs are source.
+REQUIRED.extend([
+    'engine/third_party/symphonia-aac-sources.json',
+    'scripts/testing/check_audio_aac_product.py',
+    'scripts/testing/generate_aac_product_fixtures.py',
+])
+for folder in ['engine/crates/audio/src/decoder/aac', 'engine/crates/audio/src/decoder/aac-fixtures']:
+    REQUIRED.extend(str(p.relative_to(ROOT)) for p in sorted((ROOT/folder).rglob('*')) if p.is_file())
+
+
+REQUIRED.append('scripts/testing/check_audio_progressive_product.py')
+REQUIRED.extend(['engine/crates/services/src/audio_local_file.rs', 'engine/crates/services/src/audio_local_file_tests.rs', 'scripts/testing/check_audio_local_file.py'])
+REQUIRED.extend(str(p.relative_to(ROOT)) for p in sorted((ROOT/'engine/crates/audio/src/streaming_codecs').glob('*.rs')))
+
+
+REQUIRED.append('scripts/testing/check_audio_file_controls.py')
+
+REQUIRED.extend(['scripts/testing/check_audio_range_buffer.py', 'engine/crates/services/src/network/http/range/borrowed_tests.rs'])
+
+REQUIRED.extend(['engine/crates/audio/src/streaming_http.rs', 'engine/crates/audio/src/streaming_http_tests.rs', 'scripts/testing/check_audio_http_m4a.py'])
+
+
+REQUIRED.extend([
+    'engine/crates/audio/src/streaming_source_control.rs',
+    'engine/crates/audio/src/streaming_http_control.rs',
+    'engine/crates/audio/src/streaming_range_control_tests.rs',
+    'scripts/testing/check_audio_range_controls.py',
+])
+
+REQUIRED.extend(['engine/crates/audio/src/streaming_file_wave.rs','engine/crates/audio/src/streaming_file_wave_tests.rs','scripts/testing/check_audio_wave_controls.py','engine/third_party/symphonia-format-riff-patches/0004-retained-pcm-source-seek.patch'])
 
 if __name__ == '__main__':
     main()

@@ -71,8 +71,7 @@ fn apply(
         } => {
             let started = index.get_context(*node_id) == Some(*ctx_id)
                 && contexts.get_mut(ctx_id).is_some_and(|ctx| {
-                    ctx.try_set_started_buffer(*node_id, buffer)
-                        && ctx.start_source(*node_id, *when, *offset, *duration)
+                    ctx.try_start_buffer(*node_id, buffer, *when, *offset, *duration)
                 });
             if !started {
                 warn!("StartBuffer rejected: context {ctx_id} does not own node {node_id}");

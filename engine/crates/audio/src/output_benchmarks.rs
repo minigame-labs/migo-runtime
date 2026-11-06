@@ -1,8 +1,7 @@
 //! Explicit host callback-to-refill experiment, using the production callback,
 //! SPSC ring, AudioSync and wakeup. No device, DSP or speaker latency claim.
 use super::*;
-use ringbuf::HeapRb;
-use ringbuf::traits::{Producer, Split};
+use ringbuf::traits::Producer;
 use std::sync::atomic::AtomicU64;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -23,7 +22,7 @@ fn audio_wake_refill_latency() {
     let sync = AudioSync::new();
     sync.bind_wakeup(&wake);
     sync.set_callback_wakeup_enabled(true);
-    let (mut producer, consumer) = HeapRb::<f32>::new(SAMPLES).split();
+    let (mut producer, consumer) = ring::new(SAMPLES, None).unwrap();
     let pcm = [0.25f32; SAMPLES];
     assert_eq!(producer.push_slice(&pcm), SAMPLES);
     let mut callback = OutputCallback::new(consumer, sync.clone(), SAMPLES / 4);

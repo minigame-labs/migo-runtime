@@ -171,6 +171,9 @@ impl<B: AsRef<[u8]>> WavDecodeJob<B> {
                     t.input_view = input.len();
                 });
                 let consumed = match owner.parser.next(input, eof).map_err(codec_error)? {
+                    PacketStep::ReadAt(_) => {
+                        return Err(invalid("sequential WAVE requested a source reposition"));
+                    }
                     PacketStep::NeedMore => {
                         if eof || owner.window == FORMAT_BYTES {
                             return Err(invalid("WAVE format exceeds its input window"));

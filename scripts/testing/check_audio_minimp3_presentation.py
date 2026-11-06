@@ -216,7 +216,7 @@ def main(work, target, preflight, sanitize, plain):
         binary = build(package, vendor, work, env, label, release)
         log = work / (label + '-tests.log')
         observed = run([str(binary), '--test-threads=1', '--nocapture'], log, package, env)
-        count = 8 if plain else 9
+        count = 9 if plain else 10
         assert f'test result: ok. {count} passed; 0 failed; 0 ignored;' in observed
         programs.append(dict(name=label, sha256=sha(binary), positive=True, fresh_native=True, fresh_rust=True))
         positive[label] = dict(passed=count, ignored=0)

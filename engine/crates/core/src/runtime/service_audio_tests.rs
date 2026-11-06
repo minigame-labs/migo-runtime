@@ -55,6 +55,7 @@ fn no_sources() -> LocalSources {
     LocalSources {
         code_dir: None,
         vfs: None,
+        local_file: None,
     }
 }
 

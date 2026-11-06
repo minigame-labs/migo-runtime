@@ -16,6 +16,9 @@ void migo_mp3_presentation_free(migo_mp3_presentation *);
  * expected=0 retains the upstream unknown-duration path. No heap allocation. */
 int migo_mp3_presentation_begin(migo_mp3_presentation *, const uint8_t *, int,
     int, const mp3dec_frame_info_t *, uint64_t, uint64_t *);
+/* Progressive PCM has a bounded resident window, rather than a duration cap. */
+int migo_mp3_presentation_begin_stream(migo_mp3_presentation *, const uint8_t *, int,
+    int, const mp3dec_frame_info_t *, uint64_t *);
 /* Returns interleaved samples in pcm[skip..skip+count], or a negative error.
  * The original minimp3 consumed-byte fields remain in info, including when
  * trimming consumes the whole frame. Does not publish partial-file success. */

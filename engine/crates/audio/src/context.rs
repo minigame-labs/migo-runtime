@@ -3,7 +3,7 @@
 use crate::graph_map::{GraphMap, GraphSet};
 use std::sync::Arc;
 
-use shared::audio_resources::AudioSnapshot;
+use shared::audio_resources::{AudioBufferFormat, AudioSnapshot};
 use shared::error::{EngineError, EngineResult, ErrorCode};
 use shared::protocol::audio_cmd::{AudioBufferId, AudioContextId, AudioContextState, AudioNodeId};
 
@@ -17,6 +17,9 @@ use crate::render_buffer::RenderBuffer;
 #[path = "context_graph_storage.rs"]
 mod graph_storage;
 use graph_storage::{EdgeGrowth, NodeGrowth};
+#[path = "context_processing.rs"]
+mod processing;
+use processing::NodeState;
 
 /// Special node ID for the destination node
 pub const DESTINATION_NODE_ID: AudioNodeId = 0;
@@ -92,7 +95,7 @@ pub struct AudioContext {
     // back to the id `nodes` and `node_buffers` are keyed by.
     dense_index: GraphMap<u32>,
     dense_ids: GraphVec<AudioNodeId>,
-    in_degree: GraphVec<u32>,
+    in_degree: GraphVec<NodeState>,
     input_start: GraphVec<u32>,
     /// Edge ids, grouped by destination. Ids rather than source indices, because a
     /// connection now carries port information that the mix step needs.
@@ -173,7 +176,7 @@ struct ContextStorage {
     processing_order: GraphVec<u32>,
     dense_index: GraphMap<u32>,
     dense_ids: GraphVec<AudioNodeId>,
-    in_degree: GraphVec<u32>,
+    in_degree: GraphVec<NodeState>,
     input_start: GraphVec<u32>,
     input_edges: GraphVec<u32>,
     output_start: GraphVec<u32>,
@@ -1310,6 +1313,7 @@ impl AudioContext {
     }
 
     pub fn set_buffer(&mut self, node_id: AudioNodeId, buffer_id: Option<AudioBufferId>) -> bool {
+        let now = self.current_time();
         tracing::trace!("set_buffer: node_id={}, buffer_id={buffer_id:?}", node_id);
         let buffer = match buffer_id {
             Some(buffer_id) => match self.buffers.get(&buffer_id) {
@@ -1325,11 +1329,25 @@ impl AudioContext {
         if let Some(node) = self.nodes.get_mut(&node_id) {
             let any = node.as_any_mut();
             if let Some(source) = any.downcast_mut::<BufferSourceNode>() {
+                let prepared = if source.rate_started() {
+                    let format = buffer.as_ref().map(|buffer| AudioBufferFormat {
+                        channels: buffer.channels,
+                        frames: buffer.frame_count() as u32,
+                        sample_rate: buffer.sample_rate,
+                    });
+                    match source.prepare_rate(self.node_retirement.as_ref(), format, now, false) {
+                        Ok(prepared) => prepared,
+                        Err(_) => return false,
+                    }
+                } else {
+                    None
+                };
                 if let Err(error) = source.retire_buffer(self.node_retirement.as_ref()) {
                     tracing::warn!("buffer replacement admission rejected: {error}");
                     return false;
                 }
                 source.set_buffer(buffer);
+                source.install_rate(prepared);
                 return true;
             }
         }
@@ -1353,14 +1371,29 @@ impl AudioContext {
         node_id: AudioNodeId,
         buffer: &mut Option<Arc<AudioSnapshot>>,
     ) -> bool {
+        let now = self.current_time();
         if let Some(node) = self.nodes.get_mut(&node_id) {
             let any = node.as_any_mut();
             if let Some(source) = any.downcast_mut::<BufferSourceNode>() {
+                let prepared = if source.rate_started() {
+                    match source.prepare_rate(
+                        self.node_retirement.as_ref(),
+                        buffer.as_ref().map(|buffer| buffer.format()),
+                        now,
+                        false,
+                    ) {
+                        Ok(prepared) => prepared,
+                        Err(_) => return false,
+                    }
+                } else {
+                    None
+                };
                 if let Err(error) = source.retire_buffer(self.node_retirement.as_ref()) {
                     tracing::warn!("snapshot replacement admission rejected: {error}");
                     return false;
                 }
                 source.set_snapshot(buffer.take());
+                source.install_rate(prepared);
                 return true;
             }
         }
@@ -1385,7 +1418,21 @@ impl AudioContext {
         if let Some(node) = self.nodes.get_mut(&node_id) {
             let any = node.as_any_mut();
             if let Some(source) = any.downcast_mut::<BufferSourceNode>() {
+                let prepared = if !source.rate_started() {
+                    match source.prepare_rate(
+                        self.node_retirement.as_ref(),
+                        source.rate_format(),
+                        current_time,
+                        false,
+                    ) {
+                        Ok(prepared) => prepared,
+                        Err(_) => return false,
+                    }
+                } else {
+                    None
+                };
                 source.start(when, offset, duration, current_time);
+                source.install_rate(prepared);
                 self.device_controls_pending = true;
                 tracing::trace!("start_source: node started");
                 return true;
@@ -1393,6 +1440,41 @@ impl AudioContext {
         }
         tracing::warn!("start_source: node {} not found", node_id);
         false
+    }
+
+    /// Admit the SRC and old binding before taking the atomic StartBuffer input.
+    pub(crate) fn try_start_buffer(
+        &mut self,
+        node_id: AudioNodeId,
+        buffer: &mut Option<Arc<AudioSnapshot>>,
+        when: f64,
+        offset: f64,
+        duration: Option<f64>,
+    ) -> bool {
+        let now = self.current_time();
+        let Some(node) = self.nodes.get_mut(&node_id) else {
+            return false;
+        };
+        let Some(source) = node.as_any_mut().downcast_mut::<BufferSourceNode>() else {
+            return false;
+        };
+        let prepared = match source.prepare_rate(
+            self.node_retirement.as_ref(),
+            buffer.as_ref().map(|buffer| buffer.format()),
+            now,
+            false,
+        ) {
+            Ok(prepared) => prepared,
+            Err(_) => return false,
+        };
+        if source.retire_buffer(self.node_retirement.as_ref()).is_err() {
+            return false;
+        }
+        source.set_snapshot(buffer.take());
+        source.start(when, offset, duration, now);
+        source.install_rate(prepared);
+        self.device_controls_pending = true;
+        true
     }
 
     pub fn stop_source(&mut self, node_id: AudioNodeId, when: f64) -> bool {
@@ -1474,10 +1556,17 @@ impl AudioContext {
     }
 
     pub fn set_loop(&mut self, node_id: AudioNodeId, enabled: bool, start: f64, end: f64) -> bool {
+        let now = self.current_time();
         if let Some(node) = self.nodes.get_mut(&node_id) {
             let any = node.as_any_mut();
             if let Some(source) = any.downcast_mut::<BufferSourceNode>() {
+                let prepared =
+                    match source.prepare_loop_rate(self.node_retirement.as_ref(), enabled, now) {
+                        Ok(prepared) => prepared,
+                        Err(_) => return false,
+                    };
                 source.set_loop(enabled, start, end);
+                source.install_rate(prepared);
                 return true;
             }
         }
@@ -1485,14 +1574,10 @@ impl AudioContext {
     }
 
     pub fn set_playback_rate(&mut self, node_id: AudioNodeId, rate: f32) -> bool {
-        if let Some(node) = self.nodes.get_mut(&node_id) {
-            let any = node.as_any_mut();
-            if let Some(source) = any.downcast_mut::<BufferSourceNode>() {
-                source.set_playback_rate(rate);
-                return true;
-            }
-        }
-        false
+        self.nodes
+            .get_mut(&node_id)
+            .is_some_and(|node| node.as_any_mut().is::<BufferSourceNode>())
+            && self.set_node_param(node_id, "playbackRate", rate.max(0.0))
     }
 
     pub fn set_gain(&mut self, node_id: AudioNodeId, value: f32) -> bool {
@@ -1506,18 +1591,47 @@ impl AudioContext {
         false
     }
 
-    /// Set an AudioParam value on a node by name
-    pub fn set_node_param(&mut self, node_id: AudioNodeId, param_name: &str, value: f32) -> bool {
+    /// Prepare a BufferSource SRC candidate before changing its timeline. A
+    /// rejected event keeps the old node state and retires only the candidate.
+    fn update_node_param(
+        &mut self,
+        node_id: AudioNodeId,
+        name: &str,
+        value: Option<f32>,
+        update: impl FnOnce(&mut crate::param::AudioParamTimeline) -> EngineResult<()>,
+    ) -> bool {
         let now = self.current_time();
-        if let Some(node) = self.nodes.get_mut(&node_id)
-            && let Some(param) = node.get_param_mut(param_name)
-        {
-            return param.try_set_value_now(value, now).is_ok();
+        let Some(node) = self.nodes.get_mut(&node_id) else {
+            return false;
+        };
+        let prepared = if let Some(source) = node.as_any_mut().downcast_mut::<BufferSourceNode>() {
+            match source.prepare_param_rate(self.node_retirement.as_ref(), name, value, now) {
+                Ok(prepared) => prepared,
+                Err(_) => return false,
+            }
+        } else {
+            None
+        };
+        let Some(param) = node.get_param_mut(name) else {
+            return false;
+        };
+        if update(param).is_err() {
+            return false;
         }
-        false
+        if let Some(source) = node.as_any_mut().downcast_mut::<BufferSourceNode>() {
+            source.install_rate(prepared);
+        }
+        true
     }
 
-    /// Schedule AudioParam automation on a node
+    /// Set an AudioParam value on a node by name.
+    pub fn set_node_param(&mut self, node_id: AudioNodeId, param_name: &str, value: f32) -> bool {
+        let now = self.current_time();
+        self.update_node_param(node_id, param_name, Some(value), |param| {
+            param.try_set_value_now(value, now)
+        })
+    }
+
     pub fn param_set_value_at_time(
         &mut self,
         node_id: AudioNodeId,
@@ -1526,16 +1640,11 @@ impl AudioContext {
         time: f64,
     ) -> bool {
         let now = self.current_time();
-        if let Some(node) = self.nodes.get_mut(&node_id)
-            && let Some(param) = node.get_param_mut(param_name)
-        {
-            let accepted = param.try_set_value_at_time(value, time).is_ok();
-            if accepted {
-                param.gc_events(now);
-            }
-            return accepted;
-        }
-        false
+        self.update_node_param(node_id, param_name, None, |param| {
+            param.try_set_value_at_time(value, time)?;
+            param.gc_events(now);
+            Ok(())
+        })
     }
 
     pub fn param_linear_ramp(
@@ -1546,18 +1655,11 @@ impl AudioContext {
         end_time: f64,
     ) -> bool {
         let now = self.current_time();
-        if let Some(node) = self.nodes.get_mut(&node_id)
-            && let Some(param) = node.get_param_mut(param_name)
-        {
-            let accepted = param
-                .try_linear_ramp_to_value_at_time(value, end_time)
-                .is_ok();
-            if accepted {
-                param.gc_events(now);
-            }
-            return accepted;
-        }
-        false
+        self.update_node_param(node_id, param_name, None, |param| {
+            param.try_linear_ramp_to_value_at_time(value, end_time)?;
+            param.gc_events(now);
+            Ok(())
+        })
     }
 
     pub fn param_exponential_ramp(
@@ -1568,18 +1670,11 @@ impl AudioContext {
         end_time: f64,
     ) -> bool {
         let now = self.current_time();
-        if let Some(node) = self.nodes.get_mut(&node_id)
-            && let Some(param) = node.get_param_mut(param_name)
-        {
-            let accepted = param
-                .try_exponential_ramp_to_value_at_time(value, end_time)
-                .is_ok();
-            if accepted {
-                param.gc_events(now);
-            }
-            return accepted;
-        }
-        false
+        self.update_node_param(node_id, param_name, None, |param| {
+            param.try_exponential_ramp_to_value_at_time(value, end_time)?;
+            param.gc_events(now);
+            Ok(())
+        })
     }
 
     pub fn param_set_target(
@@ -1591,18 +1686,11 @@ impl AudioContext {
         time_constant: f64,
     ) -> bool {
         let now = self.current_time();
-        if let Some(node) = self.nodes.get_mut(&node_id)
-            && let Some(param) = node.get_param_mut(param_name)
-        {
-            let accepted = param
-                .try_set_target_at_time(target, start_time, time_constant)
-                .is_ok();
-            if accepted {
-                param.gc_events(now);
-            }
-            return accepted;
-        }
-        false
+        self.update_node_param(node_id, param_name, None, |param| {
+            param.try_set_target_at_time(target, start_time, time_constant)?;
+            param.gc_events(now);
+            Ok(())
+        })
     }
 
     pub fn param_cancel_scheduled(
@@ -1776,7 +1864,7 @@ impl AudioContext {
         self.output_edges.clear();
         self.output_edges.resize(edge_count, 0);
         self.in_degree.clear();
-        self.in_degree.resize(node_count, 0);
+        self.in_degree.resize(node_count, NodeState::default());
         self.processing_order.clear();
         self.processing_order.resize(node_count, 0);
         let mut edge_id = 0u32;
@@ -1787,10 +1875,10 @@ impl AudioContext {
             ) else {
                 continue;
             };
-            let in_slot =
-                self.input_start[dst as usize] as usize + self.in_degree[dst as usize] as usize;
+            let in_slot = self.input_start[dst as usize] as usize
+                + self.in_degree[dst as usize].degree as usize;
             self.input_edges[in_slot] = edge_id;
-            self.in_degree[dst as usize] += 1;
+            self.in_degree[dst as usize].degree += 1;
 
             let out_slot = self.output_start[src as usize] as usize
                 + self.processing_order[src as usize] as usize;
@@ -1799,54 +1887,7 @@ impl AudioContext {
             edge_id += 1;
         }
 
-        // Kahn's algorithm. The destination is held back unconditionally so it is
-        // always rendered last, after every contributor has written its buffer.
-        let destination = self.dense_index.get(&DESTINATION_NODE_ID).copied();
-        self.processing_order.clear();
-        self.ready_queue.clear();
-        for node in 0..node_count as u32 {
-            if self.in_degree[node as usize] == 0 && Some(node) != destination {
-                self.ready_queue.push(node);
-            }
-        }
-        // Deterministic order for a deterministic mix.
-        self.ready_queue.sort_unstable();
-
-        while let Some(node) = self.ready_queue.pop() {
-            self.processing_order.push(node);
-            let start = self.output_start[node as usize] as usize;
-            let end = self.output_start[node as usize + 1] as usize;
-            for slot in start..end {
-                let next = self.output_edges[slot];
-                let degree = &mut self.in_degree[next as usize];
-                *degree = degree.saturating_sub(1);
-                if *degree == 0 && Some(next) != destination {
-                    self.ready_queue.push(next);
-                }
-            }
-        }
-
-        // Anything with in-degree left over sits on a cycle.
-        //
-        // A cycle is legal Web Audio -- a feedback delay is the canonical effect --
-        // and dropping those nodes from the order made them render nothing at all:
-        // the graph went silent instead of echoing, and because they never ran they
-        // never finished, so they were never collected either. There is no
-        // topological order inside a cycle by definition, so they are appended in
-        // index order and read their inputs from the previous quantum's buffers --
-        // exactly the one-quantum delay the spec requires a cycle to contain.
-        let placed = self.processing_order.len() + usize::from(destination.is_some());
-        if placed < node_count {
-            for node in 0..node_count as u32 {
-                if self.in_degree[node as usize] > 0 && Some(node) != destination {
-                    self.processing_order.push(node);
-                }
-            }
-        }
-
-        if let Some(destination) = destination {
-            self.processing_order.push(destination);
-        }
+        self.order_cycle_aware_graph();
         self.graph_dirty = false;
     }
 
@@ -1999,130 +2040,23 @@ impl AudioContext {
             self.rebuild_processing_order();
         }
 
-        let buffer_size = output.len();
         self.synchronize_render_clock();
-        let current_time = self.rendered_time();
-        let sample_rate = self.sample_rate;
-
-        // Ensure mix buffer is large enough
-        if self.mix_buffer.len() < buffer_size {
-            self.mix_buffer.resize(buffer_size, 0.0);
+        let channels = self.channels.max(1) as usize;
+        if self.in_degree.iter().any(|state| state.feedback_delay) {
+            // Reader/writer separation is safe for at most one quantum at a time.
+            for block in output.chunks_mut(DEVICE_QUANTUM_FRAMES * channels) {
+                self.render_graph_block(block);
+                self.frames_processed = self
+                    .frames_processed
+                    .saturating_add((block.len() / channels) as u64);
+            }
+        } else {
+            self.render_graph_block(output);
+            self.frames_processed = self
+                .frames_processed
+                .saturating_add((output.len() / channels) as u64);
         }
-
-        let mix_buffer = self.mix_buffer.as_mut_slice();
-
-        // Process each node in topological order. Indexed rather than iterated so
-        // the loop body can borrow the other members mutably.
-        let order_len = self.processing_order.len();
-        for order_idx in 0..order_len {
-            let node = self.processing_order[order_idx];
-            let node_id = self.dense_ids[node as usize];
-
-            // Gather mixed input from upstream: a contiguous slice of the CSR
-            // edge array, not a map lookup and a pointer chase per node.
-            mix_buffer[..buffer_size].fill(0.0);
-            let mut has_input = false;
-            let input_start = self.input_start[node as usize] as usize;
-            let input_end = self.input_start[node as usize + 1] as usize;
-            let channels = self.channels.max(1) as usize;
-            for slot in input_start..input_end {
-                let edge = self.input_edges[slot] as usize;
-                let src_id = self.dense_ids[self.edge_src[edge] as usize];
-                let Some(src_buf) = self.node_buffers.get(&src_id) else {
-                    continue;
-                };
-                let src_buf = src_buf.as_slice();
-                let len = src_buf.len().min(buffer_size);
-                match (self.edge_src_port[edge], self.edge_dst_port[edge]) {
-                    // The ordinary case: a whole bus mixed into a whole bus.
-                    (None, None) => {
-                        for i in 0..len {
-                            mix_buffer[i] += src_buf[i];
-                        }
-                    }
-                    // From a splitter port: one source channel, as mono, spread
-                    // across the destination bus.
-                    (Some(from), None) => {
-                        let from = from.min(channels - 1);
-                        for frame in 0..len / channels {
-                            let sample = src_buf[frame * channels + from];
-                            for ch in 0..channels {
-                                mix_buffer[frame * channels + ch] += sample;
-                            }
-                        }
-                    }
-                    // Into a merger port: the source, downmixed to mono, lands in
-                    // exactly one destination channel.
-                    (from, Some(into)) => {
-                        let into = into.min(channels - 1);
-                        for frame in 0..len / channels {
-                            let base = frame * channels;
-                            let sample = match from {
-                                Some(from) => src_buf[base + from.min(channels - 1)],
-                                None => {
-                                    let sum: f32 = src_buf[base..base + channels].iter().sum();
-                                    sum / channels as f32
-                                }
-                            };
-                            mix_buffer[base + into] += sample;
-                        }
-                    }
-                }
-                has_input = true;
-            }
-
-            // Every node is provisioned a render buffer by `add_node`, on the
-            // command path, so this is a lookup and never an allocation.
-            let Some(node_buf) = self.node_buffers.get_mut(&node_id) else {
-                continue;
-            };
-            if node_buf.len() < buffer_size {
-                node_buf.resize(buffer_size, 0.0);
-            }
-            let node_buf = node_buf.as_mut_slice();
-            node_buf[..buffer_size].fill(0.0);
-
-            if let Some(node) = self.nodes.get_mut(&node_id) {
-                let input = if has_input {
-                    &mix_buffer[..buffer_size]
-                } else {
-                    &[] as &[f32]
-                };
-
-                node.process(
-                    input,
-                    &mut node_buf[..buffer_size],
-                    sample_rate,
-                    self.channels,
-                    current_time,
-                );
-            }
-        }
-
-        // Add destination node's output to final output (additive for multi-context mixing)
-        if let Some(dest_buf) = self.node_buffers.get(&DESTINATION_NODE_ID) {
-            let dest_buf = dest_buf.as_slice();
-            let len = dest_buf.len().min(buffer_size);
-            for i in 0..len {
-                output[i] += dest_buf[i];
-            }
-        }
-
-        // No limiting here on purpose. `output` is the shared mix bus and this
-        // method is additive, so a limiter at this point would be applied once per
-        // context, in `HashMap` iteration order, over a partial sum that already
-        // contains other contexts' audio -- and would still miss the InnerAudio
-        // players that mix in afterwards. The audio thread applies one pass over
-        // the finished mix instead; see `soft_limit`.
-
-        // Track processed frames for sample-accurate currentTime
-        let frames = buffer_size / self.channels.max(1) as usize;
-        self.frames_processed = self.frames_processed.saturating_add(frames as u64);
-
-        // Drop whatever can no longer affect the output: sources that finished
-        // this block, and released nodes their disappearance just orphaned.
-        // Missing any of this leaked one node, one output buffer and one
-        // node-index entry per fired sound effect.
+        // Collect once for the whole public call, preserving all returned IDs.
         self.prune()
     }
 }
@@ -2165,6 +2099,10 @@ mod source_scheduling_tests;
 #[cfg(test)]
 #[path = "context_source_completion_tests.rs"]
 mod source_completion_tests;
+
+#[cfg(test)]
+#[path = "context_feedback_tests.rs"]
+mod feedback_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2651,8 +2589,13 @@ mod tests {
         let mut out = vec![0.0f32; 2 * 128];
         ctx.process(&mut out);
         assert!(
+            out.iter().all(|sample| *sample == 0.0),
+            "a cyclic delay must wait one quantum"
+        );
+        ctx.process(&mut out);
+        assert!(
             out.iter().any(|sample| sample.abs() > 1e-6),
-            "a legal delay cycle must render its external input, got {out:?}"
+            "a legal delay cycle must render after its first quantum"
         );
 
         for id in [10, 11, DESTINATION_NODE_ID] {

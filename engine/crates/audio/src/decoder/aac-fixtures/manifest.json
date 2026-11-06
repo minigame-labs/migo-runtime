@@ -1,0 +1,137 @@
+[
+  {
+    "file": "0-front.m4a",
+    "frames": 17,
+    "channels": 1,
+    "rate": 48000
+  },
+  {
+    "file": "0-tail.m4a",
+    "frames": 17,
+    "channels": 1,
+    "rate": 48000
+  },
+  {
+    "file": "1-front.m4a",
+    "frames": 9737,
+    "channels": 2,
+    "rate": 44100
+  },
+  {
+    "file": "1-tail.m4a",
+    "frames": 9737,
+    "channels": 2,
+    "rate": 44100
+  },
+  {
+    "file": "1-split.m4a",
+    "frames": 9737,
+    "channels": 2,
+    "rate": 44100
+  },
+  {
+    "file": "1-reorder.m4a",
+    "frames": 9737,
+    "channels": 2,
+    "rate": 44100
+  },
+  {
+    "file": "1-co64.m4a",
+    "frames": 9737,
+    "channels": 2,
+    "rate": 44100
+  },
+  {
+    "file": "2-front.m4a",
+    "frames": 240137,
+    "channels": 1,
+    "rate": 48000
+  },
+  {
+    "file": "2-tail.m4a",
+    "frames": 240137,
+    "channels": 1,
+    "rate": 48000
+  },
+  {
+    "file": "2-split.m4a",
+    "frames": 240137,
+    "channels": 1,
+    "rate": 48000
+  },
+  {
+    "file": "2-reorder.m4a",
+    "frames": 240137,
+    "channels": 1,
+    "rate": 48000
+  },
+  {
+    "file": "2-co64.m4a",
+    "frames": 240137,
+    "channels": 1,
+    "rate": 48000
+  },
+  {
+    "file": "2-reverse.m4a",
+    "frames": 240137,
+    "channels": 1,
+    "rate": 48000
+  },
+  {
+    "file": "2-tail-reverse.m4a",
+    "frames": 240137,
+    "channels": 1,
+    "rate": 48000
+  },
+  {
+    "file": "2-multi.m4a",
+    "frames": 240137,
+    "channels": 1,
+    "rate": 48000
+  },
+  {
+    "file": "2-tail-multi.m4a",
+    "frames": 240137,
+    "channels": 1,
+    "rate": 48000
+  },
+  {
+    "file": "edit-211.m4a",
+    "frames": 5000,
+    "channels": 2,
+    "rate": 44100,
+    "slice_start": 211
+  },
+  {
+    "file": "edit-1537.m4a",
+    "frames": 5000,
+    "channels": 2,
+    "rate": 44100,
+    "slice_start": 1537
+  },
+  {
+    "file": "edit-version-one.m4a",
+    "frames": 9737,
+    "channels": 2,
+    "rate": 44100,
+    "slice_start": 1024
+  },
+  {
+    "file": "adts-0.aac",
+    "rate": 32000,
+    "channels": 1,
+    "frames": 8192
+  },
+  {
+    "file": "adts-1.aac",
+    "rate": 44100,
+    "channels": 2,
+    "frames": 11264
+  },
+  {
+    "file": "adts-2.aac",
+    "rate": 48000,
+    "channels": 1,
+    "frames": 2048
+  }
+]

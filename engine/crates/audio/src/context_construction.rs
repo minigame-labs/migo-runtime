@@ -10,7 +10,7 @@ struct InitialStorage {
     connections: Vector<NodeConnection>,
     processing_order: Vector<u32>,
     dense_ids: Vector<AudioNodeId>,
-    in_degree: Vector<u32>,
+    in_degree: Vector<NodeState>,
     input_start: Vector<u32>,
     input_edges: Vector<u32>,
     output_start: Vector<u32>,

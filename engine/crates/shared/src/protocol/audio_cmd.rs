@@ -624,6 +624,15 @@ pub enum AudioCmd {
         id: InnerAudioId,
         load: crate::audio_load::InnerAudioLoadToken,
         url: String,
+        spool: Option<std::sync::Arc<dyn crate::audio_file::AudioHttpSpool>>,
+        resp: AudioResp<()>,
+    },
+
+    /// Begin a bounded local-file stream from an already sealed capability.
+    InnerAudioLoadFile {
+        id: InnerAudioId,
+        load: crate::audio_load::InnerAudioLoadToken,
+        source: std::sync::Arc<dyn crate::audio_file::AudioFile>,
         resp: AudioResp<()>,
     },
 
@@ -706,6 +715,7 @@ impl AudioCmd {
                 data.capacity()
             }
             Self::InnerAudioLoadUrl { url, .. } => url.capacity(),
+            Self::InnerAudioLoadFile { source, .. } => source.queued_bytes(),
             Self::CreateContext { .. }
             | Self::InnerAudioBeginLoad { .. }
             | Self::ReleaseContext { .. }

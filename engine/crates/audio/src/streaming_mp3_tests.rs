@@ -6,7 +6,7 @@ const VBR: &[u8] = include_bytes!("decoder/mp3/fixtures/mono-vbr.mp3");
 const CBR_PCM: &[u8] = include_bytes!("decoder/mp3/fixtures/stereo-cbr.f32le");
 const VBR_PCM: &[u8] = include_bytes!("decoder/mp3/fixtures/mono-vbr.f32le");
 
-fn checked(
+pub(super) fn checked(
     decoder: &mut Mp3StreamDecoder,
     input: &[u8],
     eof: bool,
@@ -52,7 +52,8 @@ fn collect(input: &[u8], target: u32, partition: usize) -> Vec<f32> {
     let cancel = AtomicBool::new(false);
     for _ in 0..1_000_000 {
         out.clear();
-        let step = checked(&mut decoder, &input[position..end], eof, &mut out, &cancel).unwrap();
+        let step = checked(&mut decoder, &input[position..end], eof, &mut out, &cancel)
+            .expect("progressive MP3 did not complete its presentation");
         position += step.consumed;
         result.extend_from_slice(&out);
         if step.progress == Progress::Finished {
@@ -401,9 +402,9 @@ fn garbage_is_bounded_and_eof_and_cancellation_retire_codec_storage() {
 }
 
 #[test]
-fn long_music_matches_original_raw_minimp3_frames_and_independent_sinc() {
+fn long_music_matches_frozen_gapless_minimp3_and_independent_sinc() {
     let data = include_bytes!("decoder/mp3/fixtures/music.mp3");
-    // Keep encoded delay/tail; gapless selection remains a separate migration.
+    // Preserve the historical raw count as evidence of the corrected duration.
     let samples = original_raw(data);
     assert_eq!(
         samples.len() / 2,
@@ -411,7 +412,10 @@ fn long_music_matches_original_raw_minimp3_frames_and_independent_sinc() {
         "independent raw frame count changed"
     );
     let raw = DecodedAudio {
-        samples,
+        samples: include_bytes!("decoder/mp3/fixtures/music.i16le")
+            .chunks_exact(2)
+            .map(|v| f32::from(i16::from_le_bytes(v.try_into().unwrap())) / 32768.0)
+            .collect(),
         sample_rate: 48000,
         channels: 2,
     };
@@ -433,8 +437,11 @@ fn long_music_matches_original_raw_minimp3_frames_and_independent_sinc() {
                     .iter()
                     .zip(&reference)
                     .all(|(a, b)| a.to_bits() == b.to_bits()),
-                "music stream changed a raw codec or sinc sample"
+                "music stream changed a frozen presentation or sinc sample"
             );
         }
     }
 }
+
+#[path = "streaming_mp3_gapless_tests.rs"]
+mod gapless;

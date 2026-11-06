@@ -461,6 +461,9 @@ impl AudioCommandDelivery {
                 reply(resp, data, permit, bytes, error)
             }
             AudioCmd::InnerAudioLoadUrl { url, resp, .. } => reply(resp, url, permit, bytes, error),
+            AudioCmd::InnerAudioLoadFile { source, resp, .. } => {
+                reply(resp, source, permit, bytes, error)
+            }
             command => Self { command, permit }.into_discarded_payload(),
         }
     }
@@ -495,6 +498,7 @@ impl AudioCommandDelivery {
             } => Box::new(data),
             AudioCmd::InnerAudioLoad { data, .. }
             | AudioCmd::InnerAudioCompleteLoad { data, .. } => Box::new(data),
+            AudioCmd::InnerAudioLoadFile { source, .. } => Box::new(source),
             AudioCmd::CreateIIRFilter {
                 feedforward,
                 feedback,

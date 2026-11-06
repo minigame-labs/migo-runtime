@@ -56,6 +56,12 @@ impl Host {
     pub(crate) fn render_buffer_samples(&self) -> usize {
         crate::audio_thread::RENDER_QUANTUM_FRAMES * self.channels.max(1) as usize
     }
+    pub(crate) fn for_channels(&self, channels: u32) -> Self {
+        Self {
+            channels: channels.max(1),
+            ..self.clone()
+        }
+    }
     pub(crate) fn accepts_inline(&self, permit: &AudioAggregatePermit) -> bool {
         permit.belongs_to(&self.aggregate)
     }

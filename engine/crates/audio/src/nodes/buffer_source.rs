@@ -101,6 +101,8 @@ pub struct BufferSourceNode {
 
     // Scheduled stop time (None = no stop scheduled)
     stop_when: Option<f64>,
+    rate_converter: Option<crate::node_retirement::Value<crate::variable_rate::Converter>>,
+    rate_dirty: bool,
 }
 
 impl BufferSourceNode {
@@ -123,15 +125,138 @@ impl BufferSourceNode {
             detune: AudioParamTimeline::new(0.0, -3.4028235e38, 3.4028235e38),
             start_time: None,
             stop_when: None,
+            rate_converter: None,
+            rate_dirty: true,
         }
     }
 
     pub fn set_buffer(&mut self, buffer: Option<Arc<RetainedAudio>>) {
         self.buffer = buffer.map(SourceBuffer::Legacy);
+        self.buffer_changed();
     }
 
     pub fn set_snapshot(&mut self, buffer: Option<Arc<AudioSnapshot>>) {
         self.buffer = buffer.map(SourceBuffer::Snapshot);
+        self.buffer_changed();
+    }
+
+    fn buffer_changed(&mut self) {
+        self.rate_dirty = true;
+        if self.buffer.as_ref().is_none_or(|buffer| {
+            self.rate_converter
+                .as_ref()
+                .is_some_and(|converter| converter.channels() != buffer.format().channels as usize)
+        }) {
+            self.rate_converter = None;
+        }
+    }
+
+    pub(crate) fn install_rate(
+        &mut self,
+        prepared: Option<crate::node_retirement::Value<crate::variable_rate::Converter>>,
+    ) {
+        if let Some(prepared) = prepared {
+            self.rate_converter = Some(prepared);
+            self.rate_dirty = true;
+        }
+    }
+
+    pub(crate) fn prepare_rate(
+        &self,
+        host: Option<&crate::node_retirement::Host>,
+        format: Option<AudioBufferFormat>,
+        time: f64,
+        requested: bool,
+    ) -> shared::error::EngineResult<
+        Option<crate::node_retirement::Value<crate::variable_rate::Converter>>,
+    > {
+        let (Some(host), Some(format)) = (host, format) else {
+            return Ok(None);
+        };
+        if self.loop_enabled && !requested {
+            return Ok(None);
+        }
+        if format.frames == 0
+            || self
+                .rate_converter
+                .as_ref()
+                .is_some_and(|converter| converter.channels() == format.channels as usize)
+        {
+            return Ok(None);
+        }
+        let rate = self.block_playback_rate(time, format.sample_rate as f64);
+        let needed = requested
+            || self.playback_rate.has_events()
+            || self.detune.has_events()
+            || ((0.5..=2.0).contains(&rate) && rate != 1.0);
+        if needed {
+            crate::variable_rate::Converter::prepare(host, format.channels as usize).map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub(crate) fn rate_format(&self) -> Option<AudioBufferFormat> {
+        self.buffer.as_ref().map(SourceBuffer::format)
+    }
+
+    pub(crate) fn rate_started(&self) -> bool {
+        self.state != BufferSourceState::Pending
+    }
+
+    pub(crate) fn prepare_param_rate(
+        &self,
+        host: Option<&crate::node_retirement::Host>,
+        name: &str,
+        value: Option<f32>,
+        time: f64,
+    ) -> shared::error::EngineResult<
+        Option<crate::node_retirement::Value<crate::variable_rate::Converter>>,
+    > {
+        if !self.rate_started() || self.loop_enabled || !matches!(name, "playbackRate" | "detune") {
+            return Ok(None);
+        }
+        let format = self.rate_format();
+        let requested = value.is_none_or(|value| {
+            let playback = if name == "playbackRate" {
+                value
+            } else {
+                self.playback_rate.compute_value(time)
+            };
+            let detune = if name == "detune" {
+                value
+            } else {
+                self.detune.compute_value(time)
+            };
+            let rate = playback.max(0.0) as f64
+                * 2.0f64.powf(detune as f64 / 1200.0)
+                * format.map_or(1.0, |format| {
+                    format.sample_rate as f64 / self.context_sample_rate
+                });
+            (0.5..=2.0).contains(&rate) && rate != 1.0
+        });
+        self.prepare_rate(host, format, time, requested)
+    }
+
+    pub(crate) fn prepare_loop_rate(
+        &self,
+        host: Option<&crate::node_retirement::Host>,
+        enabled: bool,
+        time: f64,
+    ) -> shared::error::EngineResult<
+        Option<crate::node_retirement::Value<crate::variable_rate::Converter>>,
+    > {
+        if enabled || !self.rate_started() {
+            return Ok(None);
+        }
+        let format = self.rate_format();
+        let rate = format.map_or(1.0, |format| {
+            self.block_playback_rate(time, format.sample_rate as f64)
+        });
+        let requested = self.playback_rate.has_events()
+            || self.detune.has_events()
+            || ((0.5..=2.0).contains(&rate) && rate != 1.0);
+        self.prepare_rate(host, format, time, requested)
     }
 
     pub(crate) fn retire_buffer(
@@ -156,6 +281,7 @@ impl BufferSourceNode {
         self.position = 0.0;
         self.elapsed_frames = 0.0;
         self.offset_applied = false;
+        self.rate_dirty = true;
 
         // If scheduled time is now or in the past, start immediately
         if current_time >= when {
@@ -181,6 +307,9 @@ impl BufferSourceNode {
     }
 
     pub fn set_loop(&mut self, enabled: bool, start: f64, end: f64) {
+        if (self.loop_enabled, self.loop_start, self.loop_end) != (enabled, start, end) {
+            self.rate_dirty = true;
+        }
         self.loop_enabled = enabled;
         self.loop_start = start;
         self.loop_end = end;
@@ -211,6 +340,7 @@ impl BufferSourceNode {
         }
     }
 
+    #[cfg(test)]
     pub fn set_playback_rate(&mut self, rate: f32) {
         self.playback_rate.set_value(rate.max(0.0));
     }
@@ -359,6 +489,18 @@ impl BufferSourceNode {
         let duration_frames = self.duration.map(|d| d.max(0.0) * sample_rate);
         let mut frames_written = 0;
 
+        if !self.loop_enabled && (0.5..=2.0).contains(&rate) && self.rate_converter.is_some() {
+            return self.render_native(
+                output,
+                &samples[..buffer_frames * src_channels],
+                rate,
+                duration_frames,
+                src_channels,
+                dst_channels,
+            );
+        }
+        self.rate_dirty = true;
+
         for frame_idx in 0..output_frames {
             if self.position >= wrap_frame as f64 {
                 if !self.loop_enabled {
@@ -381,7 +523,7 @@ impl BufferSourceNode {
             self.write_interpolated_frame(
                 output,
                 samples,
-                buffer_frames,
+                wrap_frame,
                 loop_restart_frame,
                 frame_idx,
                 src_channels,
@@ -405,6 +547,81 @@ impl BufferSourceNode {
         frames_written
     }
 
+    fn render_native(
+        &mut self,
+        output: &mut [f32],
+        samples: &[f32],
+        rate: f64,
+        duration_frames: Option<f64>,
+        src_channels: usize,
+        dst_channels: usize,
+    ) -> usize {
+        let total = (samples.len() / src_channels) as f64;
+        if self.position >= total
+            || duration_frames.is_some_and(|limit| self.elapsed_frames >= limit)
+        {
+            self.state = BufferSourceState::Finished;
+            return 0;
+        }
+        let converter = self.rate_converter.as_mut().unwrap();
+        if self.rate_dirty {
+            if let Err(error) = converter.reset_fractional(samples, self.position) {
+                tracing::error!("BufferSource {} rate reset failed: {error}", self.id);
+                self.state = BufferSourceState::Finished;
+                return 0;
+            }
+            self.rate_dirty = false;
+        }
+        let mut scratch = [0.; crate::variable_rate::BLOCK * 32];
+        let mut written = 0;
+        let requested = output.len() / dst_channels;
+        while written < requested {
+            let mut position = self.position;
+            let mut elapsed = self.elapsed_frames;
+            let mut count = 0;
+            while count < (requested - written).min(crate::variable_rate::BLOCK)
+                && position < total
+                && duration_frames.is_none_or(|limit| elapsed < limit)
+            {
+                // Preserve the existing per-frame f64 media clock arithmetic.
+                position += rate;
+                elapsed += rate;
+                count += 1;
+            }
+            if count == 0 {
+                break;
+            }
+            if let Err(error) =
+                converter.render_precise(samples, rate, &mut scratch[..count * src_channels])
+            {
+                tracing::error!("BufferSource {} rate render failed: {error}", self.id);
+                self.state = BufferSourceState::Finished;
+                return written;
+            }
+            for frame in 0..count {
+                let source = &scratch[frame * src_channels..(frame + 1) * src_channels];
+                let target = &mut output
+                    [(written + frame) * dst_channels..(written + frame + 1) * dst_channels];
+                if src_channels == 1 {
+                    target.fill(source[0]);
+                } else {
+                    let shared = src_channels.min(dst_channels);
+                    target[..shared].copy_from_slice(&source[..shared]);
+                    target[shared..].fill(0.0);
+                }
+            }
+            self.position = position;
+            self.elapsed_frames = elapsed;
+            written += count;
+        }
+        if self.position >= total
+            || duration_frames.is_some_and(|limit| self.elapsed_frames >= limit)
+        {
+            self.state = BufferSourceState::Finished;
+        }
+        written
+    }
+
     /// Read the source at the current fractional frame and write it to output
     /// frame `frame_idx`, up- or down-mixing to `dst_channels`.
     ///
@@ -419,7 +636,7 @@ impl BufferSourceNode {
         &self,
         output: &mut [f32],
         samples: &[f32],
-        buffer_frames: usize,
+        wrap_frame: usize,
         loop_restart_frame: Option<usize>,
         frame_idx: usize,
         src_channels: usize,
@@ -427,12 +644,13 @@ impl BufferSourceNode {
     ) {
         let frame0 = self.position as usize;
         let frac = (self.position - frame0 as f64) as f32;
-        // Past the last frame the successor is the loop restart, so the seam
-        // interpolates across the wrap instead of fading into the final sample.
+        // At the loop end the successor is the restart, including a loop that
+        // ends before the buffer does. Samples outside that interval must not
+        // leak into the interpolated seam.
         // A one-shot holds, which contributes nothing: it is only ever reached on
         // the last frame, where `frac` is what the caller already advanced past.
         let frame1 = match loop_restart_frame {
-            _ if frame0 + 1 < buffer_frames => frame0 + 1,
+            _ if frame0 + 1 < wrap_frame => frame0 + 1,
             Some(restart) => restart,
             None => frame0,
         };
@@ -508,6 +726,10 @@ impl AudioNodeProcessor for BufferSourceNode {
     ) -> shared::error::EngineResult<()> {
         for param in [&mut self.playback_rate, &mut self.detune] {
             param.prepare_storage(host)?;
+        }
+        if self.rate_started() {
+            let prepared = self.prepare_rate(Some(host), self.rate_format(), 0.0, false)?;
+            self.install_rate(prepared);
         }
         Ok(())
     }
@@ -612,5 +834,87 @@ mod tests {
         let actual = node.block_playback_rate(0.0, 44_100.0);
         let expected = 2.0 * 2.0 * 44_100.0 / 48_000.0;
         assert!((actual - expected).abs() < f64::EPSILON * 32.0);
+    }
+
+    #[test]
+    fn fractional_rate_and_detune_keep_partial_loop_pcm_inside_the_loop() {
+        for channels in [1, 2, 32] {
+            for (rate, cents) in [(0.5, 0.0), (2.0, -2400.0)] {
+                let samples: Vec<_> = (0..8)
+                    .flat_map(|frame| {
+                        (0..channels).map(move |ch| {
+                            if frame >= 4 {
+                                1000.0 + ch as f32
+                            } else {
+                                (frame * 10 + ch) as f32
+                            }
+                        })
+                    })
+                    .collect();
+                let retained = RetainedAudio::try_new(
+                    DecodedAudio {
+                        samples,
+                        sample_rate: 48000,
+                        channels,
+                    },
+                    &PcmBudget::for_context(),
+                )
+                .unwrap();
+                let mut node = BufferSourceNode::new(1, 48000);
+                node.set_buffer(Some(Arc::new(retained)));
+                node.set_playback_rate(rate);
+                node.detune.set_value(cents);
+                node.set_loop(true, 2.0 / 48000.0, 4.0 / 48000.0);
+                node.start(0.0, 2.0 / 48000.0, Some(16.0 / 48000.0), 0.0);
+                let mut actual = Vec::new();
+                for frames in [1, 3, 5, 7, 16] {
+                    let mut output = vec![91.0; frames * channels as usize + channels as usize - 1];
+                    let before = migo_alloc_probe::thread_counts();
+                    let written = node.process_with_channels(
+                        &mut output,
+                        channels,
+                        actual.len() as f64 / channels as f64 / 48000.0,
+                    );
+                    let after = migo_alloc_probe::thread_counts();
+                    assert_eq!(
+                        (before.allocations, before.reallocations),
+                        (after.allocations, after.reallocations)
+                    );
+                    assert_eq!(written, frames);
+                    assert!(
+                        output[frames * channels as usize..]
+                            .iter()
+                            .all(|v| *v == 91.0)
+                    );
+                    actual.extend_from_slice(&output[..frames * channels as usize]);
+                }
+                let expected: Vec<_> = (0..32)
+                    .flat_map(|frame| {
+                        (0..channels).map(move |ch| [20.0, 25.0, 30.0, 25.0][frame % 4] + ch as f32)
+                    })
+                    .collect();
+                assert_eq!(
+                    actual, expected,
+                    "partial loop interpolation read beyond loopEnd"
+                );
+                assert!(node.is_finished() && !node.is_producing());
+                let mut tail = vec![91.0; 9 * channels as usize];
+                assert_eq!(
+                    node.process_with_channels(&mut tail, channels, 32.0 / 48000.0),
+                    0
+                );
+                assert!(tail.iter().all(|v| *v == 0.0));
+                if let Some(root) = std::env::var_os("MIGO_WEBAUDIO_LOOP_PCM_DIR") {
+                    let root = std::path::PathBuf::from(root);
+                    for (label, pcm) in [("actual", &actual), ("reference", &expected)] {
+                        std::fs::write(
+                            root.join(format!("loop-{channels}-{rate}-{label}.f32le")),
+                            pcm.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>(),
+                        )
+                        .unwrap();
+                    }
+                }
+            }
+        }
     }
 }

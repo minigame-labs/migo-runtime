@@ -418,9 +418,12 @@ pub struct InnerAudioPlayer {
     position: usize,
     /// Fractional source frame in thousandths, always below PLAYBACK_RATE_SCALE.
     position_phase: u16,
+    /// Completed buffered traversals distinguish real past from zero padding.
+    buffered_loops: usize,
     output_channels: u32,
     pending_events: Vec<InnerAudioEvent>,
     stream_rx: Option<Receiver<StreamMsg>>,
+    file_load: Option<crate::streaming_file::Load>,
     stream_state: Option<Arc<StreamingState>>,
     stream_revision: StreamRevision,
     stream_complete: bool,
@@ -447,6 +450,8 @@ pub struct InnerAudioPlayer {
     stream_permit: Option<AudioAggregatePermit>,
     retirement_cpu: Option<migo_io::audio_cpu::AudioCpu>,
     source_retirement: Option<source_retirement::Slot>,
+    rate_host: Option<crate::node_retirement::Host>,
+    rate_converter: Option<crate::node_retirement::Value<crate::variable_rate::Converter>>,
 }
 impl InnerAudioPlayer {
     pub fn new(id: InnerAudioId, output_channels: u32) -> Self {
@@ -465,9 +470,11 @@ impl InnerAudioPlayer {
             last_source_id: 0,
             position: 0,
             position_phase: 0,
+            buffered_loops: 0,
             output_channels,
             pending_events: Vec::with_capacity(4),
             stream_rx: None,
+            file_load: None,
             stream_state: None,
             stream_revision: StreamRevision::INITIAL,
             stream_complete: false,
@@ -490,6 +497,8 @@ impl InnerAudioPlayer {
             stream_permit: None,
             retirement_cpu: None,
             source_retirement: None,
+            rate_host: None,
+            rate_converter: None,
         }
     }
 
@@ -502,8 +511,87 @@ impl InnerAudioPlayer {
         player.retirement_cpu = Some(cpu);
         player
     }
+
+    pub(crate) fn with_rate_host(mut self, host: crate::node_retirement::Host) -> Self {
+        self.rate_host = Some(host);
+        self
+    }
+
+    fn prepare_rate_converter(
+        &self,
+        channels: usize,
+        empty: bool,
+    ) -> EngineResult<Option<crate::node_retirement::Value<crate::variable_rate::Converter>>> {
+        if empty || self.shared.playback_rate_units() == PLAYBACK_RATE_SCALE {
+            return Ok(None);
+        }
+        self.rate_host
+            .as_ref()
+            .map(|host| crate::variable_rate::Converter::prepare(host, channels))
+            .transpose()
+    }
+
+    pub(crate) fn set_playback_rate(&mut self, rate: f32) -> EngineResult<()> {
+        if rate.is_nan() {
+            return Ok(());
+        }
+        let units = (rate.clamp(0.5, 2.0) * PLAYBACK_RATE_SCALE as f32).round() as u32;
+        if units == PLAYBACK_RATE_SCALE {
+            self.rate_converter = None;
+        } else if self.rate_converter.is_none()
+            && self.shared.channels() != 0
+            && (self.shared.is_loaded() || self.is_streaming())
+            && let Some(host) = &self.rate_host
+        {
+            let channels = self.shared.channels() as usize;
+            let mut converter = crate::variable_rate::Converter::prepare(host, channels)?;
+            if !self.stream_complete {
+                converter.reset_stream(self.position / channels, self.position_phase)?;
+            } else {
+                converter.reset(
+                    self.source.samples(),
+                    self.position / channels,
+                    self.position_phase,
+                    self.shared.loop_enabled(),
+                    self.buffered_loops
+                        .saturating_mul(self.source.len() / channels)
+                        .saturating_add(self.position / channels),
+                )?;
+            }
+            self.rate_converter = Some(converter);
+        }
+        self.shared.set_playback_rate(rate);
+        Ok(())
+    }
+
+    fn reset_rate_converter(&mut self) {
+        let streaming = !self.stream_complete;
+        if let Some(converter) = &mut self.rate_converter {
+            let channels = self.shared.channels() as usize;
+            let result = if streaming {
+                converter.reset_stream(self.position / channels, self.position_phase)
+            } else {
+                converter.reset(
+                    self.source.samples(),
+                    self.position / channels,
+                    self.position_phase,
+                    self.shared.loop_enabled(),
+                    self.buffered_loops
+                        .saturating_mul(self.source.len() / channels)
+                        .saturating_add(self.position / channels),
+                )
+            };
+            if let Err(error) = result {
+                tracing::error!("InnerAudioPlayer {} rate reset failed: {error}", self.id);
+                self.shared.set_state(PlaybackState::Stopped);
+                self.push_event(InnerAudioEventType::Error);
+            }
+        }
+    }
     /// Change source storage and its existing physical permit as one owner.
     fn replace_source(&mut self, source: AudioSource, permit: Option<AudioAggregatePermit>) {
+        self.rate_converter = None;
+        self.buffered_loops = 0;
         let next = match (&source, self.retirement_cpu.as_ref()) {
             (AudioSource::Owned(samples), Some(cpu))
                 if samples.capacity() >= 4096 / size_of::<f32>() =>
@@ -658,6 +746,8 @@ impl InnerAudioPlayer {
         if !self.shared.owns_load(load) || self.shared.is_loaded() {
             return Err(InnerAudioLoadToken::cancelled_error());
         }
+        let converter =
+            self.prepare_rate_converter(audio.channels as usize, audio.samples.is_empty())?;
         let permit = match crate::limits::pcm_bytes(audio.samples.capacity()).and_then(|bytes| {
             if let Some(credit) = physical
                 .as_mut()
@@ -686,6 +776,7 @@ impl InnerAudioPlayer {
             AudioSource::Owned(std::mem::take(&mut audio.samples)),
             Some(permit),
         );
+        self.rate_converter = converter;
         self.position = 0;
         self.position_phase = 0;
         self.frames_since_time_update = 0;
@@ -714,6 +805,8 @@ impl InnerAudioPlayer {
         if !self.shared.owns_load(&load) || self.shared.is_loaded() {
             return Err(InnerAudioLoadToken::cancelled_error());
         }
+        let converter =
+            self.prepare_rate_converter(audio.channels as usize, audio.samples.is_empty())?;
         let frame_count = audio.frame_count();
         self.shared.set_sample_rate(audio.sample_rate);
         self.shared.set_channels(audio.channels);
@@ -725,6 +818,7 @@ impl InnerAudioPlayer {
         }
         self.publish_position(0);
         self.replace_source(AudioSource::Cached(audio), None);
+        self.rate_converter = converter;
         self.position = 0;
         self.position_phase = 0;
         self.frames_since_time_update = 0;
@@ -792,7 +886,7 @@ impl InnerAudioPlayer {
         self.loop_intent = self
             .stream_state
             .as_ref()
-            .filter(|s| s.control_sender().is_some())
+            .filter(|s| s.accepts_controls())
             .map(|_| self.shared.loop_enabled());
         self.stream_timeline = None;
         self.stream_presentation = None;
@@ -800,6 +894,31 @@ impl InnerAudioPlayer {
         tracing::debug!("InnerAudioPlayer {} started streaming", self.id);
         Ok(())
     }
+    pub(crate) fn complete_file_stream_load(
+        &mut self,
+        load: InnerAudioLoadToken,
+        rx: Receiver<StreamMsg>,
+        state: Arc<StreamingState>,
+        pending: crate::streaming_file::Load,
+    ) -> bool {
+        match self.complete_stream_load(load, String::new(), rx, state) {
+            Ok(()) => {
+                self.loading_url = None;
+                self.file_load = Some(pending);
+                true
+            }
+            Err(error) => {
+                let _ = pending.reply.send(Err(error));
+                false
+            }
+        }
+    }
+    fn complete_file_canplay(&mut self) {
+        if let Some(load) = self.file_load.take() {
+            let _ = load.reply.send(Ok(()));
+        }
+    }
+
     const STREAM_WINDOW_SAMPLES: usize = 44_100 * 2 * 5;
 
     /// Reclaim consumed stream prefix without allocating.
@@ -827,6 +946,9 @@ impl InnerAudioPlayer {
                 .stream_base_frames
                 .saturating_add((trim / channels) as u64);
             self.stream_windowed = true;
+            if let Some(converter) = &mut self.rate_converter {
+                converter.trim_stream_prefix(trim / channels);
+            }
         }
     }
 
@@ -885,9 +1007,11 @@ impl InnerAudioPlayer {
 
     /// Replace a completed stream's owned backing with its cached Arc.
     pub fn attach_cached_backing(&mut self, audio: Arc<CachedAudio>) {
+        let converter = self.rate_converter.take();
         self.stream_timeline = audio.source_timeline();
         self.stream_presentation = None;
         self.replace_source(AudioSource::Cached(audio.clone()), None);
+        self.rate_converter = converter;
         self.shared.set_duration_frames(audio.frame_count() as u64);
         if let Some(timeline) = self.stream_timeline {
             self.shared.set_source_duration(timeline);
@@ -900,6 +1024,9 @@ impl InnerAudioPlayer {
 
     /// Cancel ongoing stream
     fn cancel_stream(&mut self) {
+        if let Some(load) = self.file_load.take() {
+            let _ = load.reply.send(Err(InnerAudioLoadToken::cancelled_error()));
+        }
         self.stream_controls.clear();
         if let Some(state) = self.stream_state.take() {
             state.cancel();
@@ -907,7 +1034,7 @@ impl InnerAudioPlayer {
         self.stream_rx = None;
     }
 
-    fn retains_stream_source(&self) -> bool {
+    pub(crate) fn retains_stream_source(&self) -> bool {
         self.stream_state
             .as_ref()
             .is_some_and(|state| state.retains_source())
@@ -1040,10 +1167,20 @@ impl InnerAudioPlayer {
         } else {
             self.shared.set_duration_frames(target_frame);
         }
+        self.reset_rate_converter();
         Ok(())
     }
 
     fn fail_stream(&mut self) {
+        let file_load = self.file_load.take();
+        let error = file_load.as_ref().map(|load| {
+            load.error.lock().unwrap().take().unwrap_or_else(|| {
+                EngineError::from_detail(
+                    ErrorCode::Internal,
+                    "local audio stream preparation failed",
+                )
+            })
+        });
         self.cancel_stream();
         self.discard_loading_controls();
         self.pending_seek = None;
@@ -1053,7 +1190,11 @@ impl InnerAudioPlayer {
         self.stream_complete = false;
         self.shared.set_loaded(false);
         self.shared.set_state(PlaybackState::Stopped);
-        self.push_event(InnerAudioEventType::Error);
+        if let Some(load) = file_load {
+            let _ = load.reply.send(Err(error.unwrap()));
+        } else {
+            self.push_event(InnerAudioEventType::Error);
+        }
     }
 
     /// Preserve producer backpressure after startup, including for a paused
@@ -1080,6 +1221,15 @@ impl InnerAudioPlayer {
 
     /// Process incoming stream messages (call from audio thread loop)
     pub fn poll_stream(&mut self) {
+        if self
+            .file_load
+            .as_ref()
+            .is_some_and(|load| load.reply.is_closed())
+        {
+            self.cancel_stream();
+            self.discard_loading_controls();
+            return;
+        }
         self.poll_stream_controls();
         if !self.stream_controls.is_empty() {
             return;
@@ -1122,6 +1272,16 @@ impl InnerAudioPlayer {
                         self.fail_stream();
                         stream_ended = true;
                         break;
+                    }
+                    if self.rate_converter.is_none() {
+                        match self.prepare_rate_converter(channels as usize, false) {
+                            Ok(converter) => self.rate_converter = converter,
+                            Err(_) => {
+                                self.fail_stream();
+                                stream_ended = true;
+                                break;
+                            }
+                        }
                     }
                     tracing::debug!(
                         "InnerAudioPlayer {} stream ready: {} Hz, {} channels",
@@ -1236,6 +1396,7 @@ impl InnerAudioPlayer {
                                     buffered_seconds
                                 );
                                 self.push_event(InnerAudioEventType::CanPlay);
+                                self.complete_file_canplay();
                             }
                         }
                     }
@@ -1289,6 +1450,16 @@ impl InnerAudioPlayer {
                         self.shared.set_loaded(true);
                         tracing::debug!("InnerAudioPlayer {} canplay (short audio)", self.id);
                         self.push_event(InnerAudioEventType::CanPlay);
+                        self.complete_file_canplay();
+                    }
+                    if self.file_load.is_some() {
+                        if let Some(load) = &self.file_load {
+                            *load.error.lock().unwrap() = Some(EngineError::from_detail(
+                                ErrorCode::InvalidArgument,
+                                "local audio contains no samples",
+                            ));
+                        }
+                        self.fail_stream();
                     }
                     break; // No more messages after Done
                 }
@@ -1369,6 +1540,7 @@ impl InnerAudioPlayer {
         self.position = 0;
         self.stream_base_frames = base + skip;
         self.stream_windowed = true;
+        self.reset_rate_converter();
         Ok(&samples[skip as usize * channels..])
     }
 
@@ -1539,7 +1711,19 @@ impl InnerAudioPlayer {
             .as_ref()
             .is_some_and(|s| s.control_sender().is_some());
         if !controlled {
+            if !self.shared.is_loaded()
+                && self
+                    .stream_state
+                    .as_ref()
+                    .is_some_and(|s| s.accepts_controls())
+            {
+                self.loop_intent = Some(enabled);
+            }
+            let changed = self.shared.loop_enabled() != enabled;
             self.shared.set_loop_enabled(enabled);
+            if changed {
+                self.reset_rate_converter();
+            }
             return;
         }
         if !self.shared.is_loaded() {
@@ -1574,6 +1758,10 @@ impl InnerAudioPlayer {
             return;
         }
         let prev_state = self.shared.state();
+        if prev_state == PlaybackState::Stopped && self.position == 0 {
+            self.buffered_loops = 0;
+            self.reset_rate_converter();
+        }
         let initial_seek = self.start_pending && self.start_time > 0.0;
         self.start_pending = false;
         if initial_seek {
@@ -1683,7 +1871,9 @@ impl InnerAudioPlayer {
             .saturating_mul(channels)
             .min(self.source.len());
         self.position_phase = 0;
+        self.buffered_loops = 0;
         self.publish_position(self.stream_base_frames + (self.position / channels) as u64);
+        self.reset_rate_converter();
         // A seek into buffered data may resume a stalled player. Let the next
         // underrun notify, and start a fresh TimeUpdate interval at the target.
         self.waiting_notified = false;
@@ -1703,8 +1893,10 @@ impl InnerAudioPlayer {
         self.pending_seek = None;
         self.position = 0;
         self.position_phase = 0;
+        self.buffered_loops = 0;
         self.publish_position(0);
         self.frames_since_time_update = 0;
+        self.reset_rate_converter();
         if self.shared.is_loaded() {
             self.request_stream_control(0.0, ControlKind::Restart);
         }
@@ -1751,6 +1943,7 @@ impl InnerAudioPlayer {
         self.push_event(InnerAudioEventType::Ended);
         self.position = 0;
         self.position_phase = 0;
+        self.buffered_loops = 0;
         self.publish_position(0);
         self.frames_since_time_update = 0;
     }
@@ -1782,6 +1975,10 @@ impl InnerAudioPlayer {
                 self.finish_playback(0, 0);
             }
             return false;
+        }
+
+        if self.rate_converter.is_some() {
+            return self.process_rate_converted(output);
         }
 
         let volume = self.shared.volume();
@@ -1848,6 +2045,9 @@ impl InnerAudioPlayer {
                     // Carry overshoot and phase across the seam, including
                     // multiple wraps when a very short clip plays above 1x.
                     tracing::trace!("InnerAudioPlayer {} looping back to start", self.id);
+                    self.buffered_loops = self
+                        .buffered_loops
+                        .saturating_add(source_frame / total_frames);
                     source_frame %= total_frames;
                     src_frame = source_frame;
                 } else {
@@ -1910,6 +2110,9 @@ impl InnerAudioPlayer {
         // normalize a final overshoot so the stored currentTime doesn't briefly
         // pin at duration until the next callback wraps.
         if loop_enabled && !waiting_for_input {
+            self.buffered_loops = self
+                .buffered_loops
+                .saturating_add(source_frame / total_frames);
             source_frame %= total_frames;
         }
         if !waiting_for_input && !loop_enabled && source_frame >= total_frames {
@@ -1930,6 +2133,108 @@ impl InnerAudioPlayer {
         // and onTimeUpdate fires between the discrete lifecycle events.
         self.accumulate_time_update(output_frames);
 
+        true
+    }
+
+    fn process_rate_converted(&mut self, output: &mut [f32]) -> bool {
+        let channels = self.shared.channels() as usize;
+        let output_channels = self.output_channels as usize;
+        let total = self.source.len() / channels;
+        if total == 0 {
+            self.finish_playback(0, 0);
+            return false;
+        }
+        let looping = self.shared.loop_enabled()
+            && self.stream_complete
+            && !self.stream_presentation.is_some_and(|p| p.is_cyclic());
+        let units = self.shared.playback_rate_units();
+        let volume = self.shared.volume();
+        let mut frame = self.position / channels;
+        let mut phase = u32::from(self.position_phase);
+        let mut written = 0;
+        let requested = output.len() / output_channels;
+        let mut scratch = [0.; crate::variable_rate::BLOCK * 32];
+        if looping && frame >= total {
+            self.buffered_loops = self.buffered_loops.saturating_add(frame / total);
+            frame %= total;
+        }
+        while written < requested && (looping || frame < total) {
+            let n = (requested - written).min(crate::variable_rate::BLOCK);
+            let n = if looping || !self.stream_complete {
+                n
+            } else {
+                let left =
+                    (total - frame) as u64 * u64::from(PLAYBACK_RATE_SCALE) - u64::from(phase);
+                n.min(left.div_ceil(u64::from(units)) as usize)
+            };
+            let converter = self.rate_converter.as_mut().unwrap();
+            let result = if looping {
+                converter
+                    .render(
+                        self.source.samples(),
+                        units,
+                        true,
+                        &mut scratch[..n * channels],
+                    )
+                    .map(|()| n)
+            } else {
+                converter.render_stream(
+                    self.source.samples(),
+                    units,
+                    self.stream_complete,
+                    &mut scratch[..n * channels],
+                )
+            };
+            let n = match result {
+                Ok(n) => n,
+                Err(error) => {
+                    tracing::error!("InnerAudioPlayer {} rate render failed: {error}", self.id);
+                    self.shared.set_state(PlaybackState::Stopped);
+                    self.push_event(InnerAudioEventType::Error);
+                    return false;
+                }
+            };
+            if n == 0 {
+                break;
+            }
+            for i in 0..n {
+                let source = &scratch[i * channels..(i + 1) * channels];
+                let destination = &mut output
+                    [(written + i) * output_channels..(written + i + 1) * output_channels];
+                if channels == 1 {
+                    for value in destination {
+                        *value += source[0] * volume;
+                    }
+                } else if output_channels == 1 {
+                    let sum = source.iter().copied().sum::<f32>();
+                    destination[0] += sum / channels as f32 * volume;
+                } else {
+                    for ch in 0..channels.min(output_channels) {
+                        destination[ch] += source[ch] * volume;
+                    }
+                }
+            }
+            let advance = phase + n as u32 * units;
+            frame += (advance / PLAYBACK_RATE_SCALE) as usize;
+            phase = advance % PLAYBACK_RATE_SCALE;
+            if looping {
+                self.buffered_loops = self.buffered_loops.saturating_add(frame / total);
+                frame %= total;
+            }
+            written += n;
+        }
+        if self.stream_complete && !looping && frame >= total {
+            self.finish_playback(total, written);
+            return false;
+        }
+        self.position = frame * channels;
+        self.position_phase = phase as u16;
+        self.publish_position(self.stream_base_frames + frame as u64);
+        self.accumulate_time_update(written);
+        if !self.stream_complete && written < requested && !self.waiting_notified {
+            self.waiting_notified = true;
+            self.push_event(InnerAudioEventType::Waiting);
+        }
         true
     }
 
@@ -2019,6 +2324,10 @@ impl Drop for InnerAudioPlayer {
         self.replace_source(AudioSource::Owned(Vec::new()), None);
     }
 }
+
+#[cfg(test)]
+#[path = "inner_rate_tests.rs"]
+mod rate_tests;
 
 #[cfg(test)]
 #[path = "loading_control_tests.rs"]

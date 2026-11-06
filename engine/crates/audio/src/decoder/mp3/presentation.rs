@@ -18,6 +18,14 @@ unsafe extern "C" {
         limit: u64,
         expected: *mut u64,
     ) -> c_int;
+    fn migo_mp3_presentation_begin_stream(
+        p: *mut c_void,
+        frame: *const u8,
+        size: c_int,
+        free_bytes: c_int,
+        info: *const ffi::mp3dec_frame_info_t,
+        expected: *mut u64,
+    ) -> c_int;
     fn migo_mp3_presentation_decode(
         p: *mut c_void,
         decoder: *mut ffi::mp3dec_t,
@@ -30,9 +38,9 @@ unsafe extern "C" {
     fn migo_mp3_presentation_finish(p: *const c_void) -> c_int;
 }
 
-pub(super) struct Presentation {
+pub(crate) struct Presentation {
     native: NonNull<c_void>,
-    pub(super) expected: Option<usize>,
+    pub(crate) expected: Option<usize>,
     format: (c_int, c_int, c_int),
 }
 // SAFETY: this uniquely owned native state retains no input/IO pointers or
@@ -41,13 +49,19 @@ unsafe impl Send for Presentation {}
 
 impl Presentation {
     pub(super) fn new(frame: &[u8], boundary: &FrameBoundary) -> EngineResult<(Self, bool)> {
+        let mut owner = Self::allocate(boundary)?;
+        let skip = owner.begin(frame, boundary, false)?;
+        Ok((owner, skip))
+    }
+
+    pub(crate) fn allocate(boundary: &FrameBoundary) -> EngineResult<Self> {
         #[cfg(test)]
         super::trace_native(0);
         // SAFETY: the constructor returns one exclusively owned C allocation.
         let native = NonNull::new(unsafe { migo_mp3_presentation_new() }).ok_or_else(|| {
             EngineError::from_detail(ErrorCode::OutOfMemory, "MP3 presentation allocation failed")
         })?;
-        let mut owner = Self {
+        Ok(Self {
             native,
             expected: None,
             format: (
@@ -55,35 +69,65 @@ impl Presentation {
                 boundary.info.channels,
                 boundary.info.layer,
             ),
-        };
+        })
+    }
+
+    pub(crate) fn begin(
+        &mut self,
+        frame: &[u8],
+        boundary: &FrameBoundary,
+        streaming: bool,
+    ) -> EngineResult<bool> {
         let mut expected = 0;
         #[cfg(test)]
         super::trace_native(frame.len());
         // SAFETY: native is owned here, frame is the complete bounded frame
         // measured by minimp3; info/free size come from that same dry probe.
         let status = unsafe {
-            migo_mp3_presentation_begin(
-                native.as_ptr(),
-                frame.as_ptr(),
-                frame.len() as c_int,
-                boundary.free_format_bytes,
-                &boundary.info,
-                crate::limits::MAX_AUDIO_PCM_SAMPLES,
-                &mut expected,
-            )
+            if streaming {
+                migo_mp3_presentation_begin_stream(
+                    self.native.as_ptr(),
+                    frame.as_ptr(),
+                    frame.len() as c_int,
+                    boundary.free_format_bytes,
+                    &boundary.info,
+                    &mut expected,
+                )
+            } else {
+                migo_mp3_presentation_begin(
+                    self.native.as_ptr(),
+                    frame.as_ptr(),
+                    frame.len() as c_int,
+                    boundary.free_format_bytes,
+                    &boundary.info,
+                    crate::limits::MAX_AUDIO_PCM_SAMPLES,
+                    &mut expected,
+                )
+            }
         };
         if status < 0 {
             return Err(invalid("invalid MP3 presentation metadata or PCM quota"));
         }
-        owner.expected = (expected != 0).then_some(expected as usize);
-        Ok((owner, status == 1))
+        self.expected = if expected == 0 {
+            None
+        } else {
+            Some(
+                usize::try_from(expected)
+                    .map_err(|_| invalid("MP3 presentation overflows sample coordinates"))?,
+            )
+        };
+        Ok(status == 1)
     }
 
-    pub(super) fn accepts(&self, info: &ffi::mp3dec_frame_info_t) -> bool {
+    pub(crate) fn format(&self) -> (u32, u32) {
+        (self.format.0 as u32, self.format.1 as u32)
+    }
+
+    pub(crate) fn accepts(&self, info: &ffi::mp3dec_frame_info_t) -> bool {
         self.format == (info.hz, info.channels, info.layer)
     }
 
-    pub(super) fn finish(&self) -> EngineResult<()> {
+    pub(crate) fn finish(&self) -> EngineResult<()> {
         #[cfg(test)]
         super::trace_native(0);
         // SAFETY: native remains live and owned through final validation.
@@ -101,7 +145,7 @@ impl Drop for Presentation {
 }
 
 impl Mp3FrameDecoder {
-    pub(super) fn decode_presented<'a>(
+    pub(crate) fn decode_presented<'a>(
         &'a mut self,
         input: &[u8],
         owner: &mut Presentation,
@@ -125,7 +169,9 @@ impl Mp3FrameDecoder {
             )
         };
         if count < 0 || skip < 0 || skip as usize + count as usize > MAX_SAMPLES_PER_FRAME {
-            return Err(invalid("MP3 presentation decode failed"));
+            return Err(invalid(
+                "MP3 source format changed or presentation decode failed",
+            ));
         }
         Ok(self.frame_step(input.len(), info, count as usize, skip as usize, true))
     }

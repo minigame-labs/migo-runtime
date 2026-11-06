@@ -28,7 +28,7 @@ def declarations(original):
     change('stream-cancel-retains-owner', 'fn retire(&mut self, code: ErrorCode) {\n        self.owner = None;',
            'fn retire(&mut self, code: ErrorCode) {\n        let _ = &self.owner;', cancel, 'cancel retained stream allocations or PCM')
     change('stream-terminal-code-lost', 'self.error = Some(code);', 'self.error = Some(ErrorCode::Internal);', cancel, 'Cancelled')
-    change('stream-input-quantum-doubled', 'const INPUT_BYTES: usize = 4096;', 'const INPUT_BYTES: usize = 8192;', 'long_music_matches_original_raw_minimp3_frames_and_independent_sinc', 'step.consumed <= input.len() && step.consumed <= 4096')
+    change('stream-input-quantum-doubled', 'const INPUT_BYTES: usize = 4096;', 'const INPUT_BYTES: usize = 8192;', 'long_music_matches_frozen_gapless_minimp3_and_independent_sinc', 'step.consumed <= input.len() && step.consumed <= 4096')
     before = '''            let step = self.pipeline.as_mut().unwrap().step(
                 &self.scratch[self.head..],
                 false,

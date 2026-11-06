@@ -155,12 +155,35 @@ impl Reader {
         result
     }
 
-    async fn read_inner(
+    /// Fill an existing control/index allocation without collecting a second
+    /// full-size Vec. The caller owns admission and the buffer's retirement.
+    /// On error the buffer may contain a partial prefix; it must not be used as
+    /// a complete index. Failure and dropped futures retire this reader.
+    pub async fn read_exact_into(
         &mut self,
         offset: u64,
-        len: usize,
+        output: &mut [u8],
         deadline: Instant,
-    ) -> Result<Vec<u8>, Error> {
+    ) -> Result<(), Error> {
+        if self.failed {
+            return Err(Error::PreviouslyFailed);
+        }
+        self.failed = true;
+        let result = async {
+            let end = self.control_end(offset, output.len())?;
+            self.read_control(offset, end, deadline, |at, bytes| {
+                output[at..at + bytes.len()].copy_from_slice(bytes);
+            })
+            .await
+        }
+        .await;
+        if result.is_ok() {
+            self.failed = false;
+        }
+        result
+    }
+
+    fn control_end(&self, offset: u64, len: usize) -> Result<u64, Error> {
         let end = offset
             .checked_add(len as u64)
             .filter(|end| *end > offset)
@@ -174,15 +197,41 @@ impl Reader {
         {
             return Err(Error::Limit);
         }
+        Ok(end)
+    }
+
+    async fn read_inner(
+        &mut self,
+        offset: u64,
+        len: usize,
+        deadline: Instant,
+    ) -> Result<Vec<u8>, Error> {
+        let end = self.control_end(offset, len)?;
         let mut output = Vec::new();
         output.try_reserve_exact(len).map_err(|_| Error::Limit)?;
-        while output.len() < len {
+        self.read_control(offset, end, deadline, |_, bytes| {
+            output.extend_from_slice(bytes);
+        })
+        .await?;
+        Ok(output)
+    }
+
+    async fn read_control(
+        &mut self,
+        offset: u64,
+        end: u64,
+        deadline: Instant,
+        mut write: impl FnMut(usize, &[u8]),
+    ) -> Result<(), Error> {
+        let len = usize::try_from(end - offset).map_err(|_| Error::Limit)?;
+        let mut received = 0;
+        while received < len {
             self.requests = self
                 .requests
                 .checked_add(1)
                 .filter(|n| *n <= self.limits.max_requests)
                 .ok_or(Error::Limit)?;
-            let start = offset + output.len() as u64;
+            let start = offset + received as u64;
             let mut segment = self.open_range(start, end, deadline, true).await?;
             while let Some(chunk) = segment.chunk(deadline).await? {
                 self.bytes = self
@@ -190,10 +239,15 @@ impl Reader {
                     .checked_add(chunk.len() as u64)
                     .filter(|n| *n <= self.limits.max_total_bytes)
                     .ok_or(Error::Limit)?;
-                output.extend_from_slice(&chunk);
+                let next = received
+                    .checked_add(chunk.len())
+                    .filter(|n| *n <= len)
+                    .ok_or(Error::InvalidResponse("control body exceeds target extent"))?;
+                write(received, &chunk);
+                received = next;
             }
         }
-        Ok(output)
+        Ok(())
     }
 
     /// Shared request/identity/extent validation for control reads and media.
@@ -406,3 +460,7 @@ mod tests;
 #[cfg(test)]
 #[path = "range/interruption_tests.rs"]
 mod interruption_tests;
+
+#[cfg(test)]
+#[path = "range/borrowed_tests.rs"]
+mod borrowed_tests;

@@ -9,16 +9,16 @@
 //! Borrowed incremental WAVE packetization. No Read is attempted until the
 //! complete bounded field is available. Optional metadata is skipped without
 //! retaining values; audio length is independent of the input working set.
-use super::chunks::{append_fact_params, FactChunk, RiffWaveChunks, WaveFormatChunk};
+use super::chunks::{FactChunk, RiffWaveChunks, WaveFormatChunk, append_fact_params};
 use crate::common::{
-    append_data_params, append_format_params, ByteOrder, ChunksReader, FormatData, PacketInfo,
-    ParseChunk, ParseChunkTag,
+    ByteOrder, ChunksReader, FormatData, PacketInfo, ParseChunk, ParseChunkTag, append_data_params,
+    append_format_params,
 };
 use std::num::NonZero;
 use symphonia_core::{
-    codecs::{audio::AudioCodecParameters, CodecParameters},
-    errors::{decode_error, unsupported_error, Error, Result},
-    formats::Track,
+    codecs::{CodecParameters, audio::AudioCodecParameters},
+    errors::{Error, Result, SeekErrorKind, decode_error, unsupported_error},
+    formats::{SeekedTo, Track},
     io::{BufReader, ReadBytes},
     packet::PacketRef,
     units::{Duration, TimeBase, Timestamp},
@@ -27,6 +27,7 @@ use symphonia_core::{
 #[derive(Debug)]
 pub enum PacketStep<'a> {
     NeedMore,
+    ReadAt(u64),
     Discard(usize),
     Packet {
         consumed: usize,
@@ -72,6 +73,10 @@ pub struct WavPacketizer {
     track: Option<Track>,
     next_pts: Timestamp,
     failed: bool,
+    position: u64,
+    data: Option<(u64, u64)>,
+    pending: Option<u64>,
+    object_len: Option<u64>,
 }
 impl WavPacketizer {
     pub fn new(options: PacketizerOptions) -> Self {
@@ -85,10 +90,75 @@ impl WavPacketizer {
             track: None,
             next_pts: Timestamp::ZERO,
             failed: false,
+            position: 0,
+            data: None,
+            pending: None,
+            object_len: None,
         }
+    }
+    /// Bind the immutable source without changing stream/unknown-length policy.
+    pub fn with_object_len(options: PacketizerOptions, length: u64) -> Self {
+        let mut value = Self::new(options);
+        value.object_len = Some(length);
+        value
     }
     pub fn track(&self) -> Option<&Track> {
         self.track.as_ref()
+    }
+
+    /// Coordinates belong to this packetizer's one immutable representation.
+    pub fn position(&self) -> u64 {
+        self.position
+    }
+    pub fn source_request(&self) -> Option<u64> {
+        self.pending
+    }
+    /// PCM is independently framed. Reuse the pull reader's packet alignment;
+    /// the common decoder removes samples preceding required_ts after reset.
+    pub fn seek(&mut self, required_ts: Timestamp) -> Result<SeekedTo> {
+        if self.failed {
+            return Err(Error::SeekError(SeekErrorKind::Unseekable));
+        }
+        let reject = || Error::SeekError(SeekErrorKind::OutOfRange);
+        let (start, end) = self
+            .data
+            .ok_or(Error::SeekError(SeekErrorKind::Unseekable))?;
+        let info = self
+            .info
+            .as_ref()
+            .ok_or(Error::SeekError(SeekErrorKind::Unseekable))?;
+        let frames = self
+            .track
+            .as_ref()
+            .and_then(|t| t.num_frames)
+            .ok_or(Error::SeekError(SeekErrorKind::Unseekable))?;
+        if required_ts.is_negative() || required_ts.get() as u64 > frames {
+            return Err(reject());
+        }
+        let actual_ts = info.get_actual_ts(required_ts);
+        let offset = (actual_ts.get() as u64)
+            .checked_mul(info.block_size.get())
+            .and_then(|n| start.checked_add(n))
+            .filter(|n| *n <= end)
+            .ok_or_else(reject)?;
+        self.pending = Some(offset);
+        self.next_pts = actual_ts;
+        self.state = State::Data(Some(end - offset));
+        Ok(SeekedTo {
+            track_id: 0,
+            actual_ts,
+            required_ts,
+        })
+    }
+    /// Resume only the exact outstanding read; validation failures are terminal.
+    pub fn resume_at(&mut self, offset: u64) -> Result<()> {
+        if self.failed || self.pending != Some(offset) {
+            self.failed = true;
+            return decode_error("wav: source resume does not match pending read");
+        }
+        self.position = offset;
+        self.pending = None;
+        Ok(())
     }
 
     /// NeedMore consumes no input and does not advance a field parser. Errors
@@ -97,7 +167,20 @@ impl WavPacketizer {
         if self.failed {
             return decode_error("wav: stream packetizer previously failed");
         }
-        let result = self.next_inner(input, eof);
+        if let Some(offset) = self.pending {
+            return Ok(PacketStep::ReadAt(offset));
+        }
+        let result = self.next_inner(input, eof).and_then(|step| {
+            let consumed = match &step {
+                PacketStep::Discard(n) | PacketStep::Packet { consumed: n, .. } => *n,
+                _ => 0,
+            };
+            self.position = self
+                .position
+                .checked_add(consumed as u64)
+                .ok_or(Error::DecodeError("wav: stream byte position overflow"))?;
+            Ok(step)
+        });
         if result.is_err() {
             self.failed = true;
         }
@@ -156,6 +239,19 @@ impl WavPacketizer {
                         }
                         if let Some(len) = data_len {
                             append_data_params(&mut track, len, info);
+                        }
+                        if let Some(length) = data_len {
+                            let start = self
+                                .position
+                                .checked_add(reader.pos())
+                                .ok_or(Error::DecodeError("wav: data position overflow"))?;
+                            let end = start
+                                .checked_add(length)
+                                .ok_or(Error::DecodeError("wav: data extent overflow"))?;
+                            if self.object_len.is_some_and(|length| end > length) {
+                                return decode_error("wav: data extent exceeds bound source");
+                            }
+                            self.data = Some((start, end));
                         }
                         self.track = Some(track);
                         State::Data(data_len)
@@ -289,7 +385,7 @@ mod tests {
             output.push(0);
         }
     }
-    fn wave(
+    pub(super) fn wave(
         channels: u16,
         bits: u16,
         floating: bool,
@@ -326,6 +422,7 @@ mod tests {
         let mut audio = Vec::new();
         for _ in 0..file.len().saturating_mul(3) + 1024 {
             match reader.next(&file[offset..available], available == file.len())? {
+                PacketStep::ReadAt(_) => panic!("sequential WAVE requested source reposition"),
                 PacketStep::NeedMore => {
                     assert!(available < file.len(), "EOF cannot request more bytes");
                     available = (available + fragment).min(file.len());
@@ -517,3 +614,7 @@ mod tests {
         assert!(drain(&file, 3, 4).is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "streaming_seek_tests.rs"]
+mod seek_tests;

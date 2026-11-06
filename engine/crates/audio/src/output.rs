@@ -7,11 +7,18 @@
 //! and cpal has no OHAudio support, not because anything about the buffering differs.
 
 use shared::channel::{AudioNotifier, ThreadWakeup};
+#[cfg(test)]
+use std::sync::Arc;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, OnceLock};
 
-use ringbuf::HeapCons;
 use ringbuf::traits::{Consumer, Observer};
+
+#[path = "output_ring.rs"]
+mod ring;
+#[path = "output_sync_storage.rs"]
+mod sync_storage;
+pub(crate) use ring::Retry as OutputRetry;
 
 /// The device backend for this target. Selected on `target_env` rather than a feature,
 /// because which audio API exists is a property of the platform and not a choice a
@@ -25,6 +32,12 @@ mod backend;
 #[cfg(not(any(target_os = "android", all(target_os = "linux", target_env = "ohos"))))]
 #[path = "output_cpal.rs"]
 mod backend;
+#[cfg(all(test, target_os = "linux", not(target_env = "ohos")))]
+#[path = "output_oboe.rs"]
+mod oboe_source_probe;
+#[cfg(all(test, target_os = "linux", not(target_env = "ohos")))]
+#[path = "output_ohaudio.rs"]
+mod ohaudio_source_probe;
 #[path = "output_policy.rs"]
 mod policy;
 #[path = "output_silent.rs"]
@@ -59,24 +72,39 @@ macro_rules! each_output {
 
 impl AudioOutput {
     /// The default device, or silence when none opens.
-    pub fn new() -> Self {
-        match Self::open_device() {
-            Ok(output) => output,
+    pub fn new(cpu: migo_io::audio_cpu::AudioCpu) -> shared::error::EngineResult<Self> {
+        let host = crate::node_retirement::Host::new(
+            cpu,
+            crate::limits::AudioAggregateLedger::process_global(),
+            2,
+        )?;
+        Self::with_host(&host)
+    }
+
+    pub(crate) fn with_host(
+        host: &crate::node_retirement::Host,
+    ) -> shared::error::EngineResult<Self> {
+        match Self::open_device(host) {
+            Ok(output) => Ok(output),
             Err(error) => {
                 tracing::warn!(
                     "no audio output device ({error}); the mix plays into silence until one appears"
                 );
                 // Running from the start, as a device's stream is once opened.
-                let mut silent = SilentOutput::new();
+                let mut silent = SilentOutput::with_host(Some(host))?;
                 silent.resume_stream();
-                Self::Silent(silent)
+                Ok(Self::Silent(silent))
             }
         }
     }
 
     /// The default device, and nothing else: what the audio thread tries while it plays into silence.
-    pub fn open_device() -> shared::error::EngineResult<Self> {
-        DeviceOutput::new().map(Self::Device)
+    pub fn open_device(host: &crate::node_retirement::Host) -> shared::error::EngineResult<Self> {
+        DeviceOutput::new(host).map(Self::Device)
+    }
+
+    pub(crate) fn storage_host(&self) -> Option<crate::node_retirement::Host> {
+        each_output!(self, output => output.storage_host())
     }
 
     /// SilentOutput pumps on this owner thread; attaching a notifier there
@@ -213,7 +241,7 @@ pub(crate) const HIGH_WATERMARK_FRAMES: usize = 4096;
 ///   visible to the audio thread checking `is_alive()` with `Acquire`.
 #[derive(Clone)]
 pub struct AudioSync {
-    inner: Arc<AudioSyncState>,
+    inner: sync_storage::Reference,
 }
 
 struct AudioSyncState {
@@ -228,9 +256,16 @@ struct AudioSyncState {
 }
 
 impl AudioSync {
+    #[cfg(test)]
     pub(crate) fn new() -> Self {
-        Self {
-            inner: Arc::new(AudioSyncState {
+        Self::with_host(None).unwrap()
+    }
+
+    pub(super) fn with_host(
+        host: Option<&crate::node_retirement::Host>,
+    ) -> shared::error::EngineResult<Self> {
+        Ok(Self {
+            inner: sync_storage::Reference::new(host, || AudioSyncState {
                 needs_data: AtomicBool::new(false),
                 buffer_level: AtomicUsize::new(0),
                 max_callback: AtomicUsize::new(0),
@@ -239,8 +274,22 @@ impl AudioSync {
                 policy: OnceLock::new(),
                 software_underrun: AtomicBool::new(false),
                 software_underruns: AtomicUsize::new(0),
-            }),
-        }
+            })?,
+        })
+    }
+
+    #[cfg(test)]
+    fn storage_bytes(&self) -> usize {
+        self.inner.charged_bytes()
+    }
+
+    #[cfg(test)]
+    fn observe_storage(
+        &mut self,
+        before: Arc<dyn Fn() + Send + Sync>,
+        after: Arc<dyn Fn() + Send + Sync>,
+    ) {
+        self.inner.observe(before, after);
     }
 
     pub(super) fn configure_device(&self, channels: usize, hint_frames: usize) {
@@ -396,14 +445,14 @@ impl FromNormalizedF32 for u16 {
 /// The type is also what removes the duplication: three near-identical callbacks
 /// differing only in the sample conversion collapse into two methods.
 pub(crate) struct OutputCallback {
-    consumer: HeapCons<f32>,
+    consumer: ring::Consumer,
     sync: AudioSync,
     low_watermark: usize,
 }
 
 impl OutputCallback {
     /// Built by a backend, which owns the consumer half of the ring.
-    pub(crate) fn new(consumer: HeapCons<f32>, sync: AudioSync, low_watermark: usize) -> Self {
+    pub(crate) fn new(consumer: ring::Consumer, sync: AudioSync, low_watermark: usize) -> Self {
         Self {
             consumer,
             sync,
@@ -473,10 +522,10 @@ impl OutputCallback {
 
 #[cfg(test)]
 mod tests {
+    use super::ring;
     use super::*;
     use migo_alloc_probe::{Burst, assert_no_steady_state_allocation};
-    use ringbuf::traits::{Producer, Split};
-    use ringbuf::{HeapProd, HeapRb};
+    use ringbuf::traits::Producer;
 
     const WARMUP: usize = 8;
     const MEASURED: usize = 64;
@@ -491,8 +540,8 @@ mod tests {
     /// The producer is returned rather than dropped because a dropped producer
     /// closes the ring, and a gate that measured a closed ring would be measuring
     /// the wrong thing.
-    fn filled_callback(ring_samples: usize) -> (HeapProd<f32>, OutputCallback) {
-        let (mut producer, consumer) = HeapRb::<f32>::new(ring_samples).split();
+    fn filled_callback(ring_samples: usize) -> (ring::Producer, OutputCallback) {
+        let (mut producer, consumer) = ring::new(ring_samples, None).unwrap();
         let block = vec![0.25f32; ring_samples];
         producer.push_slice(&block);
         (
@@ -779,7 +828,7 @@ mod tests {
     /// fleet of one-shot callbacks measures first calls exactly.
     #[test]
     fn an_output_callback_never_reaches_the_heap_on_its_very_first_call() {
-        let mut fleet: Vec<(HeapProd<f32>, OutputCallback)> = (0..WARMUP + MEASURED)
+        let mut fleet: Vec<(ring::Producer, OutputCallback)> = (0..WARMUP + MEASURED)
             .map(|_| filled_callback(CALLBACK_SAMPLES))
             .collect();
         let mut out = vec![0i16; CALLBACK_SAMPLES];
@@ -808,7 +857,7 @@ mod tests {
             .map(|i| (i as f32 / samples as f32) * 2.0 - 1.0)
             .collect();
 
-        let (mut producer, consumer) = HeapRb::<f32>::new(samples).split();
+        let (mut producer, consumer) = ring::new(samples, None).unwrap();
         producer.push_slice(&source);
         let mut callback = OutputCallback::new(consumer, AudioSync::new(), 0);
 
@@ -829,7 +878,7 @@ mod tests {
     #[test]
     fn an_underrun_pads_the_rest_of_the_device_buffer_with_silence() {
         let available = CONVERT_CHUNK_SAMPLES + 3;
-        let (mut producer, consumer) = HeapRb::<f32>::new(available).split();
+        let (mut producer, consumer) = ring::new(available, None).unwrap();
         producer.push_slice(&vec![1.0f32; available]);
         let mut callback = OutputCallback::new(consumer, AudioSync::new(), usize::MAX);
 

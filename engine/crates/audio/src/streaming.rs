@@ -1,7 +1,7 @@
 //! Streaming audio download and decode for edge-download-edge-play
 //!
 //! Downloads audio from URL in chunks and decodes progressively.
-//! Only MP3 is supported for streaming as it can be decoded frame-by-frame.
+//! MP3, PCM WAVE, Ogg/Vorbis and AAC-LC ADTS use bounded progressive decoders.
 //!
 //! Uses a shared tokio runtime for all download tasks to avoid per-stream overhead.
 
@@ -15,6 +15,7 @@ use tokio::sync::{Notify, mpsc};
 
 #[cfg(test)]
 use crate::off_worker::OffWorker;
+#[cfg(test)]
 use crate::streaming_mp3::Mp3StreamDecoder;
 
 /// Keep only a small number of decoded chunks ahead of the audio thread.
@@ -132,6 +133,9 @@ impl StreamTimeline {
     }
     pub(crate) fn output_frames(self) -> u64 {
         self.output_frames
+    }
+    pub(crate) fn input_frames(self) -> u64 {
+        self.frames
     }
     pub(crate) fn seconds(self) -> f64 {
         self.frames as f64 / self.input_rate as f64
@@ -524,6 +528,8 @@ pub struct StreamingState {
     cancel_notify: Notify,
     /// A reusable producer keeps its source and command receiver alive at EOF.
     retain_after_eof: bool,
+    /// URL capability is selected asynchronously; a real port activates retention.
+    require_control_port: bool,
     /// Bound once by the CPU decoder to this exact source, across revisions.
     timeline: std::sync::OnceLock<StreamTimeline>,
     presentation: std::sync::OnceLock<StreamPresentation>,
@@ -545,8 +551,24 @@ impl StreamingState {
         })
     }
 
-    pub(crate) fn retains_source(&self) -> bool {
+    pub(crate) fn new_url() -> Arc<Self> {
+        Self::new_optional_controls()
+    }
+
+    pub(crate) fn new_optional_controls() -> Arc<Self> {
+        Arc::new(Self {
+            retain_after_eof: true,
+            require_control_port: true,
+            ..Self::default()
+        })
+    }
+
+    pub(crate) fn accepts_controls(&self) -> bool {
         self.retain_after_eof
+    }
+
+    pub(crate) fn retains_source(&self) -> bool {
+        self.retain_after_eof && (!self.require_control_port || self.controls.get().is_some())
     }
 
     pub(crate) fn timeline(&self) -> Option<StreamTimeline> {
@@ -576,7 +598,7 @@ impl StreamingState {
         &self,
         sender: mpsc::Sender<crate::stream_control::Command>,
     ) -> EngineResult<()> {
-        if !self.retains_source() || self.is_cancelled() {
+        if !self.accepts_controls() || self.is_cancelled() {
             return Err(EngineError::from_detail(
                 ErrorCode::InvalidArgument,
                 "inactive source control port",
@@ -652,6 +674,7 @@ impl Default for StreamingState {
             rendered_frames: AtomicU64::new(0),
             cancel_notify: Notify::new(),
             retain_after_eof: false,
+            require_control_port: false,
             timeline: std::sync::OnceLock::new(),
             presentation: std::sync::OnceLock::new(),
             controls: std::sync::OnceLock::new(),
@@ -736,15 +759,38 @@ pub fn start_streaming_download(
 ) -> mpsc::Receiver<StreamMsg> {
     let (tx, rx) = stream_channel();
 
-    get_stream_runtime().spawn(crate::streaming_transport::run(
+    get_stream_runtime().spawn(crate::streaming_transport::run_with_source::<
+        crate::streaming_codecs::AutoDecoder,
+        crate::streaming_http::IndexedHttp,
+    >(cpu, client, url, tx, state, move |_| {
+        crate::streaming_codecs::AutoDecoder::http(target_sample_rate)
+    }));
+
+    rx
+}
+
+/// Product URL loads carry the session's existing private Fs spool authority.
+pub fn start_streaming_download_with_spool(
+    cpu: migo_io::audio_cpu::AudioCpu,
+    client: HttpClient,
+    url: String,
+    state: Arc<StreamingState>,
+    target_sample_rate: u32,
+    spool: Option<Arc<dyn shared::audio_file::AudioHttpSpool>>,
+) -> mpsc::Receiver<StreamMsg> {
+    let Some(spool) = spool else {
+        return start_streaming_download(cpu, client, url, state, target_sample_rate);
+    };
+    let (tx, rx) = stream_channel();
+    get_stream_runtime().spawn(crate::streaming_http_prepare::run(
         cpu,
         client,
         url,
         tx,
         state,
-        move || Mp3StreamDecoder::new(target_sample_rate),
+        target_sample_rate,
+        spool,
     ));
-
     rx
 }
 

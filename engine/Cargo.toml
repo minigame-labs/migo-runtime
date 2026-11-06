@@ -340,6 +340,8 @@ symphonia-core = { path = "third_party/symphonia-core-0.6.1" }
 symphonia-metadata = { path = "third_party/symphonia-metadata-0.6.1" }
 symphonia-format-ogg = { path = "third_party/symphonia-format-ogg-0.6.1" }
 symphonia-codec-vorbis = { path = "third_party/symphonia-codec-vorbis-0.6.1" }
+symphonia-codec-aac = { path = "third_party/symphonia-codec-aac-0.6.1" }
+symphonia-format-isomp4 = { path = "third_party/symphonia-format-isomp4-0.6.1" }
 # Exclude unused macOS process-tap capture from the mini-game output product.
 cpal = { path = "third_party/cpal-0.18.2" }
 tungstenite = { path = "third_party/tungstenite-0.30.0" }

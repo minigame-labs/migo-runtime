@@ -98,6 +98,7 @@ fn pushed(file: &[u8], fragment: usize) -> Vec<f32> {
             .next(&file[offset..available], available == file.len())
             .unwrap()
         {
+            PacketStep::ReadAt(_) => panic!("sequential WAVE requested a source reposition"),
             PacketStep::NeedMore => {
                 assert!(available < file.len());
                 available = (available + fragment).min(file.len());

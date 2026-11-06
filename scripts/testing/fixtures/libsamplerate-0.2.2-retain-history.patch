@@ -1,0 +1,26 @@
+--- a/src/src_sinc.c
++++ b/src/src_sinc.c
+@@ -1159 +1159,2 @@
+-{	int len = 0 ;
++{	int len = 0, retained ;
++	int history = channels * ((int) lrint ((filter->coeff_half_len + 2.0) / filter->index_inc * SRC_MAX_RATIO) + 1) ;
+@@ -1182,4 +1183,5 @@
+-		memmove (filter->buffer, filter->buffer + filter->b_current - half_filter_chan_len,
+-						(half_filter_chan_len + len) * sizeof (filter->buffer [0])) ;
+-
+-		filter->b_current = half_filter_chan_len ;
++		retained = MIN (history, filter->b_current) ;
++		memmove (filter->buffer, filter->buffer + filter->b_current - retained,
++						(retained + len) * sizeof (filter->buffer [0])) ;
++
++		filter->b_current = retained ;
+@@ -1213,4 +1215,5 @@
+-			memmove (filter->buffer, filter->buffer + filter->b_current - half_filter_chan_len,
+-							(half_filter_chan_len + len) * sizeof (filter->buffer [0])) ;
+-
+-			filter->b_current = half_filter_chan_len ;
++			retained = MIN (history, filter->b_current) ;
++		memmove (filter->buffer, filter->buffer + filter->b_current - retained,
++							(retained + len) * sizeof (filter->buffer [0])) ;
++
++			filter->b_current = retained ;

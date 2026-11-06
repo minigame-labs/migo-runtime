@@ -18,6 +18,10 @@ use shared::protocol::audio_cmd::{
 use shared::protocol::host_cmd::HostCommand;
 use tracing::{error, info, warn};
 
+#[cfg(test)]
+#[path = "audio_thread_http_spool_tests.rs"]
+mod http_spool_tests;
+
 #[path = "audio_thread_analyser_output.rs"]
 mod analyser_output;
 #[path = "audio_thread_command_copy.rs"]
@@ -1007,7 +1011,7 @@ fn start_buffer_scoped(
     node_index: &NodeContextIndex,
     ctx_id: AudioContextId,
     node_id: AudioNodeId,
-    buffer: Option<Arc<AudioSnapshot>>,
+    mut buffer: Option<Arc<AudioSnapshot>>,
     (when, offset, duration): (f64, f64, Option<f64>),
 ) -> bool {
     if node_index.get_context(node_id) != Some(ctx_id) {
@@ -1019,8 +1023,7 @@ fn start_buffer_scoped(
     // Keep the replacement and start in one audio-thread operation, so the
     // source can never render a block from the previous snapshot after this
     // command has been accepted.
-    context.set_started_buffer(node_id, buffer)
-        && context.start_source(node_id, when, offset, duration)
+    context.try_start_buffer(node_id, &mut buffer, when, offset, duration)
 }
 
 /// Answer one completed WebAudio decode, only while its originating runtime
@@ -1168,7 +1171,16 @@ impl AudioThread {
                     let _interruptions = crate::apple_session::watch_interruptions(host_tx.clone());
                     // A device, or silence until one appears: never no output, so a
                     // game's audio runs on a machine that cannot play it.
-                    let output = AudioOutput::new();
+                    let output = match AudioOutput::new(cpu.clone()) {
+                        Ok(output) => output,
+                        Err(error) => {
+                            // Preserve queued payload custody on startup refusal.
+                            let _inbox =
+                                crate::command_inbox::Inbox::new(rx, startup_backlog, cpu.clone());
+                            warn!("AudioThread output startup admission rejected: {error}");
+                            return;
+                        }
+                    };
 
                     info!("AudioThread (lazy) started");
                     run_audio_thread(
@@ -1249,6 +1261,40 @@ pub(crate) use crate::output::RENDER_QUANTUM_FRAMES;
 #[inline]
 fn calculate_process_frames(_sample_rate: u32) -> usize {
     RENDER_QUANTUM_FRAMES
+}
+
+pub(crate) fn start_inner_file_stream(
+    player: &mut InnerAudioPlayer,
+    cpu: &migo_io::audio_cpu::AudioCpu,
+    rate: u32,
+    load: crate::inner_audio::InnerAudioLoadToken,
+    source: Arc<dyn shared::audio_file::AudioFile>,
+    resp: AudioResp<()>,
+) {
+    if !player.shared.owns_load(&load) || resp.is_closed() {
+        drop(crate::off_worker::OffWorker::new(source, cpu.clone()));
+        let _ = resp.send(Err(
+            crate::inner_audio::InnerAudioLoadToken::cancelled_error(),
+        ));
+        return;
+    }
+    let (tx, rx) = streaming::stream_channel();
+    let state = if crate::decoder::is_m4a(source.prefix()) {
+        StreamingState::new_reusable()
+    } else {
+        // The payload decoder activates a real port only with an authoritative
+        // clock. Unknown-duration sequential formats retain their old EOF.
+        StreamingState::new_optional_controls()
+    };
+    let error = Arc::new(std::sync::Mutex::new(None));
+    let pending = crate::streaming_file::Load {
+        reply: resp,
+        error: error.clone(),
+    };
+    let producer = crate::streaming_file::run(cpu.clone(), source, tx, state.clone(), rate, error);
+    if player.complete_file_stream_load(load, rx, state, pending) {
+        streaming::get_stream_runtime().spawn(producer);
+    }
 }
 
 /// Prepared bytes keep the source boundary issued before asynchronous IO.
@@ -1540,11 +1586,15 @@ fn run_audio_thread(
     let mut sample_rate = output.sample_rate();
     let mut channels = output.channels();
 
-    let mut node_index = match NodeContextIndex::new_managed(
-        cpu.clone(),
-        AudioAggregateLedger::process_global(),
-        channels,
-    ) {
+    let index = match output.storage_host() {
+        Some(host) => NodeContextIndex::with_host(host.for_channels(channels)),
+        None => NodeContextIndex::new_managed(
+            cpu.clone(),
+            AudioAggregateLedger::process_global(),
+            channels,
+        ),
+    };
+    let mut node_index = match index {
         Ok(index) => index,
         Err(error) => {
             warn!("AudioThread node index startup admission rejected: {error}");
@@ -1582,7 +1632,7 @@ fn run_audio_thread(
     };
 
     // Cache backing keeps its physical credit through final CPU disposal.
-    let audio_cache = GlobalAudioCache::with_cpu(cpu.clone());
+    let audio_cache = GlobalAudioCache::managed(cpu.clone(), node_index.storage_host());
 
     // Per-host and lazy: local audio never builds an HTTP pool, while every
     // remote cache miss after the first reuses the same DNS/TCP/TLS/H2 state.
@@ -1627,6 +1677,7 @@ fn run_audio_thread(
 
     // While the mix plays into silence, when to look for a device next.
     let mut device_search = DeviceSearch::new(Instant::now());
+    let mut output_retry = crate::output::OutputRetry::default();
 
     #[cfg(any(target_os = "ios", test))]
     let mut playback_intents = PlaybackIntents::new();
@@ -2317,9 +2368,10 @@ fn run_audio_thread(
 
                 // ==================== InnerAudioContext ====================
                 AudioCmd::CreateInnerAudio { id } => {
-                    match inner_players
-                        .create_with(id, || Ok(new_inner_audio_player(id, channels, &cpu)))
-                    {
+                    match inner_players.create_with(id, || {
+                        Ok(new_inner_audio_player(id, channels, &cpu)
+                            .with_rate_host(node_index.storage_host()))
+                    }) {
                         Ok(true) => tracing::debug!("Created InnerAudioContext {}", id),
                         Ok(false) => {}
                         Err(error) => warn!("InnerAudioContext {id} admission rejected: {error}"),
@@ -2380,6 +2432,7 @@ fn run_audio_thread(
                     id,
                     load,
                     url,
+                    spool,
                     resp,
                 } => {
                     if let Some(player) = inner_players.get_mut(&id) {
@@ -2396,13 +2449,14 @@ fn run_audio_thread(
                         } else {
                             match streaming_client.get() {
                                 Ok(client) => {
-                                    let state = StreamingState::new();
-                                    let rx = streaming::start_streaming_download(
+                                    let state = StreamingState::new_url();
+                                    let rx = streaming::start_streaming_download_with_spool(
                                         cpu.clone(),
                                         client,
                                         url.clone(),
                                         state.clone(),
                                         sample_rate,
+                                        spool,
                                     );
                                     match player.complete_stream_load(load, url, rx, state) {
                                         Ok(()) => {
@@ -2427,6 +2481,19 @@ fn run_audio_thread(
                             ErrorCode::NotFound,
                             format!("InnerAudioContext {} not found", id),
                         )));
+                    }
+                }
+
+                AudioCmd::InnerAudioLoadFile {
+                    id,
+                    load,
+                    source,
+                    resp,
+                } => {
+                    if let Some(player) = inner_players.get_mut(&id) {
+                        start_inner_file_stream(player, &cpu, sample_rate, load, source, resp);
+                    } else {
+                        let _ = resp.send(Err(EngineError::new(ErrorCode::NotFound)));
                     }
                 }
 
@@ -2484,8 +2551,10 @@ fn run_audio_thread(
                 }
 
                 AudioCmd::InnerAudioSetPlaybackRate { id, rate } => {
-                    if let Some(player) = inner_players.get_mut(&id) {
-                        player.shared.set_playback_rate(rate);
+                    if let Some(player) = inner_players.get_mut(&id)
+                        && let Err(error) = player.set_playback_rate(rate)
+                    {
+                        warn!("InnerAudioContext {id} playbackRate rejected: {error}");
                     }
                 }
 
@@ -2637,7 +2706,7 @@ fn run_audio_thread(
 
         // -----------------------------------------------------------------
         // 6. Replace the output only when there is audible work. A dead device
-        //    is reopened -- or replaced by silence, which cannot fail -- and
+        //    is reopened or replaced by silence when its ring is admitted, and
         //    while the mix plays into silence a device is looked for, less
         //    often the longer none appears. A new output starts in play state.
         // -----------------------------------------------------------------
@@ -2646,31 +2715,36 @@ fn run_audio_thread(
         }
         if has_output_demand || output_is_active {
             let now = Instant::now();
-            let replacement = if !output.is_alive() {
-                Some(AudioOutput::new())
-            } else if output.is_silent() && device_search.is_due(now) {
-                match AudioOutput::open_device() {
-                    Ok(device) => Some(device),
-                    Err(e) => {
-                        tracing::debug!("AudioThread: still no audio output device: {}", e);
-                        device_search.missed(now);
-                        None
+            let replacement = output_retry.attempt(now, || {
+                let replacement = if !output.is_alive() {
+                    Some(AudioOutput::with_host(&node_index.storage_host())?)
+                } else if output.is_silent() && device_search.is_due(now) {
+                    match AudioOutput::open_device(&node_index.storage_host()) {
+                        Ok(device) => Some(device),
+                        Err(e) => {
+                            tracing::debug!("AudioThread: still no audio output device: {}", e);
+                            device_search.missed(now);
+                            None
+                        }
                     }
-                }
-            } else {
-                None
-            };
-            let replacement = replacement.and_then(|new_output| {
-                let samples = calculate_process_frames(new_output.sample_rate())
-                    * new_output.channels() as usize;
-                match process_buffer.admit(new_output, samples) {
-                    Ok(output) => Some(output),
-                    Err(error) => {
-                        warn!("AudioThread output buffer admission rejected: {error}");
-                        None
-                    }
-                }
+                } else {
+                    None
+                };
+                replacement
+                    .map(|new_output| {
+                        let samples = calculate_process_frames(new_output.sample_rate())
+                            * new_output.channels() as usize;
+                        process_buffer.admit(new_output, samples)
+                    })
+                    .transpose()
             });
+            let replacement = match replacement {
+                Ok(output) => output,
+                Err(error) => {
+                    warn!("AudioThread output admission rejected: {error}");
+                    None
+                }
+            };
             if let Some(new_output) = replacement {
                 sync.set_callback_wakeup_enabled(false);
                 new_output.bind_wakeup(&wakeup);

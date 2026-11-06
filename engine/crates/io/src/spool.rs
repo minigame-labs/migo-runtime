@@ -151,6 +151,17 @@ impl SpoolWriter {
     pub fn seal(self, max_control_bytes: usize) -> io::Result<SealedSpool> {
         self.seal_with(max_control_bytes, ReadAtFile::new)
     }
+    /// Admit both possible media slots before allocating the sealed reader.
+    /// Call on the original Fs executor, just like seal and append.
+    pub fn seal_with_budget(
+        self,
+        max_control_bytes: usize,
+        pools: &crate::pools::IoPools,
+    ) -> io::Result<SealedSpool> {
+        self.seal_with(max_control_bytes, |file, limit| {
+            ReadAtFile::with_budget(file, limit, pools)
+        })
+    }
     pub(crate) fn seal_with_buffer(
         self,
         max_control_bytes: usize,

@@ -72,6 +72,7 @@ fn source_begin_is_synchronous_and_old_preparation_is_not_started() {
         InnerAudioSources {
             code_dir: None,
             vfs: None,
+            local_file: None,
             admit_remote: move |_: &Url| {
                 counted_old.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
                 Err(audio_error("stale preparation reached admission"))
@@ -91,6 +92,7 @@ fn source_begin_is_synchronous_and_old_preparation_is_not_started() {
         InnerAudioSources {
             code_dir: None,
             vfs: None,
+            local_file: None,
             admit_remote: move |_: &Url| {
                 counted.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
                 Ok(())
@@ -154,6 +156,7 @@ fn source_cancellation_finishes_while_the_native_reply_is_still_held() {
         InnerAudioSources {
             code_dir: None,
             vfs: None,
+            local_file: None,
             admit_remote: |_: &Url| Ok(()),
         },
         7,
@@ -202,6 +205,7 @@ fn clearing_a_source_publishes_a_boundary_without_open_or_remote_admission() {
         InnerAudioSources {
             code_dir: None,
             vfs: None,
+            local_file: None,
             admit_remote: |_: &Url| -> Result<(), ServiceError> {
                 panic!("empty source admitted as remote")
             },
@@ -861,6 +865,7 @@ fn shared_url_contract_queues_the_exact_canonical_audio_url_that_was_admitted() 
         InnerAudioSources {
             code_dir: None,
             vfs: None,
+            local_file: None,
             admit_remote: |url: &Url| {
                 assert_eq!(url.as_str(), "https://media.example/audio%5Egame.mp3");
                 Ok(())
@@ -910,6 +915,7 @@ fn shared_url_contract_bounds_the_canonical_audio_command_before_enqueue() {
                 InnerAudioSources {
                     code_dir: None,
                     vfs: None,
+                    local_file: None,
                     admit_remote: |_: &Url| Ok(()),
                 },
                 5,
@@ -942,6 +948,7 @@ fn a_remote_source_is_admitted_before_it_reaches_the_queue() {
         InnerAudioSources {
             code_dir: None,
             vfs: None,
+            local_file: None,
             admit_remote: |_: &Url| Err(audio_error("not on the allow list")),
         },
         1,
@@ -962,6 +969,7 @@ fn a_remote_source_is_admitted_before_it_reaches_the_queue() {
         InnerAudioSources {
             code_dir: None,
             vfs: None,
+            local_file: None,
             admit_remote: |_: &Url| -> Result<(), ServiceError> { unreachable!() },
         },
         1,
@@ -976,12 +984,9 @@ fn a_local_source_is_admitted_before_it_is_opened_and_charged_what_it_keeps() {
     let source = include_str!("audio.rs");
     let body = section(source, "pub fn inner_audio_load_url", "\n}\n");
     let reserve = body.find("reserve(&tx, MAX_ENCODED_AUDIO_BYTES)").unwrap();
-    let open = body
-        .find("open_local_audio_source(sources.vfs, source)")
-        .unwrap();
-    let read = body.find("read_capped_local_audio(file)").unwrap();
+    let open = body.find("prepare_local_audio_source(").unwrap();
     let send = body.find("send_reserved").unwrap();
-    assert!(reserve < open && open < read && read < send);
+    assert!(reserve < open && open < send);
     assert!(body.contains("permit.shrink_to(data.capacity())"));
 }
 
@@ -997,6 +1002,7 @@ fn a_packaged_sound_is_read_through_the_sandbox_and_loaded() {
         InnerAudioSources {
             code_dir: Some(code.to_string_lossy().into_owned()),
             vfs: Some(vfs),
+            local_file: Some(file_context(&base)),
             admit_remote: |_: &Url| -> Result<(), ServiceError> {
                 panic!("a packaged sound is not remote")
             },
@@ -1047,6 +1053,7 @@ fn a_packaged_sound_the_decoder_refuses_is_a_format_error() {
             InnerAudioSources {
                 code_dir: Some(code_dir.to_string_lossy().into_owned()),
                 vfs: Some(vfs),
+                local_file: Some(file_context(&base)),
                 admit_remote: |_: &Url| -> Result<(), ServiceError> { unreachable!() },
             },
             4,
@@ -1213,8 +1220,8 @@ fn resolve_local_src_rejects_absolute_path_outside_sandbox() {
 fn local_audio_vfs_branch_opens_the_descriptor_instead_of_reopening_a_resolved_path() {
     let source = include_str!("audio.rs");
     let body = section(source, "async fn open_local_audio_source", "\n}\n");
-    assert!(body.contains("open_regular_for_read"));
-    assert!(body.contains("spawn_blocking"));
+    assert!(body.contains("local_file::read"));
+    assert!(!body.contains("spawn_blocking"));
     assert!(!body.contains("vfs.resolve"));
 }
 
@@ -1224,8 +1231,9 @@ fn local_audio_source_reads_through_the_already_open_vfs_descriptor() {
     fs::write(base.join("user").join("clip.bin"), b"sandboxed-audio").unwrap();
     let source = resolve_local_src(code.to_str(), Some(&vfs), "/user/clip.bin").unwrap();
     let bytes = runtime().block_on(async {
-        let file = open_local_audio_source(Some(vfs), source).await.unwrap();
-        read_capped_local_audio(file).await.unwrap()
+        open_local_audio_source(Some(vfs), source, Some(file_context(&base)))
+            .await
+            .unwrap()
     });
     assert_eq!(bytes, b"sandboxed-audio");
     let _ = fs::remove_dir_all(base);
@@ -1237,7 +1245,11 @@ fn vendor_specific_local_uri_schemes_are_rejected_without_echoing_them() {
     let original = "vendor-file://user/audio/clip.bin";
     let source = resolve_local_src(code.to_str(), Some(&vfs), original).unwrap();
     let error = runtime()
-        .block_on(open_local_audio_source(Some(vfs), source))
+        .block_on(open_local_audio_source(
+            Some(vfs),
+            source,
+            Some(file_context(&base)),
+        ))
         .unwrap_err();
     assert_eq!(error.message, "Failed to open local audio file");
     assert_eq!(
@@ -1438,3 +1450,21 @@ fn the_producer_s_command_checks_answer_as_these_do() {
         path.display()
     );
 }
+
+fn file_context(base: &std::path::Path) -> LocalAudioFile {
+    LocalAudioFile {
+        scheduler: Arc::new(migo_io::scheduler::IoScheduler::new(991)),
+        spool_dir: base.join("private-audio-spool"),
+        mounts: None,
+        hooks: super::local_file::Hooks::default(),
+    }
+}
+
+#[path = "audio_local_file_tests.rs"]
+mod local_file;
+
+#[path = "audio_file_stream_tests.rs"]
+mod file_stream;
+
+#[path = "audio_package_file_tests.rs"]
+mod package_file;

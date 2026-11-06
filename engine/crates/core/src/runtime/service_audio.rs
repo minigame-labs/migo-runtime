@@ -54,6 +54,7 @@ impl AudioBinding {
 pub(crate) struct LocalSources {
     pub(crate) code_dir: Option<String>,
     pub(crate) vfs: Option<std::sync::Arc<shared::vfs::VirtualFS>>,
+    pub(crate) local_file: Option<service::LocalAudioFile>,
 }
 
 /// `AudioBufferInfo`, in its field order: id, duration, sample_rate, channels,
@@ -445,6 +446,7 @@ pub(crate) fn call_async(
             let sources = InnerAudioSources {
                 code_dir: sources.code_dir,
                 vfs: sources.vfs,
+                local_file: sources.local_file,
                 // The same gate the embedded runtime holds a streamed source
                 // to, over this session's own policy.
                 admit_remote: move |url: &service::Url| {

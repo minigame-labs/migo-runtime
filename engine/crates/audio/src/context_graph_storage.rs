@@ -6,7 +6,7 @@ use shared::error::EngineResult;
 
 pub(super) struct NodeGrowth {
     dense_ids: Option<Plan<u32>>,
-    in_degree: Option<Plan<u32>>,
+    in_degree: Option<Plan<super::NodeState>>,
     processing_order: Option<Plan<u32>>,
     ready_queue: Option<Plan<u32>>,
     input_start: Option<Plan<u32>>,

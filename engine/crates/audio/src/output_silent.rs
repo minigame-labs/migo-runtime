@@ -14,8 +14,8 @@
 
 use std::time::Instant;
 
-use ringbuf::traits::{Observer, Producer, Split};
-use ringbuf::{HeapProd, HeapRb};
+use super::ring;
+use ringbuf::traits::{Observer, Producer};
 
 use super::{
     AudioSync, CONVERT_CHUNK_SAMPLES, HIGH_WATERMARK_FRAMES, LOW_WATERMARK_FRAMES, OutputCallback,
@@ -32,7 +32,7 @@ pub(crate) const SILENT_CHANNELS: u32 = 2;
 const MAX_FRAMES_PER_PUMP: u64 = RING_BUFFER_FRAMES as u64;
 
 pub struct SilentOutput {
-    producer: HeapProd<f32>,
+    producer: ring::Producer,
     callback: OutputCallback,
     sync: AudioSync,
     low_watermark_samples: usize,
@@ -45,12 +45,24 @@ pub struct SilentOutput {
 }
 
 impl SilentOutput {
+    #[cfg(test)]
     pub fn new() -> Self {
+        Self::with_host(None).unwrap()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn managed_for_test(host: &crate::node_retirement::Host) -> Self {
+        Self::with_host(Some(host)).unwrap()
+    }
+
+    pub(super) fn with_host(
+        host: Option<&crate::node_retirement::Host>,
+    ) -> shared::error::EngineResult<Self> {
         let channels = SILENT_CHANNELS as usize;
-        let (producer, consumer) = HeapRb::<f32>::new(RING_BUFFER_FRAMES * channels).split();
-        let sync = AudioSync::new();
+        let sync = AudioSync::with_host(host)?;
+        let (producer, consumer) = ring::new(RING_BUFFER_FRAMES * channels, host)?;
         let low_watermark_samples = LOW_WATERMARK_FRAMES * channels;
-        Self {
+        Ok(Self {
             producer,
             callback: OutputCallback::new(consumer, sync.clone(), low_watermark_samples),
             sync,
@@ -58,7 +70,11 @@ impl SilentOutput {
             high_watermark_samples: HIGH_WATERMARK_FRAMES * channels,
             started: None,
             consumed: 0,
-        }
+        })
+    }
+
+    pub(super) fn storage_host(&self) -> Option<crate::node_retirement::Host> {
+        ring::host(&self.producer)
     }
 
     #[inline]

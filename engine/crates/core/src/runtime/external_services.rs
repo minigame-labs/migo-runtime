@@ -649,6 +649,15 @@ impl ServiceContext {
                 .as_ref()
                 .map(|content| content.game_paths.code_dir().to_string_lossy().into_owned()),
             vfs: content.as_ref().map(|content| Arc::clone(&content.vfs)),
+            local_file: content.as_ref().and_then(|content| {
+                self.scheduler.get().map(|scheduler| {
+                    migo_services::audio::LocalAudioFile::session(
+                        scheduler.clone(),
+                        &content.game_paths,
+                    )
+                    .with_mounts(Some(content.mount_table.clone()))
+                })
+            }),
         }
     }
 
@@ -2579,6 +2588,126 @@ mod tests {
     /// embedded ops take them: content's options reach the platform's audio
     /// as given, and its inputs come back as content's array -- and with no
     /// platform audio, the embedded ops' refusals.
+    #[test]
+    fn actual_external_audio_source_op_uses_the_session_package_mount() {
+        use shared::protocol::audio_cmd::{AudioCmd, InnerAudioInfo};
+        let root = std::env::temp_dir().join(format!(
+            "migo-external-package-audio-{}",
+            std::process::id()
+        ));
+        let files = root.join("files");
+        let cache = root.join("cache");
+        let paths = shared::vfs::GamePaths::new(&files, &cache, "audio", 1).unwrap();
+        paths.ensure_directories().unwrap();
+        std::fs::create_dir_all(paths.code_dir()).unwrap();
+        let context = Arc::new(ServiceContext::new(files, cache));
+        context.bind_session(1043);
+        context.load_content("audio", "game.js").unwrap();
+        let package = root.join("audio.mpkg");
+        let mut writer =
+            shared::vfs::PackageWriter::new(std::fs::File::create(&package).unwrap()).unwrap();
+        writer
+            .add_entry("clip", b"actual external package input")
+            .unwrap();
+        writer.finish("audio", "1").unwrap();
+        context
+            .content
+            .read()
+            .as_ref()
+            .unwrap()
+            .mount_table
+            .swap_base(Arc::new(
+                shared::vfs::PackSource::open(&package, "audio", "1").unwrap(),
+            ));
+        let (tx, rx) = shared::audio_channel::channel();
+        context.bind_audio(
+            shared::op_state::AudioSender::new(tx, shared::channel::ThreadWakeup::new()),
+            1,
+            Default::default(),
+        );
+        let responder = std::thread::spawn(move || {
+            struct Source(tokio::sync::Notify);
+            impl shared::audio_load::AudioLoadState for Source {
+                fn generation(&self) -> u64 {
+                    1
+                }
+                fn generation_changed(&self) -> &tokio::sync::Notify {
+                    &self.0
+                }
+            }
+            let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                assert!(
+                    std::time::Instant::now() < end,
+                    "external package source never reached audio command"
+                );
+                match rx.try_recv() {
+                    Ok(AudioCmd::InnerAudioBeginLoad {
+                        id,
+                        source_id,
+                        resp,
+                    }) => {
+                        assert_eq!((id, source_id), (31, 77));
+                        let state = Arc::new(Source(tokio::sync::Notify::new()));
+                        resp.send(Ok(shared::audio_load::InnerAudioLoadToken::new(
+                            &state, 1, source_id,
+                        )))
+                        .unwrap();
+                    }
+                    Ok(AudioCmd::InnerAudioCompleteLoad {
+                        id,
+                        load,
+                        data,
+                        resp,
+                    }) => {
+                        assert_eq!((id, load.source_id()), (31, 77));
+                        assert_eq!(
+                            data, b"actual external package input",
+                            "external package mount did not reach audio service"
+                        );
+                        resp.send(Ok(InnerAudioInfo {
+                            duration: 1.,
+                            sample_rate: 48000,
+                            channels: 1,
+                        }))
+                        .unwrap();
+                        break;
+                    }
+                    Ok(_) => panic!("unexpected external package command"),
+                    Err(crossbeam_channel::TryRecvError::Empty) => std::thread::yield_now(),
+                    Err(e) => panic!("external package audio disconnected: {e}"),
+                }
+            }
+        });
+        let (render_tx, _render_rx) = shared::render_command_sender::CommandSender::new();
+        let render = RenderHandles {
+            canvas: shared::op_state::CanvasOpState::for_host(render_tx, 1),
+            gpu_caps: shared::device::gpu_caps::GpuCaps::new(),
+        };
+        let task = context
+            .call_async(
+                id::op_inner_audio_load_url,
+                vec![
+                    OwnedValue::U32(31),
+                    OwnedValue::U32(77),
+                    OwnedValue::Str("clip".into()),
+                ],
+                &render,
+            )
+            .unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        assert_eq!(
+            rt.block_on(task)
+                .expect("actual external package op failed"),
+            OwnedValue::Null
+        );
+        responder.join().unwrap();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn the_audio_settings_are_the_platform_s() {
         use shared::services::{AudioPlatformService, ServiceError as DeviceError};

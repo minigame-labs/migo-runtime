@@ -3,33 +3,39 @@
 //! Only the device half lives here. The ring buffer, the watermarks and the real-time
 //! render logic are in the parent module, shared with the OpenHarmony backend.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossbeam_utils::atomic::AtomicCell;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, SampleFormat, Stream, StreamConfig};
-use ringbuf::traits::{Observer, Producer, Split};
-use ringbuf::{HeapCons, HeapProd, HeapRb};
+use ringbuf::traits::{Observer, Producer};
 use shared::error::{EngineError, EngineResult, ErrorCode};
 use tracing::info;
 
-use super::{AudioSync, FromNormalizedF32, OutputCallback, RING_BUFFER_FRAMES};
+use super::{AudioSync, FromNormalizedF32, OutputCallback, RING_BUFFER_FRAMES, ring};
+
+#[path = "output_error_storage.rs"]
+mod error_storage;
+type StreamErrorRef = error_storage::Reference;
+
+fn shared_stream_errors(host: &crate::node_retirement::Host) -> EngineResult<StreamErrorRef> {
+    error_storage::Reference::new(Some(host), StreamErrors::new)
+}
 
 /// Audio output handle
 pub struct AudioOutput {
     stream: Stream,
-    producer: HeapProd<f32>,
+    producer: ring::Producer,
     sample_rate: u32,
     channels: u32,
     sync: AudioSync,
-    stream_errors: Arc<StreamErrors>,
+    stream_errors: StreamErrorRef,
 }
 
 impl AudioOutput {
     /// Create a new audio output
-    pub fn new() -> EngineResult<Self> {
+    pub fn new(storage: &crate::node_retirement::Host) -> EngineResult<Self> {
         // Migo supplies the mini-game category; CPAL activates the session
         // when starting and owns subsequent system interruption recovery.
         #[cfg(target_os = "ios")]
@@ -61,11 +67,9 @@ impl AudioOutput {
         );
 
         let ring_size = RING_BUFFER_FRAMES * channels as usize;
-        let ring = HeapRb::<f32>::new(ring_size);
-        let (producer, consumer) = ring.split();
-
-        let sync = AudioSync::new();
-        let stream_errors = Arc::new(StreamErrors::new()?);
+        let stream_errors = shared_stream_errors(storage)?;
+        let sync = AudioSync::with_host(Some(storage))?;
+        let (producer, consumer) = ring::new(ring_size, Some(storage))?;
 
         let stream = match config.sample_format() {
             SampleFormat::F32 => build_stream_f32(
@@ -117,6 +121,10 @@ impl AudioOutput {
             sync,
             stream_errors,
         })
+    }
+
+    pub(super) fn storage_host(&self) -> Option<crate::node_retirement::Host> {
+        ring::host(&self.producer)
     }
 
     /// Get the sample rate
@@ -225,9 +233,9 @@ impl AudioOutput {
 fn build_stream_f32(
     device: &Device,
     config: StreamConfig,
-    consumer: HeapCons<f32>,
+    consumer: ring::Consumer,
     sync: AudioSync,
-    stream_errors: Arc<StreamErrors>,
+    stream_errors: StreamErrorRef,
 ) -> EngineResult<Stream> {
     let mut callback = OutputCallback::new(consumer, sync, 0);
     build_stream(device, config, stream_errors, move |data: &mut [f32]| {
@@ -238,9 +246,9 @@ fn build_stream_f32(
 fn build_stream_converted<T>(
     device: &Device,
     config: StreamConfig,
-    consumer: HeapCons<f32>,
+    consumer: ring::Consumer,
     sync: AudioSync,
-    stream_errors: Arc<StreamErrors>,
+    stream_errors: StreamErrorRef,
 ) -> EngineResult<Stream>
 where
     T: cpal::SizedSample + FromNormalizedF32 + 'static,
@@ -254,7 +262,7 @@ where
 fn build_stream<T, F>(
     device: &Device,
     config: StreamConfig,
-    stream_errors: Arc<StreamErrors>,
+    stream_errors: StreamErrorRef,
     mut render: F,
 ) -> EngineResult<Stream>
 where
