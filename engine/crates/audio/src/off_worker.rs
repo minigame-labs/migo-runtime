@@ -13,119 +13,40 @@
 //! error rather than a convention someone has to remember, which is the same
 //! instrument `LiveContextCount` uses for the Skia budget.
 //!
-//! One caller submits one bounded step at a time. Process/host admission and
-//! scheduling belong to the shared audio CPU lane; dropping a queued operation
-//! transfers its value, captures and unclaimed result to CPU-only disposal.
-
+//! One caller submits one bounded step at a time on the shared audio CPU lane.
+//! The value lives in one box across steps, so a step's future stays small and
+//! the state never moves.
 use migo_io::audio_cpu::AudioCpu;
 use shared::error::EngineResult;
-use tokio::sync::mpsc;
-
 /// A value whose work is CPU-bound, reachable only from a blocking thread.
 pub(crate) struct OffWorker<T> {
-    // Same exclusive allocation across every CPU turn, including waiting custody.
-    value: Option<Box<T>>,
+    value: Box<T>,
     cpu: AudioCpu,
-    retired: mpsc::Sender<Retired<T>>,
-}
-// Destroy state before a captured input/output that may own its final credit.
-struct Retired<T> {
-    _value: Box<T>,
-    _adjunct: Option<Box<dyn Send>>,
-}
-impl<T> Drop for OffWorker<T> {
-    fn drop(&mut self) {
-        let Some(value) = self.value.take() else {
-            return;
-        };
-        if self
-            .retired
-            .try_send(Retired {
-                _value: value,
-                _adjunct: None,
-            })
-            .is_err()
-        {
-            unreachable!("exclusive OffWorker retirement receiver disappeared");
-        }
-    }
-}
-// Protect both a not-yet-executed step and a computed result until extraction.
-// The owner is linear: only one such message can ever retire this allocation.
-struct Handoff<T, P: Send + 'static> {
-    value: Option<(OffWorker<T>, P)>,
-}
-impl<T, P: Send + 'static> Handoff<T, P> {
-    fn take(mut self) -> (OffWorker<T>, P) {
-        self.value.take().unwrap()
-    }
-}
-impl<T, P: Send + 'static> Drop for Handoff<T, P> {
-    fn drop(&mut self) {
-        if let Some((mut owner, adjunct)) = self.value.take() {
-            let value = owner.value.take().unwrap();
-            if owner
-                .retired
-                .try_send(Retired {
-                    _value: value,
-                    _adjunct: Some(Box::new(adjunct)),
-                })
-                .is_err()
-            {
-                unreachable!("exclusive OffWorker handoff receiver disappeared");
-            }
-        }
-    }
-}
-async fn retire<T: Send + 'static>(mut incoming: mpsc::Receiver<Retired<T>>, cpu: AudioCpu) {
-    // Each unique owner owns its original resource credits until this drop.
-    // The process-lifetime receiver is never tied to the caller's abort handle.
-    if let Some(value) = incoming.recv().await {
-        cpu.retirement().retire(value).await;
-    }
 }
 impl<T: Send + 'static> OffWorker<T> {
     pub(crate) fn new(value: T, cpu: AudioCpu) -> Self {
         Self::from_box(Box::new(value), cpu)
     }
-    /// Transfer already boxed waiting custody without reallocating its state.
     pub(crate) fn from_box(value: Box<T>, cpu: AudioCpu) -> Self {
-        let (retired, incoming) = mpsc::channel(1);
-        crate::streaming::get_stream_runtime().spawn(retire(incoming, cpu.clone()));
-        Self {
-            value: Some(value),
-            cpu,
-            retired,
-        }
+        Self { value, cpu }
     }
-    /// Custody starts before first poll. Cancellation never runs a queued step;
-    /// captures and unclaimed results retire on the original bounded CPU lane.
     pub(crate) fn with<R: Send + 'static>(
         self,
         step: impl FnOnce(&mut T) -> R + Send + 'static,
     ) -> impl std::future::Future<Output = EngineResult<(Self, R)>> + Send + 'static {
-        let call = Handoff {
-            value: Some((self, step)),
-        };
         async move {
-            let cpu = call.value.as_ref().unwrap().0.cpu.clone();
-            let result = cpu
+            let Self { mut value, cpu } = self;
+            let lane = cpu.clone();
+            let (value, outcome) = lane
                 .run(move || {
-                    let (mut owner, step) = call.take();
-                    let outcome = step(owner.value.as_mut().unwrap().as_mut());
-                    Handoff {
-                        value: Some((owner, outcome)),
-                    }
+                    let outcome = step(value.as_mut());
+                    (value, outcome)
                 })
                 .await?;
-            Ok(result.take())
+            Ok((Self { value, cpu }, outcome))
         }
     }
 }
-
-#[cfg(test)]
-#[path = "off_worker_custody_tests.rs"]
-mod custody_tests;
 
 #[cfg(test)]
 mod tests {
@@ -149,7 +70,6 @@ mod tests {
 
     #[test]
     fn successive_steps_keep_the_same_exclusive_value_address() {
-        super::custody_tests::custody();
         let host = migo_io::scheduler::IoScheduler::new(0);
         executor().block_on(async {
             let (owner, first) = OffWorker::new([0_u8; 8192], host.audio_cpu())

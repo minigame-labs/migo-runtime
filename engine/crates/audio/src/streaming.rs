@@ -478,7 +478,6 @@ impl PcmPool {
     fn allocate(&self, slot: Option<tokio::sync::OwnedSemaphorePermit>) -> PcmChunk {
         self.chunk(pcm_buffer::Buffer::new(
             Vec::with_capacity(PCM_CHUNK_SAMPLES),
-            self.cpu.as_ref(),
             slot,
         ))
     }
@@ -1365,7 +1364,6 @@ mod tests {
     /// the allocation gate above is the only other thing that would notice.
     #[test]
     fn a_returned_chunk_is_the_buffer_the_next_one_is_written_into() {
-        super::pcm_retirement_tests::retirement();
         let mut pool = PcmPool::new();
 
         let mut first = pool.take();
@@ -1888,6 +1886,3 @@ mod revision_tests {
 
 #[path = "stream_pcm_buffer.rs"]
 mod pcm_buffer;
-#[cfg(test)]
-#[path = "stream_pcm_retirement_tests.rs"]
-mod pcm_retirement_tests;

@@ -198,35 +198,6 @@ fn pool_drop_aborts_its_tasks_without_waiting_or_closing_peer_hosts() {
 }
 
 #[test]
-fn actual_decode_pools_share_admission_and_release_before_result_visibility() {
-    let first_host = migo_io::scheduler::IoScheduler::new(0);
-    let second_host = migo_io::scheduler::IoScheduler::new(0);
-    let (mut first, first_results) = pool(&first_host, 1);
-    let (mut second, second_results) = pool(&second_host, 1);
-    second.in_flight = first.in_flight.clone();
-    let (started, release, _) = hold_first_step(&mut first);
-    let (job, _reply) = inner_decode_job(1);
-    first.submit(job);
-    started.recv_timeout(WAIT).unwrap();
-    let held = second.in_flight.try_reserve().unwrap();
-    let (job, _reply2) = inner_decode_job(2);
-    second.submit(job);
-    // A failed admission now retires its input on the same bounded CPU lane.
-    // Observe the selected refusal while the first native step is held, then
-    // release that step before waiting for actual disposal and publication.
-    until(|| second.retirement.queued.load(Ordering::Acquire) == 1);
-    drop(release);
-    let DecodeResult::InnerAudio { result, .. } = second_results.recv_timeout(WAIT).unwrap() else {
-        panic!("inner");
-    };
-    assert_eq!(result.unwrap_err().code, ErrorCode::InputSaturated);
-    drop(held);
-    let _ = first_results.recv_timeout(WAIT).unwrap();
-    assert_eq!(first.in_flight.bytes.load(Ordering::Acquire), 0);
-    assert_eq!(first.slots.available_permits(), 1);
-}
-
-#[test]
 fn host_close_releases_waiting_input_without_a_local_slot() {
     let host = migo_io::scheduler::IoScheduler::new(0);
     let (mut pool, results) = pool(&host, 0);
@@ -747,4 +718,30 @@ fn local_file_product(packaged: bool) {
         }
     }
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn actual_decode_pools_share_admission_and_release_before_result_visibility() {
+    let first_host = migo_io::scheduler::IoScheduler::new(0);
+    let second_host = migo_io::scheduler::IoScheduler::new(0);
+    let (mut first, first_results) = pool(&first_host, 1);
+    let (mut second, second_results) = pool(&second_host, 1);
+    second.in_flight = first.in_flight.clone();
+    let (started, release, _) = hold_first_step(&mut first);
+    let (job, _reply) = inner_decode_job(1);
+    first.submit(job);
+    started.recv_timeout(WAIT).unwrap();
+    let held = second.in_flight.try_reserve().unwrap();
+    let (job, _reply2) = inner_decode_job(2);
+    second.submit(job);
+    // The second pool's refusal is published while the first step is still held.
+    let DecodeResult::InnerAudio { result, .. } = second_results.recv_timeout(WAIT).unwrap() else {
+        panic!("inner");
+    };
+    assert_eq!(result.unwrap_err().code, ErrorCode::InputSaturated);
+    drop(release);
+    drop(held);
+    let _ = first_results.recv_timeout(WAIT).unwrap();
+    assert_eq!(first.in_flight.bytes.load(Ordering::Acquire), 0);
+    assert_eq!(first.slots.available_permits(), 1);
 }

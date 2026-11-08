@@ -54,7 +54,6 @@ pub(super) struct DecodePool {
     result_tx: DecodeQueueSender<DecodeResult>,
     wakeup: ThreadWakeup,
     tasks: tokio::task::JoinSet<()>,
-    retirement: waiting_retirement::Retirement,
     #[cfg(test)]
     step_hook: Option<StepHook>,
 }
@@ -90,7 +89,6 @@ impl DecodePool {
             }),
             slots: Arc::new(Semaphore::new(concurrency)),
             in_flight,
-            retirement: waiting_retirement::Retirement::new(cpu.clone()),
             cpu: cpu.background(),
             result_tx,
             wakeup,
@@ -133,7 +131,7 @@ impl DecodePool {
             step_hook: self.step_hook.clone(),
         };
         // Prepare custody before spawning: even an unpolled future can be aborted.
-        let pending = Pending::new(job, waiting, &admission, &self.cpu, &mut self.retirement);
+        let pending = Pending::new(job, waiting, &admission, &self.cpu);
         self.tasks.spawn_on(
             run(
                 pending,
@@ -324,7 +322,7 @@ impl Drop for CancelOnDrop {
     }
 }
 async fn decode(
-    mut state: waiting_retirement::Owner,
+    mut state: Box<State>,
     slots: Arc<Semaphore>,
     budget: Arc<DecodeInFlightUsage>,
     cpu: AudioCpu,
@@ -349,7 +347,7 @@ async fn decode(
         .active
         .store(true, Ordering::Release);
     drop(resources.waiting.take());
-    let mut owner = OffWorker::from_box(state.into_box(), cpu.clone());
+    let mut owner = OffWorker::from_box(state, cpu.clone());
     loop {
         let step_cpu = cpu.clone();
         let (returned, result) = owner.with(move |state| state.turn(&step_cpu)).await?;
@@ -366,7 +364,7 @@ struct Admission {
     step_hook: Option<StepHook>,
 }
 struct Pending {
-    state: waiting_retirement::Owner,
+    state: Box<State>,
     reply: Reply,
     retired: Arc<Retired>,
     cancel: Arc<AtomicBool>,
@@ -377,7 +375,6 @@ impl Pending {
         waiting: DecodeQueuePermit,
         _admission: &Admission,
         cpu: &AudioCpu,
-        retirement: &mut waiting_retirement::Retirement,
     ) -> Self {
         let (input, target, reply) = match job {
             DecodeJob::AudioBuffer {
@@ -422,7 +419,7 @@ impl Pending {
             }),
         };
         Self {
-            state: retirement.own(state),
+            state: Box::new(state),
             reply,
             retired,
             cancel,
@@ -494,9 +491,6 @@ async fn run(
     }
     wakeup.notify();
 }
-
-#[path = "decode_waiting.rs"]
-mod waiting_retirement;
 
 #[cfg(test)]
 #[path = "decode_pool_tests.rs"]
