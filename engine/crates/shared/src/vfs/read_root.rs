@@ -67,6 +67,12 @@ pub(super) fn validate_relative(relative: &Path) -> Result<(), VfsOpenError> {
     if relative.as_os_str().is_empty() {
         return Err(VfsOpenError::NotRegularFile);
     }
+    // VFS paths separate with '/' only. Windows also splits on '\\' before
+    // the per-name check below could see it, so refuse it in the whole text.
+    let text = relative.to_str().ok_or(VfsOpenError::UnsafePath)?;
+    if text.contains('\\') {
+        return Err(VfsOpenError::UnsafePath);
+    }
     for component in relative.components() {
         let Component::Normal(name) = component else {
             return Err(VfsOpenError::UnsafePath);
