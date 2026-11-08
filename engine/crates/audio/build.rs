@@ -3,6 +3,7 @@ use std::{env, fs, path::PathBuf};
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(migo_native_alloc_probe)");
     variable_rate();
+    minimp3();
     println!("cargo:rerun-if-changed=build.rs");
     if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("android") {
         return;
@@ -36,6 +37,23 @@ fn main() {
     for library in ["log", "OpenSLES", "dl"] {
         println!("cargo:rustc-link-lib={library}");
     }
+}
+
+/// Upstream minimp3 with mp3dec_ex (see native/mp3.c for the symbol renaming).
+fn minimp3() {
+    let root = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
+    let source = root.join("../../third_party/minimp3-afb604c");
+    println!("cargo:rerun-if-changed={}", source.display());
+    println!("cargo:rerun-if-changed=native/mp3.c");
+    cc::Build::new()
+        .std("c11")
+        .opt_level(3)
+        .flag_if_supported("-fvisibility=hidden")
+        // Upstream code: its own warnings are not ours to fix.
+        .warnings(false)
+        .include(&source)
+        .file("native/mp3.c")
+        .compile("migo_minimp3");
 }
 
 fn variable_rate() {

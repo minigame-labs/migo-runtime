@@ -107,6 +107,7 @@ mod media_source;
 mod media_source_http;
 #[cfg(test)]
 mod mp3_fixture;
+mod mp3_source;
 mod nodes;
 mod off_worker;
 mod output;
