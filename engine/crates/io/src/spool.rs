@@ -13,7 +13,10 @@ use std::{
 
 pub const DEFAULT_SPOOL_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const PROCESS_SPOOL_BYTES: u64 = 256 * 1024 * 1024;
-const PROCESS_SPOOL_FILES: usize = 8;
+// Every HTTP audio stream keeps its body here for its life (seek and loop
+// replay from it), so the count follows the streams a game holds; the byte
+// budget is what bounds the disk.
+const PROCESS_SPOOL_FILES: usize = 64;
 #[derive(Default)]
 struct Usage {
     bytes: u64,

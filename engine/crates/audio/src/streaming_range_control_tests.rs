@@ -1,10 +1,9 @@
 //! Public pinned-Range controls use the original reader, CPU and PCM consumer.
 use super::controls::{Context, player};
 use super::*;
-use crate::streaming_file::tests::controls::{
+use crate::stream_open::file_tests::controls::{
     deterministic, finish, pull_seek, seek_reference, suffix, wait,
 };
-use crate::streaming_transport::InterruptibleSource;
 fn compare(got: &[f32], want: &[f32], key: &str) {
     assert_eq!(
         got.len(),
@@ -170,7 +169,7 @@ async fn public_loop_cutovers_keep_the_global_sinc_grid_and_finish_the_consumed_
 }
 
 #[tokio::test]
-async fn pns_http_seeks_match_independent_mature_pull_seek_instead_of_continuous_noise() {
+async fn pns_http_seeks_match_an_independent_pull_seek() {
     for mode in [Mode::Normal] {
         let f = Context::new(mode);
         for (name, data) in cases()
@@ -184,18 +183,6 @@ async fn pns_http_seeks_match_independent_mature_pull_seek_instead_of_continuous
                 let start =
                     (target as u128 * rate as u128).div_ceil(native.sample_rate as u128) as u64;
                 let reference = seek_reference(data, rate, start, 1, Some(target as u64));
-                if name == "1-front" && rate == 16000 {
-                    let continuous = crate::decoder::decode_for_rate(data, rate).unwrap();
-                    let delta = reference
-                        .iter()
-                        .zip(&continuous.samples[start as usize * native.channels as usize..])
-                        .map(|(a, b)| (*a - *b).abs())
-                        .fold(0.0f32, f32::max);
-                    assert!(
-                        delta > 0.00001,
-                        "PNS oracle did not expose the real mature-seek noise discontinuity"
-                    );
-                }
                 let mut p = player(&f, data, rate).await;
                 p.seek((target as f64 + 0.25) / native.sample_rate as f64);
                 wait(&mut p, |p| {
@@ -242,148 +229,6 @@ async fn very_short_http_loops_publish_pcm_before_reposition_credit_is_exhausted
     }
 }
 
-async fn reader_source(
-    server: &Server,
-    host: &migo_io::scheduler::IoScheduler,
-    limits: range::Limits,
-    length: u64,
-) -> IndexedHttp {
-    let client = server.client(host.pools().clone());
-    let response = client
-        .get(
-            GateKind::AudioStream,
-            migo_services::network::url::Url::parse(
-                "http://indexed-product-fixture.invalid/source",
-            )
-            .unwrap(),
-        )
-        .header(
-            "accept-encoding".parse().unwrap(),
-            "identity".parse().unwrap(),
-        )
-        .send()
-        .await
-        .unwrap();
-    let identity = range::Identity::capture(&response).unwrap();
-    let mut source = IndexedHttp::new(client.clone(), response).unwrap();
-    let reader = range::Reader::new(client, GateKind::AudioStream, identity, limits);
-    source.initial = None;
-    source.owner = Owner::Media(Box::new(
-        reader
-            .into_stream_at(0, length, range::StreamLimits::default())
-            .unwrap(),
-    ));
-    source
-}
-#[tokio::test]
-async fn interrupted_range_read_keeps_every_byte_and_original_reader_budget() {
-    let data: Vec<u8> = (0..9737).map(|n| (n % 251) as u8).collect();
-    let server = server(data.clone(), Mode::Normal, false, false).await;
-    let host = migo_io::scheduler::IoScheduler::new(1087);
-    let mut source = reader_source(
-        &server,
-        &host,
-        range::Limits {
-            max_requests: 1,
-            ..Default::default()
-        },
-        data.len() as u64,
-    )
-    .await;
-    // Spend the one control request before media, then carry its exact reader through interruption.
-    let reader = source.control().unwrap();
-    reader
-        .read_exact_into(0, &mut [0; 8], Instant::now() + WAIT)
-        .await
-        .unwrap();
-    assert_eq!(reader.requests(), 1);
-    let Owner::Control(reader) = std::mem::replace(&mut source.owner, Owner::Failed) else {
-        panic!()
-    };
-    source.owner = Owner::Media(Box::new(
-        reader
-            .into_stream_at(0, data.len() as u64, range::StreamLimits::default())
-            .unwrap(),
-    ));
-    server.pause_range_body(2);
-    let (tx, _rx) = crate::streaming::stream_channel();
-    let state = StreamingState::new_url();
-    let mut got = match source.read(&tx, &state).await.unwrap() {
-        SourceRead::Data(b) => b.as_ref().to_vec(),
-        _ => panic!(),
-    };
-    tokio::time::timeout(WAIT, server.entered.notified())
-        .await
-        .unwrap();
-    let count = server.range_requests();
-    {
-        let read = source.read(&tx, &state);
-        tokio::pin!(read);
-        std::future::poll_fn(|cx| {
-            assert!(
-                std::future::Future::poll(read.as_mut(), cx).is_pending(),
-                "fixture failed to interrupt the actual pending body"
-            );
-            std::task::Poll::Ready(())
-        })
-        .await;
-    }
-    source
-        .resume_after_read_interruption()
-        .expect("pinned HTTP did not recover its interrupted read");
-    server.release.notify_one();
-    while let SourceRead::Data(b) = source.read(&tx, &state).await.unwrap() {
-        got.extend_from_slice(b.as_ref());
-    }
-    assert_eq!(
-        got, data,
-        "interrupted HTTP lost or repeated a payload byte"
-    );
-    assert_eq!(
-        server.range_requests(),
-        count,
-        "interrupted HTTP replaced its already validated body"
-    );
-    let reader = source.control().unwrap();
-    assert_eq!(
-        (reader.requests(), reader.bytes_received()),
-        (1, 8),
-        "HTTP control reader budget was reset by interruption"
-    );
-    assert!(
-        reader
-            .read_exact_into(0, &mut [0; 1], Instant::now() + WAIT)
-            .await
-            .is_err(),
-        "HTTP control reader budget was renewed"
-    );
-    assert_eq!(server.range_requests(), count);
-}
-#[tokio::test]
-async fn returned_range_validation_and_body_errors_never_become_interruptions() {
-    let host = migo_io::scheduler::IoScheduler::new(1088);
-    for mode in [Mode::Changed, Mode::Offset, Mode::Truncated] {
-        let server = server(vec![23; 9737], Mode::Normal, false, false).await;
-        let mut source = reader_source(&server, &host, range::Limits::default(), 9737).await;
-        server.range_fault(mode);
-        let (tx, _rx) = crate::streaming::stream_channel();
-        let state = StreamingState::new_url();
-        loop {
-            match source.read(&tx, &state).await {
-                Ok(SourceRead::Data(_)) => {}
-                Err(_) => break,
-                _ => panic!("bad Range unexpectedly completed"),
-            }
-        }
-        let count = server.range_requests();
-        assert!(
-            source.resume_after_read_interruption().is_err(),
-            "completed HTTP error was recovered as an interruption"
-        );
-        assert!(source.read(&tx, &state).await.is_err());
-        assert_eq!(server.range_requests(), count);
-    }
-}
 pub(super) async fn done(
     rx: &mut mpsc::Receiver<StreamMsg>,
 ) -> (Vec<f32>, crate::streaming::StreamRevision) {
@@ -497,29 +342,118 @@ async fn real_range_controls_reject_without_change_and_wait_for_actual_consumer_
     );
     assert!(state.is_cancelled());
 }
-#[tokio::test]
-async fn public_range_seek_keeps_original_deadline_through_the_first_real_body_chunk() {
-    let server = server(padded(TAIL, 1024 * 1024), Mode::Normal, false, false).await;
-    let host = Arc::new(migo_io::scheduler::IoScheduler::new(1090));
-    let (mut rx, state) = start_controlled(&server, &host);
-    done(&mut rx).await;
-    let port = state.control_sender().unwrap();
+/// A controlled source whose network stops after its first `prefix` bytes:
+/// the initial body stalls, and so does every Range response. Returns once
+/// the producer is waiting on bytes that will not come.
+async fn stalled_after(
+    data: &[u8],
+    prefix: usize,
+    scheduler: i32,
+) -> (Server, mpsc::Receiver<StreamMsg>, Arc<StreamingState>) {
+    let server = server_with_initial_prefix(data.to_vec(), Mode::Normal, Some(prefix), false).await;
     server.pause_range_body(1);
-    let deadline = Instant::now() + Duration::from_millis(500);
-    let reply = crate::stream_control::request(port, 0, deadline).unwrap();
-    tokio::time::timeout(WAIT, server.entered.notified())
-        .await
-        .expect("public HTTP seek never reached the real Range body");
-    tokio::select! {
-        result=reply=>assert!(result.is_err(),"HTTP control prepared beyond its original body deadline"),
-        _=tokio::time::sleep_until(deadline+Duration::from_millis(300))=>panic!("HTTP control renewed its original media deadline"),
+    let host = Arc::new(migo_io::scheduler::IoScheduler::new(scheduler));
+    let (mut rx, state) = start_controlled(&server, &host);
+    // Keep the channel drained so the producer reads on until the stall, which
+    // shows as its range request for the missing bytes being held.
+    let entered = server.entered.clone();
+    let deadline = tokio::time::sleep(WAIT);
+    tokio::pin!(deadline);
+    loop {
+        tokio::select! {
+            _ = entered.notified() => break,
+            message = rx.recv() => match message {
+                Some(StreamMsg::Error { message, .. }) => panic!("stalled source failed: {message}"),
+                Some(_) => {}
+                None => panic!("producer ended before the stall"),
+            },
+            _ = &mut deadline => panic!("the producer never waited on the stalled network"),
+        }
+    }
+    (server, rx, state)
+}
+
+#[tokio::test]
+async fn a_control_preempts_a_read_the_network_does_not_answer() {
+    // WAVE through Symphonia's reader; MP3 through minimp3's callback IO,
+    // whose 128 KiB refill is what waits. A restart needs no seek index.
+    let wave = crate::test_media::wav(16000, 1, 16000 * 8);
+    let mp3 = include_bytes!("decoder/mp3/fixtures/music.mp3");
+    for (data, prefix, scheduler) in [(&wave[..], 64 * 1024, 1094), (&mp3[..], 140 * 1024, 1096)] {
+        preempted(data, prefix, scheduler).await;
+    }
+}
+
+async fn preempted(data: &[u8], prefix: usize, scheduler: i32) {
+    let (_server, mut rx, state) = stalled_after(data, prefix, scheduler).await;
+    let asked = Instant::now();
+    let reply =
+        crate::stream_control::request(state.control_sender().unwrap(), 0, Instant::now() + WAIT)
+            .unwrap();
+    let crate::stream_control::Reply::Prepared(prepared) =
+        tokio::time::timeout(Duration::from_secs(2), reply)
+            .await
+            .expect("a seek into delivered media waited behind a stalled read")
+            .unwrap()
+    else {
+        panic!("a seek into delivered media was refused")
+    };
+    assert!(asked.elapsed() < Duration::from_secs(1));
+    let revision = prepared.revision;
+    prepared.accept.send(()).unwrap();
+    // The new traversal plays the delivered bytes exactly, from the start.
+    let reference = crate::decoder::decode_for_rate(data, 16000)
+        .unwrap()
+        .samples;
+    let mut got = Vec::new();
+    while got.len() < 16000 {
+        match tokio::time::timeout(WAIT, rx.recv())
+            .await
+            .unwrap()
+            .unwrap()
+        {
+            StreamMsg::Samples { revision: r, pcm } if r == revision => got.extend_from_slice(&pcm),
+            StreamMsg::Error { message, .. } => panic!("preempted source failed: {message}"),
+            _ => {}
+        }
     }
     assert!(
-        matches!(
-            tokio::time::timeout(WAIT, rx.recv()).await.unwrap(),
-            Some(StreamMsg::Error { .. })
-        ),
-        "expired HTTP control did not publish its original revision error"
+        got[..16000] == reference[..16000],
+        "the preempted reader resumed off its position"
     );
-    assert!(rx.recv().await.is_none());
+}
+
+#[tokio::test]
+async fn a_control_whose_media_never_arrives_fails_by_its_own_deadline() {
+    // A sample-exact MP3 seek needs the frames before its target (minimp3
+    // indexes them on the first seek); a WAVE seek, by contrast, needs no
+    // media to prepare. The prefix covers minimp3's first 128 KiB fill, so
+    // the stream is open and playing when the network stops.
+    let data = include_bytes!("decoder/mp3/fixtures/music.mp3");
+    let (_server, mut rx, state) = stalled_after(data, 140 * 1024, 1095).await;
+    let target = state.timeline().unwrap().output_frames() as i64 * 9 / 10;
+    let deadline = Instant::now() + Duration::from_millis(500);
+    let reply =
+        crate::stream_control::request(state.control_sender().unwrap(), target, deadline).unwrap();
+    tokio::select! {
+        result = reply => assert!(result.is_err(), "a seek was acknowledged without its media"),
+        _ = tokio::time::sleep_until(deadline + Duration::from_millis(300)) => {
+            panic!("a control outlived its deadline")
+        }
+    }
+    loop {
+        match tokio::time::timeout(WAIT, rx.recv()).await.unwrap() {
+            Some(StreamMsg::Error { .. }) => break,
+            Some(_) => {}
+            None => panic!("the stream ended without its timeout error"),
+        }
+    }
+    assert!(
+        tokio::time::timeout(WAIT, rx.recv())
+            .await
+            .unwrap()
+            .is_none(),
+        "the producer outlived its failure"
+    );
+    assert!(!state.is_cancelled());
 }

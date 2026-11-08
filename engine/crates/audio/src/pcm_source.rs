@@ -61,6 +61,18 @@ const SEEK_PREROLL: u64 = 4096;
 /// Corrupt packets tolerated per stream before the stream fails.
 const MAX_BAD_PACKETS: u32 = 16;
 
+/// A container the sniffer recognised but whose reader refuses it is not a
+/// playable input (IO failures and cancellation keep their own codes).
+fn open_error(error: SymphoniaError) -> EngineError {
+    match error {
+        SymphoniaError::IoError(_) => media_error(error),
+        other => EngineError::from_detail(
+            ErrorCode::InvalidArgument,
+            format!("audio container: {other}"),
+        ),
+    }
+}
+
 fn invalid(detail: impl Into<String>) -> EngineError {
     EngineError::from_detail(ErrorCode::IoError, detail.into())
 }
@@ -86,6 +98,31 @@ fn format_options() -> FormatOptions {
     options
 }
 
+/// The WAVE `data` chunk's offset and declared size, read from chunk headers
+/// before the reader takes the source (the reader does not expose them).
+fn wave_data_extent(source: &mut dyn MediaSource) -> std::io::Result<Option<(u64, u32)>> {
+    use std::io::SeekFrom;
+    let mut head = [0u8; 12];
+    source.read_exact(&mut head)?;
+    let mut pos = 12u64;
+    let mut found = None;
+    for _ in 0..64 {
+        let mut chunk = [0u8; 8];
+        if source.read_exact(&mut chunk).is_err() {
+            break;
+        }
+        let size = u32::from_le_bytes(chunk[4..8].try_into().unwrap());
+        if &chunk[..4] == b"data" {
+            found = Some((pos + 8, size));
+            break;
+        }
+        pos += 8 + u64::from(size) + u64::from(size & 1);
+        source.seek(SeekFrom::Start(pos))?;
+    }
+    source.seek(SeekFrom::Start(0))?;
+    Ok(found)
+}
+
 pub(crate) struct Symphonia {
     reader: Box<dyn FormatReader + 'static>,
     decoder: Box<dyn AudioDecoder>,
@@ -104,22 +141,43 @@ pub(crate) struct Symphonia {
 }
 
 impl Symphonia {
-    pub(crate) fn open(source: Box<dyn MediaSource>, container: Container) -> EngineResult<Self> {
+    pub(crate) fn open(
+        mut source: Box<dyn MediaSource>,
+        container: Container,
+    ) -> EngineResult<Self> {
+        // A WAVE states its data size; streamed writers put the "unknown"
+        // maximum there, and a data chunk past the object is a truncation.
+        let mut wave_unknown_length = false;
+        if container == Container::Wave
+            && let Some(len) = source.byte_len()
+        {
+            let extent = wave_data_extent(source.as_mut())
+                .map_err(|e| media_error(SymphoniaError::IoError(e)))?;
+            if let Some((offset, size)) = extent {
+                if size >= u32::MAX - 1 {
+                    wave_unknown_length = true;
+                } else if offset + u64::from(size) > len {
+                    return Err(EngineError::from_detail(
+                        ErrorCode::InvalidArgument,
+                        "WAVE data extends beyond the object",
+                    ));
+                }
+            }
+        }
         let mss = MediaSourceStream::new(source, MediaSourceStreamOptions::default());
         let options = format_options();
         let reader: Box<dyn FormatReader + 'static> = match container {
             Container::Wave => Box::new(
-                symphonia_format_riff::WavReader::try_new(mss, options).map_err(media_error)?,
+                symphonia_format_riff::WavReader::try_new(mss, options).map_err(open_error)?,
             ),
             Container::Ogg => Box::new(
-                symphonia_format_ogg::OggReader::try_new(mss, options).map_err(media_error)?,
+                symphonia_format_ogg::OggReader::try_new(mss, options).map_err(open_error)?,
             ),
             Container::Adts => Box::new(
-                symphonia_codec_aac::AdtsReader::try_new(mss, options).map_err(media_error)?,
+                symphonia_codec_aac::AdtsReader::try_new(mss, options).map_err(open_error)?,
             ),
             Container::Mp4 => Box::new(
-                symphonia_format_isomp4::IsoMp4Reader::try_new(mss, options)
-                    .map_err(media_error)?,
+                symphonia_format_isomp4::IsoMp4Reader::try_new(mss, options).map_err(open_error)?,
             ),
         };
         let track = reader
@@ -163,7 +221,7 @@ impl Symphonia {
             .time_base
             .or_else(|| TimeBase::try_from_recip(rate))
             .ok_or_else(|| invalid("audio track has no time base"))?;
-        let frames = track.num_frames.filter(|n| *n > 0);
+        let frames = track.num_frames.filter(|n| *n > 0 && !wave_unknown_length);
         let (delay, start_ts) = (track.delay.unwrap_or(0), track.start_ts.get());
         let track = track.id;
         Ok(Self {
@@ -220,8 +278,16 @@ impl PcmSource for Symphonia {
             if self.frames.is_some_and(|n| self.position >= n) {
                 return Ok(false);
             }
-            let Some(packet) = self.reader.next_packet().map_err(media_error)? else {
-                return Ok(false);
+            let packet = match self.reader.next_packet() {
+                Ok(Some(packet)) => packet,
+                Ok(None) => return Ok(false),
+                // Without a stated length the object's end is the stream's end.
+                Err(SymphoniaError::IoError(e))
+                    if self.frames.is_none() && e.kind() == std::io::ErrorKind::UnexpectedEof =>
+                {
+                    return Ok(false);
+                }
+                Err(error) => return Err(media_error(error)),
             };
             if packet.track_id != self.track {
                 continue;

@@ -16,9 +16,6 @@ pub enum PacketStep<'a> {
         consumed: usize,
         packet: PacketRef<'a>,
     },
-    BufferedPacket {
-        consumed: usize,
-    },
     End,
 }
 
@@ -27,7 +24,6 @@ pub trait Packetizer: Send + 'static {
     const OUTPUT_SAMPLES_PER_STEP: usize = SAMPLES_PER_STEP;
     const ENCODED_BYTES_PER_STEP: usize = WORK_BYTES_PER_STEP;
     const DISCARDS_PER_STEP: usize = usize::MAX;
-    const SEEK_FROM_START: bool = false;
     // Container audio can end before its optional metadata. These bounds apply
     // to discarded bytes, independently of resident buffering and PCM duration.
     const MAX_TRAILING_BYTES: usize = 0;
@@ -36,22 +32,8 @@ pub trait Packetizer: Send + 'static {
     fn track(&self) -> Option<&Track>;
     fn next<'a>(&mut self, input: &'a [u8], eof: bool) -> FormatResult<PacketStep<'a>>;
 
-    fn buffered_packet<'a>(&'a self, _input: &'a [u8]) -> Option<PacketRef<'a>> {
-        None
-    }
     fn validate_codec(params: &AudioCodecParameters) -> Result<(), String>;
     fn create_decoder(params: &AudioCodecParameters) -> Result<Self::Codec, String>;
-    fn seek(
-        &mut self,
-        _target: symphonia_core::units::Timestamp,
-    ) -> FormatResult<symphonia_core::formats::SeekedTo> {
-        Err(symphonia_core::errors::Error::SeekError(
-            symphonia_core::errors::SeekErrorKind::Unseekable,
-        ))
-    }
-    fn resume_buffered(&mut self, _input: &[u8], _head: usize) -> FormatResult<Option<usize>> {
-        Ok(None)
-    }
 }
 
 pub const ENCODED_CAPACITY: usize = 64 * 1024;
@@ -84,25 +66,11 @@ pub struct Decoder<P: Packetizer> {
     awaiting_eof: bool,
     trailing_bytes: usize,
     discarded_bytes: usize,
-    seek_target: Option<symphonia_core::units::Timestamp>,
-    retain_history: bool,
     pub rate: u32,
     pub channels: u32,
 }
 
 impl<P: Packetizer> Decoder<P> {
-    #[cfg(test)]
-    pub(crate) fn input_allocation(&self) -> (*const u8, usize) {
-        (self.input.as_ptr(), self.input.capacity())
-    }
-    #[cfg(test)]
-    pub(crate) fn input_len(&self) -> usize {
-        self.input.len()
-    }
-    #[cfg(test)]
-    pub(crate) fn discarded_bytes(&self) -> usize {
-        self.discarded_bytes
-    }
     pub(crate) fn presentation_track(&self) -> Option<&Track> {
         self.packets.track()
     }
@@ -129,22 +97,11 @@ impl<P: Packetizer> Decoder<P> {
             awaiting_eof: false,
             trailing_bytes: 0,
             discarded_bytes: 0,
-            seek_target: None,
-            retain_history: false,
             rate: 0,
             channels: 0,
         }
     }
 
-    pub(crate) fn awaits_source_eof(&self) -> bool {
-        self.awaiting_eof
-    }
-    pub(crate) fn awaits_source(&self) -> bool {
-        self.source_waiting
-    }
-    pub(crate) fn retain_history(&mut self) {
-        self.retain_history = true;
-    }
     fn accept_tail(&mut self, bytes: usize) -> Result<(), String> {
         let total = self
             .trailing_bytes
@@ -188,34 +145,6 @@ impl<P: Packetizer> Decoder<P> {
 
     pub fn finish_input(&mut self) {
         self.eof = true;
-    }
-
-    pub(crate) fn seek(
-        &mut self,
-        target: symphonia_core::units::Timestamp,
-    ) -> FormatResult<symphonia_core::formats::SeekedTo> {
-        use symphonia_core::errors::Error;
-        if self.failed || self.cancelled {
-            return Err(Error::DecodeError("stream decoder is retired"));
-        }
-        let seeked = self.packets.seek(target)?;
-        if let Some(decoder) = &mut self.decoder {
-            decoder.reset();
-        }
-        self.seek_target = Some(seeked.required_ts);
-        self.source_waiting = true;
-        self.finished = false;
-        self.awaiting_eof = false;
-        self.total_samples = 0;
-        self.trailing_bytes = 0;
-        self.discarded_bytes = 0;
-        if self.retain_history
-            && let Some(head) = self.packets.resume_buffered(&self.input, self.head)?
-        {
-            self.head = head;
-            self.source_waiting = false;
-        }
-        Ok(seeked)
     }
 
     pub(crate) fn source_packetizer(&self) -> Option<&P> {
@@ -323,12 +252,8 @@ impl<P: Packetizer> Decoder<P> {
                         let tail = input.len();
                         self.accept_tail(tail)?;
                         self.awaiting_eof = true;
-                        if self.retain_history {
-                            self.head = self.input.len();
-                        } else {
-                            self.input.clear();
-                            self.head = 0;
-                        }
+                        self.input.clear();
+                        self.head = 0;
                         return Ok(Progress::NeedInput);
                     }
                     self.finished = true;
@@ -349,7 +274,7 @@ impl<P: Packetizer> Decoder<P> {
                     bytes += consumed;
                     scanned += consumed;
                     discards += 1;
-                    if self.head == self.input.len() && !self.retain_history {
+                    if self.head == self.input.len() {
                         self.input.clear();
                         self.head = 0;
                     }
@@ -372,16 +297,6 @@ impl<P: Packetizer> Decoder<P> {
                     if consumed == 0 || consumed > input.len() {
                         return Err("invalid packet byte count".into());
                     }
-                    (consumed, packet)
-                }
-                PacketStep::BufferedPacket { consumed } => {
-                    if consumed > input.len() {
-                        return Err("invalid buffered packet byte count".into());
-                    }
-                    let packet = self
-                        .packets
-                        .buffered_packet(input)
-                        .ok_or("missing buffered packet")?;
                     (consumed, packet)
                 }
             };
@@ -416,26 +331,6 @@ impl<P: Packetizer> Decoder<P> {
             {
                 return Err("stream format changed".into());
             }
-            let skip = if let Some(target) = self.seek_target {
-                let start = packet
-                    .pts
-                    .get()
-                    .checked_add(
-                        i64::try_from(packet.trim_start.get())
-                            .map_err(|_| "invalid packet trim")?,
-                    )
-                    .ok_or("packet presentation timestamp overflow")?;
-                let skip = usize::try_from(target.get().saturating_sub(start).max(0))
-                    .unwrap_or(usize::MAX)
-                    .min(block.frames());
-                if skip < block.frames() {
-                    self.seek_target = None;
-                }
-                skip
-            } else {
-                0
-            };
-            let block = block.slice(skip..);
             let additional = block.samples_interleaved();
             let total = self
                 .total_samples
@@ -456,7 +351,7 @@ impl<P: Packetizer> Decoder<P> {
             bytes += consumed;
             packets += 1;
 
-            if self.head == self.input.len() && !self.retain_history {
+            if self.head == self.input.len() {
                 self.input.clear();
                 self.head = 0;
             }

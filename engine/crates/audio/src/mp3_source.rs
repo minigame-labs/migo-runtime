@@ -91,7 +91,7 @@ unsafe extern "C" fn seek_callback(position: u64, user: *mut c_void) -> c_int {
 pub(crate) struct Minimp3 {
     dec: *mut c_void,
     /// Pinned: minimp3 keeps pointers to both.
-    _io: Box<Io>,
+    io: Box<Io>,
     reader: Box<Reader>,
     rate: u32,
     channels: u32,
@@ -111,8 +111,14 @@ impl Drop for Minimp3 {
     }
 }
 
+/// A failure while reading or decoding an opened stream.
 fn invalid(detail: impl Into<String>) -> EngineError {
     EngineError::from_detail(ErrorCode::IoError, detail.into())
+}
+
+/// Bytes that are not a playable MP3 stream (as the other readers report it).
+fn malformed(detail: impl Into<String>) -> EngineError {
+    EngineError::from_detail(ErrorCode::InvalidArgument, detail.into())
 }
 
 fn source_error(error: io::Error) -> EngineError {
@@ -136,24 +142,10 @@ impl Minimp3 {
             seek: seek_callback,
             seek_data: user,
         });
-        let mut error = 0;
-        // SAFETY: `io` and `reader` are boxed and owned by the returned value,
-        // so the pointers minimp3 keeps stay valid until migo_mp3_close.
-        let dec =
-            unsafe { migo_mp3_open(&mut *io, MP3D_SEEK_TO_SAMPLE | MP3D_DO_NOT_SCAN, &mut error) };
-        if dec.is_null() {
-            return Err(match (reader.error.take(), error) {
-                (Some(error), _) => source_error(error),
-                (None, MP3D_E_MEMORY) => EngineError::new(ErrorCode::OutOfMemory),
-                (None, code) => invalid(format!("not a decodable MP3 stream ({code})")),
-            });
-        }
-        let (mut hz, mut channels, mut samples, mut tagged) = (0, 0, 0u64, 0);
-        // SAFETY: `dec` is a live decoder.
-        unsafe { migo_mp3_info(dec, &mut hz, &mut channels, &mut samples, &mut tagged) };
+        let dec = start(&mut io, &mut reader)?;
         let mut source = Self {
             dec,
-            _io: io,
+            io,
             reader,
             rate: 0,
             channels: 0,
@@ -161,20 +153,47 @@ impl Minimp3 {
             position: 0,
             buffer: vec![0; READ_SAMPLES],
         };
+        let (rate, channels, frames) = source.format()?;
+        source.rate = rate;
+        source.channels = channels;
+        source.frames = frames;
+        Ok(source)
+    }
+
+    /// The decoder's format and tagged length, validated.
+    fn format(&self) -> EngineResult<(u32, u32, Option<u64>)> {
+        let (mut hz, mut channels, mut samples, mut tagged) = (0, 0, 0u64, 0);
+        // SAFETY: `dec` is a live decoder.
+        unsafe { migo_mp3_info(self.dec, &mut hz, &mut channels, &mut samples, &mut tagged) };
         let rate = u32::try_from(hz)
             .ok()
             .filter(|r| {
                 (crate::limits::MIN_SAMPLE_RATE..=crate::limits::MAX_SAMPLE_RATE).contains(r)
             })
-            .ok_or_else(|| invalid("unsupported MP3 sample rate"))?;
+            .ok_or_else(|| malformed("unsupported MP3 sample rate"))?;
         let channels = u32::try_from(channels)
             .ok()
             .filter(|c| (1..=2).contains(c))
-            .ok_or_else(|| invalid("unsupported MP3 channel count"))?;
-        source.rate = rate;
-        source.channels = channels;
-        source.frames = (tagged != 0 && samples > 0).then(|| samples / u64::from(channels));
-        Ok(source)
+            .ok_or_else(|| malformed("unsupported MP3 channel count"))?;
+        let frames = (tagged != 0 && samples > 0).then(|| samples / u64::from(channels));
+        Ok((rate, channels, frames))
+    }
+
+    /// Back to the first playable sample by opening again. minimp3 reaches
+    /// sample 0 behind an encoder delay through its seek index, which scans
+    /// the whole stream (over HTTP: waits for its whole download); opening
+    /// reads only the head, so restarts and loop points stay immediate.
+    fn restart(&mut self) -> EngineResult<()> {
+        self.reader.error = None;
+        let dec = start(&mut self.io, &mut self.reader)?;
+        let old = std::mem::replace(&mut self.dec, dec);
+        // SAFETY: `old` came from migo_mp3_open and is no longer referenced.
+        unsafe { migo_mp3_close(old) };
+        if self.format()? != (self.rate, self.channels, self.frames) {
+            return Err(invalid("MP3 stream changed between passes"));
+        }
+        self.position = 0;
+        Ok(())
     }
 
     fn failure(&mut self) -> EngineError {
@@ -188,6 +207,23 @@ impl Minimp3 {
             code => invalid(format!("MP3 decode failed ({code})")),
         }
     }
+}
+
+/// Open a decoder over `io` (positioned by minimp3 itself): no whole-stream
+/// scan, so playback starts after the first input buffer.
+fn start(io: &mut Io, reader: &mut Reader) -> EngineResult<*mut c_void> {
+    let mut error = 0;
+    // SAFETY: `io` and `reader` are boxed by the caller and outlive the
+    // decoder, so the pointers minimp3 keeps stay valid until migo_mp3_close.
+    let dec = unsafe { migo_mp3_open(io, MP3D_SEEK_TO_SAMPLE | MP3D_DO_NOT_SCAN, &mut error) };
+    if dec.is_null() {
+        return Err(match (reader.error.take(), error) {
+            (Some(error), _) => source_error(error),
+            (None, MP3D_E_MEMORY) => EngineError::new(ErrorCode::OutOfMemory),
+            (None, code) => malformed(format!("not a decodable MP3 stream ({code})")),
+        });
+    }
+    Ok(dec)
 }
 
 impl PcmSource for Minimp3 {
@@ -209,6 +245,13 @@ impl PcmSource for Minimp3 {
         let want = self.buffer.len() / channels * channels;
         // SAFETY: the buffer holds `want` samples; `dec` is a live decoder.
         let got = unsafe { migo_mp3_read(self.dec, self.buffer.as_mut_ptr(), want) };
+        if self.reader.error.is_some() {
+            // The source failed (or was interrupted) during this read: report
+            // it now, not on some later call. minimp3 took the short read as
+            // the end of its input, so what it decoded is dropped and the
+            // position stays; the owner seeks back before reading again.
+            return Err(self.failure());
+        }
         if got == 0 {
             // SAFETY: `dec` is a live decoder.
             let failed =
@@ -236,6 +279,9 @@ impl PcmSource for Minimp3 {
     fn seek(&mut self, frame: u64) -> EngineResult<()> {
         if self.frames.is_some_and(|n| frame > n) {
             return Err(invalid("seek beyond the MP3 presentation"));
+        }
+        if frame == 0 {
+            return self.restart();
         }
         // SAFETY: `dec` is a live decoder.
         let result = unsafe { migo_mp3_seek(self.dec, frame * u64::from(self.channels)) };

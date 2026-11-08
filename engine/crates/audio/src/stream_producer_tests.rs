@@ -28,13 +28,12 @@ fn wave(rate: u32, channels: u16, frames: usize) -> Vec<u8> {
 
 fn start(bytes: Vec<u8>, target: u32, state: &Arc<StreamingState>) -> mpsc::Receiver<StreamMsg> {
     let (tx, rx) = crate::streaming::stream_channel();
-    let open: Open = Box::new(move |cancel| {
-        let _ = cancel;
+    let open: Open = Box::new(move |_state| {
         let container = Container::sniff(&bytes).unwrap();
         let source = AudioFileSource::new(MemoryFile::new(bytes), Arc::new(AtomicBool::new(false)));
         Ok(Box::new(Symphonia::open(Box::new(source), container)?) as Box<dyn PcmSource>)
     });
-    spawn(open, target, tx, state.clone()).unwrap();
+    spawn(open, target, tx, state.clone(), None).unwrap();
     rx
 }
 
@@ -135,4 +134,34 @@ fn cancelling_ends_a_producer_blocked_on_a_full_channel() {
     let mut rx = rx;
     while rx.blocking_recv().is_some() {}
     assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+#[test]
+fn a_steady_state_mp3_traversal_never_reaches_the_heap() {
+    use migo_alloc_probe::{Burst, assert_no_steady_state_allocation};
+    // Decoding, conversion and chunking reuse their buffers once warm. (The
+    // Symphonia readers box each packet upstream; that is a decode-thread cost,
+    // never the audio callback's.)
+    let bytes = include_bytes!("decoder/mp3/fixtures/music.mp3").to_vec();
+    let source = AudioFileSource::new(MemoryFile::new(bytes), Arc::new(AtomicBool::new(false)));
+    let mut source = crate::mp3_source::Minimp3::open(Box::new(source)).unwrap();
+    let (rate, channels) = (source.rate(), source.channels());
+    let sinc = Sinc::new_at(rate, 44_100, channels, source.frames(), 0, 0).unwrap();
+    let mut traversal = Traversal::new(sinc, channels, source.frames(), 0, Some(1));
+    let cancel = AtomicBool::new(false);
+    let mut pcm = Vec::with_capacity(1024);
+    assert_no_steady_state_allocation(
+        Burst {
+            path: "MP3 decode, SRC and chunk fill",
+            warmup: 64,
+            measured: 256,
+        },
+        |_| {
+            pcm.clear();
+            let done = traversal
+                .fill(&mut source, &mut pcm, 1024, &cancel)
+                .unwrap();
+            assert!(!done && pcm.len() == 1024);
+        },
+    );
 }

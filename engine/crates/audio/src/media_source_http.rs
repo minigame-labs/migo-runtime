@@ -23,12 +23,24 @@ use symphonia_core::io::MediaSource;
 /// A wanted offset this close ahead of the live response is reached by reading
 /// on rather than by a new request.
 const READ_ON_WINDOW: u64 = 256 * 1024;
-/// Fresh requests after a failed body read, per object.
-const MAX_RESTARTS: u32 = 8;
-/// Upper bound on one blocked wait between cancellation checks.
-const WAIT_SLICE: Duration = Duration::from_millis(250);
+/// A reader waiting this long on a body that delivers nothing gets a range
+/// request instead, however close its offset is.
+const STALL_JUMP: Duration = Duration::from_millis(200);
+/// How far the fetcher runs ahead of the reader before it pauses: decoding
+/// drives the network, so a paused or slow player does not download a whole
+/// long object.
+const READ_AHEAD: u64 = 512 * 1024;
+/// Consecutive fresh requests without progress before the object fails; any
+/// delivered byte resets the count, so a long stream survives many blips.
+pub(crate) const MAX_RESTARTS: u32 = 8;
+/// The pause before the n-th consecutive re-request is n times this: a dropped
+/// connection usually needs a moment, and a failing server is not hammered.
+const RETRY_DELAY: Duration = Duration::from_millis(50);
+/// Upper bound on one blocked wait between cancellation and interrupt checks
+/// (a seek behind a stalled read waits at most this long to start).
+const WAIT_SLICE: Duration = Duration::from_millis(50);
 /// Body reads that stall this long fail the response (and restart it if ranged).
-const BODY_IDLE: Duration = Duration::from_secs(30);
+const BODY_IDLE: Duration = crate::streaming::BODY_IDLE_TIMEOUT;
 
 /// Sorted, disjoint, non-adjacent byte extents `[start, end)`.
 #[derive(Default, Debug, PartialEq)]
@@ -76,6 +88,9 @@ struct State {
     len: Option<u64>,
     failed: Option<String>,
     closed: bool,
+    /// Where the reader is, and whether the fetcher paused for it.
+    read_pos: u64,
+    paused: bool,
 }
 
 struct Shared {
@@ -85,6 +100,8 @@ struct Shared {
     store: Box<dyn AudioSparseSpool>,
     cancel: Arc<dyn AudioFileCancel>,
     ranged: bool,
+    /// Called with the total bytes held after each received chunk.
+    progress: Option<Box<dyn Fn(u64) + Send + Sync>>,
 }
 
 impl Shared {
@@ -109,6 +126,9 @@ impl Shared {
 pub(crate) struct HttpSource {
     shared: Arc<Shared>,
     pos: u64,
+    /// Ends a read that would wait for bytes (not the fetch): its owner has
+    /// something better to do than wait, and will reposition.
+    interrupt: Option<Arc<dyn AudioFileCancel>>,
 }
 
 impl HttpSource {
@@ -121,6 +141,7 @@ impl HttpSource {
         response: Response,
         spool: &dyn shared::audio_file::AudioHttpSpool,
         cancel: Arc<dyn AudioFileCancel>,
+        progress: Option<Box<dyn Fn(u64) + Send + Sync>>,
     ) -> EngineResult<Self> {
         if response.status().as_u16() != 200 {
             return Err(EngineError::from_detail(
@@ -137,7 +158,7 @@ impl HttpSource {
         };
         let ranged = identity.as_ref().is_some_and(|i| i.length().is_some());
         let store = spool.sparse(len)?;
-        if len.is_some_and(|len| len > store.len()) {
+        if len.is_some_and(|len| len > store.size()) {
             return Err(EngineError::new(ErrorCode::InputSaturated));
         }
         let shared = Arc::new(Shared {
@@ -147,21 +168,28 @@ impl HttpSource {
                 len,
                 failed: None,
                 closed: false,
+                read_pos: 0,
+                paused: false,
             }),
             landed: Condvar::new(),
             wake_fetcher: tokio::sync::Notify::new(),
             store,
             cancel,
             ranged,
+            progress,
         });
         runtime.spawn(fetch(shared.clone(), client, response, identity));
-        Ok(Self { shared, pos: 0 })
+        Ok(Self {
+            shared,
+            pos: 0,
+            interrupt: None,
+        })
     }
 
-    /// Stop the fetcher and fail any blocked read now (it would otherwise
-    /// notice cancellation within one wait slice).
-    pub(crate) fn close(&self) {
-        close(&self.shared);
+    /// Make reads that would block report `Interrupted` while `interrupt`
+    /// holds; reads of bytes already here are unaffected.
+    pub(crate) fn interrupt_with(&mut self, interrupt: Arc<dyn AudioFileCancel>) {
+        self.interrupt = Some(interrupt);
     }
 }
 
@@ -193,6 +221,11 @@ impl Read for HttpSource {
             }
             if let Some(end) = state.extents.end_from(self.pos) {
                 let n = (end - self.pos).min(buf.len() as u64) as usize;
+                state.read_pos = self.pos + n as u64;
+                if state.paused {
+                    state.paused = false;
+                    shared.wake_fetcher.notify_one();
+                }
                 drop(state);
                 shared
                     .store
@@ -204,7 +237,12 @@ impl Read for HttpSource {
             if let Some(message) = &state.failed {
                 return Err(io::Error::other(message.clone()));
             }
-            if state.want != Some(self.pos) {
+            if self.interrupt.as_ref().is_some_and(|i| i.is_cancelled()) {
+                return Err(cancelled());
+            }
+            state.read_pos = self.pos;
+            if state.want != Some(self.pos) || state.paused {
+                state.paused = false;
                 state.want = Some(self.pos);
                 shared.wake_fetcher.notify_one();
             }
@@ -252,17 +290,32 @@ enum Live {
     Range(Box<range::OwnedStream>),
 }
 
+/// Network failures may be retried from a fresh request; a response that
+/// breaks the pinned representation or the range contract may not.
+enum FetchError {
+    Retry(String),
+    Terminal(String),
+}
+
 impl Live {
-    async fn chunk(&mut self) -> Result<Option<Bytes>, String> {
+    async fn chunk(&mut self) -> Result<Option<Bytes>, FetchError> {
         let read = async {
             match self {
-                Self::Initial(response) => response.chunk().await.map_err(|e| e.to_string()),
-                Self::Range(stream) => stream.chunk().await.map_err(|e| e.to_string()),
+                Self::Initial(response) => response
+                    .chunk()
+                    .await
+                    .map_err(|e| FetchError::Retry(e.to_string())),
+                Self::Range(stream) => stream.chunk().await.map_err(|e| match e {
+                    range::Error::Http(_) | range::Error::Timeout => {
+                        FetchError::Retry(e.to_string())
+                    }
+                    other => FetchError::Terminal(other.to_string()),
+                }),
             }
         };
         tokio::time::timeout(BODY_IDLE, read)
             .await
-            .map_err(|_| "audio body read timed out".to_owned())?
+            .map_err(|_| FetchError::Retry("audio body read timed out".to_owned()))?
     }
 }
 
@@ -279,8 +332,12 @@ enum Next {
 
 fn next(state: &State, live_pos: Option<u64>, ranged: bool) -> Next {
     let want = state.want.filter(|&w| !state.extents.contains(w));
+    let ahead = |p: u64| want.is_none() && p >= state.read_pos.saturating_add(READ_AHEAD);
     let Some(len) = state.len else {
         // Unknown length: only the initial body can fill it, to its end.
+        if live_pos.is_some_and(ahead) {
+            return Next::Idle;
+        }
         return if live_pos.is_some() {
             Next::ReadOn
         } else {
@@ -289,6 +346,9 @@ fn next(state: &State, live_pos: Option<u64>, ranged: bool) -> Next {
     };
     if state.extents.covers(len) {
         return Next::Done;
+    }
+    if live_pos.is_some_and(ahead) {
+        return Next::Idle;
     }
     if let Some(pos) = live_pos.filter(|&p| p < len && !state.extents.contains(p)) {
         let reach = want.is_none_or(|w| w >= pos && w < pos.saturating_add(READ_ON_WINDOW));
@@ -350,6 +410,7 @@ async fn fetch(
                 let wake = shared.wake_fetcher.notified();
                 tokio::pin!(wake);
                 wake.as_mut().enable();
+                shared.lock().paused = true;
                 if shared.stopped() {
                     return;
                 }
@@ -381,23 +442,38 @@ async fn fetch(
             continue;
         };
         let pos_now = *pos;
-        // Only closing interrupts a body read: dropping a pending read would
-        // poison a range stream, and a new `want` is decided between chunks.
+        // A wanted offset the live body will not reach soon (a stalled or far
+        // body) abandons it: the response is dropped whole, and a range stream
+        // is always opened from a fresh reader, so no poisoned reader is reused.
         let chunk = {
             let read = body.chunk();
             tokio::pin!(read);
             loop {
                 let wake = shared.wake_fetcher.notified();
+                let waiting = shared.ranged && {
+                    let state = shared.lock();
+                    state.want.is_some_and(|w| !state.extents.contains(w))
+                };
                 tokio::select! {
                     biased;
-                    chunk = &mut read => break chunk,
+                    chunk = &mut read => break Some(chunk),
                     _ = wake => {
                         if shared.stopped() {
                             return;
                         }
+                        let state = shared.lock();
+                        if !matches!(next(&state, Some(pos_now), shared.ranged), Next::ReadOn) {
+                            break None;
+                        }
                     }
+                    // A reader is blocked and this body has gone quiet.
+                    _ = tokio::time::sleep(STALL_JUMP), if waiting => break None,
                 }
             }
+        };
+        let Some(chunk) = chunk else {
+            live = None;
+            continue;
         };
         match chunk {
             Ok(Some(bytes)) => {
@@ -412,6 +488,9 @@ async fn fetch(
                 }
                 let mut state = shared.lock();
                 state.extents.insert(pos_now, end);
+                if let Some(progress) = &shared.progress {
+                    progress(state.extents.0.iter().map(|(s, e)| e - s).sum());
+                }
                 if state.want.is_some_and(|w| state.extents.contains(w)) {
                     state.want = None;
                 }
@@ -419,6 +498,10 @@ async fn fetch(
                     *pos = end;
                 }
                 shared.landed.notify_all();
+                drop(state);
+                if !bytes.is_empty() {
+                    restarts = 0;
+                }
             }
             Ok(None) => {
                 let ended_at = pos_now;
@@ -436,17 +519,32 @@ async fn fetch(
                         shared.fail("audio body ended early".to_owned());
                         return;
                     }
+                    backoff(&shared, restarts).await;
                 }
             }
-            Err(error) => {
+            Err(FetchError::Terminal(error)) => {
+                shared.fail(error);
+                return;
+            }
+            Err(FetchError::Retry(error)) => {
                 live = None;
                 restarts += 1;
                 if !shared.ranged || restarts > MAX_RESTARTS {
                     shared.fail(error);
                     return;
                 }
+                backoff(&shared, restarts).await;
             }
         }
+    }
+}
+
+/// Wait before the `restarts`-th consecutive re-request; closing the source
+/// cuts it short.
+async fn backoff(shared: &Shared, restarts: u32) {
+    tokio::select! {
+        _ = tokio::time::sleep(RETRY_DELAY * restarts) => {}
+        _ = shared.wake_fetcher.notified() => {}
     }
 }
 

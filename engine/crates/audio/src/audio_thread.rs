@@ -1130,13 +1130,21 @@ pub(crate) fn start_inner_file_stream(
         StreamingState::new_optional_controls()
     };
     let error = Arc::new(std::sync::Mutex::new(None));
-    let pending = crate::streaming_file::Load {
+    let pending = crate::stream_open::Load {
         reply: resp,
         error: error.clone(),
     };
-    let producer = crate::streaming_file::run(cpu.clone(), source, tx, state.clone(), rate, error);
-    if player.complete_file_stream_load(load, rx, state, pending) {
-        streaming::get_stream_runtime().spawn(producer);
+    if player.complete_file_stream_load(load, rx, state.clone(), pending) {
+        let open = crate::stream_open::file(source);
+        if let Err(cause) =
+            crate::stream_producer::spawn(open, rate, tx.clone(), state, Some(error.clone()))
+        {
+            *error.lock().unwrap_or_else(|p| p.into_inner()) = Some(cause.clone());
+            let _ = tx.try_send(streaming::StreamMsg::Error {
+                revision: streaming::StreamRevision::INITIAL,
+                message: cause.to_string(),
+            });
+        }
     }
 }
 

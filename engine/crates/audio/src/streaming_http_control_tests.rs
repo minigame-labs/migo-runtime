@@ -1,7 +1,7 @@
 //! Public controls over the real HTTP response sealed by the session Fs lane.
 use super::*;
 use crate::inner_audio::InnerAudioPlayer;
-use crate::streaming_file::tests::controls::{
+use crate::stream_open::file_tests::controls::{
     deterministic, finish, pull_seek, seek_reference, suffix, wait,
 };
 pub(super) struct Context {
@@ -43,7 +43,8 @@ pub(super) struct Loaded {
     player: InnerAudioPlayer,
     pub(super) state: Arc<StreamingState>,
     pub(super) server: Server,
-    mode: Mode,
+    /// Range requests made while loading; none may follow a complete body.
+    ranges_at_load: usize,
 }
 impl std::ops::Deref for Loaded {
     type Target = InnerAudioPlayer;
@@ -59,13 +60,11 @@ impl std::ops::DerefMut for Loaded {
 impl Drop for Loaded {
     fn drop(&mut self) {
         assert!(self.state.control_sender().is_some());
-        if self.mode != Mode::Normal {
-            assert_eq!(
-                self.server.ranges.load(Ordering::Acquire),
-                usize::from(self.mode == Mode::Ignored),
-                "sealed source retried HTTP after preparing controls"
-            );
-        }
+        assert_eq!(
+            self.server.ranges.load(Ordering::Acquire),
+            self.ranges_at_load,
+            "a completely spooled source went back to HTTP"
+        );
     }
 }
 pub(super) async fn player(f: &Context, data: &[u8], rate: u32) -> Loaded {
@@ -98,19 +97,12 @@ pub(super) async fn player(f: &Context, data: &[u8], rate: u32) -> Loaded {
         "HTTP sealed source never activated its original control port"
     );
     assert_eq!(server.initial_eof.load(Ordering::Acquire), 1);
-    if f.mode != Mode::Normal {
-        assert_eq!(
-            server.ranges.load(Ordering::Acquire),
-            usize::from(f.mode == Mode::Ignored)
-        );
-    } else {
-        assert!(server.ranges.load(Ordering::Acquire) > 0);
-    }
+    let ranges_at_load = server.ranges.load(Ordering::Acquire);
     Loaded {
         player: p,
         state,
         server,
-        mode: f.mode,
+        ranges_at_load,
     }
 }
 fn compare(got: &[f32], want: &[f32], key: &str) {
@@ -313,7 +305,7 @@ async fn public_loop_cutovers_keep_the_global_sinc_grid_and_finish_the_consumed_
 }
 
 #[tokio::test]
-async fn pns_http_seeks_match_independent_mature_pull_seek_instead_of_continuous_noise() {
+async fn pns_http_seeks_match_an_independent_pull_seek() {
     for mode in [Mode::NoTag, Mode::Ignored] {
         let f = Context::new(mode);
         for (name, data) in cases()
@@ -327,18 +319,6 @@ async fn pns_http_seeks_match_independent_mature_pull_seek_instead_of_continuous
                 let start =
                     (target as u128 * rate as u128).div_ceil(native.sample_rate as u128) as u64;
                 let reference = seek_reference(data, rate, start, 1, Some(target as u64));
-                if name == "1-front" && rate == 16000 {
-                    let continuous = crate::decoder::decode_for_rate(data, rate).unwrap();
-                    let delta = reference
-                        .iter()
-                        .zip(&continuous.samples[start as usize * native.channels as usize..])
-                        .map(|(a, b)| (*a - *b).abs())
-                        .fold(0.0f32, f32::max);
-                    assert!(
-                        delta > 0.00001,
-                        "PNS oracle did not expose the real mature-seek noise discontinuity"
-                    );
-                }
                 let mut p = player(&f, data, rate).await;
                 p.seek((target as f64 + 0.25) / native.sample_rate as f64);
                 wait(&mut p, |p| {
@@ -433,7 +413,7 @@ fn url_retention_requires_a_real_port_and_preserves_existing_single_pass_and_fix
 }
 
 #[tokio::test]
-async fn ordinary_progressive_formats_keep_complete_pcm_and_close_the_uncontrolled_url() {
+async fn ordinary_progressive_formats_keep_complete_pcm_and_controls_follow_a_known_length() {
     let f = Context::new(Mode::NoTag);
     let mut wav = b"RIFF".to_vec();
     let frames = 9737u32;
@@ -467,9 +447,19 @@ async fn ordinary_progressive_formats_keep_complete_pcm_and_close_the_uncontroll
                 rate,
                 Some(f.spool()),
             );
-            let got = collect(&mut rx)
-                .await
-                .expect("ordinary URL lost its progressive source");
+            let mut got = Vec::new();
+            loop {
+                match tokio::time::timeout(WAIT, rx.recv())
+                    .await
+                    .expect("ordinary URL publication stalled")
+                    .expect("ordinary URL closed before Done")
+                {
+                    StreamMsg::Samples { pcm, .. } => got.extend_from_slice(&pcm),
+                    StreamMsg::Done { .. } => break,
+                    StreamMsg::Error { message, .. } => panic!("ordinary URL failed: {message}"),
+                    StreamMsg::Ready { .. } => {}
+                }
+            }
             let expected = crate::decoder::decode_for_rate(&data, rate).unwrap();
             assert_eq!(
                 got.iter().map(|s| s.to_bits()).collect::<Vec<_>>(),
@@ -480,11 +470,25 @@ async fn ordinary_progressive_formats_keep_complete_pcm_and_close_the_uncontroll
                     .collect::<Vec<_>>(),
                 "ordinary URL complete PCM changed"
             );
-            assert!(
-                !state.retains_source() && state.control_sender().is_none(),
-                "ordinary progressive URL retained an unavailable control port"
+            // Without a validator seeks replay the spool or read on, so only
+            // a known presentation length decides whether controls exist; an
+            // unknown-length source ends with its single pass.
+            let controlled = state.timeline().is_some();
+            assert_eq!(
+                state.control_sender().is_some(),
+                controlled,
+                "{name}: controls do not follow its known presentation length"
             );
-            assert!(rx.is_closed());
+            if controlled {
+                state.cancel();
+            }
+            assert!(
+                tokio::time::timeout(WAIT, rx.recv())
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "{name}: producer outlived its stream"
+            );
             assert_eq!(server.ranges.load(Ordering::Acquire), 0);
             if std::env::var_os("MIGO_DUMP_HTTP_CONTROL_PCM").is_some() {
                 println!(
@@ -494,206 +498,4 @@ async fn ordinary_progressive_formats_keep_complete_pcm_and_close_the_uncontroll
             }
         }
     }
-}
-
-#[tokio::test]
-async fn loop_intent_before_the_late_http_port_keeps_the_last_requested_mode() {
-    let f = Context::new(Mode::NoTag);
-    let data = include_bytes!("decoder/aac-fixtures/1-seek-edit.m4a");
-    let native = crate::decoder::decode(data).unwrap();
-    for changed in [false, true] {
-        let server = server(data.to_vec(), Mode::NoTag, false, false).await;
-        let state = StreamingState::new_url();
-        let (tx, rx) = crate::streaming::stream_channel();
-        let mut p = InnerAudioPlayer::new(919, native.channels);
-        let load = p.begin_load_for(8181).unwrap();
-        p.set_loop_enabled(!changed);
-        p.complete_stream_load(
-            load,
-            "http://indexed-product-fixture.invalid/late".into(),
-            rx,
-            state.clone(),
-        )
-        .unwrap();
-        if changed {
-            p.set_loop_enabled(true);
-        }
-        let task = tokio::spawn(crate::streaming_http_prepare::run(
-            f.host.audio_cpu(),
-            server.client(f.host.pools().clone()),
-            "http://indexed-product-fixture.invalid/late".into(),
-            tx,
-            state.clone(),
-            3000,
-            f.spool(),
-        ));
-        wait(&mut p, |p| p.shared.is_loaded()).await;
-        let got = suffix(
-            &mut p,
-            (native.samples.len() / native.channels as usize * 3000)
-                .div_ceil(native.sample_rate as usize)
-                + 37,
-        )
-        .await;
-        let expected = crate::resample_job::tests::reference(
-            &crate::decoder::DecodedAudio {
-                samples: native.samples.repeat(3),
-                sample_rate: native.sample_rate,
-                channels: native.channels,
-            },
-            3000,
-        );
-        compare(
-            &got,
-            &expected[..got.len()],
-            &format!("loading-{changed}/loop"),
-        );
-        assert!(state.control_sender().is_some() && state.retains_source());
-        drop(p);
-        tokio::time::timeout(WAIT, task).await.unwrap().unwrap();
-    }
-}
-
-use shared::audio_file::{
-    AudioFile, AudioFileCancel, AudioFileRead, AudioHttpSpool, AudioSpoolBody, AudioSpoolFuture,
-};
-pub(crate) struct Seen {
-    pub(crate) file: std::sync::Weak<dyn AudioFile>,
-    pub(crate) watch: Arc<migo_alloc_probe::DeallocationWatch>,
-}
-pub(crate) struct Freed {
-    pub(crate) bytes: u64,
-    pub(crate) allocation: Option<usize>,
-}
-struct ObservedSpool {
-    source: Arc<dyn AudioHttpSpool>,
-    seen: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<Seen>>>,
-    freed: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<Freed>>>,
-}
-struct ObservedFile {
-    file: Option<Arc<dyn AudioFile>>,
-    watch: Arc<migo_alloc_probe::DeallocationWatch>,
-    freed: Option<tokio::sync::oneshot::Sender<Freed>>,
-}
-impl Drop for ObservedFile {
-    fn drop(&mut self) {
-        let before = migo_alloc_probe::thread_counts().bytes_freed;
-        drop(self.file.take());
-        let freed = Freed {
-            bytes: migo_alloc_probe::thread_counts().bytes_freed - before,
-            allocation: self.watch.freed_bytes(),
-        };
-        if let Some(reply) = self.freed.take() {
-            let _ = reply.send(freed);
-        }
-    }
-}
-impl ObservedFile {
-    fn source(&self) -> &Arc<dyn AudioFile> {
-        self.file.as_ref().unwrap()
-    }
-}
-impl AudioFile for ObservedFile {
-    fn read_blocking(&self, _offset: u64, _output: &mut [u8]) -> shared::error::EngineResult<()> {
-        unimplemented!("the stepped pipeline never reads on the calling thread")
-    }
-    fn length(&self) -> u64 {
-        self.source().length()
-    }
-    fn prefix(&self) -> &[u8] {
-        self.source().prefix()
-    }
-    fn queued_bytes(&self) -> usize {
-        self.source().queued_bytes()
-    }
-    fn is_closed(&self) -> bool {
-        self.source().is_closed()
-    }
-    fn closed_signal(&self) -> &tokio::sync::Notify {
-        self.source().closed_signal()
-    }
-    fn read_at(
-        self: Arc<Self>,
-        offset: u64,
-        length: usize,
-        cancel: Arc<dyn AudioFileCancel>,
-        deadline: std::time::Instant,
-    ) -> Result<AudioFileRead, EngineError> {
-        self.source()
-            .clone()
-            .read_at(offset, length, cancel, deadline)
-    }
-    fn read_control_at(
-        self: Arc<Self>,
-        offset: u64,
-        length: usize,
-        cancel: Arc<dyn AudioFileCancel>,
-        deadline: std::time::Instant,
-    ) -> Result<AudioFileRead, EngineError> {
-        self.source()
-            .clone()
-            .read_control_at(offset, length, cancel, deadline)
-    }
-}
-impl AudioHttpSpool for ObservedSpool {
-    fn prepare(
-        self: Arc<Self>,
-        body: Box<dyn AudioSpoolBody>,
-        cancel: Arc<dyn AudioFileCancel>,
-        deadline: std::time::Instant,
-    ) -> AudioSpoolFuture<'static, Arc<dyn AudioFile>> {
-        Box::pin(async move {
-            let file = self
-                .source
-                .clone()
-                .prepare(body, cancel.clone(), deadline)
-                .await?;
-            let chunk = file
-                .clone()
-                .read_at(0, 1, cancel, deadline)?
-                .await
-                .unwrap()
-                .unwrap()?;
-            let watch = Arc::new(
-                migo_alloc_probe::DeallocationWatch::new(chunk.as_ref().as_ptr()).unwrap(),
-            );
-            drop(chunk);
-            let file: Arc<dyn AudioFile> = Arc::new(ObservedFile {
-                file: Some(file),
-                watch: watch.clone(),
-                freed: self.freed.lock().unwrap().take(),
-            });
-            self.seen
-                .lock()
-                .unwrap()
-                .take()
-                .unwrap()
-                .send(Seen {
-                    file: Arc::downgrade(&file),
-                    watch,
-                })
-                .ok()
-                .unwrap();
-            Ok(file)
-        })
-    }
-}
-pub(crate) fn observe(
-    source: Arc<dyn AudioHttpSpool>,
-) -> (
-    Arc<dyn AudioHttpSpool>,
-    tokio::sync::oneshot::Receiver<Seen>,
-    tokio::sync::oneshot::Receiver<Freed>,
-) {
-    let (tx, seen) = tokio::sync::oneshot::channel();
-    let (drop_tx, freed) = tokio::sync::oneshot::channel();
-    (
-        Arc::new(ObservedSpool {
-            source,
-            seen: std::sync::Mutex::new(Some(tx)),
-            freed: std::sync::Mutex::new(Some(drop_tx)),
-        }),
-        seen,
-        freed,
-    )
 }

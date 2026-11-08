@@ -3,9 +3,9 @@ use super::range_controls::{done, start_controlled};
 use super::*;
 use crate::inner_audio::InnerAudioPlayer;
 use crate::stream_control::{Reply, request};
-use crate::streaming_file::tests::controls::{finish, suffix, wait};
+use crate::stream_open::file_tests::controls::{finish, suffix, wait};
 fn data(frames: usize, channels: u16, rate: u32, tail: usize) -> Vec<u8> {
-    let mut data = crate::streaming_codecs::tests::wav(rate, channels, frames);
+    let mut data = crate::test_media::wav(rate, channels, frames);
     if tail != 0 {
         data.extend(b"LIST");
         data.extend((tail as u32).to_le_bytes());
@@ -219,7 +219,7 @@ async fn wave_loops_with_metadata_keep_global_sinc_phase_and_consumer_cutovers()
 }
 
 #[tokio::test]
-async fn wave_without_reliable_range_keeps_the_original_complete_progressive_body() {
+async fn wave_without_reliable_range_keeps_the_complete_original_body_without_unpinned_ranges() {
     let f = controls::Context::new(Mode::Normal);
     let bytes = data(9737, 2, 44100, 37);
     for mode in [
@@ -246,6 +246,7 @@ async fn wave_without_reliable_range_keeps_the_original_complete_progressive_bod
             while let Some(message) = tokio::time::timeout(WAIT, rx.recv()).await.unwrap() {
                 match message {
                     StreamMsg::Samples { pcm: p, .. } => pcm.extend_from_slice(&p),
+                    StreamMsg::Done { .. } => break,
                     StreamMsg::Error { message, .. } => panic!(
                         "fallback WAVE lost original body: mode={} rate={rate} samples={} error={message}",
                         match mode {
@@ -277,15 +278,21 @@ async fn wave_without_reliable_range_keeps_the_original_complete_progressive_bod
                     }
                 ),
             );
-            assert!(
-                state.control_sender().is_none() && !state.retains_source(),
-                "unreliable WAVE installed unavailable source controls"
-            );
-            assert!(rx.is_closed());
+            // Seeks replay the spool or read on: controls follow the known
+            // presentation length, and nothing goes back to the network.
             assert_eq!(
-                server.range_requests(),
-                usize::from(matches!(mode, Mode::Ignored | Mode::UnknownLength))
+                state.control_sender().is_some(),
+                state.timeline().is_some(),
+                "WAVE controls do not follow its known presentation length"
             );
+            state.cancel();
+            assert!(
+                tokio::time::timeout(WAIT, rx.recv())
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(server.range_requests(), 0);
         }
     }
 }
@@ -400,96 +407,6 @@ async fn wave_refusals_and_actual_consumer_ack_preserve_the_original_revision() 
     );
     assert!(state.is_cancelled());
 }
-#[tokio::test]
-async fn wave_bad_media_ranges_are_terminal_and_cannot_publish_a_new_revision() {
-    let host = Arc::new(migo_io::scheduler::IoScheduler::new(1104));
-    let bytes = data(120137, 2, 44100, 0);
-    for mode in [Mode::Changed, Mode::Offset, Mode::Truncated] {
-        let server = server(bytes.clone(), Mode::Normal, false, false).await;
-        let (mut rx, state) = start_controlled(&server, &host);
-        let (_, old) = done(&mut rx).await;
-        server.range_fault(mode);
-        let reply = request(state.control_sender().unwrap(), 0, Instant::now() + WAIT)
-            .unwrap()
-            .await;
-        let expected = if mode == Mode::Truncated {
-            let Reply::Prepared(prepared) =
-                reply.expect("truncated WAVE lost valid first media bytes")
-            else {
-                panic!("truncated WAVE did not prepare first validated body bytes")
-            };
-            let revision = prepared.revision;
-            prepared.accept.send(()).unwrap();
-            revision
-        } else {
-            assert!(
-                reply.is_err(),
-                "invalid HTTP WAVE Range header was accepted"
-            );
-            old
-        };
-        let mut received = Vec::new();
-        loop {
-            let message = tokio::time::timeout(WAIT, rx.recv())
-                .await
-                .unwrap()
-                .unwrap();
-            match message {
-                StreamMsg::Ready { revision, .. } if mode == Mode::Truncated => {
-                    assert_eq!(revision, expected);
-                }
-                StreamMsg::Samples { revision, pcm } if mode == Mode::Truncated => {
-                    assert_eq!(revision, expected);
-                    received.extend_from_slice(&pcm);
-                }
-                StreamMsg::Error { revision, .. } => {
-                    assert_eq!(revision, expected);
-                    break;
-                }
-                _ => panic!("bad HTTP WAVE published successful terminal PCM or a new revision"),
-            }
-        }
-        if mode == Mode::Truncated {
-            let reference = crate::decoder::decode_for_rate(&bytes, 16000).unwrap();
-            assert!(received.len() < reference.samples.len());
-            assert_eq!(received, reference.samples[..received.len()]);
-        }
-        let count = server.range_requests();
-        assert!(
-            tokio::time::timeout(WAIT, rx.recv())
-                .await
-                .unwrap()
-                .is_none()
-        );
-        assert_eq!(server.range_requests(), count);
-        assert!(
-            request(state.control_sender().unwrap(), 0, Instant::now() + WAIT).is_err(),
-            "terminal HTTP WAVE error reopened its source control channel"
-        );
-    }
-}
-#[tokio::test]
-async fn wave_control_keeps_the_original_deadline_through_the_first_real_media_body() {
-    let host = Arc::new(migo_io::scheduler::IoScheduler::new(1105));
-    let bytes = data(120137, 2, 44100, 37);
-    let server = server(bytes, Mode::Normal, false, false).await;
-    let (mut rx, state) = start_controlled(&server, &host);
-    done(&mut rx).await;
-    server.pause_range_body(1);
-    let deadline = Instant::now() + Duration::from_millis(500);
-    let reply = request(state.control_sender().unwrap(), 0, deadline).unwrap();
-    tokio::time::timeout(WAIT, server.entered.notified())
-        .await
-        .expect("HTTP WAVE control never reached its real media read");
-    tokio::select! {r=reply=>assert!(r.is_err(),"HTTP WAVE prepared beyond original media deadline"),
-    _=tokio::time::sleep_until(deadline+Duration::from_millis(300))=>panic!("HTTP WAVE renewed its original media deadline"),}
-    assert!(matches!(
-        tokio::time::timeout(WAIT, rx.recv()).await.unwrap(),
-        Some(StreamMsg::Error { .. })
-    ));
-    server.release.notify_one();
-}
-
 #[tokio::test]
 async fn wave_source_seek_before_original_response_eof_preserves_the_entire_nonconstant_tail() {
     let host = Arc::new(migo_io::scheduler::IoScheduler::new(1106));

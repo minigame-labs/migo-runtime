@@ -3,7 +3,7 @@ use super::range_controls::{done, start_controlled};
 use super::*;
 use crate::inner_audio::InnerAudioPlayer;
 use crate::stream_control::{Reply, request};
-use crate::streaming_file::tests::controls::{finish, suffix, wait};
+use crate::stream_open::file_tests::controls::{finish, suffix, wait};
 const MUSIC: &[u8] = include_bytes!("decoder/ogg-fixtures/1.ogg");
 const MONO: &[u8] = include_bytes!("decoder/ogg-fixtures/2.ogg");
 async fn load(
@@ -35,15 +35,21 @@ async fn load(
     );
     (p, state, server)
 }
-fn compare(got: &[f32], want: &[f32], key: &str, exact: bool) {
+/// Restarts replay the converter from the same origin and must be bit-exact.
+const EXACT: f32 = 0.0;
+/// A seek restarts the converter's history at its own origin: the same filter
+/// over a different accumulation order, so equal up to f32 rounding.
+const SEEK: f32 = 1e-6;
+const DECODED: f32 = 1e-5;
+fn compare(got: &[f32], want: &[f32], key: &str, tolerance: f32) {
     assert!(
         got.len() == want.len()
             && got.iter().zip(want).all(|(a, b)| a.is_finite()
                 && b.is_finite()
-                && if exact {
+                && if tolerance == EXACT {
                     a.to_bits() == b.to_bits()
                 } else {
-                    (*a - *b).abs() <= 0.00001
+                    (*a - *b).abs() <= tolerance
                 }),
         "pinned Vorbis complete PCM changed: {key}, lengths={}/{}, first={:?}",
         got.len(),
@@ -94,7 +100,7 @@ async fn public_vorbis_seek_restart_and_exact_endpoint_keep_complete_pcm() {
                     &got,
                     expected,
                     &format!("file-{name}-{rate}-{target}-seek"),
-                    true,
+                    SEEK,
                 );
                 if got.is_empty() {
                     wait(&mut p, |p| p.is_stream_complete()).await;
@@ -110,7 +116,7 @@ async fn public_vorbis_seek_restart_and_exact_endpoint_keep_complete_pcm() {
                     &got,
                     &reference.samples,
                     &format!("file-{name}-{rate}-{target}-restart"),
-                    true,
+                    EXACT,
                 );
             }
             finish(&mut p).await;
@@ -155,7 +161,7 @@ async fn public_vorbis_loops_keep_global_phase_and_reuse_the_original_cached_win
                 &got,
                 &a[..got.len()],
                 &format!("file-{name}-{rate}-loop"),
-                false,
+                DECODED,
             );
             // A public cutover may precede original EOF. Its one cold replay
             // is distinct from reopening HTTP once per decoded loop cycle.
@@ -183,7 +189,7 @@ async fn public_vorbis_loops_keep_global_phase_and_reuse_the_original_cached_win
                 &got,
                 &finite[at as usize * native.channels as usize..],
                 &format!("file-{name}-{rate}-disabled"),
-                false,
+                DECODED,
             );
             finish(&mut p).await;
             p.set_loop_enabled(true);
@@ -199,7 +205,7 @@ async fn public_vorbis_loops_keep_global_phase_and_reuse_the_original_cached_win
                 &got,
                 &a[..got.len()],
                 &format!("file-{name}-{rate}-loop-restart"),
-                false,
+                DECODED,
             );
             assert!(
                 server.range_requests() <= loop_requests + 2,
@@ -211,6 +217,12 @@ async fn public_vorbis_loops_keep_global_phase_and_reuse_the_original_cached_win
 // A fallback must retain its original progressive response, without a spool.
 struct NoSpool;
 impl shared::audio_file::AudioHttpSpool for NoSpool {
+    fn sparse(
+        &self,
+        len: Option<u64>,
+    ) -> shared::error::EngineResult<Box<dyn shared::audio_file::AudioSparseSpool>> {
+        crate::stream_open::memory_sparse(len)
+    }
     fn prepare(
         self: Arc<Self>,
         _: Box<dyn shared::audio_file::AudioSpoolBody>,
@@ -221,7 +233,7 @@ impl shared::audio_file::AudioHttpSpool for NoSpool {
     }
 }
 #[tokio::test]
-async fn unreliable_range_vorbis_keeps_complete_original_body_and_never_activates_controls() {
+async fn unreliable_range_vorbis_keeps_the_complete_original_body_without_unpinned_ranges() {
     let f = controls::Context::new(Mode::Normal);
     for (mode_id, mode) in [
         Mode::NoTag,
@@ -250,22 +262,28 @@ async fn unreliable_range_vorbis_keeps_complete_original_body_and_never_activate
                 &got,
                 &crate::decoder::decode_for_rate(MONO, rate).unwrap().samples,
                 &format!("fallback-{mode_id}-{rate}"),
-                true,
+                EXACT,
             );
-            assert!(
-                state.control_sender().is_none() && !state.retains_source(),
-                "unreliable Vorbis Range exposed source controls"
+            // Without a pinned identity a seek is served from the spool or
+            // reads on along the original body, so controls depend only on a
+            // known presentation length.
+            assert_eq!(
+                state.control_sender().is_some(),
+                state.timeline().is_some(),
+                "Vorbis controls do not follow its known presentation length"
             );
+            state.cancel();
             assert!(
                 tokio::time::timeout(WAIT, rx.recv())
                     .await
                     .unwrap()
-                    .is_none()
+                    .is_none(),
+                "Vorbis producer outlived its cancelled stream"
             );
             assert_eq!(
                 server.range_requests(),
-                usize::from(matches!(mode, Mode::Ignored | Mode::UnknownLength)),
-                "fallback Vorbis retried Range instead of keeping its original response"
+                0,
+                "an unpinned Vorbis response was followed by a Range request"
             );
         }
     }
@@ -282,7 +300,7 @@ async fn vorbis_refusals_and_source_ack_preserve_the_old_revision_and_cached_pcm
             .unwrap()
             .samples,
         "ack-original",
-        true,
+        EXACT,
     );
     let port = state
         .control_sender()
@@ -330,10 +348,10 @@ async fn vorbis_refusals_and_source_ack_preserve_the_old_revision_and_cached_pcm
     prepared.accept.send(()).unwrap();
     let (got, r) = done(&mut rx).await;
     assert_eq!(r, revision);
-    compare(&got, &first[start..], "ack-suffix", true);
+    compare(&got, &first[start..], "ack-suffix", SEEK);
     assert_eq!(
         server.range_requests(),
-        1,
+        0,
         "cached Vorbis seek spent another Range request"
     );
     let Reply::Prepared(prepared) = request(port, 0, Instant::now() + WAIT)
@@ -354,154 +372,6 @@ async fn vorbis_refusals_and_source_ack_preserve_the_old_revision_and_cached_pcm
 }
 
 #[tokio::test]
-async fn vorbis_bad_media_ranges_are_terminal_and_cannot_publish_successful_done() {
-    let host = Arc::new(migo_io::scheduler::IoScheduler::new(1112));
-    for mode in [Mode::Changed, Mode::Offset, Mode::Truncated] {
-        let server = server(CROSS.to_vec(), Mode::Normal, false, false).await;
-        let (mut rx, state) = start_controlled(&server, &host);
-        let (_, old) = done(&mut rx).await;
-        server.range_fault(mode);
-        let reply = request(state.control_sender().unwrap(), 0, Instant::now() + WAIT)
-            .unwrap()
-            .await;
-        let expected = if mode == Mode::Truncated {
-            let Reply::Prepared(prepared) =
-                reply.expect("truncated Vorbis lost valid first media bytes")
-            else {
-                panic!("truncated Vorbis did not prepare its validated first chunk")
-            };
-            let rev = prepared.revision;
-            prepared.accept.send(()).unwrap();
-            rev
-        } else {
-            assert!(reply.is_err(), "invalid Vorbis Range header was accepted");
-            old
-        };
-        let mut pcm = Vec::new();
-        loop {
-            match tokio::time::timeout(WAIT, rx.recv())
-                .await
-                .unwrap()
-                .unwrap()
-            {
-                StreamMsg::Ready { revision, .. } if mode == Mode::Truncated => {
-                    assert_eq!(revision, expected)
-                }
-                StreamMsg::Samples { revision, pcm: out } if mode == Mode::Truncated => {
-                    assert_eq!(revision, expected);
-                    pcm.extend_from_slice(&out);
-                }
-                StreamMsg::Error { revision, .. } => {
-                    assert_eq!(revision, expected);
-                    break;
-                }
-                _ => panic!("bad Vorbis Range published successful Done or a new revision"),
-            }
-        }
-        if mode == Mode::Truncated {
-            let full = crate::decoder::decode_for_rate(CROSS, 16000).unwrap();
-            assert!(pcm.len() < full.samples.len());
-            compare(
-                &pcm,
-                &full.samples[..pcm.len()],
-                "truncated-range-prefix",
-                true,
-            );
-        }
-        let count = server.range_requests();
-        assert!(
-            tokio::time::timeout(WAIT, rx.recv())
-                .await
-                .unwrap()
-                .is_none()
-        );
-        assert_eq!(server.range_requests(), count);
-        assert!(
-            request(state.control_sender().unwrap(), 0, Instant::now() + WAIT).is_err(),
-            "terminal Vorbis Range reopened its retired source"
-        );
-    }
-}
-#[tokio::test]
-async fn vorbis_control_keeps_one_absolute_deadline_through_the_first_real_media_body() {
-    let host = Arc::new(migo_io::scheduler::IoScheduler::new(1113));
-    let server = server(CROSS.to_vec(), Mode::Normal, false, false).await;
-    let (mut rx, state) = start_controlled(&server, &host);
-    done(&mut rx).await;
-    server.pause_range_body(1);
-    let deadline = Instant::now() + Duration::from_millis(500);
-    let mut reply = request(state.control_sender().unwrap(), 0, deadline).unwrap();
-    tokio::select! {
-        _=server.entered.notified()=>(),
-        _=&mut reply=>panic!("Vorbis source acknowledged before its first real media read"),
-        _=tokio::time::sleep(WAIT)=>panic!("Vorbis source control never reached its real media read"),
-    }
-    tokio::select! {r=reply=>assert!(r.is_err(),"Vorbis acknowledged before the first body met its original deadline"),_ = tokio::time::sleep_until(deadline+Duration::from_millis(300))=>panic!("Vorbis control renewed the original body deadline"),}
-    assert!(matches!(
-        tokio::time::timeout(WAIT, rx.recv()).await.unwrap(),
-        Some(StreamMsg::Error { .. })
-    ));
-    server.release.notify_one();
-}
-#[tokio::test]
-async fn vorbis_loading_loop_intents_survive_the_late_authoritative_port() {
-    let f = controls::Context::new(Mode::Normal);
-    let native = crate::decoder::decode(MONO).unwrap();
-    for changed in [false, true] {
-        let server = server(MONO.to_vec(), Mode::Normal, false, false).await;
-        let state = StreamingState::new_url();
-        let (tx, rx) = crate::streaming::stream_channel();
-        let mut p = InnerAudioPlayer::new(919, native.channels);
-        let load = p.begin_load_for(8181).unwrap();
-        p.set_loop_enabled(!changed);
-        p.complete_stream_load(
-            load,
-            "http://indexed-product-fixture.invalid/late".into(),
-            rx,
-            state.clone(),
-        )
-        .unwrap();
-        if changed {
-            p.set_loop_enabled(true);
-        }
-        let task = tokio::spawn(crate::streaming_http_prepare::run(
-            f.host.audio_cpu(),
-            server.client(f.host.pools().clone()),
-            "http://indexed-product-fixture.invalid/late".into(),
-            tx,
-            state.clone(),
-            8000,
-            f.spool(),
-        ));
-        wait(&mut p, |p| p.shared.is_loaded() && p.shared.loop_enabled()).await;
-        let got = suffix(
-            &mut p,
-            (native.samples.len() / native.channels as usize * 8000)
-                .div_ceil(native.sample_rate as usize)
-                + 37,
-        )
-        .await;
-        let expected = crate::resample_job::tests::reference(
-            &crate::decoder::DecodedAudio {
-                samples: native.samples.repeat(4),
-                sample_rate: native.sample_rate,
-                channels: native.channels,
-            },
-            8000,
-        );
-        compare(
-            &got,
-            &expected[..got.len()],
-            &format!("loading-{changed}-loop"),
-            false,
-        );
-        assert!(state.control_sender().is_some());
-        drop(p);
-        tokio::time::timeout(WAIT, task).await.unwrap().unwrap();
-    }
-}
-
-#[tokio::test]
 async fn vorbis_seek_while_original_response_is_held_preserves_the_complete_nonconstant_tail() {
     let f = controls::Context::new(Mode::Normal);
     let native = crate::decoder::decode(CROSS).unwrap();
@@ -516,7 +386,6 @@ async fn vorbis_seek_while_original_response_is_held_preserves_the_complete_nonc
     );
     let target = (native.samples.len() / channels / 2 + 17) as u64;
     let start = (target * 16000).div_ceil(native.sample_rate as u64);
-    let ranges = server.range_requests();
     p.pause();
     let old = p.shared.position_frames();
     p.seek((target as f64 + 0.25) / native.sample_rate as f64);
@@ -534,14 +403,14 @@ async fn vorbis_seek_while_original_response_is_held_preserves_the_complete_nonc
         &got,
         &reference.samples[start as usize * channels..],
         "held-original-complete-tail",
-        true,
+        EXACT,
     );
     finish(&mut p).await;
+    // The held response never completed: its missing byte came by Range, and
+    // the delivered bytes of the same pinned object were reused, not fetched
+    // again.
     assert_eq!(server.initial_eof.load(Ordering::Acquire), 0);
-    assert!(
-        server.range_requests() > ranges,
-        "held Vorbis seek did not reopen the same pinned source"
-    );
+    assert!(server.range_requests() >= 1);
 }
 #[tokio::test]
 async fn cross_page_and_eight_channel_http_seek_keep_complete_file_suffix_bits() {
@@ -571,202 +440,17 @@ async fn cross_page_and_eight_channel_http_seek_keep_complete_file_suffix_bits()
                 &got,
                 &expected.samples[start as usize * channels..],
                 &format!("file-{name}-{rate}-seek"),
-                true,
+                SEEK,
             );
             finish(&mut p).await;
         }
     }
 }
 #[tokio::test]
-async fn actual_large_http_vorbis_reclaims_pcm_reopens_the_pinned_source_and_checks_every_tail_sample()
- {
-    use crate::inner_audio::PlaybackState;
-    use shared::protocol::audio_cmd::InnerAudioEventType;
+async fn a_corrupt_final_vorbis_page_is_skipped_as_libogg_does_and_the_rest_plays() {
     let f = controls::Context::new(Mode::Normal);
-    let bytes = crate::streaming_codecs::vorbis::tests::silence(513, 128);
-    let frames = 513_u64 * 4096;
-    assert!(bytes.len() > 65536);
-    assert!(
-        crate::decoder::decode(&bytes).is_err(),
-        "whole-file PCM ceiling was relaxed"
-    );
-    let (mut p, _, server) = load(&f, &bytes, 8, 48000, Some(bytes.len() - 1)).await;
-    assert_eq!(server.initial_eof.load(Ordering::Acquire), 0);
-    async fn zeroes(p: &mut InnerAudioPlayer, frames: u64) {
-        let mut got = 0;
-        let mut out = [0.; 8192];
-        let deadline = std::time::Instant::now() + WAIT;
-        p.play();
-        while got < frames {
-            p.poll_stream();
-            assert!(
-                !p.drain_events().any(|e| {
-                    assert_eq!(e.source_id, 8181);
-                    e.event_type == InnerAudioEventType::Error
-                }),
-                "large HTTP Vorbis failed its actual replay"
-            );
-            let offered = ((frames - got) * 8).min(out.len() as u64) as usize;
-            out.fill(0.);
-            let before = p.shared.position_frames();
-            let active = p.process(&mut out[..offered]);
-            let n = if active {
-                p.shared.position_frames().saturating_sub(before)
-            } else if p.shared.state() == PlaybackState::Stopped && p.shared.is_loaded() {
-                frames - got
-            } else {
-                0
-            };
-            assert!(
-                n * 8 <= offered as u64,
-                "large HTTP Vorbis ended before its complete tail"
-            );
-            assert!(
-                out[..offered].iter().all(|n| *n == 0.),
-                "large HTTP Vorbis actual PCM changed"
-            );
-            got += n;
-            assert!(
-                p.physical_pcm_bytes() < 4 * 1024 * 1024,
-                "large HTTP Vorbis retained whole-track PCM"
-            );
-            assert!(
-                std::time::Instant::now() < deadline,
-                "large HTTP Vorbis source replay stalled"
-            );
-            tokio::task::yield_now().await;
-        }
-        assert_eq!(got, frames);
-    }
-    zeroes(&mut p, 180017).await;
-    assert!(
-        p.retained_stream_start() > 0,
-        "large HTTP Vorbis never reclaimed old PCM"
-    );
-    let ranges = server.range_requests();
-    p.pause();
-    p.seek(0.);
-    wait(&mut p, |p| {
-        p.shared.position_frames() == 0 && p.retained_stream_start() == 0
-    })
-    .await;
-    zeroes(&mut p, frames).await;
-    finish(&mut p).await;
-    assert!(
-        server.range_requests() > ranges,
-        "large Vorbis replay did not reopen its original pinned reader"
-    );
-    assert_eq!(server.initial_eof.load(Ordering::Acquire), 0);
-    p.seek(p.shared.duration());
-    wait(&mut p, |p| {
-        p.retained_stream_start() == frames
-            && p.shared.position_frames() == frames
-            && p.is_stream_complete()
-    })
-    .await;
-    println!(
-        "MIGO_LARGE_HTTP_VORBIS_CONTROL samples={} encoded={} complete_zero_pcm_checked=true original_held_before_eof=true reclaimed_then_source_replay=true",
-        frames * 8,
-        bytes.len()
-    );
-}
-#[tokio::test]
-async fn retained_http_vorbis_capacity_is_destroyed_only_by_the_original_cpu() {
-    use crate::streaming_transport::{Decoder, Progress};
-    use std::sync::atomic::AtomicBool;
-    let host = migo_io::scheduler::IoScheduler::new(1141);
-    let peer = migo_io::scheduler::IoScheduler::new(1142);
-    let slot = OffWorker::new(None::<AutoDecoder>, host.audio_cpu());
-    let (slot, watches) = slot
-        .with(|slot| {
-            let mut d = AutoDecoder::http_retained(16000, MONO.len() as u64);
-            let mut pos = 0;
-            let mut pcm = Vec::with_capacity(32768);
-            let mut done = false;
-            for _ in 0..100000 {
-                pcm.clear();
-                let step = d
-                    .step(
-                        &MONO[pos..],
-                        pos == MONO.len(),
-                        &mut pcm,
-                        &AtomicBool::new(false),
-                    )
-                    .unwrap();
-                pos += step.consumed;
-                if step.progress == Progress::NeedSource {
-                    let Some(HttpRequest::Vorbis(offset)) = d.http_request() else {
-                        panic!("HTTP Vorbis hid its original source request")
-                    };
-                    d.resume_vorbis(offset).unwrap();
-                    pos = offset as usize;
-                }
-                if step.progress == Progress::Finished {
-                    done = true;
-                    break;
-                }
-            }
-            assert!(done);
-            assert!(
-                d.reposition(0, None).unwrap().unwrap().0.is_none(),
-                "HTTP Vorbis lost its cached owned decoder after EOF"
-            );
-            let watches = d.vorbis_watches();
-            assert_eq!(watches.len(), 3);
-            assert!(watches[0].1 > MONO.len());
-            *slot = Some(d);
-            watches
-        })
-        .await
-        .unwrap();
-    let bytes = watches.iter().map(|(_, n)| *n).sum::<usize>();
-    let (started, entered) = std::sync::mpsc::channel();
-    let (release, blocked) = std::sync::mpsc::channel();
-    let task = tokio::spawn(slot.with(move |slot| {
-        started.send(()).unwrap();
-        blocked.recv_timeout(Duration::from_secs(15)).unwrap();
-        assert!(
-            std::thread::current()
-                .name()
-                .unwrap_or("")
-                .starts_with("Migo-IO-")
-        );
-        let mut pcm = Vec::with_capacity(32768);
-        let before = migo_alloc_probe::thread_counts().bytes_freed;
-        assert_eq!(
-            slot.as_mut()
-                .unwrap()
-                .step(&[], false, &mut pcm, &AtomicBool::new(true))
-                .unwrap()
-                .progress,
-            Progress::Cancelled
-        );
-        assert!(
-            migo_alloc_probe::thread_counts().bytes_freed - before >= bytes as u64,
-            "original CPU did not destroy retained HTTP Vorbis capacity"
-        );
-    }));
-    tokio::task::spawn_blocking(move || entered.recv_timeout(Duration::from_secs(15)).unwrap())
-        .await
-        .unwrap();
-    assert!(
-        watches.iter().all(|(w, _)| w.freed_bytes().is_none()),
-        "HTTP Vorbis capacity freed before its original CPU returned"
-    );
-    assert_eq!(peer.audio_cpu().run(|| 17).await.unwrap(), 17);
-    release.send(()).unwrap();
-    let (slot, ()) = task.await.unwrap().unwrap();
-    assert!(
-        watches.iter().all(|(w, n)| w.freed_bytes() == Some(*n)),
-        "original HTTP Vorbis CPU did not free the watched capacity"
-    );
-    drop(slot);
-    host.close();
-    peer.close();
-}
-#[tokio::test]
-async fn malformed_vorbis_final_crc_never_publishes_successful_done() {
-    let f = controls::Context::new(Mode::Normal);
+    let reference = crate::decoder::decode_for_rate(CROSS, 16000).unwrap();
+    let channels = reference.channels as usize;
     let mut bytes = CROSS.to_vec();
     *bytes.last_mut().unwrap() ^= 1;
     let server = server(bytes, Mode::Normal, false, false).await;
@@ -779,16 +463,33 @@ async fn malformed_vorbis_final_crc_never_publishes_successful_done() {
         16000,
         Some(Arc::new(NoSpool)),
     );
+    let mut got = Vec::new();
     loop {
         match tokio::time::timeout(WAIT, rx.recv())
             .await
             .unwrap()
-            .expect("malformed Vorbis closed without its terminal error")
+            .expect("Vorbis closed without Done")
         {
-            StreamMsg::Error { .. } => break,
-            StreamMsg::Done { .. } => panic!("bad Vorbis final CRC published successful Done"),
-            _ => (),
+            StreamMsg::Samples { pcm, .. } => got.extend_from_slice(&pcm),
+            StreamMsg::Done { .. } => break,
+            StreamMsg::Error { message, .. } => {
+                panic!("a skippable page failed the stream: {message}")
+            }
+            StreamMsg::Ready { .. } => {}
         }
     }
-    assert!(!state.retains_source() && state.control_sender().is_none());
+    // The presentation ends at the last intact page; everything before it
+    // (away from the converter's earlier end) is the intact decode.
+    assert!(
+        got.len() < reference.samples.len(),
+        "the corrupt page was decoded"
+    );
+    let settled = got.len().saturating_sub(64 * channels);
+    compare(
+        &got[..settled],
+        &reference.samples[..settled],
+        "skipped-final-page",
+        DECODED,
+    );
+    state.cancel();
 }

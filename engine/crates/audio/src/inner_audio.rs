@@ -418,7 +418,7 @@ pub struct InnerAudioPlayer {
     output_channels: u32,
     pending_events: Vec<InnerAudioEvent>,
     stream_rx: Option<Receiver<StreamMsg>>,
-    file_load: Option<crate::streaming_file::Load>,
+    file_load: Option<crate::stream_open::Load>,
     stream_state: Option<Arc<StreamingState>>,
     stream_revision: StreamRevision,
     stream_complete: bool,
@@ -606,9 +606,6 @@ impl InnerAudioPlayer {
     /// Callable on both the normal and early-return (stall) paths.
     #[inline]
     fn accumulate_time_update(&mut self, frames_rendered: usize) {
-        if let Some(source) = &self.stream_state {
-            source.record_rendered_frames(frames_rendered);
-        }
         let sr = self.shared.sample_rate() as u64;
         if sr == 0 {
             return;
@@ -829,7 +826,7 @@ impl InnerAudioPlayer {
         load: InnerAudioLoadToken,
         rx: Receiver<StreamMsg>,
         state: Arc<StreamingState>,
-        pending: crate::streaming_file::Load,
+        pending: crate::stream_open::Load,
     ) -> bool {
         match self.complete_stream_load(load, String::new(), rx, state) {
             Ok(()) => {
@@ -1183,7 +1180,19 @@ impl InnerAudioPlayer {
             if self.stream_prefetch_full() {
                 break;
             }
-            let Ok(msg) = rx.try_recv() else { break };
+            let msg = match rx.try_recv() {
+                Ok(msg) => msg,
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    // Every producer ends a traversal with Done or Error before
+                    // it exits; a channel closed with neither (a panicked or
+                    // lost producer) can never complete this stream.
+                    tracing::error!("InnerAudioPlayer {} stream producer vanished", self.id);
+                    self.fail_stream();
+                    stream_ended = true;
+                    break;
+                }
+            };
             if msg.revision() != self.stream_revision {
                 continue;
             }
@@ -2515,6 +2524,21 @@ mod tests {
         let mut resumed = [0.0; 4];
         assert!(player.process(&mut resumed));
         assert_eq!(resumed, [4.0, 5.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn a_producer_gone_without_done_or_error_fails_the_stream() {
+        let (mut player, tx) = short_stream(&[1.0, 2.0]);
+        player.drain_events().for_each(drop);
+        drop(tx);
+        player.poll_stream();
+        assert_eq!(player.shared.state(), PlaybackState::Stopped);
+        assert!(!player.shared.is_loaded());
+        let events = player
+            .drain_events()
+            .map(|event| event.event_type)
+            .collect::<Vec<_>>();
+        assert_eq!(events, [InnerAudioEventType::Error]);
     }
 
     #[test]

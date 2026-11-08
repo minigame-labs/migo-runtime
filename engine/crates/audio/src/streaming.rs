@@ -13,11 +13,6 @@ use std::time::Duration;
 use shared::error::{EngineError, EngineResult, ErrorCode};
 use tokio::sync::{Notify, mpsc};
 
-#[cfg(test)]
-use crate::off_worker::OffWorker;
-#[cfg(test)]
-use crate::streaming_mp3::Mp3StreamDecoder;
-
 /// Keep only a small number of decoded chunks ahead of the audio thread.
 /// When the app is backgrounded and stops polling, async sends apply
 /// backpressure to both decoding and the network response body.
@@ -25,7 +20,7 @@ pub(crate) const STREAM_CHANNEL_CAPACITY: usize = 4;
 
 /// Bound a server that accepts a connection but never produces headers.
 pub(crate) const RESPONSE_HEADER_TIMEOUT: Duration = Duration::from_secs(30);
-/// Per-chunk inactivity bound. This deliberately does not cap track duration.
+/// Per-read body inactivity bound. This deliberately does not cap track duration.
 pub(crate) const BODY_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The engine's HTTP client, as streaming holds it.
@@ -520,8 +515,6 @@ pub struct StreamingState {
     pub download_complete: AtomicBool,
     /// Whether cancelled
     pub cancelled: AtomicBool,
-    /// Monotonic real output consumption, independent of seeks and revisions.
-    rendered_frames: AtomicU64,
     /// Event-driven cancellation edge for tasks blocked on network I/O.
     cancel_notify: Notify,
     /// A reusable producer keeps its source and command receiver alive at EOF.
@@ -532,6 +525,13 @@ pub struct StreamingState {
     timeline: std::sync::OnceLock<StreamTimeline>,
     presentation: std::sync::OnceLock<StreamPresentation>,
     controls: std::sync::OnceLock<mpsc::Sender<crate::stream_control::Command>>,
+    /// Set while the producer reads its current traversal: a queued control
+    /// then interrupts a read the network has not answered (it is about to
+    /// reposition anyway). Off while the producer prepares a control.
+    preempt_reads: AtomicBool,
+    /// The deadline of the control being prepared: a read still waiting on
+    /// the network then is abandoned (the consumer fails the stream at it).
+    read_deadline: std::sync::Mutex<Option<tokio::time::Instant>>,
     /// Test observation of an actual queued publication wait, after CPU return.
     #[cfg(test)]
     pub(crate) publication_waiting: AtomicBool,
@@ -592,6 +592,29 @@ impl StreamingState {
         self.controls.get()
     }
 
+    pub(crate) fn set_read_preemption(&self, enabled: bool) {
+        self.preempt_reads.store(enabled, Ordering::Release);
+    }
+
+    pub(crate) fn set_read_deadline(&self, deadline: Option<tokio::time::Instant>) {
+        *self.read_deadline.lock().unwrap_or_else(|p| p.into_inner()) = deadline;
+    }
+
+    /// A waiting read should give up: a control is queued while the producer
+    /// reads its traversal, or the control it prepares is out of time.
+    pub(crate) fn read_preempted(&self) -> bool {
+        (self.preempt_reads.load(Ordering::Acquire)
+            && self
+                .controls
+                .get()
+                .is_some_and(|tx| tx.capacity() < tx.max_capacity()))
+            || self
+                .read_deadline
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .is_some_and(|deadline| tokio::time::Instant::now() >= deadline)
+    }
+
     pub(crate) fn install_controls(
         &self,
         sender: mpsc::Sender<crate::stream_control::Command>,
@@ -630,22 +653,6 @@ impl StreamingState {
         self.cancelled.load(Ordering::Acquire)
     }
 
-    pub(crate) fn rendered_frames(&self) -> u64 {
-        self.rendered_frames.load(Ordering::Relaxed)
-    }
-
-    pub(crate) fn record_rendered_frames(&self, frames: usize) {
-        if frames != 0 && !self.is_cancelled() {
-            // Saturation stops future credit rather than wrapping into a new
-            // epoch. Only the audio consumer calls this, once per mixed block.
-            let _ =
-                self.rendered_frames
-                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |old| {
-                        Some(old.saturating_add(frames as u64))
-                    });
-        }
-    }
-
     /// Wait without polling. Registering before the second level check closes
     /// the check-to-sleep race with `notify_waiters`, which does not retain a
     /// permit for future waiters.
@@ -669,38 +676,17 @@ impl Default for StreamingState {
             bytes_total: AtomicU64::new(0),
             download_complete: AtomicBool::new(false),
             cancelled: AtomicBool::new(false),
-            rendered_frames: AtomicU64::new(0),
             cancel_notify: Notify::new(),
             retain_after_eof: false,
             require_control_port: false,
             timeline: std::sync::OnceLock::new(),
             presentation: std::sync::OnceLock::new(),
             controls: std::sync::OnceLock::new(),
+            preempt_reads: AtomicBool::new(false),
+            read_deadline: std::sync::Mutex::new(None),
             #[cfg(test)]
             publication_waiting: AtomicBool::new(false),
         }
-    }
-}
-
-#[cfg(test)]
-mod rendered_progress_tests {
-    use super::*;
-
-    #[test]
-    fn consumed_credit_saturates_and_retirement_cannot_mint_more() {
-        let source = StreamingState::new();
-        source
-            .rendered_frames
-            .store(u64::MAX - 3, Ordering::Relaxed);
-        source.record_rendered_frames(8);
-        assert_eq!(source.rendered_frames(), u64::MAX);
-        source.record_rendered_frames(8);
-        assert_eq!(source.rendered_frames(), u64::MAX);
-        let source = StreamingState::new();
-        source.record_rendered_frames(3);
-        source.cancel();
-        source.record_rendered_frames(8);
-        assert_eq!(source.rendered_frames(), 3);
     }
 }
 
@@ -732,6 +718,12 @@ where
     }
 }
 
+impl shared::audio_file::AudioFileCancel for StreamingState {
+    fn is_cancelled(&self) -> bool {
+        StreamingState::is_cancelled(self)
+    }
+}
+
 /// Shared single-worker runtime for all audio streaming downloads.
 static STREAM_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 
@@ -755,45 +747,31 @@ pub fn start_streaming_download(
     state: Arc<StreamingState>,
     target_sample_rate: u32,
 ) -> mpsc::Receiver<StreamMsg> {
-    let (tx, rx) = stream_channel();
-
-    get_stream_runtime().spawn(crate::streaming_transport::run_with_source::<
-        crate::streaming_codecs::AutoDecoder,
-        crate::streaming_http::IndexedHttp,
-    >(cpu, client, url, tx, state, move |_| {
-        crate::streaming_codecs::AutoDecoder::http(target_sample_rate)
-    }));
-
-    rx
+    start_streaming_download_with_spool(cpu, client, url, state, target_sample_rate, None)
 }
-
-/// Product URL loads carry the session's existing private Fs spool authority.
+/// Product URL loads carry the session's existing private Fs spool authority;
+/// without one the body is held in memory (bounded).
 pub fn start_streaming_download_with_spool(
-    cpu: migo_io::audio_cpu::AudioCpu,
+    _cpu: migo_io::audio_cpu::AudioCpu,
     client: HttpClient,
     url: String,
     state: Arc<StreamingState>,
     target_sample_rate: u32,
     spool: Option<Arc<dyn shared::audio_file::AudioHttpSpool>>,
 ) -> mpsc::Receiver<StreamMsg> {
-    let Some(spool) = spool else {
-        return start_streaming_download(cpu, client, url, state, target_sample_rate);
-    };
     let (tx, rx) = stream_channel();
-    get_stream_runtime().spawn(crate::streaming_http_prepare::run(
-        cpu,
-        client,
-        url,
-        tx,
-        state,
-        target_sample_rate,
-        spool,
-    ));
+    let open = crate::stream_open::http(client, url, spool);
+    if let Err(error) =
+        crate::stream_producer::spawn(open, target_sample_rate, tx.clone(), state, None)
+    {
+        let _ = tx.try_send(StreamMsg::Error {
+            revision: StreamRevision::INITIAL,
+            message: error.to_string(),
+        });
+    }
     rx
 }
 
-/// Producer-owned protocol ledger. Seeking reuses the source's PCM format while
-/// starting a fresh Ready/Samples/Done sequence. No atomics on the render path.
 #[derive(Default)]
 pub(crate) struct StreamPublication {
     revision: StreamRevision,
@@ -862,10 +840,6 @@ pub(crate) struct PendingPublication {
 }
 
 impl StreamPublication {
-    pub(crate) fn has_timeline(&self) -> bool {
-        self.presentation.is_some() || self.expected_samples.is_some()
-    }
-
     pub(crate) fn bind_presentation(
         &mut self,
         presentation: StreamPresentation,
@@ -1096,273 +1070,9 @@ pub(crate) async fn publish_stream_chunk(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mp3_fixture;
-    use migo_alloc_probe::{Burst, assert_no_steady_state_allocation};
-    use migo_executor_probe::{PATIENCE, SharedExecutor, assert_leaves_the_executor_free};
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
     use tokio::sync::mpsc::error::TrySendError;
 
-    /// Not MP3, and deliberately so: the decoder keeps what it cannot yet decode, so
-    /// the buffered length is a value only the real decoder produces.
-    const A_CHUNK: &[u8] = b"bytes no frame ends in";
-
-    #[test]
-    fn the_decode_step_leaves_the_shared_streaming_worker_free() {
-        // `STREAM_RUNTIME` is process-wide and single-worker, so a decode that ran on
-        // it would stall every other session's download for as long as the decode
-        // took -- which is as long as the chunk is, not as long as anyone budgeted.
-        let owner = migo_io::scheduler::IoScheduler::new(0);
-        let buffered = assert_leaves_the_executor_free(
-            SharedExecutor {
-                step: "streaming MP3 decode",
-                executor: "the process-wide audio streaming worker",
-                patience: PATIENCE,
-            },
-            get_stream_runtime(),
-            |cpu| async move {
-                let (_decoder, buffered) =
-                    OffWorker::new(Mp3StreamDecoder::new(48_000), owner.audio_cpu())
-                        .with(move |decoder| {
-                            cpu.occupy();
-                            decoder.push_data(A_CHUNK);
-                            decoder.decode_into(&mut Vec::new());
-                            decoder.buffered_len()
-                        })
-                        .await
-                        .expect("the decode step must complete");
-                buffered
-            },
-        );
-
-        assert_eq!(
-            buffered,
-            A_CHUNK.len(),
-            "the step must have run against the real decoder, not a stand-in"
-        );
-    }
-
-    /// The steady-state allocation gate, applied to the streaming
-    /// refill: one network chunk in, its decoded PCM out.
-    ///
-    /// The unit is a chunk because that is what repeats -- a track is thousands
-    /// of them -- and everything inside it is per-frame, so an allocation here is
-    /// multiplied by however many frames the chunk carried. Resampling is on
-    /// (the fixture is 44.1 kHz, the device 48 kHz), which is the configuration
-    /// most Android devices actually run.
-    ///
-    /// The warm-up covers the decoder's first frame, the resampler's
-    /// construction, every buffer's first growth to a chunk's worth, and the
-    /// return channel's block list reaching its working set -- tokio hands out
-    /// message slots 32 to a block and recycles them, so the list grows once and
-    /// then never again. Forty iterations crosses that boundary; the property was
-    /// checked over 256 measured iterations before this window was chosen, so the
-    /// number is a warm-up and not a hiding place.
-    #[test]
-    fn a_steady_state_streaming_chunk_never_reaches_the_heap() {
-        const WARMUP: usize = 40;
-        const MEASURED: usize = 128;
-        const FRAMES_PER_CHUNK: usize = 2;
-
-        let chunk_bytes = FRAMES_PER_CHUNK * mp3_fixture::FRAME_BYTES;
-        // Built before the measured window, and long enough that no iteration
-        // runs out of input and quietly measures a decoder with nothing to do.
-        let source = mp3_fixture::stream(FRAMES_PER_CHUNK * (WARMUP + MEASURED) + 4);
-        let chunks: Vec<&[u8]> = source.chunks_exact(chunk_bytes).collect();
-        assert!(chunks.len() >= WARMUP + MEASURED);
-
-        let mut decoder = Mp3StreamDecoder::new(48_000);
-        let mut pool = PcmPool::new();
-        let mut decoded_total = 0usize;
-
-        assert_no_steady_state_allocation(
-            Burst {
-                path: "audio: one streaming chunk decoded and resampled",
-                warmup: WARMUP,
-                measured: MEASURED,
-            },
-            |iteration| {
-                decoder.push_data(chunks[iteration]);
-                // Taken from the pool and dropped again at the end of the
-                // iteration, which is the whole loan: a burst that kept its
-                // buffers would measure the pool draining, not the steady state.
-                let mut pcm = pool.take();
-                decoder.decode_into(pcm.buffer_mut());
-                decoded_total += pcm.len();
-            },
-        );
-
-        assert!(
-            decoded_total > 0,
-            "the burst must have decoded audio, or it proves nothing"
-        );
-    }
-
-    /// A stream cut into chunks must decode to exactly what one pass over the
-    /// same bytes produces.
-    ///
-    /// This is the correctness half of the same change, and it is a reftest
-    /// rather than a golden file because both sides are computed in the same run:
-    /// no baseline to go stale, and no claim about any particular recording. The
-    /// chunk size is deliberately not a multiple of the frame size, so frames are
-    /// split at every offset within them.
-    ///
-    /// What it pins is decoder *state*. Rebuilding the decoder per chunk -- which
-    /// is what constructing one inside the decode step amounted to -- discards
-    /// the bit reservoir, and a frame whose main data lives there then decodes to
-    /// nothing at all: silently short audio, no error anywhere.
-    #[test]
-    fn a_chunked_stream_decodes_to_what_one_pass_over_the_same_bytes_does() {
-        const FRAMES: usize = 24;
-        // Coprime with the frame size, so no chunk boundary lands on a frame one.
-        const CHUNK_BYTES: usize = 137;
-
-        let source = mp3_fixture::stream(FRAMES);
-        let one_pass = crate::decoder::mp3::decode(&source).expect("the fixture must decode");
-
-        // Same rate in and out, so the two sides are comparable sample for sample.
-        let mut decoder = Mp3StreamDecoder::new(mp3_fixture::SAMPLE_RATE);
-        let mut chunked = Vec::new();
-        for chunk in source.chunks(CHUNK_BYTES) {
-            decoder.push_data(chunk);
-            decoder.decode_into(&mut chunked);
-        }
-        decoder.flush_into(&mut chunked);
-
-        assert_eq!(
-            one_pass.samples.len(),
-            FRAMES * mp3_fixture::SAMPLES_PER_FRAME,
-            "the one-pass side must itself be complete, or this compares two \
-             equally broken decodes"
-        );
-        assert_eq!(
-            chunked.len(),
-            one_pass.samples.len(),
-            "a chunked stream lost or invented samples"
-        );
-        assert_eq!(chunked, one_pass.samples);
-    }
-
-    /// A stream that ends in bytes that are not audio must still decode.
-    ///
-    /// An ID3v1 tag is 128 bytes at the very end of a large fraction of real MP3
-    /// files, and minimp3 will not accept a frame it cannot chain to a successor,
-    /// so the frame immediately before such a tag is lost. That single frame —
-    /// 26 ms at the end of a track — is the accepted cost; what is asserted here
-    /// is that it is *one* frame and not the stream.
-    ///
-    /// Bytes that are not audio, before or after the audio, must cost no frames.
-    ///
-    /// An ID3v1 tag is 128 bytes at the end of a large fraction of real MP3
-    /// files, and an ID3v2 tag at the front runs to kilobytes. Both defeat
-    /// minimp3's requirement that a frame be chainable to a successor, and the
-    /// lengths matter independently: a stream shorter than the lookahead decodes
-    /// nothing until the flush and so meets a decoder that has never run, while a
-    /// longer one arrives there warm.
-    ///
-    /// Every combination is asserted **exact**. Losing "just the last frame" was
-    /// the behaviour before the flush learned to isolate frames, and it is not a
-    /// tolerance worth keeping: a rule that permits one lost frame permits the
-    /// mechanism to stop working and lose it every time.
-    #[test]
-    fn bytes_that_are_not_audio_cost_no_frames() {
-        let id3v1 = {
-            let mut tag = b"TAG".to_vec();
-            tag.resize(128, 0);
-            tag
-        };
-        // Larger than any frame, so the flush cannot isolate its way past it and
-        // the in-place fallback is what has to carry this case.
-        let id3v2 = vec![0u8; 4096];
-
-        for frames in [2usize, 6, 40] {
-            for (label, leading, trailing) in [
-                ("a trailing tag", [].as_slice(), id3v1.as_slice()),
-                ("a leading tag", id3v2.as_slice(), [].as_slice()),
-                ("tags at both ends", id3v2.as_slice(), id3v1.as_slice()),
-            ] {
-                let mut source = leading.to_vec();
-                source.extend_from_slice(&mp3_fixture::stream(frames));
-                source.extend_from_slice(trailing);
-
-                let mut decoder = Mp3StreamDecoder::new(mp3_fixture::SAMPLE_RATE);
-                let mut out = Vec::new();
-                for chunk in source.chunks(137) {
-                    decoder.push_data(chunk);
-                    decoder.decode_into(&mut out);
-                }
-                decoder.flush_into(&mut out);
-
-                assert_eq!(
-                    out.len() / mp3_fixture::SAMPLES_PER_FRAME,
-                    frames,
-                    "a {frames}-frame stream with {label} must decode every frame"
-                );
-            }
-        }
-    }
-
-    /// A tag whose bytes look like a frame header, and a first frame that points into a reservoir
-    /// nobody filled: neither may cost the frames after it, whether the stream is short enough to
-    /// meet only the flush or long enough to decode in place.
-    #[test]
-    fn a_false_frame_costs_nothing_and_a_frame_without_its_reservoir_costs_only_itself() {
-        let tag = |side_info: u8| {
-            let mut body = vec![0u8; 16];
-            body.extend_from_slice(&[0xFF, 0xFB, 0x90, 0x00]);
-            body.extend_from_slice(&[side_info; 32]);
-            body.resize(600, 0);
-            let n = body.len();
-            let mut tag = b"ID3\x03\x00\x00".to_vec();
-            tag.extend([
-                (n >> 21) as u8 & 0x7F,
-                (n >> 14) as u8 & 0x7F,
-                (n >> 7) as u8 & 0x7F,
-                n as u8 & 0x7F,
-            ]);
-            tag.extend_from_slice(&body);
-            tag
-        };
-
-        for frames in [3usize, 6, 40] {
-            let stream = mp3_fixture::stream(frames);
-            for (label, source, expected) in [
-                (
-                    "behind a tag holding a false frame that decodes to nothing",
-                    [tag(0xFF), stream.clone()].concat(),
-                    frames,
-                ),
-                (
-                    "behind a tag holding a false frame that decodes to silence",
-                    [tag(0x00), stream.clone()].concat(),
-                    frames,
-                ),
-                (
-                    "whose first frame has no reservoir",
-                    stream[mp3_fixture::FRAME_BYTES..].to_vec(),
-                    frames - 2,
-                ),
-            ] {
-                let mut decoder = Mp3StreamDecoder::new(mp3_fixture::SAMPLE_RATE);
-                let mut out = Vec::new();
-                for chunk in source.chunks(137) {
-                    decoder.push_data(chunk);
-                    decoder.decode_into(&mut out);
-                }
-                decoder.flush_into(&mut out);
-                assert_eq!(
-                    out.len() / mp3_fixture::SAMPLES_PER_FRAME,
-                    expected,
-                    "{frames} frames {label}"
-                );
-            }
-        }
-    }
-
-    /// The loan has to come back, and come back empty.
-    ///
-    /// Identity is asserted by address: a pool that quietly allocated a fresh
-    /// buffer each time would satisfy every other observable property here, and
-    /// the allocation gate above is the only other thing that would notice.
     #[test]
     fn a_returned_chunk_is_the_buffer_the_next_one_is_written_into() {
         let mut pool = PcmPool::new();
@@ -1545,29 +1255,6 @@ mod tests {
     }
 
     #[test]
-    fn flush_reports_output_rate_and_short_stream_format() {
-        let mut decoder = Mp3StreamDecoder::new(48_000);
-        let mut body = Vec::new();
-        decoder.push_data(&mp3_fixture::stream(6));
-        assert_eq!(decoder.decode_into(&mut body), (0, 0));
-
-        let mut flushed = Vec::new();
-        let (sample_rate, channels) = decoder.flush_into(&mut flushed);
-        assert_eq!((sample_rate, channels), (48_000, 2));
-        assert!(!flushed.is_empty(), "short stream must decode during flush");
-    }
-
-    #[test]
-    fn body_reports_output_rate_when_resampling() {
-        let mut decoder = Mp3StreamDecoder::new(48_000);
-        decoder.push_data(&mp3_fixture::stream(40));
-        let mut body = Vec::new();
-        let (sample_rate, channels) = decoder.decode_into(&mut body);
-        assert_eq!((sample_rate, channels), (48_000, 2));
-        assert!(!body.is_empty(), "body-sized stream must decode before EOF");
-    }
-
-    #[test]
     fn stream_publication_sends_ready_once_before_samples_and_handles_empty_eof() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1710,13 +1397,13 @@ mod timeline_publication_tests {
         let timeline = StreamTimeline::new(100, 44100, 16000, 2).unwrap();
         let mut publication = StreamPublication::default();
         publication.bind_timeline(timeline, 37).unwrap();
-        assert!(publication.has_timeline());
+        assert!(publication.presentation.is_some() || publication.expected_samples.is_some());
         assert!(publication.bind_timeline(timeline, 0).is_err());
         assert_eq!(publication.expected_samples, Some(0));
         publication
             .begin(StreamRevision::INITIAL.checked_next().unwrap(), &state)
             .unwrap();
-        assert!(!publication.has_timeline());
+        assert!(publication.presentation.is_none() && publication.expected_samples.is_none());
         publication.bind_timeline(timeline, 0).unwrap();
         assert_eq!(publication.expected_samples, Some(74));
         let overflow = StreamTimeline::new(u64::MAX, 48000, 48000, 2).unwrap();

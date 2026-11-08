@@ -12,7 +12,6 @@ mod job;
 mod presentation;
 pub(crate) use file::{FileStep, Mp3FileDecoder};
 pub(crate) use job::Mp3DecodeJob;
-pub(crate) use presentation::Presentation;
 
 #[cfg(test)]
 #[derive(Clone, Copy, Default)]
@@ -64,19 +63,6 @@ const MAX_FRAME_BYTES: usize = 1441;
 
 /// Bytes an MP3 frame header occupies.
 const HEADER_BYTES: usize = 4;
-
-/// Bytes that must stay unread behind the decode cursor while a stream's buffer
-/// is still growing.
-///
-/// minimp3 keeps `mp3dec_t` -- the bit reservoir included -- only when it can
-/// confirm the *next* frame's header in the same buffer; when it cannot, it
-/// wipes the decoder and searches from scratch. Decoding right up to the end of
-/// a partially received buffer therefore throws the reservoir away at every
-/// chunk boundary, and an MP3 frame whose main data lives in that reservoir then
-/// decodes to nothing at all. Two maximum frames of slack keeps the confirmation
-/// available; at 128 kb/s that is under a quarter of a second of hold-back, well
-/// inside the half second of buffering the player already waits for.
-pub(crate) const STREAM_LOOKAHEAD_BYTES: usize = 2 * MAX_FRAME_BYTES;
 
 /// What one call to [`Mp3FrameDecoder::decode`] did with the bytes it was given.
 pub(crate) enum Mp3Step<'a> {
@@ -439,12 +425,6 @@ pub(crate) fn first_frame_length(
     (HEADER_BYTES..=limit).find(|&len| ends_a_frame(len))
 }
 
-/// Convert one interleaved `i16` frame to normalized `f32`, appending.
-#[inline]
-pub(crate) fn append_as_f32(pcm: &[i16], out: &mut Vec<f32>) {
-    out.extend(pcm.iter().map(|&sample| f32::from(sample) / 32768.0));
-}
-
 /// Decode a complete MP3 by draining the owned codec/PCM job.
 /// Scheduling between steps belongs to the caller; the current pool drains
 /// synchronously. Only a complete continuous buffer can leave the job.
@@ -458,12 +438,6 @@ fn drain_job<B: AsRef<[u8]>>(mut job: Mp3DecodeJob<B>) -> EngineResult<DecodedAu
     let cancel = std::sync::atomic::AtomicBool::new(false);
     while !job.step(&cancel)? {}
     job.finish()
-}
-
-#[cfg(test)]
-pub(crate) fn take_stream_trace() -> (usize, usize, usize, usize) {
-    let t = take_native_trace();
-    (t.calls, t.bytes, t.max_input, t.max_scan)
 }
 
 #[cfg(test)]

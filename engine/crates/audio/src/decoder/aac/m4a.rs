@@ -75,51 +75,6 @@ impl Packetizer for M4a {
         Self::Codec::try_new(params, &AudioDecoderOptions::default().gapless(true))
             .map_err(|e| format!("decoder: {e}"))
     }
-    fn seek(
-        &mut self,
-        target: symphonia_core::units::Timestamp,
-    ) -> FormatResult<symphonia_core::formats::SeekedTo> {
-        let seeked = self.packets.seek(target)?;
-        self.request = match self.packets.next(&[], false)? {
-            Mp4Step::ReadAt(packet) => Some(SourceRequest::ReadAt(packet)),
-            _ => {
-                return Err(symphonia_core::errors::Error::DecodeError(
-                    "M4A seek lost source request",
-                ));
-            }
-        };
-        Ok(seeked)
-    }
-    fn resume_buffered(&mut self, input: &[u8], head: usize) -> FormatResult<Option<usize>> {
-        use symphonia_core::errors::Error;
-        use symphonia_format_isomp4::streaming::BufferedStep;
-        if !matches!(self.request, Some(SourceRequest::ReadAt(_))) {
-            return Ok(None);
-        }
-        let base = self
-            .packets
-            .position()
-            .checked_sub(head as u64)
-            .ok_or(Error::DecodeError("M4A cached input coordinates changed"))?;
-        match self
-            .packets
-            .try_buffered(base, input, super::incremental::ENCODED_CAPACITY)?
-        {
-            BufferedStep::ReadAt { offset } => {
-                let head = offset
-                    .checked_sub(base)
-                    .and_then(|n| usize::try_from(n).ok())
-                    .filter(|n| *n <= input.len())
-                    .ok_or(Error::DecodeError("M4A cached cursor outside input"))?;
-                self.request = None;
-                Ok(Some(head))
-            }
-            BufferedStep::Index => Err(Error::DecodeError(
-                "cached seek replaced its retained index",
-            )),
-            BufferedStep::Unavailable | BufferedStep::NeedMore | BufferedStep::Yield => Ok(None),
-        }
-    }
 }
 
 impl Decoder<M4a> {
@@ -138,25 +93,6 @@ impl Decoder<M4a> {
         index: AudioIndex,
         length: Option<u64>,
     ) -> Result<(), String> {
-        self.install_index(index, length, false)
-    }
-
-    /// HTTP can close a stalled initial body after the tail index is installed.
-    /// Reuse the library's first-packet seek; IO must still validate actual mdat.
-    pub fn install_index_for_range(
-        &mut self,
-        index: AudioIndex,
-        length: u64,
-    ) -> Result<(), String> {
-        self.install_index(index, Some(length), true)
-    }
-
-    fn install_index(
-        &mut self,
-        index: AudioIndex,
-        length: Option<u64>,
-        first_packet: bool,
-    ) -> Result<(), String> {
         self.resume_source(false, |p| {
             if !matches!(p.request, Some(SourceRequest::Index(_))) {
                 return Err("M4A decoder is not awaiting an index".into());
@@ -167,11 +103,6 @@ impl Decoder<M4a> {
                     .map_err(|e| e.to_string())?;
             }
             p.packets.install_index(index).map_err(|e| e.to_string())?;
-            if first_packet {
-                p.packets
-                    .seek(symphonia_core::units::Timestamp::ZERO)
-                    .map_err(|e| e.to_string())?;
-            }
             p.request = None;
             Ok(())
         })

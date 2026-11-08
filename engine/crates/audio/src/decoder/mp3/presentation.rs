@@ -119,10 +119,6 @@ impl Presentation {
         Ok(status == 1)
     }
 
-    pub(crate) fn format(&self) -> (u32, u32) {
-        (self.format.0 as u32, self.format.1 as u32)
-    }
-
     pub(crate) fn accepts(&self, info: &ffi::mp3dec_frame_info_t) -> bool {
         self.format == (info.hz, info.channels, info.layer)
     }

@@ -24,7 +24,12 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 
 /// Opens the source on the producer thread (blocking IO happens there).
-pub(crate) type Open = Box<dyn FnOnce(&AtomicBool) -> EngineResult<Box<dyn PcmSource>> + Send>;
+pub(crate) type Open =
+    Box<dyn FnOnce(&Arc<StreamingState>) -> EngineResult<Box<dyn PcmSource>> + Send>;
+
+/// Where a file load records the typed cause of a failure before the consumer
+/// reads the message.
+pub(crate) type ErrorCell = Arc<std::sync::Mutex<Option<EngineError>>>;
 
 /// Decoders and the SRC keep their state on the heap; this is ample.
 const STACK_BYTES: usize = 1 << 20;
@@ -33,24 +38,31 @@ fn invalid(detail: &str) -> EngineError {
     EngineError::from_detail(ErrorCode::IoError, detail)
 }
 
-/// Start a producer. Its failures reach the consumer as `StreamMsg::Error`.
+/// Start a producer. Its failures reach the consumer as `StreamMsg::Error`;
+/// the thread ends with the stream (dropping the handle detaches it).
 pub(crate) fn spawn(
     open: Open,
     target: u32,
     tx: mpsc::Sender<StreamMsg>,
     state: Arc<StreamingState>,
-) -> EngineResult<()> {
+    error_cell: Option<ErrorCell>,
+) -> EngineResult<std::thread::JoinHandle<()>> {
     std::thread::Builder::new()
         .name("audio-decode".into())
         .stack_size(STACK_BYTES)
         .spawn(move || {
             let runtime = crate::streaming::get_stream_runtime().handle().clone();
             let result = run(open, target, &tx, &state, &runtime);
-            if let Err(error) = result
+            if let Err((revision, error)) = result
                 && !state.is_cancelled()
             {
+                if let Some(cell) = &error_cell {
+                    *cell.lock().unwrap_or_else(|p| p.into_inner()) = Some(error.clone());
+                }
+                // The consumer drops messages of retired revisions: a failure
+                // belongs to the revision it last accepted.
                 let message = StreamMsg::Error {
-                    revision: StreamRevision::INITIAL,
+                    revision,
                     message: error.to_string(),
                 };
                 let _ = runtime.block_on(async {
@@ -62,7 +74,6 @@ pub(crate) fn spawn(
                 });
             }
         })
-        .map(|_| ())
         .map_err(|error| EngineError::from_detail(ErrorCode::OutOfMemory, error.to_string()))
 }
 
@@ -166,6 +177,10 @@ impl Traversal {
             self.head = 0;
             if self.input_done {
                 let step = self.sinc.step(&[], true, &mut self.out, cancel)?;
+                if step.progress == Progress::NeedInput {
+                    // Input is over; an SRC still asking for more cannot finish.
+                    return Err(invalid("SRC ended short of its declared input"));
+                }
                 self.finished = step.progress == Progress::Finished;
                 continue;
             }
@@ -179,15 +194,18 @@ impl Traversal {
             if self.frames.is_some_and(|n| self.local != n) {
                 return Err(invalid("source ended before its presentation"));
             }
-            self.completed += 1;
-            if self.cycles.is_none_or(|n| self.completed < n) {
+            let completed = self.completed + 1;
+            if self.cycles.is_none_or(|n| completed < n) {
                 // The next pass continues the same input clock, so the SRC
-                // sees one continuous signal across the loop point.
+                // sees one continuous signal across the loop point. Counted
+                // only once the seek holds: an interrupted one is retried
+                // from the same end-of-pass state.
                 source.seek(0)?;
                 self.local = 0;
             } else {
                 self.input_done = true;
             }
+            self.completed = completed;
         }
     }
 }
@@ -209,6 +227,17 @@ struct Producer<'a> {
     /// rate pair.
     history: u64,
     period: u64,
+    /// Samples per published chunk: a fixed duration, so the channel holds the
+    /// same short time at every rate and a seek or error is not queued behind
+    /// seconds of audio.
+    chunk_samples: usize,
+    /// The newest revision the consumer accepted; it may be ahead of
+    /// `publication` between an accept and the traversal's start.
+    accepted: StreamRevision,
+    /// A read of the current traversal was abandoned mid-packet: the source
+    /// must be put back at `traversal.local` before it is read again, unless
+    /// a reposition replaces the traversal first.
+    restore: bool,
 }
 
 enum Event<'t> {
@@ -230,8 +259,22 @@ fn run(
     tx: &mpsc::Sender<StreamMsg>,
     state: &Arc<StreamingState>,
     runtime: &tokio::runtime::Handle,
-) -> EngineResult<()> {
-    let source = open(&state.cancelled)?;
+) -> Result<(), (StreamRevision, EngineError)> {
+    let mut producer = start(open, target, tx, state, runtime)
+        .map_err(|error| (StreamRevision::INITIAL, error))?;
+    producer
+        .produce()
+        .map_err(|error| (producer.accepted, error))
+}
+
+fn start<'a>(
+    open: Open,
+    target: u32,
+    tx: &'a mpsc::Sender<StreamMsg>,
+    state: &'a Arc<StreamingState>,
+    runtime: &'a tokio::runtime::Handle,
+) -> EngineResult<Producer<'a>> {
+    let source = open(state)?;
     let (rate, channels) = (source.rate(), source.channels());
     let clock = source
         .frames()
@@ -257,7 +300,7 @@ fn run(
     let history = sinc.quiet_source_frames()?;
     let period = sinc.grid_period();
     let traversal = Traversal::new(sinc, channels, source.frames(), 0, Some(1));
-    let mut producer = Producer {
+    Ok(Producer {
         tx,
         state,
         runtime,
@@ -272,8 +315,10 @@ fn run(
         traversal,
         history,
         period,
-    };
-    producer.produce()
+        chunk_samples: chunk_samples(target, channels),
+        accepted: StreamRevision::INITIAL,
+        restore: false,
+    })
 }
 
 impl Producer<'_> {
@@ -285,13 +330,38 @@ impl Producer<'_> {
             let Some(mut pcm) = self.acquire() else {
                 return Ok(());
             };
-            let capacity = pcm.buffer_mut().capacity();
-            let done = self.traversal.fill(
+            let capacity = pcm.buffer_mut().capacity().min(self.chunk_samples);
+            if std::mem::take(&mut self.restore) {
+                self.source.seek(self.traversal.local)?;
+            }
+            self.state.set_read_preemption(true);
+            let filled = self.traversal.fill(
                 self.source.as_mut(),
                 pcm.buffer_mut(),
                 capacity,
                 &self.state.cancelled,
-            )?;
+            );
+            self.state.set_read_preemption(false);
+            let done = match filled {
+                Ok(done) => done,
+                // A control arrived while a read waited on the network: serve
+                // it first. The reader stopped mid-packet, so it goes back to
+                // where this traversal stands (the SRC state is intact) before
+                // reading on, unless the control repositions it anyway (a
+                // restore can cost a seek index).
+                Err(error) if error.code == ErrorCode::Cancelled && !self.state.is_cancelled() => {
+                    self.restore = true;
+                    if pcm.buffer_mut().is_empty() {
+                        drop(pcm);
+                        match self.serve_control()? {
+                            Applied::Stop => return Ok(()),
+                            Applied::Repositioned | Applied::Unchanged => continue,
+                        }
+                    }
+                    false
+                }
+                Err(error) => return Err(error),
+            };
             let pending = self
                 .publication
                 .prepare_chunk(pcm, self.target, self.channels)?;
@@ -349,6 +419,10 @@ impl Producer<'_> {
 
     fn publish(&mut self, mut pending: PendingPublication) -> EngineResult<Applied> {
         while self.publication.has_pending(&pending) {
+            #[cfg(test)]
+            self.state
+                .publication_waiting
+                .store(self.tx.capacity() == 0, Ordering::Release);
             match Self::next_event(self.runtime, self.tx, self.state, self.controls.as_mut()) {
                 Event::Permit(permit) => self.publication.publish_next(&mut pending, permit),
                 Event::Command(command) => match self.apply(command)? {
@@ -380,21 +454,29 @@ impl Producer<'_> {
             return Ok(Applied::Stop);
         }
         loop {
-            let (state, controls) = (self.state, &mut self.controls);
-            let command = self.runtime.block_on(async {
-                tokio::select! {
-                    biased;
-                    _ = state.cancelled() => None,
-                    command = controls.as_mut().unwrap().recv() => command,
-                }
-            });
-            let Some(command) = command else {
-                return Ok(Applied::Stop);
-            };
-            match self.apply(command)? {
+            match self.serve_control()? {
                 Applied::Unchanged => {}
                 other => return Ok(other),
             }
+        }
+    }
+
+    /// Wait for the next control (or cancellation) and apply it.
+    fn serve_control(&mut self) -> EngineResult<Applied> {
+        let (state, controls) = (self.state, &mut self.controls);
+        let Some(controls) = controls.as_mut() else {
+            return Ok(Applied::Stop);
+        };
+        let command = self.runtime.block_on(async {
+            tokio::select! {
+                biased;
+                _ = state.cancelled() => None,
+                command = controls.recv() => command,
+            }
+        });
+        match command {
+            Some(command) => self.apply(command),
+            None => Ok(Applied::Stop),
         }
     }
 
@@ -444,17 +526,39 @@ impl Producer<'_> {
             }
         };
         let revision = self.publication.revision().checked_next()?;
-        let next = match self.prepare(&plan) {
+        self.state.set_read_deadline(Some(deadline));
+        let prepared = self.prepare(&plan);
+        self.state.set_read_deadline(None);
+        let next = match prepared {
             Ok(next) => next,
-            Err(error) if error.code == ErrorCode::Cancelled => return Ok(Applied::Stop),
+            Err(error) if error.code == ErrorCode::Cancelled && self.state.is_cancelled() => {
+                return Ok(Applied::Stop);
+            }
+            // A read the deadline interrupted: the consumer fails the stream
+            // at that deadline, so this is terminal, not a refusal.
+            Err(error) if error.code == ErrorCode::Cancelled => {
+                return Err(EngineError::from_detail(
+                    ErrorCode::Timeout,
+                    "source control deadline passed while reading its media",
+                ));
+            }
             Err(error) => {
-                // The old traversal stays current: put the source back where it
-                // was reading (everything before is already decoded).
-                self.source.seek(self.traversal.local)?;
+                // The old traversal stays current: the source goes back where
+                // it was reading (everything before is already decoded) before
+                // its next read.
+                self.restore = true;
                 let _ = reply.send(Reply::Rejected(error.code));
                 return Ok(Applied::Unchanged);
             }
         };
+        if Instant::now() >= deadline {
+            // The consumer gives up on the request at its deadline and fails
+            // the stream; preparing longer must not renew it.
+            return Err(EngineError::from_detail(
+                ErrorCode::Timeout,
+                "source control deadline passed while preparing",
+            ));
+        }
         let (accept, receipt) = oneshot::channel();
         let prepared = Prepared {
             revision,
@@ -479,10 +583,13 @@ impl Producer<'_> {
                 accepted = tokio::time::timeout_at(deadline, receipt) => matches!(accepted, Ok(Ok(()))),
             }
         });
-        if !accepted || Instant::now() >= deadline {
+        // An acceptance is authoritative: the consumer checked the deadline
+        // before sending it.
+        if !accepted {
             self.state.cancel();
             return Ok(Applied::Stop);
         }
+        self.accepted = revision;
         self.publication.begin(revision, self.state)?;
         let presentation = traversal
             .map(StreamTraversal::presentation)
@@ -490,6 +597,7 @@ impl Producer<'_> {
         self.publication
             .bind_presentation(presentation, plan.start)?;
         self.traversal = next;
+        self.restore = false;
         Ok(Applied::Repositioned)
     }
 
@@ -566,13 +674,23 @@ impl Producer<'_> {
             plan.cycles,
         );
         if plan.presentation.output_end() == Some(plan.start) {
-            // Nothing to play from here: a seek to the very end.
+            // Nothing to play from here (a seek to the very end): the traversal
+            // is over before any input, and the SRC is never driven.
             next.input_done = true;
+            next.finished = true;
         } else {
             self.source.seek(plan.origin % plan.frames)?;
         }
         Ok(next)
     }
+}
+
+/// About 50 ms of output, between 64 frames and one SRC step.
+fn chunk_samples(rate: u32, channels: u32) -> usize {
+    let ch = channels as usize;
+    let per_50ms = rate as usize * ch / 20;
+    let samples = per_50ms.clamp(64 * ch, STEP_SAMPLES.max(64 * ch));
+    samples / ch * ch
 }
 
 struct Plan {
