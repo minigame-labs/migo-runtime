@@ -73,7 +73,13 @@ struct Reference {
 impl Reference {
     fn new(input: &[f32], channels: usize) -> Self {
         let mut error = 0;
-        let owner = unsafe { src_new(crate::variable_rate::CONVERTER, channels as c_int, &mut error) };
+        let owner = unsafe {
+            src_new(
+                crate::variable_rate::CONVERTER,
+                channels as c_int,
+                &mut error,
+            )
+        };
         assert!(!owner.is_null() && error == 0);
         let mut padded = input.to_vec();
         padded.resize(input.len() + 8192 * channels, 0.);

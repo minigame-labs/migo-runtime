@@ -123,7 +123,6 @@ mod render_buffer;
 mod render_time;
 mod resample_job;
 mod resampler;
-mod variable_rate;
 mod stream_control;
 pub mod streaming;
 mod streaming_codecs;
@@ -134,6 +133,7 @@ mod streaming_mp3;
 mod streaming_sinc;
 mod streaming_source_control;
 mod streaming_transport;
+mod variable_rate;
 
 pub use audio_thread::*;
 pub use cache::GlobalAudioCache;
