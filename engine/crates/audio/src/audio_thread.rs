@@ -1122,13 +1122,9 @@ pub(crate) fn start_inner_file_stream(
         return;
     }
     let (tx, rx) = streaming::stream_channel();
-    let state = if crate::decoder::is_m4a(source.prefix()) {
-        StreamingState::new_reusable()
-    } else {
-        // The payload decoder activates a real port only with an authoritative
-        // clock. Unknown-duration sequential formats retain their old EOF.
-        StreamingState::new_optional_controls()
-    };
+    // The producer installs controls once the source states its length; an
+    // unknown-length source keeps a single pass and ends at its EOF.
+    let state = StreamingState::new_optional_controls();
     let error = Arc::new(std::sync::Mutex::new(None));
     let pending = crate::stream_open::Load {
         reply: resp,

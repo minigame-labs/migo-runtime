@@ -542,6 +542,9 @@ impl StreamingState {
         Arc::new(Self::default())
     }
 
+    /// Retains its source at EOF without waiting for a control port (consumer
+    /// tests drive the protocol by hand).
+    #[cfg(test)]
     pub(crate) fn new_reusable() -> Arc<Self> {
         Arc::new(Self {
             retain_after_eof: true,

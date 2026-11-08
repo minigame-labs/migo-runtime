@@ -25,7 +25,7 @@ fn inputs() -> Vec<Vec<u8>> {
         include_bytes!("aac-fixtures/2-tail-reverse.m4a").to_vec(),
     ]
 }
-fn drain<B: AsRef<[u8]>>(mut job: WholeDecodeJob<B>) -> DecodedAudio {
+fn drain(mut job: WholeDecodeJob) -> DecodedAudio {
     for _ in 0..1_048_576 {
         if job.step(&AtomicBool::new(false)).unwrap() {
             return job.finish().unwrap();
@@ -39,7 +39,7 @@ fn all_product_formats_keep_complete_pcm_and_the_submitted_target() {
         let native = crate::decoder::decode(&bytes).unwrap();
         for target in [native.sample_rate, 16000, 48000] {
             let expected = crate::resampler::resample_if_needed(native.clone(), target).unwrap();
-            let actual = drain(WholeDecodeJob::new(bytes.as_slice(), Some(target)).unwrap());
+            let actual = drain(WholeDecodeJob::new(bytes.clone(), Some(target)).unwrap());
             assert_eq!(
                 (actual.sample_rate, actual.channels),
                 (target, expected.channels)
@@ -164,4 +164,128 @@ fn m4a_reaches_the_product_dispatcher() {
         (44100, 2, 9737)
     );
     assert!(audio.samples.iter().any(|s| s.abs() > 0.01));
+}
+
+fn f32le(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .chunks_exact(4)
+        .map(|x| f32::from_le_bytes(x.try_into().unwrap()))
+        .collect()
+}
+
+fn i16le(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .chunks_exact(2)
+        .map(|x| f32::from(i16::from_le_bytes(x.try_into().unwrap())) / 32768.0)
+        .collect()
+}
+
+#[test]
+fn every_format_decodes_to_its_frozen_independent_reference() {
+    // MP3: the original minimp3 output, bit for bit (the same core decoder).
+    for (name, encoded, frozen) in [
+        (
+            "stereo-cbr",
+            include_bytes!("mp3/fixtures/stereo-cbr.mp3").as_slice(),
+            f32le(include_bytes!("mp3/fixtures/stereo-cbr.f32le")),
+        ),
+        (
+            "mono-vbr",
+            include_bytes!("mp3/fixtures/mono-vbr.mp3"),
+            f32le(include_bytes!("mp3/fixtures/mono-vbr.f32le")),
+        ),
+        (
+            "music",
+            include_bytes!("mp3/fixtures/music.mp3"),
+            i16le(include_bytes!("mp3/fixtures/music.i16le")),
+        ),
+        (
+            "tiny-47-mono",
+            include_bytes!("mp3/fixtures/tiny-47-mono.mp3"),
+            i16le(include_bytes!("mp3/fixtures/tiny-47-mono.i16le")),
+        ),
+        (
+            "tiny-47-stereo",
+            include_bytes!("mp3/fixtures/tiny-47-stereo.mp3"),
+            i16le(include_bytes!("mp3/fixtures/tiny-47-stereo.i16le")),
+        ),
+        (
+            "gapless-mpeg2",
+            include_bytes!("mp3/fixtures/gapless-mpeg2.mp3"),
+            i16le(include_bytes!("mp3/fixtures/gapless-mpeg2.i16le")),
+        ),
+    ] {
+        let audio = crate::decoder::decode(encoded).unwrap();
+        assert_eq!(audio.samples.len(), frozen.len(), "{name}: length");
+        assert!(
+            audio.samples == frozen,
+            "{name}: PCM differs from the original decoder"
+        );
+    }
+    // Vorbis: the frozen mature decoder, to float rounding.
+    for (name, encoded, frozen) in [
+        (
+            "0",
+            include_bytes!("ogg-fixtures/0.ogg").as_slice(),
+            include_bytes!("ogg-fixtures/0.f32le").as_slice(),
+        ),
+        (
+            "1",
+            include_bytes!("ogg-fixtures/1.ogg"),
+            include_bytes!("ogg-fixtures/1.f32le"),
+        ),
+        (
+            "2",
+            include_bytes!("ogg-fixtures/2.ogg"),
+            include_bytes!("ogg-fixtures/2.f32le"),
+        ),
+    ] {
+        let audio = crate::decoder::decode(encoded).unwrap();
+        let frozen = f32le(frozen);
+        assert_eq!(audio.samples.len(), frozen.len(), "Vorbis {name}: length");
+        let max = audio
+            .samples
+            .iter()
+            .zip(&frozen)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f32::max);
+        assert!(max < 1e-6, "Vorbis {name}: PCM differs by {max}");
+    }
+    // AAC: an independent decoder, so equal within codec tolerance.
+    for number in 0..3 {
+        let encoded = match number {
+            0 => include_bytes!("aac-fixtures/adts-0.aac").as_slice(),
+            1 => include_bytes!("aac-fixtures/adts-1.aac"),
+            _ => include_bytes!("aac-fixtures/adts-2.aac"),
+        };
+        let frozen = f32le(match number {
+            0 => include_bytes!("aac-fixtures/adts-0.f32le").as_slice(),
+            1 => include_bytes!("aac-fixtures/adts-1.f32le"),
+            _ => include_bytes!("aac-fixtures/adts-2.f32le"),
+        });
+        let audio = crate::decoder::decode(encoded).unwrap();
+        assert_eq!(audio.samples.len(), frozen.len(), "ADTS {number}: length");
+        let (mut square, mut maximum) = (0.0, 0.0_f64);
+        for (actual, expected) in audio.samples.iter().zip(&frozen) {
+            let error = f64::from(actual - expected).abs();
+            square += error * error;
+            maximum = maximum.max(error);
+        }
+        assert!(
+            maximum < 0.01 && (square / frozen.len() as f64).sqrt() < 0.001,
+            "ADTS {number}: PCM differs from the independent decoder"
+        );
+    }
+}
+
+#[test]
+fn every_m4a_layout_keeps_its_format_and_presentation_length() {
+    for (name, encoded, rate, channels, frames) in crate::decoder::aac_fixture_cases() {
+        let audio = crate::decoder::decode(encoded).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        assert_eq!(
+            (audio.sample_rate, audio.channels, audio.frame_count()),
+            (*rate, *channels, *frames),
+            "{name}"
+        );
+    }
 }

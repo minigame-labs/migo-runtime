@@ -29,6 +29,7 @@ pub(crate) struct PcmCollector {
 }
 
 impl PcmCollector {
+    #[cfg(test)]
     pub(crate) fn new() -> Self {
         Self::with_expected_samples(None)
     }
@@ -57,49 +58,9 @@ impl PcmCollector {
     }
 
     /// Admit the whole slice before allocating or appending any of it.
+    #[cfg(test)]
     pub(crate) fn append_i16(&mut self, pcm: &[i16]) -> EngineResult<()> {
         self.append_with(pcm, |sample| f32::from(sample) / 32768.0)
-    }
-
-    /// Fill a declared allocation directly with a mature codec's conversion.
-    /// Unknown lengths return false without calling `write` or changing state.
-    pub(crate) fn append_direct(
-        &mut self,
-        count: usize,
-        write: impl FnOnce(&mut [f32]),
-    ) -> EngineResult<bool> {
-        let Phase::Collecting {
-            pages,
-            samples,
-            expected: Some(expected),
-            reserved,
-        } = &mut self.phase
-        else {
-            return Ok(false);
-        };
-        if !*reserved {
-            return Err(internal("PCM reservation requires its own step"));
-        }
-        let needed = samples.checked_add(count);
-        if count > STEP_SAMPLES
-            || needed.is_none_or(|n| n > *expected || !crate::limits::pcm_samples_within_budget(n))
-        {
-            self.phase = Phase::Failed;
-            return Err(EngineError::from_detail(
-                ErrorCode::InvalidArgument,
-                "decoded PCM exceeds its collection budget",
-            ));
-        }
-        if count != 0 {
-            let output = pages
-                .front_mut()
-                .ok_or_else(|| internal("declared PCM storage missing"))?;
-            let start = output.len();
-            output.resize(needed.unwrap(), 0.);
-            write(&mut output[start..]);
-        }
-        *samples = needed.unwrap();
-        Ok(true)
     }
 
     /// Shared bounded collection for codec-native samples and normalized f32.

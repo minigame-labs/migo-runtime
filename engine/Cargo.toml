@@ -325,8 +325,6 @@ windowfunctions = { path = "third_party/windowfunctions-0.1.1" }
 # Bounded WAVE framing and mature PCM conversion use the accepted W09 sources.
 symphonia-format-riff = { path = "third_party/symphonia-format-riff-0.6.1" }
 symphonia-codec-pcm = { path = "third_party/symphonia-codec-pcm-0.6.1" }
-# Same mature MP3 codec, with bounded native presentation from W09.
-minimp3-sys = { path = "third_party/minimp3-sys-0.6.0" }
 # The same checksum-pinned codec sources and patches used by W09 conformance.
 symphonia-core = { path = "third_party/symphonia-core-0.6.1" }
 symphonia-metadata = { path = "third_party/symphonia-metadata-0.6.1" }
