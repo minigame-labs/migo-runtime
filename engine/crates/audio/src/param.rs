@@ -95,21 +95,6 @@ impl AudioParamTimeline {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn event_identity(&self) -> (usize, usize, usize) {
-        (
-            self.events.len(),
-            self.events.capacity(),
-            self.events.as_ptr() as usize,
-        )
-    }
-
-    #[cfg(test)]
-    pub(crate) fn reserve_native_events(&mut self, capacity: usize) {
-        let additional = capacity.saturating_sub(self.events.len());
-        self.events.reserve_exact(additional);
-    }
-
     /// Get the current static value (without automation)
     #[inline]
     pub fn value(&self) -> f32 {

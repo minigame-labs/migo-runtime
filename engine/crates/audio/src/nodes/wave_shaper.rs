@@ -174,11 +174,6 @@ impl WaveShaperNode {
             .reserve(channels.saturating_sub(history.down_state.len()));
     }
 
-    #[cfg(test)]
-    pub(crate) fn coefficients(&self) -> (&[f32], &[f32]) {
-        (&self.up_taps, &self.down_taps)
-    }
-
     fn zero_input_response(&self) -> f32 {
         self.curve
             .as_ref()

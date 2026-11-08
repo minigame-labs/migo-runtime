@@ -1,11 +1,7 @@
 //! Product cutover checks: independent whole-input native oracle, exact media
 //! clock, command/reset boundaries, physical admission and original CPU Drop.
 use super::*;
-use std::{
-    ffi::{c_int, c_long, c_void},
-    sync::{Condvar, Mutex},
-    time::{Duration, Instant},
-};
+use std::ffi::{c_int, c_long, c_void};
 
 #[repr(C)]
 struct NativeData {
@@ -888,37 +884,6 @@ fn buffered_loop_controls_rebuild_only_real_past_without_reallocating() {
         "loop stop/replay retained old traversal history"
     );
     save("loop-replay", &actual, &expected);
-}
-
-fn wait(mut predicate: impl FnMut() -> bool) {
-    let start = Instant::now();
-    while !predicate() {
-        assert!(
-            start.elapsed() < Duration::from_secs(20),
-            "native retirement did not complete"
-        );
-        std::thread::sleep(Duration::from_millis(1));
-    }
-}
-struct Gate(Arc<(Mutex<bool>, Condvar)>);
-impl Drop for Gate {
-    fn drop(&mut self) {
-        *self.0.0.lock().unwrap() = true;
-        self.0.1.notify_all();
-    }
-}
-struct Block {
-    gate: Arc<(Mutex<bool>, Condvar)>,
-    worker: Arc<Mutex<Option<std::thread::ThreadId>>>,
-}
-impl Drop for Block {
-    fn drop(&mut self) {
-        *self.worker.lock().unwrap() = Some(std::thread::current().id());
-        let mut open = self.gate.0.lock().unwrap();
-        while !*open {
-            open = self.gate.1.wait(open).unwrap();
-        }
-    }
 }
 
 #[test]

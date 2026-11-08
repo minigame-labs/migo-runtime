@@ -133,7 +133,7 @@ impl Host {
             .cpu
             .run(move || {
                 let mut lease = lease;
-                let State::Ready(mut ready) =
+                let State::Ready(ready) =
                     std::mem::replace(&mut lease.retired.as_mut().unwrap().state, State::Empty)
                 else {
                     unreachable!()

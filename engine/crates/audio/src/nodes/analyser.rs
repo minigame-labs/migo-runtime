@@ -35,9 +35,6 @@ impl AnalyserNode {
             workspace: workspace::Workspace::new(fft_size),
         }
     }
-    pub(crate) fn fft_size(&self) -> usize {
-        self.fft_size
-    }
     pub fn set_fft_size(&mut self, size: usize) {
         let size = size.next_power_of_two().clamp(32, 32768);
         if size == self.fft_size {

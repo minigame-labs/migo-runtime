@@ -564,7 +564,6 @@ pub(crate) struct Seen {
 pub(crate) struct Freed {
     pub(crate) bytes: u64,
     pub(crate) allocation: Option<usize>,
-    pub(crate) off_async_thread: bool,
 }
 struct ObservedSpool {
     source: Arc<dyn AudioHttpSpool>,
@@ -574,7 +573,6 @@ struct ObservedSpool {
 struct ObservedFile {
     file: Option<Arc<dyn AudioFile>>,
     watch: Arc<migo_alloc_probe::DeallocationWatch>,
-    async_thread: std::thread::ThreadId,
     freed: Option<tokio::sync::oneshot::Sender<Freed>>,
 }
 impl Drop for ObservedFile {
@@ -584,7 +582,6 @@ impl Drop for ObservedFile {
         let freed = Freed {
             bytes: migo_alloc_probe::thread_counts().bytes_freed - before,
             allocation: self.watch.freed_bytes(),
-            off_async_thread: std::thread::current().id() != self.async_thread,
         };
         if let Some(reply) = self.freed.take() {
             let _ = reply.send(freed);
@@ -661,7 +658,6 @@ impl AudioHttpSpool for ObservedSpool {
             let file: Arc<dyn AudioFile> = Arc::new(ObservedFile {
                 file: Some(file),
                 watch: watch.clone(),
-                async_thread: std::thread::current().id(),
                 freed: self.freed.lock().unwrap().take(),
             });
             self.seen

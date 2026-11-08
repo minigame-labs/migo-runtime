@@ -263,11 +263,6 @@ impl InnerAudioSharedState {
         load.matches(self)
     }
 
-    #[cfg(test)]
-    pub(crate) fn exhaust_source_generation_for_test(&self) {
-        self.source_generation.store(u64::MAX, Ordering::Release);
-    }
-
     pub(crate) fn begin_source(
         self: &Arc<Self>,
         source_id: u32,
@@ -748,11 +743,6 @@ impl InnerAudioPlayer {
         Ok(())
     }
 
-    #[cfg(test)]
-    pub(crate) fn owned_samples_for_custody(&self) -> &[f32] {
-        self.source.samples()
-    }
-
     /// Load cached audio data (shared reference, no copy).
     pub(crate) fn complete_cached_load(
         &mut self,
@@ -915,6 +905,7 @@ impl InnerAudioPlayer {
     }
 
     /// Take ownership of streamed samples and their physical ownership permit.
+    #[cfg(test)]
     pub fn take_streamed_audio(&mut self) -> Option<(DecodedAudio, AudioAggregatePermit)> {
         // The legacy PCM-only transfer cannot represent a source clock.
         if self.stream_timeline.is_some() {
@@ -1043,6 +1034,7 @@ impl InnerAudioPlayer {
     /// Commit a source-accepted reposition on the audio thread. The caller has
     /// already validated the target and mapped it to output frames. Merely
     /// requesting a seek must not clear PCM or admit another revision.
+    #[cfg(test)]
     pub(crate) fn accept_stream_revision(
         &mut self,
         source: &Arc<StreamingState>,
@@ -2201,25 +2193,6 @@ impl InnerAudioPlayer {
 }
 
 impl stream_control::Prepared {
-    pub(crate) fn accept_clocked(self, player: &mut InnerAudioPlayer) -> EngineResult<()> {
-        let output = match self.mapped_output() {
-            Ok(output) => output,
-            Err(error) => {
-                self.source.cancel();
-                return Err(error);
-            }
-        };
-        self.accept(player, output)
-    }
-
-    pub(crate) fn accept(
-        self,
-        player: &mut InnerAudioPlayer,
-        output_frame: u64,
-    ) -> EngineResult<()> {
-        self.accept_as(player, output_frame, true, false)
-    }
-
     fn accept_as(
         self,
         player: &mut InnerAudioPlayer,

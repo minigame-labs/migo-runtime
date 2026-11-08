@@ -806,7 +806,6 @@ impl Source<AutoDecoder> for Coalesced {
             match self.0.read(tx, state).await? {
                 SourceRead::Data(chunk) => bytes.extend_from_slice(chunk.as_ref()),
                 SourceRead::End => break,
-                SourceRead::Cancelled => return Ok(SourceRead::Cancelled),
             }
         }
         Ok(if bytes.is_empty() {

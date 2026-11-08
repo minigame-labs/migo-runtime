@@ -105,7 +105,6 @@ mod inner_audio;
 mod limits;
 #[cfg(test)]
 mod mp3_fixture;
-mod node_storage;
 mod nodes;
 mod off_worker;
 mod output;
@@ -116,6 +115,7 @@ pub mod platform;
 pub mod power_manager;
 mod render_time;
 mod resample_job;
+#[cfg(test)]
 mod resampler;
 mod stream_control;
 pub mod streaming;

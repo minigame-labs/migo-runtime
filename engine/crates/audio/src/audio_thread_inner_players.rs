@@ -32,9 +32,6 @@ pub(crate) trait PlayerView {
     fn get(&self, id: &InnerAudioId) -> Option<&InnerAudioPlayer> {
         self.view().get(id)
     }
-    fn contains_key(&self, id: &InnerAudioId) -> bool {
-        self.view().contains_key(id)
-    }
     fn values(&self) -> std::collections::hash_map::Values<'_, InnerAudioId, InnerAudioPlayer> {
         self.view().values()
     }

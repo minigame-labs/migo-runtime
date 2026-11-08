@@ -5,6 +5,7 @@ pub(crate) mod pcm;
 mod wav;
 pub(crate) mod whole;
 
+#[cfg(test)]
 use shared::error::EngineResult;
 #[cfg(test)]
 use shared::error::{EngineError, ErrorCode};
@@ -80,6 +81,7 @@ pub(crate) fn is_mp3(data: &[u8]) -> bool {
 }
 
 /// Preserve the submitted target through each product codec, collection and SRC phase.
+#[cfg(test)]
 pub(crate) fn decode_for_rate(data: &[u8], target_rate: u32) -> EngineResult<DecodedAudio> {
     let mut job = whole::WholeDecodeJob::new(data, Some(target_rate))?;
     while !job.step(&std::sync::atomic::AtomicBool::new(false))? {}

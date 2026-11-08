@@ -53,6 +53,7 @@ fn invalid(message: &str) -> EngineError {
 pub(crate) fn channel() -> (mpsc::Sender<Command>, mpsc::Receiver<Command>) {
     mpsc::channel(STREAM_CHANNEL_CAPACITY)
 }
+#[cfg(test)]
 pub(crate) fn request(
     tx: &mpsc::Sender<Command>,
     target: i64,

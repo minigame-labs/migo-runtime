@@ -100,7 +100,6 @@ pub(crate) trait HttpSource<D: Decoder>: Source<D> {
 pub(crate) enum SourceRead<C> {
     Data(C),
     End,
-    Cancelled,
 }
 
 pub(crate) struct SourceResume<D> {
@@ -580,7 +579,7 @@ async fn drive_source<D: Decoder, S: Source<D>, C: SourceControl<D, S>>(
     }
     let mut decoder = OffWorker::new(None::<D>, cpu.clone());
     let mut make_decoder = Some(make_decoder);
-    let mut pool = PcmPool::with_cpu(cpu);
+    let mut pool = PcmPool::bounded();
     let mut open = controls.enabled();
     let mut input = None;
     let mut offset = 0;
@@ -826,7 +825,6 @@ async fn drive_source<D: Decoder, S: Source<D>, C: SourceControl<D, S>>(
             input = match next {
                 SourceRead::Data(chunk) => Some(chunk),
                 SourceRead::End => None,
-                SourceRead::Cancelled => return Ok(()),
             };
             if let Some(chunk) = &input {
                 state

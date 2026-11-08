@@ -61,10 +61,6 @@ impl IirData {
 }
 
 impl IIRFilterNode {
-    #[cfg(test)]
-    pub fn new(id: AudioNodeId, feedforward: Vec<f64>, feedback: Vec<f64>, channels: u32) -> Self {
-        Self::from_coefficients(id, &feedforward, &feedback, channels)
-    }
     pub(crate) fn from_coefficients(
         id: AudioNodeId,
         feedforward: &[f64],
