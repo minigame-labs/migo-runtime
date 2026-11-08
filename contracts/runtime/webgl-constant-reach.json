@@ -94,6 +94,7 @@
     "engine/crates/graphics/src/present_damage.rs": "Present-time damage application, engine-internal.",
     "engine/crates/graphics/src/render_frame_state.rs": "Per-frame engine state.",
     "engine/crates/graphics/src/shader_cache.rs": "Shader binary caching; content names shaders, never the cache's enums.",
-    "engine/crates/graphics/src/upload_thread.rs": "The upload thread's own GL work and fences."
+    "engine/crates/graphics/src/upload_thread.rs": "The upload thread's own GL work and fences.",
+    "engine/crates/graphics/src/backend/gl/glsl/mod.rs": "WebGL shader zero-initialization for drivers without ANGLE's WebGL translator. Its GL constants appear only in its driver tests, which compile a shader and draw with it; content names none of them."
   }
 }
