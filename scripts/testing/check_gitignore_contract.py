@@ -68,18 +68,10 @@ REQUIRED = [
     'scripts/testing/fixtures/oboe/bridge_test.cpp',
     'scripts/testing/fixtures/oboe/oboe/Oboe.h',
     'scripts/test-oboe-backend-contract.sh',
-    'engine/crates/audio/src/output_oboe_callback_storage.rs',
-    'engine/crates/audio/src/output_oboe_callback_storage_tests.rs',
     'scripts/testing/check_audio_oboe_callback.py',
-    'engine/crates/audio/src/output_ohaudio_error_storage.rs',
-    'engine/crates/audio/src/output_ohaudio_error_storage_tests.rs',
     'scripts/testing/check_audio_ohaudio_errors.py',
-    'engine/crates/audio/src/output_error_storage.rs',
-    'engine/crates/audio/src/output_error_storage_tests.rs',
     'scripts/testing/check_audio_cpal_errors.py',
     'engine/crates/audio/src/output_ring.rs',
-    'engine/crates/audio/src/output_ring_tests.rs',
-    'engine/crates/audio/src/output_ring_reference.rs',
     'scripts/testing/check_audio_output_ring.py',
     'engine/crates/audio/src/cache_entries_storage.rs',
     'engine/crates/audio/src/cache_entries_storage_tests.rs',
@@ -87,8 +79,6 @@ REQUIRED = [
     'engine/crates/audio/src/cache_lru.rs',
     'engine/crates/audio/src/cache_lru_tests.rs',
     'scripts/testing/check_audio_cache_lru.py',
-    'engine/crates/audio/src/output_sync_storage.rs',
-    'engine/crates/audio/src/output_sync_storage_tests.rs',
     'scripts/testing/check_audio_output_sync.py',
     'scripts/testing/check_audio_device_slots.py',
     'scripts/testing/check_audio_device_routes.py',
@@ -97,32 +87,23 @@ REQUIRED = [
     'engine/crates/audio/src/cache_key_storage.rs',
     'engine/crates/audio/src/cache_key_storage_tests.rs',
     'engine/crates/audio/src/audio_thread_mix_buffer.rs',
-    'engine/crates/audio/src/audio_thread_mix_buffer_tests.rs',
     'engine/crates/audio/src/device_route_storage.rs',
     'engine/crates/audio/src/device_route_storage_tests.rs',
     'engine/crates/audio/src/device_slot_storage.rs',
     'engine/crates/audio/src/device_slot_storage_tests.rs',
     'scripts/testing/check_audio_context_table.py',
     'engine/crates/audio/src/audio_thread_context_table.rs',
-    'engine/crates/audio/src/audio_thread_context_table_tests.rs',
     'scripts/testing/check_audio_inner_players.py',
     'engine/crates/audio/src/audio_thread_inner_players.rs',
-    'engine/crates/audio/src/audio_thread_inner_players_tests.rs',
     'scripts/testing/check_audio_media_players.py',
     'engine/crates/audio/src/audio_thread_media_players.rs',
-    'engine/crates/audio/src/audio_thread_media_players_tests.rs',
     'scripts/testing/check_audio_node_index.py',
     'engine/crates/audio/src/audio_thread_node_index.rs',
     'engine/crates/audio/src/audio_thread_node_creation.rs',
-    'engine/crates/audio/src/audio_thread_node_index_tests.rs',
     'scripts/testing/check_audio_context_construction.py',
-    'engine/crates/audio/src/context_construction.rs',
-    'engine/crates/audio/src/audio_thread_context_construction_tests.rs',
     'scripts/testing/check_audio_graph_tables.py',
     'engine/crates/audio/src/graph_table_layout.rs',
     'engine/crates/audio/src/graph_map.rs',
-    'engine/crates/audio/src/context_graph_tables.rs',
-    'engine/crates/audio/src/audio_thread_graph_table_tests.rs',
 
     "engine/crates/audio/src/graph_vec.rs",
     "engine/crates/audio/src/context_graph_storage.rs",
@@ -136,8 +117,6 @@ REQUIRED = [
     "engine/crates/audio/src/audio_thread_param_storage_tests.rs",
     "scripts/testing/check_audio_param_storage.py",
     'scripts/testing/check_audio_waveshaper_storage.py',
-    'engine/crates/audio/src/nodes/wave_shaper_storage.rs',
-    'engine/crates/audio/src/audio_thread_waveshaper_storage_tests.rs',
     'engine/crates/audio/src/nodes/wave_shaper_inline_tests.rs',
     'engine/crates/audio/src/nodes/wave_shaper_inline_reference.rs',
     'scripts/testing/check_audio_waveshaper_inline.py',
@@ -154,12 +133,9 @@ REQUIRED = [
     'engine/crates/audio/src/nodes/filter_storage_iir_filter_reference.rs',
     'scripts/testing/check_audio_filter_storage.py',
     'engine/crates/audio/src/nodes/analyser_workspace.rs',
-    'engine/crates/audio/src/nodes/analyser_workspace_tests.rs',
-    'engine/crates/audio/src/nodes/analyser_workspace_reference.rs',
     'scripts/testing/check_audio_analyser_workspace.py',
     'engine/crates/shared/src/audio_analyser_samples.rs',
     'engine/crates/audio/src/audio_thread_analyser_output.rs',
-    'engine/crates/audio/src/audio_thread_analyser_output_tests.rs',
     'engine/crates/core/src/runtime/audio_analyser_wire_tests.rs',
     'engine/crates/runtime-v8/src/audio/analyser_backing_tests.rs',
     'scripts/testing/check_audio_analyser_output.py',
@@ -693,7 +669,6 @@ GENERATED = [
     'scripts/patch-helper.py.orig', 'scripts/patch-helper.py.rej',
 ]
 
-
 REQUIRED.extend(['engine/crates/services/src/audio_http_spool.rs', 'engine/crates/services/src/audio_http_spool_tests.rs', 'engine/crates/audio/src/streaming_http_prepare.rs', 'engine/crates/audio/src/streaming_http_prepare_tests.rs', 'engine/crates/audio/src/audio_thread_http_spool_tests.rs', 'scripts/testing/check_audio_http_spool.py'])
 
 REQUIRED.extend(['engine/crates/audio/src/streaming_http_control_tests.rs', 'scripts/testing/check_audio_http_control.py'])
@@ -719,8 +694,6 @@ def main():
                              + '\n'.join(ignored))
     print(f'Git ignore policy PASS: {len(required)} source paths / {len(GENERATED)} generated samples; main Git metadata untouched')
 
-
-
 # Published source, notices and manifests are part of the selected product codec.
 for folder in sorted((ROOT / 'engine/third_party').glob('symphonia-*-0.6.1')):
     REQUIRED.extend(str(p.relative_to(ROOT)) for p in sorted(folder.rglob('*')) if p.is_file())
@@ -732,21 +705,14 @@ for name, row in json.loads((ROOT / 'engine/third_party/rubato-sources.json').re
     folder=ROOT/'engine/third_party'/(name+'-'+row['version'])
     REQUIRED.extend(str(p.relative_to(ROOT)) for p in sorted(folder.rglob('*')) if p.is_file())
 
-
 # AAC product codecs, provenance and complete immutable test inputs are source.
-REQUIRED.extend([
-    'engine/third_party/symphonia-aac-sources.json',
-    'scripts/testing/check_audio_aac_product.py',
-    'scripts/testing/generate_aac_product_fixtures.py',
-])
+REQUIRED.extend(['engine/third_party/symphonia-aac-sources.json', 'scripts/testing/check_audio_aac_product.py', 'scripts/testing/generate_aac_product_fixtures.py'])
 for folder in ['engine/crates/audio/src/decoder/aac', 'engine/crates/audio/src/decoder/aac-fixtures']:
     REQUIRED.extend(str(p.relative_to(ROOT)) for p in sorted((ROOT/folder).rglob('*')) if p.is_file())
-
 
 REQUIRED.append('scripts/testing/check_audio_progressive_product.py')
 REQUIRED.extend(['engine/crates/services/src/audio_local_file.rs', 'engine/crates/services/src/audio_local_file_tests.rs', 'scripts/testing/check_audio_local_file.py'])
 REQUIRED.extend(str(p.relative_to(ROOT)) for p in sorted((ROOT/'engine/crates/audio/src/streaming_codecs').glob('*.rs')))
-
 
 REQUIRED.append('scripts/testing/check_audio_file_controls.py')
 
@@ -754,15 +720,9 @@ REQUIRED.extend(['scripts/testing/check_audio_range_buffer.py', 'engine/crates/s
 
 REQUIRED.extend(['engine/crates/audio/src/streaming_http.rs', 'engine/crates/audio/src/streaming_http_tests.rs', 'scripts/testing/check_audio_http_m4a.py'])
 
+REQUIRED.extend(['engine/crates/audio/src/streaming_source_control.rs', 'engine/crates/audio/src/streaming_http_control.rs', 'engine/crates/audio/src/streaming_range_control_tests.rs', 'scripts/testing/check_audio_range_controls.py'])
 
-REQUIRED.extend([
-    'engine/crates/audio/src/streaming_source_control.rs',
-    'engine/crates/audio/src/streaming_http_control.rs',
-    'engine/crates/audio/src/streaming_range_control_tests.rs',
-    'scripts/testing/check_audio_range_controls.py',
-])
-
-REQUIRED.extend(['engine/crates/audio/src/streaming_file_wave.rs','engine/crates/audio/src/streaming_file_wave_tests.rs','scripts/testing/check_audio_wave_controls.py','engine/third_party/symphonia-format-riff-patches/0004-retained-pcm-source-seek.patch'])
+REQUIRED.extend(['engine/crates/audio/src/streaming_file_wave.rs', 'engine/crates/audio/src/streaming_file_wave_tests.rs', 'scripts/testing/check_audio_wave_controls.py', 'engine/third_party/symphonia-format-riff-patches/0004-retained-pcm-source-seek.patch'])
 
 if __name__ == '__main__':
     main()

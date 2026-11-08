@@ -259,8 +259,16 @@ _OPEN_FILE_EXCLUSIVE_FLAG = re.compile(
 )
 
 
+# Two standardized upper-case identifiers begin with the short brand's letters:
+# the ID3v2 user-defined URL frame (WXX in v2.2, WXXX in v2.3/2.4) that vendored
+# tag readers name, and the B-format ambisonic channel set (WXY, WXYZ) that WAVE
+# channel tables name. Only these exact upper-case words are neutralised.
+_STANDARD_AUDIO_IDENTIFIERS = re.compile(r"\b(?:WXXX|WXX|WXYZ|WXY)(?=\b|_)")
+
+
 def _without_non_brand_tokens(text: str) -> str:
     text = _INTEGRITY_DIGEST.sub("sha-digest", text)
+    text = _STANDARD_AUDIO_IDENTIFIERS.sub("audio-identifier", text)
     return _OPEN_FILE_EXCLUSIVE_FLAG.sub(r"\1\2open-exclusive\3\2", text)
 
 

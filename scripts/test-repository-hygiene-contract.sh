@@ -87,6 +87,21 @@ PY
     git -C "$fixture" add global.js
     expect_fail "the brand as a quoted global name is still rejected" "$fixture"
     git -C "$fixture" rm -q --cached lock.json open.js global.js
+    # ID3's user-defined URL frame and B-format ambisonic channels are standard
+    # upper-case identifiers in vendored audio code; the same letters in lower
+    # case, as a namespace, must still fail.
+    python3 - "$fixture/id3.rs" "$fixture/ambisonic.rs" "$fixture/namespace.js" <<'PY'
+import pathlib, sys
+w, x = chr(0x57), chr(0x58)
+pathlib.Path(sys.argv[1]).write_text("// %s%s%s%s frames\npub const %s%s%s%s_DESCRIPTION: &str = \"D\";\n" % ((w, x, x, x) * 2))
+pathlib.Path(sys.argv[2]).write_text("// %s%sY,UV and %s%sYZ channel sets\n" % (w, x, w, x))
+pathlib.Path(sys.argv[3]).write_text("%s%s.login({});\n" % (w.lower(), x.lower()))
+PY
+    git -C "$fixture" add id3.rs ambisonic.rs
+    expect_pass "standard upper-case audio identifiers are not the brand" "$fixture"
+    git -C "$fixture" add namespace.js
+    expect_fail "the brand as a lower-case namespace is still rejected" "$fixture"
+    git -C "$fixture" rm -q --cached id3.rs ambisonic.rs namespace.js
     python3 - "$fixture/path.md" <<'PY'
 import pathlib, sys
 pathlib.Path(sys.argv[1]).write_bytes(bytes.fromhex(
