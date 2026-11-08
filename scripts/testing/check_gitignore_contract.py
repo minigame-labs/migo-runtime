@@ -19,7 +19,7 @@ REQUIRED = [
     'engine/third_party/libsamplerate-0.2.2/src/src_sinc.c',
     'engine/third_party/libsamplerate-0.2.2/src/src_linear.c',
     'engine/third_party/libsamplerate-0.2.2/src/src_zoh.c',
-    'engine/third_party/libsamplerate-0.2.2/src/high_qual_coeffs.h',
+    'engine/third_party/libsamplerate-0.2.2/src/fastest_coeffs.h',
     'scripts/testing/fixtures/libsamplerate-0.2.2-retain-history.patch',
     'scripts/testing/fixtures/variable_rate_probe.rs',
     'scripts/testing/fixtures/variable_rate_alloc.c',

@@ -73,7 +73,7 @@ struct Reference {
 impl Reference {
     fn new(input: &[f32], channels: usize) -> Self {
         let mut error = 0;
-        let owner = unsafe { src_new(0, channels as c_int, &mut error) };
+        let owner = unsafe { src_new(crate::variable_rate::CONVERTER, channels as c_int, &mut error) };
         assert!(!owner.is_null() && error == 0);
         let mut padded = input.to_vec();
         padded.resize(input.len() + 8192 * channels, 0.);
@@ -1734,7 +1734,7 @@ fn native_admission_preserves_refused_inputs_and_original_cpu_keeps_credit_throu
     }
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     assert_eq!(
-        bytes, 880228,
+        bytes, 120532,
         "native capacity differs from pinned observed calloc requests"
     );
     assert_eq!(

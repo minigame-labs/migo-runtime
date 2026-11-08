@@ -8,6 +8,9 @@ use std::{
 };
 
 pub(crate) const BLOCK: usize = 128;
+/// `SRC_SINC_FASTEST`: band-limited (97 dB SNR, 80% bandwidth) at roughly a
+/// ninth of the best-quality kernel's cost; the only converter compiled in.
+pub(crate) const CONVERTER: c_int = 2;
 
 pub(crate) fn history_frames() -> usize {
     unsafe { migo_src_history_frames() }
@@ -140,7 +143,7 @@ impl Converter {
         let bytes = unsafe { migo_src_required_bytes(channels as c_int) };
         let admission = host.reserve_value_with_bytes::<Self>(bytes)?;
         let mut error = 0;
-        let state = native(|| unsafe { src_new(0, channels as c_int, &mut error) });
+        let state = native(|| unsafe { src_new(CONVERTER, channels as c_int, &mut error) });
         let state = NonNull::new(state).ok_or_else(|| {
             EngineError::from_detail(
                 ErrorCode::InputSaturated,

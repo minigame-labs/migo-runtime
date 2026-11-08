@@ -49,7 +49,7 @@ fn variable_rate() {
         format!(
             "#define PACKAGE \"libsamplerate\"\n#define VERSION \"0.2.2\"\n\
          #define HAVE_STDBOOL_H 1\n#define HAVE_STDINT_H 1\n\
-         #define ENABLE_SINC_BEST_CONVERTER 1\n\
+         #define ENABLE_SINC_FAST_CONVERTER 1\n\
          #define CPU_CLIPS_NEGATIVE 0\n#define CPU_CLIPS_POSITIVE 0\n\
          #define CPU_IS_LITTLE_ENDIAN {}\n#define CPU_IS_BIG_ENDIAN {}\n",
             u8::from(little),
