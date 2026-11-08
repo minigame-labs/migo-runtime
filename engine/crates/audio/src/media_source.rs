@@ -84,4 +84,4 @@ pub(crate) fn resolve_seek(pos: u64, len: u64, to: SeekFrom) -> io::Result<u64> 
 
 #[cfg(test)]
 #[path = "media_source_tests.rs"]
-mod tests;
+pub(crate) mod tests;

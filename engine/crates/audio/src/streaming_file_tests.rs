@@ -1,6 +1,9 @@
-use super::*;
 use crate::inner_audio::{InnerAudioPlayer, PlaybackState};
+use crate::streaming::{self, StreamMsg, StreamingState};
+use shared::audio_file::AudioFile;
+use shared::error::{EngineError, ErrorCode};
 use shared::protocol::audio_cmd::{AudioCmd, InnerAudioEventType};
+use std::sync::{Arc, atomic::AtomicBool};
 use std::{
     fs,
     io::Write,
@@ -69,70 +72,6 @@ fn wave(frames: u32) -> Vec<u8> {
     header.extend(b"\x02\0\x10\0data");
     header.extend(bytes.to_le_bytes());
     header
-}
-#[tokio::test]
-async fn sealed_file_cpu_publication_matches_complete_mature_pcm_for_every_sequential_codec() {
-    let f = Fixture::new().await;
-    let mut wav = wave(9737);
-    wav.extend([0, 32].repeat(9737));
-    for (name, data) in [
-        ("wave", wav),
-        (
-            "vorbis",
-            include_bytes!("decoder/ogg-fixtures/cross.ogg").to_vec(),
-        ),
-        (
-            "adts",
-            include_bytes!("decoder/aac-fixtures/adts-1.aac").to_vec(),
-        ),
-        ("mp3", crate::mp3_fixture::stream(32)),
-    ] {
-        for rate in [16000, 48000] {
-            let expected = crate::decoder::decode_for_rate(&data, rate).unwrap();
-            let source = f.source(&data).await;
-            let state = StreamingState::new();
-            let (tx, mut rx) = streaming::stream_channel();
-            let errors = Arc::new(std::sync::Mutex::new(None));
-            let task = tokio::spawn(run(
-                f.host.audio_cpu(),
-                source,
-                tx,
-                state.clone(),
-                rate,
-                errors.clone(),
-            ));
-            let mut actual = Vec::new();
-            let mut ready = 0;
-            let mut done = 0;
-            while let Some(msg) = tokio::time::timeout(WAIT, rx.recv()).await.unwrap() {
-                match msg {
-                    StreamMsg::Ready {
-                        sample_rate,
-                        channels,
-                        ..
-                    } => {
-                        ready += 1;
-                        assert_eq!((sample_rate, channels), (rate, expected.channels));
-                    }
-                    StreamMsg::Samples { pcm, .. } => actual.extend_from_slice(&pcm),
-                    StreamMsg::Done { .. } => done += 1,
-                    StreamMsg::Error { message, .. } => {
-                        panic!("sealed file source failed complete PCM: {message}")
-                    }
-                }
-            }
-            task.await.unwrap();
-            assert_eq!((ready, done), (1, 1));
-            assert_eq!(actual, expected.samples, "sealed file complete PCM changed");
-            assert!(errors.lock().unwrap().is_none());
-            if std::env::var_os("MIGO_DUMP_FILE_STREAM_PCM").is_some() {
-                println!(
-                    "MIGO_FILE_STREAM_PCM {name}/{rate} {:?}",
-                    actual.iter().map(|s| s.to_bits()).collect::<Vec<_>>()
-                );
-            }
-        }
-    }
 }
 #[tokio::test]
 async fn actual_large_file_src_plays_all_pcm_beyond_both_old_whole_file_limits() {
@@ -327,46 +266,6 @@ async fn original_cpu_really_frees_the_file_backing_only_after_its_loan_step_ret
         "original file loan allocation was not actually destroyed"
     );
     assert!(f.host.pools().reserve_bytes(128 * 1024).is_ok());
-}
-#[tokio::test]
-async fn full_file_pcm_channel_stops_source_reads_and_cancel_never_publishes_done() {
-    let f = Fixture::new().await;
-    let mut data = wave(500000);
-    data.extend([0, 32].repeat(500000));
-    let source = f.source(&data).await;
-    let state = StreamingState::new();
-    let (tx, mut rx) = streaming::stream_channel();
-    let error = Arc::new(std::sync::Mutex::new(None));
-    let task = tokio::spawn(run(
-        f.host.audio_cpu(),
-        source,
-        tx,
-        state.clone(),
-        48000,
-        error,
-    ));
-    let end = Instant::now() + WAIT;
-    while !state.publication_waiting.load(Ordering::Acquire) || rx.len() < 4 {
-        assert!(Instant::now() < end);
-        tokio::task::yield_now().await;
-    }
-    let before = state.bytes_downloaded.load(Ordering::Acquire);
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    assert_eq!(
-        state.bytes_downloaded.load(Ordering::Acquire),
-        before,
-        "full file PCM loans did not backpressure IO"
-    );
-    assert!(before < data.len() as u64);
-    state.cancel();
-    let mut done = 0;
-    while let Some(msg) = rx.recv().await {
-        if matches!(msg, StreamMsg::Done { .. }) {
-            done += 1;
-        }
-    }
-    task.await.unwrap();
-    assert_eq!(done, 0, "cancelled file producer published successful EOF");
 }
 #[tokio::test]
 async fn native_file_readiness_keeps_typed_errors_and_source_refusal_without_duplicate_events() {

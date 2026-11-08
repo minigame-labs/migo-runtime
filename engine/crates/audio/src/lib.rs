@@ -107,10 +107,12 @@ mod media_source;
 mod media_source_http;
 #[cfg(test)]
 mod mp3_fixture;
+mod mp3_source;
 mod nodes;
 mod off_worker;
 mod output;
 pub mod param;
+mod pcm_source;
 /// `setInnerAudioOption` and `getAvailableAudioSources`, where the engine is
 /// the platform's audio (see the module).
 pub mod platform;
@@ -120,15 +122,12 @@ mod resample_job;
 #[cfg(test)]
 mod resampler;
 mod stream_control;
+mod stream_open;
+mod stream_producer;
 pub mod streaming;
-mod streaming_codecs;
-mod streaming_file;
-mod streaming_http;
-mod streaming_http_prepare;
-mod streaming_mp3;
 mod streaming_sinc;
-mod streaming_source_control;
-mod streaming_transport;
+#[cfg(test)]
+mod test_media;
 mod variable_rate;
 
 pub use audio_thread::*;

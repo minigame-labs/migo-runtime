@@ -12,6 +12,8 @@ allowed = [
   "BSD-3-Clause",
   "BSL-1.0",
   "BSL-1.1",
+  # minimp3 (public-domain dedication); the same code shipped earlier inside minimp3-sys.
+  "CC0-1.0",
   "CDLA-Permissive-2.0",
   "IJG",
   "ISC",
@@ -40,6 +42,20 @@ tracking = "https://rustsec.org/advisories/RUSTSEC-2024-0436.html"
 
 # Direct native sources used by audio/build.rs; digest includes every vendored
 # path and SHA-256, including upstream license/attribution files.
+[[native_components]]
+name = "minimp3"
+version = "0.0.0+afb604c"
+owner_package = "migo-audio"
+platforms = ["*"]
+license = "CC0-1.0"
+source_dir = "engine/third_party/minimp3-afb604c"
+source_sha256 = "8c9d80ec3d07da879e23db32c0f7ec40af1377bcd886f081327c416584ee4b8d"
+license_file = "LICENSE"
+license_sha256 = "6a1ee543e5282cd9061881edf462e6fdab181f328da71fc2c9a6950a80e94d01"
+repository = "https://github.com/lieff/minimp3"
+upstream_revision = "afb604c06bc8beb145fecd42c0ceb5bda8795144"
+upstream_archive_sha256 = "21672c32aaac29cf4b7e6f8e0154767080ae87faa79c682498453e5a9bc5e0d3"
+source_modified = false
 [[native_components]]
 name = "libsamplerate"
 version = "0.2.2"

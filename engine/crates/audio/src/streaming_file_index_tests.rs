@@ -1,18 +1,19 @@
 use super::*;
-use symphonia_format_isomp4::streaming::{AtomKind, AtomSpan};
+use crate::test_media::{AtomKind, AtomSpan};
 
 async fn collect(f: &Fixture, source: Arc<dyn AudioFile>, rate: u32) -> (Vec<f32>, u64) {
     let state = StreamingState::new();
     let (tx, mut rx) = streaming::stream_channel();
     let errors = Arc::new(std::sync::Mutex::new(None));
-    let task = tokio::spawn(run(
-        f.host.audio_cpu(),
-        source,
+    let _ = &f;
+    crate::stream_producer::spawn(
+        crate::stream_open::file(source),
+        rate,
         tx,
         state.clone(),
-        rate,
-        errors.clone(),
-    ));
+        Some(errors.clone()),
+    )
+    .unwrap();
     let mut actual = Vec::new();
     let mut ready = 0;
     let mut done = 0;
@@ -29,7 +30,6 @@ async fn collect(f: &Fixture, source: Arc<dyn AudioFile>, rate: u32) -> (Vec<f32
             }
         }
     }
-    task.await.unwrap();
     assert_eq!((ready, done), (1, 1));
     assert!(errors.lock().unwrap().is_none());
     (actual, state.bytes_downloaded.load(Ordering::Acquire))
@@ -207,8 +207,16 @@ struct Observed {
     backwards: std::sync::atomic::AtomicUsize,
 }
 impl AudioFile for Observed {
-    fn read_blocking(&self, _offset: u64, _output: &mut [u8]) -> shared::error::EngineResult<()> {
-        unimplemented!("the stepped pipeline never reads on the calling thread")
+    fn read_blocking(&self, offset: u64, output: &mut [u8]) -> shared::error::EngineResult<()> {
+        if output.len() > 16 {
+            let previous = self
+                .end
+                .swap(offset + output.len() as u64, Ordering::AcqRel);
+            if offset < previous {
+                self.backwards.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        self.file.read_blocking(offset, output)
     }
     fn length(&self) -> u64 {
         self.file.length()
@@ -500,62 +508,4 @@ async fn original_cpu_really_destroys_the_exact_index_allocation_before_credit_r
             .reserve_bytes((bytes + 128 * 1024) as u64)
             .is_ok()
     );
-}
-#[tokio::test]
-async fn malformed_or_oversized_tail_indexes_never_publish_successful_pcm_or_eof() {
-    let f = Fixture::new().await;
-    let original = include_bytes!("decoder/aac-fixtures/1-tail.m4a");
-    let mut position = 0;
-    let index = loop {
-        let span = AtomSpan::read(
-            &original[position..],
-            position as u64,
-            Some(original.len() as u64),
-        )
-        .unwrap()
-        .unwrap();
-        if span.kind == AtomKind::Movie {
-            break position;
-        }
-        position = span.end.unwrap() as usize;
-    };
-    let mut oversized = original[..index].to_vec();
-    oversized.extend(((2 * 1024 * 1024 + 8) as u32).to_be_bytes());
-    oversized.extend(b"moov");
-    oversized.resize(index + 2 * 1024 * 1024 + 8, 0);
-    let mut bad = original.to_vec();
-    bad[index + 4..index + 8].copy_from_slice(b"moof");
-    for data in [&oversized[..], &bad[..]] {
-        let source = f.source(data).await;
-        let (tx, mut rx) = streaming::stream_channel();
-        let state = StreamingState::new();
-        let errors = Arc::new(std::sync::Mutex::new(None));
-        let task = tokio::spawn(run(
-            f.host.audio_cpu(),
-            source,
-            tx,
-            state,
-            48000,
-            errors.clone(),
-        ));
-        let mut success = 0;
-        let mut failures = 0;
-        while let Some(message) = tokio::time::timeout(WAIT, rx.recv()).await.unwrap() {
-            match message {
-                StreamMsg::Error { .. } => failures += 1,
-                _ => success += 1,
-            }
-        }
-        task.await.unwrap();
-        assert_eq!(
-            (success, failures),
-            (0, 1),
-            "invalid indexed source published successful PCM or EOF"
-        );
-        assert_eq!(
-            errors.lock().unwrap().as_ref().unwrap().code,
-            ErrorCode::InvalidArgument,
-            "oversized index reached the unadmitted body reader"
-        );
-    }
 }

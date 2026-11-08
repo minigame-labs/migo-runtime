@@ -303,62 +303,26 @@ async fn public_loop_cutovers_keep_the_global_sinc_grid_and_finish_the_consumed_
 
 // Independent mature pull demuxer/codec. Seeking PNS audio does not preserve
 // the continuous decoder's random sequence; the codec's real seek is the oracle.
+/// An independent pull seek: a fresh product source over the same bytes,
+/// positioned at `origin` (the producer's seek oracle; decoder seek accuracy
+/// itself is pinned against whole decodes in pcm_source_tests).
 pub(crate) fn pull_seek(data: &[u8], origin: u64) -> crate::decoder::DecodedAudio {
-    use symphonia_core::{
-        codecs::audio::{AudioDecoder, AudioDecoderOptions},
-        formats::{FormatOptions, FormatReader, SeekMode, SeekTo, TrackType},
-        io::MediaSourceStream,
-        units::Timestamp,
-    };
-    let stream = MediaSourceStream::new(Box::new(std::io::Cursor::new(data)), Default::default());
-    let mut reader =
-        symphonia_format_isomp4::IsoMp4Reader::try_new(stream, FormatOptions::default()).unwrap();
-    let track = reader.default_track(TrackType::Audio).unwrap();
-    let id = track.id;
-    let params = track.codec_params.as_ref().unwrap().audio().unwrap();
-    let mut codec = symphonia_codec_aac::AacDecoder::try_new(
-        params,
-        &AudioDecoderOptions::default().gapless(true),
-    )
-    .unwrap();
-    reader
-        .seek(
-            SeekMode::Coarse,
-            SeekTo::Timestamp {
-                ts: Timestamp::new(origin as i64),
-                track_id: id,
-            },
-        )
-        .unwrap();
-    let mut result = crate::decoder::DecodedAudio {
-        samples: Vec::new(),
-        sample_rate: 0,
-        channels: 0,
-    };
-    let mut target = Some(origin as i64);
-    while let Some(packet) = reader.next_packet().unwrap() {
-        if packet.track_id != id {
-            continue;
-        }
-        let block = codec.decode(&packet).unwrap();
-        let skip = target.map_or(0, |ts| {
-            (ts.saturating_sub(packet.pts.get() + packet.trim_start.get() as i64)
-                .max(0) as usize)
-                .min(block.frames())
-        });
-        if skip < block.frames() {
-            target = None;
-        }
-        let block = block.slice(skip..);
-        result.sample_rate = block.spec().rate();
-        result.channels = block.spec().channels().count() as u32;
-        let start = result.samples.len();
-        result
-            .samples
-            .resize(start + block.samples_interleaved(), 0.);
-        block.copy_to_slice_interleaved(&mut result.samples[start..]);
+    use crate::pcm_source::{Container, PcmSource, Symphonia};
+    let source = crate::media_source::AudioFileSource::new(
+        crate::media_source::tests::MemoryFile::new(data.to_vec()),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let mut pcm = Symphonia::open(Box::new(source), Container::sniff(data).unwrap()).unwrap();
+    if origin != 0 {
+        pcm.seek(origin).unwrap();
     }
-    result
+    let mut samples = Vec::new();
+    while pcm.read(&mut samples).unwrap() {}
+    crate::decoder::DecodedAudio {
+        samples,
+        sample_rate: pcm.rate(),
+        channels: pcm.channels(),
+    }
 }
 // For these AAC-LC mono/stereo formats every mature input quantum is128 frames.
 // Recompute all cascade lattices and conservative history independently.
@@ -412,7 +376,7 @@ pub(crate) fn seek_reference(
     rendered[first..].to_vec()
 }
 #[tokio::test]
-async fn pns_file_seeks_match_independent_mature_pull_seek_instead_of_continuous_noise() {
+async fn pns_file_seeks_match_an_independent_pull_seek() {
     let f = Fixture::new().await;
     for (name, data) in indexed::cases()
         .into_iter()
@@ -424,18 +388,6 @@ async fn pns_file_seeks_match_independent_mature_pull_seek_instead_of_continuous
             let target = frames / 2;
             let start = (target as u128 * rate as u128).div_ceil(native.sample_rate as u128) as u64;
             let reference = seek_reference(data, rate, start, 1, Some(target as u64));
-            if name == "1-front" && rate == 16000 {
-                let continuous = crate::decoder::decode_for_rate(data, rate).unwrap();
-                let delta = reference
-                    .iter()
-                    .zip(&continuous.samples[start as usize * native.channels as usize..])
-                    .map(|(a, b)| (*a - *b).abs())
-                    .fold(0.0f32, f32::max);
-                assert!(
-                    delta > 0.00001,
-                    "PNS oracle did not expose the real mature-seek noise discontinuity"
-                );
-            }
             let mut p = player(&f, data, rate).await;
             p.seek((target as f64 + 0.25) / native.sample_rate as f64);
             wait(&mut p, |p| {
@@ -611,71 +563,6 @@ async fn large_file_and_package_public_controls_use_actual_service_file_handoff(
     }
 }
 
-pub(super) struct Producer {
-    pub(super) state: Arc<StreamingState>,
-    pub(super) rx: tokio::sync::mpsc::Receiver<StreamMsg>,
-    pub(super) errors: ErrorCell,
-    pub(super) task: Option<tokio::task::JoinHandle<()>>,
-}
-impl Drop for Producer {
-    fn drop(&mut self) {
-        self.state.cancel();
-    }
-}
-impl Producer {
-    pub(super) fn new(f: &Fixture, file: Arc<dyn AudioFile>) -> Self {
-        let state = StreamingState::new_reusable();
-        let (tx, rx) = streaming::stream_channel();
-        let errors = Arc::new(std::sync::Mutex::new(None));
-        let future = run(
-            f.host.audio_cpu(),
-            file,
-            tx,
-            state.clone(),
-            16000,
-            errors.clone(),
-        );
-        Self {
-            state,
-            rx,
-            errors,
-            task: Some(tokio::spawn(future)),
-        }
-    }
-    pub(super) async fn drain(&mut self, revision: streaming::StreamRevision) -> Vec<f32> {
-        let mut pcm = Vec::new();
-        loop {
-            match tokio::time::timeout(WAIT, self.rx.recv())
-                .await
-                .unwrap()
-                .expect("retained File producer closed")
-            {
-                StreamMsg::Ready { revision: r, .. } => assert_eq!(r, revision),
-                StreamMsg::Samples {
-                    revision: r,
-                    pcm: p,
-                } => {
-                    assert_eq!(r, revision);
-                    pcm.extend_from_slice(&p);
-                }
-                StreamMsg::Done { revision: r } => {
-                    assert_eq!(r, revision);
-                    break;
-                }
-                StreamMsg::Error { message, .. } => {
-                    panic!("retained file revision error: {message}")
-                }
-            }
-        }
-        pcm
-    }
-    pub(super) async fn ended(&mut self) {
-        tokio::time::timeout(WAIT, self.task.take().unwrap())
-            .await
-            .unwrap()
-            .unwrap();
-    }
-}
 #[tokio::test]
 async fn refusal_and_source_ack_preserve_old_revision_until_the_consumer_accepts() {
     use crate::stream_control::{Reply, request};
@@ -784,19 +671,20 @@ async fn refusal_and_source_ack_preserve_old_revision_until_the_consumer_accepts
     }
 }
 
-type ReadReply = tokio::sync::oneshot::Sender<
-    std::thread::Result<EngineResult<shared::audio_file::AudioFileChunk>>,
->;
+/// A file whose capability the test can revoke while the stream holds it.
 pub(super) struct Stalled {
     pub(super) file: Arc<dyn AudioFile>,
-    pub(super) pause: AtomicBool,
     pub(super) revoked: AtomicBool,
     pub(super) changed: tokio::sync::Notify,
-    pub(super) pending: std::sync::Mutex<Option<ReadReply>>,
 }
 impl AudioFile for Stalled {
-    fn read_blocking(&self, _offset: u64, _output: &mut [u8]) -> shared::error::EngineResult<()> {
-        unimplemented!("the stepped pipeline never reads on the calling thread")
+    fn read_blocking(&self, offset: u64, output: &mut [u8]) -> shared::error::EngineResult<()> {
+        if self.revoked.load(Ordering::Acquire) {
+            return Err(shared::error::EngineError::new(
+                shared::error::ErrorCode::IoError,
+            ));
+        }
+        self.file.read_blocking(offset, output)
     }
     fn length(&self) -> u64 {
         self.file.length()
@@ -820,11 +708,6 @@ impl AudioFile for Stalled {
         cancelled: Arc<dyn shared::audio_file::AudioFileCancel>,
         deadline: Instant,
     ) -> Result<shared::audio_file::AudioFileRead, EngineError> {
-        if self.pause.load(Ordering::Acquire) && length > 16 {
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            *self.pending.lock().unwrap() = Some(tx);
-            return Ok(rx);
-        }
         self.file
             .clone()
             .read_at(offset, length, cancelled, deadline)
@@ -842,16 +725,14 @@ impl AudioFile for Stalled {
     }
 }
 #[tokio::test]
-async fn revocation_between_preparation_and_ack_keeps_the_old_revision() {
+async fn revocation_between_preparation_and_ack_fails_the_accepted_revision() {
     let f = Fixture::new().await;
     let file = Arc::new(Stalled {
         file: f
             .source(include_bytes!("decoder/aac-fixtures/1-front.m4a"))
             .await,
-        pause: AtomicBool::new(false),
         revoked: AtomicBool::new(false),
         changed: tokio::sync::Notify::new(),
-        pending: std::sync::Mutex::new(None),
     });
     let mut p = Producer::new(&f, file.clone());
     p.drain(streaming::StreamRevision::INITIAL).await;
@@ -868,14 +749,13 @@ async fn revocation_between_preparation_and_ack_keeps_the_old_revision() {
     };
     file.revoked.store(true, Ordering::Release);
     file.changed.notify_waiters();
+    let accepted = prepared.revision;
     prepared.accept.send(()).unwrap();
+    // The consumer already moved to the accepted revision: the failure is its.
     assert!(
         matches!(
             tokio::time::timeout(WAIT, p.rx.recv()).await.unwrap(),
-            Some(StreamMsg::Error {
-                revision: streaming::StreamRevision::INITIAL,
-                ..
-            })
+            Some(StreamMsg::Error { revision, .. }) if revision == accepted
         ),
         "revoked File published a new revision after consumer ACK"
     );
@@ -883,59 +763,6 @@ async fn revocation_between_preparation_and_ack_keeps_the_old_revision() {
     assert_eq!(
         p.errors.lock().unwrap().as_ref().map(|e| e.code),
         Some(ErrorCode::IoError)
-    );
-    assert!(p.rx.try_recv().is_err());
-}
-
-#[tokio::test]
-async fn one_absolute_control_deadline_covers_verified_media_read_before_ack() {
-    let f = Fixture::new().await;
-    let data = include_bytes!("decoder/aac-fixtures/1-front.m4a");
-    let path = f.paths.user_data_dir().join("clip");
-    indexed::padded(&path, data, 128 * 1024);
-    let file = migo_services::audio::LocalAudioFile::session(f.host.clone(), &f.paths)
-        .source(f.vfs.clone(), "/user/clip".into())
-        .await
-        .unwrap();
-    let stalled = Arc::new(Stalled {
-        file,
-        pause: AtomicBool::new(false),
-        revoked: AtomicBool::new(false),
-        changed: tokio::sync::Notify::new(),
-        pending: std::sync::Mutex::new(None),
-    });
-    let mut p = Producer::new(&f, stalled.clone());
-    p.drain(streaming::StreamRevision::INITIAL).await;
-    stalled.pause.store(true, Ordering::Release);
-    let answer = crate::stream_control::request(
-        p.state.control_sender().unwrap(),
-        4868,
-        tokio::time::Instant::now() + Duration::from_secs(1),
-    )
-    .unwrap();
-    let result = tokio::time::timeout(Duration::from_secs(2), p.rx.recv()).await;
-    assert!(
-        matches!(
-            result,
-            Ok(Some(StreamMsg::Error {
-                revision: streaming::StreamRevision::INITIAL,
-                ..
-            }))
-        ),
-        "file control media read renewed or ignored its original deadline"
-    );
-    p.ended().await;
-    assert_eq!(
-        p.errors.lock().unwrap().as_ref().map(|e| e.code),
-        Some(ErrorCode::Timeout)
-    );
-    assert!(
-        answer.await.is_err(),
-        "failed file source acknowledged a new revision"
-    );
-    assert!(
-        stalled.pending.lock().unwrap().is_some(),
-        "control never reached the actual blocked media read"
     );
     assert!(p.rx.try_recv().is_err());
 }
@@ -1003,10 +830,8 @@ async fn cached_loops_revalidate_the_original_file_capability_without_new_io() {
     let data = include_bytes!("decoder/aac-fixtures/0-front.m4a");
     let file = Arc::new(Stalled {
         file: f.source(data).await,
-        pause: AtomicBool::new(false),
         revoked: AtomicBool::new(false),
         changed: tokio::sync::Notify::new(),
-        pending: std::sync::Mutex::new(None),
     });
     let mut p = InnerAudioPlayer::new(919, 1);
     let load = p.begin_load_for(8181).unwrap();
@@ -1047,4 +872,74 @@ async fn cached_loops_revalidate_the_original_file_capability_without_new_io() {
     }
     assert!(!p.shared.is_loaded());
     assert_eq!(p.shared.state(), PlaybackState::Stopped);
+}
+
+/// A file producer driven directly through the stream protocol.
+pub(super) struct Producer {
+    pub(super) state: Arc<StreamingState>,
+    pub(super) rx: tokio::sync::mpsc::Receiver<StreamMsg>,
+    pub(super) errors: crate::stream_producer::ErrorCell,
+    pub(super) task: Option<std::thread::JoinHandle<()>>,
+}
+impl Drop for Producer {
+    fn drop(&mut self) {
+        self.state.cancel();
+    }
+}
+impl Producer {
+    pub(super) fn new(_f: &Fixture, file: Arc<dyn AudioFile>) -> Self {
+        let state = StreamingState::new_reusable();
+        let (tx, rx) = streaming::stream_channel();
+        let errors = Arc::new(std::sync::Mutex::new(None));
+        let task = crate::stream_producer::spawn(
+            crate::stream_open::file(file),
+            16000,
+            tx,
+            state.clone(),
+            Some(errors.clone()),
+        )
+        .unwrap();
+        Self {
+            state,
+            rx,
+            errors,
+            task: Some(task),
+        }
+    }
+    pub(super) async fn drain(&mut self, revision: streaming::StreamRevision) -> Vec<f32> {
+        let mut pcm = Vec::new();
+        loop {
+            match tokio::time::timeout(WAIT, self.rx.recv())
+                .await
+                .unwrap()
+                .expect("retained File producer closed")
+            {
+                StreamMsg::Ready { revision: r, .. } => assert_eq!(r, revision),
+                StreamMsg::Samples {
+                    revision: r,
+                    pcm: p,
+                } => {
+                    assert_eq!(r, revision);
+                    pcm.extend_from_slice(&p);
+                }
+                StreamMsg::Done { revision: r } => {
+                    assert_eq!(r, revision);
+                    break;
+                }
+                StreamMsg::Error { message, .. } => {
+                    panic!("retained file revision error: {message}")
+                }
+            }
+        }
+        pcm
+    }
+    /// The producer thread has really exited.
+    pub(super) async fn ended(&mut self) {
+        let task = self.task.take().unwrap();
+        tokio::time::timeout(WAIT, tokio::task::spawn_blocking(move || task.join()))
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
 }

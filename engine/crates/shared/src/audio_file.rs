@@ -39,7 +39,8 @@ pub trait AudioHttpSpool: Send + Sync {
 /// Positioned storage for one HTTP media object; which extents hold data is the
 /// caller's record. Blocking IO: decode and fetch threads only.
 pub trait AudioSparseSpool: Send + Sync {
-    fn len(&self) -> u64;
+    /// Bytes the spool can hold: the object's length when it is known.
+    fn size(&self) -> u64;
     fn write_at(&self, offset: u64, bytes: &[u8]) -> EngineResult<()>;
     fn read_at(&self, offset: u64, output: &mut [u8]) -> EngineResult<()>;
 }

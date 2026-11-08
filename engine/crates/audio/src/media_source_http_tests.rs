@@ -1,5 +1,5 @@
 use super::*;
-use crate::streaming_http::tests::{Mode, server, server_with_initial_prefix};
+use crate::stream_open::http_tests::{Mode, server, server_with_initial_prefix};
 use shared::audio_file::{
     AudioFile, AudioFileCancel, AudioHttpSpool, AudioSpoolBody, AudioSpoolFuture,
 };
@@ -30,7 +30,7 @@ fn extents_merge_touching_ranges_and_report_gaps() {
 
 struct MemorySparse(std::sync::Mutex<Vec<u8>>);
 impl AudioSparseSpool for MemorySparse {
-    fn len(&self) -> u64 {
+    fn size(&self) -> u64 {
         self.0.lock().unwrap().len() as u64
     }
     fn write_at(&self, offset: u64, bytes: &[u8]) -> EngineResult<()> {
@@ -84,14 +84,14 @@ fn runtime() -> tokio::runtime::Runtime {
 
 struct Opened {
     source: HttpSource,
-    server: crate::streaming_http::tests::Server,
+    server: crate::stream_open::http_tests::Server,
     cancel: Arc<AtomicBool>,
     _host: migo_io::scheduler::IoScheduler,
 }
 
 fn open(
     rt: &tokio::runtime::Runtime,
-    server: crate::streaming_http::tests::Server,
+    server: crate::stream_open::http_tests::Server,
     path: &str,
 ) -> Opened {
     let host = migo_io::scheduler::IoScheduler::new(0);
@@ -112,8 +112,15 @@ fn open(
         request.send().await.unwrap()
     });
     let cancel = Arc::new(AtomicBool::new(false));
-    let source =
-        HttpSource::open(rt.handle(), client, response, &MemorySpool, cancel.clone()).unwrap();
+    let source = HttpSource::open(
+        rt.handle(),
+        client,
+        response,
+        &MemorySpool,
+        cancel.clone(),
+        None,
+    )
+    .unwrap();
     Opened {
         source,
         server,
@@ -155,6 +162,11 @@ fn the_tail_arrives_by_range_while_the_initial_body_is_still_stalled() {
         false,
     ));
     let mut o = open(&rt, server, "/clip");
+    // The 4 KiB prefix has landed, so the fetcher now waits on the stalled body.
+    let mut first = [0; 100];
+    o.source.read_exact(&mut first).unwrap();
+    assert_eq!(first, data[..100]);
+    std::thread::sleep(Duration::from_millis(50));
     let started = Instant::now();
     o.source.seek(SeekFrom::End(-10_000)).unwrap();
     let mut tail = vec![0; 10_000];
@@ -212,19 +224,26 @@ fn compressed_and_unknown_length_bodies_learn_their_length_at_the_end() {
 }
 
 #[test]
-fn a_changed_representation_fails_the_read_instead_of_mixing_objects() {
+fn a_bad_range_response_fails_the_read_instead_of_mixing_bytes() {
     let rt = runtime();
     let data = media(2_000_000);
-    let server = rt.block_on(server_with_initial_prefix(
-        data.clone(),
-        Mode::Changed,
-        Some(4096),
-        false,
-    ));
-    let mut o = open(&rt, server, "/clip");
-    o.source.seek(SeekFrom::End(-1000)).unwrap();
-    let mut tail = vec![0; 1000];
-    assert!(o.source.read_exact(&mut tail).is_err());
+    // A changed validator, a shifted Content-Range, and a body that keeps
+    // ending one byte short of its own length (retried without progress).
+    for mode in [Mode::Changed, Mode::Offset, Mode::Truncated] {
+        let server = rt.block_on(server_with_initial_prefix(
+            data.clone(),
+            mode,
+            Some(4096),
+            false,
+        ));
+        let mut o = open(&rt, server, "/clip");
+        o.source.seek(SeekFrom::End(-1000)).unwrap();
+        let mut tail = vec![0; 1000];
+        assert!(
+            o.source.read_exact(&mut tail).is_err(),
+            "{mode:?}: a bad Range response was read as media"
+        );
+    }
 }
 
 #[test]
@@ -269,4 +288,60 @@ fn closing_releases_a_reader_blocked_on_a_stalled_body() {
     assert!(o2.source.read(&mut [0; 16]).is_err());
     assert!(started.elapsed() < WAIT_SLICE * 4);
     drop(o);
+}
+
+#[test]
+fn a_nearby_offset_behind_a_stalled_body_still_arrives_by_range() {
+    let rt = runtime();
+    let data = media(200_000);
+    let server = rt.block_on(server_with_initial_prefix(
+        data.clone(),
+        Mode::Normal,
+        Some(4096),
+        false,
+    ));
+    let mut o = open(&rt, server, "/clip");
+    let mut first = [0; 100];
+    o.source.read_exact(&mut first).unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+    // Well inside the read-on window, but the body will never get there.
+    let started = Instant::now();
+    o.source.seek(SeekFrom::Start(150_000)).unwrap();
+    let mut near = vec![0; 1000];
+    o.source.read_exact(&mut near).unwrap();
+    assert_eq!(near, data[150_000..151_000]);
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+#[test]
+fn short_responses_that_make_progress_are_continued_without_limit() {
+    // Every Range response covers only 4 KiB: far more responses than the
+    // restart bound, each one valid (the range stream continues them).
+    let rt = runtime();
+    let data = media(1_000_000);
+    let server = rt.block_on(server_with_initial_prefix(
+        data.clone(),
+        Mode::Normal,
+        Some(4096),
+        true,
+    ));
+    let mut o = open(&rt, server, "/clip");
+    let started = std::time::Instant::now();
+    assert_eq!(read_all(&mut o.source).unwrap(), data);
+    assert!(
+        started.elapsed() < Duration::from_secs(10),
+        "valid short responses were delayed"
+    );
+}
+
+#[test]
+fn a_connection_that_keeps_dropping_after_progress_is_resumed_to_the_end() {
+    // Every response breaks off after 64 KiB: more drops than the restart
+    // bound, but each one after progress, as on a flaky mobile network.
+    let rt = runtime();
+    let data = media(1_000_000);
+    let server = rt.block_on(server(data.clone(), Mode::Flaky, false, false));
+    let mut o = open(&rt, server, "/clip");
+    assert_eq!(read_all(&mut o.source).unwrap(), data);
+    assert!(o.server.range_requests() > MAX_RESTARTS as usize);
 }

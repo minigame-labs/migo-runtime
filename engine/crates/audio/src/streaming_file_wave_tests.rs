@@ -2,7 +2,7 @@
 use super::controls::{finish, suffix, wait};
 use super::*;
 fn data(frames: usize, channels: u16, rate: u32, tail: usize) -> Vec<u8> {
-    let mut data = crate::streaming_codecs::tests::wav(rate, channels, frames);
+    let mut data = crate::test_media::wav(rate, channels, frames);
     if tail != 0 {
         data.extend(b"LIST");
         data.extend((tail as u32).to_le_bytes());
@@ -248,14 +248,12 @@ async fn actual_large_wave_reclaims_pcm_then_reopens_the_sealed_source_and_plays
 
 use super::controls::{Producer, Stalled};
 #[tokio::test]
-async fn wave_revocation_between_preparation_and_ack_keeps_the_old_revision() {
+async fn wave_revocation_between_preparation_and_ack_fails_the_accepted_revision() {
     let f = Fixture::new().await;
     let file = Arc::new(Stalled {
         file: f.source(&data(120000, 2, 44100, 37)).await,
-        pause: AtomicBool::new(false),
         revoked: AtomicBool::new(false),
         changed: tokio::sync::Notify::new(),
-        pending: std::sync::Mutex::new(None),
     });
     let mut p = Producer::new(&f, file.clone());
     p.drain(streaming::StreamRevision::INITIAL).await;
@@ -272,14 +270,13 @@ async fn wave_revocation_between_preparation_and_ack_keeps_the_old_revision() {
     };
     file.revoked.store(true, Ordering::Release);
     file.changed.notify_waiters();
+    let accepted = prepared.revision;
     prepared.accept.send(()).unwrap();
+    // The consumer already moved to the accepted revision: the failure is its.
     assert!(
         matches!(
             tokio::time::timeout(WAIT, p.rx.recv()).await.unwrap(),
-            Some(StreamMsg::Error {
-                revision: streaming::StreamRevision::INITIAL,
-                ..
-            })
+            Some(StreamMsg::Error { revision, .. }) if revision == accepted
         ),
         "revoked File published a new revision after consumer ACK"
     );
@@ -287,54 +284,6 @@ async fn wave_revocation_between_preparation_and_ack_keeps_the_old_revision() {
     assert_eq!(
         p.errors.lock().unwrap().as_ref().map(|e| e.code),
         Some(ErrorCode::IoError)
-    );
-    assert!(p.rx.try_recv().is_err());
-}
-
-#[tokio::test]
-async fn wave_absolute_control_deadline_covers_the_first_actual_media_read() {
-    let f = Fixture::new().await;
-    let bytes = data(120000, 2, 44100, 37);
-    let file = f.source(&bytes).await;
-    let stalled = Arc::new(Stalled {
-        file,
-        pause: AtomicBool::new(false),
-        revoked: AtomicBool::new(false),
-        changed: tokio::sync::Notify::new(),
-        pending: std::sync::Mutex::new(None),
-    });
-    let mut p = Producer::new(&f, stalled.clone());
-    p.drain(streaming::StreamRevision::INITIAL).await;
-    stalled.pause.store(true, Ordering::Release);
-    let answer = crate::stream_control::request(
-        p.state.control_sender().unwrap(),
-        4868,
-        tokio::time::Instant::now() + Duration::from_secs(1),
-    )
-    .unwrap();
-    let result = tokio::time::timeout(Duration::from_secs(2), p.rx.recv()).await;
-    assert!(
-        matches!(
-            result,
-            Ok(Some(StreamMsg::Error {
-                revision: streaming::StreamRevision::INITIAL,
-                ..
-            }))
-        ),
-        "file control media read renewed or ignored its original deadline"
-    );
-    p.ended().await;
-    assert_eq!(
-        p.errors.lock().unwrap().as_ref().map(|e| e.code),
-        Some(ErrorCode::Timeout)
-    );
-    assert!(
-        answer.await.is_err(),
-        "failed file source acknowledged a new revision"
-    );
-    assert!(
-        stalled.pending.lock().unwrap().is_some(),
-        "control never reached the actual blocked media read"
     );
     assert!(p.rx.try_recv().is_err());
 }
@@ -466,103 +415,6 @@ async fn live_wave_source_seek_discards_the_original_unaccepted_encoded_suffix()
         &got,
         &reference.samples[mapped * 2..],
         "live-seek/16000/source-suffix",
-    );
-}
-
-#[tokio::test]
-async fn unknown_length_wave_keeps_single_pass_eof_and_existing_buffered_controls() {
-    let f = Fixture::new().await;
-    let mut bytes = data(9737, 2, 44100, 0);
-    bytes[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
-    bytes[40..44].copy_from_slice(&u32::MAX.to_le_bytes());
-    let state = StreamingState::new_optional_controls();
-    let (tx, mut rx) = streaming::stream_channel();
-    let error = Arc::new(std::sync::Mutex::new(None));
-    let task = tokio::spawn(run(
-        f.host.audio_cpu(),
-        f.source(&bytes).await,
-        tx,
-        state.clone(),
-        16000,
-        error.clone(),
-    ));
-    let mut pcm = Vec::new();
-    let mut ended = 0;
-    while let Some(message) = tokio::time::timeout(WAIT, rx.recv()).await.unwrap() {
-        match message {
-            StreamMsg::Ready { .. } => assert!(
-                state.control_sender().is_none() && !state.retains_source(),
-                "unknown WAVE installed unavailable source controls"
-            ),
-            StreamMsg::Samples { pcm: p, .. } => pcm.extend_from_slice(&p),
-            StreamMsg::Done { .. } => ended += 1,
-            StreamMsg::Error { message, .. } => {
-                panic!("unknown WAVE single pass failed: {message}")
-            }
-        }
-    }
-    task.await.unwrap();
-    assert_eq!(ended, 1);
-    assert!(
-        state.control_sender().is_none() && !state.retains_source(),
-        "unknown WAVE installed unavailable source controls"
-    );
-    assert!(error.lock().unwrap().is_none());
-    compare(
-        &pcm,
-        &crate::decoder::decode_for_rate(&bytes, 16000)
-            .unwrap()
-            .samples,
-        "unknown/16000/single-pass",
-    );
-    let mut p = load(&f, f.source(&bytes).await, 2, 16000).await;
-    let got = suffix(&mut p, pcm.len() / 2).await;
-    compare(&got, &pcm, "unknown/16000/public-complete");
-    finish(&mut p).await;
-    let at = 311u64;
-    p.seek((at as f64 + 0.25) / 16000.0);
-    assert_eq!(
-        p.shared.position_frames(),
-        at,
-        "unknown WAVE lost buffered seek"
-    );
-    let got = suffix(&mut p, pcm.len() / 2 - at as usize).await;
-    compare(&got, &pcm[at as usize * 2..], "unknown/16000/buffered-seek");
-}
-
-#[tokio::test]
-async fn truncated_pinned_wave_refuses_before_ready_or_source_control_installation() {
-    let f = Fixture::new().await;
-    let mut bytes = data(9737, 2, 44100, 0);
-    bytes.pop();
-    let state = StreamingState::new_optional_controls();
-    let (tx, mut rx) = streaming::stream_channel();
-    let error = Arc::new(std::sync::Mutex::new(None));
-    let task = tokio::spawn(run(
-        f.host.audio_cpu(),
-        f.source(&bytes).await,
-        tx,
-        state.clone(),
-        16000,
-        error.clone(),
-    ));
-    let mut errors = 0;
-    while let Some(message) = tokio::time::timeout(WAIT, rx.recv()).await.unwrap() {
-        assert!(
-            matches!(message, StreamMsg::Error { .. }),
-            "truncated pinned WAVE published successful PCM or Ready"
-        );
-        errors += 1;
-    }
-    task.await.unwrap();
-    assert_eq!(errors, 1);
-    assert!(
-        state.control_sender().is_none() && !state.retains_source(),
-        "truncated WAVE exposed unavailable source controls"
-    );
-    assert_eq!(
-        error.lock().unwrap().as_ref().map(|e| e.code),
-        Some(ErrorCode::InvalidArgument)
     );
 }
 

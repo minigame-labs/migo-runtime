@@ -183,7 +183,7 @@ impl Spool {
 }
 struct Sparse(migo_io::spool::SparseSpool);
 impl shared::audio_file::AudioSparseSpool for Sparse {
-    fn len(&self) -> u64 {
+    fn size(&self) -> u64 {
         self.0.len()
     }
     fn write_at(&self, offset: u64, bytes: &[u8]) -> Result<(), EngineError> {

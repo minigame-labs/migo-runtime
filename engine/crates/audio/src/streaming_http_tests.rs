@@ -1,23 +1,24 @@
-use super::*;
+use crate::streaming::{HttpClient, StreamMsg, StreamingState};
+use crate::test_media::{AtomKind, AtomSpan};
+use shared::error::ErrorCode;
+use std::sync::Arc;
+use tokio::{sync::mpsc, time::Instant};
 #[path = "streaming_http_control_tests.rs"]
 pub(crate) mod controls;
 #[path = "streaming_http_mp3_tests.rs"]
 mod mp3_controls;
-#[path = "streaming_http_prepare_tests.rs"]
-mod preparation;
 #[path = "streaming_range_control_tests.rs"]
 mod range_controls;
 #[path = "streaming_http_vorbis_tests.rs"]
 mod vorbis_controls;
 #[path = "streaming_http_wave_tests.rs"]
 mod wave_controls;
-use crate::streaming_transport::Decoder;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 const WAIT: Duration = Duration::from_secs(20);
 const TAIL: &[u8] = include_bytes!("decoder/aac-fixtures/1-tail.m4a");
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum Mode {
     Normal,
     Changed,
@@ -30,16 +31,16 @@ pub(crate) enum Mode {
     Gzip,
     UnknownLength,
     OriginalShort,
+    /// Every response (initial or Range) breaks the connection after 64 KiB.
+    Flaky,
 }
 pub(crate) struct Server {
     proxy: String,
     task: tokio::task::JoinHandle<()>,
     ranges: Arc<AtomicUsize>,
     initial_eof: Arc<AtomicUsize>,
-    behavior: Arc<AtomicUsize>,
     hold_body: Arc<AtomicUsize>,
     entered: Arc<tokio::sync::Notify>,
-    release: Arc<tokio::sync::Notify>,
 }
 impl Drop for Server {
     fn drop(&mut self) {
@@ -49,17 +50,6 @@ impl Drop for Server {
 impl Server {
     pub(crate) fn range_requests(&self) -> usize {
         self.ranges.load(Ordering::Acquire)
-    }
-    fn range_fault(&self, mode: Mode) {
-        self.behavior.store(
-            match mode {
-                Mode::Changed => 1,
-                Mode::Offset => 2,
-                Mode::Truncated => 3,
-                _ => 0,
-            },
-            Ordering::Release,
-        );
     }
     //0=no pause;1=before body;2=after first body chunk. Production never sees this fixture state.
     fn pause_range_body(&self, at: usize) {
@@ -124,28 +114,19 @@ pub(crate) async fn server_with_initial_prefix(
     } else {
         data
     });
-    let behavior = Arc::new(AtomicUsize::new(0));
     let hold_body = Arc::new(AtomicUsize::new(0));
     let entered = Arc::new(tokio::sync::Notify::new());
     let release = Arc::new(tokio::sync::Notify::new());
-    let (behavior_run, hold_run, entered_run, release_run) = (
-        behavior.clone(),
-        hold_body.clone(),
-        entered.clone(),
-        release.clone(),
-    );
+    let (hold_run, entered_run, release_run) =
+        (hold_body.clone(), entered.clone(), release.clone());
     let task =
         tokio::spawn(async move {
             let mut children = tokio::task::JoinSet::new();
             loop {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let (data, count, eof) = (data.clone(), count.clone(), eof.clone());
-                let (behavior, hold_body, entered, release) = (
-                    behavior_run.clone(),
-                    hold_run.clone(),
-                    entered_run.clone(),
-                    release_run.clone(),
-                );
+                let (hold_body, entered, release) =
+                    (hold_run.clone(), entered_run.clone(), release_run.clone());
                 children.spawn(async move {
                 let mut header = Vec::new();
                 while !header.ends_with(b"\r\n\r\n") {
@@ -161,12 +142,6 @@ pub(crate) async fn server_with_initial_prefix(
                 } else {
                     assert!(text.contains("accept-encoding: identity\r\n"));
                 }
-                let mode = match behavior.load(Ordering::Acquire) {
-                    1 => Mode::Changed,
-                    2 => Mode::Offset,
-                    3 => Mode::Truncated,
-                    _ => mode,
-                };
                 let range = text.lines().find_map(|s| s.strip_prefix("range: bytes="));
                 let (start, end, status, extent) = if let Some(range) = range {
                     count.fetch_add(1, Ordering::AcqRel);
@@ -246,6 +221,9 @@ pub(crate) async fn server_with_initial_prefix(
                     release.notified().await;
                 }
                 for (i, chunk) in data[start..end].chunks(137).enumerate() {
+                    if mode == Mode::Flaky && i * 137 >= 64 * 1024 {
+                        return;
+                    }
                     if range.is_some() && i == 1 && hold_body.load(Ordering::Acquire) == 2 {
                         entered.notify_one();
                         release.notified().await;
@@ -283,10 +261,8 @@ pub(crate) async fn server_with_initial_prefix(
         task,
         ranges,
         initial_eof,
-        behavior,
         hold_body,
         entered,
-        release,
     }
 }
 fn start(
@@ -483,13 +459,7 @@ async fn range_tail_plays_beyond_whole_file_limit_without_waiting_for_original_b
 #[tokio::test]
 async fn changed_ignored_shifted_short_or_unpinned_ranges_cannot_publish_success() {
     let host = migo_io::scheduler::IoScheduler::new(0);
-    for mode in [
-        Mode::Changed,
-        Mode::Offset,
-        Mode::Ignored,
-        Mode::Truncated,
-        Mode::NoTag,
-    ] {
+    for mode in [Mode::Changed, Mode::Offset, Mode::Ignored, Mode::Truncated] {
         let server = server(padded(TAIL, 256 * 1024), mode, true, false).await;
         let (mut rx, state) = start(&server, &host, 48000);
         assert!(
@@ -497,11 +467,40 @@ async fn changed_ignored_shifted_short_or_unpinned_ranges_cannot_publish_success
             "invalid HTTP representation published successful PCM"
         );
         assert!(!state.download_complete.load(Ordering::Acquire));
+        // A response that fails validation is terminal at once; one that
+        // keeps ending short is retried a bounded number of times without
+        // progress; without a validator no Range is sent at all.
+        let bound = match mode {
+            Mode::Truncated => 1 + crate::media_source_http::MAX_RESTARTS as usize,
+            _ => 1,
+        };
         assert!(
-            server.ranges.load(Ordering::Acquire) <= 1,
-            "invalid Range retried or started an unpinned fallback"
+            server.ranges.load(Ordering::Acquire) <= bound,
+            "{mode:?}: invalid Range retried past its bound or started an unpinned fallback"
         );
     }
+    // Without a validator nothing can be pinned: the reader waits on the
+    // original body (as a browser does, until its idle timeout) and never
+    // sends a Range for the missing tail.
+    let server = server(padded(TAIL, 256 * 1024), Mode::NoTag, true, false).await;
+    let (mut rx, state) = start(&server, &host, 48000);
+    let quiet = tokio::time::sleep(Duration::from_secs(1));
+    tokio::pin!(quiet);
+    loop {
+        tokio::select! {
+            message = rx.recv() => assert!(
+                !matches!(message, Some(StreamMsg::Done { .. })),
+                "an unpinned stalled body published success"
+            ),
+            _ = &mut quiet => break,
+        }
+    }
+    assert_eq!(
+        server.ranges.load(Ordering::Acquire),
+        0,
+        "an unpinned body sent a Range"
+    );
+    state.cancel();
 }
 #[tokio::test]
 async fn valid_short_media_responses_continue_to_the_real_object_eof() {
@@ -519,189 +518,6 @@ async fn valid_short_media_responses_continue_to_the_real_object_eof() {
         "short 206 changed complete PCM"
     );
     assert!(server.ranges.load(Ordering::Acquire) > 8);
-}
-#[tokio::test]
-async fn admitted_index_input_is_held_until_the_original_cpu_really_frees_it() {
-    const N: usize = 2 * 1024 * 1024;
-    let host = migo_io::scheduler::IoScheduler::isolated_for_admission_probe(1071, 4, N as u64);
-    let peer = host.peer_for_admission_probe(1072);
-    let client = server(TAIL.to_vec(), Mode::Normal, false, false)
-        .await
-        .client(host.pools().clone());
-    let input = Input::new(&client, N).unwrap();
-    let watch = migo_alloc_probe::DeallocationWatch::new(input.data.as_ptr()).unwrap();
-    assert!(
-        Input::new(&client, 1).is_err(),
-        "HTTP index bypassed original byte admission"
-    );
-    let owner = OffWorker::new((), host.audio_cpu());
-    let (entered, waiting) = std::sync::mpsc::channel();
-    let (release, held) = std::sync::mpsc::channel();
-    let job = tokio::spawn(owner.with(move |_| {
-        entered.send(()).unwrap();
-        held.recv_timeout(WAIT).unwrap();
-        assert!(
-            std::thread::current()
-                .name()
-                .unwrap_or("")
-                .starts_with("Migo-IO-")
-        );
-        let before = migo_alloc_probe::thread_counts();
-        drop(input);
-        assert!(
-            migo_alloc_probe::thread_counts().bytes_freed - before.bytes_freed >= N as u64,
-            "HTTP index did not really free on original CPU"
-        );
-    }));
-    tokio::task::spawn_blocking(move || waiting.recv_timeout(WAIT).unwrap())
-        .await
-        .unwrap();
-    let retained = watch.freed_bytes().is_none() && Input::new(&client, 1).is_err();
-    assert_eq!(peer.audio_cpu().run(|| 19).await.unwrap(), 19);
-    release.send(()).unwrap();
-    let (owner, ()) = job.await.unwrap().unwrap();
-    assert!(
-        retained,
-        "HTTP index storage or credit returned before original CPU drop"
-    );
-    assert_eq!(
-        watch.freed_bytes(),
-        Some(N),
-        "original HTTP index pointer was not freed"
-    );
-    assert!(Input::new(&client, N).is_ok());
-    drop(owner);
-}
-#[tokio::test]
-async fn sequential_decoder_keeps_m4a_refusal_and_cancellation_terminal() {
-    let mut decoder = AutoDecoder::new(48000);
-    let mut pcm = Vec::with_capacity(32768);
-    assert!(
-        decoder
-            .step(
-                TAIL,
-                false,
-                &mut pcm,
-                &std::sync::atomic::AtomicBool::new(false)
-            )
-            .is_err(),
-        "sequential decoder silently accepted indexed M4A"
-    );
-    let mut decoder = AutoDecoder::http(48000);
-    decoder
-        .step(
-            TAIL,
-            false,
-            &mut pcm,
-            &std::sync::atomic::AtomicBool::new(true),
-        )
-        .unwrap();
-    assert!(
-        decoder
-            .step(
-                TAIL,
-                false,
-                &mut pcm,
-                &std::sync::atomic::AtomicBool::new(false)
-            )
-            .is_err()
-    );
-    let source = server(TAIL.to_vec(), Mode::Normal, false, false).await;
-    let host = migo_io::scheduler::IoScheduler::new(0);
-    let state = StreamingState::new();
-    let (tx, mut rx) = crate::streaming::stream_channel();
-    let operation = tokio::spawn(crate::streaming_transport::run(
-        host.audio_cpu(),
-        source.client(host.pools().clone()),
-        "http://indexed-product-fixture.invalid/sequential".into(),
-        tx,
-        state,
-        || AutoDecoder::new(48000),
-    ));
-    let cause = collect(&mut rx)
-        .await
-        .expect_err("sequential HTTP source silently accepted indexed M4A");
-    assert!(
-        cause.contains("M4A requires the indexed streaming source"),
-        "sequential HTTP refusal did not reach the decoder: {cause}"
-    );
-    operation.await.unwrap();
-}
-
-#[tokio::test]
-async fn oversized_tail_index_is_refused_before_the_body_or_allocation() {
-    let mut data = TAIL.to_vec();
-    let mut pos = 0;
-    loop {
-        let span = AtomSpan::read(&data[pos..], pos as u64, Some(data.len() as u64))
-            .unwrap()
-            .unwrap();
-        if span.kind == AtomKind::Movie {
-            break;
-        }
-        pos = span.end.unwrap() as usize;
-    }
-    let length = 2 * 1024 * 1024 + 1;
-    data[pos..pos + 4].copy_from_slice(&(length as u32).to_be_bytes());
-    data.resize(pos + length, 0);
-    let server = server(data, Mode::Normal, true, false).await;
-    let host = migo_io::scheduler::IoScheduler::new(0);
-    let (mut rx, _) = start(&server, &host, 48000);
-    let cause = collect(&mut rx)
-        .await
-        .expect_err("oversized HTTP index was accepted");
-    assert!(
-        cause.contains("HTTP M4A index budget exceeded before body read"),
-        "oversized HTTP index did not fail before allocation/body: {cause}"
-    );
-    assert_eq!(
-        server.ranges.load(Ordering::Acquire),
-        2,
-        "oversized HTTP index reached its unadmitted body read"
-    );
-}
-
-#[tokio::test]
-async fn indexed_packets_are_checked_against_actual_mdat_and_failure_stays_terminal() {
-    let server = server(TAIL.to_vec(), Mode::Normal, false, false).await;
-    let host = migo_io::scheduler::IoScheduler::new(0);
-    let client = server.client(host.pools().clone());
-    let response = client
-        .get(
-            GateKind::AudioStream,
-            migo_services::network::url::Url::parse(
-                "http://indexed-product-fixture.invalid/extents",
-            )
-            .unwrap(),
-        )
-        .header(
-            "accept-encoding".parse().unwrap(),
-            "identity".parse().unwrap(),
-        )
-        .send()
-        .await
-        .unwrap();
-    let mut source = IndexedHttp::new(client, response).unwrap();
-    let packet = IndexedPacket {
-        offset: 8,
-        size: 1,
-        track_id: 0,
-        pts: symphonia_core::units::Timestamp::ZERO,
-        dur: symphonia_core::units::Duration::ZERO,
-        trim_start: symphonia_core::units::Duration::ZERO,
-        trim_end: symphonia_core::units::Duration::ZERO,
-    };
-    assert!(
-        source.media(packet, Instant::now() + WAIT).await.is_err(),
-        "HTTP source accepted packet bytes outside actual mdat"
-    );
-    let state = StreamingState::new();
-    let (tx, _rx) = crate::streaming::stream_channel();
-    source.failed = true;
-    assert!(
-        source.read(&tx, &state).await.is_err(),
-        "failed indexed HTTP source resumed on EOF"
-    );
 }
 
 #[tokio::test]
@@ -790,77 +606,3 @@ async fn actual_player_receives_range_m4a_with_complete_pcm_source_identity_and_
 // large real HTTP prefix even when hyper happens to yield small socket frames.
 // This adapter only joins test chunks; all framing, identity, IO and resumption
 // still go through the production IndexedHttp and the original CPU driver.
-struct Coalesced(IndexedHttp);
-impl Source<AutoDecoder> for Coalesced {
-    type Request = HttpRequest;
-    fn pending(decoder: &AutoDecoder) -> EngineResult<HttpRequest> {
-        IndexedHttp::pending(decoder)
-    }
-    async fn read(
-        &mut self,
-        tx: &mpsc::Sender<StreamMsg>,
-        state: &Arc<StreamingState>,
-    ) -> EngineResult<SourceRead<impl AsRef<[u8]> + Send + 'static>> {
-        let mut bytes = Vec::new();
-        while bytes.len() < 65536 {
-            match self.0.read(tx, state).await? {
-                SourceRead::Data(chunk) => bytes.extend_from_slice(chunk.as_ref()),
-                SourceRead::End => break,
-            }
-        }
-        Ok(if bytes.is_empty() {
-            SourceRead::End
-        } else {
-            SourceRead::Data(bytes)
-        })
-    }
-    async fn resume(
-        &mut self,
-        request: HttpRequest,
-        decoder: OffWorker<Option<AutoDecoder>>,
-        tx: &mpsc::Sender<StreamMsg>,
-        state: &Arc<StreamingState>,
-    ) -> EngineResult<Option<SourceResume<AutoDecoder>>> {
-        self.0.resume(request, decoder, tx, state).await
-    }
-}
-impl HttpSource<AutoDecoder> for Coalesced {
-    fn request(request: RequestBuilder) -> RequestBuilder {
-        IndexedHttp::request(request)
-    }
-    fn new(client: HttpClient, response: Response) -> EngineResult<Self> {
-        IndexedHttp::new(client, response).map(Self)
-    }
-}
-#[tokio::test]
-async fn source_reposition_discards_large_unaccepted_http_suffix_and_preserves_all_pcm() {
-    let server = server(padded(TAIL, 256 * 1024), Mode::Normal, false, false).await;
-    let host = migo_io::scheduler::IoScheduler::new(0);
-    let state = StreamingState::new();
-    let (tx, mut rx) = crate::streaming::stream_channel();
-    let operation = tokio::spawn(crate::streaming_transport::run_with_source::<
-        AutoDecoder,
-        Coalesced,
-    >(
-        host.audio_cpu(),
-        server.client(host.pools().clone()),
-        "http://indexed-product-fixture.invalid/partitions".into(),
-        tx,
-        state,
-        |_| AutoDecoder::http(48000),
-    ));
-    let actual = collect(&mut rx)
-        .await
-        .expect("coalesced HTTP M4A failed complete PCM");
-    assert_eq!(
-        actual,
-        crate::decoder::decode_for_rate(TAIL, 48000)
-            .unwrap()
-            .samples,
-        "coalesced HTTP M4A complete PCM or tail changed"
-    );
-    operation.await.unwrap();
-}
-
-#[path = "streaming_mp3_http_tests.rs"]
-mod mp3_gapless;

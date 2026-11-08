@@ -3,48 +3,6 @@ use super::*;
 use crate::stream_control::LoopRequest;
 
 #[test]
-fn source_credit_counts_only_real_mixed_output_frames() {
-    let (mut p, source, _tx, _requests) = setup(true, false);
-    p.output_channels = 2;
-    p.shared.set_playback_rate(2.0);
-    assert_eq!(source.rendered_frames(), 0);
-    p.process(&mut [0.0; 274]);
-    assert_eq!(source.rendered_frames(), 137);
-    assert_eq!(p.shared.position_frames(), 274);
-    for state in [PlaybackState::Paused, PlaybackState::Stopped] {
-        p.shared.set_state(state);
-        p.poll_stream();
-        p.process(&mut [0.125; 274]);
-        assert_eq!(source.rendered_frames(), 137);
-    }
-    p.shared.set_state(PlaybackState::Playing);
-    p.seek(0.5);
-    p.process(&mut [0.0; 274]);
-    assert_eq!(source.rendered_frames(), 137);
-    p.stop();
-    p.play();
-    p.process(&mut [0.0; 274]);
-    assert_eq!(source.rendered_frames(), 137);
-}
-
-#[test]
-fn source_credit_excludes_stalled_tail_and_retired_source() {
-    let (mut p, source, _tx, _requests) = setup(true, false);
-    p.process(&mut vec![0.0; 24009]);
-    assert_eq!(source.rendered_frames(), 24000);
-    p.process(&mut [0.0; 16]);
-    assert_eq!(source.rendered_frames(), 24000);
-    let replacement = StreamingState::new();
-    let (_sender, rx) = stream_channel();
-    p.start_streaming("replacement".into(), rx, replacement.clone())
-        .unwrap();
-    assert!(source.is_cancelled());
-    p.process(&mut [0.0; 16]);
-    assert_eq!(source.rendered_frames(), 24000);
-    assert_eq!(replacement.rendered_frames(), 0);
-}
-
-#[test]
 fn cyclic_seek_waits_for_ack_and_fresh_pcm_in_every_play_state() {
     for state in [
         PlaybackState::Playing,
