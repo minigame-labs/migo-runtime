@@ -250,14 +250,6 @@ struct Complete {
     audio: Option<DecodedAudio>,
     _resources: Resources,
 }
-impl Complete {
-    fn into_physical(mut self) -> Option<AudioAggregatePermit> {
-        self._resources
-            .in_flight
-            .as_mut()
-            .and_then(|permit| permit._aggregate.take())
-    }
-}
 impl State {
     fn turn(&mut self, cpu: &AudioCpu) -> EngineResult<Option<Complete>> {
         #[cfg(test)]
@@ -464,7 +456,9 @@ async fn run(
     match outcome {
         Ok(mut complete) => {
             let result = reply.result(Ok(complete.audio.take().unwrap()));
-            publish_decode_result_handoff(&result_tx, result, move || complete.into_physical());
+            // The in-flight budget ends here; the result queue charges its PCM.
+            drop(complete);
+            publish_decode_result(&result_tx, result);
         }
         Err(error) => {
             let error = if error.code != ErrorCode::Cancelled && cpu.is_closed() {
@@ -494,7 +488,7 @@ async fn run(
                     "audio decode request cancelled",
                 );
             } else {
-                publish_decode_result_after(&result_tx, reply.result(Err(error)), || {});
+                publish_decode_result(&result_tx, reply.result(Err(error)));
             }
         }
     }

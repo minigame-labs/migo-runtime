@@ -716,8 +716,6 @@ impl InnerAudioPlayer {
     ) -> EngineResult<()> {
         self.try_complete_load(&load, &mut audio)
     }
-    /// Refusal returns the original allocation to its admitted result owner.
-    #[cfg(test)]
     pub(crate) fn try_complete_load(
         &mut self,
         load: &InnerAudioLoadToken,

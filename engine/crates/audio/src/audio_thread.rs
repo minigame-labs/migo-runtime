@@ -156,13 +156,6 @@ const DECODE_RESULT_BYTE_LIMIT_DETAIL: &str = "audio decode result queue byte li
 const DECODE_QUEUE_DISCONNECTED_DETAIL: &str = "audio decode queue is disconnected";
 
 trait DecodeQueuePayload: Send + 'static {
-    fn retire_parts(self, lease: result_custody::Lease) -> Box<dyn Send>
-    where
-        Self: Sized,
-    {
-        result_custody::boxed(self, lease)
-    }
-
     fn queued_bytes(&self) -> usize;
 }
 
@@ -266,20 +259,6 @@ impl DecodeJob {
 }
 
 impl DecodeQueuePayload for DecodeResult {
-    fn retire_parts(self, lease: result_custody::Lease) -> Box<dyn Send> {
-        match self {
-            Self::AudioBuffer { result, resp, .. } => {
-                drop(resp);
-                result_custody::boxed(result, lease)
-            }
-            Self::InnerAudio {
-                result, resp, load, ..
-            } => {
-                drop(resp);
-                result_custody::boxed((result, load), lease)
-            }
-        }
-    }
     fn queued_bytes(&self) -> usize {
         let result = match self {
             Self::AudioBuffer { result, .. } | Self::InnerAudio { result, .. } => result,
@@ -383,12 +362,22 @@ impl DecodeQueueUsage {
     }
 }
 
-use result_custody::Owned as DecodeQueueEntry;
+struct DecodeQueueEntry<T> {
+    value: T,
+    _permit: DecodeQueuePermit,
+}
+
+impl<T> DecodeQueueEntry<T> {
+    fn into_value(self) -> T {
+        let Self { value, _permit } = self;
+        drop(_permit);
+        value
+    }
+}
 
 struct DecodeQueueSender<T: DecodeQueuePayload> {
     tx: std_mpsc::SyncSender<DecodeQueueEntry<T>>,
     usage: Arc<DecodeQueueUsage>,
-    retirement: Option<result_custody::Retirement>,
 }
 
 impl<T: DecodeQueuePayload> Clone for DecodeQueueSender<T> {
@@ -396,7 +385,6 @@ impl<T: DecodeQueuePayload> Clone for DecodeQueueSender<T> {
         Self {
             tx: self.tx.clone(),
             usage: Arc::clone(&self.usage),
-            retirement: self.retirement.clone(),
         }
     }
 }
@@ -411,18 +399,16 @@ impl<T: DecodeQueuePayload> Drop for DecodeQueueReceiver<T> {
         self.usage
             .closed
             .store(true, std::sync::atomic::Ordering::Release);
-        // Actual queued/retiring owners retain their original physical ticket.
+        // Queued entries release their own credit when they drop.
     }
 }
 
-#[cfg(test)]
 enum DecodeQueueSendError<T> {
     Full(T),
     ByteLimit(T),
     Disconnected(T),
 }
 
-#[cfg(test)]
 impl<T> std::fmt::Debug for DecodeQueueSendError<T> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self {
@@ -434,7 +420,6 @@ impl<T> std::fmt::Debug for DecodeQueueSendError<T> {
 }
 
 impl<T: DecodeQueuePayload> DecodeQueueSender<T> {
-    #[cfg(test)]
     fn try_send(&self, value: T) -> Result<(), DecodeQueueSendError<T>> {
         let reservation = self.usage.try_reserve(value.queued_bytes());
         let permit = match reservation {
@@ -449,11 +434,10 @@ impl<T: DecodeQueuePayload> DecodeQueueSender<T> {
                 return Err(DecodeQueueSendError::Disconnected(value));
             }
         };
-        match self.tx.try_send(result_custody::entry(
+        match self.tx.try_send(DecodeQueueEntry {
             value,
-            permit,
-            self.retirement.as_ref(),
-        )) {
+            _permit: permit,
+        }) {
             Ok(()) => Ok(()),
             Err(std_mpsc::TrySendError::Full(entry)) => {
                 Err(DecodeQueueSendError::Full(entry.into_value()))
@@ -466,11 +450,6 @@ impl<T: DecodeQueuePayload> DecodeQueueSender<T> {
 }
 
 impl<T: DecodeQueuePayload> DecodeQueueReceiver<T> {
-    fn try_recv_owned(&self) -> Result<DecodeQueueEntry<T>, std_mpsc::TryRecvError> {
-        self.rx.try_recv()
-    }
-
-    #[cfg(test)]
     fn try_recv(&self) -> Result<T, std_mpsc::TryRecvError> {
         self.rx.try_recv().map(DecodeQueueEntry::into_value)
     }
@@ -499,7 +478,6 @@ fn decode_queue<T: DecodeQueuePayload>(
         DecodeQueueSender {
             tx,
             usage: Arc::clone(&usage),
-            retirement: None,
         },
         DecodeQueueReceiver { rx, usage },
     )
@@ -522,118 +500,51 @@ fn reject_decode_job(job: DecodeJob, code: ErrorCode, detail: &'static str) {
 }
 
 fn reject_decode_result(result: DecodeResult, code: ErrorCode, detail: &'static str) {
-    reject_decode_result_after(result, code, detail, || {});
-}
-
-fn reject_decode_result_after(
-    result: DecodeResult,
-    code: ErrorCode,
-    detail: &'static str,
-    retire: impl FnOnce(),
-) {
     let error = EngineError::from_detail(code, detail);
     match result {
         DecodeResult::AudioBuffer { resp, result, .. } => {
             drop(result);
-            retire();
             let _ = resp.send(Err(error));
         }
         DecodeResult::InnerAudio {
             resp, result, load, ..
         } => {
             drop((result, load));
-            retire();
             let _ = resp.send(Err(error));
         }
     }
 }
 
-#[cfg(test)]
 fn publish_decode_result(result_tx: &DecodeQueueSender<DecodeResult>, result: DecodeResult) {
-    publish_decode_result_after(result_tx, result, || {});
-}
-
-fn publish_decode_result_after(
-    result_tx: &DecodeQueueSender<DecodeResult>,
-    result: DecodeResult,
-    retire: impl FnOnce() + Send + 'static,
-) {
-    publish_decode_result_handoff(result_tx, result, || {
-        retire();
-        None
-    });
-}
-
-// The producer returns the original physical reservation after all other
-// completion resources retire; this ticket follows the same PCM allocation.
-fn publish_decode_result_handoff(
-    result_tx: &DecodeQueueSender<DecodeResult>,
-    result: DecodeResult,
-    retire: impl FnOnce() -> Option<AudioAggregatePermit> + Send + 'static,
-) {
     let cancelled = match &result {
         DecodeResult::InnerAudio { load, resp, .. } => !load.is_current() || resp.is_closed(),
         DecodeResult::AudioBuffer { resp, .. } => resp.is_closed(),
     };
     if cancelled {
-        inner_custody::reject_unadmitted(
+        reject_decode_result(
             result,
             ErrorCode::Cancelled,
             "audio decode request cancelled",
-            || drop(retire()),
-            result_tx.retirement.as_ref(),
         );
         return;
     }
-    let permit = match result_tx.usage.try_reserve(result.queued_bytes()) {
-        Ok(permit) => permit,
-        Err(error) => {
-            let (code, detail) = match error {
-                DecodeQueueReserveError::Full => {
-                    (ErrorCode::InputSaturated, DECODE_RESULT_QUEUE_FULL_DETAIL)
-                }
-                DecodeQueueReserveError::ByteLimit => {
-                    (ErrorCode::InputSaturated, DECODE_RESULT_BYTE_LIMIT_DETAIL)
-                }
-                DecodeQueueReserveError::Disconnected => {
-                    (ErrorCode::Disconnected, DECODE_QUEUE_DISCONNECTED_DETAIL)
-                }
-            };
-            inner_custody::reject_unadmitted(
-                result,
-                code,
-                detail,
-                || drop(retire()),
-                result_tx.retirement.as_ref(),
-            );
-            return;
-        }
-    };
-    // The result queue now owns a byte/item allowance for this PCM. Return
-    // the in-flight lease before making the queue entry visible to audio.
-    let mut physical = retire();
-    if let Some(physical) = &mut physical {
-        physical.shrink_to(result.queued_bytes());
-    }
-    if let Err(error) = result_tx.tx.try_send(result_custody::entry_charged(
-        result,
-        permit,
-        result_tx.retirement.as_ref(),
-        physical,
-    )) {
-        let (entry, code, detail) = match error {
-            std_mpsc::TrySendError::Full(entry) => (
-                entry,
-                ErrorCode::InputSaturated,
-                DECODE_RESULT_QUEUE_FULL_DETAIL,
-            ),
-            std_mpsc::TrySendError::Disconnected(entry) => (
-                entry,
-                ErrorCode::Disconnected,
-                DECODE_QUEUE_DISCONNECTED_DETAIL,
-            ),
-        };
-        result_custody::reject(entry, code, detail);
+    match result_tx.try_send(result) {
+        Ok(()) => {}
+        Err(DecodeQueueSendError::Full(result)) => reject_decode_result(
+            result,
+            ErrorCode::InputSaturated,
+            DECODE_RESULT_QUEUE_FULL_DETAIL,
+        ),
+        Err(DecodeQueueSendError::ByteLimit(result)) => reject_decode_result(
+            result,
+            ErrorCode::InputSaturated,
+            DECODE_RESULT_BYTE_LIMIT_DETAIL,
+        ),
+        Err(DecodeQueueSendError::Disconnected(result)) => reject_decode_result(
+            result,
+            ErrorCode::Disconnected,
+            DECODE_QUEUE_DISCONNECTED_DETAIL,
+        ),
     }
 }
 
@@ -972,7 +883,6 @@ fn start_buffer_scoped(
 /// as the `AudioBuffer`'s frozen snapshot in the host registry, which is what
 /// playback shares (see `AudioResourceRegistry::adopt_frozen`). The context is
 /// consulted only to refuse a decode it did not live to see.
-#[cfg(test)]
 fn integrate_audio_buffer_decode_result(
     contexts: &impl ContextView,
     ctx_id: AudioContextId,
@@ -992,6 +902,45 @@ fn integrate_audio_buffer_decode_result(
         decoded_pcm(decoded)
     });
     let _ = resp.send(answer);
+}
+
+fn integrate_decode_result(
+    result: DecodeResult,
+    contexts: &impl ContextView,
+    players: &mut impl PlayerAccess,
+) {
+    match result {
+        DecodeResult::AudioBuffer {
+            ctx_id,
+            result,
+            resp,
+        } => integrate_audio_buffer_decode_result(contexts, ctx_id, result, resp),
+        DecodeResult::InnerAudio {
+            id,
+            load,
+            result,
+            resp,
+        } => {
+            let response = match players.get_mut(&id) {
+                Some(player) if player.shared.owns_load(&load) && !resp.is_closed() => {
+                    let response = result.and_then(|mut audio| {
+                        let info = InnerAudioInfo {
+                            duration: audio.duration(),
+                            sample_rate: audio.sample_rate,
+                            channels: audio.channels,
+                        };
+                        player.try_complete_load(&load, &mut audio).map(|()| info)
+                    });
+                    if response.is_err() {
+                        player.discard_loading_controls();
+                    }
+                    response
+                }
+                _ => Err(crate::inner_audio::InnerAudioLoadToken::cancelled_error()),
+            };
+            let _ = resp.send(response);
+        }
+    }
 }
 
 /// A decode's samples with their shape, refusing one no `AudioBuffer` can hold:
@@ -1017,7 +966,6 @@ fn decoded_pcm_frames(decoded: &DecodedAudio) -> EngineResult<u32> {
     Ok(frames)
 }
 
-#[cfg(test)]
 fn decoded_pcm(decoded: DecodedAudio) -> EngineResult<DecodedPcm> {
     let frames = decoded_pcm_frames(&decoded)?;
     Ok(DecodedPcm::new(
@@ -1509,11 +1457,8 @@ fn run_audio_thread(
     let mut streaming_client = LazyStreamingClient::new(http_client_factory);
 
     // Channel for receiving decode+resample results from worker threads.
-    let (decode_tx, decode_rx) = result_custody::channel::<DecodeResult>(
-        DECODE_RESULT_QUEUE_CAPACITY,
-        MAX_DECODE_RESULT_QUEUED_BYTES,
-        cpu.clone(),
-    );
+    let (decode_tx, decode_rx) =
+        decode_queue::<DecodeResult>(DECODE_RESULT_QUEUE_CAPACITY, MAX_DECODE_RESULT_QUEUED_BYTES);
 
     // The fixed-size pool starts only if a decode job arrives. Once started,
     // its two workers persist for the audio thread's lifetime.
@@ -2411,8 +2356,8 @@ fn run_audio_thread(
         //     Worker threads send decoded audio back here so we can
         //     integrate the buffers without blocking the audio loop.
         // -----------------------------------------------------------------
-        while let Ok(result) = decode_rx.try_recv_owned() {
-            result_custody::integrate(result, &contexts, &mut inner_players);
+        while let Ok(result) = decode_rx.try_recv() {
+            integrate_decode_result(result, &contexts, &mut inner_players);
         }
 
         device_mixer.service(
@@ -4455,12 +4400,6 @@ pub(crate) fn cache_retirement_service_probe(
     (cache, players)
 }
 
-#[path = "decode_inner_custody.rs"]
-mod inner_custody;
-#[path = "decode_response_custody.rs"]
-mod response_custody;
-#[path = "decode_result_custody.rs"]
-mod result_custody;
 pub(crate) fn new_inner_audio_player(
     id: InnerAudioId,
     channels: u32,
