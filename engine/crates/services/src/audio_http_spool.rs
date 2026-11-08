@@ -197,12 +197,12 @@ impl shared::audio_file::AudioSparseSpool for Sparse {
 impl AudioHttpSpool for Spool {
     fn sparse(
         &self,
-        len: u64,
+        len: Option<u64>,
     ) -> Result<Box<dyn shared::audio_file::AudioSparseSpool>, EngineError> {
         migo_io::spool::SparseSpool::create(
             &self.context.spool_dir,
             &self.budget,
-            len,
+            len.unwrap_or(self.maximum),
             self.maximum,
         )
         .map(|spool| Box::new(Sparse(spool)) as Box<dyn shared::audio_file::AudioSparseSpool>)

@@ -24,9 +24,10 @@ pub trait AudioHttpSpool: Send + Sync {
         cancel: Arc<dyn AudioFileCancel>,
         deadline: Instant,
     ) -> AudioSpoolFuture<'static, Arc<dyn AudioFile>>;
-    /// A disk-backed object of exactly `len` bytes for a body fetched out of
-    /// order. Blocking file creation: call it on a decode thread.
-    fn sparse(&self, len: u64) -> EngineResult<Box<dyn AudioSparseSpool>> {
+    /// A disk-backed object for a body fetched out of order: exactly `len`
+    /// bytes, or the spool's per-object maximum when the length is unknown.
+    /// Blocking file creation: call it on a decode thread.
+    fn sparse(&self, len: Option<u64>) -> EngineResult<Box<dyn AudioSparseSpool>> {
         let _ = len;
         Err(EngineError::from_detail(
             crate::error::ErrorCode::Unsupported,
