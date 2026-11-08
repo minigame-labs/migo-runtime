@@ -478,14 +478,21 @@ mod tests {
                     .unwrap();
                 send.send((started.elapsed(), value)).unwrap();
             });
-            // This timeout guards a lock dependency, not a throughput target:
-            // the blocked database is deliberately released only afterwards.
-            let progress = receive.recv_timeout(Duration::from_secs(2));
+            // A lock dependency cannot be told from a slow runner by a wall-clock
+            // budget (4 ms locally, >2 s on a hosted Windows image). It can be
+            // told by order: the unrelated work must finish while the cold open
+            // is still waiting on SQLite, which only the ROLLBACK below ends.
+            let progress = receive.recv_timeout(Duration::from_secs(60));
+            let cold_still_waiting = !cold.is_finished();
             blocker.execute_batch("ROLLBACK").unwrap();
             let cold_result = cold.join().unwrap();
             other.join().unwrap();
             assert!(opening, "cold open must not hold the cache mutex");
-            let (elapsed, value) = progress.expect("other directories must finish before unlock");
+            let (elapsed, value) = progress.expect("other directories must make progress");
+            assert!(
+                cold_still_waiting,
+                "other directories finished only after the blocked cold open ended ({elapsed:?})"
+            );
             assert_eq!(value.as_deref(), Some("stable"));
             cold_result.unwrap().set("after", "unlock").unwrap();
             eprintln!("warm read + unrelated cold write before SQLite unlock: {elapsed:?}");
