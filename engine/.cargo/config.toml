@@ -294,6 +294,14 @@ rustflags = [
 # per-function CFI; -fno-unwind-tables drops the rest.
 SKIA_GN_ARGS = "extra_cflags_cc=[\"-fno-asynchronous-unwind-tables\",\"-fno-unwind-tables\"]"
 
+# The pinned OpenHarmony SDK (5.1.0.107) ships clang/libc++ 15.0.4, whose
+# completed ranges algorithms still sit behind -fexperimental-library. ada-url
+# 4.0's C++20 sources call std::ranges::find_if, so without this the OHOS build
+# stops in ada's build script. The flag only exposes header templates (no
+# libc++experimental symbols are referenced) and is scoped to the OHOS triples.
+CXXFLAGS_aarch64_unknown_linux_ohos = "-fexperimental-library"
+CXXFLAGS_x86_64_unknown_linux_ohos = "-fexperimental-library"
+
 # On WSL / Ubuntu hosts, Skia's C++20 consteval usage in src/base/SkTime.cpp
 # does not compile with clang-12 against the GCC-13 libstdc++ shipped by
 # Ubuntu 24.04 (see Skia bug 353527181).  Force a newer clang explicitly;
