@@ -1,14 +1,14 @@
 {
   "schema_version": 1,
-  "package": "libclang-rt-23-dev",
-  "version": "1:23.1.5~++20261023090852+395ba2c4d274-1~exp1~20261023090919.90",
-  "url": "https://apt.llvm.org/noble/pool/main/l/llvm-toolchain-23/libclang-rt-23-dev_23.1.5~++20261023090852+395ba2c4d274-1~exp1~20261023090919.90_amd64.deb",
-  "bytes": 4355628,
-  "sha256": "a43266990eebf2d0a7a930d3e3f195ca21c4c4fbb29b243cea14a735316b0865",
+  "package": "libclang-rt-21-dev",
+  "version": "1:21.1.8-14",
+  "url": "https://snapshot.debian.org/file/49bac70db97c0cfa7ca075aeee50c071325d00d7",
+  "bytes": 3875124,
+  "sha256": "865b7836765f7684abd71bd3a7ad465fa313ec3d83b2f3971797c36b09cb4f47",
   "archive": {
-    "path": "usr/lib/llvm-23/lib/clang/23/lib/linux/libclang_rt.rtsan-x86_64.a",
-    "sha256": "ccced14f58b2848039b1753e9904f7f10be5279d47f3eadc9d82b5b86f1b523c",
-    "bytes": 1255312
+    "path": "usr/lib/llvm-21/lib/clang/21/lib/linux/libclang_rt.rtsan-x86_64.a",
+    "sha256": "23f35dcbb98fed5dd1141004b92709dd5a2977c96e07a3b4d10b6c1d6ef03627",
+    "bytes": 1241664
   },
   "rust_toolchain": "1.95.0",
   "std_source_sha256": {
@@ -17,5 +17,6 @@
     "sys/sync/thread_parking/futex.rs": "13617a66b7684288ef3c81e582d17f83948d3016f8210b857cfe15b12fd7ce86",
     "sys/pal/unix/futex.rs": "7a3649b2fea96ff61773a91aee306e08ed35c552fe7a2f4d6deac47361a27785"
   },
-  "scope": "Test-only Linux x86_64 allocator/lock interception plus complete callback syscall trace. Not a product dependency or hard RT proof."
+  "scope": "Test-only Linux x86_64 allocator/lock interception plus complete callback syscall trace. Not a product dependency or hard RT proof.",
+  "source_note": "Debian snapshot (content-addressed by SHA-1, permanent). apt.llvm.org nightly pool URLs are pruned and turned this gate red."
 }
