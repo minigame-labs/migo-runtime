@@ -59,6 +59,13 @@ from android_permission_policy import (  # noqa: E402
 TAG = "[merged-manifest-permissions]"
 LIBRARY = root / "platforms/android/library"
 MERGED = LIBRARY / "build/intermediates/merged_manifest"
+
+
+def merged_manifest(variant: str) -> pathlib.Path:
+    """AGP 9 nests the output under the producing task; AGP 8 did not."""
+    task = f"process{variant[0].upper()}{variant[1:]}Manifest"
+    nested = MERGED / variant / task / "AndroidManifest.xml"
+    return nested if nested.exists() else MERGED / variant / "AndroidManifest.xml"
 API_LEVELS = (26, 28, 31)
 MIN_SDK = "26"
 
@@ -123,7 +130,7 @@ else:
 
 for profile, expected in EXPECTED.items():
     variant = f"{profile}Debug"
-    merged = MERGED / variant / "AndroidManifest.xml"
+    merged = merged_manifest(variant)
     if not merged.is_file():
         fail(f"{variant} merged manifest was not produced: {merged}")
         continue
@@ -131,7 +138,7 @@ for profile, expected in EXPECTED.items():
 
     # When a release build has run, hold the two to each other rather than resting on
     # the source-set argument alone.
-    release = MERGED / f"{profile}Release/AndroidManifest.xml"
+    release = merged_manifest(f"{profile}Release")
     if release.is_file():
         if release.read_text(encoding="utf-8") == source:
             ok(f"{profile}: the release merged manifest is identical to the debug one")
@@ -182,7 +189,7 @@ for profile, expected in EXPECTED.items():
                 print(f"    {name.rsplit('.', 1)[-1]}")
 
 # The Slim promise, stated where it can be read rather than inferred from two sets.
-slim_merged = MERGED / "slimDebug/AndroidManifest.xml"
+slim_merged = merged_manifest("slimDebug")
 if slim_merged.is_file():
     slim_permissions, _ = manifest_permissions(slim_merged.read_text(encoding="utf-8"))
     leaked = sorted(set(slim_permissions) & set(FULL_PERMISSION_POLICY))
