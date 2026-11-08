@@ -173,7 +173,6 @@ pub use crate::ops_builtin::op_void_async;
 pub use crate::ops_builtin::op_void_sync;
 pub use crate::ops_builtin_v8::deserialize_broadcast;
 pub use crate::ops_builtin_v8::serialize_broadcast;
-pub use crate::ops_builtin_v8::{serialize_for_storage, deserialize_for_storage};
 pub use crate::ops_metrics::OpMetricsEvent;
 pub use crate::ops_metrics::OpMetricsFactoryFn;
 pub use crate::ops_metrics::OpMetricsFn;

@@ -292,16 +292,16 @@ fn decoding_releases_its_external_memory_charge_on_success_and_error() {
     let mut rt = runtime();
     deno_core::scope!(scope, rt);
     let original = v8::ArrayBuffer::new(scope, 1024);
-    let bytes = deno_core::serialize_for_storage(scope, original.into(), 4096, None)
+    let bytes = wire::serialize(scope, original.into(), 4096, None)
         .unwrap()
         .unwrap();
     // V8 150 heap statistics report backing stores, not the embedder counter.
     // Query the actual counter with a zero adjustment.
     // Core also creates external strings for its host-object symbol. Compare
     // the wrapper against the same direct core operation, including metadata.
-    deno_core::deserialize_for_storage(scope, &bytes).unwrap();
+    wire::deserialize(scope, &bytes).unwrap();
     let before_reference = scope.adjust_amount_of_external_allocated_memory(0);
-    deno_core::deserialize_for_storage(scope, &bytes).unwrap();
+    wire::deserialize(scope, &bytes).unwrap();
     let reference_delta = scope.adjust_amount_of_external_allocated_memory(0) - before_reference;
     let before = scope.adjust_amount_of_external_allocated_memory(0);
     let value = WorkerWire::from_owned(bytes)
@@ -317,7 +317,7 @@ fn decoding_releases_its_external_memory_charge_on_success_and_error() {
     );
     let invalid = [1, 2, 3];
     let before_error_reference = scope.adjust_amount_of_external_allocated_memory(0);
-    assert!(deno_core::deserialize_for_storage(scope, &invalid).is_err());
+    assert!(wire::deserialize(scope, &invalid).is_err());
     let reference_error_delta =
         scope.adjust_amount_of_external_allocated_memory(0) - before_error_reference;
     let before_error = scope.adjust_amount_of_external_allocated_memory(0);
@@ -342,7 +342,7 @@ fn lifecycle_and_message_to_v8_have_distinct_internal_shapes() {
         deno_core::scope!(scope, rt);
         let value = v8::String::new(scope, "payload").unwrap();
         WorkerWire::from_owned(
-            deno_core::serialize_for_storage(scope, value.into(), 1024, None)
+            wire::serialize(scope, value.into(), 1024, None)
                 .unwrap()
                 .unwrap(),
         )

@@ -176,10 +176,7 @@ pub(crate) unsafe extern "C" fn v8__ValueSerializer__Delegate__ReallocateBufferM
 ) -> *mut c_void {
   let base = unsafe { ValueSerializerHeap::dispatch(this) };
 
-  if size == 0
-    || size > base.value_serializer_impl.max_buffer_capacity()
-    || Layout::from_size_align(size, 1).is_err()
-  {
+  if size == 0 || Layout::from_size_align(size, 1).is_err() {
     unsafe { *actual_size = 0 };
     return std::ptr::null_mut();
   }
@@ -286,13 +283,6 @@ unsafe extern "C" {
 /// The ValueSerializerImpl trait allows for
 /// custom callback functions used by v8.
 pub trait ValueSerializerImpl {
-  /// Maximum allocation capacity, including V8's geometric growth slack.
-  /// Returning null on a larger request lets V8 report a data-clone error.
-  /// This default preserves the existing unbounded serializer contract.
-  fn max_buffer_capacity(&self) -> usize {
-    usize::MAX
-  }
-
   fn throw_data_clone_error<'s>(
     &self,
     scope: &mut PinScope<'s, '_>,
