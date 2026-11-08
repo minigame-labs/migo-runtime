@@ -291,6 +291,13 @@ jobs:
       # requests at API 26, 28 and 31.
       # Gradle configures :c-host-example, which pins android.ndkVersion to the
       # native build lock; pin all four NDK variables from that single source.
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4
+        with:
+          # The action's default `tools` package no longer exists; sdkmanager
+          # is what the NDK pin below needs.
+          packages: platform-tools
+
       - name: Pin the Android NDK for Gradle configuration
         run: bash scripts/ci/setup-android-ndk.sh
 
